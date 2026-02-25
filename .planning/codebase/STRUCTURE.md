@@ -1,217 +1,198 @@
 # Codebase Structure
 
-**Analysis Date:** 2026-02-23
+**Analysis Date:** 2026-02-24
 
 ## Directory Layout
 
 ```
 qanta-buzzer/
-├── config.py                 # Configuration settings (model, training, reward, paths)
-├── environment.py            # POMDP environment (Question, QuizBowlEnvironment)
-├── dataset.py                # Dataset handling (QuizBowlDataset, data loaders)
-├── model.py                  # T5 + policy head architecture
-├── metrics.py                # Evaluation metrics (MetricsTracker, compute functions)
-├── train_supervised.py       # Supervised warm-start training
-├── train_ppo.py              # PPO reinforcement learning training
-├── main.py                   # Main orchestration script (CLI entry point)
-├── demo.py                   # Interactive demonstration
-├── visualize.py              # Visualization and analysis utilities
-├── run.sh                     # Quick-start shell script
-├── requirements.txt          # Python dependencies
-├── data/                      # Dataset storage (created at runtime)
-│   ├── processed_dataset.json  # Full dataset from QANTA CSV
-│   ├── train_dataset.json      # Training split (70%, ~350 questions)
-│   ├── val_dataset.json        # Validation split (15%, ~75 questions)
-│   └── test_dataset.json       # Test split (15%, ~75 questions)
-├── checkpoints/              # Model checkpoints (created at runtime)
-│   ├── supervised/           # Supervised training checkpoints
-│   │   ├── best_model/       # Best supervised checkpoint
-│   │   ├── epoch_*.pt        # Per-epoch checkpoints
-│   │   └── history.json      # Supervised training history
-│   └── ppo/                  # PPO training checkpoints
-│       ├── best_model/       # Best PPO checkpoint
-│       ├── iter_*.pt         # Per-iteration checkpoints
-│       └── history.json      # PPO training history
-├── results/                   # Evaluation results (created at runtime)
-│   └── evaluation_results.json # Test set results
-├── logs/                      # Training logs (created at runtime)
-└── visualizations/            # Generated plots (created at runtime)
+├── main.py                    # CLI entry point, mode routing, phase orchestration
+├── config.py                  # Centralized configuration (Config class)
+├── model.py                   # T5PolicyModel + PolicyHead architecture
+├── environment.py             # QuizBowlEnvironment, BatchedEnvironment, Question
+├── dataset.py                 # QuizBowlDataset, QANTADatasetLoader, SyntheticDatasetGenerator
+├── train_supervised.py        # SupervisedTrainer, run_supervised_training()
+├── train_ppo.py               # PPOTrainer, RolloutBuffer, RolloutStep, run_ppo_training()
+├── metrics.py                 # MetricsTracker, evaluate_model(), evaluate_choices_only()
+├── demo.py                    # Interactive question answering demo
+├── visualize.py               # Visualization utilities for checkpoints
+├── test_imports.py            # Module import verification
+├── test_csv_loader.py         # Dataset loading verification
+├── run.sh                      # Interactive shell script menu
+├── README.md                  # Project documentation
+├── IMPLEMENTATION_README.md   # Implementation details
+├── PROJECT_OVERVIEW.md        # High-level overview
+├── CLAUDE.md                  # Development guidance for Claude
+└── .planning/
+    └── codebase/
+        ├── ARCHITECTURE.md    # (This analysis)
+        ├── STRUCTURE.md       # (This file)
+```
+
+Data and checkpoints (generated at runtime):
+```
+qanta-buzzer/
+├── data/                      # Dataset storage
+│   ├── questions.csv          # Input: QANTA quiz bowl data (14.9MB)
+│   ├── processed_dataset.json # Parsed dataset with distractors
+│   ├── train_dataset.json     # 70% of questions
+│   ├── val_dataset.json       # 15% of questions
+│   └── test_dataset.json      # 15% of questions
+├── checkpoints/               # Model checkpoints
+│   ├── supervised/
+│   │   ├── best_model/        # Best supervised model (T5 + policy_head.pt)
+│   │   ├── epoch_1/           # Intermediate checkpoints
+│   │   └── history.json       # Training history
+│   └── ppo/
+│       ├── best_model/        # Best PPO model
+│       ├── iter_50/           # Intermediate checkpoints
+│       └── history.json       # PPO training history
+└── results/                   # Evaluation outputs
+    └── evaluation_results.json
 ```
 
 ## Directory Purposes
 
-**Root directory:**
-- Purpose: Python entry points and configuration
-- Contains: All executable modules (.py files) and primary config
-- Key files: `main.py` (entry), `config.py` (settings), `run.sh` (quickstart)
+**Root directory (qanta-buzzer/):**
+- Purpose: Python source code for training pipeline
+- Contains: Model definition, training loops, CLI orchestration
+- Key files: `main.py` (entry point), `config.py` (hyperparameters), `model.py` (neural net)
 
 **data/ directory:**
-- Purpose: Persistent dataset storage
-- Contains: JSON files with train/val/test question splits
-- Generated by: `dataset.py` setup_datasets() function
-- 350 train + 75 val + 75 test = 500 total questions (default)
+- Purpose: Dataset storage and preprocessing
+- Contains: Raw QANTA CSV, processed question objects (JSON), train/val/test splits
+- Generated at runtime if not present; loads from `questions.csv` if available
+- Falls back to synthetic data generation if CSV missing
 
 **checkpoints/ directory:**
-- Purpose: Model state snapshots for resume and evaluation
-- Contains: PyTorch model weights, training history, best model indicators
-- Structure: `{phase}/{type}` where phase ∈ {supervised, ppo}, type ∈ {best_model, epoch_*, iter_*, history.json}
-- Generated by: `train_supervised.py`, `train_ppo.py` save logic
+- Purpose: Model weights and training state persistence
+- Contains: Supervised and PPO model directories with T5 weights, policy head weights, optimizer states
+- Structure: Two phases (supervised/, ppo/) each with best_model/ and periodic snapshots
+- Each checkpoint includes: pytorch_model.bin (T5 weights), config.json (T5 config), sentencepiece.model (tokenizer), policy_head.pt, training_state.pt
 
 **results/ directory:**
-- Purpose: Final evaluation metrics and experiment outputs
-- Contains: JSON files with accuracy, reward, ECE, calibration metrics
-- Generated by: `main.py` eval mode via `metrics.py` evaluate_model()
-
-**logs/ directory:**
-- Purpose: Training progress and debugging information
-- Contains: Text logs of training iterations (optional, not actively used in current code)
-- Reserved for: Future detailed logging
+- Purpose: Final evaluation outputs
+- Contains: JSON files with metrics (accuracy, ECE, rewards, per-category breakdown)
 
 ## Key File Locations
 
 **Entry Points:**
-- `main.py`: Primary CLI entry point (lines 75-206) - coordinates all modes
-- `demo.py`: Interactive demo (lines 200-264) - run inference on sample questions
-- `visualize.py`: Visualization utility (lines 150-280) - generate result plots
-- `run.sh`: Shell script wrapper for quick execution
+- `main.py`: Primary CLI entry point - routes to supervised/PPO/eval modes
+- `run.sh`: Interactive shell script menu (wrapper around main.py)
+- `demo.py`: Interactive demo for manual testing
 
 **Configuration:**
-- `config.py`: All hyperparameters, paths, model settings (lines 1-90)
-  - Override from CLI via `main.py` parse_args() → setup_config()
+- `config.py`: Single Config class with all hyperparameters (model, learning rates, batch sizes, paths, device selection)
 
 **Core Logic:**
-- `environment.py`: POMDP environment definition (lines 1-239)
-  - Question class (lines 10-18)
-  - QuizBowlEnvironment (lines 21-193)
-  - BatchedEnvironment (lines 196-239)
-- `model.py`: Neural network architecture (lines 1-346)
-  - PolicyHead class (lines 15-74)
-  - T5PolicyModel class (lines 77-346)
-- `dataset.py`: Data loading and management (lines 1-329)
-  - QuizBowlDataset (lines 18-80)
-  - QANTADatasetLoader (lines 83-200)
-  - SyntheticDatasetGenerator (lines 203-329)
-  - setup_datasets() function (line 332+)
+- `model.py`: T5PolicyModel class (encoder + policy heads), PolicyHead neural network
+- `environment.py`: QuizBowlEnvironment (POMDP simulation), Question dataclass
+- `dataset.py`: QuizBowlDataset (data wrapper), QANTADatasetLoader (CSV parsing), SyntheticDatasetGenerator
 
 **Training:**
-- `train_supervised.py`: Supervised warm-start (lines 1-267)
-  - SupervisedTrainer class (lines 21-187)
-  - run_supervised_training() entry (lines 190-267)
-- `train_ppo.py`: PPO fine-tuning (lines 1-434)
-  - RolloutStep dataclass (lines 22-35)
-  - RolloutBuffer class (lines 37-105)
-  - PPOTrainer class (lines 107-387)
-  - run_ppo_training() entry (lines 390-434)
+- `train_supervised.py`: SupervisedTrainer class, run_supervised_training() function
+- `train_ppo.py`: PPOTrainer class, RolloutBuffer, RolloutStep, run_ppo_training() function
 
-**Evaluation:**
-- `metrics.py`: Metric computation (lines 1-385)
-  - MetricsTracker class (lines 12-185)
-  - evaluate_model() function (lines 188-330)
-  - evaluate_choices_only() function (lines 333-385)
+**Evaluation & Metrics:**
+- `metrics.py`: MetricsTracker class, evaluate_model(), evaluate_choices_only() functions
+
+**Testing & Utilities:**
+- `test_imports.py`: Verifies all modules can be imported
+- `test_csv_loader.py`: Verifies dataset loading from CSV
+- `visualize.py`: Checkpoint visualization utilities
 
 ## Naming Conventions
 
 **Files:**
-- Python modules: `snake_case.py` (e.g., `train_supervised.py`, `config.py`)
-- Data files: `snake_case.json` (e.g., `train_dataset.json`)
-- Checkpoint dirs: `{phase}/{checkpoint_type}` (e.g., `supervised/best_model`, `ppo/iter_50`)
-- Results: `evaluation_results.json`
-
-**Directories:**
-- Phase dirs: lowercase (e.g., `supervised`, `ppo`)
-- Data types: lowercase plurals (e.g., `checkpoints`, `results`, `logs`)
-- Generated at runtime: no underscore prefix
-
-**Functions:**
-- Module entry points: `run_{phase}_training()` (e.g., `run_supervised_training()`)
-- Public methods: `snake_case()` (e.g., `compute_accuracy()`, `prepare_batch()`)
-- Private methods: `_snake_case()` (e.g., `_get_observation()`, `_print_model_info()`)
+- Training phases use underscore separators: `train_supervised.py`, `train_ppo.py`
+- Utility/test files use underscore separators: `test_imports.py`, `test_csv_loader.py`
+- Config file lowercase: `config.py`
+- Single-word modules lowercase: `model.py`, `environment.py`, `dataset.py`, `metrics.py`
 
 **Classes:**
-- Main classes: `PascalCase` (e.g., `T5PolicyModel`, `MetricsTracker`)
-- Dataclasses: `PascalCase` (e.g., `Question`, `RolloutStep`)
+- PascalCase: `T5PolicyModel`, `PolicyHead`, `QuizBowlEnvironment`, `BatchedEnvironment`, `Question`, `SupervisedTrainer`, `PPOTrainer`, `RolloutBuffer`, `RolloutStep`, `MetricsTracker`, `QANTADatasetLoader`, `SyntheticDatasetGenerator`, `QuizBowlDataset`, `Config`
+- Exceptions: ValueError (built-in), always raised with descriptive messages
+
+**Functions:**
+- snake_case: `run_supervised_training()`, `run_ppo_training()`, `setup_datasets()`, `create_train_val_test_splits()`, `evaluate_model()`, `evaluate_choices_only()`, `compute_system_score()`, `parse_args()`, `setup_config()`, `get_text_representation()`, `get_choices_only_text()`, `get_encoder_output()`, `select_action()`, `get_action_log_probs()`, `predict_answer()`
+- Internal/private functions use leading underscore: `_get_observation()`, `_print_model_info()`, `_question_to_dict()`, `_dict_to_question()`, `convert_to_json_serializable()` (helper function, not private)
 
 **Variables:**
-- Model weights: Single letter or descriptive (e.g., `logits`, `embeddings`, `values`)
-- Losses: `{type}_loss` (e.g., `policy_loss`, `value_loss`)
-- Metrics: `{metric}_{type}` (e.g., `accuracy_val`, `ece_train`)
-- RL standard notation: `gamma` (discount), `gae_lambda` (GAE λ), `R_t` (return), `A_t` (advantage)
+- snake_case: `model`, `train_dataset`, `val_dataset`, `test_dataset`, `batch_size`, `learning_rate`, `epoch`, `iteration`, `loss`, `reward`, `best_val_acc`, `best_val_reward`
+- RL notation: `gamma` (discount), `gae_lambda`, `action`, `observation`, `reward`, `done`, `value`, `log_prob`, `advantage`, `return_`, `entropy`
+- Abbreviations: `ppo` (PPO trainer), `env` (environment), `obs` (observation), `pred` (prediction), `acc` (accuracy), `ece` (expected calibration error)
 
-**Constants:**
-- Config class attributes: `UPPERCASE_WITH_UNDERSCORES`
-- Environment actions: `WAIT_ACTION = 0`
+**Paths (in code):**
+- Relative to config.DATA_DIR: "questions.csv" → `data/questions.csv`
+- Checkpoint subdirs: config.CHECKPOINT_DIR / "supervised" / "best_model"
+- Results: config.RESULTS_DIR / "evaluation_results.json"
 
 ## Where to Add New Code
 
-**New Feature (e.g., new loss function):**
-- Primary code: Add to existing trainer (`train_supervised.py` or `train_ppo.py`)
-- Implement in: Loss computation within train() method
-- Register in: Config class if hyperparameter needed
+**New Feature (e.g., different reward shaping):**
+- Primary code: `environment.py` → Modify `QuizBowlEnvironment.step()` reward computation
+- Config: `config.py` → Add hyperparameter (e.g., `REWARD_PENALTY_SCHEME`)
+- Tests: `test_csv_loader.py` or new test file for validation
 
-**New Evaluation Metric:**
-- Implementation: Add method to `MetricsTracker` class in `metrics.py` (lines 12-185)
-- Pattern: Follow compute_accuracy(), compute_ece() pattern
-- Usage: Call from evaluate_model() (lines 188-330)
+**New Model Component (e.g., different encoder):**
+- Implementation: `model.py` → Create new class inheriting or replacing T5PolicyModel
+- Config: `config.py` → Add MODEL_NAME or similar override
+- Entry point: `main.py` → Update initialization to use new model class
+- Tests: Verify tokenization and forward pass in test file
 
-**New Training Phase:**
-- Framework: Create new trainer class inheriting pattern from `SupervisedTrainer` or `PPOTrainer`
-- Location: New file or extend existing trainer file
-- Entry: Add new mode check in `main.py` parse_args() and main() function (lines 75-206)
+**New Training Algorithm (e.g., A2C instead of PPO):**
+- Implementation: Create new file `train_a2c.py` mirroring `train_ppo.py` structure
+- Trainer class: `A2CTrainer` with collect_rollouts(), update_policy() methods
+- Entry point: `main.py` → Add new mode (e.g., `--mode a2c`)
+- Orchestration: New function `run_a2c_training()` called from main.py
 
-**New Distractor Strategy:**
-- Location: Extend `SyntheticDatasetGenerator._generate_distractors()` in `dataset.py` (lines 203-329)
-- Register: Add probability to Config.DISTRACTOR_* constants
+**New Utility/Metric:**
+- Metrics: Add method to `MetricsTracker` class in `metrics.py`
+- Helper: Create new file `utils.py` if utility is general purpose
+- Tests: Add to `test_csv_loader.py` or create dedicated test file
 
-**Utility Functions:**
-- Shared helpers: `metrics.py` already contains metric utils
-- Visualization: Add functions to `visualize.py` (lines 150-280)
-- Text processing: Add to `environment.py` near get_text_representation() (line 141)
+**New Dataset Source:**
+- Loader: Add new class in `dataset.py` (e.g., `EBQADatasetLoader`)
+- Configuration: `config.py` → Add path constants
+- Integration: Modify `setup_datasets()` to check for new source and load appropriately
 
 ## Special Directories
 
-**checkpoints/ (Model State):**
-- Purpose: Serialized model weights and training state
-- Generated: Yes (automatically by trainers)
-- Committed: No (.gitignore should exclude)
-- Structure: Each phase (supervised/ppo) has subdirectories for checkpoints at intervals
-- Restoration: Load via T5PolicyModel.load_pretrained(path) in eval/continue modes
+**data/ directory:**
+- Purpose: Input data and processed datasets
+- Generated: Yes (processed_dataset.json, splits created at runtime if not present)
+- Committed: No (data is generated, .gitignore excludes *.json in data/)
+- Notes: questions.csv should be placed here for CSV-based loading
 
-**data/ (Datasets):**
-- Purpose: Question data splits
-- Generated: Yes (by setup_datasets() on first run)
-- Committed: Partial (test_dataset.json committed, others generated)
-- Format: JSON list of Question dicts with {question_id, clues, answer_choices, correct_answer_idx, category}
-- Size: ~500 questions default, configurable via Config.NUM_QUESTIONS
+**checkpoints/ directory:**
+- Purpose: Model weights, optimizer states, training history
+- Generated: Yes (created during training)
+- Committed: No (large files, excluded via .gitignore)
+- Contents: Each checkpoint is a directory with:
+  - `pytorch_model.bin` - T5 encoder weights
+  - `config.json` - T5 model config
+  - `sentencepiece.model` - T5 tokenizer
+  - `policy_head.pt` - PolicyHead weights (custom)
+  - `training_state.pt` - Optimizer state dict and training metadata
+  - `history.json` - Training curves
 
-**results/ (Experiment Output):**
-- Purpose: Final metrics from eval runs
-- Generated: Yes (by main.py eval mode)
-- Committed: No (experiment artifacts)
-- Format: JSON with keys: num_samples, accuracy, average_reward, average_buzz_position, ece, brier_score, category_accuracy
+**results/ directory:**
+- Purpose: Final evaluation metrics and predictions
+- Generated: Yes (created during eval mode)
+- Committed: No (excluded via .gitignore)
+- Contains: JSON files with accuracy, ECE, per-category breakdown, etc.
 
-## File Operations Summary
+**logs/ directory:**
+- Purpose: Optional detailed logging (not currently used in codebase)
+- Referenced in: `config.py` as LOG_DIR = "logs"
+- Usage: Can be expanded for TensorBoard logs or detailed metric logging
 
-**Read Operations:**
-- Config: Read once at startup from `config.py`
-- Datasets: Load from `data/*.json` via `QuizBowlDataset.load()` in setup_datasets()
-- Checkpoints: Load model weights via torch.load() or T5PolicyModel.load_pretrained()
-- QANTA CSV: Optionally read `questions.csv` via `QANTADatasetLoader.load_from_csv()`
-
-**Write Operations:**
-- Datasets: Save splits to `data/*.json` via setup_datasets() if not cached
-- Checkpoints: Save model every N iterations via trainer.save_checkpoint()
-- Training history: Save JSON to `checkpoints/{phase}/history.json`
-- Results: Save metrics JSON to `results/evaluation_results.json`
-- Visualizations: Save PNG plots to `visualizations/` subdirs
-
-**Pipeline Typical File Touch Order:**
-1. Read: config.py (startup)
-2. Read: data/*.json or generate from questions.csv
-3. Write: checkpoints/supervised/best_model and history
-4. Write: checkpoints/ppo/best_model and history
-5. Write: results/evaluation_results.json
-6. Read/Write: visualizations/* (optional)
+**.planning/codebase/ directory:**
+- Purpose: GSD (Code Mapper) analysis documents
+- Generated: By codebase mapper tool
+- Committed: Yes (reference documentation for future Claude instances)
+- Contains: ARCHITECTURE.md, STRUCTURE.md, CONVENTIONS.md, TESTING.md, etc.
 
 ---
 
-*Structure analysis: 2026-02-23*
+*Structure analysis: 2026-02-24*

@@ -1,228 +1,221 @@
 # Codebase Concerns
 
-**Analysis Date:** 2026-02-23
+**Analysis Date:** 2026-02-24
 
 ## Tech Debt
 
-**No exception handling in training loops:**
-- Issue: Training scripts (`train_supervised.py`, `train_ppo.py`, `metrics.py`) lack try-except blocks for handling data loading errors, tokenization failures, or OOM conditions
-- Files: `train_supervised.py:80-200`, `train_ppo.py:135-300`, `metrics.py:295-330`
-- Impact: Training will crash without graceful failure messages. Memory errors during large batch processing are unrecoverable.
-- Fix approach: Add try-except blocks around tokenization, model forward passes, and disk I/O operations. Add memory monitoring and checkpoint recovery.
+**PPO Training State Management:**
+- Issue: Incomplete training state persistence. Only saves optimizer state, not learning rate schedule or model intermediate layers
+- Files: `train_ppo.py:275-280` (save_checkpoint method)
+- Impact: Cannot reliably resume PPO training from checkpoints. Restarting mid-training loses optimization momentum and may cause training instability
+- Fix approach: Save complete trainer state including scheduler state, batch statistics, and gradient accumulation counters. Implement proper resume logic in `PPOTrainer.__init__`
 
-**Loose coupling between dataset splits and training:**
-- Issue: `setup_datasets()` in `dataset.py:480-550` shuffles raw questions before splitting, but if dataset loading fails partway through, train/val/test splits may become contaminated or desynchronized
-- Files: `dataset.py:480-550`, `main.py:90-95`
-- Impact: Accidental train/test leakage possible if splits are regenerated mid-experiment. Reproducibility issues.
-- Fix approach: Implement deterministic split based on question IDs (not shuffle index). Validate split integrity on load.
+**Gradient Accumulation Inconsistency:**
+- Issue: Supervised training uses gradient accumulation (`SUPERVISED_GRAD_ACCUM_STEPS = 4`, effective batch = 32) but final backward pass may use incomplete accumulation
+- Files: `train_supervised.py:88-100` (gradient accumulation logic)
+- Impact: Effective batch size fluctuates at end of each epoch. Produces different optimization dynamics than intended
+- Fix approach: Implement proper gradient accumulation with accumulation step counter and final step flush at epoch end
 
-**No input validation for CSV data:**
-- Issue: `QANTADatasetLoader.load_from_csv()` (`dataset.py:90-170`) assumes CSV columns ('Text', 'Answer', 'Category') exist and are non-empty. Malformed CSV crashes silently.
-- Files: `dataset.py:95-115`
-- Impact: Invalid datasets will cause obscure tokenization or shape errors downstream during training.
-- Fix approach: Add schema validation at load time. Log row-level errors and skip malformed rows with warnings.
+**Model Loading Bug:**
+- Issue: `T5PolicyModel.load_pretrained()` attempts to reload entire T5 model from saved directory, but doesn't verify T5 config matches runtime config (e.g., MODEL_NAME in config.py)
+- Files: `model.py:233-252` (load_pretrained classmethod)
+- Impact: If config.MODEL_NAME changes after model is saved, loading may fail or load mismatched architecture. No version validation
+- Fix approach: Store model name in saved checkpoint metadata, validate during load, emit clear error if mismatch detected
 
-**Hardcoded paths in multiple locations:**
-- Issue: Checkpoint directories, data paths, model names are scattered across config and individual files
-- Files: `config.py:50-55`, `main.py:110`, `train_ppo.py:520`, `metrics.py:300`
-- Impact: Difficult to test or run on different systems. Path conflicts if multiple jobs run simultaneously.
-- Fix approach: Consolidate all path logic to `config.py`. Use timestamped subdirectories for concurrent runs.
+**Device Handling Fragility:**
+- Issue: Device detection logic scattered across files. Auto-detection in config happens at import time before CLI args are parsed
+- Files: `config.py:37` (DEVICE auto-detection)
+- Impact: Cannot override device via CLI after config import if GPU becomes unavailable mid-run. If running on different hardware after training, checkpoint loading may fail silently with wrong device
+- Fix approach: Defer device detection until after CLI args parsed. Add validation in checkpoint loading to move tensors to specified device
 
-**Missing gradient clipping in supervised training:**
-- Issue: `train_supervised.py:125-135` clips gradients but only after accumulation steps, not per mini-batch
-- Files: `train_supervised.py:125-140`
-- Impact: Gradient spikes can accumulate during early accumulation steps, degrading training stability.
-- Fix approach: Move gradient clipping before accumulation or clip each gradient step individually.
+## Known Issues
 
-## Known Bugs
+**Dataset Loading Multiple Fallback Levels:**
+- Problem: Three-tier fallback (JSON splits → CSV → synthetic) with unclear priority and silent failures
+- Files: `dataset.py:548-620` (setup_datasets function)
+- Symptoms: If train_dataset.json exists but is corrupted, function silently falls back to CSV. If CSV path not found in multiple locations, generates synthetic data without clear indication to user
+- Workaround: Always manually verify data/processed_dataset.json and ensure questions.csv in project root
+- Recommendation: Add explicit error messages and --data-source flag to clarify which dataset is being used
 
-**Off-by-one error in clue indexing:**
-- Symptoms: When showing all clues in supervised training, `env.current_clue_idx = len(question.clues) - 1` is set but `get_text_representation()` shows clues `[:self.current_clue_idx + 1]`, which correctly includes all clues. However, if environment is used for RL after supervised training, the clue representation may be inconsistent.
-- Files: `train_supervised.py:71-72`, `environment.py:138-142`
-- Trigger: Running PPO after supervised training without proper environment reset verification
-- Workaround: Always verify `env.reset()` is called before stepping
+**PPO Episode Collection Memory Leak Risk:**
+- Problem: RolloutStep stores full tokenized input_ids and attention_mask for all steps. For long episodes (6-12 steps) and large batch sizes, memory accumulation is not properly cleaned
+- Files: `train_ppo.py:28-40` (RolloutStep dataclass), `train_ppo.py:158-185` (collect_rollouts)
+- Trigger: Running PPO with batch_size=32 and PPO_BATCH_SIZE=32 and max sequence length 512
+- Workaround: Reduce PPO_BATCH_SIZE or SUPERVISED_BATCH_SIZE in config.py to reduce concurrent episodes
+- Current mitigation: tensors stored on CPU (.cpu() calls in line 180), but never explicitly freed
 
-**Reward computation doesn't match specification:**
-- Symptoms: Time penalty in `environment.py:120` is `penalty = reward_time_penalty * (current_clue_idx / num_clues)` but should be `(current_clue_idx + 1) / num_clues` to match problem statement
-- Files: `environment.py:119-122`
-- Trigger: Every episode with time penalty > 0
-- Workaround: None; penalty values are slightly optimistic
-
-**Deterministic action selection during training:**
-- Symptoms: PPO uses `deterministic=False` for collection but supervised training uses `deterministic=True` during validation. During PPO training, the model may explore suboptimal policies that supervised training never saw.
-- Files: `train_ppo.py:197-198`, `train_supervised.py:142-146`
-- Trigger: PPO performance plateau or divergence from supervised baseline
-- Workaround: Use same determinism setting for fair comparison
-
-## Security Considerations
-
-**No input sanitization for model paths:**
-- Risk: `T5PolicyModel.load_pretrained()` (`model.py:380-420`) uses `from_pretrained()` which could load arbitrary models from HuggingFace Hub if path is user-controlled
-- Files: `model.py:380-420`, `main.py:123-127`
-- Current mitigation: Only local filesystem paths in default flow, but no validation
-- Recommendations: Validate model paths are within expected directories. Whitelist allowed model names.
-
-**Unvalidated tokenizer inputs:**
-- Risk: Dataset CSV answers are passed directly to tokenizer without sanitization (`dataset.py:150-155`)
-- Files: `dataset.py:150-155`
-- Current mitigation: T5 tokenizer is robust, but arbitrary text could cause issues
-- Recommendations: Add length limits and character validation on answer strings
+**Distractor Generation Edge Case:**
+- Problem: If not enough unique distractors exist across categories, falls back to padding with "[No answer X]" placeholders
+- Files: `dataset.py:235-244` (answer choice padding)
+- Symptoms: Model may learn spurious "placeholder detection" pattern that doesn't transfer to real data
+- Workaround: Verify data/train_dataset.json has valid non-placeholder distractors for all questions before training
+- Risk: Low for QANTA data, high for synthetic data with small category sets
 
 ## Performance Bottlenecks
 
-**Sequential rollout collection is O(n*episode_length):**
-- Problem: `collect_rollouts()` in `train_ppo.py:150-215` processes episodes sequentially in Python loop. With T5-large model, each forward pass is slow.
-- Files: `train_ppo.py:150-215`
-- Cause: Episodes vary in length (1-6 clues), making batching difficult. No parallelization.
-- Improvement path: Implement vectorized environment steps or multi-threaded collection. Use batch processing for all forward passes.
+**T5 Encoder Forward Pass Repeated:**
+- Problem: `model.py:137-149` (get_encoder_output) re-computes T5 encoder outputs on every forward pass, even in evaluation. Mean pooling is not cached
+- Files: `model.py:137-149`, `model.py:195-219` (select_action), `model.py:245-284` (get_action_log_probs)
+- Cause: Stateless design requires re-encoding same text representations multiple times per trajectory
+- Improvement path: Implement single-encoder-output → multiple-head design with intermediate caching (requires refactoring forward signature)
+- Current impact: ~30% overhead on inference time per action step
 
-**Full validation on every epoch during supervised training:**
-- Problem: `validate()` in `train_supervised.py:142-148` runs on entire val set after every epoch. With 75+ validation questions * 6 clues * tokenization, this is ~450+ forward passes per epoch.
-- Files: `train_supervised.py:117-150`
-- Cause: No sampling or early stopping. Validation doesn't scale.
-- Improvement path: Sample 10-20% of validation set for frequent checks. Only full validation every N epochs.
+**Validation Evaluation is Full Forward Pass:**
+- Problem: `evaluate_model` runs full episodes with intermediate observations for every validation sample, instead of just computing final answer accuracy
+- Files: `metrics.py:180-240` (evaluate_model function)
+- Cause: Captures realistic POMDP behavior but at cost of O(num_clues * num_samples) forward passes
+- Improvement path: Add --eval-mode fast flag to use only complete questions during validation (like supervised training does)
+- Current impact: Validation takes 3-5x longer than training epoch on small datasets
 
-**Tokenization happens per-step in RL evaluation:**
-- Problem: `evaluate_model()` in `metrics.py:295-330` tokenizes every observation step-by-step. For 75 test questions * 6 steps, this is 450 tokenizations.
-- Files: `metrics.py:295-330`
-- Cause: Observation changes per step (more clues revealed), but question/choice part is constant. No caching.
-- Improvement path: Cache tokenized question/choices. Only retokenize when clues change.
-
-**T5-large model loading on every checkpoint load:**
-- Problem: `load_pretrained()` in `model.py:380-420` reloads entire T5 model from disk even for multi-step training
-- Files: `model.py:380-420`
-- Cause: Each training phase reloads model (supervised → PPO → eval)
-- Improvement path: Keep model in memory between phases or use memory-mapped weights
-
-## Fragile Areas
-
-**Environment state machine is brittle:**
-- Files: `environment.py:60-130`
-- Why fragile: Multiple mutable fields (`current_clue_idx`, `done`, `selected_answer`). Calling `step()` without `reset()` raises ValueError, but no state validation. If `_get_observation()` is called during episode, it returns mutable dict that could be modified.
-- Safe modification: Use immutable observation tuples or frozen dataclasses. Add state assertions in every method.
-- Test coverage: Environment has 2 raise statements but no tests that verify exception paths. `test_imports.py` doesn't test environment.
-
-**Policy head architecture is fixed:**
-- Files: `model.py:15-55`
-- Why fragile: Wait/answer heads use hard-coded layer sizes (256, 512). If num_choices changes from 4, only `answer_head` updates; wait_head doesn't. No validation of output shapes.
-- Safe modification: Parameterize all layer sizes. Add shape assertions in forward pass.
-- Test coverage: Only loaded via T5PolicyModel. No unit tests for PolicyHead forward pass.
-
-**Dataset splits are cached but not versioned:**
-- Files: `dataset.py:480-550`
-- Why fragile: Once splits are saved to disk (`train_dataset.json`, `val_dataset.json`, `test_dataset.json`), `setup_datasets()` always reuses them. If config changes, splits don't refresh.
-- Safe modification: Add version number to split files. Invalidate cache when config hash changes.
-- Test coverage: Only tested via `test_csv_loader.py` which tests CSV parsing, not split integrity. No test verifies splits are consistent.
-
-**Reward function is not differentiable:**
-- Files: `environment.py:119-130`
-- Why fragile: Rewards are computed in environment (NumPy), not PyTorch. This means reward shaping or gradient-based exploration would fail. If reward formulation changes, it must be changed in two places: environment and any downstream loss computations.
-- Safe modification: Move reward computation to PyTorch in `train_ppo.py`. Make it a differentiable function.
-- Test coverage: Reward computation is not tested. No unit tests for step() return values.
+**Batch Padding Inefficient:**
+- Problem: `train_ppo.py:222-238` manually pads sequences to max_len in batch with explicit loops
+- Files: `train_ppo.py:222-238` (batch padding)
+- Cause: Torch DataLoader not used; manual batch assembly needed
+- Improvement path: Switch to DataLoader with collate_fn for automatic efficient padding
+- Current impact: Negligible for small batches (<32) but becomes noticeable at 128+ batch size
 
 ## Scaling Limits
 
-**Dataset size is hard-limited to config.NUM_QUESTIONS:**
-- Current capacity: 500 questions (config.py:48)
-- Limit: Memory usage scales linearly with dataset size. T5 tokenization on 500 questions takes ~30s. At 5000+ questions, data loading becomes bottleneck.
-- Scaling path: Implement streaming dataset loader (load batches from disk on-demand). Use HuggingFace datasets library for efficient caching.
+**T5-Large Model Size:**
+- Current capacity: 770M parameters requires 8GB+ GPU VRAM for training, 4GB for inference
+- Limit: Cannot run on T4 GPUs (16GB) with batch_size > 16 due to gradient storage. OOM on consumer GPUs
+- Scaling path: Switch MODEL_NAME to t5-base (220M, 2GB) or t5-small (60M, 0.5GB). Trade off quality for accessibility
+- Configuration impact: No code changes needed, just update config.MODEL_NAME
 
-**Batch size is fixed at training time:**
-- Current capacity: PPO_BATCH_SIZE=32, SUPERVISED_BATCH_SIZE=8
-- Limit: Effective batch size = 8 * 4 (grad accum) = 32 for supervised. If GPU memory allows larger, cannot scale without config change + restart.
-- Scaling path: Implement dynamic batch sizing based on available GPU memory. Use gradient checkpointing to reduce memory per batch.
+**Dataset Scale:**
+- Current: NUM_QUESTIONS = 500 loads fully in memory (~50MB JSON)
+- Limit: QANTA full dataset (~100K questions) requires memory-mapped loading or streaming
+- Scaling path: Implement streaming dataset with online sampling instead of loading all questions at once
+- Risk: If scaling to 100K questions, current train loop will crash on memory-full system
 
-**Model checkpoints are uncompressed:**
-- Current capacity: T5-large checkpoints are ~2.4GB each. Saving best_model + PPO checkpoints fills disk quickly.
-- Limit: Storage grows linearly with number of saved checkpoints. At 50+ checkpoints, can exceed 100GB.
-- Scaling path: Only save recent N checkpoints. Compress old checkpoints to tar.gz. Use distributed checkpoint format (sharding).
-
-**Single GPU / single machine:**
-- Current capacity: T5-large is 770M params. Fits on 1 GPU with gradient accumulation on most modern cards (24GB+ VRAM).
-- Limit: Training one policy takes 48+ hours on V100. Cannot parallelize training across multiple experiments.
-- Scaling path: Implement distributed training with torch.distributed. Use ray or Ludwig for experiment parallelization.
+**Checkpoint Disk Usage:**
+- Current: Each PPO checkpoint saves full T5 model (~3GB) + policy head (1MB) + optimizer state (~3GB)
+- Limit: With SAVE_INTERVAL=50 and PPO_ITERATIONS=250, creates 15 checkpoints = 90GB total
+- Scaling path: Implement checkpoint pruning (keep only best + last 2) or use only_state_dict saving
 
 ## Dependencies at Risk
 
-**transformers library version lock:**
-- Risk: `requirements.txt` specifies `transformers>=4.30.0` but HuggingFace makes breaking API changes frequently (e.g., `from_pretrained` signature changes)
-- Files: `requirements.txt`, `model.py:100-110`
-- Impact: Major version bumps (4.30 → 4.40 → 5.0) may break model loading
-- Migration plan: Pin to exact version `transformers==4.30.2` during development. Test major version upgrades in isolated environment.
+**Transformers Version Pinning:**
+- Risk: `transformers>=4.30.0` is very loose. API changes between 4.30 and 5.0 may break T5ForConditionalGeneration interface
+- Current mitigation: Code tested on 4.35.2 only
+- Migration plan: Add explicit upper bound (transformers<5.0.0) and test on version boundaries. Consider moving to huggingface_hub for future T5 variants
 
-**torch version compatibility:**
-- Risk: Code uses `torch.distributions.Categorical` and `torch.nn.utils.clip_grad_norm_()` which have stability variations across versions
-- Files: `requirements.txt:1`, `model.py:320-330`, `train_ppo.py:304`
-- Impact: torch 2.0 has different semantics for some operations than 1.13
-- Migration plan: Test on both torch 2.0.x and 2.1.x. Document minimum version.
+**PyTorch Device API Deprecation:**
+- Risk: `torch.cuda.is_available()` and `torch.backends.mps.is_available()` may be deprecated in torch 2.5+
+- Files: `config.py:37-38`
+- Migration plan: Use `torch.device()` context manager. Already using correct API but consider future-proofing with version check
 
-**numpy random state management:**
-- Risk: Code uses both `random.seed()` and `np.random.seed()` but torch also has its own seed. No coordinated seeding.
-- Files: `dataset.py:68-70`, `main.py:75-80`, `train_ppo.py:200`
-- Impact: Reproducibility breaks if pytorch version changes RNG algorithm
-- Migration plan: Use a unified seeding utility. Verify reproducibility across versions.
+**scikit-learn Usage:**
+- Risk: Only used for `accuracy_score()`. Minimal but adds 30MB+ dependency for one function
+- Files: `metrics.py:9` (import), `metrics.py:73` (usage)
+- Migration plan: Replace with simple numpy implementation: `np.mean(predictions == targets)`
 
 ## Missing Critical Features
 
-**No checkpoint recovery on failure:**
-- Problem: If training crashes at iteration 200/250, no way to resume. Must restart from epoch 0.
-- Blocks: Multi-GPU training, long training runs, hyperparameter sweeps
-- Fix: Save optimizer state, LR scheduler state, and training step counter. Implement `resume_from_checkpoint()`.
+**No Experiment Tracking:**
+- What's missing: Metrics saved only to JSON files. No integration with W&B, MLflow, or TensorBoard
+- Blocks: Cannot easily compare runs, visualize training curves in real-time, or share results
+- Impact: Requires manual post-processing of history.json to analyze results
+- Fix approach: Add --log-wandb flag and optional wandb.log() calls (already commented in requirements.txt)
 
-**No learning rate scheduling:**
-- Problem: Config.py hardcodes learning rates but no scheduler. LR stays constant across epochs.
-- Files: `config.py:22-24`, `train_supervised.py:50-55`
-- Blocks: Optimal learning requires decay. Current setup may undershoot or overshoot in later epochs.
-- Fix: Add `lr_scheduler` (e.g., `CosineAnnealingLR`). Make it configurable.
+**No Early Stopping:**
+- What's missing: Training runs for fixed epochs/iterations regardless of validation performance
+- Blocks: Cannot prevent wasted compute on plateaued validation metrics
+- Files: `train_supervised.py` and `train_ppo.py` lack early stopping logic
+- Impact: 50 supervised epochs or 250 PPO iterations always execute even if val accuracy stagnates after epoch 20
+- Fix approach: Add patience parameter, track best val metric, stop if no improvement for N epochs
 
-**No hyperparameter sweep infrastructure:**
-- Problem: Cannot easily run grid search over PPO_CLIP_RATIO, PPO_LR, PPO_ENTROPY_COEF, etc.
-- Blocks: Finding optimal hyperparameters requires manual config edits and reruns
-- Fix: Add argparse for key hyperparams. Use wandb or ray tune for sweep orchestration.
+**No Hyperparameter Search:**
+- What's missing: All hyperparameters fixed in config.py or CLI args. No grid/random search
+- Blocks: Cannot systematically explore learning rates, batch sizes, PPO coefficients
+- Impact: Requires manual trial-and-error or separate script to sweep hyperparameters
+- Fix approach: Add optuna integration with config space specification
 
-**No data augmentation:**
-- Problem: Dataset is fixed-size after loading. No augmentation, no curriculum learning.
-- Blocks: Limited data diversity. Overfitting risk on small datasets.
-- Fix: Implement on-the-fly clue resampling, paraphrase augmentation using T5, answer distractors resampling.
+**No Distributed Training:**
+- What's missing: Single GPU only. T5 model and PPO training not distributed
+- Blocks: Cannot scale to multiple GPUs or leverage DDP/FSDP
+- Impact: Max throughput limited by single GPU memory and compute
+- Fix approach: Integrate PyTorch DistributedDataParallel for supervised; async PPO collection for RL phase
 
 ## Test Coverage Gaps
 
-**No unit tests for environment state machine:**
-- What's not tested: Environment.step() with all action types, reward computation, terminal state handling, observation format
-- Files: `environment.py:60-130`
-- Risk: State mutations or off-by-one errors in environment could propagate through entire training pipeline undetected
-- Priority: High (environment is core POMDP)
+**No Unit Tests for Core Logic:**
+- Untested: `QuizBowlEnvironment` step logic, reward computation, action decoding
+- Files: `environment.py:25-120` (step function, action handling)
+- Risk: Bug in reward calculation or action parsing could go unnoticed for weeks of training
+- Priority: High - core POMDP mechanics critical to RL performance
+- Recommendation: Add pytest suite for environment state transitions, edge cases (last clue, invalid actions)
 
-**No tests for dataset integrity:**
-- What's not tested: Dataset splits don't leak (train ∩ test = ∅), correct answer indices are valid, category distribution matches config
-- Files: `dataset.py:480-550`
-- Risk: Accidental data leakage between train/test during grid search or multi-run experiments
-- Priority: High (data integrity is prerequisite for valid results)
+**No Integration Tests:**
+- Untested: Full pipeline flow (supervised → PPO → eval) with real data
+- Files: `main.py` (mode='full'), data loading, checkpoint saving/loading chain
+- Risk: Changes to one module break full training pipeline silently
+- Priority: High - integration failures only discovered after long training run
+- Recommendation: Add smoke test that runs full pipeline on 10 synthetic questions with 1 epoch
 
-**No tests for model shapes:**
-- What's not tested: PolicyHead output shapes for batch processing, token embedding dimensions, value head outputs
-- Files: `model.py:15-55`, `model.py:180-210`
-- Risk: Shape mismatches only caught at runtime during training, wasting hours
-- Priority: Medium
+**No Tests for Metrics Computation:**
+- Untested: ECE, Brier score, calibration calculations, especially edge cases
+- Files: `metrics.py:83-127` (compute_ece, compute_brier_score)
+- Risk: Metrics reported incorrectly but training appears normal
+- Priority: Medium - affects evaluation only, not training
+- Recommendation: Add tests for known metric values on synthetic 100-sample dataset
 
-**No tests for metrics computation:**
-- What's not tested: ECE calculation correctness, category accuracy binning, confidence calibration
-- Files: `metrics.py:50-130`
-- Risk: Incorrect metric reporting. Published results based on wrong ECE/accuracy could be invalid.
-- Priority: Medium
+**No Tests for Dataset Loading:**
+- Untested: CSV parsing, distractor generation, edge cases with missing categories
+- Files: `dataset.py:148-245` (QANTADatasetLoader.load_from_csv)
+- Risk: Dataset corruption silently goes to training, producing spurious results
+- Priority: Medium - caught by spot-checking data but not automated
 
-**No integration tests for full training pipeline:**
-- What's not tested: Full supervised training → PPO training → evaluation pipeline with small dataset
-- Files: `main.py:73-168`
-- Risk: Regressions in main.py CLI argument handling, dataset loading pipeline order, checkpoint saving/loading flow undetected
-- Priority: Medium
+## Fragile Areas
 
-**No tests for distributed training (if implemented):**
-- What's not tested: Multi-GPU forward pass synchronization, gradient averaging, checkpoint saving in distributed mode
-- Files: N/A (not yet implemented)
-- Risk: Future multi-GPU training will have subtle bugs
-- Priority: Low (for now)
+**PPO Advantage Normalization:**
+- Why fragile: Line `advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)` in train_ppo.py:306
+- Files: `train_ppo.py:306`
+- Fragility: If all advantages are identical (rare but possible early in training), std() becomes 0. Adding 1e-8 epsilon is defensive but unclear. No warning issued
+- Safe modification: Add assertion `assert advantages.std() > 1e-6, "Advantages have zero variance"` before normalization. Document epsilon choice
+- Test coverage: None
+
+**T5 Tokenization Assumptions:**
+- Why fragile: Code assumes T5Tokenizer.pad_token_id is valid and consistent across saves
+- Files: `train_ppo.py:235` (uses self.model.tokenizer.pad_token_id)
+- Fragility: If tokenizer config is corrupted or different T5 variant used, pad_token_id might be None, causing TypeError
+- Safe modification: Add initialization validation: `assert model.tokenizer.pad_token_id is not None` after loading
+- Test coverage: None
+
+**Action Decoding Logic:**
+- Why fragile: Complex bit-packing logic in `model.py:268-273` where action 0=WAIT, 1-4=SELECT answer
+- Files: `model.py:268-273` (combined_actions computation)
+- Fragility: Off-by-one errors easy to introduce when refactoring. Mismatch with environment.py:21 action space definition
+- Safe modification: Add comprehensive tests for all action combinations (0-4) round-tripping through encode/decode
+- Test coverage: None - only manual testing during development
+
+**Environment Reset State:**
+- Why fragile: `QuizBowlEnvironment.reset()` must be called before first step(). No guard against calling step() without reset()
+- Files: `environment.py:60-68`, `train_ppo.py:159-184` (step called after reset in line 169 but reset called in line 165)
+- Fragility: If collect_rollouts loop exits early without resetting, next iteration may use stale environment state
+- Safe modification: Add `if not hasattr(self, '_initialized'): raise RuntimeError(...)` guard in step()
+- Test coverage: None
+
+## Security Considerations
+
+**Model Checkpoint Integrity:**
+- Risk: Saving and loading T5 models from arbitrary directories without checksum verification
+- Files: `model.py:215-225` (save), `model.py:228-237` (load)
+- Current mitigation: None
+- Recommendations: Compute SHA256 hash of saved files, store in metadata.json, verify on load. Prevents accidental corruption or tampering
+
+**Tokenizer Injection Risk:**
+- Risk: Loading tokenizer from saved checkpoint directory could load modified tokenizer if directory is writable by other users
+- Files: `model.py:228` (T5Tokenizer.from_pretrained from directory)
+- Current mitigation: Standard permissions on checkpoint directory
+- Recommendations: Add explicit tokenizer config validation after load. Consider shipping tokenizer as code constant rather than file
+
+**No Input Validation on User Data:**
+- Risk: Questions loaded from CSV or JSON with no schema validation. Text fields could contain adversarial inputs or injections
+- Files: `dataset.py:167-180` (CSV loading without validation)
+- Current mitigation: None
+- Recommendations: Add JSON schema validation. Sanitize text fields (max length, character set checks)
 
 ---
 
-*Concerns audit: 2026-02-23*
+*Concerns audit: 2026-02-24*
