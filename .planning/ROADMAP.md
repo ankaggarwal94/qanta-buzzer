@@ -48,10 +48,10 @@ Plans:
 **Plans**: 4 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Create belief features and likelihood models (TF-IDF, SBERT)
-- [ ] 02-02-PLAN.md — Implement TossupMCEnv Gymnasium environment
-- [ ] 02-03-PLAN.md — Add factory functions for config-based construction
-- [ ] 02-04-PLAN.md — Create pytest test scaffolding for TDD
+- [ ] 02-01-PLAN.md — Belief features and LikelihoodModel ABC
+- [ ] 02-02-PLAN.md — TF-IDF and SBERT likelihood models with factory
+- [ ] 02-03-PLAN.md — TossupMCEnv Gymnasium environment
+- [ ] 02-04-PLAN.md — Factory functions and pytest test scaffolding
 
 ### Phase 3: Baseline Agents and T5 Likelihood
 **Goal**: Users can run baseline agents and leverage T5 for semantic similarity scoring
@@ -102,7 +102,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Data Pipeline Foundation | 5/5 | Complete| ✅ |
-| 2. Environment and Core Likelihood Models | 0/0 | Not started | - |
+| 2. Environment and Core Likelihood Models | 0/4 | Not started | - |
 | 3. Baseline Agents and T5 Likelihood | 0/0 | Not started | - |
 | 4. PPO Training Pipeline | 0/0 | Not started | - |
 | 5. Evaluation Framework | 0/0 | Not started | - |
@@ -144,4 +144,5 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 ---
 *Roadmap created: 2026-02-25*
 *Phase 1 planned: 2026-02-25*
-*Next: `/gsd:execute-phase 1`*
+*Phase 2 replanned: 2026-02-25*
+*Next: `/gsd:execute-phase 2`*
