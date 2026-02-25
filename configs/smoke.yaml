@@ -3,7 +3,7 @@
 
 # Data settings for quick testing
 data:
-  csv_path: "data/questions.csv"
+  csv_path: "questions.csv"
   K: 4
   distractor_strategy: "category_random"  # Faster than sbert_profile
   train_ratio: 0.7
