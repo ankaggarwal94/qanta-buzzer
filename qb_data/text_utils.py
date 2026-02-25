@@ -45,7 +45,8 @@ def normalize_answer(answer: str) -> str:
     normalized = normalized.strip()
 
     # Remove leading articles (a, an, the)
-    normalized = re.sub(r'^(a|an|the)\s+', '', normalized)
+    # Use \b word boundary to ensure we match complete words
+    normalized = re.sub(r'^(a|an|the)\b\s*', '', normalized)
 
     # Remove punctuation
     # Keep alphanumeric characters and spaces
