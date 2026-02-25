@@ -1,130 +1,111 @@
 # Technology Stack
 
-**Analysis Date:** 2026-02-23
+**Analysis Date:** 2026-02-24
 
 ## Languages
 
 **Primary:**
-- Python 3.9+ - All core implementation, training, evaluation
-  - Developed/tested on Python 3.13.5
-  - Type hints used throughout (from `typing`)
-
-**Secondary:**
-- Bash - Build/run scripts (`run.sh`)
+- Python 3.11+ - All source code, training, evaluation
 
 ## Runtime
 
 **Environment:**
-- Python 3.9 minimum (specified for compatibility)
-- No external runtime required (native Python execution)
+- Python 3.11 or higher (specified in CLAUDE.md)
 
 **Package Manager:**
-- pip - Primary package manager
-- Lockfile: `requirements.txt` (present, version pinned with `>=` constraints)
+- pip + setuptools
+- Installation: `pip install -e .` in project root
 
 ## Frameworks
 
-**Deep Learning:**
-- PyTorch - Core neural network framework
-  - `torch>=2.0.0` - Tensors, autograd, optimizers
-  - `torch.nn` - Neural network modules
-  - `torch.optim` - Optimization (AdamW, SGD)
-  - Used in `model.py`, `train_supervised.py`, `train_ppo.py`
+**Core ML/RL:**
+- PyTorch 2.0.0+ - Neural network framework, distributed training primitives
+- Transformers 4.30.0+ - Hugging Face transformers library for T5 model loading
 
-**NLP/Language Models:**
-- Transformers (Hugging Face) - `transformers>=4.30.0`
-  - Pre-trained T5 model loading (`T5ForConditionalGeneration`, `T5Tokenizer`)
-  - Used in `model.py` for encoder-decoder architecture
-  - Model: T5-large (770M parameters, ~3GB download)
+**Data Processing:**
+- Datasets 2.14.0+ - Data loading and preprocessing
+- scikit-learn 1.3.0+ - Metrics (accuracy_score, classification metrics)
+- NumPy 1.24.0+ - Numerical operations, vectorized computations
 
-**ML/Data Processing:**
-- scikit-learn - `scikit-learn>=1.3.0`
-  - Metrics computation (accuracy, calibration error)
-  - Used in `metrics.py` for `accuracy_score`
-- Hugging Face Datasets - `datasets>=2.14.0`
-  - Dataset loading and processing utilities
-  - Optional for extended data handling
+**Visualization & Analysis:**
+- matplotlib 3.7.0+ - Plotting, metric visualization (`visualize.py`)
+- seaborn 0.12.0+ - Statistical data visualization
+- pandas 2.0.0+ - DataFrame operations for analysis
 
-**Progress/CLI:**
-- tqdm - `tqdm>=4.65.0` - Progress bars for training loops
-
-**Data Format:**
-- jsonlines - `jsonlines>=3.1.0` - Line-delimited JSON handling
+**Utilities:**
+- tqdm 4.65.0+ - Progress bars for training loops
+- jsonlines 3.1.0+ - JSON line format reading/writing
 
 ## Key Dependencies
 
-**Critical (Core Functionality):**
-- torch (>=2.0.0) - Neural network computation, gradients, device management
-- transformers (>=4.30.0) - Pre-trained T5 model and tokenization
-- numpy (>=1.24.0) - Numerical operations, array handling
-- scikit-learn (>=1.3.0) - Evaluation metrics (accuracy, ECE)
+**Critical (Used Daily):**
+- `torch` - Core RL training, PPO updates, gradient computation
+  - Location: `train_ppo.py`, `train_supervised.py`, `model.py`
+  - Why: Essential for all neural network operations
+- `transformers` - T5-large model loading and tokenization
+  - Location: `model.py` (T5ForConditionalGeneration, T5Tokenizer)
+  - Why: Pre-trained encoder backbone (770M parameters)
+- `numpy` - Array operations, reward computation, rollout handling
+  - Location: `train_ppo.py`, `environment.py`, `metrics.py`
+  - Why: Efficient vectorized operations across batches
 
-**Essential (Training/Inference):**
-- tqdm (>=4.65.0) - Progress bars, interactive feedback
-- datasets (>=2.14.0) - Dataset utilities
+**Important (Used in Training/Eval):**
+- `tqdm` - Progress bars during supervised and PPO training
+  - Location: `train_supervised.py`, `train_ppo.py`
+- `scikit-learn` - Metric computation (accuracy, calibration error)
+  - Location: `metrics.py` (accuracy_score)
 
-**Data I/O:**
-- jsonlines (>=3.1.0) - JSON serialization (legacy dependency, minimal use)
-
-**Optional (Visualization/Analysis):**
-- matplotlib (>=3.7.0) - Plotting, visualization
-- seaborn (>=0.12.0) - Statistical visualization
-- pandas (>=2.0.0) - Data analysis and manipulation
+**Optional (Commented in requirements.txt):**
+- `wandb` 0.15.0+ - Weights & Biases experiment tracking (currently disabled)
+- `jupyter` 1.0.0+ - Interactive notebooks
+- `ipywidgets` 8.0.0+ - Interactive widgets for Jupyter
 
 ## Configuration
 
 **Environment:**
-- Configuration via `config.py` class-based approach (static attributes on `Config` class)
-- No `.env` file required - configuration hardcoded in Python
-- Device detection: Automatic selection (CUDA > MPS > CPU)
-
-**Key Configuration Parameters:**
-- Model: T5-large (configurable as `MODEL_NAME`)
-- Batch sizes: Supervised (8), PPO (32)
-- Learning rates: Supervised (5e-5), PPO (3e-5)
-- Training iterations: Supervised (50 epochs), PPO (250 iterations)
-- Paths: Data, checkpoints, results, logs (relative to project root)
+- Configured via `config.py` using Config class attributes
+- CLI arguments in `main.py` override Config defaults
+- Key env-dependent settings:
+  - `DEVICE`: Auto-detected (cuda > mps > cpu) via `torch.cuda.is_available()` and `torch.backends.mps.is_available()`
+  - `SEED`: Default 42, override with `--seed` CLI arg
 
 **Build:**
-- No build configuration file (pure Python, no compilation)
-- Shell script wrapper: `run.sh` - Interactive training launcher
+- No build configuration file (native Python project)
+- Training entry point: `python main.py --mode {supervised|ppo|full|eval}`
+- Checkpoints saved to `checkpoints/` directory
+- Results logged to `results/` and `logs/` directories
 
 ## Platform Requirements
 
 **Development:**
-- macOS/Linux/Windows with Python 3.9+
-- 8GB+ RAM recommended for T5-large model
-- GPU optional but recommended (CUDA, Metal Performance Shaders)
-- Virtual environment (venv) for isolation
+- Python 3.11+
+- 16GB RAM minimum (for T5-large)
+- 8GB GPU VRAM recommended (for t5-large on CUDA)
+- Can fall back to CPU or Apple Metal Performance Shaders (MPS)
+- Supports: Linux, macOS (with MPS), Windows (with CUDA)
 
-**Production:**
-- Deployment: Local filesystem or cloud platforms supporting Python/PyTorch
-- Model weights stored in `checkpoints/` directory (HuggingFace format)
-- Data stored as JSON files in `data/` directory
+**Production (Inference):**
+- Python 3.11+
+- 8GB+ RAM
+- Model size: t5-large (~3GB first download), t5-base (~1GB), t5-small (~500MB)
+- Optional: GPU for faster inference
 
-## Model & Data
+## Model Architecture
 
-**Pre-trained Models:**
-- T5-large encoder-decoder from Hugging Face Hub
-- Downloaded on first run to default HuggingFace cache location (~3GB)
+**T5 Encoder:**
+- Base model: `t5-large` (770M parameters, configurable to t5-base or t5-small)
+- Type: Sequence-to-sequence encoder-decoder, used encoder-only
+- Download: Automatic via Hugging Face transformers on first run
+- Tokenizer: T5Tokenizer (loads from same checkpoint)
 
-**Datasets:**
-- Quiz Bowl questions with pyramidal clues (500 questions)
-- Multiple-choice format (4 choices per question)
-- Splits: 70% train, 15% val, 15% test
-- Storage: JSON format in `data/` directory
-  - `processed_dataset.json` - Full dataset
-  - `train_dataset.json` - Training split
-  - `val_dataset.json` - Validation split
-  - `test_dataset.json` - Test split
-  - `questions.csv` - Original QANTA CSV (~15MB)
-
-**Checkpoints:**
-- Model checkpoints saved as HuggingFace-compatible format in `checkpoints/` directory
-  - `checkpoints/supervised/` - Supervised training results
-  - `checkpoints/ppo/` - PPO training results
-  - Contains: `config.json`, `pytorch_model.bin`, `tokenizer files`, `policy_head.pt`
+**Custom Policy Head:**
+- Input: T5 encoder pooled hidden state
+- Outputs:
+  - Wait head: 2 logits (WAIT vs SELECT NOW)
+  - Answer head: 4 logits (choice selection 0-3)
+  - Value head: 1 scalar (state value for PPO)
+- Location: `model.py` - PolicyHead class
 
 ---
 
-*Stack analysis: 2026-02-23*
+*Stack analysis: 2026-02-24*

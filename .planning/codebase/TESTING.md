@@ -1,48 +1,47 @@
 # Testing Patterns
 
-**Analysis Date:** 2026-02-23
+**Analysis Date:** 2025-02-24
 
 ## Test Framework
 
-**Runner:**
-- No formal test framework configured (pytest/unittest not in use)
-- Test files are standalone Python scripts executed directly
-- No testing library in requirements.txt
+**Runner:** No formal test framework (pytest/unittest not configured)
 
-**Assertion Library:**
-- Print-based validation (not a formal assertion library)
+**Test Files:**
+- `test_imports.py`: Import verification script
+- `test_csv_loader.py`: Dataset loading script
 
 **Run Commands:**
 ```bash
-python test_imports.py              # Check module imports
-python test_csv_loader.py           # Test dataset loading from CSV
+python test_imports.py              # Verify all modules import successfully
+python test_csv_loader.py           # Verify dataset loading and inspect samples
 ```
+
+**No Coverage Tools:** No pytest, coverage, or similar tools configured. Tests are ad-hoc verification scripts.
 
 ## Test File Organization
 
-**Location:**
-- Co-located with source code in project root
-- Files: `test_imports.py`, `test_csv_loader.py`
+**Location:** Tests in project root next to source modules
 
-**Naming:**
-- `test_*.py` convention for all test files
-
-**Structure:**
 ```
 qanta-buzzer/
-├── test_imports.py        # Import verification
-├── test_csv_loader.py     # Dataset loading tests
-├── model.py               # Core source files
+├── config.py
+├── model.py
 ├── environment.py
-└── dataset.py
+├── dataset.py
+├── metrics.py
+├── test_imports.py          # Test file 1
+├── test_csv_loader.py       # Test file 2
+└── .planning/
 ```
+
+**Naming:**
+- Test files prefixed with `test_`: `test_imports.py`, `test_csv_loader.py`
+- No test classes or functions; scripts run procedurally
 
 ## Test Structure
 
-**Suite Organization:**
-Tests are organized as standalone scripts rather than test classes. Each script has a specific purpose.
+**Import Verification (`test_imports.py`):**
 
-**test_imports.py Pattern:**
 ```python
 """Quick import test"""
 
@@ -59,7 +58,13 @@ print('✓ QuizBowlDataset class available')
 print('✓ T5PolicyModel class available')
 ```
 
-**test_csv_loader.py Pattern:**
+**Patterns:**
+- Import all critical classes
+- Print status messages on success
+- No assertions; passes if no exceptions raised
+
+**Dataset Loading Verification (`test_csv_loader.py`):**
+
 ```python
 """Test loading questions from CSV"""
 
@@ -77,84 +82,80 @@ print("=" * 60)
 # Load datasets
 train_dataset, val_dataset, test_dataset = setup_datasets(config)
 
-# Validation: Show sample questions
+print("\n" + "=" * 60)
+print("Sample Questions from Training Set")
+print("=" * 60)
+
+# Show a few sample questions
 for i in range(min(3, len(train_dataset))):
     question = train_dataset.questions[i]
     print(f"\n--- Question {i+1} ---")
-    # Print and visually verify structure
+    print(f"ID: {question.question_id}")
+    print(f"Category: {question.category}")
+    # ... detailed output
 ```
 
 **Patterns:**
-- Setup phase: Create config and modify settings for test conditions
-- Execution phase: Call functions/load datasets
-- Validation phase: Print output for manual inspection
-- No automated assertions; success is indicated by successful execution
+- Modify config for test run (smaller dataset)
+- Call main setup function
+- Inspect results manually with print statements
+- Visual verification only; no automated checks
 
-## Mocking
+## Data Fixtures
 
-**Framework:** No mocking framework used
+**Synthetic Data Generator:** Built-in for testing without CSV
 
-**Patterns:**
-- Configuration objects modified directly for testing: `config.NUM_QUESTIONS = 100`
-- No stub/mock objects created
-- Real datasets loaded and processed
+Located in `dataset.py` (lines 234-407):
 
-**What to Mock:**
-- Not applicable; no mocking infrastructure present
+```python
+class SyntheticDatasetGenerator:
+    """Generate synthetic quiz bowl questions for development and testing."""
 
-**What NOT to Mock:**
-- All components run with real implementations
+    SAMPLE_QUESTIONS = {
+        'history': [
+            {
+                'entity': 'Napoleon Bonaparte',
+                'clues': [
+                    'This military leader established the Continental System...',
+                    'He crowned himself emperor in 1804...',
+                    # ... 3-5 clues per question
+                ],
+                'distractors': ['Julius Caesar', 'Alexander the Great', 'Charlemagne']
+            },
+            # ... more historical figures
+        ],
+        'literature': [...],
+        'science': [...],
+        'arts': [...]
+    }
 
-## Fixtures and Factories
+    @classmethod
+    def generate_dataset(cls,
+                        num_questions: int = 500,
+                        category_distribution: Dict[str, float] = None,
+                        seed: int = 42) -> QuizBowlDataset:
+        """Generate synthetic dataset."""
+        # ... implementation
+```
 
-**Test Data:**
-- Synthetic data generated via `SyntheticDatasetGenerator` (referenced in test_imports.py)
-- CSV data loaded from `questions.csv` in dataset loading tests
-- Config values act as test parameters: `config.NUM_QUESTIONS`, `config.MIN_CLUES_PER_QUESTION`
+**Usage in Tests:**
+- `setup_datasets(config)` falls back to synthetic generator if no CSV found
+- Deterministic: seeded with `seed=42` by default
+- Configurable: `num_questions`, `category_distribution`, `min_clues`, `max_clues`
 
-**Location:**
-- CSV source: `questions.csv` (14MB, in project root)
-- Processed datasets: `data/` directory contains JSON versions:
-  - `data/train_dataset.json`
-  - `data/val_dataset.json`
-  - `data/test_dataset.json`
-  - `data/processed_dataset.json`
-
-## Coverage
-
-**Requirements:** None enforced
-
-**View Coverage:**
-- No coverage measurement tooling present
-- Manual verification via print statements and visual inspection
-
-## Test Types
-
-**Unit Tests:**
-- Minimal unit testing; focus is on integration testing
-- Import verification in `test_imports.py`: Verifies all modules load correctly
-- No isolated function tests
-
-**Integration Tests:**
-- `test_csv_loader.py`: Tests full pipeline of loading CSV, creating questions, splitting datasets
-- Validates data structure and correctness of question objects
-
-**E2E Tests:**
-- Not formal E2E tests, but training scripts (`train_supervised.py`, `train_ppo.py`) serve as integration tests
-- `main.py --mode eval`: Evaluation mode tests complete training and inference pipeline
-- Full pipeline tested via `main.py --mode full`: Supervised training + PPO training on actual data
+**Fixture locations:**
+- Synthetic templates: `dataset.py` lines 240-326 (SAMPLE_QUESTIONS dict)
+- CSV parser: `dataset.py` lines 89-231 (QANTADatasetLoader.load_from_csv)
 
 ## Evaluation Infrastructure
 
-**MetricsTracker (metrics.py):**
-Central evaluation class used across training and inference:
+**Not traditional "tests" but evaluation utilities in `metrics.py`:**
+
+### MetricsTracker Class
 
 ```python
 class MetricsTracker:
     """Track and compute various metrics for QA evaluation"""
-
-    def __init__(self):
-        self.reset()
 
     def reset(self):
         """Reset all tracked values"""
@@ -162,77 +163,184 @@ class MetricsTracker:
         self.targets = []
         self.confidences = []
         self.rewards = []
-        self.buzz_positions = []
-        self.is_correct = []
-        self.categories = []
+        # ...
 
     def update(self, pred: int, target: int, confidence: float,
                reward: float = None, buzz_position: int = None, category: str = None):
         """Update metrics with new sample"""
+        self.predictions.append(pred)
+        # ...
 
     def compute_accuracy(self) -> float:
         """Compute overall accuracy"""
-
-    def compute_average_reward(self) -> float:
-        """Compute average reward"""
+        if len(self.predictions) == 0:
+            return 0.0
+        return accuracy_score(self.targets, self.predictions)
 
     def compute_ece(self, num_bins: int = 10) -> float:
         """Compute Expected Calibration Error"""
+        # ... implementation
+
+    def get_summary(self) -> Dict:
+        """Get summary of all metrics"""
+        summary = {
+            'num_samples': len(self.predictions),
+            'accuracy': self.compute_accuracy(),
+            # ... additional metrics
+        }
+        return convert_to_json_serializable(summary)
 ```
 
-**Usage in Training:**
+**Patterns:**
+- Accumulate predictions and ground truth
+- Compute standard metrics: accuracy, ECE, Brier score
+- Support hierarchical analysis: per-category accuracy, per-position accuracy
+- JSON serialization helper: `convert_to_json_serializable()` (handles numpy types)
+
+**Locations:**
+- `metrics.py` lines 38-280: MetricsTracker implementation
+- `metrics.py` lines 313-384: evaluate_model() function
+
+### Evaluation Functions
+
+**`evaluate_model()` - Full question evaluation**
+
 ```python
-# In train_supervised.py:
-metrics = MetricsTracker()
-for batch in data_loader:
-    predictions = model(batch)
-    metrics.update(pred=pred_idx, target=label, confidence=prob)
-accuracy = metrics.compute_accuracy()
+def evaluate_model(model, dataset, device: str = 'cpu',
+                  max_samples: int = None,
+                  deterministic: bool = True) -> MetricsTracker:
+    """Evaluate model on a dataset using the RL environment."""
+    model.eval()
+    metrics = MetricsTracker()
+
+    questions = dataset.questions[:max_samples] if max_samples else dataset.questions
+
+    with torch.no_grad():
+        for question in questions:
+            env = QuizBowlEnvironment(question)
+            obs = env.reset()
+            done = False
+
+            while not done:
+                text = env.get_text_representation(obs)
+                inputs = model.tokenizer(text, return_tensors='pt', ...).to(device)
+                actions, info = model.select_action(inputs['input_ids'],
+                                                   inputs['attention_mask'],
+                                                   deterministic=deterministic)
+                obs, reward, done, step_info = env.step(action)
+
+            # Extract final metrics
+            if 'is_correct' in step_info:
+                metrics.update(pred=step_info['answer_idx'],
+                             target=step_info['correct_idx'],
+                             confidence=confidence,
+                             reward=reward,
+                             buzz_position=step_info['clue_position'],
+                             category=question.category)
+
+    return metrics
 ```
 
-**Evaluation Functions:**
-- `evaluate_model(model, dataset, device)` in `metrics.py`: Full evaluation on dataset
-- `evaluate_choices_only(model, dataset, device)`: Baseline - only answer choices (no clues)
-- Called from `main.py --mode eval`: Final evaluation
+**`evaluate_choices_only()` - Control experiment**
 
-## Common Patterns
-
-**Async Testing:**
-- Not applicable; no async code in codebase
-
-**Error Testing:**
-- Explicit error validation in environment:
-  - `environment.py:78`: "Episode is already done" error
-  - `environment.py:104`: "Invalid action" error
-- Tests in `test_csv_loader.py` validate Question object structure and print for visual inspection
-
-**Dataset Loading Pattern:**
 ```python
-# From dataset.py (loader function pattern)
-train_dataset, val_dataset, test_dataset = setup_datasets(config)
+def evaluate_choices_only(model, dataset, device: str = 'cpu',
+                         max_samples: int = None) -> MetricsTracker:
+    """Evaluate model on answer choices only (control experiment)."""
+    model.eval()
+    metrics = MetricsTracker()
 
-# Test validates:
-# 1. Datasets load successfully
-# 2. Split ratios correct (0.7/0.15/0.15 for train/val/test)
-# 3. Question objects have correct fields
-# 4. Answer choices and metadata are properly structured
+    # Get choices-only text (no clues)
+    text = env.get_choices_only_text()
+
+    # Verify model uses clues (expected baseline: ~25% random)
 ```
 
-## Manual Validation Checklist
+**Locations:**
+- `metrics.py` lines 313-384: evaluate_model()
+- `metrics.py` lines 387-443: evaluate_choices_only()
+- Calls in `train_supervised.py` lines 166-172: Used in validation loop
 
-When running tests, verify:
-1. All imports succeed without errors
-2. Config values print correctly
-3. Questions load from CSV
-4. Question objects contain:
-   - Valid question_id
-   - Non-empty clues list (min 4, max 6 per config)
-   - 4 answer choices
-   - Valid correct_answer_idx (0-3)
-   - Category from configured distribution
-5. Train/val/test split respects configured ratios
-6. No corrupted JSON in saved datasets
+## Test Patterns Observed
+
+**1. Import Safety:**
+- `test_imports.py` catches import errors early
+- All critical classes verified accessible
+
+**2. Data Pipeline Verification:**
+- `test_csv_loader.py` confirms dataset loading end-to-end
+- Checks CSV parsing, distractor generation, train/val/test splits
+- Inspects sample questions for manual review
+
+**3. Metric Computation:**
+- Standalone MetricsTracker tested implicitly during training
+- `evaluate_model()` used in `train_supervised.py` validation loop
+- Results printed and saved to JSON for inspection
+
+**4. Environment Simulation:**
+- `QuizBowlEnvironment` tested indirectly through `evaluate_model()`
+- Step-by-step episode execution verified by checking rewards, done flags
+- No unit tests; verification is integration-level
+
+## What is NOT Tested
+
+**No explicit testing for:**
+- Token counting/overflow scenarios (`tokenizer` behavior assumed correct)
+- Gradient flow in backward pass (PyTorch assumed correct)
+- Edge cases in rare states (e.g., all clues exhausted, forced answer)
+- Memory/performance under heavy load
+- Distributed training across devices
+- Model save/load checkpoint compatibility
+- Adversarial inputs or malformed data
+
+**Risk Areas:**
+- `model.save()`/`model.load()` checkpoint format compatibility untested
+- T5 model architecture changes in future transformers versions
+- CSV format changes or missing columns in questions.csv
+
+## Test Execution in Training
+
+**Implicit Testing During `train_supervised.py`:**
+- Each epoch validates on validation set
+- `evaluate_model()` called with `deterministic=True`
+- Results logged and best model saved
+- No assertions; failures are manual inspection
+
+**Example (`train_supervised.py` lines 175-225):**
+```python
+def train(self):
+    """Run full supervised training"""
+    for epoch in range(self.config.SUPERVISED_EPOCHS):
+        train_loss, train_acc = self.train_epoch()
+        val_summary = self.validate()  # Calls evaluate_model()
+        val_acc = val_summary['accuracy']
+
+        print(f"Epoch {epoch + 1}")
+        print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}")
+        print(f"Val Acc: {val_acc:.4f}")
+
+        # Save best model based on val_acc
+        if val_acc > self.best_val_acc:
+            self.best_val_acc = val_acc
+            self.save_checkpoint(is_best=True)
+```
+
+## Testing Philosophy
+
+**Approach:** Empirical rather than unit-tested
+
+- **No pytest/unittest:** Tests are standalone scripts run manually
+- **No mocking:** All components tested in realistic settings
+- **No fixtures in code:** Synthetic data generator used, but not fixtures
+- **Manual verification:** Print output inspected; no automated assertions
+- **Integration-focused:** Full pipeline tested end-to-end
+- **Relies on training loops:** Model correctness inferred from training behavior (accuracy improving, loss decreasing)
+
+**When tests fail:**
+- Import errors: Dependency issue (transformers, torch)
+- Dataset loading errors: CSV parsing or path issues
+- Training errors: Usually model/device issues, not logic
 
 ---
 
-*Testing analysis: 2026-02-23*
+*Testing analysis: 2025-02-24*

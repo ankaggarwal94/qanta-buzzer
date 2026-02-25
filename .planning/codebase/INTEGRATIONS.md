@@ -1,135 +1,134 @@
 # External Integrations
 
-**Analysis Date:** 2026-02-23
+**Analysis Date:** 2026-02-24
 
 ## APIs & External Services
 
-**Hugging Face Hub:**
-- Service: Pre-trained model repository
-  - Model: T5-large (encoder-decoder transformer)
-  - What it's used for: Language understanding and answer selection
-  - SDK/Client: `transformers` library (Hugging Face)
-  - Authentication: Public models (no API key required)
-  - How accessed: `T5ForConditionalGeneration.from_pretrained()`, `T5Tokenizer.from_pretrained()`
-  - Files: `model.py` (lines ~80-90)
-
-**QANTA Dataset:**
-- Service: Public quiz bowl question corpus
-  - Format: CSV file (`questions.csv`)
-  - What it's used for: Quiz bowl question and answer training data
-  - Access: Local file loading (pre-downloaded)
-  - Files: `dataset.py` (QANTADatasetLoader class)
+**Hugging Face Model Hub:**
+- T5 pre-trained models (t5-large, t5-base, t5-small)
+  - SDK/Client: `transformers` library (T5ForConditionalGeneration, T5Tokenizer)
+  - Authentication: Public access (no credentials required)
+  - Usage: `model.py` loads T5 model automatically on first run (~3GB download)
+  - Location: Lines 96-97 in `model.py`: `T5ForConditionalGeneration.from_pretrained(config.MODEL_NAME)`
 
 ## Data Storage
 
-**Databases:**
-- Not applicable - No database connections
-- All data stored as local JSON files
-- No ORM or database client libraries
-
 **File Storage:**
-- Local filesystem only (no cloud storage)
-- Storage locations:
-  - `data/processed_dataset.json` - Full processed questions
-  - `data/train_dataset.json` - Training split (70%, ~50 questions)
-  - `data/val_dataset.json` - Validation split (15%, ~75 questions)
-  - `data/test_dataset.json` - Test split (15%, ~75 questions)
-  - `questions.csv` - Original QANTA CSV (~15MB)
-  - `checkpoints/supervised/best_model/` - Supervised model checkpoint
-  - `checkpoints/ppo/best_model/` - PPO model checkpoint
-  - `results/` - Evaluation results (JSON)
-  - `logs/` - Training logs (JSON)
+- **Local filesystem only**
+  - Training data: `questions.csv` (QANTA dataset, 14.9MB)
+  - Processed datasets: `data/processed_dataset.json`, `data/{train,val,test}_dataset.json`
+  - Checkpoints: `checkpoints/supervised/best_model/` and `checkpoints/ppo/best_model/`
+  - Results: `results/` directory (JSON files with evaluation metrics)
+  - Logs: `logs/` directory
 
-**Caching:**
-- Hugging Face transformers cache: Auto-managed in `~/.cache/huggingface/`
-  - T5-large model (~3GB) cached on first download
-  - No custom caching layer
-- PyTorch model caching: Embedded in checkpoint system
+**No Database:**
+- All data is file-based (JSON, CSV)
+- No external database connections
+- No ORM usage
+
+**No Caching Service:**
+- In-memory caching during training (Python objects)
+- No Redis, Memcached, or similar
 
 ## Authentication & Identity
 
 **Auth Provider:**
-- Not applicable - No authentication required
-- Hugging Face Hub access is public/anonymous
-- All model downloads unrestricted
+- Not applicable (no user authentication)
+- Model downloads use public Hugging Face Hub access
 
 ## Monitoring & Observability
 
 **Error Tracking:**
-- Not integrated - No external error tracking service
-- Errors logged to console output
+- None (no Sentry or similar)
 
 **Logs:**
-- Local file system logging approach
-  - Files saved to `logs/` directory as JSON
-  - Training history saved: `training_history.json`
-  - Evaluation metrics saved: `eval_results.json`
-  - No centralized logging service (Splunk, CloudWatch, etc.)
-  - Optional: W&B integration commented out in `requirements.txt` (wandb>=0.15.0)
+- Standard Python logging via console print statements
+- Training progress via tqdm progress bars
+- Metrics saved to `history.json` in checkpoints
+- Evaluation results dumped to JSON files in `results/`
 
-**Optional Monitoring (Disabled by Default):**
-- Weights & Biases (W&B) logging - Dependency listed as optional/commented
-  - To enable: Uncomment `wandb>=0.15.0` in `requirements.txt`
-  - Not currently integrated in training code
-  - Would require API key setup if enabled
+**Supported Monitoring:**
+- Manual inspection of training curves (saved in `history.json`)
+- Command-line output during training
+- Optional W&B integration (currently commented out in `requirements.txt`)
 
 ## CI/CD & Deployment
 
 **Hosting:**
-- Not deployed - Research/experimental project
-- Runs locally on development machines
-- No cloud platform deployment
+- Not deployed (academic project)
+- Local development and evaluation only
+- Can run on local machine, HPC cluster, or personal GPU machine
 
 **CI Pipeline:**
-- None - No automated CI/CD pipeline
-- Manual testing via command-line scripts
-- Test suite: `test_csv_loader.py`, `test_imports.py`, `test_dataset.json`
+- None (no automated CI/CD)
 
 ## Environment Configuration
 
-**Required env vars:**
-- None - No environment variables required
-- All configuration in `config.py`
-- Device selection automatic (CUDA > MPS > CPU)
+**Required Environment Variables:**
+- None (all hardcoded in `config.py` or overridable via CLI)
 
-**Secrets location:**
-- Not applicable - No external secrets
-- No `.env` file or secrets management system
+**Optional Environment Variables:**
+- `CUDA_VISIBLE_DEVICES` - Control GPU visibility (if using CUDA)
+- `PYTORCH_MPS_HIGH_WATERMARK_RATIO` - MPS memory optimization (if using Apple Silicon)
+
+**Secrets Location:**
+- No secrets required (public model, local data)
+- `.env` file: Not used
 
 ## Webhooks & Callbacks
 
 **Incoming:**
-- None - Not applicable
+- None
 
 **Outgoing:**
-- None - Not applicable
+- None
 
-## Model & Data Sources
+## Optional Integrations (Disabled)
 
-**Model Source:**
-- Hugging Face Hub: T5-large transformer
-- Downloaded via `transformers.AutoModel.from_pretrained()`
-- License: Apache 2.0 (T5 model)
+**W&B (Weights & Biases):**
+- Commented out in `requirements.txt` (line 22-23)
+- If enabled, would require: `wandb>=0.15.0`
+- Usage: `import wandb` in training scripts
+- Authentication: Would require W&B API key (not in current codebase)
 
-**Training Data Source:**
-- QANTA Quiz Bowl Dataset (public)
-- Local CSV file: `questions.csv`
-- Original source: https://www.qanta.org/
+**Jupyter Notebooks:**
+- Commented out in `requirements.txt` (lines 24-26)
+- Not used in active training pipeline
+- Optional for interactive analysis
 
-## Import Dependencies (External Packages Only)
+## Data Processing Pipeline
 
-**Direct Imports from External Packages:**
-- `torch.*` - PyTorch (torch.nn, torch.optim, torch.utils.data)
-- `transformers.*` - Hugging Face Transformers
-- `numpy.*` - NumPy arrays and operations
-- `sklearn.metrics` - scikit-learn metrics
-- `datasets.*` - Hugging Face Datasets (optional)
-- `tqdm` - Progress bars
-- `jsonlines` - JSON utilities
-- `matplotlib.*` - Visualization (optional)
-- `seaborn.*` - Statistical visualization (optional)
-- `pandas.*` - Data manipulation (optional)
+**QANTA Dataset Loading:**
+- Source: `questions.csv` (local CSV file)
+- Format: Comma-separated with clues separated by `|||`
+- Loader: `QANTADatasetLoader` in `dataset.py`
+- Process:
+  1. Load from CSV (lines 90-120 in `dataset.py`)
+  2. Generate multiple-choice with distractors (3 strategies: category-based 40%, embedding-based 40%, common-confusion 20%)
+  3. Save to JSON format for caching
+  4. Split into train/val/test (70/15/15)
+
+**No External Data APIs:**
+- All data is static, pre-downloaded
+- No streaming from remote sources
+- No real-time data ingestion
+
+## Model Loading & Persistence
+
+**First-Run Behavior:**
+- T5 model downloads automatically from Hugging Face Hub on first instantiation
+- Approximately 3GB for t5-large (770M params)
+- Cached in torch cache directory (~/.cache/huggingface/hub/)
+
+**Checkpoint Management:**
+- Manual save/load via `T5PolicyModel.save()` and `load_pretrained()`
+- Locations: `model.py` lines 370-440
+- Saved artifacts:
+  - T5 model: Saved via `save_pretrained()`
+  - Tokenizer: Saved via `save_pretrained()`
+  - Policy head: `policy_head.pt` (custom state dict)
+  - Training metadata: `history.json` (loss curves, metrics)
 
 ---
 
-*Integration audit: 2026-02-23*
+*Integration audit: 2026-02-24*
