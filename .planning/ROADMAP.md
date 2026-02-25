@@ -95,7 +95,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Data Pipeline Foundation | 1/5 | In progress | - |
+| 1. Data Pipeline Foundation | 3/5 | In Progress|  |
 | 2. Environment and Core Likelihood Models | 0/0 | Not started | - |
 | 3. Baseline Agents and T5 Likelihood | 0/0 | Not started | - |
 | 4. PPO Training Pipeline | 0/0 | Not started | - |
