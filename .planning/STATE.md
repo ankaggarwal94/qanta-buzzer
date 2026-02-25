@@ -15,12 +15,13 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 ## Current Position
 
 **Phase:** 1 - Data Pipeline Foundation
-**Current Plan:** 2 of 5
+**Current Plan:** 4 of 5
 **Status:** In Progress
-**Progress:** [████░░░░░░░░░░░░░░░░] 20%
+**Progress:** [████████████████░░░░] 80%
 
 ### Active Work
-- Completed: Plan 01-02 (YAML Configuration System)
+- Completed: Plans 01-01, 01-02, 01-03, 01-04
+- Next: Plan 01-05 (Evaluation and Testing Infrastructure)
 
 ### Completed Phases
 None
@@ -64,6 +65,9 @@ None
 | Cumulative prefix pre-computation | Build all prefixes during loading to avoid repeated operations | 2026-02-25 |
 | Use YAML for configuration | Human-readable, standard in ML projects, supports comments | 2026-02-25 |
 | Dot notation for CLI overrides | Easy experimentation without editing files (e.g., data.K=5) | 2026-02-25 |
+| Category-based stratification | Preserve category distribution across train/val/test splits | 2026-02-25 |
+| HuggingFace as optional fallback | Provide alternative data source when CSV unavailable | 2026-02-25 |
+| Match existing dataclass structure | Fixed field name inconsistencies between plans and implementation | 2026-02-25 |
 
 ### Architecture Decisions
 - Four-layer modular architecture: Pipeline → Agent → Environment → Model
@@ -87,18 +91,18 @@ None identified yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 01-01: Data Pipeline Foundation
-- Created TossupQuestion dataclass matching qb-rl structure
-- Implemented QANTADatasetLoader for CSV parsing with ||| delimiters
-- Built text normalization utilities with edge case handling
-- Created test dataset with 10 sample questions
-- Fixed normalize_answer bug for articles-only input
+- Executed Plan 01-04: Dataset Splitting and HuggingFace Loader
+- Implemented stratified splitting with category preservation
+- Created HuggingFace fallback loader for optional data source
+- Fixed field name mismatches with TossupQuestion dataclass
+- Added missing tokenize_text function to text_utils
+- Verified splits maintain 70/15/15 ratios per category
 
 ### Next Session Priority
-1. Execute Plan 01-02: MC Dataset Construction
-2. Implement distractor generation strategies
-3. Create MCQuestion dataclass
-4. Build dataset splitter and balancing utilities
+1. Execute Plan 01-05: Evaluation and Testing Infrastructure
+2. Create data pipeline integration tests
+3. Build dataset statistics and validation utilities
+4. Complete Phase 1 and move to Phase 2 (Environment)
 
 ### Context for Next Claude
 This is a CS234 final project due this week. We're merging two existing codebases:
@@ -127,4 +131,4 @@ Key risks to watch:
 
 ---
 *State file initialized: 2026-02-25*
-*Last update: 2026-02-25 (Plan 01-01 completed)*
+*Last update: 2026-02-25 (Plan 01-04 completed)*

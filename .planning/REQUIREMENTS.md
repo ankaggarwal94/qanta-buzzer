@@ -13,8 +13,8 @@ Requirements for initial release. Each maps to roadmap phases.
 - [ ] **DATA-02**: System constructs K=4 multiple-choice questions with distractor generation
 - [ ] **DATA-03**: Anti-artifact guards reject MC options with alias collision, token overlap >50%, or length ratio >3x
 - [ ] **DATA-04**: Answer profiles built with leave-one-out exclusion per question
-- [ ] **DATA-05**: Dataset splits stratified by category (train 70% / val 15% / test 15%)
-- [ ] **DATA-06**: System can optionally load questions from HuggingFace datasets as fallback
+- [x] **DATA-05**: Dataset splits stratified by category (train 70% / val 15% / test 15%)
+- [x] **DATA-06**: System can optionally load questions from HuggingFace datasets as fallback
 
 ### Environment
 
@@ -103,8 +103,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-02 | Phase 1 | Pending |
 | DATA-03 | Phase 1 | Pending |
 | DATA-04 | Phase 1 | Pending |
-| DATA-05 | Phase 1 | Pending |
-| DATA-06 | Phase 1 | Pending |
+| DATA-05 | Phase 1 | Complete |
+| DATA-06 | Phase 1 | Complete |
 | ENV-01 | Phase 2 | Pending |
 | ENV-02 | Phase 2 | Pending |
 | ENV-03 | Phase 2 | Pending |
