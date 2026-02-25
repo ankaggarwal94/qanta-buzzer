@@ -264,9 +264,34 @@ class PPOTrainer:
                 # Get batch
                 batch_steps = [all_steps[i] for i in batch_indices]
                 
-                # Prepare batch tensors
-                input_ids = torch.cat([step.input_ids for step in batch_steps]).to(self.device)
-                attention_mask = torch.cat([step.attention_mask for step in batch_steps]).to(self.device)
+                # Prepare batch tensors with padding
+                # Find max sequence length in batch
+                max_len = max(step.input_ids.shape[1] for step in batch_steps)
+                
+                # Pad sequences
+                padded_input_ids = []
+                padded_attention_mask = []
+                for step in batch_steps:
+                    seq_len = step.input_ids.shape[1]
+                    if seq_len < max_len:
+                        # Pad with tokenizer's pad_token_id
+                        pad_len = max_len - seq_len
+                        input_ids_padded = torch.cat([
+                            step.input_ids,
+                            torch.full((1, pad_len), self.model.tokenizer.pad_token_id, dtype=step.input_ids.dtype)
+                        ], dim=1)
+                        attention_mask_padded = torch.cat([
+                            step.attention_mask,
+                            torch.zeros((1, pad_len), dtype=step.attention_mask.dtype)
+                        ], dim=1)
+                    else:
+                        input_ids_padded = step.input_ids
+                        attention_mask_padded = step.attention_mask
+                    padded_input_ids.append(input_ids_padded)
+                    padded_attention_mask.append(attention_mask_padded)
+                
+                input_ids = torch.cat(padded_input_ids).to(self.device)
+                attention_mask = torch.cat(padded_attention_mask).to(self.device)
                 actions = torch.tensor([step.action for step in batch_steps], dtype=torch.long).to(self.device)
                 old_log_probs = torch.tensor([step.log_prob for step in batch_steps]).to(self.device)
                 returns = torch.tensor([step.return_ for step in batch_steps]).to(self.device)
@@ -479,10 +504,15 @@ def run_ppo_training(config: Config,
         print("FINAL EVALUATION ON TEST SET")
         print("=" * 60)
         
-        # Load best model
+        # Load best model if it exists, otherwise use current model
         best_model_path = trainer.checkpoint_dir / "best_model"
-        model = T5PolicyModel.load_pretrained(str(best_model_path), device=config.DEVICE)
-        model.to(config.DEVICE)
+        if best_model_path.exists():
+            print(f"\nLoading best model from {best_model_path}")
+            model = T5PolicyModel.load_pretrained(str(best_model_path), device=config.DEVICE)
+            model.to(config.DEVICE)
+        else:
+            print("\nNo best model found, using current model for evaluation")
+            model = trainer.model
         
         # Evaluate
         print("\nRunning full evaluation...")

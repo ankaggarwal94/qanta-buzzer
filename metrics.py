@@ -4,9 +4,35 @@ Evaluation metrics for question answering
 
 import numpy as np
 import torch
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any
 from sklearn.metrics import accuracy_score
 from collections import defaultdict
+
+
+def convert_to_json_serializable(obj: Any) -> Any:
+    """
+    Convert numpy types to JSON-serializable Python types.
+    
+    Args:
+        obj: Object to convert
+        
+    Returns:
+        JSON-serializable version of the object
+    """
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_to_json_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_json_serializable(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(convert_to_json_serializable(item) for item in obj)
+    else:
+        return obj
 
 
 class MetricsTracker:
@@ -220,7 +246,8 @@ class MetricsTracker:
         if len(self.categories) > 0:
             summary['category_accuracy'] = self.compute_category_accuracy()
         
-        return summary
+        # Convert all numpy types to JSON-serializable Python types
+        return convert_to_json_serializable(summary)
     
     def print_summary(self):
         """Print summary of metrics"""
