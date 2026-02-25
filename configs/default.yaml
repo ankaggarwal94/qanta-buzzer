@@ -1,0 +1,79 @@
+# Default configuration for qanta-buzzer
+# Adapted from qb-rl structure for T5-based quiz bowl agent
+
+data:
+  csv_path: "data/questions.csv"  # Raw QANTA CSV with ||| separated clues
+  K: 4  # Number of answer choices
+  distractor_strategy: "sbert_profile"  # sbert_profile | category_random | embedding_based
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  max_questions: null  # Limit for testing (null = use all)
+  shuffle_seed: 42
+
+answer_profiles:
+  max_tokens_per_profile: 2000  # Max tokens to use for answer profile
+  min_questions_per_answer: 1  # Minimum examples to build profile
+  leave_one_out: true  # Exclude current question from profile
+
+likelihood:
+  model: "t5-large"  # Model for computing answer likelihoods (t5-small | t5-base | t5-large)
+  embedding_model: "all-MiniLM-L6-v2"  # For distractor generation
+  cache_embeddings: true
+  cache_dir: "cache/embeddings"
+  batch_size: 16
+  max_length: 512  # Max input tokens for T5
+
+environment:
+  reward_mode: "time_penalty"  # time_penalty | simple
+  wait_penalty: 0.1  # Penalty per clue revealed (fraction of total)
+  buzz_correct: 1.0  # Reward for correct answer
+  buzz_incorrect: -0.5  # Penalty for wrong answer
+  max_steps: 20  # Maximum clues to reveal
+
+mc_guards:  # Anti-artifact guards from qb-rl
+  alias_edit_distance_threshold: 0.2  # Reject similar answer aliases
+  duplicate_token_overlap_threshold: 0.8  # Reject token-overlapping distractors
+  max_length_ratio: 3.0  # Reject distractors much longer than answer
+
+ppo:  # PPO hyperparameters (for future use)
+  total_timesteps: 100000
+  learning_rate: 3e-4
+  n_steps: 128
+  batch_size: 32
+  n_epochs: 4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_ratio: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  max_grad_norm: 0.5
+  target_kl: 0.03
+  policy_kwargs:
+    net_arch: [64, 64]  # MLP architecture for belief-based policy
+
+evaluation:
+  metrics:
+    - accuracy
+    - reward
+    - buzz_position
+    - calibration  # ECE and Brier score
+    - per_category
+  compute_sq: true  # S_q scoring metric
+  run_choices_only: true  # Control: model sees only choices, no clues
+  run_shuffle: true  # Control: shuffle clue order
+  bootstrap_ci_samples: 1000  # Bootstrap confidence intervals
+  save_predictions: true
+  prediction_dir: "results/predictions"
+
+# Supervised warm-start settings (for T5 policy)
+supervised:
+  epochs: 10
+  batch_size: 8
+  gradient_accumulation_steps: 4  # Effective batch = 32
+  learning_rate: 1e-4
+  warmup_steps: 500
+  eval_steps: 100
+  save_steps: 500
+  save_total_limit: 3
+  checkpoint_dir: "checkpoints/supervised"
