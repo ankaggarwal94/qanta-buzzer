@@ -30,7 +30,7 @@
 
 Plans:
 - [ ] 01-01-PLAN.md — Create core data structures and CSV loading
-- [ ] 01-02-PLAN.md — Set up YAML configuration system
+- [x] 01-02-PLAN.md — Set up YAML configuration system ✓
 - [ ] 01-03-PLAN.md — Port MCBuilder and answer profiles with guards
 - [ ] 01-04-PLAN.md — Implement stratified splits and HuggingFace loader
 - [ ] 01-05-PLAN.md — Create main dataset construction script
@@ -95,7 +95,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Data Pipeline Foundation | 0/5 | Planning complete | - |
+| 1. Data Pipeline Foundation | 1/5 | In progress | - |
 | 2. Environment and Core Likelihood Models | 0/0 | Not started | - |
 | 3. Baseline Agents and T5 Likelihood | 0/0 | Not started | - |
 | 4. PPO Training Pipeline | 0/0 | Not started | - |
