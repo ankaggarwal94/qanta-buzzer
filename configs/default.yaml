@@ -2,7 +2,7 @@
 # Adapted from qb-rl structure for T5-based quiz bowl agent
 
 data:
-  csv_path: "data/questions.csv"  # Raw QANTA CSV with ||| separated clues
+  csv_path: "questions.csv"  # Raw QANTA CSV with ||| separated clues
   K: 4  # Number of answer choices
   distractor_strategy: "sbert_profile"  # sbert_profile | category_random | embedding_based
   train_ratio: 0.7
