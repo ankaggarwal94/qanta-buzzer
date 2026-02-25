@@ -1,0 +1,77 @@
+# Smoke test configuration - quick testing with reduced data
+# Inherits from default.yaml and overrides key settings
+
+# Data settings for quick testing
+data:
+  csv_path: "data/questions.csv"
+  K: 4
+  distractor_strategy: "category_random"  # Faster than sbert_profile
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  max_questions: 50  # Use only 50 questions for smoke test
+  shuffle_seed: 42
+
+answer_profiles:
+  max_tokens_per_profile: 500  # Reduced for speed
+  min_questions_per_answer: 1
+  leave_one_out: false  # Skip for smoke test
+
+likelihood:
+  model: "t5-small"  # Use smallest model for quick testing
+  embedding_model: "all-MiniLM-L6-v2"
+  cache_embeddings: true
+  cache_dir: "cache/embeddings"
+  batch_size: 4  # Smaller batch for memory
+  max_length: 256  # Shorter sequences
+
+environment:
+  reward_mode: "time_penalty"
+  wait_penalty: 0.1
+  buzz_correct: 1.0
+  buzz_incorrect: -0.5
+  max_steps: 10  # Fewer steps for quick testing
+
+mc_guards:
+  alias_edit_distance_threshold: 0.2
+  duplicate_token_overlap_threshold: 0.8
+  max_length_ratio: 3.0
+
+ppo:  # Reduced for smoke testing
+  total_timesteps: 1000  # Much fewer steps
+  learning_rate: 3e-4
+  n_steps: 32  # Smaller rollout
+  batch_size: 8  # Smaller batch
+  n_epochs: 2  # Fewer epochs
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_ratio: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  max_grad_norm: 0.5
+  target_kl: 0.03
+  policy_kwargs:
+    net_arch: [32, 32]  # Smaller network
+
+evaluation:
+  metrics:
+    - accuracy
+    - reward
+  compute_sq: false  # Skip expensive metrics
+  run_choices_only: false  # Skip control experiments
+  run_shuffle: false
+  bootstrap_ci_samples: 0  # No bootstrap for smoke test
+  save_predictions: false
+  prediction_dir: "results/predictions"
+
+# Supervised settings for smoke test
+supervised:
+  epochs: 2  # Very few epochs
+  batch_size: 4
+  gradient_accumulation_steps: 1  # No accumulation for speed
+  learning_rate: 1e-4
+  warmup_steps: 10
+  eval_steps: 20
+  save_steps: 100
+  save_total_limit: 1
+  checkpoint_dir: "checkpoints/supervised_smoke"
