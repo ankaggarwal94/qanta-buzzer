@@ -26,7 +26,14 @@
   3. Answer profiles are built with leave-one-out exclusion per question
   4. Dataset splits are stratified by category (train 70% / val 15% / test 15%)
   5. YAML configuration system loads and can be overridden via CLI
-**Plans**: TBD
+**Plans**: 5 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Create core data structures and CSV loading
+- [ ] 01-02-PLAN.md — Set up YAML configuration system
+- [ ] 01-03-PLAN.md — Port MCBuilder and answer profiles with guards
+- [ ] 01-04-PLAN.md — Implement stratified splits and HuggingFace loader
+- [ ] 01-05-PLAN.md — Create main dataset construction script
 
 ### Phase 2: Environment and Core Likelihood Models
 **Goal**: Users can run quiz bowl episodes in a Gymnasium environment with belief-based observations
@@ -88,7 +95,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Data Pipeline Foundation | 0/0 | Not started | - |
+| 1. Data Pipeline Foundation | 0/5 | Planning complete | - |
 | 2. Environment and Core Likelihood Models | 0/0 | Not started | - |
 | 3. Baseline Agents and T5 Likelihood | 0/0 | Not started | - |
 | 4. PPO Training Pipeline | 0/0 | Not started | - |
@@ -130,4 +137,5 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 
 ---
 *Roadmap created: 2026-02-25*
-*Next: `/gsd:plan-phase 1`*
+*Phase 1 planned: 2026-02-25*
+*Next: `/gsd:execute-phase 1`*
