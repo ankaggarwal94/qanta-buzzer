@@ -7,7 +7,7 @@
 
 ## Phases
 
-- [ ] **Phase 1: Data Pipeline Foundation** - Build MC dataset construction with anti-artifact guards and YAML configuration
+- [x] **Phase 1: Data Pipeline Foundation** - Build MC dataset construction with anti-artifact guards and YAML configuration
 - [ ] **Phase 2: Environment and Core Likelihood Models** - Implement Gymnasium environment with belief features and TF-IDF/SBERT likelihood models
 - [ ] **Phase 3: Baseline Agents and T5 Likelihood** - Add baseline agents, T5 likelihood model, and episode trace generation
 - [ ] **Phase 4: PPO Training Pipeline** - Train MLP policy with SB3 PPO and pipeline scripts
@@ -29,11 +29,11 @@
 **Plans**: 5 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — Create core data structures and CSV loading
+- [x] 01-01-PLAN.md — Create core data structures and CSV loading ✓
 - [x] 01-02-PLAN.md — Set up YAML configuration system ✓
-- [ ] 01-03-PLAN.md — Port MCBuilder and answer profiles with guards
-- [ ] 01-04-PLAN.md — Implement stratified splits and HuggingFace loader
-- [ ] 01-05-PLAN.md — Create main dataset construction script
+- [x] 01-03-PLAN.md — Port MCBuilder and answer profiles with guards ✓
+- [x] 01-04-PLAN.md — Implement stratified splits and HuggingFace loader ✓
+- [x] 01-05-PLAN.md — Create main dataset construction script ✓
 
 ### Phase 2: Environment and Core Likelihood Models
 **Goal**: Users can run quiz bowl episodes in a Gymnasium environment with belief-based observations
@@ -45,7 +45,13 @@ Plans:
   3. Environment computes all belief features (belief[K], top_p, margin, entropy, stability, progress)
   4. User can configure different reward modes (time_penalty, simple, human_grounded)
   5. TF-IDF and SBERT likelihood models produce valid belief distributions
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Create belief features and likelihood models (TF-IDF, SBERT)
+- [ ] 02-02-PLAN.md — Implement TossupMCEnv Gymnasium environment
+- [ ] 02-03-PLAN.md — Add factory functions for config-based construction
+- [ ] 02-04-PLAN.md — Create pytest test scaffolding for TDD
 
 ### Phase 3: Baseline Agents and T5 Likelihood
 **Goal**: Users can run baseline agents and leverage T5 for semantic similarity scoring
@@ -95,7 +101,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Data Pipeline Foundation | 3/5 | In Progress|  |
+| 1. Data Pipeline Foundation | 5/5 | Complete| ✅ |
 | 2. Environment and Core Likelihood Models | 0/0 | Not started | - |
 | 3. Baseline Agents and T5 Likelihood | 0/0 | Not started | - |
 | 4. PPO Training Pipeline | 0/0 | Not started | - |
