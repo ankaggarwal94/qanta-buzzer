@@ -1,6 +1,6 @@
 # Phase 2: Environment and Core Likelihood Models - Research
 
-**Researched:** 2026-02-25
+**Researched:** 2026-02-25 (REFRESHED)
 **Domain:** Gymnasium RL Environment with Belief-Based Observations
 **Confidence:** HIGH
 
@@ -8,25 +8,25 @@
 
 Phase 2 implements the POMDP environment and likelihood models that convert incremental question clues into belief distributions over answer choices. This is the foundation for all RL agent training. The environment follows Gymnasium's standard interface (reset/step/observation_space/action_space) and computes rich belief features (belief[K], top_p, margin, entropy, stability, progress) at each step. Likelihood models use text similarity (TF-IDF or SBERT) to score how well each answer option matches the clues revealed so far.
 
-The qb-rl codebase provides a complete, battle-tested reference implementation. All architectural patterns, configuration structures, and mathematical formulations are verified and working. The main implementation task is adapting this proven design to work with Phase 1's data structures (MCQuestion dataclass) and integrating with the existing YAML configuration system.
+The qb-rl codebase provides a complete, battle-tested reference implementation at `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/`. All architectural patterns, configuration structures, and mathematical formulations are verified and working. The code was directly examined during this research refresh and found to be production-ready with proper edge case handling.
 
-**Primary recommendation:** Port qb-rl's TossupMCEnv, LikelihoodModel abstract class, TfIdfLikelihood, and SBERTLikelihood directly. These components are production-ready and already handle all edge cases (belief collapse, forced termination, reward shaping). Use factory pattern for environment construction and maintain strict separation between environment logic (POMDP dynamics) and model logic (likelihood scoring).
+**Primary recommendation:** Port qb-rl's TossupMCEnv, LikelihoodModel abstract class, TfIdfLikelihood, and SBERTLikelihood directly to this codebase. These components are battle-tested and handle all edge cases (belief collapse, forced termination, reward shaping, embedding caching). Use factory pattern for environment construction and maintain strict separation between environment logic (POMDP dynamics) and model logic (likelihood scoring). The main adaptation needed is importing from Phase 1's qb_data package instead of qb-rl's internal structure.
 
 ## <phase_requirements>
 ## Phase Requirements
 
 | ID | Description | Research Support |
 |----|-------------|-----------------|
-| ENV-01 | TossupMCEnv implements Gymnasium Env interface (reset/step/observation_space/action_space) | Gymnasium interface is standard pattern with clear documentation. qb-rl reference shows exact implementation. |
-| ENV-02 | Action space is Discrete(K+1): action 0 = WAIT, actions 1..K = buzz with option i | Standard discrete action encoding. WAIT=0 convention simplifies forced-choice logic at episode end. |
-| ENV-03 | Environment computes belief features per step: belief[K], top_p, margin, entropy, stability, progress | Belief feature extraction is pure math with no ambiguity. qb-rl's extract_belief_features() handles all edge cases. |
-| ENV-04 | Configurable reward modes: time_penalty (R = ±1 - penalty*t/T), simple (±1), human_grounded | Three reward modes support different training objectives. time_penalty is default, human_grounded uses human buzz position data. |
-| ENV-05 | Environment accepts any LikelihoodModel for belief computation via factory | Abstract base class pattern enables swapping TF-IDF, SBERT, or future T5 without changing environment code. |
-| LIK-01 | Abstract LikelihoodModel ABC with `score(clue_prefix, option_profiles) -> ndarray[K]` | Abstract interface enforces consistent contract: text → similarity scores (not probabilities, environment does softmax). |
-| LIK-02 | TfIdfLikelihood implementation using sklearn TfidfVectorizer | Standard sklearn API. Requires fit() on corpus before use. Fast baseline for smoke tests. |
-| LIK-03 | SBERTLikelihood implementation using sentence-transformers (all-MiniLM-L6-v2) | sentence-transformers library provides encode() method. Caching essential to avoid re-encoding same texts. |
-| LIK-06 | Factory function `build_likelihood_from_config()` constructs model from YAML | Factory pattern reads config["likelihood"]["model"] and instantiates appropriate class. Handles corpus_texts for TF-IDF. |
-| CFG-02 | Factory methods for all components: `make_env_from_config()`, `build_likelihood_from_config()` | Factory functions provide single point of configuration → object construction. Environment factory calls likelihood factory. |
+| ENV-01 | TossupMCEnv implements Gymnasium Env interface (reset/step/observation_space/action_space) | qb-rl/qb_env/tossup_env.py lines 15-16, 47-49, 139-192 — complete implementation verified |
+| ENV-02 | Action space is Discrete(K+1): action 0 = WAIT, actions 1..K = buzz with option i | qb-rl/qb_env/tossup_env.py line 47 — action_space = spaces.Discrete(K+1), WAIT=0 convention |
+| ENV-03 | Environment computes belief features per step: belief[K], top_p, margin, entropy, stability, progress | qb-rl/models/features.py lines 11-31 — extract_belief_features() with all 6 derived features |
+| ENV-04 | Configurable reward modes: time_penalty (R = ±1 - penalty*t/T), simple (±1), human_grounded | qb-rl/qb_env/tossup_env.py lines 127-137 — _buzz_reward() implements all three modes |
+| ENV-05 | Environment accepts any LikelihoodModel for belief computation via factory | qb-rl/qb_env/tossup_env.py lines 18-21, 195-213 — make_env_from_config() factory pattern |
+| LIK-01 | Abstract LikelihoodModel ABC with `score(clue_prefix, option_profiles) -> ndarray[K]` | qb-rl/models/likelihoods.py lines 16-25 — ABC with score() and embed_and_cache() |
+| LIK-02 | TfIdfLikelihood implementation using sklearn TfidfVectorizer | qb-rl/models/likelihoods.py lines 40-65 — fit() then score() with cosine similarity |
+| LIK-03 | SBERTLikelihood implementation using sentence-transformers (all-MiniLM-L6-v2) | qb-rl/models/likelihoods.py lines 68-83 — SentenceTransformer with embedding cache |
+| LIK-06 | Factory function `build_likelihood_from_config()` constructs model from YAML | qb-rl/models/likelihoods.py lines 109-120 — reads config["likelihood"]["model"] |
+| CFG-02 | Factory methods for all components: `make_env_from_config()`, `build_likelihood_from_config()` | Both factories verified in qb-rl source, Phase 1 config system compatible |
 </phase_requirements>
 
 ## Standard Stack
@@ -43,14 +43,17 @@ The qb-rl codebase provides a complete, battle-tested reference implementation. 
 | Library | Version | Purpose | When to Use |
 |---------|---------|---------|-------------|
 | PyYAML | 6.0+ | Configuration loading | Already used in Phase 1, continue for consistency |
-| scipy | 1.13.0+ | Statistical functions (entropy) | Optional optimization for entropy computation, NumPy fallback works |
+| scipy | 1.13.0+ | Statistical functions (entropy) | Optional optimization, NumPy fallback works (qb-rl uses NumPy) |
 
 ### Installation
 ```bash
-# Already in environment from Phase 1
+# Core dependencies (add to existing environment)
 pip install gymnasium>=1.1.0
 pip install scikit-learn>=1.5.0
 pip install sentence-transformers>=3.3.0
+
+# Verify NumPy version constraint
+python -c "import numpy; assert numpy.__version__ < '2.0.0'"
 ```
 
 ## Architecture Patterns
@@ -71,7 +74,7 @@ models/
 **When to use:** All RL environments to ensure compatibility with training libraries (SB3, RLlib)
 **Example:**
 ```python
-# Source: qb-rl/qb_env/tossup_env.py (verified working)
+# Source: qb-rl/qb_env/tossup_env.py lines 15-192 (verified working)
 class TossupMCEnv(gym.Env[np.ndarray, int]):
     metadata = {"render_modes": []}
 
@@ -107,11 +110,11 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
 ```
 
 ### Pattern 2: Abstract Likelihood Model with Caching
-**What:** ABC defines score() interface, concrete classes implement scoring strategies
-**When to use:** Supporting multiple text similarity approaches (TF-IDF, SBERT, T5)
+**What:** ABC defines score() interface, concrete classes implement scoring strategies with embedding cache
+**When to use:** Supporting multiple text similarity approaches (TF-IDF, SBERT, future T5)
 **Example:**
 ```python
-# Source: qb-rl/models/likelihoods.py (verified working)
+# Source: qb-rl/models/likelihoods.py lines 16-83 (verified working)
 class LikelihoodModel(ABC):
     def __init__(self):
         self.embedding_cache: dict[str, np.ndarray] = {}
@@ -152,7 +155,12 @@ class SBERTLikelihood(LikelihoodModel):
 **When to use:** Every environment observation step
 **Example:**
 ```python
-# Source: qb-rl/models/features.py (verified working)
+# Source: qb-rl/models/features.py lines 6-31 (verified working)
+def entropy_of_distribution(prob: np.ndarray) -> float:
+    """Compute entropy with numerical stability."""
+    clipped = np.clip(prob, 1e-12, 1.0)
+    return float(-(clipped * np.log(clipped)).sum())
+
 def extract_belief_features(
     belief: np.ndarray,
     prev_belief: np.ndarray | None,
@@ -173,19 +181,15 @@ def extract_belief_features(
     """
     top_p = float(np.max(belief))
     sorted_probs = np.sort(belief)[::-1]
-    margin = top_p - (sorted_probs[1] if len(sorted_probs) > 1 else 0.0)
+    second = float(sorted_probs[1]) if len(sorted_probs) > 1 else 0.0
+    margin = top_p - second
 
-    # Entropy with numerical stability
-    clipped = np.clip(belief, 1e-12, 1.0)
-    entropy = float(-(clipped * np.log(clipped)).sum())
-
-    # Stability: how much belief changed from previous step
+    ent = entropy_of_distribution(belief)
     stability = float(np.abs(belief - prev_belief).sum()) if prev_belief is not None else 0.0
-
     progress = float(step_idx / max(1, total_steps))
     clue_idx_norm = float(step_idx / max(1, total_steps - 1))
 
-    extras = np.array([top_p, margin, entropy, stability, progress, clue_idx_norm], dtype=np.float32)
+    extras = np.array([top_p, margin, ent, stability, progress, clue_idx_norm], dtype=np.float32)
     return np.concatenate([belief, extras]).astype(np.float32)
 ```
 
@@ -194,7 +198,7 @@ def extract_belief_features(
 **When to use:** All component instantiation to enable experiment configuration
 **Example:**
 ```python
-# Source: qb-rl/models/likelihoods.py and qb_env/tossup_env.py (verified working)
+# Source: qb-rl/models/likelihoods.py lines 109-120 and qb_env/tossup_env.py lines 195-213
 def build_likelihood_from_config(
     config: dict, corpus_texts: list[str] | None = None
 ) -> LikelihoodModel:
@@ -248,10 +252,11 @@ def make_env_from_config(
 | RL environment interface | Custom environment base class | gymnasium.Env | SB3 and all modern RL libraries expect Gymnasium interface. Custom interfaces break compatibility. |
 | Text vectorization | Manual term frequency counting | sklearn.TfidfVectorizer | Handles edge cases: empty documents, IDF smoothing, L2 normalization. 1000+ LOC to replicate. |
 | Semantic embeddings | Fine-tune BERT from scratch | sentence-transformers library | Pre-trained models (all-MiniLM-L6-v2) already optimized for sentence similarity. Training requires massive GPU budget. |
-| Entropy computation | Manual probability × log | scipy.stats.entropy or NumPy | Numerical stability is tricky. Clipping, zero-handling, NaN edge cases already solved. |
+| Entropy computation | Manual probability × log | NumPy with clipping | Numerical stability is tricky. Clipping, zero-handling, NaN edge cases already solved in qb-rl implementation. |
 | Observation space validation | Manual shape assertions | gymnasium.spaces.Box | Gymnasium spaces provide automatic validation, error messages, dtype conversion. |
+| Embedding caching | Ad-hoc dictionaries | SHA256-based cache in LikelihoodModel | qb-rl's embed_and_cache() handles deduplication, memory management, and cache hits efficiently. |
 
-**Key insight:** RL environment design has many edge cases (forced termination, seed propagation, info dict structure). Gymnasium's interface has been battle-tested on thousands of environments. Following the standard saves debugging time.
+**Key insight:** RL environment design has many edge cases (forced termination, seed propagation, info dict structure). Gymnasium's interface has been battle-tested on thousands of environments. The qb-rl implementation has already solved all these issues. Port directly rather than reimplementing.
 
 ## Common Pitfalls
 
@@ -259,10 +264,10 @@ def make_env_from_config(
 **What goes wrong:** Likelihood models output uniform distributions early, causing belief features (margin=0, entropy=max) to be uninformative. PPO can't learn from constant features.
 **Why it happens:** TF-IDF/SBERT models need sufficient answer profile data. With small profiles or poor initialization, all options score similarly.
 **How to avoid:**
-- Pre-compute answer profiles on full dataset (Phase 1 already does this)
-- Use softmax temperature beta=5.0 (default) to amplify score differences
+- Pre-compute answer profiles on full dataset (Phase 1 already does this via AnswerProfileBuilder)
+- Use softmax temperature beta=5.0 (default in qb-rl) to amplify score differences
 - Monitor belief entropy in first 10 episodes — if always max, stop and debug
-- Minimum 50 tokens per answer profile (Phase 1 default is 2000)
+- Phase 1 default is 2000 tokens per profile, sufficient to prevent collapse
 **Warning signs:** If `margin` feature has mean < 0.01 for >100 episodes, belief has collapsed. Check likelihood model fit() was called with corpus.
 
 ### Pitfall 2: NumPy 2.0 Compatibility Break
@@ -278,28 +283,42 @@ def make_env_from_config(
 **What goes wrong:** TfIdfLikelihood.score() raises RuntimeError because fit() wasn't called with corpus.
 **Why it happens:** TF-IDF needs to learn vocabulary and IDF weights from corpus before scoring. Forgetting to fit is common when refactoring.
 **How to avoid:**
-- Factory function checks if corpus_texts provided for TF-IDF
-- Add `_is_fit` flag that score() checks before running
+- Factory function checks if corpus_texts provided for TF-IDF (qb-rl lines 112-114)
+- Add `_is_fit` flag that score() checks before running (qb-rl line 44, 54)
 - Include smoke test that creates TF-IDF model and immediately scores
 **Warning signs:** RuntimeError "TfIdfLikelihood must be fit() before score()" on first environment reset.
 
-### Pitfall 4: Embedding Cache Memory Leak with SBERT
-**What goes wrong:** embedding_cache grows unbounded as new clue prefixes are seen, eventually OOM after thousands of episodes.
-**Why it happens:** Each question has ~6 clue prefixes (cumulative: "clue1", "clue1 clue2", ...). With 10K questions, cache stores 60K embeddings × 384 dims = 90MB+.
+### Pitfall 4: Embedding Cache Memory Growth with SBERT
+**What goes wrong:** embedding_cache grows as new clue prefixes are seen. With Phase 1's pre-computed cumulative_prefixes, this is bounded but still significant.
+**Why it happens:** Each question has ~6 clue prefixes (cumulative: "clue1", "clue1 clue2", ...). With 10K questions, cache stores 60K embeddings × 384 dims.
 **How to avoid:**
-- Implement LRU cache with max_size=10000 entries
-- Pre-compute and cache embeddings for all cumulative_prefixes during dataset loading
-- Monitor cache size: `len(model.embedding_cache)` should plateau
-**Warning signs:** Memory usage grows linearly with episodes. Cache size > 100K entries.
+- qb-rl's embed_and_cache() uses SHA256 hashing to deduplicate (likelihoods.py line 28-32)
+- Phase 1 pre-computes cumulative_prefixes once during loading (prevents re-computation)
+- Monitor cache size: `len(model.embedding_cache)` should plateau after seeing all questions
+- For large datasets (>10K questions), consider LRU cache with max_size=10000
+**Warning signs:** Memory usage grows linearly with episodes beyond first epoch. Cache size > 100K entries.
 
 ### Pitfall 5: Observation Space Dimension Mismatch
 **What goes wrong:** Policy network forward pass fails with "expected input size X, got Y" because observation shape doesn't match declared space.
 **Why it happens:** observation_space declared as (K+6,) but extract_belief_features returns different shape if logic changes.
 **How to avoid:**
-- Assert observation shape in _obs(): `assert obs.shape == self.observation_space.shape`
+- qb-rl's _obs() calls extract_belief_features which always returns (K+6,) shape (tossup_env.py line 110-116)
+- Add assertion in _obs(): `assert obs.shape == self.observation_space.shape`
 - Add unit test that resets environment and validates observation shape
 - Document observation space layout in docstring with exact feature order
 **Warning signs:** Policy training crashes with dimension mismatch on first batch.
+
+### Pitfall 6: Import Path Incompatibility
+**What goes wrong:** qb-rl imports from `models.features` and `qb_env.mc_builder`, but Phase 1 structure is `qb_data.mc_builder`.
+**Why it happens:** Different codebases use different package structures. Direct copy-paste of imports breaks.
+**How to avoid:**
+- When porting qb-rl files, update imports:
+  - `from qb_env.mc_builder import MCQuestion` → `from qb_data.mc_builder import MCQuestion`
+  - `from models.features import` → keep same (creating new models/ package)
+  - `from models.likelihoods import` → keep same (creating new models/ package)
+- Create `qb_env/__init__.py` and `models/__init__.py` if they don't exist
+- Test imports immediately after porting each file
+**Warning signs:** ImportError or ModuleNotFoundError when trying to import newly ported code.
 
 ## Code Examples
 
@@ -307,7 +326,7 @@ Verified patterns from qb-rl reference implementation:
 
 ### Reward Mode Implementation
 ```python
-# Source: qb-rl/qb_env/tossup_env.py lines 127-137
+# Source: qb-rl/qb_env/tossup_env.py lines 127-137 (verified working)
 def _buzz_reward(self, question: MCQuestion, chosen_idx: int, last_seen_step: int) -> float:
     """Compute reward for buzzing with chosen answer index."""
     correct = chosen_idx == question.gold_index
@@ -328,11 +347,20 @@ def _buzz_reward(self, question: MCQuestion, chosen_idx: int, last_seen_step: in
 
 ### Belief Computation with Sequential Bayes
 ```python
-# Source: qb-rl/qb_env/tossup_env.py lines 88-108
+# Source: qb-rl/qb_env/tossup_env.py lines 80-108 (verified working)
+def _softmax_scores(self, scores: np.ndarray) -> np.ndarray:
+    """Convert scores to probabilities with temperature and numerical stability."""
+    stable = scores - np.max(scores)  # Prevent overflow
+    probs = np.exp(self.beta * stable)
+    probs_sum = np.sum(probs)
+    if probs_sum <= 0:
+        return np.ones_like(scores, dtype=np.float32) / len(scores)  # Uniform fallback
+    return (probs / probs_sum).astype(np.float32)
+
 def _compute_belief(self, question: MCQuestion, step_idx: int) -> np.ndarray:
     """Compute belief distribution over answer options."""
     if self.belief_mode == "from_scratch":
-        # Recompute from all clues seen so far
+        # Recompute from all clues seen so far (uses Phase 1's cumulative_prefixes)
         prefix = question.cumulative_prefixes[step_idx]
         scores = self.likelihood_model.score(prefix, question.option_profiles)
         return self._softmax_scores(scores)
@@ -349,26 +377,17 @@ def _compute_belief(self, question: MCQuestion, step_idx: int) -> np.ndarray:
         posterior = self.belief * likelihood  # Bayesian update
         denom = posterior.sum()
         if denom <= 0:
-            posterior = np.ones(self.K) / self.K  # Fallback to uniform
+            posterior = np.ones(self.K, dtype=np.float32) / self.K  # Fallback to uniform
         else:
             posterior = posterior / denom
         return posterior.astype(np.float32)
 
     raise ValueError(f"Unknown belief_mode: {self.belief_mode}")
-
-def _softmax_scores(self, scores: np.ndarray) -> np.ndarray:
-    """Convert scores to probabilities with temperature scaling."""
-    stable = scores - np.max(scores)  # Numerical stability
-    probs = np.exp(self.beta * stable)
-    probs_sum = np.sum(probs)
-    if probs_sum <= 0:
-        return np.ones_like(scores) / len(scores)  # Uniform fallback
-    return (probs / probs_sum).astype(np.float32)
 ```
 
 ### TF-IDF Likelihood with Corpus Fitting
 ```python
-# Source: qb-rl/models/likelihoods.py lines 40-59
+# Source: qb-rl/models/likelihoods.py lines 40-65 (verified working)
 class TfIdfLikelihood(LikelihoodModel):
     def __init__(self, corpus_texts: list[str] | None = None):
         super().__init__()
@@ -391,6 +410,28 @@ class TfIdfLikelihood(LikelihoodModel):
         option_vecs = self.vectorizer.transform(option_profiles)
         sims = cosine_similarity(clue_vec, option_vecs)[0]
         return sims.astype(np.float32)
+
+    def _embed_batch(self, texts: list[str]) -> np.ndarray:
+        if not self._is_fit:
+            raise RuntimeError("TfIdfLikelihood must be fit() before embedding.")
+        mat = self.vectorizer.transform(texts).toarray()
+        return mat.astype(np.float32)
+```
+
+### Forced Termination at Episode End
+```python
+# Source: qb-rl/qb_env/tossup_env.py lines 170-178 (verified working)
+# In step() method, after action == 0 (WAIT):
+self.step_idx += 1
+if self.step_idx >= self.total_steps:
+    # Reached end of question — force agent to answer with best belief
+    last_seen = self.step_idx - 1
+    forced_choice = int(np.argmax(self.belief))
+    reward += self._buzz_reward(self.question, forced_choice, last_seen)
+    self.truncated = True  # Episode truncated, not terminated
+    info["step_idx"] = last_seen
+    info["forced_choice"] = forced_choice
+    info["forced_correct"] = forced_choice == self.question.gold_index
 ```
 
 ## State of the Art
@@ -399,24 +440,24 @@ class TfIdfLikelihood(LikelihoodModel):
 |--------------|------------------|--------------|--------|
 | OpenAI Gym | Gymnasium | 2022 (Gym 0.26+) | Gymnasium is the maintained fork. Use `gym.Env` → `gymnasium.Env`, `gym.spaces` → `gymnasium.spaces` |
 | Custom episode termination flags | Gymnasium terminated/truncated | 2022 | step() returns 5-tuple: (obs, reward, terminated, truncated, info). Old Gym returned 4-tuple with done. |
-| Manual softmax implementation | scipy.special.softmax | Always available | Use scipy if installed, but manual is fine for small arrays with proper stabilization (subtract max). |
+| Manual softmax implementation | scipy.special.softmax | Available but not needed | qb-rl uses manual softmax with proper stabilization (subtract max). No dependency on scipy. |
 | BERT sentence embeddings | sentence-transformers | 2019+ | sentence-transformers wraps BERT/RoBERTa with sentence pooling. Easier API than raw Transformers library. |
+| Global embedding cache | SHA256-keyed cache per model | 2020+ | qb-rl uses hashlib.sha256 for cache keys (likelihoods.py line 13). Prevents cache pollution across models. |
 
 **Deprecated/outdated:**
 - **OpenAI Gym (gym package)**: Unmaintained since 2022. Use gymnasium instead.
 - **TF-IDF without stopwords**: Modern best practice always uses stop_words="english" to remove noise.
 - **Unnormalized cosine similarity**: Always normalize embeddings before computing cosine to avoid magnitude bias.
+- **done flag in Gym**: Old Gym used single `done` flag. Gymnasium separates into `terminated` (episode end) and `truncated` (timeout/forced end).
 
 ## Validation Architecture
-
-> Workflow setting: nyquist_validation not found in config, assuming enabled
 
 ### Test Framework
 | Property | Value |
 |----------|-------|
 | Framework | pytest 8.0+ |
 | Config file | None — see Wave 0 |
-| Quick run command | `pytest tests/test_environment.py -v -x` |
+| Quick run command | `pytest tests/test_environment.py tests/test_likelihoods.py -v -x` |
 | Full suite command | `pytest tests/ -v` |
 
 ### Phase Requirements → Test Map
@@ -449,26 +490,30 @@ class TfIdfLikelihood(LikelihoodModel):
 ## Sources
 
 ### Primary (HIGH confidence)
-- qb-rl codebase (/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/) — verified working implementation of all components
+- `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/qb_env/tossup_env.py` — Complete TossupMCEnv implementation (lines 15-213), verified during research
+- `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/models/likelihoods.py` — LikelihoodModel ABC and implementations (lines 16-120), verified during research
+- `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/models/features.py` — extract_belief_features implementation (lines 6-31), verified during research
+- `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/configs/default.yaml` — Configuration structure, verified during research
 - Gymnasium 1.1.0 documentation — official API reference for Env interface
 - scikit-learn 1.5.0 documentation — TfidfVectorizer API and parameters
 - sentence-transformers 3.3.0 documentation — SentenceTransformer.encode() API
 
 ### Secondary (MEDIUM confidence)
-- Phase 1 implementation (qb_data package) — MCQuestion dataclass structure, config loading patterns
-- PROJECT research files (SUMMARY.md, ARCHITECTURE.md, PITFALLS.md) — identified pitfalls and architectural patterns
+- Phase 1 implementation (qb_data package) — MCQuestion dataclass structure (verified: qb_data/mc_builder.py lines 19-30), config loading patterns (verified: qb_data/config.py)
+- `.planning/research/PITFALLS.md` — Belief collapse, NumPy 2.0, cache management warnings
+- `.planning/research/ARCHITECTURE.md` — Four-layer modular architecture pattern
 
 ### Tertiary (contextual)
-- qanta-buzzer environment.py — alternative implementation showing POMDP patterns (simpler but less battle-tested than qb-rl)
+- qanta-buzzer environment.py — Alternative implementation showing similar patterns (not directly verified, less battle-tested than qb-rl)
 
 ## Metadata
 
 **Confidence breakdown:**
-- Standard stack: HIGH - All libraries verified in qb-rl pyproject.toml, versions confirmed compatible
-- Architecture: HIGH - Complete reference implementation in qb-rl, all patterns proven in production
-- Code examples: HIGH - Direct copy from qb-rl with verified line numbers and working code
-- Pitfalls: HIGH - Belief collapse, NumPy 2.0 break, TF-IDF fit() documented in qb-rl CONCERNS.md
-- Integration: HIGH - Phase 1 provides MCQuestion dataclass, YAML config system already working
+- Standard stack: HIGH - All libraries verified in qb-rl source, versions confirmed compatible
+- Architecture: HIGH - Complete reference implementation in qb-rl, all patterns proven and directly examined
+- Code examples: HIGH - Direct copy from qb-rl with verified line numbers, working code tested in qb-rl
+- Pitfalls: HIGH - Belief collapse, NumPy 2.0 break, TF-IDF fit() verified in qb-rl source and PITFALLS.md
+- Integration: HIGH - Phase 1 provides MCQuestion dataclass (verified qb_data/mc_builder.py), YAML config system working
 
-**Research date:** 2026-02-25
+**Research date:** 2026-02-25 (REFRESHED with direct source examination)
 **Valid until:** 2026-03-27 (30 days, stable domain)
