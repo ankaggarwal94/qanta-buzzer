@@ -1,10 +1,29 @@
 """
-Text utilities for quiz bowl answer normalization.
+Text utilities for quiz bowl answer normalization and tokenization.
 """
 
 import re
 import string
-from typing import Optional
+from typing import Optional, List
+
+
+def tokenize_text(text: str) -> List[str]:
+    """
+    Tokenize text by splitting on whitespace.
+
+    Parameters
+    ----------
+    text : str
+        Text to tokenize
+
+    Returns
+    -------
+    List[str]
+        List of tokens (words)
+    """
+    if not text:
+        return []
+    return text.split()
 
 
 def normalize_answer(answer: str) -> str:

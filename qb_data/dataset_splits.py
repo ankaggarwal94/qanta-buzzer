@@ -11,7 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 
-from qb_data import TossupQuestion
+from qb_data.data_loader import TossupQuestion
 
 
 def create_stratified_splits(
@@ -160,11 +160,12 @@ def save_splits(
             {
                 "qid": q.qid,
                 "question": q.question,
-                "answer": q.answer,
-                "category": q.category,
-                "tokenized_question": q.tokenized_question,
-                "tokenized_answer": q.tokenized_answer,
+                "tokens": q.tokens,
+                "answer_primary": q.answer_primary,
+                "clean_answers": q.clean_answers,
                 "run_indices": q.run_indices,
+                "human_buzz_positions": q.human_buzz_positions,
+                "category": q.category,
                 "cumulative_prefixes": q.cumulative_prefixes
             }
             for q in questions
