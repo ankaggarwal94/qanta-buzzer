@@ -9,7 +9,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Data Pipeline
 
-- [ ] **DATA-01**: System loads quiz bowl questions from local CSV (QANTA format, clues separated by `|||`)
+- [x] **DATA-01**: System loads quiz bowl questions from local CSV (QANTA format, clues separated by `|||`)
 - [ ] **DATA-02**: System constructs K=4 multiple-choice questions with distractor generation
 - [ ] **DATA-03**: Anti-artifact guards reject MC options with alias collision, token overlap >50%, or length ratio >3x
 - [ ] **DATA-04**: Answer profiles built with leave-one-out exclusion per question
@@ -55,10 +55,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Configuration
 
-- [ ] **CFG-01**: YAML configuration system with sections: data, likelihood, environment, ppo, evaluation
+- [x] **CFG-01**: YAML configuration system with sections: data, likelihood, environment, ppo, evaluation
 - [ ] **CFG-02**: Factory methods for all components: `make_env_from_config()`, `build_likelihood_from_config()`
 - [ ] **CFG-03**: Four-stage pipeline scripts: build_mc_dataset, run_baselines, train_ppo, evaluate_all
-- [ ] **CFG-04**: CLI override support: `--config`, `--smoke`, key overrides
+- [x] **CFG-04**: CLI override support: `--config`, `--smoke`, key overrides
 
 ## v1 Stretch Goals
 
@@ -99,7 +99,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DATA-01 | Phase 1 | Pending |
+| DATA-01 | Phase 1 | Complete |
 | DATA-02 | Phase 1 | Pending |
 | DATA-03 | Phase 1 | Pending |
 | DATA-04 | Phase 1 | Pending |
@@ -130,10 +130,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EVAL-05 | Phase 5 | Pending |
 | EVAL-06 | Phase 5 | Pending |
 | EVAL-07 | Phase 5 | Pending |
-| CFG-01 | Phase 1 | Pending |
+| CFG-01 | Phase 1 | Complete |
 | CFG-02 | Phase 2 | Pending |
 | CFG-03 | Phase 4 | Pending |
-| CFG-04 | Phase 1 | Pending |
+| CFG-04 | Phase 1 | Complete |
 | STR-01 | Phase 6 | Pending |
 | STR-02 | Phase 6 | Pending |
 | STR-03 | Phase 6 | Pending |
