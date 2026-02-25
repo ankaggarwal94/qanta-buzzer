@@ -419,8 +419,8 @@ class T5PolicyModel(nn.Module):
         
         # Load T5 model and tokenizer from the directory
         # This will determine the model name from the saved config
-        t5_model = T5ForConditionalGeneration.from_pretrained(load_dir)
-        tokenizer = T5Tokenizer.from_pretrained(load_dir)
+        t5_model = T5ForConditionalGeneration.from_pretrained(load_dir, local_files_only=True)
+        tokenizer = T5Tokenizer.from_pretrained(load_dir, local_files_only=True)
         
         # Create new model instance
         model = cls(config)
