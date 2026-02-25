@@ -139,11 +139,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | STR-03 | Phase 6 | Pending |
 
 **Coverage:**
-- v1 requirements: 30 total
+- v1 requirements: 35 total
 - Stretch goals: 3 total
-- Mapped to phases: 33
+- Mapped to phases: 38
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-02-25*
-*Last updated: 2026-02-25 after initial definition*
+*Last updated: 2026-02-25 after roadmap creation*
