@@ -18,11 +18,11 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Environment
 
-- [ ] **ENV-01**: TossupMCEnv implements Gymnasium Env interface (reset/step/observation_space/action_space)
-- [ ] **ENV-02**: Action space is Discrete(K+1): action 0 = WAIT, actions 1..K = buzz with option i
-- [ ] **ENV-03**: Environment computes belief features per step: belief[K], top_p, margin, entropy, stability, progress
-- [ ] **ENV-04**: Configurable reward modes: time_penalty (R = ±1 - penalty*t/T), simple (±1), human_grounded
-- [ ] **ENV-05**: Environment accepts any LikelihoodModel for belief computation via factory
+- [x] **ENV-01**: TossupMCEnv implements Gymnasium Env interface (reset/step/observation_space/action_space)
+- [x] **ENV-02**: Action space is Discrete(K+1): action 0 = WAIT, actions 1..K = buzz with option i
+- [x] **ENV-03**: Environment computes belief features per step: belief[K], top_p, margin, entropy, stability, progress
+- [x] **ENV-04**: Configurable reward modes: time_penalty (R = ±1 - penalty*t/T), simple (±1), human_grounded
+- [x] **ENV-05**: Environment accepts any LikelihoodModel for belief computation via factory
 
 ### Likelihood Models
 
@@ -105,11 +105,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-04 | Phase 1 | Pending |
 | DATA-05 | Phase 1 | Complete |
 | DATA-06 | Phase 1 | Complete |
-| ENV-01 | Phase 2 | Pending |
-| ENV-02 | Phase 2 | Pending |
-| ENV-03 | Phase 2 | Pending |
-| ENV-04 | Phase 2 | Pending |
-| ENV-05 | Phase 2 | Pending |
+| ENV-01 | Phase 2 | Complete |
+| ENV-02 | Phase 2 | Complete |
+| ENV-03 | Phase 2 | Complete |
+| ENV-04 | Phase 2 | Complete |
+| ENV-05 | Phase 2 | Complete |
 | LIK-01 | Phase 2 | Complete |
 | LIK-02 | Phase 2 | Complete |
 | LIK-03 | Phase 2 | Complete |

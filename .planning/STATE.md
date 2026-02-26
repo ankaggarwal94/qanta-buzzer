@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 2 of 4
+current_plan: 3 of 4
 status: executing
-last_updated: "2026-02-26T02:28:30.456Z"
+last_updated: "2026-02-26T02:36:38.677Z"
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 9
-  completed_plans: 7
-  percent: 78
+  completed_plans: 8
+  percent: 89
 ---
 
 # Project State: Quiz Bowl RL Buzzer (Unified)
@@ -30,14 +30,15 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 ## Current Position
 
 **Phase:** 2 - Environment and Core Likelihood Models
-**Current Plan:** 2 of 4
+**Current Plan:** 3 of 4
 **Status:** In Progress
-**Progress:** [████████░░] 78%
+**Progress:** [█████████░] 89%
 
 ### Active Work
 - Completed: Plan 02-01 (Belief features and LikelihoodModel ABC)
 - Completed: Plan 02-02 (TF-IDF and SBERT likelihood models with factory)
-- Next: Plan 02-03 (TossupMCEnv Gymnasium environment)
+- Completed: Plan 02-03 (TossupMCEnv Gymnasium environment)
+- Next: Plan 02-04 (Factory functions and pytest test scaffolding)
 
 ### Completed Phases
 1. Phase 01 - Data Pipeline Foundation (5/5 plans complete)
@@ -91,6 +92,8 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | LikelihoodModel returns raw scores | Environment applies softmax with temperature (separation of concerns) | 2026-02-25 |
 | Factory supports dual config keys | Both sbert_name and embedding_model keys for cross-project compat | 2026-02-25 |
 | Lazy imports for optional deps | sklearn and sentence_transformers imported inside class constructors | 2026-02-25 |
+| Port qb-rl TossupMCEnv exactly | Maintain downstream compatibility with agent and training plans | 2026-02-26 |
+| Adapt MCQuestion import path | Use qb_data.mc_builder (this codebase) not qb_env.mc_builder (qb-rl) | 2026-02-26 |
 
 ### Architecture Decisions
 - Four-layer modular architecture: Pipeline → Agent → Environment → Model
@@ -114,17 +117,18 @@ None identified yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 02-02: TF-IDF and SBERT Likelihood Models
-- Added TfIdfLikelihood with corpus fitting and cosine similarity scoring
-- Added SBERTLikelihood with SentenceTransformer and L2-normalized embeddings
-- Created build_likelihood_from_config() factory for YAML-driven construction
-- Updated models/__init__.py with all likelihood exports
-- 1 deviation: factory handles both sbert_name and embedding_model config keys
+- Executed Plan 02-03: TossupMCEnv Gymnasium Environment
+- Created qb_env/ package with TossupMCEnv class (483 lines)
+- Implemented Gymnasium reset/step interface with belief-based observations
+- Belief computation supports from_scratch and sequential_bayes modes
+- Three reward modes: time_penalty, simple, human_grounded
+- Forced termination picks argmax(belief) when question exhausted
+- 1 deviation: installed gymnasium dependency (was missing)
 
 ### Next Session Priority
-1. Execute Plan 02-03: TossupMCEnv Gymnasium environment
-2. Execute Plan 02-04: Factory functions and pytest test scaffolding
-3. Begin Phase 3: Baseline Agents and T5 Likelihood
+1. Execute Plan 02-04: Factory functions and pytest test scaffolding
+2. Begin Phase 3: Baseline Agents and T5 Likelihood
+3. Continue to Phase 4: PPO Training Pipeline
 
 ### Context for Next Claude
 This is a CS234 final project due this week. We're merging two existing codebases:
