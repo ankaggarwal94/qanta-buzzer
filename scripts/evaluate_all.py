@@ -45,7 +45,11 @@ from evaluation.controls import (
     run_choices_only_control,
     run_shuffle_control,
 )
-from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+from evaluation.metrics import (
+    calibration_at_buzz,
+    per_category_accuracy,
+    summarize_buzz_metrics,
+)
 from evaluation.plotting import (
     plot_calibration_curve,
     plot_entropy_vs_clue_index,
@@ -221,6 +225,22 @@ def main() -> None:
     print("Running full evaluation...")
     full_eval = evaluate_questions(mc_questions)
 
+    # Compute per-category breakdown
+    print("\nComputing per-category breakdown...")
+    per_category_results = per_category_accuracy(full_eval["runs"], mc_questions)
+
+    # Sort by category name for readability
+    per_category_sorted = dict(sorted(per_category_results.items()))
+
+    print("\nPer-category accuracy:")
+    for category, metrics in per_category_sorted.items():
+        print(
+            f"  {category:20s} (n={metrics['n']:3.0f}): "
+            f"acc={metrics['buzz_accuracy']:.3f}, "
+            f"S_q={metrics['mean_sq']:.3f}"
+        )
+    print()
+
     print("Running shuffle control...")
     shuffle_eval = run_shuffle_control(
         mc_questions, evaluator=lambda qset: evaluate_questions(qset)
@@ -255,6 +275,7 @@ def main() -> None:
                 k: v for k, v in alias_eval.items() if k != "runs"
             },
         },
+        "per_category": per_category_sorted,
         "baseline_summary": baseline_summary,
         "ppo_summary": ppo_summary,
     }
