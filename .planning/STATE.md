@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: Not started
-status: completed
-last_updated: "2026-02-26T05:41:54.355Z"
+current_plan: Plan 2 of 3 in Phase 6
+status: in_progress
+last_updated: "2026-02-26T06:19:08Z"
 progress:
-  total_phases: 5
-  completed_phases: 4
-  total_plans: 17
-  completed_plans: 16
-  percent: 94
+  total_phases: 6
+  completed_phases: 5
+  total_plans: 20
+  completed_plans: 18
+  percent: 90
 ---
 
 # Project State: Quiz Bowl RL Buzzer (Unified)
@@ -29,14 +29,14 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 
 ## Current Position
 
-**Phase:** 5 - Evaluation Framework (Complete)
-**Current Plan:** Not started
-**Status:** Milestone complete
-**Progress:** [█████████░] 94%
+**Phase:** 6 - T5 Policy Integration
+**Current Plan:** Plan 2 of 3 (06-01 complete)
+**Status:** In progress
+**Progress:** [█████████░] 90%
 
 ### Active Work
-- Completed: Plan 05-02 (Evaluation Enhancement: baseline sweep comparison, per-category breakdown)
-- Phase 5 complete: All 2 plans executed successfully
+- Completed: Plan 06-01 (T5PolicyModel architecture with 3 custom heads, 18 tests)
+- Next: Plan 06-02 (TextObservationWrapper and supervised training)
 
 ### Completed Phases
 1. Phase 01 - Data Pipeline Foundation (5/5 plans complete)
@@ -45,8 +45,9 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 4. Phase 04 - PPO Training Pipeline (3/3 plans complete)
 5. Phase 05 - Evaluation Framework (2/2 plans complete)
 
-### Upcoming Phases
-1. Phase 6: T5 Policy Integration (optional)
+### Upcoming Plans
+- 06-02: TextObservationWrapper and supervised training
+- 06-03: Custom PPO and comparison experiment
 
 ## Performance Metrics
 
@@ -112,8 +113,13 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | Graceful alias_lookup fallback | Empty dict when alias_lookup.json missing, controls still run | 2026-02-26 |
 | MC dataset path fallback | Check data/processed/ when artifacts/ not found for portability | 2026-02-26 |
 | Port qb-rl controls exactly | choices-only, shuffle, alias substitution controls from reference | 2026-02-26 |
+| T5EncoderModel for T5PolicyModel | 2x faster, 50% less memory vs T5ForConditionalGeneration (decoder unused) | 2026-02-26 |
+| T5TokenizerFast for T5PolicyModel | 3-5x faster tokenization via Rust backend, critical for PPO rollouts | 2026-02-26 |
+| Lazy import T5PolicyModel | models/__init__.py uses __getattr__ to avoid loading transformers for belief-only usage | 2026-02-26 |
+| Config-dict interface for T5PolicyModel | Accept dict instead of qanta-buzzer Config class for unified codebase compat | 2026-02-26 |
 | Phase 05 P01 | 2min | 2 tasks | 3 files |
 | Phase 05 P02 | 3min | 3 tasks | 1 files |
+| Phase 06 P01 | 5min | 3 tasks | 3 files |
 
 ### Architecture Decisions
 - Four-layer modular architecture: Pipeline → Agent → Environment → Model
@@ -137,15 +143,16 @@ None identified yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 05-02: Enhanced evaluate_all.py with baseline sweep and per-category breakdown
-- Comparison table now includes 10 agents (threshold_0.5/0.7/0.9, softmax_0.5/0.7/0.9, full_softmax, shuffle_control, alias_control, ppo)
-- Per-category breakdown shows 11 categories with accuracy and S_q scores
-- All 7 EVAL requirements (EVAL-01 through EVAL-07) verified present in smoke test output
-- Phase 5 complete: All 2 plans executed successfully
+- Executed Plan 06-01: Ported T5PolicyModel with 3-head PolicyHead from qanta-buzzer
+- T5EncoderModel + T5TokenizerFast (not full T5/slow tokenizer) for 2x speed and 50% less memory
+- Action decomposition: 0=WAIT, 1-K=SELECT with independent log probs for PPO
+- 18 unit tests pass in <5 seconds using t5-small
+- models/__init__.py updated with lazy import for T5PolicyModel/PolicyHead
 
 ### Next Session Priority
-1. Phase 6: T5 Policy Integration (optional, stretch goal)
-2. CS234 writeup preparation
+1. Plan 06-02: TextObservationWrapper and supervised warm-start training
+2. Plan 06-03: Custom PPO and T5-as-likelihood vs T5-as-policy comparison
+3. CS234 writeup preparation
 
 ### Context for Next Claude
 This is a CS234 final project due this week. We're merging two existing codebases:
@@ -174,4 +181,4 @@ Key risks to watch:
 
 ---
 *State file initialized: 2026-02-25*
-*Last update: 2026-02-26 (Plan 04-02 completed, Phase 4 in progress)*
+*Last update: 2026-02-26 (Plan 06-01 completed, Phase 6 in progress)*
