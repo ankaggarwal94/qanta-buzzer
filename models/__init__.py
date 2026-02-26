@@ -9,6 +9,7 @@ from models.features import extract_belief_features, entropy_of_distribution
 from models.likelihoods import (
     LikelihoodModel,
     SBERTLikelihood,
+    T5Likelihood,
     TfIdfLikelihood,
     build_likelihood_from_config,
 )
@@ -19,5 +20,6 @@ __all__ = [
     "LikelihoodModel",
     "TfIdfLikelihood",
     "SBERTLikelihood",
+    "T5Likelihood",
     "build_likelihood_from_config",
 ]
