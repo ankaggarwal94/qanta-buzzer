@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 03-03 (next)
+current_plan: 04-01 (next)
 status: executing
-last_updated: "2026-02-26T03:21:52.315Z"
+last_updated: "2026-02-26T03:29:49.295Z"
 progress:
   total_phases: 3
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 12
-  completed_plans: 10
-  percent: 83
+  completed_plans: 11
+  percent: 92
 ---
 
 # Project State: Quiz Bowl RL Buzzer (Unified)
@@ -29,19 +29,19 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 
 ## Current Position
 
-**Phase:** 3 - Baseline Agents and T5 Likelihood
-**Current Plan:** 03-03 (next)
+**Phase:** 4 - PPO Training Pipeline
+**Current Plan:** 04-01 (next)
 **Status:** In progress
-**Progress:** [████████░░] 83%
+**Progress:** [█████████░] 92%
 
 ### Active Work
-- Completed: Plan 03-01 (Baseline agents port from qb-rl)
-- Completed: Plan 03-02 (T5 likelihood model)
-- Next: Plan 03-03 (Agent integration tests)
+- Completed: Phase 03 (Baseline Agents and T5 Likelihood, 3/3 plans)
+- Next: Phase 04 (PPO Training Pipeline)
 
 ### Completed Phases
 1. Phase 01 - Data Pipeline Foundation (5/5 plans complete)
 2. Phase 02 - Environment and Core Likelihood Models (4/4 plans complete)
+3. Phase 03 - Baseline Agents and T5 Likelihood (3/3 plans complete)
 
 ### Upcoming Phases
 1. Phase 3: Baseline Agents and T5 Likelihood (2/3 plans complete)
@@ -100,6 +100,8 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | Consolidate bayesian buzzers | Merged softmax_profile_buzzer.py into bayesian_buzzer.py (both Bayesian-family) | 2026-02-26 |
 | T5EncoderModel over full T5 | 2x faster inference and half memory vs T5ForConditionalGeneration | 2026-02-26 |
 | T5TokenizerFast over T5Tokenizer | Faster tokenization via Rust-backed fast tokenizer | 2026-02-26 |
+| TF-IDF for agent tests | 0.19s execution vs 5+ seconds with neural models for testing agent logic | 2026-02-26 |
+| Module-scoped T5 fixture | Load t5-small once per test file, not per function, for efficiency | 2026-02-26 |
 
 ### Architecture Decisions
 - Four-layer modular architecture: Pipeline → Agent → Environment → Model
@@ -123,16 +125,16 @@ None identified yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 03-02: T5 Likelihood Model
-- Added T5Likelihood class to models/likelihoods.py with mean-pooled embeddings
-- Updated build_likelihood_from_config factory with model="t5" support
-- Exported T5Likelihood from models package
-- Installed sentencepiece/protobuf dependencies for T5 tokenizer
+- Executed Plan 03-03: Agent and T5 Integration Tests (Phase 3 complete)
+- Created 33 agent tests covering all 4 baseline buzzers in tests/test_agents.py
+- Added 5 T5 likelihood tests (semantic scoring, caching, factory, variable-length)
+- Added module-scoped sample_t5_model fixture to conftest.py
+- Full suite: 116 tests passing in 30 seconds
 
 ### Next Session Priority
-1. Continue Phase 3: Plan 03-03 (Agent integration tests)
-2. Phase 4: PPO Training Pipeline
-3. Phase 5: Evaluation Framework
+1. Phase 4: PPO Training Pipeline
+2. Phase 5: Evaluation Framework
+3. Phase 6: T5 Policy Integration (optional)
 
 ### Context for Next Claude
 This is a CS234 final project due this week. We're merging two existing codebases:
@@ -161,4 +163,4 @@ Key risks to watch:
 
 ---
 *State file initialized: 2026-02-25*
-*Last update: 2026-02-26 (Plan 03-02 completed)*
+*Last update: 2026-02-26 (Plan 03-03 completed, Phase 3 complete)*
