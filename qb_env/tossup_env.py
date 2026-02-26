@@ -353,3 +353,131 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
             return self.buzz_correct if correct else self.buzz_incorrect
         # default: time_penalty
         return self.buzz_correct if correct else self.buzz_incorrect
+
+    # ------------------------------------------------------------------
+    # Gymnasium interface
+    # ------------------------------------------------------------------
+
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> tuple[np.ndarray, dict[str, Any]]:
+        """Reset the environment and start a new episode.
+
+        Samples a random question from the pool, initializes belief to a
+        uniform distribution, and returns the initial observation.
+
+        Parameters
+        ----------
+        seed : int or None
+            If provided, reseeds both the internal RNG and numpy's global
+            RNG for reproducibility.
+        options : dict or None
+            Unused. Included for Gymnasium API compatibility.
+
+        Returns
+        -------
+        observation : np.ndarray
+            Initial observation of shape (K + 6,), dtype float32.
+            Belief is uniform, so top_p = 1/K, margin = 0, entropy = max.
+        info : dict[str, Any]
+            Episode metadata. Contains ``"qid"`` (the sampled question ID).
+        """
+        if seed is not None:
+            self.rng.seed(seed)
+            np.random.seed(seed)
+
+        self.question = self._sample_question()
+        self.step_idx = 0
+        self.prev_belief = None
+        self.belief = np.ones(self.K, dtype=np.float32) / self.K
+        self.terminated = False
+        self.truncated = False
+        self._sampled_human_buzz_pos = self._sample_human_buzz(self.question)
+        return self._obs(), {"qid": self.question.qid}
+
+    def step(
+        self, action: int
+    ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        """Execute one step in the environment.
+
+        If ``action == 0`` (WAIT):
+            - Saves previous belief, computes new belief from current clue.
+            - Applies wait_penalty if reward_mode is ``"time_penalty"``.
+            - Advances step counter.
+            - If all clues exhausted: forced termination with best-guess
+              answer (``truncated=True``).
+
+        If ``action in 1..K`` (BUZZ):
+            - Computes buzz reward for chosen answer option ``action - 1``.
+            - Episode ends (``terminated=True``).
+
+        Parameters
+        ----------
+        action : int
+            Action to take. 0 = WAIT, 1..K = buzz with option (action-1).
+
+        Returns
+        -------
+        observation : np.ndarray
+            Updated observation of shape (K + 6,), dtype float32.
+        reward : float
+            Scalar reward for this step.
+        terminated : bool
+            True if the agent buzzed (natural episode end).
+        truncated : bool
+            True if all clues were exhausted (forced termination).
+        info : dict[str, Any]
+            Step metadata. Always contains ``"qid"`` and ``"step_idx"``.
+            On BUZZ: also ``"chosen_idx"`` and ``"correct"``.
+            On forced termination: also ``"forced_choice"`` and
+            ``"forced_correct"``.
+
+        Raises
+        ------
+        RuntimeError
+            If called before ``reset()`` or after episode has ended.
+        ValueError
+            If ``action`` is not in the action space.
+        """
+        if self.question is None:
+            raise RuntimeError("Environment must be reset() before step().")
+        if self.terminated or self.truncated:
+            raise RuntimeError("Cannot call step() on terminated/truncated episode.")
+        if not self.action_space.contains(action):
+            raise ValueError(f"Invalid action: {action}")
+
+        info: dict[str, Any] = {"qid": self.question.qid}
+        reward = 0.0
+
+        if action == 0:
+            # WAIT: reveal next clue and update belief
+            self.prev_belief = self.belief.copy()
+            self.belief = self._compute_belief(self.question, self.step_idx)
+            if self.reward_mode == "time_penalty":
+                reward -= self.wait_penalty
+
+            self.step_idx += 1
+            if self.step_idx >= self.total_steps:
+                # Forced termination: pick best answer from current belief
+                last_seen = self.step_idx - 1
+                forced_choice = int(np.argmax(self.belief))
+                reward += self._buzz_reward(self.question, forced_choice, last_seen)
+                self.truncated = True
+                info["step_idx"] = last_seen
+                info["forced_choice"] = forced_choice
+                info["forced_correct"] = forced_choice == self.question.gold_index
+            else:
+                info["step_idx"] = self.step_idx
+
+        else:
+            # BUZZ: select an answer option
+            last_seen = max(0, self.step_idx - 1)
+            chosen_idx = action - 1
+            reward += self._buzz_reward(self.question, chosen_idx, last_seen)
+            self.terminated = True
+            info["step_idx"] = last_seen
+            info["chosen_idx"] = chosen_idx
+            info["correct"] = chosen_idx == self.question.gold_index
+
+        obs = self._obs()
+        return obs, float(reward), self.terminated, self.truncated, info
