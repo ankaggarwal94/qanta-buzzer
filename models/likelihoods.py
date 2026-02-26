@@ -252,3 +252,94 @@ class TfIdfLikelihood(LikelihoodModel):
             raise RuntimeError("TfIdfLikelihood must be fit() before embedding.")
         mat = self.vectorizer.transform(texts).toarray()
         return mat.astype(np.float32)
+
+
+class SBERTLikelihood(LikelihoodModel):
+    """Sentence-BERT likelihood model using semantic embeddings.
+
+    Uses a ``SentenceTransformer`` model to compute dense, L2-normalized
+    embeddings. Cosine similarity is computed as a simple dot product since
+    embeddings are pre-normalized (``normalize_embeddings=True``).
+
+    Inherits ``embed_and_cache()`` from ``LikelihoodModel`` for transparent
+    caching of embeddings via SHA-256 content hashing. The first call to
+    ``score()`` computes and caches all embeddings; subsequent calls with the
+    same texts are fast cache lookups.
+
+    Compared to TF-IDF, SBERT captures semantic similarity (e.g., "first
+    president" and "George Washington" score highly even without word overlap)
+    but is slower due to the neural encoder.
+
+    Parameters
+    ----------
+    model_name : str
+        HuggingFace model identifier for ``SentenceTransformer``.
+        Default is ``"all-MiniLM-L6-v2"`` (22M params, 384-dim embeddings).
+        First run downloads the model (~80MB) from HuggingFace.
+
+    Attributes
+    ----------
+    model_name : str
+        The SentenceTransformer model name.
+    encoder : SentenceTransformer
+        The loaded sentence transformer model.
+
+    Examples
+    --------
+    >>> model = SBERTLikelihood()  # downloads model on first run
+    >>> scores = model.score("first president", ["Washington", "Lincoln"])
+    >>> scores.shape
+    (2,)
+    """
+
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
+        super().__init__()
+        from sentence_transformers import SentenceTransformer
+
+        self.model_name = model_name
+        self.encoder = SentenceTransformer(model_name)
+
+    def _embed_batch(self, texts: list[str]) -> np.ndarray:
+        """Embed texts using the SentenceTransformer encoder.
+
+        Embeddings are L2-normalized so that cosine similarity can be computed
+        as a simple dot product (avoiding the division by norms).
+
+        Parameters
+        ----------
+        texts : list[str]
+            Texts to embed (guaranteed non-empty, all cache misses).
+
+        Returns
+        -------
+        np.ndarray
+            Normalized embeddings of shape (len(texts), embed_dim), dtype float32.
+        """
+        return self.encoder.encode(
+            texts, convert_to_numpy=True, normalize_embeddings=True
+        ).astype(np.float32)
+
+    def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
+        """Score each option using semantic cosine similarity.
+
+        Computes dot product between the clue embedding and each option
+        embedding. Since embeddings are L2-normalized, dot product equals
+        cosine similarity.
+
+        Parameters
+        ----------
+        clue_prefix : str
+            Clue text revealed so far.
+        option_profiles : list[str]
+            Answer profile text for each of the K answer options.
+
+        Returns
+        -------
+        np.ndarray
+            Cosine similarity scores of shape (K,), dtype float32.
+            Values in [-1, 1].
+        """
+        clue_emb = self.embed_and_cache([clue_prefix])[0]
+        option_embs = self.embed_and_cache(option_profiles)
+        sims = option_embs @ clue_emb
+        return sims.astype(np.float32)
