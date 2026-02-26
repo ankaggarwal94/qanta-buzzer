@@ -1,0 +1,56 @@
+# T5 Policy Configuration
+# Hyperparameters for T5PolicyModel with supervised warm-start and PPO fine-tuning.
+# Use with: python -m training.train_supervised_t5 --config configs/t5_policy.yaml
+
+model:
+  model_name: t5-large  # Use t5-base or t5-small if memory constrained
+  device: auto  # auto-detect cuda > mps > cpu
+  max_input_length: 512
+  num_choices: 4
+
+supervised:
+  lr: 3.0e-4
+  epochs: 10
+  batch_size: 8
+  grad_accum_steps: 4  # Effective batch = 32
+  max_grad_norm: 1.0
+  weight_decay: 0.01
+  checkpoint_dir: checkpoints
+
+ppo:
+  lr: 1.0e-5  # Lower than supervised for stability
+  iterations: 100
+  batch_size: 8
+  epochs_per_iter: 4
+  clip_ratio: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  max_grad_norm: 0.5
+  gamma: 0.99
+  gae_lambda: 0.95
+  target_kl: 0.03
+  checkpoint_dir: checkpoints
+
+data:
+  csv_path: "questions.csv"
+  K: 4
+  train_size: 0.7
+  val_size: 0.15
+  test_size: 0.15
+  seed: 42
+
+# Smoke test overrides (use with --smoke flag)
+smoke:
+  model:
+    model_name: t5-small  # 60M params instead of 770M
+    max_input_length: 128
+  supervised:
+    epochs: 2
+    batch_size: 4
+    grad_accum_steps: 1  # No accumulation for speed
+  ppo:
+    iterations: 5
+    batch_size: 4
+    epochs_per_iter: 2
+  data:
+    max_questions: 50
