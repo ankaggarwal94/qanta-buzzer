@@ -18,8 +18,9 @@ answer_profiles:
   leave_one_out: false  # Skip for smoke test
 
 likelihood:
-  model: "t5-small"  # Use smallest model for quick testing
+  model: "tfidf"  # Use TF-IDF for fastest smoke testing (<5 seconds)
   embedding_model: "all-MiniLM-L6-v2"
+  beta: 5.0  # Softmax temperature for belief distribution
   cache_embeddings: true
   cache_dir: "cache/embeddings"
   batch_size: 4  # Smaller batch for memory
@@ -36,6 +37,10 @@ mc_guards:
   alias_edit_distance_threshold: 0.2
   duplicate_token_overlap_threshold: 0.8
   max_length_ratio: 3.0
+
+bayesian:  # Reduced sweep for smoke testing
+  threshold_sweep: [0.5, 0.7, 0.9]
+  alpha: 10.0
 
 ppo:  # Reduced for smoke testing
   total_timesteps: 1000  # Much fewer steps

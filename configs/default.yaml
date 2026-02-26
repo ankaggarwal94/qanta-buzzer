@@ -19,6 +19,7 @@ answer_profiles:
 likelihood:
   model: "t5-large"  # Model for computing answer likelihoods (t5-small | t5-base | t5-large)
   embedding_model: "all-MiniLM-L6-v2"  # For distractor generation
+  beta: 5.0  # Softmax temperature for belief distribution
   cache_embeddings: true
   cache_dir: "cache/embeddings"
   batch_size: 16
@@ -35,6 +36,10 @@ mc_guards:  # Anti-artifact guards from qb-rl
   alias_edit_distance_threshold: 0.2  # Reject similar answer aliases
   duplicate_token_overlap_threshold: 0.8  # Reject token-overlapping distractors
   max_length_ratio: 3.0  # Reject distractors much longer than answer
+
+bayesian:  # Bayesian buzzer sweep parameters (from qb-rl)
+  threshold_sweep: [0.5, 0.6, 0.7, 0.8, 0.9]
+  alpha: 10.0  # Sigmoid steepness for confidence proxy
 
 ppo:  # PPO hyperparameters (for future use)
   total_timesteps: 100000
