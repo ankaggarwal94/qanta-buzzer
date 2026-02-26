@@ -4,6 +4,8 @@ Covers:
 - LIK-01: LikelihoodModel ABC contract
 - LIK-02: TfIdfLikelihood with corpus fitting and cosine scoring
 - LIK-03: SBERTLikelihood with semantic embeddings and caching
+- LIK-04: T5Likelihood semantic scoring and embedding shape
+- LIK-05: T5 embedding cache reuse and factory construction
 """
 
 from __future__ import annotations
@@ -196,4 +198,118 @@ class TestSBERTLikelihood:
         np.testing.assert_array_almost_equal(
             norms, np.ones(2), decimal=4,
             err_msg="Embeddings should be L2-normalized",
+        )
+
+
+# ------------------------------------------------------------------ #
+# Tests for T5Likelihood (LIK-04, LIK-05)
+# ------------------------------------------------------------------ #
+
+
+class TestT5Likelihood:
+    """Tests for T5 encoder likelihood model.
+
+    Uses the sample_t5_model fixture (t5-small, module-scoped) from conftest.py
+    so the model is loaded once per test file, not per test function.
+    """
+
+    def test_t5_semantic_scoring(self, sample_t5_model) -> None:
+        """T5 should score semantically relevant options higher (LIK-04).
+
+        "First president" clue should rank Washington higher than Einstein,
+        demonstrating that T5 captures semantic similarity between question
+        content and answer profiles.
+        """
+        clue = "This person was the first president of the United States"
+        options = [
+            "George Washington first president commander revolutionary war",
+            "Albert Einstein physicist theory relativity Nobel Prize",
+        ]
+
+        scores = sample_t5_model.score(clue, options)
+
+        assert isinstance(scores, np.ndarray)
+        assert scores.dtype == np.float32
+        assert len(scores) == 2
+        # Washington should score higher than Einstein for "first president" query
+        assert scores[0] > scores[1], (
+            f"Expected Washington > Einstein, got {scores}"
+        )
+
+    def test_t5_embedding_cache(self, sample_t5_model) -> None:
+        """T5 should cache embeddings and reuse them (LIK-05).
+
+        After embedding two texts, the cache should contain 2 entries.
+        Re-embedding the same texts should not grow the cache, and the
+        returned embeddings should be identical.
+        """
+        # Clear cache to get a clean test
+        sample_t5_model.embedding_cache.clear()
+
+        texts = ["George Washington", "Thomas Jefferson"]
+
+        # First call embeds and caches
+        emb1 = sample_t5_model.embed_and_cache(texts)
+        cache_size_1 = len(sample_t5_model.embedding_cache)
+
+        # Second call reuses cache
+        emb2 = sample_t5_model.embed_and_cache(texts)
+        cache_size_2 = len(sample_t5_model.embedding_cache)
+
+        np.testing.assert_array_equal(
+            emb1, emb2, err_msg="Cached embeddings should match"
+        )
+        assert cache_size_1 == cache_size_2 == 2, (
+            f"Cache size should not grow on reuse, got {cache_size_1} -> {cache_size_2}"
+        )
+
+    def test_t5_score_returns_float32(self, sample_t5_model) -> None:
+        """T5 score should return float32 array, not probabilities.
+
+        Scores are raw cosine similarities (not softmax probabilities),
+        so they do not necessarily sum to 1.
+        """
+        scores = sample_t5_model.score("test clue", ["option 1", "option 2"])
+        assert scores.dtype == np.float32
+        assert scores.shape == (2,)
+        # Scores are raw similarities, not probabilities (don't sum to 1)
+        assert all(np.isfinite(scores)), "All scores should be finite"
+
+    def test_build_t5_from_config(self) -> None:
+        """Factory should construct T5Likelihood from config (LIK-04).
+
+        The build_likelihood_from_config factory should recognize
+        model="t5" and instantiate a T5Likelihood with the specified
+        t5_name parameter.
+        """
+        from models.likelihoods import T5Likelihood, build_likelihood_from_config
+
+        config = {
+            "likelihood": {
+                "model": "t5",
+                "t5_name": "t5-small",
+            }
+        }
+
+        model = build_likelihood_from_config(config)
+        assert isinstance(model, T5Likelihood)
+        assert model.model_name == "t5-small"
+
+    def test_t5_handles_variable_length(self, sample_t5_model) -> None:
+        """T5 should handle variable-length texts via attention mask.
+
+        Short and long texts should both embed without error, producing
+        embeddings of the same hidden dimension regardless of input length.
+        """
+        short = "Washington"
+        long = (
+            "George Washington was the first president of the United States "
+            "and commander of the Continental Army during the Revolutionary War"
+        )
+
+        # Both should embed without error
+        embs = sample_t5_model.embed_and_cache([short, long])
+        assert embs.shape == (2, sample_t5_model.encoder.config.d_model), (
+            f"Expected shape (2, {sample_t5_model.encoder.config.d_model}), "
+            f"got {embs.shape}"
         )
