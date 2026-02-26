@@ -136,3 +136,220 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         self.terminated: bool = False
         self.truncated: bool = False
         self._sampled_human_buzz_pos: int | None = None
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def total_steps(self) -> int:
+        """Total number of incremental clue steps for the current question.
+
+        Returns
+        -------
+        int
+            Length of ``question.run_indices`` if a question is loaded, else 1.
+        """
+        if self.question is None:
+            return 1
+        return len(self.question.run_indices)
+
+    # ------------------------------------------------------------------
+    # Helper methods
+    # ------------------------------------------------------------------
+
+    def _sample_question(self) -> MCQuestion:
+        """Sample a random question from the question pool.
+
+        Returns
+        -------
+        MCQuestion
+            A randomly selected question.
+        """
+        return self.rng.choice(self.questions)
+
+    def _sample_human_buzz(self, question: MCQuestion) -> int | None:
+        """Sample a human buzz position from the question's distribution.
+
+        Uses weighted random sampling based on the number of humans who
+        buzzed at each position. Returns None if no human buzz data exists.
+
+        Parameters
+        ----------
+        question : MCQuestion
+            The question to sample a human buzz position for.
+
+        Returns
+        -------
+        int or None
+            Sampled token position, or None if no human buzz data.
+        """
+        if not question.human_buzz_positions:
+            return None
+        positions = []
+        weights = []
+        for pos, count in question.human_buzz_positions:
+            positions.append(int(pos))
+            weights.append(max(1, int(count)))
+        if not positions:
+            return None
+        return self.rng.choices(positions, weights=weights, k=1)[0]
+
+    def _softmax_scores(self, scores: np.ndarray) -> np.ndarray:
+        """Convert raw likelihood scores to a probability distribution.
+
+        Applies a temperature-scaled softmax with numerical stability
+        (subtract max before exponentiation). Falls back to uniform
+        distribution if the sum of exponentiated scores is non-positive.
+
+        Parameters
+        ----------
+        scores : np.ndarray
+            Raw similarity scores of shape (K,).
+
+        Returns
+        -------
+        np.ndarray
+            Probability distribution of shape (K,), dtype float32.
+        """
+        stable = scores - np.max(scores)
+        probs = np.exp(self.beta * stable)
+        probs_sum = np.sum(probs)
+        if probs_sum <= 0:
+            return np.ones_like(scores, dtype=np.float32) / len(scores)
+        return (probs / probs_sum).astype(np.float32)
+
+    def _compute_belief(self, question: MCQuestion, step_idx: int) -> np.ndarray:
+        """Compute belief distribution over answer options at a given step.
+
+        Two modes are supported:
+
+        ``from_scratch``
+            Score the cumulative clue prefix against all option profiles,
+            then apply softmax. Each step is independent of the previous
+            belief.
+
+        ``sequential_bayes``
+            Extract only the new clue fragment since the last step, score
+            it, and perform a Bayesian update: posterior = prior * likelihood,
+            then normalize. This is cheaper per step but may accumulate
+            approximation errors.
+
+        Parameters
+        ----------
+        question : MCQuestion
+            Current question being played.
+        step_idx : int
+            Current step index (0-based, indexes into run_indices).
+
+        Returns
+        -------
+        np.ndarray
+            Updated belief distribution of shape (K,), dtype float32.
+
+        Raises
+        ------
+        ValueError
+            If ``self.belief_mode`` is not a recognized mode.
+        """
+        if self.belief_mode == "from_scratch":
+            prefix = question.cumulative_prefixes[step_idx]
+            scores = self.likelihood_model.score(prefix, question.option_profiles)
+            return self._softmax_scores(scores)
+
+        if self.belief_mode == "sequential_bayes":
+            idx = question.run_indices[step_idx]
+            prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
+            frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
+            scores = self.likelihood_model.score(frag, question.option_profiles)
+            likelihood = self._softmax_scores(scores)
+            posterior = self.belief * likelihood
+            denom = posterior.sum()
+            if denom <= 0:
+                posterior = np.ones(self.K, dtype=np.float32) / self.K
+            else:
+                posterior = posterior / denom
+            return posterior.astype(np.float32)
+
+        raise ValueError(f"Unknown belief_mode: {self.belief_mode}")
+
+    def _obs(self) -> np.ndarray:
+        """Build the observation vector from current belief state.
+
+        Delegates to ``extract_belief_features`` which concatenates the raw
+        belief vector with 6 derived scalar features.
+
+        Returns
+        -------
+        np.ndarray
+            Feature vector of shape (K + 6,), dtype float32.
+        """
+        return extract_belief_features(
+            belief=self.belief,
+            prev_belief=self.prev_belief,
+            step_idx=self.step_idx,
+            total_steps=self.total_steps,
+        )
+
+    def _step_to_token_pos(self, step_idx: int) -> int:
+        """Convert a step index to the corresponding token position.
+
+        Used by the ``human_grounded`` reward mode to compare the agent's
+        buzz position against the sampled human buzz position.
+
+        Parameters
+        ----------
+        step_idx : int
+            Step index (0-based, indexes into run_indices).
+
+        Returns
+        -------
+        int
+            Token position in the original question text.
+        """
+        if self.question is None or not self.question.run_indices:
+            return step_idx
+        if step_idx >= len(self.question.run_indices):
+            return self.question.run_indices[-1]
+        if step_idx < 0:
+            return self.question.run_indices[0]
+        return self.question.run_indices[step_idx]
+
+    def _buzz_reward(self, question: MCQuestion, chosen_idx: int, last_seen_step: int) -> float:
+        """Compute the reward for buzzing with a given answer.
+
+        Dispatches on ``self.reward_mode``:
+
+        ``simple``
+            +1.0 for correct, -1.0 for incorrect.
+        ``human_grounded``
+            0.0 if the agent buzzes after the sampled human would have;
+            otherwise +buzz_correct / +buzz_incorrect.
+        ``time_penalty`` (default)
+            +buzz_correct / +buzz_incorrect. The per-step wait penalty
+            is applied separately in ``step()``.
+
+        Parameters
+        ----------
+        question : MCQuestion
+            Current question.
+        chosen_idx : int
+            Index of the chosen answer option (0-based).
+        last_seen_step : int
+            Step index of the last clue seen before buzzing.
+
+        Returns
+        -------
+        float
+            Reward value.
+        """
+        correct = chosen_idx == question.gold_index
+        if self.reward_mode == "simple":
+            return 1.0 if correct else -1.0
+        if self.reward_mode == "human_grounded":
+            token_pos = self._step_to_token_pos(last_seen_step)
+            if self._sampled_human_buzz_pos is not None and token_pos > self._sampled_human_buzz_pos:
+                return 0.0
+            return self.buzz_correct if correct else self.buzz_incorrect
+        # default: time_penalty
+        return self.buzz_correct if correct else self.buzz_incorrect
