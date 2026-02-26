@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 3 of 4
-status: executing
-last_updated: "2026-02-26T02:36:38.677Z"
+current_plan: 4 of 4
+status: completed
+last_updated: "2026-02-26T02:48:45.193Z"
 progress:
   total_phases: 2
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 9
-  completed_plans: 8
-  percent: 89
+  completed_plans: 9
+  percent: 100
 ---
 
 # Project State: Quiz Bowl RL Buzzer (Unified)
@@ -29,19 +29,20 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 
 ## Current Position
 
-**Phase:** 2 - Environment and Core Likelihood Models
-**Current Plan:** 3 of 4
-**Status:** In Progress
-**Progress:** [█████████░] 89%
+**Phase:** 2 - Environment and Core Likelihood Models (COMPLETE)
+**Current Plan:** 4 of 4
+**Status:** Phase Complete
+**Progress:** [██████████] 100%
 
 ### Active Work
 - Completed: Plan 02-01 (Belief features and LikelihoodModel ABC)
 - Completed: Plan 02-02 (TF-IDF and SBERT likelihood models with factory)
 - Completed: Plan 02-03 (TossupMCEnv Gymnasium environment)
-- Next: Plan 02-04 (Factory functions and pytest test scaffolding)
+- Completed: Plan 02-04 (Factory functions and pytest test scaffolding)
 
 ### Completed Phases
 1. Phase 01 - Data Pipeline Foundation (5/5 plans complete)
+2. Phase 02 - Environment and Core Likelihood Models (4/4 plans complete)
 
 ### Upcoming Phases
 1. Phase 2: Environment and Core Likelihood Models
@@ -94,6 +95,9 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | Lazy imports for optional deps | sklearn and sentence_transformers imported inside class constructors | 2026-02-25 |
 | Port qb-rl TossupMCEnv exactly | Maintain downstream compatibility with agent and training plans | 2026-02-26 |
 | Adapt MCQuestion import path | Use qb_data.mc_builder (this codebase) not qb_env.mc_builder (qb-rl) | 2026-02-26 |
+| Dual reward config key support | Factory checks 'reward' then falls back to 'reward_mode' for cross-project compat | 2026-02-26 |
+| TF-IDF for fast tests | Most tests use TF-IDF (fast), SBERT only for pluggability and semantic tests | 2026-02-26 |
+| Shared conftest fixtures | Centralized test data avoids duplication across 4 test modules | 2026-02-26 |
 
 ### Architecture Decisions
 - Four-layer modular architecture: Pipeline → Agent → Environment → Model
@@ -117,18 +121,17 @@ None identified yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 02-03: TossupMCEnv Gymnasium Environment
-- Created qb_env/ package with TossupMCEnv class (483 lines)
-- Implemented Gymnasium reset/step interface with belief-based observations
-- Belief computation supports from_scratch and sequential_bayes modes
-- Three reward modes: time_penalty, simple, human_grounded
-- Forced termination picks argmax(belief) when question exhausted
-- 1 deviation: installed gymnasium dependency (was missing)
+- Executed Plan 02-04: Factory functions and pytest test scaffolding
+- Added make_env_from_config() factory for YAML-driven env construction
+- Created 78-test pytest suite covering all Phase 2 requirements
+- Shared fixtures in conftest.py (sample_mc_question, sample_config, sample_corpus)
+- Updated package exports for models and qb_env modules
+- Phase 2 is fully complete (4/4 plans)
 
 ### Next Session Priority
-1. Execute Plan 02-04: Factory functions and pytest test scaffolding
-2. Begin Phase 3: Baseline Agents and T5 Likelihood
-3. Continue to Phase 4: PPO Training Pipeline
+1. Begin Phase 3: Baseline Agents and T5 Likelihood
+2. Continue to Phase 4: PPO Training Pipeline
+3. Phase 5: Evaluation Framework
 
 ### Context for Next Claude
 This is a CS234 final project due this week. We're merging two existing codebases:
