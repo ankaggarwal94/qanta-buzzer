@@ -10,14 +10,17 @@ from agents.bayesian_buzzer import (
     SequentialBayesBuzzer,
     SoftmaxEpisodeResult,
 )
+from agents.ppo_buzzer import PPOBuzzer, PPOEpisodeTrace
 
 __all__ = [
     "ThresholdBuzzer",
     "AlwaysBuzzFinalBuzzer",
     "SoftmaxProfileBuzzer",
     "SequentialBayesBuzzer",
+    "PPOBuzzer",
     "EpisodeResult",
     "SoftmaxEpisodeResult",
+    "PPOEpisodeTrace",
     "sweep_thresholds",
     "result_to_dict",
 ]
