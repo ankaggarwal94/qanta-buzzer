@@ -36,11 +36,11 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Agents & Training
 
 - [ ] **AGT-01**: MLP policy trained with SB3 PPO on belief feature observations
-- [ ] **AGT-02**: ThresholdBuzzer baseline (sweeps configurable thresholds on top_p)
-- [ ] **AGT-03**: AlwaysBuzzFinalBuzzer baseline (buzzes on last clue)
-- [ ] **AGT-04**: SoftmaxProfileBuzzer baseline with explicit scoring
-- [ ] **AGT-05**: SequentialBayesBuzzer baseline with Bayesian updates
-- [ ] **AGT-06**: All agents produce episode traces with c_trace (buzz probability) and g_trace (correctness)
+- [x] **AGT-02**: ThresholdBuzzer baseline (sweeps configurable thresholds on top_p)
+- [x] **AGT-03**: AlwaysBuzzFinalBuzzer baseline (buzzes on last clue)
+- [x] **AGT-04**: SoftmaxProfileBuzzer baseline with explicit scoring
+- [x] **AGT-05**: SequentialBayesBuzzer baseline with Bayesian updates
+- [x] **AGT-06**: All agents produce episode traces with c_trace (buzz probability) and g_trace (correctness)
 - [ ] **AGT-07**: Smoke test mode (`--smoke`) for fast pipeline validation with small dataset
 
 ### Evaluation
@@ -117,11 +117,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | LIK-05 | Phase 3 | Pending |
 | LIK-06 | Phase 2 | Complete |
 | AGT-01 | Phase 4 | Pending |
-| AGT-02 | Phase 3 | Pending |
-| AGT-03 | Phase 3 | Pending |
-| AGT-04 | Phase 3 | Pending |
-| AGT-05 | Phase 3 | Pending |
-| AGT-06 | Phase 3 | Pending |
+| AGT-02 | Phase 3 | Complete |
+| AGT-03 | Phase 3 | Complete |
+| AGT-04 | Phase 3 | Complete |
+| AGT-05 | Phase 3 | Complete |
+| AGT-06 | Phase 3 | Complete |
 | AGT-07 | Phase 4 | Pending |
 | EVAL-01 | Phase 5 | Pending |
 | EVAL-02 | Phase 5 | Pending |

@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: Not started
-status: completed
-last_updated: "2026-02-26T02:53:34.310Z"
+current_plan: 03-03 (next)
+status: executing
+last_updated: "2026-02-26T03:20:56.313Z"
 progress:
-  total_phases: 2
+  total_phases: 3
   completed_phases: 1
-  total_plans: 9
-  completed_plans: 8
-  percent: 100
+  total_plans: 12
+  completed_plans: 10
+  percent: 83
 ---
 
 # Project State: Quiz Bowl RL Buzzer (Unified)
@@ -29,27 +29,25 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 
 ## Current Position
 
-**Phase:** 2 - Environment and Core Likelihood Models (COMPLETE)
-**Current Plan:** Not started
-**Status:** Milestone complete
-**Progress:** [██████████] 100%
+**Phase:** 3 - Baseline Agents and T5 Likelihood
+**Current Plan:** 03-03 (next)
+**Status:** In progress
+**Progress:** [████████░░] 83%
 
 ### Active Work
-- Completed: Plan 02-01 (Belief features and LikelihoodModel ABC)
-- Completed: Plan 02-02 (TF-IDF and SBERT likelihood models with factory)
-- Completed: Plan 02-03 (TossupMCEnv Gymnasium environment)
-- Completed: Plan 02-04 (Factory functions and pytest test scaffolding)
+- Completed: Plan 03-01 (Baseline agents port from qb-rl)
+- Completed: Plan 03-02 (T5 likelihood model)
+- Next: Plan 03-03 (Agent integration tests)
 
 ### Completed Phases
 1. Phase 01 - Data Pipeline Foundation (5/5 plans complete)
 2. Phase 02 - Environment and Core Likelihood Models (4/4 plans complete)
 
 ### Upcoming Phases
-1. Phase 2: Environment and Core Likelihood Models
-2. Phase 3: Baseline Agents and T5 Likelihood
-3. Phase 4: PPO Training Pipeline
-4. Phase 5: Evaluation Framework
-5. Phase 6: T5 Policy Integration (optional)
+1. Phase 3: Baseline Agents and T5 Likelihood (2/3 plans complete)
+2. Phase 4: PPO Training Pipeline
+3. Phase 5: Evaluation Framework
+4. Phase 6: T5 Policy Integration (optional)
 
 ## Performance Metrics
 
@@ -98,6 +96,10 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | Dual reward config key support | Factory checks 'reward' then falls back to 'reward_mode' for cross-project compat | 2026-02-26 |
 | TF-IDF for fast tests | Most tests use TF-IDF (fast), SBERT only for pluggability and semantic tests | 2026-02-26 |
 | Shared conftest fixtures | Centralized test data avoids duplication across 4 test modules | 2026-02-26 |
+| Direct port from qb-rl agents | Only import path changes (qb_env -> qb_data) to preserve exact agent logic | 2026-02-26 |
+| Consolidate bayesian buzzers | Merged softmax_profile_buzzer.py into bayesian_buzzer.py (both Bayesian-family) | 2026-02-26 |
+| T5EncoderModel over full T5 | 2x faster inference and half memory vs T5ForConditionalGeneration | 2026-02-26 |
+| T5TokenizerFast over T5Tokenizer | Faster tokenization via Rust-backed fast tokenizer | 2026-02-26 |
 
 ### Architecture Decisions
 - Four-layer modular architecture: Pipeline → Agent → Environment → Model
@@ -121,17 +123,15 @@ None identified yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 02-04: Factory functions and pytest test scaffolding
-- Added make_env_from_config() factory for YAML-driven env construction
-- Created 78-test pytest suite covering all Phase 2 requirements
-- Shared fixtures in conftest.py (sample_mc_question, sample_config, sample_corpus)
-- Updated package exports for models and qb_env modules
-- Phase 2 is fully complete (4/4 plans)
+- Executed Plan 03-01: Baseline agents port from qb-rl
+- Ported ThresholdBuzzer, AlwaysBuzzFinalBuzzer, SoftmaxProfileBuzzer, SequentialBayesBuzzer
+- All 4 agents produce episode traces (c_trace, g_trace) for S_q evaluation
+- agents/ package created with full exports
 
 ### Next Session Priority
-1. Begin Phase 3: Baseline Agents and T5 Likelihood
-2. Continue to Phase 4: PPO Training Pipeline
-3. Phase 5: Evaluation Framework
+1. Continue Phase 3: Plan 03-02 (Agent integration tests)
+2. Plan 03-03 (T5 likelihood model)
+3. Phase 4: PPO Training Pipeline
 
 ### Context for Next Claude
 This is a CS234 final project due this week. We're merging two existing codebases:
@@ -160,4 +160,4 @@ Key risks to watch:
 
 ---
 *State file initialized: 2026-02-25*
-*Last update: 2026-02-25 (Plan 02-01 completed)*
+*Last update: 2026-02-26 (Plan 03-01 completed)*
