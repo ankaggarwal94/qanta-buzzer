@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 05-02
-status: executing
-last_updated: "2026-02-26T05:37:08.215Z"
+current_plan: Not started
+status: completed
+last_updated: "2026-02-26T05:38:32.402Z"
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 17
-  completed_plans: 15
-  percent: 88
+  completed_plans: 16
+  percent: 94
 ---
 
 # Project State: Quiz Bowl RL Buzzer (Unified)
@@ -29,24 +29,24 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 
 ## Current Position
 
-**Phase:** 5 - Evaluation Framework
-**Current Plan:** 05-02
-**Status:** In progress
-**Progress:** [█████████░] 88%
+**Phase:** 5 - Evaluation Framework (Complete)
+**Current Plan:** Not started
+**Status:** Phase 5 complete
+**Progress:** [█████████░] 94%
 
 ### Active Work
-- Completed: Plan 05-01 (Metrics Extension: per_category_accuracy, 17 edge case tests)
-- Next: Plan 05-02
+- Completed: Plan 05-02 (Evaluation Enhancement: baseline sweep comparison, per-category breakdown)
+- Phase 5 complete: All 2 plans executed successfully
 
 ### Completed Phases
 1. Phase 01 - Data Pipeline Foundation (5/5 plans complete)
 2. Phase 02 - Environment and Core Likelihood Models (4/4 plans complete)
 3. Phase 03 - Baseline Agents and T5 Likelihood (3/3 plans complete)
 4. Phase 04 - PPO Training Pipeline (3/3 plans complete)
+5. Phase 05 - Evaluation Framework (2/2 plans complete)
 
 ### Upcoming Phases
-1. Phase 5: Evaluation Framework
-2. Phase 6: T5 Policy Integration (optional)
+1. Phase 6: T5 Policy Integration (optional)
 
 ## Performance Metrics
 
@@ -113,6 +113,7 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | MC dataset path fallback | Check data/processed/ when artifacts/ not found for portability | 2026-02-26 |
 | Port qb-rl controls exactly | choices-only, shuffle, alias substitution controls from reference | 2026-02-26 |
 | Phase 05 P01 | 2min | 2 tasks | 3 files |
+| Phase 05 P02 | 3min | 3 tasks | 1 files |
 
 ### Architecture Decisions
 - Four-layer modular architecture: Pipeline → Agent → Environment → Model
@@ -136,18 +137,15 @@ None identified yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 04-03: PPO Training and Evaluation Pipeline
-- Created scripts/train_ppo.py for MLP PPO training with SB3 checkpointing
-- Created scripts/evaluate_all.py with control experiments and visualization generation
-- Created evaluation/controls.py (choices-only, shuffle, alias substitution)
-- Created evaluation/plotting.py (entropy curves, calibration, comparison tables)
-- Full pipeline smoke test: ~12 seconds total (build -> baselines -> train -> evaluate)
-- PPO accuracy: 0.409, mean S_q: 0.260 on 44-question smoke dataset
-- Phase 4 complete: All 3 plans executed successfully
+- Executed Plan 05-02: Enhanced evaluate_all.py with baseline sweep and per-category breakdown
+- Comparison table now includes 10 agents (threshold_0.5/0.7/0.9, softmax_0.5/0.7/0.9, full_softmax, shuffle_control, alias_control, ppo)
+- Per-category breakdown shows 11 categories with accuracy and S_q scores
+- All 7 EVAL requirements (EVAL-01 through EVAL-07) verified present in smoke test output
+- Phase 5 complete: All 2 plans executed successfully
 
 ### Next Session Priority
-1. Phase 5: Evaluation Framework (extends evaluation with additional metrics)
-2. Phase 6: T5 Policy Integration (optional)
+1. Phase 6: T5 Policy Integration (optional, stretch goal)
+2. CS234 writeup preparation
 
 ### Context for Next Claude
 This is a CS234 final project due this week. We're merging two existing codebases:
