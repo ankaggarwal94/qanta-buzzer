@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 from abc import ABC, abstractmethod
+from typing import Any
 
 import numpy as np
 
@@ -343,3 +344,64 @@ class SBERTLikelihood(LikelihoodModel):
         option_embs = self.embed_and_cache(option_profiles)
         sims = option_embs @ clue_emb
         return sims.astype(np.float32)
+
+
+def build_likelihood_from_config(
+    config: dict[str, Any], corpus_texts: list[str] | None = None
+) -> LikelihoodModel:
+    """Construct a likelihood model from YAML configuration.
+
+    Factory function that reads the ``likelihood`` section of the config dict
+    and instantiates the appropriate ``LikelihoodModel`` subclass.
+
+    Parameters
+    ----------
+    config : dict[str, Any]
+        Full YAML config dict. Must contain a ``"likelihood"`` key with at
+        least a ``"model"`` field specifying the model type.
+
+        Supported model types:
+        - ``"tfidf"``: TF-IDF cosine similarity (requires ``corpus_texts``)
+        - ``"sbert"``: Sentence-BERT semantic similarity
+
+        Optional config keys:
+        - ``"sbert_name"`` or ``"embedding_model"``: SentenceTransformer model
+          name (default: ``"all-MiniLM-L6-v2"``)
+
+    corpus_texts : list[str] or None
+        Text corpus for TF-IDF fitting. Required when ``model == "tfidf"``,
+        ignored for other models.
+
+    Returns
+    -------
+    LikelihoodModel
+        An instantiated and ready-to-use likelihood model.
+
+    Raises
+    ------
+    ValueError
+        If ``model`` is ``"tfidf"`` and ``corpus_texts`` is None.
+        If ``model`` is not a recognized model type.
+
+    Examples
+    --------
+    >>> from qb_data.config import load_config
+    >>> config = load_config("configs/default.yaml")
+    >>> model = build_likelihood_from_config(config, corpus_texts=my_corpus)
+    >>> scores = model.score("first president", ["Washington", "Lincoln"])
+    """
+    cfg = config["likelihood"]
+    model_name = cfg.get("model", "sbert")
+
+    if model_name == "tfidf":
+        if not corpus_texts:
+            raise ValueError("TF-IDF likelihood requires corpus_texts.")
+        return TfIdfLikelihood(corpus_texts=corpus_texts)
+
+    if model_name == "sbert":
+        # Support both "sbert_name" (qb-rl convention) and
+        # "embedding_model" (qanta-buzzer default.yaml convention)
+        sbert_name = cfg.get("sbert_name", cfg.get("embedding_model", "all-MiniLM-L6-v2"))
+        return SBERTLikelihood(model_name=sbert_name)
+
+    raise ValueError(f"Unknown likelihood model: {model_name}")
