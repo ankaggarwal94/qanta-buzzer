@@ -29,8 +29,8 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **LIK-01**: Abstract LikelihoodModel ABC with `score(clue_prefix, option_profiles) -> ndarray[K]`
 - [x] **LIK-02**: TfIdfLikelihood implementation using sklearn TfidfVectorizer
 - [x] **LIK-03**: SBERTLikelihood implementation using sentence-transformers (all-MiniLM-L6-v2)
-- [ ] **LIK-04**: T5Likelihood implementation using T5 encoder for semantic similarity scoring
-- [ ] **LIK-05**: Embedding cache with text hashing for SBERT and T5 models
+- [x] **LIK-04**: T5Likelihood implementation using T5 encoder for semantic similarity scoring
+- [x] **LIK-05**: Embedding cache with text hashing for SBERT and T5 models
 - [x] **LIK-06**: Factory function `build_likelihood_from_config()` constructs model from YAML
 
 ### Agents & Training
@@ -113,8 +113,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | LIK-01 | Phase 2 | Complete |
 | LIK-02 | Phase 2 | Complete |
 | LIK-03 | Phase 2 | Complete |
-| LIK-04 | Phase 3 | Pending |
-| LIK-05 | Phase 3 | Pending |
+| LIK-04 | Phase 3 | Complete |
+| LIK-05 | Phase 3 | Complete |
 | LIK-06 | Phase 2 | Complete |
 | AGT-01 | Phase 4 | Pending |
 | AGT-02 | Phase 3 | Complete |
