@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""
+Train PPO buzzer agent on belief-feature observations.
+
+Loads MC questions, builds a likelihood model, creates a Gymnasium environment,
+trains an MLP policy with SB3 PPO, then evaluates with episode traces and
+summary metrics (accuracy, S_q, ECE, Brier score).
+
+Usage:
+    python scripts/train_ppo.py --smoke              # Quick smoke test
+    python scripts/train_ppo.py --smoke --deterministic-eval
+    python scripts/train_ppo.py --config configs/custom.yaml
+    python scripts/train_ppo.py --timesteps 50000    # Override timesteps
+
+Ported from qb-rl reference implementation (scripts/train_ppo.py) with
+import path adaptations for the unified qanta-buzzer codebase.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agents.ppo_buzzer import PPOBuzzer
+from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+from models.likelihoods import SBERTLikelihood, T5Likelihood, TfIdfLikelihood
+from qb_env.tossup_env import make_env_from_config
+from scripts._common import ARTIFACT_DIR, load_config, load_mc_questions, save_json
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns
+    -------
+    argparse.Namespace
+        Parsed arguments with config, smoke, mc_path, timesteps, and
+        deterministic_eval fields.
+    """
+    parser = argparse.ArgumentParser(description="Train PPO buzzer.")
+    parser.add_argument(
+        "--config", type=str, default=None,
+        help="Path to YAML config file (default: configs/default.yaml).",
+    )
+    parser.add_argument(
+        "--smoke", action="store_true",
+        help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
+    )
+    parser.add_argument(
+        "--mc-path", type=str, default=None,
+        help="Optional MC dataset JSON path (overrides config-derived path).",
+    )
+    parser.add_argument(
+        "--timesteps", type=int, default=None,
+        help="Override total_timesteps from config.",
+    )
+    parser.add_argument(
+        "--deterministic-eval", action="store_true",
+        help="Use deterministic policy for post-training episode evaluation.",
+    )
+    return parser.parse_args()
+
+
+def build_likelihood(config: dict, mc_questions: list):
+    """Construct a likelihood model from config.
+
+    Reads config["likelihood"]["model"] to determine the model type and
+    instantiates the appropriate LikelihoodModel subclass.
+
+    Parameters
+    ----------
+    config : dict
+        Full YAML configuration dict. Must contain ``likelihood.model``.
+    mc_questions : list
+        List of MCQuestion instances. Used for TF-IDF corpus construction.
+
+    Returns
+    -------
+    LikelihoodModel
+        Instantiated likelihood model ready for scoring.
+    """
+    model_name = config["likelihood"]["model"]
+
+    if model_name == "tfidf":
+        corpus = (
+            [q.question for q in mc_questions]
+            + [p for q in mc_questions for p in q.option_profiles]
+        )
+        return TfIdfLikelihood(corpus_texts=corpus)
+
+    if model_name == "sbert":
+        sbert_name = config["likelihood"].get(
+            "sbert_name",
+            config["likelihood"].get("embedding_model", "all-MiniLM-L6-v2"),
+        )
+        return SBERTLikelihood(model_name=sbert_name)
+
+    if model_name.startswith("t5"):
+        return T5Likelihood(model_name=model_name)
+
+    raise ValueError(
+        f"Unknown likelihood model: {model_name}. "
+        f"Expected one of: tfidf, sbert, t5-small, t5-base, t5-large."
+    )
+
+
+def main() -> None:
+    """Train PPO agent and save model + evaluation artifacts."""
+    args = parse_args()
+
+    # Load config: smoke mode auto-selects configs/smoke.yaml
+    if args.smoke and args.config is None:
+        smoke_config = PROJECT_ROOT / "configs" / "smoke.yaml"
+        config = load_config(str(smoke_config) if smoke_config.exists() else None)
+    else:
+        config = load_config(args.config)
+
+    split = "smoke" if args.smoke else "main"
+    out_dir = ARTIFACT_DIR / split
+    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
+
+    # Fallback: check data/processed/ if artifacts path doesn't exist
+    if not mc_path.exists():
+        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
+        if fallback.exists():
+            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
+            mc_path = fallback
+
+    print(f"Loading MC questions from: {mc_path}")
+    mc_questions = load_mc_questions(mc_path)
+    print(f"Loaded {len(mc_questions)} MC questions")
+
+    print(f"Building likelihood model: {config['likelihood']['model']}")
+    likelihood_model = build_likelihood(config, mc_questions)
+    env = make_env_from_config(
+        mc_questions=mc_questions,
+        likelihood_model=likelihood_model,
+        config=config,
+    )
+
+    ppo_cfg = config["ppo"]
+    total_timesteps = int(
+        args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
+    )
+
+    print(f"Training PPO for {total_timesteps} timesteps...")
+    agent = PPOBuzzer(
+        env=env,
+        learning_rate=float(ppo_cfg["learning_rate"]),
+        n_steps=int(ppo_cfg["n_steps"]),
+        batch_size=int(ppo_cfg["batch_size"]),
+        n_epochs=int(ppo_cfg["n_epochs"]),
+        gamma=float(ppo_cfg["gamma"]),
+        policy_kwargs=ppo_cfg.get("policy_kwargs", {"net_arch": [64, 64]}),
+        verbose=1,
+    )
+
+    agent.train(total_timesteps=total_timesteps)
+    model_path = out_dir / "ppo_model"
+    agent.save(model_path)
+
+    print(f"Evaluating PPO agent on {len(mc_questions)} questions...")
+    traces = [
+        asdict(agent.run_episode(deterministic=args.deterministic_eval))
+        for _ in range(len(mc_questions))
+    ]
+    summary = {**summarize_buzz_metrics(traces), **calibration_at_buzz(traces)}
+
+    save_json(out_dir / "ppo_runs.json", traces)
+    save_json(out_dir / "ppo_summary.json", summary)
+    print(f"Saved PPO model to: {model_path}.zip")
+    print(f"Saved PPO summaries to: {out_dir}")
+
+
+if __name__ == "__main__":
+    main()
