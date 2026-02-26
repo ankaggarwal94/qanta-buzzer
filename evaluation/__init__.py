@@ -12,6 +12,7 @@ dataclass structures.
 from evaluation.metrics import (
     calibration_at_buzz,
     expected_calibration_error,
+    per_category_accuracy,
     summarize_buzz_metrics,
     system_score,
 )
@@ -21,4 +22,5 @@ __all__ = [
     "summarize_buzz_metrics",
     "calibration_at_buzz",
     "expected_calibration_error",
+    "per_category_accuracy",
 ]
