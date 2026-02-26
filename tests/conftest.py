@@ -1,8 +1,8 @@
-"""Shared pytest fixtures for Phase 2 tests.
+"""Shared pytest fixtures for test suites.
 
-Provides reusable test data for environment, likelihood, features, and
-factory test suites. All fixtures create minimal but complete data structures
-that satisfy the interfaces expected by the Phase 2 modules.
+Provides reusable test data for environment, likelihood, features,
+factory, and agent test suites. All fixtures create minimal but complete
+data structures that satisfy the interfaces expected by the codebase modules.
 
 Fixtures
 --------
@@ -19,6 +19,10 @@ sample_config
 sample_corpus
     A list of 10 short text strings about US presidents and historical
     events. Suitable for fitting TF-IDF vectorizers in tests.
+
+sample_tfidf_env
+    A TossupMCEnv with TF-IDF likelihood and 3 sample MCQuestions.
+    Fast to construct, suitable for agent and PPO tests.
 """
 
 from __future__ import annotations
@@ -162,3 +166,38 @@ def sample_t5_model():
     from models.likelihoods import T5Likelihood
 
     return T5Likelihood(model_name="t5-small")
+
+
+@pytest.fixture
+def sample_tfidf_env(sample_mc_question: MCQuestion) -> "TossupMCEnv":
+    """Return a TossupMCEnv with TF-IDF likelihood and 3 sample questions.
+
+    Creates a lightweight environment suitable for PPOBuzzer and agent
+    tests. Uses TF-IDF likelihood for fast execution (< 1ms per score).
+    Three copies of the sample question are used to provide enough data
+    for environment sampling.
+
+    Returns
+    -------
+    TossupMCEnv
+        A configured environment with simple reward mode.
+    """
+    from models.likelihoods import TfIdfLikelihood
+    from qb_env.tossup_env import TossupMCEnv
+
+    corpus = sample_mc_question.option_profiles[:]
+    model = TfIdfLikelihood(corpus_texts=corpus)
+
+    # Use 3 copies for variety in sampling
+    questions = [sample_mc_question] * 3
+    return TossupMCEnv(
+        questions=questions,
+        likelihood_model=model,
+        K=4,
+        reward_mode="simple",
+        wait_penalty=0.0,
+        buzz_correct=1.0,
+        buzz_incorrect=-1.0,
+        belief_mode="from_scratch",
+        beta=5.0,
+    )
