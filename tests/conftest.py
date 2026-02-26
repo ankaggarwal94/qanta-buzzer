@@ -140,3 +140,25 @@ def sample_corpus() -> list[str]:
         "The American Revolution established independence from Britain",
         "The Constitution created a federal system of government",
     ]
+
+
+@pytest.fixture(scope="module")
+def sample_t5_model():
+    """Return a T5Likelihood model for testing.
+
+    Uses t5-small (60M params) for fast test execution. Scoped to module
+    level so the model is loaded once per test file, not per test function.
+
+    Returns
+    -------
+    T5Likelihood
+        A T5 likelihood model suitable for testing semantic scoring.
+
+    Notes
+    -----
+    This fixture may take 5-10 seconds on first run to download the model
+    from HuggingFace. Subsequent runs use cached weights.
+    """
+    from models.likelihoods import T5Likelihood
+
+    return T5Likelihood(model_name="t5-small")
