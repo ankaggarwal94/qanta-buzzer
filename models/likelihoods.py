@@ -346,6 +346,146 @@ class SBERTLikelihood(LikelihoodModel):
         return sims.astype(np.float32)
 
 
+class T5Likelihood(LikelihoodModel):
+    """T5 encoder likelihood model using mean-pooled semantic embeddings.
+
+    Uses ``T5EncoderModel`` (not full ``T5ForConditionalGeneration``) for 2x
+    faster inference and half the memory. Embeddings are mean-pooled over
+    sequence length with attention mask weighting to handle padding correctly.
+
+    Inherits ``embed_and_cache()`` from ``LikelihoodModel`` for transparent
+    caching of embeddings via SHA-256 content hashing. The first call to
+    ``score()`` computes and caches all embeddings; subsequent calls with the
+    same texts are fast cache lookups.
+
+    Compared to SBERT, T5 captures deeper semantic relationships via its
+    encoder-decoder pre-training on massive text corpora. This is the novel
+    contribution: using T5 as a likelihood model rather than just as a policy
+    encoder.
+
+    Parameters
+    ----------
+    model_name : str
+        HuggingFace T5 model identifier. Default is ``"t5-base"``
+        (220M params). Options:
+
+        - ``"t5-small"`` (60M params) -- fastest, lowest quality
+        - ``"t5-base"`` (220M params) -- balanced (recommended)
+        - ``"t5-large"`` (770M params) -- best quality, requires 8GB GPU VRAM
+
+        First run downloads the model from HuggingFace (~850MB for t5-base).
+
+    Attributes
+    ----------
+    model_name : str
+        The T5 model identifier.
+    encoder : T5EncoderModel
+        Pre-trained T5 encoder loaded from HuggingFace.
+    tokenizer : T5TokenizerFast
+        Fast T5 tokenizer for text preprocessing.
+    device : torch.device
+        Computation device (cuda if available, else cpu).
+
+    Examples
+    --------
+    >>> model = T5Likelihood(model_name="t5-small")
+    >>> scores = model.score("first president", ["Washington", "Einstein"])
+    >>> scores.shape
+    (2,)
+    """
+
+    def __init__(self, model_name: str = "t5-base") -> None:
+        super().__init__()
+        import torch
+        from transformers import T5EncoderModel, T5TokenizerFast
+
+        self.model_name = model_name
+        self.encoder = T5EncoderModel.from_pretrained(model_name)
+        self.tokenizer = T5TokenizerFast.from_pretrained(model_name)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.encoder.to(self.device)
+        self.encoder.eval()
+
+    def _embed_batch(self, texts: list[str]) -> np.ndarray:
+        """Embed texts using T5 encoder with attention-masked mean pooling.
+
+        Mean pooling uses the attention mask to exclude padding tokens from the
+        average, ensuring correct semantic embeddings when sequences have
+        different lengths. Embeddings are L2-normalized so that cosine
+        similarity can be computed as a simple dot product.
+
+        Parameters
+        ----------
+        texts : list[str]
+            Texts to embed (guaranteed non-empty, all cache misses).
+
+        Returns
+        -------
+        np.ndarray
+            L2-normalized embeddings of shape (len(texts), hidden_dim),
+            dtype float32. Hidden dim is 512 (t5-small), 768 (t5-base),
+            or 1024 (t5-large).
+
+        Notes
+        -----
+        Tensors are detached and moved to CPU immediately after computation
+        to prevent GPU memory leaks when called repeatedly during episodes.
+        """
+        import torch
+
+        with torch.no_grad():
+            encoded = self.tokenizer(
+                texts,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+            ).to(self.device)
+
+            outputs = self.encoder(**encoded)
+            last_hidden = outputs.last_hidden_state  # (batch, seq_len, hidden_dim)
+
+            # Mean pooling over sequence length with attention mask
+            mask = encoded.attention_mask.unsqueeze(-1)  # (batch, seq_len, 1)
+            masked_hidden = last_hidden * mask
+            sum_hidden = masked_hidden.sum(dim=1)  # (batch, hidden_dim)
+            mask_sum = mask.sum(dim=1).clamp(min=1e-9)  # (batch, 1)
+            mean_pooled = sum_hidden / mask_sum  # (batch, hidden_dim)
+
+            # L2 normalize for cosine similarity via dot product
+            embeddings = torch.nn.functional.normalize(mean_pooled, p=2, dim=1)
+
+            # Detach and move to CPU to prevent GPU memory leak
+            embeddings = embeddings.detach().cpu().numpy().astype(np.float32)
+
+        return embeddings
+
+    def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
+        """Score each option using T5 semantic cosine similarity.
+
+        Computes dot product between the clue embedding and each option
+        embedding. Since embeddings are L2-normalized, dot product equals
+        cosine similarity.
+
+        Parameters
+        ----------
+        clue_prefix : str
+            Clue text revealed so far.
+        option_profiles : list[str]
+            Answer profile text for each of the K answer options.
+
+        Returns
+        -------
+        np.ndarray
+            Cosine similarity scores of shape (K,), dtype float32.
+            Values in [-1, 1].
+        """
+        clue_emb = self.embed_and_cache([clue_prefix])[0]
+        option_embs = self.embed_and_cache(option_profiles)
+        sims = option_embs @ clue_emb
+        return sims.astype(np.float32)
+
+
 def build_likelihood_from_config(
     config: dict[str, Any], corpus_texts: list[str] | None = None
 ) -> LikelihoodModel:
