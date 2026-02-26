@@ -1,3 +1,18 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+current_plan: 1 of 4
+status: executing
+last_updated: "2026-02-26T02:21:36.039Z"
+progress:
+  total_phases: 2
+  completed_phases: 1
+  total_plans: 9
+  completed_plans: 6
+  percent: 67
+---
+
 # Project State: Quiz Bowl RL Buzzer (Unified)
 
 **Project:** Quiz Bowl RL Buzzer (Unified System)
@@ -14,17 +29,17 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 
 ## Current Position
 
-**Phase:** 1 - Data Pipeline Foundation
-**Current Plan:** 4 of 5
+**Phase:** 2 - Environment and Core Likelihood Models
+**Current Plan:** 1 of 4
 **Status:** In Progress
-**Progress:** [████████████████░░░░] 80%
+**Progress:** [███████░░░] 67%
 
 ### Active Work
-- Completed: Plans 01-01, 01-02, 01-03, 01-04
-- Next: Plan 01-05 (Evaluation and Testing Infrastructure)
+- Completed: Plan 02-01 (Belief features and LikelihoodModel ABC)
+- Next: Plan 02-02 (TF-IDF and SBERT likelihood models with factory)
 
 ### Completed Phases
-None
+1. Phase 01 - Data Pipeline Foundation (5/5 plans complete)
 
 ### Upcoming Phases
 1. Phase 2: Environment and Core Likelihood Models
@@ -68,6 +83,11 @@ None
 | Category-based stratification | Preserve category distribution across train/val/test splits | 2026-02-25 |
 | HuggingFace as optional fallback | Provide alternative data source when CSV unavailable | 2026-02-25 |
 | Match existing dataclass structure | Fixed field name inconsistencies between plans and implementation | 2026-02-25 |
+| Fix CSV paths in configs | Updated configs to point to root directory where questions.csv exists | 2026-02-25 |
+| Use _grouped attribute | AnswerProfileBuilder stores data in _grouped, not profiles | 2026-02-25 |
+| Add .gitignore for generated data | Prevent large JSON files from being committed | 2026-02-25 |
+| Port qb-rl features.py exactly | Maintain compatibility with downstream environment and agent plans | 2026-02-25 |
+| LikelihoodModel returns raw scores | Environment applies softmax with temperature (separation of concerns) | 2026-02-25 |
 
 ### Architecture Decisions
 - Four-layer modular architecture: Pipeline → Agent → Environment → Model
@@ -91,18 +111,16 @@ None identified yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 01-04: Dataset Splitting and HuggingFace Loader
-- Implemented stratified splitting with category preservation
-- Created HuggingFace fallback loader for optional data source
-- Fixed field name mismatches with TossupQuestion dataclass
-- Added missing tokenize_text function to text_utils
-- Verified splits maintain 70/15/15 ratios per category
+- Executed Plan 02-01: Belief Features and LikelihoodModel ABC
+- Created models/ package with __init__.py
+- Ported extract_belief_features() and entropy_of_distribution() from qb-rl
+- Ported LikelihoodModel ABC with embed_and_cache() and _text_key() hashing
+- All verification passed, no deviations from plan
 
 ### Next Session Priority
-1. Execute Plan 01-05: Evaluation and Testing Infrastructure
-2. Create data pipeline integration tests
-3. Build dataset statistics and validation utilities
-4. Complete Phase 1 and move to Phase 2 (Environment)
+1. Execute Plan 02-02: TF-IDF and SBERT likelihood models with factory
+2. Execute Plan 02-03: TossupMCEnv Gymnasium environment
+3. Execute Plan 02-04: Factory functions and pytest test scaffolding
 
 ### Context for Next Claude
 This is a CS234 final project due this week. We're merging two existing codebases:
@@ -124,11 +142,11 @@ Key risks to watch:
 4. Should we implement all 4 baselines or just threshold for MVP?
 
 ### Environment State
-- Working directory: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/Final Project/qanta-buzzer`
+- Working directory: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer`
 - Python environment: Not yet configured (needs 3.11+)
 - Git status: Roadmap files created, not yet committed
 - Dependencies: Not yet installed
 
 ---
 *State file initialized: 2026-02-25*
-*Last update: 2026-02-25 (Plan 01-04 completed)*
+*Last update: 2026-02-25 (Plan 02-01 completed)*
