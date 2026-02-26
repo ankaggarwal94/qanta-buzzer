@@ -98,8 +98,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 05-01-PLAN.md — Add per-category accuracy and S_q edge case tests
-- [ ] 05-02-PLAN.md — Enhance comparison table with baseline sweep and per-category breakdown
+- [x] 05-01-PLAN.md — Add per-category accuracy and S_q edge case tests ✓
+- [x] 05-02-PLAN.md — Enhance comparison table with baseline sweep and per-category breakdown ✓
 
 ### Phase 6: T5 Policy Integration
 **Goal**: Users can train and compare T5-based policy with custom heads as alternative to MLP
@@ -109,7 +109,12 @@ Plans:
   1. T5PolicyModel with custom policy heads (wait/answer/value) trains successfully
   2. Supervised warm-start on complete questions improves convergence
   3. Comparison experiment shows performance difference between T5-as-likelihood vs T5-as-policy
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 06-01-PLAN.md — Port T5PolicyModel and PolicyHead architecture
+- [ ] 06-02-PLAN.md — Create TextObservationWrapper and supervised training
+- [ ] 06-03-PLAN.md — Implement custom PPO and comparison experiment
 
 ## Progress
 
@@ -119,8 +124,8 @@ Plans:
 | 2. Environment and Core Likelihood Models | 4/4 | Complete| ✅ |
 | 3. Baseline Agents and T5 Likelihood | 3/3 | Complete| ✅ |
 | 4. PPO Training Pipeline | 3/3 | Complete | ✅ |
-| 5. Evaluation Framework | 0/2 | Not started | - |
-| 6. T5 Policy Integration | 0/0 | Not started | - |
+| 5. Evaluation Framework | 2/2 | Complete | ✅ |
+| 6. T5 Policy Integration | 0/3 | Not started | - |
 
 ## Success Metrics
 
@@ -164,4 +169,6 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 *Phase 4 planned: 2026-02-26*
 *Phase 4 completed: 2026-02-26*
 *Phase 5 planned: 2026-02-26*
-*Next: `/gsd:execute-phase 5`*
+*Phase 5 completed: 2026-02-26*
+*Phase 6 planned: 2026-02-26*
+*Next: `/gsd:execute-phase 6` (optional stretch goal)*
