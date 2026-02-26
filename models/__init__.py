@@ -14,6 +14,17 @@ from models.likelihoods import (
     build_likelihood_from_config,
 )
 
+# Lazy import: T5PolicyModel and PolicyHead require transformers + torch.
+# Import on demand to keep package lightweight for belief-feature-only usage.
+
+
+def __getattr__(name: str):
+    if name in ("T5PolicyModel", "PolicyHead"):
+        from models.t5_policy import T5PolicyModel, PolicyHead
+        return {"T5PolicyModel": T5PolicyModel, "PolicyHead": PolicyHead}[name]
+    raise AttributeError(f"module 'models' has no attribute {name!r}")
+
+
 __all__ = [
     "extract_belief_features",
     "entropy_of_distribution",
@@ -22,4 +33,6 @@ __all__ = [
     "SBERTLikelihood",
     "T5Likelihood",
     "build_likelihood_from_config",
+    "T5PolicyModel",
+    "PolicyHead",
 ]
