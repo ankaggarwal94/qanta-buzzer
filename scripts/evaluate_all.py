@@ -292,23 +292,43 @@ def main() -> None:
         confidences, outcomes, out_dir / "plots" / "calibration.png"
     )
 
-    # Comparison table
-    table_rows = [
-        {
-            "agent": "softmax_profile",
-            **{k: v for k, v in full_eval.items() if k != "runs"},
-        },
-        {
-            "agent": "shuffle_control",
-            **{k: v for k, v in shuffle_eval.items() if k != "runs"},
-        },
-        {
-            "agent": "alias_control",
-            **{k: v for k, v in alias_eval.items() if k != "runs"},
-        },
-    ]
+    # Comparison table: include baseline sweep, controls, and PPO
+    table_rows = []
+
+    # Add baseline sweep results (threshold at multiple values)
+    if "threshold" in baseline_summary:
+        for threshold_str, metrics in baseline_summary["threshold"].items():
+            table_rows.append({
+                "agent": f"threshold_{threshold_str}",
+                **{k: v for k, v in metrics.items() if k != "runs"},
+            })
+
+    # Add softmax_profile sweep results
+    if "softmax_profile" in baseline_summary:
+        for threshold_str, metrics in baseline_summary["softmax_profile"].items():
+            table_rows.append({
+                "agent": f"softmax_{threshold_str}",
+                **{k: v for k, v in metrics.items() if k != "runs"},
+            })
+
+    # Add full softmax eval (best threshold) and control experiments
+    table_rows.append({
+        "agent": "full_softmax",
+        **{k: v for k, v in full_eval.items() if k != "runs"},
+    })
+    table_rows.append({
+        "agent": "shuffle_control",
+        **{k: v for k, v in shuffle_eval.items() if k != "runs"},
+    })
+    table_rows.append({
+        "agent": "alias_control",
+        **{k: v for k, v in alias_eval.items() if k != "runs"},
+    })
+
+    # Add PPO if available
     if ppo_summary:
         table_rows.append({"agent": "ppo", **ppo_summary})
+
     save_comparison_table(table_rows, out_dir / "plots" / "comparison.csv")
 
     print(f"Wrote evaluation report to: {out_dir / 'evaluation_report.json'}")
