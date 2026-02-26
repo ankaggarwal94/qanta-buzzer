@@ -95,7 +95,11 @@ Plans:
   3. Control experiments (choices-only, shuffle, alias) verify agent uses clues properly
   4. Comparison plots and tables show relative performance of all agents
   5. Per-category accuracy breakdown reveals performance patterns
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 05-01-PLAN.md — Add per-category accuracy and S_q edge case tests
+- [ ] 05-02-PLAN.md — Enhance comparison table with baseline sweep and per-category breakdown
 
 ### Phase 6: T5 Policy Integration
 **Goal**: Users can train and compare T5-based policy with custom heads as alternative to MLP
@@ -115,7 +119,7 @@ Plans:
 | 2. Environment and Core Likelihood Models | 4/4 | Complete| ✅ |
 | 3. Baseline Agents and T5 Likelihood | 3/3 | Complete| ✅ |
 | 4. PPO Training Pipeline | 3/3 | Complete | ✅ |
-| 5. Evaluation Framework | 0/0 | Not started | - |
+| 5. Evaluation Framework | 0/2 | Not started | - |
 | 6. T5 Policy Integration | 0/0 | Not started | - |
 
 ## Success Metrics
@@ -159,4 +163,5 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 *Phase 3 planned: 2026-02-25*
 *Phase 4 planned: 2026-02-26*
 *Phase 4 completed: 2026-02-26*
+*Phase 5 planned: 2026-02-26*
 *Next: `/gsd:execute-phase 5`*
