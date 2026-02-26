@@ -8,7 +8,7 @@
 ## Phases
 
 - [x] **Phase 1: Data Pipeline Foundation** - Build MC dataset construction with anti-artifact guards and YAML configuration
-- [ ] **Phase 2: Environment and Core Likelihood Models** - Implement Gymnasium environment with belief features and TF-IDF/SBERT likelihood models
+- [x] **Phase 2: Environment and Core Likelihood Models** - Implement Gymnasium environment with belief features and TF-IDF/SBERT likelihood models
 - [ ] **Phase 3: Baseline Agents and T5 Likelihood** - Add baseline agents, T5 likelihood model, and episode trace generation
 - [ ] **Phase 4: PPO Training Pipeline** - Train MLP policy with SB3 PPO and pipeline scripts
 - [ ] **Phase 5: Evaluation Framework** - Complete S_q metric, control experiments, and visualization
@@ -48,10 +48,10 @@ Plans:
 **Plans**: 4 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Belief features and LikelihoodModel ABC
-- [ ] 02-02-PLAN.md — TF-IDF and SBERT likelihood models with factory
-- [ ] 02-03-PLAN.md — TossupMCEnv Gymnasium environment
-- [ ] 02-04-PLAN.md — Factory functions and pytest test scaffolding
+- [x] 02-01-PLAN.md — Belief features and LikelihoodModel ABC ✓
+- [x] 02-02-PLAN.md — TF-IDF and SBERT likelihood models with factory ✓
+- [x] 02-03-PLAN.md — TossupMCEnv Gymnasium environment ✓
+- [x] 02-04-PLAN.md — Factory functions and pytest test scaffolding ✓
 
 ### Phase 3: Baseline Agents and T5 Likelihood
 **Goal**: Users can run baseline agents and leverage T5 for semantic similarity scoring
@@ -62,7 +62,12 @@ Plans:
   2. T5 likelihood model computes semantic similarity scores for belief updates
   3. Embedding cache reduces redundant T5 computations
   4. All agents generate episode traces with c_trace (buzz probability) and g_trace (correctness)
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — Port baseline agents from qb-rl (ThresholdBuzzer, AlwaysBuzzFinal, SoftmaxProfile, SequentialBayes)
+- [ ] 03-02-PLAN.md — Implement T5Likelihood with semantic similarity scoring
+- [ ] 03-03-PLAN.md — Create agent and T5 test suite
 
 ### Phase 4: PPO Training Pipeline
 **Goal**: Users can train an MLP policy with SB3 PPO and run smoke tests for validation
@@ -102,8 +107,8 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Data Pipeline Foundation | 5/5 | Complete| ✅ |
-| 2. Environment and Core Likelihood Models | 0/4 | Not started | - |
-| 3. Baseline Agents and T5 Likelihood | 0/0 | Not started | - |
+| 2. Environment and Core Likelihood Models | 4/4 | Complete| ✅ |
+| 3. Baseline Agents and T5 Likelihood | 0/3 | Planned | - |
 | 4. PPO Training Pipeline | 0/0 | Not started | - |
 | 5. Evaluation Framework | 0/0 | Not started | - |
 | 6. T5 Policy Integration | 0/0 | Not started | - |
@@ -145,4 +150,5 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 *Roadmap created: 2026-02-25*
 *Phase 1 planned: 2026-02-25*
 *Phase 2 replanned: 2026-02-25*
-*Next: `/gsd:execute-phase 2`*
+*Phase 3 planned: 2026-02-25*
+*Next: `/gsd:execute-phase 3`*
