@@ -9,7 +9,7 @@
 
 - [x] **Phase 1: Data Pipeline Foundation** - Build MC dataset construction with anti-artifact guards and YAML configuration
 - [x] **Phase 2: Environment and Core Likelihood Models** - Implement Gymnasium environment with belief features and TF-IDF/SBERT likelihood models
-- [ ] **Phase 3: Baseline Agents and T5 Likelihood** - Add baseline agents, T5 likelihood model, and episode trace generation
+- [x] **Phase 3: Baseline Agents and T5 Likelihood** - Add baseline agents, T5 likelihood model, and episode trace generation
 - [ ] **Phase 4: PPO Training Pipeline** - Train MLP policy with SB3 PPO and pipeline scripts
 - [ ] **Phase 5: Evaluation Framework** - Complete S_q metric, control experiments, and visualization
 - [ ] **Phase 6: T5 Policy Integration** - Optional T5 policy model with supervised warm-start
@@ -65,9 +65,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — Port baseline agents from qb-rl (ThresholdBuzzer, AlwaysBuzzFinal, SoftmaxProfile, SequentialBayes)
-- [ ] 03-02-PLAN.md — Implement T5Likelihood with semantic similarity scoring
-- [ ] 03-03-PLAN.md — Create agent and T5 test suite
+- [x] 03-01-PLAN.md — Port baseline agents from qb-rl (ThresholdBuzzer, AlwaysBuzzFinal, SoftmaxProfile, SequentialBayes) ✓
+- [x] 03-02-PLAN.md — Implement T5Likelihood with semantic similarity scoring ✓
+- [x] 03-03-PLAN.md — Create agent and T5 test suite ✓
 
 ### Phase 4: PPO Training Pipeline
 **Goal**: Users can train an MLP policy with SB3 PPO and run smoke tests for validation
@@ -78,7 +78,12 @@ Plans:
   2. Smoke test mode runs complete pipeline in under 2 minutes with small dataset
   3. Four-stage pipeline scripts (build_mc, run_baselines, train_ppo, evaluate_all) execute without errors
   4. Training produces checkpoints that can be loaded for evaluation
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — Create _common.py utilities and PPOBuzzer wrapper
+- [ ] 04-02-PLAN.md — Implement run_baselines.py script
+- [ ] 04-03-PLAN.md — Implement train_ppo.py and evaluate_all.py scripts
 
 ### Phase 5: Evaluation Framework
 **Goal**: Users can evaluate agents with S_q metric, control experiments, and comprehensive visualizations
@@ -108,8 +113,8 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Data Pipeline Foundation | 5/5 | Complete| ✅ |
 | 2. Environment and Core Likelihood Models | 4/4 | Complete| ✅ |
-| 3. Baseline Agents and T5 Likelihood | 0/3 | Planned | - |
-| 4. PPO Training Pipeline | 0/0 | Not started | - |
+| 3. Baseline Agents and T5 Likelihood | 3/3 | Complete| ✅ |
+| 4. PPO Training Pipeline | 0/3 | Planned | - |
 | 5. Evaluation Framework | 0/0 | Not started | - |
 | 6. T5 Policy Integration | 0/0 | Not started | - |
 
@@ -135,6 +140,7 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 ### Key Integration Points
 - Phase 2 defines LikelihoodModel interface that Phase 3 implements for T5
 - Phase 3 agents must produce traces that Phase 5 uses for S_q computation
+- Phase 4 implements PPO training with evaluation metrics (S_q, ECE, Brier) that Phase 5 extends
 - Phase 6 is independent path after Phase 2 (alternative to Phase 3-4 pipeline)
 
 ## Risks and Mitigations
@@ -151,4 +157,5 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 *Phase 1 planned: 2026-02-25*
 *Phase 2 replanned: 2026-02-25*
 *Phase 3 planned: 2026-02-25*
-*Next: `/gsd:execute-phase 3`*
+*Phase 4 planned: 2026-02-26*
+*Next: `/gsd:execute-phase 4`*
