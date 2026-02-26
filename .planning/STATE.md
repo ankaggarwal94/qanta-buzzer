@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: Plan 2 of 3 in Phase 6
+current_plan: Plan 3 of 3 (06-01, 06-02 complete)
 status: in_progress
-last_updated: "2026-02-26T06:19:08Z"
+last_updated: "2026-02-26T06:29:43Z"
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 20
-  completed_plans: 18
-  percent: 90
+  completed_plans: 19
+  percent: 95
 ---
 
 # Project State: Quiz Bowl RL Buzzer (Unified)
@@ -30,13 +30,14 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 ## Current Position
 
 **Phase:** 6 - T5 Policy Integration
-**Current Plan:** Plan 2 of 3 (06-01 complete)
+**Current Plan:** Plan 3 of 3 (06-01, 06-02 complete)
 **Status:** In progress
-**Progress:** [█████████░] 90%
+**Progress:** [█████████▌] 95%
 
 ### Active Work
 - Completed: Plan 06-01 (T5PolicyModel architecture with 3 custom heads, 18 tests)
-- Next: Plan 06-02 (TextObservationWrapper and supervised training)
+- Completed: Plan 06-02 (TextObservationWrapper and supervised training, 20 tests)
+- Next: Plan 06-03 (Custom PPO and comparison experiment)
 
 ### Completed Phases
 1. Phase 01 - Data Pipeline Foundation (5/5 plans complete)
@@ -46,7 +47,6 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 5. Phase 05 - Evaluation Framework (2/2 plans complete)
 
 ### Upcoming Plans
-- 06-02: TextObservationWrapper and supervised training
 - 06-03: Custom PPO and comparison experiment
 
 ## Performance Metrics
@@ -117,9 +117,14 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | T5TokenizerFast for T5PolicyModel | 3-5x faster tokenization via Rust backend, critical for PPO rollouts | 2026-02-26 |
 | Lazy import T5PolicyModel | models/__init__.py uses __getattr__ to avoid loading transformers for belief-only usage | 2026-02-26 |
 | Config-dict interface for T5PolicyModel | Accept dict instead of qanta-buzzer Config class for unified codebase compat | 2026-02-26 |
+| TextObservationWrapper via cumulative_prefixes | step_idx maps directly to visible prefix index for accurate clue visibility | 2026-02-26 |
+| Loss scaled by 1/grad_accum_steps | Correct gradient magnitude when accumulating over multiple batches | 2026-02-26 |
+| Nested smoke section in config YAML | Clean override pattern without separate config file | 2026-02-26 |
+| Best model by validation accuracy | checkpoints/supervised/best_model/ tracks highest val_acc across epochs | 2026-02-26 |
 | Phase 05 P01 | 2min | 2 tasks | 3 files |
 | Phase 05 P02 | 3min | 3 tasks | 1 files |
 | Phase 06 P01 | 5min | 3 tasks | 3 files |
+| Phase 06 P02 | 7min | 3 tasks | 7 files |
 
 ### Architecture Decisions
 - Four-layer modular architecture: Pipeline → Agent → Environment → Model
@@ -143,16 +148,16 @@ None identified yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 06-01: Ported T5PolicyModel with 3-head PolicyHead from qanta-buzzer
-- T5EncoderModel + T5TokenizerFast (not full T5/slow tokenizer) for 2x speed and 50% less memory
-- Action decomposition: 0=WAIT, 1-K=SELECT with independent log probs for PPO
-- 18 unit tests pass in <5 seconds using t5-small
-- models/__init__.py updated with lazy import for T5PolicyModel/PolicyHead
+- Executed Plan 06-02: TextObservationWrapper and supervised warm-start training
+- TextObservationWrapper bridges TossupMCEnv beliefs to text observations via cumulative_prefixes
+- SupervisedTrainer with gradient accumulation (4 steps, effective batch=32)
+- T5 policy config YAML with t5-large defaults and t5-small smoke overrides
+- 20 new tests passing (8 wrapper + 12 supervised), total project tests ~38+
+- 7 files created/modified
 
 ### Next Session Priority
-1. Plan 06-02: TextObservationWrapper and supervised warm-start training
-2. Plan 06-03: Custom PPO and T5-as-likelihood vs T5-as-policy comparison
-3. CS234 writeup preparation
+1. Plan 06-03: Custom PPO and T5-as-likelihood vs T5-as-policy comparison
+2. CS234 writeup preparation
 
 ### Context for Next Claude
 This is a CS234 final project due this week. We're merging two existing codebases:
