@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 current_plan: Plan 03 of 3
-status: in-progress
-last_updated: "2026-02-26T04:23:22Z"
+status: phase-complete
+last_updated: "2026-02-26T04:33:21Z"
 progress:
   total_phases: 4
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 15
-  completed_plans: 13
-  percent: 87
+  completed_plans: 15
+  percent: 100
 ---
 
 # Project State: Quiz Bowl RL Buzzer (Unified)
@@ -29,25 +29,24 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 
 ## Current Position
 
-**Phase:** 4 - PPO Training Pipeline
-**Current Plan:** Plan 03 of 3
-**Status:** In progress
-**Progress:** [████████░░] 87%
+**Phase:** 4 - PPO Training Pipeline (Complete)
+**Current Plan:** Plan 03 of 3 (Complete)
+**Status:** Phase complete
+**Progress:** [██████████] 100%
 
 ### Active Work
-- Completed: Plan 04-02 (Baseline Orchestration: evaluation metrics, run_baselines.py, smoke test)
-- Next: Plan 04-03 (PPO Training Pipeline - final plan)
+- Completed: Plan 04-03 (PPO Training + Evaluation: train_ppo.py, evaluate_all.py, controls, plots)
+- Phase 4 complete: All 3 plans executed successfully
 
 ### Completed Phases
 1. Phase 01 - Data Pipeline Foundation (5/5 plans complete)
 2. Phase 02 - Environment and Core Likelihood Models (4/4 plans complete)
 3. Phase 03 - Baseline Agents and T5 Likelihood (3/3 plans complete)
+4. Phase 04 - PPO Training Pipeline (3/3 plans complete)
 
 ### Upcoming Phases
-1. Phase 3: Baseline Agents and T5 Likelihood (2/3 plans complete)
-2. Phase 4: PPO Training Pipeline
-3. Phase 5: Evaluation Framework
-4. Phase 6: T5 Policy Integration (optional)
+1. Phase 5: Evaluation Framework
+2. Phase 6: T5 Policy Integration (optional)
 
 ## Performance Metrics
 
@@ -109,6 +108,10 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | Lazy import PPOBuzzer in agents/__init__.py | Avoid hard stable_baselines3 dependency for baseline-only runs | 2026-02-26 |
 | Fallback MC dataset path | run_baselines.py checks data/processed/ when artifacts/ not found | 2026-02-26 |
 | 3 thresholds in smoke config | Reduced sweep (0.5, 0.7, 0.9) vs 5 in default for quick validation | 2026-02-26 |
+| Matplotlib Agg backend | Non-interactive backend for headless environments and CI | 2026-02-26 |
+| Graceful alias_lookup fallback | Empty dict when alias_lookup.json missing, controls still run | 2026-02-26 |
+| MC dataset path fallback | Check data/processed/ when artifacts/ not found for portability | 2026-02-26 |
+| Port qb-rl controls exactly | choices-only, shuffle, alias substitution controls from reference | 2026-02-26 |
 
 ### Architecture Decisions
 - Four-layer modular architecture: Pipeline → Agent → Environment → Model
@@ -132,17 +135,18 @@ None identified yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 04-02: Baseline Agent Orchestration
-- Created evaluation/metrics.py with S_q, ECE, Brier score functions (ported from qb-rl)
-- Created scripts/run_baselines.py orchestrating 4 baseline agents across threshold sweep
-- Added bayesian config section to default.yaml and smoke.yaml
-- Smoke test: 0.9s with TF-IDF, 44 questions, 3 thresholds, all 5 artifact files produced
-- Fixed: lazy PPOBuzzer import, missing bayesian/beta config, fallback MC path
+- Executed Plan 04-03: PPO Training and Evaluation Pipeline
+- Created scripts/train_ppo.py for MLP PPO training with SB3 checkpointing
+- Created scripts/evaluate_all.py with control experiments and visualization generation
+- Created evaluation/controls.py (choices-only, shuffle, alias substitution)
+- Created evaluation/plotting.py (entropy curves, calibration, comparison tables)
+- Full pipeline smoke test: ~12 seconds total (build -> baselines -> train -> evaluate)
+- PPO accuracy: 0.409, mean S_q: 0.260 on 44-question smoke dataset
+- Phase 4 complete: All 3 plans executed successfully
 
 ### Next Session Priority
-1. Plan 04-03: PPO Training Pipeline (final plan in phase)
-2. Phase 5: Evaluation Framework
-3. Phase 6: T5 Policy Integration (optional)
+1. Phase 5: Evaluation Framework (extends evaluation with additional metrics)
+2. Phase 6: T5 Policy Integration (optional)
 
 ### Context for Next Claude
 This is a CS234 final project due this week. We're merging two existing codebases:
