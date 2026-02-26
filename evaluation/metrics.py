@@ -209,6 +209,54 @@ def summarize_buzz_metrics(results: list[Any]) -> dict[str, float]:
     }
 
 
+def per_category_accuracy(
+    results: list[Any],
+    questions: list[Any],
+) -> dict[str, dict[str, float]]:
+    """Compute accuracy and S_q metrics grouped by question category.
+
+    Joins results with questions to extract category field, then groups
+    and computes summarize_buzz_metrics per category.
+
+    Parameters
+    ----------
+    results : list[Any]
+        Episode results from agent evaluation (dicts or dataclasses).
+        Must have qid field for joining.
+    questions : list[Any]
+        Original questions with category field (MCQuestion or similar).
+
+    Returns
+    -------
+    dict[str, dict[str, float]]
+        Mapping from category name to metrics dict with keys:
+        n, buzz_accuracy, mean_buzz_step, mean_sq, mean_reward_like.
+    """
+    from collections import defaultdict
+
+    # Build qid -> category lookup, default to "unknown" for missing
+    qid_to_category: dict[str, str] = {}
+    for q in questions:
+        q_dict = _to_dict(q)
+        cat = q_dict.get("category", "") or ""
+        qid = q_dict.get("qid", "")
+        qid_to_category[qid] = cat if cat else "unknown"
+
+    # Group results by category
+    by_category: dict[str, list[Any]] = defaultdict(list)
+    for r in results:
+        r_dict = _to_dict(r)
+        qid = r_dict.get("qid", "")
+        category = qid_to_category.get(qid, "unknown")
+        by_category[category].append(r)
+
+    # Compute metrics per category
+    return {
+        cat: summarize_buzz_metrics(rows)
+        for cat, rows in sorted(by_category.items())
+    }
+
+
 def calibration_at_buzz(results: list[Any]) -> dict[str, float]:
     """Compute calibration metrics at the buzz decision point.
 
