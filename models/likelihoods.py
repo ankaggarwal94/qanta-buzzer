@@ -503,10 +503,12 @@ def build_likelihood_from_config(
         Supported model types:
         - ``"tfidf"``: TF-IDF cosine similarity (requires ``corpus_texts``)
         - ``"sbert"``: Sentence-BERT semantic similarity
+        - ``"t5"``: T5 encoder semantic similarity
 
         Optional config keys:
         - ``"sbert_name"`` or ``"embedding_model"``: SentenceTransformer model
           name (default: ``"all-MiniLM-L6-v2"``)
+        - ``"t5_name"``: T5 model name (default: ``"t5-base"``)
 
     corpus_texts : list[str] or None
         Text corpus for TF-IDF fitting. Required when ``model == "tfidf"``,
@@ -543,5 +545,9 @@ def build_likelihood_from_config(
         # "embedding_model" (qanta-buzzer default.yaml convention)
         sbert_name = cfg.get("sbert_name", cfg.get("embedding_model", "all-MiniLM-L6-v2"))
         return SBERTLikelihood(model_name=sbert_name)
+
+    if model_name == "t5":
+        t5_name = cfg.get("t5_name", "t5-base")
+        return T5Likelihood(model_name=t5_name)
 
     raise ValueError(f"Unknown likelihood model: {model_name}")
