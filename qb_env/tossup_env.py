@@ -481,3 +481,60 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
 
         obs = self._obs()
         return obs, float(reward), self.terminated, self.truncated, info
+
+
+def make_env_from_config(
+    mc_questions: list[MCQuestion],
+    likelihood_model: LikelihoodModel,
+    config: dict[str, Any],
+) -> TossupMCEnv:
+    """Construct a TossupMCEnv from YAML configuration.
+
+    Factory function that reads the ``environment``, ``data``, and
+    ``likelihood`` sections of a config dict and instantiates a fully
+    configured environment. The likelihood model must be pre-constructed
+    (e.g., via ``build_likelihood_from_config``).
+
+    Parameters
+    ----------
+    mc_questions : list[MCQuestion]
+        List of MCQuestion instances with options and answer profiles.
+        Must be non-empty.
+    likelihood_model : LikelihoodModel
+        Pre-constructed likelihood model for scoring clues against options.
+        Use ``build_likelihood_from_config`` to create one from config.
+    config : dict[str, Any]
+        Full YAML config dict. Must contain the following sections:
+
+        - ``environment``: reward mode, penalties, belief mode
+        - ``data``: K (number of answer choices)
+        - ``likelihood``: beta (softmax temperature)
+
+    Returns
+    -------
+    TossupMCEnv
+        A configured Gymnasium environment ready for ``reset()``.
+
+    Examples
+    --------
+    >>> from qb_data.config import load_config
+    >>> from models.likelihoods import build_likelihood_from_config
+    >>> config = load_config("configs/default.yaml")
+    >>> model = build_likelihood_from_config(config, corpus_texts=corpus)
+    >>> env = make_env_from_config(mc_questions, model, config)
+    >>> obs, info = env.reset()
+    """
+    env_cfg = config["environment"]
+    data_cfg = config["data"]
+    lik_cfg = config["likelihood"]
+    return TossupMCEnv(
+        questions=mc_questions,
+        likelihood_model=likelihood_model,
+        K=int(data_cfg.get("K", 4)),
+        reward_mode=str(env_cfg.get("reward", env_cfg.get("reward_mode", "time_penalty"))),
+        wait_penalty=float(env_cfg.get("wait_penalty", 0.01)),
+        buzz_correct=float(env_cfg.get("buzz_correct", 1.0)),
+        buzz_incorrect=float(env_cfg.get("buzz_incorrect", -0.5)),
+        belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
+        beta=float(lik_cfg.get("beta", 5.0)),
+    )
