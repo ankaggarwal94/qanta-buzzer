@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: 1 of 4
+current_plan: 2 of 4
 status: executing
-last_updated: "2026-02-26T02:21:36.039Z"
+last_updated: "2026-02-26T02:28:30.456Z"
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 9
-  completed_plans: 6
-  percent: 67
+  completed_plans: 7
+  percent: 78
 ---
 
 # Project State: Quiz Bowl RL Buzzer (Unified)
@@ -30,13 +30,14 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 ## Current Position
 
 **Phase:** 2 - Environment and Core Likelihood Models
-**Current Plan:** 1 of 4
+**Current Plan:** 2 of 4
 **Status:** In Progress
-**Progress:** [███████░░░] 67%
+**Progress:** [████████░░] 78%
 
 ### Active Work
 - Completed: Plan 02-01 (Belief features and LikelihoodModel ABC)
-- Next: Plan 02-02 (TF-IDF and SBERT likelihood models with factory)
+- Completed: Plan 02-02 (TF-IDF and SBERT likelihood models with factory)
+- Next: Plan 02-03 (TossupMCEnv Gymnasium environment)
 
 ### Completed Phases
 1. Phase 01 - Data Pipeline Foundation (5/5 plans complete)
@@ -88,6 +89,8 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | Add .gitignore for generated data | Prevent large JSON files from being committed | 2026-02-25 |
 | Port qb-rl features.py exactly | Maintain compatibility with downstream environment and agent plans | 2026-02-25 |
 | LikelihoodModel returns raw scores | Environment applies softmax with temperature (separation of concerns) | 2026-02-25 |
+| Factory supports dual config keys | Both sbert_name and embedding_model keys for cross-project compat | 2026-02-25 |
+| Lazy imports for optional deps | sklearn and sentence_transformers imported inside class constructors | 2026-02-25 |
 
 ### Architecture Decisions
 - Four-layer modular architecture: Pipeline → Agent → Environment → Model
@@ -111,16 +114,17 @@ None identified yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 02-01: Belief Features and LikelihoodModel ABC
-- Created models/ package with __init__.py
-- Ported extract_belief_features() and entropy_of_distribution() from qb-rl
-- Ported LikelihoodModel ABC with embed_and_cache() and _text_key() hashing
-- All verification passed, no deviations from plan
+- Executed Plan 02-02: TF-IDF and SBERT Likelihood Models
+- Added TfIdfLikelihood with corpus fitting and cosine similarity scoring
+- Added SBERTLikelihood with SentenceTransformer and L2-normalized embeddings
+- Created build_likelihood_from_config() factory for YAML-driven construction
+- Updated models/__init__.py with all likelihood exports
+- 1 deviation: factory handles both sbert_name and embedding_model config keys
 
 ### Next Session Priority
-1. Execute Plan 02-02: TF-IDF and SBERT likelihood models with factory
-2. Execute Plan 02-03: TossupMCEnv Gymnasium environment
-3. Execute Plan 02-04: Factory functions and pytest test scaffolding
+1. Execute Plan 02-03: TossupMCEnv Gymnasium environment
+2. Execute Plan 02-04: Factory functions and pytest test scaffolding
+3. Begin Phase 3: Baseline Agents and T5 Likelihood
 
 ### Context for Next Claude
 This is a CS234 final project due this week. We're merging two existing codebases:
