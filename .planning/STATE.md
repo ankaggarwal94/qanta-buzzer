@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_plan: Plan 02 of 3
-status: executing
-last_updated: "2026-02-26T04:24:46.478Z"
+current_plan: Plan 03 of 3
+status: in-progress
+last_updated: "2026-02-26T04:23:22Z"
 progress:
   total_phases: 4
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 15
   completed_plans: 13
-  percent: 80
+  percent: 87
 ---
 
 # Project State: Quiz Bowl RL Buzzer (Unified)
@@ -30,13 +30,13 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 ## Current Position
 
 **Phase:** 4 - PPO Training Pipeline
-**Current Plan:** Plan 02 of 3
+**Current Plan:** Plan 03 of 3
 **Status:** In progress
-**Progress:** [████████░░] 80%
+**Progress:** [████████░░] 87%
 
 ### Active Work
-- Completed: Plan 04-01 (PPO Infrastructure: _common.py, PPOBuzzer, 19 tests)
-- Next: Plan 04-02 (PPO Training Pipeline - training script)
+- Completed: Plan 04-02 (Baseline Orchestration: evaluation metrics, run_baselines.py, smoke test)
+- Next: Plan 04-03 (PPO Training Pipeline - final plan)
 
 ### Completed Phases
 1. Phase 01 - Data Pipeline Foundation (5/5 plans complete)
@@ -105,6 +105,10 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | Lazy import for PPOBuzzer | agents/__init__.py uses __getattr__ to avoid requiring SB3 for baseline-only runs | 2026-02-26 |
 | Direct port from qb-rl PPOBuzzer | Only import path changes to preserve exact logic and SB3 integration | 2026-02-26 |
 | TF-IDF for PPO agent tests | sample_tfidf_env fixture enables 2.4s test execution for 19 PPO tests | 2026-02-26 |
+| TF-IDF for smoke mode baselines | 0.9s execution vs 30s+ with T5-small for baseline sweep | 2026-02-26 |
+| Lazy import PPOBuzzer in agents/__init__.py | Avoid hard stable_baselines3 dependency for baseline-only runs | 2026-02-26 |
+| Fallback MC dataset path | run_baselines.py checks data/processed/ when artifacts/ not found | 2026-02-26 |
+| 3 thresholds in smoke config | Reduced sweep (0.5, 0.7, 0.9) vs 5 in default for quick validation | 2026-02-26 |
 
 ### Architecture Decisions
 - Four-layer modular architecture: Pipeline → Agent → Environment → Model
@@ -128,17 +132,17 @@ None identified yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 04-01: PPO Infrastructure (Phase 4 started)
-- Created scripts/_common.py with config, JSON, path utilities
-- Created agents/ppo_buzzer.py with PPOBuzzer wrapping SB3 PPO
-- PPOEpisodeTrace provides c_trace, g_trace, entropy_trace for S_q metric
-- Added 19 unit tests in tests/test_ppo_buzzer.py (all pass in 2.4s)
-- Full suite: 134 tests passing
+- Executed Plan 04-02: Baseline Agent Orchestration
+- Created evaluation/metrics.py with S_q, ECE, Brier score functions (ported from qb-rl)
+- Created scripts/run_baselines.py orchestrating 4 baseline agents across threshold sweep
+- Added bayesian config section to default.yaml and smoke.yaml
+- Smoke test: 0.9s with TF-IDF, 44 questions, 3 thresholds, all 5 artifact files produced
+- Fixed: lazy PPOBuzzer import, missing bayesian/beta config, fallback MC path
 
 ### Next Session Priority
-1. Plan 04-02: PPO Training Script (baseline runner + PPO training)
-2. Plan 04-03: Smoke test integration
-3. Phase 5: Evaluation Framework
+1. Plan 04-03: PPO Training Pipeline (final plan in phase)
+2. Phase 5: Evaluation Framework
+3. Phase 6: T5 Policy Integration (optional)
 
 ### Context for Next Claude
 This is a CS234 final project due this week. We're merging two existing codebases:
@@ -167,4 +171,4 @@ Key risks to watch:
 
 ---
 *State file initialized: 2026-02-25*
-*Last update: 2026-02-26 (Plan 04-01 completed, Phase 4 in progress)*
+*Last update: 2026-02-26 (Plan 04-02 completed, Phase 4 in progress)*
