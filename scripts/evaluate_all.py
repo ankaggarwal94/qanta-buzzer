@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+"""
+Comprehensive evaluation with control experiments and visualization.
+
+Runs the SoftmaxProfileBuzzer at the best threshold (from baseline sweep),
+then executes control experiments (choices-only, shuffle, alias substitution)
+and generates comparison plots and tables for the CS234 writeup.
+
+Consumes outputs from:
+- build_mc_dataset.py (mc_dataset.json, alias_lookup.json)
+- run_baselines.py (baseline_summary.json)
+- train_ppo.py (ppo_summary.json)
+
+Produces:
+- evaluation_report.json (full eval + controls + baseline + PPO summaries)
+- plots/entropy_vs_clue.png
+- plots/calibration.png
+- plots/comparison.csv
+
+Usage:
+    python scripts/evaluate_all.py --smoke
+    python scripts/evaluate_all.py --config configs/custom.yaml
+    python scripts/evaluate_all.py --mc-path artifacts/main/mc_dataset.json
+
+Ported from qb-rl reference implementation (scripts/evaluate_all.py) with
+import path adaptations for the unified qanta-buzzer codebase.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict
+from pathlib import Path
+import sys
+
+import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agents.bayesian_buzzer import SoftmaxProfileBuzzer
+from evaluation.controls import (
+    run_alias_substitution_control,
+    run_choices_only_control,
+    run_shuffle_control,
+)
+from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+from evaluation.plotting import (
+    plot_calibration_curve,
+    plot_entropy_vs_clue_index,
+    save_comparison_table,
+)
+from models.likelihoods import SBERTLikelihood, T5Likelihood, TfIdfLikelihood
+from scripts._common import ARTIFACT_DIR, load_config, load_json, load_mc_questions, save_json
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns
+    -------
+    argparse.Namespace
+        Parsed arguments with config, smoke, and mc_path fields.
+    """
+    parser = argparse.ArgumentParser(
+        description="Evaluate all agents and controls."
+    )
+    parser.add_argument(
+        "--config", type=str, default=None,
+        help="Path to YAML config file (default: configs/default.yaml).",
+    )
+    parser.add_argument(
+        "--smoke", action="store_true",
+        help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
+    )
+    parser.add_argument(
+        "--mc-path", type=str, default=None,
+        help="Optional MC dataset JSON path (overrides config-derived path).",
+    )
+    return parser.parse_args()
+
+
+def build_likelihood(config: dict, mc_questions: list):
+    """Construct a likelihood model from config.
+
+    Reads config["likelihood"]["model"] to determine the model type and
+    instantiates the appropriate LikelihoodModel subclass.
+
+    Parameters
+    ----------
+    config : dict
+        Full YAML configuration dict. Must contain ``likelihood.model``.
+    mc_questions : list
+        List of MCQuestion instances. Used for TF-IDF corpus construction.
+
+    Returns
+    -------
+    LikelihoodModel
+        Instantiated likelihood model ready for scoring.
+    """
+    model_name = config["likelihood"]["model"]
+
+    if model_name == "tfidf":
+        corpus = (
+            [q.question for q in mc_questions]
+            + [p for q in mc_questions for p in q.option_profiles]
+        )
+        return TfIdfLikelihood(corpus_texts=corpus)
+
+    if model_name == "sbert":
+        sbert_name = config["likelihood"].get(
+            "sbert_name",
+            config["likelihood"].get("embedding_model", "all-MiniLM-L6-v2"),
+        )
+        return SBERTLikelihood(model_name=sbert_name)
+
+    if model_name.startswith("t5"):
+        return T5Likelihood(model_name=model_name)
+
+    raise ValueError(
+        f"Unknown likelihood model: {model_name}. "
+        f"Expected one of: tfidf, sbert, t5-small, t5-base, t5-large."
+    )
+
+
+def pick_best_softmax_threshold(
+    out_dir: Path, default_threshold: float
+) -> float:
+    """Select the best softmax threshold from baseline sweep results.
+
+    Loads baseline_summary.json and extracts the threshold with the
+    highest mean S_q score from the softmax_profile results.
+
+    Parameters
+    ----------
+    out_dir : Path
+        Directory containing baseline_summary.json.
+    default_threshold : float
+        Fallback threshold if baseline summary is unavailable.
+
+    Returns
+    -------
+    float
+        Best threshold by S_q score, or default_threshold if unavailable.
+    """
+    summary_path = out_dir / "baseline_summary.json"
+    if not summary_path.exists():
+        return default_threshold
+    summary = load_json(summary_path)
+    softmax = summary.get("softmax_profile", {})
+    if not softmax:
+        return default_threshold
+    best_t = default_threshold
+    best_sq = float("-inf")
+    for t_str, metrics in softmax.items():
+        sq = float(metrics.get("mean_sq", float("-inf")))
+        if sq > best_sq:
+            best_sq = sq
+            best_t = float(t_str)
+    return best_t
+
+
+def main() -> None:
+    """Run comprehensive evaluation with controls and visualizations."""
+    args = parse_args()
+
+    # Load config: smoke mode auto-selects configs/smoke.yaml
+    if args.smoke and args.config is None:
+        smoke_config = PROJECT_ROOT / "configs" / "smoke.yaml"
+        config = load_config(str(smoke_config) if smoke_config.exists() else None)
+    else:
+        config = load_config(args.config)
+
+    split = "smoke" if args.smoke else "main"
+    out_dir = ARTIFACT_DIR / split
+    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
+
+    # Fallback: check data/processed/ if artifacts path doesn't exist
+    if not mc_path.exists():
+        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
+        if fallback.exists():
+            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
+            mc_path = fallback
+
+    print(f"Loading MC questions from: {mc_path}")
+    mc_questions = load_mc_questions(mc_path)
+    print(f"Loaded {len(mc_questions)} MC questions")
+
+    # Load alias lookup (generated by build_mc_dataset.py)
+    alias_path = out_dir / "alias_lookup.json"
+    if alias_path.exists():
+        alias_lookup = load_json(alias_path)
+    else:
+        print(f"Warning: alias_lookup.json not found at {alias_path}, using empty lookup")
+        alias_lookup = {}
+
+    # Build likelihood model
+    print(f"Building likelihood model: {config['likelihood']['model']}")
+    likelihood_model = build_likelihood(config, mc_questions)
+    beta = float(config["likelihood"].get("beta", 5.0))
+    alpha = float(config["bayesian"].get("alpha", 10.0))
+    default_threshold = float(config["bayesian"]["threshold_sweep"][0])
+    threshold = pick_best_softmax_threshold(out_dir, default_threshold=default_threshold)
+    print(f"Using best softmax threshold: {threshold}")
+
+    # Evaluator function using SoftmaxProfileBuzzer
+    def evaluate_questions(qset):
+        agent = SoftmaxProfileBuzzer(
+            likelihood_model=likelihood_model,
+            threshold=threshold,
+            beta=beta,
+            alpha=alpha,
+        )
+        runs = [asdict(agent.run_episode(q)) for q in qset]
+        summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
+        summary["runs"] = runs
+        return summary
+
+    # --- Run evaluations ---
+    print("Running full evaluation...")
+    full_eval = evaluate_questions(mc_questions)
+
+    print("Running shuffle control...")
+    shuffle_eval = run_shuffle_control(
+        mc_questions, evaluator=lambda qset: evaluate_questions(qset)
+    )
+
+    print("Running alias substitution control...")
+    alias_eval = run_alias_substitution_control(
+        mc_questions,
+        alias_lookup=alias_lookup,
+        evaluator=lambda qset: evaluate_questions(qset),
+    )
+
+    print("Running choices-only control...")
+    choices_only = run_choices_only_control(mc_questions)
+
+    # --- Load existing artifacts ---
+    ppo_summary_path = out_dir / "ppo_summary.json"
+    ppo_summary = load_json(ppo_summary_path) if ppo_summary_path.exists() else {}
+    baseline_summary_path = out_dir / "baseline_summary.json"
+    baseline_summary = (
+        load_json(baseline_summary_path) if baseline_summary_path.exists() else {}
+    )
+
+    # --- Build evaluation report ---
+    report = {
+        "softmax_profile_best_threshold": threshold,
+        "full_eval": {k: v for k, v in full_eval.items() if k != "runs"},
+        "controls": {
+            "choices_only": choices_only,
+            "shuffle": {k: v for k, v in shuffle_eval.items() if k != "runs"},
+            "alias_substitution": {
+                k: v for k, v in alias_eval.items() if k != "runs"
+            },
+        },
+        "baseline_summary": baseline_summary,
+        "ppo_summary": ppo_summary,
+    }
+    save_json(out_dir / "evaluation_report.json", report)
+
+    # --- Generate visualizations ---
+    print("Generating plots...")
+
+    # Entropy vs clue index
+    entropy_traces = [
+        list(r["entropy_trace"])
+        for r in full_eval["runs"]
+        if r.get("entropy_trace")
+    ]
+    max_len = max((len(t) for t in entropy_traces), default=0)
+    padded = np.full((len(entropy_traces), max_len), np.nan, dtype=np.float32)
+    for i, trace in enumerate(entropy_traces):
+        padded[i, : len(trace)] = np.array(trace, dtype=np.float32)
+    entropy_trace = (
+        np.nanmean(padded, axis=0).tolist() if max_len > 0 else []
+    )
+    plot_entropy_vs_clue_index(
+        {"softmax_profile": entropy_trace},
+        out_dir / "plots" / "entropy_vs_clue.png",
+    )
+
+    # Calibration curve
+    confidences = []
+    outcomes = []
+    for row in full_eval["runs"]:
+        idx = min(int(row["buzz_step"]), len(row["g_trace"]) - 1)
+        confidences.append(float(row["g_trace"][idx]))
+        outcomes.append(1 if bool(row["correct"]) else 0)
+    plot_calibration_curve(
+        confidences, outcomes, out_dir / "plots" / "calibration.png"
+    )
+
+    # Comparison table
+    table_rows = [
+        {
+            "agent": "softmax_profile",
+            **{k: v for k, v in full_eval.items() if k != "runs"},
+        },
+        {
+            "agent": "shuffle_control",
+            **{k: v for k, v in shuffle_eval.items() if k != "runs"},
+        },
+        {
+            "agent": "alias_control",
+            **{k: v for k, v in alias_eval.items() if k != "runs"},
+        },
+    ]
+    if ppo_summary:
+        table_rows.append({"agent": "ppo", **ppo_summary})
+    save_comparison_table(table_rows, out_dir / "plots" / "comparison.csv")
+
+    print(f"Wrote evaluation report to: {out_dir / 'evaluation_report.json'}")
+
+
+if __name__ == "__main__":
+    main()
