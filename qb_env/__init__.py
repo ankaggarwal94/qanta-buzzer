@@ -7,5 +7,6 @@ for more clues or BUZZ with a specific answer option.
 """
 
 from qb_env.tossup_env import TossupMCEnv, make_env_from_config
+from qb_env.text_wrapper import TextObservationWrapper
 
-__all__ = ["TossupMCEnv", "make_env_from_config"]
+__all__ = ["TossupMCEnv", "make_env_from_config", "TextObservationWrapper"]
