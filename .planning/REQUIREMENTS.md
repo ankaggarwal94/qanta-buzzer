@@ -46,11 +46,11 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Evaluation
 
 - [x] **EVAL-01**: S_q metric computation: system score = Σ(b_t × g_t) per episode
-- [ ] **EVAL-02**: Calibration metrics: ECE (expected calibration error) and Brier score
-- [ ] **EVAL-03**: Control experiment: choices-only (remove clues, verify ~25% random baseline)
-- [ ] **EVAL-04**: Control experiment: shuffle (permute option order, verify no position bias)
-- [ ] **EVAL-05**: Control experiment: alias substitution (swap answer text, verify robustness)
-- [ ] **EVAL-06**: Comparison plots: calibration curves, entropy vs clue index, agent comparison tables
+- [x] **EVAL-02**: Calibration metrics: ECE (expected calibration error) and Brier score
+- [x] **EVAL-03**: Control experiment: choices-only (remove clues, verify ~25% random baseline)
+- [x] **EVAL-04**: Control experiment: shuffle (permute option order, verify no position bias)
+- [x] **EVAL-05**: Control experiment: alias substitution (swap answer text, verify robustness)
+- [x] **EVAL-06**: Comparison plots: calibration curves, entropy vs clue index, agent comparison tables
 - [x] **EVAL-07**: Per-category accuracy breakdown with summary statistics
 
 ### Configuration
@@ -124,11 +124,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AGT-06 | Phase 3 | Complete |
 | AGT-07 | Phase 4 | Complete |
 | EVAL-01 | Phase 5 | Complete |
-| EVAL-02 | Phase 5 | Pending |
-| EVAL-03 | Phase 5 | Pending |
-| EVAL-04 | Phase 5 | Pending |
-| EVAL-05 | Phase 5 | Pending |
-| EVAL-06 | Phase 5 | Pending |
+| EVAL-02 | Phase 5 | Complete |
+| EVAL-03 | Phase 5 | Complete |
+| EVAL-04 | Phase 5 | Complete |
+| EVAL-05 | Phase 5 | Complete |
+| EVAL-06 | Phase 5 | Complete |
 | EVAL-07 | Phase 5 | Complete |
 | CFG-01 | Phase 1 | Complete |
 | CFG-02 | Phase 2 | Complete |
