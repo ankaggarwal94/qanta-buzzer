@@ -66,7 +66,7 @@ Include if time permits after core pipeline works.
 
 - [x] **STR-01**: T5PolicyModel with custom policy heads (wait/answer/value) as alternative to MLP policy
 - [x] **STR-02**: Supervised warm-start training for T5 policy on complete questions
-- [ ] **STR-03**: Comparison experiment: T5-as-likelihood (MLP policy) vs T5-as-policy (end-to-end)
+- [x] **STR-03**: Comparison experiment: T5-as-likelihood (MLP policy) vs T5-as-policy (end-to-end)
 
 ## v2 Requirements
 
@@ -136,7 +136,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CFG-04 | Phase 1 | Complete |
 | STR-01 | Phase 6 | Complete |
 | STR-02 | Phase 6 | Complete |
-| STR-03 | Phase 6 | Pending |
+| STR-03 | Phase 6 | Complete |
 
 **Coverage:**
 - v1 requirements: 35 total
