@@ -57,7 +57,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [x] **CFG-01**: YAML configuration system with sections: data, likelihood, environment, ppo, evaluation
 - [x] **CFG-02**: Factory methods for all components: `make_env_from_config()`, `build_likelihood_from_config()`
-- [ ] **CFG-03**: Four-stage pipeline scripts: build_mc_dataset, run_baselines, train_ppo, evaluate_all
+- [x] **CFG-03**: Four-stage pipeline scripts: build_mc_dataset, run_baselines, train_ppo, evaluate_all
 - [x] **CFG-04**: CLI override support: `--config`, `--smoke`, key overrides
 
 ## v1 Stretch Goals
@@ -132,7 +132,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EVAL-07 | Phase 5 | Pending |
 | CFG-01 | Phase 1 | Complete |
 | CFG-02 | Phase 2 | Complete |
-| CFG-03 | Phase 4 | Pending |
+| CFG-03 | Phase 4 | Complete |
 | CFG-04 | Phase 1 | Complete |
 | STR-01 | Phase 6 | Pending |
 | STR-02 | Phase 6 | Pending |
