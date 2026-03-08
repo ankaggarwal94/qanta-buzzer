@@ -1,16 +1,107 @@
 """Configuration loading and management utilities.
 
-Provides functions to load YAML configurations and merge CLI overrides
-using dot notation (e.g., "data.K=5" updates config["data"]["K"]).
+Provides functions to load YAML configurations, apply small
+cross-codebase compatibility normalizations, and merge CLI overrides
+using dot notation (e.g., ``data.K=5`` updates ``config["data"]["K"]``).
 """
 
 import argparse
-import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 
-def load_config(config_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
+def normalize_config(
+    config: Dict[str, Any],
+    smoke: bool = False,
+) -> Dict[str, Any]:
+    """Apply compatibility defaults to a loaded configuration.
+
+    Parameters
+    ----------
+    config : dict
+        Parsed configuration dictionary.
+    smoke : bool
+        Whether the caller intends to run in smoke mode.
+
+    Returns
+    -------
+    dict
+        Normalized configuration dictionary.
+    """
+    data_cfg = config.setdefault("data", {})
+    env_cfg = config.setdefault("environment", {})
+    lik_cfg = config.setdefault("likelihood", {})
+
+    if "reward" in env_cfg and "reward_mode" not in env_cfg:
+        env_cfg["reward_mode"] = env_cfg["reward"]
+    elif "reward_mode" in env_cfg and "reward" not in env_cfg:
+        env_cfg["reward"] = env_cfg["reward_mode"]
+
+    if smoke and data_cfg.get("dataset_smoke") and "dataset" not in data_cfg:
+        data_cfg["dataset"] = data_cfg["dataset_smoke"]
+    if smoke and data_cfg.get("dataset_smoke_config") and "dataset_config" not in data_cfg:
+        data_cfg["dataset_config"] = data_cfg["dataset_smoke_config"]
+
+    if "embedding_model" in lik_cfg and "sbert_name" not in lik_cfg:
+        lik_cfg["sbert_name"] = lik_cfg["embedding_model"]
+    if "sbert_name" in lik_cfg and "embedding_model" not in lik_cfg:
+        lik_cfg["embedding_model"] = lik_cfg["sbert_name"]
+
+    return config
+
+
+def resolve_data_loading_options(
+    config: Dict[str, Any],
+    smoke: bool = False,
+) -> Dict[str, Any]:
+    """Resolve CSV/Hugging Face data-loading options from a config dict.
+
+    Parameters
+    ----------
+    config : dict
+        Parsed configuration dictionary.
+    smoke : bool
+        Whether the caller intends to run in smoke mode.
+
+    Returns
+    -------
+    dict
+        Resolved data-loading settings.
+    """
+    data_cfg = config.get("data", {})
+    use_smoke_dataset = smoke and any(
+        data_cfg.get(key) is not None
+        for key in ("dataset_smoke", "dataset_smoke_config", "split_smoke", "csv_smoke_path")
+    )
+
+    csv_path = data_cfg.get("csv_path")
+    if smoke and data_cfg.get("csv_smoke_path"):
+        csv_path = data_cfg["csv_smoke_path"]
+
+    dataset = data_cfg.get("dataset")
+    dataset_config = data_cfg.get("dataset_config")
+    split = data_cfg.get("split", "eval")
+
+    if use_smoke_dataset:
+        dataset = data_cfg.get("dataset_smoke", dataset)
+        dataset_config = data_cfg.get("dataset_smoke_config", dataset_config)
+        split = data_cfg.get("split_smoke", split)
+
+    return {
+        "csv_path": csv_path,
+        "dataset": dataset,
+        "dataset_config": dataset_config,
+        "split": split,
+        "use_huggingface": bool(data_cfg.get("use_huggingface", False) or dataset),
+        "max_questions": data_cfg.get("max_questions"),
+        "uses_dataset_smoke": use_smoke_dataset,
+    }
+
+
+def load_config(
+    config_path: Optional[Union[str, Path]] = None,
+    smoke: bool = False,
+) -> Dict[str, Any]:
     """Load configuration from YAML file.
 
     Parameters
@@ -40,19 +131,35 @@ def load_config(config_path: Optional[Union[str, Path]] = None) -> Dict[str, Any
 
     # Default to configs/default.yaml if no path given
     if config_path is None:
-        # Get the project root (parent of qb_data)
         project_root = Path(__file__).parent.parent
-        config_path = project_root / "configs" / "default.yaml"
+        default_path = project_root / "configs" / "default.yaml"
+        smoke_path = project_root / "configs" / "smoke.yaml"
+
+        if smoke and default_path.exists():
+            with open(default_path, "r", encoding="utf-8") as f:
+                default_config = yaml.safe_load(f) or {}
+            default_data = default_config.get("data", {})
+            if any(
+                default_data.get(key) is not None
+                for key in ("dataset_smoke", "dataset_smoke_config", "split_smoke", "csv_smoke_path")
+            ):
+                config_path = default_path
+            elif smoke_path.exists():
+                config_path = smoke_path
+            else:
+                config_path = default_path
+        else:
+            config_path = default_path
     else:
         config_path = Path(config_path)
 
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-    with open(config_path, "r") as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    return config
+    return normalize_config(config or {}, smoke=smoke)
 
 
 def merge_overrides(
@@ -97,7 +204,7 @@ def merge_overrides(
         final_key = keys[-1]
         current[final_key] = value
 
-    return config
+    return normalize_config(config)
 
 
 def build_argparse_overrides(args: argparse.Namespace) -> Dict[str, Any]:
@@ -124,12 +231,7 @@ def build_argparse_overrides(args: argparse.Namespace) -> Dict[str, Any]:
 
     # Handle smoke test mode
     if hasattr(args, "smoke") and args.smoke:
-        # Load smoke config as base instead of default
-        project_root = Path(__file__).parent.parent
-        smoke_path = project_root / "configs" / "smoke.yaml"
-        if smoke_path.exists():
-            # Return special marker to load smoke config
-            overrides["__config_path__"] = str(smoke_path)
+        overrides["__smoke__"] = True
 
     # Handle custom config path
     if hasattr(args, "config") and args.config:
@@ -240,9 +342,10 @@ def load_config_with_overrides(args: argparse.Namespace) -> Dict[str, Any]:
 
     # Check for special config path
     config_path = overrides.pop("__config_path__", None)
+    smoke = bool(overrides.pop("__smoke__", False))
 
     # Load base config
-    config = load_config(config_path)
+    config = load_config(config_path, smoke=smoke)
 
     # Apply remaining overrides
     if overrides:
@@ -255,6 +358,8 @@ def load_config_with_overrides(args: argparse.Namespace) -> Dict[str, Any]:
 __all__ = [
     "load_config",
     "merge_overrides",
+    "normalize_config",
+    "resolve_data_loading_options",
     "build_argparse_overrides",
     "add_config_args",
     "load_config_with_overrides",

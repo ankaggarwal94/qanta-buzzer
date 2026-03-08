@@ -19,6 +19,7 @@ Ported from qb-rl reference implementation (models/likelihoods.py lines 1-38).
 from __future__ import annotations
 
 import hashlib
+import os
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -346,6 +347,55 @@ class SBERTLikelihood(LikelihoodModel):
         return sims.astype(np.float32)
 
 
+class OpenAILikelihood(LikelihoodModel):
+    """OpenAI embedding likelihood model using normalized embedding similarity.
+
+    This path is optional and only activates when explicitly selected in config.
+    It requires both the ``openai`` Python package and ``OPENAI_API_KEY`` to be
+    available at runtime.
+    """
+
+    def __init__(
+        self,
+        model: str = "text-embedding-3-small",
+        api_key: str | None = None,
+    ) -> None:
+        super().__init__()
+
+        resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not resolved_api_key:
+            raise RuntimeError(
+                "OpenAI likelihood requires OPENAI_API_KEY to be set."
+            )
+
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise ImportError(
+                "OpenAI likelihood requires the openai package. "
+                "Install it with: pip install -e .[openai] or pip install openai."
+            ) from exc
+
+        self.model = model
+        self.client = OpenAI(api_key=resolved_api_key)
+
+    def _embed_batch(self, texts: list[str]) -> np.ndarray:
+        """Embed texts via the OpenAI embeddings API and L2-normalize them."""
+        response = self.client.embeddings.create(model=self.model, input=texts)
+        vectors = [np.array(item.embedding, dtype=np.float32) for item in response.data]
+        embeddings = np.stack(vectors)
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        return (embeddings / norms).astype(np.float32)
+
+    def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
+        """Score each option using cosine similarity over normalized embeddings."""
+        clue_emb = self.embed_and_cache([clue_prefix])[0]
+        option_embs = self.embed_and_cache(option_profiles)
+        sims = option_embs @ clue_emb
+        return sims.astype(np.float32)
+
+
 class T5Likelihood(LikelihoodModel):
     """T5 encoder likelihood model using mean-pooled semantic embeddings.
 
@@ -503,11 +553,15 @@ def build_likelihood_from_config(
         Supported model types:
         - ``"tfidf"``: TF-IDF cosine similarity (requires ``corpus_texts``)
         - ``"sbert"``: Sentence-BERT semantic similarity
-        - ``"t5"``: T5 encoder semantic similarity
+        - ``"openai"``: OpenAI embedding similarity
+        - ``"t5"`` / ``"t5-small"`` / ``"t5-base"`` / ``"t5-large"``:
+          T5 encoder semantic similarity
 
         Optional config keys:
         - ``"sbert_name"`` or ``"embedding_model"``: SentenceTransformer model
           name (default: ``"all-MiniLM-L6-v2"``)
+        - ``"openai_model"``: OpenAI embedding model name
+          (default: ``"text-embedding-3-small"``)
         - ``"t5_name"``: T5 model name (default: ``"t5-base"``)
 
     corpus_texts : list[str] or None
@@ -546,8 +600,17 @@ def build_likelihood_from_config(
         sbert_name = cfg.get("sbert_name", cfg.get("embedding_model", "all-MiniLM-L6-v2"))
         return SBERTLikelihood(model_name=sbert_name)
 
+    if model_name == "openai":
+        return OpenAILikelihood(
+            model=cfg.get("openai_model", "text-embedding-3-small"),
+        )
+
     if model_name == "t5":
         t5_name = cfg.get("t5_name", "t5-base")
+        return T5Likelihood(model_name=t5_name)
+
+    if isinstance(model_name, str) and model_name.startswith("t5"):
+        t5_name = model_name
         return T5Likelihood(model_name=t5_name)
 
     raise ValueError(f"Unknown likelihood model: {model_name}")

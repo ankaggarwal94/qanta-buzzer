@@ -92,6 +92,170 @@ def _generate_qid(text: str) -> str:
     return f"qid-{hash_obj.hexdigest()[:12]}"
 
 
+def _coerce_human_buzz_positions(value: Any) -> Optional[List[Tuple[int, int]]]:
+    """Coerce various metadata formats into ``(position, count)`` tuples."""
+    if value is None:
+        return None
+
+    if isinstance(value, list):
+        result: List[Tuple[int, int]] = []
+        for item in value:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                try:
+                    result.append((int(item[0]), int(item[1])))
+                except (TypeError, ValueError):
+                    continue
+            elif isinstance(item, dict):
+                pos = item.get("position")
+                count = item.get("count", 1)
+                if pos is None:
+                    continue
+                try:
+                    result.append((int(pos), int(count)))
+                except (TypeError, ValueError):
+                    continue
+        return result or None
+
+    return None
+
+
+def _coerce_run_indices(run_indices: Any, token_count: int) -> List[int]:
+    """Validate and coerce run indices into a sorted unique list."""
+    clean: List[int] = []
+    for idx in run_indices or []:
+        try:
+            clean.append(int(idx))
+        except (TypeError, ValueError):
+            continue
+
+    if not clean:
+        if token_count <= 0:
+            raise ValueError("question must contain at least one token")
+        clean = list(range(token_count))
+
+    clean = sorted(set(clean))
+    if clean[0] < 0 or clean[-1] > token_count - 1:
+        raise ValueError(
+            f"run_indices out of bounds: min={clean[0]} max={clean[-1]} token_count={token_count}"
+        )
+    return clean
+
+
+def parse_row(row: Dict[str, Any]) -> TossupQuestion:
+    """Parse a qb-rl/HuggingFace-style row into ``TossupQuestion``."""
+    question = str(row["question"])
+    tokens = question.split()
+    metadata = row.get("metadata", {}) or {}
+    answer_primary = str(
+        row.get("answer_primary") or (row.get("clean_answers") or [""])[0]
+    ).strip()
+    clean_answers = [str(x) for x in (row.get("clean_answers") or [])]
+    if not clean_answers and answer_primary:
+        clean_answers = [answer_primary]
+
+    run_indices = _coerce_run_indices(
+        row.get("run_indices") or [],
+        token_count=len(tokens),
+    )
+
+    normalized_question = " ".join(question.split())
+    normalized_tokens = " ".join(tokens)
+    if normalized_tokens != normalized_question:
+        raise ValueError("tokenization roundtrip mismatch")
+    if max(run_indices) > len(tokens) - 1:
+        raise ValueError("run_indices out of bounds")
+
+    cumulative_prefixes = [" ".join(tokens[: idx + 1]) for idx in run_indices]
+    category = str(metadata.get("category") or row.get("category") or "")
+    human_buzz_positions = _coerce_human_buzz_positions(
+        metadata.get("human_buzz_positions") or row.get("human_buzz_positions")
+    )
+
+    qid_raw = row.get("qid") or row.get("question_id") or row.get("id")
+    if qid_raw is None:
+        qid_raw = _generate_qid(question)
+
+    return TossupQuestion(
+        qid=str(qid_raw),
+        question=question,
+        tokens=tokens,
+        answer_primary=answer_primary,
+        clean_answers=clean_answers,
+        run_indices=run_indices,
+        human_buzz_positions=human_buzz_positions,
+        category=category,
+        cumulative_prefixes=cumulative_prefixes,
+    )
+
+
+def load_tossup_questions(
+    dataset: str,
+    dataset_config: Optional[str] = None,
+    split: str = "eval",
+    limit: Optional[int] = None,
+) -> List[TossupQuestion]:
+    """Load tossup questions from Hugging Face datasets using qb-rl semantics."""
+    try:
+        from datasets import load_dataset
+    except ImportError as exc:
+        raise ImportError(
+            "datasets is required for Hugging Face loading. Install it with: pip install datasets"
+        ) from exc
+
+    if dataset_config:
+        ds = load_dataset(dataset, dataset_config, split=split)
+    else:
+        ds = load_dataset(dataset, split=split)
+
+    if limit is not None:
+        ds = ds.select(range(min(int(limit), len(ds))))
+
+    return [parse_row(dict(row)) for row in ds]
+
+
+def load_tossup_questions_from_config(
+    config: Dict[str, Any],
+    smoke: bool = False,
+) -> List[TossupQuestion]:
+    """Load tossups from config, supporting qb-rl and qanta-buzzer keys."""
+    from qb_data.config import resolve_data_loading_options
+
+    data_opts = resolve_data_loading_options(config, smoke=smoke)
+    csv_path = data_opts.get("csv_path")
+    dataset = data_opts.get("dataset")
+    dataset_config = data_opts.get("dataset_config")
+    split = data_opts.get("split", "eval")
+    limit = data_opts.get("max_questions")
+
+    if csv_path and Path(csv_path).exists():
+        questions = QANTADatasetLoader.load_from_csv(str(csv_path))
+    elif dataset:
+        questions = load_tossup_questions(
+            dataset=str(dataset),
+            dataset_config=str(dataset_config) if dataset_config else None,
+            split=str(split),
+            limit=int(limit) if limit is not None else None,
+        )
+    elif csv_path and data_opts.get("use_huggingface"):
+        from qb_data.huggingface_loader import try_huggingface_fallback
+
+        questions = try_huggingface_fallback(str(csv_path))
+        if questions is None:
+            raise FileNotFoundError(
+                f"Could not load questions from missing CSV path {csv_path} via Hugging Face fallback"
+            )
+    else:
+        raise FileNotFoundError(
+            "No valid data source configured. Provide data.csv_path or "
+            "data.dataset/data.dataset_config for qb-rl compatibility."
+        )
+
+    if limit is not None:
+        questions = questions[: int(limit)]
+
+    return questions
+
+
 class QANTADatasetLoader:
     """
     Loader for QANTA-format quiz bowl CSV files.

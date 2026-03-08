@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from qb_data import TossupQuestion
 from qb_data.answer_profiles import AnswerProfileBuilder
-from qb_data.config import load_config, merge_overrides
+from qb_data.config import load_config, merge_overrides, resolve_data_loading_options
 from qb_data.data_loader import QANTADatasetLoader
 from qb_data.dataset_splits import create_stratified_splits
 from qb_data.huggingface_loader import load_from_huggingface
@@ -230,9 +230,8 @@ def main():
     start_time = time.time()
 
     # Load configuration
-    config_path = 'configs/smoke.yaml' if args.smoke else args.config
-    print(f"Loading configuration from {config_path}")
-    config = load_config(config_path)
+    print("Loading configuration...")
+    config = load_config(args.config, smoke=args.smoke)
 
     # Apply overrides
     overrides = parse_overrides(args)
@@ -247,29 +246,35 @@ def main():
     # Load questions
     print("\nLoading questions...")
     questions = None
+    data_opts = resolve_data_loading_options(config, smoke=args.smoke)
 
     # Try CSV first
-    csv_path = config['data'].get('csv_path', 'data/questions.csv')
-    if Path(csv_path).exists():
+    csv_path = data_opts.get('csv_path')
+    if csv_path and Path(csv_path).exists():
         print(f"Loading from CSV: {csv_path}")
         loader = QANTADatasetLoader()
         questions = loader.load_from_csv(csv_path)
         print(f"Loaded {len(questions)} questions from CSV")
 
     # Fallback to HuggingFace if configured
-    if questions is None and config['data'].get('use_huggingface', False):
+    if questions is None and data_opts.get('use_huggingface'):
         print("CSV not found, falling back to HuggingFace")
-        dataset_name = config['data'].get('dataset', 'entitize/qanta')
-        questions = load_from_huggingface(dataset_name)
+        dataset_name = data_opts.get('dataset') or 'qanta-challenge/acf-co24-tossups'
+        questions = load_from_huggingface(
+            dataset_name,
+            config_name=data_opts.get('dataset_config'),
+            split=data_opts.get('split', 'eval'),
+        )
         print(f"Loaded {len(questions)} questions from HuggingFace")
 
     if questions is None:
         raise FileNotFoundError(f"Could not load questions from {csv_path} and HuggingFace fallback not enabled")
 
-    # Apply smoke test limit
-    if args.smoke and len(questions) > 50:
-        print(f"Smoke test mode: limiting to 50 questions")
-        questions = questions[:50]
+    # Apply configured limit after loading
+    max_questions = data_opts.get('max_questions')
+    if max_questions is not None and len(questions) > int(max_questions):
+        print(f"Limiting dataset to {int(max_questions)} questions")
+        questions = questions[: int(max_questions)]
 
     # Build answer profiles
     print("\nBuilding answer profiles...")
@@ -285,6 +290,11 @@ def main():
     mc_builder = MCBuilder(
         K=config['data']['K'],
         strategy=config['data']['distractor_strategy'],
+        embedding_model=config['likelihood'].get(
+            'sbert_name',
+            config['likelihood'].get('embedding_model', 'all-MiniLM-L6-v2'),
+        ),
+        openai_model=config['likelihood'].get('openai_model', 'text-embedding-3-small'),
         **config['mc_guards']
     )
 

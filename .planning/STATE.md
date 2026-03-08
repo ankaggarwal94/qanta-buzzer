@@ -4,7 +4,7 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: Not started
 status: completed
-last_updated: "2026-02-26T06:58:33.651Z"
+last_updated: "2026-03-06T18:00:00.000Z"
 progress:
   total_phases: 6
   completed_phases: 5
@@ -121,6 +121,10 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | Loss scaled by 1/grad_accum_steps | Correct gradient magnitude when accumulating over multiple batches | 2026-02-26 |
 | Nested smoke section in config YAML | Clean override pattern without separate config file | 2026-02-26 |
 | Best model by validation accuracy | checkpoints/supervised/best_model/ tracks highest val_acc across epochs | 2026-02-26 |
+| Keep qanta-buzzer canonical | Bridge qb-rl into the unified repo instead of restoring qb-rl layout | 2026-03-06 |
+| Add qb-rl compatibility shims | Preserve old imports/config keys with thin re-exports and aliases | 2026-03-06 |
+| OpenAI support is optional | Default workflows remain offline-friendly; OpenAI activates only when selected | 2026-03-06 |
+| Rewrite stale root docs | `.planning/` plus codebase are the source of truth over stale CLAUDE guidance | 2026-03-06 |
 | Phase 05 P01 | 2min | 2 tasks | 3 files |
 | Phase 05 P02 | 3min | 3 tasks | 1 files |
 | Phase 06 P01 | 5min | 3 tasks | 3 files |

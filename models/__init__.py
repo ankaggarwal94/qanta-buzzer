@@ -8,6 +8,7 @@ for the quiz bowl RL buzzer system.
 from models.features import extract_belief_features, entropy_of_distribution
 from models.likelihoods import (
     LikelihoodModel,
+    OpenAILikelihood,
     SBERTLikelihood,
     T5Likelihood,
     TfIdfLikelihood,
@@ -31,6 +32,7 @@ __all__ = [
     "LikelihoodModel",
     "TfIdfLikelihood",
     "SBERTLikelihood",
+    "OpenAILikelihood",
     "T5Likelihood",
     "build_likelihood_from_config",
     "T5PolicyModel",

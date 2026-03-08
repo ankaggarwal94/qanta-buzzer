@@ -15,8 +15,8 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from models.likelihoods import build_likelihood_from_config
+from qb_data.config import load_config as load_yaml_config
 from qb_data.mc_builder import MCQuestion
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +24,7 @@ DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "default.yaml"
 ARTIFACT_DIR = PROJECT_ROOT / "artifacts"
 
 
-def load_config(config_path: str | None = None) -> dict[str, Any]:
+def load_config(config_path: str | None = None, smoke: bool = False) -> dict[str, Any]:
     """Load YAML configuration from a file path.
 
     Parameters
@@ -38,9 +38,19 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
         Parsed config dict with nested structure (data, likelihood,
         environment, ppo, etc.).
     """
-    cfg_path = Path(config_path) if config_path else DEFAULT_CONFIG
-    with cfg_path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    return load_yaml_config(config_path, smoke=smoke)
+
+
+def build_likelihood_model(config: dict[str, Any], mc_questions: list[MCQuestion]):
+    """Build a likelihood model with shared TF-IDF corpus handling."""
+    corpus = None
+    if config["likelihood"].get("model") == "tfidf":
+        corpus = [q.question for q in mc_questions] + [
+            profile
+            for question in mc_questions
+            for profile in question.option_profiles
+        ]
+    return build_likelihood_from_config(config, corpus_texts=corpus)
 
 
 def ensure_dir(path: str | Path) -> Path:
