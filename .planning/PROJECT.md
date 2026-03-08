@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A unified RL-based quiz bowl buzzer system that decides when to buzz in and which answer to select as clues are revealed incrementally. Built on qb-rl's modular architecture (Gymnasium env, YAML config, belief features, S_q scoring) with qanta-buzzer's T5 encoder integrated as both a likelihood model and an optional policy encoder. Supports MLP policy on belief features (SB3 PPO) and T5 end-to-end policy with custom heads. CS234 final project, shipped v1.0.
+A unified RL-based quiz bowl buzzer system that decides when to buzz in and which answer to select as clues are revealed incrementally. Built on qb-rl's modular architecture (Gymnasium env, YAML config, belief features, S_q scoring) with qanta-buzzer's T5 encoder integrated as both a likelihood model and an optional policy encoder. Supports MLP policy on belief features (SB3 PPO), T5 end-to-end policy with custom heads, qb-rl compatibility shims, and optional OpenAI embeddings for bridge workflows. CS234 final project, shipped v1.0 with a compatibility bridge.
 
 ## Core Value
 
@@ -30,6 +30,8 @@ A principled, modular RL system that produces rigorous experimental results — 
 - ✓ Smoke test mode (`--smoke`) completing full pipeline in <15 seconds — v1.0
 - ✓ CSV primary data source with HuggingFace fallback — v1.0
 - ✓ Comparison experiment: T5-as-likelihood vs T5-as-policy — v1.0
+- ✓ qb-rl compatibility bridge for legacy imports and config aliases — v1.0+
+- ✓ Optional OpenAI embedding support for `likelihood.model=openai` and `openai_profile` distractor ranking — v1.0+
 
 ### Active
 
@@ -38,7 +40,7 @@ A principled, modular RL system that produces rigorous experimental results — 
 ### Out of Scope
 
 - Web UI or interactive demo — not needed for writeup
-- OpenAI embedding likelihood model — API cost, SBERT sufficient
+- OpenAI as the default path — support exists, but remains opt-in
 - Real-time quiz bowl game integration — academic project only
 - Multi-GPU distributed training — single GPU/MPS sufficient for dataset size
 - Custom PPO for MLP policy — SB3 is battle-tested (custom PPO only for T5 policy)
@@ -68,6 +70,9 @@ A principled, modular RL system that produces rigorous experimental results — 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Rebuild around qb-rl architecture | Cleaner modularity, better eval framework, S_q metric | ✓ Good — clean separation across 7 packages |
+| Keep qanta-buzzer canonical and add shims | Avoid structural churn while preserving qb-rl compatibility | ✓ Good — additive bridge, no codebase rollback |
+| OpenAI support is optional only | Preserve offline/local default workflows and avoid forced API dependency | ✓ Good — explicit opt-in via install extra + env var |
+| `.planning/` overrides stale bridge docs | Durable tracked state must match repo reality | ✓ Good — README and CLAUDE aligned to current code |
 | T5 as both likelihood model and policy encoder | Maximize flexibility, compare approaches in writeup | ✓ Good — both approaches implemented and comparable |
 | Supervised warm-start as config toggle | Useful for T5 policy, unnecessary for MLP policy | ✓ Good — 3-5x faster convergence for T5 |
 | CSV primary, HF optional | Data already local, minimize external dependencies | ✓ Good — avoids network dependency |
@@ -77,4 +82,4 @@ A principled, modular RL system that produces rigorous experimental results — 
 | TF-IDF for fast agent tests, SBERT/T5 for semantic | Keeps test suite fast (<30s) | ✓ Good — 204 tests in ~10s |
 
 ---
-*Last updated: 2026-02-26 after v1.0 milestone*
+*Last updated: 2026-03-06 after qb-rl compatibility bridge*

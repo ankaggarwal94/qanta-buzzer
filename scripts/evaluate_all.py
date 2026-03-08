@@ -55,8 +55,14 @@ from evaluation.plotting import (
     plot_entropy_vs_clue_index,
     save_comparison_table,
 )
-from models.likelihoods import SBERTLikelihood, T5Likelihood, TfIdfLikelihood
-from scripts._common import ARTIFACT_DIR, load_config, load_json, load_mc_questions, save_json
+from scripts._common import (
+    ARTIFACT_DIR,
+    build_likelihood_model,
+    load_config,
+    load_json,
+    load_mc_questions,
+    save_json,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -83,49 +89,6 @@ def parse_args() -> argparse.Namespace:
         help="Optional MC dataset JSON path (overrides config-derived path).",
     )
     return parser.parse_args()
-
-
-def build_likelihood(config: dict, mc_questions: list):
-    """Construct a likelihood model from config.
-
-    Reads config["likelihood"]["model"] to determine the model type and
-    instantiates the appropriate LikelihoodModel subclass.
-
-    Parameters
-    ----------
-    config : dict
-        Full YAML configuration dict. Must contain ``likelihood.model``.
-    mc_questions : list
-        List of MCQuestion instances. Used for TF-IDF corpus construction.
-
-    Returns
-    -------
-    LikelihoodModel
-        Instantiated likelihood model ready for scoring.
-    """
-    model_name = config["likelihood"]["model"]
-
-    if model_name == "tfidf":
-        corpus = (
-            [q.question for q in mc_questions]
-            + [p for q in mc_questions for p in q.option_profiles]
-        )
-        return TfIdfLikelihood(corpus_texts=corpus)
-
-    if model_name == "sbert":
-        sbert_name = config["likelihood"].get(
-            "sbert_name",
-            config["likelihood"].get("embedding_model", "all-MiniLM-L6-v2"),
-        )
-        return SBERTLikelihood(model_name=sbert_name)
-
-    if model_name.startswith("t5"):
-        return T5Likelihood(model_name=model_name)
-
-    raise ValueError(
-        f"Unknown likelihood model: {model_name}. "
-        f"Expected one of: tfidf, sbert, t5-small, t5-base, t5-large."
-    )
 
 
 def pick_best_softmax_threshold(
@@ -169,12 +132,7 @@ def main() -> None:
     """Run comprehensive evaluation with controls and visualizations."""
     args = parse_args()
 
-    # Load config: smoke mode auto-selects configs/smoke.yaml
-    if args.smoke and args.config is None:
-        smoke_config = PROJECT_ROOT / "configs" / "smoke.yaml"
-        config = load_config(str(smoke_config) if smoke_config.exists() else None)
-    else:
-        config = load_config(args.config)
+    config = load_config(args.config, smoke=args.smoke)
 
     split = "smoke" if args.smoke else "main"
     out_dir = ARTIFACT_DIR / split
@@ -201,7 +159,7 @@ def main() -> None:
 
     # Build likelihood model
     print(f"Building likelihood model: {config['likelihood']['model']}")
-    likelihood_model = build_likelihood(config, mc_questions)
+    likelihood_model = build_likelihood_model(config, mc_questions)
     beta = float(config["likelihood"].get("beta", 5.0))
     alpha = float(config["bayesian"].get("alpha", 10.0))
     default_threshold = float(config["bayesian"]["threshold_sweep"][0])

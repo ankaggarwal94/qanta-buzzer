@@ -197,7 +197,7 @@ The research benefits from two working reference implementations (qb-rl and qant
 ## Sources
 
 ### Primary (HIGH confidence)
-- qb-rl codebase analysis (/Users/ankit.aggarwal/Dropbox/Stanford/CS234/Final Project/qb-rl/) — verified working stack, architecture patterns, evaluation metrics
+- qb-rl codebase analysis (/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/) — verified working stack, architecture patterns, evaluation metrics
 - qanta-buzzer codebase analysis (this repository) — T5 integration, supervised warm-start, policy head design
 - CS234 project CLAUDE.md files — project constraints, testing commands, conventions
 - qb-rl CONCERNS.md — explicit warnings about memory leaks, gradient accumulation issues

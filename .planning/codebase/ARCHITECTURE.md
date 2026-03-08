@@ -166,7 +166,7 @@
 ## Entry Points
 
 **main.py:**
-- Location: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/Final Project/qanta-buzzer/main.py`
+- Location: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/main.py`
 - Triggers: `python main.py --mode {supervised|ppo|full|eval}`
 - Responsibilities:
   - Parse CLI arguments (mode, model_path, hyperparameter overrides, seed)

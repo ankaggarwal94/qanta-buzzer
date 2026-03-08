@@ -1,0 +1,108 @@
+{
+  "threshold": {
+    "0.5": {
+      "n": 44.0,
+      "buzz_accuracy": 0.38636363636363635,
+      "mean_buzz_step": 3.5,
+      "mean_sq": 0.24329479467724396,
+      "mean_reward_like": 0.07954545454545454,
+      "ece": 0.0,
+      "brier": 0.0,
+      "n_calibration": 44.0
+    },
+    "0.7": {
+      "n": 44.0,
+      "buzz_accuracy": 0.38636363636363635,
+      "mean_buzz_step": 3.9545454545454546,
+      "mean_sq": 0.12951727467749788,
+      "mean_reward_like": 0.07954545454545454,
+      "ece": 0.0,
+      "brier": 0.0,
+      "n_calibration": 44.0
+    },
+    "0.9": {
+      "n": 44.0,
+      "buzz_accuracy": 0.38636363636363635,
+      "mean_buzz_step": 4.045454545454546,
+      "mean_sq": 0.05277608956128622,
+      "mean_reward_like": 0.07954545454545454,
+      "ece": 0.0,
+      "brier": 0.0,
+      "n_calibration": 44.0
+    }
+  },
+  "softmax_profile": {
+    "0.5": {
+      "n": 44.0,
+      "buzz_accuracy": 0.38636363636363635,
+      "mean_buzz_step": 3.5,
+      "mean_sq": 0.24329479467724396,
+      "mean_reward_like": 0.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "n_calibration": 44.0
+    },
+    "0.7": {
+      "n": 44.0,
+      "buzz_accuracy": 0.38636363636363635,
+      "mean_buzz_step": 3.9545454545454546,
+      "mean_sq": 0.12951727467749788,
+      "mean_reward_like": 0.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "n_calibration": 44.0
+    },
+    "0.9": {
+      "n": 44.0,
+      "buzz_accuracy": 0.38636363636363635,
+      "mean_buzz_step": 4.045454545454546,
+      "mean_sq": 0.05277608956128622,
+      "mean_reward_like": 0.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "n_calibration": 44.0
+    }
+  },
+  "sequential_bayes": {
+    "0.5": {
+      "n": 44.0,
+      "buzz_accuracy": 0.38636363636363635,
+      "mean_buzz_step": 3.0454545454545454,
+      "mean_sq": 0.26743703225887505,
+      "mean_reward_like": 0.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "n_calibration": 44.0
+    },
+    "0.7": {
+      "n": 44.0,
+      "buzz_accuracy": 0.38636363636363635,
+      "mean_buzz_step": 3.590909090909091,
+      "mean_sq": 0.2121522899483236,
+      "mean_reward_like": 0.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "n_calibration": 44.0
+    },
+    "0.9": {
+      "n": 44.0,
+      "buzz_accuracy": 0.38636363636363635,
+      "mean_buzz_step": 3.8863636363636362,
+      "mean_sq": 0.1411674381411319,
+      "mean_reward_like": 0.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "n_calibration": 44.0
+    }
+  },
+  "always_final": {
+    "n": 44.0,
+    "buzz_accuracy": 0.38636363636363635,
+    "mean_buzz_step": 4.045454545454546,
+    "mean_sq": 0.38636363636363635,
+    "mean_reward_like": 0.07954545454545454,
+    "ece": 0.0,
+    "brier": 0.0,
+    "n_calibration": 44.0
+  }
+}

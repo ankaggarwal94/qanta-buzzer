@@ -79,16 +79,21 @@ class MCBuilder:
         duplicate_token_overlap_threshold: float = 0.8,
         max_length_ratio: float = 3.0,
         random_seed: int = 13,
+        embedding_model: str = "all-MiniLM-L6-v2",
+        openai_model: str = "text-embedding-3-small",
     ):
         """Initialize the MC builder.
 
         Args:
             K: Number of answer choices (must be >= 2).
-            strategy: Distractor selection strategy (sbert_profile, tfidf_profile, category_random).
+            strategy: Distractor selection strategy
+                (sbert_profile, openai_profile, tfidf_profile, category_random).
             alias_edit_distance_threshold: Max edit distance for alias detection.
             duplicate_token_overlap_threshold: Max token overlap between options.
             max_length_ratio: Max ratio between longest and shortest option.
             random_seed: Random seed for reproducibility.
+            embedding_model: SentenceTransformer model name for ``sbert_profile``.
+            openai_model: OpenAI embedding model for ``openai_profile``.
         """
         if K < 2:
             raise ValueError("K must be >= 2")
@@ -98,6 +103,8 @@ class MCBuilder:
         self.duplicate_token_overlap_threshold = duplicate_token_overlap_threshold
         self.max_length_ratio = max_length_ratio
         self.rng = random.Random(random_seed)
+        self.embedding_model = embedding_model
+        self.openai_model = openai_model
 
     def _prepare_lookup(
         self, questions: List[TossupQuestion]
@@ -182,13 +189,15 @@ class MCBuilder:
             if self.strategy == "sbert_profile":
                 # Sentence-BERT embeddings
                 from sentence_transformers import SentenceTransformer
-                encoder = SentenceTransformer("all-MiniLM-L6-v2")
+                encoder = SentenceTransformer(self.embedding_model)
                 embeddings = encoder.encode(docs, convert_to_numpy=True, normalize_embeddings=True)
                 sim = embeddings @ embeddings.T
             else:
-                # OpenAI embeddings (would need to implement OpenAILikelihood)
-                # For now, fall back to TF-IDF
-                return self._compute_rankings_fallback(answers, answer_profiles, answer_to_category)
+                from models.likelihoods import OpenAILikelihood
+
+                likelihood = OpenAILikelihood(model=self.openai_model)
+                embeddings = likelihood.embed_and_cache(docs)
+                sim = embeddings @ embeddings.T
 
             for answer in answers:
                 idx = answer_idx[answer]
@@ -197,27 +206,6 @@ class MCBuilder:
             return rankings
 
         raise ValueError(f"Unknown distractor strategy: {self.strategy}")
-
-    def _compute_rankings_fallback(
-        self,
-        answers: List[str],
-        answer_profiles: Dict[str, str],
-        answer_to_category: Dict[str, str],
-    ) -> Dict[str, List[str]]:
-        """Fallback to TF-IDF if strategy is not available."""
-        # Use TF-IDF as fallback
-        vectorizer = TfidfVectorizer(stop_words="english")
-        docs = [answer_profiles[a] for a in answers]
-        matrix = vectorizer.fit_transform(docs)
-        sim = cosine_similarity(matrix, matrix)
-
-        answer_idx = {a: i for i, a in enumerate(answers)}
-        rankings = {}
-        for answer in answers:
-            idx = answer_idx[answer]
-            order = np.argsort(-sim[idx]).tolist()
-            rankings[answer] = [answers[i] for i in order if answers[i] != answer]
-        return rankings
 
     def _aliases_collide(self, candidate: str, gold_aliases: List[str]) -> bool:
         """Check if a candidate is too similar to any gold answer alias.
