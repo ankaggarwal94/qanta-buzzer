@@ -27,9 +27,13 @@ likelihood:
 
 environment:
   reward_mode: "time_penalty"  # time_penalty | simple
+<<<<<<< HEAD
   seed: 13
   wait_penalty: 0.05  # Tuned candidate from multi-seed smoke sweep
   early_buzz_penalty: 0.2  # Tuned candidate from multi-seed smoke sweep
+=======
+  wait_penalty: 0.1  # Penalty per clue revealed (fraction of total)
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
   buzz_correct: 1.0  # Reward for correct answer
   buzz_incorrect: -0.5  # Penalty for wrong answer
   max_steps: 20  # Maximum clues to reveal
@@ -44,7 +48,10 @@ bayesian:  # Bayesian buzzer sweep parameters (from qb-rl)
   alpha: 10.0  # Sigmoid steepness for confidence proxy
 
 ppo:  # PPO hyperparameters (for future use)
+<<<<<<< HEAD
   seed: 13
+=======
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
   total_timesteps: 100000
   learning_rate: 3e-4
   n_steps: 128

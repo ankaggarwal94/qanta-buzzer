@@ -11,6 +11,11 @@ Covers:
 
 from __future__ import annotations
 
+<<<<<<< HEAD
+=======
+import warnings
+
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 import numpy as np
 import pytest
 
@@ -24,6 +29,10 @@ from agents import (
     result_to_dict,
     sweep_thresholds,
 )
+<<<<<<< HEAD
+=======
+from agents._math import sigmoid
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 from models.likelihoods import TfIdfLikelihood
 from qb_data.mc_builder import MCQuestion
 
@@ -41,6 +50,19 @@ def _make_likelihood(corpus: list[str]) -> TfIdfLikelihood:
     return TfIdfLikelihood(corpus_texts=corpus)
 
 
+<<<<<<< HEAD
+=======
+class TestSigmoidMath:
+    """Tests for stable scalar sigmoid helper."""
+
+    def test_sigmoid_handles_extreme_inputs_without_warning(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            assert sigmoid(1000.0) == pytest.approx(1.0)
+            assert sigmoid(-1000.0) == pytest.approx(0.0)
+
+
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 # ------------------------------------------------------------------ #
 # ThresholdBuzzer tests (AGT-02)
 # ------------------------------------------------------------------ #
@@ -165,6 +187,32 @@ class TestThresholdBuzzer:
         result = agent.run_episode(sample_mc_question)
         assert isinstance(result, EpisodeResult)
 
+<<<<<<< HEAD
+=======
+    def test_threshold_buzzer_confidence_proxy_stable_extremes(
+        self, sample_corpus: list[str]
+    ) -> None:
+        likelihood = _make_likelihood(sample_corpus)
+        agent = ThresholdBuzzer(
+            likelihood_model=likelihood,
+            threshold=-100.0,
+            alpha=100.0,
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            assert agent._confidence_proxy(1.0) == pytest.approx(1.0)
+
+        agent = ThresholdBuzzer(
+            likelihood_model=likelihood,
+            threshold=100.0,
+            alpha=100.0,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            assert agent._confidence_proxy(0.0) == pytest.approx(0.0)
+
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
     def test_threshold_buzzer_top_p_in_range(
         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
     ) -> None:
@@ -346,6 +394,32 @@ class TestSoftmaxProfileBuzzer:
         result_high = agent_high.run_episode(sample_mc_question)
         assert result_high.buzz_step == len(sample_mc_question.cumulative_prefixes) - 1
 
+<<<<<<< HEAD
+=======
+    def test_softmax_profile_confidence_proxy_stable_extremes(
+        self, sample_corpus: list[str]
+    ) -> None:
+        likelihood = _make_likelihood(sample_corpus)
+        agent = SoftmaxProfileBuzzer(
+            likelihood_model=likelihood,
+            threshold=-100.0,
+            alpha=100.0,
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            assert agent.confidence_proxy(1.0) == pytest.approx(1.0)
+
+        agent = SoftmaxProfileBuzzer(
+            likelihood_model=likelihood,
+            threshold=100.0,
+            alpha=100.0,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            assert agent.confidence_proxy(0.0) == pytest.approx(0.0)
+
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 
 # ------------------------------------------------------------------ #
 # SequentialBayesBuzzer tests (AGT-05)
