@@ -212,4 +212,4 @@ def setup_config(args):
 
 ---
 
-*Convention analysis: 2025-02-24*
+*Convention analysis: 2026-03-08*
