@@ -22,6 +22,10 @@ rg --files . -g '!venv/**' -g '!**/__pycache__/**' -g '!artifacts/smoke/**' | so
 ./PROJECT_OVERVIEW.md
 ./README.md
 ./agents/__init__.py
+<<<<<<< HEAD
+=======
+./agents/_math.py
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 ./agents/bayesian_buzzer.py
 ./agents/ppo_buzzer.py
 ./agents/softmax_profile_buzzer.py
@@ -84,6 +88,10 @@ rg --files . -g '!venv/**' -g '!**/__pycache__/**' -g '!artifacts/smoke/**' | so
 ./tests/__init__.py
 ./tests/conftest.py
 ./tests/test_agents.py
+<<<<<<< HEAD
+=======
+./tests/test_build_mc_dataset.py
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 ./tests/test_environment.py
 ./tests/test_factories.py
 ./tests/test_features.py
@@ -157,6 +165,11 @@ python scripts/train_ppo.py --smoke
 python scripts/evaluate_all.py --smoke
 ```
 
+<<<<<<< HEAD
+=======
+In smoke mode, `build_mc_dataset.py` now resolves its default config and output path dynamically: bare `--smoke` selects the smoke config path and writes datasets to `artifacts/smoke/` unless you explicitly override `--config` or `--output-dir`.
+
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 T5 policy track:
 
 ```bash
@@ -264,6 +277,11 @@ python scripts/train_ppo.py --smoke
 python scripts/evaluate_all.py --smoke
 ```
 
+<<<<<<< HEAD
+=======
+Bare `python scripts/build_mc_dataset.py --smoke` is now a valid contract: it selects the smoke config path and writes datasets to `artifacts/smoke/` unless `--config` or `--output-dir` are supplied explicitly.
+
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 T5 policy workflow:
 
 ```bash
@@ -334,7 +352,11 @@ This script orchestrates the complete data pipeline:
 
 Usage:
     python scripts/build_mc_dataset.py
+<<<<<<< HEAD
     python scripts/build_mc_dataset.py --smoke  # Quick test with 50 questions
+=======
+    python scripts/build_mc_dataset.py --smoke  # Quick test with 50 questions in artifacts/smoke
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
     python scripts/build_mc_dataset.py --config configs/custom.yaml
     python scripts/build_mc_dataset.py --data.K=5 --data.distractor_strategy=tfidf_profile
 """
@@ -357,6 +379,12 @@ from qb_data.dataset_splits import create_stratified_splits
 from qb_data.huggingface_loader import load_from_huggingface
 from qb_data.mc_builder import MCBuilder, MCQuestion
 
+<<<<<<< HEAD
+=======
+DEFAULT_OUTPUT_DIR = Path("data/processed")
+SMOKE_OUTPUT_DIR = Path("artifacts/smoke")
+
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 
 def parse_overrides(args: argparse.Namespace) -> Dict[str, Any]:
     """
@@ -378,9 +406,12 @@ def parse_overrides(args: argparse.Namespace) -> Dict[str, Any]:
 
     # Check for any attributes that look like overrides (contain dots)
     for key, value in vars(args).items():
+<<<<<<< HEAD
         if value is not None and '.' not in key:
             continue  # Skip non-override args
 
+=======
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 ```
 
 ```bash
@@ -393,6 +424,7 @@ rg -n "resolve_data_loading_options|AnswerProfileBuilder|MCBuilder|create_strati
 31:from qb_data.config import load_config, merge_overrides, resolve_data_loading_options
 33:from qb_data.dataset_splits import create_stratified_splits
 35:from qb_data.mc_builder import MCBuilder, MCQuestion
+<<<<<<< HEAD
 97:def save_json(path: Path, data: List[Any]) -> None:
 124:def print_statistics(
 128:    profile_builder: Optional[AnswerProfileBuilder] = None,
@@ -408,6 +440,23 @@ rg -n "resolve_data_loading_options|AnswerProfileBuilder|MCBuilder|create_strati
 324:    save_json(output_dir / "val_dataset.json", val)
 325:    save_json(output_dir / "test_dataset.json", test)
 341:    print_statistics(train, val, test, profile_builder, mc_builder)
+=======
+144:def save_json(path: Path, data: List[Any]) -> None:
+171:def print_statistics(
+175:    profile_builder: Optional[AnswerProfileBuilder] = None,
+176:    mc_builder: Optional[MCBuilder] = None
+189:    profile_builder : Optional[AnswerProfileBuilder]
+191:    mc_builder : Optional[MCBuilder]
+267:    data_opts = resolve_data_loading_options(config, smoke=args.smoke)
+299:    profile_builder = AnswerProfileBuilder(
+308:    mc_builder = MCBuilder(
+336:    train, val, test = create_stratified_splits(mc_questions, ratios=ratios)
+340:    save_json(output_dir / "mc_dataset.json", mc_questions)
+341:    save_json(output_dir / "train_dataset.json", train)
+342:    save_json(output_dir / "val_dataset.json", val)
+343:    save_json(output_dir / "test_dataset.json", test)
+359:    print_statistics(train, val, test, profile_builder, mc_builder)
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 ```
 
 ```bash
@@ -3885,14 +3934,21 @@ from typing import Any
 
 import numpy as np
 
+<<<<<<< HEAD
+=======
+from agents._math import sigmoid
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
 
 
+<<<<<<< HEAD
 def _sigmoid(x: float) -> float:
     return float(1.0 / (1.0 + np.exp(-x)))
 
 
+=======
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 @dataclass
 class EpisodeResult:
     qid: str
@@ -3929,7 +3985,11 @@ class ThresholdBuzzer:
         return probs.astype(np.float32)
 
     def _confidence_proxy(self, top_p: float) -> float:
+<<<<<<< HEAD
         return _sigmoid(self.alpha * (top_p - self.threshold))
+=======
+        return sigmoid(self.alpha * (top_p - self.threshold))
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 
     def run_episode(self, question: MCQuestion) -> EpisodeResult:
         c_trace: list[float] = []
@@ -4067,14 +4127,21 @@ from dataclasses import dataclass
 
 import numpy as np
 
+<<<<<<< HEAD
+=======
+from agents._math import sigmoid
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
 
 
+<<<<<<< HEAD
 def _sigmoid(x: float) -> float:
     return float(1.0 / (1.0 + np.exp(-x)))
 
 
+=======
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 @dataclass
 class SoftmaxEpisodeResult:
     qid: str
@@ -4110,7 +4177,11 @@ class SoftmaxProfileBuzzer:
         return probs.astype(np.float32)
 
     def confidence_proxy(self, top_p: float) -> float:
+<<<<<<< HEAD
         return _sigmoid(self.alpha * (top_p - self.threshold))
+=======
+        return sigmoid(self.alpha * (top_p - self.threshold))
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 
     def run_episode(self, question: MCQuestion) -> SoftmaxEpisodeResult:
         c_trace: list[float] = []
@@ -4195,7 +4266,11 @@ class SequentialBayesBuzzer:
             top_idx = int(np.argmax(belief))
             top_p = float(np.max(belief))
             entropy = float(-(np.clip(belief, 1e-12, 1.0) * np.log(np.clip(belief, 1e-12, 1.0))).sum())
+<<<<<<< HEAD
             c_t = _sigmoid(self.alpha * (top_p - self.threshold))
+=======
+            c_t = sigmoid(self.alpha * (top_p - self.threshold))
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
             g_t = 1.0 if top_idx == question.gold_index else 0.0
 
             c_trace.append(c_t)
@@ -4529,9 +4604,15 @@ PY
 
 ```output
 baseline_groups = ['always_final', 'sequential_bayes', 'softmax_profile', 'threshold']
+<<<<<<< HEAD
 threshold sample_threshold= 0.5 metrics= {'n': 44.0, 'buzz_accuracy': 0.38636363636363635, 'mean_buzz_step': 3.5, 'mean_sq': 0.24329479467724396, 'mean_reward_like': 0.07954545454545454, 'ece': 0.0, 'brier': 0.0, 'n_calibration': 44.0}
 softmax_profile sample_threshold= 0.5 metrics= {'n': 44.0, 'buzz_accuracy': 0.38636363636363635, 'mean_buzz_step': 3.5, 'mean_sq': 0.24329479467724396, 'mean_reward_like': 0.0, 'ece': 0.0, 'brier': 0.0, 'n_calibration': 44.0}
 sequential_bayes sample_threshold= 0.5 metrics= {'n': 44.0, 'buzz_accuracy': 0.38636363636363635, 'mean_buzz_step': 3.0454545454545454, 'mean_sq': 0.26743703225887505, 'mean_reward_like': 0.0, 'ece': 0.0, 'brier': 0.0, 'n_calibration': 44.0}
+=======
+threshold sample_threshold= 0.5 metrics= {'n': 44.0, 'buzz_accuracy': 0.38636363636363635, 'mean_buzz_step': 3.5, 'mean_sq': 0.24329479467724402, 'mean_reward_like': 0.07954545454545454, 'ece': 0.0, 'brier': 0.0, 'n_calibration': 44.0}
+softmax_profile sample_threshold= 0.5 metrics= {'n': 44.0, 'buzz_accuracy': 0.38636363636363635, 'mean_buzz_step': 3.5, 'mean_sq': 0.24329479467724402, 'mean_reward_like': 0.0, 'ece': 0.0, 'brier': 0.0, 'n_calibration': 44.0}
+sequential_bayes sample_threshold= 0.5 metrics= {'n': 44.0, 'buzz_accuracy': 0.38636363636363635, 'mean_buzz_step': 3.0454545454545454, 'mean_sq': 0.2674370322588751, 'mean_reward_like': 0.0, 'ece': 0.0, 'brier': 0.0, 'n_calibration': 44.0}
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 always_final accuracy= 0.38636363636363635 mean_sq= 0.38636363636363635
 ```
 
@@ -5174,15 +5255,26 @@ PY
 ```output
 full_eval_keys = ['brier', 'buzz_accuracy', 'ece', 'mean_buzz_step', 'mean_reward_like', 'mean_sq', 'n', 'n_calibration']
 controls = ['alias_substitution', 'choices_only', 'shuffle']
+<<<<<<< HEAD
 full_eval_mean_sq = 0.24329479467724396
+=======
+full_eval_mean_sq = 0.24329479467724402
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 choices_only = {'accuracy': 0.09090909090909091, 'chance': 0.25, 'n_test': 11.0}
 per_category_count = 11
 comparison_csv_head =
 ['agent', 'n', 'buzz_accuracy', 'mean_buzz_step', 'mean_sq', 'mean_reward_like', 'ece', 'brier', 'n_calibration']
+<<<<<<< HEAD
 ['threshold_0.5', '44.0', '0.38636363636363635', '3.5', '0.24329479467724396', '0.07954545454545454', '0.0', '0.0', '44.0']
 ['threshold_0.7', '44.0', '0.38636363636363635', '3.9545454545454546', '0.12951727467749788', '0.07954545454545454', '0.0', '0.0', '44.0']
 ['threshold_0.9', '44.0', '0.38636363636363635', '4.045454545454546', '0.05277608956128622', '0.07954545454545454', '0.0', '0.0', '44.0']
 ['softmax_0.5', '44.0', '0.38636363636363635', '3.5', '0.24329479467724396', '0.0', '0.0', '0.0', '44.0']
+=======
+['threshold_0.5', '44.0', '0.38636363636363635', '3.5', '0.24329479467724402', '0.07954545454545454', '0.0', '0.0', '44.0']
+['threshold_0.7', '44.0', '0.38636363636363635', '3.9545454545454546', '0.12951727467749788', '0.07954545454545454', '0.0', '0.0', '44.0']
+['threshold_0.9', '44.0', '0.38636363636363635', '4.045454545454546', '0.05277608956128622', '0.07954545454545454', '0.0', '0.0', '44.0']
+['softmax_0.5', '44.0', '0.38636363636363635', '3.5', '0.24329479467724402', '0.0', '0.0', '0.0', '44.0']
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 ```
 
 ## 8. T5 training track
@@ -8145,6 +8237,10 @@ tests/__pycache__/conftest.cpython-312-pytest-9.0.2.pyc
 tests/__pycache__/conftest.cpython-312.pyc
 tests/__pycache__/test_agents.cpython-311-pytest-9.0.2.pyc
 tests/__pycache__/test_agents.cpython-312-pytest-9.0.2.pyc
+<<<<<<< HEAD
+=======
+tests/__pycache__/test_build_mc_dataset.cpython-312-pytest-9.0.2.pyc
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 tests/__pycache__/test_environment.cpython-311-pytest-9.0.2.pyc
 tests/__pycache__/test_environment.cpython-312-pytest-9.0.2.pyc
 tests/__pycache__/test_factories.cpython-311-pytest-9.0.2.pyc
@@ -8168,6 +8264,10 @@ tests/__pycache__/test_text_wrapper.cpython-311-pytest-9.0.2.pyc
 tests/__pycache__/test_text_wrapper.cpython-312-pytest-9.0.2.pyc
 tests/conftest.py
 tests/test_agents.py
+<<<<<<< HEAD
+=======
+tests/test_build_mc_dataset.py
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 tests/test_environment.py
 tests/test_factories.py
 tests/test_features.py
@@ -8198,8 +8298,14 @@ PY
 ```
 
 ```output
+<<<<<<< HEAD
 test_files = 12
 test_agents.py test_functions= 0
+=======
+test_files = 13
+test_agents.py test_functions= 0
+test_build_mc_dataset.py test_functions= 0
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 test_environment.py test_functions= 0
 test_factories.py test_functions= 0
 test_features.py test_functions= 0
@@ -8517,6 +8623,7 @@ rg -n "qb_env.data_loader|qb_env.mc_builder|qb_env.text_utils|models.answer_prof
 
 ```output
 CLAUDE.md:12:`qanta-buzzer` is the canonical repo. qb-rl compatibility is preserved through additive shims rather than structural rewrites.
+<<<<<<< HEAD
 CLAUDE.md:75:- `qb_env/`: Gymnasium environment plus text wrapper and qb-rl compatibility shims
 CLAUDE.md:76:- `models/`: likelihood models, belief features, T5 policy model, compatibility exports
 CLAUDE.md:85:- Old qb-rl imports like `qb_env.data_loader` and `models.answer_profiles` are thin re-exports over the canonical modules.
@@ -8529,6 +8636,20 @@ README.md:71:- `qb_env.text_utils`
 README.md:72:- `models.answer_profiles`
 README.md:73:- `agents.softmax_profile_buzzer`
 README.md:85:- qb-rl compatibility bridge and mocked OpenAI coverage
+=======
+CLAUDE.md:77:- `qb_env/`: Gymnasium environment plus text wrapper and qb-rl compatibility shims
+CLAUDE.md:78:- `models/`: likelihood models, belief features, T5 policy model, compatibility exports
+CLAUDE.md:87:- Old qb-rl imports like `qb_env.data_loader` and `models.answer_profiles` are thin re-exports over the canonical modules.
+CLAUDE.md:9:1. Belief-feature pipeline: build MC tossups, score answer profiles with TF-IDF / SBERT / T5 / optional OpenAI embeddings, train or compare buzzers, and evaluate with S_q plus calibration metrics.
+README.md:10:- Optional OpenAI embedding support for `likelihood.model: openai` and `data.distractor_strategy: openai_profile`
+README.md:5:This repo keeps `qanta-buzzer` as the canonical implementation while preserving a qb-rl compatibility bridge:
+README.md:71:- `qb_env.data_loader`
+README.md:72:- `qb_env.mc_builder`
+README.md:73:- `qb_env.text_utils`
+README.md:74:- `models.answer_profiles`
+README.md:75:- `agents.softmax_profile_buzzer`
+README.md:87:- qb-rl compatibility bridge and mocked OpenAI coverage
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 agents/softmax_profile_buzzer.py:1:"""qb-rl compatibility re-exports for Bayesian-family buzzers."""
 models/answer_profiles.py:1:"""qb-rl compatibility re-export for answer profile building."""
 qb_env/__init__.py:14:from qb_env.mc_builder import MCBuilder, MCQuestion
@@ -8540,6 +8661,7 @@ qb_env/mc_builder.py:1:"""qb-rl compatibility re-exports for MC question buildin
 qb_env/text_utils.py:1:"""qb-rl compatibility re-exports for text utilities."""
 ```
 
+<<<<<<< HEAD
 ## 11. Closing mental model
 
 At this point the full repo can be summarized as one loop.
@@ -8584,6 +8706,29 @@ Observed wall-clock times on this machine:
 - evaluation: `real 2.37s`
 
 Those timings are for the intended smoke path. If you accidentally let the build step fall back to `configs/default.yaml`, the later smoke scripts can end up reading a much larger dataset and become dramatically slower.
+=======
+## 12. Smoke test runs in practice
+
+This appendix records a fresh end-to-end smoke pass run on March 8, 2026 from the repo root after repairing the smoke CLI contract.
+
+Bare `python scripts/build_mc_dataset.py --smoke` is now the intended entrypoint again. When you do not override anything explicitly, the build step selects the smoke config path and writes its outputs to `artifacts/smoke/`, so the full smoke workflow is once again:
+
+```bash
+python scripts/build_mc_dataset.py --smoke
+python scripts/run_baselines.py --smoke
+python scripts/train_ppo.py --smoke
+python scripts/evaluate_all.py --smoke
+```
+
+Observed wall-clock times on this machine during the recorded run were approximately:
+
+- dataset build: `2.064s`
+- baseline sweep: `2.333s`
+- PPO smoke training: `5.282s`
+- evaluation: `2.035s`
+
+The rest of this appendix inspects the artifacts produced by that run instead of replaying the long commands inline, which keeps the Showboat document readable and verifiable while still grounding the walkthrough in a real smoke pass.
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 
 ```bash
 sed -n '1,120p' configs/smoke.yaml; printf '\n'
@@ -8676,6 +8821,7 @@ supervised:
 
 ### Smoke build
 
+<<<<<<< HEAD
 The corrected build command finishes quickly and leaves a small, inspectable dataset under `artifacts/smoke/`.
 
 Key console outcomes from the run:
@@ -8685,6 +8831,9 @@ Key console outcomes from the run:
 - built `42` answer profiles
 - generated `44` MC questions after guard filtering
 - wrote `mc_dataset.json`, train/val/test splits, and `answer_profiles.json`
+=======
+The repaired build step loaded the local CSV, honored the 50-question smoke cap without extra flags, filtered a few questions through the MC guards, and wrote the expected dataset bundle to `artifacts/smoke/`.
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 
 ```bash
 find artifacts/smoke -maxdepth 1 -type f | sort
@@ -8707,6 +8856,7 @@ artifacts/smoke/train_dataset.json
 artifacts/smoke/val_dataset.json
 ```
 
+<<<<<<< HEAD
 Recorded from the run:
 
 - `{"mc_questions": 44, "train": 28, "val": 3, "test": 13}`
@@ -8720,6 +8870,44 @@ The notable result in this run is that all of the baseline families landed on th
 
 ```bash
 venv/bin/python - <<'PY'
+=======
+```python3
+import json
+from pathlib import Path
+base = Path('artifacts/smoke')
+mc = json.loads((base / 'mc_dataset.json').read_text())
+train = json.loads((base / 'train_dataset.json').read_text())
+val = json.loads((base / 'val_dataset.json').read_text())
+test = json.loads((base / 'test_dataset.json').read_text())
+print({
+    'mc_questions': len(mc),
+    'train': len(train),
+    'val': len(val),
+    'test': len(test),
+})
+sample = mc[0]
+print({
+    'qid': sample['qid'],
+    'answer': sample['answer_primary'],
+    'category': sample['category'],
+    'options': sample['options'],
+})
+
+```
+
+```output
+{'mc_questions': 44, 'train': 28, 'val': 3, 'test': 13}
+{'qid': '205242', 'answer': 'Mass spectrometry', 'category': 'Science:Chemistry', 'options': ['Charlemagne', 'Shiva', 'Mass spectrometry', 'Surface tension']}
+```
+
+### Baseline sweep
+
+The baseline stage reused the smoke dataset, built a TF-IDF likelihood model, and evaluated the threshold, softmax-profile, sequential-Bayes, and always-buzz-final baselines over the reduced threshold sweep `[0.5, 0.7, 0.9]`.
+
+In this run all baseline families landed on the same smoke accuracy (`0.386`), but they differed in when they chose to buzz. `AlwaysBuzzFinal` waited the longest and therefore preserved the best `mean_sq`, while `SequentialBayes` buzzed a bit earlier than the from-scratch softmax baselines at the same threshold.
+
+```python3
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 import json
 from pathlib import Path
 summary = json.loads(Path('artifacts/smoke/baseline_summary.json').read_text())
@@ -8737,7 +8925,11 @@ for name, metrics in rows:
         'mean_sq': round(metrics['mean_sq'], 3),
         'mean_reward_like': round(metrics['mean_reward_like'], 3),
     })
+<<<<<<< HEAD
 PY
+=======
+
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 ```
 
 ```output
@@ -8753,6 +8945,7 @@ always_final
 
 ### PPO smoke training
 
+<<<<<<< HEAD
 The PPO smoke run trains a tiny belief-state policy for only `1000` timesteps. The console trace shows the Stable Baselines3 rollout summaries updating quickly, and the stage leaves both `ppo_model.zip` and structured run summaries in `artifacts/smoke/`.
 
 This particular smoke policy is clearly not meant to be a good buzzer. It learned a very early-buzzing behavior: `mean_buzz_step` ended up essentially at the first clue, which is why its reward-like metric is still negative even though `mean_sq` is not terrible.
@@ -8772,6 +8965,34 @@ Two details are worth noticing in the output:
 
 ```bash
 venv/bin/python - <<'PY'
+=======
+The PPO smoke run trained the belief-state policy for only `1000` timesteps and left both the model checkpoint and structured summary artifacts under `artifacts/smoke/`.
+
+This is still a smoke test, not a quality target. The trained policy buzzed almost immediately on average, which kept `mean_sq` non-trivial but left the reward-like metric negative.
+
+```python3
+import json
+from pathlib import Path
+summary = json.loads(Path('artifacts/smoke/ppo_summary.json').read_text())
+print({key: round(value, 3) for key, value in summary.items()})
+
+```
+
+```output
+{'n': 44.0, 'buzz_accuracy': 0.25, 'mean_buzz_step': 0.023, 'mean_sq': 0.273, 'mean_reward_like': -0.134, 'ece': 0.044, 'brier': 0.178, 'n_calibration': 44.0}
+```
+
+### Final evaluation
+
+The evaluation stage read the fresh baseline and PPO artifacts, selected the best softmax threshold from the baseline summary, and then computed the final report plus the three control experiments.
+
+Two useful smoke-test details stand out here:
+
+- `alias_lookup.json` was still absent in `artifacts/smoke/`, so alias substitution fell back to an empty lookup.
+- the choices-only control dropped below chance, which is the kind of quick sanity check you want when validating that the model still needs clue content rather than just exploiting option artifacts.
+
+```python3
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 import json
 from pathlib import Path
 report = json.loads(Path('artifacts/smoke/evaluation_report.json').read_text())
@@ -8784,17 +9005,28 @@ print({
     'mean_reward_like': round(full['mean_reward_like'], 3),
 })
 print(report['controls'])
+<<<<<<< HEAD
 PY
+=======
+
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 ```
 
 ```output
 {'softmax_profile_best_threshold': 0.5}
 {'buzz_accuracy': 0.386, 'mean_buzz_step': 3.5, 'mean_sq': 0.243, 'mean_reward_like': 0.0}
+<<<<<<< HEAD
 {'choices_only': {'accuracy': 0.09090909090909091, 'chance': 0.25, 'n_test': 11.0}, 'shuffle': {'n': 44.0, 'buzz_accuracy': 0.38636363636363635, 'mean_buzz_step': 3.5, 'mean_sq': 0.23666016887085728, 'mean_reward_like': 0.0, 'ece': 0.0, 'brier': 0.0, 'n_calibration': 44.0}, 'alias_substitution': {'n': 44.0, 'buzz_accuracy': 0.38636363636363635, 'mean_buzz_step': 3.5, 'mean_sq': 0.24329479467724396, 'mean_reward_like': 0.0, 'ece': 0.0, 'brier': 0.0, 'n_calibration': 44.0}}
 ```
 
 ```bash
 venv/bin/python - <<'PY'
+=======
+{'choices_only': {'accuracy': 0.09090909090909091, 'chance': 0.25, 'n_test': 11.0}, 'shuffle': {'n': 44.0, 'buzz_accuracy': 0.38636363636363635, 'mean_buzz_step': 3.5, 'mean_sq': 0.23666016887085728, 'mean_reward_like': 0.0, 'ece': 0.0, 'brier': 0.0, 'n_calibration': 44.0}, 'alias_substitution': {'n': 44.0, 'buzz_accuracy': 0.38636363636363635, 'mean_buzz_step': 3.5, 'mean_sq': 0.24329479467724402, 'mean_reward_like': 0.0, 'ece': 0.0, 'brier': 0.0, 'n_calibration': 44.0}}
+```
+
+```python3
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 import json
 from pathlib import Path
 report = json.loads(Path('artifacts/smoke/evaluation_report.json').read_text())
@@ -8807,7 +9039,11 @@ for key in ['Science:Chemistry', 'Science:Physics', 'Fine_Arts', 'Literature', '
             'buzz_accuracy': round(metrics['buzz_accuracy'], 3),
             'mean_sq': round(metrics['mean_sq'], 3),
         })
+<<<<<<< HEAD
 PY
+=======
+
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 ```
 
 ```output
@@ -8817,3 +9053,227 @@ Fine_Arts {'n': 7, 'buzz_accuracy': 0.143, 'mean_sq': 0.159}
 Literature {'n': 6, 'buzz_accuracy': 0.0, 'mean_sq': 0.0}
 Social_Science {'n': 9, 'buzz_accuracy': 0.222, 'mean_sq': 0.139}
 ```
+<<<<<<< HEAD
+=======
+
+## 13. Full non-smoke workflow
+
+This section maps the full repo workflow without pretending that we re-ran the heavyweight path inline. The smoke appendix above is the executed proof path; this section is the code-grounded guide for the real full run.
+
+The canonical full belief-feature workflow from the repo root is:
+
+```bash
+python scripts/build_mc_dataset.py
+python scripts/run_baselines.py
+python scripts/train_ppo.py
+python scripts/evaluate_all.py
+```
+
+One subtlety matters here: in non-smoke mode the build step still defaults to `data/processed/`, while the later scripts look for `artifacts/main/mc_dataset.json` first and then fall back to `data/processed/mc_dataset.json`. So the default full workflow works as written, but if you want a single full-run artifact root you should use:
+
+```bash
+python scripts/build_mc_dataset.py --output-dir artifacts/main
+```
+
+The T5 training and comparison track is separate and heavier:
+
+```bash
+python scripts/train_t5_policy.py --config configs/t5_policy.yaml
+python scripts/compare_policies.py \
+  --mlp-checkpoint artifacts/main/ppo_model.zip \
+  --t5-checkpoint checkpoints/ppo_t5/best_model
+```
+
+That `compare_policies.py` invocation uses the actual SB3 checkpoint emitted by `train_ppo.py`, not the older `checkpoints/ppo/...` example still shown in the script docstring.
+
+### Full belief-feature run expectations
+
+The full belief-feature path is materially heavier than smoke mode because the default config does not cap the dataset, uses a semantic likelihood model by default, trains PPO for a real run length, and enables the full evaluation stack.
+
+The point of showing these values explicitly is to set expectations before someone pastes the command block and assumes it is another sub-10-second smoke run.
+
+```bash
+venv/bin/python - <<'PY'
+import yaml
+from pathlib import Path
+cfg = yaml.safe_load(Path('configs/default.yaml').read_text())
+print({
+    'data': {
+        'csv_path': cfg['data']['csv_path'],
+        'K': cfg['data']['K'],
+        'distractor_strategy': cfg['data']['distractor_strategy'],
+        'max_questions': cfg['data']['max_questions'],
+    },
+    'likelihood': {
+        'model': cfg['likelihood']['model'],
+        'beta': cfg['likelihood']['beta'],
+        'batch_size': cfg['likelihood']['batch_size'],
+        'max_length': cfg['likelihood']['max_length'],
+    },
+    'ppo': {
+        'total_timesteps': cfg['ppo']['total_timesteps'],
+        'n_steps': cfg['ppo']['n_steps'],
+        'batch_size': cfg['ppo']['batch_size'],
+        'n_epochs': cfg['ppo']['n_epochs'],
+    },
+    'evaluation': {
+        'compute_sq': cfg['evaluation']['compute_sq'],
+        'run_choices_only': cfg['evaluation']['run_choices_only'],
+        'run_shuffle': cfg['evaluation']['run_shuffle'],
+        'bootstrap_ci_samples': cfg['evaluation']['bootstrap_ci_samples'],
+    },
+})
+PY
+
+```
+
+```output
+{'data': {'csv_path': 'questions.csv', 'K': 4, 'distractor_strategy': 'sbert_profile', 'max_questions': None}, 'likelihood': {'model': 't5-large', 'beta': 5.0, 'batch_size': 16, 'max_length': 512}, 'ppo': {'total_timesteps': 100000, 'n_steps': 128, 'batch_size': 32, 'n_epochs': 4}, 'evaluation': {'compute_sq': True, 'run_choices_only': True, 'run_shuffle': True, 'bootstrap_ci_samples': 1000}}
+```
+
+```bash
+rg -n 'ARTIFACT_DIR / split|mc_path =|fallback|ppo_model|evaluation_report.json|plots/comparison.csv' scripts/{run_baselines.py,train_ppo.py,evaluate_all.py} | sort
+```
+
+```output
+scripts/evaluate_all.py:138:    out_dir = ARTIFACT_DIR / split
+scripts/evaluate_all.py:139:    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
+scripts/evaluate_all.py:143:        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
+scripts/evaluate_all.py:144:        if fallback.exists():
+scripts/evaluate_all.py:145:            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
+scripts/evaluate_all.py:146:            mc_path = fallback
+scripts/evaluate_all.py:15:- evaluation_report.json (full eval + controls + baseline + PPO summaries)
+scripts/evaluate_all.py:18:- plots/comparison.csv
+scripts/evaluate_all.py:240:    save_json(out_dir / "evaluation_report.json", report)
+scripts/evaluate_all.py:313:    print(f"Wrote evaluation report to: {out_dir / 'evaluation_report.json'}")
+scripts/run_baselines.py:104:    out_dir = ARTIFACT_DIR / split
+scripts/run_baselines.py:107:    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
+scripts/run_baselines.py:111:        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
+scripts/run_baselines.py:112:        if fallback.exists():
+scripts/run_baselines.py:113:            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
+scripts/run_baselines.py:114:            mc_path = fallback
+scripts/train_ppo.py:122:    model_path = out_dir / "ppo_model"
+scripts/train_ppo.py:82:    out_dir = ARTIFACT_DIR / split
+scripts/train_ppo.py:83:    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
+scripts/train_ppo.py:87:        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
+scripts/train_ppo.py:88:        if fallback.exists():
+scripts/train_ppo.py:89:            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
+scripts/train_ppo.py:90:            mc_path = fallback
+```
+
+The artifact story in the code is straightforward once you see it spelled out:
+
+- `run_baselines.py`, `train_ppo.py`, and `evaluate_all.py` all compute `out_dir = ARTIFACT_DIR / split`
+- in full mode, `split` becomes `main`
+- each script looks for `artifacts/main/mc_dataset.json` first
+- if that file is absent, each script falls back to `data/processed/mc_dataset.json`
+
+That fallback keeps the full workflow usable even when the build step uses its legacy default output directory, but `--output-dir artifacts/main` is still the cleaner explicit choice for a long run you want to keep together.
+
+### T5 full run expectations
+
+The end-to-end T5 path is a second workflow, not an extension of the MLP smoke path. It performs two training phases:
+
+1. supervised warm-start on complete questions
+2. PPO fine-tuning with text observations
+
+This is the path that is most sensitive to hardware, available memory, model downloads, and patience. It is also where the checkpoint locations matter most, because the later comparison script expects concrete pretrained artifacts rather than rebuilding them implicitly.
+
+```bash
+venv/bin/python - <<'PY'
+import yaml
+from pathlib import Path
+cfg = yaml.safe_load(Path('configs/t5_policy.yaml').read_text())
+print({
+    'model_name': cfg['model']['model_name'],
+    'device': cfg['model']['device'],
+    'max_input_length': cfg['model']['max_input_length'],
+    'supervised_epochs': cfg['supervised']['epochs'],
+    'supervised_batch_size': cfg['supervised']['batch_size'],
+    'ppo_iterations': cfg['ppo']['iterations'],
+    'ppo_batch_size': cfg['ppo']['batch_size'],
+    'data_seed': cfg['data']['seed'],
+    'smoke_model_name': cfg['smoke']['model']['model_name'],
+})
+PY
+
+```
+
+```output
+{'model_name': 't5-large', 'device': 'auto', 'max_input_length': 512, 'supervised_epochs': 10, 'supervised_batch_size': 8, 'ppo_iterations': 100, 'ppo_batch_size': 8, 'data_seed': 42, 'smoke_model_name': 't5-small'}
+```
+
+```bash
+rg -n 'checkpoint_dir|best_model|history.json|results/t5_comparison.json|ppo_model.zip|ARTIFACT_DIR / "main" / "mc_dataset.json"' scripts/train_t5_policy.py scripts/compare_policies.py training/train_supervised_t5.py training/train_ppo_t5.py | sort
+```
+
+```output
+scripts/compare_policies.py:19:        --mlp-checkpoint checkpoints/ppo/best_model \\
+scripts/compare_policies.py:20:        --t5-checkpoint checkpoints/ppo_t5/best_model \\
+scripts/compare_policies.py:21:        --output results/t5_comparison.json
+scripts/compare_policies.py:25:        --mlp-checkpoint checkpoints/ppo/best_model \\
+scripts/compare_policies.py:26:        --t5-checkpoint checkpoints/ppo_t5/best_model \\
+scripts/compare_policies.py:31:        --t5-checkpoint checkpoints/ppo_t5/best_model \\
+scripts/compare_policies.py:377:        default="results/t5_comparison.json",
+scripts/compare_policies.py:405:            ARTIFACT_DIR / "main" / "mc_dataset.json",
+scripts/train_t5_policy.py:168:    flat["checkpoint_dir"] = sup.get("checkpoint_dir", "checkpoints")
+scripts/train_t5_policy.py:18:        --skip-supervised --model-path checkpoints/supervised/best_model
+scripts/train_t5_policy.py:209:            ARTIFACT_DIR / "main" / "mc_dataset.json",
+scripts/train_t5_policy.py:310:            trainer.checkpoint_dir / "best_model"
+scripts/train_t5_policy.py:333:    print(f"Best PPO model saved to: {trainer.checkpoint_dir / 'best_model'}")
+scripts/train_t5_policy.py:334:    print(f"Training history: {trainer.checkpoint_dir / 'history.json'}")
+training/train_ppo_t5.py:235:        - ``checkpoint_dir`` (str): Base checkpoint directory. Default "checkpoints".
+training/train_ppo_t5.py:248:    checkpoint_dir : Path
+training/train_ppo_t5.py:294:        self.checkpoint_dir = (
+training/train_ppo_t5.py:295:            Path(config.get("checkpoint_dir", "checkpoints")) / "ppo_t5"
+training/train_ppo_t5.py:297:        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+training/train_ppo_t5.py:786:            If True, save to ``best_model/`` directory.
+training/train_ppo_t5.py:794:            save_path = self.checkpoint_dir / "best_model"
+training/train_ppo_t5.py:797:                self.checkpoint_dir
+training/train_ppo_t5.py:823:        history_path = self.checkpoint_dir / "history.json"
+training/train_ppo_t5.py:908:        best_model_path = trainer.checkpoint_dir / "best_model"
+training/train_ppo_t5.py:909:        if best_model_path.exists():
+training/train_ppo_t5.py:910:            print(f"Loading best model from {best_model_path}")
+training/train_ppo_t5.py:911:            model.load(str(best_model_path))
+training/train_ppo_t5.py:928:        results_path = trainer.checkpoint_dir / "test_results.json"
+training/train_supervised_t5.py:106:        - ``checkpoint_dir`` (str): Base checkpoint directory. Default "checkpoints".
+training/train_supervised_t5.py:10:is saved by validation accuracy to checkpoints/supervised/best_model/.
+training/train_supervised_t5.py:125:    checkpoint_dir : Path
+training/train_supervised_t5.py:167:        self.checkpoint_dir = Path(config.get("checkpoint_dir", "checkpoints")) / "supervised"
+training/train_supervised_t5.py:168:        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+training/train_supervised_t5.py:336:        best model by validation accuracy to ``checkpoint_dir/best_model/``.
+training/train_supervised_t5.py:337:        Training history is saved to ``checkpoint_dir/history.json``.
+training/train_supervised_t5.py:406:        Best model is saved to ``checkpoint_dir/best_model/``, epoch
+training/train_supervised_t5.py:407:        checkpoints to ``checkpoint_dir/epoch_N/``.
+training/train_supervised_t5.py:412:            If True, save to ``best_model/`` directory.
+training/train_supervised_t5.py:420:            save_path = self.checkpoint_dir / "best_model"
+training/train_supervised_t5.py:422:            save_path = self.checkpoint_dir / f"epoch_{self.current_epoch + 1}"
+training/train_supervised_t5.py:458:        history_path = self.checkpoint_dir / "history.json"
+training/train_supervised_t5.py:529:        best_model_path = trainer.checkpoint_dir / "best_model"
+training/train_supervised_t5.py:530:        model.load(str(best_model_path))
+training/train_supervised_t5.py:543:        results_path = trainer.checkpoint_dir / "test_results.json"
+```
+
+A practical output map for the full run is:
+
+- `build_mc_dataset.py`
+  writes `mc_dataset.json`, train/val/test splits, and `answer_profiles.json`
+  default location: `data/processed/`
+  cleaner explicit location for a coordinated full run: `artifacts/main/`
+- `run_baselines.py`
+  writes baseline episode traces plus `baseline_summary.json` under `artifacts/main/`
+- `train_ppo.py`
+  writes `artifacts/main/ppo_model.zip`, `ppo_runs.json`, and `ppo_summary.json`
+- `evaluate_all.py`
+  writes `artifacts/main/evaluation_report.json` and `artifacts/main/plots/comparison.csv`
+- `train_t5_policy.py`
+  writes supervised checkpoints under `checkpoints/supervised/` and PPO checkpoints under `checkpoints/ppo_t5/`
+- `compare_policies.py`
+  writes `results/t5_comparison.json` by default
+
+Two caveats are worth carrying forward explicitly:
+
+- the example checkpoint path in `compare_policies.py` still points at the older `checkpoints/ppo/...` convention, while the current belief-feature PPO script actually emits `artifacts/main/ppo_model.zip`
+- a real full run is expected to download or load large models, use substantially more memory than smoke mode, and take long enough that it does not belong inside routine `showboat verify` or CI-like validation loops
+
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af

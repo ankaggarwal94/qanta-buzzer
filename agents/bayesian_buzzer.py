@@ -4,14 +4,21 @@ from dataclasses import dataclass
 
 import numpy as np
 
+<<<<<<< HEAD
+=======
+from agents._math import sigmoid
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
 
 
+<<<<<<< HEAD
 def _sigmoid(x: float) -> float:
     return float(1.0 / (1.0 + np.exp(-x)))
 
 
+=======
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 @dataclass
 class SoftmaxEpisodeResult:
     qid: str
@@ -47,7 +54,11 @@ class SoftmaxProfileBuzzer:
         return probs.astype(np.float32)
 
     def confidence_proxy(self, top_p: float) -> float:
+<<<<<<< HEAD
         return _sigmoid(self.alpha * (top_p - self.threshold))
+=======
+        return sigmoid(self.alpha * (top_p - self.threshold))
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 
     def run_episode(self, question: MCQuestion) -> SoftmaxEpisodeResult:
         c_trace: list[float] = []
@@ -132,7 +143,11 @@ class SequentialBayesBuzzer:
             top_idx = int(np.argmax(belief))
             top_p = float(np.max(belief))
             entropy = float(-(np.clip(belief, 1e-12, 1.0) * np.log(np.clip(belief, 1e-12, 1.0))).sum())
+<<<<<<< HEAD
             c_t = _sigmoid(self.alpha * (top_p - self.threshold))
+=======
+            c_t = sigmoid(self.alpha * (top_p - self.threshold))
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
             g_t = 1.0 if top_idx == question.gold_index else 0.0
 
             c_trace.append(c_t)
