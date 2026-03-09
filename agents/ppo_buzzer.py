@@ -101,6 +101,7 @@ class PPOBuzzer:
         batch_size: int = 32,
         n_epochs: int = 10,
         gamma: float = 0.99,
+        seed: int | None = None,
         policy_kwargs: dict[str, Any] | None = None,
         verbose: int = 0,
     ):
@@ -112,6 +113,7 @@ class PPOBuzzer:
             "MlpPolicy",
             env,
             verbose=verbose,
+            seed=seed,
             learning_rate=learning_rate,
             n_steps=n_steps,
             batch_size=batch_size,
@@ -223,7 +225,10 @@ class PPOBuzzer:
         return float(probs[gold_index + 1] / c_t)
 
     def run_episode(
-        self, deterministic: bool = False, seed: int | None = None
+        self,
+        deterministic: bool = False,
+        seed: int | None = None,
+        question_idx: int | None = None,
     ) -> PPOEpisodeTrace:
         """Run a full episode and record per-step action probability traces.
 
@@ -243,7 +248,11 @@ class PPOBuzzer:
         PPOEpisodeTrace
             Complete episode record with action traces and outcome.
         """
-        obs, info = self.env.reset(seed=seed)
+        reset_options = None
+        if question_idx is not None:
+            reset_options = {"question_idx": int(question_idx)}
+
+        obs, info = self.env.reset(seed=seed, options=reset_options)
         terminated = False
         truncated = False
         total_reward = 0.0
