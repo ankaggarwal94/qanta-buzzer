@@ -1,0 +1,237 @@
+{
+  "softmax_profile_best_threshold": 0.5,
+  "full_eval": {
+    "n": 44.0,
+    "buzz_accuracy": 0.38636363636363635,
+    "mean_buzz_step": 3.5,
+    "mean_sq": 0.24329479467724402,
+    "mean_reward_like": 0.0,
+    "ece": 0.0,
+    "brier": 0.0,
+    "n_calibration": 44.0
+  },
+  "controls": {
+    "choices_only": {
+      "accuracy": 0.09090909090909091,
+      "chance": 0.25,
+      "n_test": 11.0
+    },
+    "shuffle": {
+      "n": 44.0,
+      "buzz_accuracy": 0.38636363636363635,
+      "mean_buzz_step": 3.5,
+      "mean_sq": 0.23666016887085728,
+      "mean_reward_like": 0.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "n_calibration": 44.0
+    },
+    "alias_substitution": {
+      "n": 44.0,
+      "buzz_accuracy": 0.38636363636363635,
+      "mean_buzz_step": 3.5,
+      "mean_sq": 0.24329479467724402,
+      "mean_reward_like": 0.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "n_calibration": 44.0
+    }
+  },
+  "per_category": {
+    "Fine_Arts": {
+      "n": 7.0,
+      "buzz_accuracy": 0.14285714285714285,
+      "mean_buzz_step": 3.5714285714285716,
+      "mean_sq": 0.15910391000456073,
+      "mean_reward_like": 0.0
+    },
+    "Fine_Arts:Music": {
+      "n": 1.0,
+      "buzz_accuracy": 1.0,
+      "mean_buzz_step": 5.0,
+      "mean_sq": 0.6197985931063873,
+      "mean_reward_like": 0.0
+    },
+    "History": {
+      "n": 4.0,
+      "buzz_accuracy": 0.25,
+      "mean_buzz_step": 3.25,
+      "mean_sq": 0.06427327609182373,
+      "mean_reward_like": 0.0
+    },
+    "Literature": {
+      "n": 6.0,
+      "buzz_accuracy": 0.0,
+      "mean_buzz_step": 3.0,
+      "mean_sq": 0.0,
+      "mean_reward_like": 0.0
+    },
+    "Literature:Europe": {
+      "n": 2.0,
+      "buzz_accuracy": 0.0,
+      "mean_buzz_step": 6.0,
+      "mean_sq": 0.0,
+      "mean_reward_like": 0.0
+    },
+    "Literature:World": {
+      "n": 1.0,
+      "buzz_accuracy": 1.0,
+      "mean_buzz_step": 2.0,
+      "mean_sq": 0.8705244202243025,
+      "mean_reward_like": 0.0
+    },
+    "Science": {
+      "n": 3.0,
+      "buzz_accuracy": 0.0,
+      "mean_buzz_step": 5.666666666666667,
+      "mean_sq": 0.0,
+      "mean_reward_like": 0.0
+    },
+    "Science:Chemistry": {
+      "n": 6.0,
+      "buzz_accuracy": 1.0,
+      "mean_buzz_step": 1.8333333333333333,
+      "mean_sq": 0.6831063038716181,
+      "mean_reward_like": 0.0
+    },
+    "Science:Physics": {
+      "n": 4.0,
+      "buzz_accuracy": 1.0,
+      "mean_buzz_step": 2.75,
+      "mean_sq": 0.5321564825885906,
+      "mean_reward_like": 0.0
+    },
+    "Social_Science": {
+      "n": 9.0,
+      "buzz_accuracy": 0.2222222222222222,
+      "mean_buzz_step": 4.111111111111111,
+      "mean_sq": 0.13942178083467247,
+      "mean_reward_like": 0.0
+    },
+    "Social_Science:Religion": {
+      "n": 1.0,
+      "buzz_accuracy": 1.0,
+      "mean_buzz_step": 3.0,
+      "mean_sq": 0.3617676969727023,
+      "mean_reward_like": 0.0
+    }
+  },
+  "baseline_summary": {
+    "threshold": {
+      "0.5": {
+        "n": 44.0,
+        "buzz_accuracy": 0.38636363636363635,
+        "mean_buzz_step": 3.5,
+        "mean_sq": 0.24329479467724402,
+        "mean_reward_like": 0.07954545454545454,
+        "ece": 0.0,
+        "brier": 0.0,
+        "n_calibration": 44.0
+      },
+      "0.7": {
+        "n": 44.0,
+        "buzz_accuracy": 0.38636363636363635,
+        "mean_buzz_step": 3.9545454545454546,
+        "mean_sq": 0.12951727467749788,
+        "mean_reward_like": 0.07954545454545454,
+        "ece": 0.0,
+        "brier": 0.0,
+        "n_calibration": 44.0
+      },
+      "0.9": {
+        "n": 44.0,
+        "buzz_accuracy": 0.38636363636363635,
+        "mean_buzz_step": 4.045454545454546,
+        "mean_sq": 0.05277608956128622,
+        "mean_reward_like": 0.07954545454545454,
+        "ece": 0.0,
+        "brier": 0.0,
+        "n_calibration": 44.0
+      }
+    },
+    "softmax_profile": {
+      "0.5": {
+        "n": 44.0,
+        "buzz_accuracy": 0.38636363636363635,
+        "mean_buzz_step": 3.5,
+        "mean_sq": 0.24329479467724402,
+        "mean_reward_like": 0.0,
+        "ece": 0.0,
+        "brier": 0.0,
+        "n_calibration": 44.0
+      },
+      "0.7": {
+        "n": 44.0,
+        "buzz_accuracy": 0.38636363636363635,
+        "mean_buzz_step": 3.9545454545454546,
+        "mean_sq": 0.12951727467749788,
+        "mean_reward_like": 0.0,
+        "ece": 0.0,
+        "brier": 0.0,
+        "n_calibration": 44.0
+      },
+      "0.9": {
+        "n": 44.0,
+        "buzz_accuracy": 0.38636363636363635,
+        "mean_buzz_step": 4.045454545454546,
+        "mean_sq": 0.05277608956128622,
+        "mean_reward_like": 0.0,
+        "ece": 0.0,
+        "brier": 0.0,
+        "n_calibration": 44.0
+      }
+    },
+    "sequential_bayes": {
+      "0.5": {
+        "n": 44.0,
+        "buzz_accuracy": 0.38636363636363635,
+        "mean_buzz_step": 3.0454545454545454,
+        "mean_sq": 0.2674370322588751,
+        "mean_reward_like": 0.0,
+        "ece": 0.0,
+        "brier": 0.0,
+        "n_calibration": 44.0
+      },
+      "0.7": {
+        "n": 44.0,
+        "buzz_accuracy": 0.38636363636363635,
+        "mean_buzz_step": 3.590909090909091,
+        "mean_sq": 0.2121522899483236,
+        "mean_reward_like": 0.0,
+        "ece": 0.0,
+        "brier": 0.0,
+        "n_calibration": 44.0
+      },
+      "0.9": {
+        "n": 44.0,
+        "buzz_accuracy": 0.38636363636363635,
+        "mean_buzz_step": 3.8863636363636362,
+        "mean_sq": 0.1411674381411319,
+        "mean_reward_like": 0.0,
+        "ece": 0.0,
+        "brier": 0.0,
+        "n_calibration": 44.0
+      }
+    },
+    "always_final": {
+      "n": 44.0,
+      "buzz_accuracy": 0.38636363636363635,
+      "mean_buzz_step": 4.045454545454546,
+      "mean_sq": 0.38636363636363635,
+      "mean_reward_like": 0.07954545454545454,
+      "ece": 0.0,
+      "brier": 0.0,
+      "n_calibration": 44.0
+    }
+  },
+  "ppo_summary": {
+    "n": 44.0,
+    "buzz_accuracy": 0.25,
+    "mean_buzz_step": 0.022727272727272728,
+    "mean_sq": 0.27264222811278266,
+    "mean_reward_like": -0.1340909090909091,
+    "ece": 0.04357596215876666,
+    "brier": 0.17805268460634988,
+    "n_calibration": 44.0
+  }
+}
