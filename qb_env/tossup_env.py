@@ -105,6 +105,8 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         buzz_incorrect: float = -0.5,
         belief_mode: str = "from_scratch",
         beta: float = 5.0,
+        end_mode: str = "force_commit",
+        no_buzz_reward: float = 0.0,
         seed: int = 13,
     ) -> None:
         if not questions:
@@ -121,6 +123,8 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         self.buzz_incorrect = buzz_incorrect
         self.belief_mode = belief_mode
         self.beta = beta
+        self.end_mode = end_mode
+        self.no_buzz_reward = no_buzz_reward
         self.rng = random.Random(seed)
 
         self.action_space = spaces.Discrete(self.K + 1)
@@ -458,14 +462,19 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
 
             self.step_idx += 1
             if self.step_idx >= self.total_steps:
-                # Forced termination: pick best answer from current belief
                 last_seen = self.step_idx - 1
-                forced_choice = int(np.argmax(self.belief))
-                reward += self._buzz_reward(self.question, forced_choice, last_seen)
                 self.truncated = True
                 info["step_idx"] = last_seen
-                info["forced_choice"] = forced_choice
-                info["forced_correct"] = forced_choice == self.question.gold_index
+                if self.end_mode == "force_commit":
+                    forced_choice = int(np.argmax(self.belief))
+                    reward += self._buzz_reward(self.question, forced_choice, last_seen)
+                    info["forced_choice"] = forced_choice
+                    info["forced_correct"] = forced_choice == self.question.gold_index
+                elif self.end_mode == "no_buzz":
+                    reward += self.no_buzz_reward
+                    info["no_buzz"] = True
+                else:
+                    raise ValueError(f"Unknown end_mode: {self.end_mode}")
             else:
                 info["step_idx"] = self.step_idx
 
@@ -537,4 +546,6 @@ def make_env_from_config(
         buzz_incorrect=float(env_cfg.get("buzz_incorrect", -0.5)),
         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
         beta=float(lik_cfg.get("beta", 5.0)),
+        end_mode=str(env_cfg.get("end_mode", "force_commit")),
+        no_buzz_reward=float(env_cfg.get("no_buzz_reward", 0.0)),
     )

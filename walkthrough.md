@@ -9039,3 +9039,11 @@ Two caveats are worth carrying forward explicitly:
 - the example checkpoint path in `compare_policies.py` still points at the older `checkpoints/ppo/...` convention, while the current belief-feature PPO script actually emits `artifacts/main/ppo_model.zip`
 - a real full run is expected to download or load large models, use substantially more memory than smoke mode, and take long enough that it does not belong inside routine `showboat verify` or CI-like validation loops
 
+
+
+## Action-space semantics
+
+- Canonical action semantics are **factored-first**: stop module `p_buzz(h_t)` and answer module `p_ans(i|h_t)` induce flat actions by `P(WAIT)=1-p_buzz`, `P(BUZZ i)=p_buzz*p_ans(i)`.
+- The flat `Discrete(K+1)` belief-feature PPO policy remains available as an **ablation** (`--policy-mode flat_kplus1`), while `stop_only` is canonical.
+- The K-way posterior used in this repo is a **modeling compression** for tractable learning, not the full theorem-level POMDP belief state.
+- `SoftmaxProfileBuzzer` denotes the softmax-from-scratch family; reserve `SequentialBayesBuzzer` for fragmentwise multiplicative belief updates.

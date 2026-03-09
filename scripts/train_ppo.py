@@ -29,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.ppo_buzzer import PPOBuzzer
 from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+from qb_env.stop_only_env import StopOnlyEnv
 from qb_env.tossup_env import make_env_from_config
 from scripts._common import (
     ARTIFACT_DIR,
@@ -69,6 +70,13 @@ def parse_args() -> argparse.Namespace:
         "--deterministic-eval", action="store_true",
         help="Use deterministic policy for post-training episode evaluation.",
     )
+    parser.add_argument(
+        "--policy-mode",
+        type=str,
+        choices=["stop_only", "flat_kplus1"],
+        default="stop_only",
+        help="Policy action-space mode: canonical stop_only or flat_kplus1 ablation.",
+    )
     return parser.parse_args()
 
 
@@ -95,11 +103,12 @@ def main() -> None:
 
     print(f"Building likelihood model: {config['likelihood']['model']}")
     likelihood_model = build_likelihood_model(config, mc_questions)
-    env = make_env_from_config(
+    base_env = make_env_from_config(
         mc_questions=mc_questions,
         likelihood_model=likelihood_model,
         config=config,
     )
+    env = base_env if args.policy_mode == "flat_kplus1" else StopOnlyEnv(base_env)
 
     ppo_cfg = config["ppo"]
     total_timesteps = int(

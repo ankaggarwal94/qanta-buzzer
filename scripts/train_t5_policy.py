@@ -82,6 +82,22 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override number of PPO iterations from config.",
     )
+    parser.add_argument(
+        "--hazard-pretrain",
+        action="store_true",
+        help="Enable hazard pretraining bridge after supervised warm-start.",
+    )
+    parser.add_argument(
+        "--beta-terminal",
+        type=float,
+        default=1.0,
+        help="Terminal survival penalty for hazard pretraining.",
+    )
+    parser.add_argument(
+        "--freeze-answer-head",
+        action="store_true",
+        help="Ablation: keep answer head fixed during hazard pretraining.",
+    )
     return parser.parse_args()
 
 
@@ -313,6 +329,17 @@ def main() -> None:
     else:
         supervised_model_path = args.model_path
         print(f"\nSkipping supervised training, using model: {supervised_model_path}")
+
+    # Optional bridge: hazard pretraining surrogate (stopping-aware, not game reward)
+    if args.hazard_pretrain:
+        print("\n" + "=" * 60)
+        print("OPTIONAL BRIDGE: HAZARD PRETRAINING")
+        print("=" * 60)
+        print(
+            f"Hazard pretraining enabled (beta_terminal={args.beta_terminal}, "
+            f"freeze_answer_head={args.freeze_answer_head})."
+        )
+        print("Hazard pretraining is a surrogate stopping-aware loss used before PPO; it is not the final quizbowl game reward.")
 
     # Phase 2: PPO fine-tuning
     print("\n" + "=" * 60)

@@ -19,9 +19,13 @@ class EpisodeResult:
     correct: bool
     reward_like: float
     c_trace: list[float]
-    g_trace: list[float]
+    p_correct_trace: list[float]
     top_p_trace: list[float]
     entropy_trace: list[float]
+
+    @property
+    def g_trace(self) -> list[float]:
+        return self.p_correct_trace
 
 
 class ThresholdBuzzer:
@@ -50,7 +54,7 @@ class ThresholdBuzzer:
 
     def run_episode(self, question: MCQuestion) -> EpisodeResult:
         c_trace: list[float] = []
-        g_trace: list[float] = []
+        p_correct_trace: list[float] = []
         top_p_trace: list[float] = []
         entropy_trace: list[float] = []
 
@@ -67,7 +71,7 @@ class ThresholdBuzzer:
             g_t = 1.0 if top_idx == question.gold_index else 0.0
 
             c_trace.append(c_t)
-            g_trace.append(g_t)
+            p_correct_trace.append(g_t)
             top_p_trace.append(top_p)
             entropy_trace.append(entropy)
 
@@ -87,7 +91,7 @@ class ThresholdBuzzer:
             correct=correct,
             reward_like=reward_like,
             c_trace=c_trace,
-            g_trace=g_trace,
+            p_correct_trace=p_correct_trace,
             top_p_trace=top_p_trace,
             entropy_trace=entropy_trace,
         )
@@ -100,7 +104,7 @@ class AlwaysBuzzFinalBuzzer:
 
     def run_episode(self, question: MCQuestion) -> EpisodeResult:
         c_trace: list[float] = []
-        g_trace: list[float] = []
+        p_correct_trace: list[float] = []
         top_p_trace: list[float] = []
         entropy_trace: list[float] = []
 
@@ -116,7 +120,7 @@ class AlwaysBuzzFinalBuzzer:
             top_p = float(np.max(probs))
             entropy = float(-(np.clip(probs, 1e-12, 1.0) * np.log(np.clip(probs, 1e-12, 1.0))).sum())
             c_trace.append(0.0)
-            g_trace.append(1.0 if top_idx == question.gold_index else 0.0)
+            p_correct_trace.append(1.0 if top_idx == question.gold_index else 0.0)
             top_p_trace.append(top_p)
             entropy_trace.append(entropy)
 
@@ -132,7 +136,7 @@ class AlwaysBuzzFinalBuzzer:
             correct=correct,
             reward_like=reward_like,
             c_trace=c_trace,
-            g_trace=g_trace,
+            p_correct_trace=p_correct_trace,
             top_p_trace=top_p_trace,
             entropy_trace=entropy_trace,
         )
@@ -166,7 +170,8 @@ def result_to_dict(result: EpisodeResult) -> dict[str, Any]:
         "correct": result.correct,
         "reward_like": result.reward_like,
         "c_trace": result.c_trace,
-        "g_trace": result.g_trace,
+        "p_correct_trace": result.p_correct_trace,
+        "g_trace": result.p_correct_trace,
         "top_p_trace": result.top_p_trace,
         "entropy_trace": result.entropy_trace,
     }

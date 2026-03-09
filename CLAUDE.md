@@ -86,3 +86,11 @@ pytest
 - qb-rl config aliases are supported in addition to the canonical qanta-buzzer YAML shape.
 - Old qb-rl imports like `qb_env.data_loader` and `models.answer_profiles` are thin re-exports over the canonical modules.
 - OpenAI support is opt-in only. Default local workflows stay offline-friendly and do not require the `openai` package or `OPENAI_API_KEY`.
+
+
+## Action-space semantics
+
+- Canonical action semantics are **factored-first**: stop module `p_buzz(h_t)` and answer module `p_ans(i|h_t)` induce flat actions by `P(WAIT)=1-p_buzz`, `P(BUZZ i)=p_buzz*p_ans(i)`.
+- The flat `Discrete(K+1)` belief-feature PPO policy remains available as an **ablation** (`--policy-mode flat_kplus1`), while `stop_only` is canonical.
+- The K-way posterior used in this repo is a **modeling compression** for tractable learning, not the full theorem-level POMDP belief state.
+- `SoftmaxProfileBuzzer` denotes the softmax-from-scratch family; reserve `SequentialBayesBuzzer` for fragmentwise multiplicative belief updates.

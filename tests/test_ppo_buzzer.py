@@ -268,3 +268,11 @@ class TestCheckpointSaveLoad:
         probs = loaded.action_probabilities(obs)
         assert probs.shape == (sample_tfidf_env.K + 1,)
         assert abs(probs.sum() - 1.0) < 1e-5
+
+
+def test_train_ppo_defaults_to_stop_only_policy_mode(monkeypatch):
+    from scripts import train_ppo
+
+    monkeypatch.setattr("sys.argv", ["train_ppo.py"])
+    args = train_ppo.parse_args()
+    assert args.policy_mode == "stop_only"

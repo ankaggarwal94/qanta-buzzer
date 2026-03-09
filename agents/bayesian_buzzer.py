@@ -17,9 +17,13 @@ class SoftmaxEpisodeResult:
     gold_index: int
     correct: bool
     c_trace: list[float]
-    g_trace: list[float]
+    p_correct_trace: list[float]
     top_p_trace: list[float]
     entropy_trace: list[float]
+
+    @property
+    def g_trace(self) -> list[float]:
+        return self.p_correct_trace
 
 
 class SoftmaxProfileBuzzer:
@@ -48,7 +52,7 @@ class SoftmaxProfileBuzzer:
 
     def run_episode(self, question: MCQuestion) -> SoftmaxEpisodeResult:
         c_trace: list[float] = []
-        g_trace: list[float] = []
+        p_correct_trace: list[float] = []
         top_p_trace: list[float] = []
         entropy_trace: list[float] = []
 
@@ -65,7 +69,7 @@ class SoftmaxProfileBuzzer:
             g_t = 1.0 if top_idx == question.gold_index else 0.0
 
             c_trace.append(c_t)
-            g_trace.append(g_t)
+            p_correct_trace.append(g_t)
             top_p_trace.append(top_p)
             entropy_trace.append(entropy)
 
@@ -82,7 +86,7 @@ class SoftmaxProfileBuzzer:
             gold_index=question.gold_index,
             correct=(chosen_idx == question.gold_index),
             c_trace=c_trace,
-            g_trace=g_trace,
+            p_correct_trace=p_correct_trace,
             top_p_trace=top_p_trace,
             entropy_trace=entropy_trace,
         )
@@ -113,7 +117,7 @@ class SequentialBayesBuzzer:
 
     def run_episode(self, question: MCQuestion) -> SoftmaxEpisodeResult:
         c_trace: list[float] = []
-        g_trace: list[float] = []
+        p_correct_trace: list[float] = []
         top_p_trace: list[float] = []
         entropy_trace: list[float] = []
 
@@ -133,7 +137,7 @@ class SequentialBayesBuzzer:
             g_t = 1.0 if top_idx == question.gold_index else 0.0
 
             c_trace.append(c_t)
-            g_trace.append(g_t)
+            p_correct_trace.append(g_t)
             top_p_trace.append(top_p)
             entropy_trace.append(entropy)
 
@@ -150,7 +154,7 @@ class SequentialBayesBuzzer:
             gold_index=question.gold_index,
             correct=(chosen_idx == question.gold_index),
             c_trace=c_trace,
-            g_trace=g_trace,
+            p_correct_trace=p_correct_trace,
             top_p_trace=top_p_trace,
             entropy_trace=entropy_trace,
         )

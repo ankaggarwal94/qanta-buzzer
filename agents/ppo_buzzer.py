@@ -6,7 +6,7 @@ action probabilities needed to compute the S_q scoring metric.
 
 The key design rationale: SB3's ``learn()`` does not expose per-step action
 distributions, so ``run_episode()`` implements custom episode execution that
-records c_trace (buzz probability) and g_trace (correctness probability)
+records c_trace (buzz probability) and p_correct_trace (correctness probability)
 at each step for downstream S_q computation.
 
 Ported from qb-rl reference implementation (agents/ppo_buzzer.py) with
@@ -48,7 +48,7 @@ class PPOEpisodeTrace:
         Total accumulated reward over the episode.
     c_trace : list[float]
         Per-step buzz probability: 1 - P(wait) at each timestep.
-    g_trace : list[float]
+    p_correct_trace : list[float]
         Per-step correctness probability: P(gold_option) / P(buzz).
     entropy_trace : list[float]
         Per-step policy entropy over the full action distribution.
@@ -61,8 +61,12 @@ class PPOEpisodeTrace:
     correct: bool
     episode_reward: float
     c_trace: list[float]
-    g_trace: list[float]
+    p_correct_trace: list[float]
     entropy_trace: list[float]
+
+    @property
+    def g_trace(self) -> list[float]:
+        return self.p_correct_trace
 
 
 class PPOBuzzer:
@@ -228,7 +232,7 @@ class PPOBuzzer:
         """Run a full episode and record per-step action probability traces.
 
         Executes the policy in the environment, computing c_trace (buzz
-        probability), g_trace (correctness probability), and entropy_trace
+        probability), p_correct_trace (correctness probability), and entropy_trace
         at each step. These traces are needed to compute the S_q metric.
 
         Parameters
@@ -248,27 +252,28 @@ class PPOBuzzer:
         truncated = False
         total_reward = 0.0
         c_trace: list[float] = []
-        g_trace: list[float] = []
+        p_correct_trace: list[float] = []
         entropy_trace: list[float] = []
 
         buzz_step = -1
         buzz_index = -1
-        gold_index = (
-            self.env.question.gold_index if self.env.question is not None else -1
-        )
+        base_env = self.env.unwrapped
+        gold_index = base_env.question.gold_index if getattr(base_env, "question", None) is not None else -1
 
         while not (terminated or truncated):
             probs = self.action_probabilities(obs)
-            c_val = float(1.0 - probs[0])
-            g_val = (
-                float(probs[gold_index + 1] / c_val) if c_val > 1e-12 else 0.0
-            )
+            if len(probs) == 2:
+                c_val = float(probs[1])
+                g_val = float(base_env.belief[gold_index]) if gold_index >= 0 else 0.0
+            else:
+                c_val = float(1.0 - probs[0])
+                g_val = float(probs[gold_index + 1] / c_val) if c_val > 1e-12 else 0.0
             entropy = float(
                 -(np.clip(probs, 1e-12, 1.0) * np.log(np.clip(probs, 1e-12, 1.0))).sum()
             )
 
             c_trace.append(c_val)
-            g_trace.append(g_val)
+            p_correct_trace.append(g_val)
             entropy_trace.append(entropy)
 
             if deterministic:
@@ -287,7 +292,7 @@ class PPOBuzzer:
                     step_info.get("step_idx", len(c_trace) - 1)
                 )
                 buzz_index = int(
-                    step_info.get("forced_choice", np.argmax(self.env.belief))
+                    step_info.get("forced_choice", np.argmax(base_env.belief))
                 )
 
         correct = buzz_index == gold_index
@@ -299,6 +304,6 @@ class PPOBuzzer:
             correct=correct,
             episode_reward=total_reward,
             c_trace=c_trace,
-            g_trace=g_trace,
+            p_correct_trace=p_correct_trace,
             entropy_trace=entropy_trace,
         )

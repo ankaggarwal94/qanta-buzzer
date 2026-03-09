@@ -37,7 +37,10 @@ def t5_small_config() -> dict:
 @pytest.fixture(scope="module")
 def t5_small_model(t5_small_config):
     """Load T5PolicyModel with t5-small once per test module."""
-    model = T5PolicyModel(t5_small_config)
+    try:
+        model = T5PolicyModel(t5_small_config)
+    except OSError as exc:
+        pytest.skip(f"t5-small unavailable in test environment: {exc}")
     model.eval()
     return model
 
@@ -378,3 +381,75 @@ class TestCheckpoint:
             assert torch.allclose(wait_before, wait_after, atol=1e-5)
             assert torch.allclose(answer_before, answer_after, atol=1e-5)
             assert torch.allclose(value_before, value_after, atol=1e-5)
+
+def test_wait_action_log_prob_matches_wait_mass(t5_small_model, sample_texts):
+    model = t5_small_model
+    enc = model.encode_input(sample_texts[:1])
+
+    pooled = model.get_encoder_output(enc["input_ids"], enc["attention_mask"])
+    wait_logits, answer_logits, _ = model.policy_head(pooled)
+    wait_probs = torch.softmax(wait_logits, dim=-1)
+
+    actions = torch.tensor([0], dtype=torch.long, device=model.device)
+    log_probs, _entropy, _ = model.get_action_log_probs(
+        enc["input_ids"], enc["attention_mask"], actions
+    )
+
+    expected = torch.log(wait_probs[:, 0])
+    assert torch.allclose(log_probs, expected, atol=1e-5)
+
+
+def test_buzz_action_log_prob_matches_factorized_mass(t5_small_model, sample_texts):
+    model = t5_small_model
+    enc = model.encode_input(sample_texts[:1])
+
+    pooled = model.get_encoder_output(enc["input_ids"], enc["attention_mask"])
+    wait_logits, answer_logits, _ = model.policy_head(pooled)
+    wait_probs = torch.softmax(wait_logits, dim=-1)
+    answer_probs = torch.softmax(answer_logits, dim=-1)
+
+    answer_idx = 2
+    actions = torch.tensor([1 + answer_idx], dtype=torch.long, device=model.device)
+    log_probs, _entropy, _ = model.get_action_log_probs(
+        enc["input_ids"], enc["attention_mask"], actions
+    )
+
+    expected = torch.log(wait_probs[:, 1]) + torch.log(answer_probs[:, answer_idx])
+    assert torch.allclose(log_probs, expected, atol=1e-5)
+
+
+def test_joint_entropy_matches_chain_rule(t5_small_model, sample_texts):
+    model = t5_small_model
+    enc = model.encode_input(sample_texts[:1])
+
+    pooled = model.get_encoder_output(enc["input_ids"], enc["attention_mask"])
+    wait_logits, answer_logits, _ = model.policy_head(pooled)
+    wait_probs = torch.softmax(wait_logits, dim=-1)
+    answer_probs = torch.softmax(answer_logits, dim=-1)
+
+    actions = torch.tensor([0], dtype=torch.long, device=model.device)
+    _, entropy, _ = model.get_action_log_probs(
+        enc["input_ids"], enc["attention_mask"], actions
+    )
+
+    wait_log_probs = torch.log(wait_probs.clamp_min(1e-12))
+    answer_log_probs = torch.log(answer_probs.clamp_min(1e-12))
+    wait_entropy = -(wait_probs * wait_log_probs).sum(dim=-1)
+    answer_entropy = -(answer_probs * answer_log_probs).sum(dim=-1)
+    expected = wait_entropy + wait_probs[:, 1] * answer_entropy
+    assert torch.allclose(entropy, expected, atol=1e-5)
+
+
+def test_old_unconditional_entropy_semantics_do_not_match(t5_small_model, sample_texts):
+    model = t5_small_model
+    enc = model.encode_input(sample_texts[:1])
+    pooled = model.get_encoder_output(enc["input_ids"], enc["attention_mask"])
+    wait_logits, answer_logits, _ = model.policy_head(pooled)
+    wait_probs = torch.softmax(wait_logits, dim=-1)
+    answer_probs = torch.softmax(answer_logits, dim=-1)
+    actions = torch.tensor([0], dtype=torch.long, device=model.device)
+    _, entropy, _ = model.get_action_log_probs(enc["input_ids"], enc["attention_mask"], actions)
+
+    old = (-(wait_probs * torch.log(wait_probs.clamp_min(1e-12))).sum(dim=-1)
+           - (answer_probs * torch.log(answer_probs.clamp_min(1e-12))).sum(dim=-1))
+    assert not torch.allclose(entropy, old, atol=1e-6)

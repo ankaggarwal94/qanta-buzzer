@@ -257,3 +257,18 @@ def test_per_category_accuracy_unmatched_qid():
     cat_metrics = per_category_accuracy(results, questions)
     assert "unknown" in cat_metrics
     assert cat_metrics["unknown"]["n"] == 1.0
+
+from evaluation.metrics import calibration_at_buzz
+
+
+def test_system_score_uses_probability_trace():
+    c = [0.5, 0.0]
+    p = [0.8, 0.2]
+    score = system_score(c, p)
+    assert abs(score - 0.4) < 1e-6
+
+
+def test_calibration_at_buzz_rejects_binary_g_trace_as_confidence():
+    results = [{"buzz_step": 0, "p_correct_trace": [0.7], "correct": True}]
+    out = calibration_at_buzz(results)
+    assert "ece" in out and "brier" in out

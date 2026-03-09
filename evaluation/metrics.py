@@ -24,11 +24,25 @@ calibration_at_buzz(results)
 
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
 import numpy as np
 
+
+
+@dataclass
+class CanonicalEpisodeTrace:
+    qid: str
+    buzz_step: int
+    buzz_index: int
+    gold_index: int
+    correct: bool
+    episode_reward: float
+    c_trace: list[float]
+    p_correct_trace: list[float]
+    top_p_trace: list[float]
+    entropy_trace: list[float]
 
 def _to_dict(item: Any) -> dict[str, Any]:
     """Convert dataclass or object to dict for uniform access.
@@ -50,7 +64,7 @@ def _to_dict(item: Any) -> dict[str, Any]:
     return item.__dict__
 
 
-def system_score(c_trace: list[float], g_trace: list[float]) -> float:
+def system_score(c_trace: list[float], p_correct_trace: list[float]) -> float:
     """Compute S_q scoring metric for a single episode.
 
     S_q = sum_t b_t * g_t, where b_t = c_t * prod_{i<t} (1 - c_i).
@@ -71,7 +85,7 @@ def system_score(c_trace: list[float], g_trace: list[float]) -> float:
         S_q score for the episode, in [0, 1].
     """
     c = np.array(c_trace, dtype=np.float64)
-    g = np.array(g_trace, dtype=np.float64)
+    g = np.array(p_correct_trace, dtype=np.float64)
     if len(c) == 0:
         return 0.0
     b = np.zeros_like(c)
@@ -186,7 +200,7 @@ def summarize_buzz_metrics(results: list[Any]) -> dict[str, float]:
         [
             system_score(
                 list(r.get("c_trace", [])),
-                list(r.get("g_trace", [])),
+                list(r.get("p_correct_trace", r.get("g_trace", []))),
             )
             for r in rows
         ],
@@ -257,7 +271,7 @@ def per_category_accuracy(
     }
 
 
-def calibration_at_buzz(results: list[Any]) -> dict[str, float]:
+def calibration_at_buzz(results: list[Any], confidence_key: str = "p_correct_trace") -> dict[str, float]:
     """Compute calibration metrics at the buzz decision point.
 
     Extracts buzz-time confidence (from g_trace at buzz_step) and
@@ -279,12 +293,12 @@ def calibration_at_buzz(results: list[Any]) -> dict[str, float]:
     outcomes: list[int] = []
     for row in rows:
         c_trace = list(row.get("c_trace", []))
-        g_trace = list(row.get("g_trace", []))
-        buzz_step = int(row.get("buzz_step", max(0, len(g_trace) - 1)))
-        if not g_trace:
+        conf_trace = list(row.get(confidence_key, row.get("g_trace", [])))
+        buzz_step = int(row.get("buzz_step", max(0, len(conf_trace) - 1)))
+        if not conf_trace:
             continue
-        idx = min(max(0, buzz_step), len(g_trace) - 1)
-        confidences.append(float(g_trace[idx]))
+        idx = min(max(0, buzz_step), len(conf_trace) - 1)
+        confidences.append(float(conf_trace[idx]))
         outcomes.append(1 if bool(row.get("correct", False)) else 0)
 
     return {

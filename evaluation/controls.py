@@ -6,7 +6,9 @@ genuinely uses question clues rather than exploiting surface-form artifacts:
 
 1. **Choices-only control**: Strips all clues, trains a logistic regression
    on option surface features (char n-grams, length, capitalization). Expected
-   accuracy ~25% (1/K) if options have no exploitable artifacts.
+   accuracy is an artifact-pressure audit. Accuracy above chance can reflect exploitable
+   surface regularities, benchmark regularities, or strategic inference from
+   the option set. Treat it as a diagnostic, not automatic invalidation.
 
 2. **Shuffle control**: Randomizes option ordering to verify the agent has
    no position bias. Performance should be unchanged.
@@ -99,7 +101,9 @@ def run_choices_only_control(
 
     Strips all question clues and trains a logistic regression on option
     surface features (char n-grams, length, capitalization patterns).
-    Expected accuracy ~25% (1/K) if options are well-constructed.
+    This is an artifact-pressure audit. Accuracy above chance can reflect
+    exploitable surface regularities, benchmark regularities, or strategic
+    inference from option sets; treat it as a diagnostic, not invalidation.
 
     Parameters
     ----------

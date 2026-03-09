@@ -264,8 +264,9 @@ def main() -> None:
     confidences = []
     outcomes = []
     for row in full_eval["runs"]:
-        idx = min(int(row["buzz_step"]), len(row["g_trace"]) - 1)
-        confidences.append(float(row["g_trace"][idx]))
+        conf_trace = row.get("p_correct_trace", row.get("g_trace", []))
+        idx = min(int(row["buzz_step"]), len(conf_trace) - 1)
+        confidences.append(float(conf_trace[idx]))
         outcomes.append(1 if bool(row["correct"]) else 0)
     plot_calibration_curve(
         confidences, outcomes, out_dir / "plots" / "calibration.png"

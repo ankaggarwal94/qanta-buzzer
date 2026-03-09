@@ -15,11 +15,13 @@ from qb_env.mc_builder import MCBuilder, MCQuestion
 from qb_env.text_utils import normalize_answer, tokenize_text
 from qb_env.tossup_env import TossupMCEnv, make_env_from_config
 from qb_env.text_wrapper import TextObservationWrapper
+from qb_env.stop_only_env import StopOnlyEnv
 
 __all__ = [
     "TossupMCEnv",
     "make_env_from_config",
     "TextObservationWrapper",
+    "StopOnlyEnv",
     "TossupQuestion",
     "QANTADatasetLoader",
     "parse_row",

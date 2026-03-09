@@ -31,6 +31,8 @@ environment:
   buzz_correct: 1.0  # Reward for correct answer
   buzz_incorrect: -0.5  # Penalty for wrong answer
   max_steps: 20  # Maximum clues to reveal
+  end_mode: "force_commit"  # force_commit | no_buzz
+  no_buzz_reward: 0.0
 
 mc_guards:  # Anti-artifact guards from qb-rl
   alias_edit_distance_threshold: 0.2  # Reject similar answer aliases
