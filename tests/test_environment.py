@@ -504,4 +504,4 @@ def test_no_buzz_mode_does_not_force_answer(sample_mc_question):
             break
     assert truncated
     assert info.get("no_buzz") is True
-    assert "forced_choice" not in info
+    assert info.get("forced_choice") == -1

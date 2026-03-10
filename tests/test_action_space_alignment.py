@@ -80,7 +80,7 @@ def test_no_buzz_end_mode_does_not_force_choice(sample_tfidf_env):
         if tr:
             break
     assert info.get("no_buzz") is True
-    assert "forced_choice" not in info
+    assert info.get("forced_choice") == -1
 
 
 def test_train_ppo_defaults_to_stop_only(monkeypatch):

@@ -286,14 +286,13 @@ class PPOBuzzer:
 
             if action != 0 and buzz_step < 0:
                 buzz_step = int(step_info.get("step_idx", 0))
-                buzz_index = action - 1
+                buzz_index = int(step_info.get("chosen_idx", action - 1))
             if truncated and buzz_step < 0:
-                buzz_step = int(
-                    step_info.get("step_idx", len(c_trace) - 1)
-                )
-                buzz_index = int(
-                    step_info.get("forced_choice", np.argmax(base_env.belief))
-                )
+                buzz_step = int(step_info.get("step_idx", len(c_trace) - 1))
+                if bool(step_info.get("no_buzz", False)):
+                    buzz_index = -1
+                else:
+                    buzz_index = int(step_info.get("forced_choice", np.argmax(base_env.belief)))
 
         correct = buzz_index == gold_index
         return PPOEpisodeTrace(

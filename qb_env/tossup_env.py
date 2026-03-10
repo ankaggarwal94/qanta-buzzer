@@ -473,6 +473,8 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
                 elif self.end_mode == "no_buzz":
                     reward += self.no_buzz_reward
                     info["no_buzz"] = True
+                    info["forced_choice"] = -1
+                    info["forced_correct"] = False
                 else:
                     raise ValueError(f"Unknown end_mode: {self.end_mode}")
             else:
