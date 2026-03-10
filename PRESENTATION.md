@@ -23,7 +23,7 @@ March 2026
 
 ## Project Overview
 
-**Goal**: Build an intelligent agent that learns *when* to buzz in quiz bowl competitions
+**Goal**: Build an intelligent agent that learns *when* to buzz in quiz bowl competitions (with multiple-choice options)
 
 **Two Approaches**:
 1. 🎯 **Belief-Feature Pipeline**: Traditional RL with hand-crafted features
