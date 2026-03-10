@@ -7,7 +7,7 @@ paginate: true
 <!-- _class: lead -->
 
 # Quiz Bowl RL Buzzer
-## Multiple-Choice Strategic Buzzing Under Incremental Clues
+## Current `main` Branch Codebase
 
 CS234 Final Project
 
@@ -19,164 +19,210 @@ March 2026
 
 ---
 
-## Problem
+## What This Repository Is Now
 
-- Quiz bowl questions reveal evidence incrementally
-- A good system must decide **when** to buzz, not just **what** answer to pick
-- Buzz too early:
-  - higher risk of a wrong answer
-- Buzz too late:
-  - lower strategic value, less chance to beat an opponent
-- We study this in a **multiple-choice** setting so the answer space is controlled and evaluation is reproducible
-
----
-
-## Background And Setup
-
-- We model quiz bowl as a sequential decision problem over partial clues
-- Each example is converted into:
-  - question prefixes over time
-  - `K=4` answer options
-  - one correct option + three distractors
-- The system supports two policy families:
-  - belief-feature buzzers
-  - end-to-end T5 text-policy buzzers
+- The canonical implementation is the modular pipeline under:
+  - `qb_data/`
+  - `qb_env/`
+  - `models/`
+  - `agents/`
+  - `evaluation/`
+  - `scripts/`
+  - `training/`
+- The older root-level prototype (`main.py`, `environment.py`, `model.py`, etc.) is still present, but it is no longer the primary path to understand the repo.
+- The repo also includes a qb-rl compatibility bridge so older imports and configs can still resolve inside `qanta-buzzer`.
 
 ---
 
-## Why Multiple Choice?
+## Core Problem Framing
 
-- Open-ended answering adds aliasing and grading complexity
-- Multiple choice makes it easier to isolate the buzzing decision itself
-- But naive distractors create artifacts, so answer generation matters
-
-Our design goal:
-
-- keep the answer space constrained
-- make the options hard enough that the agent must use the clues
+- Task: learn **when to buzz** on a quiz bowl tossup with **multiple-choice** answers
+- Questions reveal information incrementally
+- The agent must trade off:
+  - waiting for more evidence
+  - buzzing early enough to gain score advantage
+- The codebase supports both:
+  - belief-feature decision making
+  - end-to-end text-policy experiments
 
 ---
 
-## Method Overview
+## End-to-End Pipeline
 
-End-to-end flow in the current codebase:
-
-1. Load tossup questions
-2. Build answer profiles from historical text
-3. Construct artifact-resistant multiple-choice questions
-4. Score options with a likelihood model
-5. Convert beliefs into observations
+1. Load tossup questions from CSV or optional Hugging Face fallback
+2. Build answer profiles from historical question text
+3. Construct multiple-choice questions with anti-artifact guards
+4. Score answer options with a likelihood model
+5. Convert beliefs into:
+   - feature vectors for MLP/PPO agents, or
+   - text observations for the T5 policy track
 6. Run baseline or learned buzzers
-7. Evaluate timing, correctness, calibration, and controls
+7. Evaluate with accuracy, `S_q`, calibration, and control experiments
 
 ---
 
-## Data And MC Construction
+## Data Layer
 
-Key implementation pieces:
+Key modules:
 
 - `qb_data/data_loader.py`
+  - `TossupQuestion`
   - CSV-first loading
+  - qb-rl-compatible row parsing
   - optional Hugging Face fallback
 - `qb_data/answer_profiles.py`
   - leave-one-out answer profiles
-- `qb_data/mc_builder.py`
-  - distractor selection strategies
-  - anti-artifact guards
+- `qb_data/dataset_splits.py`
+  - stratified train / val / test creation
 
-Distractor strategies in code:
-
-- `sbert_profile`
-- `tfidf_profile`
-- `openai_profile`
-- `category_random`
+The data layer is designed to feed both the modular RL pipeline and the legacy / compatibility surfaces.
 
 ---
 
-## Anti-Artifact Guards
+## Multiple-Choice Construction
 
-The MC builder explicitly filters bad distractors using:
+`qb_data/mc_builder.py` builds `MCQuestion` objects with:
 
-- alias collision checks
-- duplicate token overlap checks
-- length ratio checks
-- overlap-with-question-text checks
+- `K=4` options by default
+- distractor strategies:
+  - `sbert_profile`
+  - `tfidf_profile`
+  - `openai_profile`
+  - `category_random`
+- anti-artifact guards:
+  - alias collision
+  - duplicate token overlap
+  - length ratio
+  - overlap with question text
 
-Why this matters:
-
-- otherwise a model can exploit answer-surface quirks
-- we want the buzzer to rely on clue semantics and timing
+This is one of the repo's main research contributions: the answer space is constrained, but deliberately guarded against easy artifacts.
 
 ---
 
 ## Likelihood Models
 
-`models/likelihoods.py` supports:
+`models/likelihoods.py` provides pluggable scoring backends:
 
 - TF-IDF
 - SBERT
 - T5 embeddings
 - optional OpenAI embeddings
 
-These models are used to score clue text against answer profiles and produce beliefs over answer options.
+These likelihoods drive two separate parts of the system:
 
-This separation lets us compare:
+- distractor ranking during MC construction
+- belief updates during buzzing / environment interaction
 
-- a fixed semantic scorer + simple buzzer
-- a fixed semantic scorer + PPO buzzer
-- a T5 policy that reads the text directly
-
----
-
-## Belief-Feature Pipeline
-
-The modular RL path uses:
-
-- `qb_env/tossup_env.py`
-- `models/features.py`
-- `agents/threshold_buzzer.py`
-- `agents/bayesian_buzzer.py`
-- `agents/ppo_buzzer.py`
-
-Observation vector:
-
-- belief over answer options
-- top probability
-- margin
-- entropy
-- stability
-- progress
-- clue index
-
-Action space:
-
-- WAIT
-- BUZZ with one of the `K` answer options
+The repo keeps the likelihood model separate from the buzzer policy, which makes comparisons easier.
 
 ---
 
-## T5 Policy Pipeline
+## Environment
 
-The second path is an end-to-end text policy:
+`qb_env/tossup_env.py` models the game as a Gymnasium environment:
 
-- `qb_env/text_wrapper.py`
+- **Action space**: `Discrete(K + 1)`
+  - `0` = WAIT
+  - `1..K` = buzz with answer option
+- **Observation space**: `K + 6` belief-feature vector
+  - belief over options
+  - top probability
+  - margin
+  - entropy
+  - stability
+  - progress
+  - clue index
+
+Configurable behavior:
+
+- reward modes: `time_penalty`, `simple`, `human_grounded`
+- belief modes: `from_scratch`, `sequential_bayes`
+
+---
+
+## Baseline Agents
+
+Implemented baseline buzzers:
+
+- `ThresholdBuzzer`
+- `AlwaysBuzzFinalBuzzer`
+- `SoftmaxProfileBuzzer`
+- `SequentialBayesBuzzer`
+
+These agents produce:
+
+- `c_trace`: buzz-confidence style trace
+- `g_trace`: correctness trace
+- entropy / top-probability traces
+
+Those traces are used downstream for `S_q` and calibration-style evaluation, not just raw accuracy.
+
+---
+
+## PPO Agent
+
+`agents/ppo_buzzer.py` wraps Stable-Baselines3 PPO around the belief-feature environment.
+
+Current design:
+
+- MLP policy over belief features
+- SB3 handles training
+- custom episode execution records per-step traces for evaluation
+
+Canonical training entrypoint:
+
+```bash
+python scripts/train_ppo.py --smoke
+```
+
+This is the main learned policy path in the modular codebase.
+
+---
+
+## T5 Policy Track
+
+The repo also contains a second, heavier path:
+
 - `models/t5_policy.py`
+- `qb_env/text_wrapper.py`
 - `training/train_supervised_t5.py`
 - `training/train_ppo_t5.py`
+- `scripts/train_t5_policy.py`
 
-Workflow:
+This track:
 
-1. build a text observation from visible clues + answer choices
-2. warm-start with supervised learning
-3. fine-tune with PPO
+- converts the current visible clue text plus choices into a text observation
+- uses a T5-based policy/value architecture
+- supports supervised warm-start plus PPO fine-tuning
 
-This gives us a direct comparison between structured belief-based decisions and a heavier neural policy.
+It is an alternative experimental path, not the default smoke workflow.
 
 ---
 
-## Experimental Setup
+## Evaluation Layer
 
-Canonical scripts in the repo:
+`evaluation/` contains:
+
+- `metrics.py`
+  - `S_q`
+  - calibration-at-buzz
+  - per-category accuracy
+- `controls.py`
+  - choices-only
+  - shuffle
+  - alias substitution
+- `plotting.py`
+  - calibration curves
+  - entropy vs clue index
+  - comparison tables / CSV
+
+This makes the repo more than a training script collection: it is built as an experiment pipeline.
+
+---
+
+## Canonical Workflows
+
+Smoke pipeline:
 
 ```bash
 python scripts/build_mc_dataset.py --smoke
@@ -185,109 +231,77 @@ python scripts/train_ppo.py --smoke
 python scripts/evaluate_all.py --smoke
 ```
 
-Additional T5 path:
+T5 policy path:
 
 ```bash
 python scripts/train_t5_policy.py --config configs/t5_policy.yaml
 python scripts/compare_policies.py --config configs/t5_policy.yaml
 ```
 
-Configs:
-
-- `configs/default.yaml`
-- `configs/smoke.yaml`
-- `configs/t5_policy.yaml`
+Legacy root-level scripts still exist, but the modular `scripts/` path is the one the repo docs and walkthrough now center.
 
 ---
 
-## Baselines And Learned Agents
+## Testing And Validation
 
-Implemented agents:
+The current repo is documented around three validation layers:
 
-- `ThresholdBuzzer`
-- `AlwaysBuzzFinalBuzzer`
-- `SoftmaxProfileBuzzer`
-- `SequentialBayesBuzzer`
-- `PPOBuzzer`
+1. targeted `pytest` runs
+2. the smoke pipeline above
+3. `walkthrough.md` as a generated, verified code tour
 
-Why this baseline set is useful:
+Key reference docs:
 
-- thresholded confidence
-- from-scratch belief recomputation
-- sequential Bayesian belief updates
-- always-buzz-final control
-- learned timing policy with PPO
+- `README.md`
+- `CLAUDE.md`
+- `walkthrough.md`
+- `.planning/`
 
----
-
-## Evaluation
-
-`evaluation/` measures more than final accuracy:
-
-- `S_q`
-- buzz accuracy
-- mean buzz step
-- calibration-at-buzz
-- ECE
-- Brier score
-- per-category accuracy
-
-The code also includes explicit controls:
-
-- choices-only
-- shuffle
-- alias substitution
-
-This is important because a buzzer can look strong while exploiting answer artifacts instead of clue content.
+There are also local repomix packs for model ingestion, but those are generated artifacts rather than tracked source files.
 
 ---
 
-## Analysis Focus
+## Current Repo Caveat
 
-The codebase is designed to answer questions like:
+This presentation is about the **architecture and intended operation** of the current `main` branch.
 
-- Do sequential Bayesian updates change buzzing behavior relative to from-scratch softmax?
-- Do learned buzzers trade confidence for earlier timing?
-- Do models still perform when clue order or answer aliases are perturbed?
-- Is confidence calibrated at the time the system decides to buzz?
+Two practical caveats:
 
-The checked-in evaluation outputs include:
+- the repo contains both the modular path and the older prototype path
+- some files on current `main` still need post-merge cleanup, so this deck avoids overclaiming polished benchmark numbers from the checked-in branch state
 
-- JSON summaries
-- comparison tables
-- calibration plots
-- entropy-vs-clue-index plots
+So the safest interpretation is:
+
+- the modular pipeline is the canonical design
+- the repo is a research codebase, not a polished package release
 
 ---
 
-## What The Current System Demonstrates
+## What The Codebase Demonstrates
 
-- a full pipeline from raw tossups to multiple-choice episodes
-- swappable likelihood models for semantic scoring
-- both simple and learned buzzer policies
-- experiment-oriented evaluation with artifact controls
-- an implementation that is modular enough to compare policy families, not just train one model
-
----
-
-## Conclusions
-
-- Multiple-choice quiz bowl is a useful controlled setting for studying strategic buzzing
-- Answer construction quality is as important as the buzzer itself
-- The repository now supports:
-  - belief-feature baselines
-  - PPO on structured observations
-  - T5-based text-policy experiments
-  - calibration and artifact-aware evaluation
-- The most important contribution of the codebase is the **experiment platform**, not just a single model checkpoint
+- quiz bowl buzzing framed over a multiple-choice answer space
+- modular separation of:
+  - data
+  - likelihoods
+  - environment
+  - agents
+  - evaluation
+- both belief-feature RL and text-policy experimentation
+- artifact-aware evaluation rather than raw accuracy alone
+- compatibility bridging from qb-rl into a single canonical repo
 
 ---
 
-## References
+<!-- _class: lead -->
 
-- Rodriguez et al. — QANTA / quiz bowl question answering
-- Schulman et al. — Proximal Policy Optimization
-- Raffel et al. — Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer
+# Takeaway
+
+The current repository is best understood as a **modular experiment platform**
+for multiple-choice quiz bowl buzzing:
+
+data -> MC construction -> beliefs/text -> buzzer -> evaluation
+
+not as the original single-path T5-only prototype.
 
 ---
 
