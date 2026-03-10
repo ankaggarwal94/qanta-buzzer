@@ -66,9 +66,23 @@ def parse_args() -> argparse.Namespace:
         help="Override total_timesteps from config.",
     )
     parser.add_argument(
+<<<<<<< HEAD
+        "--seed", type=int, default=None,
+        help="Override PPO/environment seed from config.",
+    )
+    parser.add_argument(
         "--deterministic-eval", action="store_true",
         help="Use deterministic policy for post-training episode evaluation.",
     )
+    parser.add_argument(
+        "--stochastic-eval", action="store_true",
+        help="Force stochastic policy sampling for post-training evaluation.",
+    )
+=======
+        "--deterministic-eval", action="store_true",
+        help="Use deterministic policy for post-training episode evaluation.",
+    )
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
     return parser.parse_args()
 
 
@@ -102,6 +116,10 @@ def main() -> None:
     )
 
     ppo_cfg = config["ppo"]
+<<<<<<< HEAD
+    train_seed = int(args.seed if args.seed is not None else ppo_cfg.get("seed", 13))
+=======
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
     total_timesteps = int(
         args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
     )
@@ -114,6 +132,10 @@ def main() -> None:
         batch_size=int(ppo_cfg["batch_size"]),
         n_epochs=int(ppo_cfg["n_epochs"]),
         gamma=float(ppo_cfg["gamma"]),
+<<<<<<< HEAD
+        seed=train_seed,
+=======
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
         policy_kwargs=ppo_cfg.get("policy_kwargs", {"net_arch": [64, 64]}),
         verbose=1,
     )
@@ -122,10 +144,31 @@ def main() -> None:
     model_path = out_dir / "ppo_model"
     agent.save(model_path)
 
+<<<<<<< HEAD
+    eval_deterministic = True
+    if args.stochastic_eval:
+        eval_deterministic = False
+    elif args.deterministic_eval:
+        eval_deterministic = True
+
+    print(
+        f"Evaluating PPO agent on {len(mc_questions)} questions "
+        f"(deterministic={eval_deterministic})..."
+    )
+    traces = [
+        asdict(
+            agent.run_episode(
+                deterministic=eval_deterministic,
+                question_idx=i,
+            )
+        )
+        for i in range(len(mc_questions))
+=======
     print(f"Evaluating PPO agent on {len(mc_questions)} questions...")
     traces = [
         asdict(agent.run_episode(deterministic=args.deterministic_eval))
         for _ in range(len(mc_questions))
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
     ]
     summary = {**summarize_buzz_metrics(traces), **calibration_at_buzz(traces)}
 

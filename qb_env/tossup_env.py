@@ -101,6 +101,10 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         K: int = 4,
         reward_mode: str = "time_penalty",
         wait_penalty: float = 0.01,
+<<<<<<< HEAD
+        early_buzz_penalty: float = 0.0,
+=======
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
         buzz_correct: float = 1.0,
         buzz_incorrect: float = -0.5,
         belief_mode: str = "from_scratch",
@@ -117,6 +121,10 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         self.K = K
         self.reward_mode = reward_mode
         self.wait_penalty = wait_penalty
+<<<<<<< HEAD
+        self.early_buzz_penalty = early_buzz_penalty
+=======
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
         self.buzz_correct = buzz_correct
         self.buzz_incorrect = buzz_incorrect
         self.belief_mode = belief_mode
@@ -352,7 +360,19 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
                 return 0.0
             return self.buzz_correct if correct else self.buzz_incorrect
         # default: time_penalty
+<<<<<<< HEAD
+        reward = self.buzz_correct if correct else self.buzz_incorrect
+
+        # Optional shaping term to discourage very early buzzing.
+        # Penalty decreases as more clues are revealed.
+        if self.early_buzz_penalty > 0 and self.total_steps > 1:
+            progress = np.clip((last_seen_step + 1) / self.total_steps, 0.0, 1.0)
+            reward -= float(self.early_buzz_penalty) * (1.0 - progress)
+
+        return reward
+=======
         return self.buzz_correct if correct else self.buzz_incorrect
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 
     # ------------------------------------------------------------------
     # Gymnasium interface
@@ -386,7 +406,17 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
             self.rng.seed(seed)
             np.random.seed(seed)
 
+<<<<<<< HEAD
+        if options and "question_idx" in options:
+            q_idx = int(options["question_idx"])
+            if q_idx < 0 or q_idx >= len(self.questions):
+                raise ValueError(f"question_idx out of range: {q_idx}")
+            self.question = self.questions[q_idx]
+        else:
+            self.question = self._sample_question()
+=======
         self.question = self._sample_question()
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
         self.step_idx = 0
         self.prev_belief = None
         self.belief = np.ones(self.K, dtype=np.float32) / self.K
@@ -532,7 +562,13 @@ def make_env_from_config(
         likelihood_model=likelihood_model,
         K=int(data_cfg.get("K", 4)),
         reward_mode=str(env_cfg.get("reward", env_cfg.get("reward_mode", "time_penalty"))),
+<<<<<<< HEAD
+        seed=int(env_cfg.get("seed", 13)),
         wait_penalty=float(env_cfg.get("wait_penalty", 0.01)),
+        early_buzz_penalty=float(env_cfg.get("early_buzz_penalty", 0.0)),
+=======
+        wait_penalty=float(env_cfg.get("wait_penalty", 0.01)),
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
         buzz_correct=float(env_cfg.get("buzz_correct", 1.0)),
         buzz_incorrect=float(env_cfg.get("buzz_incorrect", -0.5)),
         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),

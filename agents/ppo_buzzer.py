@@ -101,6 +101,10 @@ class PPOBuzzer:
         batch_size: int = 32,
         n_epochs: int = 10,
         gamma: float = 0.99,
+<<<<<<< HEAD
+        seed: int | None = None,
+=======
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
         policy_kwargs: dict[str, Any] | None = None,
         verbose: int = 0,
     ):
@@ -112,6 +116,10 @@ class PPOBuzzer:
             "MlpPolicy",
             env,
             verbose=verbose,
+<<<<<<< HEAD
+            seed=seed,
+=======
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
             learning_rate=learning_rate,
             n_steps=n_steps,
             batch_size=batch_size,
@@ -223,7 +231,14 @@ class PPOBuzzer:
         return float(probs[gold_index + 1] / c_t)
 
     def run_episode(
+<<<<<<< HEAD
+        self,
+        deterministic: bool = False,
+        seed: int | None = None,
+        question_idx: int | None = None,
+=======
         self, deterministic: bool = False, seed: int | None = None
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
     ) -> PPOEpisodeTrace:
         """Run a full episode and record per-step action probability traces.
 
@@ -243,7 +258,15 @@ class PPOBuzzer:
         PPOEpisodeTrace
             Complete episode record with action traces and outcome.
         """
+<<<<<<< HEAD
+        reset_options = None
+        if question_idx is not None:
+            reset_options = {"question_idx": int(question_idx)}
+
+        obs, info = self.env.reset(seed=seed, options=reset_options)
+=======
         obs, info = self.env.reset(seed=seed)
+>>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
         terminated = False
         truncated = False
         total_reward = 0.0
