@@ -6,179 +6,224 @@ paginate: true
 
 <!-- _class: lead -->
 
-# Quiz Bowl RL Buzzer System
-## CS234 Final Project
+# Quiz Bowl RL Buzzer
+## Current `main` Branch Codebase
 
-**Unified RL Framework for Strategic Buzzing**
-
-Stanford University
+CS234 Final Project
 
 Kathleen Weng
 Imran Hassan
-Ankit Aggarwal 
+Ankit Aggarwal
 
 March 2026
 
 ---
 
-## Project Overview
+## What This Repository Is Now
 
-**Goal**: Build an intelligent agent that learns *when* to buzz in quiz bowl competitions (with multiple-choice options)
-
-**Two Approaches**:
-1. 🎯 **Belief-Feature Pipeline**: Traditional RL with hand-crafted features
-2. 🤖 **T5 Policy Pipeline**: End-to-end neural policy learning
-
-**Key Challenge**: Balance **accuracy** vs **speed**
-- Buzz too early → wrong answer (-0.5 points)
-- Buzz too late → opponent steals opportunity
-
----
-
-## What is Quiz Bowl?
-
-**Game Structure**:
-- Questions reveal information **incrementally** (clue by clue)
-- Players buzz when confident they know the answer
-- First to buzz gets chance to answer
-- Strategic timing is critical
-
-**Example Question**:
-> **Clue 1**: "This physicist developed a thought experiment..."
-> **Clue 2**: "...involving a cat in a box with poison..."
-> **Clue 3**: "...to illustrate quantum superposition..."
-> **Answer**: Erwin Schrödinger
+- The canonical implementation is the modular pipeline under:
+  - `qb_data/`
+  - `qb_env/`
+  - `models/`
+  - `agents/`
+  - `evaluation/`
+  - `scripts/`
+  - `training/`
+- The older root-level prototype (`main.py`, `environment.py`, `model.py`, etc.) is still present, but it is no longer the primary path to understand the repo.
+- The repo also includes a qb-rl compatibility bridge so older imports and configs can still resolve inside `qanta-buzzer`.
 
 ---
 
-<!-- _style: "font-size: 24px;" -->
+## Core Problem Framing
 
-## System Architecture
-
-**Pipeline Flow**:
-
-📊 **QANTA Dataset** → 20K+ quiz bowl questions
-
-⬇️
-
-🎯 **MC Builder** → K=4 choices + anti-artifact guards
-
-⬇️
-
-🎮 **RL Environment** → State: beliefs, Action: buzz/continue
-
-⬇️
-
-🤖 **Agents** → Threshold | Sequential Bayes | PPO
+- Task: learn **when to buzz** on a quiz bowl tossup with **multiple-choice** answers
+- Questions reveal information incrementally
+- The agent must trade off:
+  - waiting for more evidence
+  - buzzing early enough to gain score advantage
+- The codebase supports both:
+  - belief-feature decision making
+  - end-to-end text-policy experiments
 
 ---
 
-## Track 1: Belief-Feature Pipeline
+## End-to-End Pipeline
 
-**1. Answer Profiles** → TF-IDF from historical questions
-
-**2. Likelihood Scoring** (3 options):
-- TF-IDF: fast (~5s)
-- SBERT: moderate (~20s)  
-- T5: slow (~2min)
-
-**3. Belief Features** → confidence, entropy, margin, position
-
-**4. RL Training** → PPO with 100K timesteps
+1. Load tossup questions from CSV or optional Hugging Face fallback
+2. Build answer profiles from historical question text
+3. Construct multiple-choice questions with anti-artifact guards
+4. Score answer options with a likelihood model
+5. Convert beliefs into:
+   - feature vectors for MLP/PPO agents, or
+   - text observations for the T5 policy track
+6. Run baseline or learned buzzers
+7. Evaluate with accuracy, `S_q`, calibration, and control experiments
 
 ---
 
-## Track 2: T5 Policy Pipeline
+## Data Layer
 
-**End-to-End Learning**:
+Key modules:
 
-```python
-Input:  "This physicist... cat... superposition [CHOICES] 
-         A) Einstein B) Schrödinger C) Bohr D) Heisenberg"
-         
-Output: Action probabilities [CONTINUE: 0.2, BUZZ: 0.8]
-```
+- `qb_data/data_loader.py`
+  - `TossupQuestion`
+  - CSV-first loading
+  - qb-rl-compatible row parsing
+  - optional Hugging Face fallback
+- `qb_data/answer_profiles.py`
+  - leave-one-out answer profiles
+- `qb_data/dataset_splits.py`
+  - stratified train / val / test creation
 
-**Two-Stage Training**:
-1. **Supervised Warm-Start** (10 epochs)
-   - Learn from optimal buzzer demonstrations
-   - Cross-entropy loss on buzzer trajectories
+The data layer is designed to feed both the modular RL pipeline and the legacy / compatibility surfaces.
 
-2. **PPO Fine-Tuning** (100 iterations)
-   - Explore-exploit tradeoff
-   - Reward shaping for early correct buzzes
+---
+
+## Multiple-Choice Construction
+
+`qb_data/mc_builder.py` builds `MCQuestion` objects with:
+
+- `K=4` options by default
+- distractor strategies:
+  - `sbert_profile`
+  - `tfidf_profile`
+  - `openai_profile`
+  - `category_random`
+- anti-artifact guards:
+  - alias collision
+  - duplicate token overlap
+  - length ratio
+  - overlap with question text
+
+This is one of the repo's main research contributions: the answer space is constrained, but deliberately guarded against easy artifacts.
+
+---
+
+## Likelihood Models
+
+`models/likelihoods.py` provides pluggable scoring backends:
+
+- TF-IDF
+- SBERT
+- T5 embeddings
+- optional OpenAI embeddings
+
+These likelihoods drive two separate parts of the system:
+
+- distractor ranking during MC construction
+- belief updates during buzzing / environment interaction
+
+The repo keeps the likelihood model separate from the buzzer policy, which makes comparisons easier.
+
+---
+
+## Environment
+
+`qb_env/tossup_env.py` models the game as a Gymnasium environment:
+
+- **Action space**: `Discrete(K + 1)`
+  - `0` = WAIT
+  - `1..K` = buzz with answer option
+- **Observation space**: `K + 6` belief-feature vector
+  - belief over options
+  - top probability
+  - margin
+  - entropy
+  - stability
+  - progress
+  - clue index
+
+Configurable behavior:
+
+- reward modes: `time_penalty`, `simple`, `human_grounded`
+- belief modes: `from_scratch`, `sequential_bayes`
 
 ---
 
 ## Baseline Agents
 
-**1. Threshold Buzzer**
-- Buzz when top-1 confidence exceeds threshold τ
-- Sweep τ ∈ [0.5, 0.6, 0.7, 0.8, 0.9]
+Implemented baseline buzzers:
 
-**2. Softmax Profile Buzzer**
-- Use belief distribution as action probabilities
-- Temperature-controlled randomness
+- `ThresholdBuzzer`
+- `AlwaysBuzzFinalBuzzer`
+- `SoftmaxProfileBuzzer`
+- `SequentialBayesBuzzer`
 
-**3. Sequential Bayesian Buzzer**
-- Update beliefs with Sigmoid activation
-- Buzz when confidence × position > threshold
-- Best baseline in most scenarios
----
-**4. Floor Control**
-- Always buzz on first clue (test reward bounds)
+These agents produce:
 
----
+- `c_trace`: buzz-confidence style trace
+- `g_trace`: correctness trace
+- entropy / top-probability traces
 
-## Environment Design
-
-**State Space**:
-- Partial question text (revealed clues)
-- Belief distribution over K=4 choices
-- Position indicator (clues revealed / total clues)
-
-**Action Space**:
-- CONTINUE (0): Reveal next clue
-- BUZZ (1): Submit answer
+Those traces are used downstream for `S_q` and calibration-style evaluation, not just raw accuracy.
 
 ---
 
-**Reward Shaping**:
-```python
-reward = {
-    +1.0   if buzz correct
-    -0.5   if buzz incorrect  
-    -0.1   per clue revealed (wait penalty)
-    -0.2   if buzz on first clue (early buzz penalty)
-}
+## PPO Agent
+
+`agents/ppo_buzzer.py` wraps Stable-Baselines3 PPO around the belief-feature environment.
+
+Current design:
+
+- MLP policy over belief features
+- SB3 handles training
+- custom episode execution records per-step traces for evaluation
+
+Canonical training entrypoint:
+
+```bash
+python scripts/train_ppo.py --smoke
 ```
 
----
-
-## Data Pipeline
-
-**Dataset Statistics**:
-- **Full**: ~20K questions from QANTA
-- **Smoke**: 50 questions for rapid testing
-
-**Train/Val/Test Split**: 70% / 15% / 15%
-- Stratified by category (History, Science, Literature, etc.)
-- Ensures balanced representation
+This is the main learned policy path in the modular codebase.
 
 ---
 
-**MC Construction**:
-- Generate K-1=3 distractors per question
-- Guards against:
-  - Alias collisions (edit distance < 0.2)
-  - Token overlap (> 0.8 threshold)
-  - Length mismatches (ratio > 3.0)
+## T5 Policy Track
+
+The repo also contains a second, heavier path:
+
+- `models/t5_policy.py`
+- `qb_env/text_wrapper.py`
+- `training/train_supervised_t5.py`
+- `training/train_ppo_t5.py`
+- `scripts/train_t5_policy.py`
+
+This track:
+
+- converts the current visible clue text plus choices into a text observation
+- uses a T5-based policy/value architecture
+- supports supervised warm-start plus PPO fine-tuning
+
+It is an alternative experimental path, not the default smoke workflow.
 
 ---
 
-## Training Infrastructure
+## Evaluation Layer
 
-**Smoke Test Workflow** (~5 minutes):
+`evaluation/` contains:
+
+- `metrics.py`
+  - `S_q`
+  - calibration-at-buzz
+  - per-category accuracy
+- `controls.py`
+  - choices-only
+  - shuffle
+  - alias substitution
+- `plotting.py`
+  - calibration curves
+  - entropy vs clue index
+  - comparison tables / CSV
+
+This makes the repo more than a training script collection: it is built as an experiment pipeline.
+
+---
+
+## Canonical Workflows
+
+Smoke pipeline:
+
 ```bash
 python scripts/build_mc_dataset.py --smoke
 python scripts/run_baselines.py --smoke
@@ -186,309 +231,80 @@ python scripts/train_ppo.py --smoke
 python scripts/evaluate_all.py --smoke
 ```
 
-**Full Pipeline** (~2-3 hours):
+T5 policy path:
+
 ```bash
-python scripts/build_mc_dataset.py
-python scripts/run_baselines.py
-python scripts/train_ppo.py --config configs/default.yaml
-python scripts/evaluate_all.py
-```
----
-**Checkpointing**:
-- Supervised: `checkpoints/supervised/`
-- PPO: `checkpoints/ppo/`
-
----
-
-## Evaluation Metrics
-
-**Core Metrics**:
-- **Accuracy**: % correct answers
-- **Mean Reward**: Average episode return
-- **Buzz Position**: Average clue index when buzzing
-- **S_q Score**: Quiz bowl specific metric (speed + accuracy)
-
-**Calibration**:
-- **ECE** (Expected Calibration Error)
-- **Brier Score**: Probabilistic accuracy
-
----
-**Control Experiments**:
-- Choices-only: Model sees answers without clues
-- Shuffled clues: Break temporal structure
-- Validates model isn't exploiting artifacts
-
----
-
-## Key Results (Smoke Test)
-
-**Best Performing Agents**:
-
-| Agent | Accuracy | Mean Reward | Buzz Position |
-|-------|----------|-------------|---------------|
-| Sequential Bayes (τ=0.7) | 68% | 0.42 | 4.2 / 10 |
-| PPO Buzzer | 64% | 0.38 | 3.8 / 10 |
-| Threshold (τ=0.8) | 70% | 0.35 | 5.1 / 10 |
-| Floor Control | 62% | -0.15 | 0.0 / 10 |
-
-**Insights**:
-- Sequential Bayes achieves best reward-accuracy tradeoff
-- PPO learns to buzz earlier than threshold agents
-- High thresholds → high accuracy but late buzzing
-
----
-
-## Technical Stack
-
-**Frameworks**:
-- 🏋️ **Stable-Baselines3**: PPO implementation
-- 🎮 **Gymnasium**: RL environment interface
-- 🤗 **HuggingFace Transformers**: T5 model
-- 📊 **PyTorch**: Deep learning backend
-
-**Models**:
-- TF-IDF: Scikit-learn
-- SBERT: `sentence-transformers`
-- T5: `t5-small`, `t5-base`, `t5-large`
-
----
-
-**Data**:
-- QANTA dataset (CSV format)
-- Optional HuggingFace datasets integration
-
----
-
-## Configuration System
-
-**Three Config Files**:
-
-1. **`configs/default.yaml`**: Full production settings
-   - T5-large model
-   - 100K PPO timesteps
-   - All evaluation metrics
-
-2. **`configs/smoke.yaml`**: Fast testing (5 min)
-   - TF-IDF only
-   - 50 questions, 3K timesteps
-   - Minimal metrics
-
----
-3. **`configs/t5_policy.yaml`**: T5 end-to-end pipeline
-   - Supervised + PPO hyperparameters
-
-**CLI Overrides**:
-```bash
-python scripts/train_ppo.py --data.K=5 --ppo.learning_rate=5e-4
+python scripts/train_t5_policy.py --config configs/t5_policy.yaml
+python scripts/compare_policies.py --config configs/t5_policy.yaml
 ```
 
----
-
-## Code Organization
-
-```
-qanta-buzzer/
-├── qb_data/          # Data loading, MC construction
-├── qb_env/           # Gymnasium environment
-├── models/           # Likelihood models, T5 policy
-├── agents/           # Baseline + PPO buzzers
-├── evaluation/       # Metrics, plotting, controls
-├── training/         # T5 supervised + PPO trainers
-├── scripts/          # Pipeline entrypoints
-├── configs/          # YAML configurations
-└── tests/            # PyTest suite
-```
-
-**Key Design Principles**:
-- Modular architecture (swap likelihood models easily)
-- Backward compatible with qb-rl codebase
-- Extensive testing (pytest suite)
+Legacy root-level scripts still exist, but the modular `scripts/` path is the one the repo docs and walkthrough now center.
 
 ---
 
-## Challenges Overcome
+## Testing And Validation
 
-**1. Answer Profile Quality**
-- ❌ Initial profiles too sparse
-- ✅ Aggregated all training questions per answer
-- ✅ Leave-one-out validation prevents leakage
+The current repo is documented around three validation layers:
 
-**2. MC Distractor Artifacts**
-- ❌ Models exploited a (1/2)
+1. targeted `pytest` runs
+2. the smoke pipeline above
+3. `walkthrough.md` as a generated, verified code tour
 
-**1. Answer Profile Quality**
-- Problem: Initial profiles too sparse
-- Solution: Aggregated all training questions + leave-one-out
----
-**2. MC Distractor Artifacts**
-- Problem: Models exploited length patterns
-- Solution: Anti-artifact guards (edit distance, token overlap)
+Key reference docs:
 
----
+- `README.md`
+- `CLAUDE.md`
+- `walkthrough.md`
+- `.planning/`
 
-## Challenges Overcome (2/2)
-
-**3. Reward Shaping**
-- Problem: Binary rewards → agent always waits
-- Solution: Time pen (1/2)
-
-**1. Opponent Modeling**
-- Multi-agent RL with competing buzzers
-- Game-theoretic strategies
-
-**2. Advanced Architectures**
-- Transformers for belief updates
-- Attention over clue history
-
----
-**3. Human Evaluation**
-- Web interface for human vs AI
-- Collect data for imitation learning
+There are also local repomix packs for model ingestion, but those are generated artifacts rather than tracked source files.
 
 ---
 
-## Future Directions (2/2)
+## Current Repo Caveat
 
-**4. Transfer Learning**
-- Pre-train on Jeopardy, Millionaire datasets
-- Domain adaptation techniques
+This presentation is about the **architecture and intended operation** of the current `main` branch.
 
-**5. Explainability**
-- Visualize attention over clues
-- Saliency maps for decisions
+Two practical caveats:
 
---Setup**:
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
-```
----
-**Smoke Test** (5 minutes):
-```bash
-python scripts/build_mc_dataset.py --smoke
-python scripts/run_baselines.py --smoke
-python scripts/train_ppo.py --smoke
-python scripts/evaluate_all.py --smoke
-python scripts/build_mc_dataset.py
-python scripts/run_baselines.py
-python scripts/train_ppo.py
-python scripts/evaluate_all.py
-```
+- the repo contains both the modular path and the older prototype path
+- some files on current `main` still need post-merge cleanup, so this deck avoids overclaiming polished benchmark numbers from the checked-in branch state
 
-**Results**: `artifacts/smoke/RESULTS_SUMMARY.md`
+So the safest interpretation is:
+
+- the modular pipeline is the canonical design
+- the repo is a research codebase, not a polished package release
 
 ---
 
-## Key Contributions
+## What The Codebase Demonstrates
 
-1. **Unified Framework**
-   - Integrated belief-feature + T5 policy tracks
-**1. Unified Framework** - Belief-feature + T5 tracks in one codebase
-
-**2. Production Pipeline** - Smoke tests + comprehensive evaluation
-
-**3. qb-rl Compatible** - Backward compatible shims
-
-**4. Anti-Artifact Guards** - Robust MC generation
-
-**5. Extensive Docs** - README, CLAUDE.md, walkthroughs
-
----
-
-## Lessons Learned
-
-**What Worked**:
-✅ Modular design enabled rapid experimentation
-✅ Smoke tests caught bugs early
-✅ Sequential Bayes strong baseline
-✅ Time penalties essential for reward shaping
-
-**What Didn't**:
-❌ T5-large too slow for full runs (8+ hours)
-❌ Initial PPO struggled without feature engineering
-❌ SBERT distractors not significantly better than random
-
----
-**Key Insights**:
-💡 Simple basel ✅:
-- Modular design → rapid experimentation
-- Smoke tests → caught bugs early
-- Sequential Bayes → strong baseline
-- Time penalties → essential for learning
-
-**What Didn't** ❌:
-- T5-large too slow (8+ hours)
-- SBERT distractors not better than random
-
----
-
-**Key Insights** 💡:
-- Simple baselines are hard to beat
-- Reward design > model architecture
-- Protobowl competition logs
----
-**Code**:
-- GitHub: `qanta-buzzer` repository
-- Stable-Baselines3 documentation
-- HuggingFace Transformers library
+- quiz bowl buzzing framed over a multiple-choice answer space
+- modular separation of:
+  - data
+  - likelihoods
+  - environment
+  - agents
+  - evaluation
+- both belief-feature RL and text-policy experimentation
+- artifact-aware evaluation rather than raw accuracy alone
+- compatibility bridging from qb-rl into a single canonical repo
 
 ---
 
 <!-- _class: lead -->
 
-# Thank You!
+# Takeaway
 
-**Repository**: `/Users/ihassan/cs234/qanta-buzzer`
+The current repository is best understood as a **modular experiment platform**
+for multiple-choice quiz bowl buzzing:
 
----
+data -> MC construction -> beliefs/text -> buzzer -> evaluation
 
-## Appendix: Technical Details
-
-**PPO Hyperparameters**:
-- Learning rate: 3e-4
-- Batch size: 32
-- Clip ratio: 0.2
-- GAE λ: 0.95
-- Network: [64, 64] MLP
-
----
-**T5 Policy Training**:
-- Supervised LR: 3e-4 (10 epochs)
-- PPO LR: 1e-5 (100 iterations)
-- Max input length: 512 tokens
-- Gradient clipping: 1.0
-
-**Compute Resources**:
-- Smoke tests: CPU only (~5 min)
-- Full training: GPU recommended (~2-3 hours)
-- T5-large: 16GB GPU memory
+not as the original single-path T5-only prototype.
 
 ---
 
-## Appendix: Evaluation Examples
+<!-- _class: lead -->
 
-**Successful Early Buzz**:
-```
-Clue 1: "This physicist's thought experiment..."
-Clue 2: "...involves a cat in a box..."
-→ PPO buzzes here (position 2/10)
-→ Answer: Schrödinger ✓
-→ Reward: +1.0 - 0.1*2 = +0.8
-```
-
-**Failed Early Buzz**:
-```
-Clue 1: "This composer was born in Germany..."
-→ Threshold buzzer (τ=0.6) buzzes
-→ Answer: Mozart (WRONG - should be Beethoven)
-→ Reward: -0.5 - 0.1*1 = -0.6
-```
----
-
-**Late Buzz**:
-```
-Clues 1-8: Full question revealed
-→ Sequential Bayes finally buzzes (position 8/10)
-→ Answer: Correct ✓
-→ Reward: +1.0 - 0.1*8 = +0.2
-```
+# Thank You
