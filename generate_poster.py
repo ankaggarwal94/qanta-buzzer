@@ -204,7 +204,7 @@ def generate_poster():
               "Stanford CS234 — Reinforcement Learning  •  March 2026",
               font=fonts["small"], fill="#F4D1C0")
     draw.text((MARGIN + 20, 410),
-              "github.com/ihassancs234/qanta-buzzer",
+              "github.com/hass0114/qanta-buzzer",
               font=fonts["tiny"], fill="#F4D1C0")
 
     # ===== COLUMN POSITIONS =====
