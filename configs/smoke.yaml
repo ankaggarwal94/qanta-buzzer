@@ -28,17 +28,11 @@ likelihood:
 
 environment:
   reward_mode: "time_penalty"
-<<<<<<< HEAD
   seed: 13
   wait_penalty: 0.05
   early_buzz_penalty: 0.2
   buzz_correct: 1.0
   buzz_incorrect: -1.0
-=======
-  wait_penalty: 0.1
-  buzz_correct: 1.0
-  buzz_incorrect: -0.5
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
   max_steps: 10  # Fewer steps for quick testing
 
 mc_guards:
@@ -51,12 +45,8 @@ bayesian:  # Reduced sweep for smoke testing
   alpha: 10.0
 
 ppo:  # Reduced for smoke testing
-<<<<<<< HEAD
   seed: 13
-  total_timesteps: 3000  # Still fast but gives policy more learning signal
-=======
-  total_timesteps: 1000  # Much fewer steps
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
+  total_timesteps: 3000
   learning_rate: 3e-4
   n_steps: 32  # Smaller rollout
   batch_size: 8  # Smaller batch

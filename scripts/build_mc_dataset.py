@@ -11,11 +11,7 @@ This script orchestrates the complete data pipeline:
 
 Usage:
     python scripts/build_mc_dataset.py
-<<<<<<< HEAD
-    python scripts/build_mc_dataset.py --smoke  # Quick test with 50 questions
-=======
     python scripts/build_mc_dataset.py --smoke  # Quick test with 50 questions in artifacts/smoke
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
     python scripts/build_mc_dataset.py --config configs/custom.yaml
     python scripts/build_mc_dataset.py --data.K=5 --data.distractor_strategy=tfidf_profile
 """
@@ -38,12 +34,9 @@ from qb_data.dataset_splits import create_stratified_splits
 from qb_data.huggingface_loader import load_from_huggingface
 from qb_data.mc_builder import MCBuilder, MCQuestion
 
-<<<<<<< HEAD
-=======
 DEFAULT_OUTPUT_DIR = Path("data/processed")
 SMOKE_OUTPUT_DIR = Path("artifacts/smoke")
 
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 
 def parse_overrides(args: argparse.Namespace) -> Dict[str, Any]:
     """
@@ -104,8 +97,6 @@ def parse_overrides(args: argparse.Namespace) -> Dict[str, Any]:
     return overrides
 
 
-<<<<<<< HEAD
-=======
 def resolve_output_dir(output_dir: Optional[str], smoke: bool) -> Path:
     """Resolve the dataset output directory from CLI inputs."""
     if output_dir is not None:
@@ -150,7 +141,6 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 def save_json(path: Path, data: List[Any]) -> None:
     """
     Save dataclass objects to JSON file.
@@ -250,44 +240,9 @@ def print_statistics(
         print(f"  Category: {sample.category}")
 
 
-<<<<<<< HEAD
-def main():
-    """Main entry point for dataset construction."""
-    parser = argparse.ArgumentParser(
-        description="Build multiple-choice dataset from QANTA questions",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__
-    )
-
-    parser.add_argument(
-        '--config',
-        type=str,
-        default='configs/default.yaml',
-        help='Path to YAML configuration file'
-    )
-    parser.add_argument(
-        '--smoke',
-        action='store_true',
-        help='Use smoke test configuration (50 questions, quick run)'
-    )
-    parser.add_argument(
-        '--output-dir',
-        type=str,
-        default='data/processed',
-        help='Directory to save processed datasets'
-    )
-    parser.add_argument(
-        'overrides',
-        nargs='*',
-        help='Config overrides in format: data.K=5 data.distractor_strategy=tfidf_profile'
-    )
-
-    args = parser.parse_args()
-=======
 def main(argv: Optional[list[str]] = None):
     """Main entry point for dataset construction."""
     args = parse_args(argv)
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 
     # Start timing
     start_time = time.time()
@@ -303,11 +258,7 @@ def main(argv: Optional[list[str]] = None):
         config = merge_overrides(config, overrides)
 
     # Create output directory
-<<<<<<< HEAD
-    output_dir = Path(args.output_dir)
-=======
     output_dir = resolve_output_dir(args.output_dir, smoke=args.smoke)
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load questions

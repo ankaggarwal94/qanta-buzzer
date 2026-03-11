@@ -4,11 +4,7 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: Not started
 status: completed
-<<<<<<< HEAD
-last_updated: "2026-03-06T18:00:00.000Z"
-=======
 last_updated: "2026-03-08T18:00:00.000Z"
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 progress:
   total_phases: 6
   completed_phases: 5
@@ -129,12 +125,9 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | Add qb-rl compatibility shims | Preserve old imports/config keys with thin re-exports and aliases | 2026-03-06 |
 | OpenAI support is optional | Default workflows remain offline-friendly; OpenAI activates only when selected | 2026-03-06 |
 | Rewrite stale root docs | `.planning/` plus codebase are the source of truth over stale CLAUDE guidance | 2026-03-06 |
-<<<<<<< HEAD
-=======
 | Make bare `build_mc_dataset.py --smoke` a real workflow contract | Fix the code/docs mismatch by selecting smoke config and `artifacts/smoke/` defaults in code unless explicit overrides are passed | 2026-03-08 |
 | Consolidate review remediation into PR #1 | Avoid stacked/noise follow-up history and keep one review surface for smoke + agent fixes | 2026-03-08 |
 | Shared sigmoid helper lives in `agents/_math.py` | Confidence math belongs with agents; the stable implementation avoids overflow warnings in extreme cases | 2026-03-08 |
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 | Phase 05 P01 | 2min | 2 tasks | 3 files |
 | Phase 05 P02 | 3min | 3 tasks | 1 files |
 | Phase 06 P01 | 5min | 3 tasks | 3 files |
@@ -203,8 +196,4 @@ Key risks to watch:
 
 ---
 *State file initialized: 2026-02-25*
-<<<<<<< HEAD
-*Last update: 2026-02-26 (Plan 06-01 completed, Phase 6 in progress)*
-=======
 *Last update: 2026-03-08 (smoke-contract and agent-stability remediation consolidated into PR #1)*
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af

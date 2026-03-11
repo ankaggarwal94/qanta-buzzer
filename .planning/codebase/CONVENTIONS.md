@@ -1,10 +1,6 @@
 # Coding Conventions
 
-<<<<<<< HEAD
-**Analysis Date:** 2025-02-24
-=======
 **Analysis Date:** 2026-03-08
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 
 ## Naming Patterns
 
@@ -216,8 +212,4 @@ def setup_config(args):
 
 ---
 
-<<<<<<< HEAD
-*Convention analysis: 2025-02-24*
-=======
 *Convention analysis: 2026-03-08*
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af

@@ -49,4 +49,4 @@ class TestBuildMcDatasetArgs:
         cfg = load_yaml_config(None, smoke=True)
 
         assert cfg["data"]["max_questions"] == 50
-        assert cfg["ppo"]["total_timesteps"] == 1000
+        assert cfg["ppo"]["total_timesteps"] == 3000
