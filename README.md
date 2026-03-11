@@ -1,6 +1,6 @@
 # Quiz Bowl RL Buzzer (Unified)
 
-Unified CS234 final project codebase for quiz bowl buzzing under incremental clues.
+Unified CS234 final project codebase for quiz bowl buzzing under incremental clues with multiple choice.
 
 This repo keeps `qanta-buzzer` as the canonical implementation while preserving a qb-rl compatibility bridge:
 
