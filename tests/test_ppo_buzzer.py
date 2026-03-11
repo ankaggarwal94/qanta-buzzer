@@ -52,7 +52,7 @@ class TestLoadConfig:
         smoke_path = str(PROJECT_ROOT / "configs" / "smoke.yaml")
         cfg = load_config(smoke_path)
         assert cfg["data"]["max_questions"] == 50
-        assert cfg["ppo"]["total_timesteps"] == 1000
+        assert cfg["ppo"]["total_timesteps"] == 3000
 
 
 class TestJsonUtilities:
