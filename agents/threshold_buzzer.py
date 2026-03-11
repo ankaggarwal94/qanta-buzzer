@@ -10,7 +10,6 @@ from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
 
 
-
 @dataclass
 class EpisodeResult:
     qid: str
@@ -23,6 +22,62 @@ class EpisodeResult:
     g_trace: list[float]
     top_p_trace: list[float]
     entropy_trace: list[float]
+
+
+def _scores_to_belief(scores: np.ndarray, beta: float) -> np.ndarray:
+    """Convert raw similarity scores to a belief distribution via softmax."""
+    shifted = scores - np.max(scores)
+    probs = np.exp(beta * shifted)
+    probs = probs / max(1e-12, probs.sum())
+    return probs.astype(np.float32)
+
+
+def _belief_stats(belief: np.ndarray) -> tuple[int, float, float]:
+    """Return (top_idx, top_p, entropy) from a belief distribution."""
+    top_idx = int(np.argmax(belief))
+    top_p = float(belief[top_idx])
+    clipped = np.clip(belief, 1e-12, 1.0)
+    entropy = float(-(clipped * np.log(clipped)).sum())
+    return top_idx, top_p, entropy
+
+
+@dataclass
+class _PrecomputedQuestion:
+    """Pre-computed belief distributions for every clue step of one question."""
+    qid: str
+    gold_index: int
+    num_options: int
+    beliefs: list[np.ndarray]
+
+
+def precompute_beliefs(
+    questions: list[MCQuestion],
+    likelihood_model: LikelihoodModel,
+    beta: float,
+) -> list[_PrecomputedQuestion]:
+    """Compute beliefs at every step for every question (single model pass).
+
+    After calling ``likelihood_model.precompute_embeddings()`` this is
+    pure cache lookups + numpy math, so it runs in seconds rather than
+    hours.
+    """
+    from tqdm import tqdm
+
+    out: list[_PrecomputedQuestion] = []
+    for q in tqdm(questions, desc="Computing beliefs"):
+        beliefs = [
+            _scores_to_belief(
+                likelihood_model.score(prefix, q.option_profiles), beta
+            )
+            for prefix in q.cumulative_prefixes
+        ]
+        out.append(_PrecomputedQuestion(
+            qid=q.qid,
+            gold_index=q.gold_index,
+            num_options=len(q.options),
+            beliefs=beliefs,
+        ))
+    return out
 
 
 class ThresholdBuzzer:
@@ -41,10 +96,7 @@ class ThresholdBuzzer:
 
     def _belief_from_prefix(self, prefix: str, option_profiles: list[str]) -> np.ndarray:
         scores = self.likelihood_model.score(prefix, option_profiles)
-        scores = scores - np.max(scores)
-        probs = np.exp(self.beta * scores)
-        probs = probs / max(1e-12, probs.sum())
-        return probs.astype(np.float32)
+        return _scores_to_belief(scores, self.beta)
 
     def _confidence_proxy(self, top_p: float) -> float:
         return sigmoid(self.alpha * (top_p - self.threshold))
@@ -61,9 +113,7 @@ class ThresholdBuzzer:
         for step_idx, prefix in enumerate(question.cumulative_prefixes):
             belief = self._belief_from_prefix(prefix, question.option_profiles)
             self.belief = belief
-            top_p = float(np.max(belief))
-            top_idx = int(np.argmax(belief))
-            entropy = float(-(np.clip(belief, 1e-12, 1.0) * np.log(np.clip(belief, 1e-12, 1.0))).sum())
+            top_idx, top_p, entropy = _belief_stats(belief)
             c_t = self._confidence_proxy(top_p)
             g_t = 1.0 if top_idx == question.gold_index else 0.0
 
@@ -109,13 +159,9 @@ class AlwaysBuzzFinalBuzzer:
         final_belief = np.ones(len(question.options), dtype=np.float32) / len(question.options)
         for prefix in question.cumulative_prefixes:
             scores = self.likelihood_model.score(prefix, question.option_profiles)
-            scores = scores - np.max(scores)
-            probs = np.exp(self.beta * scores)
-            probs = probs / max(1e-12, probs.sum())
+            probs = _scores_to_belief(scores, self.beta)
             final_belief = probs
-            top_idx = int(np.argmax(probs))
-            top_p = float(np.max(probs))
-            entropy = float(-(np.clip(probs, 1e-12, 1.0) * np.log(np.clip(probs, 1e-12, 1.0))).sum())
+            top_idx, top_p, entropy = _belief_stats(probs)
             c_trace.append(0.0)
             g_trace.append(1.0 if top_idx == question.gold_index else 0.0)
             top_p_trace.append(top_p)
@@ -139,22 +185,74 @@ class AlwaysBuzzFinalBuzzer:
         )
 
 
+def _episode_from_precomputed(
+    pq: _PrecomputedQuestion,
+    threshold: float,
+    alpha: float,
+) -> EpisodeResult:
+    """Build an EpisodeResult from pre-computed beliefs (pure numpy)."""
+    c_trace: list[float] = []
+    g_trace: list[float] = []
+    top_p_trace: list[float] = []
+    entropy_trace: list[float] = []
+
+    chosen_step = len(pq.beliefs) - 1
+    chosen_idx = 0
+
+    for step_idx, belief in enumerate(pq.beliefs):
+        top_idx, top_p, entropy = _belief_stats(belief)
+        c_t = sigmoid(alpha * (top_p - threshold))
+        g_t = 1.0 if top_idx == pq.gold_index else 0.0
+
+        c_trace.append(c_t)
+        g_trace.append(g_t)
+        top_p_trace.append(top_p)
+        entropy_trace.append(entropy)
+
+        is_last = step_idx == len(pq.beliefs) - 1
+        if top_p >= threshold or is_last:
+            chosen_step = step_idx
+            chosen_idx = top_idx
+            break
+
+    correct = chosen_idx == pq.gold_index
+    return EpisodeResult(
+        qid=pq.qid,
+        buzz_step=chosen_step,
+        buzz_index=chosen_idx,
+        gold_index=pq.gold_index,
+        correct=correct,
+        reward_like=1.0 if correct else -0.5,
+        c_trace=c_trace,
+        g_trace=g_trace,
+        top_p_trace=top_p_trace,
+        entropy_trace=entropy_trace,
+    )
+
+
 def sweep_thresholds(
     questions: list[MCQuestion],
     likelihood_model: LikelihoodModel,
     thresholds: list[float],
     beta: float = 5.0,
     alpha: float = 10.0,
+    precomputed: list[_PrecomputedQuestion] | None = None,
 ) -> dict[float, list[EpisodeResult]]:
+    """Sweep multiple thresholds with a single belief-computation pass.
+
+    If *precomputed* is provided the expensive model calls are skipped
+    entirely and the sweep is pure numpy.  Otherwise beliefs are computed
+    once internally and reused across thresholds.
+    """
+    if precomputed is None:
+        precomputed = precompute_beliefs(questions, likelihood_model, beta)
+
     out: dict[float, list[EpisodeResult]] = {}
     for threshold in thresholds:
-        agent = ThresholdBuzzer(
-            likelihood_model=likelihood_model,
-            threshold=float(threshold),
-            beta=beta,
-            alpha=alpha,
-        )
-        out[float(threshold)] = [agent.run_episode(q) for q in questions]
+        out[float(threshold)] = [
+            _episode_from_precomputed(pq, threshold, alpha)
+            for pq in precomputed
+        ]
     return out
 
 

@@ -33,7 +33,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from agents.bayesian_buzzer import SequentialBayesBuzzer, SoftmaxProfileBuzzer
-from agents.threshold_buzzer import AlwaysBuzzFinalBuzzer, sweep_thresholds
+from agents.threshold_buzzer import (
+    AlwaysBuzzFinalBuzzer,
+    precompute_beliefs,
+    sweep_thresholds,
+)
 from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
 from scripts._common import (
     ARTIFACT_DIR,
@@ -129,7 +133,21 @@ def main() -> None:
     print(f"Beta: {beta}, Alpha: {alpha}")
     print(f"Thresholds: {thresholds}")
 
-    # --- Threshold sweep ---
+    # --- Pre-compute all embeddings once (batched) ---
+    all_texts: list[str] = []
+    for q in mc_questions:
+        all_texts.extend(q.cumulative_prefixes)
+        all_texts.extend(q.option_profiles)
+        for step_idx in range(len(q.run_indices)):
+            prev_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
+            all_texts.append(" ".join(q.tokens[prev_idx + 1 : q.run_indices[step_idx] + 1]))
+    print(f"\nPre-computing embeddings for {len(set(all_texts)):,} unique texts...")
+    likelihood_model.precompute_embeddings(all_texts, batch_size=64)
+
+    # --- Pre-compute beliefs (one model pass, all steps) ---
+    precomputed = precompute_beliefs(mc_questions, likelihood_model, beta)
+
+    # --- Threshold sweep (pure numpy, instant) ---
     print("\nRunning ThresholdBuzzer sweep...")
     threshold_runs = sweep_thresholds(
         questions=mc_questions,
@@ -137,6 +155,7 @@ def main() -> None:
         thresholds=thresholds,
         beta=beta,
         alpha=alpha,
+        precomputed=precomputed,
     )
 
     threshold_payload: dict[str, list[dict]] = {}
