@@ -27,9 +27,14 @@ sample_tfidf_env
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from qb_data.mc_builder import MCQuestion
+
+if TYPE_CHECKING:
+    from qb_env.tossup_env import TossupMCEnv
 
 
 @pytest.fixture

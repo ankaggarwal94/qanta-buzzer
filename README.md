@@ -1,17 +1,17 @@
 # Quiz Bowl RL Buzzer (Unified)
 
-Unified CS234 final project codebase for quiz bowl buzzing under incremental clues.
+Unified CS234 final project codebase for quiz bowl buzzing under incremental clues with multiple choice.
 
 This repo keeps `qanta-buzzer` as the canonical implementation while preserving a qb-rl compatibility bridge:
 
-- Modular belief-feature pipeline with `qb_data/`, `qb_env/`, `models/`, `agents/`, `evaluation/`, and `scripts/`
-- T5 likelihood and T5 policy training tracks from the original qanta-buzzer work
+- Modular belief-feature pipeline: `qb_data/` -> `models/` -> `qb_env/` -> `agents/` -> `evaluation/` -> `scripts/`
+- T5 policy pipeline: supervised warm-start and PPO for end-to-end text-based buzzing
 - qb-rl-compatible import/config shims for older notebooks and scripts
-- Optional OpenAI embedding support for `likelihood.model: openai` and `data.distractor_strategy: openai_profile`
+- Optional OpenAI embedding support (`likelihood.model: openai`, `data.distractor_strategy: openai_profile`)
 
 ## Setup
 
-Preferred development install:
+Requires Python >= 3.11.
 
 ```bash
 python3 -m venv .venv
@@ -23,255 +23,116 @@ pip install -e .
 Optional OpenAI support:
 
 ```bash
-pip install -e .[openai]
+pip install -e '.[openai]'
 export OPENAI_API_KEY=...
 ```
 
-Legacy install remains available:
+## Main Workflows
+
+### Belief-feature / PPO pipeline
+
+The canonical four-stage smoke pipeline:
 
 ```bash
-pip install -r requirements.txt
+python scripts/build_mc_dataset.py --smoke
+python scripts/run_baselines.py --smoke
+python scripts/train_ppo.py --smoke
+python scripts/evaluate_all.py --smoke
 ```
 
-**Note:** The first run will download the T5-large model (~3GB), which may take some time.
+`--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`. Drop `--smoke` for full runs (uses `configs/default.yaml`, writes to `artifacts/main/`).
 
-## Quick Start
+The smoke config uses tuned reward settings (`wait_penalty=0.05`, `early_buzz_penalty=0.2`, `ppo.seed=13`, `ppo.total_timesteps=3000`).
 
-### Full Pipeline (Supervised + PPO)
+`train_ppo.py` also accepts `--seed` to override the PPO/environment seed, and `--stochastic-eval` / `--deterministic-eval` to control post-training evaluation mode.
 
-Run the complete training pipeline (this replicates the milestone results):
+### T5 policy pipeline
+
+Trains a T5-based policy with supervised warm-start followed by PPO fine-tuning:
 
 ```bash
-python main.py --mode full
+python scripts/train_t5_policy.py --config configs/t5_policy.yaml
+python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke  # quick test with t5-small
 ```
 
-This will:
-1. Generate/load 500 quiz bowl questions with multiple-choice answers
-2. Train supervised baseline for 50 epochs
-3. Train PPO for 250 iterations
-4. Evaluate on test set and report all metrics
+The T5 pipeline uses its own config (`configs/t5_policy.yaml`) which defines `model`, `supervised`, `ppo`, and `data` sections. It does not inherit `environment` or `likelihood` settings from the belief-feature configs -- the T5 PPO trainer uses default reward settings (`wait_penalty=0.1`).
 
-### Individual Training Modes
-
-**Supervised training only:**
-```bash
-python main.py --mode supervised
-```
-
-**PPO training only** (requires pretrained supervised model):
-```bash
-python main.py --mode ppo --model_path checkpoints/supervised/best_model
-```
-
-**Evaluation only:**
-```bash
-python main.py --mode eval --model_path checkpoints/ppo/best_model
-```
-
-## Command-Line Arguments
+### Policy comparison
 
 ```bash
-python main.py --help
+python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model
 ```
 
-Key arguments:
-- `--mode`: Training mode (`supervised`, `ppo`, `full`, or `eval`)
-- `--model_path`: Path to pretrained model
-- `--supervised_epochs`: Number of supervised epochs (default: 50)
-- `--ppo_iterations`: Number of PPO iterations (default: 250)
-- `--batch_size`: Batch size (default: 32)
-- `--device`: Device (`cuda`, `mps`, or `cpu`)
-- `--seed`: Random seed (default: 42)
-- `--num_questions`: Dataset size (default: 500)
+Compares the MLP belief-feature policy against the T5 end-to-end policy on the same test set. Both evaluation paths use TF-IDF likelihood internally. Note: the MLP side uses config-driven env settings while the T5 side hardcodes its own defaults, so numeric comparisons should be interpreted with care.
+
+### Additional scripts
+
+- `scripts/run_smoke_pipeline.py` -- runs all four smoke stages sequentially and writes a timing summary to `artifacts/smoke/smoke_pipeline_summary.json`
+- `scripts/sweep_reward_shaping.py` -- grid sweep over `wait_penalty` and `early_buzz_penalty` with multi-seed evaluation
+- `generate_presentation.py` -- generates the Marp presentation slides
 
 ## Configuration
 
-Edit `config.py` to customize:
+Two primary YAML configs:
 
-### Model Settings
-- `MODEL_NAME`: Base T5 model (`t5-small`, `t5-base`, `t5-large`)
-- `POLICY_HIDDEN_DIM`: Policy head hidden dimension
-- `NUM_ANSWER_CHOICES`: Number of answer choices (default: 4)
+| Config | Purpose | Key reward settings |
+|--------|---------|-------------------|
+| `configs/default.yaml` | Full runs | `wait_penalty=0.05`, `early_buzz_penalty=0.2`, `buzz_incorrect=-0.5` |
+| `configs/smoke.yaml` | Quick tests (50 questions) | Same as default except `buzz_incorrect=-1.0`, `total_timesteps=3000` |
+| `configs/t5_policy.yaml` | T5 pipeline | Own `model`/`supervised`/`ppo`/`data` sections; no `environment` |
 
-### Training Settings
-- Supervised: learning rate, batch size, epochs
-- PPO: learning rate, clip ratio, entropy coefficient, GAE lambda
+qb-rl config aliases are also supported: `data.dataset`, `data.dataset_config`, `likelihood.sbert_name`, `environment.reward` as an alias for `reward_mode`, etc.
 
-### Reward Settings
-- `REWARD_CORRECT`: Reward for correct answer (default: 1.0)
-- `REWARD_TIME_PENALTY`: Time penalty coefficient (default: 0.1)
+## Testing
 
-## Expected Results (Milestone Report)
-
-After 50 PPO iterations (20% of full training):
-
-| Metric | Supervised Baseline | PPO (50 iter) |
-|--------|-------------------|---------------|
-| Accuracy | 68.0% | 64.0% |
-| Average Reward | +0.31 | +0.42 |
-| ECE | 0.18 | 0.15 |
-| Avg Buzz Position | 2.3 | 3.1 |
-
-**Choices-Only Control:** 28% accuracy (vs 25% random)
-
-## Project Components
-
-### 1. POMDP Environment (`environment.py`)
-
-Implements the quiz bowl as a Partially Observable Markov Decision Process:
-- **States:** Complete questions with all clues
-- **Observations:** Partial questions (clues revealed so far) + answer choices
-- **Actions:** WAIT (0) or SELECT answer i (1-4)
-- **Rewards:** `R_t = 1_{correct} - 0.1 × (t/T)`
-
-```python
-from environment import QuizBowlEnvironment, Question
-
-question = Question(
-    question_id="history_0001",
-    clues=["Clue 1...", "Clue 2...", "Clue 3..."],
-    answer_choices=["Napoleon", "Caesar", "Alexander", "Charlemagne"],
-    correct_answer_idx=0,
-    category="history"
-)
-
-env = QuizBowlEnvironment(question)
-obs = env.reset()
-obs, reward, done, info = env.step(action=0)  # WAIT
-obs, reward, done, info = env.step(action=1)  # SELECT answer 0
-```
-
-### 2. Model Architecture (`model.py`)
-
-T5-large (770M parameters) with custom policy head:
-
-```python
-from model import T5PolicyModel
-
-model = T5PolicyModel(
-    model_name="t5-large",
-    num_answer_choices=4,
-    policy_hidden_dim=256
-)
-
-# Get action probabilities
-outputs = model(input_ids, attention_mask)
-# outputs['wait_prob']: P(wait)
-# outputs['action_probs']: P(wait), P(select 1), P(select 2), P(select 3), P(select 4)
-# outputs['value']: State value estimate
-
-# Sample action
-actions, info = model.select_action(input_ids, attention_mask, deterministic=False)
-```
-
-### 3. Dataset (`dataset.py`)
-
-Synthetic quiz bowl questions with carefully curated distractors:
-
-```python
-from dataset import setup_datasets
-
-train_dataset, val_dataset, test_dataset = setup_datasets(config)
-# 350 train, 75 val, 75 test questions
-# Categories: History 35%, Literature 25%, Science 25%, Arts 15%
-```
-
-### 4. Metrics (`metrics.py`)
-
-Comprehensive evaluation metrics:
-- **Accuracy:** Standard classification accuracy
-- **Average Reward:** Mean reward per episode
-- **ECE (Expected Calibration Error):** Confidence calibration
-- **Brier Score:** Probabilistic accuracy
-- **Category Accuracy:** Per-category breakdown
-- **Buzzing Statistics:** Position analysis
-
-```python
-from metrics import evaluate_model, evaluate_choices_only
-
-# Full evaluation
-metrics = evaluate_model(model, test_dataset, device='cuda')
-metrics.print_summary()
-
-# Choices-only control
-choices_metrics = evaluate_choices_only(model, test_dataset, device='cuda')
-print(f"Choices-only accuracy: {choices_metrics.compute_accuracy()}")
-```
-
-### 5. Training
-
-**Supervised Training (`train_supervised.py`):**
-- Warm-start training on complete questions
-- Cross-entropy loss on answer choices
-- 50 epochs, learning rate 5e-5
-
-**PPO Training (`train_ppo.py`):**
-- Policy gradient optimization with clipping
-- GAE for advantage estimation
-- 250 iterations, 32 episodes per iteration
-
-## Key Features
-
-### ✅ Novel Contributions
-1. **First combination** of pyramidal questions with multiple-choice constraints
-2. **Rigorous testing** via choices-only control experiment
-3. **RL-based calibration** using reward shaping
-
-### ✅ Complete Implementation
-- Full POMDP environment with incremental clue revelation
-- T5-large with learned policy head (772M parameters)
-- Supervised warm-start + PPO fine-tuning
-- Comprehensive metrics: accuracy, reward, ECE, buzzing behavior
-- Choices-only control experiment
-
-### ✅ Reproducibility
-- Fixed random seeds
-- Deterministic evaluation
-- Saved checkpoints and training history
-- Detailed logging
-
-## Computational Requirements
-
-### Hardware
-- **Minimum:** 16GB RAM, 8GB GPU VRAM
-- **Recommended:** 32GB RAM, 16GB GPU VRAM (for T5-large)
-- **Alternative:** Use `t5-base` (220M params) or `t5-small` (60M params) for lower memory
-
-### Training Time (on V100 GPU)
-- **Supervised (50 epochs):** ~2-3 hours
-- **PPO (250 iterations):** ~8-10 hours
-- **Full pipeline:** ~10-13 hours
-
-For CPU-only training, expect 5-10x longer training times.
-
-## Troubleshooting
-
-### Out of Memory
-```python
-# In config.py, reduce batch sizes:
-SUPERVISED_BATCH_SIZE = 4  # Instead of 8
-PPO_BATCH_SIZE = 16  # Instead of 32
-
-# Or use smaller model:
-MODEL_NAME = "t5-base"  # Instead of "t5-large"
-```
-
-### Slow Training
-```bash
-# Reduce dataset size for quick testing:
-python main.py --mode full --num_questions 100 --supervised_epochs 10 --ppo_iterations 50
-```
-
-### Model Download Issues
-```bash
-# Pre-download model:
-python -c "from transformers import T5ForConditionalGeneration; T5ForConditionalGeneration.from_pretrained('t5-large')"
-```
-
-## Visualization and Analysis
-
-Generate plots and analysis:
+220 tests across 13 test files:
 
 ```bash
-pytest
+pytest                    # full suite
+pytest tests/test_agents.py tests/test_environment.py tests/test_ppo_buzzer.py  # quick iteration
 ```
+
+The test suite covers:
+
+- Baseline agents (threshold, softmax-profile, sequential Bayes) and PPO wrapper
+- Gymnasium environment behavior, reward modes, and belief computation
+- Likelihood model factories (TF-IDF, SBERT with offline-safe stubs)
+- T5 policy model, supervised trainer, and PPO trainer
+- Evaluation metrics (S_q, ECE, Brier score, per-category accuracy)
+- qb-rl compatibility bridge
+- Text observation wrapper
+
+## Architecture
+
+```
+qb_data/        Data loading, answer profiles, stratified splits, MC construction
+qb_env/         Gymnasium environment, text wrapper, qb-rl compatibility shims
+models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI), belief features, T5 policy
+agents/         Threshold, softmax-profile, sequential Bayes, PPO buzzer
+evaluation/     S_q metric, calibration, control experiments, plotting
+scripts/        Pipeline entrypoints and shared helpers
+training/       T5 policy supervised + PPO trainers
+configs/        YAML configuration files
+artifacts/      Generated pipeline outputs (smoke/ and main/)
+```
+
+## Compatibility Bridge
+
+These old qb-rl import paths resolve in this repo:
+
+- `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
+- `models.answer_profiles`
+- `agents.softmax_profile_buzzer`
+
+The bridge is additive. `qb_data/` remains the canonical home for data loading and MC construction. OpenAI support is opt-in only -- default local workflows stay offline-friendly.
+
+## Documentation
+
+- `walkthrough.md` -- showboat-generated end-to-end walkthrough exercising both pipelines
+- `CLAUDE.md` -- agent guidance with setup, commands, and architecture reference
+- `PRESENTATION.md` -- Marp presentation slides for the CS234 final project
+- `.planning/` -- canonical project state, roadmap, and architectural decisions
+
+## Legacy Prototype
+
+The older root-level prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`) is still present but is no longer the primary path. The modular `scripts/` pipeline above is the canonical workflow.

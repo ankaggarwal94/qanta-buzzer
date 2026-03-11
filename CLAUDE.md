@@ -25,7 +25,7 @@ pip install -e .
 Optional OpenAI support:
 
 ```bash
-pip install -e .[openai]
+pip install -e '.[openai]'
 export OPENAI_API_KEY=...
 ```
 
@@ -46,11 +46,8 @@ python scripts/train_ppo.py --smoke
 python scripts/evaluate_all.py --smoke
 ```
 
-<<<<<<< HEAD
-=======
 Bare `python scripts/build_mc_dataset.py --smoke` is now a valid contract: it selects the smoke config path and writes datasets to `artifacts/smoke/` unless `--config` or `--output-dir` are supplied explicitly.
 
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 T5 policy workflow:
 
 ```bash

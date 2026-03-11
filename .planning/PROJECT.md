@@ -71,13 +71,9 @@ A principled, modular RL system that produces rigorous experimental results — 
 |----------|-----------|---------|
 | Rebuild around qb-rl architecture | Cleaner modularity, better eval framework, S_q metric | ✓ Good — clean separation across 7 packages |
 | Keep qanta-buzzer canonical and add shims | Avoid structural churn while preserving qb-rl compatibility | ✓ Good — additive bridge, no codebase rollback |
-<<<<<<< HEAD
-| OpenAI support is optional only | Preserve offline/local default workflows and avoid forced API dependency | ✓ Good — explicit opt-in via install extra + env var |
-=======
 | Make bare `build_mc_dataset.py --smoke` a real contract | Review, walkthrough, and smoke workflows must match runnable defaults, not workaround commands | ✓ Good — smoke builds now auto-select smoke config and `artifacts/smoke/` unless overridden |
 | OpenAI support is optional only | Preserve offline/local default workflows and avoid forced API dependency | ✓ Good — explicit opt-in via install extra + env var |
 | Consolidate review fixes into PR #1 | Keep one canonical review surface and avoid stacked/noise follow-up history | ✓ Good — smoke and agent fixes land on the main branch under review |
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 | `.planning/` overrides stale bridge docs | Durable tracked state must match repo reality | ✓ Good — README and CLAUDE aligned to current code |
 | T5 as both likelihood model and policy encoder | Maximize flexibility, compare approaches in writeup | ✓ Good — both approaches implemented and comparable |
 | Supervised warm-start as config toggle | Useful for T5 policy, unnecessary for MLP policy | ✓ Good — 3-5x faster convergence for T5 |
@@ -88,8 +84,4 @@ A principled, modular RL system that produces rigorous experimental results — 
 | TF-IDF for fast agent tests, SBERT/T5 for semantic | Keeps test suite fast (<30s) | ✓ Good — 204 tests in ~10s |
 
 ---
-<<<<<<< HEAD
-*Last updated: 2026-03-06 after qb-rl compatibility bridge*
-=======
 *Last updated: 2026-03-08 after smoke-contract and agent-stability remediation*
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
