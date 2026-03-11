@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from math import ceil
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
@@ -9,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFont
 # ============================================================
 # Paths
 # ============================================================
-OUT_DIR = Path("/mnt/data/quizbowl_mc_stopping_data_driven")
+OUT_DIR = Path(__file__).resolve().parent / "artifacts" / "presentation"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 GIF_OUT = OUT_DIR / "quizbowl_mc_stopping_data_driven.gif"
@@ -365,6 +366,58 @@ def draw_line_chart(draw: ImageDraw.ImageDraw, box, phase: int):
             outline=GREEN if phase >= 2 else ORANGE, radius=12, width=2)
     draw_text_fit(draw, (x0 + 136, y0 + 60, x0 + 226, y0 + 98), notes[idx], max_size=12, min_size=9, fill=TEXT_SOFT, align="center", valign="center")
 
+
+def fmt_pct(value) -> str:
+    try:
+        return f"{100 * float(value):.1f}%"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def fmt_num(value, digits: int = 3) -> str:
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def load_eval_report() -> Dict:
+    path = Path(__file__).resolve().parent / "artifacts" / "smoke" / "evaluation_report.json"
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def best_baseline_result(report: Dict) -> Tuple[str, Dict]:
+    baseline_summary = report.get("baseline_summary", {})
+    best_label = "n/a"
+    best_metrics: Dict = {}
+    best_sq = float("-inf")
+
+    for method, payload in baseline_summary.items():
+        if isinstance(payload, dict) and payload and all(isinstance(v, dict) for v in payload.values()):
+            for threshold, metrics in payload.items():
+                sq = metrics.get("mean_sq")
+                if isinstance(sq, (float, int)) and sq > best_sq:
+                    best_sq = float(sq)
+                    best_label = f"{method} @ {threshold}"
+                    best_metrics = metrics
+        elif isinstance(payload, dict):
+            sq = payload.get("mean_sq")
+            if isinstance(sq, (float, int)) and sq > best_sq:
+                best_sq = float(sq)
+                best_label = method
+                best_metrics = payload
+
+    return best_label, best_metrics
+
+
+EVAL_REPORT = load_eval_report()
+
 # ============================================================
 # Scene specs
 # ============================================================
@@ -488,23 +541,38 @@ SCENES: List[Dict] = [
         "footer": "Frame 22 • practical recipe",
     },
     {
+        "kind": "pipeline",
+        "stage": 0,
+        "footer": "Frame 23 • training setup",
+    },
+    {
+        "kind": "pipeline",
+        "stage": 1,
+        "footer": "Frame 24 • evaluation setup",
+    },
+    {
+        "kind": "pipeline",
+        "stage": 2,
+        "footer": "Frame 25 • smoke results",
+    },
+    {
         "kind": "summary",
         "stage": 0,
-        "footer": "Frame 23 • final summary",
+        "footer": "Frame 26 • final summary",
     },
     {
         "kind": "summary",
         "stage": 1,
-        "footer": "Frame 24 • final summary",
+        "footer": "Frame 27 • final summary",
     },
     {
         "kind": "summary",
         "stage": 2,
-        "footer": "Frame 25 • final summary",
+        "footer": "Frame 28 • final summary",
     },
 ]
 
-assert len(SCENES) == 25
+assert len(SCENES) == 28
 
 # ============================================================
 # Scene renderers
@@ -723,6 +791,156 @@ def render_recipe(spec: Dict) -> Image.Image:
     footer(d, spec["footer"])
     return img
 
+
+def render_pipeline(spec: Dict) -> Image.Image:
+    stage = spec["stage"]
+    img = make_canvas()
+    d = ImageDraw.Draw(img)
+
+    titles = [
+        "Training setup in code",
+        "Evaluation protocol",
+        "Smoke results snapshot",
+    ]
+    header(d, titles[stage])
+
+    rounded(d, (48, 98, 912, 474), WHITE, outline=BORDER, radius=16, width=2)
+
+    if stage == 0:
+        rounded(d, (74, 138, 886, 230), BLUE_SOFT, outline=BLUE, radius=12, width=2)
+        draw_text_fit(
+            d,
+            (92, 154, 868, 214),
+            "scripts/build_mc_dataset.py --smoke -> scripts/run_baselines.py --smoke -> scripts/train_ppo.py --smoke",
+            max_size=18,
+            min_size=11,
+            bold=True,
+            fill=NAVY,
+            align="center",
+            valign="center",
+        )
+
+        card(d, (88, 258, 370, 420), "Data + baseline prep", title_color=BLUE)
+        draw_bullets(
+            d,
+            (104, 298, 352, 398),
+            [
+                "build MC prefixes",
+                "set distractor strategy",
+                "run baseline sweeps",
+            ],
+            bullet_color=BLUE,
+        )
+
+        card(d, (396, 258, 678, 420), "RL fine-tune", title_color=ORANGE)
+        draw_bullets(
+            d,
+            (412, 298, 660, 398),
+            [
+                "initialize policy",
+                "optimize timing reward",
+                "trade speed vs accuracy",
+            ],
+            bullet_color=ORANGE,
+        )
+
+        card(d, (704, 258, 886, 420), "Artifacts", title_color=GREEN)
+        draw_text_fit(
+            d,
+            (718, 300, 872, 406),
+            "artifacts/smoke/\n- mc_dataset.json\n- baseline_summary.json\n- ppo_runs.json",
+            max_size=14,
+            min_size=9,
+            fill=TEXT_SOFT,
+            valign="top",
+        )
+
+    elif stage == 1:
+        card(d, (88, 136, 472, 320), "Core metrics", title_color=BLUE)
+        draw_bullets(
+            d,
+            (106, 176, 454, 294),
+            [
+                "mean S_q",
+                "buzz accuracy",
+                "mean buzz step",
+                "ECE and Brier",
+            ],
+            bullet_color=BLUE,
+        )
+
+        card(d, (488, 136, 872, 320), "Control checks", title_color=PURPLE)
+        draw_bullets(
+            d,
+            (506, 176, 854, 294),
+            [
+                "choices-only baseline",
+                "shuffle test",
+                "alias substitution",
+                "per-category slices",
+            ],
+            bullet_color=PURPLE,
+        )
+
+        rounded(d, (88, 344, 872, 430), "#F7F8FA", outline=BORDER, radius=10, width=1)
+        draw_text_fit(
+            d,
+            (106, 360, 854, 416),
+            "Evaluation source of truth: artifacts/smoke/evaluation_report.json",
+            max_size=18,
+            min_size=10,
+            fill=TEXT_SOFT,
+            align="center",
+            valign="center",
+        )
+
+    else:
+        full_eval = EVAL_REPORT.get("full_eval", {})
+        ppo = EVAL_REPORT.get("ppo_summary", {})
+        best_name, best_metrics = best_baseline_result(EVAL_REPORT)
+
+        card(d, (88, 136, 472, 424), "Best baseline (mean S_q)", title_color=BLUE)
+        draw_text_fit(d, (106, 178, 454, 208), best_name, max_size=20, min_size=11, bold=True, fill=NAVY, align="center")
+        draw_bullets(
+            d,
+            (108, 220, 454, 382),
+            [
+                f"mean S_q = {fmt_num(best_metrics.get('mean_sq'))}",
+                f"buzz acc = {fmt_pct(best_metrics.get('buzz_accuracy'))}",
+                f"mean step = {fmt_num(best_metrics.get('mean_buzz_step'), 2)}",
+                f"n = {fmt_num(best_metrics.get('n'), 0)}",
+            ],
+            bullet_color=BLUE,
+        )
+
+        card(d, (488, 136, 872, 424), "PPO smoke", title_color=ORANGE)
+        draw_bullets(
+            d,
+            (508, 178, 854, 382),
+            [
+                f"mean S_q = {fmt_num(ppo.get('mean_sq'))}",
+                f"buzz acc = {fmt_pct(ppo.get('buzz_accuracy'))}",
+                f"reward-like = {fmt_num(ppo.get('mean_reward_like'))}",
+                f"ECE/Brier = {fmt_num(ppo.get('ece'))}/{fmt_num(ppo.get('brier'))}",
+            ],
+            bullet_color=ORANGE,
+        )
+
+        rounded(d, (88, 438, 872, 464), BLUE_SOFT, outline=BLUE, radius=10, width=2)
+        draw_text_fit(
+            d,
+            (106, 442, 854, 460),
+            f"Full eval: S_q={fmt_num(full_eval.get('mean_sq'))}, accuracy={fmt_pct(full_eval.get('buzz_accuracy'))}, mean step={fmt_num(full_eval.get('mean_buzz_step'), 2)}",
+            max_size=13,
+            min_size=9,
+            fill=NAVY_DARK,
+            align="center",
+            valign="center",
+        )
+
+    footer(d, spec["footer"])
+    return img
+
 def render_summary(spec: Dict) -> Image.Image:
     stage = spec["stage"]
     img = make_canvas()
@@ -781,6 +999,7 @@ RENDERERS = {
     "abstain": render_abstain,
     "factorization": render_factorization,
     "recipe": render_recipe,
+    "pipeline": render_pipeline,
     "summary": render_summary,
 }
 
@@ -791,19 +1010,19 @@ frames: List[Image.Image] = []
 for spec in SCENES:
     frames.append(RENDERERS[spec["kind"]](spec))
 
-assert len(frames) == 25
+assert len(frames) == len(SCENES)
 
 # ============================================================
 # Durations
 # ============================================================
 durations = []
-section_frames = {2, 8, 14, 18, 21}  # 1-indexed
+section_frames = {idx for idx, spec in enumerate(SCENES, start=1) if spec["kind"] == "section"}  # 1-indexed
 for i in range(1, len(frames) + 1):
     if i == 1:
         durations.append(1000)
     elif i in section_frames:
         durations.append(900)
-    elif i in {7, 13, 20, 25}:
+    elif i in {7, 13, 20, len(frames)}:
         durations.append(850)
     else:
         durations.append(450)
