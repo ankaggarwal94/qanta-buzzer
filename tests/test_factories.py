@@ -11,10 +11,7 @@ import numpy as np
 import pytest
 
 from models.likelihoods import (
-<<<<<<< HEAD
-=======
     LikelihoodModel,
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
     SBERTLikelihood,
     TfIdfLikelihood,
     build_likelihood_from_config,
@@ -31,9 +28,6 @@ from qb_env.tossup_env import TossupMCEnv, make_env_from_config
 class TestBuildLikelihoodFromConfig:
     """Tests for likelihood model factory function."""
 
-<<<<<<< HEAD
-    def test_likelihood_factory_sbert(self, sample_config: dict) -> None:
-=======
     @pytest.fixture
     def stub_sbert_init(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Stub SBERT model loading so factory tests stay offline-safe."""
@@ -48,7 +42,6 @@ class TestBuildLikelihoodFromConfig:
     def test_likelihood_factory_sbert(
         self, sample_config: dict, stub_sbert_init: None
     ) -> None:
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
         """Config with model='sbert' creates SBERTLikelihood."""
         sample_config["likelihood"]["model"] = "sbert"
         model = build_likelihood_from_config(sample_config)
@@ -82,11 +75,7 @@ class TestBuildLikelihoodFromConfig:
             build_likelihood_from_config(sample_config)
 
     def test_likelihood_factory_sbert_name_override(
-<<<<<<< HEAD
-        self, sample_config: dict
-=======
         self, sample_config: dict, stub_sbert_init: None
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
     ) -> None:
         """sbert_name config key overrides default model name."""
         sample_config["likelihood"]["model"] = "sbert"
@@ -98,11 +87,7 @@ class TestBuildLikelihoodFromConfig:
         )
 
     def test_likelihood_factory_embedding_model_key(
-<<<<<<< HEAD
-        self, sample_config: dict
-=======
         self, sample_config: dict, stub_sbert_init: None
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
     ) -> None:
         """embedding_model config key works as fallback for sbert_name."""
         sample_config["likelihood"]["model"] = "sbert"

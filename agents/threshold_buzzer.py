@@ -5,21 +5,12 @@ from typing import Any
 
 import numpy as np
 
-<<<<<<< HEAD
-=======
 from agents._math import sigmoid
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
 
 
-<<<<<<< HEAD
-def _sigmoid(x: float) -> float:
-    return float(1.0 / (1.0 + np.exp(-x)))
 
-
-=======
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 @dataclass
 class EpisodeResult:
     qid: str
@@ -56,11 +47,7 @@ class ThresholdBuzzer:
         return probs.astype(np.float32)
 
     def _confidence_proxy(self, top_p: float) -> float:
-<<<<<<< HEAD
-        return _sigmoid(self.alpha * (top_p - self.threshold))
-=======
         return sigmoid(self.alpha * (top_p - self.threshold))
->>>>>>> cda02951d4f40d4e7f14fbb2626d3740699830af
 
     def run_episode(self, question: MCQuestion) -> EpisodeResult:
         c_trace: list[float] = []
