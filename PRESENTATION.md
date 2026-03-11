@@ -200,6 +200,62 @@ Configs:
 
 ---
 
+## Training (Smoke)
+
+Practical training path used in this repo:
+
+1. `python scripts/build_mc_dataset.py --smoke`
+2. `python scripts/run_baselines.py --smoke`
+3. `python scripts/train_ppo.py --smoke`
+
+What this gives us:
+
+- reproducible MC episodes
+- baseline timing/accuracy reference points
+- PPO fine-tuning focused on buzz timing decisions
+
+---
+
+## Evaluation (Smoke)
+
+Evaluation source:
+
+- `artifacts/smoke/evaluation_report.json`
+
+Main metrics:
+
+- `S_q`
+- buzz accuracy
+- mean buzz step
+- reward-like score
+- calibration at buzz (ECE, Brier)
+
+Controls:
+
+- choices-only
+- shuffle
+- alias substitution
+
+---
+
+## Results Snapshot (Smoke)
+
+From `artifacts/smoke/evaluation_report.json`:
+
+- Best baseline by `mean_sq`: `always_final`
+  - mean `S_q`: `0.386`
+  - buzz accuracy: `38.6%`
+  - mean buzz step: `4.05`
+- PPO smoke summary:
+  - mean `S_q`: `0.326`
+  - buzz accuracy: `34.1%`
+  - reward-like: `-0.476`
+  - ECE / Brier: `0.099 / 0.013`
+
+These are smoke-scale diagnostics to validate the full train-eval loop.
+
+---
+
 ## Baselines And Learned Agents
 
 Implemented agents:
