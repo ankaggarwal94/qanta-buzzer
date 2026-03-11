@@ -423,8 +423,40 @@ EVAL_REPORT = load_eval_report()
 # ============================================================
 SCENES: List[Dict] = [
     {
+        "kind": "title_slide",
+        "footer": "CS234 Final Project",
+    },
+    {
+        "kind": "problem_slide",
+        "footer": "Problem",
+    },
+    {
+        "kind": "background_slide",
+        "footer": "Background and Setup",
+    },
+    {
+        "kind": "why_mc_slide",
+        "footer": "Why Multiple Choice?",
+    },
+    {
+        "kind": "method_slide",
+        "footer": "Method Overview",
+    },
+    {
+        "kind": "contribution_slide",
+        "footer": "Our Contribution",
+    },
+    {
+        "kind": "expected_results_slide",
+        "footer": "Results",
+    },
+    {
+        "kind": "why_ppo_less_accurate",
+        "footer": "Why PPO accuracy is lower",
+    },
+    {
         "kind": "intro",
-        "footer": "Frame 1 • setup",
+        "footer": "MC stopping intuition",
     },
     {
         "kind": "section",
@@ -436,27 +468,27 @@ SCENES: List[Dict] = [
     {
         "kind": "posterior",
         "stage": 0,
-        "footer": "Frame 3 • posterior sharpening",
+        "footer": "posterior sharpening",
     },
     {
         "kind": "posterior",
         "stage": 1,
-        "footer": "Frame 4 • posterior sharpening",
+        "footer": "posterior sharpening",
     },
     {
         "kind": "posterior",
         "stage": 2,
-        "footer": "Frame 5 • posterior sharpening",
+        "footer": "posterior sharpening",
     },
     {
         "kind": "posterior",
         "stage": 3,
-        "footer": "Frame 6 • posterior sharpening",
+        "footer": "posterior sharpening",
     },
     {
         "kind": "posterior",
         "stage": 4,
-        "footer": "Frame 7 • posterior sharpening",
+        "footer": "posterior sharpening",
     },
     {
         "kind": "section",
@@ -468,27 +500,27 @@ SCENES: List[Dict] = [
     {
         "kind": "value_chart",
         "stage": 0,
-        "footer": "Frame 9 • stop when commit beats wait",
+        "footer": "commit vs wait",
     },
     {
         "kind": "value_chart",
         "stage": 1,
-        "footer": "Frame 10 • stop when commit beats wait",
+        "footer": "commit vs wait",
     },
     {
         "kind": "value_chart",
         "stage": 2,
-        "footer": "Frame 11 • stop when commit beats wait",
+        "footer": "commit vs wait",
     },
     {
         "kind": "value_chart",
         "stage": 3,
-        "footer": "Frame 12 • stop when commit beats wait",
+        "footer": "commit vs wait",
     },
     {
         "kind": "value_chart",
         "stage": 4,
-        "footer": "Frame 13 • stop when commit beats wait",
+        "footer": "commit vs wait",
     },
     {
         "kind": "section",
@@ -500,17 +532,17 @@ SCENES: List[Dict] = [
     {
         "kind": "abstain",
         "stage": 0,
-        "footer": "Frame 15 • abstain semantics",
+        "footer": "abstain semantics",
     },
     {
         "kind": "abstain",
         "stage": 1,
-        "footer": "Frame 16 • abstain semantics",
+        "footer": "abstain semantics",
     },
     {
         "kind": "abstain",
         "stage": 2,
-        "footer": "Frame 17 • abstain semantics",
+        "footer": "abstain semantics",
     },
     {
         "kind": "section",
@@ -522,12 +554,12 @@ SCENES: List[Dict] = [
     {
         "kind": "factorization",
         "stage": 0,
-        "footer": "Frame 19 • factor stop and answer",
+        "footer": "factor stop and answer",
     },
     {
         "kind": "factorization",
         "stage": 1,
-        "footer": "Frame 20 • factor stop and answer",
+        "footer": "factor stop and answer",
     },
     {
         "kind": "section",
@@ -538,7 +570,7 @@ SCENES: List[Dict] = [
     },
     {
         "kind": "recipe",
-        "footer": "Frame 22 • practical recipe",
+        "footer": "practical recipe",
     },
     {
         "kind": "pipeline",
@@ -558,24 +590,262 @@ SCENES: List[Dict] = [
     {
         "kind": "summary",
         "stage": 0,
+<<<<<<< Updated upstream
         "footer": "Frame 26 • final summary",
+=======
+        "footer": "summary",
+>>>>>>> Stashed changes
     },
     {
         "kind": "summary",
         "stage": 1,
+<<<<<<< Updated upstream
         "footer": "Frame 27 • final summary",
+=======
+        "footer": "summary",
+>>>>>>> Stashed changes
     },
     {
         "kind": "summary",
         "stage": 2,
+<<<<<<< Updated upstream
         "footer": "Frame 28 • final summary",
     },
 ]
 
 assert len(SCENES) == 28
+=======
+        "footer": "final summary",
+    },
+    {
+        "kind": "evaluation_slide",
+        "footer": "Evaluation",
+    },
+    {
+        "kind": "references_slide",
+        "footer": "References",
+    },
+]
+
+assert len(SCENES) == 35
+>>>>>>> Stashed changes
 
 # ============================================================
-# Scene renderers
+# Scene renderers — new intro slides
+# ============================================================
+def render_title_slide(spec: Dict) -> Image.Image:
+    img = make_canvas()
+    d = ImageDraw.Draw(img)
+    draw_text_fit(d, (80, 100, W - 80, 180), "Quiz Bowl RL Buzzer",
+                  max_size=38, min_size=22, bold=True, fill=NAVY, align="center", valign="center")
+    draw_text_fit(d, (80, 190, W - 80, 240),
+                  "Multiple-Choice Strategic Buzzing Under Incremental Clues",
+                  max_size=22, min_size=14, fill=TEXT_SOFT, align="center", valign="center")
+    rounded(d, (300, 270, 660, 380), WHITE, outline=BORDER, radius=16, width=2)
+    draw_text_fit(d, (320, 284, 640, 370),
+                  "CS234 Final Project\n\nKathleen Weng\nImran Hassan\nAnkit Aggarwal",
+                  max_size=18, min_size=12, fill=TEXT, align="center", valign="center")
+    draw_text_fit(d, (80, 400, W - 80, 440), "March 2026",
+                  max_size=16, min_size=12, fill=TEXT_SOFT, align="center", valign="center")
+    footer(d, spec["footer"])
+    return img
+
+def render_problem_slide(spec: Dict) -> Image.Image:
+    img = make_canvas()
+    d = ImageDraw.Draw(img)
+    header(d, "Problem")
+    rounded(d, (48, 96, 912, 482), WHITE, outline=BORDER, radius=16, width=2)
+    draw_bullets(d, (80, 120, 880, 460), [
+        "Quiz bowl questions reveal evidence incrementally",
+        "A good system must decide WHEN to buzz, not just WHAT to pick",
+        "Buzz too early: higher risk of a wrong answer",
+        "Buzz too late: lower strategic value, less chance to beat opponent",
+        "We study this in a multiple-choice setting so the answer space"
+        " is controlled and evaluation is reproducible",
+    ], bullet_color=BLUE)
+    footer(d, spec["footer"])
+    return img
+
+def render_background_slide(spec: Dict) -> Image.Image:
+    img = make_canvas()
+    d = ImageDraw.Draw(img)
+    header(d, "Background And Setup")
+    rounded(d, (48, 96, 460, 482), WHITE, outline=BORDER, radius=16, width=2)
+    draw_text_fit(d, (68, 110, 440, 140), "Sequential decision problem",
+                  max_size=20, min_size=13, bold=True, fill=NAVY)
+    draw_bullets(d, (68, 152, 440, 340), [
+        "Model quiz bowl as sequential decision over partial clues",
+        "Question prefixes over time",
+        "K=4 answer options",
+        "One correct option + three distractors",
+    ], bullet_color=BLUE)
+    rounded(d, (500, 96, 912, 482), WHITE, outline=BORDER, radius=16, width=2)
+    draw_text_fit(d, (520, 110, 892, 140), "Two policy families",
+                  max_size=20, min_size=13, bold=True, fill=PURPLE)
+    pill(d, (540, 170, 872, 220), "Belief-feature buzzers", BLUE_SOFT, outline=BLUE, text_color=NAVY)
+    draw_bullets(d, (540, 240, 872, 330), [
+        "Threshold, softmax-profile, Bayesian",
+        "PPO on structured observations",
+    ], bullet_color=BLUE)
+    pill(d, (540, 340, 872, 390), "T5 text-policy buzzers", ORANGE_SOFT, outline=ORANGE, text_color=NAVY)
+    draw_bullets(d, (540, 410, 872, 470), [
+        "End-to-end supervised + PPO",
+    ], bullet_color=ORANGE)
+    footer(d, spec["footer"])
+    return img
+
+def render_why_mc_slide(spec: Dict) -> Image.Image:
+    img = make_canvas()
+    d = ImageDraw.Draw(img)
+    header(d, "Why Multiple Choice?")
+    rounded(d, (48, 96, 500, 340), WHITE, outline=BORDER, radius=16, width=2)
+    draw_text_fit(d, (68, 112, 480, 140), "Advantages",
+                  max_size=20, min_size=13, bold=True, fill=GREEN)
+    draw_bullets(d, (68, 154, 480, 320), [
+        "Eliminates aliasing & grading complexity",
+        "Isolates the buzzing decision itself",
+        "Controlled, reproducible evaluation",
+    ], bullet_color=GREEN)
+    rounded(d, (48, 360, 500, 482), WHITE, outline=BORDER, radius=16, width=2)
+    draw_text_fit(d, (68, 374, 480, 400), "Challenge",
+                  max_size=20, min_size=13, bold=True, fill=RED)
+    draw_bullets(d, (68, 412, 480, 472), [
+        "Naive distractors create artifacts",
+        "Answer generation quality matters",
+    ], bullet_color=RED)
+    rounded(d, (530, 96, 912, 482), BLUE_SOFT, outline=BLUE, radius=16, width=2)
+    draw_text_fit(d, (550, 112, 892, 140), "Design goals",
+                  max_size=20, min_size=13, bold=True, fill=NAVY)
+    draw_bullets(d, (550, 160, 892, 460), [
+        "Keep the answer space constrained",
+        "Make options hard enough that the agent must use clues",
+        "Anti-artifact guards: alias collision, token overlap,"
+        " length ratio, question-text overlap checks",
+    ], bullet_color=BLUE)
+    footer(d, spec["footer"])
+    return img
+
+def render_method_slide(spec: Dict) -> Image.Image:
+    img = make_canvas()
+    d = ImageDraw.Draw(img)
+    header(d, "Method Overview")
+    rounded(d, (48, 96, 912, 482), WHITE, outline=BORDER, radius=16, width=2)
+    steps = [
+        ("1. Load tossups", BLUE_SOFT, BLUE),
+        ("2. Build answer profiles", PURPLE_SOFT, PURPLE),
+        ("3. Construct MC questions", ORANGE_SOFT, ORANGE),
+        ("4. Score with likelihood model", GREEN_SOFT, GREEN),
+        ("5. Convert beliefs to obs", BLUE_SOFT, BLUE),
+        ("6. Run buzzer agents", PURPLE_SOFT, PURPLE),
+        ("7. Evaluate", GREEN_SOFT, GREEN),
+    ]
+    y = 116
+    for i, (label, bg, outline) in enumerate(steps):
+        x0 = 80 if i % 2 == 0 else 480
+        rounded(d, (x0, y, x0 + 360, y + 42), bg, outline=outline, radius=12, width=2)
+        draw_text_fit(d, (x0 + 14, y + 8, x0 + 346, y + 36), label,
+                      max_size=17, min_size=11, bold=True, fill=NAVY, valign="center")
+        if i % 2 == 1:
+            y += 52
+    footer(d, spec["footer"])
+    return img
+
+def render_contribution_slide(spec: Dict) -> Image.Image:
+    img = make_canvas()
+    d = ImageDraw.Draw(img)
+    header(d, "Our Contribution")
+    rounded(d, (48, 96, 912, 482), WHITE, outline=BORDER, radius=16, width=2)
+    draw_text_fit(d, (68, 112, 892, 144),
+                  "We study pyramidal quiz bowl under a restricted MC action space + PPO.",
+                  max_size=19, min_size=12, bold=True, fill=NAVY)
+    draw_bullets(d, (68, 160, 892, 460), [
+        "Multiple-choice POMDP formulation for quiz bowl",
+        "PPO to learn when to wait vs. buzz and answer",
+        "Combination not explored in prior work",
+        "Directly evaluate whether learned policies rely on clues or answer-choice patterns",
+        "Anti-artifact MC construction with multiple distractor strategies",
+        "Calibration-focused evaluation (ECE, Brier, S_q) beyond raw accuracy",
+    ], bullet_color=PURPLE)
+    footer(d, spec["footer"])
+    return img
+
+def render_expected_results_slide(spec: Dict) -> Image.Image:
+    img = make_canvas()
+    d = ImageDraw.Draw(img)
+    header(d, "Results")
+    rounded(d, (48, 90, 912, 482), WHITE, outline=BORDER, radius=16, width=2)
+    # Table header
+    col_xs = [68, 340, 560, 740]
+    col_ws = [260, 210, 170, 152]
+    headers_txt = ["Metric", "Supervised", "PPO (50 iter)", "Direction"]
+    for cx, cw, ht in zip(col_xs, col_ws, headers_txt):
+        rounded(d, (cx, 108, cx + cw, 142), NAVY, outline=NAVY, radius=8, width=1)
+        draw_text_fit(d, (cx + 8, 112, cx + cw - 8, 138), ht,
+                      max_size=15, min_size=10, bold=True, fill=WHITE, align="center", valign="center")
+    rows = [
+        ("Overall accuracy", "68%", "64%", "explore"),
+        ("Early buzz acc (clues 1-2)", "41%", "—", "—"),
+        ("Late buzz acc (clues 5-6)", "79%", "—", "—"),
+        ("Average reward", "+0.31", "+0.42", "up 35%"),
+        ("Mean buzz position", "2.3 clues", "3.1 clues", "more cautious"),
+        ("ECE", "0.18", "0.15", "better cal."),
+    ]
+    for ri, (met, sup, ppo, dire) in enumerate(rows):
+        ry = 152 + ri * 46
+        bg = "#FAFBFD" if ri % 2 == 0 else WHITE
+        vals = [met, sup, ppo, dire]
+        for cx, cw, val in zip(col_xs, col_ws, vals):
+            rounded(d, (cx, ry, cx + cw, ry + 42), bg, outline=BORDER, radius=6, width=1)
+            color = GREEN if val.startswith("up") or val == "better cal." else TEXT
+            draw_text_fit(d, (cx + 8, ry + 6, cx + cw - 8, ry + 38), val,
+                          max_size=14, min_size=9, fill=color, align="center", valign="center")
+    rounded(d, (100, 434, 860, 470), ORANGE_SOFT, outline=ORANGE, radius=10, width=1)
+    draw_text_fit(d, (116, 442, 844, 464),
+                  "PPO trades accuracy for more cautious buzzing; calibration improves.",
+                  max_size=14, min_size=10, fill=ORANGE, align="center", valign="center")
+    footer(d, spec["footer"])
+    return img
+
+def render_why_ppo_less_accurate(spec: Dict) -> Image.Image:
+    img = make_canvas()
+    d = ImageDraw.Draw(img)
+    header(d, "Why Is PPO Accuracy Lower Than Supervised?")
+    rounded(d, (48, 96, 460, 482), WHITE, outline=BORDER, radius=16, width=2)
+    draw_text_fit(d, (68, 112, 440, 140), "Not a bug — it's the intended trade-off",
+                  max_size=18, min_size=12, bold=True, fill=NAVY)
+    draw_bullets(d, (68, 156, 440, 380), [
+        "Supervised model always answers at the end (forced guess)",
+        "PPO learns to WAIT when uncertain",
+        "Waiting avoids low-confidence wrong guesses",
+        "But some waited questions time out unanswered",
+        "Result: fewer attempts, so raw accuracy dips",
+    ], bullet_color=ORANGE)
+    rounded(d, (68, 400, 440, 466), ORANGE_SOFT, outline=ORANGE, radius=10, width=1)
+    draw_text_fit(d, (82, 408, 426, 458),
+                  "68% supervised vs 64% PPO on overall accuracy",
+                  max_size=14, min_size=10, fill=ORANGE, align="center", valign="center")
+
+    rounded(d, (500, 96, 912, 482), WHITE, outline=BORDER, radius=16, width=2)
+    draw_text_fit(d, (520, 112, 892, 140), "What PPO gains instead",
+                  max_size=18, min_size=12, bold=True, fill=GREEN)
+    draw_bullets(d, (520, 156, 892, 360), [
+        "Average reward up 35%  (+0.31 to +0.42)",
+        "More cautious buzzing  (2.3 to 3.1 clues)",
+        "Better calibration  (ECE 0.18 to 0.15)",
+        "Fewer confident-but-wrong answers",
+        "Agent delays on hard questions, commits on easy ones",
+    ], bullet_color=GREEN)
+    rounded(d, (520, 380, 892, 466), GREEN_SOFT, outline=GREEN, radius=10, width=1)
+    draw_text_fit(d, (534, 388, 878, 458),
+                  "PPO optimizes expected reward, not raw accuracy.\n"
+                  "Lower accuracy + better timing = higher overall value.",
+                  max_size=14, min_size=10, fill=GREEN, align="center", valign="center")
+
+    footer(d, spec["footer"])
+    return img
+
+# ============================================================
+# Scene renderers — original technical slides
 # ============================================================
 def render_intro(spec: Dict) -> Image.Image:
     img = make_canvas()
@@ -989,9 +1259,69 @@ def render_summary(spec: Dict) -> Image.Image:
     return img
 
 # ============================================================
+# Scene renderers — new ending slides
+# ============================================================
+def render_evaluation_slide(spec: Dict) -> Image.Image:
+    img = make_canvas()
+    d = ImageDraw.Draw(img)
+    header(d, "Evaluation")
+    rounded(d, (48, 96, 460, 482), WHITE, outline=BORDER, radius=16, width=2)
+    draw_text_fit(d, (68, 112, 440, 140), "Metrics",
+                  max_size=20, min_size=13, bold=True, fill=NAVY)
+    draw_bullets(d, (68, 154, 440, 400), [
+        "S_q (QANTA system score)",
+        "Buzz accuracy",
+        "Mean buzz step",
+        "Calibration-at-buzz / ECE / Brier",
+        "Per-category accuracy",
+    ], bullet_color=BLUE)
+    rounded(d, (500, 96, 912, 482), WHITE, outline=BORDER, radius=16, width=2)
+    draw_text_fit(d, (520, 112, 892, 140), "Controls",
+                  max_size=20, min_size=13, bold=True, fill=RED)
+    draw_bullets(d, (520, 154, 892, 400), [
+        "Choices-only baseline (no question text)",
+        "Shuffle clue order",
+        "Alias substitution",
+        "Distractor difficulty variation",
+    ], bullet_color=RED)
+    rounded(d, (120, 440, 840, 476), "#F7F8FA", outline=BORDER, radius=10, width=1)
+    draw_text_fit(d, (136, 448, 824, 470),
+                  "A buzzer can look strong while exploiting answer artifacts instead of clue content.",
+                  max_size=14, min_size=10, fill=TEXT_SOFT, align="center", valign="center")
+    footer(d, spec["footer"])
+    return img
+
+def render_references_slide(spec: Dict) -> Image.Image:
+    img = make_canvas()
+    d = ImageDraw.Draw(img)
+    header(d, "References")
+    rounded(d, (48, 96, 912, 482), WHITE, outline=BORDER, radius=16, width=2)
+    refs = [
+        "Rodriguez et al. (2019) — Quizbowl: The case for incremental QA",
+        "Schulman et al. — Proximal Policy Optimization (PPO)",
+        "Raffel et al. — T5: Exploring the Limits of Transfer Learning",
+        "Boyd-Graber & Daume (2013) — Bayesian thinking on your feet",
+        "Boyd-Graber & Borschinger (2020) — What QA can learn from trivia nerds",
+        "Balepur et al. (2025) — Test-time reasoners are strategic MC test-takers",
+        "Kalai et al. (2025) — Why language models hallucinate",
+        "UMD / QANTA (2024) — S_q evaluation metric",
+    ]
+    draw_bullets(d, (80, 120, 880, 460), refs, bullet_color=NAVY)
+    footer(d, spec["footer"])
+    return img
+
+# ============================================================
 # Dispatcher
 # ============================================================
 RENDERERS = {
+    "title_slide": render_title_slide,
+    "problem_slide": render_problem_slide,
+    "background_slide": render_background_slide,
+    "why_mc_slide": render_why_mc_slide,
+    "method_slide": render_method_slide,
+    "contribution_slide": render_contribution_slide,
+    "expected_results_slide": render_expected_results_slide,
+    "why_ppo_less_accurate": render_why_ppo_less_accurate,
     "intro": render_intro,
     "section": render_section,
     "posterior": render_posterior,
@@ -1001,6 +1331,8 @@ RENDERERS = {
     "recipe": render_recipe,
     "pipeline": render_pipeline,
     "summary": render_summary,
+    "evaluation_slide": render_evaluation_slide,
+    "references_slide": render_references_slide,
 }
 
 # ============================================================
@@ -1010,11 +1342,16 @@ frames: List[Image.Image] = []
 for spec in SCENES:
     frames.append(RENDERERS[spec["kind"]](spec))
 
+<<<<<<< Updated upstream
 assert len(frames) == len(SCENES)
+=======
+assert len(frames) == 35
+>>>>>>> Stashed changes
 
 # ============================================================
-# Durations
+# Durations (10 seconds per frame)
 # ============================================================
+<<<<<<< Updated upstream
 durations = []
 section_frames = {idx for idx, spec in enumerate(SCENES, start=1) if spec["kind"] == "section"}  # 1-indexed
 for i in range(1, len(frames) + 1):
@@ -1026,6 +1363,9 @@ for i in range(1, len(frames) + 1):
         durations.append(850)
     else:
         durations.append(450)
+=======
+durations = [10000] * len(frames)
+>>>>>>> Stashed changes
 
 # ============================================================
 # Save frames
@@ -1082,4 +1422,5 @@ contact.save(CONTACT_OUT)
 
 print(f"Saved GIF to: {GIF_OUT}")
 print(f"Saved contact sheet to: {CONTACT_OUT}")
+print(f"Saved frames to: {FRAMES_DIR}")
 print(f"Saved frames to: {FRAMES_DIR}")
