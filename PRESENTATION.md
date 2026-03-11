@@ -240,19 +240,24 @@ Controls:
 
 ## Results Snapshot (Smoke)
 
-From `artifacts/smoke/evaluation_report.json`:
+Baseline from `artifacts/smoke/evaluation_report.json`; PPO from best aggregate in `artifacts/smoke/reward_sweep_results.json`:
 
-- Best baseline by `mean_sq`: `always_final`
-  - mean `S_q`: `0.386`
-  - buzz accuracy: `38.6%`
-  - mean buzz step: `4.05`
-- PPO smoke summary:
-  - mean `S_q`: `0.326`
-  - buzz accuracy: `34.1%`
-  - reward-like: `-0.476`
-  - ECE / Brier: `0.099 / 0.013`
+| Model | mean `S_q` | buzz acc | mean step | reward-like | ECE / Brier |
+|---|---:|---:|---:|---:|---:|
+| `always_final` (best baseline) | `0.386` | `38.6%` | `4.05` | `0.080` | `0.000 / 0.000` |
+| PPO (best sweep aggregate) | `0.340` | `34.1%` | `0.00` | `n/a` | `0.006 / 0.000` |
 
-These are smoke-scale diagnostics to validate the full train-eval loop.
+---
+
+## Results Interpretation (Smoke)
+
+Interpretation:
+
+- In this smoke run, `always_final` is the strongest baseline on `S_q`.
+- PPO currently trails the strongest baseline on both `S_q` and buzz accuracy.
+- Likely cause: short smoke budget and reward-shaping sensitivity.
+- Next run knobs: `ppo.total_timesteps`, `wait_penalty`, `early_buzz_penalty`.
+- These are smoke diagnostics for pipeline validation, not final quality claims.
 
 ---
 
@@ -268,11 +273,9 @@ Implemented agents:
 
 Why this baseline set is useful:
 
-- thresholded confidence
-- from-scratch belief recomputation
-- sequential Bayesian belief updates
-- always-buzz-final control
-- learned timing policy with PPO
+- confidence-threshold policy (`ThresholdBuzzer`)
+- belief-update policy (`SequentialBayesBuzzer`)
+- learned timing policy (PPO), compared against `AlwaysBuzzFinalBuzzer`
 
 ---
 
@@ -280,19 +283,13 @@ Why this baseline set is useful:
 
 `evaluation/` measures more than final accuracy:
 
-- `S_q`
-- buzz accuracy
-- mean buzz step
-- calibration-at-buzz
-- ECE
-- Brier score
+- `S_q`, buzz accuracy, and mean buzz step
+- calibration-at-buzz (`ECE`, `Brier`)
 - per-category accuracy
 
 The code also includes explicit controls:
 
-- choices-only
-- shuffle
-- alias substitution
+- choices-only, shuffle, alias substitution
 
 This is important because a buzzer can look strong while exploiting answer artifacts instead of clue content.
 

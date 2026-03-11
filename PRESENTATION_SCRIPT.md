@@ -245,41 +245,50 @@ The key insight: RL learns *mostly* the stopping problem, not which-answer-plus-
 
 ---
 
-## Frame 23 — Summary Stage 0
+## Frame 23 — Training (Smoke)
 
-**Visual:** Left panel with first two takeaway bullets: (1) "clues arrive from hard to easy" and (2) "posterior over fixed answer choices sharpens." Right panel: "For RL people" card.
+**Visual:** Command pipeline and three blocks: data/baseline prep, PPO fine-tuning, and artifact outputs.
 
 **Script:**
 
-Let's recap. First two key points:
-1. Clues arrive from hard to easy — this is the pyramidal structure.
-2. The posterior over a *fixed* answer set sharpens as more clues arrive.
+This slide anchors the run to concrete commands:
 
-For the RL audience: at each prefix, compare the value of committing now to the value of one more clue.
+1. `build_mc_dataset --smoke`
+2. `run_baselines --smoke`
+3. `train_ppo --smoke`
+
+The purpose is reproducibility: build the MC episodes, establish baseline references, then train the timing policy.
 
 ---
 
-## Frame 24 — Summary Stage 1
+## Frame 24 — Evaluation (Smoke)
 
-**Visual:** Third bullet appears: "the RL decision is mostly when to stop listening." A green "factorization" card appears on the right.
+**Visual:** Metrics panel plus control checks, with `evaluation_report.json` called out as source.
 
 **Script:**
 
-Third point: the RL decision is *mostly* about when to stop, not which answer. And the factored architecture card reminds us: P(WAIT) = 1 − p_buzz, P(BUZZ i) = p_buzz × p_ans(i). Keep the interface flat if needed, but factor it internally.
+Here we define what "good" means:
+- `S_q`, buzz accuracy, buzz timing, reward-like score
+- calibration at buzz via ECE and Brier
+- controls for choices-only, shuffle, and alias substitution
+
+This keeps us from over-claiming performance due to artifacts.
 
 ---
 
-## Frame 25 — Summary Stage 2 (Final)
+## Frame 25 — Results Snapshot (Smoke)
 
-**Visual:** All four bullets visible. Fourth bullet: "abstain means another clue is worth it, not 'none of these are right'." Blue banner at bottom with key takeaway.
+**Visual:** Compact baseline-vs-PPO table and short interpretation bullets.
 
 **Script:**
 
-Final point — abstain means continuation, not rejection.
+The results table mixes two artifact sources: baseline metrics from `evaluation_report.json`, and PPO metrics from the **best aggregate run** in `reward_sweep_results.json`.
 
-**Key takeaway (bottom banner):** Pyramidal quiz bowl turns MCQA into a stopping problem because information improves before action.
+Even with best sweep aggregate settings, `always_final` still leads on `S_q` in this snapshot.
 
-That's the whole mental model: **selective prediction + optimal stopping + fixed answer set.** Thank you.
+Interpretation: PPO is still under-trained at smoke budget and reward shaping is likely dominating behavior.
+
+Actionable next run: increase PPO timesteps and tune wait/early-buzz penalties.
 
 ---
 
@@ -298,4 +307,6 @@ That's the whole mental model: **selective prediction + optimal stopping + fixed
 | 19–20 | §4 Content | Answer module + stop module = flat interface |
 | 21 | §5 Header | One clean mental model |
 | 22 | §5 Content | 3-step recipe: answer model → hazard warm start → PPO |
-| 23–25 | Summary | Progressive reveal of 4 takeaways + key banner |
+| 23 | Training | Smoke command path and artifacts |
+| 24 | Evaluation | Metrics + controls from evaluation report |
+| 25 | Results | Baseline vs PPO smoke snapshot + interpretation |
