@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from math import ceil
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 

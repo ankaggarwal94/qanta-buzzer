@@ -25,7 +25,7 @@ pip install -e .
 Optional OpenAI support:
 
 ```bash
-pip install -e .[openai]
+pip install -e '.[openai]'
 export OPENAI_API_KEY=...
 ```
 
