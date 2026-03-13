@@ -147,6 +147,7 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | # | Description | Date | Commit | Status | Directory |
 |---|-------------|------|--------|--------|-----------|
 | 1 | Repo-contract scaffolding: AGENTS.md, thin CLAUDE.md shim, .agentic.yml, ci.sh, manual-smoke.sh | 2026-03-13 | f478d1b3 | Verified | [1-repo-contract-scaffolding-agents-md-thin](./quick/1-repo-contract-scaffolding-agents-md-thin/) |
+| 2 | Precompute belief-observation trajectories for PPO training speedup | 2026-03-13 | c3a69552, 0e8a60fa | Verified | [2-precompute-belief-observation-trajectori](./quick/2-precompute-belief-observation-trajectori/) |
 
 ### Known Issues
 None yet
@@ -157,7 +158,7 @@ None yet
 - Memory requirements for T5-large (may need T5-base)
 
 ### Performance Bottlenecks
-None identified yet
+- likelihood_model.score() dominated PPO training wall time (mitigated by quick task 2: precomputed belief cache)
 
 ## Session Continuity
 
@@ -202,4 +203,4 @@ Key risks to watch:
 
 ---
 *State file initialized: 2026-02-25*
-Last activity: 2026-03-13 - Completed quick task 1: Repo-contract scaffolding: AGENTS.md, thin CLAUDE.md shim, .agentic.yml, ci.sh, manual-smoke.sh
+Last activity: 2026-03-13 - Completed quick task 2: Precompute belief-observation trajectories for PPO training speedup
