@@ -840,3 +840,100 @@ class TestPrecomputedEquivalence:
             np.testing.assert_array_almost_equal(
                 pre.entropy_trace, live.entropy_trace
             )
+
+
+# ------------------------------------------------------------------ #
+# Shuffle precomputed equivalence tests
+# ------------------------------------------------------------------ #
+
+
+class TestShufflePrecomputedEquivalence:
+    """Prove precomputed shuffle control matches live rescore shuffle control."""
+
+    def test_shuffle_precomputed_matches_rescore(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        """Precomputed shuffle control matches live rescore shuffle control."""
+        from dataclasses import asdict
+
+        from agents.threshold_buzzer import precompute_beliefs
+        from evaluation.controls import (
+            run_shuffle_control,
+            run_shuffle_control_precomputed,
+        )
+        from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+
+        likelihood = _make_likelihood(sample_corpus)
+        threshold, beta, alpha = 0.7, 5.0, 10.0
+        questions = [sample_mc_question]
+
+        # Live rescore path
+        def evaluator(qset):
+            agent = SoftmaxProfileBuzzer(
+                likelihood_model=likelihood,
+                threshold=threshold,
+                beta=beta,
+                alpha=alpha,
+            )
+            runs = [asdict(agent.run_episode(q)) for q in qset]
+            summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
+            summary["runs"] = runs
+            return summary
+
+        live_result = run_shuffle_control(questions, evaluator=evaluator, random_seed=13)
+
+        # Precomputed path
+        precomputed = precompute_beliefs(questions, likelihood, beta)
+        pre_result = run_shuffle_control_precomputed(
+            precomputed, threshold, alpha, random_seed=13
+        )
+
+        # Compare summary metrics
+        assert live_result["mean_sq"] == pytest.approx(pre_result["mean_sq"])
+        assert live_result["buzz_accuracy"] == pytest.approx(pre_result["buzz_accuracy"])
+
+        # Compare per-run results
+        for live_run, pre_run in zip(live_result["runs"], pre_result["runs"]):
+            assert live_run["buzz_step"] == pre_run["buzz_step"]
+            assert live_run["buzz_index"] == pre_run["buzz_index"]
+            assert live_run["correct"] == pre_run["correct"]
+            np.testing.assert_array_almost_equal(
+                live_run["c_trace"], pre_run["c_trace"]
+            )
+            np.testing.assert_array_almost_equal(
+                live_run["g_trace"], pre_run["g_trace"]
+            )
+            np.testing.assert_array_almost_equal(
+                live_run["top_p_trace"], pre_run["top_p_trace"]
+            )
+            np.testing.assert_array_almost_equal(
+                live_run["entropy_trace"], pre_run["entropy_trace"]
+            )
+
+    def test_permutation_consistency(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        """Permutation applied to beliefs matches permutation applied to gold_index."""
+        import random as random_mod
+
+        from agents.threshold_buzzer import _PrecomputedQuestion, precompute_beliefs
+        from evaluation.controls import shuffled_option_copy
+
+        likelihood = _make_likelihood(sample_corpus)
+        beta = 5.0
+        questions = [sample_mc_question]
+        precomputed = precompute_beliefs(questions, likelihood, beta)
+
+        # Reproduce the permutation that shuffled_option_copy would use
+        rng_live = random_mod.Random(13)
+        shuffled_q = shuffled_option_copy(sample_mc_question, rng_live)
+
+        # Reproduce the same permutation for precomputed
+        rng_pre = random_mod.Random(13)
+        pq = precomputed[0]
+        perm = list(range(pq.num_options))
+        rng_pre.shuffle(perm)
+        new_gold = perm.index(pq.gold_index)
+
+        # The gold index should match
+        assert new_gold == shuffled_q.gold_index
