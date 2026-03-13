@@ -137,6 +137,50 @@ class MCBuilder:
 
         return answer_to_aliases_list, answer_to_category, answer_to_norm, answers
 
+    def _rank_by_similarity(
+        self,
+        sim: np.ndarray,
+        answers: List[str],
+        answer_idx: Dict[str, int],
+        M: int,
+    ) -> Dict[str, List[str]]:
+        """Rank distractors for each answer using a similarity matrix.
+
+        Uses ``np.argpartition`` for top-M retrieval when M < N-1,
+        reducing per-answer work from O(N log N) to O(N + M log M).
+
+        Parameters
+        ----------
+        sim : np.ndarray
+            Pairwise similarity matrix of shape (N, N).
+        answers : list[str]
+            Ordered answer strings corresponding to matrix rows/cols.
+        answer_idx : dict[str, int]
+            Mapping from answer string to its index in *sim*.
+        M : int
+            Number of top candidates to retain per answer.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Each answer mapped to its ranked distractor list (length <= M).
+        """
+        N = len(answers)
+        rankings: Dict[str, List[str]] = {}
+        for answer in answers:
+            idx = answer_idx[answer]
+            row = sim[idx]
+            if M >= N - 1:
+                # Small N: full sort (no benefit from partition)
+                order = np.argsort(-row).tolist()
+            else:
+                # Top-M retrieval: O(N) partition + O(M log M) sort
+                top_m_idx = np.argpartition(-row, M)[:M]
+                top_m_idx = top_m_idx[np.argsort(-row[top_m_idx])]
+                order = top_m_idx.tolist()
+            rankings[answer] = [answers[i] for i in order if answers[i] != answer]
+        return rankings
+
     def _compute_rankings(
         self,
         answers: List[str],
@@ -144,6 +188,11 @@ class MCBuilder:
         answer_to_category: Dict[str, str],
     ) -> Dict[str, List[str]]:
         """Compute distractor rankings for each answer.
+
+        For profile-based strategies, uses top-M retrieval via
+        ``np.argpartition`` instead of full ``np.argsort`` to reduce
+        per-answer complexity from O(N log N) to O(N + M log M) and
+        total memory from O(N^2) to O(N*M), where M = max(5*K, 30).
 
         Args:
             answers: List of all unique answers.
@@ -172,18 +221,14 @@ class MCBuilder:
         # Profile-based ranking strategies
         docs = [answer_profiles[a] for a in answers]
         answer_idx = {a: i for i, a in enumerate(answers)}
-        rankings = {}
+        M = min(max(5 * self.K, 30), len(answers) - 1)
 
         if self.strategy == "tfidf_profile":
             # TF-IDF based similarity
             vectorizer = TfidfVectorizer(stop_words="english")
             matrix = vectorizer.fit_transform(docs)
             sim = cosine_similarity(matrix, matrix)
-            for answer in answers:
-                idx = answer_idx[answer]
-                order = np.argsort(-sim[idx]).tolist()
-                rankings[answer] = [answers[i] for i in order if answers[i] != answer]
-            return rankings
+            return self._rank_by_similarity(sim, answers, answer_idx, M)
 
         if self.strategy in {"sbert_profile", "openai_profile"}:
             if self.strategy == "sbert_profile":
@@ -199,11 +244,7 @@ class MCBuilder:
                 embeddings = likelihood.embed_and_cache(docs)
                 sim = embeddings @ embeddings.T
 
-            for answer in answers:
-                idx = answer_idx[answer]
-                order = np.argsort(-sim[idx]).tolist()
-                rankings[answer] = [answers[i] for i in order if answers[i] != answer]
-            return rankings
+            return self._rank_by_similarity(sim, answers, answer_idx, M)
 
         raise ValueError(f"Unknown distractor strategy: {self.strategy}")
 
