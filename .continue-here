@@ -1,0 +1,41 @@
+# Continue Here
+
+## Session State
+**Date:** 2026-03-13
+**Branch:** main
+**Last commit:** f6eb3bdc
+
+## What Was Completed This Session
+
+### Optimization Campaign (7 of 7 items complete)
+
+| # | Item | Quick Task | Status |
+|---|------|-----------|--------|
+| 1 | Precompute belief/observation trajectories for PPO | QT-2 | Verified |
+| 2 | Persist cache artifacts across subprocess stages | QT-3 | Verified |
+| 3 | Collapse duplicate baseline sweeps into one-pass precomputed evaluation | QT-4 | Verified |
+| 4 | Cache answer profiles, especially leave-one-out gold profiles | QT-5 | Verified |
+| 5 | Replace full all-pairs distractor ranking with top-M retrieval | QT-6 | Verified |
+| 6 | Make TF-IDF caching real in score() | QT-7 | Verified |
+| 7 | Stop rescoring control experiments from scratch (shuffle control) | QT-8 | Executed, verification skipped |
+
+### Also Completed
+- QT-1: Repo-contract scaffolding (AGENTS.md, thin CLAUDE.md shim, .agentic.yml, ci.sh, manual-smoke.sh)
+- Codebase map refresh (.planning/codebase/ — 7 documents)
+
+## What To Do Next
+
+1. **Run `/gsd:verify-work` on QT-8** — verification was skipped due to pause
+2. **Run full smoke pipeline** — `bash scripts/manual-smoke.sh` to validate all optimizations end-to-end
+3. **Consider next priorities:**
+   - CS234 writeup preparation
+   - Full training pipeline run
+   - Comparison experiment for paper results
+
+## Key Context
+
+- All 7 optimization items from the ranked list are implemented
+- Each optimization is behavior-preserving with equivalence tests
+- Total new tests added: ~30+ across all quick tasks
+- All optimizations use the same pattern: precompute once, reuse via cache/permutation
+- AGENTS.md is now the canonical repo contract; CLAUDE.md is a thin shim

@@ -169,13 +169,12 @@ None yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 06-03: Custom PPO trainer and comparison experiment
-- PPOTrainer with RolloutBuffer, GAE, dynamic padding, memory-safe rollouts (933 lines)
-- End-to-end supervised-to-PPO training script with smoke mode (338 lines)
-- Comparison experiment: T5-as-likelihood vs T5-as-policy on same test set (468 lines)
-- 14 new tests passing, total project tests ~52+
-- 4 files created
-- All 20 plans across 6 phases now complete (100%)
+- Completed full optimization campaign: 7 ranked items (QT-2 through QT-8)
+- Repo-contract scaffolding: AGENTS.md, thin CLAUDE.md shim, .agentic.yml, ci.sh, manual-smoke.sh (QT-1)
+- Refreshed codebase map (.planning/codebase/ — 7 documents)
+- ~30+ new tests added across all quick tasks
+- All optimizations behavior-preserving with equivalence tests
+- QT-8 verification skipped due to pause — run /gsd:verify-work next session
 
 ### Next Session Priority
 1. CS234 writeup preparation
