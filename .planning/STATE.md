@@ -142,6 +142,12 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 - Gymnasium-compliant environment
 - SB3 PPO for MLP policy, custom for T5 policy
 
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Status | Directory |
+|---|-------------|------|--------|--------|-----------|
+| 1 | Repo-contract scaffolding: AGENTS.md, thin CLAUDE.md shim, .agentic.yml, ci.sh, manual-smoke.sh | 2026-03-13 | f478d1b3 | Verified | [1-repo-contract-scaffolding-agents-md-thin](./quick/1-repo-contract-scaffolding-agents-md-thin/) |
+
 ### Known Issues
 None yet
 
@@ -196,4 +202,4 @@ Key risks to watch:
 
 ---
 *State file initialized: 2026-02-25*
-*Last update: 2026-03-08 (smoke-contract and agent-stability remediation consolidated into PR #1)*
+Last activity: 2026-03-13 - Completed quick task 1: Repo-contract scaffolding: AGENTS.md, thin CLAUDE.md shim, .agentic.yml, ci.sh, manual-smoke.sh
