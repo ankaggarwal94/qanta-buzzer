@@ -152,6 +152,7 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | 4 | Collapse duplicate baseline sweeps into one-pass precomputed evaluation | 2026-03-13 | cdb89290, a9fb6da6, e56f125c | Verified | [4-collapse-duplicate-baseline-sweeps-into-](./quick/4-collapse-duplicate-baseline-sweeps-into-/) |
 | 5 | Cache answer profiles: memoize _profile_text with (answer, exclude_qid) dict | 2026-03-13 | 476a24de, dcce59d8 | Verified | [5-cache-answer-profiles-especially-leave-o](./quick/5-cache-answer-profiles-especially-leave-o/) |
 | 6 | Replace full all-pairs distractor ranking with top-M argpartition | 2026-03-13 | b0d5d21b, bc8b3b46 | Verified | [6-replace-full-all-pairs-distractor-rankin](./quick/6-replace-full-all-pairs-distractor-rankin/) |
+| 7 | Make TF-IDF score() use embed_and_cache with L2-normalized embeddings | 2026-03-13 | e65b5cab, ba773e72 | Verified | [7-make-tf-idf-caching-real-in-score](./quick/7-make-tf-idf-caching-real-in-score/) |
 
 ### Known Issues
 None yet
@@ -207,4 +208,4 @@ Key risks to watch:
 
 ---
 *State file initialized: 2026-02-25*
-Last activity: 2026-03-13 - Completed quick task 6: Replace full all-pairs distractor ranking with top-M argpartition
+Last activity: 2026-03-13 - Completed quick task 7: Make TF-IDF score() use embed_and_cache with L2-normalized embeddings
