@@ -59,6 +59,7 @@ from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
     load_config,
+    load_embedding_cache,
     load_json,
     load_mc_questions,
     save_json,
@@ -160,6 +161,7 @@ def main() -> None:
     # Build likelihood model
     print(f"Building likelihood model: {config['likelihood']['model']}")
     likelihood_model = build_likelihood_model(config, mc_questions)
+    load_embedding_cache(likelihood_model, config)
     beta = float(config["likelihood"].get("beta", 5.0))
     alpha = float(config["bayesian"].get("alpha", 10.0))
     default_threshold = float(config["bayesian"]["threshold_sweep"][0])

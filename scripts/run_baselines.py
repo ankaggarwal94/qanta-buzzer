@@ -43,7 +43,9 @@ from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
     load_config,
+    load_embedding_cache,
     load_mc_questions,
+    save_embedding_cache,
     save_json,
 )
 
@@ -124,6 +126,7 @@ def main() -> None:
     # Build likelihood model
     print(f"Building likelihood model: {config['likelihood']['model']}")
     likelihood_model = build_likelihood_model(config, mc_questions)
+    load_embedding_cache(likelihood_model, config)
 
     # Extract hyperparameters
     beta = float(config["likelihood"].get("beta", 5.0))
@@ -143,6 +146,7 @@ def main() -> None:
             all_texts.append(" ".join(q.tokens[prev_idx + 1 : q.run_indices[step_idx] + 1]))
     print(f"\nPre-computing embeddings for {len(set(all_texts)):,} unique texts...")
     likelihood_model.precompute_embeddings(all_texts, batch_size=64)
+    save_embedding_cache(likelihood_model, config)
 
     # --- Pre-compute beliefs (one model pass, all steps) ---
     precomputed = precompute_beliefs(mc_questions, likelihood_model, beta)

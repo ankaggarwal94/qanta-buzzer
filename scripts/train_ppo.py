@@ -34,7 +34,9 @@ from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
     load_config,
+    load_embedding_cache,
     load_mc_questions,
+    save_embedding_cache,
     save_json,
 )
 
@@ -103,6 +105,7 @@ def main() -> None:
 
     print(f"Building likelihood model: {config['likelihood']['model']}")
     likelihood_model = build_likelihood_model(config, mc_questions)
+    load_embedding_cache(likelihood_model, config)
 
     env_cfg = config["environment"]
     lik_cfg = config["likelihood"]
@@ -116,6 +119,7 @@ def main() -> None:
         K=int(config["data"].get("K", 4)),
     )
     print(f"Cached {len(belief_cache)} belief vectors")
+    save_embedding_cache(likelihood_model, config)
 
     env = make_env_from_config(
         mc_questions=mc_questions,
