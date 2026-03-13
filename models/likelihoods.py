@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -162,6 +163,55 @@ class LikelihoodModel(ABC):
             for text, emb in zip(batch, embeddings):
                 self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
 
+    def save_cache(self, path: str | Path) -> int:
+        """Persist embedding_cache to disk as compressed ``.npz``.
+
+        Creates parent directories if needed. Keys are SHA-256 hex
+        strings (valid Python identifiers), values are float32 arrays.
+
+        Parameters
+        ----------
+        path : str or Path
+            Destination file path (should end with ``.npz``).
+
+        Returns
+        -------
+        int
+            Number of cache entries saved.
+        """
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(p, **self.embedding_cache)
+        return len(self.embedding_cache)
+
+    def load_cache(self, path: str | Path) -> int:
+        """Load embedding_cache from a ``.npz`` file on disk.
+
+        Merges loaded entries into the existing cache **without**
+        overwriting keys that are already present (existing keys win).
+        If the file does not exist, silently returns 0 (cold-start).
+
+        Parameters
+        ----------
+        path : str or Path
+            Path to ``.npz`` file previously written by ``save_cache``.
+
+        Returns
+        -------
+        int
+            Number of *new* entries added to the cache.
+        """
+        p = Path(path)
+        if not p.exists():
+            return 0
+        data = np.load(p)
+        loaded = 0
+        for key in data.files:
+            if key not in self.embedding_cache:
+                self.embedding_cache[key] = data[key].astype(np.float32)
+                loaded += 1
+        return loaded
+
     @abstractmethod
     def _embed_batch(self, texts: list[str]) -> np.ndarray:
         """Embed a batch of texts. Subclasses must implement.
@@ -224,6 +274,20 @@ class TfIdfLikelihood(LikelihoodModel):
         self._is_fit = False
         if corpus_texts:
             self.fit(corpus_texts)
+
+    def save_cache(self, path: str | Path) -> int:
+        """No-op: TF-IDF embeddings are vocabulary-specific and not portable.
+
+        TF-IDF vectors depend on the fitted vocabulary, which changes
+        between ``fit()`` calls. Persisting them would produce wrong
+        results if the vocabulary differs.
+
+        Returns
+        -------
+        int
+            Always 0.
+        """
+        return 0
 
     def fit(self, corpus_texts: list[str]) -> "TfIdfLikelihood":
         """Learn vocabulary and IDF weights from a text corpus.
