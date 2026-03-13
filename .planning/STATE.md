@@ -149,6 +149,7 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | 1 | Repo-contract scaffolding: AGENTS.md, thin CLAUDE.md shim, .agentic.yml, ci.sh, manual-smoke.sh | 2026-03-13 | f478d1b3 | Verified | [1-repo-contract-scaffolding-agents-md-thin](./quick/1-repo-contract-scaffolding-agents-md-thin/) |
 | 2 | Precompute belief-observation trajectories for PPO training speedup | 2026-03-13 | c3a69552, 0e8a60fa | Verified | [2-precompute-belief-observation-trajectori](./quick/2-precompute-belief-observation-trajectori/) |
 | 3 | Persist embedding cache across subprocesses via .npz | 2026-03-13 | 553c78a1, d17f0f3b | Verified | [3-persist-cache-artifacts-across-subproces](./quick/3-persist-cache-artifacts-across-subproces/) |
+| 4 | Collapse duplicate baseline sweeps into one-pass precomputed evaluation | 2026-03-13 | cdb89290, a9fb6da6, e56f125c | Verified | [4-collapse-duplicate-baseline-sweeps-into-](./quick/4-collapse-duplicate-baseline-sweeps-into-/) |
 
 ### Known Issues
 None yet
@@ -204,4 +205,4 @@ Key risks to watch:
 
 ---
 *State file initialized: 2026-02-25*
-Last activity: 2026-03-13 - Completed quick task 3: Persist embedding cache across subprocesses via .npz
+Last activity: 2026-03-13 - Completed quick task 4: Collapse duplicate baseline sweeps into one-pass precomputed evaluation
