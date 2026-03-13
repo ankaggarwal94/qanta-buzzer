@@ -40,10 +40,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from agents.bayesian_buzzer import SoftmaxProfileBuzzer
+from agents.threshold_buzzer import (
+    _softmax_episode_from_precomputed,
+    precompute_beliefs,
+)
 from evaluation.controls import (
     run_alias_substitution_control,
     run_choices_only_control,
-    run_shuffle_control,
+    run_shuffle_control_precomputed,
 )
 from evaluation.metrics import (
     calibration_at_buzz,
@@ -168,8 +172,19 @@ def main() -> None:
     threshold = pick_best_softmax_threshold(out_dir, default_threshold=default_threshold)
     print(f"Using best softmax threshold: {threshold}")
 
-    # Evaluator function using SoftmaxProfileBuzzer
-    def evaluate_questions(qset):
+    # Precompute beliefs once (single pass of likelihood_model.score())
+    print("Precomputing beliefs...")
+    precomputed = precompute_beliefs(mc_questions, likelihood_model, beta)
+
+    # Precomputed evaluation (zero extra score() calls)
+    def evaluate_questions_precomputed(pqs):
+        runs = [asdict(_softmax_episode_from_precomputed(pq, threshold, alpha)) for pq in pqs]
+        summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
+        summary["runs"] = runs
+        return summary
+
+    # Live evaluator for controls that genuinely change option text (alias)
+    def evaluate_questions_live(qset):
         agent = SoftmaxProfileBuzzer(
             likelihood_model=likelihood_model,
             threshold=threshold,
@@ -183,7 +198,7 @@ def main() -> None:
 
     # --- Run evaluations ---
     print("Running full evaluation...")
-    full_eval = evaluate_questions(mc_questions)
+    full_eval = evaluate_questions_precomputed(precomputed)
 
     # Compute per-category breakdown
     print("\nComputing per-category breakdown...")
@@ -202,15 +217,13 @@ def main() -> None:
     print()
 
     print("Running shuffle control...")
-    shuffle_eval = run_shuffle_control(
-        mc_questions, evaluator=lambda qset: evaluate_questions(qset)
-    )
+    shuffle_eval = run_shuffle_control_precomputed(precomputed, threshold, alpha)
 
     print("Running alias substitution control...")
     alias_eval = run_alias_substitution_control(
         mc_questions,
         alias_lookup=alias_lookup,
-        evaluator=lambda qset: evaluate_questions(qset),
+        evaluator=lambda qset: evaluate_questions_live(qset),
     )
 
     print("Running choices-only control...")
