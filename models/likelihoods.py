@@ -310,8 +310,10 @@ class TfIdfLikelihood(LikelihoodModel):
     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
         """Score each option against the clue using TF-IDF cosine similarity.
 
-        Transforms both the clue and options into TF-IDF space, then computes
-        cosine similarity between the clue vector and each option vector.
+        Uses ``embed_and_cache()`` to embed both the clue and options, so
+        repeated calls with the same texts skip vectorizer.transform().
+        Since ``_embed_batch()`` returns L2-normalized vectors, the dot
+        product equals cosine similarity.
 
         Parameters
         ----------
@@ -333,15 +335,17 @@ class TfIdfLikelihood(LikelihoodModel):
         """
         if not self._is_fit:
             raise RuntimeError("TfIdfLikelihood must be fit() before score().")
-        clue_vec = self.vectorizer.transform([clue_prefix])
-        option_vecs = self.vectorizer.transform(option_profiles)
-        from sklearn.metrics.pairwise import cosine_similarity
-
-        sims = cosine_similarity(clue_vec, option_vecs)[0]
+        clue_emb = self.embed_and_cache([clue_prefix])[0]
+        option_embs = self.embed_and_cache(option_profiles)
+        sims = option_embs @ clue_emb
         return sims.astype(np.float32)
 
     def _embed_batch(self, texts: list[str]) -> np.ndarray:
-        """Embed texts as dense TF-IDF vectors.
+        """Embed texts as dense, L2-normalized TF-IDF vectors.
+
+        Row-wise L2 normalization ensures that dot product between any
+        two embedding vectors equals their cosine similarity, matching
+        the convention used by SBERT and T5 likelihood models.
 
         Parameters
         ----------
@@ -351,7 +355,8 @@ class TfIdfLikelihood(LikelihoodModel):
         Returns
         -------
         np.ndarray
-            Dense TF-IDF matrix of shape (len(texts), vocab_size), dtype float32.
+            L2-normalized dense TF-IDF matrix of shape
+            (len(texts), vocab_size), dtype float32.
 
         Raises
         ------
@@ -360,8 +365,10 @@ class TfIdfLikelihood(LikelihoodModel):
         """
         if not self._is_fit:
             raise RuntimeError("TfIdfLikelihood must be fit() before embedding.")
-        mat = self.vectorizer.transform(texts).toarray()
-        return mat.astype(np.float32)
+        mat = self.vectorizer.transform(texts).toarray().astype(np.float32)
+        norms = np.linalg.norm(mat, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0  # avoid division by zero for empty docs
+        return mat / norms
 
 
 class SBERTLikelihood(LikelihoodModel):
