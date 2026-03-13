@@ -121,6 +121,50 @@ class TestTfIdfLikelihood:
         assert scores.shape == (4,), f"Expected shape (4,), got {scores.shape}"
         assert all(np.isfinite(scores)), "All scores should be finite"
 
+    def test_tfidf_embed_batch_normalized(self, sample_corpus: list[str]) -> None:
+        """_embed_batch returns L2-normalized vectors (row norms ~1.0)."""
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        embeddings = model._embed_batch(["George Washington president", "Thomas Jefferson"])
+        norms = np.linalg.norm(embeddings, axis=1)
+        np.testing.assert_array_almost_equal(norms, np.ones(2), decimal=5)
+
+    def test_tfidf_score_uses_cache(self, sample_corpus: list[str]) -> None:
+        """score() populates embedding_cache via embed_and_cache()."""
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        assert len(model.embedding_cache) == 0
+        model.score("first president", ["Washington profile", "Lincoln profile"])
+        assert len(model.embedding_cache) == 3  # 1 clue + 2 options
+
+    def test_tfidf_score_cache_hit(self, sample_corpus: list[str]) -> None:
+        """Repeated score() with same options reuses cache."""
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        options = ["George Washington president", "Thomas Jefferson declaration"]
+        model.score("first president", options)
+        cache_after_first = len(model.embedding_cache)
+        model.score("second president", options)
+        # Only the new clue should be added; options are cached
+        assert len(model.embedding_cache) == cache_after_first + 1
+
+    def test_tfidf_score_matches_cosine_reference(self, sample_corpus: list[str]) -> None:
+        """New cached score() matches sklearn cosine_similarity reference."""
+        from sklearn.metrics.pairwise import cosine_similarity as sklearn_cos
+
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        clue = "Who was the first president?"
+        options = [
+            "George Washington first president commander revolutionary",
+            "Abraham Lincoln Civil War emancipation",
+            "Thomas Jefferson declaration independence Virginia",
+            "Benjamin Franklin inventor Philadelphia diplomat",
+        ]
+        # Compute reference via sklearn cosine_similarity (old method)
+        clue_vec = model.vectorizer.transform([clue])
+        option_vecs = model.vectorizer.transform(options)
+        ref_scores = sklearn_cos(clue_vec, option_vecs)[0].astype(np.float32)
+        # Compute via new cached path
+        actual_scores = model.score(clue, options)
+        np.testing.assert_allclose(actual_scores, ref_scores, atol=1e-6)
+
 
 # ------------------------------------------------------------------ #
 # Tests for SBERTLikelihood
