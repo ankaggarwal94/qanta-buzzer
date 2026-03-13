@@ -154,6 +154,7 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | 6 | Replace full all-pairs distractor ranking with top-M argpartition | 2026-03-13 | b0d5d21b, bc8b3b46 | Verified | [6-replace-full-all-pairs-distractor-rankin](./quick/6-replace-full-all-pairs-distractor-rankin/) |
 | 7 | Make TF-IDF score() use embed_and_cache with L2-normalized embeddings | 2026-03-13 | e65b5cab, ba773e72 | Verified | [7-make-tf-idf-caching-real-in-score](./quick/7-make-tf-idf-caching-real-in-score/) |
 | 8 | Stop re-scoring control experiments: precomputed shuffle control | 2026-03-13 | 01902552, af199b8b | Verified | [8-stop-rescoring-control-experiments-from-](./quick/8-stop-rescoring-control-experiments-from-/) |
+| 9 | Final repo verification and handoff report | 2026-03-13 | 5f42852a | Verified | [9-final-repo-verification-and-handoff-for-](./quick/9-final-repo-verification-and-handoff-for-/) |
 
 ### Known Issues
 None yet
@@ -208,4 +209,4 @@ Key risks to watch:
 
 ---
 *State file initialized: 2026-02-25*
-Last activity: 2026-03-13 - Completed quick task 8: Stop re-scoring control experiments with precomputed shuffle control
+Last activity: 2026-03-13 - Final verification and handoff: all 7 optimizations verified, smoke pipeline passing, 165 core + 52 optimization tests green
