@@ -27,6 +27,95 @@ from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
 
 
+def _softmax(scores: np.ndarray, beta: float) -> np.ndarray:
+    """Temperature-scaled softmax with numerical stability.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Raw similarity scores of shape (K,).
+    beta : float
+        Temperature parameter. Higher values produce sharper distributions.
+
+    Returns
+    -------
+    np.ndarray
+        Probability distribution of shape (K,), dtype float32.
+    """
+    stable = scores - np.max(scores)
+    probs = np.exp(beta * stable)
+    probs_sum = np.sum(probs)
+    if probs_sum <= 0:
+        return np.ones_like(scores, dtype=np.float32) / len(scores)
+    return (probs / probs_sum).astype(np.float32)
+
+
+def precompute_beliefs(
+    questions: list[MCQuestion],
+    likelihood_model: LikelihoodModel,
+    belief_mode: str = "from_scratch",
+    beta: float = 5.0,
+    K: int = 4,
+) -> dict[tuple[int, int], np.ndarray]:
+    """Precompute belief trajectories for all questions and steps.
+
+    Iterates over each question and each step index, computing the belief
+    using the same logic as ``TossupMCEnv._compute_belief``. The result is
+    a dict keyed by ``(question_index, step_idx)`` for O(1) lookup during
+    training rollouts.
+
+    Parameters
+    ----------
+    questions : list[MCQuestion]
+        Pool of questions to precompute beliefs for.
+    likelihood_model : LikelihoodModel
+        Model that scores clue text against answer option profiles.
+    belief_mode : str
+        One of ``"from_scratch"``, ``"sequential_bayes"``.
+    beta : float
+        Softmax temperature for converting raw scores to probabilities.
+    K : int
+        Number of answer options per question.
+
+    Returns
+    -------
+    dict[tuple[int, int], np.ndarray]
+        Maps ``(question_index, step_idx)`` to belief vectors of shape
+        ``(K,)`` with dtype float32. Each belief sums to ~1.0.
+    """
+    cache: dict[tuple[int, int], np.ndarray] = {}
+
+    for q_idx, question in enumerate(questions):
+        num_steps = len(question.run_indices)
+        belief = np.ones(K, dtype=np.float32) / K
+
+        for step_idx in range(num_steps):
+            if belief_mode == "from_scratch":
+                prefix = question.cumulative_prefixes[step_idx]
+                scores = likelihood_model.score(prefix, question.option_profiles)
+                belief = _softmax(scores, beta)
+
+            elif belief_mode == "sequential_bayes":
+                idx = question.run_indices[step_idx]
+                prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
+                frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
+                scores = likelihood_model.score(frag, question.option_profiles)
+                likelihood = _softmax(scores, beta)
+                posterior = belief * likelihood
+                denom = posterior.sum()
+                if denom <= 0:
+                    belief = np.ones(K, dtype=np.float32) / K
+                else:
+                    belief = (posterior / denom).astype(np.float32)
+
+            else:
+                raise ValueError(f"Unknown belief_mode: {belief_mode}")
+
+            cache[(q_idx, step_idx)] = belief.copy()
+
+    return cache
+
+
 class TossupMCEnv(gym.Env[np.ndarray, int]):
     """Gymnasium environment for quiz bowl tossup questions with MC options.
 
@@ -107,6 +196,7 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         belief_mode: str = "from_scratch",
         beta: float = 5.0,
         seed: int = 13,
+        precomputed_beliefs: dict[tuple[int, int], np.ndarray] | None = None,
     ) -> None:
         if not questions:
             raise ValueError("questions cannot be empty")
@@ -124,6 +214,12 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         self.belief_mode = belief_mode
         self.beta = beta
         self.rng = random.Random(seed)
+        self.precomputed_beliefs = precomputed_beliefs
+
+        # Build qid -> list-index map for precomputed belief lookups
+        self._question_index_map: dict[str, int] = {
+            q.qid: i for i, q in enumerate(questions)
+        }
 
         self.action_space = spaces.Discrete(self.K + 1)
         # belief[K] + (top_p, margin, entropy, stability, progress, clue_idx)
@@ -138,6 +234,7 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         self.terminated: bool = False
         self.truncated: bool = False
         self._sampled_human_buzz_pos: int | None = None
+        self._current_question_idx: int = 0
 
     # ------------------------------------------------------------------
     # Properties
@@ -200,9 +297,7 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
     def _softmax_scores(self, scores: np.ndarray) -> np.ndarray:
         """Convert raw likelihood scores to a probability distribution.
 
-        Applies a temperature-scaled softmax with numerical stability
-        (subtract max before exponentiation). Falls back to uniform
-        distribution if the sum of exponentiated scores is non-positive.
+        Delegates to module-level ``_softmax`` with this environment's beta.
 
         Parameters
         ----------
@@ -214,12 +309,7 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         np.ndarray
             Probability distribution of shape (K,), dtype float32.
         """
-        stable = scores - np.max(scores)
-        probs = np.exp(self.beta * stable)
-        probs_sum = np.sum(probs)
-        if probs_sum <= 0:
-            return np.ones_like(scores, dtype=np.float32) / len(scores)
-        return (probs / probs_sum).astype(np.float32)
+        return _softmax(scores, self.beta)
 
     def _compute_belief(self, question: MCQuestion, step_idx: int) -> np.ndarray:
         """Compute belief distribution over answer options at a given step.
@@ -254,6 +344,10 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         ValueError
             If ``self.belief_mode`` is not a recognized mode.
         """
+        if self.precomputed_beliefs is not None:
+            key = (self._current_question_idx, step_idx)
+            return self.precomputed_beliefs[key].copy()
+
         if self.belief_mode == "from_scratch":
             prefix = question.cumulative_prefixes[step_idx]
             scores = self.likelihood_model.score(prefix, question.option_profiles)
@@ -399,8 +493,12 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
             if q_idx < 0 or q_idx >= len(self.questions):
                 raise ValueError(f"question_idx out of range: {q_idx}")
             self.question = self.questions[q_idx]
+            self._current_question_idx = q_idx
         else:
             self.question = self._sample_question()
+            self._current_question_idx = self._question_index_map.get(
+                self.question.qid, self.questions.index(self.question)
+            )
         self.step_idx = 0
         self.prev_belief = None
         self.belief = np.ones(self.K, dtype=np.float32) / self.K
@@ -501,6 +599,7 @@ def make_env_from_config(
     mc_questions: list[MCQuestion],
     likelihood_model: LikelihoodModel,
     config: dict[str, Any],
+    precomputed_beliefs: dict[tuple[int, int], np.ndarray] | None = None,
 ) -> TossupMCEnv:
     """Construct a TossupMCEnv from YAML configuration.
 
@@ -523,6 +622,10 @@ def make_env_from_config(
         - ``environment``: reward mode, penalties, belief mode
         - ``data``: K (number of answer choices)
         - ``likelihood``: beta (softmax temperature)
+    precomputed_beliefs : dict or None
+        Optional precomputed belief cache from ``precompute_beliefs()``.
+        When provided, ``_compute_belief`` uses O(1) lookups instead of
+        calling ``likelihood_model.score()``.
 
     Returns
     -------
@@ -553,4 +656,5 @@ def make_env_from_config(
         buzz_incorrect=float(env_cfg.get("buzz_incorrect", -0.5)),
         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
         beta=float(lik_cfg.get("beta", 5.0)),
+        precomputed_beliefs=precomputed_beliefs,
     )
