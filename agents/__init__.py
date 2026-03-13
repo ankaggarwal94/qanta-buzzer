@@ -9,6 +9,7 @@ from agents.bayesian_buzzer import (
     SoftmaxProfileBuzzer,
     SequentialBayesBuzzer,
     SoftmaxEpisodeResult,
+    sweep_sequential_thresholds,
 )
 
 # Lazy import: PPOBuzzer requires stable_baselines3 which may not be installed
@@ -32,5 +33,6 @@ __all__ = [
     "SoftmaxEpisodeResult",
     "PPOEpisodeTrace",
     "sweep_thresholds",
+    "sweep_sequential_thresholds",
     "result_to_dict",
 ]

@@ -185,6 +185,93 @@ class AlwaysBuzzFinalBuzzer:
         )
 
 
+def _softmax_episode_from_precomputed(
+    pq: _PrecomputedQuestion,
+    threshold: float,
+    alpha: float,
+) -> "SoftmaxEpisodeResult":
+    """Build a SoftmaxEpisodeResult from pre-computed beliefs (pure numpy).
+
+    Identical buzzing logic to ``SoftmaxProfileBuzzer.run_episode`` but
+    reads beliefs from a ``_PrecomputedQuestion`` instead of calling the
+    likelihood model.
+    """
+    from agents.bayesian_buzzer import SoftmaxEpisodeResult
+
+    c_trace: list[float] = []
+    g_trace: list[float] = []
+    top_p_trace: list[float] = []
+    entropy_trace: list[float] = []
+
+    chosen_step = len(pq.beliefs) - 1
+    chosen_idx = 0
+
+    for step_idx, belief in enumerate(pq.beliefs):
+        top_idx, top_p, entropy = _belief_stats(belief)
+        c_t = sigmoid(alpha * (top_p - threshold))
+        g_t = 1.0 if top_idx == pq.gold_index else 0.0
+
+        c_trace.append(c_t)
+        g_trace.append(g_t)
+        top_p_trace.append(top_p)
+        entropy_trace.append(entropy)
+
+        is_last = step_idx == len(pq.beliefs) - 1
+        if top_p >= threshold or is_last:
+            chosen_step = step_idx
+            chosen_idx = top_idx
+            break
+
+    correct = chosen_idx == pq.gold_index
+    return SoftmaxEpisodeResult(
+        qid=pq.qid,
+        buzz_step=chosen_step,
+        buzz_index=chosen_idx,
+        gold_index=pq.gold_index,
+        correct=correct,
+        c_trace=c_trace,
+        g_trace=g_trace,
+        top_p_trace=top_p_trace,
+        entropy_trace=entropy_trace,
+    )
+
+
+def _always_final_from_precomputed(pq: _PrecomputedQuestion) -> EpisodeResult:
+    """Build an EpisodeResult for AlwaysBuzzFinal from pre-computed beliefs.
+
+    Iterates all beliefs (no early stopping), buzzes at the last step
+    with argmax of the final belief.
+    """
+    c_trace: list[float] = []
+    g_trace: list[float] = []
+    top_p_trace: list[float] = []
+    entropy_trace: list[float] = []
+
+    for belief in pq.beliefs:
+        top_idx, top_p, entropy = _belief_stats(belief)
+        g_t = 1.0 if top_idx == pq.gold_index else 0.0
+        c_trace.append(0.0)
+        g_trace.append(g_t)
+        top_p_trace.append(top_p)
+        entropy_trace.append(entropy)
+
+    c_trace[-1] = 1.0
+    buzz_idx = int(np.argmax(pq.beliefs[-1]))
+    correct = buzz_idx == pq.gold_index
+    return EpisodeResult(
+        qid=pq.qid,
+        buzz_step=len(pq.beliefs) - 1,
+        buzz_index=buzz_idx,
+        gold_index=pq.gold_index,
+        correct=correct,
+        reward_like=1.0 if correct else -0.5,
+        c_trace=c_trace,
+        g_trace=g_trace,
+        top_p_trace=top_p_trace,
+        entropy_trace=entropy_trace,
+    )
+
+
 def _episode_from_precomputed(
     pq: _PrecomputedQuestion,
     threshold: float,
