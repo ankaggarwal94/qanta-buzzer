@@ -1,0 +1,40 @@
+# .agentic.yml -- machine-readable repo contract for coding agents
+project: qanta-buzzer
+description: "Unified quiz bowl RL buzzer for Stanford CS234"
+python: ">=3.11"
+install: "pip install -e ."
+install_openai: "pip install -e '.[openai]'"
+
+packages:
+  - agents
+  - evaluation
+  - models
+  - qb_data
+  - qb_env
+  - training
+  - scripts
+
+configs:
+  default: configs/default.yaml
+  smoke: configs/smoke.yaml
+  t5_policy: configs/t5_policy.yaml
+
+testing:
+  framework: pytest
+  command: pytest
+  test_dir: tests
+  test_files: 13
+  ci_script: scripts/ci.sh
+
+smoke:
+  script: scripts/manual-smoke.sh
+  steps:
+    - python scripts/build_mc_dataset.py --smoke
+    - python scripts/run_baselines.py --smoke
+    - python scripts/train_ppo.py --smoke
+    - python scripts/evaluate_all.py --smoke
+
+repo_contract: AGENTS.md
+agent_shims:
+  claude: CLAUDE.md
+  copilot: .github/copilot-instructions.md
