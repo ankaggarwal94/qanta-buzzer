@@ -700,3 +700,143 @@ class TestSweepThresholds:
                 f"(step {buzz_steps[i]}) > threshold {thresholds[i+1]} "
                 f"(step {buzz_steps[i+1]})"
             )
+
+
+# ------------------------------------------------------------------ #
+# Precomputed equivalence tests
+# ------------------------------------------------------------------ #
+
+
+class TestPrecomputedEquivalence:
+    """Prove precomputed-path functions are numerically identical to live agents."""
+
+    def test_softmax_precomputed_matches_live(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        """_softmax_episode_from_precomputed matches SoftmaxProfileBuzzer.run_episode."""
+        from agents.threshold_buzzer import (
+            _softmax_episode_from_precomputed,
+            precompute_beliefs,
+        )
+
+        likelihood = _make_likelihood(sample_corpus)
+        threshold, beta, alpha = 0.7, 5.0, 10.0
+
+        # Live agent
+        agent = SoftmaxProfileBuzzer(
+            likelihood_model=likelihood, threshold=threshold, beta=beta, alpha=alpha
+        )
+        live = agent.run_episode(sample_mc_question)
+
+        # Precomputed path
+        pqs = precompute_beliefs([sample_mc_question], likelihood, beta)
+        pre = _softmax_episode_from_precomputed(pqs[0], threshold, alpha)
+
+        assert pre.buzz_step == live.buzz_step
+        assert pre.buzz_index == live.buzz_index
+        assert pre.correct == live.correct
+        np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
+        np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
+        np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
+        np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
+
+    def test_always_final_precomputed_matches_live(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        """_always_final_from_precomputed matches AlwaysBuzzFinalBuzzer.run_episode."""
+        from agents.threshold_buzzer import (
+            _always_final_from_precomputed,
+            precompute_beliefs,
+        )
+
+        likelihood = _make_likelihood(sample_corpus)
+        beta = 5.0
+
+        # Live agent
+        agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood, beta=beta)
+        live = agent.run_episode(sample_mc_question)
+
+        # Precomputed path
+        pqs = precompute_beliefs([sample_mc_question], likelihood, beta)
+        pre = _always_final_from_precomputed(pqs[0])
+
+        assert pre.buzz_step == live.buzz_step
+        assert pre.buzz_index == live.buzz_index
+        assert pre.correct == live.correct
+        assert pre.reward_like == live.reward_like
+        np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
+        np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
+        np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
+        np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
+
+    def test_sequential_precomputed_matches_live(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        """_sequential_episode_from_precomputed matches SequentialBayesBuzzer.run_episode."""
+        from agents.bayesian_buzzer import (
+            _sequential_episode_from_precomputed,
+            precompute_sequential_beliefs,
+        )
+
+        likelihood = _make_likelihood(sample_corpus)
+        threshold, beta, alpha = 0.7, 5.0, 10.0
+
+        # Live agent
+        agent = SequentialBayesBuzzer(
+            likelihood_model=likelihood, threshold=threshold, beta=beta, alpha=alpha
+        )
+        live = agent.run_episode(sample_mc_question)
+
+        # Precomputed path
+        pqs = precompute_sequential_beliefs([sample_mc_question], likelihood, beta)
+        pre = _sequential_episode_from_precomputed(pqs[0], threshold, alpha)
+
+        assert pre.buzz_step == live.buzz_step
+        assert pre.buzz_index == live.buzz_index
+        assert pre.correct == live.correct
+        np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
+        np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
+        np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
+        np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
+
+    def test_sweep_sequential_matches_per_threshold(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        """sweep_sequential_thresholds matches per-threshold SequentialBayesBuzzer."""
+        from agents.bayesian_buzzer import sweep_sequential_thresholds
+
+        likelihood = _make_likelihood(sample_corpus)
+        thresholds = [0.5, 0.7, 0.9]
+        beta, alpha = 5.0, 10.0
+
+        # Sweep
+        sweep = sweep_sequential_thresholds(
+            questions=[sample_mc_question],
+            likelihood_model=likelihood,
+            thresholds=thresholds,
+            beta=beta,
+            alpha=alpha,
+        )
+
+        # Per-threshold live agents
+        for threshold in thresholds:
+            agent = SequentialBayesBuzzer(
+                likelihood_model=likelihood,
+                threshold=threshold,
+                beta=beta,
+                alpha=alpha,
+            )
+            live = agent.run_episode(sample_mc_question)
+            pre = sweep[float(threshold)][0]
+
+            assert pre.buzz_step == live.buzz_step, (
+                f"threshold={threshold}: buzz_step {pre.buzz_step} != {live.buzz_step}"
+            )
+            assert pre.buzz_index == live.buzz_index
+            assert pre.correct == live.correct
+            np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
+            np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
+            np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
+            np.testing.assert_array_almost_equal(
+                pre.entropy_trace, live.entropy_trace
+            )
