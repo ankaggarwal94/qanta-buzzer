@@ -10,6 +10,8 @@ Covers:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -312,4 +314,99 @@ class TestT5Likelihood:
         assert embs.shape == (2, sample_t5_model.encoder.config.d_model), (
             f"Expected shape (2, {sample_t5_model.encoder.config.d_model}), "
             f"got {embs.shape}"
+        )
+
+
+# ------------------------------------------------------------------ #
+# Tests for Embedding Cache Persistence
+# ------------------------------------------------------------------ #
+
+
+class TestEmbeddingCachePersistence:
+    """Tests for save_cache / load_cache disk persistence on LikelihoodModel."""
+
+    def test_save_load_cache_round_trip(self, tmp_path: Path, sample_corpus: list[str]) -> None:
+        """save_cache writes .npz; load_cache restores identical entries."""
+        model = SBERTLikelihood()
+        texts = ["George Washington", "Thomas Jefferson", "Abraham Lincoln"]
+        model.embed_and_cache(texts)
+        assert len(model.embedding_cache) == 3
+
+        cache_path = tmp_path / "cache.npz"
+        saved = model.save_cache(cache_path)
+        assert saved == 3
+        assert cache_path.exists()
+
+        model2 = SBERTLikelihood()
+        assert len(model2.embedding_cache) == 0
+        loaded = model2.load_cache(cache_path)
+        assert loaded == 3
+
+        for key in model.embedding_cache:
+            np.testing.assert_array_equal(
+                model.embedding_cache[key],
+                model2.embedding_cache[key],
+                err_msg=f"Mismatch for key {key}",
+            )
+
+    def test_load_cache_missing_file(self, tmp_path: Path) -> None:
+        """load_cache with nonexistent file returns 0 and leaves cache empty."""
+        model = SBERTLikelihood()
+        result = model.load_cache(tmp_path / "nonexistent.npz")
+        assert result == 0
+        assert len(model.embedding_cache) == 0
+
+    def test_save_cache_empty(self, tmp_path: Path) -> None:
+        """save_cache with empty cache creates a valid .npz with zero arrays."""
+        model = SBERTLikelihood()
+        cache_path = tmp_path / "empty.npz"
+        saved = model.save_cache(cache_path)
+        assert saved == 0
+        assert cache_path.exists()
+
+        # Should be loadable
+        model2 = SBERTLikelihood()
+        loaded = model2.load_cache(cache_path)
+        assert loaded == 0
+
+    def test_tfidf_save_cache_noop(self, sample_corpus: list[str]) -> None:
+        """TfIdfLikelihood.save_cache is a no-op returning 0."""
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        # Populate the cache with some embeddings
+        model.embed_and_cache(["test text one", "test text two"])
+        assert len(model.embedding_cache) > 0
+
+        import tempfile
+        import os
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "should_not_exist.npz"
+            result = model.save_cache(path)
+            assert result == 0
+            assert not path.exists(), "TfIdfLikelihood should NOT write a cache file"
+
+    def test_load_cache_does_not_overwrite(self, tmp_path: Path) -> None:
+        """load_cache merges without overwriting existing cache entries."""
+        model = SBERTLikelihood()
+        texts = ["Hello world"]
+        model.embed_and_cache(texts)
+
+        # Save this cache
+        cache_path = tmp_path / "cache.npz"
+        model.save_cache(cache_path)
+
+        # Create a second model, pre-populate with the same key but different value
+        model2 = SBERTLikelihood()
+        from models.likelihoods import _text_key
+        key = _text_key("Hello world")
+        original_value = np.ones(384, dtype=np.float32)  # dummy
+        model2.embedding_cache[key] = original_value
+
+        loaded = model2.load_cache(cache_path)
+        assert loaded == 0, "Key already present, so nothing should be loaded"
+
+        # Original value should be preserved (not overwritten)
+        np.testing.assert_array_equal(
+            model2.embedding_cache[key],
+            original_value,
+            err_msg="Existing cache entry was overwritten by load_cache",
         )
