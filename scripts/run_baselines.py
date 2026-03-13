@@ -32,9 +32,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.bayesian_buzzer import SequentialBayesBuzzer, SoftmaxProfileBuzzer
+from agents.bayesian_buzzer import (
+    precompute_sequential_beliefs,
+    sweep_sequential_thresholds,
+)
 from agents.threshold_buzzer import (
-    AlwaysBuzzFinalBuzzer,
+    _always_final_from_precomputed,
+    _softmax_episode_from_precomputed,
     precompute_beliefs,
     sweep_thresholds,
 )
@@ -169,39 +173,40 @@ def main() -> None:
         threshold_payload[str(threshold)] = rows
         threshold_summary[str(threshold)] = summarize(rows)
 
-    # --- Softmax profile and Sequential Bayes sweeps ---
+    # --- Softmax profile sweep (reuse from_scratch precomputed beliefs) ---
+    print("\nRunning SoftmaxProfile sweep (precomputed)...")
     softmax_payload: dict[str, list[dict]] = {}
     softmax_summary: dict[str, dict] = {}
+    for threshold in thresholds:
+        results = [
+            asdict(_softmax_episode_from_precomputed(pq, threshold, alpha))
+            for pq in precomputed
+        ]
+        softmax_payload[str(threshold)] = results
+        softmax_summary[str(threshold)] = summarize(results)
+
+    # --- Sequential Bayes sweep (one belief pass, pure numpy threshold sweep) ---
+    print("Pre-computing sequential Bayes beliefs...")
+    seq_precomputed = precompute_sequential_beliefs(mc_questions, likelihood_model, beta)
+    print("Running SequentialBayes sweep (precomputed)...")
+    seq_results = sweep_sequential_thresholds(
+        questions=mc_questions,
+        likelihood_model=likelihood_model,
+        thresholds=thresholds,
+        beta=beta,
+        alpha=alpha,
+        precomputed=seq_precomputed,
+    )
     sequential_payload: dict[str, list[dict]] = {}
     sequential_summary: dict[str, dict] = {}
+    for threshold, runs in seq_results.items():
+        rows = [asdict(r) for r in runs]
+        sequential_payload[str(threshold)] = rows
+        sequential_summary[str(threshold)] = summarize(rows)
 
-    for threshold in thresholds:
-        print(f"Running SoftmaxProfile and SequentialBayes at threshold={threshold}...")
-
-        softmax_agent = SoftmaxProfileBuzzer(
-            likelihood_model=likelihood_model,
-            threshold=threshold,
-            beta=beta,
-            alpha=alpha,
-        )
-        softmax_runs = [asdict(softmax_agent.run_episode(q)) for q in mc_questions]
-        softmax_payload[str(threshold)] = softmax_runs
-        softmax_summary[str(threshold)] = summarize(softmax_runs)
-
-        seq_agent = SequentialBayesBuzzer(
-            likelihood_model=likelihood_model,
-            threshold=threshold,
-            beta=beta,
-            alpha=alpha,
-        )
-        seq_runs = [asdict(seq_agent.run_episode(q)) for q in mc_questions]
-        sequential_payload[str(threshold)] = seq_runs
-        sequential_summary[str(threshold)] = summarize(seq_runs)
-
-    # --- AlwaysBuzzFinal (floor baseline) ---
-    print("Running AlwaysBuzzFinal baseline...")
-    floor_agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood_model, beta=beta)
-    floor_runs = [asdict(floor_agent.run_episode(q)) for q in mc_questions]
+    # --- AlwaysBuzzFinal (reuse from_scratch precomputed beliefs) ---
+    print("Running AlwaysBuzzFinal baseline (precomputed)...")
+    floor_runs = [asdict(_always_final_from_precomputed(pq)) for pq in precomputed]
     floor_summary = summarize(floor_runs)
 
     # --- Save artifacts ---
