@@ -151,6 +151,7 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | 3 | Persist embedding cache across subprocesses via .npz | 2026-03-13 | 553c78a1, d17f0f3b | Verified | [3-persist-cache-artifacts-across-subproces](./quick/3-persist-cache-artifacts-across-subproces/) |
 | 4 | Collapse duplicate baseline sweeps into one-pass precomputed evaluation | 2026-03-13 | cdb89290, a9fb6da6, e56f125c | Verified | [4-collapse-duplicate-baseline-sweeps-into-](./quick/4-collapse-duplicate-baseline-sweeps-into-/) |
 | 5 | Cache answer profiles: memoize _profile_text with (answer, exclude_qid) dict | 2026-03-13 | 476a24de, dcce59d8 | Verified | [5-cache-answer-profiles-especially-leave-o](./quick/5-cache-answer-profiles-especially-leave-o/) |
+| 6 | Replace full all-pairs distractor ranking with top-M argpartition | 2026-03-13 | b0d5d21b, bc8b3b46 | Verified | [6-replace-full-all-pairs-distractor-rankin](./quick/6-replace-full-all-pairs-distractor-rankin/) |
 
 ### Known Issues
 None yet
@@ -206,4 +207,4 @@ Key risks to watch:
 
 ---
 *State file initialized: 2026-02-25*
-Last activity: 2026-03-13 - Completed quick task 5: Cache answer profiles with _profile_text memoization
+Last activity: 2026-03-13 - Completed quick task 6: Replace full all-pairs distractor ranking with top-M argpartition
