@@ -9,13 +9,15 @@ Covers:
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import gymnasium as gym
 import numpy as np
 import pytest
 
 from models.likelihoods import SBERTLikelihood, TfIdfLikelihood
 from qb_data.mc_builder import MCQuestion
-from qb_env.tossup_env import TossupMCEnv
+from qb_env.tossup_env import TossupMCEnv, precompute_beliefs
 
 
 # ------------------------------------------------------------------ #
@@ -466,4 +468,180 @@ class TestConstructorValidation:
         with pytest.raises(ValueError, match="K must be >= 2"):
             TossupMCEnv(
                 questions=[sample_mc_question], likelihood_model=model, K=1
+            )
+
+
+# ------------------------------------------------------------------ #
+# Tests: Precomputed Beliefs (OPT-1)
+# ------------------------------------------------------------------ #
+
+
+class TestPrecomputedBeliefs:
+    """Tests for precomputed belief trajectory bypass."""
+
+    def test_precomputed_matches_live_from_scratch(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Precomputed env produces identical beliefs as live env (from_scratch)."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        questions = [sample_mc_question]
+
+        # Run live env and record beliefs at each step
+        live_env = TossupMCEnv(
+            questions=questions, likelihood_model=model, K=4,
+            belief_mode="from_scratch", beta=5.0,
+        )
+        live_env.reset(seed=42, options={"question_idx": 0})
+        live_beliefs = []
+        for _ in range(live_env.total_steps):
+            live_env.step(0)  # WAIT
+            live_beliefs.append(live_env.belief.copy())
+            if live_env.truncated:
+                break
+
+        # Build precomputed cache
+        cache = precompute_beliefs(
+            questions=questions, likelihood_model=model,
+            belief_mode="from_scratch", beta=5.0, K=4,
+        )
+
+        # Run precomputed env and compare beliefs
+        pre_env = TossupMCEnv(
+            questions=questions, likelihood_model=model, K=4,
+            belief_mode="from_scratch", beta=5.0,
+            precomputed_beliefs=cache,
+        )
+        pre_env.reset(seed=42, options={"question_idx": 0})
+        for i in range(len(live_beliefs)):
+            pre_env.step(0)
+            np.testing.assert_allclose(
+                pre_env.belief, live_beliefs[i], atol=1e-6,
+                err_msg=f"Belief mismatch at step {i} (from_scratch)",
+            )
+            if pre_env.truncated:
+                break
+
+    def test_precomputed_matches_live_sequential_bayes(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Precomputed env produces identical beliefs as live env (sequential_bayes)."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        questions = [sample_mc_question]
+
+        # Run live env
+        live_env = TossupMCEnv(
+            questions=questions, likelihood_model=model, K=4,
+            belief_mode="sequential_bayes", beta=5.0,
+        )
+        live_env.reset(seed=42, options={"question_idx": 0})
+        live_beliefs = []
+        for _ in range(live_env.total_steps):
+            live_env.step(0)
+            live_beliefs.append(live_env.belief.copy())
+            if live_env.truncated:
+                break
+
+        # Build precomputed cache
+        cache = precompute_beliefs(
+            questions=questions, likelihood_model=model,
+            belief_mode="sequential_bayes", beta=5.0, K=4,
+        )
+
+        # Run precomputed env
+        pre_env = TossupMCEnv(
+            questions=questions, likelihood_model=model, K=4,
+            belief_mode="sequential_bayes", beta=5.0,
+            precomputed_beliefs=cache,
+        )
+        pre_env.reset(seed=42, options={"question_idx": 0})
+        for i in range(len(live_beliefs)):
+            pre_env.step(0)
+            np.testing.assert_allclose(
+                pre_env.belief, live_beliefs[i], atol=1e-6,
+                err_msg=f"Belief mismatch at step {i} (sequential_bayes)",
+            )
+            if pre_env.truncated:
+                break
+
+    def test_precomputed_skips_scoring(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Precomputed env never calls likelihood_model.score()."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        questions = [sample_mc_question]
+
+        cache = precompute_beliefs(
+            questions=questions, likelihood_model=model,
+            belief_mode="from_scratch", beta=5.0, K=4,
+        )
+
+        # Replace score with a mock
+        mock_model = MagicMock(spec=TfIdfLikelihood)
+        mock_model.score = MagicMock()
+
+        env = TossupMCEnv(
+            questions=questions, likelihood_model=mock_model, K=4,
+            belief_mode="from_scratch", beta=5.0,
+            precomputed_beliefs=cache,
+        )
+        env.reset(seed=42, options={"question_idx": 0})
+        for _ in range(env.total_steps):
+            env.step(0)
+            if env.truncated:
+                break
+
+        mock_model.score.assert_not_called()
+
+    def test_no_precomputed_backward_compat(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Env with precomputed_beliefs=None behaves identically to default."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        questions = [sample_mc_question]
+
+        # Default env (no precomputed_beliefs arg)
+        env_default = TossupMCEnv(
+            questions=questions, likelihood_model=model, K=4,
+            belief_mode="from_scratch", beta=5.0,
+        )
+        env_default.reset(seed=42, options={"question_idx": 0})
+        obs_default, _, _, _, _ = env_default.step(0)
+
+        # Explicit None
+        env_none = TossupMCEnv(
+            questions=questions, likelihood_model=model, K=4,
+            belief_mode="from_scratch", beta=5.0,
+            precomputed_beliefs=None,
+        )
+        env_none.reset(seed=42, options={"question_idx": 0})
+        obs_none, _, _, _, _ = env_none.step(0)
+
+        np.testing.assert_array_equal(obs_default, obs_none)
+
+    def test_precompute_beliefs_helper_shape(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """precompute_beliefs returns correct keys and belief shapes."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        questions = [sample_mc_question]
+
+        cache = precompute_beliefs(
+            questions=questions, likelihood_model=model,
+            belief_mode="from_scratch", beta=5.0, K=4,
+        )
+
+        total_steps = len(sample_mc_question.run_indices)
+        for s in range(total_steps):
+            key = (0, s)
+            assert key in cache, f"Missing key {key}"
+            belief = cache[key]
+            assert belief.shape == (4,), f"Expected (4,), got {belief.shape}"
+            assert belief.dtype == np.float32, f"Expected float32, got {belief.dtype}"
+            assert abs(belief.sum() - 1.0) < 1e-5, (
+                f"Belief should sum to ~1.0, got {belief.sum()}"
             )
