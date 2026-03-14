@@ -733,4 +733,25 @@ def build_likelihood_from_config(
         t5_name = model_name
         return T5Likelihood(model_name=t5_name)
 
+    if model_name == "dspy":
+        try:
+            from models.dspy_likelihood import DSPyLikelihood
+        except ImportError as exc:
+            raise ImportError(
+                "DSPy likelihood requires the dspy package. "
+                "Install with: pip install -e '.[dspy]'"
+            ) from exc
+        dspy_cfg = config.get("dspy", {})
+        cache_dir = dspy_cfg.get("cache_dir")
+        fingerprint = dspy_cfg.get("program_fingerprint", "default")
+
+        def _placeholder_scorer(clue: str, options: list[str]) -> list[float]:
+            return [1.0 / max(1, len(options))] * len(options)
+
+        return DSPyLikelihood(
+            scorer=_placeholder_scorer,
+            program_fingerprint=fingerprint,
+            cache_dir=cache_dir,
+        )
+
     raise ValueError(f"Unknown likelihood model: {model_name}")

@@ -207,3 +207,22 @@ class TestMakeEnvFromConfig:
         assert env.reward_mode == "time_penalty", (
             f"Expected 'time_penalty', got '{env.reward_mode}'"
         )
+
+
+class TestDSPyFactoryIntegration:
+    """Factory dispatches to DSPyLikelihood when configured."""
+
+    def test_factory_returns_dspy_likelihood(self):
+        from models.dspy_likelihood import DSPyLikelihood
+
+        config = {
+            "likelihood": {"model": "dspy"},
+            "dspy": {"cache_dir": None, "program_fingerprint": "test"},
+        }
+        model = build_likelihood_from_config(config)
+        assert isinstance(model, DSPyLikelihood)
+
+    def test_default_paths_unchanged(self, sample_corpus):
+        config = {"likelihood": {"model": "tfidf"}}
+        model = build_likelihood_from_config(config, corpus_texts=sample_corpus)
+        assert isinstance(model, TfIdfLikelihood)
