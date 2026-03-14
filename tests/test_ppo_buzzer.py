@@ -195,6 +195,7 @@ class TestRunEpisode:
 
         assert isinstance(trace, PPOEpisodeTrace)
         assert len(trace.c_trace) == len(trace.g_trace)
+        assert len(trace.c_trace) == len(trace.top_p_trace)
         assert len(trace.c_trace) == len(trace.entropy_trace)
         assert len(trace.c_trace) > 0, "Episode should have at least one step"
 
@@ -209,8 +210,29 @@ class TestRunEpisode:
             assert 0.0 <= c_val <= 1.0, f"c_trace value {c_val} out of [0,1]"
         for g_val in trace.g_trace:
             assert g_val >= 0.0, f"g_trace value {g_val} should be non-negative"
+        for top_p in trace.top_p_trace:
+            assert 0.0 <= top_p <= 1.0, f"top_p_trace value {top_p} out of [0,1]"
         for ent in trace.entropy_trace:
             assert ent >= 0.0, f"entropy {ent} should be non-negative"
+
+    def test_ppo_calibration_uses_top_p_trace(
+        self, sample_tfidf_env: TossupMCEnv
+    ) -> None:
+        """calibration_at_buzz on PPO traces uses top_p_trace, not c_trace."""
+        from dataclasses import asdict
+        from evaluation.metrics import calibration_at_buzz
+
+        buzzer = PPOBuzzer(env=sample_tfidf_env)
+        trace = buzzer.run_episode(seed=42)
+        assert len(trace.top_p_trace) > 0, "top_p_trace must be populated"
+
+        cal = calibration_at_buzz([asdict(trace)])
+        assert cal["n_calibration"] == 1.0
+        # Confidence should be top_p_trace[buzz_step], not c_trace[buzz_step]
+        idx = min(max(0, trace.buzz_step), len(trace.top_p_trace) - 1)
+        expected_conf = trace.top_p_trace[idx]
+        expected_brier = (expected_conf - (1.0 if trace.correct else 0.0)) ** 2
+        assert abs(cal["brier"] - expected_brier) < 1e-9
 
     def test_run_episode_deterministic(
         self, sample_tfidf_env: TossupMCEnv
@@ -268,3 +290,18 @@ class TestCheckpointSaveLoad:
         probs = loaded.action_probabilities(obs)
         assert probs.shape == (sample_tfidf_env.K + 1,)
         assert abs(probs.sum() - 1.0) < 1e-5
+
+
+class TestMaskablePPO:
+    """Tests for optional MaskablePPO path."""
+
+    def test_default_ppo_unchanged(self, sample_tfidf_env) -> None:
+        buzzer = PPOBuzzer(env=sample_tfidf_env, use_maskable_ppo=False)
+        assert not buzzer._use_maskable
+        trace = buzzer.run_episode(seed=42)
+        assert len(trace.c_trace) > 0
+
+    def test_maskable_import_error(self, sample_tfidf_env) -> None:
+        sb3_contrib = pytest.importorskip("sb3_contrib", reason="sb3-contrib not installed")
+        buzzer = PPOBuzzer(env=sample_tfidf_env, use_maskable_ppo=True)
+        assert buzzer._use_maskable
