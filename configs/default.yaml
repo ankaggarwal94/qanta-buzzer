@@ -80,6 +80,14 @@ evaluation:
   save_predictions: true
   prediction_dir: "results/predictions"
 
+# DSPy integration (optional, offline-first)
+dspy:
+  enabled: false
+  model: "openai/gpt-4o-mini"  # DSPy LM identifier
+  optimizer: "BootstrapFewShot"  # BootstrapFewShot | MIPROv2
+  cache_dir: "cache/dspy"
+  max_examples: 50
+
 # Supervised warm-start settings (for T5 policy)
 supervised:
   epochs: 10

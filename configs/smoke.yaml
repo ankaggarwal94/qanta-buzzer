@@ -74,6 +74,9 @@ evaluation:
   save_predictions: false
   prediction_dir: "results/predictions"
 
+dspy:
+  enabled: false
+
 # Supervised settings for smoke test
 supervised:
   epochs: 2  # Very few epochs
