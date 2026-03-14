@@ -937,3 +937,41 @@ class TestShufflePrecomputedEquivalence:
 
         # The gold index should match
         assert new_gold == shuffled_q.gold_index
+
+
+class TestBaselineAgentsVariableK:
+    """Baseline agents work on non-K=4 questions (K-agnostic check)."""
+
+    def test_threshold_buzzer_k3(self, sample_corpus):
+        from agents.threshold_buzzer import ThresholdBuzzer
+        from dataclasses import replace
+        from models.likelihoods import TfIdfLikelihood
+        from tests.conftest import sample_mc_question as _  # reuse fixture pattern
+
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        q4 = MCQuestion(
+            qid="q_k3",
+            question="Who was the first president?",
+            tokens=["Who", "was", "the", "first", "president"],
+            answer_primary="George Washington",
+            clean_answers=["George Washington"],
+            run_indices=[1, 3, 4],
+            human_buzz_positions=[],
+            category="History",
+            cumulative_prefixes=["Who was", "Who was the first", "Who was the first president"],
+            options=["George Washington", "Thomas Jefferson", "John Adams"],
+            gold_index=0,
+            option_profiles=[
+                "George Washington first president",
+                "Thomas Jefferson third president",
+                "John Adams second president",
+            ],
+            option_answer_primary=["George Washington", "Thomas Jefferson", "John Adams"],
+            distractor_strategy="test",
+        )
+        buzzer = ThresholdBuzzer(
+            likelihood_model=model, threshold=0.5, beta=5.0, alpha=10.0,
+        )
+        result = buzzer.run_episode(q4)
+        assert len(result.c_trace) > 0
+        assert 0 <= result.buzz_index < 3
