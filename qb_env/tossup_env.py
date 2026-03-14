@@ -201,6 +201,9 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         ew_reward_correct: float = 10.0,
         ew_reward_incorrect: float = -5.0,
         ew_opponent_expected_value: float = 0.0,
+        variable_K: bool = False,
+        max_K: int | None = None,
+        use_action_masking: bool = False,
     ) -> None:
         if not questions:
             raise ValueError("questions cannot be empty")
@@ -225,15 +228,22 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         self.ew_reward_incorrect = ew_reward_incorrect
         self.ew_opponent_expected_value = ew_opponent_expected_value
 
+        self.variable_K = variable_K
+        self.use_action_masking = use_action_masking
+        if variable_K:
+            self._max_K = max_K or max(len(q.options) for q in questions)
+        else:
+            self._max_K = K
+
         # Build qid -> list-index map for precomputed belief lookups
         self._question_index_map: dict[str, int] = {
             q.qid: i for i, q in enumerate(questions)
         }
 
-        self.action_space = spaces.Discrete(self.K + 1)
-        # belief[K] + (top_p, margin, entropy, stability, progress, clue_idx)
+        obs_K = self._max_K if self.variable_K else self.K
+        self.action_space = spaces.Discrete(obs_K + 1)
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.K + 6,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(obs_K + 6,), dtype=np.float32
         )
 
         self.question: MCQuestion | None = None
@@ -381,20 +391,48 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
     def _obs(self) -> np.ndarray:
         """Build the observation vector from current belief state.
 
-        Delegates to ``extract_belief_features`` which concatenates the raw
-        belief vector with 6 derived scalar features.
+        In variable-K mode, uses padded features sized to ``_max_K``.
+        Otherwise delegates to ``extract_belief_features``.
 
         Returns
         -------
         np.ndarray
-            Feature vector of shape (K + 6,), dtype float32.
+            Feature vector of shape (obs_K + 6,), dtype float32.
         """
+        if self.variable_K:
+            from models.features import extract_padded_belief_features
+
+            return extract_padded_belief_features(
+                belief=self.belief,
+                prev_belief=self.prev_belief,
+                step_idx=self.step_idx,
+                total_steps=self.total_steps,
+                max_K=self._max_K,
+            )
         return extract_belief_features(
             belief=self.belief,
             prev_belief=self.prev_belief,
             step_idx=self.step_idx,
             total_steps=self.total_steps,
         )
+
+    def action_masks(self) -> np.ndarray:
+        """Return a boolean mask of valid actions.
+
+        WAIT (action 0) is always valid.  Buzz actions ``1..K_actual``
+        are valid; padded slots ``K_actual+1..max_K`` are invalid.
+
+        Returns
+        -------
+        np.ndarray
+            Boolean array of shape ``(max_K + 1,)`` or ``(K + 1,)``.
+        """
+        n_actions = self._max_K + 1 if self.variable_K else self.K + 1
+        mask = np.zeros(n_actions, dtype=bool)
+        mask[0] = True  # WAIT
+        k_actual = len(self.question.options) if self.question is not None else self.K
+        mask[1 : k_actual + 1] = True
+        return mask
 
     def _step_to_token_pos(self, step_idx: int) -> int:
         """Convert a step index to the corresponding token position.

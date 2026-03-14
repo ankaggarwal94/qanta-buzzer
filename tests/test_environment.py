@@ -700,3 +700,62 @@ class TestExpectedWinsRewardMode:
         obs, _ = env.reset(seed=42)
         _, reward, _, _, _ = env.step(0)
         assert isinstance(reward, float)
+
+
+class TestVariableKEnv:
+    """Tests for variable-K mode and action masks in TossupMCEnv."""
+
+    def _make_mixed_k_questions(self, sample_mc_question):
+        """Create a K=3 variant alongside the K=4 original."""
+        from dataclasses import replace
+
+        q3 = replace(
+            sample_mc_question,
+            qid="q_k3",
+            options=sample_mc_question.options[:3],
+            option_profiles=sample_mc_question.option_profiles[:3],
+            option_answer_primary=sample_mc_question.option_answer_primary[:3],
+            gold_index=0,
+        )
+        return [sample_mc_question, q3]
+
+    def test_variable_k_obs_shape(self, sample_mc_question):
+        from models.likelihoods import TfIdfLikelihood
+
+        questions = self._make_mixed_k_questions(sample_mc_question)
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        env = TossupMCEnv(
+            questions=questions, likelihood_model=model,
+            K=4, variable_K=True, max_K=4,
+            reward_mode="simple", belief_mode="from_scratch",
+        )
+        obs, _ = env.reset(seed=42, options={"question_idx": 1})
+        assert obs.shape == (4 + 6,)
+
+    def test_action_mask_shape_and_validity(self, sample_mc_question):
+        from models.likelihoods import TfIdfLikelihood
+
+        questions = self._make_mixed_k_questions(sample_mc_question)
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        env = TossupMCEnv(
+            questions=questions, likelihood_model=model,
+            K=4, variable_K=True, max_K=4,
+            reward_mode="simple", belief_mode="from_scratch",
+        )
+        env.reset(seed=42, options={"question_idx": 1})
+        mask = env.action_masks()
+        assert mask.shape == (5,)
+        assert mask[0]
+        assert mask[1] and mask[2] and mask[3]
+        assert not mask[4]
+
+    def test_fixed_k_path_unchanged(self, sample_tfidf_env):
+        """Fixed-K env (variable_K=False) behavior is unchanged."""
+        env = sample_tfidf_env
+        obs, _ = env.reset(seed=42)
+        assert obs.shape == (4 + 6,)
+        mask = env.action_masks()
+        assert mask.shape == (5,)
+        assert all(mask)
