@@ -26,13 +26,16 @@ likelihood:
   max_length: 512  # Max input tokens for T5
 
 environment:
-  reward_mode: "time_penalty"  # time_penalty | simple
+  reward_mode: "time_penalty"  # time_penalty | simple | expected_wins
   seed: 13
   wait_penalty: 0.05  # Tuned candidate from multi-seed smoke sweep
   early_buzz_penalty: 0.2  # Tuned candidate from multi-seed smoke sweep
   buzz_correct: 1.0  # Reward for correct answer
   buzz_incorrect: -0.5  # Penalty for wrong answer
   max_steps: 20  # Maximum clues to reveal
+  # Expected Wins opponent model (only used when reward_mode: expected_wins)
+  opponent_buzz_model:
+    type: "none"  # none | logistic | empirical
 
 mc_guards:  # Anti-artifact guards from qb-rl
   alias_edit_distance_threshold: 0.2  # Reject similar answer aliases
