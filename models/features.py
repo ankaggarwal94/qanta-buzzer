@@ -106,3 +106,56 @@ def extract_belief_features(
 
     extras = np.array([top_p, margin, ent, stability, progress, clue_idx_norm], dtype=np.float32)
     return np.concatenate([belief, extras]).astype(np.float32)
+
+
+def extract_padded_belief_features(
+    belief: np.ndarray,
+    prev_belief: np.ndarray | None,
+    step_idx: int,
+    total_steps: int,
+    max_K: int,
+) -> np.ndarray:
+    """Extract belief features padded to a fixed ``max_K`` size.
+
+    Identical to :func:`extract_belief_features` except the belief
+    segment is zero-padded (or truncated) to exactly ``max_K`` elements,
+    producing a ``(max_K + 6)``-dimensional vector regardless of the
+    actual number of answer options.
+
+    Parameters
+    ----------
+    belief : np.ndarray
+        1D probability vector of shape (K_actual,).
+    prev_belief : np.ndarray or None
+        Previous belief vector (same shape as *belief*).
+    step_idx : int
+        Current clue step index (0-based).
+    total_steps : int
+        Total clue steps in the episode.
+    max_K : int
+        Target padded length for the belief segment.
+
+    Returns
+    -------
+    np.ndarray
+        Feature vector of shape (max_K + 6,), dtype float32.
+    """
+    belief = np.asarray(belief, dtype=np.float32)
+    if belief.ndim != 1:
+        raise ValueError("belief must be a 1D probability vector")
+
+    K_actual = len(belief)
+
+    top_p = float(np.max(belief))
+    sorted_probs = np.sort(belief)[::-1]
+    second = float(sorted_probs[1]) if len(sorted_probs) > 1 else 0.0
+    margin = top_p - second
+    ent = entropy_of_distribution(belief)
+    stability = float(np.abs(belief - prev_belief).sum()) if prev_belief is not None else 0.0
+    progress = float(step_idx / max(1, total_steps))
+    clue_idx_norm = float(step_idx / max(1, total_steps - 1))
+
+    padded = np.zeros(max_K, dtype=np.float32)
+    padded[:K_actual] = belief[:max_K]
+    extras = np.array([top_p, margin, ent, stability, progress, clue_idx_norm], dtype=np.float32)
+    return np.concatenate([padded, extras]).astype(np.float32)
