@@ -81,23 +81,32 @@ class MCBuilder:
         random_seed: int = 13,
         embedding_model: str = "all-MiniLM-L6-v2",
         openai_model: str = "text-embedding-3-small",
+        variable_K: bool = False,
+        min_K: int = 2,
+        max_K: int | None = None,
     ):
         """Initialize the MC builder.
 
         Args:
-            K: Number of answer choices (must be >= 2).
-            strategy: Distractor selection strategy
-                (sbert_profile, openai_profile, tfidf_profile, category_random).
+            K: Default number of answer choices (must be >= 2).
+            strategy: Distractor selection strategy.
             alias_edit_distance_threshold: Max edit distance for alias detection.
             duplicate_token_overlap_threshold: Max token overlap between options.
             max_length_ratio: Max ratio between longest and shortest option.
             random_seed: Random seed for reproducibility.
             embedding_model: SentenceTransformer model name for ``sbert_profile``.
             openai_model: OpenAI embedding model for ``openai_profile``.
+            variable_K: If True, sample target K per question from
+                ``[min_K, max_K or K]``.
+            min_K: Minimum K when ``variable_K`` is True.
+            max_K: Maximum K when ``variable_K`` is True.  Defaults to ``K``.
         """
         if K < 2:
             raise ValueError("K must be >= 2")
         self.K = K
+        self.variable_K = variable_K
+        self.min_K = max(2, min_K)
+        self.max_K = max_K if max_K is not None else K
         self.strategy = strategy
         self.alias_edit_distance_threshold = alias_edit_distance_threshold
         self.duplicate_token_overlap_threshold = duplicate_token_overlap_threshold
@@ -232,7 +241,9 @@ class MCBuilder:
 
         if self.strategy in {"sbert_profile", "openai_profile"}:
             if self.strategy == "sbert_profile":
-                # Sentence-BERT embeddings
+                # One-shot SBERT encoding for distractor ranking.
+                # This is separate from the SBERTLikelihood runtime cache
+                # because it runs only during MC dataset construction.
                 from sentence_transformers import SentenceTransformer
                 encoder = SentenceTransformer(self.embedding_model)
                 embeddings = encoder.encode(docs, convert_to_numpy=True, normalize_embeddings=True)
@@ -316,6 +327,16 @@ class MCBuilder:
                 return True
         return False
 
+    def _target_k(self) -> int:
+        """Return the target K for the next question.
+
+        When ``variable_K`` is False, always returns ``self.K``.
+        When True, samples uniformly from ``[min_K, max_K]``.
+        """
+        if not self.variable_K:
+            return self.K
+        return self.rng.randint(self.min_K, self.max_K)
+
     def build(
         self,
         questions: List[TossupQuestion],
@@ -346,6 +367,7 @@ class MCBuilder:
         mc_questions: List[MCQuestion] = []
 
         for q in questions:
+            target_k = self._target_k()
             gold = q.answer_primary
             gold_aliases = answer_to_aliases.get(gold, [gold])
             ranked = rankings.get(gold, [a for a in answers if a != gold])
@@ -355,18 +377,16 @@ class MCBuilder:
             for candidate in ranked:
                 if candidate == gold:
                     continue
-                # Apply guard 1: Check alias collision
                 if self._aliases_collide(candidate, gold_aliases):
                     continue
-                # Apply guard 2: Check duplicate tokens
                 if self._violates_duplicate_guard(candidate, selected):
                     continue
                 selected.append(candidate)
-                if len(selected) >= self.K - 1:
+                if len(selected) >= target_k - 1:
                     break
 
             # If not enough distractors from ranking, try random fallback
-            if len(selected) < self.K - 1:
+            if len(selected) < target_k - 1:
                 fallback = [a for a in answers if a not in selected and a != gold]
                 self.rng.shuffle(fallback)
                 for candidate in fallback:
@@ -375,15 +395,15 @@ class MCBuilder:
                     if self._violates_duplicate_guard(candidate, selected):
                         continue
                     selected.append(candidate)
-                    if len(selected) >= self.K - 1:
+                    if len(selected) >= target_k - 1:
                         break
 
             # Skip question if we can't find enough valid distractors
-            if len(selected) < self.K - 1:
+            if len(selected) < target_k - 1:
                 continue
 
             # Create options and shuffle
-            option_answer_primary = [gold] + selected[:self.K - 1]
+            option_answer_primary = [gold] + selected[:target_k - 1]
             self.rng.shuffle(option_answer_primary)
             gold_index = option_answer_primary.index(gold)
             options = option_answer_primary[:]

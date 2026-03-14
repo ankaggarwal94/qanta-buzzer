@@ -3,8 +3,11 @@
 
 data:
   csv_path: "questions.csv"  # Raw QANTA CSV with ||| separated clues
-  K: 4  # Number of answer choices
+  K: 4  # Default number of answer choices
   distractor_strategy: "sbert_profile"  # sbert_profile | category_random | embedding_based
+  variable_K: false  # If true, sample K per question from [min_K, max_K]
+  min_K: 2
+  max_K: null  # Defaults to K when null
   train_ratio: 0.7
   val_ratio: 0.15
   test_ratio: 0.15
