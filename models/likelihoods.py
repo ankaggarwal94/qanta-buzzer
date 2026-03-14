@@ -85,6 +85,11 @@ class LikelihoodModel(ABC):
     def __init__(self) -> None:
         self.embedding_cache: dict[str, np.ndarray] = {}
 
+    @property
+    def cache_memory_bytes(self) -> int:
+        """Approximate memory used by the embedding cache in bytes."""
+        return sum(v.nbytes for v in self.embedding_cache.values())
+
     @abstractmethod
     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
         """Return raw similarity scores for each answer option.
@@ -204,13 +209,13 @@ class LikelihoodModel(ABC):
         p = Path(path)
         if not p.exists():
             return 0
-        data = np.load(p)
-        loaded = 0
-        for key in data.files:
-            if key not in self.embedding_cache:
-                self.embedding_cache[key] = data[key].astype(np.float32)
-                loaded += 1
-        return loaded
+        with np.load(p) as data:
+            loaded = 0
+            for key in data.files:
+                if key not in self.embedding_cache:
+                    self.embedding_cache[key] = data[key].astype(np.float32)
+                    loaded += 1
+            return loaded
 
     @abstractmethod
     def _embed_batch(self, texts: list[str]) -> np.ndarray:
