@@ -252,6 +252,31 @@ def main() -> None:
         "baseline_summary": baseline_summary,
         "ppo_summary": ppo_summary,
     }
+
+    # Add Expected Wins summary only when that reward mode is active
+    if config.get("environment", {}).get("reward_mode") == "expected_wins":
+        from evaluation.metrics import expected_wins_score
+        from qb_env.opponent_models import build_opponent_model_from_config
+
+        opp_model = build_opponent_model_from_config(mc_questions, config)
+        if opp_model is not None:
+            ew_scores = []
+            for run in full_eval["runs"]:
+                opp_surv = [
+                    opp_model.prob_survive_to_step(mc_questions[0], t)
+                    for t in range(len(run.get("c_trace", [])))
+                ]
+                ew = expected_wins_score(
+                    run.get("c_trace", []),
+                    run.get("g_trace", []),
+                    opp_surv,
+                )
+                ew_scores.append(ew)
+            report["expected_wins"] = {
+                "mean_ew": float(np.mean(ew_scores)) if ew_scores else 0.0,
+                "n": len(ew_scores),
+            }
+
     save_json(out_dir / "evaluation_report.json", report)
 
     # --- Generate visualizations ---
@@ -275,12 +300,15 @@ def main() -> None:
         out_dir / "plots" / "entropy_vs_clue.png",
     )
 
-    # Calibration curve
+    # Calibration curve — use top_p (belief in top answer) as confidence
     confidences = []
     outcomes = []
     for row in full_eval["runs"]:
-        idx = min(int(row["buzz_step"]), len(row["g_trace"]) - 1)
-        confidences.append(float(row["g_trace"][idx]))
+        top_p = row.get("top_p_trace", row.get("c_trace", []))
+        if not top_p:
+            continue
+        idx = min(int(row["buzz_step"]), len(top_p) - 1)
+        confidences.append(float(top_p[idx]))
         outcomes.append(1 if bool(row["correct"]) else 0)
     plot_calibration_curve(
         confidences, outcomes, out_dir / "plots" / "calibration.png"
