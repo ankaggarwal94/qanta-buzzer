@@ -645,3 +645,58 @@ class TestPrecomputedBeliefs:
             assert abs(belief.sum() - 1.0) < 1e-5, (
                 f"Belief should sum to ~1.0, got {belief.sum()}"
             )
+
+
+class TestExpectedWinsRewardMode:
+    """Tests for the expected_wins reward mode in TossupMCEnv."""
+
+    def _make_env(self, sample_mc_question, survival: float):
+        """Build an EW env with a fixed-survival opponent model."""
+        from unittest.mock import MagicMock
+
+        from models.likelihoods import TfIdfLikelihood
+
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        opp = MagicMock()
+        opp.prob_survive_to_step = MagicMock(return_value=survival)
+        opp.prob_buzzed_before_step = MagicMock(return_value=1.0 - survival)
+        return TossupMCEnv(
+            questions=[sample_mc_question],
+            likelihood_model=model,
+            K=4,
+            reward_mode="expected_wins",
+            opponent_buzz_model=opp,
+            ew_reward_correct=10.0,
+            ew_reward_incorrect=-5.0,
+            ew_opponent_expected_value=0.0,
+            belief_mode="from_scratch",
+            beta=5.0,
+        )
+
+    def test_survival_1_correct_gives_ew_correct(self, sample_mc_question):
+        env = self._make_env(sample_mc_question, survival=1.0)
+        env.reset(seed=42, options={"question_idx": 0})
+        gold = sample_mc_question.gold_index
+        _, reward, _, _, _ = env.step(gold + 1)
+        assert abs(reward - 10.0) < 1e-9
+
+    def test_survival_1_incorrect_gives_ew_incorrect(self, sample_mc_question):
+        env = self._make_env(sample_mc_question, survival=1.0)
+        env.reset(seed=42, options={"question_idx": 0})
+        wrong = (sample_mc_question.gold_index + 1) % 4
+        _, reward, _, _, _ = env.step(wrong + 1)
+        assert abs(reward - (-5.0)) < 1e-9
+
+    def test_survival_0_gives_opponent_value(self, sample_mc_question):
+        env = self._make_env(sample_mc_question, survival=0.0)
+        env.reset(seed=42, options={"question_idx": 0})
+        _, reward, _, _, _ = env.step(1)
+        assert abs(reward - 0.0) < 1e-9
+
+    def test_non_ew_modes_unchanged(self, sample_tfidf_env):
+        """Non-EW reward modes are unaffected by the new EW plumbing."""
+        env = sample_tfidf_env
+        obs, _ = env.reset(seed=42)
+        _, reward, _, _, _ = env.step(0)
+        assert isinstance(reward, float)

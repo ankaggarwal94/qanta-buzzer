@@ -197,6 +197,10 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         beta: float = 5.0,
         seed: int = 13,
         precomputed_beliefs: dict[tuple[int, int], np.ndarray] | None = None,
+        opponent_buzz_model: "OpponentBuzzModel | None" = None,
+        ew_reward_correct: float = 10.0,
+        ew_reward_incorrect: float = -5.0,
+        ew_opponent_expected_value: float = 0.0,
     ) -> None:
         if not questions:
             raise ValueError("questions cannot be empty")
@@ -215,6 +219,11 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         self.beta = beta
         self.rng = random.Random(seed)
         self.precomputed_beliefs = precomputed_beliefs
+
+        self.opponent_buzz_model = opponent_buzz_model
+        self.ew_reward_correct = ew_reward_correct
+        self.ew_reward_incorrect = ew_reward_incorrect
+        self.ew_opponent_expected_value = ew_opponent_expected_value
 
         # Build qid -> list-index map for precomputed belief lookups
         self._question_index_map: dict[str, int] = {
@@ -411,6 +420,22 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
             return self.question.run_indices[0]
         return self.question.run_indices[step_idx]
 
+    def _expected_wins_reward(
+        self, question: MCQuestion, chosen_idx: int, last_seen_step: int
+    ) -> float:
+        """Compute Expected Wins reward at buzz time.
+
+        R_t = S_t * V_self + (1 - S_t) * V_opp
+
+        where S_t = P(opponent has NOT buzzed by step t).
+        """
+        correct = chosen_idx == question.gold_index
+        v_self = self.ew_reward_correct if correct else self.ew_reward_incorrect
+        if self.opponent_buzz_model is None:
+            return v_self
+        s_t = self.opponent_buzz_model.prob_survive_to_step(question, last_seen_step)
+        return s_t * v_self + (1.0 - s_t) * self.ew_opponent_expected_value
+
     def _buzz_reward(self, question: MCQuestion, chosen_idx: int, last_seen_step: int) -> float:
         """Compute the reward for buzzing with a given answer.
 
@@ -424,6 +449,8 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         ``time_penalty`` (default)
             +buzz_correct / +buzz_incorrect. The per-step wait penalty
             is applied separately in ``step()``.
+        ``expected_wins``
+            S_t * V_self + (1 - S_t) * V_opp via opponent model.
 
         Parameters
         ----------
@@ -447,6 +474,8 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
             if self._sampled_human_buzz_pos is not None and token_pos > self._sampled_human_buzz_pos:
                 return 0.0
             return self.buzz_correct if correct else self.buzz_incorrect
+        if self.reward_mode == "expected_wins":
+            return self._expected_wins_reward(question, chosen_idx, last_seen_step)
         # default: time_penalty
         reward = self.buzz_correct if correct else self.buzz_incorrect
 
