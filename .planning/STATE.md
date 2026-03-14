@@ -4,8 +4,8 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: Not started
 status: milestone_complete
-last_updated: "2026-03-13T19:35:18.258Z"
-last_activity: 2026-03-13 - v1.0 milestone archived and tagged
+last_updated: "2026-03-14T03:00:00.000Z"
+last_activity: 2026-03-14 - Post-optimization audit remediation (evidence-verified)
 progress:
   total_phases: 6
   completed_phases: 5
@@ -17,7 +17,7 @@ progress:
 # Project State: Quiz Bowl RL Buzzer (Unified)
 
 **Project:** Quiz Bowl RL Buzzer (Unified System)
-**Last Updated:** 2026-03-13
+**Last Updated:** 2026-03-14
 **Current Sprint:** v1.0 complete — no active milestone
 
 ## Project Reference
@@ -159,12 +159,15 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | 10 | Fix scripts/ci.sh to scope pytest to tests/ directory | 2026-03-13 | 0b48b1c2 | Verified | — |
 
 ### Known Issues
-None yet
+- compare_policies.py: MLP and T5 evaluation paths use different reward settings and confidence semantics; accuracy/buzz-position are directly comparable but S_q/reward are qualitative
+- TF-IDF embedding cache stores dense vocab-sized vectors; measured ~1.9 MB for 44 questions, projected ~42 MB for 1000 questions (see `cache_memory_bytes` property)
+- Full 100k PPO training run (default.yaml) has not been verified end-to-end; smoke and reduced-scale paths are tested
+- SBERT/T5-large likelihood paths and sbert_profile distractor strategy require large model downloads; not exercised in local verification
+- Pre-existing config bug: `parse_overrides` in `build_mc_dataset.py` creates nested dicts that clobber parent config sections when merged via `merge_overrides`
 
 ### Technical Debt
-- Two existing codebases to merge (qb-rl and qanta-buzzer)
-- Different observation spaces (numeric beliefs vs text)
-- Memory requirements for T5-large (may need T5-base)
+- Memory requirements for T5-large (may need T5-base on memory-constrained machines)
+- `parse_overrides` / `merge_overrides` config merge logic is fragile (nested dicts replace rather than merge)
 
 ### Performance Bottlenecks
 - likelihood_model.score() dominated PPO training wall time (mitigated by quick task 2: precomputed belief cache)
@@ -172,43 +175,28 @@ None yet
 ## Session Continuity
 
 ### Last Session Summary
-- Completed full optimization campaign: 7 ranked items (QT-2 through QT-8)
-- Repo-contract scaffolding: AGENTS.md, thin CLAUDE.md shim, .agentic.yml, ci.sh, manual-smoke.sh (QT-1)
-- Refreshed codebase map (.planning/codebase/ — 7 documents)
-- ~30+ new tests added across all quick tasks
-- All optimizations behavior-preserving with equivalence tests
-- QT-8 verification skipped due to pause — run /gsd:verify-work next session
+- Post-optimization audit remediation (evidence-verified):
+  - Fixed calibration bug: `calibration_at_buzz` now uses `top_p_trace` instead of binary `g_trace`
+  - Added `top_p_trace` to `PPOEpisodeTrace` for consistent calibration across all agent types
+  - Fixed split reproducibility: `hash(category)` replaced with deterministic `hashlib.md5`
+  - Made `compare_policies.py` honest: aligned calibration, corrected docstring caveats
+  - CI robustness: `ci.sh` auto-activates venv, `pyproject.toml` sets `testpaths = ["tests"]`
+  - Moved 13 legacy root files to `_legacy/`
+  - 261 tests across 16 test files, all passing
 
 ### Next Session Priority
-1. CS234 writeup preparation
-2. Run full training pipeline: `python scripts/train_t5_policy.py --config configs/t5_policy.yaml`
-3. Run comparison experiment for paper results
+1. CS234 writeup — all infrastructure is ready for generating paper results
+2. Full training run: `python scripts/train_t5_policy.py --config configs/t5_policy.yaml`
+3. Comparison experiment: `python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model`
 
-### Context for Next Claude
-This is a CS234 final project due this week. We're merging two existing codebases:
-- qb-rl: Has the modular architecture we want (Gymnasium env, belief features, S_q metric, baselines)
-- qanta-buzzer: Has T5 integration we need (encoder, policy heads, supervised warm-start)
-
-The novel contribution is using T5 as a likelihood model to compute beliefs for an MLP policy, then comparing with T5 as an end-to-end policy. Phase 1-5 is the critical path for the deadline. Phase 6 (T5 policy) is optional if time permits.
-
-Key risks to watch:
-- Scope explosion (stick to critical path)
-- Memory issues with T5-large (have T5-base ready)
-- Observation space incompatibility (keep interfaces clean)
-- Belief state collapse (pre-compute answer profiles)
-
-### Open Questions
-1. Should we start with existing qanta-buzzer data loading or rebuild from qb-rl?
-2. Is supervised warm-start necessary for T5 policy or just helpful?
-3. What's the optimal time penalty coefficient for reward shaping?
-4. Should we implement all 4 baselines or just threshold for MVP?
+### Context for Next Agent
+Unified quiz bowl RL buzzer with two tracks. v1.0 milestone complete. Post-optimization audit remediation complete and evidence-verified. The novel contribution is using T5 as a likelihood model to compute beliefs for an MLP policy, then comparing with T5 as an end-to-end policy.
 
 ### Environment State
 - Working directory: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer`
-- Python environment: Not yet configured (needs 3.11+)
-- Git status: Roadmap files created, not yet committed
-- Dependencies: Not yet installed
+- Python environment: `.venv/` with Python 3.13, `pip install -e .` done
+- 261 tests passing, CI green, smoke pipeline green, T5 smoke green
 
 ---
 *State file initialized: 2026-02-25*
-Last activity: 2026-03-13 - Fix ci.sh to scope pytest to tests/ directory (avoids legacy root-level test collection errors)
+Last activity: 2026-03-14 - Evidence-verified audit remediation: PPO top_p_trace, docs sync, repomix regeneration

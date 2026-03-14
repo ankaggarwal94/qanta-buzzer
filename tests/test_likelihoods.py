@@ -454,3 +454,17 @@ class TestEmbeddingCachePersistence:
             original_value,
             err_msg="Existing cache entry was overwritten by load_cache",
         )
+
+
+class TestCacheMemory:
+    """Verify cache_memory_bytes property for resource monitoring."""
+
+    def test_tfidf_cache_memory_bytes(self, sample_corpus):
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        assert model.cache_memory_bytes == 0
+        model.embed_and_cache(["George Washington"])
+        assert model.cache_memory_bytes > 0
+
+    def test_empty_cache_zero_bytes(self, sample_corpus):
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        assert model.cache_memory_bytes == 0

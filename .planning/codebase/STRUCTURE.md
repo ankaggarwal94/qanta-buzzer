@@ -61,22 +61,25 @@ qanta-buzzer/
 │   ├── run_smoke_pipeline.py   # End-to-end smoke test runner
 │   └── test_mc_builder.py      # Standalone MC builder test script
 │
-├── tests/                      # pytest test suite
+├── tests/                         # pytest test suite (261 tests, 16 files)
 │   ├── __init__.py
-│   ├── conftest.py             # Shared fixtures: sample_mc_question, sample_config, sample_tfidf_env
-│   ├── test_agents.py          # ThresholdBuzzer, SoftmaxProfileBuzzer tests
-│   ├── test_build_mc_dataset.py # MC dataset construction tests
-│   ├── test_environment.py     # TossupMCEnv reset/step/reward tests
-│   ├── test_factories.py       # Factory function tests (make_env_from_config, etc.)
-│   ├── test_features.py        # Belief feature extraction tests
-│   ├── test_likelihoods.py     # TfIdf, SBERT, T5 likelihood scoring tests
-│   ├── test_metrics.py         # S_q, ECE, Brier score tests
-│   ├── test_ppo_buzzer.py      # PPOBuzzer training + run_episode tests
-│   ├── test_ppo_t5.py          # T5 PPO training tests
-│   ├── test_qb_rl_bridge.py    # qb-rl compatibility import tests
-│   ├── test_supervised_t5.py   # T5 supervised training tests
-│   ├── test_t5_policy.py       # T5PolicyModel forward/backward tests
-│   └── test_text_wrapper.py    # TextObservationWrapper tests
+│   ├── conftest.py                # Shared fixtures: sample_mc_question, sample_config, sample_tfidf_env
+│   ├── test_agents.py             # ThresholdBuzzer, SoftmaxProfileBuzzer, precomputed equivalence
+│   ├── test_answer_profile_cache.py # Answer profile memoization cache
+│   ├── test_build_mc_dataset.py   # MC dataset construction tests
+│   ├── test_dataset_splits.py     # Split reproducibility (cross-process determinism)
+│   ├── test_environment.py        # TossupMCEnv reset/step/reward, precomputed beliefs
+│   ├── test_factories.py          # Factory function tests (make_env_from_config, etc.)
+│   ├── test_features.py           # Belief feature extraction tests
+│   ├── test_likelihoods.py        # TfIdf, SBERT, T5 scoring, cache persistence/memory
+│   ├── test_mc_builder_topk.py    # Top-M argpartition distractor ranking
+│   ├── test_metrics.py            # S_q, ECE, Brier, calibration_at_buzz
+│   ├── test_ppo_buzzer.py         # PPOBuzzer training, run_episode, PPO calibration
+│   ├── test_ppo_t5.py             # T5 PPO training tests
+│   ├── test_qb_rl_bridge.py       # qb-rl compatibility import tests
+│   ├── test_supervised_t5.py      # T5 supervised training tests
+│   ├── test_t5_policy.py          # T5PolicyModel forward/backward tests
+│   └── test_text_wrapper.py       # TextObservationWrapper tests
 │
 ├── configs/                    # YAML configuration files
 │   ├── default.yaml            # Full production config
@@ -87,17 +90,23 @@ qanta-buzzer/
 ├── checkpoints/                # Model checkpoints (gitignored runtime)
 ├── artifacts/                  # Pipeline output artifacts (runtime)
 │
-├── pyproject.toml              # Package definition, dependencies
+├── pyproject.toml              # Package definition, dependencies, pytest config
 ├── requirements.txt            # Flat dependency list (legacy)
 ├── setup.cfg                   # Setuptools config
-├── CLAUDE.md                   # Agent guidance
+├── AGENTS.md                   # Canonical repo contract for all coding agents
+├── CLAUDE.md                   # Claude-specific shim (points to AGENTS.md)
 ├── README.md                   # Project documentation
 │
-└── (legacy root files)         # Pre-modularization code
-    ├── config.py, dataset.py, environment.py, model.py
-    ├── main.py, train_supervised.py, train_ppo.py
-    ├── metrics.py, visualize.py, demo.py
-    └── verify_data_loader.py, test_csv_loader.py, test_imports.py
+├── _legacy/                    # Pre-modularization prototypes (not installed)
+│   ├── config.py, dataset.py, environment.py, model.py
+│   ├── main.py, train_supervised.py, train_ppo.py
+│   ├── metrics.py, visualize.py, demo.py
+│   └── verify_data_loader.py, test_csv_loader.py, test_imports.py
+│
+└── repomix/                    # AI-consumable repo snapshots
+    ├── repomix-code.xml        # Core code + tests
+    ├── repomix-docs.xml        # Documentation + planning
+    └── repomix-smoke.xml       # Smoke artifact data
 ```
 
 ## Key File Locations

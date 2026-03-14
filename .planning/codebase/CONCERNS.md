@@ -2,12 +2,10 @@
 
 ## Legacy Root-Level Files
 
-**Severity:** Medium
-**Files:** `config.py`, `dataset.py`, `environment.py`, `model.py`, `main.py`, `train_supervised.py`, `train_ppo.py`, `metrics.py`, `visualize.py`, `demo.py`
+**Severity:** Resolved
+**Files:** `_legacy/config.py`, `_legacy/dataset.py`, etc.
 
-The project has both a modular package structure (`qb_data/`, `qb_env/`, `models/`, `agents/`, `evaluation/`, `training/`, `scripts/`) and legacy root-level files from a pre-modularization phase. These legacy files are not part of the installed package (not listed in `pyproject.toml` packages) but still exist in the repo. They may cause confusion about which code is canonical.
-
-**Recommendation:** Archive or remove root-level duplicates once the modular pipeline is fully validated.
+Legacy root-level files have been moved to `_legacy/`. They are not part of the installed package and `pyproject.toml` sets `testpaths = ["tests"]` to prevent pytest from collecting them.
 
 ## Dual Data Paths
 
@@ -39,7 +37,7 @@ No offline fallback exists. First-run tests require network access and may be sl
 **Severity:** Low
 **Files:** `models/likelihoods.py`
 
-The `LikelihoodModel` base class caches embeddings in an in-memory dict keyed by SHA-256 hash. For large datasets, this cache can consume significant memory. There is a `cache_dir` config option but no persistent disk-cache implementation in the base class — each process re-computes embeddings from scratch.
+The `LikelihoodModel` base class caches embeddings in an in-memory dict keyed by SHA-256 hash. `save_cache()` / `load_cache()` persist SBERT/T5 caches to `.npz` files across pipeline stages. `TfIdfLikelihood` intentionally no-ops on `save_cache()` because its dense vectors are vocabulary-specific. The `cache_memory_bytes` property reports current cache size. Measured: ~1.9 MB for 44 questions, projected ~42 MB for 1000 questions.
 
 ## PPO Trace Recording Workaround
 
@@ -57,20 +55,20 @@ SB3's `learn()` does not expose per-step action distributions. `PPOBuzzer.run_ep
 
 ## No CI / Linting Configuration
 
-**Severity:** Low
+**Severity:** Low (partially resolved)
 
-No `.github/workflows/`, `tox.ini`, `pyproject.toml [tool.ruff]`, or pre-commit hooks. Code quality relies on manual review and CLAUDE.md conventions. This is expected for a course project but means no automated enforcement of coding standards.
+No `.github/workflows/`, `tox.ini`, or pre-commit hooks. However, `scripts/ci.sh` provides a local CI entry point that auto-activates the project venv and runs the full test suite. `pyproject.toml` sets `testpaths = ["tests"]` to scope pytest correctly.
 
 ## Test Coverage Gaps
 
 **Severity:** Low
 **Files:** `tests/`
 
-Test coverage focuses on core abstractions (environment, likelihoods, features, agents) but does not cover:
-- `evaluation/controls.py` (shuffle, choices-only, alias substitution experiments)
-- `evaluation/plotting.py` (plot generation)
+261 tests cover core abstractions, optimizations (precomputed beliefs, cache persistence, top-M ranking), calibration correctness, and split reproducibility. Remaining gaps:
+- `evaluation/plotting.py` (plot generation — visual output only)
 - Pipeline scripts end-to-end (partially covered by `--smoke` flag)
 - Config validation edge cases in `qb_data/config.py`
+- `evaluation/controls.py` choices-only and alias substitution controls (shuffle precomputed control has equivalence tests)
 
 ## __pycache__ in Git Status
 

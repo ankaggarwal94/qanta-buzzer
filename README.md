@@ -63,7 +63,7 @@ The T5 pipeline uses its own config (`configs/t5_policy.yaml`) which defines `mo
 python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model
 ```
 
-Compares the MLP belief-feature policy against the T5 end-to-end policy on the same test set. Both evaluation paths use TF-IDF likelihood internally. Note: the MLP side uses config-driven env settings while the T5 side hardcodes its own defaults, so numeric comparisons should be interpreted with care.
+Compares the MLP belief-feature policy against the T5 end-to-end policy on the same test set. Accuracy and buzz-position metrics are directly comparable. ECE and Brier are computed identically (top-answer probability at buzz time). S_q and reward comparisons are qualitative because the two architectures use different confidence semantics (belief-sigmoid vs wait-head probability) and different reward settings (config-driven vs T5-pipeline defaults).
 
 ### Additional scripts
 
@@ -85,7 +85,7 @@ qb-rl config aliases are also supported: `data.dataset`, `data.dataset_config`, 
 
 ## Testing
 
-220 tests across 13 test files:
+315 tests across 22 test files (3 skipped when optional extras not installed):
 
 ```bash
 pytest                    # full suite
@@ -98,7 +98,8 @@ The test suite covers:
 - Gymnasium environment behavior, reward modes, and belief computation
 - Likelihood model factories (TF-IDF, SBERT with offline-safe stubs)
 - T5 policy model, supervised trainer, and PPO trainer
-- Evaluation metrics (S_q, ECE, Brier score, per-category accuracy)
+- Evaluation metrics (S_q, ECE, Brier score, calibration at buzz, per-category accuracy)
+- Dataset split reproducibility (cross-process determinism)
 - qb-rl compatibility bridge
 - Text observation wrapper
 
@@ -128,11 +129,28 @@ The bridge is additive. `qb_data/` remains the canonical home for data loading a
 
 ## Documentation
 
-- `walkthrough.md` -- showboat-generated end-to-end walkthrough exercising both pipelines
-- `CLAUDE.md` -- agent guidance with setup, commands, and architecture reference
+- `AGENTS.md` -- canonical repo contract for all coding agents (setup, architecture, testing, configuration)
+- `CLAUDE.md` -- thin shim pointing to AGENTS.md with Claude-specific notes
+- `walkthrough.md` -- end-to-end walkthrough exercising both pipelines (pre-remediation snapshot)
 - `PRESENTATION.md` -- Marp presentation slides for the CS234 final project
-- `.planning/` -- canonical project state, roadmap, and architectural decisions
+- `.planning/` -- canonical project state, roadmap, architectural decisions, and remediation log
+
+## Extensions (opt-in)
+
+Three opt-in extensions are available. All are disabled by default — the smoke pipeline and T5 smoke path work unchanged.
+
+### Expected Wins reward mode
+
+Set `environment.reward_mode: expected_wins` and configure `environment.opponent_buzz_model` in YAML. Supports logistic and empirical (from `human_buzz_positions`) opponent models. Offline `expected_wins_score()` in `evaluation/metrics.py` uses the continuous formula: `V_self = g * R_correct + (1-g) * R_incorrect`.
+
+### Variable-K answer choices
+
+Set `data.variable_K: true` and `data.min_K` / `data.max_K` in YAML. `MCBuilder` samples K per question. The env uses padded observations and `action_masks()`. Optional `MaskablePPO` via `pip install -e '.[maskable]'`.
+
+### DSPy integration (experimental)
+
+Set `likelihood.model: dspy` and configure the `dspy` section in YAML. Requires `pip install -e '.[dspy]'`. Offline compile via `python scripts/optimize_dspy.py`. Does NOT integrate prompt optimization into PPO rollouts.
 
 ## Legacy Prototype
 
-The older root-level prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`) is still present but is no longer the primary path. The modular `scripts/` pipeline above is the canonical workflow.
+The pre-modularization prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`, etc.) has been moved to `_legacy/`. These files are not part of the installed package and are preserved only for reference. The modular `scripts/` pipeline above is the canonical workflow.

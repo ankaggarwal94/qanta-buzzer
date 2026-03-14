@@ -1,0 +1,133 @@
+You are reviewing and redesigning a CS234 project poster by modifying a single
+Python generator script.
+
+I am attaching a zip file that contains the current poster code, current
+generated outputs, related slide-generation assets, the smoke evaluation report,
+and the course poster-guidance sources.
+
+Your job is to improve the poster wholesale by rewriting
+`qanta-buzzer/generate_poster.py`.
+
+Important: treat the attached files as the primary source of truth for
+substantive project content, available assets, actual metrics, and course
+requirements. Do not invent metrics, claims, assets, or requirements that are
+not supported by the attached files or the links below.
+
+However, do not treat the current visual formatting of `generate_presentation.py`
+or the generated slide frames as sacred. They are useful content references, not
+layout truth. If a reused slide or panel has awkward formatting, weak hierarchy,
+or visually poor composition, you should feel free to redesign or restage that
+material in the poster. For example, the current Markov tossup slide has some
+wonky formatting; preserve its substantive content, but not necessarily its
+presentation.
+
+Relevant internet links:
+- Course poster/video guidelines:
+  - https://docs.google.com/document/d/1PKK8bFriqfjrDhWYtZ0FWsVTjijjFVPpm9F2ELDYCuI/edit?tab=t.0
+- NYU academic poster guide:
+  - https://guides.nyu.edu/posters
+- Stanford template link referenced in Ed:
+  - https://icme.stanford.edu/sites/g/files/sbiybj17116/files/media/file/icme-research-symposium-poster-template-2024-1.pptx
+- Repository:
+  - https://github.com/hass0114/qanta-buzzer
+- QBReader tossup used in the running example:
+  - https://www.qbreader.org/db/tossup/?_id=63ec2f74c5548754cbcb03f4
+
+Attached-file context you should use:
+- `qanta-buzzer/generate_poster.py`
+  - current poster generator
+- `qanta-buzzer/generated/quizbowl_mc_stopping_data_driven/poster.pdf`
+- `qanta-buzzer/generated/quizbowl_mc_stopping_data_driven/poster.png`
+  - current poster outputs
+- `qanta-buzzer/generated/quizbowl_mc_stopping_data_driven/frames/*.png`
+  - slide frames available for reuse as poster visuals, but their existing
+    formatting should not be treated as authoritative
+- `qanta-buzzer/generate_presentation.py`
+  - source of the slide deck and running-example content; use it for ideas and
+    content extraction, not as a fixed visual template
+- `qanta-buzzer/artifacts/smoke/evaluation_report.json`
+  - actual smoke metrics; all numerical claims in the poster should come from
+    here if they are presented as results
+- `ed_threads.md`, `ed_threads.json`
+  - course discussion archive with poster-related clarifications
+- `poster_guidelines/google_doc_poster_guidelines.txt`
+  - text export of the Google Doc guidelines
+- `poster_guidelines/source_summary.md`
+  - concise summary of the relevant course guidance
+- `manifest.md`
+  - bundle contents overview
+
+What I want from you:
+1. Audit the current poster against the attached guidance.
+2. Propose a better poster structure that is more visual, more legible, and
+   more conference-poster-like.
+3. Then output a full replacement version of
+   `qanta-buzzer/generate_poster.py` that implements your redesign.
+
+Hard requirements:
+- Keep the poster as a single-page landscape academic poster.
+- Target the course-recommended scale: approximately `30 x 20` inches.
+- Save outputs to the same paths:
+  - `generated/quizbowl_mc_stopping_data_driven/poster.pdf`
+  - `generated/quizbowl_mc_stopping_data_driven/poster.png`
+- Preserve truthful project content:
+  - no invented benchmark numbers
+  - no invented ablation results
+  - no invented control outcomes
+  - if a result comes from the smoke evaluation, label it clearly as a smoke or
+    sanity-check snapshot rather than a final leaderboard claim
+- Prefer figures, charts, panels, callouts, and concise bullets over dense
+  paragraphs.
+- Keep references short: around 1-3 key references.
+- Reuse the attached slide frames where helpful, but do not let the poster look
+  like a contact sheet or a screenshot dump.
+- If you borrow content from the slide deck, you may restyle, crop, redraw, or
+  recompose it so the poster looks substantially cleaner than the current slide
+  layouts.
+- Make the poster readable from a typical poster-session distance.
+- Avoid tiny fonts and oversized empty margins.
+
+Design goals:
+- Strong top-level hierarchy:
+  - title / authors / one-sentence takeaway
+  - problem/setup
+  - method
+  - key visual example
+  - results / controls
+  - conclusion
+- Use the running quiz-bowl example if it helps make the poster concrete.
+- Preserve the substance of the running example and other core project content
+  for the most part, but improve the visual presentation aggressively wherever
+  the current slides are cluttered, awkward, or poorly formatted.
+- Replace table-heavy communication with more visual encodings where practical.
+- Make the poster feel intentional and polished rather than like a compressed
+  paper.
+
+Data-integrity rules:
+- Use exact values from `evaluation_report.json` when presenting metrics.
+- If a metric is unavailable or unreliable, say less rather than making
+  something up.
+- If a control is known to be limited, label it cautiously.
+
+Preferred response format:
+1. `Findings`
+   - short critique of the current poster against the guidelines
+2. `Redesign plan`
+   - the new layout / information hierarchy you recommend
+3. `Replacement code`
+   - a single full `python` code block containing the complete replacement
+     `generate_poster.py`
+4. `Notes`
+   - any assumptions, tradeoffs, or optional future improvements
+
+Implementation preferences for the replacement script:
+- Keep it self-contained in Python with Pillow.
+- Feel free to add helper functions and restructure the file significantly.
+- Prefer maintainable code over minimal diffs.
+- If you use any frame numbers, choose them deliberately and explain why.
+- If you add small derived charts, compute them from the attached report data.
+- Do not assume internet access at runtime.
+
+One more constraint:
+- Please do not merely critique the poster. I want an actually improved
+  replacement `generate_poster.py` that I can paste in and run.

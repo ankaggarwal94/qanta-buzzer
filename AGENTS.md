@@ -37,7 +37,7 @@ export OPENAI_API_KEY=...
 
 ## Testing
 
-220 tests across 13 test files.
+315 tests across 22 test files (3 skipped when optional extras not installed).
 
 ```bash
 pytest                    # full suite

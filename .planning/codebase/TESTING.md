@@ -10,20 +10,23 @@
 
 ```
 tests/
-├── conftest.py             # Shared fixtures (module-scoped for heavy models)
-├── test_agents.py          # ThresholdBuzzer, SoftmaxProfileBuzzer behavior
-├── test_build_mc_dataset.py # MC dataset construction, anti-artifact guards
-├── test_environment.py     # TossupMCEnv reset/step/reward/done semantics
-├── test_factories.py       # Factory functions (make_env_from_config, build_likelihood_from_config)
-├── test_features.py        # Belief feature extraction (shape, range, edge cases)
-├── test_likelihoods.py     # TfIdf, SBERT, T5 scoring (shape, dtype, cache behavior)
-├── test_metrics.py         # S_q, ECE, Brier score mathematical correctness
-├── test_ppo_buzzer.py      # PPOBuzzer training loop + run_episode trace recording
-├── test_ppo_t5.py          # T5 PPO training integration
-├── test_qb_rl_bridge.py    # qb-rl backward compatibility (import paths work)
-├── test_supervised_t5.py   # T5 supervised warm-start training
-├── test_t5_policy.py       # T5PolicyModel forward/backward pass
-└── test_text_wrapper.py    # TextObservationWrapper observation format
+├── conftest.py                # Shared fixtures (module-scoped for heavy models)
+├── test_agents.py             # ThresholdBuzzer, SoftmaxProfileBuzzer, precomputed equivalence
+├── test_answer_profile_cache.py # Answer profile memoization cache correctness
+├── test_build_mc_dataset.py   # MC dataset construction, anti-artifact guards
+├── test_dataset_splits.py     # Stratified split reproducibility (cross-process determinism)
+├── test_environment.py        # TossupMCEnv reset/step/reward/done, precomputed beliefs
+├── test_factories.py          # Factory functions (make_env_from_config, build_likelihood_from_config)
+├── test_features.py           # Belief feature extraction (shape, range, edge cases)
+├── test_likelihoods.py        # TfIdf, SBERT, T5 scoring (shape, dtype, cache persistence, memory)
+├── test_mc_builder_topk.py    # Top-M argpartition distractor ranking correctness
+├── test_metrics.py            # S_q, ECE, Brier, calibration_at_buzz (top_p_trace, not g_trace)
+├── test_ppo_buzzer.py         # PPOBuzzer training, run_episode traces, PPO calibration
+├── test_ppo_t5.py             # T5 PPO training integration
+├── test_qb_rl_bridge.py       # qb-rl backward compatibility (import paths work)
+├── test_supervised_t5.py      # T5 supervised warm-start training
+├── test_t5_policy.py          # T5PolicyModel forward/backward pass
+└── test_text_wrapper.py       # TextObservationWrapper observation format
 ```
 
 ## Key Fixtures (`tests/conftest.py`)
