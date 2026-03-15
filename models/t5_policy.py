@@ -149,10 +149,11 @@ class T5PolicyModel(nn.Module):
         - 0 = WAIT
         - 1..K = SELECT answer (i-1)
 
-    Combined actions are decomposed into two independent decisions for log
-    probability computation:
-        - ``wait_action``: 0 (wait) or 1 (answer now)
-        - ``answer_action``: 0..K-1 (which answer to select)
+    Combined actions are treated as a factorized policy:
+        - ``P(WAIT) = p_wait``
+        - ``P(BUZZ_i) = p_buzz * p_ans(i)``
+
+    The answer distribution only contributes when the policy chooses to buzz.
 
     Parameters
     ----------
@@ -395,6 +396,60 @@ class T5PolicyModel(nn.Module):
 
         return answer_logits, predictions
 
+    def _joint_action_log_prob(
+        self,
+        wait_logits: torch.Tensor,
+        answer_logits: torch.Tensor,
+        actions: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute factorized log-probabilities for flat WAIT/BUZZ actions.
+
+        Parameters
+        ----------
+        wait_logits : torch.Tensor
+            Binary logits of shape ``[batch_size, 2]`` for [WAIT, BUZZ].
+        answer_logits : torch.Tensor
+            Answer logits of shape ``[batch_size, K]``.
+        actions : torch.Tensor
+            Flat actions of shape ``[batch_size]`` where 0 = WAIT and
+            1..K = BUZZ with answer index action-1.
+
+        Returns
+        -------
+        torch.Tensor
+            Log-probabilities of shape ``[batch_size]``.
+        """
+        wait_log_probs = F.log_softmax(wait_logits, dim=-1)
+        answer_log_probs = F.log_softmax(answer_logits, dim=-1)
+
+        wait_actions = (actions > 0).long()
+        answer_actions = torch.clamp(actions - 1, min=0)
+
+        selected_wait = wait_log_probs.gather(1, wait_actions.unsqueeze(-1)).squeeze(-1)
+        selected_answer = answer_log_probs.gather(
+            1, answer_actions.unsqueeze(-1)
+        ).squeeze(-1)
+
+        return torch.where(actions == 0, selected_wait, selected_wait + selected_answer)
+
+    def _joint_entropy(
+        self,
+        wait_logits: torch.Tensor,
+        answer_logits: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute chain-rule entropy for the factorized wait/answer policy.
+
+        Returns ``H(wait) + p_buzz * H(answer)`` for each example.
+        """
+        wait_probs = F.softmax(wait_logits, dim=-1)
+        wait_log_probs = F.log_softmax(wait_logits, dim=-1)
+        answer_probs = F.softmax(answer_logits, dim=-1)
+        answer_log_probs = F.log_softmax(answer_logits, dim=-1)
+
+        wait_entropy = -(wait_probs * wait_log_probs).sum(dim=-1)
+        answer_entropy = -(answer_probs * answer_log_probs).sum(dim=-1)
+        return wait_entropy + wait_probs[:, 1] * answer_entropy
+
     def select_action(
         self,
         input_ids: torch.Tensor,
@@ -402,12 +457,15 @@ class T5PolicyModel(nn.Module):
         deterministic: bool = False,
         temperature: float = 1.0,
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        """Select actions based on current policy.
+        """Select flat WAIT/BUZZ actions from the factorized policy.
 
         Produces combined actions following TossupMCEnv convention:
-        0 = WAIT, 1..K = SELECT answer 0..K-1. The decision is decomposed
-        into two independent categorical distributions: wait (binary) and
-        answer (K-way).
+        0 = WAIT, 1..K = SELECT answer 0..K-1. Under the factorized policy:
+
+        - ``P(WAIT) = p_wait``
+        - ``P(BUZZ_i) = p_buzz * p_ans(i)``
+
+        Answer sampling only occurs for examples that actually buzz.
 
         Parameters
         ----------
@@ -438,49 +496,43 @@ class T5PolicyModel(nn.Module):
             - ``log_probs``: total log probability of the combined action
         """
         with torch.no_grad():
-            # Get encoder output
             pooled_output = self.get_encoder_output(input_ids, attention_mask)
-
-            # Get logits from policy head
             wait_logits, answer_logits, values = self.policy_head(pooled_output)
 
-            # Apply temperature
             wait_logits_scaled = wait_logits / temperature
             answer_logits_scaled = answer_logits / temperature
 
-            # Get probabilities
             wait_probs = F.softmax(wait_logits_scaled, dim=-1)
             answer_probs = F.softmax(answer_logits_scaled, dim=-1)
+            flat_action_probs = torch.cat(
+                [wait_probs[:, :1], wait_probs[:, 1:2] * answer_probs],
+                dim=-1,
+            )
 
             if deterministic:
-                # Argmax for both decisions
-                wait_actions = torch.argmax(wait_probs, dim=-1)
-                answer_actions = torch.argmax(answer_probs, dim=-1)
+                combined_actions = torch.argmax(flat_action_probs, dim=-1)
+                wait_actions = (combined_actions > 0).long()
+                answer_actions = torch.clamp(combined_actions - 1, min=0)
             else:
-                # Sample from distributions
-                wait_dist = torch.distributions.Categorical(wait_probs)
-                answer_dist = torch.distributions.Categorical(answer_probs)
+                wait_actions = torch.distributions.Categorical(wait_probs).sample()
+                answer_actions = torch.argmax(answer_probs, dim=-1)
+                buzz_mask = wait_actions == 1
+                if buzz_mask.any():
+                    buzz_answers = torch.distributions.Categorical(
+                        answer_probs[buzz_mask]
+                    ).sample()
+                    answer_actions = answer_actions.clone()
+                    answer_actions[buzz_mask] = buzz_answers
+                combined_actions = torch.where(
+                    wait_actions == 0,
+                    torch.zeros_like(wait_actions),
+                    1 + answer_actions,
+                )
 
-                wait_actions = wait_dist.sample()
-                answer_actions = answer_dist.sample()
+            log_probs = self._joint_action_log_prob(
+                wait_logits_scaled, answer_logits_scaled, combined_actions
+            )
 
-            # Compute log probabilities
-            wait_log_probs = F.log_softmax(wait_logits_scaled, dim=-1)
-            answer_log_probs = F.log_softmax(answer_logits_scaled, dim=-1)
-
-            selected_wait_log_probs = wait_log_probs.gather(
-                1, wait_actions.unsqueeze(-1)
-            ).squeeze(-1)
-            selected_answer_log_probs = answer_log_probs.gather(
-                1, answer_actions.unsqueeze(-1)
-            ).squeeze(-1)
-
-            # Total log prob is sum (independent decisions)
-            log_probs = selected_wait_log_probs + selected_answer_log_probs
-
-            # Combine wait and answer into single action
-            # wait_action == 0 -> combined action = 0 (WAIT)
-            # wait_action == 1 -> combined action = 1 + answer_action (SELECT)
             combined_actions = torch.where(
                 wait_actions == 0,
                 torch.zeros_like(wait_actions),
@@ -509,12 +561,10 @@ class T5PolicyModel(nn.Module):
         """Compute log probabilities and entropy for given actions.
 
         Used during PPO training to evaluate old actions under the current
-        policy. Decomposes combined actions (0 = WAIT, 1..K = SELECT) into
-        independent wait and answer decisions for probability computation.
+        policy. Combined actions follow the factorized semantics:
 
-        Action decomposition:
-            - ``actions == 0`` -> ``wait_action = 0`` (WAIT)
-            - ``actions in 1..K`` -> ``wait_action = 1``, ``answer_action = actions - 1``
+        - ``P(WAIT) = p_wait``
+        - ``P(BUZZ_i) = p_buzz * p_ans(i)``
 
         Parameters
         ----------
@@ -530,45 +580,15 @@ class T5PolicyModel(nn.Module):
         log_probs : torch.Tensor
             Shape ``[batch_size]`` -- total log probability of each action.
         entropy : torch.Tensor
-            Shape ``[batch_size]`` -- sum of wait and answer entropy.
+            Shape ``[batch_size]`` -- chain-rule entropy for the factorized policy.
         values : torch.Tensor
             Shape ``[batch_size]`` -- value estimates (squeezed).
         """
-        # Decompose combined actions into wait and answer components
-        # action 0 -> wait=0 (WAIT)
-        # action 1-K -> wait=1, answer=0..K-1 (SELECT)
-        wait_actions = (actions > 0).long()
-        answer_actions = torch.clamp(actions - 1, min=0)  # Map 1..K to 0..K-1
-
-        # Get encoder output
         pooled_output = self.get_encoder_output(input_ids, attention_mask)
-
-        # Get logits from policy head
         wait_logits, answer_logits, values = self.policy_head(pooled_output)
 
-        # Compute log probabilities
-        wait_log_probs = F.log_softmax(wait_logits, dim=-1)
-        answer_log_probs = F.log_softmax(answer_logits, dim=-1)
-
-        # Gather log probs for selected actions
-        selected_wait_log_probs = wait_log_probs.gather(
-            1, wait_actions.unsqueeze(-1)
-        ).squeeze(-1)
-        selected_answer_log_probs = answer_log_probs.gather(
-            1, answer_actions.unsqueeze(-1)
-        ).squeeze(-1)
-
-        # Total log prob
-        log_probs = selected_wait_log_probs + selected_answer_log_probs
-
-        # Compute entropy
-        wait_probs = F.softmax(wait_logits, dim=-1)
-        answer_probs = F.softmax(answer_logits, dim=-1)
-
-        wait_entropy = -(wait_probs * wait_log_probs).sum(dim=-1)
-        answer_entropy = -(answer_probs * answer_log_probs).sum(dim=-1)
-
-        entropy = wait_entropy + answer_entropy
+        log_probs = self._joint_action_log_prob(wait_logits, answer_logits, actions)
+        entropy = self._joint_entropy(wait_logits, answer_logits)
 
         return log_probs, entropy, values.squeeze(-1)
 
