@@ -82,11 +82,112 @@ bash scripts/manual-smoke.sh   # expect: 4/4 stages complete
 
 ---
 
+## Quick start: automated parallel execution
+
+For a fully automated run of the entire pipeline with parallelism, use
+the `run_full_pipeline.sh` script. This is the **recommended path** for
+local agents and unattended runs.
+
+```bash
+# 1. Clean previous artifacts
+rm -rf artifacts/main/ artifacts/k* artifacts/distractor_*
+rm -rf cache/embeddings/
+rm -rf checkpoints/supervised/ checkpoints/ppo/ checkpoints/ppo_t5/
+rm -rf results/
+
+# 2. Run the full pipeline (pick ONE)
+
+# Fastest — t5-small for T5 policy, TF-IDF for baselines (~2 hrs on M3 Max)
+bash scripts/run_full_pipeline.sh --t5-model t5-small
+
+# Balanced — t5-base for T5 policy (~3–4 hrs on M3 Max)
+bash scripts/run_full_pipeline.sh --t5-model t5-base
+
+# Full quality — t5-large (~6–8 hrs on M3 Max)
+bash scripts/run_full_pipeline.sh --t5-model t5-large
+
+# Sequential (no background jobs, safe for debugging)
+bash scripts/run_full_pipeline.sh --sequential --t5-model t5-base
+```
+
+The script executes all 19 phases in a 3-wave DAG:
+
+```
+Phase 1 (sequential — builds the shared MC dataset)
+  │
+  ├─ Wave 1 (4 parallel tracks):
+  │    Track A: Phase 2  — baseline sweeps (TF-IDF)
+  │    Track B: Phase 3  — PPO training (100k steps, [64,64] MLP)
+  │    Track C: Phase 5  — T5 policy (supervised + PPO)
+  │    Track D: Phase 13 — K-sensitivity (K=2,3,5,6 builds + baselines)
+  │
+  ├─ Wave 2 (4 parallel tracks, starts after Wave 1):
+  │    Phase 4  — full evaluation + controls (needs Phase 2)
+  │    Phase 6  — MLP vs T5 comparison (needs Phase 3 + 5)
+  │    Phase 11 — Expected Wins evaluation
+  │    Phase 15 — belief mode comparison (sequential_bayes)
+  │
+  └─ Wave 3 (sequential — PPO ablations):
+       Phase 14 — reward modes (simple, human_grounded)
+       Phase 16 — stop-only PPO
+       Phase 17 — no-buzz horizon
+```
+
+**Output:** All JSON results in `results/`, per-phase logs in `results/phase_*.log`.
+
+**Monitoring:** Tail any phase log in real time:
+```bash
+tail -f results/phase_3.log   # watch PPO training
+tail -f results/phase_5.log   # watch T5 policy
+```
+
+**After completion:** Generate summary table:
+```bash
+python -c "
+import json, glob
+for f in sorted(glob.glob('results/*.json')):
+    s = json.load(open(f))
+    name = f.split('/')[-1].replace('.json', '')
+    acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
+    sq = s.get('mean_sq', 'N/A')
+    print(f'{name}: acc={acc}, S_q={sq}')
+"
+```
+
+**If a phase fails:** Check the log, fix the issue, and re-run just that
+phase manually (see the individual phase sections below). The script exits
+on first failure — completed phases don't need re-running since their
+outputs are already written.
+
+---
+
+## Agent instructions
+
+If you are an AI coding agent executing this runbook:
+
+1. **Preferred path:** Run `bash scripts/run_full_pipeline.sh --t5-model t5-base` and monitor the logs. This handles all parallelism, output isolation, and dependency ordering automatically.
+
+2. **If the script fails:** Read the failing `results/phase_*.log`, diagnose the issue, fix it, then re-run only the failed phase using the manual commands in the sections below.
+
+3. **Do not run phases 2/3/5/13 sequentially** if the parallel script is available — they are independent and running them in parallel saves 2–3x wall time.
+
+4. **Do not modify `artifacts/main/mc_dataset.json`** after Phase 1 — every subsequent phase reads it.
+
+5. **Phases 18–19** (OpenAI embeddings, DSPy compile) require API keys and are not included in the automated script. Run them manually after the main pipeline completes, if needed.
+
+---
+
+## Manual phase-by-phase instructions
+
+The sections below document each phase individually for debugging,
+selective re-runs, or environments where the parallel script cannot be used.
+
+---
+
 ## Phase 0: Clean state
 
 ```bash
-# Remove previous full-run artifacts (keep smoke artifacts intact)
-rm -rf artifacts/main/
+rm -rf artifacts/main/ artifacts/k* artifacts/distractor_*
 rm -rf cache/embeddings/
 rm -rf checkpoints/supervised/ checkpoints/ppo/ checkpoints/ppo_t5/
 rm -rf results/
@@ -791,51 +892,9 @@ python scripts/optimize_dspy.py --config configs/default.yaml --optimizer MIPROv
 
 ---
 
-## Parallel execution script
-
-The script `scripts/run_full_pipeline.sh` implements the full DAG with
-output isolation and 3-wave parallelism:
-
-```
-Wave 1 (parallel, after Phase 1):
-  Track A: Phase 2 (baselines)
-  Track B: Phase 3 (PPO training)
-  Track C: Phase 5 (T5 policy)
-  Track D: Phase 13 (K-sensitivity)
-
-Wave 2 (parallel, after Wave 1):
-  Phase 4 (evaluate — needs Phase 2)
-  Phase 6 (compare — needs Phase 3+5)
-  Phase 11 (EW eval)
-  Phase 15 (belief mode)
-
-Wave 3 (sequential — PPO ablations share artifacts/main/):
-  Phase 14 (reward modes)
-  Phase 16 (stop-only)
-  Phase 17 (no-buzz)
-```
-
-Usage:
-
-```bash
-# Parallel with t5-base (recommended)
-bash scripts/run_full_pipeline.sh --t5-model t5-base
-
-# Parallel with t5-small (fastest)
-bash scripts/run_full_pipeline.sh --t5-model t5-small
-
-# Sequential (safe, no background jobs)
-bash scripts/run_full_pipeline.sh --sequential
-
-# Full quality
-bash scripts/run_full_pipeline.sh --t5-model t5-large
-```
-
-All results land in `results/*.json`. Each phase logs to `results/phase_*.log`.
-
-Estimated wall time with parallelism (Apple M3 Max):
+## Wall-time summary (Apple M3 Max, parallel vs sequential)
 
 | Mode | t5-small | t5-base | t5-large |
 |------|----------|---------|----------|
-| Parallel (3 waves) | ~2 hrs | ~3–4 hrs | ~6–8 hrs |
-| Sequential | ~5 hrs | ~7–10 hrs | ~12–18 hrs |
+| `run_full_pipeline.sh` (parallel) | ~2 hrs | ~3–4 hrs | ~6–8 hrs |
+| `run_full_pipeline.sh --sequential` | ~5 hrs | ~7–10 hrs | ~12–18 hrs |
