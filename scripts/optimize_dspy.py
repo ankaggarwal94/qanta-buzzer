@@ -57,6 +57,26 @@ def build_dspy_trainset(
     return examples
 
 
+def _score_metric(example, prediction, _trace=None):
+    """Compare predicted scores against gold target via argmax match.
+
+    Used as the optimization metric for DSPy ``BootstrapFewShot`` and
+    ``MIPROv2``.  Returns 1.0 when the argmax of the predicted scores
+    matches the argmax of the target scores, 0.0 otherwise.
+    """
+    try:
+        pred_scores = json.loads(prediction.scores)
+        target_scores = json.loads(example.scores)
+    except (json.JSONDecodeError, AttributeError):
+        return 0.0
+    if not pred_scores or not target_scores:
+        return 0.0
+    return 1.0 if (
+        max(range(len(pred_scores)), key=lambda i: pred_scores[i])
+        == max(range(len(target_scores)), key=lambda i: target_scores[i])
+    ) else 0.0
+
+
 def compile_dspy_scorer(
     trainset: list[dict[str, Any]],
     dspy_config: dict[str, Any],
@@ -109,20 +129,6 @@ def compile_dspy_scorer(
             options=json.dumps(ex["option_profiles"]),
             scores=json.dumps(target_scores),
         ).with_inputs("clue_prefix", "options"))
-
-    def _score_metric(example, prediction, _trace=None):
-        """Compare predicted scores against gold target via argmax match."""
-        try:
-            pred_scores = json.loads(prediction.scores)
-            target_scores = json.loads(example.scores)
-        except (json.JSONDecodeError, AttributeError):
-            return 0.0
-        if not pred_scores or not target_scores:
-            return 0.0
-        return 1.0 if (
-            max(range(len(pred_scores)), key=lambda i: pred_scores[i])
-            == max(range(len(target_scores)), key=lambda i: target_scores[i])
-        ) else 0.0
 
     if optimizer_name == "MIPROv2":
         optimizer = dspy.MIPROv2(metric=_score_metric)
