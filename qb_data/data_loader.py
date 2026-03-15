@@ -295,7 +295,6 @@ class QANTADatasetLoader:
             reader = csv.DictReader(f)
 
             # Validate required columns
-            required_columns = {'question', 'answer'}
             actual_columns = set(reader.fieldnames or [])
 
             # Handle alternate column names

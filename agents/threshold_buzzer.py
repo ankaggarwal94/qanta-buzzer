@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from agents._math import sigmoid
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
+
+if TYPE_CHECKING:
+    from agents.bayesian_buzzer import SoftmaxEpisodeResult
 
 
 @dataclass

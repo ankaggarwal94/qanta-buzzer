@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from agents._math import sigmoid
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
+
+if TYPE_CHECKING:
+    from agents.threshold_buzzer import _PrecomputedQuestion
 
 
 

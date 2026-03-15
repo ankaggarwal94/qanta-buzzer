@@ -10,7 +10,7 @@ import json
 import random
 from collections import defaultdict
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Dict, Any
 
 from qb_data.data_loader import TossupQuestion
 
