@@ -31,12 +31,14 @@ from agents.ppo_buzzer import PPOBuzzer
 from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
 from qb_env.stop_only_env import StopOnlyEnv
 from qb_env.tossup_env import make_env_from_config, precompute_beliefs
+from qb_data.config import merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
     load_config,
     load_embedding_cache,
     load_mc_questions,
+    parse_overrides,
     save_embedding_cache,
     save_json,
 )
@@ -87,6 +89,11 @@ def parse_args() -> argparse.Namespace:
         default="flat_kplus1",
         help="Policy action space: flat K+1 actions (default) or binary stop_only.",
     )
+    parser.add_argument(
+        "overrides",
+        nargs="*",
+        help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
+    )
     return parser.parse_args()
 
 
@@ -95,6 +102,10 @@ def main() -> None:
     args = parse_args()
 
     config = load_config(args.config, smoke=args.smoke)
+    overrides = parse_overrides(args)
+    if overrides:
+        print(f"Applying overrides: {overrides}")
+        config = merge_overrides(config, overrides)
 
     split = "smoke" if args.smoke else "main"
     out_dir = ARTIFACT_DIR / split

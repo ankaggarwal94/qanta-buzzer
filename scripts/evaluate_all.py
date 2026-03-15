@@ -59,6 +59,7 @@ from evaluation.plotting import (
     plot_entropy_vs_clue_index,
     save_comparison_table,
 )
+from qb_data.config import merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
@@ -66,6 +67,7 @@ from scripts._common import (
     load_embedding_cache,
     load_json,
     load_mc_questions,
+    parse_overrides,
     save_json,
 )
 
@@ -92,6 +94,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mc-path", type=str, default=None,
         help="Optional MC dataset JSON path (overrides config-derived path).",
+    )
+    parser.add_argument(
+        "overrides",
+        nargs="*",
+        help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
     )
     return parser.parse_args()
 
@@ -138,6 +145,10 @@ def main() -> None:
     args = parse_args()
 
     config = load_config(args.config, smoke=args.smoke)
+    overrides = parse_overrides(args)
+    if overrides:
+        print(f"Applying overrides: {overrides}")
+        config = merge_overrides(config, overrides)
 
     split = "smoke" if args.smoke else "main"
     out_dir = ARTIFACT_DIR / split

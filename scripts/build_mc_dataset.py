@@ -21,7 +21,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -33,59 +33,10 @@ from qb_data.data_loader import QANTADatasetLoader
 from qb_data.dataset_splits import create_stratified_splits
 from qb_data.huggingface_loader import load_from_huggingface
 from qb_data.mc_builder import MCBuilder, MCQuestion
+from scripts._common import parse_overrides
 
 DEFAULT_OUTPUT_DIR = Path("data/processed")
 SMOKE_OUTPUT_DIR = Path("artifacts/smoke")
-
-
-def _parse_value(value: str) -> Any:
-    """Parse a CLI override value string into a typed Python value.
-
-    Tries JSON first, then bool/int/float, and falls back to str.
-    """
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        pass
-    if value.lower() == "true":
-        return True
-    if value.lower() == "false":
-        return False
-    if value.lstrip("-").isdigit():
-        return int(value)
-    try:
-        return float(value)
-    except ValueError:
-        return value
-
-
-def parse_overrides(args: argparse.Namespace) -> Dict[str, Any]:
-    """Parse CLI override arguments into flat dotted-key overrides.
-
-    Returns a dict with dotted keys (e.g. ``{"data.K": 5}``) that
-    ``merge_overrides`` can apply leaf-by-leaf without clobbering
-    sibling config entries.
-
-    Parameters
-    ----------
-    args : argparse.Namespace
-        Parsed CLI arguments.  Positional ``overrides`` are
-        ``key=value`` strings where *key* uses dot-notation
-        (e.g. ``data.K=5``).
-
-    Returns
-    -------
-    Dict[str, Any]
-        Flat dotted-key overrides ready for ``merge_overrides()``.
-    """
-    overrides: Dict[str, Any] = {}
-    if hasattr(args, "overrides") and args.overrides:
-        for token in args.overrides:
-            if "=" not in token:
-                continue
-            key, value = token.split("=", 1)
-            overrides[key] = _parse_value(value)
-    return overrides
 
 
 def resolve_output_dir(output_dir: Optional[str], smoke: bool) -> Path:
