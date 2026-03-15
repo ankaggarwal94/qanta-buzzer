@@ -729,6 +729,8 @@ def make_env_from_config(
     env_cfg = config["environment"]
     data_cfg = config["data"]
     lik_cfg = config["likelihood"]
+    variable_k = bool(data_cfg.get("variable_K", False) or env_cfg.get("variable_K", False))
+    max_k_raw = data_cfg.get("max_K") or env_cfg.get("max_K")
     return TossupMCEnv(
         questions=mc_questions,
         likelihood_model=likelihood_model,
@@ -744,4 +746,7 @@ def make_env_from_config(
         precomputed_beliefs=precomputed_beliefs,
         end_mode=str(env_cfg.get("end_mode", "force_commit")),
         no_buzz_reward=float(env_cfg.get("no_buzz_reward", 0.0)),
+        variable_K=variable_k,
+        max_K=int(max_k_raw) if max_k_raw is not None else None,
+        use_action_masking=bool(env_cfg.get("use_action_masking", False)),
     )

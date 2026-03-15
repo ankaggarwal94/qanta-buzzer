@@ -110,7 +110,9 @@ bash scripts/run_full_pipeline.sh --t5-model t5-large
 bash scripts/run_full_pipeline.sh --sequential --t5-model t5-base
 ```
 
-The script executes all 19 phases in a 3-wave DAG:
+The script executes the **core pipeline and key extensions** in a 3-wave DAG.
+Phases 9 (distractor comparison), 10 (variable-K), 12 (DSPy), 18 (OpenAI),
+and 19 (MIPROv2) require manual execution — see the individual phase sections below.
 
 ```
 Phase 1 (sequential — builds the shared MC dataset)
@@ -258,9 +260,12 @@ python scripts/run_baselines.py \
 python -c "
 import json
 s = json.load(open('artifacts/main/baseline_summary.json'))
-for agent, thresholds in s.items():
-    best = max(thresholds.items(), key=lambda x: x[1].get('mean_sq', 0))
-    print(f'{agent}: best threshold={best[0]}, S_q={best[1][\"mean_sq\"]:.3f}, acc={best[1][\"buzz_accuracy\"]:.3f}')
+for agent, data in s.items():
+    if isinstance(list(data.values())[0], dict):
+        best = max(data.items(), key=lambda x: x[1].get('mean_sq', 0))
+        print(f'{agent}: best_t={best[0]}, S_q={best[1][\"mean_sq\"]:.3f}, acc={best[1][\"buzz_accuracy\"]:.3f}')
+    else:
+        print(f'{agent}: S_q={data.get(\"mean_sq\", 0):.3f}, acc={data.get(\"buzz_accuracy\", 0):.3f}')
 "
 ```
 
@@ -300,7 +305,9 @@ python -c "import json; s=json.load(open('artifacts/main/ppo_summary.json')); pr
 ## Phase 4: Evaluate all (belief-feature pipeline)
 
 **Config:** `configs/default.yaml`
-**Controls:** choices-only, shuffle, alias substitution
+**Controls:** choices-only, shuffle, alias substitution (alias control is a
+no-op unless `alias_lookup.json` is provided externally — `build_mc_dataset.py`
+does not generate it)
 **Metrics:** S_q, ECE, Brier, per-category accuracy, bootstrap CIs
 
 ```bash
@@ -421,12 +428,12 @@ for seed in [1, 2, 3]:
 
 ## Phase 8: Reward sweep (optional)
 
-Grid search over wait_penalty and early_buzz_penalty:
+Grid search over wait_penalty and early_buzz_penalty. Note: this script
+is hardwired to use `configs/smoke.yaml` and `artifacts/smoke/` — it does
+not accept `--config` or `--mc-path`.
 
 ```bash
-python scripts/sweep_reward_shaping.py \
-    --config configs/default.yaml \
-    --mc-path artifacts/main/mc_dataset.json
+python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000
 ```
 
 ---
@@ -475,7 +482,6 @@ artifacts/main/
 ├── val_dataset.json          # 15% validation split
 ├── test_dataset.json         # 15% test split
 ├── answer_profiles.json      # Profile metadata
-├── alias_lookup.json         # Answer alias map
 ├── baseline_summary.json     # All baseline sweep results
 ├── baseline_threshold_runs.json
 ├── baseline_softmax_profile_runs.json

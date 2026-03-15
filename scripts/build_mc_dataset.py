@@ -247,14 +247,18 @@ def main(argv: Optional[list[str]] = None):
 
     # Construct MC questions with guards
     print("\nConstructing MC questions...")
+    data_cfg = config['data']
     mc_builder = MCBuilder(
-        K=config['data']['K'],
-        strategy=config['data']['distractor_strategy'],
+        K=data_cfg['K'],
+        strategy=data_cfg['distractor_strategy'],
         embedding_model=config['likelihood'].get(
             'sbert_name',
             config['likelihood'].get('embedding_model', 'all-MiniLM-L6-v2'),
         ),
         openai_model=config['likelihood'].get('openai_model', 'text-embedding-3-small'),
+        variable_K=bool(data_cfg.get('variable_K', False)),
+        min_K=int(data_cfg.get('min_K', 2)),
+        max_K=int(data_cfg['max_K']) if data_cfg.get('max_K') is not None else None,
         **config['mc_guards']
     )
 

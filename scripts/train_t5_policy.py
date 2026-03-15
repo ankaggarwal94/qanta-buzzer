@@ -34,7 +34,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import yaml
 
-from scripts._common import ARTIFACT_DIR, load_mc_questions
+from qb_data.config import merge_overrides
+from scripts._common import ARTIFACT_DIR, load_mc_questions, parse_overrides
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,6 +98,11 @@ def parse_args() -> argparse.Namespace:
         "--freeze-answer-head",
         action="store_true",
         help="Freeze the answer head during the hazard bridge phase.",
+    )
+    parser.add_argument(
+        "overrides",
+        nargs="*",
+        help="Config overrides: key=value (e.g. model.model_name=t5-base)",
     )
     return parser.parse_args()
 
@@ -310,6 +316,9 @@ def main() -> None:
 
     # Load config with overrides
     config = load_config_with_overrides(args)
+    overrides = parse_overrides(args)
+    if overrides:
+        config = merge_overrides(config, overrides)
     flat_config = flatten_config(config)
 
     # Load and split dataset
