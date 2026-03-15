@@ -432,13 +432,19 @@ def main() -> None:
     all_questions = load_mc_questions(mc_path)
     print(f"Loaded {len(all_questions)} questions")
 
-    # Use last 15% as test set (matching standard split)
-    import random
-    rng = random.Random(42)
-    shuffled = all_questions[:]
-    rng.shuffle(shuffled)
-    test_start = int(len(shuffled) * 0.85)
-    test_questions = shuffled[test_start:]
+    # Prefer the persisted test split if it exists alongside mc_dataset.json
+    test_split_path = mc_path.parent / "test_dataset.json"
+    if test_split_path.exists():
+        test_questions = load_mc_questions(test_split_path)
+        print(f"Using persisted test split: {len(test_questions)} questions")
+    else:
+        import random
+        rng = random.Random(42)
+        shuffled = all_questions[:]
+        rng.shuffle(shuffled)
+        test_start = int(len(shuffled) * 0.85)
+        test_questions = shuffled[test_start:]
+        print(f"No test_dataset.json found; using random 15% split: {len(test_questions)} questions")
 
     if args.smoke:
         test_questions = test_questions[:50]

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Full pipeline with parallelism — runs all 19 phases with output isolation.
+# Full pipeline with parallelism — runs the core pipeline plus key extensions.
+# Phases 9/10/12/18/19 require manual execution (see docs/full-pipeline-runbook.md).
 #
 # Dependencies form a DAG:
 #
@@ -36,11 +37,12 @@ cd "$REPO_ROOT"
 # Parse arguments
 T5_MODEL="t5-base"
 SEQUENTIAL=false
-for arg in "$@"; do
-    case "$arg" in
-        --t5-model) shift; T5_MODEL="$1"; shift ;;
-        --t5-model=*) T5_MODEL="${arg#*=}" ;;
-        --sequential) SEQUENTIAL=true ;;
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --t5-model) T5_MODEL="$2"; shift 2 ;;
+        --t5-model=*) T5_MODEL="${1#*=}"; shift ;;
+        --sequential) SEQUENTIAL=true; shift ;;
+        *) shift ;;
     esac
 done
 

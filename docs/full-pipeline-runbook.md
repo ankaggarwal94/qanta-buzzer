@@ -167,7 +167,7 @@ outputs are already written.
 
 If you are an AI coding agent executing this runbook:
 
-1. **Preferred path:** Run `bash scripts/run_full_pipeline.sh --t5-model t5-base` and monitor the logs. This handles all parallelism, output isolation, and dependency ordering automatically.
+1. **Preferred path:** Run `bash scripts/run_full_pipeline.sh --t5-model t5-base` and monitor the logs. This handles parallelism and dependency ordering for the core pipeline and key extensions. Note: parallel tracks share `artifacts/main/` for intermediate files — the script copies final results to `results/*.json` immediately after each phase to avoid clobber.
 
 2. **If the script fails:** Read the failing `results/phase_*.log`, diagnose the issue, fix it, then re-run only the failed phase using the manual commands in the sections below.
 
@@ -175,7 +175,7 @@ If you are an AI coding agent executing this runbook:
 
 4. **Do not modify `artifacts/main/mc_dataset.json`** after Phase 1 — every subsequent phase reads it.
 
-5. **Phases 18–19** (OpenAI embeddings, DSPy compile) require API keys and are not included in the automated script. Run them manually after the main pipeline completes, if needed.
+5. **Phases 9, 10, 12, 18, 19** are not included in the automated script (distractor comparison, variable-K, DSPy, OpenAI, MIPROv2). Run them manually after the main pipeline completes if needed.
 
 ---
 
@@ -593,17 +593,12 @@ python scripts/run_baselines.py \
 cp artifacts/main/baseline_summary.json results/baselines_variable_k.json
 ```
 
-**Note:** PPO with variable-K requires `MaskablePPO` from `sb3-contrib`:
-```bash
-pip install -e '.[maskable]'
-python scripts/train_ppo.py \
-    --config configs/default.yaml \
-    --mc-path artifacts/variable_k/mc_dataset.json \
-    --seed 13 \
-    --deterministic-eval \
-    environment.variable_K=true environment.max_K=6 environment.use_action_masking=true \
-    ppo.algorithm=maskable_ppo
-```
+**Note:** PPO with variable-K and MaskablePPO is not yet wired end-to-end
+through `train_ppo.py`. The `PPOBuzzer` class supports `use_maskable_ppo=True`
+and the env supports `action_masks()`, but `train_ppo.py` does not read
+`ppo.algorithm` from config or pass `use_maskable_ppo` to the constructor.
+This requires a code change to `train_ppo.py` before it will work.
+For now, variable-K baselines (which don't need MaskablePPO) work correctly.
 
 ---
 

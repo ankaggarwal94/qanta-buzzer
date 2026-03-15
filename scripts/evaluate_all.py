@@ -270,11 +270,13 @@ def main() -> None:
         from qb_env.opponent_models import build_opponent_model_from_config
 
         opp_model = build_opponent_model_from_config(mc_questions, config)
+        qid_to_q = {q.qid: q for q in mc_questions}
         if opp_model is not None:
             ew_scores = []
             for run in full_eval["runs"]:
+                q = qid_to_q.get(run.get("qid", ""), mc_questions[0])
                 opp_surv = [
-                    opp_model.prob_survive_to_step(mc_questions[0], t)
+                    opp_model.prob_survive_to_step(q, t)
                     for t in range(len(run.get("c_trace", [])))
                 ]
                 ew = expected_wins_score(
