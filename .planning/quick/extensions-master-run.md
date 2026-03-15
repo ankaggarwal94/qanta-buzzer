@@ -27,10 +27,11 @@
 | DSPY-03 — Factory integration | completed | e1bc7c12 | 2 |
 | DSPY-04 — Offline compile | completed | 34e98645 | 4 (1 skip) |
 | DSPY-05 — Answer profiles | completed | 943019c6 | 2 (1 skip) |
-| FINAL-01 — Docs + verification | completed | (this commit) | 0 |
+| FINAL-01 — Docs + verification | completed | a70fb00e | 0 |
+| REVIEW — ChatGPT anti-hallucination fixes | completed | fd34e25a | 3 |
 
-**Total new tests: 57**
-**Total tests in repo: 315 passed, 3 skipped**
+**Total new tests: 60**
+**Total tests in repo: 318 passed, 3 skipped**
 
 ---
 
@@ -38,7 +39,7 @@
 
 | Check | Result |
 |-------|--------|
-| Full CI (`pytest tests/`) | 315 passed, 3 skipped (45s) |
+| Full CI (`pytest tests/`) | 318 passed, 3 skipped (58s) |
 | Manual smoke (`bash scripts/manual-smoke.sh`) | 4/4 stages complete (10s) |
 | T5 smoke | Supervised + PPO, test accuracy reported (22s) |
 | Existing invariants | calibration uses top_p_trace, splits use hashlib.md5, alias re-scores live |

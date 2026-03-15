@@ -163,11 +163,11 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 - TF-IDF embedding cache stores dense vocab-sized vectors; measured ~1.9 MB for 44 questions, projected ~42 MB for 1000 questions (see `cache_memory_bytes` property)
 - Full 100k PPO training run (default.yaml) has not been verified end-to-end; smoke and reduced-scale paths are tested
 - SBERT/T5-large likelihood paths and sbert_profile distractor strategy require large model downloads; not exercised in local verification
-- Pre-existing config bug: `parse_overrides` in `build_mc_dataset.py` creates nested dicts that clobber parent config sections when merged via `merge_overrides`
+- MaskablePPO integration requires sb3-contrib (optional, not installed locally)
+- DSPy compile/optimize requires live LM backend (optional, not exercised locally)
 
 ### Technical Debt
 - Memory requirements for T5-large (may need T5-base on memory-constrained machines)
-- `parse_overrides` / `merge_overrides` config merge logic is fragile (nested dicts replace rather than merge)
 
 ### Performance Bottlenecks
 - likelihood_model.score() dominated PPO training wall time (mitigated by quick task 2: precomputed belief cache)
@@ -175,14 +175,10 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 ## Session Continuity
 
 ### Last Session Summary
-- Post-optimization audit remediation (evidence-verified):
-  - Fixed calibration bug: `calibration_at_buzz` now uses `top_p_trace` instead of binary `g_trace`
-  - Added `top_p_trace` to `PPOEpisodeTrace` for consistent calibration across all agent types
-  - Fixed split reproducibility: `hash(category)` replaced with deterministic `hashlib.md5`
-  - Made `compare_policies.py` honest: aligned calibration, corrected docstring caveats
-  - CI robustness: `ci.sh` auto-activates venv, `pyproject.toml` sets `testpaths = ["tests"]`
-  - Moved 13 legacy root files to `_legacy/`
-  - 261 tests across 16 test files, all passing
+- Extension campaign (18 patches): Expected Wins reward, Variable-K, DSPy integration
+- Post-extension code review: 7 issues found by ChatGPT 5.4 Pro, all verified and fixed
+- Fixed: DSPyLikelihood inheritance, score shape validation, stale config key/comments, weak tests
+- 318 tests across 22 test files (3 skipped for optional extras)
 
 ### Next Session Priority
 1. CS234 writeup — all infrastructure is ready for generating paper results
@@ -190,13 +186,13 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 3. Comparison experiment: `python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model`
 
 ### Context for Next Agent
-Unified quiz bowl RL buzzer with two tracks. v1.0 milestone complete. Post-optimization audit remediation complete and evidence-verified. The novel contribution is using T5 as a likelihood model to compute beliefs for an MLP policy, then comparing with T5 as an end-to-end policy.
+Unified quiz bowl RL buzzer with two tracks plus three opt-in extensions (Expected Wins, Variable-K, DSPy). v1.0 milestone complete. Extensions and code review complete. The novel contribution is using T5 as a likelihood model to compute beliefs for an MLP policy, then comparing with T5 as an end-to-end policy.
 
 ### Environment State
 - Working directory: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer`
 - Python environment: `.venv/` with Python 3.13, `pip install -e .` done
-- 261 tests passing, CI green, smoke pipeline green, T5 smoke green
+- 318 tests passing (3 skipped), CI green, smoke pipeline green, T5 smoke green
 
 ---
 *State file initialized: 2026-02-25*
-Last activity: 2026-03-14 - Evidence-verified audit remediation: PPO top_p_trace, docs sync, repomix regeneration
+Last activity: 2026-03-14 - Post-extension code review fixes (DSPyLikelihood inheritance, shape validation, config cleanup)

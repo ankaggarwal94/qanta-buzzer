@@ -10,23 +10,29 @@
 
 ```
 tests/
-├── conftest.py                # Shared fixtures (module-scoped for heavy models)
-├── test_agents.py             # ThresholdBuzzer, SoftmaxProfileBuzzer, precomputed equivalence
-├── test_answer_profile_cache.py # Answer profile memoization cache correctness
-├── test_build_mc_dataset.py   # MC dataset construction, anti-artifact guards
-├── test_dataset_splits.py     # Stratified split reproducibility (cross-process determinism)
-├── test_environment.py        # TossupMCEnv reset/step/reward/done, precomputed beliefs
-├── test_factories.py          # Factory functions (make_env_from_config, build_likelihood_from_config)
-├── test_features.py           # Belief feature extraction (shape, range, edge cases)
-├── test_likelihoods.py        # TfIdf, SBERT, T5 scoring (shape, dtype, cache persistence, memory)
-├── test_mc_builder_topk.py    # Top-M argpartition distractor ranking correctness
-├── test_metrics.py            # S_q, ECE, Brier, calibration_at_buzz (top_p_trace, not g_trace)
-├── test_ppo_buzzer.py         # PPOBuzzer training, run_episode traces, PPO calibration
-├── test_ppo_t5.py             # T5 PPO training integration
-├── test_qb_rl_bridge.py       # qb-rl backward compatibility (import paths work)
-├── test_supervised_t5.py      # T5 supervised warm-start training
-├── test_t5_policy.py          # T5PolicyModel forward/backward pass
-└── test_text_wrapper.py       # TextObservationWrapper observation format
+├── conftest.py                   # Shared fixtures (module-scoped for heavy models)
+├── test_agents.py                # ThresholdBuzzer, SoftmaxProfileBuzzer, precomputed equivalence, K-agnostic
+├── test_answer_profile_cache.py  # Answer profile memoization cache correctness
+├── test_build_mc_dataset.py      # MC dataset construction, CLI overrides, anti-artifact guards
+├── test_dataset_splits.py        # Stratified split reproducibility (cross-process determinism)
+├── test_dspy_answer_profiles.py  # DSPy answer profile augmentation (importorskip)
+├── test_dspy_likelihood.py       # DSPyLikelihood score cache, shape validation, inheritance
+├── test_dspy_optimize.py         # Offline DSPy compile trainset builder (importorskip)
+├── test_environment.py           # TossupMCEnv reset/step/reward, Expected Wins, variable-K, masks
+├── test_factories.py             # Factory functions including DSPy dispatch
+├── test_features.py              # Belief feature extraction, padded features
+├── test_likelihoods.py           # TfIdf, SBERT, T5 scoring (shape, dtype, cache, memory)
+├── test_mc_builder_topk.py       # Top-M argpartition distractor ranking correctness
+├── test_mc_builder_variable_k.py # Variable-K dataset build: mixed option counts, guards
+├── test_metrics.py               # S_q, Expected Wins, ECE, Brier, calibration_at_buzz
+├── test_opponent_models.py       # Logistic/empirical opponent models, config factory
+├── test_ppo_buzzer.py            # PPOBuzzer training, traces, calibration, MaskablePPO
+├── test_ppo_t5.py                # T5 PPO training integration
+├── test_qb_rl_bridge.py          # qb-rl backward compatibility (import paths work)
+├── test_supervised_t5.py         # T5 supervised warm-start training
+├── test_t5_policy.py             # T5PolicyModel forward/backward pass
+├── test_text_wrapper.py          # TextObservationWrapper including K=3 formatting
+└── test_variable_k_integration.py # Mixed-K build→env→baseline→wrapper integration
 ```
 
 ## Key Fixtures (`tests/conftest.py`)
@@ -85,4 +91,4 @@ Tests use real (lightweight) model instances:
 - `t5-small` for T5 tests (60M params, downloads on first run)
 - `SBERTLikelihood` with default model (downloads on first run)
 
-No mock objects or monkeypatching is used. This keeps tests high-fidelity but means some tests require network access on first run.
+Most tests use real (lightweight) model instances with no mocking. The exception is Expected Wins env tests which use `unittest.mock.MagicMock` for a fixed-survival opponent model. Optional-extra tests (DSPy, MaskablePPO) use `pytest.importorskip` to skip gracefully when the extra is not installed.

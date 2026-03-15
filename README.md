@@ -85,7 +85,7 @@ qb-rl config aliases are also supported: `data.dataset`, `data.dataset_config`, 
 
 ## Testing
 
-315 tests across 22 test files (3 skipped when optional extras not installed):
+318 tests across 22 test files (3 skipped when optional extras not installed):
 
 ```bash
 pytest                    # full suite
@@ -95,26 +95,29 @@ pytest tests/test_agents.py tests/test_environment.py tests/test_ppo_buzzer.py  
 The test suite covers:
 
 - Baseline agents (threshold, softmax-profile, sequential Bayes) and PPO wrapper
-- Gymnasium environment behavior, reward modes, and belief computation
-- Likelihood model factories (TF-IDF, SBERT with offline-safe stubs)
+- Gymnasium environment behavior, reward modes (including Expected Wins), and belief computation
+- Likelihood model factories (TF-IDF, SBERT, DSPy with offline-safe stubs)
 - T5 policy model, supervised trainer, and PPO trainer
-- Evaluation metrics (S_q, ECE, Brier score, calibration at buzz, per-category accuracy)
+- Evaluation metrics (S_q, Expected Wins, ECE, Brier score, calibration at buzz, per-category accuracy)
 - Dataset split reproducibility (cross-process determinism)
+- Variable-K dataset construction and mixed-K integration
+- Opponent buzz models (logistic, empirical)
 - qb-rl compatibility bridge
 - Text observation wrapper
 
 ## Architecture
 
 ```
-qb_data/        Data loading, answer profiles, stratified splits, MC construction
-qb_env/         Gymnasium environment, text wrapper, qb-rl compatibility shims
-models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI), belief features, T5 policy
+qb_data/        Data loading, answer profiles, stratified splits, MC construction, DSPy profiles
+qb_env/         Gymnasium environment, text wrapper, opponent models, qb-rl shims
+models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy
 agents/         Threshold, softmax-profile, sequential Bayes, PPO buzzer
-evaluation/     S_q metric, calibration, control experiments, plotting
-scripts/        Pipeline entrypoints and shared helpers
+evaluation/     S_q metric, Expected Wins, calibration, control experiments, plotting
+scripts/        Pipeline entrypoints, DSPy compile, shared helpers
 training/       T5 policy supervised + PPO trainers
 configs/        YAML configuration files
 artifacts/      Generated pipeline outputs (smoke/ and main/)
+_legacy/        Pre-modularization prototypes (not installed)
 ```
 
 ## Compatibility Bridge

@@ -2,12 +2,14 @@
 
 ## System Overview
 
-Two-track quiz bowl buzzer system:
+Two-track quiz bowl buzzer system with three opt-in extensions:
 
-1. **Belief-feature pipeline:** Build MC tossups → score with likelihood models → train/compare buzzers → evaluate with S_q + calibration metrics
+1. **Belief-feature pipeline:** Build MC tossups → score with likelihood models → train/compare buzzers → evaluate with S_q, Expected Wins, and calibration metrics
 2. **T5 policy pipeline:** Supervised warm-start → PPO fine-tuning for an end-to-end text policy
 
 Both tracks share the same data layer (`qb_data/`) and environment (`qb_env/`).
+
+**Opt-in extensions:** Expected Wins reward mode (opponent models), Variable-K answer choices (padded obs + action masks), DSPy LM-based scoring (offline compile).
 
 ## Layered Architecture
 
@@ -17,6 +19,7 @@ Both tracks share the same data layer (`qb_data/`) and environment (`qb_env/`).
 │  scripts/build_mc_dataset.py → run_baselines.py →       │
 │  train_ppo.py → evaluate_all.py                         │
 │  scripts/train_t5_policy.py → compare_policies.py       │
+│  scripts/optimize_dspy.py  (offline DSPy compile)        │
 ├─────────────────────────────────────────────────────────┤
 │  Agent Layer                                             │
 │  agents/threshold_buzzer.py  (ThresholdBuzzer)           │
@@ -24,17 +27,19 @@ Both tracks share the same data layer (`qb_data/`) and environment (`qb_env/`).
 │  agents/ppo_buzzer.py        (PPOBuzzer via SB3)         │
 ├─────────────────────────────────────────────────────────┤
 │  Evaluation Layer                                        │
-│  evaluation/metrics.py   (S_q, ECE, Brier, accuracy)     │
+│  evaluation/metrics.py   (S_q, EW, ECE, Brier, accuracy)  │
 │  evaluation/controls.py  (shuffle, choices-only, alias)   │
 │  evaluation/plotting.py  (calibration curves, entropy)    │
 ├─────────────────────────────────────────────────────────┤
 │  Environment Layer                                       │
-│  qb_env/tossup_env.py    (TossupMCEnv, Gymnasium env)    │
+│  qb_env/tossup_env.py    (TossupMCEnv: EW, variable-K)   │
+│  qb_env/opponent_models.py (opponent buzz model protocol) │
 │  qb_env/text_wrapper.py  (TextObservationWrapper)        │
 ├─────────────────────────────────────────────────────────┤
 │  Model Layer                                             │
 │  models/likelihoods.py   (TfIdf, SBERT, T5, OpenAI)      │
-│  models/features.py      (belief feature extraction)      │
+│  models/dspy_likelihood.py (DSPyLikelihood, score cache)  │
+│  models/features.py      (belief + padded features)       │
 │  models/t5_policy.py     (T5PolicyModel + PolicyHead)     │
 ├─────────────────────────────────────────────────────────┤
 │  Data Layer                                              │
@@ -94,10 +99,10 @@ Core data structure: question text, tokens, answer, run_indices for clue boundar
 Adds: options (K answer choices), gold_index, option_profiles, distractor_strategy. Four anti-artifact guards prevent spurious patterns.
 
 ### `LikelihoodModel` (ABC, `models/likelihoods.py`)
-Pluggable scoring interface. Implementations: `TfIdfLikelihood`, `SBERTLikelihood`, `T5Likelihood`, `OpenAILikelihood`. Each implements `score(clue_prefix, option_profiles) → np.ndarray` and `_embed_batch(texts) → np.ndarray`.
+Pluggable scoring interface. Implementations: `TfIdfLikelihood`, `SBERTLikelihood`, `T5Likelihood`, `OpenAILikelihood`, `DSPyLikelihood`. Each implements `score(clue_prefix, option_profiles) → np.ndarray`. Embedding-based models also implement `_embed_batch()`; `DSPyLikelihood` raises `NotImplementedError` on embedding operations.
 
 ### `TossupMCEnv` (Gymnasium env, `qb_env/tossup_env.py`)
-POMDP environment: Discrete(K+1) action space (WAIT + K buzz options), Box(K+6) observation space (belief features). Three reward modes: `time_penalty`, `simple`, `human_grounded`.
+POMDP environment: Discrete(K+1) action space (WAIT + K buzz options), Box(K+6) observation space (belief features). Four reward modes: `time_penalty`, `simple`, `human_grounded`, `expected_wins`. Supports variable-K mode with padded observations and `action_masks()`.
 
 ### Agent hierarchy
 - `ThresholdBuzzer`: simple confidence threshold
@@ -116,6 +121,7 @@ POMDP environment: Discrete(K+1) action space (WAIT + K buzz options), Box(K+6) 
 | `scripts/compare_policies.py` | Compare T5 vs belief-feature policies |
 | `scripts/sweep_reward_shaping.py` | Multi-seed reward parameter sweep |
 | `scripts/run_smoke_pipeline.py` | End-to-end smoke test |
+| `scripts/optimize_dspy.py` | Offline DSPy compile/optimize |
 
 All pipeline scripts accept `--smoke` for fast testing and `--config` for custom YAML configs.
 

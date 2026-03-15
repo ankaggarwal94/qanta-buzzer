@@ -44,7 +44,7 @@ The `LikelihoodModel` base class caches embeddings in an in-memory dict keyed by
 **Severity:** Low
 **Files:** `agents/ppo_buzzer.py`
 
-SB3's `learn()` does not expose per-step action distributions. `PPOBuzzer.run_episode()` implements a custom episode loop to record `c_trace` and `g_trace` for S_q computation. This duplicates some environment-stepping logic and must be kept in sync with any environment changes.
+SB3's `learn()` does not expose per-step action distributions. `PPOBuzzer.run_episode()` implements a custom episode loop to record `c_trace`, `g_trace`, and `top_p_trace` for S_q and calibration computation. This duplicates some environment-stepping logic and must be kept in sync with any environment changes.
 
 ## Hardcoded Path Patterns
 
@@ -64,11 +64,19 @@ No `.github/workflows/`, `tox.ini`, or pre-commit hooks. However, `scripts/ci.sh
 **Severity:** Low
 **Files:** `tests/`
 
-261 tests cover core abstractions, optimizations (precomputed beliefs, cache persistence, top-M ranking), calibration correctness, and split reproducibility. Remaining gaps:
+318 tests (3 skipped for optional extras) cover core abstractions, extensions, and optimizations. Remaining gaps:
 - `evaluation/plotting.py` (plot generation — visual output only)
 - Pipeline scripts end-to-end (partially covered by `--smoke` flag)
 - Config validation edge cases in `qb_data/config.py`
 - `evaluation/controls.py` choices-only and alias substitution controls (shuffle precomputed control has equivalence tests)
+- DSPy live compile with real LM backend (only stubbed in tests)
+
+## DSPy Integration Caveats
+
+**Severity:** Low
+**Files:** `models/dspy_likelihood.py`, `models/likelihoods.py`
+
+`DSPyLikelihood` inherits `LikelihoodModel` but raises `NotImplementedError` from `embed_and_cache()` and `_embed_batch()`. Callers that use the generic `LikelihoodModel` interface for embedding-based operations (e.g. `precompute_embeddings()`) will fail at runtime if given a DSPy model. The factory returns a placeholder scorer by default which produces uniform scores — real scoring requires a compiled DSPy program. The `dspy` optional extra must be installed for the compile workflow.
 
 ## __pycache__ in Git Status
 

@@ -4,7 +4,7 @@ Canonical repo contract for all coding agents (Claude, Copilot, Cursor, etc.).
 
 ## Project Overview
 
-Stanford CS234 final project: a unified quiz bowl RL buzzer system with two tracks. The belief-feature pipeline builds MC tossups, scores answer profiles with TF-IDF / SBERT / T5 / optional OpenAI embeddings, trains or compares buzzers, and evaluates with S_q plus calibration metrics. The T5 policy pipeline provides supervised warm-start and PPO for an end-to-end text policy. `qanta-buzzer` is the canonical repo. qb-rl compatibility is preserved through additive shims rather than structural rewrites.
+Stanford CS234 final project: a unified quiz bowl RL buzzer system with two tracks. The belief-feature pipeline builds MC tossups, scores answer profiles with TF-IDF / SBERT / T5 / optional OpenAI / optional DSPy, trains or compares buzzers, and evaluates with S_q, Expected Wins, and calibration metrics. The T5 policy pipeline provides supervised warm-start and PPO for an end-to-end text policy. Three opt-in extensions: Expected Wins reward mode, variable-K answer choices, and DSPy integration. `qanta-buzzer` is the canonical repo. qb-rl compatibility is preserved through additive shims rather than structural rewrites.
 
 ## Setup
 
@@ -15,29 +15,30 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -U pip && pip install -e .
 ```
 
-Optional OpenAI support:
+Optional extras:
 
 ```bash
-pip install -e '.[openai]'
-export OPENAI_API_KEY=...
+pip install -e '.[openai]'    # OpenAI embedding support
+pip install -e '.[maskable]'  # MaskablePPO for variable-K
+pip install -e '.[dspy]'      # DSPy LM-based scoring
 ```
 
 ## Architecture
 
 | Package | Purpose |
 |---------|---------|
-| `qb_data/` | Canonical data loading, answer profiles, stratified splits, MC construction |
-| `qb_env/` | Gymnasium environment, text wrapper, qb-rl compatibility shims |
-| `models/` | Likelihood models (TF-IDF, SBERT, T5, OpenAI), belief features, T5 policy model |
+| `qb_data/` | Data loading, answer profiles, stratified splits, MC construction, DSPy profiles |
+| `qb_env/` | Gymnasium environment, text wrapper, opponent models, qb-rl shims |
+| `models/` | Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy |
 | `agents/` | Threshold, softmax-profile, sequential Bayes, PPO wrapper |
-| `evaluation/` | S_q metric, calibration, control experiments, plotting |
-| `scripts/` | Pipeline entrypoints and shared helpers |
+| `evaluation/` | S_q metric, Expected Wins, calibration, control experiments, plotting |
+| `scripts/` | Pipeline entrypoints, DSPy compile, shared helpers |
 | `training/` | T5 policy supervised + PPO trainers |
 | `configs/` | YAML configuration files (default, smoke, t5_policy) |
 
 ## Testing
 
-315 tests across 22 test files (3 skipped when optional extras not installed).
+318 tests across 22 test files (3 skipped when optional extras not installed).
 
 ```bash
 pytest                    # full suite
