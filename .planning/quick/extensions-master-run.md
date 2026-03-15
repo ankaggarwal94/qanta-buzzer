@@ -32,7 +32,7 @@
 | REVIEW-2 — DSPy-focused review fixes | completed | c912c814 | 2 |
 
 **Total new tests: 62**
-**Total tests in repo: 320 passed, 3 skipped**
+**Total tests in repo: 342 passed, 3 skipped**
 
 ---
 
@@ -40,7 +40,7 @@
 
 | Check | Result |
 |-------|--------|
-| Full CI (`pytest tests/`) | 320 passed, 3 skipped (55s) |
+| Full CI (`pytest tests/`) | 342 passed, 3 skipped (55s) |
 | Manual smoke (`bash scripts/manual-smoke.sh`) | 4/4 stages complete (10s) |
 | T5 smoke | Supervised + PPO, test accuracy reported (22s) |
 | Existing invariants | calibration uses top_p_trace, splits use hashlib.md5, alias re-scores live |

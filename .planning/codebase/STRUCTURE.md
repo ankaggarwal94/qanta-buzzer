@@ -43,11 +43,13 @@ qanta-buzzer/
 │   ├── mc_builder.py           # Re-export shim → qb_data.mc_builder
 │   ├── opponent_models.py      # OpponentBuzzModel protocol + logistic/empirical impls
 │   ├── text_utils.py           # Re-export shim → qb_data.text_utils
+│   ├── stop_only_env.py         # StopOnlyEnv: Discrete(2) WAIT/BUZZ wrapper
 │   ├── text_wrapper.py         # TextObservationWrapper for T5 policy pipeline
 │   └── tossup_env.py           # TossupMCEnv (main env: EW, variable-K, action masks)
 │
 ├── training/                   # T5 policy training loops
 │   ├── __init__.py
+│   ├── hazard_pretrain.py      # Hazard bridge loss utilities
 │   ├── train_ppo_t5.py         # PPO fine-tuning for T5 policy
 │   └── train_supervised_t5.py  # Supervised warm-start for T5 policy
 │
@@ -65,9 +67,10 @@ qanta-buzzer/
 │   ├── optimize_dspy.py        # Offline DSPy compile/optimize workflow
 │   └── test_mc_builder.py      # Standalone MC builder test script
 │
-├── tests/                            # pytest test suite (320 tests, 22 files)
+├── tests/                            # pytest test suite (342 tests, 24 files)
 │   ├── __init__.py
 │   ├── conftest.py                   # Shared fixtures
+│   ├── test_action_space_alignment.py # Factored action semantics guards
 │   ├── test_agents.py                # Baseline agents, precomputed equivalence, K-agnostic
 │   ├── test_answer_profile_cache.py  # Answer profile memoization cache
 │   ├── test_build_mc_dataset.py      # MC dataset construction, CLI overrides
@@ -78,6 +81,7 @@ qanta-buzzer/
 │   ├── test_environment.py           # TossupMCEnv: reward modes, EW, variable-K, masks
 │   ├── test_factories.py             # Factories including DSPy dispatch
 │   ├── test_features.py              # Belief features, padded features
+│   ├── test_hazard_pretrain.py       # Hazard bridge survival terms and NLL loss
 │   ├── test_likelihoods.py           # TfIdf, SBERT, T5 scoring, cache, memory
 │   ├── test_mc_builder_topk.py       # Top-M argpartition distractor ranking
 │   ├── test_mc_builder_variable_k.py # Variable-K dataset build

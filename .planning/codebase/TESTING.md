@@ -11,6 +11,7 @@
 ```
 tests/
 ├── conftest.py                   # Shared fixtures (module-scoped for heavy models)
+├── test_action_space_alignment.py # Factored action semantics integration guards
 ├── test_agents.py                # ThresholdBuzzer, SoftmaxProfileBuzzer, precomputed equivalence, K-agnostic
 ├── test_answer_profile_cache.py  # Answer profile memoization cache correctness
 ├── test_build_mc_dataset.py      # MC dataset construction, CLI overrides, anti-artifact guards
@@ -21,6 +22,7 @@ tests/
 ├── test_environment.py           # TossupMCEnv reset/step/reward, Expected Wins, variable-K, masks
 ├── test_factories.py             # Factory functions including DSPy dispatch
 ├── test_features.py              # Belief feature extraction, padded features
+├── test_hazard_pretrain.py       # Hazard bridge survival terms and expected NLL loss
 ├── test_likelihoods.py           # TfIdf, SBERT, T5 scoring (shape, dtype, cache, memory)
 ├── test_mc_builder_topk.py       # Top-M argpartition distractor ranking correctness
 ├── test_mc_builder_variable_k.py # Variable-K dataset build: mixed option counts, guards

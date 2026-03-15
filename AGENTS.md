@@ -38,7 +38,7 @@ pip install -e '.[dspy]'      # DSPy LM-based scoring
 
 ## Testing
 
-320 tests across 22 test files (3 skipped when optional extras not installed).
+342 tests across 24 test files (3 skipped when optional extras not installed).
 
 ```bash
 pytest                    # full suite
