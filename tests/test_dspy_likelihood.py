@@ -37,10 +37,15 @@ class TestDSPyLikelihood:
         assert call_count == 1
 
     def test_changed_fingerprint_invalidates(self) -> None:
-        model1 = DSPyLikelihood(scorer=_fake_scorer, program_fingerprint="v1")
-        model2 = DSPyLikelihood(scorer=_fake_scorer, program_fingerprint="v2")
-        model1.score("clue", ["A", "B"])
-        assert len(model2._score_cache) == 0
+        """Different fingerprints produce different cache keys for same input."""
+        key_v1 = _score_cache_key("clue", ["A", "B"], "v1")
+        key_v2 = _score_cache_key("clue", ["A", "B"], "v2")
+        assert key_v1 != key_v2, "Fingerprint must affect cache key"
+
+        model = DSPyLikelihood(scorer=_fake_scorer, program_fingerprint="v1")
+        model.score("clue", ["A", "B"])
+        assert key_v1 in model._score_cache
+        assert key_v2 not in model._score_cache
 
     def test_persistence_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -68,3 +73,18 @@ class TestDSPyLikelihood:
         assert model.cache_memory_bytes == 0
         model.score("c", ["A"])
         assert model.cache_memory_bytes > 0
+
+    def test_score_shape_validation(self) -> None:
+        """Scorer returning wrong length raises ValueError."""
+        def bad_scorer(clue, options):
+            return [1.0, 2.0]  # always 2, ignoring len(options)
+
+        model = DSPyLikelihood(scorer=bad_scorer)
+        with pytest.raises(ValueError, match="expected"):
+            model.score("clue", ["A", "B", "C", "D"])
+
+    def test_isinstance_likelihood_model(self) -> None:
+        """DSPyLikelihood is a proper LikelihoodModel subclass."""
+        from models.likelihoods import LikelihoodModel
+        model = DSPyLikelihood(scorer=_fake_scorer)
+        assert isinstance(model, LikelihoodModel)

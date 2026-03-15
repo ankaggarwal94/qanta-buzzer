@@ -4,7 +4,7 @@
 data:
   csv_path: "questions.csv"  # Raw QANTA CSV with ||| separated clues
   K: 4  # Default number of answer choices
-  distractor_strategy: "sbert_profile"  # sbert_profile | category_random | embedding_based
+  distractor_strategy: "sbert_profile"  # sbert_profile | tfidf_profile | category_random | openai_profile
   variable_K: false  # If true, sample K per question from [min_K, max_K]
   min_K: 2
   max_K: null  # Defaults to K when null
@@ -81,8 +81,8 @@ evaluation:
   prediction_dir: "results/predictions"
 
 # DSPy integration (optional, offline-first)
+# Activated by setting likelihood.model: dspy — no separate enable flag.
 dspy:
-  enabled: false
   model: "openai/gpt-4o-mini"  # DSPy LM identifier
   optimizer: "BootstrapFewShot"  # BootstrapFewShot | MIPROv2
   cache_dir: "cache/dspy"

@@ -5,7 +5,9 @@ interface.  Unlike embedding-based models, the DSPy scorer calls an LM
 to rank options — so caching is at the *score* level (keyed by clue +
 options + program fingerprint), not at the embedding level.
 
-This module is only importable when the ``dspy`` extra is installed.
+This module is importable without the ``dspy`` extra installed.
+The ``dspy`` package is only required at runtime when a DSPy-backed
+scorer is actually invoked (e.g. via ``scripts/optimize_dspy.py``).
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from models.likelihoods import LikelihoodModel
 
 
 def _score_cache_key(
@@ -31,12 +35,13 @@ def _score_cache_key(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-class DSPyLikelihood:
-    """LikelihoodModel-compatible scorer backed by a DSPy program.
+class DSPyLikelihood(LikelihoodModel):
+    """LikelihoodModel subclass backed by a DSPy program.
 
-    Conforms to the ``LikelihoodModel.score()`` contract: accepts
-    ``(clue_prefix, option_profiles)`` and returns ``np.ndarray`` of
-    shape ``(K,)``.
+    Inherits from ``LikelihoodModel`` so it satisfies the factory
+    return type and isinstance checks.  Overrides ``score()`` with
+    LM-based scoring and a score-level cache.  ``_embed_batch()`` raises
+    ``NotImplementedError`` because DSPy scoring is not embedding-based.
 
     Unlike TF-IDF/SBERT/T5, this model does NOT produce embeddings.
     ``_embed_batch`` is explicitly unsupported — calling it raises
@@ -62,6 +67,7 @@ class DSPyLikelihood:
         program_fingerprint: str = "default",
         cache_dir: str | Path | None = None,
     ) -> None:
+        super().__init__()
         self.scorer = scorer
         self.program_fingerprint = program_fingerprint
         self._score_cache: dict[str, np.ndarray] = {}
@@ -89,6 +95,8 @@ class DSPyLikelihood:
         """Score answer options using the DSPy scorer.
 
         Results are cached by ``(clue, options, program_fingerprint)``.
+        Validates that the returned array has shape ``(K,)`` where
+        ``K = len(option_profiles)``.
         """
         key = _score_cache_key(clue_prefix, option_profiles, self.program_fingerprint)
         if key in self._score_cache:
@@ -96,6 +104,12 @@ class DSPyLikelihood:
 
         raw = self.scorer(clue_prefix, option_profiles)
         scores = np.array(raw, dtype=np.float32)
+        expected_k = len(option_profiles)
+        if scores.ndim != 1 or len(scores) != expected_k:
+            raise ValueError(
+                f"DSPy scorer returned shape {scores.shape}, "
+                f"expected ({expected_k},)"
+            )
         self._score_cache[key] = scores
         return scores.copy()
 
@@ -127,12 +141,14 @@ class DSPyLikelihood:
         return sum(v.nbytes for v in self._score_cache.values())
 
     def _embed_batch(self, texts: list[str]) -> np.ndarray:
+        """Not supported — DSPy scoring is not embedding-based."""
         raise NotImplementedError(
             "DSPyLikelihood does not produce embeddings. "
             "Use score() directly."
         )
 
     def embed_and_cache(self, texts: list[str]) -> np.ndarray:
+        """Not supported — DSPy scoring is not embedding-based."""
         raise NotImplementedError(
             "DSPyLikelihood does not produce embeddings. "
             "Use score() directly."
