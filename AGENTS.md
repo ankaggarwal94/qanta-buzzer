@@ -4,7 +4,7 @@ Canonical repo contract for all coding agents (Claude, Copilot, Cursor, etc.).
 
 ## Project Overview
 
-Stanford CS234 final project: a unified quiz bowl RL buzzer system with two tracks. The belief-feature pipeline builds MC tossups, scores answer profiles with TF-IDF / SBERT / T5 / optional OpenAI / optional DSPy, trains or compares buzzers, and evaluates with S_q, Expected Wins, and calibration metrics. The T5 policy pipeline provides supervised warm-start and PPO for an end-to-end text policy. Three opt-in extensions: Expected Wins reward mode, variable-K answer choices, and DSPy integration. `qanta-buzzer` is the canonical repo. qb-rl compatibility is preserved through additive shims rather than structural rewrites.
+Stanford CS234 final project: a unified quiz bowl RL buzzer system with two tracks. The belief-feature pipeline builds MC tossups, scores answer profiles with TF-IDF / SBERT / T5 / optional OpenAI / optional DSPy, trains or compares buzzers, and evaluates with S_q, Expected Wins, and calibration metrics. The T5 policy pipeline provides supervised warm-start and PPO for an end-to-end text policy using factorized stop/answer semantics (`P(WAIT)` and `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`). Three opt-in extensions: Expected Wins reward mode, variable-K answer choices, and DSPy integration. Additional opt-in feature-port surfaces are available for stop-only PPO (`scripts/train_ppo.py --policy-mode stop_only`) and no-buzz horizon behavior (`environment.end_mode: no_buzz`). `qanta-buzzer` is the canonical repo. qb-rl compatibility is preserved through additive shims rather than structural rewrites.
 
 ## Setup
 
@@ -28,12 +28,12 @@ pip install -e '.[dspy]'      # DSPy LM-based scoring
 | Package | Purpose |
 |---------|---------|
 | `qb_data/` | Data loading, answer profiles, stratified splits, MC construction, DSPy profiles |
-| `qb_env/` | Gymnasium environment, text wrapper, opponent models, qb-rl shims |
+| `qb_env/` | Gymnasium environment, text wrapper, opponent models, optional StopOnlyEnv wrapper, qb-rl shims |
 | `models/` | Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy |
 | `agents/` | Threshold, softmax-profile, sequential Bayes, PPO wrapper |
 | `evaluation/` | S_q metric, Expected Wins, calibration, control experiments, plotting |
 | `scripts/` | Pipeline entrypoints, DSPy compile, shared helpers |
-| `training/` | T5 policy supervised + PPO trainers |
+| `training/` | T5 policy supervised + PPO trainers, hazard bridge utilities |
 | `configs/` | YAML configuration files (default, smoke, t5_policy) |
 
 ## Testing
@@ -70,6 +70,9 @@ python scripts/train_t5_policy.py --config configs/t5_policy.yaml
 python scripts/compare_policies.py --config configs/t5_policy.yaml
 ```
 
+Notes:
+`scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the future hazard bridge. `--hazard-pretrain` intentionally raises `NotImplementedError` until that loop is implemented.
+
 ## Configuration
 
 | Config | Purpose |
@@ -79,6 +82,10 @@ python scripts/compare_policies.py --config configs/t5_policy.yaml
 | `configs/t5_policy.yaml` | T5 policy pipeline: model, supervised, PPO, and data sections |
 
 qb-rl config aliases are supported (e.g., `data.dataset`, `likelihood.sbert_name`, `environment.reward` as alias for `reward_mode`).
+
+Additional environment options:
+- `environment.end_mode: force_commit|no_buzz` controls horizon behavior
+- `environment.no_buzz_reward` is only used when `end_mode: no_buzz`
 
 ## Compatibility Bridge
 

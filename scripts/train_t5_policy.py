@@ -82,6 +82,22 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override number of PPO iterations from config.",
     )
+    parser.add_argument(
+        "--hazard-pretrain",
+        action="store_true",
+        help="Enable the experimental hazard pretraining bridge before PPO.",
+    )
+    parser.add_argument(
+        "--beta-terminal",
+        type=float,
+        default=1.0,
+        help="Terminal survival penalty used by the hazard bridge.",
+    )
+    parser.add_argument(
+        "--freeze-answer-head",
+        action="store_true",
+        help="Freeze the answer head during the hazard bridge phase.",
+    )
     return parser.parse_args()
 
 
@@ -236,6 +252,19 @@ def load_questions(args: argparse.Namespace, config: dict) -> list:
     return questions
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    """Validate CLI arguments and reject unsupported bridge paths."""
+    if args.skip_supervised and args.model_path is None:
+        print("ERROR: --model-path is required when using --skip-supervised")
+        sys.exit(1)
+    if args.hazard_pretrain:
+        raise NotImplementedError(
+            "Hazard pretraining loop not yet implemented. "
+            "The math utilities are available in training/hazard_pretrain.py, "
+            "but the end-to-end bridge has not been wired into train_t5_policy.py yet."
+        )
+
+
 def split_questions(questions: list, config: dict) -> tuple:
     """Split questions into train/val/test sets.
 
@@ -277,10 +306,7 @@ def split_questions(questions: list, config: dict) -> tuple:
 def main() -> None:
     """Run the full T5 policy training pipeline."""
     args = parse_args()
-
-    if args.skip_supervised and args.model_path is None:
-        print("ERROR: --model-path is required when using --skip-supervised")
-        sys.exit(1)
+    validate_args(args)
 
     # Load config with overrides
     config = load_config_with_overrides(args)

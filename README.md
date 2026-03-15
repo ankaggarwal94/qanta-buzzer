@@ -57,6 +57,10 @@ python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke  # qui
 
 The T5 pipeline uses its own config (`configs/t5_policy.yaml`) which defines `model`, `supervised`, `ppo`, and `data` sections. It does not inherit `environment` or `likelihood` settings from the belief-feature configs -- the T5 PPO trainer uses default reward settings (`wait_penalty=0.1`).
 
+The T5 policy uses factorized action semantics: the wait head models `P(WAIT)` vs `P(BUZZ)`, the answer head models `P(answer | BUZZ)`, and the flat action distribution is `P(WAIT)` plus `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`.
+
+The CLI also reserves `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for an experimental hazard-style warm-start bridge. Those flags are parsed, but `--hazard-pretrain` currently raises `NotImplementedError` until the training loop is wired.
+
 ### Policy comparison
 
 ```bash
@@ -69,6 +73,7 @@ Compares the MLP belief-feature policy against the T5 end-to-end policy on the s
 
 - `scripts/run_smoke_pipeline.py` -- runs all four smoke stages sequentially and writes a timing summary to `artifacts/smoke/smoke_pipeline_summary.json`
 - `scripts/sweep_reward_shaping.py` -- grid sweep over `wait_penalty` and `early_buzz_penalty` with multi-seed evaluation
+- `scripts/train_ppo.py --policy-mode flat_kplus1|stop_only` -- optional stop-only PPO surface; default remains `flat_kplus1`
 - `generate_presentation.py` -- generates the Marp presentation slides
 
 ## Configuration
@@ -82,6 +87,8 @@ Two primary YAML configs:
 | `configs/t5_policy.yaml` | T5 pipeline | Own `model`/`supervised`/`ppo`/`data` sections; no `environment` |
 
 qb-rl config aliases are also supported: `data.dataset`, `data.dataset_config`, `likelihood.sbert_name`, `environment.reward` as an alias for `reward_mode`, etc.
+
+For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy behavior). Set `environment.end_mode: no_buzz` with `environment.no_buzz_reward` to end the episode without forcing a terminal answer.
 
 ## Testing
 
@@ -109,12 +116,12 @@ The test suite covers:
 
 ```
 qb_data/        Data loading, answer profiles, stratified splits, MC construction, DSPy profiles
-qb_env/         Gymnasium environment, text wrapper, opponent models, qb-rl shims
+qb_env/         Gymnasium environment, text wrapper, opponent models, optional StopOnlyEnv wrapper, qb-rl shims
 models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy
 agents/         Threshold, softmax-profile, sequential Bayes, PPO buzzer
 evaluation/     S_q metric, Expected Wins, calibration, control experiments, plotting
 scripts/        Pipeline entrypoints, DSPy compile, shared helpers
-training/       T5 policy supervised + PPO trainers
+training/       T5 policy supervised + PPO trainers, hazard bridge utilities
 configs/        YAML configuration files
 artifacts/      Generated pipeline outputs (smoke/ and main/)
 _legacy/        Pre-modularization prototypes (not installed)
