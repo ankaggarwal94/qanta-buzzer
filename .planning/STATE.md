@@ -178,6 +178,7 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 - Extension campaign (18 patches): Expected Wins reward, Variable-K, DSPy integration
 - Post-extension code review: 7 issues found by ChatGPT 5.4 Pro, all verified and fixed
 - Fixed: DSPyLikelihood inheritance, score shape validation, stale config key/comments, weak tests
+- PR #1 review-remediation reconciliation: DSPy likelihood/factory contract verified-closed, compile path metric extraction fix committed, answer-profile docs/tests verified-closed
 - 320 tests across 22 test files (3 skipped for optional extras)
 
 ### Next Session Priority
@@ -195,4 +196,4 @@ Unified quiz bowl RL buzzer with two tracks plus three opt-in extensions (Expect
 
 ---
 *State file initialized: 2026-02-25*
-Last activity: 2026-03-15 - Second DSPy review fixes (optimizer metric, train split, docstring, logging, tests)
+Last activity: 2026-03-15 - PR #1 DSPy reconciliation (WP1-3 verified/fixed, tracked in .planning/quick/pr1-reconciliation.md)

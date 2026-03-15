@@ -41,6 +41,36 @@
 
 ---
 
+### WP-3: DSPy Answer-Profile Fallback / Doc / Test Behavior
+
+| Field | Value |
+|-------|-------|
+| Objective | Verify docstrings don't overclaim leave-one-out, fallback logs truthfully, test names match bodies, no misleading naming drift |
+| Repo evidence checked | `qb_data/dspy_answer_profiles.py`, `tests/test_dspy_answer_profiles.py` |
+| Files changed | none |
+| Tests run | `pytest tests/test_dspy_answer_profiles.py -q` → 2 passed, 1 skipped in 0.01s |
+| Result | **verified_closed** |
+| Commit hash | — |
+| Rollback command | — |
+| Notes | (1) Docstring explicitly disclaims leave-one-out enforcement: "This function itself does not receive per-question exclusion context — it augments whatever profiles it is given." ✅ (2) Fallback logs at WARNING per-answer and INFO summary with augmented/fallback counts (fixed in REVIEW-2 c912c814). ✅ (3) All three test names match their bodies: `test_module_importable_without_dspy` asserts callable, `test_runtime_call_without_dspy_raises` expects ImportError, `test_with_dspy_installed` guards with importorskip and asserts callable. ✅ (4) No naming drift found; REVIEW-2 resolved the prior "silent except" issue. ✅ |
+
+---
+
+### WP-4: Durable Docs — PR #1 Absorption Statement
+
+| Field | Value |
+|-------|-------|
+| Objective | Ensure durable docs reflect that PR #1 review-remediation content is absorbed locally; no misleading upstream references |
+| Repo evidence checked | `README.md`, `AGENTS.md`, `CLAUDE.md`, `.planning/STATE.md`, `.planning/quick/extensions-master-run.md` |
+| Files changed | `.planning/STATE.md`, `.planning/quick/extensions-master-run.md` |
+| Tests run | `pytest tests/test_dspy_likelihood.py tests/test_dspy_optimize.py tests/test_dspy_answer_profiles.py tests/test_factories.py -q` → (pending) |
+| Result | **completed** |
+| Commit hash | (pending) |
+| Rollback command | `git revert <hash>` |
+| Notes | (1) README/AGENTS/CLAUDE already reflect local reality — modular pipeline canonical, extensions opt-in, test counts accurate, no misleading upstream references. (2) STATE.md session summary updated to mention PR #1 reconciliation status. (3) extensions-master-run.md cross-references the PR #1 reconciliation ledger. (4) No changes needed to README/AGENTS/CLAUDE — they don't mention PR #1 and shouldn't. |
+
+---
+
 ### WP-A: T5 Joint Action Semantics
 
 | Field | Value |

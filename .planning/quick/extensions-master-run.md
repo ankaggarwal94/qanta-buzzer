@@ -76,3 +76,9 @@ To roll back the entire extension campaign:
 git revert --no-commit 239a2a81..HEAD
 git commit -m "revert: roll back extension campaign"
 ```
+
+---
+
+## PR #1 Reconciliation
+
+The review-remediation content from upstream PR #1 (factored action semantics) overlaps with the REVIEW and REVIEW-2 patches above. A separate reconciliation ledger tracks per-work-package verification: `.planning/quick/pr1-reconciliation.md`. DSPy-related items (WP1-3) are resolved; remaining PR #1 features (T5 joint action semantics, StopOnlyEnv, end_mode, hazard pretrain) are tracked as WP-A through WP-D there.
