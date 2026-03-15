@@ -65,7 +65,7 @@ qanta-buzzer/
 │   ├── optimize_dspy.py        # Offline DSPy compile/optimize workflow
 │   └── test_mc_builder.py      # Standalone MC builder test script
 │
-├── tests/                            # pytest test suite (318 tests, 22 files)
+├── tests/                            # pytest test suite (320 tests, 22 files)
 │   ├── __init__.py
 │   ├── conftest.py                   # Shared fixtures
 │   ├── test_agents.py                # Baseline agents, precomputed equivalence, K-agnostic

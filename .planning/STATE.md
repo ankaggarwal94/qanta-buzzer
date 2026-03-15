@@ -178,7 +178,7 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 - Extension campaign (18 patches): Expected Wins reward, Variable-K, DSPy integration
 - Post-extension code review: 7 issues found by ChatGPT 5.4 Pro, all verified and fixed
 - Fixed: DSPyLikelihood inheritance, score shape validation, stale config key/comments, weak tests
-- 318 tests across 22 test files (3 skipped for optional extras)
+- 320 tests across 22 test files (3 skipped for optional extras)
 
 ### Next Session Priority
 1. CS234 writeup — all infrastructure is ready for generating paper results
@@ -191,8 +191,8 @@ Unified quiz bowl RL buzzer with two tracks plus three opt-in extensions (Expect
 ### Environment State
 - Working directory: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer`
 - Python environment: `.venv/` with Python 3.13, `pip install -e .` done
-- 318 tests passing (3 skipped), CI green, smoke pipeline green, T5 smoke green
+- 320 tests passing (3 skipped), CI green, smoke pipeline green, T5 smoke green
 
 ---
 *State file initialized: 2026-02-25*
-Last activity: 2026-03-14 - Post-extension code review fixes (DSPyLikelihood inheritance, shape validation, config cleanup)
+Last activity: 2026-03-15 - Second DSPy review fixes (optimizer metric, train split, docstring, logging, tests)

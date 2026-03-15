@@ -85,7 +85,7 @@ qb-rl config aliases are also supported: `data.dataset`, `data.dataset_config`, 
 
 ## Testing
 
-318 tests across 22 test files (3 skipped when optional extras not installed):
+320 tests across 22 test files (3 skipped when optional extras not installed):
 
 ```bash
 pytest                    # full suite

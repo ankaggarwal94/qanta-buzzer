@@ -64,7 +64,7 @@ No `.github/workflows/`, `tox.ini`, or pre-commit hooks. However, `scripts/ci.sh
 **Severity:** Low
 **Files:** `tests/`
 
-318 tests (3 skipped for optional extras) cover core abstractions, extensions, and optimizations. Remaining gaps:
+320 tests (3 skipped for optional extras) cover core abstractions, extensions, and optimizations. Remaining gaps:
 - `evaluation/plotting.py` (plot generation — visual output only)
 - Pipeline scripts end-to-end (partially covered by `--smoke` flag)
 - Config validation edge cases in `qb_data/config.py`
