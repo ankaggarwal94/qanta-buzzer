@@ -136,7 +136,8 @@ Phase 1 (sequential — builds the shared MC dataset)
   └─ Wave 4 (sequential — K-sensitivity, clobbers baseline_summary.json):
        Phase 13 — K=2,3,5,6 builds + baselines (each result copied to results/)
 
-Not in script (run manually):
+Not in parallel mode (sequential only or run manually):
+  Phase 9  — distractor comparison (sequential mode only)
   Phase 10 — variable-K + MaskablePPO (not wired through train_ppo.py)
   Phase 12 — DSPy compile (requires API key)
   Phase 18 — OpenAI embeddings (requires API key)
@@ -179,7 +180,7 @@ If you are an AI coding agent executing this runbook:
 
 2. **If the script fails:** Read the failing `results/phase_*.log`, diagnose the issue, fix it, then re-run only the failed phase using the manual commands in the sections below.
 
-3. **Do not run phases 2/3/5 sequentially** if the parallel script is available — they are independent and running them in parallel saves 2–3x wall time. Phase 13 (K-sensitivity) must run after Phase 4 because both write `baseline_summary.json`.
+3. **Do not run phases 2/3/5 sequentially** if the parallel script is available — they are independent and running them in parallel saves 2–3x wall time. Phase 13 (K-sensitivity) must run after Phase 4 because Phase 4 reads `baseline_summary.json` and Phase 13 overwrites it.
 
 4. **Do not modify `artifacts/main/mc_dataset.json`** after Phase 1 — every subsequent phase reads it.
 
@@ -502,8 +503,8 @@ results/                         # Stable per-phase outputs
 ├── ppo_stop_only.json           # Phase 16 stop-only PPO
 ├── ppo_no_buzz.json             # Phase 17 no-buzz horizon
 ├── baselines_k2..k6.json        # Phase 13 K-sensitivity
-├── baselines_tfidf_profile.json # Phase 9 distractor comparison
-└── baselines_category_random.json
+├── baselines_tfidf_profile.json # Phase 9 (sequential mode only)
+└── baselines_category_random.json # Phase 9 (sequential mode only)
 
 artifacts/main/                  # Working directory (overwritten by later phases)
 ├── mc_dataset.json              # Stable — built in Phase 1, never overwritten
