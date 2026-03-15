@@ -5,13 +5,19 @@
 # Dependencies form a DAG:
 #
 #   Phase 1 (build MC dataset)
-#     ├── Wave A: Phases 2, 3, 5, 9, 10, 13  (independent, parallel)
-#     │     ├── Phase 4  (needs Phase 2+3 outputs)
-#     │     ├── Phase 6  (needs Phase 3+5 outputs)
-#     │     └── Phase 7  (needs Phase 1 only, but writes to same PPO dir)
-#     └── Wave B: Phases 11, 14, 15, 16, 17  (need Phase 1 MC dataset)
+#     ├── Wave 1 (parallel): Phases 2, 3, 5, 13
+#     │     Tracks A/B/C write to different artifact types (baselines vs PPO vs T5)
+#     │     Track D (K-sensitivity) writes to artifacts/k*/ (isolated)
+#     ├── Wave 2 (sequential after Wave 1): Phases 4, 6
+#     │     Must be sequential — share artifacts/main/ for reads and writes
+#     └── Wave 3 (sequential): Phases 11, 14, 15, 16, 17
+#         PPO/eval ablations that reuse artifacts/main/
 #
-# Each parallel phase writes to its own artifacts directory to avoid clobber.
+# Wave 1 tracks A and D both write artifacts/main/baseline_summary.json,
+# but Track D's baselines use different --mc-path so results are copied
+# to results/ immediately and the final baseline_summary.json is from
+# whichever track finishes last. Phase 4 (Wave 2) reads baseline_summary.json
+# only after Wave 1 completes, so there is no read-during-write race.
 #
 # Usage:
 #   bash scripts/run_full_pipeline.sh                    # t5-base (balanced)
@@ -224,49 +230,33 @@ else
     wait_all "${PIDS[@]}"
     echo ""
 
-    echo "=== WAVE 2: Phases that depend on Wave 1 ==="
-    PIDS=()
+    echo "=== WAVE 2: Sequential post-Wave-1 phases (share artifacts/main/) ==="
 
-    # Phase 4: Evaluate all (needs baselines from Phase 2)
-    (
-        run_phase "4" python scripts/evaluate_all.py \
-            --config configs/default.yaml --mc-path "$MC"
-        cp artifacts/main/evaluation_report.json "$RESULTS/eval_default.json"
-    ) &
-    PIDS+=($!)
+    # Phase 4: Evaluate all (reads baseline_summary.json from Phase 2)
+    run_phase "4" python scripts/evaluate_all.py \
+        --config configs/default.yaml --mc-path "$MC"
+    cp artifacts/main/evaluation_report.json "$RESULTS/eval_default.json"
 
     # Phase 6: Compare policies (needs Phase 3 PPO + Phase 5 T5)
-    (
-        run_phase "6" python scripts/compare_policies.py \
-            --mlp-checkpoint artifacts/main/ppo_model \
-            --t5-checkpoint checkpoints/ppo_t5/best_model \
-            --mc-path "$MC" \
-            --output "$RESULTS/t5_comparison.json"
-    ) &
-    PIDS+=($!)
+    run_phase "6" python scripts/compare_policies.py \
+        --mlp-checkpoint artifacts/main/ppo_model \
+        --t5-checkpoint checkpoints/ppo_t5/best_model \
+        --mc-path "$MC" \
+        --output "$RESULTS/t5_comparison.json"
 
-    # Phase 11: Expected Wins eval
-    (
-        run_phase "11" python scripts/evaluate_all.py \
-            --config configs/default.yaml --mc-path "$MC" \
-            environment.reward_mode=expected_wins environment.opponent_buzz_model.type=logistic
-        cp artifacts/main/evaluation_report.json "$RESULTS/eval_ew_logistic.json"
-    ) &
-    PIDS+=($!)
+    # Phase 11: Expected Wins eval (writes evaluation_report.json)
+    run_phase "11" python scripts/evaluate_all.py \
+        --config configs/default.yaml --mc-path "$MC" \
+        environment.reward_mode=expected_wins environment.opponent_buzz_model.type=logistic
+    cp artifacts/main/evaluation_report.json "$RESULTS/eval_ew_logistic.json"
 
-    # Phase 15: Belief mode comparison
-    (
-        run_phase "15" python scripts/run_baselines.py \
-            --config configs/default.yaml --mc-path "$MC" \
-            environment.belief_mode=sequential_bayes likelihood.model=tfidf
-        cp artifacts/main/baseline_summary.json "$RESULTS/baselines_seqbayes.json"
-    ) &
-    PIDS+=($!)
+    # Phase 15: Belief mode comparison (writes baseline_summary.json)
+    run_phase "15" python scripts/run_baselines.py \
+        --config configs/default.yaml --mc-path "$MC" \
+        environment.belief_mode=sequential_bayes likelihood.model=tfidf
+    cp artifacts/main/baseline_summary.json "$RESULTS/baselines_seqbayes.json"
 
-    echo "Waiting for Wave 2 (${#PIDS[@]} tracks)..."
-    wait_all "${PIDS[@]}"
     echo ""
-
     echo "=== WAVE 3: PPO ablations (sequential — share artifacts/main/) ==="
 
     echo "[Phase 14a] reward_mode=simple"

@@ -123,16 +123,23 @@ Phase 1 (sequential — builds the shared MC dataset)
   │    Track C: Phase 5  — T5 policy (supervised + PPO)
   │    Track D: Phase 13 — K-sensitivity (K=2,3,5,6 builds + baselines)
   │
-  ├─ Wave 2 (4 parallel tracks, starts after Wave 1):
-  │    Phase 4  — full evaluation + controls (needs Phase 2)
-  │    Phase 6  — MLP vs T5 comparison (needs Phase 3 + 5)
-  │    Phase 11 — Expected Wins evaluation
-  │    Phase 15 — belief mode comparison (sequential_bayes)
+  ├─ Wave 2 (sequential — share artifacts/main/, starts after Wave 1):
+  │    Phase 4  — full evaluation + controls (reads baseline_summary)
+  │    Phase 6  — MLP vs T5 comparison (reads PPO + T5 models)
+  │    Phase 11 — Expected Wins evaluation (writes evaluation_report)
+  │    Phase 15 — belief mode comparison (writes baseline_summary)
   │
   └─ Wave 3 (sequential — PPO ablations):
        Phase 14 — reward modes (simple, human_grounded)
        Phase 16 — stop-only PPO
        Phase 17 — no-buzz horizon
+
+Not in script (run manually):
+  Phase 9  — distractor comparison
+  Phase 10 — variable-K + MaskablePPO
+  Phase 12 — DSPy compile
+  Phase 18 — OpenAI embeddings
+  Phase 19 — DSPy MIPROv2
 ```
 
 **Output:** All JSON results in `results/`, per-phase logs in `results/phase_*.log`.
@@ -604,8 +611,10 @@ For now, variable-K baselines (which don't need MaskablePPO) work correctly.
 
 ### Phase 11: Expected Wins evaluation
 
-Re-evaluate the trained PPO model from Phase 3 using the Expected Wins
-metric with a logistic opponent model.
+Evaluate the SoftmaxProfile baseline (from `evaluate_all.py`) using the
+Expected Wins metric with a logistic opponent model. Note: this evaluates
+the baseline agents, not the PPO model — to train PPO with Expected Wins
+reward, see the separate command below.
 
 ```bash
 # Evaluate with Expected Wins reward mode and logistic opponent
