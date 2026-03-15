@@ -22,13 +22,16 @@ from __future__ import annotations
 
 import random
 from dataclasses import replace
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 
 from qb_data.mc_builder import MCQuestion
+
+if TYPE_CHECKING:
+    from agents.threshold_buzzer import _PrecomputedQuestion
 
 
 def _option_scalar_features(option: str) -> list[float]:

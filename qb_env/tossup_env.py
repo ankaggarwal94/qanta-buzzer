@@ -16,7 +16,7 @@ for the unified qanta-buzzer codebase.
 from __future__ import annotations
 
 import random
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import gymnasium as gym
 import numpy as np
@@ -25,6 +25,9 @@ from gymnasium import spaces
 from models.features import extract_belief_features
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
+
+if TYPE_CHECKING:
+    from qb_env.opponent_models import OpponentBuzzModel
 
 
 def _softmax(scores: np.ndarray, beta: float) -> np.ndarray:

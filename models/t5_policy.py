@@ -37,7 +37,6 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -238,7 +237,7 @@ class T5PolicyModel(nn.Module):
         policy_params = sum(p.numel() for p in self.policy_head.parameters())
         total_params = encoder_params + policy_params
 
-        print(f"Model Architecture:")
+        print("Model Architecture:")
         print(f"  T5 encoder parameters: {encoder_params:,}")
         print(f"  Policy head parameters: {policy_params:,}")
         print(f"  Total parameters: {total_params:,}")
@@ -675,9 +674,8 @@ class T5PolicyModel(nn.Module):
         """
         from transformers import T5EncoderModel
 
-        # Detect model config from saved checkpoint
-        t5_encoder = T5EncoderModel.from_pretrained(load_dir, local_files_only=True)
-        hidden_size = t5_encoder.config.d_model
+        # Detect model config from saved checkpoint – validates checkpoint integrity
+        T5EncoderModel.from_pretrained(load_dir, local_files_only=True)
 
         # Infer num_choices from policy head state dict
         policy_head_path = os.path.join(load_dir, "policy_head.pt")

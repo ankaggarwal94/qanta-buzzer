@@ -1,10 +1,30 @@
 __pycache__/
 *.py[cod]
+*.pyc
 venv/
 .venv/
 *.egg-info/
 .DS_Store
 checkpoints/
 cache/
-*.pyc
-__pycache__/
+
+# Generated artifacts and outputs
+artifacts/
+generated/
+repomix/
+
+# Binary / large files
+*.pptx
+~$*.pptx
+*.zip
+poster_chatgpt_bundle*/
+
+# Generated documents
+presentation.pdf
+
+# Conversation transcripts
+*-transcript*.txt
+
+# Environment files
+.env
+.env.*

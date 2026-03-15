@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from qb_data.data_loader import QANTADatasetLoader
 from qb_data.answer_profiles import AnswerProfileBuilder
-from qb_data.mc_builder import MCBuilder, MCQuestion
+from qb_data.mc_builder import MCBuilder
 from qb_data.config import load_config
 
 
@@ -74,7 +74,7 @@ def main():
         first_clue = mc_q.tokens[0] if mc_q.tokens else mc_q.question[:100]
         print(f"First clue: {first_clue[:150]}...")
 
-        print(f"\nOptions:")
+        print("\nOptions:")
         for j, option in enumerate(mc_q.options):
             marker = " [CORRECT]" if j == mc_q.gold_index else ""
             print(f"  {j+1}. {option}{marker}")

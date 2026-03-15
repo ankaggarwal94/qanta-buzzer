@@ -21,12 +21,11 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from qb_data import TossupQuestion
 from qb_data.answer_profiles import AnswerProfileBuilder
 from qb_data.config import load_config, merge_overrides, resolve_data_loading_options
 from qb_data.data_loader import QANTADatasetLoader
@@ -222,7 +221,7 @@ def print_statistics(
     # Sample MC question
     if train:
         sample = train[0]
-        print(f"\nSample MC question:")
+        print("\nSample MC question:")
         # Get first sentence from the question
         first_sentence = sample.question[:100] + "..." if len(sample.question) > 100 else sample.question
         print(f"  Question: {first_sentence}")

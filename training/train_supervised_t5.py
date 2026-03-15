@@ -386,7 +386,7 @@ class SupervisedTrainer:
                 self.save_checkpoint(is_best=True)
                 print(f"  -> New best validation accuracy: {val_acc:.4f}")
 
-        print(f"\nSupervised training completed!")
+        print("\nSupervised training completed!")
         print(f"  Best validation accuracy: {self.best_val_acc:.4f}")
 
         # Save training history

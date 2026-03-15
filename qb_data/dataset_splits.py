@@ -10,7 +10,7 @@ import json
 import random
 from collections import defaultdict
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Dict, Any
 
 from qb_data.data_loader import TossupQuestion
 
@@ -48,9 +48,6 @@ def create_stratified_splits(
 
     if abs(sum(ratios) - 1.0) > 1e-6:
         raise ValueError(f"Ratios must sum to 1.0, got {sum(ratios)}")
-
-    # Initialize random generator for reproducibility
-    rng = random.Random(seed)
 
     # Group questions by category
     category_groups = defaultdict(list)
@@ -100,7 +97,7 @@ def create_stratified_splits(
         raise RuntimeError(f"Split mismatch: {total_original} original vs {total_split} split")
 
     # Log category distribution statistics
-    print(f"Dataset split complete:")
+    print("Dataset split complete:")
     print(f"  Train: {len(train_questions)} questions ({len(train_questions)/total_original:.1%})")
     print(f"  Val:   {len(val_questions)} questions ({len(val_questions)/total_original:.1%})")
     print(f"  Test:  {len(test_questions)} questions ({len(test_questions)/total_original:.1%})")

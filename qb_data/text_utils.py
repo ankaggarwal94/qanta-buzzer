@@ -3,8 +3,7 @@ Text utilities for quiz bowl answer normalization and tokenization.
 """
 
 import re
-import string
-from typing import Optional, List
+from typing import List
 
 
 def tokenize_text(text: str) -> List[str]:
