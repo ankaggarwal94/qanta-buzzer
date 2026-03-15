@@ -20,8 +20,11 @@ def build_dspy_profiles(
 ) -> dict[str, str]:
     """Generate LM-augmented answer profiles via DSPy.
 
-    Preserves leave-one-out discipline: the generated profile for an
-    answer does NOT include content from the current question's clues.
+    Leave-one-out discipline depends on the *caller* providing
+    ``existing_profiles`` that already exclude the current question
+    (as ``AnswerProfileBuilder.profile_for_answer(answer, exclude_qid)``
+    does).  This function itself does not receive per-question exclusion
+    context — it augments whatever profiles it is given.
 
     Parameters
     ----------
@@ -60,16 +63,31 @@ def build_dspy_profiles(
 
     generator = dspy.Predict(AnswerProfileSignature)
 
+    import logging
+
+    logger = logging.getLogger(__name__)
+
     result: dict[str, str] = {}
+    n_augmented = 0
+    n_fallback = 0
     for answer in answers[:max_answers]:
         existing = existing_profiles.get(answer, "")
         try:
             pred = generator(answer=answer, existing_profile=existing)
             result[answer] = pred.augmented_profile
-        except Exception:
+            n_augmented += 1
+        except Exception as exc:
+            logger.warning("DSPy augmentation failed for %r: %s", answer, exc)
             result[answer] = existing
+            n_fallback += 1
 
     for answer in answers[max_answers:]:
         result[answer] = existing_profiles.get(answer, "")
+
+    if n_fallback:
+        logger.info(
+            "DSPy profiles: %d augmented, %d fell back to extractive",
+            n_augmented, n_fallback,
+        )
 
     return result

@@ -110,10 +110,24 @@ def compile_dspy_scorer(
             scores=json.dumps(target_scores),
         ).with_inputs("clue_prefix", "options"))
 
+    def _score_metric(example, prediction, _trace=None):
+        """Compare predicted scores against gold target via argmax match."""
+        try:
+            pred_scores = json.loads(prediction.scores)
+            target_scores = json.loads(example.scores)
+        except (json.JSONDecodeError, AttributeError):
+            return 0.0
+        if not pred_scores or not target_scores:
+            return 0.0
+        return 1.0 if (
+            max(range(len(pred_scores)), key=lambda i: pred_scores[i])
+            == max(range(len(target_scores)), key=lambda i: target_scores[i])
+        ) else 0.0
+
     if optimizer_name == "MIPROv2":
-        optimizer = dspy.MIPROv2(metric=lambda ex, pred, _: 1.0)
+        optimizer = dspy.MIPROv2(metric=_score_metric)
     else:
-        optimizer = dspy.BootstrapFewShot(metric=lambda ex, pred, _: 1.0)
+        optimizer = dspy.BootstrapFewShot(metric=_score_metric)
 
     compiled = optimizer.compile(scorer, trainset=examples)
 
@@ -144,10 +158,17 @@ def main() -> None:
         dspy_cfg["optimizer"] = args.optimizer
     max_ex = args.max_examples or int(dspy_cfg.get("max_examples", 50))
 
-    mc_path = ARTIFACT_DIR / "smoke" / "mc_dataset.json"
-    if not mc_path.exists():
-        mc_path = ARTIFACT_DIR / "main" / "mc_dataset.json"
-    questions = load_mc_questions(mc_path)
+    # Use the train split to avoid leaking val/test data into DSPy compilation
+    train_path = ARTIFACT_DIR / "smoke" / "train_dataset.json"
+    if not train_path.exists():
+        train_path = ARTIFACT_DIR / "main" / "train_dataset.json"
+    if not train_path.exists():
+        # Fallback to combined dataset with warning
+        train_path = ARTIFACT_DIR / "smoke" / "mc_dataset.json"
+        if not train_path.exists():
+            train_path = ARTIFACT_DIR / "main" / "mc_dataset.json"
+        print(f"Warning: train split not found, using combined dataset: {train_path}")
+    questions = load_mc_questions(train_path)
     trainset = build_dspy_trainset(questions, max_examples=max_ex)
 
     print(f"Built {len(trainset)} training examples")
