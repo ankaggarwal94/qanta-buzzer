@@ -33,6 +33,7 @@ Both tracks share the same data layer (`qb_data/`) and environment (`qb_env/`).
 ├─────────────────────────────────────────────────────────┤
 │  Environment Layer                                       │
 │  qb_env/tossup_env.py    (TossupMCEnv: EW, variable-K)   │
+│  qb_env/stop_only_env.py (StopOnlyEnv: Discrete(2))      │
 │  qb_env/opponent_models.py (opponent buzz model protocol) │
 │  qb_env/text_wrapper.py  (TextObservationWrapper)        │
 ├─────────────────────────────────────────────────────────┤
@@ -102,12 +103,15 @@ Adds: options (K answer choices), gold_index, option_profiles, distractor_strate
 Pluggable scoring interface. Implementations: `TfIdfLikelihood`, `SBERTLikelihood`, `T5Likelihood`, `OpenAILikelihood`, `DSPyLikelihood`. Each implements `score(clue_prefix, option_profiles) → np.ndarray`. Embedding-based models also implement `_embed_batch()`; `DSPyLikelihood` raises `NotImplementedError` on embedding operations.
 
 ### `TossupMCEnv` (Gymnasium env, `qb_env/tossup_env.py`)
-POMDP environment: Discrete(K+1) action space (WAIT + K buzz options), Box(K+6) observation space (belief features). Four reward modes: `time_penalty`, `simple`, `human_grounded`, `expected_wins`. Supports variable-K mode with padded observations and `action_masks()`.
+POMDP environment: Discrete(K+1) action space (WAIT + K buzz options), Box(K+6) observation space (belief features). Four reward modes: `time_penalty`, `simple`, `human_grounded`, `expected_wins`. Supports variable-K mode with padded observations and `action_masks()`. End-of-horizon behavior configurable via `end_mode` (`force_commit` | `no_buzz`).
+
+### `StopOnlyEnv` (wrapper, `qb_env/stop_only_env.py`)
+Discrete(2) wrapper (0=WAIT, 1=BUZZ) that maps BUZZ to argmax(belief). Selectable via `--policy-mode stop_only` in `train_ppo.py`.
 
 ### Agent hierarchy
 - `ThresholdBuzzer`: simple confidence threshold
 - `SoftmaxProfileBuzzer`: Bayesian belief updates with sigmoid confidence proxy
-- `PPOBuzzer`: SB3 PPO wrapper with custom `run_episode()` for S_q trace recording
+- `PPOBuzzer`: SB3 PPO wrapper with custom `run_episode()` for S_q trace recording; supports optional `MaskablePPO` and stop-only mode
 
 ## Entry Points
 

@@ -4,6 +4,8 @@ description: "Unified quiz bowl RL buzzer for Stanford CS234"
 python: ">=3.11"
 install: "pip install -e ."
 install_openai: "pip install -e '.[openai]'"
+install_maskable: "pip install -e '.[maskable]'"
+install_dspy: "pip install -e '.[dspy]'"
 
 packages:
   - agents
