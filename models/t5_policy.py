@@ -672,10 +672,10 @@ class T5PolicyModel(nn.Module):
         T5PolicyModel
             A loaded model instance ready for inference.
         """
-        from transformers import T5EncoderModel
+        from transformers import T5Config
 
-        # Detect model config from saved checkpoint – validates checkpoint integrity
-        T5EncoderModel.from_pretrained(load_dir, local_files_only=True)
+        # Validate checkpoint integrity by loading config (lightweight)
+        T5Config.from_pretrained(load_dir, local_files_only=True)
 
         # Infer num_choices from policy head state dict
         policy_head_path = os.path.join(load_dir, "policy_head.pt")
