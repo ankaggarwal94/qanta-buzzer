@@ -130,6 +130,33 @@ if [ "$SEQUENTIAL" = true ]; then
         --mc-path "$MC" \
         --output "$RESULTS/t5_comparison.json"
 
+    echo "=== PHASE 11: Expected Wins ==="
+    python scripts/evaluate_all.py --config configs/default.yaml --mc-path "$MC" \
+        environment.reward_mode=expected_wins environment.opponent_buzz_model.type=logistic
+    cp artifacts/main/evaluation_report.json "$RESULTS/eval_ew_logistic.json"
+
+    echo "=== PHASE 14: Reward modes ==="
+    for MODE in simple human_grounded; do
+        python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
+            --seed 13 --deterministic-eval environment.reward_mode="$MODE"
+        cp artifacts/main/ppo_summary.json "$RESULTS/ppo_$MODE.json"
+    done
+
+    echo "=== PHASE 16: Stop-only PPO ==="
+    python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
+        --seed 13 --deterministic-eval --policy-mode stop_only
+    cp artifacts/main/ppo_summary.json "$RESULTS/ppo_stop_only.json"
+
+    echo "=== PHASE 17: No-buzz horizon ==="
+    python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
+        --seed 13 --deterministic-eval environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
+    cp artifacts/main/ppo_summary.json "$RESULTS/ppo_no_buzz.json"
+
+    echo "=== PHASE 15: Belief mode (sequential_bayes) ==="
+    python scripts/run_baselines.py --config configs/default.yaml --mc-path "$MC" \
+        environment.belief_mode=sequential_bayes likelihood.model=tfidf
+    cp artifacts/main/baseline_summary.json "$RESULTS/baselines_seqbayes.json"
+
     echo "=== PHASE 9: Distractor comparison ==="
     for STRAT in tfidf_profile category_random; do
         python scripts/build_mc_dataset.py --config configs/default.yaml \
@@ -147,33 +174,6 @@ if [ "$SEQUENTIAL" = true ]; then
             --mc-path "artifacts/k$K/mc_dataset.json" likelihood.model=tfidf
         cp artifacts/main/baseline_summary.json "$RESULTS/baselines_k$K.json"
     done
-
-    echo "=== PHASE 11: Expected Wins ==="
-    python scripts/evaluate_all.py --config configs/default.yaml --mc-path "$MC" \
-        environment.reward_mode=expected_wins environment.opponent_buzz_model.type=logistic
-    cp artifacts/main/evaluation_report.json "$RESULTS/eval_ew_logistic.json"
-
-    echo "=== PHASE 14: Reward modes ==="
-    for MODE in simple human_grounded; do
-        python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
-            --seed 13 --deterministic-eval environment.reward_mode="$MODE"
-        cp artifacts/main/ppo_summary.json "$RESULTS/ppo_$MODE.json"
-    done
-
-    echo "=== PHASE 15: Belief mode (sequential_bayes) ==="
-    python scripts/run_baselines.py --config configs/default.yaml --mc-path "$MC" \
-        environment.belief_mode=sequential_bayes likelihood.model=tfidf
-    cp artifacts/main/baseline_summary.json "$RESULTS/baselines_seqbayes.json"
-
-    echo "=== PHASE 16: Stop-only PPO ==="
-    python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
-        --seed 13 --deterministic-eval --policy-mode stop_only
-    cp artifacts/main/ppo_summary.json "$RESULTS/ppo_stop_only.json"
-
-    echo "=== PHASE 17: No-buzz horizon ==="
-    python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
-        --seed 13 --deterministic-eval environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
-    cp artifacts/main/ppo_summary.json "$RESULTS/ppo_no_buzz.json"
 
 else
     ####################################################################

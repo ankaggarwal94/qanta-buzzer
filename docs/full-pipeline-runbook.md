@@ -110,8 +110,8 @@ bash scripts/run_full_pipeline.sh --t5-model t5-large
 bash scripts/run_full_pipeline.sh --sequential --t5-model t5-base
 ```
 
-The script executes the **core pipeline and key extensions** in a 3-wave DAG.
-Phases 9 (distractor comparison), 10 (variable-K), 12 (DSPy), 18 (OpenAI),
+The script executes the **core pipeline and extensions** in a 4-wave DAG.
+Phases 10 (variable-K MaskablePPO), 12 (DSPy compile), 18 (OpenAI),
 and 19 (MIPROv2) require manual execution — see the individual phase sections below.
 
 ```
@@ -137,11 +137,10 @@ Phase 1 (sequential — builds the shared MC dataset)
        Phase 13 — K=2,3,5,6 builds + baselines (each result copied to results/)
 
 Not in script (run manually):
-  Phase 9  — distractor comparison
-  Phase 10 — variable-K + MaskablePPO
-  Phase 12 — DSPy compile
-  Phase 18 — OpenAI embeddings
-  Phase 19 — DSPy MIPROv2
+  Phase 10 — variable-K + MaskablePPO (not wired through train_ppo.py)
+  Phase 12 — DSPy compile (requires API key)
+  Phase 18 — OpenAI embeddings (requires API key)
+  Phase 19 — DSPy MIPROv2 (requires API key)
 ```
 
 **Output:** All JSON results in `results/`, per-phase logs in `results/phase_*.log`.
@@ -180,11 +179,11 @@ If you are an AI coding agent executing this runbook:
 
 2. **If the script fails:** Read the failing `results/phase_*.log`, diagnose the issue, fix it, then re-run only the failed phase using the manual commands in the sections below.
 
-3. **Do not run phases 2/3/5/13 sequentially** if the parallel script is available — they are independent and running them in parallel saves 2–3x wall time.
+3. **Do not run phases 2/3/5 sequentially** if the parallel script is available — they are independent and running them in parallel saves 2–3x wall time. Phase 13 (K-sensitivity) must run after Phase 4 because both write `baseline_summary.json`.
 
 4. **Do not modify `artifacts/main/mc_dataset.json`** after Phase 1 — every subsequent phase reads it.
 
-5. **Phases 9, 10, 12, 18, 19** are not included in the automated script (distractor comparison, variable-K, DSPy, OpenAI, MIPROv2). Run them manually after the main pipeline completes if needed.
+5. **Phases 10, 12, 18, 19** are not included in the automated script (variable-K MaskablePPO, DSPy, OpenAI, MIPROv2). Run them manually if needed.
 
 ---
 
@@ -484,33 +483,39 @@ echo "=== Pipeline complete ==="
 
 ## Expected artifact tree after full run
 
+**`artifacts/main/` is a working directory** — files are overwritten by later
+phases (e.g. K-sensitivity clobbers `baseline_summary.json`, PPO ablations
+clobber `ppo_summary.json`). The **stable outputs** are in `results/*.json`,
+which are copied after each phase completes.
+
 ```
-artifacts/main/
-├── mc_dataset.json           # All MC questions (~15k+)
-├── train_dataset.json        # 70% train split
-├── val_dataset.json          # 15% validation split
-├── test_dataset.json         # 15% test split
-├── answer_profiles.json      # Profile metadata
-├── baseline_summary.json     # All baseline sweep results
-├── baseline_threshold_runs.json
-├── baseline_softmax_profile_runs.json
-├── baseline_sequential_bayes_runs.json
-├── baseline_floor_runs.json
-├── ppo_model.zip             # Trained PPO model
-├── ppo_runs.json             # PPO evaluation traces
-├── ppo_summary.json          # PPO summary metrics
-├── evaluation_report.json    # Full eval + controls + per-category
-└── plots/
-    ├── entropy_vs_clue.png
-    ├── calibration.png
-    └── comparison.csv
+results/                         # Stable per-phase outputs
+├── baselines_tfidf.json         # Phase 2 baseline summary
+├── ppo_default.json             # Phase 3 PPO summary
+├── ppo_model_default.zip        # Phase 3 PPO model
+├── eval_default.json            # Phase 4 evaluation report
+├── t5_comparison.json           # Phase 6 policy comparison
+├── eval_ew_logistic.json        # Phase 11 Expected Wins eval
+├── baselines_seqbayes.json      # Phase 15 belief mode
+├── ppo_simple.json              # Phase 14 reward ablation
+├── ppo_human_grounded.json      # Phase 14 reward ablation
+├── ppo_stop_only.json           # Phase 16 stop-only PPO
+├── ppo_no_buzz.json             # Phase 17 no-buzz horizon
+├── baselines_k2..k6.json        # Phase 13 K-sensitivity
+├── baselines_tfidf_profile.json # Phase 9 distractor comparison
+└── baselines_category_random.json
+
+artifacts/main/                  # Working directory (overwritten by later phases)
+├── mc_dataset.json              # Stable — built in Phase 1, never overwritten
+├── train_dataset.json
+├── val_dataset.json
+├── test_dataset.json
+├── answer_profiles.json
+└── (baseline/ppo/eval files)    # Overwritten by later phases
 
 checkpoints/
-├── supervised/best_model/    # T5 supervised checkpoint
-└── ppo_t5/best_model/        # T5 PPO checkpoint
-
-results/
-└── t5_comparison.json        # MLP vs T5 comparison
+├── supervised/best_model/       # T5 supervised checkpoint
+└── ppo_t5/best_model/           # T5 PPO checkpoint
 ```
 
 ---
