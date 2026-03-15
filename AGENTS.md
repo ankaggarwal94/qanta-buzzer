@@ -65,13 +65,13 @@ scripts/manual-smoke.sh
 
 ## Full Pipeline
 
-For the complete 19-phase pipeline at full scale with parallel execution:
+For the core pipeline and scripted extensions at full scale with 4-wave parallel execution:
 
 ```bash
 bash scripts/run_full_pipeline.sh --t5-model t5-base
 ```
 
-See `docs/full-pipeline-runbook.md` for phase-by-phase details and wall-time estimates.
+The script forces `likelihood.model=tfidf` for all belief-feature phases. Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19 require manual execution. See `docs/full-pipeline-runbook.md` for phase-by-phase details.
 
 All pipeline scripts accept positional config overrides (e.g. `likelihood.model=tfidf`).
 

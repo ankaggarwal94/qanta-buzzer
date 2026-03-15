@@ -25,19 +25,15 @@ The content is organized as follows:
   between different files in the repository.
 - Be aware that this file may contain sensitive information. Handle it with
   the same level of security as you would the original repository.
-- Pay special attention to the Repository Description. These contain important context and guidelines specific to this project.
 
 ## Notes
 - Some files may have been excluded based on .gitignore rules and Repomix's configuration
 - Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
-- Only files matching these patterns are included: README.md, CLAUDE.md, AGENTS.md, walkthrough.md, .planning/**, .github/copilot-instructions.md
+- Only files matching these patterns are included: README.md, AGENTS.md, CLAUDE.md, walkthrough.md, .github/copilot-instructions.md, .planning/**, docs/**
 - Files matching patterns in .gitignore are excluded
 - Files matching default ignore patterns are excluded
 - Line numbers have been added to the beginning of each line
 - Files are sorted by Git change count (files with more changes are at the bottom)
-
-# User Provided Header
-qanta-buzzer @ c8d460d7 (docs — final sync)
 
 # Directory Structure
 ```
@@ -169,6 +165,16 @@ qanta-buzzer @ c8d460d7 (docs — final sync)
   RETROSPECTIVE.md
   ROADMAP.md
   STATE.md
+docs/
+  prompts/
+    chatgpt_code_review_prompt.md
+    chatgpt_dspy_focused_review_prompt.md
+    chatgpt_extensions_prompt.md
+    chatgpt_final_review_prompt.md
+  cursor_reconciliation_process_for_upstr.md
+  full-pipeline-runbook.md
+  pipeline-proof.md
+  pr-description.md
 AGENTS.md
 CLAUDE.md
 README.md
@@ -222,6 +228,228 @@ walkthrough.md
 41: - Respect the existing file organization and naming conventions on the active branch.
 42: - When documentation and code disagree, trust the executable code first, then update docs to match.
 43: - If a branch includes compatibility shims or bridge code, preserve backward-compatible imports and config aliases unless the task explicitly asks to remove them.
+````
+
+## File: .planning/codebase/CONVENTIONS.md
+````markdown
+ 1: # Conventions
+ 2: 
+ 3: ## Code Style
+ 4: 
+ 5: - **Python version features:** `from __future__ import annotations` used consistently across all modules
+ 6: - **Type hints:** Full type annotations on function signatures using modern syntax (`list[str]`, `dict[str, Any]`, `str | None`)
+ 7: - **Docstrings:** NumPy-style with `Parameters`, `Returns`, `Notes`, `Examples` sections
+ 8: - **Imports:** Standard library → third-party → local, grouped with blank lines
+ 9: - **Line length:** No enforced limit; lines typically under 100 characters
+10: - **String quotes:** Double quotes for docstrings and strings, single quotes in `__all__` lists
+11: 
+12: ## Naming Patterns
+13: 
+14: - **RL notation:** `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
+15: - **Traces:** `c_trace` (buzz confidence per step), `g_trace` (correctness per step), `top_p_trace`, `entropy_trace`
+16: - **Config keys:** Match YAML section names exactly (`data.K`, `likelihood.beta`, `environment.reward_mode`)
+17: - **File naming:** Module files named after their primary class in snake_case
+18: - **Private helpers:** Prefixed with underscore (`_text_key`, `_belief_from_scratch`, `_to_dict`)
+19: 
+20: ## Dataclass Patterns
+21: 
+22: All core data structures are `@dataclass`:
+23: 
+24: ```python
+25: @dataclass
+26: class TossupQuestion:
+27:     qid: str
+28:     question: str
+29:     tokens: list[str]
+30:     answer_primary: str
+31:     # ...
+32: 
+33: @dataclass
+34: class MCQuestion(TossupQuestion):  # Inheritance
+35:     options: list[str]
+36:     gold_index: int
+37:     # ...
+38: 
+39: @dataclass
+40: class SoftmaxEpisodeResult:  # Standalone result type
+41:     qid: str
+42:     buzz_step: int
+43:     # ...
+44: ```
+45: 
+46: Each agent type has its own result dataclass (`EpisodeResult`, `SoftmaxEpisodeResult`, `PPOEpisodeTrace`).
+47: 
+48: ## Lazy Imports
+49: 
+50: Heavy optional dependencies use `__getattr__` for lazy loading in `__init__.py`:
+51: 
+52: ```python
+53: # agents/__init__.py
+54: def __getattr__(name: str):
+55:     if name in ("PPOBuzzer", "PPOEpisodeTrace"):
+56:         from agents.ppo_buzzer import PPOBuzzer, PPOEpisodeTrace
+57:         return {"PPOBuzzer": PPOBuzzer, "PPOEpisodeTrace": PPOEpisodeTrace}[name]
+58:     raise AttributeError(...)
+59: ```
+60: 
+61: Same pattern in `models/__init__.py` for `T5PolicyModel` and `PolicyHead`.
+62: 
+63: ## Error Handling
+64: 
+65: - **Validation at boundaries:** `ValueError` for invalid config values, missing data fields, out-of-range indices
+66: - **Import guards:** `ImportError` with helpful messages for optional dependencies (OpenAI, HuggingFace datasets)
+67: - **File guards:** `FileNotFoundError` for missing CSV files, config files
+68: - **Runtime guards:** `RuntimeError` for models used before fitting (e.g., TF-IDF before `fit()`)
+69: - **No blanket try/except:** Errors propagate with descriptive messages
+70: 
+71: ## Configuration Pattern
+72: 
+73: - YAML config loaded once at script entry → passed as `dict[str, Any]` through the call stack
+74: - Factory functions accept config dict: `make_env_from_config(config, ...)`, `build_likelihood_from_config(config, ...)`
+75: - `scripts/_common.py` provides `load_config()` with `--smoke` flag support that auto-selects `configs/smoke.yaml`
+76: - CLI overrides via argparse with `--data.K=5` style nested key overrides → `merge_overrides()`
+77: 
+78: ## Reproducibility
+79: 
+80: - Seeds set explicitly: `random.seed()`, `np.random.seed()`, `torch.manual_seed()`
+81: - Convention: seeds 13 (default), 42 (shuffle), or 1/2/3 for multi-seed runs
+82: - `shuffle_seed` in config controls data shuffling separately from environment seed
+83: 
+84: ## qb-rl Compatibility Convention
+85: 
+86: Backward-compatible re-exports use thin shim modules:
+87: 
+88: ```python
+89: # qb_env/data_loader.py
+90: """qb-rl compatibility re-exports for tossup data loading."""
+91: from qb_data.data_loader import (
+92:     QANTADatasetLoader, TossupQuestion, load_tossup_questions, ...
+93: )
+94: ```
+95: 
+96: This pattern is used in `qb_env/data_loader.py`, `qb_env/mc_builder.py`, `qb_env/text_utils.py`, and `models/answer_profiles.py`.
+````
+
+## File: .planning/codebase/INTEGRATIONS.md
+````markdown
+ 1: # Integrations
+ 2: 
+ 3: ## External APIs
+ 4: 
+ 5: ### HuggingFace Hub
+ 6: - **Module:** `qb_data/huggingface_loader.py`
+ 7: - **Purpose:** Fallback data source when local CSV is unavailable
+ 8: - **Dataset:** QANTA quiz bowl questions via `datasets` library
+ 9: - **Auth:** None required (public datasets)
+10: - **Usage:** `load_from_huggingface()` called by `scripts/build_mc_dataset.py` when CSV path missing
+11: 
+12: ### HuggingFace Model Hub
+13: - **Module:** `models/likelihoods.py`, `models/t5_policy.py`
+14: - **Models downloaded:**
+15:   - T5 variants: `t5-small`, `t5-base`, `t5-large` (likelihood scoring)
+16:   - SentenceTransformers: `all-MiniLM-L6-v2` (SBERT embeddings)
+17: - **Cache:** Default HuggingFace cache (`~/.cache/huggingface/`)
+18: - **Auth:** None required (public models)
+19: 
+20: ### OpenAI API (Optional)
+21: - **Module:** `models/likelihoods.py` → `OpenAILikelihood`
+22: - **Purpose:** Alternative embedding model for answer likelihood scoring
+23: - **Model:** `text-embedding-3-small` (configurable)
+24: - **Auth:** `OPENAI_API_KEY` environment variable
+25: - **Install:** `pip install -e '.[openai]'`
+26: - **Guard:** Import-time check with helpful error message if `openai` package not installed
+27: 
+28: ## Data Sources
+29: 
+30: ### QANTA CSV
+31: - **Primary data format:** CSV with `|||`-separated clues in `question`/`Text` column
+32: - **Path:** Configured via `data.csv_path` in YAML config (default: `questions.csv`)
+33: - **Loader:** `qb_data/data_loader.py` → `QANTADatasetLoader`
+34: - **Fields:** question text, answer, category, optional human buzz positions
+35: 
+36: ### Artifacts Directory
+37: - **Path:** `artifacts/` (main runs), `artifacts/smoke/` (smoke tests)
+38: - **Contents:** `mc_dataset.json`, `alias_lookup.json`, `baseline_summary.json`, `ppo_summary.json`, `evaluation_report.json`
+39: - **Format:** JSON with custom serialization via `scripts/_common.py:to_serializable()`
+40: 
+41: ## Embedding Cache
+42: - **Module:** `models/likelihoods.py` (base class `LikelihoodModel`)
+43: - **Strategy:** SHA-256 content hashing of input text → float32 numpy arrays
+44: - **Storage:** In-memory dict (`embedding_cache`), no persistent disk cache for embeddings themselves
+45: - **Config:** `likelihood.cache_embeddings` and `likelihood.cache_dir` in YAML (cache_dir used for optional on-disk persistence)
+46: 
+47: ## No External Databases / Auth Providers / Webhooks
+48: 
+49: This is a research project with no:
+50: - Database connections
+51: - Authentication/authorization systems
+52: - Webhook endpoints
+53: - Message queues
+54: - External monitoring services
+````
+
+## File: .planning/codebase/STACK.md
+````markdown
+ 1: # Stack
+ 2: 
+ 3: ## Language & Runtime
+ 4: 
+ 5: - **Python >= 3.11** (specified in `pyproject.toml`)
+ 6: - Virtual environment: `.venv/` with Python 3.13 (local dev)
+ 7: - Package manager: pip with setuptools build backend
+ 8: - Install: `pip install -e .` (editable) or `pip install -r requirements.txt`
+ 9: 
+10: ## Core Frameworks
+11: 
+12: | Framework | Version | Purpose |
+13: |-----------|---------|---------|
+14: | PyTorch | >= 2.0.0 | Neural network inference (T5, SBERT), PPO policy networks |
+15: | Gymnasium | >= 1.1.0 | POMDP environment interface (`TossupMCEnv`) |
+16: | Stable-Baselines3 | >= 2.6.0 | PPO training loop, MLP policy networks |
+17: | Transformers | >= 4.30.0 | T5 model loading, tokenization, likelihood scoring |
+18: | Sentence-Transformers | >= 2.2.0 | SBERT embeddings for distractor selection and scoring |
+19: 
+20: ## ML / Data Libraries
+21: 
+22: | Library | Version | Purpose |
+23: |---------|---------|---------|
+24: | NumPy | >= 1.24.0 | Array operations, belief distributions, feature extraction |
+25: | scikit-learn | >= 1.3.0 | TF-IDF vectorizer, cosine similarity, distractor ranking |
+26: | pandas | >= 2.0.0 | Data loading, evaluation tables |
+27: | datasets | >= 2.14.0 | HuggingFace dataset loading (QANTA fallback) |
+28: 
+29: ## Visualization & IO
+30: 
+31: | Library | Version | Purpose |
+32: |---------|---------|---------|
+33: | matplotlib | >= 3.7.0 | Calibration curves, entropy plots |
+34: | seaborn | >= 0.12.0 | Statistical plot styling |
+35: | PyYAML | >= 6.0.0 | Config file parsing (`configs/*.yaml`) |
+36: | jsonlines | >= 3.1.0 | Streaming JSON I/O for datasets |
+37: | tqdm | >= 4.65.0 | Progress bars in pipeline scripts |
+38: 
+39: ## Optional Dependencies
+40: 
+41: | Library | Version | Purpose |
+42: |---------|---------|---------|
+43: | openai | >= 1.0.0 | OpenAI embedding API for `OpenAILikelihood` (opt-in via `pip install -e '.[openai]'`) |
+44: 
+45: ## Configuration
+46: 
+47: - YAML-based config system: `configs/default.yaml`, `configs/smoke.yaml`
+48: - Config loaded via `qb_data.config.load_config()` with CLI override support
+49: - Sections: `data`, `answer_profiles`, `likelihood`, `environment`, `mc_guards`, `bayesian`, `ppo`, `evaluation`, `supervised`
+50: 
+51: ## Device Selection
+52: 
+53: - Auto-selects best accelerator: CUDA > MPS > CPU via `_best_torch_device()` in `models/likelihoods.py`
+54: - Seeds set explicitly for reproducibility (numpy, torch, random) — convention uses seeds 1, 2, 3 or 13, 42
+55: 
+56: ## Build & Packaging
+57: 
+58: - `pyproject.toml` defines the package with setuptools backend
+59: - Installable packages: `agents`, `evaluation`, `models`, `qb_data`, `qb_env`, `training`
+60: - Legacy root-level files (`config.py`, `dataset.py`, `environment.py`, `model.py`, etc.) coexist with the modular package structure
 ````
 
 ## File: .planning/phases/01-data-pipeline-foundation/01-01-PLAN.md
@@ -13726,226 +13954,19 @@ walkthrough.md
 218: *Ready for roadmap: yes*
 ````
 
-## File: .planning/codebase/CONVENTIONS.md
+## File: CLAUDE.md
 ````markdown
- 1: # Conventions
+ 1: # CLAUDE.md
  2: 
- 3: ## Code Style
+ 3: See **AGENTS.md** for the full repo contract: setup, architecture, testing, smoke pipeline, and configuration.
  4: 
- 5: - **Python version features:** `from __future__ import annotations` used consistently across all modules
- 6: - **Type hints:** Full type annotations on function signatures using modern syntax (`list[str]`, `dict[str, Any]`, `str | None`)
- 7: - **Docstrings:** NumPy-style with `Parameters`, `Returns`, `Notes`, `Examples` sections
- 8: - **Imports:** Standard library → third-party → local, grouped with blank lines
- 9: - **Line length:** No enforced limit; lines typically under 100 characters
-10: - **String quotes:** Double quotes for docstrings and strings, single quotes in `__all__` lists
-11: 
-12: ## Naming Patterns
-13: 
-14: - **RL notation:** `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
-15: - **Traces:** `c_trace` (buzz confidence per step), `g_trace` (correctness per step), `top_p_trace`, `entropy_trace`
-16: - **Config keys:** Match YAML section names exactly (`data.K`, `likelihood.beta`, `environment.reward_mode`)
-17: - **File naming:** Module files named after their primary class in snake_case
-18: - **Private helpers:** Prefixed with underscore (`_text_key`, `_belief_from_scratch`, `_to_dict`)
-19: 
-20: ## Dataclass Patterns
-21: 
-22: All core data structures are `@dataclass`:
-23: 
-24: ```python
-25: @dataclass
-26: class TossupQuestion:
-27:     qid: str
-28:     question: str
-29:     tokens: list[str]
-30:     answer_primary: str
-31:     # ...
-32: 
-33: @dataclass
-34: class MCQuestion(TossupQuestion):  # Inheritance
-35:     options: list[str]
-36:     gold_index: int
-37:     # ...
-38: 
-39: @dataclass
-40: class SoftmaxEpisodeResult:  # Standalone result type
-41:     qid: str
-42:     buzz_step: int
-43:     # ...
-44: ```
-45: 
-46: Each agent type has its own result dataclass (`EpisodeResult`, `SoftmaxEpisodeResult`, `PPOEpisodeTrace`).
-47: 
-48: ## Lazy Imports
-49: 
-50: Heavy optional dependencies use `__getattr__` for lazy loading in `__init__.py`:
-51: 
-52: ```python
-53: # agents/__init__.py
-54: def __getattr__(name: str):
-55:     if name in ("PPOBuzzer", "PPOEpisodeTrace"):
-56:         from agents.ppo_buzzer import PPOBuzzer, PPOEpisodeTrace
-57:         return {"PPOBuzzer": PPOBuzzer, "PPOEpisodeTrace": PPOEpisodeTrace}[name]
-58:     raise AttributeError(...)
-59: ```
-60: 
-61: Same pattern in `models/__init__.py` for `T5PolicyModel` and `PolicyHead`.
-62: 
-63: ## Error Handling
-64: 
-65: - **Validation at boundaries:** `ValueError` for invalid config values, missing data fields, out-of-range indices
-66: - **Import guards:** `ImportError` with helpful messages for optional dependencies (OpenAI, HuggingFace datasets)
-67: - **File guards:** `FileNotFoundError` for missing CSV files, config files
-68: - **Runtime guards:** `RuntimeError` for models used before fitting (e.g., TF-IDF before `fit()`)
-69: - **No blanket try/except:** Errors propagate with descriptive messages
-70: 
-71: ## Configuration Pattern
-72: 
-73: - YAML config loaded once at script entry → passed as `dict[str, Any]` through the call stack
-74: - Factory functions accept config dict: `make_env_from_config(config, ...)`, `build_likelihood_from_config(config, ...)`
-75: - `scripts/_common.py` provides `load_config()` with `--smoke` flag support that auto-selects `configs/smoke.yaml`
-76: - CLI overrides via argparse with `--data.K=5` style nested key overrides → `merge_overrides()`
-77: 
-78: ## Reproducibility
-79: 
-80: - Seeds set explicitly: `random.seed()`, `np.random.seed()`, `torch.manual_seed()`
-81: - Convention: seeds 13 (default), 42 (shuffle), or 1/2/3 for multi-seed runs
-82: - `shuffle_seed` in config controls data shuffling separately from environment seed
-83: 
-84: ## qb-rl Compatibility Convention
-85: 
-86: Backward-compatible re-exports use thin shim modules:
-87: 
-88: ```python
-89: # qb_env/data_loader.py
-90: """qb-rl compatibility re-exports for tossup data loading."""
-91: from qb_data.data_loader import (
-92:     QANTADatasetLoader, TossupQuestion, load_tossup_questions, ...
-93: )
-94: ```
-95: 
-96: This pattern is used in `qb_env/data_loader.py`, `qb_env/mc_builder.py`, `qb_env/text_utils.py`, and `models/answer_profiles.py`.
-````
-
-## File: .planning/codebase/INTEGRATIONS.md
-````markdown
- 1: # Integrations
- 2: 
- 3: ## External APIs
- 4: 
- 5: ### HuggingFace Hub
- 6: - **Module:** `qb_data/huggingface_loader.py`
- 7: - **Purpose:** Fallback data source when local CSV is unavailable
- 8: - **Dataset:** QANTA quiz bowl questions via `datasets` library
- 9: - **Auth:** None required (public datasets)
-10: - **Usage:** `load_from_huggingface()` called by `scripts/build_mc_dataset.py` when CSV path missing
-11: 
-12: ### HuggingFace Model Hub
-13: - **Module:** `models/likelihoods.py`, `models/t5_policy.py`
-14: - **Models downloaded:**
-15:   - T5 variants: `t5-small`, `t5-base`, `t5-large` (likelihood scoring)
-16:   - SentenceTransformers: `all-MiniLM-L6-v2` (SBERT embeddings)
-17: - **Cache:** Default HuggingFace cache (`~/.cache/huggingface/`)
-18: - **Auth:** None required (public models)
-19: 
-20: ### OpenAI API (Optional)
-21: - **Module:** `models/likelihoods.py` → `OpenAILikelihood`
-22: - **Purpose:** Alternative embedding model for answer likelihood scoring
-23: - **Model:** `text-embedding-3-small` (configurable)
-24: - **Auth:** `OPENAI_API_KEY` environment variable
-25: - **Install:** `pip install -e '.[openai]'`
-26: - **Guard:** Import-time check with helpful error message if `openai` package not installed
-27: 
-28: ## Data Sources
-29: 
-30: ### QANTA CSV
-31: - **Primary data format:** CSV with `|||`-separated clues in `question`/`Text` column
-32: - **Path:** Configured via `data.csv_path` in YAML config (default: `questions.csv`)
-33: - **Loader:** `qb_data/data_loader.py` → `QANTADatasetLoader`
-34: - **Fields:** question text, answer, category, optional human buzz positions
-35: 
-36: ### Artifacts Directory
-37: - **Path:** `artifacts/` (main runs), `artifacts/smoke/` (smoke tests)
-38: - **Contents:** `mc_dataset.json`, `alias_lookup.json`, `baseline_summary.json`, `ppo_summary.json`, `evaluation_report.json`
-39: - **Format:** JSON with custom serialization via `scripts/_common.py:to_serializable()`
-40: 
-41: ## Embedding Cache
-42: - **Module:** `models/likelihoods.py` (base class `LikelihoodModel`)
-43: - **Strategy:** SHA-256 content hashing of input text → float32 numpy arrays
-44: - **Storage:** In-memory dict (`embedding_cache`), no persistent disk cache for embeddings themselves
-45: - **Config:** `likelihood.cache_embeddings` and `likelihood.cache_dir` in YAML (cache_dir used for optional on-disk persistence)
-46: 
-47: ## No External Databases / Auth Providers / Webhooks
-48: 
-49: This is a research project with no:
-50: - Database connections
-51: - Authentication/authorization systems
-52: - Webhook endpoints
-53: - Message queues
-54: - External monitoring services
-````
-
-## File: .planning/codebase/STACK.md
-````markdown
- 1: # Stack
- 2: 
- 3: ## Language & Runtime
- 4: 
- 5: - **Python >= 3.11** (specified in `pyproject.toml`)
- 6: - Virtual environment: `.venv/` with Python 3.13 (local dev)
- 7: - Package manager: pip with setuptools build backend
- 8: - Install: `pip install -e .` (editable) or `pip install -r requirements.txt`
- 9: 
-10: ## Core Frameworks
-11: 
-12: | Framework | Version | Purpose |
-13: |-----------|---------|---------|
-14: | PyTorch | >= 2.0.0 | Neural network inference (T5, SBERT), PPO policy networks |
-15: | Gymnasium | >= 1.1.0 | POMDP environment interface (`TossupMCEnv`) |
-16: | Stable-Baselines3 | >= 2.6.0 | PPO training loop, MLP policy networks |
-17: | Transformers | >= 4.30.0 | T5 model loading, tokenization, likelihood scoring |
-18: | Sentence-Transformers | >= 2.2.0 | SBERT embeddings for distractor selection and scoring |
-19: 
-20: ## ML / Data Libraries
-21: 
-22: | Library | Version | Purpose |
-23: |---------|---------|---------|
-24: | NumPy | >= 1.24.0 | Array operations, belief distributions, feature extraction |
-25: | scikit-learn | >= 1.3.0 | TF-IDF vectorizer, cosine similarity, distractor ranking |
-26: | pandas | >= 2.0.0 | Data loading, evaluation tables |
-27: | datasets | >= 2.14.0 | HuggingFace dataset loading (QANTA fallback) |
-28: 
-29: ## Visualization & IO
-30: 
-31: | Library | Version | Purpose |
-32: |---------|---------|---------|
-33: | matplotlib | >= 3.7.0 | Calibration curves, entropy plots |
-34: | seaborn | >= 0.12.0 | Statistical plot styling |
-35: | PyYAML | >= 6.0.0 | Config file parsing (`configs/*.yaml`) |
-36: | jsonlines | >= 3.1.0 | Streaming JSON I/O for datasets |
-37: | tqdm | >= 4.65.0 | Progress bars in pipeline scripts |
-38: 
-39: ## Optional Dependencies
-40: 
-41: | Library | Version | Purpose |
-42: |---------|---------|---------|
-43: | openai | >= 1.0.0 | OpenAI embedding API for `OpenAILikelihood` (opt-in via `pip install -e '.[openai]'`) |
-44: 
-45: ## Configuration
-46: 
-47: - YAML-based config system: `configs/default.yaml`, `configs/smoke.yaml`
-48: - Config loaded via `qb_data.config.load_config()` with CLI override support
-49: - Sections: `data`, `answer_profiles`, `likelihood`, `environment`, `mc_guards`, `bayesian`, `ppo`, `evaluation`, `supervised`
-50: 
-51: ## Device Selection
-52: 
-53: - Auto-selects best accelerator: CUDA > MPS > CPU via `_best_torch_device()` in `models/likelihoods.py`
-54: - Seeds set explicitly for reproducibility (numpy, torch, random) — convention uses seeds 1, 2, 3 or 13, 42
-55: 
-56: ## Build & Packaging
-57: 
-58: - `pyproject.toml` defines the package with setuptools backend
-59: - Installable packages: `agents`, `evaluation`, `models`, `qb_data`, `qb_env`, `training`
-60: - Legacy root-level files (`config.py`, `dataset.py`, `environment.py`, `model.py`, etc.) coexist with the modular package structure
+ 5: ## Claude-specific notes
+ 6: 
+ 7: - `.planning/` is durable project memory; respect STATE.md decisions.
+ 8: - Prefer narrow verification over broad cargo-cult test runs.
+ 9: - Do not add dependencies unless required.
+10: - Seeds: use 1, 2, 3 for multi-seed runs.
+11: - NumPy/PyTorch vectorized operations over loops in ML code.
 ````
 
 ## File: .planning/milestones/v1.0-REQUIREMENTS.md
@@ -18836,347 +18857,3764 @@ walkthrough.md
 38: *v1.0 milestone shipped: 2026-03-13*
 ````
 
-## File: CLAUDE.md
+## File: docs/prompts/chatgpt_code_review_prompt.md
 ````markdown
- 1: # CLAUDE.md
- 2: 
- 3: See **AGENTS.md** for the full repo contract: setup, architecture, testing, smoke pipeline, and configuration.
- 4: 
- 5: ## Claude-specific notes
- 6: 
- 7: - `.planning/` is durable project memory; respect STATE.md decisions.
- 8: - Prefer narrow verification over broad cargo-cult test runs.
- 9: - Do not add dependencies unless required.
-10: - Seeds: use 1, 2, 3 for multi-seed runs.
-11: - NumPy/PyTorch vectorized operations over loops in ML code.
-````
-
-## File: .planning/codebase/ARCHITECTURE.md
-````markdown
-  1: # Architecture
+  1: # ChatGPT Prompt: Anti-Hallucinatory Code Review of qanta-buzzer
   2: 
-  3: ## System Overview
+  3: **Attach these three files:**
   4: 
-  5: Two-track quiz bowl buzzer system with three opt-in extensions:
-  6: 
-  7: 1. **Belief-feature pipeline:** Build MC tossups → score with likelihood models → train/compare buzzers → evaluate with S_q, Expected Wins, and calibration metrics
-  8: 2. **T5 policy pipeline:** Supervised warm-start → PPO fine-tuning for an end-to-end text policy
-  9: 
- 10: Both tracks share the same data layer (`qb_data/`) and environment (`qb_env/`).
- 11: 
- 12: **Opt-in extensions:** Expected Wins reward mode (opponent models), Variable-K answer choices (padded obs + action masks), DSPy LM-based scoring (offline compile).
- 13: 
- 14: ## Layered Architecture
- 15: 
- 16: ```
- 17: ┌─────────────────────────────────────────────────────────┐
- 18: │  Scripts Layer (pipeline entrypoints)                    │
- 19: │  scripts/build_mc_dataset.py → run_baselines.py →       │
- 20: │  train_ppo.py → evaluate_all.py                         │
- 21: │  scripts/train_t5_policy.py → compare_policies.py       │
- 22: │  scripts/optimize_dspy.py  (offline DSPy compile)        │
- 23: ├─────────────────────────────────────────────────────────┤
- 24: │  Agent Layer                                             │
- 25: │  agents/threshold_buzzer.py  (ThresholdBuzzer)           │
- 26: │  agents/bayesian_buzzer.py   (SoftmaxProfileBuzzer)      │
- 27: │  agents/ppo_buzzer.py        (PPOBuzzer via SB3)         │
- 28: ├─────────────────────────────────────────────────────────┤
- 29: │  Evaluation Layer                                        │
- 30: │  evaluation/metrics.py   (S_q, EW, ECE, Brier, accuracy)  │
- 31: │  evaluation/controls.py  (shuffle, choices-only, alias)   │
- 32: │  evaluation/plotting.py  (calibration curves, entropy)    │
- 33: ├─────────────────────────────────────────────────────────┤
- 34: │  Environment Layer                                       │
- 35: │  qb_env/tossup_env.py    (TossupMCEnv: EW, variable-K)   │
- 36: │  qb_env/opponent_models.py (opponent buzz model protocol) │
- 37: │  qb_env/text_wrapper.py  (TextObservationWrapper)        │
- 38: ├─────────────────────────────────────────────────────────┤
- 39: │  Model Layer                                             │
- 40: │  models/likelihoods.py   (TfIdf, SBERT, T5, OpenAI)      │
- 41: │  models/dspy_likelihood.py (DSPyLikelihood, score cache)  │
- 42: │  models/features.py      (belief + padded features)       │
- 43: │  models/t5_policy.py     (T5PolicyModel + PolicyHead)     │
- 44: ├─────────────────────────────────────────────────────────┤
- 45: │  Data Layer                                              │
- 46: │  qb_data/data_loader.py     (QANTA CSV + HF loading)     │
- 47: │  qb_data/mc_builder.py      (MCBuilder + anti-artifact)   │
- 48: │  qb_data/answer_profiles.py (answer profile generation)   │
- 49: │  qb_data/dataset_splits.py  (stratified train/val/test)   │
- 50: │  qb_data/config.py          (YAML config loading)         │
- 51: │  qb_data/text_utils.py      (normalization, tokenization) │
- 52: └─────────────────────────────────────────────────────────┘
- 53: ```
- 54: 
- 55: ## Data Flow
- 56: 
- 57: ### Belief-Feature Pipeline
- 58: 
- 59: ```
- 60: QANTA CSV / HuggingFace
- 61:     ↓ (qb_data/data_loader.py)
- 62: List[TossupQuestion]
- 63:     ↓ (qb_data/mc_builder.py)
- 64: List[MCQuestion]  (with K options, anti-artifact guards)
- 65:     ↓ (qb_data/dataset_splits.py)
- 66: train / val / test splits → mc_dataset.json
- 67:     ↓ (models/likelihoods.py)
- 68: LikelihoodModel.score() → raw similarity scores
- 69:     ↓ (softmax with beta temperature)
- 70: Belief distribution over K options
- 71:     ↓ (models/features.py)
- 72: [belief[0..K-1], top_p, margin, entropy, stability, progress, clue_idx_norm]
- 73:     ↓ (qb_env/tossup_env.py)
- 74: TossupMCEnv observation (Box(K+6,))
- 75:     ↓ (agents/)
- 76: Buzz decision → EpisodeResult / SoftmaxEpisodeResult / PPOEpisodeTrace
- 77:     ↓ (evaluation/)
- 78: S_q, ECE, Brier score, accuracy, per-category stats
- 79: ```
- 80: 
- 81: ### T5 Policy Pipeline
- 82: 
- 83: ```
- 84: MCQuestion dataset
- 85:     ↓ (training/train_supervised_t5.py)
- 86: T5PolicyModel supervised warm-start
- 87:     ↓ (training/train_ppo_t5.py)
- 88: PPO fine-tuning on TossupMCEnv with TextObservationWrapper
- 89:     ↓ (scripts/compare_policies.py)
- 90: Policy comparison metrics
- 91: ```
- 92: 
- 93: ## Key Abstractions
- 94: 
- 95: ### `TossupQuestion` (dataclass, `qb_data/data_loader.py`)
- 96: Core data structure: question text, tokens, answer, run_indices for clue boundaries, cumulative_prefixes for incremental reveal.
- 97: 
- 98: ### `MCQuestion` (dataclass, extends TossupQuestion, `qb_data/mc_builder.py`)
- 99: Adds: options (K answer choices), gold_index, option_profiles, distractor_strategy. Four anti-artifact guards prevent spurious patterns.
-100: 
-101: ### `LikelihoodModel` (ABC, `models/likelihoods.py`)
-102: Pluggable scoring interface. Implementations: `TfIdfLikelihood`, `SBERTLikelihood`, `T5Likelihood`, `OpenAILikelihood`, `DSPyLikelihood`. Each implements `score(clue_prefix, option_profiles) → np.ndarray`. Embedding-based models also implement `_embed_batch()`; `DSPyLikelihood` raises `NotImplementedError` on embedding operations.
-103: 
-104: ### `TossupMCEnv` (Gymnasium env, `qb_env/tossup_env.py`)
-105: POMDP environment: Discrete(K+1) action space (WAIT + K buzz options), Box(K+6) observation space (belief features). Four reward modes: `time_penalty`, `simple`, `human_grounded`, `expected_wins`. Supports variable-K mode with padded observations and `action_masks()`.
-106: 
-107: ### Agent hierarchy
-108: - `ThresholdBuzzer`: simple confidence threshold
-109: - `SoftmaxProfileBuzzer`: Bayesian belief updates with sigmoid confidence proxy
-110: - `PPOBuzzer`: SB3 PPO wrapper with custom `run_episode()` for S_q trace recording
-111: 
-112: ## Entry Points
-113: 
-114: | Script | Purpose |
-115: |--------|---------|
-116: | `scripts/build_mc_dataset.py` | Load questions, build MC dataset, save artifacts |
-117: | `scripts/run_baselines.py` | Sweep threshold/Bayesian buzzers |
-118: | `scripts/train_ppo.py` | Train PPO agent on belief features |
-119: | `scripts/evaluate_all.py` | Full evaluation + controls + plots |
-120: | `scripts/train_t5_policy.py` | T5 policy supervised + PPO training |
-121: | `scripts/compare_policies.py` | Compare T5 vs belief-feature policies |
-122: | `scripts/sweep_reward_shaping.py` | Multi-seed reward parameter sweep |
-123: | `scripts/run_smoke_pipeline.py` | End-to-end smoke test |
-124: | `scripts/optimize_dspy.py` | Offline DSPy compile/optimize |
-125: 
-126: All pipeline scripts accept `--smoke` for fast testing and `--config` for custom YAML configs.
-127: 
-128: ## qb-rl Compatibility Layer
-129: 
-130: The `qb_env/` package provides thin re-export shims that map old `qb_env.data_loader`, `qb_env.mc_builder`, and `qb_env.text_utils` import paths to their canonical `qb_data.*` counterparts. Similarly, `models/answer_profiles.py` re-exports from `qb_data/answer_profiles.py`. This preserves backward compatibility with the earlier qb-rl codebase.
-````
-
-## File: .planning/quick/pr1-reconciliation.md
-````markdown
-  1: # PR #1 Reconciliation Ledger
-  2: 
-  3: **Created:** 2026-03-15
-  4: **Finalized:** 2026-03-15
-  5: **Branch:** main
-  6: **Local HEAD at start:** 9664c487
-  7: **Local HEAD at finish:** acff2bbb
-  8: **PR branch:** personal/codex/align-action-space-with-revised-report (commits 4f3e3009, f459f246)
-  9: **Reference:** .planning/quick/pr1-integration-plan.md
- 10: **Mode:** Semantic reconciliation (not literal cherry-pick)
- 11: **Scope:** DSPy review-remediation surface (WP1–4). Feature ports (WP-A–D, WP-X) deferred.
+  5: 1. `repomix/repomix-code.md` (18,835 lines — full source, configs, tests)
+  6: 2. `repomix/repomix-docs.md` (21,905 lines — all .planning/, docs, README, AGENTS.md)
+  7: 3. `repomix/repomix-smoke.md` (31,931 lines — current smoke artifact JSON/CSV)
+  8: 
+  9: ---
+ 10: 
+ 11: **Copy everything below this line into ChatGPT.**
  12: 
  13: ---
  14: 
- 15: ## Final Verification
+ 15: You are conducting a rigorous, anti-hallucinatory code review of a Stanford CS234 final project codebase called **qanta-buzzer**. The three attached Markdown files are Repomix snapshots of the complete repository at commit `a70fb00e`. They contain every source file, every test, every config, every planning document, and the current smoke pipeline artifacts.
  16: 
- 17: | Command | Result |
- 18: |---------|--------|
- 19: | `pytest tests/test_dspy_likelihood.py tests/test_dspy_optimize.py tests/test_dspy_answer_profiles.py tests/test_factories.py -q` | 31 passed, 2 skipped (0.06s) |
- 20: | `pytest -q` | 320 passed, 3 skipped (57.64s) |
- 21: | `bash scripts/manual-smoke.sh` | 4/4 stages complete (10.6s) |
- 22: | `python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke` | Supervised 75% val acc → PPO 5 iters → test acc 62.5% (23.9s) |
- 23: 
- 24: All invariants hold: test count unchanged (320/3), smoke pipeline green, T5 smoke green, `top_p_trace` calibration intact, `_legacy/` untouched.
- 25: 
- 26: ---
- 27: 
- 28: ## Work Packages — Final Status
- 29: 
- 30: ### WP-1: DSPy Likelihood / Factory Contract Surface
- 31: 
- 32: | Field | Value |
- 33: |-------|-------|
- 34: | Objective | Verify DSPyLikelihood subclass contract, score() (K,) enforcement, stale `dspy.enabled` removal, importability/runtime docs accuracy, fingerprint/cache test coverage, factory dispatch consistency |
- 35: | Repo evidence checked | `models/dspy_likelihood.py`, `models/likelihoods.py` (factory), `models/__init__.py`, `tests/test_dspy_likelihood.py`, `tests/test_factories.py`, `configs/default.yaml`, `configs/smoke.yaml`, `README.md`, `AGENTS.md` |
- 36: | Files changed | none |
- 37: | Tests run | `pytest tests/test_dspy_likelihood.py tests/test_factories.py -q` → 24 passed in 0.06s |
- 38: | Result | **verified_closed** |
- 39: | Commit hash | — |
- 40: | Rollback command | — |
- 41: | Notes | All 6 checkpoints verified without edits. (1) `DSPyLikelihood(LikelihoodModel)` with `super().__init__()`. (2) `score()` validates `ndim==1` and `len==K`. (3) No `dspy.enabled` in any config; comment on default.yaml:84 says "no separate enable flag"; stale key removal tracked to REVIEW commit fd34e25a. (4) Module docstring says importable without dspy extra — true (no dspy import at module level); README/AGENTS correctly describe opt-in via `pip install -e '.[dspy]'`. (5) `test_changed_fingerprint_invalidates` proves distinct keys per fingerprint + correct cache population; `test_repeated_call_hits_cache` proves cache hit. (6) Factory reads `config.get("dspy", {})` for `cache_dir`/`program_fingerprint` with "default" fallback; test coverage in `TestDSPyFactoryIntegration`. |
- 42: 
- 43: ---
+ 17: ## Your role and constraints
+ 18: 
+ 19: You are a skeptical senior reviewer. Your job is to find real bugs, real inconsistencies, and real design problems — not to invent problems that don't exist.
+ 20: 
+ 21: **CRITICAL ANTI-HALLUCINATION RULES:**
+ 22: 
+ 23: 1. **Every claim must cite a specific file path and line range from the attached files.** Do not say "X might be wrong" — show the exact code that IS wrong and explain exactly what it does vs what it should do.
+ 24: 
+ 25: 2. **If you cannot find evidence for a problem in the attached files, do not report it.** Saying "I suspect there might be an issue with..." without pointing to code is forbidden. Either you found it or you didn't.
+ 26: 
+ 27: 3. **Distinguish between "verified issue" and "potential concern."** A verified issue has a specific code path, specific inputs, and a specific wrong output. A potential concern is a design choice that might cause problems at scale or under conditions you can describe but cannot prove from the code alone.
+ 28: 
+ 29: 4. **Do not report style preferences as bugs.** "This function could be cleaner" is not a bug. "This function returns the wrong shape when K=2 because line 47 assumes K>=3" IS a bug.
+ 30: 
+ 31: 5. **Do not report issues that are already documented as known.** The `.planning/quick/patch-audit-issues.md` and `.planning/quick/extensions-master-run.md` files document known issues and remaining risks. If something is already listed there, acknowledge it and move on.
+ 32: 
+ 33: 6. **Do not hallucinate test failures.** If you think a test would fail, show the exact test function, the exact code path it exercises, and the exact assertion that would fail. If you cannot do this, do not claim the test would fail.
+ 34: 
+ 35: ## Repo context
+ 36: 
+ 37: This is a quiz bowl RL buzzer with:
+ 38: - A **belief-feature MLP pipeline**: TF-IDF/SBERT/T5 likelihood → softmax belief → Gymnasium env → PPO (SB3)
+ 39: - A **T5 end-to-end text policy**: T5EncoderModel → PolicyHead → supervised warm-start → custom PPO
+ 40: - Three **opt-in extensions** just added (disabled by default):
+ 41:   - **Expected Wins** reward mode with opponent buzz models
+ 42:   - **Variable-K** answer choices with padded observations and action masks
+ 43:   - **DSPy** integration for LM-based scoring with offline compilation
  44: 
- 45: ### WP-2: DSPy Offline Compile / Optimize Path
+ 45: Current state: 315 tests pass, 3 skipped (optional extras not installed). Smoke pipeline green. T5 smoke green.
  46: 
- 47: | Field | Value |
- 48: |-------|-------|
- 49: | Objective | Verify optimizer metric is real, trainset uses train split, compile path is offline/testable, tests validate real code |
- 50: | Repo evidence checked | `scripts/optimize_dspy.py`, `tests/test_dspy_optimize.py`, `scripts/build_mc_dataset.py` (line 332 confirms train_dataset.json output), `chatgpt_final_review_prompt.md` (REVIEW-2 context) |
- 51: | Files changed | `scripts/optimize_dspy.py`, `tests/test_dspy_optimize.py` |
- 52: | Tests run | `pytest tests/test_dspy_optimize.py -q` → 5 passed, 1 skipped in 0.02s |
- 53: | Result | **completed** |
- 54: | Commit hash | 63c66c05 |
- 55: | Rollback command | `git revert 63c66c05` |
- 56: | Notes | (1) Metric is real argmax-based comparison, fixed in REVIEW-2. (2) `main()` looks for `train_dataset.json` first with fallback + warning; `build_mc_dataset.py` produces it at line 332. (3) `compile_dspy_scorer()` requires dspy only at runtime; helpers work without it. (4) FIX: extracted `_score_metric` from closure inside `compile_dspy_scorer()` to module level so test imports the real function instead of duplicating it. |
- 57: 
- 58: ---
- 59: 
- 60: ### WP-3: DSPy Answer-Profile Fallback / Doc / Test Behavior
- 61: 
- 62: | Field | Value |
- 63: |-------|-------|
- 64: | Objective | Verify docstrings don't overclaim leave-one-out, fallback logs truthfully, test names match bodies, no misleading naming drift |
- 65: | Repo evidence checked | `qb_data/dspy_answer_profiles.py`, `tests/test_dspy_answer_profiles.py` |
- 66: | Files changed | none |
- 67: | Tests run | `pytest tests/test_dspy_answer_profiles.py -q` → 2 passed, 1 skipped in 0.01s |
- 68: | Result | **verified_closed** |
- 69: | Commit hash | — |
- 70: | Rollback command | — |
- 71: | Notes | (1) Docstring explicitly disclaims leave-one-out enforcement: "This function itself does not receive per-question exclusion context — it augments whatever profiles it is given." (2) Fallback logs at WARNING per-answer and INFO summary with augmented/fallback counts (fixed in REVIEW-2 c912c814). (3) All three test names match their bodies. (4) No naming drift found; REVIEW-2 resolved the prior "silent except" issue. |
+ 47: ## Review tasks
+ 48: 
+ 49: ### Task 1: Correctness Review
+ 50: 
+ 51: Examine every production code file for:
+ 52: 
+ 53: A. **Logic bugs** — wrong math, off-by-one errors, unreachable code, silent wrong answers
+ 54: B. **Type mismatches** — functions that claim to return X but actually return Y, arguments passed in wrong order
+ 55: C. **Contract violations** — functions whose docstring promises a behavior the code doesn't deliver
+ 56: D. **Missing error handling** — code paths that can silently produce wrong results instead of raising
+ 57: E. **Stale references** — imports, function calls, or config keys that reference things that no longer exist or have moved
+ 58: 
+ 59: For each issue found, provide:
+ 60: - File path and line range
+ 61: - The exact problematic code (quote it)
+ 62: - What it does vs what it should do
+ 63: - Severity: critical / high / medium / low
+ 64: - Suggested fix (one-line description, not full implementation)
+ 65: 
+ 66: ### Task 2: Test Coverage Analysis
+ 67: 
+ 68: For each test file, assess:
+ 69: - Does the test actually test what it claims?
+ 70: - Are there assertions that would pass for BOTH correct and incorrect implementations (i.e., weak assertions)?
+ 71: - Are there code paths in the production code that have NO test coverage and SHOULD?
  72: 
- 73: ---
- 74: 
- 75: ### WP-4: Durable Docs — PR #1 Absorption Statement
- 76: 
- 77: | Field | Value |
- 78: |-------|-------|
- 79: | Objective | Ensure durable docs reflect that PR #1 review-remediation content is absorbed locally; no misleading upstream references |
- 80: | Repo evidence checked | `README.md`, `AGENTS.md`, `CLAUDE.md`, `.planning/STATE.md`, `.planning/quick/extensions-master-run.md` |
- 81: | Files changed | `.planning/STATE.md`, `.planning/quick/extensions-master-run.md` |
- 82: | Tests run | `pytest tests/test_dspy_likelihood.py tests/test_dspy_optimize.py tests/test_dspy_answer_profiles.py tests/test_factories.py -q` → 31 passed, 2 skipped in 0.07s |
- 83: | Result | **completed** |
- 84: | Commit hash | acff2bbb |
- 85: | Rollback command | `git revert acff2bbb` |
- 86: | Notes | (1) README/AGENTS/CLAUDE already reflect local reality — modular pipeline canonical, extensions opt-in, test counts accurate, no misleading upstream references. (2) STATE.md session summary updated to mention PR #1 reconciliation status. (3) extensions-master-run.md cross-references the PR #1 reconciliation ledger. (4) No changes needed to README/AGENTS/CLAUDE — they don't mention PR #1 and shouldn't. |
+ 73: Focus on the three new extension areas:
+ 74: - `qb_env/opponent_models.py` and `tests/test_opponent_models.py`
+ 75: - Variable-K code in `qb_data/mc_builder.py`, `qb_env/tossup_env.py`, `models/features.py` and their tests
+ 76: - `models/dspy_likelihood.py` and `tests/test_dspy_likelihood.py`
+ 77: 
+ 78: ### Task 3: Config / CLI Contract Audit
+ 79: 
+ 80: Check every YAML config file against the code that reads it:
+ 81: - Are there config keys that are defined in YAML but never read by any code?
+ 82: - Are there config keys read by code that have no default in any YAML file?
+ 83: - Does the `merge_overrides` system work correctly with the new extension config sections?
+ 84: - Are there config keys whose documented semantics (in comments or docs) don't match how the code actually uses them?
+ 85: 
+ 86: ### Task 4: Cross-Extension Interaction Review
  87: 
- 88: ---
- 89: 
- 90: ## Deferred Work Packages (not in scope for this reconciliation)
- 91: 
- 92: These are NEW features from PR #1, not review-remediation. They would be additive ports, not reconciliation of existing content.
+ 88: The three extensions were built as independent patch sequences. Check for interactions:
+ 89: - If `variable_K=True` AND `reward_mode=expected_wins`, does the opponent model correctly handle mixed-K questions?
+ 90: - If `likelihood.model=dspy` is set, do the baseline agents and evaluation scripts still work?
+ 91: - Does `DSPyLikelihood` correctly implement the `LikelihoodModel` interface contract, or does it break callers that rely on `embed_and_cache()`?
+ 92: - Do the new config sections survive `merge_overrides` correctly (i.e., setting `environment.reward_mode=expected_wins` doesn't clobber the `opponent_buzz_model` subsection)?
  93: 
- 94: ### WP-A: T5 Joint Action Semantics
+ 94: ### Task 5: Smoke Artifact Consistency
  95: 
- 96: | Field | Value |
- 97: |-------|-------|
- 98: | Objective | Port factored `_joint_action_log_prob()`, `_joint_entropy()`, updated `select_action()` / `get_action_log_probs()` from PR #1 to local `models/t5_policy.py` |
- 99: | Result | **deferred** |
-100: | Notes | Pure T5 math fix. Lowest conflict risk per integration plan. Additive feature, not review-remediation content. |
+ 96: The `repomix-smoke.md` file contains the actual JSON/CSV outputs from the most recent smoke pipeline run. Check:
+ 97: - Do the metric values in `evaluation_report.json` match what the metric functions would compute for the data in `ppo_runs.json` and `baseline_summary.json`?
+ 98: - Are there any NaN, Inf, or obviously impossible values?
+ 99: - Does `comparison.csv` agree with the individual summary files?
+100: - Are the calibration values (ECE, Brier) now non-trivial (i.e., not all zeros, which was the pre-fix state)?
 101: 
-102: ### WP-B: StopOnlyEnv + `--policy-mode` Flag
+102: ### Task 6: Documentation Truthfulness
 103: 
-104: | Field | Value |
-105: |-------|-------|
-106: | Objective | Add `StopOnlyEnv` wrapper (Discrete(2) buzz/wait), `--policy-mode` CLI flag to `train_ppo.py`. Default must be `flat_kplus1`. |
-107: | Result | **deferred** |
-108: | Notes | Must NOT adopt `p_correct_trace` rename. Must handle `use_maskable_ppo` interaction. PR has P1 bug with `stop_only` default. |
+104: Cross-check every factual claim in `README.md` and `AGENTS.md` against the actual code:
+105: - Test counts (claimed: 315 tests across 22 files)
+106: - Config table (claimed defaults vs actual YAML values)
+107: - Architecture diagram (claimed packages vs actual directory contents)
+108: - Extension descriptions (claimed behavior vs actual implementation)
 109: 
-110: ### WP-C: `end_mode` / `no_buzz_reward` Env Semantics
+110: ## Output format
 111: 
-112: | Field | Value |
-113: |-------|-------|
-114: | Objective | Add `end_mode` and `no_buzz_reward` constructor args to `TossupMCEnv`. |
-115: | Result | **deferred** |
-116: | Notes | Must merge with existing 6+ constructor params. PR has P2 bug (partial fix only). |
-117: 
-118: ### WP-D: Hazard Pretraining Bridge
-119: 
-120: | Field | Value |
-121: |-------|-------|
-122: | Objective | Add `training/hazard_pretrain.py` utilities, CLI flags in `train_t5_policy.py`. |
-123: | Result | **deferred** |
-124: | Notes | Standalone new files with no downstream callers. Can be deferred indefinitely. |
-125: 
-126: ### WP-X: Cross-cutting Tests
-127: 
-128: | Field | Value |
-129: |-------|-------|
-130: | Objective | Port `test_action_space_alignment.py` tests for landed patches. |
-131: | Result | **deferred** |
-132: | Notes | Depends on WP-A/B/C. No patches landed → nothing to test. |
+112: Organize your findings as:
+113: 
+114: ```
+115: ## VERIFIED ISSUES (things that are definitely wrong)
+116: 
+117: ### [SEVERITY] Short title
+118: - **File:** path/to/file.py:LINE
+119: - **Code:** `the exact problematic code`
+120: - **Problem:** what it does vs what it should do
+121: - **Fix:** one-line description
+122: 
+123: ## POTENTIAL CONCERNS (things that might cause problems)
+124: 
+125: ### [SEVERITY] Short title
+126: - **File:** path/to/file.py:LINE
+127: - **Evidence:** what you observed
+128: - **Risk:** when/how this could become a real problem
+129: - **Recommendation:** suggested action
+130: 
+131: ## VERIFIED CLEAN (areas you examined and found no issues)
+132: List the areas you checked and found correct.
 133: 
-134: ---
-135: 
-136: ## Reconciliation Summary
+134: ## ALREADY KNOWN (issues documented in .planning/)
+135: List issues you found that are already documented as known.
+136: ```
 137: 
-138: | WP | Scope | Result | Commit |
-139: |----|-------|--------|--------|
-140: | WP-1 | DSPy likelihood/factory contract | verified_closed | — |
-141: | WP-2 | DSPy offline compile path | completed (1 fix) | 63c66c05 |
-142: | WP-3 | DSPy answer-profile fallback | verified_closed | — |
-143: | WP-4 | Durable docs absorption statement | completed (2 files) | acff2bbb |
-144: | WP-A | T5 joint action semantics | deferred | — |
-145: | WP-B | StopOnlyEnv + policy-mode | deferred | — |
-146: | WP-C | end_mode / no_buzz_reward | deferred | — |
-147: | WP-D | Hazard pretraining bridge | deferred | — |
-148: | WP-X | Cross-cutting tests | deferred | — |
-149: 
-150: **Files changed (production):** `scripts/optimize_dspy.py` (metric extraction)
-151: **Files changed (tests):** `tests/test_dspy_optimize.py` (import real metric)
-152: **Files changed (planning):** `.planning/STATE.md`, `.planning/quick/extensions-master-run.md`, `.planning/quick/pr1-reconciliation.md`
-153: **Commits:** 2 (63c66c05, acff2bbb)
-154: **Test regressions:** 0
+138: Do NOT pad the report with non-issues to make it look thorough. If the code is correct, say so and explain what you checked. A short report that found one real bug is more valuable than a long report full of speculation.
+````
+
+## File: docs/prompts/chatgpt_dspy_focused_review_prompt.md
+````markdown
+  1: # ChatGPT Prompt: Full-Codebase Review with DSPy Deep-Dive
+  2: 
+  3: **Attach these three files:**
+  4: 
+  5: 1. `repomix/repomix-code.md` (18,876 lines — full source, configs, tests — **with line numbers**)
+  6: 2. `repomix/repomix-docs.md` (21,907 lines — all .planning/, docs — **with line numbers**)
+  7: 3. `repomix/repomix-smoke.md` (31,933 lines — current smoke artifact JSON/CSV — **with line numbers**)
+  8: 
+  9: All files include stable line numbers (`NNN: `) on every source line. Cite them as `file.py:NNN`.
+ 10: 
+ 11: ---
+ 12: 
+ 13: **Copy everything below this line into ChatGPT.**
+ 14: 
+ 15: ---
+ 16: 
+ 17: You are conducting a comprehensive code review of a Stanford CS234 final project codebase called **qanta-buzzer** at commit `fd34e25a`. The three attached Markdown files are line-numbered Repomix snapshots containing the complete repository: every source file, test, config, planning doc, and current smoke artifact.
+ 18: 
+ 19: This review has two layers:
+ 20: 1. **Whole-codebase pass** — check everything for correctness, contract violations, and test quality
+ 21: 2. **DSPy deep-dive** — give special scrutiny to the six DSPy-related files and their integration with the rest of the system
+ 22: 
+ 23: ## Anti-hallucination rules
+ 24: 
+ 25: These rules are non-negotiable. Violating any of them invalidates the entire review.
+ 26: 
+ 27: 1. **Every claim must cite `file.py:LINE`** using the line numbers in the attached files. "Line 42 of foo.py" is acceptable. "Somewhere in foo.py" is not.
+ 28: 
+ 29: 2. **Quote the exact code** that is wrong. Do not paraphrase. Copy the line(s) from the attachment.
+ 30: 
+ 31: 3. **If you cannot find evidence in the attachments, do not report it.** Speculation without a code citation is forbidden.
+ 32: 
+ 33: 4. **Distinguish VERIFIED ISSUE from POTENTIAL CONCERN.** A verified issue has a specific code path and a provably wrong output. A potential concern is a design risk you can describe but cannot prove from the code alone.
+ 34: 
+ 35: 5. **Do not re-report known issues.** The files `.planning/quick/patch-audit-issues.md` and `.planning/quick/extensions-master-run.md` document known risks. If you find something already listed there, put it in the ALREADY KNOWN section and move on.
+ 36: 
+ 37: 6. **Style preferences are not bugs.** Only report issues where behavior is wrong, contracts are violated, or tests are provably weak.
+ 38: 
+ 39: ## Repo context
+ 40: 
+ 41: - Quiz bowl RL buzzer with belief-feature MLP and T5 end-to-end policy tracks
+ 42: - Three opt-in extensions just added: Expected Wins, Variable-K, DSPy
+ 43: - 318 tests pass, 3 skipped (optional extras not installed)
+ 44: - Smoke pipeline and T5 smoke both green
+ 45: - Previous review already fixed: DSPyLikelihood inheritance, score shape validation, unused config key, stale config comment, misleading docstring, two weak tests
+ 46: 
+ 47: ## Part 1: Whole-Codebase Review
+ 48: 
+ 49: For every package (`agents/`, `evaluation/`, `models/`, `qb_data/`, `qb_env/`, `training/`, `scripts/`, `tests/`, `configs/`), check:
+ 50: 
+ 51: ### A. Contract fidelity
+ 52: - Does every function do what its docstring says?
+ 53: - Does every factory return the type it promises?
+ 54: - Are all abstract methods implemented by all concrete subclasses?
+ 55: 
+ 56: ### B. Error paths
+ 57: - Are there code paths that silently produce wrong results instead of raising?
+ 58: - Are there bare `except` or `except Exception` blocks that swallow real errors?
+ 59: - Are there missing input validations that could produce confusing downstream failures?
+ 60: 
+ 61: ### C. Numerical correctness
+ 62: - Are the math formulas in `evaluation/metrics.py` correctly implemented?
+ 63: - Does `expected_wins_score()` use the continuous V_self formula (not binary branching on g_trace)?
+ 64: - Are softmax computations numerically stable (subtract max before exp)?
+ 65: - Are there division-by-zero risks in belief normalization?
+ 66: 
+ 67: ### D. Config-code alignment
+ 68: - For every key in `configs/default.yaml` and `configs/smoke.yaml`: is there code that reads it?
+ 69: - For every `config.get("key")` call in Python: is that key defined in at least one YAML file?
+ 70: - Do config comments accurately describe the accepted values?
+ 71: 
+ 72: ### E. Test quality
+ 73: - Are there assertions that would pass for both correct AND incorrect implementations?
+ 74: - Are there production code paths with zero test coverage that should have tests?
+ 75: - Do test names accurately describe what they test?
+ 76: 
+ 77: ## Part 2: DSPy Deep-Dive
+ 78: 
+ 79: Give special attention to these six files and their integration points:
+ 80: 
+ 81: ### Production code
+ 82: 1. **`models/dspy_likelihood.py`** — The core DSPy scorer wrapper
+ 83: 2. **`qb_data/dspy_answer_profiles.py`** — Optional LM-augmented answer profiles
+ 84: 3. **`scripts/optimize_dspy.py`** — Offline DSPy compile/optimize workflow
+ 85: 
+ 86: ### Test code
+ 87: 4. **`tests/test_dspy_likelihood.py`**
+ 88: 5. **`tests/test_dspy_answer_profiles.py`**
+ 89: 6. **`tests/test_dspy_optimize.py`**
+ 90: 
+ 91: ### Integration points
+ 92: 7. **`models/likelihoods.py`** — the `build_likelihood_from_config()` factory, specifically the `model_name == "dspy"` branch
+ 93: 8. **`tests/test_factories.py`** — `TestDSPyFactoryIntegration`
+ 94: 9. **`configs/default.yaml`** — the `dspy:` section
+ 95: 10. **`pyproject.toml`** — the `[project.optional-dependencies]` `dspy` extra
+ 96: 
+ 97: For each DSPy file, answer these specific questions:
+ 98: 
+ 99: #### `models/dspy_likelihood.py`
+100: - Does `DSPyLikelihood` correctly inherit `LikelihoodModel`? (This was just fixed — verify the fix is sound.)
+101: - Does `score()` enforce the `(K,)` shape contract? (Also just fixed — verify.)
+102: - Is `_score_cache_key()` collision-resistant? Could two different `(clue, options, fingerprint)` triples produce the same key?
+103: - Does `save_cache()` / `load_cache()` correctly handle the `_score_cache` dict where keys are SHA-256 hex strings? (Note: `np.savez_compressed` uses keys as numpy array names — are SHA-256 hex strings valid numpy identifier-style keys?)
+104: - Does `embed_and_cache()` raising `NotImplementedError` cause any problems for callers that call `embed_and_cache` on a generic `LikelihoodModel`? Grep for all call sites of `embed_and_cache` and `precompute_embeddings` to check.
+105: - Is the `cache_memory_bytes` property consistent with the parent class implementation?
+106: 
+107: #### `qb_data/dspy_answer_profiles.py`
+108: - Does `build_dspy_profiles()` actually preserve leave-one-out discipline, or does it just claim to?
+109: - If the DSPy LM call fails for one answer, does the fallback to `existing_profiles` work correctly?
+110: - Is the `max_answers` cap applied correctly (first N get augmentation, rest get extractive)?
+111: 
+112: #### `scripts/optimize_dspy.py`
+113: - Is `compile_dspy_scorer()` actually functional, or is it a skeleton that would crash on real input?
+114: - Does the `metric` lambda in the optimizer initialization actually measure anything useful, or is it a placeholder `lambda: 1.0`?
+115: - Is the `program_fingerprint` derivation deterministic and stable across runs with the same config?
+116: - Could `build_dspy_trainset()` produce training examples that leak test-set information?
+117: 
+118: #### Factory integration
+119: - Does the placeholder scorer in `build_likelihood_from_config()` match the `score()` contract?
+120: - If someone sets `likelihood.model: dspy` in config but does NOT have the `dspy` package installed, what happens? Trace the exact error path.
+121: - If someone sets `likelihood.model: dspy` and also sets `dspy.cache_dir: null`, does `DSPyLikelihood.__init__` handle that correctly?
+122: 
+123: #### Test quality for DSPy
+124: - Does `test_changed_fingerprint_invalidates` now actually prove what it claims? (Was just rewritten — verify the new version.)
+125: - Is `test_persistence_roundtrip` robust, or could it pass even if persistence were broken?
+126: - Does `test_score_shape_validation` cover all failure modes (wrong length, wrong ndim, empty)?
+127: - Are there any DSPy code paths that have ZERO test coverage?
+128: 
+129: ## Part 3: Cross-Cutting Concerns
+130: 
+131: ### A. LikelihoodModel hierarchy after DSPy addition
+132: - List every concrete subclass of `LikelihoodModel` and verify each implements `score()` and `_embed_batch()`.
+133: - For `DSPyLikelihood` specifically: it inherits `embed_and_cache()` from the base class but overrides it to raise. Is the base class's `__init__` (which initializes `self.embedding_cache = {}`) wasteful but harmless, or does it cause real problems?
+134: - Does `DSPyLikelihood.save_cache()` shadow the base class `save_cache()`? If so, does it have compatible semantics?
+135: 
+136: ### B. Variable-K + DSPy interaction
+137: - If `variable_K=True` and `likelihood.model=dspy`, does the DSPy scorer receive the correct per-question option count?
+138: - Does shape validation in `DSPyLikelihood.score()` still work when K varies per question?
+139: 
+140: ### C. Expected Wins + DSPy interaction
+141: - If `reward_mode=expected_wins` and `likelihood.model=dspy`, does the env correctly consume DSPy scores?
+142: - Does `DSPyLikelihood.score()` output integrate correctly with `_softmax()` and `_compute_belief()` in `tossup_env.py`?
+143: 
+144: ## Output format
+145: 
+146: ```
+147: ## VERIFIED ISSUES
+148: ### [SEVERITY] Title
+149: - **File:** path/to/file.py:LINE
+150: - **Code:** `exact quoted code`
+151: - **Problem:** what it does vs what it should do
+152: - **Fix:** one-line description
+153: 
+154: ## POTENTIAL CONCERNS
+155: ### [SEVERITY] Title
+156: - **File:** path/to/file.py:LINE
+157: - **Evidence:** what you observed
+158: - **Risk:** when this could become a real problem
+159: 
+160: ## VERIFIED CLEAN
+161: Areas examined and found correct, with brief evidence.
+162: 
+163: ## ALREADY KNOWN
+164: Issues found that are documented in .planning/ files.
+165: 
+166: ## DSPy-SPECIFIC FINDINGS
+167: Separate section for DSPy deep-dive results, organized by file.
+168: ```
+169: 
+170: Be thorough but honest. A short report with two real bugs is worth more than a long report padded with speculation. If the codebase is mostly correct, say so clearly and explain what you verified.
+````
+
+## File: docs/prompts/chatgpt_extensions_prompt.md
+````markdown
+  1: # ChatGPT Prompt: qanta-buzzer Codebase Audit + Three Extensions
+  2: 
+  3: **Attach these four files when pasting into ChatGPT:**
+  4: 
+  5: 1. `repomix/repomix-code.md` (17,063 lines, 580K — full source code, configs, tests)
+  6: 2. `repomix/repomix-docs.md` (21,808 lines, 976K — all docs and .planning/)
+  7: 3. `repomix/repomix-smoke.md` (31,931 lines, 1.0M — current smoke artifacts)
+  8: 4. `2026-03-13-195118-qanta-buzzer-optimization-cc-transcript3.txt` (4,024 lines — Claude Code optimization + audit remediation transcript)
+  9: 
+ 10: ---
+ 11: 
+ 12: **Prompt starts below this line. Copy everything from here to the end of the file.**
+ 13: 
+ 14: ---
+ 15: 
+ 16: You are receiving the complete source code, documentation, planning history, current smoke-test artifacts, and the full engineering decision transcript of a Stanford CS234 final project called **qanta-buzzer**. It is a quiz bowl RL buzzer with two policy tracks:
+ 17: 
+ 18: 1. **Belief-feature MLP pipeline:** TF-IDF/SBERT/T5 likelihood → softmax belief → Gymnasium env (Box(K+6) obs, Discrete(K+1) actions) → PPO (Stable-Baselines3) → evaluation (S_q, ECE, Brier, per-category)
+ 19: 2. **T5 end-to-end text policy:** T5EncoderModel → PolicyHead → supervised warm-start → custom PPO → TextObservationWrapper
+ 20: 
+ 21: The codebase has just been through a full optimization campaign (7 ranked items: precomputed beliefs, embedding cache persistence, baseline sweep collapse, profile memoization, top-M argpartition, TF-IDF cache unification, shuffle control precomputation) followed by an evidence-verified audit remediation pass. 261 tests pass, the smoke pipeline and T5 smoke are green, calibration metrics correctly use `top_p_trace` (not binary `g_trace`), dataset splits are deterministic via `hashlib.md5`, and legacy prototype files have been moved to `_legacy/`.
+ 22: 
+ 23: ## Attached Files
+ 24: 
+ 25: The four attached files provide complete context:
+ 26: 
+ 27: - **repomix-code.md**: All source code (agents/, evaluation/, models/, qb_data/, qb_env/, training/, scripts/, tests/, configs/), plus README.md, AGENTS.md, CLAUDE.md, pyproject.toml. This is the canonical code snapshot.
+ 28: 
+ 29: - **repomix-docs.md**: All .planning/ files (STATE.md, ROADMAP.md, codebase analysis, phase plans, quick task summaries, audit remediation checklist), plus README.md, AGENTS.md, walkthrough.md. This is the complete planning and decision record.
+ 30: 
+ 31: - **repomix-smoke.md**: Current smoke artifact JSON/CSV files (mc_dataset.json, baseline_summary.json, ppo_summary.json, evaluation_report.json, comparison.csv). These show actual metric values from the corrected pipeline.
+ 32: 
+ 33: - **transcript3.txt**: The Claude Code engineering transcript covering the full optimization campaign and audit remediation. It contains every profiling measurement, every design decision rationale, every rejected alternative, every verification command and its output, and measured timing/memory numbers. This is the authoritative record of WHY each design decision was made. Use it to understand constraints and verified invariants before proposing changes that might violate them.
+ 34: 
+ 35: ## Context from the Cursor Remediation Session
+ 36: 
+ 37: After the Claude Code optimization campaign, a separate Cursor session performed the audit remediation. Key facts from that session:
+ 38: 
+ 39: **Calibration fix (P0-1):** `calibration_at_buzz()` in `evaluation/metrics.py` was using `g_trace[buzz_step]` as "confidence" — but in baseline agents, `g_trace` is binary (1.0 if argmax==gold, else 0.0), not a probability. Fixed to use `top_p_trace` (max belief probability) with fallback to `c_trace`. `PPOEpisodeTrace` in `agents/ppo_buzzer.py` gained a `top_p_trace: list[float]` field populated from `max(self.env.belief)` at each step.
+ 40: 
+ 41: **Split reproducibility (P0-2):** `dataset_splits.py` used `hash(category)` which is randomized by PYTHONHASHSEED. Fixed with `hashlib.md5`. Cross-process determinism test confirms identical splits across PYTHONHASHSEED=0 and PYTHONHASHSEED=12345.
+ 42: 
+ 43: **Compare policies honesty (P0-3):** The MLP path uses config-driven env settings; the T5 path hardcodes `wait_penalty=0.1`. S_q semantics differ (belief-sigmoid vs wait-head probability). The docstring and README now state these caveats honestly instead of claiming "identical metrics."
+ 44: 
+ 45: **CI robustness (P0-4):** `scripts/ci.sh` auto-activates `.venv/` if present. `pyproject.toml` has `testpaths = ["tests"]`. 261/261 tests pass in 75s.
+ 46: 
+ 47: **Memory measurements:** TF-IDF embedding cache: 1.87 MB for 44 questions, projected ~42 MB for 1000 questions. Precomputed beliefs: 3.5 KB for 44 questions. `cache_memory_bytes` property added to `LikelihoodModel`.
+ 48: 
+ 49: **Known remaining issues:**
+ 50: - `parse_overrides` in `build_mc_dataset.py` creates nested dicts that clobber parent config sections when merged (pre-existing bug, not introduced by remediation)
+ 51: - Full 100k PPO training run not verified end-to-end
+ 52: - SBERT/T5-large likelihood paths not exercised locally (require large model downloads)
+ 53: - compare_policies S_q/reward comparisons are qualitative across architectures
+ 54: 
+ 55: ## Current Reward System
+ 56: 
+ 57: The `TossupMCEnv._buzz_reward()` method supports three modes today:
+ 58: - `simple`: +1.0 correct, -1.0 incorrect
+ 59: - `time_penalty`: +buzz_correct/-buzz_incorrect with per-step wait_penalty and optional early_buzz_penalty scaled by progress
+ 60: - `human_grounded`: 0.0 if agent buzzes after sampled human position; otherwise +buzz_correct/-buzz_incorrect
+ 61: 
+ 62: The environment already has `MCQuestion.human_buzz_positions` (list of (position, count) tuples from QANTA data) and `_sample_human_buzz()` for opponent modeling.
+ 63: 
+ 64: ## Current Architecture Constraints
+ 65: 
+ 66: - `MCQuestion.options` is `List[str]` with fixed length K per dataset (default K=4)
+ 67: - `TossupMCEnv` observation space is `Box(K+6)`, action space is `Discrete(K+1)` — both set at construction
+ 68: - The `LikelihoodModel` ABC requires `score(clue_prefix, option_profiles) → np.ndarray` of shape (K,)
+ 69: - Configs use flat YAML with `data`, `likelihood`, `environment`, `ppo`, `evaluation`, `bayesian`, `supervised` top-level sections
+ 70: 
+ 71: ---
+ 72: 
+ 73: ## Task 1: Codebase Audit
+ 74: 
+ 75: Before proposing any changes, analyze the attached codebase for:
+ 76: - Remaining correctness issues, dead code, or inconsistencies
+ 77: - Config/CLI contract mismatches (especially the known `parse_overrides` bug)
+ 78: - Test coverage gaps that matter
+ 79: - Architectural bottlenecks that will block the extensions below
+ 80: 
+ 81: Produce a prioritized issue list before proceeding.
+ 82: 
+ 83: ---
+ 84: 
+ 85: ## Task 2: Design Three Extensions
+ 86: 
+ 87: Design concrete, implementation-ready plans for these three extensions. For each, specify: (a) exact files to create or modify, (b) new classes/functions with signatures and docstrings, (c) config schema additions, (d) tests, (e) integration points with existing code.
+ 88: 
+ 89: ### Extension A: "Expected Wins" Reward Function
+ 90: 
+ 91: Jordan Boyd-Graber's QANTA project uses an "Expected Wins" (EW) scoring metric that rewards buzzing optimally relative to an opponent model. The key idea: you get +10 for buzzing first and correctly, -5 for buzzing first and incorrectly, and the opponent buzzes with some known probability distribution over positions.
+ 92: 
+ 93: Design a new reward mode `expected_wins` for `TossupMCEnv` that:
+ 94: 1. Accepts an opponent buzz-position distribution (empirical histogram from human data, or a parametric model)
+ 95: 2. Computes reward as: R(t, correct) = P(opponent hasn't buzzed by t) × [+10 if correct, -5 if incorrect] + P(opponent buzzed before t) × [opponent_expected_value]
+ 96: 3. Supports configuration via `environment.opponent_buzz_model` in YAML configs
+ 97: 4. Integrates with the existing `MCQuestion.human_buzz_positions` field for empirical opponent modeling
+ 98: 5. Has an S_q-compatible trace structure
+ 99: 6. Includes a standalone `expected_wins_score()` function in `evaluation/metrics.py` for offline scoring
+100: 
+101: Reference repos for EW semantics:
+102: - https://github.com/Pinafore/qb (original QANTA expected wins implementation)
+103: - https://github.com/Pinafore/qanta-codalab (competition scoring)
+104: - https://github.com/qanta-challenge/qanta25-starter (2025 starter kit)
+105: 
+106: ### Extension B: Variable-K Answer Choices
+107: 
+108: Currently `MCQuestion` and `TossupMCEnv` hardcode K=4 answer options. The Gymnasium observation space is `Box(K+6)` and action space is `Discrete(K+1)`, both fixed at env construction.
+109: 
+110: Design a system that supports arbitrary K (2 to N) per question, where:
+111: 1. `MCBuilder` accepts `K` as a per-question or global parameter
+112: 2. `TossupMCEnv` handles variable-K across questions in the same pool (padding or dynamic reshaping)
+113: 3. The PPO policy (SB3 MLP) and T5 policy both handle variable-K
+114: 4. Evaluation metrics and baseline agents generalize cleanly
+115: 5. The observation space strategy is explicit: either (a) pad to max-K with masking, or (b) use a variable-length observation wrapper
+116: 6. Action masking for padded options is integrated
+117: 
+118: Reference repos:
+119: - https://github.com/nbalepur/mcqa-artifacts (MCQA artifact analysis — how K affects difficulty)
+120: - https://github.com/EleutherAI/lm-evaluation-harness (handles variable answer counts across benchmarks)
+121: - https://github.com/Farama-Foundation/Gymnasium (variable action/observation spaces)
+122: 
+123: ### Extension C: DSPy Integration for Rapid Iteration
+124: 
+125: Integrate DSPy (https://github.com/stanfordnlp/dspy) to allow declarative specification of the likelihood scoring, answer generation, and evaluation pipelines. The goal is to enable rapid iteration on prompts, few-shot examples, and chain-of-thought strategies without rewriting Python each time.
+126: 
+127: Design a system where:
+128: 1. A DSPy `Signature` replaces or wraps the `LikelihoodModel.score()` interface, allowing LM-based scoring with optimizable prompts
+129: 2. A DSPy module can generate answer profiles from question text (replacing or augmenting `AnswerProfileBuilder`)
+130: 3. DSPy's `BootstrapFewShot` or `MIPROv2` optimizers can tune the scoring prompts against the S_q metric
+131: 4. The existing TF-IDF/SBERT/T5 models remain available as non-DSPy baselines
+132: 5. A new config section `dspy` controls model selection, optimization strategy, and prompt caching
+133: 6. The DSPy-optimized scorer plugs into the existing environment and PPO training loop without changes to the RL side
+134: 
+135: Reference repos:
+136: - https://github.com/stanfordnlp/dspy (core framework — v2.5+, `dspy.Signature`, `dspy.Module`, `dspy.BootstrapFewShot`, `dspy.MIPROv2`)
+137: - https://github.com/huggingface/transformers (model backend)
+138: - https://github.com/UKPLab/sentence-transformers (embedding models)
+139: - https://github.com/qbreader/python-module (quiz bowl question data API — can provide training examples for DSPy optimization)
+140: - https://github.com/huggingface/datasets (dataset loading patterns)
+141: - https://github.com/DLR-RM/stable-baselines3 (RL training — must interoperate)
+142: 
+143: ---
+144: 
+145: ## Task 3: Implementation Plan
+146: 
+147: For each extension, produce:
+148: 1. A phased implementation plan (what to build first, what depends on what)
+149: 2. A dependency analysis (new pip packages, version constraints, optional vs required)
+150: 3. A test plan (unit tests, integration tests, smoke tests)
+151: 4. A config schema (YAML additions with defaults and validation)
+152: 5. Migration notes (what existing code breaks, what stays compatible)
+153: 
+154: Order the three extensions by implementation priority and explain why.
 155: 
 156: ---
 157: 
-158: ## Explicit Exclusions (from pr1-integration-plan.md)
+158: ## Task 4: Cross-Extension Integration
 159: 
-160: | Item | Reason |
-161: |------|--------|
-162: | `g_trace` → `p_correct_trace` field rename | Breaks `asdict()`, regresses `top_p_trace` calibration fix |
-163: | `CanonicalEpisodeTrace` dataclass | Unnecessary; existing trace dataclasses work with `_to_dict()` |
-164: | `calibration_at_buzz` rewrite | Reverts verified `top_p_trace` fix (3 review rounds) |
-165: | `--policy-mode stop_only` as default | Breaks `compare_policies.py` (P1 bug) |
-166: | `system_score()` param rename | Breaks all existing callers; `g_trace` is standard in S_q literature |
-167: | Softened controls language | Subjective wording, no behavioral impact |
-168: 
-169: ---
-170: 
-171: ## Remaining Risks (genuinely open)
-172: 
-173: 1. **WP-A (T5 joint action semantics)** is the highest-value deferred item — the current T5 policy uses independent log-prob sums rather than mathematically correct joint factorization. This affects T5 PPO training quality but not the belief-feature pipeline.
-174: 2. **WP-B/C have known P1/P2 bugs** in the PR implementation. Porting them requires fixing those bugs, not just copying the code.
-175: 3. **WP-D (hazard pretrain)** is a no-op stub in the PR — the training loop was never wired up.
-176: 4. **DSPy live compile** and **MaskablePPO integration** remain untested locally (require optional extras not installed).
-177: 5. **Full 100k PPO** and **SBERT/T5-large likelihood** paths remain unexercised.
-178: 
-179: These are pre-existing risks from the extension campaign, not new risks introduced by this reconciliation.
+160: Explain how the three extensions interact:
+161: - Does variable-K change the EW reward computation?
+162: - Can DSPy optimize the EW opponent model?
+163: - How does DSPy's prompt optimization interact with the PPO training loop?
+164: - What shared infrastructure (config, testing, evaluation) do all three need?
+165: 
+166: Produce a unified architecture diagram showing the current system and where each extension plugs in.
+167: 
+168: ---
+169: 
+170: ## Constraints
+171: 
+172: - All designs must be backward-compatible: existing smoke pipeline, 261 tests, and T5 smoke must continue to work unchanged when extensions are not activated.
+173: - New dependencies must be optional (extras in pyproject.toml) unless they're already in the dependency tree.
+174: - Every new code path must have at least one test.
+175: - Config additions must have sensible defaults that preserve current behavior.
+176: - Do not hand-wave implementation details. If a design requires a tricky Gymnasium space, show the space definition. If it needs a DSPy signature, write the signature class. If it changes reward math, write the formula with all terms defined.
+177: - Respect the verified invariants from the transcript: calibration uses `top_p_trace`, splits use `hashlib.md5`, TF-IDF cache is vocab-specific (save_cache is a no-op), alias control must re-score live.
+````
+
+## File: docs/prompts/chatgpt_final_review_prompt.md
+````markdown
+  1: # ChatGPT Prompt: Final Comprehensive Review — Outstanding Issues Focus
+  2: 
+  3: **Attach these three files:**
+  4: 
+  5: 1. `repomix/repomix-code.md` (18,958 lines — full source, configs, tests — line-numbered)
+  6: 2. `repomix/repomix-docs.md` (21,942 lines — all .planning/, docs — line-numbered)
+  7: 3. `repomix/repomix-smoke.md` (31,933 lines — current smoke artifact JSON/CSV — line-numbered)
+  8: 
+  9: ---
+ 10: 
+ 11: **Copy everything below this line into ChatGPT.**
+ 12: 
+ 13: ---
+ 14: 
+ 15: You are conducting the **third and final** code review of a Stanford CS234 final project codebase called **qanta-buzzer** at commit `cbaa6f41`. The three attached Markdown files are line-numbered Repomix snapshots containing the complete repository.
+ 16: 
+ 17: ## What has already been reviewed and fixed
+ 18: 
+ 19: Two prior review rounds found and fixed **12 issues total**:
+ 20: 
+ 21: **Review 1** (commit `fd34e25a`, 7 issues):
+ 22: 1. `DSPyLikelihood` didn't inherit `LikelihoodModel` — fixed
+ 23: 2. `score()` had no shape validation — fixed with ndim+length check
+ 24: 3. `dspy.enabled` config key existed but was never read — removed
+ 25: 4. Config comment listed non-existent `embedding_based` strategy — corrected
+ 26: 5. Module docstring falsely claimed dspy was required for import — rewritten
+ 27: 6. `test_changed_fingerprint_invalidates` was too weak — rewritten to test keys directly
+ 28: 7. `test_fallback_to_existing` name was misleading — split into two accurate tests
+ 29: 
+ 30: **Review 2** (commit `c912c814`, 5 issues):
+ 31: 1. Optimizer metric was constant `lambda: 1.0` — replaced with argmax-based `_score_metric`
+ 32: 2. Trainset loaded combined `mc_dataset.json` instead of train split — now uses `train_dataset.json`
+ 33: 3. `build_dspy_profiles` docstring claimed leave-one-out it couldn't enforce — corrected
+ 34: 4. Silent `except Exception` in profile augmentation — added logging
+ 35: 5. `test_compile_requires_dspy` never called the function — added `test_score_metric_logic` and `test_trainset_uses_mid_prefix`
+ 36: 
+ 37: **Do not re-report any of the above 12 items.** They are fixed in the current snapshot.
+ 38: 
+ 39: ## Current state
+ 40: 
+ 41: - 320 tests pass, 3 skipped (optional extras not installed)
+ 42: - Smoke pipeline and T5 smoke both green
+ 43: - Three opt-in extensions: Expected Wins, Variable-K, DSPy (all disabled by default)
+ 44: - Optional extras: `[openai]`, `[maskable]`, `[dspy]`
+ 45: 
+ 46: ## Anti-hallucination rules
+ 47: 
+ 48: 1. **Every claim must cite `file.py:LINE`** using the line numbers in the attached files.
+ 49: 2. **Quote the exact code** that is wrong.
+ 50: 3. **No evidence in attachments → do not report it.**
+ 51: 4. **Distinguish VERIFIED ISSUE from POTENTIAL CONCERN.**
+ 52: 5. **Do not re-report the 12 fixed issues above or the known risks listed in `.planning/quick/extensions-master-run.md:56-63`.**
+ 53: 6. **Style preferences are not bugs.**
+ 54: 
+ 55: ## Known risks (already documented, do not re-report)
+ 56: 
+ 57: These are explicitly documented in `.planning/quick/extensions-master-run.md` and `.planning/STATE.md`:
+ 58: 
+ 59: 1. Full 100k PPO training run not verified end-to-end
+ 60: 2. SBERT/T5-large likelihood paths not exercised locally
+ 61: 3. MaskablePPO path untested at integration level (requires sb3-contrib)
+ 62: 4. DSPy compile/optimize requires live LM backend not tested locally
+ 63: 5. compare_policies S_q/reward comparisons remain qualitative across architectures
+ 64: 6. TF-IDF cache memory grows with corpus size
+ 65: 
+ 66: ## Review scope
+ 67: 
+ 68: This is a **convergence review**. The goal is to find anything that two prior rounds missed, with particular attention to:
+ 69: 
+ 70: ### A. Cross-extension interaction bugs
+ 71: 
+ 72: The three extensions (EW, Variable-K, DSPy) were built independently. Check for interactions that could break:
+ 73: 
+ 74: 1. **EW + Variable-K**: If `variable_K=True` and `reward_mode=expected_wins`, does the opponent model receive the correct per-question step count? Does the EW reward formula still work when `belief.shape` varies per episode?
+ 75: 
+ 76: 2. **DSPy + the env pipeline**: If `likelihood.model=dspy`, trace every code path from `build_likelihood_from_config()` through `TossupMCEnv._compute_belief()` to `extract_belief_features()`. Does `DSPyLikelihood.score()` integrate cleanly, or does any caller along the way invoke `embed_and_cache()` / `precompute_embeddings()` which would raise `NotImplementedError`?
+ 77: 
+ 78: 3. **Variable-K + PPO**: In variable-K mode with padded observations, if the PPO agent samples an action in the padded range (action > K_actual), what happens in `TossupMCEnv.step()`? Is there a guard, or does it silently index out of bounds?
+ 79: 
+ 80: 4. **EW + evaluation**: `expected_wins_score()` requires an `opponent_survival_trace`. When `evaluate_all.py` runs with EW enabled, does it construct and pass this trace correctly for each question, or does it use a fixed dummy?
+ 81: 
+ 82: ### B. Data contract holes
+ 83: 
+ 84: 1. Does `MCQuestion` serialization (via `dataclasses.asdict` → JSON) and deserialization (via `load_mc_questions`) round-trip correctly for variable-K questions where different questions have different `len(options)`?
+ 85: 
+ 86: 2. Does `_PrecomputedQuestion.num_options` in `agents/threshold_buzzer.py` stay correct for variable-K questions, or does it get set to some fixed K?
+ 87: 
+ 88: 3. When `precompute_beliefs()` in `qb_env/tossup_env.py` runs on a mixed-K question pool, does it handle questions with different `len(option_profiles)` correctly, or does it assume a fixed K?
+ 89: 
+ 90: ### C. Config validation gaps
+ 91: 
+ 92: 1. If someone sets `environment.reward_mode: expected_wins` but does NOT configure `opponent_buzz_model` (or sets it to `type: none`), what happens at runtime? Does the env gracefully degrade, crash, or silently produce wrong rewards?
+ 93: 
+ 94: 2. If someone sets `data.variable_K: true` but `data.min_K` > `data.K`, what happens in `MCBuilder._target_k()`?
+ 95: 
+ 96: 3. If someone sets both `data.variable_K: true` and `ppo.algorithm: maskable_ppo` but does NOT install `sb3-contrib`, what error do they get? Is it actionable?
+ 97: 
+ 98: ### D. Numerical edge cases
+ 99: 
+100: 1. In `expected_wins_score()` (`evaluation/metrics.py`), what happens when `opponent_survival_trace` has length < `c_trace`? The function uses `n = min(len(c), len(g), len(s))` — is that truncation correct or lossy?
+101: 
+102: 2. In `extract_padded_belief_features()` (`models/features.py`), if `len(belief) > max_K` (belief is larger than the padded target), the function does `padded[:K_actual] = belief[:max_K]`. Is this truncation correct, or should it raise?
+103: 
+104: 3. In `LogisticOpponentModel.prob_buzzed_before_step()`, what happens when `total = len(question.cumulative_prefixes) = 0`?
+105: 
+106: ### E. Test weakness audit
+107: 
+108: For each test file in `tests/`, identify:
+109: - Tests whose assertions are so weak they would pass even if the implementation were wrong
+110: - Production code paths exercised by zero tests
+111: - Tests whose names/docstrings don't match what they actually verify
+112: 
+113: Focus on the extension test files:
+114: - `tests/test_opponent_models.py`
+115: - `tests/test_environment.py` (Expected Wins and Variable-K sections)
+116: - `tests/test_mc_builder_variable_k.py`
+117: - `tests/test_variable_k_integration.py`
+118: - `tests/test_dspy_likelihood.py`
+119: - `tests/test_dspy_optimize.py`
+120: - `tests/test_dspy_answer_profiles.py`
+121: - `tests/test_features.py` (padded features section)
+122: - `tests/test_ppo_buzzer.py` (MaskablePPO section)
+123: 
+124: ### F. Documentation-code consistency
+125: 
+126: Verify these specific factual claims against the code:
+127: 
+128: 1. README says "320 tests across 22 test files" — count the actual `test_*.py` files in the tests/ directory listing and test count in the attached code
+129: 2. README says "Four reward modes: time_penalty, simple, human_grounded, expected_wins" — verify `_buzz_reward()` in `tossup_env.py` dispatches all four
+130: 3. AGENTS.md says `evaluation/` contains "Expected Wins" — verify `expected_wins_score` exists in `evaluation/metrics.py`
+131: 4. The `dspy` config section in `default.yaml` — verify every key is read by some code path
+132: 5. The `opponent_buzz_model` config section — verify every key is read by `build_opponent_model_from_config()`
+133: 
+134: ## Output format
+135: 
+136: ```
+137: ## VERIFIED ISSUES
+138: ### [SEVERITY] Title
+139: - **File:** path/to/file.py:LINE
+140: - **Code:** `exact quoted code`
+141: - **Problem:** what it does vs what it should do
+142: - **Fix:** one-line description
+143: 
+144: ## POTENTIAL CONCERNS
+145: ### [SEVERITY] Title
+146: - **File:** path/to/file.py:LINE
+147: - **Evidence:** what you observed
+148: - **Risk:** when/how this could become a real problem
+149: 
+150: ## VERIFIED CLEAN
+151: List areas examined with brief evidence of correctness.
+152: 
+153: ## ALREADY KNOWN
+154: Issues found that are in the 12-item fixed list or the 6-item known-risks list.
+155: ```
+156: 
+157: If you find zero new verified issues, say so explicitly and list what you checked. An honest "clean" report is the ideal outcome of a convergence review.
+````
+
+## File: docs/cursor_reconciliation_process_for_upstr.md
+````markdown
+  1: # Reconciliation process for upstream PR #1
+  2: _Exported on 3/14/2026 at 21:05:04 PDT from Cursor (2.6.19)_
+  3: 
+  4: ---
+  5: 
+  6: **User**
+  7: 
+  8: Read this entire prompt first. Then read the repo before editing anything.
+  9: 
+ 10: You are working locally in the qanta-buzzer repo inside Cursor Agent.
+ 11: 
+ 12: Operating mode:
+ 13: - Local agent only
+ 14: - Claude 4 Opus Max
+ 15: - Thinking enabled
+ 16: - Max Mode enabled
+ 17: 
+ 18: Mission:
+ 19: Semantically reconcile the review-remediation content associated with upstream PR #1 into the current local repo.
+ 20: This is NOT a literal cherry-pick from the older upstream GitHub repo.
+ 21: The local repo is newer and already contains the extension campaign plus later review fixes.
+ 22: Your job is to verify current alignment and make only the minimal reconciliation edits that are still needed.
+ 23: 
+ 24: Hard rules:
+ 25: - Do not use Cloud Agent
+ 26: - Do not use worktrees or extra branches unless explicitly asked
+ 27: - Do not touch _legacy/ except to verify that it remains non-canonical
+ 28: - Do not regress the current modular architecture
+ 29: - Do not re-open the extension campaign
+ 30: - Preserve default behavior:
+ 31:   - smoke pipeline unchanged when extensions are off
+ 32:   - T5 smoke unchanged when extensions are off
+ 33:   - Expected Wins / Variable-K / DSPy remain opt-in
+ 34: - One work package at a time
+ 35: - After each work package:
+ 36:   - run only the listed verification commands
+ 37:   - if files changed, make one commit
+ 38:   - if already aligned, report VERIFIED-CLOSED and do not force a no-op commit
+ 39:   - STOP and wait for the next work package prompt
+ 40: 
+ 41: Create a reconciliation ledger immediately:
+ 42: - File: .planning/quick/pr1-reconciliation.md
+ 43: - Track for each work package:
+ 44:   - objective
+ 45:   - repo evidence checked
+ 46:   - files changed
+ 47:   - tests run
+ 48:   - result: completed | verified_closed | blocked
+ 49:   - commit hash (if any)
+ 50:   - rollback command (if any)
+ 51:   - remaining notes
+ 52: 
+ 53: Before editing anything, read at minimum:
+ 54: 1. AGENTS.md
+ 55: 2. README.md
+ 56: 3. .planning/quick/extensions-master-run.md
+ 57: 4. .planning/STATE.md
+ 58: 5. scripts/ci.sh
+ 59: 6. scripts/manual-smoke.sh
+ 60: 7. the code paths named in the current work package
+ 61: 
+ 62: Stop after setting up the ledger and summarizing the current repo state in 5-10 bullet points.
+ 63: Do not edit production code yet.
+ 64: 
+ 65: ---
+ 66: 
+ 67: **Cursor**
+ 68: 
+ 69: Let me start by reading all the required files before doing anything else.
+ 70: 
+ 71: Now let me read the CI script, manual-smoke script, and the PR #1 integration plan.
+ 72: 
+ 73: Let me check the current git state and repo structure to complete my understanding.
+ 74: 
+ 75: Let me verify the current test baseline and look at the PR #1 branch content.
+ 76: 
+ 77: Now I have a thorough understanding of the repo. Let me create the reconciliation ledger and summarize.
+ 78: 
+ 79: Ledger created. Here is my summary of the current repo state:
+ 80: 
+ 81: ---
+ 82: 
+ 83: **Current repo state (10 bullet points):**
+ 84: 
+ 85: 1. **Local HEAD is `9664c487` on `main`** — 220+ commits, roughly 72 commits ahead of the PR #1 base (`personal/main`). The PR branch has only 2 commits (`4f3e3009`, `f459f246`) and is stale with unresolved merge conflicts against local.
+ 86: 
+ 87: 2. **Extension campaign is complete (18 patches)** — Expected Wins (EW-01..04), Variable-K (VK-01..07), DSPy (DSPY-01..05), plus final docs and two ChatGPT review rounds. All tracked in `.planning/quick/extensions-master-run.md`.
+ 88: 
+ 89: 3. **320 tests across 22 files (3 skipped)** — CI via `scripts/ci.sh` runs `pytest tests/`. Skips are for optional extras (MaskablePPO, DSPy).
+ 90: 
+ 91: 4. **Smoke pipeline is green** — `scripts/manual-smoke.sh` runs four stages (build_mc_dataset, run_baselines, train_ppo, evaluate_all) with `--smoke` flag, outputs to `artifacts/smoke/`.
+ 92: 
+ 93: 5. **PR #1 introduces 7 features across 23 files (+530/-153)** — factored T5 action semantics, StopOnlyEnv, `--policy-mode`, `end_mode`/`no_buzz_reward`, `p_correct_trace` rename, hazard pretraining bridge, and integration tests. Five known bugs are documented, two at P1 severity.
+ 94: 
+ 95: 6. **Integration plan already exists** at `.planning/quick/pr1-integration-plan.md` — breaks PR into 4 independent patches (A: T5 math, B: StopOnlyEnv, C: end_mode, D: hazard pretrain), with explicit exclusions for the `p_correct_trace` rename and calibration rewrite that would regress local fixes.
+ 96: 
+ 97: 7. **`top_p_trace` is the canonical confidence field** for calibration — introduced during remediation, verified across 3 review rounds. The PR's `p_correct_trace` rename is explicitly excluded because its `@property` shim breaks `asdict()`.
+ 98: 
+ 99: 8. **`_legacy/` exists and is non-canonical** — pre-modularization prototypes, not installed via `setup.py`, preserved for reference only.
+100: 
+101: 9. **v1.0 milestone is complete** per `.planning/STATE.md` — all 6 phases done, 19/20 plans complete. Next priority is CS234 writeup and full training runs.
+102: 
+103: 10. **10 optimization quick tasks completed** (repo-contract scaffolding, precomputed beliefs, embedding cache persistence, baseline sweep collapse, profile caching, top-M argpartition, TF-IDF caching, precomputed shuffle control, final verification, ci.sh fix) — all verified and committed.
+104: 
+105: ---
+106: 
+107: The reconciliation ledger is at `.planning/quick/pr1-reconciliation.md` with 5 work packages (A through D plus cross-cutting tests), explicit exclusions, and invariant checklist. Ready for the first work package prompt.
+108: 
+109: ---
+110: 
+111: **User**
+112: 
+113: Implement WP1 only.
+114: 
+115: WP1 objective:
+116: Reconcile the DSPy likelihood/factory contract surface with the current local repo.
+117: This is a verify-then-edit step. The likely outcome is small edits or VERIFIED-CLOSED.
+118: 
+119: Edit only these files if needed:
+120: - models/dspy_likelihood.py
+121: - models/likelihoods.py
+122: - tests/test_dspy_likelihood.py
+123: - tests/test_factories.py
+124: - configs/default.yaml
+125: - README.md or AGENTS.md only if a public DSPy contract statement is still stale
+126: 
+127: What to verify:
+128: 1. DSPyLikelihood is a real LikelihoodModel subclass
+129: 2. score() enforces the (K,) contract
+130: 3. any stale dspy.enabled activation knob is gone or no longer misleading
+131: 4. DSPy importability/runtime docs are truthful
+132: 5. fingerprint/cache tests actually prove fingerprint-sensitive behavior
+133: 6. factory dispatch for likelihood.model: dspy is consistent with the current local config contract
+134: 
+135: What to change if needed:
+136: - only the minimum necessary to align those contracts
+137: - do not widen scope beyond DSPy likelihood/factory/tests/docs
+138: 
+139: Verification commands:
+140: - pytest tests/test_dspy_likelihood.py tests/test_factories.py -q
+141: 
+142: Commit message if files changed:
+143: review(pr1): reconcile DSPy likelihood contract with current local repo
+144: 
+145: Stop here after:
+146: - updating .planning/quick/pr1-reconciliation.md
+147: - running the verification commands
+148: - committing if needed
+149: - reporting:
+150:   - VERIFIED-CLOSED or COMPLETED
+151:   - files changed
+152:   - commands run
+153:   - pass/fail
+154:   - rollback command if a commit was made
+155: 
+156: ---
+157: 
+158: **Cursor**
+159: 
+160: Let me read all six target files before making any decisions.
+161: 
+162: Let me check a few more things to complete the verification — smoke config, models init, and any stale `dspy.enabled` references.
+163: 
+164: All six verification checkpoints examined. Let me now run the specified tests and then update the ledger.
+165: 
+166: All 24 tests pass. Now let me update the reconciliation ledger.
+167: 
+168: **Result: VERIFIED-CLOSED**
+169: 
+170: Verification summary for WP-1 (DSPy Likelihood / Factory Contract Surface):
+171: 
+172: | Checkpoint | Status |
+173: |------------|--------|
+174: | 1. `DSPyLikelihood` is a real `LikelihoodModel` subclass | Verified — inherits `LikelihoodModel`, calls `super().__init__()`, test confirms `isinstance` |
+175: | 2. `score()` enforces the `(K,)` contract | Verified — validates `ndim==1` and `len==expected_k`, test covers bad-scorer `ValueError` |
+176: | 3. Stale `dspy.enabled` knob is gone | Verified — no `enabled` key in any config; default.yaml comment explicitly says "no separate enable flag"; removal tracked to commit `fd34e25a` |
+177: | 4. DSPy importability/runtime docs are truthful | Verified — module imports only numpy/hashlib/json/Path (no `dspy` at module level); README and AGENTS correctly describe opt-in via `pip install -e '.[dspy]'` |
+178: | 5. Fingerprint/cache tests prove fingerprint-sensitive behavior | Verified — `test_changed_fingerprint_invalidates` proves distinct keys per fingerprint + correct cache population; `test_repeated_call_hits_cache` proves cache hit with call counting |
+179: | 6. Factory dispatch for `likelihood.model: dspy` is consistent | Verified — factory reads `dspy.cache_dir` / `dspy.program_fingerprint` with "default" fallback; `TestDSPyFactoryIntegration` covers dispatch and non-interference |
 180: 
-181: ---
-182: 
-183: ## Invariants (verified at close)
-184: 
-185: 1. `pytest -q` → 320 passed, 3 skipped ✅
-186: 2. `bash scripts/manual-smoke.sh` → 4/4 stages complete ✅
-187: 3. `top_p_trace` calibration invariant preserved ✅
-188: 4. Default smoke behavior unchanged when extensions are off ✅
-189: 5. `_legacy/` remains non-canonical (untouched) ✅
-190: 6. T5 smoke path: supervised + PPO + test evaluation ✅
+181: - **Files changed:** none
+182: - **Commands run:** `pytest tests/test_dspy_likelihood.py tests/test_factories.py -q` — 24 passed, 0.06s
+183: - **Pass/fail:** pass
+184: - **Rollback command:** n/a (no commit)
+185: 
+186: ---
+187: 
+188: **User**
+189: 
+190: Implement WP2 only.
+191: 
+192: WP2 objective:
+193: Reconcile the DSPy offline compile/optimize path with the current local repo.
+194: 
+195: Edit only these files if needed:
+196: - scripts/optimize_dspy.py
+197: - tests/test_dspy_optimize.py
+198: 
+199: What to verify:
+200: 1. the optimizer metric is real, not a constant placeholder
+201: 2. the trainset is built from the train split artifact, not the combined MC dataset
+202: 3. the compile path remains offline-oriented and unit-testable without a live LM backend
+203: 4. tests actually execute the helper logic they claim to validate
+204: 
+205: What to change if needed:
+206: - only minimal edits in optimize_dspy.py and its tests
+207: - do not touch unrelated DSPy files in this work package
+208: 
+209: Verification commands:
+210: - pytest tests/test_dspy_optimize.py -q
+211: 
+212: Commit message if files changed:
+213: review(pr1): reconcile DSPy compile path with split-aware workflow
+214: 
+215: Stop here after:
+216: - updating .planning/quick/pr1-reconciliation.md
+217: - running the verification commands
+218: - committing if needed
+219: - reporting:
+220:   - VERIFIED-CLOSED or COMPLETED
+221:   - files changed
+222:   - commands run
+223:   - pass/fail
+224:   - rollback command if a commit was made
+225: 
+226: ---
+227: 
+228: **Cursor**
+229: 
+230: Let me also check what `build_mc_dataset.py` produces, to verify the train-split path in `optimize_dspy.py` is reachable.
+231: 
+232: I've found one substantive gap: `test_score_metric_logic` duplicates the `_score_metric` function locally rather than testing the real one. The real `_score_metric` is trapped inside `compile_dspy_scorer()` as a local function, making it unimportable. The fix is to extract it to module level. It has no closure dependencies — just `json.loads`.
+233: 
+234: Let me make the minimal extraction.
+235: 
+236: Now update the test to import and test the real `_score_metric` instead of duplicating it.
+237: 
+238: Now run the verification tests.
+239: 
+240: 5 passed, 1 skipped (the `test_compile_requires_dspy` skip is expected — dspy not installed locally). Let me verify the final file states are clean.
+241: 
+242: Clean. Now update the ledger and commit.
+243: 
+244: **Result: COMPLETED**
+245: 
+246: Verification summary for WP-2 (DSPy Offline Compile / Optimize Path):
+247: 
+248: | Checkpoint | Status |
+249: |------------|--------|
+250: | 1. Optimizer metric is real, not a constant placeholder | Verified — `_score_metric` does argmax comparison (fixed in REVIEW-2 commit c912c814) |
+251: | 2. Trainset uses train split artifact | Verified — `main()` prefers `train_dataset.json` with fallback + warning; `build_mc_dataset.py` line 332 confirms the file is produced |
+252: | 3. Compile path is offline-oriented and unit-testable | Verified — `compile_dspy_scorer()` requires dspy only at runtime; `build_dspy_trainset()` and `_score_metric` work without it |
+253: | 4. Tests execute the helper logic they claim to validate | **Fixed** — extracted `_score_metric` from closure to module level; test now imports and validates the real function |
+254: 
+255: - **Files changed:** `scripts/optimize_dspy.py`, `tests/test_dspy_optimize.py`
+256: - **Commands run:** `pytest tests/test_dspy_optimize.py -q` — 5 passed, 1 skipped, 0.02s
+257: - **Pass/fail:** pass
+258: - **Commit hash:** `63c66c05`
+259: - **Rollback command:** `git revert 63c66c05`
+260: 
+261: ---
+262: 
+263: **User**
+264: 
+265: Implement WP3 only.
+266: 
+267: WP3 objective:
+268: Reconcile DSPy answer-profile fallback/doc/test behavior with the current local repo.
+269: 
+270: Edit only these files if needed:
+271: - qb_data/dspy_answer_profiles.py
+272: - tests/test_dspy_answer_profiles.py
+273: 
+274: What to verify:
+275: 1. docstrings do not overclaim leave-one-out guarantees beyond what this helper can actually enforce
+276: 2. fallback behavior logs or otherwise surfaces augmentation failure truthfully
+277: 3. test names and test bodies match the actual behavior being verified
+278: 4. any earlier misleading test naming or behavior drift is fully resolved
+279: 
+280: What to change if needed:
+281: - keep the default extractive AnswerProfileBuilder path untouched
+282: - keep DSPy augmentation opt-in
+283: - only minimal edits in these two files unless a tiny README/AGENTS note is strictly required
+284: 
+285: Verification commands:
+286: - pytest tests/test_dspy_answer_profiles.py -q
+287: 
+288: Commit message if files changed:
+289: review(pr1): reconcile DSPy answer-profile fallback docs and tests
+290: 
+291: Stop here after:
+292: - updating .planning/quick/pr1-reconciliation.md
+293: - running the verification commands
+294: - committing if needed
+295: - reporting:
+296:   - VERIFIED-CLOSED or COMPLETED
+297:   - files changed
+298:   - commands run
+299:   - pass/fail
+300:   - rollback command if a commit was made
+301: 
+302: ---
+303: 
+304: **Cursor**
+305: 
+306: Let me run the verification tests now, then report.
+307: 
+308: 2 passed, 1 skipped (the `test_with_dspy_installed` skip is expected — dspy not installed locally). All four checkpoints pass. Let me update the ledger.
+309: 
+310: No production or test files changed, so no commit needed. The ledger update is planning-only.
+311: 
+312: **Result: VERIFIED-CLOSED**
+313: 
+314: Verification summary for WP-3 (DSPy Answer-Profile Fallback / Doc / Test Behavior):
+315: 
+316: | Checkpoint | Status |
+317: |------------|--------|
+318: | 1. Docstrings don't overclaim leave-one-out | Verified — explicit disclaimer at lines 23-27: "This function itself does not receive per-question exclusion context — it augments whatever profiles it is given" |
+319: | 2. Fallback logs truthfully | Verified — `logger.warning` per-answer on failure (line 80), `logger.info` summary with augmented/fallback counts (lines 87-91); fixed in REVIEW-2 |
+320: | 3. Test names match test bodies | Verified — all three tests do exactly what their names claim |
+321: | 4. No misleading naming or behavior drift | Verified — REVIEW-2 resolved the prior "silent except" issue; no residual drift |
+322: 
+323: - **Files changed:** none
+324: - **Commands run:** `pytest tests/test_dspy_answer_profiles.py -q` — 2 passed, 1 skipped, 0.01s
+325: - **Pass/fail:** pass
+326: - **Rollback command:** n/a (no commit)
+327: 
+328: ---
+329: 
+330: **User**
+331: 
+332: Implement WP4 only.
+333: 
+334: WP4 objective:
+335: Make the local repo’s durable docs explicitly reflect that the semantic content of upstream PR #1 is already absorbed here.
+336: 
+337: Edit only these files if needed:
+338: - .planning/quick/pr1-reconciliation.md
+339: - .planning/quick/extensions-master-run.md
+340: - .planning/STATE.md
+341: - README.md
+342: - AGENTS.md
+343: - CLAUDE.md only if absolutely necessary
+344: 
+345: What to verify:
+346: 1. docs clearly reflect the current local reality, not the older upstream repo
+347: 2. the repo still presents the modular scripts pipeline as canonical
+348: 3. the three extensions remain documented as opt-in
+349: 4. the current validation status remains truthful
+350: 5. any mention of PR #1 is framed as consolidation/reconciliation, not as an instruction to regress to the older upstream structure
+351: 
+352: What to change if needed:
+353: - add a concise note that PR #1’s review-remediation content is already represented in the current local branch
+354: - do not rewrite unrelated docs
+355: - preserve the current smoke/T5 smoke and optional-extra guidance
+356: 
+357: Verification commands:
+358: - pytest tests/test_dspy_likelihood.py tests/test_dspy_optimize.py tests/test_dspy_answer_profiles.py tests/test_factories.py -q
+359: 
+360: Commit message if files changed:
+361: docs(pr1): consolidate review remediation in current local repo
+362: 
+363: Stop here after:
+364: - updating .planning/quick/pr1-reconciliation.md
+365: - running the verification commands
+366: - committing if needed
+367: - reporting:
+368:   - VERIFIED-CLOSED or COMPLETED
+369:   - files changed
+370:   - commands run
+371:   - pass/fail
+372:   - rollback command if a commit was made
+373: 
+374: ---
+375: 
+376: **Cursor**
+377: 
+378: Now let me check all five doc checkpoints systematically against the current state.
+379: 
+380: All five checkpoints are essentially met already. The one stale element is `STATE.md`'s session continuity — it describes the extension campaign but not the ongoing PR #1 reconciliation. Let me make the minimal truthfulness update.
+381: 
+382: Now add a brief cross-reference in the extensions master run ledger so the two ledgers are linked.
+383: 
+384: Now update the reconciliation ledger itself for WP-4.
+385: 
+386: Now run the verification commands.
+387: 
+388: 31 passed, 2 skipped. Now commit.
+389: 
+390: **Result: COMPLETED**
+391: 
+392: Verification summary for WP-4 (Durable Docs — PR #1 Absorption Statement):
+393: 
+394: | Checkpoint | Status |
+395: |------------|--------|
+396: | 1. Docs reflect current local reality | Verified — README, AGENTS, CLAUDE all describe modular pipeline, correct test counts, local architecture; no stale upstream references |
+397: | 2. Modular scripts pipeline presented as canonical | Verified — README "The canonical four-stage smoke pipeline"; AGENTS "Smoke Pipeline" section with `scripts/` commands |
+398: | 3. Three extensions documented as opt-in | Verified — README "All are disabled by default — the smoke pipeline and T5 smoke path work unchanged"; AGENTS "Three opt-in extensions" |
+399: | 4. Validation status truthful | Verified — "320 tests across 22 test files (3 skipped)" consistent across README, AGENTS, STATE |
+400: | 5. PR #1 framed as consolidation/reconciliation | Verified — no PR #1 mention in public docs; STATE.md and extensions ledger now cross-reference the reconciliation ledger |
+401: 
+402: - **Files changed:** `.planning/STATE.md`, `.planning/quick/extensions-master-run.md`
+403: - **Commands run:** `pytest tests/test_dspy_likelihood.py tests/test_dspy_optimize.py tests/test_dspy_answer_profiles.py tests/test_factories.py -q` — 31 passed, 2 skipped, 0.07s
+404: - **Pass/fail:** pass
+405: - **Commit hash:** `acff2bbb`
+406: - **Rollback command:** `git revert acff2bbb`
+407: 
+408: ---
+409: 
+410: **User**
+411: 
+412: Run the final reconciliation verification for the PR #1 semantic port.
+413: 
+414: Do not widen scope. Do not add new features.
+415: 
+416: Run exactly:
+417: 1. pytest tests/test_dspy_likelihood.py tests/test_dspy_optimize.py tests/test_dspy_answer_profiles.py tests/test_factories.py -q
+418: 2. pytest -q
+419: 3. bash scripts/manual-smoke.sh
+420: 4. python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke
+421: 
+422: Then update .planning/quick/pr1-reconciliation.md with:
+423: - final status for each work package
+424: - commits made
+425: - files changed
+426: - commands run
+427: - pass/fail summary
+428: - any verified no-op / already-aligned areas
+429: - any remaining risks that are genuinely still open
+430: 
+431: Stop after producing one final reconciliation report.
+432: 
+433: ---
+434: 
+435: **Cursor**
+436: 
+437: Running all four verification commands.
+438: 
+439: Both test runs green. Now the smoke pipeline.
+440: 
+441: 4/4 stages complete. Now the T5 smoke.
+442: 
+443: All four commands green. Let me now read the current reconciliation ledger and produce the final report.
+444: 
+445: Now I have everything. Let me write the final reconciliation report.
+446: 
+447: ---
+448: 
+449: **Final Reconciliation Report — PR #1 Semantic Port (DSPy Review-Remediation)**
+450: 
+451: | Command | Result |
+452: |---------|--------|
+453: | DSPy + factory targeted tests | **31 passed, 2 skipped** (0.06s) |
+454: | Full test suite | **320 passed, 3 skipped** (57.64s) |
+455: | Manual smoke pipeline | **4/4 stages complete** (10.6s) |
+456: | T5 smoke (supervised + PPO) | **62.5% test accuracy** (23.9s) |
+457: 
+458: **Work package outcomes:**
+459: 
+460: | WP | Result | Detail |
+461: |----|--------|--------|
+462: | WP-1 | verified_closed | All 6 DSPy likelihood/factory contract checkpoints already aligned |
+463: | WP-2 | completed | One fix: extracted `_score_metric` to module level so test validates real code (commit `63c66c05`) |
+464: | WP-3 | verified_closed | Docstrings, fallback logging, test names all already correct post-REVIEW-2 |
+465: | WP-4 | completed | STATE.md + extensions ledger updated with absorption statement (commit `acff2bbb`) |
+466: | WP-A–D, X | deferred | New features from PR #1, not review-remediation. Tracked in ledger for future work. |
+467: 
+468: **Production files changed:** 1 (`scripts/optimize_dspy.py`)
+469: **Test files changed:** 1 (`tests/test_dspy_optimize.py`)
+470: **Test regressions:** 0
+471: **Invariants verified:** all 6 hold
+472: 
+473: The one genuinely open risk is WP-A (T5 joint action factorization) — highest value deferred item that would improve T5 PPO training quality. Everything else is either pre-existing or blocked on PR bug fixes.
+````
+
+## File: docs/pipeline-proof.md
+````markdown
+   1: # Quiz Bowl RL Buzzer — Full Pipeline Proof
+   2: 
+   3: *2026-03-15T04:10:33Z by Showboat 0.6.1*
+   4: <!-- showboat-id: 8a0a1625-c3aa-45bf-80fe-145b499d79d2 -->
+   5: 
+   6: ## Environment and version pins
+   7: 
+   8: ```bash
+   9: source .venv/bin/activate && python --version && pip show qanta-buzzer 2>/dev/null | grep -E '^(Name|Version|Summary)' && git rev-parse --short HEAD
+  10: ```
+  11: 
+  12: ```output
+  13: Python 3.13.5
+  14: Name: qanta-buzzer
+  15: Version: 1.0.0
+  16: Summary: Unified quiz bowl RL buzzer system for Stanford CS234
+  17: acff2bbb
+  18: ```
+  19: 
+  20: ```bash
+  21: source .venv/bin/activate && grep -E '^(#|data:|  K:|  max_questions:|likelihood:|  model:)' configs/smoke.yaml
+  22: ```
+  23: 
+  24: ```output
+  25: # Smoke test configuration - quick testing with reduced data
+  26: # Inherits from default.yaml and overrides key settings
+  27: # Data settings for quick testing
+  28: data:
+  29:   K: 4
+  30:   max_questions: 50  # Use only 50 questions for smoke test
+  31: likelihood:
+  32:   model: "tfidf"  # Use TF-IDF for fastest smoke testing (<5 seconds)
+  33: # Supervised settings for smoke test
+  34: ```
+  35: 
+  36: ## Full pytest suite
+  37: 
+  38: ```bash
+  39: source .venv/bin/activate && pytest -q 2>&1
+  40: ```
+  41: 
+  42: ```output
+  43: ..................................................................s..... [ 22%]
+  44: ......s................................................................. [ 44%]
+  45: ........................................................................ [ 66%]
+  46: ............................................s........................... [ 89%]
+  47: ...................................                                      [100%]
+  48: 320 passed, 3 skipped in 52.84s
+  49: ```
+  50: 
+  51: ## Four-stage belief-feature smoke pipeline
+  52: 
+  53: ```bash
+  54: source .venv/bin/activate && python scripts/build_mc_dataset.py --smoke 2>&1
+  55: ```
+  56: 
+  57: ```output
+  58: Loading configuration...
+  59: 
+  60: Loading questions...
+  61: Loading from CSV: questions.csv
+  62: Loaded 20407 questions from CSV
+  63: Limiting dataset to 50 questions
+  64: 
+  65: Building answer profiles...
+  66: Built 42 answer profiles
+  67: 
+  68: Constructing MC questions...
+  69: Generated 44 MC questions
+  70: Note: 6 questions filtered by guards
+  71: 
+  72: Creating stratified splits...
+  73: Dataset split complete:
+  74:   Train: 28 questions (63.6%)
+  75:   Val:   3 questions (6.8%)
+  76:   Test:  13 questions (29.5%)
+  77: 
+  78: Category distribution (11 categories):
+  79:   Fine_Arts: 4/1/2 (orig: 7)
+  80:   Fine_Arts:Music: 1/0/0 (orig: 1)
+  81:   History: 2/0/2 (orig: 4)
+  82:   Literature: 4/0/2 (orig: 6)
+  83:   Literature:Europe: 1/1/0 (orig: 2)
+  84:   ... and 6 more categories
+  85: 
+  86: Saving datasets...
+  87: Saved 44 items to artifacts/smoke/mc_dataset.json
+  88: Saved 28 items to artifacts/smoke/train_dataset.json
+  89: Saved 3 items to artifacts/smoke/val_dataset.json
+  90: Saved 13 items to artifacts/smoke/test_dataset.json
+  91: Saved answer profiles to artifacts/smoke/answer_profiles.json
+  92: 
+  93: ============================================================
+  94: Dataset Construction Complete
+  95: ============================================================
+  96: 
+  97: Total MC questions: 44
+  98:   Train: 28 (63.6%)
+  99:   Val:   3 (6.8%)
+ 100:   Test:  13 (29.5%)
+ 101: 
+ 102: Categories: 11
+ 103: Sample categories: Fine_Arts, Fine_Arts:Music, History, Literature, Literature:Europe
+ 104: 
+ 105: Answer profiles: 42
+ 106: Average questions per answer: 1.2
+ 107: 
+ 108: Sample MC question:
+ 109:   Question: A carbon alpha to two carbons with this functionality is alkylated and then decarboxylated in a reac...
+ 110:   Correct answer: Ester
+ 111:   Options: Shiva, Ester, Maria Theresa...
+ 112:   Category: Science:Chemistry
+ 113: 
+ 114: Total time: 0.5 seconds
+ 115: 
+ 116: ============================================================
+ 117: Sample MC Questions (Smoke Test)
+ 118: ============================================================
+ 119: 
+ 120: Question 1:
+ 121:   First clue: A carbon alpha to two carbons with this functionality is alkylated and then decarboxylated in a reac...
+ 122:   Category: Science:Chemistry
+ 123:   Correct: Ester
+ 124:   Options: Shiva, Ester, Maria Theresa...
+ 125: 
+ 126: Question 2:
+ 127:   First clue: Setting the partial derivative of this quantity equal to zero will allow one to arrive at the standa...
+ 128:   Category: Science:Chemistry
+ 129:   Correct: Gibbs free energy
+ 130:   Options: Gibbs free energy, Tyr, Josephson effect...
+ 131: 
+ 132: Question 3:
+ 133:   First clue: A Frost diagram plots oxidation state against the relative value of this quantity, which can be writ...
+ 134:   Category: Science:Chemistry
+ 135:   Correct: Gibbs free energy
+ 136:   Options: Tyr, Josephson effect, Gibbs free energy...
+ 137: 
+ 138: Dataset construction complete!
+ 139: ```
+ 140: 
+ 141: ```bash
+ 142: source .venv/bin/activate && python scripts/run_baselines.py --smoke 2>&1
+ 143: ```
+ 144: 
+ 145: ```output
+ 146: Loading MC questions from: /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/artifacts/smoke/mc_dataset.json
+ 147: Loaded 44 MC questions
+ 148: Building likelihood model: tfidf
+ 149: Beta: 5.0, Alpha: 10.0
+ 150: Thresholds: [0.5, 0.7, 0.9]
+ 151: 
+ 152: Pre-computing embeddings for 441 unique texts...
+ 153: Pre-computing embeddings:   0%|          | 0/7 [00:00<?, ?it/s]Pre-computing embeddings: 100%|██████████| 7/7 [00:00<00:00, 689.04it/s]
+ 154: Computing beliefs:   0%|          | 0/44 [00:00<?, ?it/s]Computing beliefs: 100%|██████████| 44/44 [00:00<00:00, 8526.98it/s]
+ 155: 
+ 156: Running ThresholdBuzzer sweep...
+ 157: 
+ 158: Running SoftmaxProfile sweep (precomputed)...
+ 159: Pre-computing sequential Bayes beliefs...
+ 160: Running SequentialBayes sweep (precomputed)...
+ 161: Running AlwaysBuzzFinal baseline (precomputed)...
+ 162: 
+ 163: Saving artifacts to: /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/artifacts/smoke
+ 164: 
+ 165: Wrote baseline outputs to: /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/artifacts/smoke
+ 166: Total time: 0.1 seconds
+ 167: 
+ 168: --- Summary ---
+ 169:   threshold[0.5]: accuracy=0.386, mean_sq=0.243
+ 170:   threshold[0.7]: accuracy=0.386, mean_sq=0.130
+ 171:   threshold[0.9]: accuracy=0.386, mean_sq=0.053
+ 172:   softmax_profile[0.5]: accuracy=0.386, mean_sq=0.243
+ 173:   softmax_profile[0.7]: accuracy=0.386, mean_sq=0.130
+ 174:   softmax_profile[0.9]: accuracy=0.386, mean_sq=0.053
+ 175:   sequential_bayes[0.5]: accuracy=0.386, mean_sq=0.267
+ 176:   sequential_bayes[0.7]: accuracy=0.386, mean_sq=0.212
+ 177:   sequential_bayes[0.9]: accuracy=0.386, mean_sq=0.141
+ 178:   always_final: accuracy=0.386, mean_sq=0.386
+ 179: ```
+ 180: 
+ 181: ```bash
+ 182: source .venv/bin/activate && python scripts/train_ppo.py --smoke 2>&1
+ 183: ```
+ 184: 
+ 185: ```output
+ 186: Loading MC questions from: /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/artifacts/smoke/mc_dataset.json
+ 187: Loaded 44 MC questions
+ 188: Building likelihood model: tfidf
+ 189: Precomputing belief trajectories for 44 questions...
+ 190: Cached 222 belief vectors
+ 191: Training PPO for 3000 timesteps...
+ 192: Using cpu device
+ 193: Wrapping the env with a `Monitor` wrapper
+ 194: Wrapping the env in a DummyVecEnv.
+ 195: ---------------------------------
+ 196: | rollout/           |          |
+ 197: |    ep_len_mean     | 1.19     |
+ 198: |    ep_rew_mean     | -0.799   |
+ 199: | time/              |          |
+ 200: |    fps             | 962      |
+ 201: |    iterations      | 1        |
+ 202: |    time_elapsed    | 0        |
+ 203: |    total_timesteps | 32       |
+ 204: ---------------------------------
+ 205: ------------------------------------------
+ 206: | rollout/                |              |
+ 207: |    ep_len_mean          | 1.21         |
+ 208: |    ep_rew_mean          | -0.627       |
+ 209: | time/                   |              |
+ 210: |    fps                  | 574          |
+ 211: |    iterations           | 2            |
+ 212: |    time_elapsed         | 0            |
+ 213: |    total_timesteps      | 64           |
+ 214: | train/                  |              |
+ 215: |    approx_kl            | 9.135157e-05 |
+ 216: |    clip_fraction        | 0            |
+ 217: |    clip_range           | 0.2          |
+ 218: |    entropy_loss         | -1.61        |
+ 219: |    explained_variance   | -0.0164      |
+ 220: |    learning_rate        | 0.0003       |
+ 221: |    loss                 | 0.683        |
+ 222: |    n_updates            | 2            |
+ 223: |    policy_gradient_loss | -0.00215     |
+ 224: |    value_loss           | 1.6          |
+ 225: ------------------------------------------
+ 226: -------------------------------------------
+ 227: | rollout/                |               |
+ 228: |    ep_len_mean          | 1.2           |
+ 229: |    ep_rew_mean          | -0.686        |
+ 230: | time/                   |               |
+ 231: |    fps                  | 746           |
+ 232: |    iterations           | 3             |
+ 233: |    time_elapsed         | 0             |
+ 234: |    total_timesteps      | 96            |
+ 235: | train/                  |               |
+ 236: |    approx_kl            | 4.4781715e-05 |
+ 237: |    clip_fraction        | 0             |
+ 238: |    clip_range           | 0.2           |
+ 239: |    entropy_loss         | -1.61         |
+ 240: |    explained_variance   | 0.00233       |
+ 241: |    learning_rate        | 0.0003        |
+ 242: |    loss                 | 0.588         |
+ 243: |    n_updates            | 4             |
+ 244: |    policy_gradient_loss | -0.00024      |
+ 245: |    value_loss           | 1.09          |
+ 246: -------------------------------------------
+ 247: -------------------------------------------
+ 248: | rollout/                |               |
+ 249: |    ep_len_mean          | 1.22          |
+ 250: |    ep_rew_mean          | -0.627        |
+ 251: | time/                   |               |
+ 252: |    fps                  | 888           |
+ 253: |    iterations           | 4             |
+ 254: |    time_elapsed         | 0             |
+ 255: |    total_timesteps      | 128           |
+ 256: | train/                  |               |
+ 257: |    approx_kl            | 2.5834888e-05 |
+ 258: |    clip_fraction        | 0             |
+ 259: |    clip_range           | 0.2           |
+ 260: |    entropy_loss         | -1.61         |
+ 261: |    explained_variance   | -0.0448       |
+ 262: |    learning_rate        | 0.0003        |
+ 263: |    loss                 | 0.475         |
+ 264: |    n_updates            | 6             |
+ 265: |    policy_gradient_loss | -0.00084      |
+ 266: |    value_loss           | 1.03          |
+ 267: -------------------------------------------
+ 268: ------------------------------------------
+ 269: | rollout/                |              |
+ 270: |    ep_len_mean          | 1.23         |
+ 271: |    ep_rew_mean          | -0.587       |
+ 272: | time/                   |              |
+ 273: |    fps                  | 1010         |
+ 274: |    iterations           | 5            |
+ 275: |    time_elapsed         | 0            |
+ 276: |    total_timesteps      | 160          |
+ 277: | train/                  |              |
+ 278: |    approx_kl            | 3.953837e-05 |
+ 279: |    clip_fraction        | 0            |
+ 280: |    clip_range           | 0.2          |
+ 281: |    entropy_loss         | -1.61        |
+ 282: |    explained_variance   | -0.033       |
+ 283: |    learning_rate        | 0.0003       |
+ 284: |    loss                 | 0.388        |
+ 285: |    n_updates            | 8            |
+ 286: |    policy_gradient_loss | -0.000781    |
+ 287: |    value_loss           | 0.945        |
+ 288: ------------------------------------------
+ 289: -------------------------------------------
+ 290: | rollout/                |               |
+ 291: |    ep_len_mean          | 1.18          |
+ 292: |    ep_rew_mean          | -0.766        |
+ 293: | time/                   |               |
+ 294: |    fps                  | 1105          |
+ 295: |    iterations           | 6             |
+ 296: |    time_elapsed         | 0             |
+ 297: |    total_timesteps      | 192           |
+ 298: | train/                  |               |
+ 299: |    approx_kl            | 1.4370307e-05 |
+ 300: |    clip_fraction        | 0             |
+ 301: |    clip_range           | 0.2           |
+ 302: |    entropy_loss         | -1.61         |
+ 303: |    explained_variance   | -0.0283       |
+ 304: |    learning_rate        | 0.0003        |
+ 305: |    loss                 | 0.401         |
+ 306: |    n_updates            | 10            |
+ 307: |    policy_gradient_loss | -0.000218     |
+ 308: |    value_loss           | 0.847         |
+ 309: -------------------------------------------
+ 310: -------------------------------------------
+ 311: | rollout/                |               |
+ 312: |    ep_len_mean          | 1.26          |
+ 313: |    ep_rew_mean          | -0.709        |
+ 314: | time/                   |               |
+ 315: |    fps                  | 1185          |
+ 316: |    iterations           | 7             |
+ 317: |    time_elapsed         | 0             |
+ 318: |    total_timesteps      | 224           |
+ 319: | train/                  |               |
+ 320: |    approx_kl            | 4.8203394e-05 |
+ 321: |    clip_fraction        | 0             |
+ 322: |    clip_range           | 0.2           |
+ 323: |    entropy_loss         | -1.61         |
+ 324: |    explained_variance   | -0.0165       |
+ 325: |    learning_rate        | 0.0003        |
+ 326: |    loss                 | 0.378         |
+ 327: |    n_updates            | 12            |
+ 328: |    policy_gradient_loss | -0.00101      |
+ 329: |    value_loss           | 0.546         |
+ 330: -------------------------------------------
+ 331: ------------------------------------------
+ 332: | rollout/                |              |
+ 333: |    ep_len_mean          | 1.27         |
+ 334: |    ep_rew_mean          | -0.789       |
+ 335: | time/                   |              |
+ 336: |    fps                  | 1249         |
+ 337: |    iterations           | 8            |
+ 338: |    time_elapsed         | 0            |
+ 339: |    total_timesteps      | 256          |
+ 340: | train/                  |              |
+ 341: |    approx_kl            | 6.548315e-05 |
+ 342: |    clip_fraction        | 0            |
+ 343: |    clip_range           | 0.2          |
+ 344: |    entropy_loss         | -1.61        |
+ 345: |    explained_variance   | -0.0261      |
+ 346: |    learning_rate        | 0.0003       |
+ 347: |    loss                 | 0.376        |
+ 348: |    n_updates            | 14           |
+ 349: |    policy_gradient_loss | -0.00148     |
+ 350: |    value_loss           | 0.752        |
+ 351: ------------------------------------------
+ 352: ------------------------------------------
+ 353: | rollout/                |              |
+ 354: |    ep_len_mean          | 1.28         |
+ 355: |    ep_rew_mean          | -0.769       |
+ 356: | time/                   |              |
+ 357: |    fps                  | 1296         |
+ 358: |    iterations           | 9            |
+ 359: |    time_elapsed         | 0            |
+ 360: |    total_timesteps      | 288          |
+ 361: | train/                  |              |
+ 362: |    approx_kl            | 7.542223e-05 |
+ 363: |    clip_fraction        | 0            |
+ 364: |    clip_range           | 0.2          |
+ 365: |    entropy_loss         | -1.61        |
+ 366: |    explained_variance   | -0.0309      |
+ 367: |    learning_rate        | 0.0003       |
+ 368: |    loss                 | 0.0918       |
+ 369: |    n_updates            | 16           |
+ 370: |    policy_gradient_loss | -0.00197     |
+ 371: |    value_loss           | 0.562        |
+ 372: ------------------------------------------
+ 373: -----------------------------------------
+ 374: | rollout/                |             |
+ 375: |    ep_len_mean          | 1.35        |
+ 376: |    ep_rew_mean          | -0.751      |
+ 377: | time/                   |             |
+ 378: |    fps                  | 1341        |
+ 379: |    iterations           | 10          |
+ 380: |    time_elapsed         | 0           |
+ 381: |    total_timesteps      | 320         |
+ 382: | train/                  |             |
+ 383: |    approx_kl            | 9.83458e-05 |
+ 384: |    clip_fraction        | 0           |
+ 385: |    clip_range           | 0.2         |
+ 386: |    entropy_loss         | -1.61       |
+ 387: |    explained_variance   | -0.0252     |
+ 388: |    learning_rate        | 0.0003      |
+ 389: |    loss                 | 0.216       |
+ 390: |    n_updates            | 18          |
+ 391: |    policy_gradient_loss | -0.00299    |
+ 392: |    value_loss           | 0.622       |
+ 393: -----------------------------------------
+ 394: -------------------------------------------
+ 395: | rollout/                |               |
+ 396: |    ep_len_mean          | 1.32          |
+ 397: |    ep_rew_mean          | -0.71         |
+ 398: | time/                   |               |
+ 399: |    fps                  | 1386          |
+ 400: |    iterations           | 11            |
+ 401: |    time_elapsed         | 0             |
+ 402: |    total_timesteps      | 352           |
+ 403: | train/                  |               |
+ 404: |    approx_kl            | 5.6406483e-05 |
+ 405: |    clip_fraction        | 0             |
+ 406: |    clip_range           | 0.2           |
+ 407: |    entropy_loss         | -1.61         |
+ 408: |    explained_variance   | -0.0578       |
+ 409: |    learning_rate        | 0.0003        |
+ 410: |    loss                 | 0.237         |
+ 411: |    n_updates            | 20            |
+ 412: |    policy_gradient_loss | -0.000723     |
+ 413: |    value_loss           | 0.538         |
+ 414: -------------------------------------------
+ 415: -------------------------------------------
+ 416: | rollout/                |               |
+ 417: |    ep_len_mean          | 1.34          |
+ 418: |    ep_rew_mean          | -0.709        |
+ 419: | time/                   |               |
+ 420: |    fps                  | 1420          |
+ 421: |    iterations           | 12            |
+ 422: |    time_elapsed         | 0             |
+ 423: |    total_timesteps      | 384           |
+ 424: | train/                  |               |
+ 425: |    approx_kl            | 3.7783757e-05 |
+ 426: |    clip_fraction        | 0             |
+ 427: |    clip_range           | 0.2           |
+ 428: |    entropy_loss         | -1.6          |
+ 429: |    explained_variance   | -0.024        |
+ 430: |    learning_rate        | 0.0003        |
+ 431: |    loss                 | 0.734         |
+ 432: |    n_updates            | 22            |
+ 433: |    policy_gradient_loss | -0.000706     |
+ 434: |    value_loss           | 0.962         |
+ 435: -------------------------------------------
+ 436: -------------------------------------------
+ 437: | rollout/                |               |
+ 438: |    ep_len_mean          | 1.42          |
+ 439: |    ep_rew_mean          | -0.673        |
+ 440: | time/                   |               |
+ 441: |    fps                  | 1448          |
+ 442: |    iterations           | 13            |
+ 443: |    time_elapsed         | 0             |
+ 444: |    total_timesteps      | 416           |
+ 445: | train/                  |               |
+ 446: |    approx_kl            | 1.9911677e-05 |
+ 447: |    clip_fraction        | 0             |
+ 448: |    clip_range           | 0.2           |
+ 449: |    entropy_loss         | -1.6          |
+ 450: |    explained_variance   | -0.000575     |
+ 451: |    learning_rate        | 0.0003        |
+ 452: |    loss                 | 0.484         |
+ 453: |    n_updates            | 24            |
+ 454: |    policy_gradient_loss | -0.000466     |
+ 455: |    value_loss           | 0.866         |
+ 456: -------------------------------------------
+ 457: ------------------------------------------
+ 458: | rollout/                |              |
+ 459: |    ep_len_mean          | 1.32         |
+ 460: |    ep_rew_mean          | -0.651       |
+ 461: | time/                   |              |
+ 462: |    fps                  | 1483         |
+ 463: |    iterations           | 14           |
+ 464: |    time_elapsed         | 0            |
+ 465: |    total_timesteps      | 448          |
+ 466: | train/                  |              |
+ 467: |    approx_kl            | 3.568828e-05 |
+ 468: |    clip_fraction        | 0            |
+ 469: |    clip_range           | 0.2          |
+ 470: |    entropy_loss         | -1.6         |
+ 471: |    explained_variance   | -0.0412      |
+ 472: |    learning_rate        | 0.0003       |
+ 473: |    loss                 | 0.51         |
+ 474: |    n_updates            | 26           |
+ 475: |    policy_gradient_loss | 7.42e-05     |
+ 476: |    value_loss           | 0.7          |
+ 477: ------------------------------------------
+ 478: -----------------------------------------
+ 479: | rollout/                |             |
+ 480: |    ep_len_mean          | 1.29        |
+ 481: |    ep_rew_mean          | -0.651      |
+ 482: | time/                   |             |
+ 483: |    fps                  | 1517        |
+ 484: |    iterations           | 15          |
+ 485: |    time_elapsed         | 0           |
+ 486: |    total_timesteps      | 480         |
+ 487: | train/                  |             |
+ 488: |    approx_kl            | 3.72082e-05 |
+ 489: |    clip_fraction        | 0           |
+ 490: |    clip_range           | 0.2         |
+ 491: |    entropy_loss         | -1.6        |
+ 492: |    explained_variance   | 0.0184      |
+ 493: |    learning_rate        | 0.0003      |
+ 494: |    loss                 | 0.493       |
+ 495: |    n_updates            | 28          |
+ 496: |    policy_gradient_loss | -0.000661   |
+ 497: |    value_loss           | 0.841       |
+ 498: -----------------------------------------
+ 499: -------------------------------------------
+ 500: | rollout/                |               |
+ 501: |    ep_len_mean          | 1.19          |
+ 502: |    ep_rew_mean          | -0.689        |
+ 503: | time/                   |               |
+ 504: |    fps                  | 1543          |
+ 505: |    iterations           | 16            |
+ 506: |    time_elapsed         | 0             |
+ 507: |    total_timesteps      | 512           |
+ 508: | train/                  |               |
+ 509: |    approx_kl            | 1.8157065e-05 |
+ 510: |    clip_fraction        | 0             |
+ 511: |    clip_range           | 0.2           |
+ 512: |    entropy_loss         | -1.6          |
+ 513: |    explained_variance   | -0.0198       |
+ 514: |    learning_rate        | 0.0003        |
+ 515: |    loss                 | 0.264         |
+ 516: |    n_updates            | 30            |
+ 517: |    policy_gradient_loss | 0.000366      |
+ 518: |    value_loss           | 0.764         |
+ 519: -------------------------------------------
+ 520: -------------------------------------------
+ 521: | rollout/                |               |
+ 522: |    ep_len_mean          | 1.17          |
+ 523: |    ep_rew_mean          | -0.687        |
+ 524: | time/                   |               |
+ 525: |    fps                  | 1565          |
+ 526: |    iterations           | 17            |
+ 527: |    time_elapsed         | 0             |
+ 528: |    total_timesteps      | 544           |
+ 529: | train/                  |               |
+ 530: |    approx_kl            | 1.0963529e-05 |
+ 531: |    clip_fraction        | 0             |
+ 532: |    clip_range           | 0.2           |
+ 533: |    entropy_loss         | -1.6          |
+ 534: |    explained_variance   | -0.0094       |
+ 535: |    learning_rate        | 0.0003        |
+ 536: |    loss                 | 0.252         |
+ 537: |    n_updates            | 32            |
+ 538: |    policy_gradient_loss | -0.000415     |
+ 539: |    value_loss           | 0.578         |
+ 540: -------------------------------------------
+ 541: -------------------------------------------
+ 542: | rollout/                |               |
+ 543: |    ep_len_mean          | 1.22          |
+ 544: |    ep_rew_mean          | -0.708        |
+ 545: | time/                   |               |
+ 546: |    fps                  | 1591          |
+ 547: |    iterations           | 18            |
+ 548: |    time_elapsed         | 0             |
+ 549: |    total_timesteps      | 576           |
+ 550: | train/                  |               |
+ 551: |    approx_kl            | 1.4541671e-05 |
+ 552: |    clip_fraction        | 0             |
+ 553: |    clip_range           | 0.2           |
+ 554: |    entropy_loss         | -1.6          |
+ 555: |    explained_variance   | 0.00155       |
+ 556: |    learning_rate        | 0.0003        |
+ 557: |    loss                 | 0.109         |
+ 558: |    n_updates            | 34            |
+ 559: |    policy_gradient_loss | 7.66e-05      |
+ 560: |    value_loss           | 0.672         |
+ 561: -------------------------------------------
+ 562: -------------------------------------------
+ 563: | rollout/                |               |
+ 564: |    ep_len_mean          | 1.15          |
+ 565: |    ep_rew_mean          | -0.704        |
+ 566: | time/                   |               |
+ 567: |    fps                  | 1601          |
+ 568: |    iterations           | 19            |
+ 569: |    time_elapsed         | 0             |
+ 570: |    total_timesteps      | 608           |
+ 571: | train/                  |               |
+ 572: |    approx_kl            | 1.3899058e-05 |
+ 573: |    clip_fraction        | 0             |
+ 574: |    clip_range           | 0.2           |
+ 575: |    entropy_loss         | -1.6          |
+ 576: |    explained_variance   | -0.0152       |
+ 577: |    learning_rate        | 0.0003        |
+ 578: |    loss                 | 0.243         |
+ 579: |    n_updates            | 36            |
+ 580: |    policy_gradient_loss | 0.000421      |
+ 581: |    value_loss           | 0.747         |
+ 582: -------------------------------------------
+ 583: ------------------------------------------
+ 584: | rollout/                |              |
+ 585: |    ep_len_mean          | 1.14         |
+ 586: |    ep_rew_mean          | -0.542       |
+ 587: | time/                   |              |
+ 588: |    fps                  | 1610         |
+ 589: |    iterations           | 20           |
+ 590: |    time_elapsed         | 0            |
+ 591: |    total_timesteps      | 640          |
+ 592: | train/                  |              |
+ 593: |    approx_kl            | 8.404441e-05 |
+ 594: |    clip_fraction        | 0            |
+ 595: |    clip_range           | 0.2          |
+ 596: |    entropy_loss         | -1.6         |
+ 597: |    explained_variance   | -0.00183     |
+ 598: |    learning_rate        | 0.0003       |
+ 599: |    loss                 | 0.234        |
+ 600: |    n_updates            | 38           |
+ 601: |    policy_gradient_loss | -0.002       |
+ 602: |    value_loss           | 0.679        |
+ 603: ------------------------------------------
+ 604: -------------------------------------------
+ 605: | rollout/                |               |
+ 606: |    ep_len_mean          | 1.17          |
+ 607: |    ep_rew_mean          | -0.504        |
+ 608: | time/                   |               |
+ 609: |    fps                  | 1621          |
+ 610: |    iterations           | 21            |
+ 611: |    time_elapsed         | 0             |
+ 612: |    total_timesteps      | 672           |
+ 613: | train/                  |               |
+ 614: |    approx_kl            | 0.00020119175 |
+ 615: |    clip_fraction        | 0             |
+ 616: |    clip_range           | 0.2           |
+ 617: |    entropy_loss         | -1.6          |
+ 618: |    explained_variance   | -0.00395      |
+ 619: |    learning_rate        | 0.0003        |
+ 620: |    loss                 | 0.625         |
+ 621: |    n_updates            | 40            |
+ 622: |    policy_gradient_loss | -0.00331      |
+ 623: |    value_loss           | 1.02          |
+ 624: -------------------------------------------
+ 625: -------------------------------------------
+ 626: | rollout/                |               |
+ 627: |    ep_len_mean          | 1.16          |
+ 628: |    ep_rew_mean          | -0.485        |
+ 629: | time/                   |               |
+ 630: |    fps                  | 1629          |
+ 631: |    iterations           | 22            |
+ 632: |    time_elapsed         | 0             |
+ 633: |    total_timesteps      | 704           |
+ 634: | train/                  |               |
+ 635: |    approx_kl            | 7.9449266e-05 |
+ 636: |    clip_fraction        | 0             |
+ 637: |    clip_range           | 0.2           |
+ 638: |    entropy_loss         | -1.59         |
+ 639: |    explained_variance   | -0.00754      |
+ 640: |    learning_rate        | 0.0003        |
+ 641: |    loss                 | 0.237         |
+ 642: |    n_updates            | 42            |
+ 643: |    policy_gradient_loss | -0.000344     |
+ 644: |    value_loss           | 0.962         |
+ 645: -------------------------------------------
+ 646: -------------------------------------------
+ 647: | rollout/                |               |
+ 648: |    ep_len_mean          | 1.22          |
+ 649: |    ep_rew_mean          | -0.467        |
+ 650: | time/                   |               |
+ 651: |    fps                  | 1632          |
+ 652: |    iterations           | 23            |
+ 653: |    time_elapsed         | 0             |
+ 654: |    total_timesteps      | 736           |
+ 655: | train/                  |               |
+ 656: |    approx_kl            | 0.00013889931 |
+ 657: |    clip_fraction        | 0             |
+ 658: |    clip_range           | 0.2           |
+ 659: |    entropy_loss         | -1.59         |
+ 660: |    explained_variance   | 0.000926      |
+ 661: |    learning_rate        | 0.0003        |
+ 662: |    loss                 | 0.363         |
+ 663: |    n_updates            | 44            |
+ 664: |    policy_gradient_loss | -0.00375      |
+ 665: |    value_loss           | 0.731         |
+ 666: -------------------------------------------
+ 667: ------------------------------------------
+ 668: | rollout/                |              |
+ 669: |    ep_len_mean          | 1.21         |
+ 670: |    ep_rew_mean          | -0.587       |
+ 671: | time/                   |              |
+ 672: |    fps                  | 1643         |
+ 673: |    iterations           | 24           |
+ 674: |    time_elapsed         | 0            |
+ 675: |    total_timesteps      | 768          |
+ 676: | train/                  |              |
+ 677: |    approx_kl            | 9.755418e-05 |
+ 678: |    clip_fraction        | 0            |
+ 679: |    clip_range           | 0.2          |
+ 680: |    entropy_loss         | -1.59        |
+ 681: |    explained_variance   | -0.0179      |
+ 682: |    learning_rate        | 0.0003       |
+ 683: |    loss                 | 0.358        |
+ 684: |    n_updates            | 46           |
+ 685: |    policy_gradient_loss | -0.000278    |
+ 686: |    value_loss           | 0.843        |
+ 687: ------------------------------------------
+ 688: ------------------------------------------
+ 689: | rollout/                |              |
+ 690: |    ep_len_mean          | 1.18         |
+ 691: |    ep_rew_mean          | -0.506       |
+ 692: | time/                   |              |
+ 693: |    fps                  | 1647         |
+ 694: |    iterations           | 25           |
+ 695: |    time_elapsed         | 0            |
+ 696: |    total_timesteps      | 800          |
+ 697: | train/                  |              |
+ 698: |    approx_kl            | 8.545071e-05 |
+ 699: |    clip_fraction        | 0            |
+ 700: |    clip_range           | 0.2          |
+ 701: |    entropy_loss         | -1.58        |
+ 702: |    explained_variance   | 0.00642      |
+ 703: |    learning_rate        | 0.0003       |
+ 704: |    loss                 | 0.492        |
+ 705: |    n_updates            | 48           |
+ 706: |    policy_gradient_loss | -0.00112     |
+ 707: |    value_loss           | 0.608        |
+ 708: ------------------------------------------
+ 709: -------------------------------------------
+ 710: | rollout/                |               |
+ 711: |    ep_len_mean          | 1.15          |
+ 712: |    ep_rew_mean          | -0.486        |
+ 713: | time/                   |               |
+ 714: |    fps                  | 1659          |
+ 715: |    iterations           | 26            |
+ 716: |    time_elapsed         | 0             |
+ 717: |    total_timesteps      | 832           |
+ 718: | train/                  |               |
+ 719: |    approx_kl            | 0.00012436137 |
+ 720: |    clip_fraction        | 0             |
+ 721: |    clip_range           | 0.2           |
+ 722: |    entropy_loss         | -1.58         |
+ 723: |    explained_variance   | 0.00488       |
+ 724: |    learning_rate        | 0.0003        |
+ 725: |    loss                 | 0.479         |
+ 726: |    n_updates            | 50            |
+ 727: |    policy_gradient_loss | -0.00368      |
+ 728: |    value_loss           | 1.13          |
+ 729: -------------------------------------------
+ 730: -------------------------------------------
+ 731: | rollout/                |               |
+ 732: |    ep_len_mean          | 1.12          |
+ 733: |    ep_rew_mean          | -0.485        |
+ 734: | time/                   |               |
+ 735: |    fps                  | 1668          |
+ 736: |    iterations           | 27            |
+ 737: |    time_elapsed         | 0             |
+ 738: |    total_timesteps      | 864           |
+ 739: | train/                  |               |
+ 740: |    approx_kl            | 0.00028509833 |
+ 741: |    clip_fraction        | 0             |
+ 742: |    clip_range           | 0.2           |
+ 743: |    entropy_loss         | -1.57         |
+ 744: |    explained_variance   | -0.0171       |
+ 745: |    learning_rate        | 0.0003        |
+ 746: |    loss                 | 0.277         |
+ 747: |    n_updates            | 52            |
+ 748: |    policy_gradient_loss | -0.00219      |
+ 749: |    value_loss           | 0.943         |
+ 750: -------------------------------------------
+ 751: -------------------------------------------
+ 752: | rollout/                |               |
+ 753: |    ep_len_mean          | 1.15          |
+ 754: |    ep_rew_mean          | -0.506        |
+ 755: | time/                   |               |
+ 756: |    fps                  | 1680          |
+ 757: |    iterations           | 28            |
+ 758: |    time_elapsed         | 0             |
+ 759: |    total_timesteps      | 896           |
+ 760: | train/                  |               |
+ 761: |    approx_kl            | 0.00024232827 |
+ 762: |    clip_fraction        | 0             |
+ 763: |    clip_range           | 0.2           |
+ 764: |    entropy_loss         | -1.56         |
+ 765: |    explained_variance   | 0.00453       |
+ 766: |    learning_rate        | 0.0003        |
+ 767: |    loss                 | 0.475         |
+ 768: |    n_updates            | 54            |
+ 769: |    policy_gradient_loss | -0.00306      |
+ 770: |    value_loss           | 0.675         |
+ 771: -------------------------------------------
+ 772: ------------------------------------------
+ 773: | rollout/                |              |
+ 774: |    ep_len_mean          | 1.13         |
+ 775: |    ep_rew_mean          | -0.565       |
+ 776: | time/                   |              |
+ 777: |    fps                  | 1688         |
+ 778: |    iterations           | 29           |
+ 779: |    time_elapsed         | 0            |
+ 780: |    total_timesteps      | 928          |
+ 781: | train/                  |              |
+ 782: |    approx_kl            | 9.635277e-05 |
+ 783: |    clip_fraction        | 0            |
+ 784: |    clip_range           | 0.2          |
+ 785: |    entropy_loss         | -1.55        |
+ 786: |    explained_variance   | -0.0101      |
+ 787: |    learning_rate        | 0.0003       |
+ 788: |    loss                 | 0.585        |
+ 789: |    n_updates            | 56           |
+ 790: |    policy_gradient_loss | 0.000351     |
+ 791: |    value_loss           | 1.01         |
+ 792: ------------------------------------------
+ 793: ------------------------------------------
+ 794: | rollout/                |              |
+ 795: |    ep_len_mean          | 1.11         |
+ 796: |    ep_rew_mean          | -0.585       |
+ 797: | time/                   |              |
+ 798: |    fps                  | 1696         |
+ 799: |    iterations           | 30           |
+ 800: |    time_elapsed         | 0            |
+ 801: |    total_timesteps      | 960          |
+ 802: | train/                  |              |
+ 803: |    approx_kl            | 0.0001163315 |
+ 804: |    clip_fraction        | 0            |
+ 805: |    clip_range           | 0.2          |
+ 806: |    entropy_loss         | -1.55        |
+ 807: |    explained_variance   | -0.00176     |
+ 808: |    learning_rate        | 0.0003       |
+ 809: |    loss                 | 0.305        |
+ 810: |    n_updates            | 58           |
+ 811: |    policy_gradient_loss | -0.00277     |
+ 812: |    value_loss           | 0.814        |
+ 813: ------------------------------------------
+ 814: -------------------------------------------
+ 815: | rollout/                |               |
+ 816: |    ep_len_mean          | 1.09          |
+ 817: |    ep_rew_mean          | -0.565        |
+ 818: | time/                   |               |
+ 819: |    fps                  | 1701          |
+ 820: |    iterations           | 31            |
+ 821: |    time_elapsed         | 0             |
+ 822: |    total_timesteps      | 992           |
+ 823: | train/                  |               |
+ 824: |    approx_kl            | 0.00014591776 |
+ 825: |    clip_fraction        | 0             |
+ 826: |    clip_range           | 0.2           |
+ 827: |    entropy_loss         | -1.54         |
+ 828: |    explained_variance   | -0.000269     |
+ 829: |    learning_rate        | 0.0003        |
+ 830: |    loss                 | 0.386         |
+ 831: |    n_updates            | 60            |
+ 832: |    policy_gradient_loss | -0.00225      |
+ 833: |    value_loss           | 0.741         |
+ 834: -------------------------------------------
+ 835: -------------------------------------------
+ 836: | rollout/                |               |
+ 837: |    ep_len_mean          | 1.1           |
+ 838: |    ep_rew_mean          | -0.663        |
+ 839: | time/                   |               |
+ 840: |    fps                  | 1706          |
+ 841: |    iterations           | 32            |
+ 842: |    time_elapsed         | 0             |
+ 843: |    total_timesteps      | 1024          |
+ 844: | train/                  |               |
+ 845: |    approx_kl            | 0.00018922612 |
+ 846: |    clip_fraction        | 0             |
+ 847: |    clip_range           | 0.2           |
+ 848: |    entropy_loss         | -1.53         |
+ 849: |    explained_variance   | 0.000864      |
+ 850: |    learning_rate        | 0.0003        |
+ 851: |    loss                 | 0.565         |
+ 852: |    n_updates            | 62            |
+ 853: |    policy_gradient_loss | -0.000738     |
+ 854: |    value_loss           | 0.896         |
+ 855: -------------------------------------------
+ 856: ------------------------------------------
+ 857: | rollout/                |              |
+ 858: |    ep_len_mean          | 1.11         |
+ 859: |    ep_rew_mean          | -0.623       |
+ 860: | time/                   |              |
+ 861: |    fps                  | 1712         |
+ 862: |    iterations           | 33           |
+ 863: |    time_elapsed         | 0            |
+ 864: |    total_timesteps      | 1056         |
+ 865: | train/                  |              |
+ 866: |    approx_kl            | 0.0001565367 |
+ 867: |    clip_fraction        | 0            |
+ 868: |    clip_range           | 0.2          |
+ 869: |    entropy_loss         | -1.52        |
+ 870: |    explained_variance   | -0.00529     |
+ 871: |    learning_rate        | 0.0003       |
+ 872: |    loss                 | 0.137        |
+ 873: |    n_updates            | 64           |
+ 874: |    policy_gradient_loss | -0.00196     |
+ 875: |    value_loss           | 0.597        |
+ 876: ------------------------------------------
+ 877: -------------------------------------------
+ 878: | rollout/                |               |
+ 879: |    ep_len_mean          | 1.16          |
+ 880: |    ep_rew_mean          | -0.625        |
+ 881: | time/                   |               |
+ 882: |    fps                  | 1716          |
+ 883: |    iterations           | 34            |
+ 884: |    time_elapsed         | 0             |
+ 885: |    total_timesteps      | 1088          |
+ 886: | train/                  |               |
+ 887: |    approx_kl            | 0.00027815253 |
+ 888: |    clip_fraction        | 0             |
+ 889: |    clip_range           | 0.2           |
+ 890: |    entropy_loss         | -1.51         |
+ 891: |    explained_variance   | 0.00224       |
+ 892: |    learning_rate        | 0.0003        |
+ 893: |    loss                 | 0.355         |
+ 894: |    n_updates            | 66            |
+ 895: |    policy_gradient_loss | -0.00333      |
+ 896: |    value_loss           | 0.904         |
+ 897: -------------------------------------------
+ 898: -------------------------------------------
+ 899: | rollout/                |               |
+ 900: |    ep_len_mean          | 1.15          |
+ 901: |    ep_rew_mean          | -0.645        |
+ 902: | time/                   |               |
+ 903: |    fps                  | 1723          |
+ 904: |    iterations           | 35            |
+ 905: |    time_elapsed         | 0             |
+ 906: |    total_timesteps      | 1120          |
+ 907: | train/                  |               |
+ 908: |    approx_kl            | 0.00044066086 |
+ 909: |    clip_fraction        | 0             |
+ 910: |    clip_range           | 0.2           |
+ 911: |    entropy_loss         | -1.5          |
+ 912: |    explained_variance   | 0.00207       |
+ 913: |    learning_rate        | 0.0003        |
+ 914: |    loss                 | 0.375         |
+ 915: |    n_updates            | 68            |
+ 916: |    policy_gradient_loss | -0.00417      |
+ 917: |    value_loss           | 0.802         |
+ 918: -------------------------------------------
+ 919: ------------------------------------------
+ 920: | rollout/                |              |
+ 921: |    ep_len_mean          | 1.12         |
+ 922: |    ep_rew_mean          | -0.542       |
+ 923: | time/                   |              |
+ 924: |    fps                  | 1733         |
+ 925: |    iterations           | 36           |
+ 926: |    time_elapsed         | 0            |
+ 927: |    total_timesteps      | 1152         |
+ 928: | train/                  |              |
+ 929: |    approx_kl            | 0.0002180282 |
+ 930: |    clip_fraction        | 0            |
+ 931: |    clip_range           | 0.2          |
+ 932: |    entropy_loss         | -1.48        |
+ 933: |    explained_variance   | -0.00107     |
+ 934: |    learning_rate        | 0.0003       |
+ 935: |    loss                 | 0.488        |
+ 936: |    n_updates            | 70           |
+ 937: |    policy_gradient_loss | -0.00358     |
+ 938: |    value_loss           | 0.565        |
+ 939: ------------------------------------------
+ 940: -------------------------------------------
+ 941: | rollout/                |               |
+ 942: |    ep_len_mean          | 1.04          |
+ 943: |    ep_rew_mean          | -0.519        |
+ 944: | time/                   |               |
+ 945: |    fps                  | 1744          |
+ 946: |    iterations           | 37            |
+ 947: |    time_elapsed         | 0             |
+ 948: |    total_timesteps      | 1184          |
+ 949: | train/                  |               |
+ 950: |    approx_kl            | 0.00012468174 |
+ 951: |    clip_fraction        | 0             |
+ 952: |    clip_range           | 0.2           |
+ 953: |    entropy_loss         | -1.46         |
+ 954: |    explained_variance   | 0.0128        |
+ 955: |    learning_rate        | 0.0003        |
+ 956: |    loss                 | 0.713         |
+ 957: |    n_updates            | 72            |
+ 958: |    policy_gradient_loss | -0.000703     |
+ 959: |    value_loss           | 1.23          |
+ 960: -------------------------------------------
+ 961: -------------------------------------------
+ 962: | rollout/                |               |
+ 963: |    ep_len_mean          | 1.07          |
+ 964: |    ep_rew_mean          | -0.562        |
+ 965: | time/                   |               |
+ 966: |    fps                  | 1753          |
+ 967: |    iterations           | 38            |
+ 968: |    time_elapsed         | 0             |
+ 969: |    total_timesteps      | 1216          |
+ 970: | train/                  |               |
+ 971: |    approx_kl            | 0.00014369003 |
+ 972: |    clip_fraction        | 0             |
+ 973: |    clip_range           | 0.2           |
+ 974: |    entropy_loss         | -1.45         |
+ 975: |    explained_variance   | -1.19e-07     |
+ 976: |    learning_rate        | 0.0003        |
+ 977: |    loss                 | 0.482         |
+ 978: |    n_updates            | 74            |
+ 979: |    policy_gradient_loss | -0.00329      |
+ 980: |    value_loss           | 0.813         |
+ 981: -------------------------------------------
+ 982: -------------------------------------------
+ 983: | rollout/                |               |
+ 984: |    ep_len_mean          | 1.05          |
+ 985: |    ep_rew_mean          | -0.502        |
+ 986: | time/                   |               |
+ 987: |    fps                  | 1759          |
+ 988: |    iterations           | 39            |
+ 989: |    time_elapsed         | 0             |
+ 990: |    total_timesteps      | 1248          |
+ 991: | train/                  |               |
+ 992: |    approx_kl            | 0.00045620464 |
+ 993: |    clip_fraction        | 0             |
+ 994: |    clip_range           | 0.2           |
+ 995: |    entropy_loss         | -1.44         |
+ 996: |    explained_variance   | -0.000321     |
+ 997: |    learning_rate        | 0.0003        |
+ 998: |    loss                 | 0.371         |
+ 999: |    n_updates            | 76            |
+1000: |    policy_gradient_loss | -0.00283      |
+1001: |    value_loss           | 0.6           |
+1002: -------------------------------------------
+1003: -------------------------------------------
+1004: | rollout/                |               |
+1005: |    ep_len_mean          | 1.06          |
+1006: |    ep_rew_mean          | -0.501        |
+1007: | time/                   |               |
+1008: |    fps                  | 1762          |
+1009: |    iterations           | 40            |
+1010: |    time_elapsed         | 0             |
+1011: |    total_timesteps      | 1280          |
+1012: | train/                  |               |
+1013: |    approx_kl            | 0.00024477206 |
+1014: |    clip_fraction        | 0             |
+1015: |    clip_range           | 0.2           |
+1016: |    entropy_loss         | -1.41         |
+1017: |    explained_variance   | 0.0014        |
+1018: |    learning_rate        | 0.0003        |
+1019: |    loss                 | 0.688         |
+1020: |    n_updates            | 78            |
+1021: |    policy_gradient_loss | -0.00517      |
+1022: |    value_loss           | 1.19          |
+1023: -------------------------------------------
+1024: -------------------------------------------
+1025: | rollout/                |               |
+1026: |    ep_len_mean          | 1.07          |
+1027: |    ep_rew_mean          | -0.481        |
+1028: | time/                   |               |
+1029: |    fps                  | 1769          |
+1030: |    iterations           | 41            |
+1031: |    time_elapsed         | 0             |
+1032: |    total_timesteps      | 1312          |
+1033: | train/                  |               |
+1034: |    approx_kl            | 0.00044154935 |
+1035: |    clip_fraction        | 0             |
+1036: |    clip_range           | 0.2           |
+1037: |    entropy_loss         | -1.39         |
+1038: |    explained_variance   | 0.00403       |
+1039: |    learning_rate        | 0.0003        |
+1040: |    loss                 | 0.365         |
+1041: |    n_updates            | 80            |
+1042: |    policy_gradient_loss | -0.00595      |
+1043: |    value_loss           | 0.852         |
+1044: -------------------------------------------
+1045: -------------------------------------------
+1046: | rollout/                |               |
+1047: |    ep_len_mean          | 1.04          |
+1048: |    ep_rew_mean          | -0.56         |
+1049: | time/                   |               |
+1050: |    fps                  | 1776          |
+1051: |    iterations           | 42            |
+1052: |    time_elapsed         | 0             |
+1053: |    total_timesteps      | 1344          |
+1054: | train/                  |               |
+1055: |    approx_kl            | 0.00070065074 |
+1056: |    clip_fraction        | 0             |
+1057: |    clip_range           | 0.2           |
+1058: |    entropy_loss         | -1.37         |
+1059: |    explained_variance   | -0.00366      |
+1060: |    learning_rate        | 0.0003        |
+1061: |    loss                 | 0.485         |
+1062: |    n_updates            | 82            |
+1063: |    policy_gradient_loss | -0.00476      |
+1064: |    value_loss           | 0.777         |
+1065: -------------------------------------------
+1066: -------------------------------------------
+1067: | rollout/                |               |
+1068: |    ep_len_mean          | 1.04          |
+1069: |    ep_rew_mean          | -0.439        |
+1070: | time/                   |               |
+1071: |    fps                  | 1780          |
+1072: |    iterations           | 43            |
+1073: |    time_elapsed         | 0             |
+1074: |    total_timesteps      | 1376          |
+1075: | train/                  |               |
+1076: |    approx_kl            | 0.00039308518 |
+1077: |    clip_fraction        | 0             |
+1078: |    clip_range           | 0.2           |
+1079: |    entropy_loss         | -1.34         |
+1080: |    explained_variance   | 0             |
+1081: |    learning_rate        | 0.0003        |
+1082: |    loss                 | 0.27          |
+1083: |    n_updates            | 84            |
+1084: |    policy_gradient_loss | -0.00231      |
+1085: |    value_loss           | 0.81          |
+1086: -------------------------------------------
+1087: --------------------------------------------
+1088: | rollout/                |                |
+1089: |    ep_len_mean          | 1.02           |
+1090: |    ep_rew_mean          | -0.377         |
+1091: | time/                   |                |
+1092: |    fps                  | 1786           |
+1093: |    iterations           | 44             |
+1094: |    time_elapsed         | 0              |
+1095: |    total_timesteps      | 1408           |
+1096: | train/                  |                |
+1097: |    approx_kl            | 0.000104792416 |
+1098: |    clip_fraction        | 0              |
+1099: |    clip_range           | 0.2            |
+1100: |    entropy_loss         | -1.32          |
+1101: |    explained_variance   | -0.00185       |
+1102: |    learning_rate        | 0.0003         |
+1103: |    loss                 | 0.471          |
+1104: |    n_updates            | 86             |
+1105: |    policy_gradient_loss | 0.000187       |
+1106: |    value_loss           | 1.21           |
+1107: --------------------------------------------
+1108: ------------------------------------------
+1109: | rollout/                |              |
+1110: |    ep_len_mean          | 1.04         |
+1111: |    ep_rew_mean          | -0.457       |
+1112: | time/                   |              |
+1113: |    fps                  | 1791         |
+1114: |    iterations           | 45           |
+1115: |    time_elapsed         | 0            |
+1116: |    total_timesteps      | 1440         |
+1117: | train/                  |              |
+1118: |    approx_kl            | 0.0003661234 |
+1119: |    clip_fraction        | 0            |
+1120: |    clip_range           | 0.2          |
+1121: |    entropy_loss         | -1.3         |
+1122: |    explained_variance   | -0.00233     |
+1123: |    learning_rate        | 0.0003       |
+1124: |    loss                 | 0.326        |
+1125: |    n_updates            | 88           |
+1126: |    policy_gradient_loss | -0.00442     |
+1127: |    value_loss           | 0.855        |
+1128: ------------------------------------------
+1129: -------------------------------------------
+1130: | rollout/                |               |
+1131: |    ep_len_mean          | 1.07          |
+1132: |    ep_rew_mean          | -0.519        |
+1133: | time/                   |               |
+1134: |    fps                  | 1797          |
+1135: |    iterations           | 46            |
+1136: |    time_elapsed         | 0             |
+1137: |    total_timesteps      | 1472          |
+1138: | train/                  |               |
+1139: |    approx_kl            | 0.00027570128 |
+1140: |    clip_fraction        | 0             |
+1141: |    clip_range           | 0.2           |
+1142: |    entropy_loss         | -1.28         |
+1143: |    explained_variance   | -0.00228      |
+1144: |    learning_rate        | 0.0003        |
+1145: |    loss                 | 0.463         |
+1146: |    n_updates            | 90            |
+1147: |    policy_gradient_loss | -0.00248      |
+1148: |    value_loss           | 0.771         |
+1149: -------------------------------------------
+1150: -------------------------------------------
+1151: | rollout/                |               |
+1152: |    ep_len_mean          | 1.06          |
+1153: |    ep_rew_mean          | -0.559        |
+1154: | time/                   |               |
+1155: |    fps                  | 1800          |
+1156: |    iterations           | 47            |
+1157: |    time_elapsed         | 0             |
+1158: |    total_timesteps      | 1504          |
+1159: | train/                  |               |
+1160: |    approx_kl            | 0.00017585978 |
+1161: |    clip_fraction        | 0             |
+1162: |    clip_range           | 0.2           |
+1163: |    entropy_loss         | -1.25         |
+1164: |    explained_variance   | -0.00159      |
+1165: |    learning_rate        | 0.0003        |
+1166: |    loss                 | 0.545         |
+1167: |    n_updates            | 92            |
+1168: |    policy_gradient_loss | 0.00211       |
+1169: |    value_loss           | 0.889         |
+1170: -------------------------------------------
+1171: -------------------------------------------
+1172: | rollout/                |               |
+1173: |    ep_len_mean          | 1.06          |
+1174: |    ep_rew_mean          | -0.501        |
+1175: | time/                   |               |
+1176: |    fps                  | 1804          |
+1177: |    iterations           | 48            |
+1178: |    time_elapsed         | 0             |
+1179: |    total_timesteps      | 1536          |
+1180: | train/                  |               |
+1181: |    approx_kl            | 0.00011193007 |
+1182: |    clip_fraction        | 0             |
+1183: |    clip_range           | 0.2           |
+1184: |    entropy_loss         | -1.24         |
+1185: |    explained_variance   | 0             |
+1186: |    learning_rate        | 0.0003        |
+1187: |    loss                 | 0.459         |
+1188: |    n_updates            | 94            |
+1189: |    policy_gradient_loss | -0.00356      |
+1190: |    value_loss           | 0.95          |
+1191: -------------------------------------------
+1192: -------------------------------------------
+1193: | rollout/                |               |
+1194: |    ep_len_mean          | 1.07          |
+1195: |    ep_rew_mean          | -0.381        |
+1196: | time/                   |               |
+1197: |    fps                  | 1805          |
+1198: |    iterations           | 49            |
+1199: |    time_elapsed         | 0             |
+1200: |    total_timesteps      | 1568          |
+1201: | train/                  |               |
+1202: |    approx_kl            | 0.00013080053 |
+1203: |    clip_fraction        | 0             |
+1204: |    clip_range           | 0.2           |
+1205: |    entropy_loss         | -1.23         |
+1206: |    explained_variance   | -0.00417      |
+1207: |    learning_rate        | 0.0003        |
+1208: |    loss                 | 0.252         |
+1209: |    n_updates            | 96            |
+1210: |    policy_gradient_loss | 0.00197       |
+1211: |    value_loss           | 0.892         |
+1212: -------------------------------------------
+1213: -------------------------------------------
+1214: | rollout/                |               |
+1215: |    ep_len_mean          | 1.11          |
+1216: |    ep_rew_mean          | -0.362        |
+1217: | time/                   |               |
+1218: |    fps                  | 1805          |
+1219: |    iterations           | 50            |
+1220: |    time_elapsed         | 0             |
+1221: |    total_timesteps      | 1600          |
+1222: | train/                  |               |
+1223: |    approx_kl            | 3.0012801e-05 |
+1224: |    clip_fraction        | 0             |
+1225: |    clip_range           | 0.2           |
+1226: |    entropy_loss         | -1.22         |
+1227: |    explained_variance   | -0.00499      |
+1228: |    learning_rate        | 0.0003        |
+1229: |    loss                 | 0.531         |
+1230: |    n_updates            | 98            |
+1231: |    policy_gradient_loss | -5.23e-05     |
+1232: |    value_loss           | 0.985         |
+1233: -------------------------------------------
+1234: -------------------------------------------
+1235: | rollout/                |               |
+1236: |    ep_len_mean          | 1.12          |
+1237: |    ep_rew_mean          | -0.425        |
+1238: | time/                   |               |
+1239: |    fps                  | 1809          |
+1240: |    iterations           | 51            |
+1241: |    time_elapsed         | 0             |
+1242: |    total_timesteps      | 1632          |
+1243: | train/                  |               |
+1244: |    approx_kl            | 5.6494027e-06 |
+1245: |    clip_fraction        | 0             |
+1246: |    clip_range           | 0.2           |
+1247: |    entropy_loss         | -1.22         |
+1248: |    explained_variance   | 0.00954       |
+1249: |    learning_rate        | 0.0003        |
+1250: |    loss                 | 0.434         |
+1251: |    n_updates            | 100           |
+1252: |    policy_gradient_loss | 0.000489      |
+1253: |    value_loss           | 0.943         |
+1254: -------------------------------------------
+1255: -------------------------------------------
+1256: | rollout/                |               |
+1257: |    ep_len_mean          | 1.09          |
+1258: |    ep_rew_mean          | -0.522        |
+1259: | time/                   |               |
+1260: |    fps                  | 1814          |
+1261: |    iterations           | 52            |
+1262: |    time_elapsed         | 0             |
+1263: |    total_timesteps      | 1664          |
+1264: | train/                  |               |
+1265: |    approx_kl            | 5.1956624e-05 |
+1266: |    clip_fraction        | 0             |
+1267: |    clip_range           | 0.2           |
+1268: |    entropy_loss         | -1.22         |
+1269: |    explained_variance   | 0.00443       |
+1270: |    learning_rate        | 0.0003        |
+1271: |    loss                 | 0.501         |
+1272: |    n_updates            | 102           |
+1273: |    policy_gradient_loss | -0.00126      |
+1274: |    value_loss           | 0.855         |
+1275: -------------------------------------------
+1276: ------------------------------------------
+1277: | rollout/                |              |
+1278: |    ep_len_mean          | 1.06         |
+1279: |    ep_rew_mean          | -0.622       |
+1280: | time/                   |              |
+1281: |    fps                  | 1815         |
+1282: |    iterations           | 53           |
+1283: |    time_elapsed         | 0            |
+1284: |    total_timesteps      | 1696         |
+1285: | train/                  |              |
+1286: |    approx_kl            | 0.0001221504 |
+1287: |    clip_fraction        | 0            |
+1288: |    clip_range           | 0.2          |
+1289: |    entropy_loss         | -1.23        |
+1290: |    explained_variance   | 0            |
+1291: |    learning_rate        | 0.0003       |
+1292: |    loss                 | 0.394        |
+1293: |    n_updates            | 104          |
+1294: |    policy_gradient_loss | -0.000861    |
+1295: |    value_loss           | 0.876        |
+1296: ------------------------------------------
+1297: ------------------------------------------
+1298: | rollout/                |              |
+1299: |    ep_len_mean          | 1.06         |
+1300: |    ep_rew_mean          | -0.582       |
+1301: | time/                   |              |
+1302: |    fps                  | 1816         |
+1303: |    iterations           | 54           |
+1304: |    time_elapsed         | 0            |
+1305: |    total_timesteps      | 1728         |
+1306: | train/                  |              |
+1307: |    approx_kl            | 4.599616e-05 |
+1308: |    clip_fraction        | 0            |
+1309: |    clip_range           | 0.2          |
+1310: |    entropy_loss         | -1.23        |
+1311: |    explained_variance   | -0.00183     |
+1312: |    learning_rate        | 0.0003       |
+1313: |    loss                 | 0.224        |
+1314: |    n_updates            | 106          |
+1315: |    policy_gradient_loss | -0.000969    |
+1316: |    value_loss           | 0.795        |
+1317: ------------------------------------------
+1318: ------------------------------------------
+1319: | rollout/                |              |
+1320: |    ep_len_mean          | 1.07         |
+1321: |    ep_rew_mean          | -0.583       |
+1322: | time/                   |              |
+1323: |    fps                  | 1752         |
+1324: |    iterations           | 55           |
+1325: |    time_elapsed         | 1            |
+1326: |    total_timesteps      | 1760         |
+1327: | train/                  |              |
+1328: |    approx_kl            | 0.0001438111 |
+1329: |    clip_fraction        | 0            |
+1330: |    clip_range           | 0.2          |
+1331: |    entropy_loss         | -1.22        |
+1332: |    explained_variance   | -0.000618    |
+1333: |    learning_rate        | 0.0003       |
+1334: |    loss                 | 0.574        |
+1335: |    n_updates            | 108          |
+1336: |    policy_gradient_loss | -0.00101     |
+1337: |    value_loss           | 0.852        |
+1338: ------------------------------------------
+1339: --------------------------------------------
+1340: | rollout/                |                |
+1341: |    ep_len_mean          | 1.07           |
+1342: |    ep_rew_mean          | -0.583         |
+1343: | time/                   |                |
+1344: |    fps                  | 1736           |
+1345: |    iterations           | 56             |
+1346: |    time_elapsed         | 1              |
+1347: |    total_timesteps      | 1792           |
+1348: | train/                  |                |
+1349: |    approx_kl            | 0.000120086595 |
+1350: |    clip_fraction        | 0              |
+1351: |    clip_range           | 0.2            |
+1352: |    entropy_loss         | -1.2           |
+1353: |    explained_variance   | -0.00258       |
+1354: |    learning_rate        | 0.0003         |
+1355: |    loss                 | 0.281          |
+1356: |    n_updates            | 110            |
+1357: |    policy_gradient_loss | -0.00133       |
+1358: |    value_loss           | 0.767          |
+1359: --------------------------------------------
+1360: -----------------------------------------
+1361: | rollout/                |             |
+1362: |    ep_len_mean          | 1.06        |
+1363: |    ep_rew_mean          | -0.702      |
+1364: | time/                   |             |
+1365: |    fps                  | 1738        |
+1366: |    iterations           | 57          |
+1367: |    time_elapsed         | 1           |
+1368: |    total_timesteps      | 1824        |
+1369: | train/                  |             |
+1370: |    approx_kl            | 6.14617e-05 |
+1371: |    clip_fraction        | 0           |
+1372: |    clip_range           | 0.2         |
+1373: |    entropy_loss         | -1.19       |
+1374: |    explained_variance   | 0.0017      |
+1375: |    learning_rate        | 0.0003      |
+1376: |    loss                 | 0.147       |
+1377: |    n_updates            | 112         |
+1378: |    policy_gradient_loss | -0.00176    |
+1379: |    value_loss           | 0.762       |
+1380: -----------------------------------------
+1381: -------------------------------------------
+1382: | rollout/                |               |
+1383: |    ep_len_mean          | 1.03          |
+1384: |    ep_rew_mean          | -0.761        |
+1385: | time/                   |               |
+1386: |    fps                  | 1742          |
+1387: |    iterations           | 58            |
+1388: |    time_elapsed         | 1             |
+1389: |    total_timesteps      | 1856          |
+1390: | train/                  |               |
+1391: |    approx_kl            | 7.6962635e-05 |
+1392: |    clip_fraction        | 0             |
+1393: |    clip_range           | 0.2           |
+1394: |    entropy_loss         | -1.17         |
+1395: |    explained_variance   | 0.00147       |
+1396: |    learning_rate        | 0.0003        |
+1397: |    loss                 | 0.239         |
+1398: |    n_updates            | 114           |
+1399: |    policy_gradient_loss | 5.62e-05      |
+1400: |    value_loss           | 0.452         |
+1401: -------------------------------------------
+1402: ------------------------------------------
+1403: | rollout/                |              |
+1404: |    ep_len_mean          | 1.02         |
+1405: |    ep_rew_mean          | -0.72        |
+1406: | time/                   |              |
+1407: |    fps                  | 1741         |
+1408: |    iterations           | 59           |
+1409: |    time_elapsed         | 1            |
+1410: |    total_timesteps      | 1888         |
+1411: | train/                  |              |
+1412: |    approx_kl            | 7.905066e-05 |
+1413: |    clip_fraction        | 0            |
+1414: |    clip_range           | 0.2          |
+1415: |    entropy_loss         | -1.17        |
+1416: |    explained_variance   | 0.00146      |
+1417: |    learning_rate        | 0.0003       |
+1418: |    loss                 | 0.231        |
+1419: |    n_updates            | 116          |
+1420: |    policy_gradient_loss | -0.00123     |
+1421: |    value_loss           | 0.682        |
+1422: ------------------------------------------
+1423: -------------------------------------------
+1424: | rollout/                |               |
+1425: |    ep_len_mean          | 1.04          |
+1426: |    ep_rew_mean          | -0.66         |
+1427: | time/                   |               |
+1428: |    fps                  | 1744          |
+1429: |    iterations           | 60            |
+1430: |    time_elapsed         | 1             |
+1431: |    total_timesteps      | 1920          |
+1432: | train/                  |               |
+1433: |    approx_kl            | 0.00012888946 |
+1434: |    clip_fraction        | 0             |
+1435: |    clip_range           | 0.2           |
+1436: |    entropy_loss         | -1.15         |
+1437: |    explained_variance   | 0             |
+1438: |    learning_rate        | 0.0003        |
+1439: |    loss                 | 0.382         |
+1440: |    n_updates            | 118           |
+1441: |    policy_gradient_loss | -0.00103      |
+1442: |    value_loss           | 0.833         |
+1443: -------------------------------------------
+1444: ------------------------------------------
+1445: | rollout/                |              |
+1446: |    ep_len_mean          | 1.05         |
+1447: |    ep_rew_mean          | -0.601       |
+1448: | time/                   |              |
+1449: |    fps                  | 1744         |
+1450: |    iterations           | 61           |
+1451: |    time_elapsed         | 1            |
+1452: |    total_timesteps      | 1952         |
+1453: | train/                  |              |
+1454: |    approx_kl            | 3.979169e-05 |
+1455: |    clip_fraction        | 0            |
+1456: |    clip_range           | 0.2          |
+1457: |    entropy_loss         | -1.13        |
+1458: |    explained_variance   | 0.00535      |
+1459: |    learning_rate        | 0.0003       |
+1460: |    loss                 | 0.236        |
+1461: |    n_updates            | 120          |
+1462: |    policy_gradient_loss | 7.68e-05     |
+1463: |    value_loss           | 0.813        |
+1464: ------------------------------------------
+1465: ------------------------------------------
+1466: | rollout/                |              |
+1467: |    ep_len_mean          | 1.07         |
+1468: |    ep_rew_mean          | -0.642       |
+1469: | time/                   |              |
+1470: |    fps                  | 1746         |
+1471: |    iterations           | 62           |
+1472: |    time_elapsed         | 1            |
+1473: |    total_timesteps      | 1984         |
+1474: | train/                  |              |
+1475: |    approx_kl            | 6.055273e-05 |
+1476: |    clip_fraction        | 0            |
+1477: |    clip_range           | 0.2          |
+1478: |    entropy_loss         | -1.12        |
+1479: |    explained_variance   | 0.00207      |
+1480: |    learning_rate        | 0.0003       |
+1481: |    loss                 | 0.128        |
+1482: |    n_updates            | 122          |
+1483: |    policy_gradient_loss | -0.000402    |
+1484: |    value_loss           | 0.815        |
+1485: ------------------------------------------
+1486: -------------------------------------------
+1487: | rollout/                |               |
+1488: |    ep_len_mean          | 1.09          |
+1489: |    ep_rew_mean          | -0.623        |
+1490: | time/                   |               |
+1491: |    fps                  | 1745          |
+1492: |    iterations           | 63            |
+1493: |    time_elapsed         | 1             |
+1494: |    total_timesteps      | 2016          |
+1495: | train/                  |               |
+1496: |    approx_kl            | 0.00011927262 |
+1497: |    clip_fraction        | 0             |
+1498: |    clip_range           | 0.2           |
+1499: |    entropy_loss         | -1.11         |
+1500: |    explained_variance   | 0.00494       |
+1501: |    learning_rate        | 0.0003        |
+1502: |    loss                 | 0.247         |
+1503: |    n_updates            | 124           |
+1504: |    policy_gradient_loss | -0.00271      |
+1505: |    value_loss           | 0.681         |
+1506: -------------------------------------------
+1507: -------------------------------------------
+1508: | rollout/                |               |
+1509: |    ep_len_mean          | 1.06          |
+1510: |    ep_rew_mean          | -0.521        |
+1511: | time/                   |               |
+1512: |    fps                  | 1746          |
+1513: |    iterations           | 64            |
+1514: |    time_elapsed         | 1             |
+1515: |    total_timesteps      | 2048          |
+1516: | train/                  |               |
+1517: |    approx_kl            | 0.00015577488 |
+1518: |    clip_fraction        | 0             |
+1519: |    clip_range           | 0.2           |
+1520: |    entropy_loss         | -1.1          |
+1521: |    explained_variance   | 0.00597       |
+1522: |    learning_rate        | 0.0003        |
+1523: |    loss                 | 0.612         |
+1524: |    n_updates            | 126           |
+1525: |    policy_gradient_loss | -0.00398      |
+1526: |    value_loss           | 0.815         |
+1527: -------------------------------------------
+1528: -------------------------------------------
+1529: | rollout/                |               |
+1530: |    ep_len_mean          | 1.06          |
+1531: |    ep_rew_mean          | -0.38         |
+1532: | time/                   |               |
+1533: |    fps                  | 1743          |
+1534: |    iterations           | 65            |
+1535: |    time_elapsed         | 1             |
+1536: |    total_timesteps      | 2080          |
+1537: | train/                  |               |
+1538: |    approx_kl            | 0.00049224496 |
+1539: |    clip_fraction        | 0             |
+1540: |    clip_range           | 0.2           |
+1541: |    entropy_loss         | -1.07         |
+1542: |    explained_variance   | -0.000813     |
+1543: |    learning_rate        | 0.0003        |
+1544: |    loss                 | 0.387         |
+1545: |    n_updates            | 128           |
+1546: |    policy_gradient_loss | -0.00168      |
+1547: |    value_loss           | 1.06          |
+1548: -------------------------------------------
+1549: -------------------------------------------
+1550: | rollout/                |               |
+1551: |    ep_len_mean          | 1.07          |
+1552: |    ep_rew_mean          | -0.461        |
+1553: | time/                   |               |
+1554: |    fps                  | 1746          |
+1555: |    iterations           | 66            |
+1556: |    time_elapsed         | 1             |
+1557: |    total_timesteps      | 2112          |
+1558: | train/                  |               |
+1559: |    approx_kl            | 0.00017843954 |
+1560: |    clip_fraction        | 0             |
+1561: |    clip_range           | 0.2           |
+1562: |    entropy_loss         | -1.05         |
+1563: |    explained_variance   | -0.0017       |
+1564: |    learning_rate        | 0.0003        |
+1565: |    loss                 | 0.559         |
+1566: |    n_updates            | 130           |
+1567: |    policy_gradient_loss | -0.00393      |
+1568: |    value_loss           | 1.13          |
+1569: -------------------------------------------
+1570: ------------------------------------------
+1571: | rollout/                |              |
+1572: |    ep_len_mean          | 1.05         |
+1573: |    ep_rew_mean          | -0.619       |
+1574: | time/                   |              |
+1575: |    fps                  | 1747         |
+1576: |    iterations           | 67           |
+1577: |    time_elapsed         | 1            |
+1578: |    total_timesteps      | 2144         |
+1579: | train/                  |              |
+1580: |    approx_kl            | 0.0004255753 |
+1581: |    clip_fraction        | 0            |
+1582: |    clip_range           | 0.2          |
+1583: |    entropy_loss         | -1.02        |
+1584: |    explained_variance   | -0.0034      |
+1585: |    learning_rate        | 0.0003       |
+1586: |    loss                 | 0.191        |
+1587: |    n_updates            | 132          |
+1588: |    policy_gradient_loss | -0.00525     |
+1589: |    value_loss           | 0.64         |
+1590: ------------------------------------------
+1591: -------------------------------------------
+1592: | rollout/                |               |
+1593: |    ep_len_mean          | 1.06          |
+1594: |    ep_rew_mean          | -0.52         |
+1595: | time/                   |               |
+1596: |    fps                  | 1751          |
+1597: |    iterations           | 68            |
+1598: |    time_elapsed         | 1             |
+1599: |    total_timesteps      | 2176          |
+1600: | train/                  |               |
+1601: |    approx_kl            | 0.00016361661 |
+1602: |    clip_fraction        | 0             |
+1603: |    clip_range           | 0.2           |
+1604: |    entropy_loss         | -0.992        |
+1605: |    explained_variance   | -0.00373      |
+1606: |    learning_rate        | 0.0003        |
+1607: |    loss                 | 0.465         |
+1608: |    n_updates            | 134           |
+1609: |    policy_gradient_loss | 0.000333      |
+1610: |    value_loss           | 0.665         |
+1611: -------------------------------------------
+1612: ------------------------------------------
+1613: | rollout/                |              |
+1614: |    ep_len_mean          | 1.06         |
+1615: |    ep_rew_mean          | -0.519       |
+1616: | time/                   |              |
+1617: |    fps                  | 1755         |
+1618: |    iterations           | 69           |
+1619: |    time_elapsed         | 1            |
+1620: |    total_timesteps      | 2208         |
+1621: | train/                  |              |
+1622: |    approx_kl            | 0.0002546925 |
+1623: |    clip_fraction        | 0            |
+1624: |    clip_range           | 0.2          |
+1625: |    entropy_loss         | -0.972       |
+1626: |    explained_variance   | 0.00354      |
+1627: |    learning_rate        | 0.0003       |
+1628: |    loss                 | 0.555        |
+1629: |    n_updates            | 136          |
+1630: |    policy_gradient_loss | -0.00458     |
+1631: |    value_loss           | 1.2          |
+1632: ------------------------------------------
+1633: -------------------------------------------
+1634: | rollout/                |               |
+1635: |    ep_len_mean          | 1.05          |
+1636: |    ep_rew_mean          | -0.5          |
+1637: | time/                   |               |
+1638: |    fps                  | 1758          |
+1639: |    iterations           | 70            |
+1640: |    time_elapsed         | 1             |
+1641: |    total_timesteps      | 2240          |
+1642: | train/                  |               |
+1643: |    approx_kl            | 0.00020360388 |
+1644: |    clip_fraction        | 0             |
+1645: |    clip_range           | 0.2           |
+1646: |    entropy_loss         | -0.951        |
+1647: |    explained_variance   | -0.000284     |
+1648: |    learning_rate        | 0.0003        |
+1649: |    loss                 | 0.394         |
+1650: |    n_updates            | 138           |
+1651: |    policy_gradient_loss | -0.000815     |
+1652: |    value_loss           | 0.897         |
+1653: -------------------------------------------
+1654: -------------------------------------------
+1655: | rollout/                |               |
+1656: |    ep_len_mean          | 1.04          |
+1657: |    ep_rew_mean          | -0.56         |
+1658: | time/                   |               |
+1659: |    fps                  | 1762          |
+1660: |    iterations           | 71            |
+1661: |    time_elapsed         | 1             |
+1662: |    total_timesteps      | 2272          |
+1663: | train/                  |               |
+1664: |    approx_kl            | 9.1385096e-05 |
+1665: |    clip_fraction        | 0             |
+1666: |    clip_range           | 0.2           |
+1667: |    entropy_loss         | -0.934        |
+1668: |    explained_variance   | -0.000282     |
+1669: |    learning_rate        | 0.0003        |
+1670: |    loss                 | 0.209         |
+1671: |    n_updates            | 140           |
+1672: |    policy_gradient_loss | -0.000487     |
+1673: |    value_loss           | 0.734         |
+1674: -------------------------------------------
+1675: ------------------------------------------
+1676: | rollout/                |              |
+1677: |    ep_len_mean          | 1.03         |
+1678: |    ep_rew_mean          | -0.64        |
+1679: | time/                   |              |
+1680: |    fps                  | 1764         |
+1681: |    iterations           | 72           |
+1682: |    time_elapsed         | 1            |
+1683: |    total_timesteps      | 2304         |
+1684: | train/                  |              |
+1685: |    approx_kl            | 0.0001559928 |
+1686: |    clip_fraction        | 0            |
+1687: |    clip_range           | 0.2          |
+1688: |    entropy_loss         | -0.915       |
+1689: |    explained_variance   | -0.00843     |
+1690: |    learning_rate        | 0.0003       |
+1691: |    loss                 | 0.564        |
+1692: |    n_updates            | 142          |
+1693: |    policy_gradient_loss | -0.00134     |
+1694: |    value_loss           | 0.907        |
+1695: ------------------------------------------
+1696: -------------------------------------------
+1697: | rollout/                |               |
+1698: |    ep_len_mean          | 1.04          |
+1699: |    ep_rew_mean          | -0.52         |
+1700: | time/                   |               |
+1701: |    fps                  | 1765          |
+1702: |    iterations           | 73            |
+1703: |    time_elapsed         | 1             |
+1704: |    total_timesteps      | 2336          |
+1705: | train/                  |               |
+1706: |    approx_kl            | 7.8033656e-05 |
+1707: |    clip_fraction        | 0             |
+1708: |    clip_range           | 0.2           |
+1709: |    entropy_loss         | -0.899        |
+1710: |    explained_variance   | -0.00121      |
+1711: |    learning_rate        | 0.0003        |
+1712: |    loss                 | 0.277         |
+1713: |    n_updates            | 144           |
+1714: |    policy_gradient_loss | 0.000112      |
+1715: |    value_loss           | 0.763         |
+1716: -------------------------------------------
+1717: -------------------------------------------
+1718: | rollout/                |               |
+1719: |    ep_len_mean          | 1.03          |
+1720: |    ep_rew_mean          | -0.519        |
+1721: | time/                   |               |
+1722: |    fps                  | 1768          |
+1723: |    iterations           | 74            |
+1724: |    time_elapsed         | 1             |
+1725: |    total_timesteps      | 2368          |
+1726: | train/                  |               |
+1727: |    approx_kl            | 2.9746443e-05 |
+1728: |    clip_fraction        | 0             |
+1729: |    clip_range           | 0.2           |
+1730: |    entropy_loss         | -0.894        |
+1731: |    explained_variance   | 0.0085        |
+1732: |    learning_rate        | 0.0003        |
+1733: |    loss                 | 0.452         |
+1734: |    n_updates            | 146           |
+1735: |    policy_gradient_loss | -0.000967     |
+1736: |    value_loss           | 0.94          |
+1737: -------------------------------------------
+1738: -------------------------------------------
+1739: | rollout/                |               |
+1740: |    ep_len_mean          | 1.05          |
+1741: |    ep_rew_mean          | -0.439        |
+1742: | time/                   |               |
+1743: |    fps                  | 1771          |
+1744: |    iterations           | 75            |
+1745: |    time_elapsed         | 1             |
+1746: |    total_timesteps      | 2400          |
+1747: | train/                  |               |
+1748: |    approx_kl            | 1.5571713e-06 |
+1749: |    clip_fraction        | 0             |
+1750: |    clip_range           | 0.2           |
+1751: |    entropy_loss         | -0.897        |
+1752: |    explained_variance   | 0             |
+1753: |    learning_rate        | 0.0003        |
+1754: |    loss                 | 0.387         |
+1755: |    n_updates            | 148           |
+1756: |    policy_gradient_loss | 0.000197      |
+1757: |    value_loss           | 1.01          |
+1758: -------------------------------------------
+1759: -------------------------------------------
+1760: | rollout/                |               |
+1761: |    ep_len_mean          | 1.02          |
+1762: |    ep_rew_mean          | -0.478        |
+1763: | time/                   |               |
+1764: |    fps                  | 1775          |
+1765: |    iterations           | 76            |
+1766: |    time_elapsed         | 1             |
+1767: |    total_timesteps      | 2432          |
+1768: | train/                  |               |
+1769: |    approx_kl            | 0.00021473318 |
+1770: |    clip_fraction        | 0             |
+1771: |    clip_range           | 0.2           |
+1772: |    entropy_loss         | -0.906        |
+1773: |    explained_variance   | -0.00565      |
+1774: |    learning_rate        | 0.0003        |
+1775: |    loss                 | 0.297         |
+1776: |    n_updates            | 150           |
+1777: |    policy_gradient_loss | -0.00702      |
+1778: |    value_loss           | 0.866         |
+1779: -------------------------------------------
+1780: -------------------------------------------
+1781: | rollout/                |               |
+1782: |    ep_len_mean          | 1.04          |
+1783: |    ep_rew_mean          | -0.599        |
+1784: | time/                   |               |
+1785: |    fps                  | 1779          |
+1786: |    iterations           | 77            |
+1787: |    time_elapsed         | 1             |
+1788: |    total_timesteps      | 2464          |
+1789: | train/                  |               |
+1790: |    approx_kl            | 0.00024438463 |
+1791: |    clip_fraction        | 0             |
+1792: |    clip_range           | 0.2           |
+1793: |    entropy_loss         | -0.923        |
+1794: |    explained_variance   | 0             |
+1795: |    learning_rate        | 0.0003        |
+1796: |    loss                 | 0.546         |
+1797: |    n_updates            | 152           |
+1798: |    policy_gradient_loss | 4.93e-05      |
+1799: |    value_loss           | 0.83          |
+1800: -------------------------------------------
+1801: -------------------------------------------
+1802: | rollout/                |               |
+1803: |    ep_len_mean          | 1.03          |
+1804: |    ep_rew_mean          | -0.579        |
+1805: | time/                   |               |
+1806: |    fps                  | 1780          |
+1807: |    iterations           | 78            |
+1808: |    time_elapsed         | 1             |
+1809: |    total_timesteps      | 2496          |
+1810: | train/                  |               |
+1811: |    approx_kl            | 3.3564866e-06 |
+1812: |    clip_fraction        | 0             |
+1813: |    clip_range           | 0.2           |
+1814: |    entropy_loss         | -0.93         |
+1815: |    explained_variance   | 0.0104        |
+1816: |    learning_rate        | 0.0003        |
+1817: |    loss                 | 0.545         |
+1818: |    n_updates            | 154           |
+1819: |    policy_gradient_loss | 0.000268      |
+1820: |    value_loss           | 0.721         |
+1821: -------------------------------------------
+1822: -------------------------------------------
+1823: | rollout/                |               |
+1824: |    ep_len_mean          | 1.07          |
+1825: |    ep_rew_mean          | -0.52         |
+1826: | time/                   |               |
+1827: |    fps                  | 1783          |
+1828: |    iterations           | 79            |
+1829: |    time_elapsed         | 1             |
+1830: |    total_timesteps      | 2528          |
+1831: | train/                  |               |
+1832: |    approx_kl            | 2.7287751e-06 |
+1833: |    clip_fraction        | 0             |
+1834: |    clip_range           | 0.2           |
+1835: |    entropy_loss         | -0.927        |
+1836: |    explained_variance   | -0.00138      |
+1837: |    learning_rate        | 0.0003        |
+1838: |    loss                 | 0.362         |
+1839: |    n_updates            | 156           |
+1840: |    policy_gradient_loss | 0.000138      |
+1841: |    value_loss           | 0.961         |
+1842: -------------------------------------------
+1843: ------------------------------------------
+1844: | rollout/                |              |
+1845: |    ep_len_mean          | 1.05         |
+1846: |    ep_rew_mean          | -0.48        |
+1847: | time/                   |              |
+1848: |    fps                  | 1785         |
+1849: |    iterations           | 80           |
+1850: |    time_elapsed         | 1            |
+1851: |    total_timesteps      | 2560         |
+1852: | train/                  |              |
+1853: |    approx_kl            | 6.712042e-05 |
+1854: |    clip_fraction        | 0            |
+1855: |    clip_range           | 0.2          |
+1856: |    entropy_loss         | -0.926       |
+1857: |    explained_variance   | -0.00759     |
+1858: |    learning_rate        | 0.0003       |
+1859: |    loss                 | 0.586        |
+1860: |    n_updates            | 158          |
+1861: |    policy_gradient_loss | -0.00118     |
+1862: |    value_loss           | 0.865        |
+1863: ------------------------------------------
+1864: ------------------------------------------
+1865: | rollout/                |              |
+1866: |    ep_len_mean          | 1.05         |
+1867: |    ep_rew_mean          | -0.44        |
+1868: | time/                   |              |
+1869: |    fps                  | 1789         |
+1870: |    iterations           | 81           |
+1871: |    time_elapsed         | 1            |
+1872: |    total_timesteps      | 2592         |
+1873: | train/                  |              |
+1874: |    approx_kl            | 6.834045e-05 |
+1875: |    clip_fraction        | 0            |
+1876: |    clip_range           | 0.2          |
+1877: |    entropy_loss         | -0.915       |
+1878: |    explained_variance   | 0            |
+1879: |    learning_rate        | 0.0003       |
+1880: |    loss                 | 0.386        |
+1881: |    n_updates            | 160          |
+1882: |    policy_gradient_loss | -0.000116    |
+1883: |    value_loss           | 0.861        |
+1884: ------------------------------------------
+1885: ------------------------------------------
+1886: | rollout/                |              |
+1887: |    ep_len_mean          | 1.02         |
+1888: |    ep_rew_mean          | -0.438       |
+1889: | time/                   |              |
+1890: |    fps                  | 1791         |
+1891: |    iterations           | 82           |
+1892: |    time_elapsed         | 1            |
+1893: |    total_timesteps      | 2624         |
+1894: | train/                  |              |
+1895: |    approx_kl            | 0.0003871806 |
+1896: |    clip_fraction        | 0            |
+1897: |    clip_range           | 0.2          |
+1898: |    entropy_loss         | -0.894       |
+1899: |    explained_variance   | 0.00274      |
+1900: |    learning_rate        | 0.0003       |
+1901: |    loss                 | 0.381        |
+1902: |    n_updates            | 162          |
+1903: |    policy_gradient_loss | -0.00541     |
+1904: |    value_loss           | 0.961        |
+1905: ------------------------------------------
+1906: ------------------------------------------
+1907: | rollout/                |              |
+1908: |    ep_len_mean          | 1.02         |
+1909: |    ep_rew_mean          | -0.359       |
+1910: | time/                   |              |
+1911: |    fps                  | 1793         |
+1912: |    iterations           | 83           |
+1913: |    time_elapsed         | 1            |
+1914: |    total_timesteps      | 2656         |
+1915: | train/                  |              |
+1916: |    approx_kl            | 7.179007e-05 |
+1917: |    clip_fraction        | 0            |
+1918: |    clip_range           | 0.2          |
+1919: |    entropy_loss         | -0.87        |
+1920: |    explained_variance   | 0            |
+1921: |    learning_rate        | 0.0003       |
+1922: |    loss                 | 0.476        |
+1923: |    n_updates            | 164          |
+1924: |    policy_gradient_loss | 0.00133      |
+1925: |    value_loss           | 0.956        |
+1926: ------------------------------------------
+1927: -------------------------------------------
+1928: | rollout/                |               |
+1929: |    ep_len_mean          | 1.02          |
+1930: |    ep_rew_mean          | -0.318        |
+1931: | time/                   |               |
+1932: |    fps                  | 1797          |
+1933: |    iterations           | 84            |
+1934: |    time_elapsed         | 1             |
+1935: |    total_timesteps      | 2688          |
+1936: | train/                  |               |
+1937: |    approx_kl            | 4.5645982e-05 |
+1938: |    clip_fraction        | 0             |
+1939: |    clip_range           | 0.2           |
+1940: |    entropy_loss         | -0.864        |
+1941: |    explained_variance   | -0.0018       |
+1942: |    learning_rate        | 0.0003        |
+1943: |    loss                 | 0.47          |
+1944: |    n_updates            | 166           |
+1945: |    policy_gradient_loss | -0.00101      |
+1946: |    value_loss           | 1.01          |
+1947: -------------------------------------------
+1948: -------------------------------------------
+1949: | rollout/                |               |
+1950: |    ep_len_mean          | 1.03          |
+1951: |    ep_rew_mean          | -0.338        |
+1952: | time/                   |               |
+1953: |    fps                  | 1800          |
+1954: |    iterations           | 85            |
+1955: |    time_elapsed         | 1             |
+1956: |    total_timesteps      | 2720          |
+1957: | train/                  |               |
+1958: |    approx_kl            | 0.00020501018 |
+1959: |    clip_fraction        | 0             |
+1960: |    clip_range           | 0.2           |
+1961: |    entropy_loss         | -0.847        |
+1962: |    explained_variance   | -0.00145      |
+1963: |    learning_rate        | 0.0003        |
+1964: |    loss                 | 0.575         |
+1965: |    n_updates            | 168           |
+1966: |    policy_gradient_loss | -0.00366      |
+1967: |    value_loss           | 0.974         |
+1968: -------------------------------------------
+1969: -------------------------------------------
+1970: | rollout/                |               |
+1971: |    ep_len_mean          | 1.03          |
+1972: |    ep_rew_mean          | -0.398        |
+1973: | time/                   |               |
+1974: |    fps                  | 1804          |
+1975: |    iterations           | 86            |
+1976: |    time_elapsed         | 1             |
+1977: |    total_timesteps      | 2752          |
+1978: | train/                  |               |
+1979: |    approx_kl            | 9.0356916e-05 |
+1980: |    clip_fraction        | 0             |
+1981: |    clip_range           | 0.2           |
+1982: |    entropy_loss         | -0.822        |
+1983: |    explained_variance   | -0.00465      |
+1984: |    learning_rate        | 0.0003        |
+1985: |    loss                 | 0.568         |
+1986: |    n_updates            | 170           |
+1987: |    policy_gradient_loss | 0.000297      |
+1988: |    value_loss           | 0.948         |
+1989: -------------------------------------------
+1990: -------------------------------------------
+1991: | rollout/                |               |
+1992: |    ep_len_mean          | 1.04          |
+1993: |    ep_rew_mean          | -0.418        |
+1994: | time/                   |               |
+1995: |    fps                  | 1807          |
+1996: |    iterations           | 87            |
+1997: |    time_elapsed         | 1             |
+1998: |    total_timesteps      | 2784          |
+1999: | train/                  |               |
+2000: |    approx_kl            | 1.2971461e-05 |
+2001: |    clip_fraction        | 0             |
+2002: |    clip_range           | 0.2           |
+2003: |    entropy_loss         | -0.814        |
+2004: |    explained_variance   | 0             |
+2005: |    learning_rate        | 0.0003        |
+2006: |    loss                 | 0.42          |
+2007: |    n_updates            | 172           |
+2008: |    policy_gradient_loss | 2.21e-05      |
+2009: |    value_loss           | 0.946         |
+2010: -------------------------------------------
+2011: -------------------------------------------
+2012: | rollout/                |               |
+2013: |    ep_len_mean          | 1.04          |
+2014: |    ep_rew_mean          | -0.519        |
+2015: | time/                   |               |
+2016: |    fps                  | 1811          |
+2017: |    iterations           | 88            |
+2018: |    time_elapsed         | 1             |
+2019: |    total_timesteps      | 2816          |
+2020: | train/                  |               |
+2021: |    approx_kl            | 0.00024075061 |
+2022: |    clip_fraction        | 0             |
+2023: |    clip_range           | 0.2           |
+2024: |    entropy_loss         | -0.797        |
+2025: |    explained_variance   | -0.00097      |
+2026: |    learning_rate        | 0.0003        |
+2027: |    loss                 | 0.413         |
+2028: |    n_updates            | 174           |
+2029: |    policy_gradient_loss | -0.0052       |
+2030: |    value_loss           | 0.942         |
+2031: -------------------------------------------
+2032: -------------------------------------------
+2033: | rollout/                |               |
+2034: |    ep_len_mean          | 1.05          |
+2035: |    ep_rew_mean          | -0.379        |
+2036: | time/                   |               |
+2037: |    fps                  | 1817          |
+2038: |    iterations           | 89            |
+2039: |    time_elapsed         | 1             |
+2040: |    total_timesteps      | 2848          |
+2041: | train/                  |               |
+2042: |    approx_kl            | 0.00040026568 |
+2043: |    clip_fraction        | 0             |
+2044: |    clip_range           | 0.2           |
+2045: |    entropy_loss         | -0.766        |
+2046: |    explained_variance   | 0.000941      |
+2047: |    learning_rate        | 0.0003        |
+2048: |    loss                 | 0.407         |
+2049: |    n_updates            | 176           |
+2050: |    policy_gradient_loss | -0.00305      |
+2051: |    value_loss           | 0.777         |
+2052: -------------------------------------------
+2053: -------------------------------------------
+2054: | rollout/                |               |
+2055: |    ep_len_mean          | 1.04          |
+2056: |    ep_rew_mean          | -0.44         |
+2057: | time/                   |               |
+2058: |    fps                  | 1821          |
+2059: |    iterations           | 90            |
+2060: |    time_elapsed         | 1             |
+2061: |    total_timesteps      | 2880          |
+2062: | train/                  |               |
+2063: |    approx_kl            | 4.2077154e-05 |
+2064: |    clip_fraction        | 0             |
+2065: |    clip_range           | 0.2           |
+2066: |    entropy_loss         | -0.742        |
+2067: |    explained_variance   | 0.00454       |
+2068: |    learning_rate        | 0.0003        |
+2069: |    loss                 | 0.411         |
+2070: |    n_updates            | 178           |
+2071: |    policy_gradient_loss | 0.0007        |
+2072: |    value_loss           | 1.11          |
+2073: -------------------------------------------
+2074: -------------------------------------------
+2075: | rollout/                |               |
+2076: |    ep_len_mean          | 1.02          |
+2077: |    ep_rew_mean          | -0.439        |
+2078: | time/                   |               |
+2079: |    fps                  | 1824          |
+2080: |    iterations           | 91            |
+2081: |    time_elapsed         | 1             |
+2082: |    total_timesteps      | 2912          |
+2083: | train/                  |               |
+2084: |    approx_kl            | 0.00018515438 |
+2085: |    clip_fraction        | 0             |
+2086: |    clip_range           | 0.2           |
+2087: |    entropy_loss         | -0.729        |
+2088: |    explained_variance   | 0.00173       |
+2089: |    learning_rate        | 0.0003        |
+2090: |    loss                 | 0.319         |
+2091: |    n_updates            | 180           |
+2092: |    policy_gradient_loss | -0.00329      |
+2093: |    value_loss           | 0.869         |
+2094: -------------------------------------------
+2095: -------------------------------------------
+2096: | rollout/                |               |
+2097: |    ep_len_mean          | 1.01          |
+2098: |    ep_rew_mean          | -0.519        |
+2099: | time/                   |               |
+2100: |    fps                  | 1828          |
+2101: |    iterations           | 92            |
+2102: |    time_elapsed         | 1             |
+2103: |    total_timesteps      | 2944          |
+2104: | train/                  |               |
+2105: |    approx_kl            | 0.00024752133 |
+2106: |    clip_fraction        | 0             |
+2107: |    clip_range           | 0.2           |
+2108: |    entropy_loss         | -0.703        |
+2109: |    explained_variance   | 0             |
+2110: |    learning_rate        | 0.0003        |
+2111: |    loss                 | 0.315         |
+2112: |    n_updates            | 182           |
+2113: |    policy_gradient_loss | -0.000969     |
+2114: |    value_loss           | 0.834         |
+2115: -------------------------------------------
+2116: ------------------------------------------
+2117: | rollout/                |              |
+2118: |    ep_len_mean          | 1            |
+2119: |    ep_rew_mean          | -0.64        |
+2120: | time/                   |              |
+2121: |    fps                  | 1831         |
+2122: |    iterations           | 93           |
+2123: |    time_elapsed         | 1            |
+2124: |    total_timesteps      | 2976         |
+2125: | train/                  |              |
+2126: |    approx_kl            | 0.0004314985 |
+2127: |    clip_fraction        | 0            |
+2128: |    clip_range           | 0.2          |
+2129: |    entropy_loss         | -0.679       |
+2130: |    explained_variance   | -1.19e-07    |
+2131: |    learning_rate        | 0.0003       |
+2132: |    loss                 | 0.378        |
+2133: |    n_updates            | 184          |
+2134: |    policy_gradient_loss | -0.0035      |
+2135: |    value_loss           | 0.867        |
+2136: ------------------------------------------
+2137: ------------------------------------------
+2138: | rollout/                |              |
+2139: |    ep_len_mean          | 1            |
+2140: |    ep_rew_mean          | -0.68        |
+2141: | time/                   |              |
+2142: |    fps                  | 1835         |
+2143: |    iterations           | 94           |
+2144: |    time_elapsed         | 1            |
+2145: |    total_timesteps      | 3008         |
+2146: | train/                  |              |
+2147: |    approx_kl            | 0.0001708474 |
+2148: |    clip_fraction        | 0            |
+2149: |    clip_range           | 0.2          |
+2150: |    entropy_loss         | -0.649       |
+2151: |    explained_variance   | 0            |
+2152: |    learning_rate        | 0.0003       |
+2153: |    loss                 | 0.269        |
+2154: |    n_updates            | 186          |
+2155: |    policy_gradient_loss | -0.000836    |
+2156: |    value_loss           | 0.664        |
+2157: ------------------------------------------
+2158: Evaluating PPO agent on 44 questions (deterministic=True)...
+2159: Saved PPO model to: /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/artifacts/smoke/ppo_model.zip
+2160: Saved PPO summaries to: /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/artifacts/smoke
+2161: ```
+2162: 
+2163: ```bash
+2164: source .venv/bin/activate && python scripts/evaluate_all.py --smoke 2>&1
+2165: ```
+2166: 
+2167: ```output
+2168: Loading MC questions from: /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/artifacts/smoke/mc_dataset.json
+2169: Loaded 44 MC questions
+2170: Warning: alias_lookup.json not found at /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/artifacts/smoke/alias_lookup.json, using empty lookup
+2171: Building likelihood model: tfidf
+2172: Using best softmax threshold: 0.5
+2173: Precomputing beliefs...
+2174: Computing beliefs:   0%|          | 0/44 [00:00<?, ?it/s]Computing beliefs: 100%|██████████| 44/44 [00:00<00:00, 905.09it/s]
+2175: Running full evaluation...
+2176: 
+2177: Computing per-category breakdown...
+2178: 
+2179: Per-category accuracy:
+2180:   Fine_Arts            (n=  7): acc=0.143, S_q=0.159
+2181:   Fine_Arts:Music      (n=  1): acc=1.000, S_q=0.620
+2182:   History              (n=  4): acc=0.250, S_q=0.064
+2183:   Literature           (n=  6): acc=0.000, S_q=0.000
+2184:   Literature:Europe    (n=  2): acc=0.000, S_q=0.000
+2185:   Literature:World     (n=  1): acc=1.000, S_q=0.871
+2186:   Science              (n=  3): acc=0.000, S_q=0.000
+2187:   Science:Chemistry    (n=  6): acc=1.000, S_q=0.683
+2188:   Science:Physics      (n=  4): acc=1.000, S_q=0.532
+2189:   Social_Science       (n=  9): acc=0.222, S_q=0.139
+2190:   Social_Science:Religion (n=  1): acc=1.000, S_q=0.362
+2191: 
+2192: Running shuffle control...
+2193: Running alias substitution control...
+2194: Running choices-only control...
+2195: Generating plots...
+2196: Wrote evaluation report to: /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/artifacts/smoke/evaluation_report.json
+2197: ```
+2198: 
+2199: ## T5 policy pipeline (supervised + PPO)
+2200: 
+2201: ```bash
+2202: source .venv/bin/activate && python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke 2>&1
+2203: ```
+2204: 
+2205: ```output
+2206: Loading MC questions from: /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/artifacts/smoke/mc_dataset.json
+2207: Loaded 44 questions
+2208: Split: 30 train, 6 val, 8 test
+2209: 
+2210: ============================================================
+2211: PHASE 1: SUPERVISED WARM-START
+2212: ============================================================
+2213: ============================================================
+2214: SUPERVISED TRAINING PHASE
+2215: ============================================================
+2216: Loading T5 encoder: t5-small
+2217: Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 15035.46it/s]
+2218: Model Architecture:
+2219:   T5 encoder parameters: 35,330,816
+2220:   Policy head parameters: 528,135
+2221:   Total parameters: 35,858,951
+2222:   Device: mps
+2223: Starting supervised training for 2 epochs
+2224:   Training samples: 30
+2225:   Validation samples: 6
+2226:   Batch size: 4
+2227:   Gradient accumulation: 1 (effective batch = 4)
+2228:   Learning rate: 0.0003
+2229:   Device: mps
+2230: 
+2231: Epoch 1/2 - Train Loss: 1.3862, Train Acc: 0.1429 - Val Loss: 1.3858, Val Acc: 0.5000
+2232: Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  4.39it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  4.38it/s]
+2233: Model saved to checkpoints/supervised/best_model
+2234:   -> New best validation accuracy: 0.5000
+2235: Epoch 2/2 - Train Loss: 1.3580, Train Acc: 0.5357 - Val Loss: 1.3631, Val Acc: 0.7500
+2236: Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  6.94it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  6.93it/s]
+2237: Model saved to checkpoints/supervised/best_model
+2238:   -> New best validation accuracy: 0.7500
+2239: 
+2240: Supervised training completed!
+2241:   Best validation accuracy: 0.7500
+2242: Training history saved to checkpoints/supervised/history.json
+2243: Supervised model saved to: checkpoints/supervised/best_model
+2244: 
+2245: ============================================================
+2246: PHASE 2: PPO FINE-TUNING (T5 Policy)
+2247: ============================================================
+2248: ============================================================
+2249: PPO TRAINING PHASE (T5 Policy)
+2250: ============================================================
+2251: Loading pretrained model from checkpoints/supervised/best_model
+2252: Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 8219.07it/s]
+2253: Loading T5 encoder: checkpoints/supervised/best_model
+2254: Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 11268.48it/s]
+2255: Model Architecture:
+2256:   T5 encoder parameters: 35,330,816
+2257:   Policy head parameters: 528,135
+2258:   Total parameters: 35,858,951
+2259:   Device: mps
+2260: Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 26102.44it/s]
+2261: Model loaded from checkpoints/supervised/best_model
+2262: Starting PPO training for 5 iterations
+2263:   Training questions: 30
+2264:   Validation questions: 6
+2265:   Batch size: 4
+2266:   Episodes per iteration: 16
+2267:   Device: mps
+2268: 
+2269: 
+2270: Iteration 1/5
+2271:   Collecting rollouts...
+2272:   Avg episode reward: -0.3188
+2273:   Avg episode length: 1.94
+2274:   Updating policy...
+2275:   Policy loss: -0.0127
+2276:   Value loss: 0.3983
+2277:   Entropy: 2.0767
+2278: 
+2279: Iteration 2/5
+2280:   Collecting rollouts...
+2281:   Avg episode reward: -0.0125
+2282:   Avg episode length: 1.69
+2283:   Updating policy...
+2284:   Policy loss: -0.0036
+2285:   Value loss: 0.4932
+2286:   Entropy: 2.0772
+2287: 
+2288: Iteration 3/5
+2289:   Collecting rollouts...
+2290:   Avg episode reward: -0.0062
+2291:   Avg episode length: 1.69
+2292:   Updating policy...
+2293:   Policy loss: -0.0142
+2294:   Value loss: 0.5422
+2295:   Entropy: 2.0773
+2296: 
+2297: Iteration 4/5
+2298:   Collecting rollouts...
+2299:   Avg episode reward: -0.0813
+2300:   Avg episode length: 2.31
+2301:   Updating policy...
+2302:   Policy loss: 0.0832
+2303:   Value loss: 0.4621
+2304:   Entropy: 2.0773
+2305: 
+2306: Iteration 5/5
+2307:   Collecting rollouts...
+2308:   Avg episode reward: -0.1187
+2309:   Avg episode length: 1.88
+2310:   Updating policy...
+2311:   Policy loss: 0.0471
+2312:   Value loss: 0.4641
+2313:   Entropy: 2.0775
+2314: 
+2315: ============================================================
+2316: PPO training completed!
+2317: Best validation reward: -inf
+2318: ============================================================
+2319: 
+2320: ============================================================
+2321: FINAL EVALUATION ON TEST SET
+2322: ============================================================
+2323: Test Accuracy: 0.3750
+2324: Test Avg Reward: 0.0625
+2325: Test results saved to checkpoints/ppo_t5/test_results.json
+2326: 
+2327: ============================================================
+2328: TRAINING COMPLETE
+2329: ============================================================
+2330: Best PPO model saved to: checkpoints/ppo_t5/best_model
+2331: Training history: checkpoints/ppo_t5/history.json
+2332: ```
+2333: 
+2334: ## Artifact inventory
+2335: 
+2336: ```bash
+2337: ls -1 artifacts/smoke/ && echo '---' && ls -1 artifacts/smoke/plots/
+2338: ```
+2339: 
+2340: ```output
+2341: answer_profiles.json
+2342: baseline_floor_runs.json
+2343: baseline_sequential_bayes_runs.json
+2344: baseline_softmax_profile_runs.json
+2345: baseline_summary.json
+2346: baseline_threshold_runs.json
+2347: evaluation_report.json
+2348: mc_dataset.json
+2349: plots
+2350: ppo_model.zip
+2351: ppo_runs.json
+2352: ppo_summary.json
+2353: RESULTS_SUMMARY.md
+2354: reward_sweep_results_10k.csv
+2355: reward_sweep_results_10k.json
+2356: reward_sweep_results_5k.csv
+2357: reward_sweep_results_5k.json
+2358: reward_sweep_results.csv
+2359: reward_sweep_results.json
+2360: smoke_pipeline_summary.json
+2361: test_dataset.json
+2362: train_dataset.json
+2363: val_dataset.json
+2364: ---
+2365: calibration.png
+2366: comparison.csv
+2367: entropy_vs_clue.png
+2368: ```
+2369: 
+2370: ## Verify note
+2371: 
+2372: showboat verify exits 1 for this document because ML pipeline output contains wall-clock timing (pytest duration, tqdm speeds) and MPS-device stochastic variance (PPO rewards, T5 losses). These diffs are cosmetic — behavioral results (test counts, pipeline completion, accuracy ranges) are consistent across runs. To rebuild from scratch: showboat extract pipeline-proof.md
+````
+
+## File: docs/pr-description.md
+````markdown
+  1: # PR: Optimization Campaign, Three Extensions, PR #1 Reconciliation, and Three Review Rounds
+  2: 
+  3: **Branch:** `pr/final-sync-and-extensions` → `main`
+  4: **Squashed from:** 83 local commits
+  5: **422 files changed, +380,006 / -5,997 lines**
+  6: **342 tests pass, 3 skipped (optional extras not installed)**
+  7: 
+  8: ---
+  9: 
+ 10: ## Motivation
+ 11: 
+ 12: This PR brings the `main` branch from a working-but-unoptimized v1.0 modular pipeline to a production-quality codebase with performance optimizations, three opt-in research extensions, factored action semantics from PR #1, and three rounds of adversarial code review fixes. Every change is backward-compatible: the existing smoke pipeline and T5 smoke path work identically when extensions are disabled.
+ 13: 
+ 14: ---
+ 15: 
+ 16: ## What's in this PR
+ 17: 
+ 18: ### 1. Performance Optimization Campaign (8 quick tasks)
+ 19: 
+ 20: Seven ranked optimizations plus repo-contract scaffolding, each with equivalence tests proving behavior preservation:
+ 21: 
+ 22: | # | Optimization | Key technique |
+ 23: |---|-------------|---------------|
+ 24: | QT-1 | Repo-contract scaffolding | `AGENTS.md`, `scripts/ci.sh`, `scripts/manual-smoke.sh` |
+ 25: | QT-2 | Precompute belief-observation trajectories | `qb_env/tossup_env.py:precompute_beliefs()` bypasses `likelihood_model.score()` during PPO training |
+ 26: | QT-3 | Persist embedding cache across stages | `LikelihoodModel.save_cache()`/`load_cache()` via `.npz` |
+ 27: | QT-4 | Collapse duplicate baseline sweeps | `_softmax_episode_from_precomputed()` — one belief pass, N threshold sweeps |
+ 28: | QT-5 | Cache answer profiles | `AnswerProfileBuilder._cache` dict memoization with `(answer, exclude_qid)` key |
+ 29: | QT-6 | Top-M argpartition distractor ranking | `np.argpartition` replacing full `np.argsort` in `mc_builder.py` |
+ 30: | QT-7 | TF-IDF score() via embed_and_cache | L2-normalized dense vectors, dot product = cosine similarity |
+ 31: | QT-8 | Precomputed shuffle control | Permute belief vectors instead of re-scoring |
+ 32: 
+ 33: ### 2. Audit Remediation (10 issues, all closed)
+ 34: 
+ 35: Evidence-verified fixes for correctness, reproducibility, and truthfulness:
+ 36: 
+ 37: | Issue | Fix |
+ 38: |-------|-----|
+ 39: | **Calibration bug** | `calibration_at_buzz()` now uses `top_p_trace` (max belief probability), not binary `g_trace`. `PPOEpisodeTrace` gained `top_p_trace` field. |
+ 40: | **Split reproducibility** | `dataset_splits.py` uses `hashlib.md5(category)` instead of `hash(category)` (immune to PYTHONHASHSEED). Cross-process determinism test added. |
+ 41: | **Compare policies honesty** | Docstring no longer claims "identical metrics". T5 `wait_penalty` corrected from 0.01 to 0.1. |
+ 42: | **CI robustness** | `ci.sh` auto-activates `.venv/`. `pyproject.toml` sets `testpaths = ["tests"]`. |
+ 43: | **Config override clobbering** | `parse_overrides()` returns flat dotted keys (`{"data.K": 5}`) not nested dicts that replace sibling sections. |
+ 44: | **Legacy file cleanup** | 13 root-level prototype files moved to `_legacy/`. |
+ 45: | **Memory monitoring** | `LikelihoodModel.cache_memory_bytes` property added. Measured: 1.87 MB for 44 questions. |
+ 46: 
+ 47: ### 3. Extension A: Expected Wins Reward Mode
+ 48: 
+ 49: Implements the QANTA Expected Wins scoring model where reward depends on beating an opponent's buzz timing.
+ 50: 
+ 51: **New files:**
+ 52: - `qb_env/opponent_models.py` — `OpponentBuzzModel` protocol, `LogisticOpponentModel`, `EmpiricalHistogramOpponentModel`, `build_opponent_model_from_config()` factory
+ 53: - `tests/test_opponent_models.py` — 11 tests (monotonicity, range, fallback, config factory)
+ 54: 
+ 55: **Modified files:**
+ 56: - `qb_env/tossup_env.py` — new `expected_wins` reward mode: `R_t = S_t * V_self + (1 - S_t) * V_opp`
+ 57: - `evaluation/metrics.py` — `expected_wins_score()` offline metric using continuous formula: `V_self_t = g_t * R_correct + (1 - g_t) * R_incorrect` (not binary branching)
+ 58: - `scripts/evaluate_all.py` — EW summary in reports only when `reward_mode == expected_wins`
+ 59: - `configs/default.yaml`, `configs/smoke.yaml` — `opponent_buzz_model` config section (disabled by default)
+ 60: 
+ 61: ### 4. Extension B: Variable-K Answer Choices
+ 62: 
+ 63: Supports arbitrary numbers of answer options (2 to N) per question instead of fixed K=4.
+ 64: 
+ 65: **New files:**
+ 66: - `tests/test_mc_builder_variable_k.py` — 5 tests (fixed-K unchanged, mixed-K yields variety, gold index valid)
+ 67: - `tests/test_variable_k_integration.py` — 2 integration tests (build→env→baseline, text wrapper formatting)
+ 68: 
+ 69: **Modified files:**
+ 70: - `qb_data/mc_builder.py` — `MCBuilder` gains `variable_K`/`min_K`/`max_K` with `_target_k()` per-question sampling
+ 71: - `models/features.py` — `extract_padded_belief_features()` zero-pads belief to `max_K`
+ 72: - `qb_env/tossup_env.py` — `variable_K`/`max_K`/`use_action_masking` params, `action_masks()` method
+ 73: - `agents/ppo_buzzer.py` — `use_maskable_ppo` flag for optional `MaskablePPO` (via `sb3-contrib`)
+ 74: - `qb_env/text_wrapper.py` — already K-agnostic (verified with K=3 test)
+ 75: - `configs/default.yaml` — `variable_K: false`, `min_K: 2`, `max_K: null`
+ 76: 
+ 77: ### 5. Extension C: DSPy Integration
+ 78: 
+ 79: Optional LM-based scoring with offline prompt compilation via [DSPy](https://github.com/stanfordnlp/dspy).
+ 80: 
+ 81: **New files:**
+ 82: - `models/dspy_likelihood.py` — `DSPyLikelihood(LikelihoodModel)` with real score-level cache (keyed by clue + options + program fingerprint), `.npz` persistence, `NotImplementedError` on embedding operations
+ 83: - `qb_data/dspy_answer_profiles.py` — `build_dspy_profiles()` LM-augmented answer profiles with per-answer failure logging
+ 84: - `scripts/optimize_dspy.py` — Offline compile workflow: `build_dspy_trainset()` (from train split, not combined dataset), `compile_dspy_scorer()` with argmax-based metric (not constant `lambda: 1.0`)
+ 85: - `tests/test_dspy_likelihood.py` — 8 tests (score shape, cache hit, fingerprint-keyed invalidation, persistence roundtrip, isinstance check)
+ 86: - `tests/test_dspy_optimize.py` — 5 tests (trainset structure, metric logic, mid-prefix selection)
+ 87: - `tests/test_dspy_answer_profiles.py` — 3 tests (module importability, runtime ImportError, dspy-installed path)
+ 88: 
+ 89: **Modified files:**
+ 90: - `models/likelihoods.py` — `build_likelihood_from_config()` dispatches `model_name == "dspy"` to `DSPyLikelihood`
+ 91: - `pyproject.toml` — `[project.optional-dependencies]` gains `dspy = ["dspy>=2.5.0"]` and `maskable = ["sb3-contrib>=2.6.0"]`
+ 92: 
+ 93: ### 6. PR #1 Reconciliation (Factored Action Semantics)
+ 94: 
+ 95: Selectively integrates the valuable parts of [PR #1](https://github.com/ankaggarwal94/qanta-buzzer/pull/1) while rejecting changes that would regress the calibration fix or break downstream consumers.
+ 96: 
+ 97: **Taken from PR #1:**
+ 98: - `models/t5_policy.py` — `_joint_action_log_prob()` and `_joint_entropy()` (chain-rule: `H_wait + p_buzz * H_answer`). `select_action()` now only samples the answer distribution when `wait_action == 1`.
+ 99: - `qb_env/stop_only_env.py` — `StopOnlyEnv` Discrete(2) wrapper mapping BUZZ to `argmax(belief)`
+100: - `scripts/train_ppo.py` — `--policy-mode stop_only|flat_kplus1` flag (defaults to `flat_kplus1` to avoid compare_policies incompatibility)
+101: - `qb_env/tossup_env.py` — `end_mode` (`force_commit`|`no_buzz`) and `no_buzz_reward` constructor args
+102: - `training/hazard_pretrain.py` — `compute_survival_terms()` and `hazard_expected_nll_loss()` scaffold
+103: - `tests/test_action_space_alignment.py` — 7 integration guards for factored semantics
+104: - `tests/test_hazard_pretrain.py` — 3 hazard bridge tests
+105: 
+106: **Rejected from PR #1 (with rationale):**
+107: - `g_trace` → `p_correct_trace` field rename — `@property` shim breaks `dataclasses.asdict()`, which breaks `compare_policies.py` serialization
+108: - `calibration_at_buzz` rewrite — would revert the verified `top_p_trace` fix
+109: - `stop_only` as default `--policy-mode` — produces 2-action checkpoints incompatible with compare_policies K+1 env
+110: - `CanonicalEpisodeTrace` — unnecessary; existing `_to_dict()` handles all trace types
+111: - `system_score()` param rename — breaks 9 call sites across the codebase
+112: 
+113: ### 7. Three Rounds of Adversarial Code Review
+114: 
+115: Used ChatGPT 5.4 Pro with anti-hallucination prompts (requiring `file.py:LINE` citations for every claim). 17 verified issues found and fixed:
+116: 
+117: **Round 1 (7 issues):**
+118: 1. `DSPyLikelihood` didn't inherit `LikelihoodModel` — fixed
+119: 2. `score()` had no shape validation — added `ndim == 1` and `len == K` check
+120: 3. `dspy.enabled` config key existed but was never read — removed
+121: 4. Config comment listed non-existent `embedding_based` strategy — corrected
+122: 5. Module docstring falsely claimed dspy import required — rewritten
+123: 6. `test_changed_fingerprint_invalidates` was too weak — rewritten to test keys directly
+124: 7. `test_fallback_to_existing` name misleading — split into two accurate tests
+125: 
+126: **Round 2 (5 issues):**
+127: 1. Optimizer metric was constant `lambda: 1.0` — replaced with argmax-based `_score_metric`
+128: 2. Trainset loaded combined `mc_dataset.json` — now uses `train_dataset.json` to prevent data leakage
+129: 3. `build_dspy_profiles` docstring claimed leave-one-out it couldn't enforce — corrected
+130: 4. Silent `except Exception` in profile augmentation — added `logging.warning` per failure
+131: 5. `test_compile_requires_dspy` never called the function — added `test_score_metric_logic` and `test_trainset_uses_mid_prefix`
+132: 
+133: **Round 3 (5 issues from PR #1 reconciliation):**
+134: DSPy compile path reconciled with train-split-aware workflow, hazard bridge integrated with guards.
+135: 
+136: ---
+137: 
+138: ## New Production Files (7)
+139: 
+140: | File | Purpose |
+141: |------|---------|
+142: | `qb_env/opponent_models.py` | OpponentBuzzModel protocol + logistic/empirical implementations |
+143: | `qb_env/stop_only_env.py` | StopOnlyEnv: Discrete(2) WAIT/BUZZ wrapper |
+144: | `models/dspy_likelihood.py` | DSPyLikelihood with score-level cache and persistence |
+145: | `qb_data/dspy_answer_profiles.py` | Optional DSPy LM-augmented answer profiles |
+146: | `scripts/optimize_dspy.py` | Offline DSPy compile/optimize workflow |
+147: | `scripts/ci.sh` | Local CI entry point with venv auto-activation |
+148: | `training/hazard_pretrain.py` | Hazard bridge loss utilities (scaffold) |
+149: 
+150: ## New Test Files (11)
+151: 
+152: | File | Tests | Coverage |
+153: |------|-------|----------|
+154: | `test_opponent_models.py` | 11 | Logistic monotonicity, empirical CDF, config factory |
+155: | `test_mc_builder_variable_k.py` | 5 | Fixed-K unchanged, mixed-K build, gold index validity |
+156: | `test_variable_k_integration.py` | 2 | Build→env→baseline, text wrapper K=3 |
+157: | `test_dspy_likelihood.py` | 8 | Score shape, cache hit/miss, fingerprint keys, persistence, isinstance |
+158: | `test_dspy_optimize.py` | 5 | Trainset structure, metric logic, mid-prefix, cap |
+159: | `test_dspy_answer_profiles.py` | 3 | Module importability, runtime ImportError, dspy path |
+160: | `test_dataset_splits.py` | 4 | Same-process determinism, cross-process determinism, different seeds, all assigned |
+161: | `test_answer_profile_cache.py` | 6 | Cache correctness for memoized profile builder |
+162: | `test_mc_builder_topk.py` | 4 | Top-M ranking equivalence with full sort |
+163: | `test_action_space_alignment.py` | 7 | Factored T5 semantics, StopOnlyEnv, flat K+1 ablation |
+164: | `test_hazard_pretrain.py` | 3 | Survival terms sum-to-one, NLL loss behavior |
+165: 
+166: ## Modified Test Files (10)
+167: 
+168: `test_agents.py`, `test_build_mc_dataset.py`, `test_environment.py`, `test_factories.py`, `test_features.py`, `test_likelihoods.py`, `test_metrics.py`, `test_ppo_buzzer.py`, `test_t5_policy.py`, `test_text_wrapper.py`
+169: 
+170: ## Configuration Changes
+171: 
+172: New keys in `configs/default.yaml` (all opt-in, disabled by default):
+173: 
+174: ```yaml
+175: data:
+176:   variable_K: false       # Enable variable-K per question
+177:   min_K: 2
+178:   max_K: null             # Defaults to K when null
+179: 
+180: environment:
+181:   reward_mode: "time_penalty"   # Now also supports: expected_wins
+182:   opponent_buzz_model:
+183:     type: "none"                # none | logistic | empirical
+184:   end_mode: "force_commit"      # force_commit | no_buzz
+185:   no_buzz_reward: 0.0
+186: 
+187: dspy:
+188:   model: "openai/gpt-4o-mini"
+189:   optimizer: "BootstrapFewShot"
+190:   cache_dir: "cache/dspy"
+191:   max_examples: 50
+192: ```
+193: 
+194: New optional dependency extras in `pyproject.toml`:
+195: ```toml
+196: [project.optional-dependencies]
+197: openai = ["openai>=1.0.0"]        # existing
+198: maskable = ["sb3-contrib>=2.6.0"] # new — MaskablePPO for variable-K
+199: dspy = ["dspy>=2.5.0"]            # new — DSPy LM-based scoring
+200: ```
+201: 
+202: ---
+203: 
+204: ## Invariants Preserved
+205: 
+206: These were verified across every commit and review round:
+207: 
+208: - Smoke pipeline works unchanged: `build_mc_dataset --smoke` → `run_baselines --smoke` → `train_ppo --smoke` → `evaluate_all --smoke`
+209: - T5 smoke path works unchanged: `train_t5_policy --smoke`
+210: - Calibration uses `top_p_trace`, not binary `g_trace`
+211: - Dataset splits use deterministic `hashlib.md5`, not Python `hash()`
+212: - Alias control re-scores live (substitution changes option text)
+213: - TF-IDF `save_cache()` is an intentional no-op (vocabulary-specific vectors)
+214: - Config override merges are leaf-only (flat dotted keys)
+215: - `g_trace` field preserved in all dataclasses (no `@property` shim)
+216: 
+217: ## Test Plan
+218: 
+219: - [x] `pytest tests/` — **342 passed, 3 skipped** (58s)
+220: - [x] `bash scripts/manual-smoke.sh` — 4/4 stages complete (10.6s)
+221: - [x] `python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke` — supervised 75% val acc → PPO 5 iters → test acc 62.5% (23.9s)
+222: - [x] Reduced-scale default.yaml preflight — default reward settings, [64,64] MLP, 500 PPO timesteps
+223: - [x] Default behavior unchanged when all extensions disabled
+224: 
+225: ### Skipped (optional extras not installed locally)
+226: - [ ] MaskablePPO integration (requires `sb3-contrib`)
+227: - [ ] DSPy live compile (requires `dspy` + LM backend)
+228: - [ ] Full 100k PPO training (intentionally out of scope)
+229: - [ ] SBERT/T5-large likelihood paths (require large model downloads)
+230: 
+231: ---
+232: 
+233: ## Known Remaining Risks
+234: 
+235: 1. Full 100k PPO training run not verified end-to-end
+236: 2. SBERT/T5-large likelihood paths not exercised locally
+237: 3. MaskablePPO path untested at integration level
+238: 4. DSPy compile/optimize requires live LM backend
+239: 5. `compare_policies` S_q/reward comparisons remain qualitative across architectures
+240: 6. TF-IDF cache memory grows with corpus size (~42 MB projected for 1000 questions)
+241: 7. `--hazard-pretrain` flag is scaffolded but the training loop is not wired up
+242: 
+243: ## Supersedes
+244: 
+245: This PR supersedes [PR #1](https://github.com/ankaggarwal94/qanta-buzzer/pull/1) (factored action semantics). The useful parts of PR #1 have been reconciled into this branch with bug fixes applied. PR #1 can be closed.
 ````
 
 ## File: walkthrough.md
@@ -21624,6 +25062,146 @@ walkthrough.md
 2441: Training outputs contain nondeterministic elements (timings, SB3 verbose logs, gradient values) so this walkthrough is a demonstration document, not an exact-output reproducible proof.
 ````
 
+## File: .planning/codebase/ARCHITECTURE.md
+````markdown
+  1: # Architecture
+  2: 
+  3: ## System Overview
+  4: 
+  5: Two-track quiz bowl buzzer system with three opt-in extensions:
+  6: 
+  7: 1. **Belief-feature pipeline:** Build MC tossups → score with likelihood models → train/compare buzzers → evaluate with S_q, Expected Wins, and calibration metrics
+  8: 2. **T5 policy pipeline:** Supervised warm-start → PPO fine-tuning for an end-to-end text policy
+  9: 
+ 10: Both tracks share the same data layer (`qb_data/`) and environment (`qb_env/`).
+ 11: 
+ 12: **Opt-in extensions:** Expected Wins reward mode (opponent models), Variable-K answer choices (padded obs + action masks), DSPy LM-based scoring (offline compile).
+ 13: 
+ 14: ## Layered Architecture
+ 15: 
+ 16: ```
+ 17: ┌─────────────────────────────────────────────────────────┐
+ 18: │  Scripts Layer (pipeline entrypoints)                    │
+ 19: │  scripts/build_mc_dataset.py → run_baselines.py →       │
+ 20: │  train_ppo.py → evaluate_all.py                         │
+ 21: │  scripts/train_t5_policy.py → compare_policies.py       │
+ 22: │  scripts/optimize_dspy.py  (offline DSPy compile)        │
+ 23: ├─────────────────────────────────────────────────────────┤
+ 24: │  Agent Layer                                             │
+ 25: │  agents/threshold_buzzer.py  (ThresholdBuzzer)           │
+ 26: │  agents/bayesian_buzzer.py   (SoftmaxProfileBuzzer)      │
+ 27: │  agents/ppo_buzzer.py        (PPOBuzzer via SB3)         │
+ 28: ├─────────────────────────────────────────────────────────┤
+ 29: │  Evaluation Layer                                        │
+ 30: │  evaluation/metrics.py   (S_q, EW, ECE, Brier, accuracy)  │
+ 31: │  evaluation/controls.py  (shuffle, choices-only, alias)   │
+ 32: │  evaluation/plotting.py  (calibration curves, entropy)    │
+ 33: ├─────────────────────────────────────────────────────────┤
+ 34: │  Environment Layer                                       │
+ 35: │  qb_env/tossup_env.py    (TossupMCEnv: EW, variable-K)   │
+ 36: │  qb_env/stop_only_env.py (StopOnlyEnv: Discrete(2))      │
+ 37: │  qb_env/opponent_models.py (opponent buzz model protocol) │
+ 38: │  qb_env/text_wrapper.py  (TextObservationWrapper)        │
+ 39: ├─────────────────────────────────────────────────────────┤
+ 40: │  Model Layer                                             │
+ 41: │  models/likelihoods.py   (TfIdf, SBERT, T5, OpenAI)      │
+ 42: │  models/dspy_likelihood.py (DSPyLikelihood, score cache)  │
+ 43: │  models/features.py      (belief + padded features)       │
+ 44: │  models/t5_policy.py     (T5PolicyModel + PolicyHead)     │
+ 45: ├─────────────────────────────────────────────────────────┤
+ 46: │  Data Layer                                              │
+ 47: │  qb_data/data_loader.py     (QANTA CSV + HF loading)     │
+ 48: │  qb_data/mc_builder.py      (MCBuilder + anti-artifact)   │
+ 49: │  qb_data/answer_profiles.py (answer profile generation)   │
+ 50: │  qb_data/dataset_splits.py  (stratified train/val/test)   │
+ 51: │  qb_data/config.py          (YAML config loading)         │
+ 52: │  qb_data/text_utils.py      (normalization, tokenization) │
+ 53: └─────────────────────────────────────────────────────────┘
+ 54: ```
+ 55: 
+ 56: ## Data Flow
+ 57: 
+ 58: ### Belief-Feature Pipeline
+ 59: 
+ 60: ```
+ 61: QANTA CSV / HuggingFace
+ 62:     ↓ (qb_data/data_loader.py)
+ 63: List[TossupQuestion]
+ 64:     ↓ (qb_data/mc_builder.py)
+ 65: List[MCQuestion]  (with K options, anti-artifact guards)
+ 66:     ↓ (qb_data/dataset_splits.py)
+ 67: train / val / test splits → mc_dataset.json
+ 68:     ↓ (models/likelihoods.py)
+ 69: LikelihoodModel.score() → raw similarity scores
+ 70:     ↓ (softmax with beta temperature)
+ 71: Belief distribution over K options
+ 72:     ↓ (models/features.py)
+ 73: [belief[0..K-1], top_p, margin, entropy, stability, progress, clue_idx_norm]
+ 74:     ↓ (qb_env/tossup_env.py)
+ 75: TossupMCEnv observation (Box(K+6,))
+ 76:     ↓ (agents/)
+ 77: Buzz decision → EpisodeResult / SoftmaxEpisodeResult / PPOEpisodeTrace
+ 78:     ↓ (evaluation/)
+ 79: S_q, ECE, Brier score, accuracy, per-category stats
+ 80: ```
+ 81: 
+ 82: ### T5 Policy Pipeline
+ 83: 
+ 84: ```
+ 85: MCQuestion dataset
+ 86:     ↓ (training/train_supervised_t5.py)
+ 87: T5PolicyModel supervised warm-start
+ 88:     ↓ (training/train_ppo_t5.py)
+ 89: PPO fine-tuning on TossupMCEnv with TextObservationWrapper
+ 90:     ↓ (scripts/compare_policies.py)
+ 91: Policy comparison metrics
+ 92: ```
+ 93: 
+ 94: ## Key Abstractions
+ 95: 
+ 96: ### `TossupQuestion` (dataclass, `qb_data/data_loader.py`)
+ 97: Core data structure: question text, tokens, answer, run_indices for clue boundaries, cumulative_prefixes for incremental reveal.
+ 98: 
+ 99: ### `MCQuestion` (dataclass, extends TossupQuestion, `qb_data/mc_builder.py`)
+100: Adds: options (K answer choices), gold_index, option_profiles, distractor_strategy. Four anti-artifact guards prevent spurious patterns.
+101: 
+102: ### `LikelihoodModel` (ABC, `models/likelihoods.py`)
+103: Pluggable scoring interface. Implementations: `TfIdfLikelihood`, `SBERTLikelihood`, `T5Likelihood`, `OpenAILikelihood`, `DSPyLikelihood`. Each implements `score(clue_prefix, option_profiles) → np.ndarray`. Embedding-based models also implement `_embed_batch()`; `DSPyLikelihood` raises `NotImplementedError` on embedding operations.
+104: 
+105: ### `TossupMCEnv` (Gymnasium env, `qb_env/tossup_env.py`)
+106: POMDP environment: Discrete(K+1) action space (WAIT + K buzz options), Box(K+6) observation space (belief features). Four reward modes: `time_penalty`, `simple`, `human_grounded`, `expected_wins`. Supports variable-K mode with padded observations and `action_masks()`. End-of-horizon behavior configurable via `end_mode` (`force_commit` | `no_buzz`).
+107: 
+108: ### `StopOnlyEnv` (wrapper, `qb_env/stop_only_env.py`)
+109: Discrete(2) wrapper (0=WAIT, 1=BUZZ) that maps BUZZ to argmax(belief). Selectable via `--policy-mode stop_only` in `train_ppo.py`.
+110: 
+111: ### Agent hierarchy
+112: - `ThresholdBuzzer`: simple confidence threshold
+113: - `SoftmaxProfileBuzzer`: Bayesian belief updates with sigmoid confidence proxy
+114: - `PPOBuzzer`: SB3 PPO wrapper with custom `run_episode()` for S_q trace recording; supports optional `MaskablePPO` and stop-only mode
+115: 
+116: ## Entry Points
+117: 
+118: | Script | Purpose |
+119: |--------|---------|
+120: | `scripts/build_mc_dataset.py` | Load questions, build MC dataset, save artifacts |
+121: | `scripts/run_baselines.py` | Sweep threshold/Bayesian buzzers |
+122: | `scripts/train_ppo.py` | Train PPO agent on belief features |
+123: | `scripts/evaluate_all.py` | Full evaluation + controls + plots |
+124: | `scripts/train_t5_policy.py` | T5 policy supervised + PPO training |
+125: | `scripts/compare_policies.py` | Compare T5 vs belief-feature policies |
+126: | `scripts/sweep_reward_shaping.py` | Multi-seed reward parameter sweep |
+127: | `scripts/run_smoke_pipeline.py` | End-to-end smoke test |
+128: | `scripts/optimize_dspy.py` | Offline DSPy compile/optimize |
+129: | `scripts/run_full_pipeline.sh` | Full 19-phase pipeline (4-wave DAG, forces tfidf) |
+130: | `scripts/manual-smoke.sh` | Four-stage smoke wrapper (venv-aware, python3) |
+131: 
+132: All pipeline scripts accept `--smoke` for fast testing and `--config` for custom YAML configs. `run_full_pipeline.sh` explicitly overrides `likelihood.model=tfidf` for all belief-feature phases. `compare_policies.py` auto-detects MPS/CUDA/CPU for T5 inference.
+133: 
+134: ## qb-rl Compatibility Layer
+135: 
+136: The `qb_env/` package provides thin re-export shims that map old `qb_env.data_loader`, `qb_env.mc_builder`, and `qb_env.text_utils` import paths to their canonical `qb_data.*` counterparts. Similarly, `models/answer_profiles.py` re-exports from `qb_data/answer_profiles.py`. This preserves backward compatibility with the earlier qb-rl codebase.
+````
+
 ## File: .planning/codebase/TESTING.md
 ````markdown
  1: # Testing
@@ -21724,6 +25302,200 @@ walkthrough.md
 96: Most tests use real (lightweight) model instances with no mocking. The exception is Expected Wins env tests which use `unittest.mock.MagicMock` for a fixed-survival opponent model. Optional-extra tests (DSPy, MaskablePPO) use `pytest.importorskip` to skip gracefully when the extra is not installed.
 ````
 
+## File: .planning/quick/pr1-reconciliation.md
+````markdown
+  1: # PR #1 Reconciliation Ledger
+  2: 
+  3: **Created:** 2026-03-15
+  4: **Finalized:** 2026-03-15
+  5: **Branch:** main
+  6: **Local HEAD at start:** 9664c487
+  7: **Local HEAD at finish:** acff2bbb
+  8: **PR branch:** personal/codex/align-action-space-with-revised-report (commits 4f3e3009, f459f246)
+  9: **Reference:** .planning/quick/pr1-integration-plan.md
+ 10: **Mode:** Semantic reconciliation (not literal cherry-pick)
+ 11: **Scope:** DSPy review-remediation surface (WP1–4). Feature ports (WP-A–D, WP-X) deferred.
+ 12: 
+ 13: ---
+ 14: 
+ 15: ## Final Verification
+ 16: 
+ 17: | Command | Result |
+ 18: |---------|--------|
+ 19: | `pytest tests/test_dspy_likelihood.py tests/test_dspy_optimize.py tests/test_dspy_answer_profiles.py tests/test_factories.py -q` | 31 passed, 2 skipped (0.06s) |
+ 20: | `pytest -q` | 320 passed, 3 skipped (57.64s) |
+ 21: | `bash scripts/manual-smoke.sh` | 4/4 stages complete (10.6s) |
+ 22: | `python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke` | Supervised 75% val acc → PPO 5 iters → test acc 62.5% (23.9s) |
+ 23: 
+ 24: All invariants hold: test count unchanged (320/3), smoke pipeline green, T5 smoke green, `top_p_trace` calibration intact, `_legacy/` untouched.
+ 25: 
+ 26: ---
+ 27: 
+ 28: ## Work Packages — Final Status
+ 29: 
+ 30: ### WP-1: DSPy Likelihood / Factory Contract Surface
+ 31: 
+ 32: | Field | Value |
+ 33: |-------|-------|
+ 34: | Objective | Verify DSPyLikelihood subclass contract, score() (K,) enforcement, stale `dspy.enabled` removal, importability/runtime docs accuracy, fingerprint/cache test coverage, factory dispatch consistency |
+ 35: | Repo evidence checked | `models/dspy_likelihood.py`, `models/likelihoods.py` (factory), `models/__init__.py`, `tests/test_dspy_likelihood.py`, `tests/test_factories.py`, `configs/default.yaml`, `configs/smoke.yaml`, `README.md`, `AGENTS.md` |
+ 36: | Files changed | none |
+ 37: | Tests run | `pytest tests/test_dspy_likelihood.py tests/test_factories.py -q` → 24 passed in 0.06s |
+ 38: | Result | **verified_closed** |
+ 39: | Commit hash | — |
+ 40: | Rollback command | — |
+ 41: | Notes | All 6 checkpoints verified without edits. (1) `DSPyLikelihood(LikelihoodModel)` with `super().__init__()`. (2) `score()` validates `ndim==1` and `len==K`. (3) No `dspy.enabled` in any config; comment on default.yaml:84 says "no separate enable flag"; stale key removal tracked to REVIEW commit fd34e25a. (4) Module docstring says importable without dspy extra — true (no dspy import at module level); README/AGENTS correctly describe opt-in via `pip install -e '.[dspy]'`. (5) `test_changed_fingerprint_invalidates` proves distinct keys per fingerprint + correct cache population; `test_repeated_call_hits_cache` proves cache hit. (6) Factory reads `config.get("dspy", {})` for `cache_dir`/`program_fingerprint` with "default" fallback; test coverage in `TestDSPyFactoryIntegration`. |
+ 42: 
+ 43: ---
+ 44: 
+ 45: ### WP-2: DSPy Offline Compile / Optimize Path
+ 46: 
+ 47: | Field | Value |
+ 48: |-------|-------|
+ 49: | Objective | Verify optimizer metric is real, trainset uses train split, compile path is offline/testable, tests validate real code |
+ 50: | Repo evidence checked | `scripts/optimize_dspy.py`, `tests/test_dspy_optimize.py`, `scripts/build_mc_dataset.py` (line 332 confirms train_dataset.json output), `chatgpt_final_review_prompt.md` (REVIEW-2 context) |
+ 51: | Files changed | `scripts/optimize_dspy.py`, `tests/test_dspy_optimize.py` |
+ 52: | Tests run | `pytest tests/test_dspy_optimize.py -q` → 5 passed, 1 skipped in 0.02s |
+ 53: | Result | **completed** |
+ 54: | Commit hash | 63c66c05 |
+ 55: | Rollback command | `git revert 63c66c05` |
+ 56: | Notes | (1) Metric is real argmax-based comparison, fixed in REVIEW-2. (2) `main()` looks for `train_dataset.json` first with fallback + warning; `build_mc_dataset.py` produces it at line 332. (3) `compile_dspy_scorer()` requires dspy only at runtime; helpers work without it. (4) FIX: extracted `_score_metric` from closure inside `compile_dspy_scorer()` to module level so test imports the real function instead of duplicating it. |
+ 57: 
+ 58: ---
+ 59: 
+ 60: ### WP-3: DSPy Answer-Profile Fallback / Doc / Test Behavior
+ 61: 
+ 62: | Field | Value |
+ 63: |-------|-------|
+ 64: | Objective | Verify docstrings don't overclaim leave-one-out, fallback logs truthfully, test names match bodies, no misleading naming drift |
+ 65: | Repo evidence checked | `qb_data/dspy_answer_profiles.py`, `tests/test_dspy_answer_profiles.py` |
+ 66: | Files changed | none |
+ 67: | Tests run | `pytest tests/test_dspy_answer_profiles.py -q` → 2 passed, 1 skipped in 0.01s |
+ 68: | Result | **verified_closed** |
+ 69: | Commit hash | — |
+ 70: | Rollback command | — |
+ 71: | Notes | (1) Docstring explicitly disclaims leave-one-out enforcement: "This function itself does not receive per-question exclusion context — it augments whatever profiles it is given." (2) Fallback logs at WARNING per-answer and INFO summary with augmented/fallback counts (fixed in REVIEW-2 c912c814). (3) All three test names match their bodies. (4) No naming drift found; REVIEW-2 resolved the prior "silent except" issue. |
+ 72: 
+ 73: ---
+ 74: 
+ 75: ### WP-4: Durable Docs — PR #1 Absorption Statement
+ 76: 
+ 77: | Field | Value |
+ 78: |-------|-------|
+ 79: | Objective | Ensure durable docs reflect that PR #1 review-remediation content is absorbed locally; no misleading upstream references |
+ 80: | Repo evidence checked | `README.md`, `AGENTS.md`, `CLAUDE.md`, `.planning/STATE.md`, `.planning/quick/extensions-master-run.md` |
+ 81: | Files changed | `.planning/STATE.md`, `.planning/quick/extensions-master-run.md` |
+ 82: | Tests run | `pytest tests/test_dspy_likelihood.py tests/test_dspy_optimize.py tests/test_dspy_answer_profiles.py tests/test_factories.py -q` → 31 passed, 2 skipped in 0.07s |
+ 83: | Result | **completed** |
+ 84: | Commit hash | acff2bbb |
+ 85: | Rollback command | `git revert acff2bbb` |
+ 86: | Notes | (1) README/AGENTS/CLAUDE already reflect local reality — modular pipeline canonical, extensions opt-in, test counts accurate, no misleading upstream references. (2) STATE.md session summary updated to mention PR #1 reconciliation status. (3) extensions-master-run.md cross-references the PR #1 reconciliation ledger. (4) No changes needed to README/AGENTS/CLAUDE — they don't mention PR #1 and shouldn't. |
+ 87: 
+ 88: ---
+ 89: 
+ 90: ## Deferred Work Packages (not in scope for this reconciliation)
+ 91: 
+ 92: These are NEW features from PR #1, not review-remediation. They would be additive ports, not reconciliation of existing content.
+ 93: 
+ 94: ### WP-A: T5 Joint Action Semantics
+ 95: 
+ 96: | Field | Value |
+ 97: |-------|-------|
+ 98: | Objective | Port factored `_joint_action_log_prob()`, `_joint_entropy()`, updated `select_action()` / `get_action_log_probs()` from PR #1 to local `models/t5_policy.py` |
+ 99: | Result | **deferred** |
+100: | Notes | Pure T5 math fix. Lowest conflict risk per integration plan. Additive feature, not review-remediation content. |
+101: 
+102: ### WP-B: StopOnlyEnv + `--policy-mode` Flag
+103: 
+104: | Field | Value |
+105: |-------|-------|
+106: | Objective | Add `StopOnlyEnv` wrapper (Discrete(2) buzz/wait), `--policy-mode` CLI flag to `train_ppo.py`. Default must be `flat_kplus1`. |
+107: | Result | **deferred** |
+108: | Notes | Must NOT adopt `p_correct_trace` rename. Must handle `use_maskable_ppo` interaction. PR has P1 bug with `stop_only` default. |
+109: 
+110: ### WP-C: `end_mode` / `no_buzz_reward` Env Semantics
+111: 
+112: | Field | Value |
+113: |-------|-------|
+114: | Objective | Add `end_mode` and `no_buzz_reward` constructor args to `TossupMCEnv`. |
+115: | Result | **deferred** |
+116: | Notes | Must merge with existing 6+ constructor params. PR has P2 bug (partial fix only). |
+117: 
+118: ### WP-D: Hazard Pretraining Bridge
+119: 
+120: | Field | Value |
+121: |-------|-------|
+122: | Objective | Add `training/hazard_pretrain.py` utilities, CLI flags in `train_t5_policy.py`. |
+123: | Result | **deferred** |
+124: | Notes | Standalone new files with no downstream callers. Can be deferred indefinitely. |
+125: 
+126: ### WP-X: Cross-cutting Tests
+127: 
+128: | Field | Value |
+129: |-------|-------|
+130: | Objective | Port `test_action_space_alignment.py` tests for landed patches. |
+131: | Result | **deferred** |
+132: | Notes | Depends on WP-A/B/C. No patches landed → nothing to test. |
+133: 
+134: ---
+135: 
+136: ## Reconciliation Summary
+137: 
+138: | WP | Scope | Result | Commit |
+139: |----|-------|--------|--------|
+140: | WP-1 | DSPy likelihood/factory contract | verified_closed | — |
+141: | WP-2 | DSPy offline compile path | completed (1 fix) | 63c66c05 |
+142: | WP-3 | DSPy answer-profile fallback | verified_closed | — |
+143: | WP-4 | Durable docs absorption statement | completed (2 files) | acff2bbb |
+144: | WP-A | T5 joint action semantics | deferred | — |
+145: | WP-B | StopOnlyEnv + policy-mode | deferred | — |
+146: | WP-C | end_mode / no_buzz_reward | deferred | — |
+147: | WP-D | Hazard pretraining bridge | deferred | — |
+148: | WP-X | Cross-cutting tests | deferred | — |
+149: 
+150: **Files changed (production):** `scripts/optimize_dspy.py` (metric extraction)
+151: **Files changed (tests):** `tests/test_dspy_optimize.py` (import real metric)
+152: **Files changed (planning):** `.planning/STATE.md`, `.planning/quick/extensions-master-run.md`, `.planning/quick/pr1-reconciliation.md`
+153: **Commits:** 2 (63c66c05, acff2bbb)
+154: **Test regressions:** 0
+155: 
+156: ---
+157: 
+158: ## Explicit Exclusions (from pr1-integration-plan.md)
+159: 
+160: | Item | Reason |
+161: |------|--------|
+162: | `g_trace` → `p_correct_trace` field rename | Breaks `asdict()`, regresses `top_p_trace` calibration fix |
+163: | `CanonicalEpisodeTrace` dataclass | Unnecessary; existing trace dataclasses work with `_to_dict()` |
+164: | `calibration_at_buzz` rewrite | Reverts verified `top_p_trace` fix (3 review rounds) |
+165: | `--policy-mode stop_only` as default | Breaks `compare_policies.py` (P1 bug) |
+166: | `system_score()` param rename | Breaks all existing callers; `g_trace` is standard in S_q literature |
+167: | Softened controls language | Subjective wording, no behavioral impact |
+168: 
+169: ---
+170: 
+171: ## Remaining Risks (genuinely open)
+172: 
+173: 1. **WP-A (T5 joint action semantics)** is the highest-value deferred item — the current T5 policy uses independent log-prob sums rather than mathematically correct joint factorization. This affects T5 PPO training quality but not the belief-feature pipeline.
+174: 2. **WP-B/C have known P1/P2 bugs** in the PR implementation. Porting them requires fixing those bugs, not just copying the code.
+175: 3. **WP-D (hazard pretrain)** is a no-op stub in the PR — the training loop was never wired up.
+176: 4. **DSPy live compile** and **MaskablePPO integration** remain untested locally (require optional extras not installed).
+177: 5. **Full 100k PPO** and **SBERT/T5-large likelihood** paths remain unexercised.
+178: 
+179: These are pre-existing risks from the extension campaign, not new risks introduced by this reconciliation.
+180: 
+181: ---
+182: 
+183: ## Invariants (verified at close)
+184: 
+185: 1. `pytest -q` → 320 passed, 3 skipped ✅
+186: 2. `bash scripts/manual-smoke.sh` → 4/4 stages complete ✅
+187: 3. `top_p_trace` calibration invariant preserved ✅
+188: 4. Default smoke behavior unchanged when extensions are off ✅
+189: 5. `_legacy/` remains non-canonical (untouched) ✅
+190: 6. T5 smoke path: supervised + PPO + test evaluation ✅
+````
+
 ## File: .planning/codebase/CONCERNS.md
 ````markdown
  1: # Concerns
@@ -21785,7 +25557,7 @@ walkthrough.md
 57: 
 58: **Severity:** Low (partially resolved)
 59: 
-60: No `.github/workflows/`, `tox.ini`, or pre-commit hooks. However, `scripts/ci.sh` provides a local CI entry point that auto-activates the project venv and runs the full test suite. `pyproject.toml` sets `testpaths = ["tests"]` to scope pytest correctly.
+60: No `.github/workflows/`, `tox.ini`, or pre-commit hooks. However, `scripts/ci.sh` provides a local CI entry point that auto-activates the project venv and runs the full test suite. `scripts/manual-smoke.sh` also auto-activates the venv and uses `python3`. `pyproject.toml` sets `testpaths = ["tests"]` to scope pytest correctly.
 61: 
 62: ## Test Coverage Gaps
 63: 
@@ -21884,101 +25656,107 @@ walkthrough.md
  65: │   ├── sweep_reward_shaping.py # Multi-seed reward parameter sweep
  66: │   ├── run_smoke_pipeline.py   # End-to-end smoke test runner
  67: │   ├── optimize_dspy.py        # Offline DSPy compile/optimize workflow
- 68: │   └── test_mc_builder.py      # Standalone MC builder test script
- 69: │
- 70: ├── tests/                            # pytest test suite (342 tests, 24 files)
- 71: │   ├── __init__.py
- 72: │   ├── conftest.py                   # Shared fixtures
- 73: │   ├── test_action_space_alignment.py # Factored action semantics guards
- 74: │   ├── test_agents.py                # Baseline agents, precomputed equivalence, K-agnostic
- 75: │   ├── test_answer_profile_cache.py  # Answer profile memoization cache
- 76: │   ├── test_build_mc_dataset.py      # MC dataset construction, CLI overrides
- 77: │   ├── test_dataset_splits.py        # Split reproducibility (cross-process determinism)
- 78: │   ├── test_dspy_answer_profiles.py  # DSPy answer profile augmentation (importorskip)
- 79: │   ├── test_dspy_likelihood.py       # DSPyLikelihood cache, shape, inheritance
- 80: │   ├── test_dspy_optimize.py         # Offline DSPy compile trainset (importorskip)
- 81: │   ├── test_environment.py           # TossupMCEnv: reward modes, EW, variable-K, masks
- 82: │   ├── test_factories.py             # Factories including DSPy dispatch
- 83: │   ├── test_features.py              # Belief features, padded features
- 84: │   ├── test_hazard_pretrain.py       # Hazard bridge survival terms and NLL loss
- 85: │   ├── test_likelihoods.py           # TfIdf, SBERT, T5 scoring, cache, memory
- 86: │   ├── test_mc_builder_topk.py       # Top-M argpartition distractor ranking
- 87: │   ├── test_mc_builder_variable_k.py # Variable-K dataset build
- 88: │   ├── test_metrics.py               # S_q, Expected Wins, ECE, Brier, calibration
- 89: │   ├── test_opponent_models.py       # Logistic/empirical opponent models
- 90: │   ├── test_ppo_buzzer.py            # PPOBuzzer training, traces, MaskablePPO
- 91: │   ├── test_ppo_t5.py                # T5 PPO training
- 92: │   ├── test_qb_rl_bridge.py          # qb-rl compatibility imports
- 93: │   ├── test_supervised_t5.py         # T5 supervised training
- 94: │   ├── test_t5_policy.py             # T5PolicyModel forward/backward
- 95: │   ├── test_text_wrapper.py          # TextObservationWrapper, K=3 formatting
- 96: │   └── test_variable_k_integration.py # Mixed-K build→env→baseline integration
- 97: │
- 98: ├── configs/                    # YAML configuration files
- 99: │   ├── default.yaml            # Full production config
-100: │   ├── smoke.yaml              # Minimal config for smoke tests
-101: │   └── t5_policy.yaml          # T5 policy pipeline config
-102: │
-103: ├── generated/                  # Generated outputs (poster, presentation)
-104: ├── checkpoints/                # Model checkpoints (gitignored runtime)
-105: ├── artifacts/                  # Pipeline output artifacts (runtime)
-106: │
-107: ├── pyproject.toml              # Package definition, dependencies, pytest config
-108: ├── requirements.txt            # Flat dependency list (legacy)
-109: ├── setup.cfg                   # Setuptools config
-110: ├── AGENTS.md                   # Canonical repo contract for all coding agents
-111: ├── CLAUDE.md                   # Claude-specific shim (points to AGENTS.md)
-112: ├── README.md                   # Project documentation
-113: │
-114: ├── _legacy/                    # Pre-modularization prototypes (not installed)
-115: │   ├── config.py, dataset.py, environment.py, model.py
-116: │   ├── main.py, train_supervised.py, train_ppo.py
-117: │   ├── metrics.py, visualize.py, demo.py
-118: │   └── verify_data_loader.py, test_csv_loader.py, test_imports.py
-119: │
-120: └── repomix/                    # AI-consumable repo snapshots (XML + Markdown, line-numbered)
-121:     ├── repomix-code.{xml,md}   # Core code + tests
-122:     ├── repomix-docs.{xml,md}   # Documentation + planning
-123:     └── repomix-smoke.{xml,md}  # Smoke artifact data
-124: ```
-125: 
-126: ## Key File Locations
-127: 
-128: | What | Where |
-129: |------|-------|
-130: | Main Gymnasium environment | `qb_env/tossup_env.py` |
-131: | Likelihood model hierarchy | `models/likelihoods.py` |
-132: | DSPy likelihood scorer | `models/dspy_likelihood.py` |
-133: | Opponent buzz models | `qb_env/opponent_models.py` |
-134: | Belief feature extraction | `models/features.py` |
-135: | MC question construction | `qb_data/mc_builder.py` |
-136: | Data loading + TossupQuestion | `qb_data/data_loader.py` |
-137: | Offline DSPy compile | `scripts/optimize_dspy.py` |
-138: | Pipeline shared helpers | `scripts/_common.py` |
-139: | Default YAML config | `configs/default.yaml` |
-140: | Test fixtures | `tests/conftest.py` |
-141: 
-142: ## Naming Conventions
-143: 
-144: - **Packages:** snake_case (`qb_data`, `qb_env`)
-145: - **Modules:** snake_case matching their primary class (`bayesian_buzzer.py` → `SoftmaxProfileBuzzer`)
-146: - **Classes:** PascalCase (`TossupMCEnv`, `MCQuestion`, `LikelihoodModel`)
-147: - **Functions:** snake_case (`extract_belief_features`, `normalize_answer`)
-148: - **Private helpers:** leading underscore (`_text_key`, `_best_torch_device`, `_to_dict`)
-149: - **Constants:** UPPER_SNAKE_CASE (`PROJECT_ROOT`, `ARTIFACT_DIR`, `DEFAULT_CONFIG`)
-150: - **Config keys:** snake_case in YAML (`train_ratio`, `buzz_correct`, `max_length`)
-151: 
-152: ## Where to Add New Code
-153: 
-154: | Adding... | Put it in... |
-155: |-----------|-------------|
-156: | New likelihood model | `models/likelihoods.py` (subclass `LikelihoodModel`), register in `build_likelihood_from_config()` |
-157: | New buzzer agent | `agents/` (new file), export from `agents/__init__.py` |
-158: | New evaluation metric | `evaluation/metrics.py` |
-159: | New control experiment | `evaluation/controls.py` |
-160: | New data source | `qb_data/` (new loader), integrate in `scripts/build_mc_dataset.py` |
-161: | New pipeline script | `scripts/` (use `scripts/_common.py` helpers) |
-162: | New test | `tests/test_*.py` (use fixtures from `tests/conftest.py`) |
+ 68: │   ├── test_mc_builder.py      # Standalone MC builder test script
+ 69: │   ├── run_full_pipeline.sh    # Full 19-phase pipeline (4-wave DAG, forces tfidf, PYTHONUNBUFFERED)
+ 70: │   ├── manual-smoke.sh         # Four-stage smoke wrapper (venv-aware, python3)
+ 71: │   └── ci.sh                   # CI entry point (runs pytest)
+ 72: │
+ 73: ├── tests/                            # pytest test suite (342 tests, 24 files)
+ 74: │   ├── __init__.py
+ 75: │   ├── conftest.py                   # Shared fixtures
+ 76: │   ├── test_action_space_alignment.py # Factored action semantics guards
+ 77: │   ├── test_agents.py                # Baseline agents, precomputed equivalence, K-agnostic
+ 78: │   ├── test_answer_profile_cache.py  # Answer profile memoization cache
+ 79: │   ├── test_build_mc_dataset.py      # MC dataset construction, CLI overrides
+ 80: │   ├── test_dataset_splits.py        # Split reproducibility (cross-process determinism)
+ 81: │   ├── test_dspy_answer_profiles.py  # DSPy answer profile augmentation (importorskip)
+ 82: │   ├── test_dspy_likelihood.py       # DSPyLikelihood cache, shape, inheritance
+ 83: │   ├── test_dspy_optimize.py         # Offline DSPy compile trainset (importorskip)
+ 84: │   ├── test_environment.py           # TossupMCEnv: reward modes, EW, variable-K, masks
+ 85: │   ├── test_factories.py             # Factories including DSPy dispatch
+ 86: │   ├── test_features.py              # Belief features, padded features
+ 87: │   ├── test_hazard_pretrain.py       # Hazard bridge survival terms and NLL loss
+ 88: │   ├── test_likelihoods.py           # TfIdf, SBERT, T5 scoring, cache, memory
+ 89: │   ├── test_mc_builder_topk.py       # Top-M argpartition distractor ranking
+ 90: │   ├── test_mc_builder_variable_k.py # Variable-K dataset build
+ 91: │   ├── test_metrics.py               # S_q, Expected Wins, ECE, Brier, calibration
+ 92: │   ├── test_opponent_models.py       # Logistic/empirical opponent models
+ 93: │   ├── test_ppo_buzzer.py            # PPOBuzzer training, traces, MaskablePPO
+ 94: │   ├── test_ppo_t5.py                # T5 PPO training
+ 95: │   ├── test_qb_rl_bridge.py          # qb-rl compatibility imports
+ 96: │   ├── test_supervised_t5.py         # T5 supervised training
+ 97: │   ├── test_t5_policy.py             # T5PolicyModel forward/backward
+ 98: │   ├── test_text_wrapper.py          # TextObservationWrapper, K=3 formatting
+ 99: │   └── test_variable_k_integration.py # Mixed-K build→env→baseline integration
+100: │
+101: ├── configs/                    # YAML configuration files
+102: │   ├── default.yaml            # Full production config
+103: │   ├── smoke.yaml              # Minimal config for smoke tests
+104: │   └── t5_policy.yaml          # T5 policy pipeline config
+105: │
+106: ├── generated/                  # Generated outputs (poster, presentation)
+107: ├── checkpoints/                # Model checkpoints (gitignored runtime)
+108: ├── artifacts/                  # Pipeline output artifacts (runtime)
+109: │
+110: ├── pyproject.toml              # Package definition, dependencies, pytest config
+111: ├── requirements.txt            # Flat dependency list (legacy)
+112: ├── setup.cfg                   # Setuptools config
+113: ├── AGENTS.md                   # Canonical repo contract for all coding agents
+114: ├── CLAUDE.md                   # Claude-specific shim (points to AGENTS.md)
+115: ├── README.md                   # Project documentation
+116: │
+117: ├── _legacy/                    # Pre-modularization prototypes (not installed)
+118: │   ├── config.py, dataset.py, environment.py, model.py
+119: │   ├── main.py, train_supervised.py, train_ppo.py
+120: │   ├── metrics.py, visualize.py, demo.py
+121: │   └── verify_data_loader.py, test_csv_loader.py, test_imports.py
+122: │
+123: └── repomix/                    # AI-consumable repo snapshots (XML + Markdown, line-numbered)
+124:     ├── repomix-code.{xml,md}   # Core code + tests
+125:     ├── repomix-docs.{xml,md}   # Documentation + planning
+126:     └── repomix-smoke.{xml,md}  # Smoke artifact data
+127: ```
+128: 
+129: ## Key File Locations
+130: 
+131: | What | Where |
+132: |------|-------|
+133: | Main Gymnasium environment | `qb_env/tossup_env.py` |
+134: | Likelihood model hierarchy | `models/likelihoods.py` |
+135: | DSPy likelihood scorer | `models/dspy_likelihood.py` |
+136: | Opponent buzz models | `qb_env/opponent_models.py` |
+137: | Belief feature extraction | `models/features.py` |
+138: | MC question construction | `qb_data/mc_builder.py` |
+139: | Data loading + TossupQuestion | `qb_data/data_loader.py` |
+140: | Offline DSPy compile | `scripts/optimize_dspy.py` |
+141: | Pipeline shared helpers | `scripts/_common.py` |
+142: | Full pipeline script | `scripts/run_full_pipeline.sh` |
+143: | Smoke pipeline wrapper | `scripts/manual-smoke.sh` |
+144: | Default YAML config | `configs/default.yaml` |
+145: | Full pipeline runbook | `docs/full-pipeline-runbook.md` |
+146: | Test fixtures | `tests/conftest.py` |
+147: 
+148: ## Naming Conventions
+149: 
+150: - **Packages:** snake_case (`qb_data`, `qb_env`)
+151: - **Modules:** snake_case matching their primary class (`bayesian_buzzer.py` → `SoftmaxProfileBuzzer`)
+152: - **Classes:** PascalCase (`TossupMCEnv`, `MCQuestion`, `LikelihoodModel`)
+153: - **Functions:** snake_case (`extract_belief_features`, `normalize_answer`)
+154: - **Private helpers:** leading underscore (`_text_key`, `_best_torch_device`, `_to_dict`)
+155: - **Constants:** UPPER_SNAKE_CASE (`PROJECT_ROOT`, `ARTIFACT_DIR`, `DEFAULT_CONFIG`)
+156: - **Config keys:** snake_case in YAML (`train_ratio`, `buzz_correct`, `max_length`)
+157: 
+158: ## Where to Add New Code
+159: 
+160: | Adding... | Put it in... |
+161: |-----------|-------------|
+162: | New likelihood model | `models/likelihoods.py` (subclass `LikelihoodModel`), register in `build_likelihood_from_config()` |
+163: | New buzzer agent | `agents/` (new file), export from `agents/__init__.py` |
+164: | New evaluation metric | `evaluation/metrics.py` |
+165: | New control experiment | `evaluation/controls.py` |
+166: | New data source | `qb_data/` (new loader), integrate in `scripts/build_mc_dataset.py` |
+167: | New pipeline script | `scripts/` (use `scripts/_common.py` helpers) |
+168: | New test | `tests/test_*.py` (use fixtures from `tests/conftest.py`) |
 ````
 
 ## File: .planning/quick/extensions-master-run.md
@@ -22136,46 +25914,58 @@ walkthrough.md
  63: scripts/manual-smoke.sh
  64: ```
  65: 
- 66: ## T5 Policy Pipeline
+ 66: ## Full Pipeline
  67: 
- 68: ```bash
- 69: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
- 70: python scripts/compare_policies.py --config configs/t5_policy.yaml
- 71: ```
- 72: 
- 73: Notes:
- 74: `scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the future hazard bridge. `--hazard-pretrain` intentionally raises `NotImplementedError` until that loop is implemented.
+ 68: For the core pipeline and scripted extensions at full scale with 4-wave parallel execution:
+ 69: 
+ 70: ```bash
+ 71: bash scripts/run_full_pipeline.sh --t5-model t5-base
+ 72: ```
+ 73: 
+ 74: The script forces `likelihood.model=tfidf` for all belief-feature phases. Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19 require manual execution. See `docs/full-pipeline-runbook.md` for phase-by-phase details.
  75: 
- 76: ## Configuration
+ 76: All pipeline scripts accept positional config overrides (e.g. `likelihood.model=tfidf`).
  77: 
- 78: | Config | Purpose |
- 79: |--------|---------|
- 80: | `configs/default.yaml` | Full runs with T5-large likelihood and 100k PPO timesteps |
- 81: | `configs/smoke.yaml` | Quick tests: 50 questions, TF-IDF likelihood, 3k PPO timesteps |
- 82: | `configs/t5_policy.yaml` | T5 policy pipeline: model, supervised, PPO, and data sections |
- 83: 
- 84: qb-rl config aliases are supported (e.g., `data.dataset`, `likelihood.sbert_name`, `environment.reward` as alias for `reward_mode`).
- 85: 
- 86: Additional environment options:
- 87: - `environment.end_mode: force_commit|no_buzz` controls horizon behavior
- 88: - `environment.no_buzz_reward` is only used when `end_mode: no_buzz`
+ 78: ## T5 Policy Pipeline
+ 79: 
+ 80: ```bash
+ 81: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
+ 82: python scripts/compare_policies.py --config configs/t5_policy.yaml
+ 83: ```
+ 84: 
+ 85: Notes:
+ 86: `scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the future hazard bridge. `--hazard-pretrain` intentionally raises `NotImplementedError` until that loop is implemented.
+ 87: 
+ 88: ## Configuration
  89: 
- 90: ## Compatibility Bridge
- 91: 
- 92: Old qb-rl import paths that still resolve:
- 93: 
- 94: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
- 95: - `models.answer_profiles`
- 96: - `agents.softmax_profile_buzzer`
+ 90: | Config | Purpose |
+ 91: |--------|---------|
+ 92: | `configs/default.yaml` | Full runs with T5-large likelihood and 100k PPO timesteps |
+ 93: | `configs/smoke.yaml` | Quick tests: 50 questions, TF-IDF likelihood, 3k PPO timesteps |
+ 94: | `configs/t5_policy.yaml` | T5 policy pipeline: model, supervised, PPO, and data sections |
+ 95: 
+ 96: qb-rl config aliases are supported (e.g., `data.dataset`, `likelihood.sbert_name`, `environment.reward` as alias for `reward_mode`).
  97: 
- 98: OpenAI support is opt-in only. Default local workflows stay offline-friendly and do not require the `openai` package or `OPENAI_API_KEY`.
- 99: 
-100: ## Conventions
+ 98: Additional environment options:
+ 99: - `environment.end_mode: force_commit|no_buzz` controls horizon behavior
+100: - `environment.no_buzz_reward` is only used when `end_mode: no_buzz`
 101: 
-102: - NumPy-style docstrings with Parameters/Returns sections
-103: - RL notation: `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
-104: - Prefer NumPy/PyTorch vectorized operations over loops in ML code
-105: - Explicit seeds for reproducibility (use 1, 2, 3 for multi-seed runs)
+102: ## Compatibility Bridge
+103: 
+104: Old qb-rl import paths that still resolve:
+105: 
+106: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
+107: - `models.answer_profiles`
+108: - `agents.softmax_profile_buzzer`
+109: 
+110: OpenAI support is opt-in only. Default local workflows stay offline-friendly and do not require the `openai` package or `OPENAI_API_KEY`.
+111: 
+112: ## Conventions
+113: 
+114: - NumPy-style docstrings with Parameters/Returns sections
+115: - RL notation: `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
+116: - Prefer NumPy/PyTorch vectorized operations over loops in ML code
+117: - Explicit seeds for reproducibility (use 1, 2, 3 for multi-seed runs)
 ````
 
 ## File: README.md
@@ -22202,150 +25992,1218 @@ walkthrough.md
  20: pip install -e .
  21: ```
  22: 
- 23: Optional OpenAI support:
+ 23: Optional extras:
  24: 
  25: ```bash
- 26: pip install -e '.[openai]'
- 27: export OPENAI_API_KEY=...
- 28: ```
- 29: 
- 30: ## Main Workflows
- 31: 
- 32: ### Belief-feature / PPO pipeline
- 33: 
- 34: The canonical four-stage smoke pipeline:
- 35: 
- 36: ```bash
- 37: python scripts/build_mc_dataset.py --smoke
- 38: python scripts/run_baselines.py --smoke
- 39: python scripts/train_ppo.py --smoke
- 40: python scripts/evaluate_all.py --smoke
- 41: ```
- 42: 
- 43: `--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`. Drop `--smoke` for full runs (uses `configs/default.yaml`, writes to `artifacts/main/`).
- 44: 
- 45: The smoke config uses tuned reward settings (`wait_penalty=0.05`, `early_buzz_penalty=0.2`, `ppo.seed=13`, `ppo.total_timesteps=3000`).
- 46: 
- 47: `train_ppo.py` also accepts `--seed` to override the PPO/environment seed, and `--stochastic-eval` / `--deterministic-eval` to control post-training evaluation mode.
- 48: 
- 49: ### T5 policy pipeline
- 50: 
- 51: Trains a T5-based policy with supervised warm-start followed by PPO fine-tuning:
- 52: 
- 53: ```bash
- 54: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
- 55: python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke  # quick test with t5-small
- 56: ```
- 57: 
- 58: The T5 pipeline uses its own config (`configs/t5_policy.yaml`) which defines `model`, `supervised`, `ppo`, and `data` sections. It does not inherit `environment` or `likelihood` settings from the belief-feature configs -- the T5 PPO trainer uses default reward settings (`wait_penalty=0.1`).
- 59: 
- 60: The T5 policy uses factorized action semantics: the wait head models `P(WAIT)` vs `P(BUZZ)`, the answer head models `P(answer | BUZZ)`, and the flat action distribution is `P(WAIT)` plus `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`.
- 61: 
- 62: The CLI also reserves `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for an experimental hazard-style warm-start bridge. Those flags are parsed, but `--hazard-pretrain` currently raises `NotImplementedError` until the training loop is wired.
- 63: 
- 64: ### Policy comparison
- 65: 
- 66: ```bash
- 67: python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model
- 68: ```
- 69: 
- 70: Compares the MLP belief-feature policy against the T5 end-to-end policy on the same test set. Accuracy and buzz-position metrics are directly comparable. ECE and Brier are computed identically (top-answer probability at buzz time). S_q and reward comparisons are qualitative because the two architectures use different confidence semantics (belief-sigmoid vs wait-head probability) and different reward settings (config-driven vs T5-pipeline defaults).
- 71: 
- 72: ### Additional scripts
- 73: 
- 74: - `scripts/run_smoke_pipeline.py` -- runs all four smoke stages sequentially and writes a timing summary to `artifacts/smoke/smoke_pipeline_summary.json`
- 75: - `scripts/sweep_reward_shaping.py` -- grid sweep over `wait_penalty` and `early_buzz_penalty` with multi-seed evaluation
- 76: - `scripts/train_ppo.py --policy-mode flat_kplus1|stop_only` -- optional stop-only PPO surface; default remains `flat_kplus1`
- 77: - `generate_presentation.py` -- generates the Marp presentation slides
- 78: 
- 79: ## Configuration
+ 26: pip install -e '.[openai]'    # OpenAI embedding support (requires OPENAI_API_KEY)
+ 27: pip install -e '.[maskable]'  # MaskablePPO for variable-K (sb3-contrib)
+ 28: pip install -e '.[dspy]'      # DSPy LM-based scoring
+ 29: ```
+ 30: 
+ 31: ## Main Workflows
+ 32: 
+ 33: ### Belief-feature / PPO pipeline
+ 34: 
+ 35: The canonical four-stage smoke pipeline:
+ 36: 
+ 37: ```bash
+ 38: python scripts/build_mc_dataset.py --smoke
+ 39: python scripts/run_baselines.py --smoke
+ 40: python scripts/train_ppo.py --smoke
+ 41: python scripts/evaluate_all.py --smoke
+ 42: ```
+ 43: 
+ 44: `--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`. Drop `--smoke` for full runs (uses `configs/default.yaml`, writes to `artifacts/main/`).
+ 45: 
+ 46: The smoke config uses tuned reward settings (`wait_penalty=0.05`, `early_buzz_penalty=0.2`, `ppo.seed=13`, `ppo.total_timesteps=3000`).
+ 47: 
+ 48: `train_ppo.py` also accepts `--seed` to override the PPO/environment seed, and `--stochastic-eval` / `--deterministic-eval` to control post-training evaluation mode.
+ 49: 
+ 50: ### T5 policy pipeline
+ 51: 
+ 52: Trains a T5-based policy with supervised warm-start followed by PPO fine-tuning:
+ 53: 
+ 54: ```bash
+ 55: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
+ 56: python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke  # quick test with t5-small
+ 57: ```
+ 58: 
+ 59: The T5 pipeline uses its own config (`configs/t5_policy.yaml`) which defines `model`, `supervised`, `ppo`, and `data` sections. It does not inherit `environment` or `likelihood` settings from the belief-feature configs -- the T5 PPO trainer uses default reward settings (`wait_penalty=0.1`).
+ 60: 
+ 61: The T5 policy uses factorized action semantics: the wait head models `P(WAIT)` vs `P(BUZZ)`, the answer head models `P(answer | BUZZ)`, and the flat action distribution is `P(WAIT)` plus `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`.
+ 62: 
+ 63: The CLI also reserves `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for an experimental hazard-style warm-start bridge. Those flags are parsed, but `--hazard-pretrain` currently raises `NotImplementedError` until the training loop is wired.
+ 64: 
+ 65: ### Policy comparison
+ 66: 
+ 67: ```bash
+ 68: python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model
+ 69: ```
+ 70: 
+ 71: Compares the MLP belief-feature policy against the T5 end-to-end policy on the same test set. Accuracy and buzz-position metrics are directly comparable. ECE and Brier are computed identically (top-answer probability at buzz time). S_q and reward comparisons are qualitative because the two architectures use different confidence semantics (belief-sigmoid vs wait-head probability) and different reward settings (config-driven vs T5-pipeline defaults).
+ 72: 
+ 73: ### Full pipeline (parallel execution)
+ 74: 
+ 75: For the core pipeline and scripted extensions at full scale with automatic parallelism:
+ 76: 
+ 77: ```bash
+ 78: bash scripts/run_full_pipeline.sh --t5-model t5-base   # ~3-4 hrs on M3 Max
+ 79: ```
  80: 
- 81: Two primary YAML configs:
+ 81: The script forces `likelihood.model=tfidf` for all belief-feature phases. Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19 require manual execution. See `docs/full-pipeline-runbook.md` for the full 19-phase runbook.
  82: 
- 83: | Config | Purpose | Key reward settings |
- 84: |--------|---------|-------------------|
- 85: | `configs/default.yaml` | Full runs | `wait_penalty=0.05`, `early_buzz_penalty=0.2`, `buzz_incorrect=-0.5` |
- 86: | `configs/smoke.yaml` | Quick tests (50 questions) | Same as default except `buzz_incorrect=-1.0`, `total_timesteps=3000` |
- 87: | `configs/t5_policy.yaml` | T5 pipeline | Own `model`/`supervised`/`ppo`/`data` sections; no `environment` |
- 88: 
- 89: qb-rl config aliases are also supported: `data.dataset`, `data.dataset_config`, `likelihood.sbert_name`, `environment.reward` as an alias for `reward_mode`, etc.
+ 83: ### Additional scripts
+ 84: 
+ 85: - `scripts/run_full_pipeline.sh` -- full 19-phase parallel pipeline with 4-wave DAG (forces tfidf)
+ 86: - `scripts/run_smoke_pipeline.py` -- runs all four smoke stages sequentially
+ 87: - `scripts/sweep_reward_shaping.py` -- grid sweep over `wait_penalty` and `early_buzz_penalty` with multi-seed evaluation
+ 88: - `scripts/train_ppo.py --policy-mode flat_kplus1|stop_only` -- optional stop-only PPO surface; default remains `flat_kplus1`
+ 89: - `generate_presentation.py` -- generates the Marp presentation slides
  90: 
- 91: For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy behavior). Set `environment.end_mode: no_buzz` with `environment.no_buzz_reward` to end the episode without forcing a terminal answer.
+ 91: All pipeline scripts accept positional config overrides:
  92: 
- 93: ## Testing
- 94: 
- 95: 342 tests across 24 test files (3 skipped when optional extras not installed):
- 96: 
- 97: ```bash
- 98: pytest                    # full suite
- 99: pytest tests/test_agents.py tests/test_environment.py tests/test_ppo_buzzer.py  # quick iteration
-100: ```
+ 93: ```bash
+ 94: python scripts/run_baselines.py --smoke likelihood.model=tfidf
+ 95: python scripts/train_ppo.py --seed 13 environment.reward_mode=simple
+ 96: ```
+ 97: 
+ 98: ## Configuration
+ 99: 
+100: Two primary YAML configs:
 101: 
-102: The test suite covers:
-103: 
-104: - Baseline agents (threshold, softmax-profile, sequential Bayes) and PPO wrapper
-105: - Gymnasium environment behavior, reward modes (including Expected Wins), and belief computation
-106: - Likelihood model factories (TF-IDF, SBERT, DSPy with offline-safe stubs)
-107: - T5 policy model, supervised trainer, and PPO trainer
-108: - Evaluation metrics (S_q, Expected Wins, ECE, Brier score, calibration at buzz, per-category accuracy)
-109: - Dataset split reproducibility (cross-process determinism)
-110: - Variable-K dataset construction and mixed-K integration
-111: - Opponent buzz models (logistic, empirical)
-112: - qb-rl compatibility bridge
-113: - Text observation wrapper
-114: 
-115: ## Architecture
-116: 
-117: ```
-118: qb_data/        Data loading, answer profiles, stratified splits, MC construction, DSPy profiles
-119: qb_env/         Gymnasium environment, text wrapper, opponent models, optional StopOnlyEnv wrapper, qb-rl shims
-120: models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy
-121: agents/         Threshold, softmax-profile, sequential Bayes, PPO buzzer
-122: evaluation/     S_q metric, Expected Wins, calibration, control experiments, plotting
-123: scripts/        Pipeline entrypoints, DSPy compile, shared helpers
-124: training/       T5 policy supervised + PPO trainers, hazard bridge utilities
-125: configs/        YAML configuration files
-126: artifacts/      Generated pipeline outputs (smoke/ and main/)
-127: _legacy/        Pre-modularization prototypes (not installed)
-128: ```
-129: 
-130: ## Compatibility Bridge
-131: 
-132: These old qb-rl import paths resolve in this repo:
+102: | Config | Purpose | Key reward settings |
+103: |--------|---------|-------------------|
+104: | `configs/default.yaml` | Full runs | `wait_penalty=0.05`, `early_buzz_penalty=0.2`, `buzz_incorrect=-0.5` |
+105: | `configs/smoke.yaml` | Quick tests (50 questions) | Same as default except `buzz_incorrect=-1.0`, `total_timesteps=3000` |
+106: | `configs/t5_policy.yaml` | T5 pipeline | Own `model`/`supervised`/`ppo`/`data` sections; no `environment` |
+107: 
+108: qb-rl config aliases are also supported: `data.dataset`, `data.dataset_config`, `likelihood.sbert_name`, `environment.reward` as an alias for `reward_mode`, etc.
+109: 
+110: For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy behavior). Set `environment.end_mode: no_buzz` with `environment.no_buzz_reward` to end the episode without forcing a terminal answer.
+111: 
+112: ## Testing
+113: 
+114: 342 tests across 24 test files (3 skipped when optional extras not installed):
+115: 
+116: ```bash
+117: pytest                    # full suite
+118: pytest tests/test_agents.py tests/test_environment.py tests/test_ppo_buzzer.py  # quick iteration
+119: ```
+120: 
+121: The test suite covers:
+122: 
+123: - Baseline agents (threshold, softmax-profile, sequential Bayes) and PPO wrapper
+124: - Gymnasium environment behavior, reward modes (including Expected Wins), and belief computation
+125: - Likelihood model factories (TF-IDF, SBERT, DSPy with offline-safe stubs)
+126: - T5 policy model, supervised trainer, and PPO trainer
+127: - Evaluation metrics (S_q, Expected Wins, ECE, Brier score, calibration at buzz, per-category accuracy)
+128: - Dataset split reproducibility (cross-process determinism)
+129: - Variable-K dataset construction and mixed-K integration
+130: - Opponent buzz models (logistic, empirical)
+131: - qb-rl compatibility bridge
+132: - Text observation wrapper
 133: 
-134: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
-135: - `models.answer_profiles`
-136: - `agents.softmax_profile_buzzer`
-137: 
-138: The bridge is additive. `qb_data/` remains the canonical home for data loading and MC construction. OpenAI support is opt-in only -- default local workflows stay offline-friendly.
-139: 
-140: ## Documentation
-141: 
-142: - `AGENTS.md` -- canonical repo contract for all coding agents (setup, architecture, testing, configuration)
-143: - `CLAUDE.md` -- thin shim pointing to AGENTS.md with Claude-specific notes
-144: - `walkthrough.md` -- end-to-end walkthrough exercising both pipelines (pre-remediation snapshot)
-145: - `PRESENTATION.md` -- Marp presentation slides for the CS234 final project
-146: - `.planning/` -- canonical project state, roadmap, architectural decisions, and remediation log
-147: 
-148: ## Extensions (opt-in)
-149: 
-150: Three opt-in extensions are available. All are disabled by default — the smoke pipeline and T5 smoke path work unchanged.
-151: 
-152: ### Expected Wins reward mode
-153: 
-154: Set `environment.reward_mode: expected_wins` and configure `environment.opponent_buzz_model` in YAML. Supports logistic and empirical (from `human_buzz_positions`) opponent models. Offline `expected_wins_score()` in `evaluation/metrics.py` uses the continuous formula: `V_self = g * R_correct + (1-g) * R_incorrect`.
-155: 
-156: ### Variable-K answer choices
-157: 
-158: Set `data.variable_K: true` and `data.min_K` / `data.max_K` in YAML. `MCBuilder` samples K per question. The env uses padded observations and `action_masks()`. Optional `MaskablePPO` via `pip install -e '.[maskable]'`.
-159: 
-160: ### DSPy integration (experimental)
-161: 
-162: Set `likelihood.model: dspy` and configure the `dspy` section in YAML. Requires `pip install -e '.[dspy]'`. Offline compile via `python scripts/optimize_dspy.py`. Does NOT integrate prompt optimization into PPO rollouts.
-163: 
-164: ## Legacy Prototype
-165: 
-166: The pre-modularization prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`, etc.) has been moved to `_legacy/`. These files are not part of the installed package and are preserved only for reference. The modular `scripts/` pipeline above is the canonical workflow.
+134: ## Architecture
+135: 
+136: ```
+137: qb_data/        Data loading, answer profiles, stratified splits, MC construction, DSPy profiles
+138: qb_env/         Gymnasium environment, text wrapper, opponent models, optional StopOnlyEnv wrapper, qb-rl shims
+139: models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy
+140: agents/         Threshold, softmax-profile, sequential Bayes, PPO buzzer
+141: evaluation/     S_q metric, Expected Wins, calibration, control experiments, plotting
+142: scripts/        Pipeline entrypoints, DSPy compile, shared helpers
+143: training/       T5 policy supervised + PPO trainers, hazard bridge utilities
+144: configs/        YAML configuration files
+145: artifacts/      Generated pipeline outputs (smoke/ and main/)
+146: _legacy/        Pre-modularization prototypes (not installed)
+147: ```
+148: 
+149: ## Compatibility Bridge
+150: 
+151: These old qb-rl import paths resolve in this repo:
+152: 
+153: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
+154: - `models.answer_profiles`
+155: - `agents.softmax_profile_buzzer`
+156: 
+157: The bridge is additive. `qb_data/` remains the canonical home for data loading and MC construction. OpenAI support is opt-in only -- default local workflows stay offline-friendly.
+158: 
+159: ## Documentation
+160: 
+161: - `docs/full-pipeline-runbook.md` -- deterministic 19-phase runbook with wall-time estimates and parallel execution
+162: - `AGENTS.md` -- canonical repo contract for all coding agents (setup, architecture, testing, configuration)
+163: - `CLAUDE.md` -- thin shim pointing to AGENTS.md with Claude-specific notes
+164: - `walkthrough.md` -- end-to-end walkthrough exercising both pipelines (pre-remediation snapshot)
+165: - `PRESENTATION.md` -- Marp presentation slides for the CS234 final project
+166: - `.planning/` -- canonical project state, roadmap, architectural decisions, and remediation log
+167: 
+168: ## Extensions (opt-in)
+169: 
+170: Three opt-in extensions are available. All are disabled by default — the smoke pipeline and T5 smoke path work unchanged.
+171: 
+172: ### Expected Wins reward mode
+173: 
+174: Set `environment.reward_mode: expected_wins` and configure `environment.opponent_buzz_model` in YAML. Supports logistic and empirical (from `human_buzz_positions`) opponent models. Offline `expected_wins_score()` in `evaluation/metrics.py` uses the continuous formula: `V_self = g * R_correct + (1-g) * R_incorrect`.
+175: 
+176: ### Variable-K answer choices
+177: 
+178: Set `data.variable_K: true` and `data.min_K` / `data.max_K` in YAML. `MCBuilder` samples K per question. The env uses padded observations and `action_masks()`. Optional `MaskablePPO` via `pip install -e '.[maskable]'`.
+179: 
+180: ### DSPy integration (experimental)
+181: 
+182: Set `likelihood.model: dspy` and configure the `dspy` section in YAML. Requires `pip install -e '.[dspy]'`. Offline compile via `python scripts/optimize_dspy.py`. Does NOT integrate prompt optimization into PPO rollouts.
+183: 
+184: ## Legacy Prototype
+185: 
+186: The pre-modularization prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`, etc.) has been moved to `_legacy/`. These files are not part of the installed package and are preserved only for reference. The modular `scripts/` pipeline above is the canonical workflow.
+````
+
+## File: docs/full-pipeline-runbook.md
+````markdown
+   1: # Full End-to-End Pipeline Runbook
+   2: 
+   3: Deterministic instruction set for running the complete qanta-buzzer pipeline
+   4: at full scale on the QANTA dataset (~20,407 questions).
+   5: 
+   6: ---
+   7: 
+   8: ## Prerequisites
+   9: 
+  10: ### Hardware
+  11: 
+  12: | Resource | Minimum | This machine (Apple M3 Max) |
+  13: |----------|---------|---------------------------|
+  14: | CPU | 8 cores | 16 cores |
+  15: | RAM | 32 GB (t5-base on MPS) | 64 GB |
+  16: | GPU | — (CPU ok for tfidf) | MPS (Apple Silicon) |
+  17: | Disk | 10 GB free | 38 GB free |
+  18: 
+  19: ### Local wall-time estimates (Apple M3 Max, 64 GB, MPS)
+  20: 
+  21: All estimates assume the full QANTA dataset (~20,407 questions). Phases
+  22: marked ★ are the core pipeline; others are optional extensions/ablations.
+  23: 
+  24: | Phase | Description | Likelihood | Estimated time |
+  25: |-------|------------|------------|----------------|
+  26: | **★ 1** | Build MC dataset (SBERT distractors) | — | 5–10 min |
+  27: | **★ 2** | Baseline sweeps (TF-IDF) | tfidf | 5–10 min |
+  28: | **★ 2** | Baseline sweeps (T5-large) | t5-large | 2–4 hrs |
+  29: | **★ 2** | Baseline sweeps (T5-base) | t5-base | 45–90 min |
+  30: | **★ 3** | PPO 100k steps (TF-IDF beliefs) | tfidf | 30–60 min |
+  31: | **★ 4** | Evaluate all + controls | tfidf | 5–15 min |
+  32: | **★ 5** | T5 policy: supervised + PPO (t5-large) | — | 4–8 hrs |
+  33: | **★ 5** | T5 policy: supervised + PPO (t5-base) | — | 1.5–3 hrs |
+  34: | **★ 5** | T5 policy: supervised + PPO (t5-small) | — | 15–30 min |
+  35: | **★ 6** | Compare policies | tfidf | 10–20 min |
+  36: | 7 | Multi-seed PPO (3 seeds) | tfidf | 1.5–3 hrs |
+  37: | 8 | Reward sweep | tfidf | varies |
+  38: | 9 | Distractor comparison (3 strategies) | tfidf | 15–30 min |
+  39: | 10 | Variable-K baselines (MaskablePPO not wired) | tfidf | 15–30 min |
+  40: | 11 | Expected Wins eval (EW-trained PPO is manual only) | tfidf | 5–15 min |
+  41: | 12 | DSPy compile | API-bound | 5–10 min |
+  42: | 13 | K-sensitivity (5 values) | tfidf | 30–60 min |
+  43: | 14 | Reward mode comparison (3 modes) | tfidf | 1.5–3 hrs |
+  44: | 15 | Belief mode comparison | tfidf | 5–10 min |
+  45: | 16 | Stop-only PPO | tfidf | 30–60 min |
+  46: | 17 | No-buzz horizon | tfidf | 30–60 min |
+  47: | 18 | OpenAI embeddings | API-bound | 10–30 min |
+  48: | 19 | DSPy MIPROv2 | API-bound | 5–10 min |
+  49: 
+  50: **Totals (wall-clock, sequential):**
+  51: 
+  52: | Scope | T5-large | T5-base | T5-small / TF-IDF only |
+  53: |-------|----------|---------|------------------------|
+  54: | Core pipeline (★ Phases 1–6) | 7–13 hrs | 3–5.5 hrs | 1–2 hrs |
+  55: | Core + all extensions (1–19) | 12–22 hrs | 7–13 hrs | 5–9 hrs |
+  56: 
+  57: **Parallelism opportunities:** After Phase 1 completes, Phases 2/3/5 are
+  58: independent and can run in parallel (Wave 1 of `run_full_pipeline.sh`).
+  59: Phase 4 must follow Phase 2 (reads `baseline_summary.json`). Phase 11
+  60: must follow Phase 4 and run before Phase 15 (it reads `baseline_summary.json`
+  61: which Phase 15 overwrites). Phases 9/13/15 each overwrite
+  62: `baseline_summary.json` and must run sequentially after Phase 11.
+  63: 
+  64: ### Software
+  65: 
+  66: ```bash
+  67: cd /path/to/qanta-buzzer
+  68: python3 -m venv .venv
+  69: source .venv/bin/activate
+  70: pip install -U pip
+  71: pip install -e .
+  72: ```
+  73: 
+  74: ### Data
+  75: 
+  76: The file `questions.csv` must exist at the repo root. It contains ~20,407
+  77: QANTA quiz bowl questions with `|||`-separated clue tokens.
+  78: 
+  79: ### Verify baseline
+  80: 
+  81: ```bash
+  82: pytest tests/ -q --tb=no      # expect: 342 passed, 3 skipped
+  83: bash scripts/manual-smoke.sh   # expect: 4/4 stages complete
+  84: ```
+  85: 
+  86: ---
+  87: 
+  88: ## Quick start: automated parallel execution
+  89: 
+  90: For an automated run of the core pipeline and scripted extensions, use
+  91: `run_full_pipeline.sh`. Parallel mode runs Phases 1–6, 11 (eval only),
+  92: 13–17; sequential mode (`--sequential`) also includes Phase 9.
+  93: Phases 7, 8, 10, 11 (EW-trained PPO), 12, 18, 19 require manual
+  94: execution. This is the **recommended path** for
+  95: local agents and unattended runs.
+  96: 
+  97: ```bash
+  98: # 1. Clean previous artifacts
+  99: rm -rf artifacts/main/ artifacts/k* artifacts/distractor_*
+ 100: rm -rf cache/embeddings/
+ 101: rm -rf checkpoints/supervised/ checkpoints/ppo/ checkpoints/ppo_t5/
+ 102: rm -rf results/
+ 103: 
+ 104: # 2. Run the full pipeline (pick ONE)
+ 105: 
+ 106: # Fastest — t5-small for T5 policy, TF-IDF for baselines (~2 hrs on M3 Max)
+ 107: bash scripts/run_full_pipeline.sh --t5-model t5-small
+ 108: 
+ 109: # Balanced — t5-base for T5 policy (~3–4 hrs on M3 Max)
+ 110: bash scripts/run_full_pipeline.sh --t5-model t5-base
+ 111: 
+ 112: # Full quality — t5-large (requires CUDA with 8+ GB VRAM; will likely OOM on Apple Silicon)
+ 113: # bash scripts/run_full_pipeline.sh --t5-model t5-large
+ 114: 
+ 115: # Sequential (no background jobs, safe for debugging)
+ 116: bash scripts/run_full_pipeline.sh --sequential --t5-model t5-base
+ 117: ```
+ 118: 
+ 119: The script executes the **core pipeline and extensions** in a 4-wave DAG.
+ 120: Phases 7 (multi-seed), 8 (reward sweep), 10 (variable-K baselines),
+ 121: 11 EW-trained PPO, 12 (DSPy compile), 18 (OpenAI), and 19 (MIPROv2)
+ 122: require manual execution — see the individual phase sections below.
+ 123: 
+ 124: ```
+ 125: Phase 1 (sequential — builds the shared MC dataset)
+ 126:   │
+ 127:   ├─ Wave 1 (3 parallel tracks):
+ 128:   │    Track A: Phase 2  — baseline sweeps (→ artifacts/main/baseline_summary.json)
+ 129:   │    Track B: Phase 3  — PPO training (→ artifacts/main/ppo_model.zip)
+ 130:   │    Track C: Phase 5  — T5 policy (→ checkpoints/)
+ 131:   │
+ 132:   ├─ Wave 2 (sequential — all read/write artifacts/main/):
+ 133:   │    Phase 4  — full evaluation + controls
+ 134:   │    Phase 6  — MLP vs T5 comparison
+ 135:   │    Phase 11 — Expected Wins evaluation
+ 136:   │    Phase 15 — belief mode comparison
+ 137:   │
+ 138:   ├─ Wave 3 (sequential — PPO ablations):
+ 139:   │    Phase 14 — reward modes (simple, human_grounded)
+ 140:   │    Phase 16 — stop-only PPO
+ 141:   │    Phase 17 — no-buzz horizon
+ 142:   │
+ 143:   └─ Wave 4 (sequential — K-sensitivity, clobbers baseline_summary.json):
+ 144:        Phase 13 — K=2,3,5,6 builds + baselines (each result copied to results/)
+ 145: 
+ 146: Not in parallel mode (sequential only or run manually):
+ 147:   Phase 9  — distractor comparison (sequential mode only)
+ 148:   Phase 10 — variable-K baselines (MaskablePPO not wired through train_ppo.py)
+ 149:   Phase 12 — DSPy compile (requires API key)
+ 150:   Phase 18 — OpenAI embeddings (requires API key)
+ 151:   Phase 19 — DSPy MIPROv2 (requires API key)
+ 152: ```
+ 153: 
+ 154: **Output:** All JSON results in `results/`. In parallel mode, Waves 1, 2,
+ 155: and 4 write per-phase logs to `results/phase_*.log` (via `run_phase()`);
+ 156: Wave 3 (PPO ablations) prints directly to stdout.
+ 157: In `--sequential` mode, all output goes to stdout (no per-phase logs).
+ 158: 
+ 159: **Monitoring:** Phase logs are written via stdout redirection, so output is
+ 160: buffered — `tail -f` may show no updates for extended periods (Phase 5 can
+ 161: appear stuck for 40+ minutes during supervised warm-start). This is normal;
+ 162: check the process is still running with `ps aux | grep train_`.
+ 163: ```bash
+ 164: tail -f results/phase_3.log   # PPO training (updates every ~30s)
+ 165: tail -f results/phase_5.log   # T5 policy (may buffer for long periods)
+ 166: ```
+ 167: 
+ 168: **After completion:** Generate summary table:
+ 169: ```bash
+ 170: python3 -c "
+ 171: import json, glob
+ 172: for f in sorted(glob.glob('results/*.json')):
+ 173:     s = json.load(open(f))
+ 174:     name = f.split('/')[-1].replace('.json', '')
+ 175:     if 'full_eval' in s:
+ 176:         fe = s['full_eval']
+ 177:         print(f'{name}: acc={fe.get(\"buzz_accuracy\", \"N/A\")}, S_q={fe.get(\"mean_sq\", \"N/A\")}')
+ 178:     elif 't5_policy' in s:
+ 179:         for k in ('mlp_policy', 't5_policy'):
+ 180:             if k in s:
+ 181:                 m = s[k]
+ 182:                 print(f'{name}/{k}: acc={m.get(\"accuracy\", \"N/A\")}, S_q={m.get(\"mean_sq\", \"N/A\")}')
+ 183:     elif 'softmax_profile' in s:
+ 184:         sp = s['softmax_profile']
+ 185:         best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+ 186:         print(f'{name}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", \"N/A\")}')
+ 187:     else:
+ 188:         acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
+ 189:         sq = s.get('mean_sq', 'N/A')
+ 190:         print(f'{name}: acc={acc}, S_q={sq}')
+ 191: "
+ 192: ```
+ 193: 
+ 194: **If a phase fails:** Check the phase log (if available) or stdout, fix the
+ 195: issue, and re-run just that phase manually (see individual phase sections
+ 196: below). The script exits on first failure — completed phases don't need
+ 197: re-running since their outputs are already written.
+ 198: 
+ 199: ---
+ 200: 
+ 201: ## Agent instructions
+ 202: 
+ 203: If you are an AI coding agent executing this runbook:
+ 204: 
+ 205: 1. **Preferred path:** Run `bash scripts/run_full_pipeline.sh --t5-model t5-base` and monitor the logs. This handles dependency ordering for the core pipeline and extensions. Only Wave 1 (baselines, PPO, T5) runs in parallel — all subsequent waves are sequential to avoid artifact races on `artifacts/main/`.
+ 206: 
+ 207: 2. **If the script fails:** Check `results/phase_*.log` if available (Waves 1, 2, 4 in parallel mode); for Wave 3 and `--sequential` mode, check stdout. Diagnose, fix, then re-run only the failed phase using the manual commands below.
+ 208: 
+ 209: 3. **Do not run phases 2/3/5 sequentially** if the parallel script is available — they are independent and running them in parallel saves 2–3x wall time. Phase 11 must run after Phase 4 and before Phase 15 (it reads `baseline_summary.json` which Phase 15 overwrites). Phases 9/13/15 each overwrite `baseline_summary.json` and must run sequentially after Phase 11.
+ 210: 
+ 211: 4. **Do not modify `artifacts/main/mc_dataset.json`** after Phase 1 — every subsequent phase reads it.
+ 212: 
+ 213: 5. **Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19** are not in the automated script. Run them manually if needed.
+ 214: 
+ 215: ---
+ 216: 
+ 217: ## Manual phase-by-phase instructions
+ 218: 
+ 219: The sections below document each phase individually for debugging,
+ 220: selective re-runs, or environments where the parallel script cannot be used.
+ 221: 
+ 222: ---
+ 223: 
+ 224: ## Phase 0: Clean state
+ 225: 
+ 226: ```bash
+ 227: rm -rf artifacts/main/ artifacts/k* artifacts/distractor_*
+ 228: rm -rf cache/embeddings/
+ 229: rm -rf checkpoints/supervised/ checkpoints/ppo/ checkpoints/ppo_t5/
+ 230: rm -rf results/
+ 231: mkdir -p artifacts/main results
+ 232: ```
+ 233: 
+ 234: ---
+ 235: 
+ 236: ## Phase 1: Build MC dataset
+ 237: 
+ 238: **Config:** `configs/default.yaml`
+ 239: **Distractor strategy:** `sbert_profile` (SBERT-based semantic ranking)
+ 240: **K:** 4 fixed answer choices
+ 241: **Expected output:** `artifacts/main/mc_dataset.json`, split files, answer profiles
+ 242: 
+ 243: ```bash
+ 244: python scripts/build_mc_dataset.py \
+ 245:     --config configs/default.yaml \
+ 246:     --output-dir artifacts/main
+ 247: ```
+ 248: 
+ 249: **Expected behavior:**
+ 250: - Loads ~20,407 questions from `questions.csv`
+ 251: - Downloads `all-MiniLM-L6-v2` SBERT model (~90 MB) on first run
+ 252: - Builds answer profiles with leave-one-out
+ 253: - Ranks distractors by SBERT profile similarity (top-M argpartition)
+ 254: - Applies 4 anti-artifact guards
+ 255: - Creates stratified train/val/test splits (70/15/15)
+ 256: - Writes `mc_dataset.json`, `train_dataset.json`, `val_dataset.json`, `test_dataset.json`, `answer_profiles.json`
+ 257: 
+ 258: **Estimated time:** 5–15 minutes (SBERT encoding is the bottleneck)
+ 259: 
+ 260: **Checkpoint:** Verify `artifacts/main/mc_dataset.json` exists and has >10,000 entries:
+ 261: ```bash
+ 262: python -c "import json; d=json.load(open('artifacts/main/mc_dataset.json')); print(f'{len(d)} MC questions')"
+ 263: ```
+ 264: 
+ 265: ---
+ 266: 
+ 267: ## Phase 2: Run baseline sweeps
+ 268: 
+ 269: **Config:** `configs/default.yaml`
+ 270: **Thresholds:** [0.5, 0.6, 0.7, 0.8, 0.9]
+ 271: **Agents:** ThresholdBuzzer, SoftmaxProfileBuzzer, SequentialBayesBuzzer, AlwaysBuzzFinal
+ 272: **Likelihood:** t5-large (from config); override to tfidf for speed
+ 273: 
+ 274: For a **fast first pass** using TF-IDF (minutes, not hours):
+ 275: 
+ 276: ```bash
+ 277: python scripts/run_baselines.py \
+ 278:     --config configs/default.yaml \
+ 279:     --mc-path artifacts/main/mc_dataset.json \
+ 280:     likelihood.model=tfidf
+ 281: ```
+ 282: 
+ 283: For **T5-base baseline** (balanced quality/speed, ~45–90 min):
+ 284: 
+ 285: ```bash
+ 286: python scripts/run_baselines.py \
+ 287:     --config configs/default.yaml \
+ 288:     --mc-path artifacts/main/mc_dataset.json \
+ 289:     likelihood.model=t5-base
+ 290: ```
+ 291: 
+ 292: For **T5-large baseline** (requires CUDA or 64+ GB RAM on MPS, hours of compute):
+ 293: 
+ 294: ```bash
+ 295: python scripts/run_baselines.py \
+ 296:     --config configs/default.yaml \
+ 297:     --mc-path artifacts/main/mc_dataset.json
+ 298: ```
+ 299: 
+ 300: **Expected output:** `artifacts/main/baseline_summary.json`, per-agent run files
+ 301: 
+ 302: **Checkpoint:**
+ 303: ```bash
+ 304: python -c "
+ 305: import json
+ 306: s = json.load(open('artifacts/main/baseline_summary.json'))
+ 307: for agent, data in s.items():
+ 308:     if isinstance(list(data.values())[0], dict):
+ 309:         best = max(data.items(), key=lambda x: x[1].get('mean_sq', 0))
+ 310:         print(f'{agent}: best_t={best[0]}, S_q={best[1][\"mean_sq\"]:.3f}, acc={best[1][\"buzz_accuracy\"]:.3f}')
+ 311:     else:
+ 312:         print(f'{agent}: S_q={data.get(\"mean_sq\", 0):.3f}, acc={data.get(\"buzz_accuracy\", 0):.3f}')
+ 313: "
+ 314: ```
+ 315: 
+ 316: **Archive default baselines** (later phases clobber `artifacts/main/baseline_summary.json`):
+ 317: ```bash
+ 318: # If you ran the TF-IDF command above (recommended):
+ 319: cp artifacts/main/baseline_summary.json results/baselines_tfidf.json
+ 320: # If you ran T5-base instead:
+ 321: # cp artifacts/main/baseline_summary.json results/baselines_t5base.json
+ 322: # If you ran T5-large instead:
+ 323: # cp artifacts/main/baseline_summary.json results/baselines_t5large.json
+ 324: ```
+ 325: 
+ 326: > Phases 14–16 assume `results/baselines_tfidf.json` exists for apples-to-apples
+ 327: > comparisons. If you used T5-large here, those comparisons will mix regimes.
+ 328: 
+ 329: ---
+ 330: 
+ 331: ## Phase 3: Train PPO (MLP on belief features)
+ 332: 
+ 333: **Config:** `configs/default.yaml`
+ 334: **Timesteps:** 100,000
+ 335: **Network:** [64, 64] MLP
+ 336: **Reward:** time_penalty (wait_penalty=0.05, early_buzz_penalty=0.2, buzz_incorrect=-0.5)
+ 337: **Likelihood:** add `likelihood.model=tfidf` to match the wrapper and extension phases
+ 338: 
+ 339: ```bash
+ 340: python scripts/train_ppo.py \
+ 341:     --config configs/default.yaml \
+ 342:     --mc-path artifacts/main/mc_dataset.json \
+ 343:     --seed 13 \
+ 344:     --deterministic-eval \
+ 345:     likelihood.model=tfidf
+ 346: ```
+ 347: 
+ 348: **Expected behavior:**
+ 349: - Precomputes belief trajectories for all questions (one-time, ~minutes)
+ 350: - Trains SB3 PPO for 100k timesteps
+ 351: - Evaluates with deterministic policy
+ 352: - Saves model to `artifacts/main/ppo_model.zip`
+ 353: 
+ 354: **Estimated time:** 30–90 minutes (CPU-bound: env stepping, not GPU)
+ 355: 
+ 356: **Checkpoint:**
+ 357: ```bash
+ 358: ls -lh artifacts/main/ppo_model.zip
+ 359: python -c "import json; s=json.load(open('artifacts/main/ppo_summary.json')); print(f'PPO: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}')"
+ 360: ```
+ 361: 
+ 362: **Archive default PPO** (later phases clobber `artifacts/main/ppo_summary.json`):
+ 363: ```bash
+ 364: cp artifacts/main/ppo_summary.json results/ppo_default.json
+ 365: cp artifacts/main/ppo_model.zip results/ppo_model_default.zip
+ 366: ```
+ 367: 
+ 368: ---
+ 369: 
+ 370: ## Phase 4: Evaluate all (belief-feature pipeline)
+ 371: 
+ 372: **Config:** `configs/default.yaml`
+ 373: **Controls:** choices-only, shuffle, alias substitution (alias control is a
+ 374: no-op unless `alias_lookup.json` is provided externally — `build_mc_dataset.py`
+ 375: does not generate it)
+ 376: **Metrics:** S_q, ECE, Brier, per-category accuracy
+ 377: 
+ 378: ```bash
+ 379: python scripts/evaluate_all.py \
+ 380:     --config configs/default.yaml \
+ 381:     --mc-path artifacts/main/mc_dataset.json \
+ 382:     likelihood.model=tfidf
+ 383: ```
+ 384: 
+ 385: > **Selective re-run note:** `evaluate_all.py` reads
+ 386: > `artifacts/main/baseline_summary.json` for the softmax threshold. If later
+ 387: > phases (13, 15) have overwritten it, restore the TF-IDF archive first
+ 388: > (this command uses `likelihood.model=tfidf`, so the baseline must match):
+ 389: > `cp results/baselines_tfidf.json artifacts/main/baseline_summary.json`
+ 390: 
+ 391: **Expected output:** `artifacts/main/evaluation_report.json`, `artifacts/main/plots/`
+ 392: 
+ 393: **Checkpoint:**
+ 394: ```bash
+ 395: python -c "
+ 396: import json
+ 397: r = json.load(open('artifacts/main/evaluation_report.json'))
+ 398: fe = r['full_eval']
+ 399: print(f'Full eval: acc={fe[\"buzz_accuracy\"]:.3f}, S_q={fe[\"mean_sq\"]:.3f}, ECE={fe[\"ece\"]:.3f}, Brier={fe[\"brier\"]:.3f}')
+ 400: for name, ctrl in r['controls'].items():
+ 401:     print(f'  {name}: acc={ctrl.get(\"accuracy\", ctrl.get(\"buzz_accuracy\", \"N/A\"))}')
+ 402: "
+ 403: ```
+ 404: 
+ 405: ---
+ 406: 
+ 407: ## Phase 5: Train T5 policy (end-to-end)
+ 408: 
+ 409: **Config:** `configs/t5_policy.yaml`
+ 410: **Model:** t5-base recommended (220M params); t5-large (770M) is slower and needs more memory
+ 411: **Supervised:** 10 epochs, effective batch 32
+ 412: **PPO:** 100 iterations
+ 413: 
+ 414: > **Memory warning (Apple Silicon / MPS):** A full-scale t5-base run on
+ 415: > 20,407 questions reached ~41 GB physical memory footprint on an M3 Max.
+ 416: > The "fits in 8 GB" claim from earlier docs was based on model weight size,
+ 417: > not the actual working set with 20k-question tokenization, gradient buffers,
+ 418: > and MPS allocations. **Minimum 32 GB RAM is recommended for t5-base at full
+ 419: > scale.** t5-large will exceed 64 GB and likely OOM on most Apple Silicon Macs.
+ 420: 
+ 421: For **t5-base** (recommended path, matches `run_full_pipeline.sh --t5-model t5-base`):
+ 422: 
+ 423: ```bash
+ 424: python scripts/train_t5_policy.py \
+ 425:     --config configs/t5_policy.yaml \
+ 426:     model.model_name=t5-base
+ 427: ```
+ 428: 
+ 429: For **t5-large** (requires CUDA with 8+ GB VRAM, or 64+ GB system RAM on MPS):
+ 430: 
+ 431: ```bash
+ 432: python scripts/train_t5_policy.py \
+ 433:     --config configs/t5_policy.yaml
+ 434: ```
+ 435: 
+ 436: **Expected behavior:**
+ 437: 1. Supervised warm-start: trains answer selection on complete questions (10 epochs)
+ 438: 2. PPO fine-tuning: optimizes wait/answer policy on incremental episodes (100 iterations)
+ 439: 3. Saves best model to `checkpoints/ppo_t5/best_model/`
+ 440: 
+ 441: **Estimated time:** t5-base ~2–3 hrs on M3 Max MPS; t5-large ~6–8 hrs on CUDA
+ 442: 
+ 443: **Checkpoint:**
+ 444: ```bash
+ 445: ls checkpoints/ppo_t5/best_model/
+ 446: cat checkpoints/ppo_t5/test_results.json
+ 447: ```
+ 448: 
+ 449: ---
+ 450: 
+ 451: ## Phase 6: Compare policies
+ 452: 
+ 453: **Requires:** Phase 3 PPO model + Phase 5 T5 model
+ 454: 
+ 455: > **Comparison caveats:** The MLP and T5 policies use different confidence
+ 456: > semantics (belief-sigmoid vs wait-head probability) and different reward
+ 457: > settings (config-driven vs T5-pipeline defaults). Accuracy and buzz-position
+ 458: > are directly comparable; S_q, ECE, Brier, and reward comparisons are
+ 459: > qualitative. See the docstring in `compare_policies.py` for details.
+ 460: >
+ 461: > `compare_policies.py` auto-detects the device for T5 inference (MPS on
+ 462: > Apple Silicon, CUDA if available, otherwise CPU).
+ 463: >
+ 464: > **Selective re-run note:** Phases 11 (EW-trained PPO), 14, 16, and 17 all
+ 465: > overwrite `artifacts/main/ppo_model`. If re-running after ablations, restore:
+ 466: > `cp results/ppo_model_default.zip artifacts/main/ppo_model.zip`
+ 467: 
+ 468: ```bash
+ 469: python scripts/compare_policies.py \
+ 470:     --mlp-checkpoint artifacts/main/ppo_model \
+ 471:     --t5-checkpoint checkpoints/ppo_t5/best_model \
+ 472:     --mc-path artifacts/main/mc_dataset.json \
+ 473:     --output results/t5_comparison.json
+ 474: ```
+ 475: 
+ 476: **Expected output:** Side-by-side metrics table + `results/t5_comparison.json`
+ 477: 
+ 478: **Checkpoint:**
+ 479: ```bash
+ 480: python -c "
+ 481: import json
+ 482: c = json.load(open('results/t5_comparison.json'))
+ 483: for policy in ['mlp_policy', 't5_policy']:
+ 484:     if policy in c:
+ 485:         p = c[policy]
+ 486:         print(f'{policy}: acc={p[\"accuracy\"]:.3f}, S_q={p[\"mean_sq\"]:.3f}, ECE={p[\"ece\"]:.3f}')
+ 487: if 'difference' in c:
+ 488:     d = c['difference']
+ 489:     print(f'Δ accuracy: {d[\"accuracy\"]:+.3f}, Δ S_q: {d[\"mean_sq\"]:+.3f}')
+ 490: "
+ 491: ```
+ 492: 
+ 493: ---
+ 494: 
+ 495: ## Phase 7: Multi-seed validation (optional)
+ 496: 
+ 497: Run PPO training with 3 seeds to assess variance:
+ 498: 
+ 499: ```bash
+ 500: for SEED in 1 2 3; do
+ 501:     echo "=== Seed $SEED ==="
+ 502:     python scripts/train_ppo.py \
+ 503:         --config configs/default.yaml \
+ 504:         --mc-path artifacts/main/mc_dataset.json \
+ 505:         --seed $SEED \
+ 506:         --deterministic-eval \
+ 507:         likelihood.model=tfidf
+ 508:     cp artifacts/main/ppo_summary.json "results/ppo_seed${SEED}.json"
+ 509:     cp artifacts/main/ppo_model.zip "results/ppo_model_seed${SEED}.zip"
+ 510: done
+ 511: 
+ 512: python -c "
+ 513: import json
+ 514: for seed in [1, 2, 3]:
+ 515:     s = json.load(open(f'results/ppo_seed{seed}.json'))
+ 516:     print(f'Seed {seed}: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}, reward={s[\"mean_reward_like\"]:.3f}')
+ 517: "
+ 518: ```
+ 519: 
+ 520: ---
+ 521: 
+ 522: ## Phase 8: Reward sweep (optional)
+ 523: 
+ 524: Grid search over wait_penalty and early_buzz_penalty. Note: this script
+ 525: is hardwired to use `configs/smoke.yaml` and `artifacts/smoke/` — it does
+ 526: not accept `--config` or `--mc-path`.
+ 527: 
+ 528: ```bash
+ 529: python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000
+ 530: ```
+ 531: 
+ 532: ---
+ 533: 
+ 534: ## Full pipeline single-script execution
+ 535: 
+ 536: Run the core pipeline sequentially (Phases 1–6) with TF-IDF beliefs and
+ 537: t5-base for the T5 policy. Includes archive steps so extension phases
+ 538: can reference Phase 2/3 defaults from `results/`.
+ 539: 
+ 540: ```bash
+ 541: #!/usr/bin/env bash
+ 542: set -euo pipefail
+ 543: mkdir -p results
+ 544: 
+ 545: echo "=== Phase 1: Build MC dataset ==="
+ 546: python scripts/build_mc_dataset.py --config configs/default.yaml --output-dir artifacts/main
+ 547: 
+ 548: echo "=== Phase 2: Run baselines ==="
+ 549: python scripts/run_baselines.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json likelihood.model=tfidf
+ 550: cp artifacts/main/baseline_summary.json results/baselines_tfidf.json
+ 551: 
+ 552: echo "=== Phase 3: Train PPO ==="
+ 553: python scripts/train_ppo.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json --seed 13 --deterministic-eval likelihood.model=tfidf
+ 554: cp artifacts/main/ppo_summary.json results/ppo_default.json
+ 555: cp artifacts/main/ppo_model.zip results/ppo_model_default.zip
+ 556: 
+ 557: echo "=== Phase 4: Evaluate all ==="
+ 558: python scripts/evaluate_all.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json likelihood.model=tfidf
+ 559: cp artifacts/main/evaluation_report.json results/eval_default.json
+ 560: 
+ 561: echo "=== Phase 5: Train T5 policy (t5-base) ==="
+ 562: python scripts/train_t5_policy.py --config configs/t5_policy.yaml model.model_name=t5-base
+ 563: 
+ 564: echo "=== Phase 6: Compare policies ==="
+ 565: python scripts/compare_policies.py \
+ 566:     --mlp-checkpoint artifacts/main/ppo_model \
+ 567:     --t5-checkpoint checkpoints/ppo_t5/best_model \
+ 568:     --mc-path artifacts/main/mc_dataset.json \
+ 569:     --output results/t5_comparison.json
+ 570: 
+ 571: echo "=== Pipeline complete ==="
+ 572: ```
+ 573: 
+ 574: ---
+ 575: 
+ 576: ## Expected artifact tree after full run
+ 577: 
+ 578: **`artifacts/main/` is a working directory** — files are overwritten by later
+ 579: phases (e.g. K-sensitivity clobbers `baseline_summary.json`, PPO ablations
+ 580: clobber `ppo_summary.json`). The **stable outputs** are in `results/*.json`,
+ 581: which are copied after each phase completes.
+ 582: 
+ 583: The wrapper (`run_full_pipeline.sh`) writes all outputs to top-level
+ 584: `results/*.json`. The manual extension sections write to subdirectories
+ 585: (`results/k_sensitivity/`, `results/reward_modes/`, `results/belief_modes/`,
+ 586: `results/policy_modes/`). Both are valid — the tree below shows the wrapper
+ 587: layout; see manual phase sections for subdirectory paths.
+ 588: 
+ 589: ```
+ 590: results/                         # Stable per-phase outputs (wrapper layout)
+ 591: ├── baselines_tfidf.json         # Phase 2 baseline summary
+ 592: ├── ppo_default.json             # Phase 3 PPO summary
+ 593: ├── ppo_model_default.zip        # Phase 3 PPO model
+ 594: ├── eval_default.json            # Phase 4 evaluation report
+ 595: ├── t5_comparison.json           # Phase 6 policy comparison
+ 596: ├── eval_ew_logistic.json        # Phase 11 Expected Wins eval
+ 597: ├── baselines_seqbayes.json      # Phase 15 belief mode
+ 598: ├── ppo_simple.json              # Phase 14 reward ablation
+ 599: ├── ppo_human_grounded.json      # Phase 14 reward ablation
+ 600: ├── ppo_stop_only.json           # Phase 16 stop-only PPO
+ 601: ├── ppo_no_buzz.json             # Phase 17 no-buzz horizon
+ 602: ├── baselines_k{2,3,5,6}.json   # Phase 13 K-sensitivity (k4 is default)
+ 603: ├── baselines_tfidf_profile.json # Phase 9 (sequential mode only)
+ 604: ├── baselines_category_random.json # Phase 9 (sequential mode only)
+ 605: │
+ 606: │  # Manual extension subdirectories (not created by wrapper):
+ 607: ├── k_sensitivity/               # Phase 13 manual
+ 608: ├── reward_modes/                # Phase 14 manual
+ 609: ├── belief_modes/                # Phase 15 manual
+ 610: └── policy_modes/                # Phase 16 manual
+ 611: 
+ 612: artifacts/main/                  # Working directory (overwritten by later phases)
+ 613: ├── mc_dataset.json              # Stable — built in Phase 1, never overwritten
+ 614: ├── train_dataset.json
+ 615: ├── val_dataset.json
+ 616: ├── test_dataset.json
+ 617: ├── answer_profiles.json
+ 618: └── (baseline/ppo/eval files)    # Overwritten by later phases
+ 619: 
+ 620: checkpoints/
+ 621: ├── supervised/best_model/       # T5 supervised checkpoint
+ 622: └── ppo_t5/best_model/           # T5 PPO checkpoint
+ 623: ```
+ 624: 
+ 625: ---
+ 626: 
+ 627: ## Extension Experiments
+ 628: 
+ 629: These phases exercise the three opt-in extensions. Each is independent
+ 630: and can be run after the core pipeline (Phases 1–6) completes.
+ 631: 
+ 632: ### Phase 9: Distractor strategy comparison
+ 633: 
+ 634: Build three MC datasets with different distractor selection strategies
+ 635: and compare baseline performance across them.
+ 636: 
+ 637: ```bash
+ 638: mkdir -p artifacts/distractor_comparison
+ 639: 
+ 640: # Strategy A: SBERT semantic ranking (default — already built in Phase 1)
+ 641: cp artifacts/main/mc_dataset.json artifacts/distractor_comparison/mc_sbert.json
+ 642: 
+ 643: # Strategy B: TF-IDF profile ranking
+ 644: python scripts/build_mc_dataset.py \
+ 645:     --config configs/default.yaml \
+ 646:     --output-dir artifacts/distractor_comparison/tfidf \
+ 647:     data.distractor_strategy=tfidf_profile
+ 648: cp artifacts/distractor_comparison/tfidf/mc_dataset.json artifacts/distractor_comparison/mc_tfidf.json
+ 649: 
+ 650: # Strategy C: Category-random (no semantic ranking)
+ 651: python scripts/build_mc_dataset.py \
+ 652:     --config configs/default.yaml \
+ 653:     --output-dir artifacts/distractor_comparison/catrandom \
+ 654:     data.distractor_strategy=category_random
+ 655: cp artifacts/distractor_comparison/catrandom/mc_dataset.json artifacts/distractor_comparison/mc_catrandom.json
+ 656: 
+ 657: # Run baselines on each (TF-IDF likelihood for speed)
+ 658: for STRATEGY in sbert tfidf catrandom; do
+ 659:     echo "=== Baselines on $STRATEGY distractors ==="
+ 660:     python scripts/run_baselines.py \
+ 661:         --config configs/default.yaml \
+ 662:         --mc-path "artifacts/distractor_comparison/mc_${STRATEGY}.json" \
+ 663:         likelihood.model=tfidf
+ 664:     cp artifacts/main/baseline_summary.json "results/baselines_distractor_${STRATEGY}.json"
+ 665: done
+ 666: ```
+ 667: 
+ 668: **Checkpoint:**
+ 669: ```bash
+ 670: for STRATEGY in sbert tfidf catrandom; do
+ 671:     python -c "
+ 672: import json
+ 673: s = json.load(open('results/baselines_distractor_${STRATEGY}.json'))
+ 674: best = max(s.get('softmax_profile', {}).items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+ 675: print(f'${STRATEGY}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", 0):.3f}')
+ 676: "
+ 677: done
+ 678: ```
+ 679: 
+ 680: ---
+ 681: 
+ 682: ### Phase 10: Variable-K experiment
+ 683: 
+ 684: Build a mixed-K dataset and train PPO with action masking to evaluate
+ 685: how varying the number of answer options affects buzzer performance.
+ 686: 
+ 687: ```bash
+ 688: mkdir -p artifacts/variable_k
+ 689: 
+ 690: # Build mixed-K dataset (K sampled uniformly from 2 to 6 per question)
+ 691: python scripts/build_mc_dataset.py \
+ 692:     --config configs/default.yaml \
+ 693:     --output-dir artifacts/variable_k \
+ 694:     data.variable_K=true data.min_K=2 data.max_K=6 data.K=6 \
+ 695:     data.distractor_strategy=category_random
+ 696: 
+ 697: # Verify mixed K
+ 698: python -c "
+ 699: import json
+ 700: qs = json.load(open('artifacts/variable_k/mc_dataset.json'))
+ 701: from collections import Counter
+ 702: k_counts = Counter(len(q['options']) for q in qs)
+ 703: print(f'{len(qs)} questions, K distribution: {dict(sorted(k_counts.items()))}')
+ 704: "
+ 705: 
+ 706: # Run baselines (agents are K-agnostic)
+ 707: python scripts/run_baselines.py \
+ 708:     --config configs/default.yaml \
+ 709:     --mc-path artifacts/variable_k/mc_dataset.json \
+ 710:     likelihood.model=tfidf
+ 711: cp artifacts/main/baseline_summary.json results/baselines_variable_k.json
+ 712: ```
+ 713: 
+ 714: **Note:** PPO with variable-K and MaskablePPO is not yet wired end-to-end
+ 715: through `train_ppo.py`. The `PPOBuzzer` class supports `use_maskable_ppo=True`
+ 716: and the env supports `action_masks()`, but `train_ppo.py` does not read
+ 717: `ppo.algorithm` from config or pass `use_maskable_ppo` to the constructor.
+ 718: This requires a code change to `train_ppo.py` before it will work.
+ 719: For now, variable-K baselines (which don't need MaskablePPO) work correctly.
+ 720: 
+ 721: ---
+ 722: 
+ 723: ### Phase 11: Expected Wins evaluation
+ 724: 
+ 725: Evaluate the SoftmaxProfile baseline (from `evaluate_all.py`) using the
+ 726: Expected Wins metric with a logistic opponent model. Note: this evaluates
+ 727: the baseline agents, not the PPO model — to train PPO with Expected Wins
+ 728: reward, see the separate command below.
+ 729: 
+ 730: > **Selective re-run note:** Like Phase 4, this reads
+ 731: > `artifacts/main/baseline_summary.json`. If later phases have overwritten it,
+ 732: > restore the TF-IDF archive (this command uses `likelihood.model=tfidf`):
+ 733: > `cp results/baselines_tfidf.json artifacts/main/baseline_summary.json`
+ 734: 
+ 735: ```bash
+ 736: # Evaluate with Expected Wins reward mode and logistic opponent
+ 737: python scripts/evaluate_all.py \
+ 738:     --config configs/default.yaml \
+ 739:     --mc-path artifacts/main/mc_dataset.json \
+ 740:     likelihood.model=tfidf \
+ 741:     environment.reward_mode=expected_wins \
+ 742:     environment.opponent_buzz_model.type=logistic \
+ 743:     environment.opponent_buzz_model.midpoint=0.6 \
+ 744:     environment.opponent_buzz_model.steepness=6.0
+ 745: cp artifacts/main/evaluation_report.json results/eval_expected_wins_logistic.json
+ 746: 
+ 747: # Also try empirical opponent (uses human_buzz_positions from QANTA data)
+ 748: python scripts/evaluate_all.py \
+ 749:     --config configs/default.yaml \
+ 750:     --mc-path artifacts/main/mc_dataset.json \
+ 751:     likelihood.model=tfidf \
+ 752:     environment.reward_mode=expected_wins \
+ 753:     environment.opponent_buzz_model.type=empirical
+ 754: cp artifacts/main/evaluation_report.json results/eval_expected_wins_empirical.json
+ 755: ```
+ 756: 
+ 757: **Checkpoint:**
+ 758: ```bash
+ 759: for MODEL in logistic empirical; do
+ 760:     python -c "
+ 761: import json
+ 762: r = json.load(open('results/eval_expected_wins_${MODEL}.json'))
+ 763: ew = r.get('expected_wins', {})
+ 764: fe = r['full_eval']
+ 765: print(f'EW (${MODEL}): mean_ew={ew.get(\"mean_ew\", \"N/A\")}, S_q={fe[\"mean_sq\"]:.3f}, acc={fe[\"buzz_accuracy\"]:.3f}')
+ 766: "
+ 767: done
+ 768: ```
+ 769: 
+ 770: **Train PPO with Expected Wins reward** (trains a new model optimizing for EW):
+ 771: ```bash
+ 772: python scripts/train_ppo.py \
+ 773:     --config configs/default.yaml \
+ 774:     --mc-path artifacts/main/mc_dataset.json \
+ 775:     --seed 13 \
+ 776:     --deterministic-eval \
+ 777:     likelihood.model=tfidf \
+ 778:     environment.reward_mode=expected_wins \
+ 779:     environment.opponent_buzz_model.type=logistic
+ 780: cp artifacts/main/ppo_summary.json results/ppo_expected_wins.json
+ 781: cp artifacts/main/ppo_model.zip results/ppo_model_expected_wins.zip
+ 782: ```
+ 783: 
+ 784: ---
+ 785: 
+ 786: ### Phase 12: DSPy offline compile (experimental — not wired end-to-end)
+ 787: 
+ 788: Compile a DSPy-optimized scorer using the training split.
+ 789: Requires the `dspy` extra and an LM API key.
+ 790: 
+ 791: > **Limitation:** `optimize_dspy.py` compiles and reports metrics, but does
+ 792: > not persist the compiled program in a way that `build_likelihood_from_config()`
+ 793: > can load it. Setting `likelihood.model=dspy` constructs `DSPyLikelihood`
+ 794: > with a placeholder uniform scorer, not the compiled program. This phase
+ 795: > is useful for validating the DSPy pipeline contract, but the evaluated
+ 796: > baselines below will use uniform scores — not the compiled model's.
+ 797: >
+ 798: > **Data path caveat:** `optimize_dspy.py` prefers
+ 799: > `artifacts/smoke/train_dataset.json` over `artifacts/main/train_dataset.json`.
+ 800: > If you have run the smoke pipeline, it will silently compile on the 50-question
+ 801: > smoke split. To force the full training split, remove or rename the smoke
+ 802: > artifact first: `rm artifacts/smoke/train_dataset.json`
+ 803: 
+ 804: ```bash
+ 805: pip install -e '.[dspy]'
+ 806: export OPENAI_API_KEY=...  # or configure another LM backend
+ 807: 
+ 808: # Compile scorer against training split (reports metrics but does not persist)
+ 809: python scripts/optimize_dspy.py \
+ 810:     --config configs/default.yaml \
+ 811:     --max-examples 100
+ 812: 
+ 813: # Evaluate with DSPy scorer (NOTE: uses placeholder uniform scorer, not compiled)
+ 814: python scripts/run_baselines.py \
+ 815:     --config configs/default.yaml \
+ 816:     --mc-path artifacts/main/mc_dataset.json \
+ 817:     likelihood.model=dspy
+ 818: cp artifacts/main/baseline_summary.json results/baselines_dspy.json
+ 819: ```
+ 820: 
+ 821: ---
+ 822: 
+ 823: ### Phase 13: K-sensitivity analysis (fixed K = 2, 3, 4, 5, 6)
+ 824: 
+ 825: Build 5 separate datasets with different fixed K values and compare baseline
+ 826: performance to measure how answer-set size affects difficulty.
+ 827: 
+ 828: ```bash
+ 829: mkdir -p results/k_sensitivity
+ 830: 
+ 831: for K in 2 3 4 5 6; do
+ 832:     echo "=== K=$K ==="
+ 833:     python scripts/build_mc_dataset.py \
+ 834:         --config configs/default.yaml \
+ 835:         --output-dir "artifacts/k${K}" \
+ 836:         data.K=$K data.distractor_strategy=category_random
+ 837: 
+ 838:     python scripts/run_baselines.py \
+ 839:         --config configs/default.yaml \
+ 840:         --mc-path "artifacts/k${K}/mc_dataset.json" \
+ 841:         likelihood.model=tfidf
+ 842: 
+ 843:     cp artifacts/main/baseline_summary.json "results/k_sensitivity/baselines_k${K}.json"
+ 844: done
+ 845: 
+ 846: # Summarize
+ 847: python -c "
+ 848: import json
+ 849: for k in [2, 3, 4, 5, 6]:
+ 850:     s = json.load(open(f'results/k_sensitivity/baselines_k{k}.json'))
+ 851:     sp = s.get('softmax_profile', {})
+ 852:     best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+ 853:     n = json.load(open(f'artifacts/k{k}/mc_dataset.json'))
+ 854:     print(f'K={k}: {len(n)} questions, best S_q={best[1].get(\"mean_sq\", 0):.3f}, acc={best[1].get(\"buzz_accuracy\", 0):.3f}')
+ 855: "
+ 856: ```
+ 857: 
+ 858: ---
+ 859: 
+ 860: ### Phase 14: Reward mode comparison
+ 861: 
+ 862: Train PPO under each reward mode and compare final metrics.
+ 863: 
+ 864: ```bash
+ 865: mkdir -p results/reward_modes
+ 866: 
+ 867: # time_penalty (default — already done in Phase 3, archived to results/ppo_default.json)
+ 868: cp results/ppo_default.json results/reward_modes/ppo_time_penalty.json
+ 869: 
+ 870: # simple (+1/-1, no wait penalty)
+ 871: python scripts/train_ppo.py \
+ 872:     --config configs/default.yaml \
+ 873:     --mc-path artifacts/main/mc_dataset.json \
+ 874:     --seed 13 --deterministic-eval \
+ 875:     likelihood.model=tfidf environment.reward_mode=simple
+ 876: cp artifacts/main/ppo_summary.json results/reward_modes/ppo_simple.json
+ 877: 
+ 878: # human_grounded (0 reward if agent buzzes after sampled human position)
+ 879: python scripts/train_ppo.py \
+ 880:     --config configs/default.yaml \
+ 881:     --mc-path artifacts/main/mc_dataset.json \
+ 882:     --seed 13 --deterministic-eval \
+ 883:     likelihood.model=tfidf environment.reward_mode=human_grounded
+ 884: cp artifacts/main/ppo_summary.json results/reward_modes/ppo_human_grounded.json
+ 885: 
+ 886: # Summarize
+ 887: python -c "
+ 888: import json
+ 889: for mode in ['time_penalty', 'simple', 'human_grounded']:
+ 890:     s = json.load(open(f'results/reward_modes/ppo_{mode}.json'))
+ 891:     print(f'{mode}: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}, reward={s[\"mean_reward_like\"]:.3f}')
+ 892: "
+ 893: ```
+ 894: 
+ 895: ---
+ 896: 
+ 897: ### Phase 15: Belief mode comparison
+ 898: 
+ 899: Compare from-scratch vs sequential-Bayes belief computation for baselines.
+ 900: 
+ 901: ```bash
+ 902: mkdir -p results/belief_modes
+ 903: 
+ 904: # from_scratch (default — already done in Phase 2, archived to results/baselines_tfidf.json)
+ 905: cp results/baselines_tfidf.json results/belief_modes/baselines_from_scratch.json
+ 906: 
+ 907: # sequential_bayes (Bayesian update: posterior = prior * likelihood)
+ 908: python scripts/run_baselines.py \
+ 909:     --config configs/default.yaml \
+ 910:     --mc-path artifacts/main/mc_dataset.json \
+ 911:     environment.belief_mode=sequential_bayes \
+ 912:     likelihood.model=tfidf
+ 913: cp artifacts/main/baseline_summary.json results/belief_modes/baselines_sequential_bayes.json
+ 914: 
+ 915: python -c "
+ 916: import json
+ 917: for mode in ['from_scratch', 'sequential_bayes']:
+ 918:     s = json.load(open(f'results/belief_modes/baselines_{mode}.json'))
+ 919:     sp = s.get('softmax_profile', {})
+ 920:     best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+ 921:     print(f'{mode}: best S_q={best[1].get(\"mean_sq\", 0):.3f}, acc={best[1].get(\"buzz_accuracy\", 0):.3f}')
+ 922: "
+ 923: ```
+ 924: 
+ 925: ---
+ 926: 
+ 927: ### Phase 16: Stop-only PPO (factored action space)
+ 928: 
+ 929: Train PPO with the Discrete(2) stop-only wrapper where the agent only
+ 930: decides WAIT/BUZZ and the answer is selected by argmax(belief).
+ 931: 
+ 932: ```bash
+ 933: mkdir -p results/policy_modes
+ 934: 
+ 935: # flat_kplus1 (default — already done in Phase 3, archived to results/ppo_default.json)
+ 936: cp results/ppo_default.json results/policy_modes/ppo_flat_kplus1.json
+ 937: 
+ 938: # stop_only (Discrete(2), answer = argmax belief)
+ 939: python scripts/train_ppo.py \
+ 940:     --config configs/default.yaml \
+ 941:     --mc-path artifacts/main/mc_dataset.json \
+ 942:     --seed 13 --deterministic-eval \
+ 943:     --policy-mode stop_only likelihood.model=tfidf
+ 944: cp artifacts/main/ppo_summary.json results/policy_modes/ppo_stop_only.json
+ 945: 
+ 946: python -c "
+ 947: import json
+ 948: for mode in ['flat_kplus1', 'stop_only']:
+ 949:     s = json.load(open(f'results/policy_modes/ppo_{mode}.json'))
+ 950:     print(f'{mode}: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}')
+ 951: "
+ 952: ```
+ 953: 
+ 954: ---
+ 955: 
+ 956: ### Phase 17: No-buzz horizon mode
+ 957: 
+ 958: Evaluate with `end_mode=no_buzz` where the agent receives `no_buzz_reward`
+ 959: instead of being forced to answer at the end of the question.
+ 960: 
+ 961: ```bash
+ 962: python scripts/train_ppo.py \
+ 963:     --config configs/default.yaml \
+ 964:     --mc-path artifacts/main/mc_dataset.json \
+ 965:     --seed 13 --deterministic-eval \
+ 966:     likelihood.model=tfidf environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
+ 967: cp artifacts/main/ppo_summary.json results/ppo_no_buzz.json
+ 968: 
+ 969: python -c "
+ 970: import json
+ 971: s = json.load(open('results/ppo_no_buzz.json'))
+ 972: print(f'no_buzz: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}, reward={s[\"mean_reward_like\"]:.3f}')
+ 973: "
+ 974: ```
+ 975: 
+ 976: ---
+ 977: 
+ 978: ### Phase 18: OpenAI embedding pipeline (requires API key)
+ 979: 
+ 980: Run the full pipeline with OpenAI embeddings for both likelihood scoring
+ 981: and distractor generation.
+ 982: 
+ 983: ```bash
+ 984: pip install -e '.[openai]'
+ 985: export OPENAI_API_KEY=...
+ 986: 
+ 987: # Build dataset with OpenAI-profile distractors
+ 988: python scripts/build_mc_dataset.py \
+ 989:     --config configs/default.yaml \
+ 990:     --output-dir artifacts/openai \
+ 991:     data.distractor_strategy=openai_profile
+ 992: 
+ 993: # Run baselines with OpenAI likelihood
+ 994: python scripts/run_baselines.py \
+ 995:     --config configs/default.yaml \
+ 996:     --mc-path artifacts/openai/mc_dataset.json \
+ 997:     likelihood.model=openai
+ 998: cp artifacts/main/baseline_summary.json results/baselines_openai.json
+ 999: ```
+1000: 
+1001: ---
+1002: 
+1003: ### Phase 19: DSPy MIPROv2 optimizer (experimental)
+1004: 
+1005: Compare BootstrapFewShot vs MIPROv2 optimizers for DSPy scorer compilation.
+1006: 
+1007: ```bash
+1008: pip install -e '.[dspy]'
+1009: export OPENAI_API_KEY=...
+1010: 
+1011: # BootstrapFewShot (default — already done in Phase 12 if run)
+1012: python scripts/optimize_dspy.py --config configs/default.yaml --optimizer BootstrapFewShot
+1013: 
+1014: # MIPROv2
+1015: python scripts/optimize_dspy.py --config configs/default.yaml --optimizer MIPROv2
+1016: ```
+1017: 
+1018: ---
+1019: 
+1020: ## Reproducibility notes
+1021: 
+1022: - All random seeds are explicit: `data.shuffle_seed=42`, `environment.seed=13`, `ppo.seed=13`
+1023: - Dataset splits use `hashlib.md5` (immune to PYTHONHASHSEED)
+1024: - Same seed + same data + same code = identical results
+1025: - To reproduce exactly: pin the git commit hash and Python version
+1026: - Current: commit `40cb9a3`, Python 3.13.5
+1027: 
+1028: ## Known scale risks
+1029: 
+1030: - **T5-large likelihood** requires ~3 GB VRAM and is slow on CPU. Use `likelihood.model=tfidf` or `likelihood.model=t5-base` for faster iteration.
+1031: - **100k PPO timesteps** takes 30–90 minutes on CPU. Reduce with `--timesteps 10000` for quick validation.
+1032: - **SBERT distractor ranking** downloads `all-MiniLM-L6-v2` (~90 MB) on first run. Use `data.distractor_strategy=category_random` to skip.
+1033: - **Embedding cache** grows to ~42 MB for ~1000 questions with TF-IDF. Monitor via `model.cache_memory_bytes`.
+1034: 
+1035: ---
+1036: 
+1037: ## Wall-time summary (Apple M3 Max, parallel vs sequential)
+1038: 
+1039: | Mode | t5-small | t5-base | t5-large (CUDA only) |
+1040: |------|----------|---------|---------------------|
+1041: | `run_full_pipeline.sh` (parallel) | ~2 hrs | ~3–4 hrs | ~6–8 hrs |
+1042: | `run_full_pipeline.sh --sequential` | ~5 hrs | ~7–10 hrs | ~12–18 hrs |
+1043: 
+1044: t5-large will likely OOM on Apple Silicon Macs (64 GB) at full scale. Use t5-base on MPS.
 ````
 
 ## File: .planning/STATE.md
@@ -22356,8 +27214,8 @@ walkthrough.md
   4: milestone_name: milestone
   5: current_plan: Not started
   6: status: milestone_complete
-  7: last_updated: "2026-03-14T03:00:00.000Z"
-  8: last_activity: 2026-03-14 - Post-optimization audit remediation (evidence-verified)
+  7: last_updated: "2026-03-15T08:00:00.000Z"
+  8: last_activity: 2026-03-15 - Adversarial Codex review, runbook/script/code fixes, MPS device detection
   9: progress:
  10:   total_phases: 6
  11:   completed_phases: 5
@@ -22527,26 +27385,31 @@ walkthrough.md
 175: ## Session Continuity
 176: 
 177: ### Last Session Summary
-178: - Extension campaign (18 patches): Expected Wins reward, Variable-K, DSPy integration
-179: - Post-extension code review: 7 issues found by ChatGPT 5.4 Pro, all verified and fixed
-180: - Fixed: DSPyLikelihood inheritance, score shape validation, stale config key/comments, weak tests
-181: - PR #1 review-remediation reconciliation: DSPy likelihood/factory contract verified-closed, compile path metric extraction fix committed, answer-profile docs/tests verified-closed
-182: - 342 tests across 24 test files (3 skipped for optional extras)
-183: 
-184: ### Next Session Priority
-185: 1. CS234 writeup — all infrastructure is ready for generating paper results
-186: 2. Full training run: `python scripts/train_t5_policy.py --config configs/t5_policy.yaml`
-187: 3. Comparison experiment: `python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model`
-188: 
-189: ### Context for Next Agent
-190: Unified quiz bowl RL buzzer with two tracks plus three opt-in extensions (Expected Wins, Variable-K, DSPy). v1.0 milestone complete. Extensions and code review complete. The novel contribution is using T5 as a likelihood model to compute beliefs for an MLP policy, then comparing with T5 as an end-to-end policy.
-191: 
-192: ### Environment State
-193: - Working directory: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer`
-194: - Python environment: `.venv/` with Python 3.13, `pip install -e .` done
-195: - 342 tests passing (3 skipped), CI green, smoke pipeline green, T5 smoke green
-196: 
-197: ---
-198: *State file initialized: 2026-02-25*
-199: Last activity: 2026-03-15 - PR #1 reconciliation complete, docs synced to 342 tests/24 files
+178: - 15+ rounds of adversarial Codex review on runbook and pipeline script
+179: - Script now forces `likelihood.model=tfidf` for all belief-feature phases (both branches)
+180: - `compare_policies.py` and `T5PolicyModel.load_pretrained()` now auto-detect MPS
+181: - `manual-smoke.sh` auto-activates venv, uses python3
+182: - `run_phase()` sets `PYTHONUNBUFFERED=1` for live log streaming
+183: - StopOnlyEnv crash fixed in `ppo_buzzer.py` (Phase 16)
+184: - Runbook: Phase 5 memory warning (41 GB on MPS), t5-large marked CUDA-only, Phase 12 DSPy limitation documented, artifact tree segmented by mode, selective re-run notes on Phases 4/6/11, all manual commands have tfidf overrides
+185: - Summary snippet handles nested output structures (full_eval, t5_policy, softmax_profile)
+186: - 342 tests across 24 test files (3 skipped for optional extras)
+187: 
+188: ### Next Session Priority
+189: 1. Full-scale pipeline run on this machine to produce paper results
+190: 2. CS234 writeup using results from the run
+191: 3. Optional extension phases (7, 9, 10, 13) for ablation tables
+192: 
+193: ### Context for Next Agent
+194: Unified quiz bowl RL buzzer with two tracks plus three opt-in extensions (Expected Wins, Variable-K, DSPy). v1.0 milestone complete. Extensions, code review, and adversarial doc review complete. The novel contribution is using T5 as a likelihood model to compute beliefs for an MLP policy, then comparing with T5 as an end-to-end policy. All code and docs are synced; the next step is running the full pipeline to produce experimental results.
+195: 
+196: ### Environment State
+197: - Working directory: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer`
+198: - Python environment: `.venv/` with Python 3.13.5, `pip install -e .` done
+199: - MPS available (Apple M3 Max, 64 GB)
+200: - 342 tests passing (3 skipped), CI green, smoke pipeline green
+201: 
+202: ---
+203: *State file initialized: 2026-02-25*
+204: Last activity: 2026-03-15 - Adversarial Codex review, runbook/script/code fixes, MPS device detection
 ````

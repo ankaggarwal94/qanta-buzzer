@@ -69,7 +69,7 @@ run_phase() {
     local LOG="$RESULTS/phase_${PHASE}.log"
     shift
     echo "[Phase $PHASE] STARTED at $(date +%H:%M:%S)"
-    if "$@" > "$LOG" 2>&1; then
+    if PYTHONUNBUFFERED=1 "$@" > "$LOG" 2>&1; then
         echo "[Phase $PHASE] DONE at $(date +%H:%M:%S) — see $LOG"
     else
         echo "[Phase $PHASE] FAILED at $(date +%H:%M:%S) — see $LOG"
@@ -112,12 +112,12 @@ if [ "$SEQUENTIAL" = true ]; then
     cp artifacts/main/baseline_summary.json "$RESULTS/baselines_tfidf.json"
 
     echo "=== PHASE 3: PPO (100k steps) ==="
-    python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" --seed 13 --deterministic-eval
+    python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" --seed 13 --deterministic-eval likelihood.model=tfidf
     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_default.json"
     cp artifacts/main/ppo_model.zip "$RESULTS/ppo_model_default.zip"
 
     echo "=== PHASE 4: Evaluate all ==="
-    python scripts/evaluate_all.py --config configs/default.yaml --mc-path "$MC"
+    python scripts/evaluate_all.py --config configs/default.yaml --mc-path "$MC" likelihood.model=tfidf
     cp artifacts/main/evaluation_report.json "$RESULTS/eval_default.json"
 
     echo "=== PHASE 5: T5 policy ==="
@@ -132,24 +132,24 @@ if [ "$SEQUENTIAL" = true ]; then
 
     echo "=== PHASE 11: Expected Wins ==="
     python scripts/evaluate_all.py --config configs/default.yaml --mc-path "$MC" \
-        environment.reward_mode=expected_wins environment.opponent_buzz_model.type=logistic
+        likelihood.model=tfidf environment.reward_mode=expected_wins environment.opponent_buzz_model.type=logistic
     cp artifacts/main/evaluation_report.json "$RESULTS/eval_ew_logistic.json"
 
     echo "=== PHASE 14: Reward modes ==="
     for MODE in simple human_grounded; do
         python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
-            --seed 13 --deterministic-eval environment.reward_mode="$MODE"
+            --seed 13 --deterministic-eval likelihood.model=tfidf environment.reward_mode="$MODE"
         cp artifacts/main/ppo_summary.json "$RESULTS/ppo_$MODE.json"
     done
 
     echo "=== PHASE 16: Stop-only PPO ==="
     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
-        --seed 13 --deterministic-eval --policy-mode stop_only
+        --seed 13 --deterministic-eval --policy-mode stop_only likelihood.model=tfidf
     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_stop_only.json"
 
     echo "=== PHASE 17: No-buzz horizon ==="
     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
-        --seed 13 --deterministic-eval environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
+        --seed 13 --deterministic-eval likelihood.model=tfidf environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_no_buzz.json"
 
     echo "=== PHASE 15: Belief mode (sequential_bayes) ==="
@@ -195,7 +195,7 @@ else
     # Track B: PPO training (writes artifacts/main/ppo_model.zip)
     (
         run_phase "3" python scripts/train_ppo.py \
-            --config configs/default.yaml --mc-path "$MC" --seed 13 --deterministic-eval
+            --config configs/default.yaml --mc-path "$MC" --seed 13 --deterministic-eval likelihood.model=tfidf
         cp artifacts/main/ppo_summary.json "$RESULTS/ppo_default.json"
         cp artifacts/main/ppo_model.zip "$RESULTS/ppo_model_default.zip"
     ) &
@@ -216,7 +216,7 @@ else
 
     # Phase 4: Evaluate all (reads baseline_summary.json from Phase 2)
     run_phase "4" python scripts/evaluate_all.py \
-        --config configs/default.yaml --mc-path "$MC"
+        --config configs/default.yaml --mc-path "$MC" likelihood.model=tfidf
     cp artifacts/main/evaluation_report.json "$RESULTS/eval_default.json"
 
     # Phase 6: Compare policies (needs Phase 3 PPO + Phase 5 T5)
@@ -229,7 +229,7 @@ else
     # Phase 11: Expected Wins eval (writes evaluation_report.json)
     run_phase "11" python scripts/evaluate_all.py \
         --config configs/default.yaml --mc-path "$MC" \
-        environment.reward_mode=expected_wins environment.opponent_buzz_model.type=logistic
+        likelihood.model=tfidf environment.reward_mode=expected_wins environment.opponent_buzz_model.type=logistic
     cp artifacts/main/evaluation_report.json "$RESULTS/eval_ew_logistic.json"
 
     # Phase 15: Belief mode comparison (writes baseline_summary.json)
@@ -243,22 +243,22 @@ else
 
     echo "[Phase 14a] reward_mode=simple"
     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
-        --seed 13 --deterministic-eval environment.reward_mode=simple
+        --seed 13 --deterministic-eval likelihood.model=tfidf environment.reward_mode=simple
     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_simple.json"
 
     echo "[Phase 14b] reward_mode=human_grounded"
     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
-        --seed 13 --deterministic-eval environment.reward_mode=human_grounded
+        --seed 13 --deterministic-eval likelihood.model=tfidf environment.reward_mode=human_grounded
     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_human_grounded.json"
 
     echo "[Phase 16] policy_mode=stop_only"
     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
-        --seed 13 --deterministic-eval --policy-mode stop_only
+        --seed 13 --deterministic-eval --policy-mode stop_only likelihood.model=tfidf
     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_stop_only.json"
 
     echo "[Phase 17] end_mode=no_buzz"
     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
-        --seed 13 --deterministic-eval environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
+        --seed 13 --deterministic-eval likelihood.model=tfidf environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_no_buzz.json"
 
     echo ""
@@ -296,13 +296,26 @@ echo ""
 echo "Checkpoints:"
 ls -d checkpoints/*/best_model 2>/dev/null | while read d; do echo "  $d/"; done
 echo ""
-echo "To generate the final comparison table:"
-echo "  python -c \""
-echo "import json, glob"
-echo "for f in sorted(glob.glob('results/*.json')):"
-echo "    s = json.load(open(f))"
-echo "    name = f.split('/')[-1].replace('.json', '')"
-echo "    acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))"
-echo "    sq = s.get('mean_sq', 'N/A')"
-echo "    print(f'{name}: acc={acc}, S_q={sq}')"
-echo "\""
+echo "Final comparison table:"
+python3 -c "
+import json, glob
+for f in sorted(glob.glob('results/*.json')):
+    s = json.load(open(f))
+    name = f.split('/')[-1].replace('.json', '')
+    if 'full_eval' in s:
+        fe = s['full_eval']
+        print(f'{name}: acc={fe.get(\"buzz_accuracy\", \"N/A\")}, S_q={fe.get(\"mean_sq\", \"N/A\")}')
+    elif 't5_policy' in s:
+        for k in ('mlp_policy', 't5_policy'):
+            if k in s:
+                m = s[k]
+                print(f'{name}/{k}: acc={m.get(\"accuracy\", \"N/A\")}, S_q={m.get(\"mean_sq\", \"N/A\")}')
+    elif 'softmax_profile' in s:
+        sp = s['softmax_profile']
+        best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+        print(f'{name}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", \"N/A\")}')
+    else:
+        acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
+        sq = s.get('mean_sq', 'N/A')
+        print(f'{name}: acc={acc}, S_q={sq}')
+"

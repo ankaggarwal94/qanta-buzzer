@@ -6,16 +6,23 @@
 # Outputs: artifacts/smoke/
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f "$REPO_ROOT/.venv/bin/activate" ]; then
+    source "$REPO_ROOT/.venv/bin/activate"
+fi
+
+PYTHON="${PYTHON:-python3}"
+
 echo "=== Stage 1/4: Build MC dataset ==="
-python scripts/build_mc_dataset.py --smoke
+$PYTHON scripts/build_mc_dataset.py --smoke
 
 echo "=== Stage 2/4: Run baselines ==="
-python scripts/run_baselines.py --smoke
+$PYTHON scripts/run_baselines.py --smoke
 
 echo "=== Stage 3/4: Train PPO ==="
-python scripts/train_ppo.py --smoke
+$PYTHON scripts/train_ppo.py --smoke
 
 echo "=== Stage 4/4: Evaluate all ==="
-python scripts/evaluate_all.py --smoke
+$PYTHON scripts/evaluate_all.py --smoke
 
 echo "=== Smoke pipeline complete. Check artifacts/smoke/ ==="

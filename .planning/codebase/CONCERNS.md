@@ -57,7 +57,7 @@ SB3's `learn()` does not expose per-step action distributions. `PPOBuzzer.run_ep
 
 **Severity:** Low (partially resolved)
 
-No `.github/workflows/`, `tox.ini`, or pre-commit hooks. However, `scripts/ci.sh` provides a local CI entry point that auto-activates the project venv and runs the full test suite. `pyproject.toml` sets `testpaths = ["tests"]` to scope pytest correctly.
+No `.github/workflows/`, `tox.ini`, or pre-commit hooks. However, `scripts/ci.sh` provides a local CI entry point that auto-activates the project venv and runs the full test suite. `scripts/manual-smoke.sh` also auto-activates the venv and uses `python3`. `pyproject.toml` sets `testpaths = ["tests"]` to scope pytest correctly.
 
 ## Test Coverage Gaps
 

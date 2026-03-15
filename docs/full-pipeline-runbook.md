@@ -12,7 +12,7 @@ at full scale on the QANTA dataset (~20,407 questions).
 | Resource | Minimum | This machine (Apple M3 Max) |
 |----------|---------|---------------------------|
 | CPU | 8 cores | 16 cores |
-| RAM | 16 GB | 64 GB |
+| RAM | 32 GB (t5-base on MPS) | 64 GB |
 | GPU | — (CPU ok for tfidf) | MPS (Apple Silicon) |
 | Disk | 10 GB free | 38 GB free |
 
@@ -29,15 +29,15 @@ marked ★ are the core pipeline; others are optional extensions/ablations.
 | **★ 2** | Baseline sweeps (T5-base) | t5-base | 45–90 min |
 | **★ 3** | PPO 100k steps (TF-IDF beliefs) | tfidf | 30–60 min |
 | **★ 4** | Evaluate all + controls | tfidf | 5–15 min |
-| **★ 5** | T5 policy: supervised (t5-large, 10 epochs) | — | 4–8 hrs |
-| **★ 5** | T5 policy: supervised (t5-base, 10 epochs) | — | 1.5–3 hrs |
-| **★ 5** | T5 policy: supervised (t5-small, 10 epochs) | — | 15–30 min |
+| **★ 5** | T5 policy: supervised + PPO (t5-large) | — | 4–8 hrs |
+| **★ 5** | T5 policy: supervised + PPO (t5-base) | — | 1.5–3 hrs |
+| **★ 5** | T5 policy: supervised + PPO (t5-small) | — | 15–30 min |
 | **★ 6** | Compare policies | tfidf | 10–20 min |
 | 7 | Multi-seed PPO (3 seeds) | tfidf | 1.5–3 hrs |
 | 8 | Reward sweep | tfidf | varies |
 | 9 | Distractor comparison (3 strategies) | tfidf | 15–30 min |
-| 10 | Variable-K + MaskablePPO | tfidf | 40–80 min |
-| 11 | Expected Wins eval + EW-trained PPO | tfidf | 40–80 min |
+| 10 | Variable-K baselines (MaskablePPO not wired) | tfidf | 15–30 min |
+| 11 | Expected Wins eval (EW-trained PPO is manual only) | tfidf | 5–15 min |
 | 12 | DSPy compile | API-bound | 5–10 min |
 | 13 | K-sensitivity (5 values) | tfidf | 30–60 min |
 | 14 | Reward mode comparison (3 modes) | tfidf | 1.5–3 hrs |
@@ -54,9 +54,12 @@ marked ★ are the core pipeline; others are optional extensions/ablations.
 | Core pipeline (★ Phases 1–6) | 7–13 hrs | 3–5.5 hrs | 1–2 hrs |
 | Core + all extensions (1–19) | 12–22 hrs | 7–13 hrs | 5–9 hrs |
 
-**Parallelism opportunities:** After Phase 1 completes, Phases 2/3/5/9/10/13
-are independent and can run in separate terminal sessions simultaneously,
-reducing wall time by ~2–3x on this 16-core machine.
+**Parallelism opportunities:** After Phase 1 completes, Phases 2/3/5 are
+independent and can run in parallel (Wave 1 of `run_full_pipeline.sh`).
+Phase 4 must follow Phase 2 (reads `baseline_summary.json`). Phase 11
+must follow Phase 4 and run before Phase 15 (it reads `baseline_summary.json`
+which Phase 15 overwrites). Phases 9/13/15 each overwrite
+`baseline_summary.json` and must run sequentially after Phase 11.
 
 ### Software
 
@@ -84,8 +87,11 @@ bash scripts/manual-smoke.sh   # expect: 4/4 stages complete
 
 ## Quick start: automated parallel execution
 
-For a fully automated run of the entire pipeline with parallelism, use
-the `run_full_pipeline.sh` script. This is the **recommended path** for
+For an automated run of the core pipeline and scripted extensions, use
+`run_full_pipeline.sh`. Parallel mode runs Phases 1–6, 11 (eval only),
+13–17; sequential mode (`--sequential`) also includes Phase 9.
+Phases 7, 8, 10, 11 (EW-trained PPO), 12, 18, 19 require manual
+execution. This is the **recommended path** for
 local agents and unattended runs.
 
 ```bash
@@ -103,16 +109,17 @@ bash scripts/run_full_pipeline.sh --t5-model t5-small
 # Balanced — t5-base for T5 policy (~3–4 hrs on M3 Max)
 bash scripts/run_full_pipeline.sh --t5-model t5-base
 
-# Full quality — t5-large (~6–8 hrs on M3 Max)
-bash scripts/run_full_pipeline.sh --t5-model t5-large
+# Full quality — t5-large (requires CUDA with 8+ GB VRAM; will likely OOM on Apple Silicon)
+# bash scripts/run_full_pipeline.sh --t5-model t5-large
 
 # Sequential (no background jobs, safe for debugging)
 bash scripts/run_full_pipeline.sh --sequential --t5-model t5-base
 ```
 
 The script executes the **core pipeline and extensions** in a 4-wave DAG.
-Phases 10 (variable-K MaskablePPO), 12 (DSPy compile), 18 (OpenAI),
-and 19 (MIPROv2) require manual execution — see the individual phase sections below.
+Phases 7 (multi-seed), 8 (reward sweep), 10 (variable-K baselines),
+11 EW-trained PPO, 12 (DSPy compile), 18 (OpenAI), and 19 (MIPROv2)
+require manual execution — see the individual phase sections below.
 
 ```
 Phase 1 (sequential — builds the shared MC dataset)
@@ -138,37 +145,56 @@ Phase 1 (sequential — builds the shared MC dataset)
 
 Not in parallel mode (sequential only or run manually):
   Phase 9  — distractor comparison (sequential mode only)
-  Phase 10 — variable-K + MaskablePPO (not wired through train_ppo.py)
+  Phase 10 — variable-K baselines (MaskablePPO not wired through train_ppo.py)
   Phase 12 — DSPy compile (requires API key)
   Phase 18 — OpenAI embeddings (requires API key)
   Phase 19 — DSPy MIPROv2 (requires API key)
 ```
 
-**Output:** All JSON results in `results/`, per-phase logs in `results/phase_*.log`.
+**Output:** All JSON results in `results/`. In parallel mode, Waves 1, 2,
+and 4 write per-phase logs to `results/phase_*.log` (via `run_phase()`);
+Wave 3 (PPO ablations) prints directly to stdout.
+In `--sequential` mode, all output goes to stdout (no per-phase logs).
 
-**Monitoring:** Tail any phase log in real time:
+**Monitoring:** Phase logs are written via stdout redirection, so output is
+buffered — `tail -f` may show no updates for extended periods (Phase 5 can
+appear stuck for 40+ minutes during supervised warm-start). This is normal;
+check the process is still running with `ps aux | grep train_`.
 ```bash
-tail -f results/phase_3.log   # watch PPO training
-tail -f results/phase_5.log   # watch T5 policy
+tail -f results/phase_3.log   # PPO training (updates every ~30s)
+tail -f results/phase_5.log   # T5 policy (may buffer for long periods)
 ```
 
 **After completion:** Generate summary table:
 ```bash
-python -c "
+python3 -c "
 import json, glob
 for f in sorted(glob.glob('results/*.json')):
     s = json.load(open(f))
     name = f.split('/')[-1].replace('.json', '')
-    acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
-    sq = s.get('mean_sq', 'N/A')
-    print(f'{name}: acc={acc}, S_q={sq}')
+    if 'full_eval' in s:
+        fe = s['full_eval']
+        print(f'{name}: acc={fe.get(\"buzz_accuracy\", \"N/A\")}, S_q={fe.get(\"mean_sq\", \"N/A\")}')
+    elif 't5_policy' in s:
+        for k in ('mlp_policy', 't5_policy'):
+            if k in s:
+                m = s[k]
+                print(f'{name}/{k}: acc={m.get(\"accuracy\", \"N/A\")}, S_q={m.get(\"mean_sq\", \"N/A\")}')
+    elif 'softmax_profile' in s:
+        sp = s['softmax_profile']
+        best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+        print(f'{name}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", \"N/A\")}')
+    else:
+        acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
+        sq = s.get('mean_sq', 'N/A')
+        print(f'{name}: acc={acc}, S_q={sq}')
 "
 ```
 
-**If a phase fails:** Check the log, fix the issue, and re-run just that
-phase manually (see the individual phase sections below). The script exits
-on first failure — completed phases don't need re-running since their
-outputs are already written.
+**If a phase fails:** Check the phase log (if available) or stdout, fix the
+issue, and re-run just that phase manually (see individual phase sections
+below). The script exits on first failure — completed phases don't need
+re-running since their outputs are already written.
 
 ---
 
@@ -178,13 +204,13 @@ If you are an AI coding agent executing this runbook:
 
 1. **Preferred path:** Run `bash scripts/run_full_pipeline.sh --t5-model t5-base` and monitor the logs. This handles dependency ordering for the core pipeline and extensions. Only Wave 1 (baselines, PPO, T5) runs in parallel — all subsequent waves are sequential to avoid artifact races on `artifacts/main/`.
 
-2. **If the script fails:** Read the failing `results/phase_*.log`, diagnose the issue, fix it, then re-run only the failed phase using the manual commands in the sections below.
+2. **If the script fails:** Check `results/phase_*.log` if available (Waves 1, 2, 4 in parallel mode); for Wave 3 and `--sequential` mode, check stdout. Diagnose, fix, then re-run only the failed phase using the manual commands below.
 
-3. **Do not run phases 2/3/5 sequentially** if the parallel script is available — they are independent and running them in parallel saves 2–3x wall time. Phase 13 (K-sensitivity) must run after Phase 4 because Phase 4 reads `baseline_summary.json` and Phase 13 overwrites it.
+3. **Do not run phases 2/3/5 sequentially** if the parallel script is available — they are independent and running them in parallel saves 2–3x wall time. Phase 11 must run after Phase 4 and before Phase 15 (it reads `baseline_summary.json` which Phase 15 overwrites). Phases 9/13/15 each overwrite `baseline_summary.json` and must run sequentially after Phase 11.
 
 4. **Do not modify `artifacts/main/mc_dataset.json`** after Phase 1 — every subsequent phase reads it.
 
-5. **Phases 10, 12, 18, 19** are not included in the automated script (variable-K MaskablePPO, DSPy, OpenAI, MIPROv2). Run them manually if needed.
+5. **Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19** are not in the automated script. Run them manually if needed.
 
 ---
 
@@ -202,7 +228,7 @@ rm -rf artifacts/main/ artifacts/k* artifacts/distractor_*
 rm -rf cache/embeddings/
 rm -rf checkpoints/supervised/ checkpoints/ppo/ checkpoints/ppo_t5/
 rm -rf results/
-mkdir -p artifacts/main
+mkdir -p artifacts/main results
 ```
 
 ---
@@ -254,7 +280,16 @@ python scripts/run_baselines.py \
     likelihood.model=tfidf
 ```
 
-For the **full T5-large baseline** (requires ~3 GB download, hours of compute):
+For **T5-base baseline** (balanced quality/speed, ~45–90 min):
+
+```bash
+python scripts/run_baselines.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    likelihood.model=t5-base
+```
+
+For **T5-large baseline** (requires CUDA or 64+ GB RAM on MPS, hours of compute):
 
 ```bash
 python scripts/run_baselines.py \
@@ -278,6 +313,19 @@ for agent, data in s.items():
 "
 ```
 
+**Archive default baselines** (later phases clobber `artifacts/main/baseline_summary.json`):
+```bash
+# If you ran the TF-IDF command above (recommended):
+cp artifacts/main/baseline_summary.json results/baselines_tfidf.json
+# If you ran T5-base instead:
+# cp artifacts/main/baseline_summary.json results/baselines_t5base.json
+# If you ran T5-large instead:
+# cp artifacts/main/baseline_summary.json results/baselines_t5large.json
+```
+
+> Phases 14–16 assume `results/baselines_tfidf.json` exists for apples-to-apples
+> comparisons. If you used T5-large here, those comparisons will mix regimes.
+
 ---
 
 ## Phase 3: Train PPO (MLP on belief features)
@@ -286,13 +334,15 @@ for agent, data in s.items():
 **Timesteps:** 100,000
 **Network:** [64, 64] MLP
 **Reward:** time_penalty (wait_penalty=0.05, early_buzz_penalty=0.2, buzz_incorrect=-0.5)
+**Likelihood:** add `likelihood.model=tfidf` to match the wrapper and extension phases
 
 ```bash
 python scripts/train_ppo.py \
     --config configs/default.yaml \
     --mc-path artifacts/main/mc_dataset.json \
     --seed 13 \
-    --deterministic-eval
+    --deterministic-eval \
+    likelihood.model=tfidf
 ```
 
 **Expected behavior:**
@@ -309,6 +359,12 @@ ls -lh artifacts/main/ppo_model.zip
 python -c "import json; s=json.load(open('artifacts/main/ppo_summary.json')); print(f'PPO: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}')"
 ```
 
+**Archive default PPO** (later phases clobber `artifacts/main/ppo_summary.json`):
+```bash
+cp artifacts/main/ppo_summary.json results/ppo_default.json
+cp artifacts/main/ppo_model.zip results/ppo_model_default.zip
+```
+
 ---
 
 ## Phase 4: Evaluate all (belief-feature pipeline)
@@ -317,13 +373,20 @@ python -c "import json; s=json.load(open('artifacts/main/ppo_summary.json')); pr
 **Controls:** choices-only, shuffle, alias substitution (alias control is a
 no-op unless `alias_lookup.json` is provided externally — `build_mc_dataset.py`
 does not generate it)
-**Metrics:** S_q, ECE, Brier, per-category accuracy, bootstrap CIs
+**Metrics:** S_q, ECE, Brier, per-category accuracy
 
 ```bash
 python scripts/evaluate_all.py \
     --config configs/default.yaml \
-    --mc-path artifacts/main/mc_dataset.json
+    --mc-path artifacts/main/mc_dataset.json \
+    likelihood.model=tfidf
 ```
+
+> **Selective re-run note:** `evaluate_all.py` reads
+> `artifacts/main/baseline_summary.json` for the softmax threshold. If later
+> phases (13, 15) have overwritten it, restore the TF-IDF archive first
+> (this command uses `likelihood.model=tfidf`, so the baseline must match):
+> `cp results/baselines_tfidf.json artifacts/main/baseline_summary.json`
 
 **Expected output:** `artifacts/main/evaluation_report.json`, `artifacts/main/plots/`
 
@@ -344,18 +407,18 @@ for name, ctrl in r['controls'].items():
 ## Phase 5: Train T5 policy (end-to-end)
 
 **Config:** `configs/t5_policy.yaml`
-**Model:** t5-large (770M params, ~3 GB)
+**Model:** t5-base recommended (220M params); t5-large (770M) is slower and needs more memory
 **Supervised:** 10 epochs, effective batch 32
 **PPO:** 100 iterations
 
-For **t5-large** (requires CUDA or long MPS run):
+> **Memory warning (Apple Silicon / MPS):** A full-scale t5-base run on
+> 20,407 questions reached ~41 GB physical memory footprint on an M3 Max.
+> The "fits in 8 GB" claim from earlier docs was based on model weight size,
+> not the actual working set with 20k-question tokenization, gradient buffers,
+> and MPS allocations. **Minimum 32 GB RAM is recommended for t5-base at full
+> scale.** t5-large will exceed 64 GB and likely OOM on most Apple Silicon Macs.
 
-```bash
-python scripts/train_t5_policy.py \
-    --config configs/t5_policy.yaml
-```
-
-For **t5-base** (220M params, fits in 8 GB, ~2x faster):
+For **t5-base** (recommended path, matches `run_full_pipeline.sh --t5-model t5-base`):
 
 ```bash
 python scripts/train_t5_policy.py \
@@ -363,12 +426,19 @@ python scripts/train_t5_policy.py \
     model.model_name=t5-base
 ```
 
+For **t5-large** (requires CUDA with 8+ GB VRAM, or 64+ GB system RAM on MPS):
+
+```bash
+python scripts/train_t5_policy.py \
+    --config configs/t5_policy.yaml
+```
+
 **Expected behavior:**
 1. Supervised warm-start: trains answer selection on complete questions (10 epochs)
 2. PPO fine-tuning: optimizes wait/answer policy on incremental episodes (100 iterations)
 3. Saves best model to `checkpoints/ppo_t5/best_model/`
 
-**Estimated time:** 2–8 hours depending on GPU/model size
+**Estimated time:** t5-base ~2–3 hrs on M3 Max MPS; t5-large ~6–8 hrs on CUDA
 
 **Checkpoint:**
 ```bash
@@ -381,6 +451,19 @@ cat checkpoints/ppo_t5/test_results.json
 ## Phase 6: Compare policies
 
 **Requires:** Phase 3 PPO model + Phase 5 T5 model
+
+> **Comparison caveats:** The MLP and T5 policies use different confidence
+> semantics (belief-sigmoid vs wait-head probability) and different reward
+> settings (config-driven vs T5-pipeline defaults). Accuracy and buzz-position
+> are directly comparable; S_q, ECE, Brier, and reward comparisons are
+> qualitative. See the docstring in `compare_policies.py` for details.
+>
+> `compare_policies.py` auto-detects the device for T5 inference (MPS on
+> Apple Silicon, CUDA if available, otherwise CPU).
+>
+> **Selective re-run note:** Phases 11 (EW-trained PPO), 14, 16, and 17 all
+> overwrite `artifacts/main/ppo_model`. If re-running after ablations, restore:
+> `cp results/ppo_model_default.zip artifacts/main/ppo_model.zip`
 
 ```bash
 python scripts/compare_policies.py \
@@ -420,7 +503,8 @@ for SEED in 1 2 3; do
         --config configs/default.yaml \
         --mc-path artifacts/main/mc_dataset.json \
         --seed $SEED \
-        --deterministic-eval
+        --deterministic-eval \
+        likelihood.model=tfidf
     cp artifacts/main/ppo_summary.json "results/ppo_seed${SEED}.json"
     cp artifacts/main/ppo_model.zip "results/ppo_model_seed${SEED}.zip"
 done
@@ -449,26 +533,33 @@ python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000
 
 ## Full pipeline single-script execution
 
-Run all phases sequentially (Phases 1–4 of the belief-feature pipeline):
+Run the core pipeline sequentially (Phases 1–6) with TF-IDF beliefs and
+t5-base for the T5 policy. Includes archive steps so extension phases
+can reference Phase 2/3 defaults from `results/`.
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
+mkdir -p results
 
 echo "=== Phase 1: Build MC dataset ==="
 python scripts/build_mc_dataset.py --config configs/default.yaml --output-dir artifacts/main
 
 echo "=== Phase 2: Run baselines ==="
-python scripts/run_baselines.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json
+python scripts/run_baselines.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json likelihood.model=tfidf
+cp artifacts/main/baseline_summary.json results/baselines_tfidf.json
 
 echo "=== Phase 3: Train PPO ==="
-python scripts/train_ppo.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json --seed 13 --deterministic-eval
+python scripts/train_ppo.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json --seed 13 --deterministic-eval likelihood.model=tfidf
+cp artifacts/main/ppo_summary.json results/ppo_default.json
+cp artifacts/main/ppo_model.zip results/ppo_model_default.zip
 
 echo "=== Phase 4: Evaluate all ==="
-python scripts/evaluate_all.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json
+python scripts/evaluate_all.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json likelihood.model=tfidf
+cp artifacts/main/evaluation_report.json results/eval_default.json
 
-echo "=== Phase 5: Train T5 policy ==="
-python scripts/train_t5_policy.py --config configs/t5_policy.yaml
+echo "=== Phase 5: Train T5 policy (t5-base) ==="
+python scripts/train_t5_policy.py --config configs/t5_policy.yaml model.model_name=t5-base
 
 echo "=== Phase 6: Compare policies ==="
 python scripts/compare_policies.py \
@@ -489,8 +580,14 @@ phases (e.g. K-sensitivity clobbers `baseline_summary.json`, PPO ablations
 clobber `ppo_summary.json`). The **stable outputs** are in `results/*.json`,
 which are copied after each phase completes.
 
+The wrapper (`run_full_pipeline.sh`) writes all outputs to top-level
+`results/*.json`. The manual extension sections write to subdirectories
+(`results/k_sensitivity/`, `results/reward_modes/`, `results/belief_modes/`,
+`results/policy_modes/`). Both are valid — the tree below shows the wrapper
+layout; see manual phase sections for subdirectory paths.
+
 ```
-results/                         # Stable per-phase outputs
+results/                         # Stable per-phase outputs (wrapper layout)
 ├── baselines_tfidf.json         # Phase 2 baseline summary
 ├── ppo_default.json             # Phase 3 PPO summary
 ├── ppo_model_default.zip        # Phase 3 PPO model
@@ -502,9 +599,15 @@ results/                         # Stable per-phase outputs
 ├── ppo_human_grounded.json      # Phase 14 reward ablation
 ├── ppo_stop_only.json           # Phase 16 stop-only PPO
 ├── ppo_no_buzz.json             # Phase 17 no-buzz horizon
-├── baselines_k2..k6.json        # Phase 13 K-sensitivity
+├── baselines_k{2,3,5,6}.json   # Phase 13 K-sensitivity (k4 is default)
 ├── baselines_tfidf_profile.json # Phase 9 (sequential mode only)
-└── baselines_category_random.json # Phase 9 (sequential mode only)
+├── baselines_category_random.json # Phase 9 (sequential mode only)
+│
+│  # Manual extension subdirectories (not created by wrapper):
+├── k_sensitivity/               # Phase 13 manual
+├── reward_modes/                # Phase 14 manual
+├── belief_modes/                # Phase 15 manual
+└── policy_modes/                # Phase 16 manual
 
 artifacts/main/                  # Working directory (overwritten by later phases)
 ├── mc_dataset.json              # Stable — built in Phase 1, never overwritten
@@ -558,7 +661,7 @@ for STRATEGY in sbert tfidf catrandom; do
         --config configs/default.yaml \
         --mc-path "artifacts/distractor_comparison/mc_${STRATEGY}.json" \
         likelihood.model=tfidf
-    cp artifacts/main/baseline_summary.json "results/baselines_${STRATEGY}.json"
+    cp artifacts/main/baseline_summary.json "results/baselines_distractor_${STRATEGY}.json"
 done
 ```
 
@@ -567,7 +670,7 @@ done
 for STRATEGY in sbert tfidf catrandom; do
     python -c "
 import json
-s = json.load(open('results/baselines_${STRATEGY}.json'))
+s = json.load(open('results/baselines_distractor_${STRATEGY}.json'))
 best = max(s.get('softmax_profile', {}).items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
 print(f'${STRATEGY}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", 0):.3f}')
 "
@@ -624,11 +727,17 @@ Expected Wins metric with a logistic opponent model. Note: this evaluates
 the baseline agents, not the PPO model — to train PPO with Expected Wins
 reward, see the separate command below.
 
+> **Selective re-run note:** Like Phase 4, this reads
+> `artifacts/main/baseline_summary.json`. If later phases have overwritten it,
+> restore the TF-IDF archive (this command uses `likelihood.model=tfidf`):
+> `cp results/baselines_tfidf.json artifacts/main/baseline_summary.json`
+
 ```bash
 # Evaluate with Expected Wins reward mode and logistic opponent
 python scripts/evaluate_all.py \
     --config configs/default.yaml \
     --mc-path artifacts/main/mc_dataset.json \
+    likelihood.model=tfidf \
     environment.reward_mode=expected_wins \
     environment.opponent_buzz_model.type=logistic \
     environment.opponent_buzz_model.midpoint=0.6 \
@@ -639,6 +748,7 @@ cp artifacts/main/evaluation_report.json results/eval_expected_wins_logistic.jso
 python scripts/evaluate_all.py \
     --config configs/default.yaml \
     --mc-path artifacts/main/mc_dataset.json \
+    likelihood.model=tfidf \
     environment.reward_mode=expected_wins \
     environment.opponent_buzz_model.type=empirical
 cp artifacts/main/evaluation_report.json results/eval_expected_wins_empirical.json
@@ -664,6 +774,7 @@ python scripts/train_ppo.py \
     --mc-path artifacts/main/mc_dataset.json \
     --seed 13 \
     --deterministic-eval \
+    likelihood.model=tfidf \
     environment.reward_mode=expected_wins \
     environment.opponent_buzz_model.type=logistic
 cp artifacts/main/ppo_summary.json results/ppo_expected_wins.json
@@ -672,21 +783,34 @@ cp artifacts/main/ppo_model.zip results/ppo_model_expected_wins.zip
 
 ---
 
-### Phase 12: DSPy offline compile (experimental)
+### Phase 12: DSPy offline compile (experimental — not wired end-to-end)
 
-Compile a DSPy-optimized scorer using the training split, then evaluate.
+Compile a DSPy-optimized scorer using the training split.
 Requires the `dspy` extra and an LM API key.
+
+> **Limitation:** `optimize_dspy.py` compiles and reports metrics, but does
+> not persist the compiled program in a way that `build_likelihood_from_config()`
+> can load it. Setting `likelihood.model=dspy` constructs `DSPyLikelihood`
+> with a placeholder uniform scorer, not the compiled program. This phase
+> is useful for validating the DSPy pipeline contract, but the evaluated
+> baselines below will use uniform scores — not the compiled model's.
+>
+> **Data path caveat:** `optimize_dspy.py` prefers
+> `artifacts/smoke/train_dataset.json` over `artifacts/main/train_dataset.json`.
+> If you have run the smoke pipeline, it will silently compile on the 50-question
+> smoke split. To force the full training split, remove or rename the smoke
+> artifact first: `rm artifacts/smoke/train_dataset.json`
 
 ```bash
 pip install -e '.[dspy]'
 export OPENAI_API_KEY=...  # or configure another LM backend
 
-# Compile scorer against training split
+# Compile scorer against training split (reports metrics but does not persist)
 python scripts/optimize_dspy.py \
     --config configs/default.yaml \
     --max-examples 100
 
-# Evaluate with DSPy scorer
+# Evaluate with DSPy scorer (NOTE: uses placeholder uniform scorer, not compiled)
 python scripts/run_baselines.py \
     --config configs/default.yaml \
     --mc-path artifacts/main/mc_dataset.json \
@@ -740,15 +864,15 @@ Train PPO under each reward mode and compare final metrics.
 ```bash
 mkdir -p results/reward_modes
 
-# time_penalty (default — already done in Phase 3)
-cp artifacts/main/ppo_summary.json results/reward_modes/ppo_time_penalty.json
+# time_penalty (default — already done in Phase 3, archived to results/ppo_default.json)
+cp results/ppo_default.json results/reward_modes/ppo_time_penalty.json
 
 # simple (+1/-1, no wait penalty)
 python scripts/train_ppo.py \
     --config configs/default.yaml \
     --mc-path artifacts/main/mc_dataset.json \
     --seed 13 --deterministic-eval \
-    environment.reward_mode=simple
+    likelihood.model=tfidf environment.reward_mode=simple
 cp artifacts/main/ppo_summary.json results/reward_modes/ppo_simple.json
 
 # human_grounded (0 reward if agent buzzes after sampled human position)
@@ -756,7 +880,7 @@ python scripts/train_ppo.py \
     --config configs/default.yaml \
     --mc-path artifacts/main/mc_dataset.json \
     --seed 13 --deterministic-eval \
-    environment.reward_mode=human_grounded
+    likelihood.model=tfidf environment.reward_mode=human_grounded
 cp artifacts/main/ppo_summary.json results/reward_modes/ppo_human_grounded.json
 
 # Summarize
@@ -777,8 +901,8 @@ Compare from-scratch vs sequential-Bayes belief computation for baselines.
 ```bash
 mkdir -p results/belief_modes
 
-# from_scratch (default — already done in Phase 2)
-cp artifacts/main/baseline_summary.json results/belief_modes/baselines_from_scratch.json
+# from_scratch (default — already done in Phase 2, archived to results/baselines_tfidf.json)
+cp results/baselines_tfidf.json results/belief_modes/baselines_from_scratch.json
 
 # sequential_bayes (Bayesian update: posterior = prior * likelihood)
 python scripts/run_baselines.py \
@@ -808,15 +932,15 @@ decides WAIT/BUZZ and the answer is selected by argmax(belief).
 ```bash
 mkdir -p results/policy_modes
 
-# flat_kplus1 (default — already done in Phase 3)
-cp artifacts/main/ppo_summary.json results/policy_modes/ppo_flat_kplus1.json
+# flat_kplus1 (default — already done in Phase 3, archived to results/ppo_default.json)
+cp results/ppo_default.json results/policy_modes/ppo_flat_kplus1.json
 
 # stop_only (Discrete(2), answer = argmax belief)
 python scripts/train_ppo.py \
     --config configs/default.yaml \
     --mc-path artifacts/main/mc_dataset.json \
     --seed 13 --deterministic-eval \
-    --policy-mode stop_only
+    --policy-mode stop_only likelihood.model=tfidf
 cp artifacts/main/ppo_summary.json results/policy_modes/ppo_stop_only.json
 
 python -c "
@@ -839,7 +963,7 @@ python scripts/train_ppo.py \
     --config configs/default.yaml \
     --mc-path artifacts/main/mc_dataset.json \
     --seed 13 --deterministic-eval \
-    environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
+    likelihood.model=tfidf environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
 cp artifacts/main/ppo_summary.json results/ppo_no_buzz.json
 
 python -c "
@@ -899,7 +1023,7 @@ python scripts/optimize_dspy.py --config configs/default.yaml --optimizer MIPROv
 - Dataset splits use `hashlib.md5` (immune to PYTHONHASHSEED)
 - Same seed + same data + same code = identical results
 - To reproduce exactly: pin the git commit hash and Python version
-- Current: commit `$(git rev-parse --short HEAD)`, Python 3.13.5
+- Current: commit `40cb9a3`, Python 3.13.5
 
 ## Known scale risks
 
@@ -912,7 +1036,9 @@ python scripts/optimize_dspy.py --config configs/default.yaml --optimizer MIPROv
 
 ## Wall-time summary (Apple M3 Max, parallel vs sequential)
 
-| Mode | t5-small | t5-base | t5-large |
-|------|----------|---------|----------|
+| Mode | t5-small | t5-base | t5-large (CUDA only) |
+|------|----------|---------|---------------------|
 | `run_full_pipeline.sh` (parallel) | ~2 hrs | ~3–4 hrs | ~6–8 hrs |
 | `run_full_pipeline.sh --sequential` | ~5 hrs | ~7–10 hrs | ~12–18 hrs |
+
+t5-large will likely OOM on Apple Silicon Macs (64 GB) at full scale. Use t5-base on MPS.

@@ -25,20 +25,15 @@ The content is organized as follows:
   between different files in the repository.
 - Be aware that this file may contain sensitive information. Handle it with
   the same level of security as you would the original repository.
-- Pay special attention to the Repository Description. These contain important context and guidelines specific to this project.
 
 ## Notes
 - Some files may have been excluded based on .gitignore rules and Repomix's configuration
 - Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
-- Only files matching these patterns are included: artifacts/smoke/**/*.json, artifacts/smoke/**/*.csv
+- Only files matching these patterns are included: artifacts/smoke/**, configs/**
 - Files matching patterns in .gitignore are excluded
 - Files matching default ignore patterns are excluded
 - Line numbers have been added to the beginning of each line
-- Long base64 data strings (e.g., data:image/png;base64,...) have been truncated to reduce token count
 - Files are sorted by Git change count (files with more changes are at the bottom)
-
-# User Provided Header
-qanta-buzzer @ c8d460d7 (smoke — final sync)
 
 # Directory Structure
 ```
@@ -56,6 +51,7 @@ artifacts/
     mc_dataset.json
     ppo_runs.json
     ppo_summary.json
+    RESULTS_SUMMARY.md
     reward_sweep_results_10k.csv
     reward_sweep_results_10k.json
     reward_sweep_results_5k.csv
@@ -66,6 +62,10 @@ artifacts/
     test_dataset.json
     train_dataset.json
     val_dataset.json
+configs/
+  default.yaml
+  smoke.yaml
+  t5_policy.yaml
 ```
 
 # Files
@@ -7226,6 +7226,96 @@ artifacts/
 6886: ]
 ```
 
+## File: artifacts/smoke/RESULTS_SUMMARY.md
+```markdown
+ 1: # Smoke Pipeline Results Summary
+ 2: 
+ 3: Generated: 2026-03-09 (latest run)
+ 4: 
+ 5: ## Pipeline Status
+ 6: 
+ 7: - Status: **ok**
+ 8: - Full smoke pipeline passes end-to-end via:
+ 9:   - `python scripts/run_smoke_pipeline.py`
+10: - Runtime and per-stage timings are in:
+11:   - `artifacts/smoke/smoke_pipeline_summary.json`
+12: 
+13: ## Current Headline Metrics
+14: 
+15: ### Best non-RL baseline (SoftmaxProfile @ threshold 0.5)
+16: - Accuracy: **0.3864**
+17: - Mean S_q: **0.2433**
+18: - Mean buzz step: **3.50**
+19: 
+20: ### PPO smoke (latest tuned reward + deterministic full-dataset eval)
+21: Configuration knobs currently set in `configs/smoke.yaml`:
+22: - `environment.wait_penalty: 0.05`
+23: - `environment.early_buzz_penalty: 0.2`
+24: - `environment.buzz_incorrect: -1.0`
+25: - `ppo.total_timesteps: 3000`
+26: 
+27: Metrics:
+28: - Accuracy: **0.3864**
+29: - Mean S_q: **0.2734**
+30: - Mean buzz step: **4.0455**
+31: - ECE: **0.1445**
+32: - Brier: **0.2783**
+33: 
+34: Source: `artifacts/smoke/ppo_summary.json`
+35: 
+36: ## Reward Sweep Results (3x3)
+37: 
+38: Sweep script: `python scripts/sweep_reward_shaping.py --seeds 13,42,123`
+39: 
+40: Best config by balanced objective (`mean_accuracy + mean_S_q - 0.5 * mean_ECE`):
+41: - `wait_penalty=0.05`
+42: - `early_buzz_penalty=0.2`
+43: - Mean accuracy (3 seeds): **0.3409**
+44: - Mean S_q (3 seeds): **0.3169**
+45: - Mean buzz step (3 seeds): **0.0000**
+46: - Mean ECE (3 seeds): **0.1220**
+47: - Objective: **0.5968**
+48: 
+49: ### Follow-up multi-seed sweeps
+50: 
+51: - 5k timesteps (`--timesteps 5000`), best config `0.05/0.2`:
+52:   - Mean accuracy: **0.3409**
+53:   - Mean S_q: **0.3338**
+54:   - Mean ECE: **0.0350**
+55:   - Objective: **0.6572**
+56: - 10k timesteps (`--timesteps 10000`), best config `0.05/0.2`:
+57:   - Mean accuracy: **0.3409**
+58:   - Mean S_q: **0.3396**
+59:   - Mean ECE: **0.0060**
+60:   - Objective: **0.6775**
+61: 
+62: Recommendation from current smoke sweeps:
+63: - Keep `wait_penalty=0.05` and `early_buzz_penalty=0.2` as the candidate pair for non-smoke PPO runs.
+64: 
+65: Artifacts:
+66: - `artifacts/smoke/reward_sweep_results.csv`
+67: - `artifacts/smoke/reward_sweep_results.json`
+68: 
+69: ## Comparison Notes
+70: 
+71: - The new recommended smoke reward config is selected for cross-seed stability rather than a single-seed peak.
+72: - PPO performance still varies by seed and reward settings on this tiny smoke slice, so multi-seed means are more reliable for config decisions.
+73: - Increasing timesteps from 5k to 10k improved objective mainly through better calibration (lower ECE) and slightly higher mean `S_q`.
+74: 
+75: ## Controls Snapshot (evaluation report)
+76: 
+77: - Choices-only accuracy: **0.0909** (chance = 0.25 on this small smoke subset)
+78: - Shuffle control S_q: **0.2367** (close to full-eval baseline S_q)
+79: 
+80: Source: `artifacts/smoke/evaluation_report.json`
+81: 
+82: ## Recommended Next Steps
+83: 
+84: 1. Increase PPO timesteps in smoke (e.g., 5k to 10k) before judging policy quality.
+85: 2. Keep using multi-seed sweeps and rank by the balanced objective (includes ECE penalty).
+86: 3. Promote the selected reward config to non-smoke runs and compare against baseline on larger splits.
+```
+
 ## File: artifacts/smoke/reward_sweep_results_10k.csv
 ```
  1: wait_penalty,early_buzz_penalty,status,num_ok,num_total,seconds,buzz_accuracy,mean_sq,mean_buzz_step,ece,brier,objective
@@ -8570,6 +8660,66 @@ artifacts/
 38:   "status": "ok",
 39:   "total_seconds": 102.938
 40: }
+```
+
+## File: configs/t5_policy.yaml
+```yaml
+ 1: # T5 Policy Configuration
+ 2: # Hyperparameters for T5PolicyModel with supervised warm-start and PPO fine-tuning.
+ 3: # Use with: python -m training.train_supervised_t5 --config configs/t5_policy.yaml
+ 4: 
+ 5: model:
+ 6:   model_name: t5-large  # Use t5-base or t5-small if memory constrained
+ 7:   device: auto  # auto-detect cuda > mps > cpu
+ 8:   max_input_length: 512
+ 9:   num_choices: 4
+10: 
+11: supervised:
+12:   lr: 3.0e-4
+13:   epochs: 10
+14:   batch_size: 8
+15:   grad_accum_steps: 4  # Effective batch = 32
+16:   max_grad_norm: 1.0
+17:   weight_decay: 0.01
+18:   checkpoint_dir: checkpoints
+19: 
+20: ppo:
+21:   lr: 1.0e-5  # Lower than supervised for stability
+22:   iterations: 100
+23:   batch_size: 8
+24:   epochs_per_iter: 4
+25:   clip_ratio: 0.2
+26:   value_coef: 0.5
+27:   entropy_coef: 0.01
+28:   max_grad_norm: 0.5
+29:   gamma: 0.99
+30:   gae_lambda: 0.95
+31:   target_kl: 0.03
+32:   checkpoint_dir: checkpoints
+33: 
+34: data:
+35:   csv_path: "questions.csv"
+36:   K: 4
+37:   train_size: 0.7
+38:   val_size: 0.15
+39:   test_size: 0.15
+40:   seed: 42
+41: 
+42: # Smoke test overrides (use with --smoke flag)
+43: smoke:
+44:   model:
+45:     model_name: t5-small  # 60M params instead of 770M
+46:     max_input_length: 128
+47:   supervised:
+48:     epochs: 2
+49:     batch_size: 4
+50:     grad_accum_steps: 1  # No accumulation for speed
+51:   ppo:
+52:     iterations: 5
+53:     batch_size: 4
+54:     epochs_per_iter: 2
+55:   data:
+56:     max_questions: 50
 ```
 
 ## File: artifacts/smoke/plots/comparison.csv
@@ -25030,476 +25180,6 @@ artifacts/
 10: }
 ```
 
-## File: artifacts/smoke/val_dataset.json
-```json
-  1: [
-  2:   {
-  3:     "qid": "13234",
-  4:     "question": "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood. Along with Vili and Ve, this god was the son of Borr and Bestla. This gods possessions include the throne Hlidskjalf and the ring Draupnir. This god receives half of the Einherjar in Valhalla, where they are served by his Valkyrie messengers. After making a trip to Mimirs Well, this god lost one eye. Huginn and Muninn are ravens loyal to, for 10 points, what chief Norse deity",
-  5:     "tokens": [
-  6:       "The",
-  7:       "image",
-  8:       "of",
-  9:       "this",
- 10:       "figure",
- 11:       "on",
- 12:       "his",
- 13:       "mount",
- 14:       "is",
- 15:       "associated",
- 16:       "with",
- 17:       "three",
- 18:       "interlocking",
- 19:       "triangles,",
- 20:       "the",
- 21:       "Valknut.",
- 22:       "This",
- 23:       "god",
- 24:       "worked",
- 25:       "for",
- 26:       "Baugi",
- 27:       "and",
- 28:       "seduced",
- 29:       "Gunnlod",
- 30:       "to",
- 31:       "obtain",
- 32:       "a",
- 33:       "substance",
- 34:       "made",
- 35:       "from",
- 36:       "Kvasirs",
- 37:       "blood.",
- 38:       "Along",
- 39:       "with",
- 40:       "Vili",
- 41:       "and",
- 42:       "Ve,",
- 43:       "this",
- 44:       "god",
- 45:       "was",
- 46:       "the",
- 47:       "son",
- 48:       "of",
- 49:       "Borr",
- 50:       "and",
- 51:       "Bestla.",
- 52:       "This",
- 53:       "gods",
- 54:       "possessions",
- 55:       "include",
- 56:       "the",
- 57:       "throne",
- 58:       "Hlidskjalf",
- 59:       "and",
- 60:       "the",
- 61:       "ring",
- 62:       "Draupnir.",
- 63:       "This",
- 64:       "god",
- 65:       "receives",
- 66:       "half",
- 67:       "of",
- 68:       "the",
- 69:       "Einherjar",
- 70:       "in",
- 71:       "Valhalla,",
- 72:       "where",
- 73:       "they",
- 74:       "are",
- 75:       "served",
- 76:       "by",
- 77:       "his",
- 78:       "Valkyrie",
- 79:       "messengers.",
- 80:       "After",
- 81:       "making",
- 82:       "a",
- 83:       "trip",
- 84:       "to",
- 85:       "Mimirs",
- 86:       "Well,",
- 87:       "this",
- 88:       "god",
- 89:       "lost",
- 90:       "one",
- 91:       "eye.",
- 92:       "Huginn",
- 93:       "and",
- 94:       "Muninn",
- 95:       "are",
- 96:       "ravens",
- 97:       "loyal",
- 98:       "to,",
- 99:       "for",
-100:       "10",
-101:       "points,",
-102:       "what",
-103:       "chief",
-104:       "Norse",
-105:       "deity"
-106:     ],
-107:     "answer_primary": "Odin",
-108:     "clean_answers": [
-109:       "odin"
-110:     ],
-111:     "run_indices": [
-112:       15,
-113:       31,
-114:       45,
-115:       56,
-116:       73,
-117:       85,
-118:       99
-119:     ],
-120:     "human_buzz_positions": null,
-121:     "category": "Social_Science",
-122:     "cumulative_prefixes": [
-123:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut.",
-124:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood.",
-125:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood. Along with Vili and Ve, this god was the son of Borr and Bestla.",
-126:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood. Along with Vili and Ve, this god was the son of Borr and Bestla. This gods possessions include the throne Hlidskjalf and the ring Draupnir.",
-127:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood. Along with Vili and Ve, this god was the son of Borr and Bestla. This gods possessions include the throne Hlidskjalf and the ring Draupnir. This god receives half of the Einherjar in Valhalla, where they are served by his Valkyrie messengers.",
-128:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood. Along with Vili and Ve, this god was the son of Borr and Bestla. This gods possessions include the throne Hlidskjalf and the ring Draupnir. This god receives half of the Einherjar in Valhalla, where they are served by his Valkyrie messengers. After making a trip to Mimirs Well, this god lost one eye.",
-129:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood. Along with Vili and Ve, this god was the son of Borr and Bestla. This gods possessions include the throne Hlidskjalf and the ring Draupnir. This god receives half of the Einherjar in Valhalla, where they are served by his Valkyrie messengers. After making a trip to Mimirs Well, this god lost one eye. Huginn and Muninn are ravens loyal to, for 10 points, what chief Norse deity"
-130:     ],
-131:     "options": [
-132:       "Odin",
-133:       "Jainism",
-134:       "Jesus",
-135:       "Tyr"
-136:     ],
-137:     "gold_index": 0,
-138:     "option_profiles": [
-139:       "The Solarljod claims that this figures eldest daughter is called Radvr and that his youngest is called Kreppvr. Loki insulted this god by saying that the daughters of Hymir relieved themselves in his mouth. This figure's father-in-law once captured Loki as a giant eagle, forcing Loki to lure Idunn into Thrymheim. This figure was exchanged with Hoenir to end the Aesir-Vanir War. The wife of this god was once made to laugh by the efforts of Loki and a female goat. He separated from his wife because she could not get used to living in Natn due to the screeching of the gulls after she selected this god for his beautiful feet. For 10 points, name this father of Freyr and Freya and husband of Skadi, the Norse god of wealth and seafaring.",
-140:       "The cosmology of this group holds that pudgala is comprised of paramanu. Its eschatology holds that, when all the teachings become Purva, the current kalpa will end. Its biology predicts a multitude of minute nigodas, parts of the jiva. Its divided monastic sects are the Shvetambaras and Digambaras and its best-known practice is probably ahimsa or non-violence. This religions reveres the teachings of Parshvanatha, Mahavira, and other Tirtankaras. For 10 points, name this religion that teaches a disciplined spiritual path to enlightenment and that is prominent in India.",
-141:       "One religion says that this figure was taken to the Orissa region for instruction in the Jagannath Temple, and appeared to a couple named Claudius and Juliet, Roman pagans, on the Tiber River. In another religion, this figure is known as \"kdaba,\" and was originally Mandaean, but perverted the prophecies of his mentor and became an evil figure, like Moses and Abraham. A claimed disciple of this man, a son of Patek, died at Gundeshapur at the hands of Bahram I. Among the figures who have claimed to be him were Marshall Applewhite, the leader of Heaven's Gate, and David Koresh. For 10 points, name this figure recognized in Islam as 'Isa, believed in by the so-called \"Jews for\" him, and by a messload of Christians.",
-142:       "This god is sometimes called Thingsus, which refers to his role as the patron god of assemblies. The Hymiskvitha claims that this god is the son of the giant Hymir, though it also tells how this god helps Thor steal a giant kettle from Hymir. In the Lokasenna, this god defends Freyr from Lokis accusations of incest. A patron goddess of Augsburg known as Zisa may be the consort of this god, though Loki suggests that this gods consort cheats on him. This gods eventual killer lives across the Gjoll river in Gnipahellir cave and has a chest covered in blood and four eyes. For ten points, name this Norse god who will fight Garm at Ragnorak, a deity of oaths and justice who facilitated the use of Gleipnir when he restrained the Fenris Wolf by giving up his hand."
-143:     ],
-144:     "option_answer_primary": [
-145:       "Odin",
-146:       "Jainism",
-147:       "Jesus",
-148:       "Tyr"
-149:     ],
-150:     "distractor_strategy": "category_random"
-151:   },
-152:   {
-153:     "qid": "360",
-154:     "question": "His early works included self portraits such as The Wounded Man, The Cellist, and The Man with a Pipe. His works concerning dormancy include The Sleeping Spinner and an erotic work featuring two females entitled The Sleepers. One of his best-known works, which depicts a young and old man performing the titular backbreaking action, was destroyed during the bombing of Dresden, and another depicts the internment of a peasant in the presence of two clergy wearing red. FTP, name this French painter of The Stone-breaker and The Burial at Organs.",
-155:     "tokens": [
-156:       "His",
-157:       "early",
-158:       "works",
-159:       "included",
-160:       "self",
-161:       "portraits",
-162:       "such",
-163:       "as",
-164:       "The",
-165:       "Wounded",
-166:       "Man,",
-167:       "The",
-168:       "Cellist,",
-169:       "and",
-170:       "The",
-171:       "Man",
-172:       "with",
-173:       "a",
-174:       "Pipe.",
-175:       "His",
-176:       "works",
-177:       "concerning",
-178:       "dormancy",
-179:       "include",
-180:       "The",
-181:       "Sleeping",
-182:       "Spinner",
-183:       "and",
-184:       "an",
-185:       "erotic",
-186:       "work",
-187:       "featuring",
-188:       "two",
-189:       "females",
-190:       "entitled",
-191:       "The",
-192:       "Sleepers.",
-193:       "One",
-194:       "of",
-195:       "his",
-196:       "best-known",
-197:       "works,",
-198:       "which",
-199:       "depicts",
-200:       "a",
-201:       "young",
-202:       "and",
-203:       "old",
-204:       "man",
-205:       "performing",
-206:       "the",
-207:       "titular",
-208:       "backbreaking",
-209:       "action,",
-210:       "was",
-211:       "destroyed",
-212:       "during",
-213:       "the",
-214:       "bombing",
-215:       "of",
-216:       "Dresden,",
-217:       "and",
-218:       "another",
-219:       "depicts",
-220:       "the",
-221:       "internment",
-222:       "of",
-223:       "a",
-224:       "peasant",
-225:       "in",
-226:       "the",
-227:       "presence",
-228:       "of",
-229:       "two",
-230:       "clergy",
-231:       "wearing",
-232:       "red.",
-233:       "FTP,",
-234:       "name",
-235:       "this",
-236:       "French",
-237:       "painter",
-238:       "of",
-239:       "The",
-240:       "Stone-breaker",
-241:       "and",
-242:       "The",
-243:       "Burial",
-244:       "at",
-245:       "Organs."
-246:     ],
-247:     "answer_primary": "Gustave Courbet",
-248:     "clean_answers": [
-249:       "gustave courbet"
-250:     ],
-251:     "run_indices": [
-252:       18,
-253:       36,
-254:       76,
-255:       89
-256:     ],
-257:     "human_buzz_positions": null,
-258:     "category": "Fine_Arts",
-259:     "cumulative_prefixes": [
-260:       "His early works included self portraits such as The Wounded Man, The Cellist, and The Man with a Pipe.",
-261:       "His early works included self portraits such as The Wounded Man, The Cellist, and The Man with a Pipe. His works concerning dormancy include The Sleeping Spinner and an erotic work featuring two females entitled The Sleepers.",
-262:       "His early works included self portraits such as The Wounded Man, The Cellist, and The Man with a Pipe. His works concerning dormancy include The Sleeping Spinner and an erotic work featuring two females entitled The Sleepers. One of his best-known works, which depicts a young and old man performing the titular backbreaking action, was destroyed during the bombing of Dresden, and another depicts the internment of a peasant in the presence of two clergy wearing red.",
-263:       "His early works included self portraits such as The Wounded Man, The Cellist, and The Man with a Pipe. His works concerning dormancy include The Sleeping Spinner and an erotic work featuring two females entitled The Sleepers. One of his best-known works, which depicts a young and old man performing the titular backbreaking action, was destroyed during the bombing of Dresden, and another depicts the internment of a peasant in the presence of two clergy wearing red. FTP, name this French painter of The Stone-breaker and The Burial at Organs."
-264:     ],
-265:     "options": [
-266:       "Gustave Courbet",
-267:       "Johann Sebastian Bach",
-268:       "The Magic Flute",
-269:       "Edward Elgar"
-270:     ],
-271:     "gold_index": 0,
-272:     "option_profiles": [
-273:       "Gustave Courbet",
-274:       "This composer was given the task of improvising on a \"\"Royal Theme\"\" provided to him by a monarch, which eventually resulted in his piece The Musical Offering. The fifth part of another work by this composer contains a solo for virtuoso harpsichord. That work was written for the (*) margrave of a certain city. For 10 points, name this German composer whose works include the organ piece Toccata and Fugue in D minor, The Well-Tempered Clavier, and the Brandenburg Concertos.",
-275:       "The title of this opera comes from the subtitle of Wielands Lulu. In the finale of scene one, one characters mouth being locked shut results in the quintet hm hm hm hm, while act two begins with the trio Du feines Tubchen, nur herein, in which slaves relate one characters escape from the lusty moor Monostatos. Another character is revealed to be 18 rather than 80 after serving water to her birdcatching lover, Papageno. The opera centers around the potential curse to be put on Pamina and Tamino, whose blood along with Sarastros is required to empower the Queen of the Night. For 10 points, name this opera about an enchanted instrument by Wolfgang Amadeus Mozart.",
-276:       "This composer dedicated to King Edward VII \"the passionate pilgrimage of [his] soul\", his E-flat major 2nd Symphony. This composer included \"But hark! upon my sense comes a fierce hubbub\" and \"I go before my judge\" in a choral setting of a Cardinal Newman poem. This composer of The Dream of Gerontius included the movements (*) \"Ysobel\" and \"Nimrod\" in a work dedicated to his \"friends pictured within,\" and his tune for \"The Land of Hope and Glory\" is often played at graduations. For ten points, name this English composer of The Enigma Variations and Pomp and Circumstance."
-277:     ],
-278:     "option_answer_primary": [
-279:       "Gustave Courbet",
-280:       "Johann Sebastian Bach",
-281:       "The Magic Flute",
-282:       "Edward Elgar"
-283:     ],
-284:     "distractor_strategy": "category_random"
-285:   },
-286:   {
-287:     "qid": "202722",
-288:     "question": "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices. This author of George Dandin wrote a play whose title character has a name which derives from the Latin word for a grappling hook. Another of his plays includes the quack doctor Thomas Diafoirus, who is in love with Angelique, the daughter of the title character. In one of his plays, Celimene is courted by several men, including Alceste, despite the latter's indisguised hatred for most people. He wrote a play in which Valere tries to win the heart of Mariane, the daughter of Orgon, while the title religious hypocrite tries to stop him. For 10 points, name this author of The Miser, The Misanthrope, The Imaginary Invalid and Tartuffe.",
-289:     "tokens": [
-290:       "In",
-291:       "one",
-292:       "play",
-293:       "by",
-294:       "this",
-295:       "author,",
-296:       "the",
-297:       "high-class",
-298:       "Angelica",
-299:       "marries",
-300:       "the",
-301:       "lower-class",
-302:       "title",
-303:       "character,",
-304:       "who",
-305:       "has",
-306:       "to",
-307:       "put",
-308:       "up",
-309:       "with",
-310:       "her",
-311:       "caprices.",
-312:       "This",
-313:       "author",
-314:       "of",
-315:       "George",
-316:       "Dandin",
-317:       "wrote",
-318:       "a",
-319:       "play",
-320:       "whose",
-321:       "title",
-322:       "character",
-323:       "has",
-324:       "a",
-325:       "name",
-326:       "which",
-327:       "derives",
-328:       "from",
-329:       "the",
-330:       "Latin",
-331:       "word",
-332:       "for",
-333:       "a",
-334:       "grappling",
-335:       "hook.",
-336:       "Another",
-337:       "of",
-338:       "his",
-339:       "plays",
-340:       "includes",
-341:       "the",
-342:       "quack",
-343:       "doctor",
-344:       "Thomas",
-345:       "Diafoirus,",
-346:       "who",
-347:       "is",
-348:       "in",
-349:       "love",
-350:       "with",
-351:       "Angelique,",
-352:       "the",
-353:       "daughter",
-354:       "of",
-355:       "the",
-356:       "title",
-357:       "character.",
-358:       "In",
-359:       "one",
-360:       "of",
-361:       "his",
-362:       "plays,",
-363:       "Celimene",
-364:       "is",
-365:       "courted",
-366:       "by",
-367:       "several",
-368:       "men,",
-369:       "including",
-370:       "Alceste,",
-371:       "despite",
-372:       "the",
-373:       "latter's",
-374:       "indisguised",
-375:       "hatred",
-376:       "for",
-377:       "most",
-378:       "people.",
-379:       "He",
-380:       "wrote",
-381:       "a",
-382:       "play",
-383:       "in",
-384:       "which",
-385:       "Valere",
-386:       "tries",
-387:       "to",
-388:       "win",
-389:       "the",
-390:       "heart",
-391:       "of",
-392:       "Mariane,",
-393:       "the",
-394:       "daughter",
-395:       "of",
-396:       "Orgon,",
-397:       "while",
-398:       "the",
-399:       "title",
-400:       "religious",
-401:       "hypocrite",
-402:       "tries",
-403:       "to",
-404:       "stop",
-405:       "him.",
-406:       "For",
-407:       "10",
-408:       "points,",
-409:       "name",
-410:       "this",
-411:       "author",
-412:       "of",
-413:       "The",
-414:       "Miser,",
-415:       "The",
-416:       "Misanthrope,",
-417:       "The",
-418:       "Imaginary",
-419:       "Invalid",
-420:       "and",
-421:       "Tartuffe."
-422:     ],
-423:     "answer_primary": "Moliere",
-424:     "clean_answers": [
-425:       "moliere"
-426:     ],
-427:     "run_indices": [
-428:       21,
-429:       45,
-430:       67,
-431:       88,
-432:       115,
-433:       131
-434:     ],
-435:     "human_buzz_positions": null,
-436:     "category": "Literature:Europe",
-437:     "cumulative_prefixes": [
-438:       "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices.",
-439:       "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices. This author of George Dandin wrote a play whose title character has a name which derives from the Latin word for a grappling hook.",
-440:       "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices. This author of George Dandin wrote a play whose title character has a name which derives from the Latin word for a grappling hook. Another of his plays includes the quack doctor Thomas Diafoirus, who is in love with Angelique, the daughter of the title character.",
-441:       "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices. This author of George Dandin wrote a play whose title character has a name which derives from the Latin word for a grappling hook. Another of his plays includes the quack doctor Thomas Diafoirus, who is in love with Angelique, the daughter of the title character. In one of his plays, Celimene is courted by several men, including Alceste, despite the latter's indisguised hatred for most people.",
-442:       "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices. This author of George Dandin wrote a play whose title character has a name which derives from the Latin word for a grappling hook. Another of his plays includes the quack doctor Thomas Diafoirus, who is in love with Angelique, the daughter of the title character. In one of his plays, Celimene is courted by several men, including Alceste, despite the latter's indisguised hatred for most people. He wrote a play in which Valere tries to win the heart of Mariane, the daughter of Orgon, while the title religious hypocrite tries to stop him.",
-443:       "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices. This author of George Dandin wrote a play whose title character has a name which derives from the Latin word for a grappling hook. Another of his plays includes the quack doctor Thomas Diafoirus, who is in love with Angelique, the daughter of the title character. In one of his plays, Celimene is courted by several men, including Alceste, despite the latter's indisguised hatred for most people. He wrote a play in which Valere tries to win the heart of Mariane, the daughter of Orgon, while the title religious hypocrite tries to stop him. For 10 points, name this author of The Miser, The Misanthrope, The Imaginary Invalid and Tartuffe."
-444:     ],
-445:     "options": [
-446:       "Sikhism",
-447:       "Enigma Variations",
-448:       "Moliere",
-449:       "Enthalpy"
-450:     ],
-451:     "gold_index": 2,
-452:     "option_profiles": [
-453:       "Adherents of this religion greet each other with the words \"sat sri akal\". This religion's services are ended by reading a randomly selected verse from its scripture, and in this religion's places of worship, communal kitchens serve free food to visitors regardless of their backgrounds. Members of this faith are baptized by being sprinkled with and then drinking sugar water, and adherents wear metal bracelets and carry daggers as two of this religion's Five Ks. Name this Indian religion founded by a series of ten gurus, beginning with Guru Nanak, whose members maintain their uncut hair in turbans. One text composed by a member of this group describes the invasion of Babar into India through the metaphor of a marriage; that is the Baburbani. That member of this group emphasized three principles, including Vand Chakko, the principle of giving to the poor. He later educated a member of this group who drastically expanded the religion with which they were associated by establishing new temples; that man was Angad. More famous principles expounded by these people include repetitive chanting of the name of the divine, known as Naam Japna, while the last member of this group was elevated by Gobind Singh and is composed of hymns and meditations on God's name. For 10 points, name this group comprised of ten people, including Granth Sahib and the first one, Nanak.",
-454:       "During the initial rehearsal for this piece, the composer was unsatisfied with the use of side drum sticks for a timpani roll, and so two coins were used instead. The clarinet quotes from Mendelssohn's Calm Sea and Prosperous Voyage Overture to depict a journey to Australia in a movement which is designated as a \"Romanza,\" although that movement is marked with three asterisks. In another movement, the woodwinds imitate a (*) stutter. The most famous movement of this work is a pun on the name of Augustus Jaeger. It has been claimed that this work is based on \"Auld Lang Syne\" or \"God Save the King,\" though the composer rejected both of those claims. Including a movement called 'Nimrod', for 10 points, name this orchestral work by Edward Elgar which depicts his friends and contains a hidden, unplayed theme. While William Baker and August Jaeger are represented in this work, the composer dedicated the last one to himself, writing \"E.D.U. \" next to the name of the piece. The one preceding this lacks initials, but evidence indicates that it is perhaps written to Lady Mary Lygon or Helen Weaver, who was the composer's fiance before she moved to New Zealand. The fifth is dedicated to Richard Arnold, the son of Matthew Arnold, while the first is dedicated to the composer's wife. For ten points, identify this set of compositions which are modifications to some well known tune, composed by Edward Elgar.",
-455:       "Moliere",
-456:       "This quantity remains constant in the Joule-Thomson effect. It equals internal energy plus the product of pressure and volume. The Gibbs Free Energy is given by this quantity minus the product of temperature and entropy. For a multi-step reaction, it can be calculated independently of the pathway and is equal to the sum of its changes in each step according to (*) Hess's Law. It is positive for an endothermic reaction. For 10 points, name this \"\"heat content\"\" of a thermodynamic system, symbolized capital H."
-457:     ],
-458:     "option_answer_primary": [
-459:       "Sikhism",
-460:       "Enigma Variations",
-461:       "Moliere",
-462:       "Enthalpy"
-463:     ],
-464:     "distractor_strategy": "category_random"
-465:   }
-466: ]
-```
-
 ## File: artifacts/smoke/test_dataset.json
 ```json
    1: [
@@ -31930,4 +31610,672 @@ artifacts/
 4489:     "distractor_strategy": "category_random"
 4490:   }
 4491: ]
+```
+
+## File: artifacts/smoke/val_dataset.json
+```json
+  1: [
+  2:   {
+  3:     "qid": "13234",
+  4:     "question": "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood. Along with Vili and Ve, this god was the son of Borr and Bestla. This gods possessions include the throne Hlidskjalf and the ring Draupnir. This god receives half of the Einherjar in Valhalla, where they are served by his Valkyrie messengers. After making a trip to Mimirs Well, this god lost one eye. Huginn and Muninn are ravens loyal to, for 10 points, what chief Norse deity",
+  5:     "tokens": [
+  6:       "The",
+  7:       "image",
+  8:       "of",
+  9:       "this",
+ 10:       "figure",
+ 11:       "on",
+ 12:       "his",
+ 13:       "mount",
+ 14:       "is",
+ 15:       "associated",
+ 16:       "with",
+ 17:       "three",
+ 18:       "interlocking",
+ 19:       "triangles,",
+ 20:       "the",
+ 21:       "Valknut.",
+ 22:       "This",
+ 23:       "god",
+ 24:       "worked",
+ 25:       "for",
+ 26:       "Baugi",
+ 27:       "and",
+ 28:       "seduced",
+ 29:       "Gunnlod",
+ 30:       "to",
+ 31:       "obtain",
+ 32:       "a",
+ 33:       "substance",
+ 34:       "made",
+ 35:       "from",
+ 36:       "Kvasirs",
+ 37:       "blood.",
+ 38:       "Along",
+ 39:       "with",
+ 40:       "Vili",
+ 41:       "and",
+ 42:       "Ve,",
+ 43:       "this",
+ 44:       "god",
+ 45:       "was",
+ 46:       "the",
+ 47:       "son",
+ 48:       "of",
+ 49:       "Borr",
+ 50:       "and",
+ 51:       "Bestla.",
+ 52:       "This",
+ 53:       "gods",
+ 54:       "possessions",
+ 55:       "include",
+ 56:       "the",
+ 57:       "throne",
+ 58:       "Hlidskjalf",
+ 59:       "and",
+ 60:       "the",
+ 61:       "ring",
+ 62:       "Draupnir.",
+ 63:       "This",
+ 64:       "god",
+ 65:       "receives",
+ 66:       "half",
+ 67:       "of",
+ 68:       "the",
+ 69:       "Einherjar",
+ 70:       "in",
+ 71:       "Valhalla,",
+ 72:       "where",
+ 73:       "they",
+ 74:       "are",
+ 75:       "served",
+ 76:       "by",
+ 77:       "his",
+ 78:       "Valkyrie",
+ 79:       "messengers.",
+ 80:       "After",
+ 81:       "making",
+ 82:       "a",
+ 83:       "trip",
+ 84:       "to",
+ 85:       "Mimirs",
+ 86:       "Well,",
+ 87:       "this",
+ 88:       "god",
+ 89:       "lost",
+ 90:       "one",
+ 91:       "eye.",
+ 92:       "Huginn",
+ 93:       "and",
+ 94:       "Muninn",
+ 95:       "are",
+ 96:       "ravens",
+ 97:       "loyal",
+ 98:       "to,",
+ 99:       "for",
+100:       "10",
+101:       "points,",
+102:       "what",
+103:       "chief",
+104:       "Norse",
+105:       "deity"
+106:     ],
+107:     "answer_primary": "Odin",
+108:     "clean_answers": [
+109:       "odin"
+110:     ],
+111:     "run_indices": [
+112:       15,
+113:       31,
+114:       45,
+115:       56,
+116:       73,
+117:       85,
+118:       99
+119:     ],
+120:     "human_buzz_positions": null,
+121:     "category": "Social_Science",
+122:     "cumulative_prefixes": [
+123:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut.",
+124:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood.",
+125:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood. Along with Vili and Ve, this god was the son of Borr and Bestla.",
+126:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood. Along with Vili and Ve, this god was the son of Borr and Bestla. This gods possessions include the throne Hlidskjalf and the ring Draupnir.",
+127:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood. Along with Vili and Ve, this god was the son of Borr and Bestla. This gods possessions include the throne Hlidskjalf and the ring Draupnir. This god receives half of the Einherjar in Valhalla, where they are served by his Valkyrie messengers.",
+128:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood. Along with Vili and Ve, this god was the son of Borr and Bestla. This gods possessions include the throne Hlidskjalf and the ring Draupnir. This god receives half of the Einherjar in Valhalla, where they are served by his Valkyrie messengers. After making a trip to Mimirs Well, this god lost one eye.",
+129:       "The image of this figure on his mount is associated with three interlocking triangles, the Valknut. This god worked for Baugi and seduced Gunnlod to obtain a substance made from Kvasirs blood. Along with Vili and Ve, this god was the son of Borr and Bestla. This gods possessions include the throne Hlidskjalf and the ring Draupnir. This god receives half of the Einherjar in Valhalla, where they are served by his Valkyrie messengers. After making a trip to Mimirs Well, this god lost one eye. Huginn and Muninn are ravens loyal to, for 10 points, what chief Norse deity"
+130:     ],
+131:     "options": [
+132:       "Odin",
+133:       "Jainism",
+134:       "Jesus",
+135:       "Tyr"
+136:     ],
+137:     "gold_index": 0,
+138:     "option_profiles": [
+139:       "The Solarljod claims that this figures eldest daughter is called Radvr and that his youngest is called Kreppvr. Loki insulted this god by saying that the daughters of Hymir relieved themselves in his mouth. This figure's father-in-law once captured Loki as a giant eagle, forcing Loki to lure Idunn into Thrymheim. This figure was exchanged with Hoenir to end the Aesir-Vanir War. The wife of this god was once made to laugh by the efforts of Loki and a female goat. He separated from his wife because she could not get used to living in Natn due to the screeching of the gulls after she selected this god for his beautiful feet. For 10 points, name this father of Freyr and Freya and husband of Skadi, the Norse god of wealth and seafaring.",
+140:       "The cosmology of this group holds that pudgala is comprised of paramanu. Its eschatology holds that, when all the teachings become Purva, the current kalpa will end. Its biology predicts a multitude of minute nigodas, parts of the jiva. Its divided monastic sects are the Shvetambaras and Digambaras and its best-known practice is probably ahimsa or non-violence. This religions reveres the teachings of Parshvanatha, Mahavira, and other Tirtankaras. For 10 points, name this religion that teaches a disciplined spiritual path to enlightenment and that is prominent in India.",
+141:       "One religion says that this figure was taken to the Orissa region for instruction in the Jagannath Temple, and appeared to a couple named Claudius and Juliet, Roman pagans, on the Tiber River. In another religion, this figure is known as \"kdaba,\" and was originally Mandaean, but perverted the prophecies of his mentor and became an evil figure, like Moses and Abraham. A claimed disciple of this man, a son of Patek, died at Gundeshapur at the hands of Bahram I. Among the figures who have claimed to be him were Marshall Applewhite, the leader of Heaven's Gate, and David Koresh. For 10 points, name this figure recognized in Islam as 'Isa, believed in by the so-called \"Jews for\" him, and by a messload of Christians.",
+142:       "This god is sometimes called Thingsus, which refers to his role as the patron god of assemblies. The Hymiskvitha claims that this god is the son of the giant Hymir, though it also tells how this god helps Thor steal a giant kettle from Hymir. In the Lokasenna, this god defends Freyr from Lokis accusations of incest. A patron goddess of Augsburg known as Zisa may be the consort of this god, though Loki suggests that this gods consort cheats on him. This gods eventual killer lives across the Gjoll river in Gnipahellir cave and has a chest covered in blood and four eyes. For ten points, name this Norse god who will fight Garm at Ragnorak, a deity of oaths and justice who facilitated the use of Gleipnir when he restrained the Fenris Wolf by giving up his hand."
+143:     ],
+144:     "option_answer_primary": [
+145:       "Odin",
+146:       "Jainism",
+147:       "Jesus",
+148:       "Tyr"
+149:     ],
+150:     "distractor_strategy": "category_random"
+151:   },
+152:   {
+153:     "qid": "360",
+154:     "question": "His early works included self portraits such as The Wounded Man, The Cellist, and The Man with a Pipe. His works concerning dormancy include The Sleeping Spinner and an erotic work featuring two females entitled The Sleepers. One of his best-known works, which depicts a young and old man performing the titular backbreaking action, was destroyed during the bombing of Dresden, and another depicts the internment of a peasant in the presence of two clergy wearing red. FTP, name this French painter of The Stone-breaker and The Burial at Organs.",
+155:     "tokens": [
+156:       "His",
+157:       "early",
+158:       "works",
+159:       "included",
+160:       "self",
+161:       "portraits",
+162:       "such",
+163:       "as",
+164:       "The",
+165:       "Wounded",
+166:       "Man,",
+167:       "The",
+168:       "Cellist,",
+169:       "and",
+170:       "The",
+171:       "Man",
+172:       "with",
+173:       "a",
+174:       "Pipe.",
+175:       "His",
+176:       "works",
+177:       "concerning",
+178:       "dormancy",
+179:       "include",
+180:       "The",
+181:       "Sleeping",
+182:       "Spinner",
+183:       "and",
+184:       "an",
+185:       "erotic",
+186:       "work",
+187:       "featuring",
+188:       "two",
+189:       "females",
+190:       "entitled",
+191:       "The",
+192:       "Sleepers.",
+193:       "One",
+194:       "of",
+195:       "his",
+196:       "best-known",
+197:       "works,",
+198:       "which",
+199:       "depicts",
+200:       "a",
+201:       "young",
+202:       "and",
+203:       "old",
+204:       "man",
+205:       "performing",
+206:       "the",
+207:       "titular",
+208:       "backbreaking",
+209:       "action,",
+210:       "was",
+211:       "destroyed",
+212:       "during",
+213:       "the",
+214:       "bombing",
+215:       "of",
+216:       "Dresden,",
+217:       "and",
+218:       "another",
+219:       "depicts",
+220:       "the",
+221:       "internment",
+222:       "of",
+223:       "a",
+224:       "peasant",
+225:       "in",
+226:       "the",
+227:       "presence",
+228:       "of",
+229:       "two",
+230:       "clergy",
+231:       "wearing",
+232:       "red.",
+233:       "FTP,",
+234:       "name",
+235:       "this",
+236:       "French",
+237:       "painter",
+238:       "of",
+239:       "The",
+240:       "Stone-breaker",
+241:       "and",
+242:       "The",
+243:       "Burial",
+244:       "at",
+245:       "Organs."
+246:     ],
+247:     "answer_primary": "Gustave Courbet",
+248:     "clean_answers": [
+249:       "gustave courbet"
+250:     ],
+251:     "run_indices": [
+252:       18,
+253:       36,
+254:       76,
+255:       89
+256:     ],
+257:     "human_buzz_positions": null,
+258:     "category": "Fine_Arts",
+259:     "cumulative_prefixes": [
+260:       "His early works included self portraits such as The Wounded Man, The Cellist, and The Man with a Pipe.",
+261:       "His early works included self portraits such as The Wounded Man, The Cellist, and The Man with a Pipe. His works concerning dormancy include The Sleeping Spinner and an erotic work featuring two females entitled The Sleepers.",
+262:       "His early works included self portraits such as The Wounded Man, The Cellist, and The Man with a Pipe. His works concerning dormancy include The Sleeping Spinner and an erotic work featuring two females entitled The Sleepers. One of his best-known works, which depicts a young and old man performing the titular backbreaking action, was destroyed during the bombing of Dresden, and another depicts the internment of a peasant in the presence of two clergy wearing red.",
+263:       "His early works included self portraits such as The Wounded Man, The Cellist, and The Man with a Pipe. His works concerning dormancy include The Sleeping Spinner and an erotic work featuring two females entitled The Sleepers. One of his best-known works, which depicts a young and old man performing the titular backbreaking action, was destroyed during the bombing of Dresden, and another depicts the internment of a peasant in the presence of two clergy wearing red. FTP, name this French painter of The Stone-breaker and The Burial at Organs."
+264:     ],
+265:     "options": [
+266:       "Gustave Courbet",
+267:       "Johann Sebastian Bach",
+268:       "The Magic Flute",
+269:       "Edward Elgar"
+270:     ],
+271:     "gold_index": 0,
+272:     "option_profiles": [
+273:       "Gustave Courbet",
+274:       "This composer was given the task of improvising on a \"\"Royal Theme\"\" provided to him by a monarch, which eventually resulted in his piece The Musical Offering. The fifth part of another work by this composer contains a solo for virtuoso harpsichord. That work was written for the (*) margrave of a certain city. For 10 points, name this German composer whose works include the organ piece Toccata and Fugue in D minor, The Well-Tempered Clavier, and the Brandenburg Concertos.",
+275:       "The title of this opera comes from the subtitle of Wielands Lulu. In the finale of scene one, one characters mouth being locked shut results in the quintet hm hm hm hm, while act two begins with the trio Du feines Tubchen, nur herein, in which slaves relate one characters escape from the lusty moor Monostatos. Another character is revealed to be 18 rather than 80 after serving water to her birdcatching lover, Papageno. The opera centers around the potential curse to be put on Pamina and Tamino, whose blood along with Sarastros is required to empower the Queen of the Night. For 10 points, name this opera about an enchanted instrument by Wolfgang Amadeus Mozart.",
+276:       "This composer dedicated to King Edward VII \"the passionate pilgrimage of [his] soul\", his E-flat major 2nd Symphony. This composer included \"But hark! upon my sense comes a fierce hubbub\" and \"I go before my judge\" in a choral setting of a Cardinal Newman poem. This composer of The Dream of Gerontius included the movements (*) \"Ysobel\" and \"Nimrod\" in a work dedicated to his \"friends pictured within,\" and his tune for \"The Land of Hope and Glory\" is often played at graduations. For ten points, name this English composer of The Enigma Variations and Pomp and Circumstance."
+277:     ],
+278:     "option_answer_primary": [
+279:       "Gustave Courbet",
+280:       "Johann Sebastian Bach",
+281:       "The Magic Flute",
+282:       "Edward Elgar"
+283:     ],
+284:     "distractor_strategy": "category_random"
+285:   },
+286:   {
+287:     "qid": "202722",
+288:     "question": "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices. This author of George Dandin wrote a play whose title character has a name which derives from the Latin word for a grappling hook. Another of his plays includes the quack doctor Thomas Diafoirus, who is in love with Angelique, the daughter of the title character. In one of his plays, Celimene is courted by several men, including Alceste, despite the latter's indisguised hatred for most people. He wrote a play in which Valere tries to win the heart of Mariane, the daughter of Orgon, while the title religious hypocrite tries to stop him. For 10 points, name this author of The Miser, The Misanthrope, The Imaginary Invalid and Tartuffe.",
+289:     "tokens": [
+290:       "In",
+291:       "one",
+292:       "play",
+293:       "by",
+294:       "this",
+295:       "author,",
+296:       "the",
+297:       "high-class",
+298:       "Angelica",
+299:       "marries",
+300:       "the",
+301:       "lower-class",
+302:       "title",
+303:       "character,",
+304:       "who",
+305:       "has",
+306:       "to",
+307:       "put",
+308:       "up",
+309:       "with",
+310:       "her",
+311:       "caprices.",
+312:       "This",
+313:       "author",
+314:       "of",
+315:       "George",
+316:       "Dandin",
+317:       "wrote",
+318:       "a",
+319:       "play",
+320:       "whose",
+321:       "title",
+322:       "character",
+323:       "has",
+324:       "a",
+325:       "name",
+326:       "which",
+327:       "derives",
+328:       "from",
+329:       "the",
+330:       "Latin",
+331:       "word",
+332:       "for",
+333:       "a",
+334:       "grappling",
+335:       "hook.",
+336:       "Another",
+337:       "of",
+338:       "his",
+339:       "plays",
+340:       "includes",
+341:       "the",
+342:       "quack",
+343:       "doctor",
+344:       "Thomas",
+345:       "Diafoirus,",
+346:       "who",
+347:       "is",
+348:       "in",
+349:       "love",
+350:       "with",
+351:       "Angelique,",
+352:       "the",
+353:       "daughter",
+354:       "of",
+355:       "the",
+356:       "title",
+357:       "character.",
+358:       "In",
+359:       "one",
+360:       "of",
+361:       "his",
+362:       "plays,",
+363:       "Celimene",
+364:       "is",
+365:       "courted",
+366:       "by",
+367:       "several",
+368:       "men,",
+369:       "including",
+370:       "Alceste,",
+371:       "despite",
+372:       "the",
+373:       "latter's",
+374:       "indisguised",
+375:       "hatred",
+376:       "for",
+377:       "most",
+378:       "people.",
+379:       "He",
+380:       "wrote",
+381:       "a",
+382:       "play",
+383:       "in",
+384:       "which",
+385:       "Valere",
+386:       "tries",
+387:       "to",
+388:       "win",
+389:       "the",
+390:       "heart",
+391:       "of",
+392:       "Mariane,",
+393:       "the",
+394:       "daughter",
+395:       "of",
+396:       "Orgon,",
+397:       "while",
+398:       "the",
+399:       "title",
+400:       "religious",
+401:       "hypocrite",
+402:       "tries",
+403:       "to",
+404:       "stop",
+405:       "him.",
+406:       "For",
+407:       "10",
+408:       "points,",
+409:       "name",
+410:       "this",
+411:       "author",
+412:       "of",
+413:       "The",
+414:       "Miser,",
+415:       "The",
+416:       "Misanthrope,",
+417:       "The",
+418:       "Imaginary",
+419:       "Invalid",
+420:       "and",
+421:       "Tartuffe."
+422:     ],
+423:     "answer_primary": "Moliere",
+424:     "clean_answers": [
+425:       "moliere"
+426:     ],
+427:     "run_indices": [
+428:       21,
+429:       45,
+430:       67,
+431:       88,
+432:       115,
+433:       131
+434:     ],
+435:     "human_buzz_positions": null,
+436:     "category": "Literature:Europe",
+437:     "cumulative_prefixes": [
+438:       "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices.",
+439:       "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices. This author of George Dandin wrote a play whose title character has a name which derives from the Latin word for a grappling hook.",
+440:       "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices. This author of George Dandin wrote a play whose title character has a name which derives from the Latin word for a grappling hook. Another of his plays includes the quack doctor Thomas Diafoirus, who is in love with Angelique, the daughter of the title character.",
+441:       "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices. This author of George Dandin wrote a play whose title character has a name which derives from the Latin word for a grappling hook. Another of his plays includes the quack doctor Thomas Diafoirus, who is in love with Angelique, the daughter of the title character. In one of his plays, Celimene is courted by several men, including Alceste, despite the latter's indisguised hatred for most people.",
+442:       "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices. This author of George Dandin wrote a play whose title character has a name which derives from the Latin word for a grappling hook. Another of his plays includes the quack doctor Thomas Diafoirus, who is in love with Angelique, the daughter of the title character. In one of his plays, Celimene is courted by several men, including Alceste, despite the latter's indisguised hatred for most people. He wrote a play in which Valere tries to win the heart of Mariane, the daughter of Orgon, while the title religious hypocrite tries to stop him.",
+443:       "In one play by this author, the high-class Angelica marries the lower-class title character, who has to put up with her caprices. This author of George Dandin wrote a play whose title character has a name which derives from the Latin word for a grappling hook. Another of his plays includes the quack doctor Thomas Diafoirus, who is in love with Angelique, the daughter of the title character. In one of his plays, Celimene is courted by several men, including Alceste, despite the latter's indisguised hatred for most people. He wrote a play in which Valere tries to win the heart of Mariane, the daughter of Orgon, while the title religious hypocrite tries to stop him. For 10 points, name this author of The Miser, The Misanthrope, The Imaginary Invalid and Tartuffe."
+444:     ],
+445:     "options": [
+446:       "Sikhism",
+447:       "Enigma Variations",
+448:       "Moliere",
+449:       "Enthalpy"
+450:     ],
+451:     "gold_index": 2,
+452:     "option_profiles": [
+453:       "Adherents of this religion greet each other with the words \"sat sri akal\". This religion's services are ended by reading a randomly selected verse from its scripture, and in this religion's places of worship, communal kitchens serve free food to visitors regardless of their backgrounds. Members of this faith are baptized by being sprinkled with and then drinking sugar water, and adherents wear metal bracelets and carry daggers as two of this religion's Five Ks. Name this Indian religion founded by a series of ten gurus, beginning with Guru Nanak, whose members maintain their uncut hair in turbans. One text composed by a member of this group describes the invasion of Babar into India through the metaphor of a marriage; that is the Baburbani. That member of this group emphasized three principles, including Vand Chakko, the principle of giving to the poor. He later educated a member of this group who drastically expanded the religion with which they were associated by establishing new temples; that man was Angad. More famous principles expounded by these people include repetitive chanting of the name of the divine, known as Naam Japna, while the last member of this group was elevated by Gobind Singh and is composed of hymns and meditations on God's name. For 10 points, name this group comprised of ten people, including Granth Sahib and the first one, Nanak.",
+454:       "During the initial rehearsal for this piece, the composer was unsatisfied with the use of side drum sticks for a timpani roll, and so two coins were used instead. The clarinet quotes from Mendelssohn's Calm Sea and Prosperous Voyage Overture to depict a journey to Australia in a movement which is designated as a \"Romanza,\" although that movement is marked with three asterisks. In another movement, the woodwinds imitate a (*) stutter. The most famous movement of this work is a pun on the name of Augustus Jaeger. It has been claimed that this work is based on \"Auld Lang Syne\" or \"God Save the King,\" though the composer rejected both of those claims. Including a movement called 'Nimrod', for 10 points, name this orchestral work by Edward Elgar which depicts his friends and contains a hidden, unplayed theme. While William Baker and August Jaeger are represented in this work, the composer dedicated the last one to himself, writing \"E.D.U. \" next to the name of the piece. The one preceding this lacks initials, but evidence indicates that it is perhaps written to Lady Mary Lygon or Helen Weaver, who was the composer's fiance before she moved to New Zealand. The fifth is dedicated to Richard Arnold, the son of Matthew Arnold, while the first is dedicated to the composer's wife. For ten points, identify this set of compositions which are modifications to some well known tune, composed by Edward Elgar.",
+455:       "Moliere",
+456:       "This quantity remains constant in the Joule-Thomson effect. It equals internal energy plus the product of pressure and volume. The Gibbs Free Energy is given by this quantity minus the product of temperature and entropy. For a multi-step reaction, it can be calculated independently of the pathway and is equal to the sum of its changes in each step according to (*) Hess's Law. It is positive for an endothermic reaction. For 10 points, name this \"\"heat content\"\" of a thermodynamic system, symbolized capital H."
+457:     ],
+458:     "option_answer_primary": [
+459:       "Sikhism",
+460:       "Enigma Variations",
+461:       "Moliere",
+462:       "Enthalpy"
+463:     ],
+464:     "distractor_strategy": "category_random"
+465:   }
+466: ]
+```
+
+## File: configs/smoke.yaml
+```yaml
+ 1: # Smoke test configuration - quick testing with reduced data
+ 2: # Inherits from default.yaml and overrides key settings
+ 3: 
+ 4: # Data settings for quick testing
+ 5: data:
+ 6:   csv_path: "questions.csv"
+ 7:   K: 4
+ 8:   distractor_strategy: "category_random"  # Faster than sbert_profile
+ 9:   train_ratio: 0.7
+10:   val_ratio: 0.15
+11:   test_ratio: 0.15
+12:   max_questions: 50  # Use only 50 questions for smoke test
+13:   shuffle_seed: 42
+14: 
+15: answer_profiles:
+16:   max_tokens_per_profile: 500  # Reduced for speed
+17:   min_questions_per_answer: 1
+18:   leave_one_out: false  # Skip for smoke test
+19: 
+20: likelihood:
+21:   model: "tfidf"  # Use TF-IDF for fastest smoke testing (<5 seconds)
+22:   embedding_model: "all-MiniLM-L6-v2"
+23:   beta: 5.0  # Softmax temperature for belief distribution
+24:   cache_embeddings: true
+25:   cache_dir: "cache/embeddings"
+26:   batch_size: 4  # Smaller batch for memory
+27:   max_length: 256  # Shorter sequences
+28: 
+29: environment:
+30:   reward_mode: "time_penalty"
+31:   seed: 13
+32:   wait_penalty: 0.05
+33:   early_buzz_penalty: 0.2
+34:   buzz_correct: 1.0
+35:   buzz_incorrect: -1.0
+36:   max_steps: 10  # Fewer steps for quick testing
+37:   opponent_buzz_model:
+38:     type: "none"
+39: 
+40: mc_guards:
+41:   alias_edit_distance_threshold: 0.2
+42:   duplicate_token_overlap_threshold: 0.8
+43:   max_length_ratio: 3.0
+44: 
+45: bayesian:  # Reduced sweep for smoke testing
+46:   threshold_sweep: [0.5, 0.7, 0.9]
+47:   alpha: 10.0
+48: 
+49: ppo:  # Reduced for smoke testing
+50:   seed: 13
+51:   total_timesteps: 3000
+52:   learning_rate: 3e-4
+53:   n_steps: 32  # Smaller rollout
+54:   batch_size: 8  # Smaller batch
+55:   n_epochs: 2  # Fewer epochs
+56:   gamma: 0.99
+57:   gae_lambda: 0.95
+58:   clip_ratio: 0.2
+59:   value_coef: 0.5
+60:   entropy_coef: 0.01
+61:   max_grad_norm: 0.5
+62:   target_kl: 0.03
+63:   policy_kwargs:
+64:     net_arch: [32, 32]  # Smaller network
+65: 
+66: evaluation:
+67:   metrics:
+68:     - accuracy
+69:     - reward
+70:   compute_sq: false  # Skip expensive metrics
+71:   run_choices_only: false  # Skip control experiments
+72:   run_shuffle: false
+73:   bootstrap_ci_samples: 0  # No bootstrap for smoke test
+74:   save_predictions: false
+75:   prediction_dir: "results/predictions"
+76: 
+77: # Supervised settings for smoke test
+78: supervised:
+79:   epochs: 2  # Very few epochs
+80:   batch_size: 4
+81:   gradient_accumulation_steps: 1  # No accumulation for speed
+82:   learning_rate: 1e-4
+83:   warmup_steps: 10
+84:   eval_steps: 20
+85:   save_steps: 100
+86:   save_total_limit: 1
+87:   checkpoint_dir: "checkpoints/supervised_smoke"
+```
+
+## File: configs/default.yaml
+```yaml
+  1: # Default configuration for qanta-buzzer
+  2: # Adapted from qb-rl structure for T5-based quiz bowl agent
+  3: 
+  4: data:
+  5:   csv_path: "questions.csv"  # Raw QANTA CSV with ||| separated clues
+  6:   K: 4  # Default number of answer choices
+  7:   distractor_strategy: "sbert_profile"  # sbert_profile | tfidf_profile | category_random | openai_profile
+  8:   variable_K: false  # If true, sample K per question from [min_K, max_K]
+  9:   min_K: 2
+ 10:   max_K: null  # Defaults to K when null
+ 11:   train_ratio: 0.7
+ 12:   val_ratio: 0.15
+ 13:   test_ratio: 0.15
+ 14:   max_questions: null  # Limit for testing (null = use all)
+ 15:   shuffle_seed: 42
+ 16: 
+ 17: answer_profiles:
+ 18:   max_tokens_per_profile: 2000  # Max tokens to use for answer profile
+ 19:   min_questions_per_answer: 1  # Minimum examples to build profile
+ 20:   leave_one_out: true  # Exclude current question from profile
+ 21: 
+ 22: likelihood:
+ 23:   model: "t5-large"  # Model for computing answer likelihoods (t5-small | t5-base | t5-large)
+ 24:   embedding_model: "all-MiniLM-L6-v2"  # For distractor generation
+ 25:   beta: 5.0  # Softmax temperature for belief distribution
+ 26:   cache_embeddings: true
+ 27:   cache_dir: "cache/embeddings"
+ 28:   batch_size: 16
+ 29:   max_length: 512  # Max input tokens for T5
+ 30: 
+ 31: environment:
+ 32:   reward_mode: "time_penalty"  # time_penalty | simple | expected_wins
+ 33:   seed: 13
+ 34:   wait_penalty: 0.05  # Tuned candidate from multi-seed smoke sweep
+ 35:   early_buzz_penalty: 0.2  # Tuned candidate from multi-seed smoke sweep
+ 36:   buzz_correct: 1.0  # Reward for correct answer
+ 37:   buzz_incorrect: -0.5  # Penalty for wrong answer
+ 38:   max_steps: 20  # Maximum clues to reveal
+ 39:   # Expected Wins opponent model (only used when reward_mode: expected_wins)
+ 40:   opponent_buzz_model:
+ 41:     type: "none"  # none | logistic | empirical
+ 42:   end_mode: "force_commit"  # force_commit | no_buzz
+ 43:   no_buzz_reward: 0.0  # Only used when end_mode == no_buzz
+ 44: 
+ 45: mc_guards:  # Anti-artifact guards from qb-rl
+ 46:   alias_edit_distance_threshold: 0.2  # Reject similar answer aliases
+ 47:   duplicate_token_overlap_threshold: 0.8  # Reject token-overlapping distractors
+ 48:   max_length_ratio: 3.0  # Reject distractors much longer than answer
+ 49: 
+ 50: bayesian:  # Bayesian buzzer sweep parameters (from qb-rl)
+ 51:   threshold_sweep: [0.5, 0.6, 0.7, 0.8, 0.9]
+ 52:   alpha: 10.0  # Sigmoid steepness for confidence proxy
+ 53: 
+ 54: ppo:  # PPO hyperparameters (for future use)
+ 55:   seed: 13
+ 56:   total_timesteps: 100000
+ 57:   learning_rate: 3e-4
+ 58:   n_steps: 128
+ 59:   batch_size: 32
+ 60:   n_epochs: 4
+ 61:   gamma: 0.99
+ 62:   gae_lambda: 0.95
+ 63:   clip_ratio: 0.2
+ 64:   value_coef: 0.5
+ 65:   entropy_coef: 0.01
+ 66:   max_grad_norm: 0.5
+ 67:   target_kl: 0.03
+ 68:   policy_kwargs:
+ 69:     net_arch: [64, 64]  # MLP architecture for belief-based policy
+ 70: 
+ 71: evaluation:
+ 72:   metrics:
+ 73:     - accuracy
+ 74:     - reward
+ 75:     - buzz_position
+ 76:     - calibration  # ECE and Brier score
+ 77:     - per_category
+ 78:   compute_sq: true  # S_q scoring metric
+ 79:   run_choices_only: true  # Control: model sees only choices, no clues
+ 80:   run_shuffle: true  # Control: shuffle clue order
+ 81:   bootstrap_ci_samples: 1000  # Bootstrap confidence intervals
+ 82:   save_predictions: true
+ 83:   prediction_dir: "results/predictions"
+ 84: 
+ 85: # DSPy integration (optional, offline-first)
+ 86: # Activated by setting likelihood.model: dspy — no separate enable flag.
+ 87: dspy:
+ 88:   model: "openai/gpt-4o-mini"  # DSPy LM identifier
+ 89:   optimizer: "BootstrapFewShot"  # BootstrapFewShot | MIPROv2
+ 90:   cache_dir: "cache/dspy"
+ 91:   max_examples: 50
+ 92: 
+ 93: # Supervised warm-start settings (for T5 policy)
+ 94: supervised:
+ 95:   epochs: 10
+ 96:   batch_size: 8
+ 97:   gradient_accumulation_steps: 4  # Effective batch = 32
+ 98:   learning_rate: 1e-4
+ 99:   warmup_steps: 500
+100:   eval_steps: 100
+101:   save_steps: 500
+102:   save_total_limit: 3
+103:   checkpoint_dir: "checkpoints/supervised"
 ```

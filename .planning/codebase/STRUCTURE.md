@@ -65,7 +65,10 @@ qanta-buzzer/
 │   ├── sweep_reward_shaping.py # Multi-seed reward parameter sweep
 │   ├── run_smoke_pipeline.py   # End-to-end smoke test runner
 │   ├── optimize_dspy.py        # Offline DSPy compile/optimize workflow
-│   └── test_mc_builder.py      # Standalone MC builder test script
+│   ├── test_mc_builder.py      # Standalone MC builder test script
+│   ├── run_full_pipeline.sh    # Full 19-phase pipeline (4-wave DAG, forces tfidf, PYTHONUNBUFFERED)
+│   ├── manual-smoke.sh         # Four-stage smoke wrapper (venv-aware, python3)
+│   └── ci.sh                   # CI entry point (runs pytest)
 │
 ├── tests/                            # pytest test suite (342 tests, 24 files)
 │   ├── __init__.py
@@ -136,7 +139,10 @@ qanta-buzzer/
 | Data loading + TossupQuestion | `qb_data/data_loader.py` |
 | Offline DSPy compile | `scripts/optimize_dspy.py` |
 | Pipeline shared helpers | `scripts/_common.py` |
+| Full pipeline script | `scripts/run_full_pipeline.sh` |
+| Smoke pipeline wrapper | `scripts/manual-smoke.sh` |
 | Default YAML config | `configs/default.yaml` |
+| Full pipeline runbook | `docs/full-pipeline-runbook.md` |
 | Test fixtures | `tests/conftest.py` |
 
 ## Naming Conventions

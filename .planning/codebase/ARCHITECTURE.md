@@ -126,8 +126,10 @@ Discrete(2) wrapper (0=WAIT, 1=BUZZ) that maps BUZZ to argmax(belief). Selectabl
 | `scripts/sweep_reward_shaping.py` | Multi-seed reward parameter sweep |
 | `scripts/run_smoke_pipeline.py` | End-to-end smoke test |
 | `scripts/optimize_dspy.py` | Offline DSPy compile/optimize |
+| `scripts/run_full_pipeline.sh` | Full 19-phase pipeline (4-wave DAG, forces tfidf) |
+| `scripts/manual-smoke.sh` | Four-stage smoke wrapper (venv-aware, python3) |
 
-All pipeline scripts accept `--smoke` for fast testing and `--config` for custom YAML configs.
+All pipeline scripts accept `--smoke` for fast testing and `--config` for custom YAML configs. `run_full_pipeline.sh` explicitly overrides `likelihood.model=tfidf` for all belief-feature phases. `compare_policies.py` auto-detects MPS/CUDA/CPU for T5 inference.
 
 ## qb-rl Compatibility Layer
 

@@ -5,7 +5,7 @@ milestone_name: milestone
 current_plan: Not started
 status: milestone_complete
 last_updated: "2026-03-15T08:00:00.000Z"
-last_activity: 2026-03-15 - Repo reconciled with remote, history cleaned (checkpoints + secrets stripped)
+last_activity: 2026-03-15 - Adversarial Codex review, runbook/script/code fixes, MPS device detection
 progress:
   total_phases: 6
   completed_phases: 5
@@ -175,24 +175,30 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 ## Session Continuity
 
 ### Last Session Summary
-- Config override support ported to all pipeline scripts (run_baselines, train_ppo, evaluate_all)
-- Lint fixes cherry-picked from Copilot PR #3: TYPE_CHECKING imports, unused import removal, T5Config validation
-- Full pipeline runbook with 19 phases and parallel execution script (`scripts/run_full_pipeline.sh`)
+- 15+ rounds of adversarial Codex review on runbook and pipeline script
+- Script now forces `likelihood.model=tfidf` for all belief-feature phases (both branches)
+- `compare_policies.py` and `T5PolicyModel.load_pretrained()` now auto-detect MPS
+- `manual-smoke.sh` auto-activates venv, uses python3
+- `run_phase()` sets `PYTHONUNBUFFERED=1` for live log streaming
+- StopOnlyEnv crash fixed in `ppo_buzzer.py` (Phase 16)
+- Runbook: Phase 5 memory warning (41 GB on MPS), t5-large marked CUDA-only, Phase 12 DSPy limitation documented, artifact tree segmented by mode, selective re-run notes on Phases 4/6/11, all manual commands have tfidf overrides
+- Summary snippet handles nested output structures (full_eval, t5_policy, softmax_profile)
 - 342 tests across 24 test files (3 skipped for optional extras)
 
 ### Next Session Priority
-1. CS234 writeup — all infrastructure is ready for generating paper results
-2. Full training run: `python scripts/train_t5_policy.py --config configs/t5_policy.yaml`
-3. Comparison experiment: `python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model`
+1. Full-scale pipeline run on this machine to produce paper results
+2. CS234 writeup using results from the run
+3. Optional extension phases (7, 9, 10, 13) for ablation tables
 
 ### Context for Next Agent
-Unified quiz bowl RL buzzer with two tracks plus three opt-in extensions (Expected Wins, Variable-K, DSPy). v1.0 milestone complete. Extensions and code review complete. The novel contribution is using T5 as a likelihood model to compute beliefs for an MLP policy, then comparing with T5 as an end-to-end policy.
+Unified quiz bowl RL buzzer with two tracks plus three opt-in extensions (Expected Wins, Variable-K, DSPy). v1.0 milestone complete. Extensions, code review, and adversarial doc review complete. The novel contribution is using T5 as a likelihood model to compute beliefs for an MLP policy, then comparing with T5 as an end-to-end policy. All code and docs are synced; the next step is running the full pipeline to produce experimental results.
 
 ### Environment State
 - Working directory: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer`
-- Python environment: `.venv/` with Python 3.13, `pip install -e .` done
-- 342 tests passing (3 skipped), CI green, smoke pipeline green, T5 smoke green
+- Python environment: `.venv/` with Python 3.13.5, `pip install -e .` done
+- MPS available (Apple M3 Max, 64 GB)
+- 342 tests passing (3 skipped), CI green, smoke pipeline green
 
 ---
 *State file initialized: 2026-02-25*
-Last activity: 2026-03-15 - Config override port, lint fixes, pipeline runbook
+Last activity: 2026-03-15 - Adversarial Codex review, runbook/script/code fixes, MPS device detection

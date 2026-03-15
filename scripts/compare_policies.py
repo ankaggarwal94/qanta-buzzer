@@ -187,7 +187,7 @@ def evaluate_t5_policy(
     from qb_env.tossup_env import TossupMCEnv
 
     # Load T5 policy model
-    model = T5PolicyModel.load_pretrained(checkpoint_path, device="cpu")
+    model = T5PolicyModel.load_pretrained(checkpoint_path)
     model.eval()
 
     # Build lightweight likelihood for environment reward computation

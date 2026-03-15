@@ -25,24 +25,18 @@ The content is organized as follows:
   between different files in the repository.
 - Be aware that this file may contain sensitive information. Handle it with
   the same level of security as you would the original repository.
-- Pay special attention to the Repository Description. These contain important context and guidelines specific to this project.
 
 ## Notes
 - Some files may have been excluded based on .gitignore rules and Repomix's configuration
 - Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
-- Only files matching these patterns are included: README.md, CLAUDE.md, AGENTS.md, pyproject.toml, requirements.txt, .github/copilot-instructions.md, configs/**, qb_data/**, qb_env/**, models/**, agents/**, evaluation/**, scripts/**, training/**, tests/**
+- Only files matching these patterns are included: agents/**, evaluation/**, models/**, qb_data/**, qb_env/**, scripts/**, training/**, tests/**, configs/**, pyproject.toml, setup.cfg, README.md, AGENTS.md, CLAUDE.md
 - Files matching patterns in .gitignore are excluded
 - Files matching default ignore patterns are excluded
 - Line numbers have been added to the beginning of each line
 - Files are sorted by Git change count (files with more changes are at the bottom)
 
-# User Provided Header
-qanta-buzzer @ c8d460d7 (code — final sync)
-
 # Directory Structure
 ```
-.github/
-  copilot-instructions.md
 agents/
   __init__.py
   _math.py
@@ -94,6 +88,7 @@ scripts/
   manual-smoke.sh
   optimize_dspy.py
   run_baselines.py
+  run_full_pipeline.sh
   run_smoke_pipeline.py
   sweep_reward_shaping.py
   test_mc_builder.py
@@ -134,57 +129,9 @@ AGENTS.md
 CLAUDE.md
 pyproject.toml
 README.md
-requirements.txt
 ```
 
 # Files
-
-## File: .github/copilot-instructions.md
-````markdown
- 1: # Copilot Instructions for `qanta-buzzer`
- 2: 
- 3: Use these instructions as the repo-wide baseline for Copilot work in this repository. Keep them concise, and prefer branch-local source-of-truth docs when they exist.
- 4: 
- 5: ## Source of truth
- 6: 
- 7: - If the checked-out branch contains `CLAUDE.md`, follow it.
- 8: - If the checked-out branch contains `.planning/`, treat `.planning/` as the durable project state and keep important workflow decisions aligned with it.
- 9: - Do not invent a second planning system in parallel with existing repo docs.
-10: 
-11: ## Code paths
-12: 
-13: - This repository has an older root-level prototype path centered on files such as `main.py`, `environment.py`, `dataset.py`, `model.py`, `train_supervised.py`, `train_ppo.py`, and `metrics.py`.
-14: - Some branches also contain a newer modular pipeline with packages such as `qb_data/`, `qb_env/`, `models/`, `agents/`, `evaluation/`, `scripts/`, and `training/`.
-15: - Match the checked-out branch. Do not assume the modular pipeline exists on every branch, and do not force work back into the root-level prototype if the modular packages are already present.
-16: 
-17: ## Change discipline
-18: 
-19: - Keep changes minimal and scoped to the request.
-20: - Prefer editing existing modules over introducing new abstractions unless the request clearly needs them.
-21: - Do not add dependencies unless they are required.
-22: - Do not commit generated Python cache files, virtual environments, model artifacts, or local notebooks unless the task explicitly asks for tracked generated outputs.
-23: 
-24: ## Validation
-25: 
-26: - Prefer the narrowest relevant verification for the files you changed.
-27: - On older/root-prototype branches, the lightweight validation scripts are:
-28:   - `python test_imports.py`
-29:   - `python test_csv_loader.py`
-30: - On branches with `tests/` and `pyproject.toml`, prefer targeted `pytest` first and run the full suite when the change is broad or touches shared infrastructure.
-31: - If the branch exposes smoke workflows such as `python scripts/build_mc_dataset.py --smoke`, prefer those over heavyweight full training runs during routine iteration.
-32: 
-33: ## Heavyweight ML workflows
-34: 
-35: - This repo uses heavyweight ML dependencies including PyTorch, Transformers, sentence-transformers, and Stable-Baselines3.
-36: - Avoid expensive model downloads or long training runs unless the task actually requires them.
-37: - If you are editing docs, config handling, tests, or small control-flow logic, do not trigger full T5 or PPO training just to prove the change.
-38: 
-39: ## Practical repo guidance
-40: 
-41: - Respect the existing file organization and naming conventions on the active branch.
-42: - When documentation and code disagree, trust the executable code first, then update docs to match.
-43: - If a branch includes compatibility shims or bridge code, preserve backward-compatible imports and config aliases unless the task explicitly asks to remove them.
-````
 
 ## File: agents/_math.py
 ````python
@@ -924,741 +871,6 @@ requirements.txt
 366: ]
 ````
 
-## File: qb_data/data_loader.py
-````python
-  1: """
-  2: Data structures and loaders for quiz bowl questions.
-  3: """
-  4: 
-  5: import csv
-  6: import hashlib
-  7: from dataclasses import dataclass
-  8: from pathlib import Path
-  9: from typing import List, Optional, Tuple, Any, Dict
- 10: 
- 11: from qb_data.text_utils import normalize_answer
- 12: 
- 13: 
- 14: @dataclass
- 15: class TossupQuestion:
- 16:     """
- 17:     A quiz bowl tossup question with incremental clues.
- 18: 
- 19:     Attributes
- 20:     ----------
- 21:     qid : str
- 22:         Unique question identifier
- 23:     question : str
- 24:         Full question text (all clues concatenated)
- 25:     tokens : List[str]
- 26:         Tokenized question split on whitespace
- 27:     answer_primary : str
- 28:         Primary answer text
- 29:     clean_answers : List[str]
- 30:         List of acceptable answer variants
- 31:     run_indices : List[int]
- 32:         Token indices where clues end (for incremental reveal)
- 33:     human_buzz_positions : Optional[List[Tuple[int, int]]]
- 34:         Human buzzer positions as (position, count) tuples
- 35:     category : str
- 36:         Question category (e.g., "History", "Literature")
- 37:     cumulative_prefixes : List[str]
- 38:         Precomputed text prefixes at each run_index
- 39:     """
- 40:     qid: str
- 41:     question: str
- 42:     tokens: List[str]
- 43:     answer_primary: str
- 44:     clean_answers: List[str]
- 45:     run_indices: List[int]
- 46:     human_buzz_positions: Optional[List[Tuple[int, int]]]
- 47:     category: str
- 48:     cumulative_prefixes: List[str]
- 49: 
- 50: 
- 51: def _parse_clues_to_tokens(clues: List[str]) -> Tuple[List[str], List[int]]:
- 52:     """
- 53:     Convert list of clues to tokens and run indices.
- 54: 
- 55:     Parameters
- 56:     ----------
- 57:     clues : List[str]
- 58:         List of clue strings
- 59: 
- 60:     Returns
- 61:     -------
- 62:     Tuple[List[str], List[int]]
- 63:         Tokens (words) and indices where each clue ends
- 64:     """
- 65:     tokens = []
- 66:     run_indices = []
- 67: 
- 68:     for clue in clues:
- 69:         clue_tokens = clue.split()
- 70:         tokens.extend(clue_tokens)
- 71:         if clue_tokens:  # Only add index if clue has tokens
- 72:             run_indices.append(len(tokens) - 1)
- 73: 
- 74:     return tokens, run_indices
- 75: 
- 76: 
- 77: def _generate_qid(text: str) -> str:
- 78:     """
- 79:     Generate a unique question ID from question text.
- 80: 
- 81:     Parameters
- 82:     ----------
- 83:     text : str
- 84:         Question text to hash
- 85: 
- 86:     Returns
- 87:     -------
- 88:     str
- 89:         Unique identifier based on text hash
- 90:     """
- 91:     hash_obj = hashlib.md5(text.encode('utf-8'))
- 92:     return f"qid-{hash_obj.hexdigest()[:12]}"
- 93: 
- 94: 
- 95: def _coerce_human_buzz_positions(value: Any) -> Optional[List[Tuple[int, int]]]:
- 96:     """Coerce various metadata formats into ``(position, count)`` tuples."""
- 97:     if value is None:
- 98:         return None
- 99: 
-100:     if isinstance(value, list):
-101:         result: List[Tuple[int, int]] = []
-102:         for item in value:
-103:             if isinstance(item, (list, tuple)) and len(item) == 2:
-104:                 try:
-105:                     result.append((int(item[0]), int(item[1])))
-106:                 except (TypeError, ValueError):
-107:                     continue
-108:             elif isinstance(item, dict):
-109:                 pos = item.get("position")
-110:                 count = item.get("count", 1)
-111:                 if pos is None:
-112:                     continue
-113:                 try:
-114:                     result.append((int(pos), int(count)))
-115:                 except (TypeError, ValueError):
-116:                     continue
-117:         return result or None
-118: 
-119:     return None
-120: 
-121: 
-122: def _coerce_run_indices(run_indices: Any, token_count: int) -> List[int]:
-123:     """Validate and coerce run indices into a sorted unique list."""
-124:     clean: List[int] = []
-125:     for idx in run_indices or []:
-126:         try:
-127:             clean.append(int(idx))
-128:         except (TypeError, ValueError):
-129:             continue
-130: 
-131:     if not clean:
-132:         if token_count <= 0:
-133:             raise ValueError("question must contain at least one token")
-134:         clean = list(range(token_count))
-135: 
-136:     clean = sorted(set(clean))
-137:     if clean[0] < 0 or clean[-1] > token_count - 1:
-138:         raise ValueError(
-139:             f"run_indices out of bounds: min={clean[0]} max={clean[-1]} token_count={token_count}"
-140:         )
-141:     return clean
-142: 
-143: 
-144: def parse_row(row: Dict[str, Any]) -> TossupQuestion:
-145:     """Parse a qb-rl/HuggingFace-style row into ``TossupQuestion``."""
-146:     question = str(row["question"])
-147:     tokens = question.split()
-148:     metadata = row.get("metadata", {}) or {}
-149:     answer_primary = str(
-150:         row.get("answer_primary") or (row.get("clean_answers") or [""])[0]
-151:     ).strip()
-152:     clean_answers = [str(x) for x in (row.get("clean_answers") or [])]
-153:     if not clean_answers and answer_primary:
-154:         clean_answers = [answer_primary]
-155: 
-156:     run_indices = _coerce_run_indices(
-157:         row.get("run_indices") or [],
-158:         token_count=len(tokens),
-159:     )
-160: 
-161:     normalized_question = " ".join(question.split())
-162:     normalized_tokens = " ".join(tokens)
-163:     if normalized_tokens != normalized_question:
-164:         raise ValueError("tokenization roundtrip mismatch")
-165:     if max(run_indices) > len(tokens) - 1:
-166:         raise ValueError("run_indices out of bounds")
-167: 
-168:     cumulative_prefixes = [" ".join(tokens[: idx + 1]) for idx in run_indices]
-169:     category = str(metadata.get("category") or row.get("category") or "")
-170:     human_buzz_positions = _coerce_human_buzz_positions(
-171:         metadata.get("human_buzz_positions") or row.get("human_buzz_positions")
-172:     )
-173: 
-174:     qid_raw = row.get("qid") or row.get("question_id") or row.get("id")
-175:     if qid_raw is None:
-176:         qid_raw = _generate_qid(question)
-177: 
-178:     return TossupQuestion(
-179:         qid=str(qid_raw),
-180:         question=question,
-181:         tokens=tokens,
-182:         answer_primary=answer_primary,
-183:         clean_answers=clean_answers,
-184:         run_indices=run_indices,
-185:         human_buzz_positions=human_buzz_positions,
-186:         category=category,
-187:         cumulative_prefixes=cumulative_prefixes,
-188:     )
-189: 
-190: 
-191: def load_tossup_questions(
-192:     dataset: str,
-193:     dataset_config: Optional[str] = None,
-194:     split: str = "eval",
-195:     limit: Optional[int] = None,
-196: ) -> List[TossupQuestion]:
-197:     """Load tossup questions from Hugging Face datasets using qb-rl semantics."""
-198:     try:
-199:         from datasets import load_dataset
-200:     except ImportError as exc:
-201:         raise ImportError(
-202:             "datasets is required for Hugging Face loading. Install it with: pip install datasets"
-203:         ) from exc
-204: 
-205:     if dataset_config:
-206:         ds = load_dataset(dataset, dataset_config, split=split)
-207:     else:
-208:         ds = load_dataset(dataset, split=split)
-209: 
-210:     if limit is not None:
-211:         ds = ds.select(range(min(int(limit), len(ds))))
-212: 
-213:     return [parse_row(dict(row)) for row in ds]
-214: 
-215: 
-216: def load_tossup_questions_from_config(
-217:     config: Dict[str, Any],
-218:     smoke: bool = False,
-219: ) -> List[TossupQuestion]:
-220:     """Load tossups from config, supporting qb-rl and qanta-buzzer keys."""
-221:     from qb_data.config import resolve_data_loading_options
-222: 
-223:     data_opts = resolve_data_loading_options(config, smoke=smoke)
-224:     csv_path = data_opts.get("csv_path")
-225:     dataset = data_opts.get("dataset")
-226:     dataset_config = data_opts.get("dataset_config")
-227:     split = data_opts.get("split", "eval")
-228:     limit = data_opts.get("max_questions")
-229: 
-230:     if csv_path and Path(csv_path).exists():
-231:         questions = QANTADatasetLoader.load_from_csv(str(csv_path))
-232:     elif dataset:
-233:         questions = load_tossup_questions(
-234:             dataset=str(dataset),
-235:             dataset_config=str(dataset_config) if dataset_config else None,
-236:             split=str(split),
-237:             limit=int(limit) if limit is not None else None,
-238:         )
-239:     elif csv_path and data_opts.get("use_huggingface"):
-240:         from qb_data.huggingface_loader import try_huggingface_fallback
-241: 
-242:         questions = try_huggingface_fallback(str(csv_path))
-243:         if questions is None:
-244:             raise FileNotFoundError(
-245:                 f"Could not load questions from missing CSV path {csv_path} via Hugging Face fallback"
-246:             )
-247:     else:
-248:         raise FileNotFoundError(
-249:             "No valid data source configured. Provide data.csv_path or "
-250:             "data.dataset/data.dataset_config for qb-rl compatibility."
-251:         )
-252: 
-253:     if limit is not None:
-254:         questions = questions[: int(limit)]
-255: 
-256:     return questions
-257: 
-258: 
-259: class QANTADatasetLoader:
-260:     """
-261:     Loader for QANTA-format quiz bowl CSV files.
-262: 
-263:     The QANTA format has questions with clues separated by ||| delimiters.
-264:     """
-265: 
-266:     @classmethod
-267:     def load_from_csv(cls, filepath: str) -> List[TossupQuestion]:
-268:         """
-269:         Load questions from a QANTA-format CSV file.
-270: 
-271:         Parameters
-272:         ----------
-273:         filepath : str
-274:             Path to the CSV file
-275: 
-276:         Returns
-277:         -------
-278:         List[TossupQuestion]
-279:             List of parsed questions
-280: 
-281:         Raises
-282:         ------
-283:         FileNotFoundError
-284:             If the CSV file doesn't exist
-285:         ValueError
-286:             If required columns are missing or data is malformed
-287:         """
-288:         filepath = Path(filepath)
-289:         if not filepath.exists():
-290:             raise FileNotFoundError(f"CSV file not found: {filepath}")
-291: 
-292:         questions = []
-293: 
-294:         with open(filepath, 'r', encoding='utf-8') as f:
-295:             reader = csv.DictReader(f)
-296: 
-297:             # Validate required columns
-298:             required_columns = {'question', 'answer'}
-299:             actual_columns = set(reader.fieldnames or [])
-300: 
-301:             # Handle alternate column names
-302:             if 'Text' in actual_columns and 'question' not in actual_columns:
-303:                 # QANTA format uses 'Text' instead of 'question'
-304:                 text_col = 'Text'
-305:             elif 'question' in actual_columns:
-306:                 text_col = 'question'
-307:             else:
-308:                 raise ValueError(f"Missing required column 'question' or 'Text'. Found columns: {actual_columns}")
-309: 
-310:             if 'Answer' in actual_columns and 'answer' not in actual_columns:
-311:                 answer_col = 'Answer'
-312:             elif 'answer' in actual_columns:
-313:                 answer_col = 'answer'
-314:             else:
-315:                 raise ValueError(f"Missing required column 'answer' or 'Answer'. Found columns: {actual_columns}")
-316: 
-317:             # Check for optional columns
-318:             category_col = None
-319:             if 'Category' in actual_columns:
-320:                 category_col = 'Category'
-321:             elif 'category' in actual_columns:
-322:                 category_col = 'category'
-323: 
-324:             qid_col = None
-325:             if 'Question ID' in actual_columns:
-326:                 qid_col = 'Question ID'
-327:             elif 'qid' in actual_columns:
-328:                 qid_col = 'qid'
-329:             elif 'question_id' in actual_columns:
-330:                 qid_col = 'question_id'
-331: 
-332:             # Parse each row
-333:             for row_idx, row in enumerate(reader):
-334:                 try:
-335:                     # Get question text and parse clues
-336:                     question_text = row[text_col]
-337:                     if not question_text or not question_text.strip():
-338:                         continue  # Skip empty questions
-339: 
-340:                     # Split on ||| delimiter
-341:                     if '|||' in question_text:
-342:                         clues = [clue.strip() for clue in question_text.split('|||')]
-343:                         clues = [c for c in clues if c]  # Remove empty clues
-344:                     else:
-345:                         # Treat entire text as single clue if no delimiter
-346:                         clues = [question_text.strip()]
-347: 
-348:                     if not clues:
-349:                         continue  # Skip if no valid clues
-350: 
-351:                     # Get answer
-352:                     answer = row[answer_col].strip()
-353:                     if not answer:
-354:                         continue  # Skip questions without answers
-355: 
-356:                     # Get category (optional)
-357:                     category = ""
-358:                     if category_col:
-359:                         category = row.get(category_col, "").strip()
-360: 
-361:                     # Get or generate question ID
-362:                     if qid_col and row.get(qid_col):
-363:                         qid = row[qid_col].strip()
-364:                     else:
-365:                         qid = _generate_qid(question_text)
-366: 
-367:                     # Parse clues into tokens and run indices
-368:                     tokens, run_indices = _parse_clues_to_tokens(clues)
-369: 
-370:                     # Build cumulative prefixes
-371:                     cumulative_prefixes = []
-372:                     for idx in run_indices:
-373:                         prefix = " ".join(tokens[:idx + 1])
-374:                         cumulative_prefixes.append(prefix)
-375: 
-376:                     # Create clean answers list
-377:                     clean_answers = [normalize_answer(answer)]
-378: 
-379:                     # Full question is all clues joined
-380:                     full_question = " ".join(clues)
-381: 
-382:                     # Create TossupQuestion
-383:                     question = TossupQuestion(
-384:                         qid=qid,
-385:                         question=full_question,
-386:                         tokens=tokens,
-387:                         answer_primary=answer,
-388:                         clean_answers=clean_answers,
-389:                         run_indices=run_indices,
-390:                         human_buzz_positions=None,  # Not available in basic CSV
-391:                         category=category,
-392:                         cumulative_prefixes=cumulative_prefixes
-393:                     )
-394: 
-395:                     questions.append(question)
-396: 
-397:                 except Exception as e:
-398:                     print(f"Warning: Failed to parse row {row_idx + 1}: {e}")
-399:                     continue
-400: 
-401:         if not questions:
-402:             raise ValueError(f"No valid questions found in {filepath}")
-403: 
-404:         return questions
-````
-
-## File: qb_data/huggingface_loader.py
-````python
-  1: """
-  2: HuggingFace dataset loader for quiz bowl data.
-  3: 
-  4: This module provides fallback loading from HuggingFace Hub when local CSV files
-  5: are not available.
-  6: """
-  7: 
-  8: from typing import List, Optional, Dict, Any
-  9: 
- 10: from qb_data.data_loader import TossupQuestion
- 11: from qb_data.text_utils import tokenize_text, normalize_answer
- 12: 
- 13: 
- 14: def load_from_huggingface(
- 15:     dataset_name: str,
- 16:     config_name: Optional[str] = None,
- 17:     split: str = "eval"
- 18: ) -> List[TossupQuestion]:
- 19:     """
- 20:     Load quiz bowl dataset from HuggingFace Hub.
- 21: 
- 22:     Parameters
- 23:     ----------
- 24:     dataset_name : str
- 25:         Name of the HuggingFace dataset (e.g., "qanta-challenge/acf-co24-tossups")
- 26:     config_name : Optional[str]
- 27:         Configuration name for the dataset (e.g., "questions", "tossup")
- 28:     split : str
- 29:         Dataset split to load (default: "eval")
- 30: 
- 31:     Returns
- 32:     -------
- 33:     List[TossupQuestion]
- 34:         List of parsed questions
- 35: 
- 36:     Raises
- 37:     ------
- 38:     ImportError
- 39:         If datasets library is not installed
- 40:     ValueError
- 41:         If dataset not found or required fields missing
- 42:     """
- 43:     try:
- 44:         from datasets import load_dataset
- 45:     except ImportError:
- 46:         print("Warning: datasets library not installed. Falling back to CSV loader.")
- 47:         print("Install with: pip install datasets")
- 48:         raise ImportError("HuggingFace datasets library not available. Please use CSV fallback.")
- 49: 
- 50:     # Known dataset configurations from qb-rl
- 51:     known_configs = {
- 52:         "qanta-challenge/acf-co24-tossups": "questions",
- 53:         "qanta-challenge/qanta25-playground": "tossup"
- 54:     }
- 55: 
- 56:     # Use known config if not provided
- 57:     if config_name is None and dataset_name in known_configs:
- 58:         config_name = known_configs[dataset_name]
- 59:         print(f"Using known config '{config_name}' for {dataset_name}")
- 60: 
- 61:     # Try to load dataset
- 62:     try:
- 63:         print(f"Loading {dataset_name} from HuggingFace Hub...")
- 64:         if config_name:
- 65:             dataset = load_dataset(dataset_name, config_name, split=split)
- 66:         else:
- 67:             dataset = load_dataset(dataset_name, split=split)
- 68:         print(f"Successfully loaded {len(dataset)} questions")
- 69:     except Exception as e:
- 70:         error_msg = f"Failed to load dataset {dataset_name}: {e}"
- 71:         print(f"Error: {error_msg}")
- 72:         print("Falling back to local CSV loader...")
- 73:         raise ValueError(error_msg)
- 74: 
- 75:     # Parse dataset rows into TossupQuestion format
- 76:     questions = []
- 77:     for idx, row in enumerate(dataset):
- 78:         try:
- 79:             question = parse_huggingface_row(row, idx)
- 80:             questions.append(question)
- 81:         except KeyError as e:
- 82:             print(f"Warning: Skipping row {idx} due to missing field: {e}")
- 83:             continue
- 84:         except Exception as e:
- 85:             print(f"Warning: Failed to parse row {idx}: {e}")
- 86:             continue
- 87: 
- 88:     if not questions:
- 89:         raise ValueError(f"No valid questions parsed from {dataset_name}")
- 90: 
- 91:     print(f"Parsed {len(questions)} questions from HuggingFace dataset")
- 92:     return questions
- 93: 
- 94: 
- 95: def parse_huggingface_row(row: Dict[str, Any], idx: int = 0) -> TossupQuestion:
- 96:     """
- 97:     Parse a HuggingFace dataset row into TossupQuestion format.
- 98: 
- 99:     Parameters
-100:     ----------
-101:     row : Dict[str, Any]
-102:         Single row from HuggingFace dataset
-103:     idx : int
-104:         Row index for generating IDs
-105: 
-106:     Returns
-107:     -------
-108:     TossupQuestion
-109:         Parsed question object
-110: 
-111:     Raises
-112:     ------
-113:     KeyError
-114:         If required fields are missing
-115:     """
-116:     # Field mapping for different dataset formats
-117:     # Primary fields
-118:     question_fields = ["question", "text", "question_text", "tossup_text"]
-119:     answer_fields = ["answer_primary", "answer", "clean_answer", "clean_answers", "page"]
-120:     category_fields = ["category", "topic", "subject"]
-121: 
-122:     # Extract question text
-123:     question_text = None
-124:     for field in question_fields:
-125:         if field in row:
-126:             question_text = row[field]
-127:             break
-128: 
-129:     if not question_text:
-130:         raise KeyError(f"No question field found. Available fields: {list(row.keys())}")
-131: 
-132:     # Extract answer
-133:     answer_text = None
-134:     for field in answer_fields:
-135:         if field in row:
-136:             value = row[field]
-137:             # Handle list of answers
-138:             if isinstance(value, list) and value:
-139:                 answer_text = value[0]
-140:             elif isinstance(value, str):
-141:                 answer_text = value
-142:             break
-143: 
-144:     if not answer_text:
-145:         raise KeyError(f"No answer field found. Available fields: {list(row.keys())}")
-146: 
-147:     # Extract category (with default)
-148:     category = "General"
-149:     for field in category_fields:
-150:         if field in row and row[field]:
-151:             category = str(row[field])
-152:             break
-153: 
-154:     # Generate ID if not present
-155:     qid = row.get("qid") or row.get("id") or row.get("qanta_id") or f"hf_{idx:06d}"
-156: 
-157:     # Handle clues that may be separated by ||| or in a list
-158:     if "|||" in question_text:
-159:         # QANTA format with ||| separators
-160:         clues = question_text.split("|||")
-161:         question_text = " ".join(clues)
-162:     elif isinstance(question_text, list):
-163:         # List of clues
-164:         clues = question_text
-165:         question_text = " ".join(clues)
-166:     else:
-167:         # Single text, split by sentences as approximation
-168:         import re
-169:         sentences = re.split(r'(?<=[.!?])\s+', question_text)
-170:         clues = sentences if len(sentences) > 1 else [question_text]
-171: 
-172:     # Tokenize text
-173:     tokens = tokenize_text(question_text)
-174: 
-175:     # Build run indices (boundaries between clues)
-176:     run_indices = []
-177:     current_pos = 0
-178:     for clue in clues:
-179:         clue_tokens = tokenize_text(clue)
-180:         current_pos += len(clue_tokens)
-181:         if current_pos > 0:
-182:             run_indices.append(current_pos - 1)  # Index is 0-based
-183: 
-184:     # Build cumulative prefixes
-185:     cumulative_prefixes = []
-186:     for idx in run_indices:
-187:         prefix = " ".join(tokens[:idx + 1])
-188:         cumulative_prefixes.append(prefix)
-189: 
-190:     # Normalize answer for matching
-191:     clean_answers = [normalize_answer(answer_text)]
-192: 
-193:     return TossupQuestion(
-194:         qid=qid,
-195:         question=question_text,
-196:         tokens=tokens,
-197:         answer_primary=answer_text,  # Keep original answer as primary
-198:         clean_answers=clean_answers,  # Normalized version for matching
-199:         run_indices=run_indices,
-200:         human_buzz_positions=None,  # Not available from HuggingFace
-201:         category=category,
-202:         cumulative_prefixes=cumulative_prefixes
-203:     )
-204: 
-205: 
-206: def try_huggingface_fallback(csv_path: str) -> Optional[List[TossupQuestion]]:
-207:     """
-208:     Attempt to load from HuggingFace if CSV is missing.
-209: 
-210:     Parameters
-211:     ----------
-212:     csv_path : str
-213:         Path to missing CSV file
-214: 
-215:     Returns
-216:     -------
-217:     Optional[List[TossupQuestion]]
-218:         Questions if HuggingFace load succeeds, None otherwise
-219:     """
-220:     print(f"CSV file {csv_path} not found. Attempting HuggingFace fallback...")
-221: 
-222:     # Try known datasets in order
-223:     fallback_datasets = [
-224:         ("qanta-challenge/acf-co24-tossups", "questions"),
-225:         ("qanta-challenge/qanta25-playground", "tossup")
-226:     ]
-227: 
-228:     for dataset_name, config_name in fallback_datasets:
-229:         try:
-230:             questions = load_from_huggingface(dataset_name, config_name)
-231:             if questions:
-232:                 print(f"Successfully loaded {len(questions)} questions from {dataset_name}")
-233:                 return questions
-234:         except Exception as e:
-235:             print(f"Failed to load {dataset_name}: {e}")
-236:             continue
-237: 
-238:     print("All HuggingFace fallback attempts failed")
-239:     return None
-````
-
-## File: qb_data/text_utils.py
-````python
- 1: """
- 2: Text utilities for quiz bowl answer normalization and tokenization.
- 3: """
- 4: 
- 5: import re
- 6: import string
- 7: from typing import Optional, List
- 8: 
- 9: 
-10: def tokenize_text(text: str) -> List[str]:
-11:     """
-12:     Tokenize text by splitting on whitespace.
-13: 
-14:     Parameters
-15:     ----------
-16:     text : str
-17:         Text to tokenize
-18: 
-19:     Returns
-20:     -------
-21:     List[str]
-22:         List of tokens (words)
-23:     """
-24:     if not text:
-25:         return []
-26:     return text.split()
-27: 
-28: 
-29: def normalize_answer(answer: str) -> str:
-30:     """
-31:     Normalize an answer string for comparison.
-32: 
-33:     Removes articles (a, an, the) from the beginning, converts to lowercase,
-34:     strips punctuation and extra whitespace, and handles edge cases.
-35: 
-36:     Parameters
-37:     ----------
-38:     answer : str
-39:         The answer string to normalize
-40: 
-41:     Returns
-42:     -------
-43:     str
-44:         The normalized answer string
-45: 
-46:     Examples
-47:     --------
-48:     >>> normalize_answer("The Great Gatsby")
-49:     'great gatsby'
-50:     >>> normalize_answer("A Tale of Two Cities!")
-51:     'tale of two cities'
-52:     >>> normalize_answer("   An    Example   ")
-53:     'example'
-54:     >>> normalize_answer("")
-55:     ''
-56:     """
-57:     if not answer:
-58:         return ""
-59: 
-60:     # Convert to lowercase
-61:     normalized = answer.lower()
-62: 
-63:     # Remove leading/trailing whitespace
-64:     normalized = normalized.strip()
-65: 
-66:     # Remove leading articles (a, an, the)
-67:     # Use \b word boundary to ensure we match complete words
-68:     normalized = re.sub(r'^(a|an|the)\b\s*', '', normalized)
-69: 
-70:     # Remove punctuation
-71:     # Keep alphanumeric characters and spaces
-72:     normalized = re.sub(r'[^\w\s]', '', normalized)
-73: 
-74:     # Normalize whitespace (collapse multiple spaces to single space)
-75:     normalized = re.sub(r'\s+', ' ', normalized)
-76: 
-77:     # Final strip in case punctuation removal left spaces
-78:     normalized = normalized.strip()
-79: 
-80:     return normalized
-````
-
 ## File: qb_env/data_loader.py
 ````python
  1: """qb-rl compatibility re-exports for tossup data loading."""
@@ -1879,6 +1091,38 @@ requirements.txt
 177:             The unwrapped environment instance.
 178:         """
 179:         return self.env
+````
+
+## File: scripts/manual-smoke.sh
+````bash
+ 1: #!/usr/bin/env bash
+ 2: # Manual smoke pipeline -- runs the four-stage belief-feature smoke workflow.
+ 3: # Intended for human verification, not CI (stages are heavyweight ML runs).
+ 4: #
+ 5: # Prereqs: pip install -e .  (see AGENTS.md for full setup)
+ 6: # Outputs: artifacts/smoke/
+ 7: set -euo pipefail
+ 8: 
+ 9: REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+10: if [ -f "$REPO_ROOT/.venv/bin/activate" ]; then
+11:     source "$REPO_ROOT/.venv/bin/activate"
+12: fi
+13: 
+14: PYTHON="${PYTHON:-python3}"
+15: 
+16: echo "=== Stage 1/4: Build MC dataset ==="
+17: $PYTHON scripts/build_mc_dataset.py --smoke
+18: 
+19: echo "=== Stage 2/4: Run baselines ==="
+20: $PYTHON scripts/run_baselines.py --smoke
+21: 
+22: echo "=== Stage 3/4: Train PPO ==="
+23: $PYTHON scripts/train_ppo.py --smoke
+24: 
+25: echo "=== Stage 4/4: Evaluate all ==="
+26: $PYTHON scripts/evaluate_all.py --smoke
+27: 
+28: echo "=== Smoke pipeline complete. Check artifacts/smoke/ ==="
 ````
 
 ## File: scripts/run_smoke_pipeline.py
@@ -3694,943 +2938,6 @@ requirements.txt
 5: """
 ````
 
-## File: training/train_ppo_t5.py
-````python
-  1: """
-  2: Custom PPO Training for T5 Policy Model
-  3: 
-  4: Implements PPOTrainer with RolloutBuffer for end-to-end PPO fine-tuning of
-  5: T5PolicyModel on incremental quiz bowl episodes. Uses Generalized Advantage
-  6: Estimation (GAE) for variance reduction and dynamic batch padding to minimize
-  7: memory footprint.
-  8: 
-  9: Key design decisions:
- 10:     - Rollout tensors (input_ids, attention_mask) are immediately detached and
- 11:       moved to CPU after collection to prevent GPU memory accumulation.
- 12:     - Dynamic padding: each mini-batch is padded to the max length within that
- 13:       batch, not a global 512-token maximum, saving ~50%+ memory.
- 14:     - Config-dict interface for compatibility with the unified codebase YAML
- 15:       config pattern (see configs/t5_policy.yaml).
- 16: 
- 17: Ported from qanta-buzzer reference implementation (train_ppo.py) with:
- 18:     - TextObservationWrapper for text-based rollout collection
- 19:     - Memory-safe tensor management (detach + CPU storage)
- 20:     - Dynamic padding per mini-batch
- 21:     - Config dict interface replacing Config class
- 22:     - NumPy-style docstrings
- 23: 
- 24: Usage
- 25: -----
- 26: From Python::
- 27: 
- 28:     from training.train_ppo_t5 import PPOTrainer, run_ppo_training
- 29:     from models.t5_policy import T5PolicyModel
- 30:     from qb_data.mc_builder import MCQuestion
- 31: 
- 32:     model = T5PolicyModel({"model_name": "t5-small", "device": "cpu"})
- 33:     trainer = PPOTrainer(model, train_qs, val_qs, config)
- 34:     trainer.train()
- 35: 
- 36: From command line::
- 37: 
- 38:     python scripts/train_t5_policy.py --config configs/t5_policy.yaml
- 39: """
- 40: 
- 41: from __future__ import annotations
- 42: 
- 43: import json
- 44: import random
- 45: from dataclasses import dataclass, field
- 46: from pathlib import Path
- 47: from typing import Any, Dict, List, Optional, Tuple
- 48: 
- 49: import numpy as np
- 50: import torch
- 51: import torch.nn as nn
- 52: import torch.optim as optim
- 53: 
- 54: from models.t5_policy import T5PolicyModel
- 55: from qb_data.mc_builder import MCQuestion
- 56: 
- 57: 
- 58: @dataclass
- 59: class RolloutStep:
- 60:     """Single step in an episode rollout.
- 61: 
- 62:     Stores observation text, action, reward, value estimate, and log probability
- 63:     for a single environment step. Tokenized tensors (input_ids, attention_mask)
- 64:     are stored on CPU to prevent GPU memory accumulation during rollout collection.
- 65: 
- 66:     Attributes
- 67:     ----------
- 68:     observation_text : str
- 69:         Text observation at this step (CLUES: ... | CHOICES: ...).
- 70:     action : int
- 71:         Combined action taken (0=WAIT, 1..K=SELECT).
- 72:     reward : float
- 73:         Scalar reward received.
- 74:     done : bool
- 75:         Whether this step ended the episode.
- 76:     value : float
- 77:         Value estimate from the critic at this step.
- 78:     log_prob : float
- 79:         Log probability of the action under the policy at collection time.
- 80:     input_ids : torch.Tensor or None
- 81:         Tokenized input IDs stored on CPU. Shape ``[1, seq_len]``.
- 82:     attention_mask : torch.Tensor or None
- 83:         Attention mask stored on CPU. Shape ``[1, seq_len]``.
- 84:     return_ : float
- 85:         Discounted return (filled by ``compute_returns_and_advantages``).
- 86:     advantage : float
- 87:         GAE advantage (filled by ``compute_returns_and_advantages``).
- 88:     """
- 89: 
- 90:     observation_text: str
- 91:     action: int
- 92:     reward: float
- 93:     done: bool
- 94:     value: float
- 95:     log_prob: float
- 96:     input_ids: Optional[torch.Tensor] = None
- 97:     attention_mask: Optional[torch.Tensor] = None
- 98:     return_: float = 0.0
- 99:     advantage: float = 0.0
-100: 
-101: 
-102: class RolloutBuffer:
-103:     """Buffer to store and process episode rollouts for PPO updates.
-104: 
-105:     Accumulates complete episode rollouts (lists of RolloutStep), then computes
-106:     discounted returns and GAE advantages across all episodes. Provides a flat
-107:     view of all steps for mini-batch iteration during PPO updates.
-108: 
-109:     Attributes
-110:     ----------
-111:     rollouts : list[list[RolloutStep]]
-112:         List of episode rollouts, each a list of steps.
-113:     """
-114: 
-115:     def __init__(self) -> None:
-116:         self.rollouts: List[List[RolloutStep]] = []
-117: 
-118:     def reset(self) -> None:
-119:         """Clear all stored rollouts."""
-120:         self.rollouts = []
-121: 
-122:     def add_rollout(self, steps: List[RolloutStep]) -> None:
-123:         """Add a complete episode rollout to the buffer.
-124: 
-125:         Parameters
-126:         ----------
-127:         steps : list[RolloutStep]
-128:             Complete episode rollout (ordered list of steps from reset to done).
-129:         """
-130:         self.rollouts.append(steps)
-131: 
-132:     def get_all_steps(self) -> List[RolloutStep]:
-133:         """Get a flat list of all steps from all rollouts.
-134: 
-135:         Returns
-136:         -------
-137:         list[RolloutStep]
-138:             All steps concatenated in order (rollout 0 steps, then rollout 1, ...).
-139:         """
-140:         all_steps: List[RolloutStep] = []
-141:         for rollout in self.rollouts:
-142:             all_steps.extend(rollout)
-143:         return all_steps
-144: 
-145:     def compute_returns_and_advantages(
-146:         self, gamma: float, gae_lambda: float
-147:     ) -> None:
-148:         """Compute discounted returns and GAE advantages for all rollouts.
-149: 
-150:         Uses Generalized Advantage Estimation (GAE) to compute per-step
-151:         advantages. For each rollout, iterates backward from the terminal
-152:         step computing:
-153: 
-154:             delta_t = r_t + gamma * V(s_{t+1}) - V(s_t)
-155:             A_t = delta_t + gamma * lambda * A_{t+1}
-156:             G_t = A_t + V(s_t)
-157: 
-158:         Terminal states reset next_value and gae to 0.
-159: 
-160:         Parameters
-161:         ----------
-162:         gamma : float
-163:             Discount factor in [0, 1]. Higher values weight future rewards more.
-164:         gae_lambda : float
-165:             GAE lambda in [0, 1]. Trades off bias (low) vs variance (high).
-166:         """
-167:         for rollout in self.rollouts:
-168:             rewards = [step.reward for step in rollout]
-169:             values = [step.value for step in rollout]
-170:             dones = [step.done for step in rollout]
-171: 
-172:             # GAE computation (backward pass)
-173:             gae = 0.0
-174:             next_value = 0.0  # Terminal state value
-175: 
-176:             for t in reversed(range(len(rollout))):
-177:                 if dones[t]:
-178:                     next_value = 0.0
-179:                     gae = 0.0
-180: 
-181:                 # TD error
-182:                 delta = rewards[t] + gamma * next_value - values[t]
-183: 
-184:                 # GAE accumulation
-185:                 gae = delta + gamma * gae_lambda * gae
-186: 
-187:                 # Store return and advantage
-188:                 rollout[t].return_ = gae + values[t]
-189:                 rollout[t].advantage = gae
-190: 
-191:                 next_value = values[t]
-192: 
-193:     def __len__(self) -> int:
-194:         return len(self.rollouts)
-195: 
-196: 
-197: class PPOTrainer:
-198:     """Custom PPO trainer for T5PolicyModel on quiz bowl episodes.
-199: 
-200:     Collects rollouts by running T5PolicyModel in text-observation episodes
-201:     (via TextObservationWrapper), then updates the policy using clipped
-202:     surrogate PPO loss with value function and entropy regularization.
-203: 
-204:     The trainer handles the complete training loop:
-205:     1. Collect rollouts (episodes) using the current policy
-206:     2. Compute GAE advantages
-207:     3. Update policy with mini-batch PPO for multiple epochs
-208:     4. Periodically validate and save checkpoints
-209: 
-210:     Parameters
-211:     ----------
-212:     model : T5PolicyModel
-213:         T5 policy model to train. Should be pre-trained via supervised
-214:         warm-start for faster convergence.
-215:     train_questions : list[MCQuestion]
-216:         Training set questions for rollout collection.
-217:     val_questions : list[MCQuestion]
-218:         Validation set questions for periodic evaluation.
-219:     config : dict[str, Any]
-220:         Configuration dictionary with PPO hyperparameters:
-221: 
-222:         - ``ppo_lr`` (float): Learning rate. Default 1e-5.
-223:         - ``ppo_iterations`` (int): Number of collect-update cycles. Default 100.
-224:         - ``ppo_batch_size`` (int): Mini-batch size for PPO updates. Default 8.
-225:         - ``ppo_epochs_per_iter`` (int): PPO epochs per iteration. Default 4.
-226:         - ``ppo_gamma`` (float): Discount factor. Default 0.99.
-227:         - ``ppo_gae_lambda`` (float): GAE lambda. Default 0.95.
-228:         - ``ppo_clip_ratio`` (float): PPO clip ratio. Default 0.2.
-229:         - ``ppo_value_coef`` (float): Value loss coefficient. Default 0.5.
-230:         - ``ppo_entropy_coef`` (float): Entropy bonus coefficient. Default 0.01.
-231:         - ``ppo_max_grad_norm`` (float): Gradient clip norm. Default 0.5.
-232:         - ``ppo_episodes_per_iter`` (int): Episodes per rollout. Default 16.
-233:         - ``eval_interval`` (int): Validate every N iterations. Default 10.
-234:         - ``save_interval`` (int): Save checkpoint every N iterations. Default 20.
-235:         - ``checkpoint_dir`` (str): Base checkpoint directory. Default "checkpoints".
-236:         - ``reward_time_penalty`` (float): Time penalty for env. Default 0.1.
-237: 
-238:     Attributes
-239:     ----------
-240:     model : T5PolicyModel
-241:         The model being trained.
-242:     optimizer : torch.optim.AdamW
-243:         Optimizer with weight decay.
-244:     best_val_reward : float
-245:         Best validation reward seen so far.
-246:     history : list[dict]
-247:         Per-iteration training metrics.
-248:     checkpoint_dir : Path
-249:         Directory for saving PPO checkpoints.
-250:     """
-251: 
-252:     def __init__(
-253:         self,
-254:         model: T5PolicyModel,
-255:         train_questions: List[MCQuestion],
-256:         val_questions: List[MCQuestion],
-257:         config: Dict[str, Any],
-258:     ) -> None:
-259:         self.model = model
-260:         self.train_questions = list(train_questions)
-261:         self.val_questions = list(val_questions)
-262:         self.config = config
-263: 
-264:         self.device = model.device
-265: 
-266:         # PPO hyperparameters
-267:         self.lr = float(config.get("ppo_lr", 1e-5))
-268:         self.iterations = int(config.get("ppo_iterations", 100))
-269:         self.batch_size = int(config.get("ppo_batch_size", 8))
-270:         self.epochs_per_iter = int(config.get("ppo_epochs_per_iter", 4))
-271:         self.gamma = float(config.get("ppo_gamma", 0.99))
-272:         self.gae_lambda = float(config.get("ppo_gae_lambda", 0.95))
-273:         self.clip_ratio = float(config.get("ppo_clip_ratio", 0.2))
-274:         self.value_coef = float(config.get("ppo_value_coef", 0.5))
-275:         self.entropy_coef = float(config.get("ppo_entropy_coef", 0.01))
-276:         self.max_grad_norm = float(config.get("ppo_max_grad_norm", 0.5))
-277:         self.episodes_per_iter = int(config.get("ppo_episodes_per_iter", 16))
-278:         self.eval_interval = int(config.get("eval_interval", 10))
-279:         self.save_interval = int(config.get("save_interval", 20))
-280:         self.reward_time_penalty = float(config.get("reward_time_penalty", 0.1))
-281:         self.max_input_length = int(config.get("max_input_length", 512))
-282: 
-283:         # Optimizer
-284:         self.optimizer = optim.AdamW(
-285:             model.parameters(), lr=self.lr, weight_decay=0.01
-286:         )
-287: 
-288:         # Training state
-289:         self.current_iteration = 0
-290:         self.best_val_reward = -float("inf")
-291:         self.history: List[Dict[str, Any]] = []
-292: 
-293:         # Checkpoint directory
-294:         self.checkpoint_dir = (
-295:             Path(config.get("checkpoint_dir", "checkpoints")) / "ppo_t5"
-296:         )
-297:         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-298: 
-299:     def collect_rollouts(self, num_episodes: int) -> RolloutBuffer:
-300:         """Collect rollouts by running episodes with the current policy.
-301: 
-302:         Creates a TossupMCEnv + TextObservationWrapper for each sampled
-303:         question, runs the policy until episode termination, and stores
-304:         all steps in a RolloutBuffer. Tokenized tensors are detached and
-305:         moved to CPU immediately to prevent GPU memory accumulation.
-306: 
-307:         Parameters
-308:         ----------
-309:         num_episodes : int
-310:             Number of episodes to collect.
-311: 
-312:         Returns
-313:         -------
-314:         RolloutBuffer
-315:             Buffer containing all collected episode rollouts.
-316:         """
-317:         from qb_env.text_wrapper import TextObservationWrapper
-318:         from qb_env.tossup_env import TossupMCEnv
-319:         from models.likelihoods import TfIdfLikelihood
-320: 
-321:         self.model.eval()
-322:         buffer = RolloutBuffer()
-323: 
-324:         # Sample questions for this iteration
-325:         questions = random.choices(self.train_questions, k=num_episodes)
-326: 
-327:         # Build a simple TF-IDF likelihood for environment scoring
-328:         # (The T5 policy reads text directly; likelihood is only used for
-329:         # environment reward computation via belief updates)
-330:         corpus = []
-331:         for q in self.train_questions[:100]:  # Use subset for speed
-332:             corpus.extend(q.option_profiles)
-333:         likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
-334: 
-335:         with torch.no_grad():
-336:             for question in questions:
-337:                 env = TossupMCEnv(
-338:                     questions=[question],
-339:                     likelihood_model=likelihood_model,
-340:                     K=len(question.options),
-341:                     reward_mode="time_penalty",
-342:                     wait_penalty=self.reward_time_penalty,
-343:                     belief_mode="from_scratch",
-344:                 )
-345:                 wrapped_env = TextObservationWrapper(env)
-346: 
-347:                 obs, info = wrapped_env.reset()
-348:                 done = False
-349:                 rollout: List[RolloutStep] = []
-350: 
-351:                 while not done:
-352:                     # Tokenize text observation
-353:                     inputs = self.model.tokenizer(
-354:                         obs,
-355:                         return_tensors="pt",
-356:                         padding=True,
-357:                         truncation=True,
-358:                         max_length=self.max_input_length,
-359:                     ).to(self.device)
-360: 
-361:                     # Get action from policy
-362:                     actions, act_info = self.model.select_action(
-363:                         inputs["input_ids"],
-364:                         inputs["attention_mask"],
-365:                         deterministic=False,
-366:                     )
-367: 
-368:                     action = actions.item()
-369:                     value = act_info["values"].squeeze().item()
-370:                     log_prob = act_info["log_probs"].item()
-371: 
-372:                     # Take environment step
-373:                     next_obs, reward, terminated, truncated, step_info = (
-374:                         wrapped_env.step(action)
-375:                     )
-376:                     done = terminated or truncated
-377: 
-378:                     # CRITICAL: Detach and move tensors to CPU immediately
-379:                     # to prevent GPU memory accumulation during rollout collection
-380:                     step = RolloutStep(
-381:                         observation_text=obs,
-382:                         action=action,
-383:                         reward=reward,
-384:                         done=done,
-385:                         value=value,
-386:                         log_prob=log_prob,
-387:                         input_ids=inputs["input_ids"].detach().cpu(),
-388:                         attention_mask=inputs["attention_mask"].detach().cpu(),
-389:                     )
-390:                     rollout.append(step)
-391: 
-392:                     obs = next_obs
-393: 
-394:                 buffer.add_rollout(rollout)
-395: 
-396:         return buffer
-397: 
-398:     def _pad_batch(
-399:         self, batch_steps: List[RolloutStep]
-400:     ) -> Tuple[torch.Tensor, torch.Tensor]:
-401:         """Dynamically pad a mini-batch of steps to the max length in the batch.
-402: 
-403:         Instead of padding all sequences to the global max (512 tokens), pads
-404:         only to the longest sequence in the current mini-batch. This typically
-405:         saves 50%+ memory since most quiz bowl observations are 100-200 tokens.
-406: 
-407:         Parameters
-408:         ----------
-409:         batch_steps : list[RolloutStep]
-410:             Mini-batch of rollout steps with stored input_ids and attention_mask.
-411: 
-412:         Returns
-413:         -------
-414:         input_ids : torch.Tensor
-415:             Padded input IDs of shape ``[batch_size, max_len]``, on device.
-416:         attention_mask : torch.Tensor
-417:             Padded attention mask of shape ``[batch_size, max_len]``, on device.
-418:         """
-419:         max_len = max(step.input_ids.shape[1] for step in batch_steps)
-420:         pad_token_id = self.model.tokenizer.pad_token_id
-421: 
-422:         padded_input_ids = []
-423:         padded_attention_mask = []
-424: 
-425:         for step in batch_steps:
-426:             seq_len = step.input_ids.shape[1]
-427:             if seq_len < max_len:
-428:                 pad_len = max_len - seq_len
-429:                 input_ids_padded = torch.cat(
-430:                     [
-431:                         step.input_ids,
-432:                         torch.full(
-433:                             (1, pad_len),
-434:                             pad_token_id,
-435:                             dtype=step.input_ids.dtype,
-436:                         ),
-437:                     ],
-438:                     dim=1,
-439:                 )
-440:                 attention_mask_padded = torch.cat(
-441:                     [
-442:                         step.attention_mask,
-443:                         torch.zeros(
-444:                             (1, pad_len), dtype=step.attention_mask.dtype
-445:                         ),
-446:                     ],
-447:                     dim=1,
-448:                 )
-449:             else:
-450:                 input_ids_padded = step.input_ids
-451:                 attention_mask_padded = step.attention_mask
-452: 
-453:             padded_input_ids.append(input_ids_padded)
-454:             padded_attention_mask.append(attention_mask_padded)
-455: 
-456:         input_ids = torch.cat(padded_input_ids).to(self.device)
-457:         attention_mask = torch.cat(padded_attention_mask).to(self.device)
-458: 
-459:         return input_ids, attention_mask
-460: 
-461:     def update_policy(self, buffer: RolloutBuffer) -> Dict[str, float]:
-462:         """Update the policy using PPO with clipped surrogate loss.
-463: 
-464:         Computes GAE advantages, normalizes them, then runs multiple epochs
-465:         of mini-batch PPO updates. Each update computes the clipped surrogate
-466:         policy loss, value function MSE loss, and entropy bonus.
-467: 
-468:         Parameters
-469:         ----------
-470:         buffer : RolloutBuffer
-471:             Buffer with collected rollouts (compute_returns_and_advantages
-472:             will be called internally).
-473: 
-474:         Returns
-475:         -------
-476:         dict[str, float]
-477:             Training metrics: policy_loss, value_loss, entropy, num_updates.
-478:         """
-479:         self.model.train()
-480: 
-481:         # Compute returns and advantages
-482:         buffer.compute_returns_and_advantages(
-483:             gamma=self.gamma, gae_lambda=self.gae_lambda
-484:         )
-485: 
-486:         # Get all steps
-487:         all_steps = buffer.get_all_steps()
-488:         if not all_steps:
-489:             return {
-490:                 "policy_loss": 0.0,
-491:                 "value_loss": 0.0,
-492:                 "entropy": 0.0,
-493:                 "num_updates": 0,
-494:             }
-495: 
-496:         # Normalize advantages
-497:         advantages = torch.tensor(
-498:             [step.advantage for step in all_steps], dtype=torch.float32
-499:         )
-500:         advantages = (advantages - advantages.mean()) / (
-501:             advantages.std() + 1e-8
-502:         )
-503: 
-504:         # Training metrics
-505:         total_policy_loss = 0.0
-506:         total_value_loss = 0.0
-507:         total_entropy = 0.0
-508:         num_updates = 0
-509: 
-510:         # PPO epochs
-511:         for epoch in range(self.epochs_per_iter):
-512:             # Shuffle step indices
-513:             indices = np.random.permutation(len(all_steps))
-514: 
-515:             # Mini-batch updates
-516:             for start_idx in range(0, len(all_steps), self.batch_size):
-517:                 end_idx = min(start_idx + self.batch_size, len(all_steps))
-518:                 batch_indices = indices[start_idx:end_idx]
-519: 
-520:                 # Get batch steps
-521:                 batch_steps = [all_steps[i] for i in batch_indices]
-522: 
-523:                 # Dynamic padding to max length in THIS batch
-524:                 input_ids, attention_mask = self._pad_batch(batch_steps)
-525: 
-526:                 # Prepare batch tensors
-527:                 actions = torch.tensor(
-528:                     [step.action for step in batch_steps],
-529:                     dtype=torch.long,
-530:                 ).to(self.device)
-531:                 old_log_probs = torch.tensor(
-532:                     [step.log_prob for step in batch_steps],
-533:                     dtype=torch.float32,
-534:                 ).to(self.device)
-535:                 returns = torch.tensor(
-536:                     [step.return_ for step in batch_steps],
-537:                     dtype=torch.float32,
-538:                 ).to(self.device)
-539:                 batch_advantages = advantages[batch_indices].to(self.device)
-540: 
-541:                 # Get new log probs, entropy, and values from current policy
-542:                 new_log_probs, entropy, values = (
-543:                     self.model.get_action_log_probs(
-544:                         input_ids, attention_mask, actions
-545:                     )
-546:                 )
-547: 
-548:                 # PPO clipped surrogate policy loss
-549:                 ratio = torch.exp(new_log_probs - old_log_probs)
-550:                 surr1 = ratio * batch_advantages
-551:                 surr2 = (
-552:                     torch.clamp(
-553:                         ratio,
-554:                         1.0 - self.clip_ratio,
-555:                         1.0 + self.clip_ratio,
-556:                     )
-557:                     * batch_advantages
-558:                 )
-559:                 policy_loss = -torch.min(surr1, surr2).mean()
-560: 
-561:                 # Value function loss (MSE)
-562:                 value_loss = nn.MSELoss()(values, returns)
-563: 
-564:                 # Entropy bonus (negative because we maximize entropy)
-565:                 entropy_loss = -entropy.mean()
-566: 
-567:                 # Total loss
-568:                 loss = (
-569:                     policy_loss
-570:                     + self.value_coef * value_loss
-571:                     + self.entropy_coef * entropy_loss
-572:                 )
-573: 
-574:                 # Backward pass and optimizer step
-575:                 self.optimizer.zero_grad()
-576:                 loss.backward()
-577:                 torch.nn.utils.clip_grad_norm_(
-578:                     self.model.parameters(), self.max_grad_norm
-579:                 )
-580:                 self.optimizer.step()
-581: 
-582:                 # Track metrics
-583:                 total_policy_loss += policy_loss.item()
-584:                 total_value_loss += value_loss.item()
-585:                 total_entropy += entropy.mean().item()
-586:                 num_updates += 1
-587: 
-588:         return {
-589:             "policy_loss": total_policy_loss / max(1, num_updates),
-590:             "value_loss": total_value_loss / max(1, num_updates),
-591:             "entropy": total_entropy / max(1, num_updates),
-592:             "num_updates": num_updates,
-593:         }
-594: 
-595:     def validate(self) -> Dict[str, float]:
-596:         """Validate on validation set by running deterministic episodes.
-597: 
-598:         Runs one episode per validation question with deterministic action
-599:         selection (argmax) and computes accuracy and average reward.
-600: 
-601:         Returns
-602:         -------
-603:         dict[str, float]
-604:             Validation metrics: accuracy, average_reward, avg_episode_length.
-605:         """
-606:         from qb_env.text_wrapper import TextObservationWrapper
-607:         from qb_env.tossup_env import TossupMCEnv
-608:         from models.likelihoods import TfIdfLikelihood
-609: 
-610:         self.model.eval()
-611: 
-612:         corpus = []
-613:         for q in self.train_questions[:100]:
-614:             corpus.extend(q.option_profiles)
-615:         likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
-616: 
-617:         correct = 0
-618:         total = 0
-619:         total_reward = 0.0
-620:         total_length = 0
-621: 
-622:         # Limit validation size for speed
-623:         val_questions = self.val_questions[:50]
-624: 
-625:         with torch.no_grad():
-626:             for question in val_questions:
-627:                 env = TossupMCEnv(
-628:                     questions=[question],
-629:                     likelihood_model=likelihood_model,
-630:                     K=len(question.options),
-631:                     reward_mode="time_penalty",
-632:                     wait_penalty=self.reward_time_penalty,
-633:                     belief_mode="from_scratch",
-634:                 )
-635:                 wrapped_env = TextObservationWrapper(env)
-636: 
-637:                 obs, info = wrapped_env.reset()
-638:                 done = False
-639:                 episode_reward = 0.0
-640:                 episode_length = 0
-641: 
-642:                 while not done:
-643:                     inputs = self.model.tokenizer(
-644:                         obs,
-645:                         return_tensors="pt",
-646:                         padding=True,
-647:                         truncation=True,
-648:                         max_length=self.max_input_length,
-649:                     ).to(self.device)
-650: 
-651:                     actions, act_info = self.model.select_action(
-652:                         inputs["input_ids"],
-653:                         inputs["attention_mask"],
-654:                         deterministic=True,
-655:                     )
-656: 
-657:                     action = actions.item()
-658:                     obs, reward, terminated, truncated, step_info = (
-659:                         wrapped_env.step(action)
-660:                     )
-661:                     done = terminated or truncated
-662:                     episode_reward += reward
-663:                     episode_length += 1
-664: 
-665:                 total_reward += episode_reward
-666:                 total_length += episode_length
-667:                 total += 1
-668: 
-669:                 # Check if answer was correct
-670:                 if step_info.get("correct", False) or step_info.get(
-671:                     "forced_correct", False
-672:                 ):
-673:                     correct += 1
-674: 
-675:         return {
-676:             "accuracy": correct / max(1, total),
-677:             "average_reward": total_reward / max(1, total),
-678:             "avg_episode_length": total_length / max(1, total),
-679:         }
-680: 
-681:     def train(self) -> Dict[str, Any]:
-682:         """Run the full PPO training loop.
-683: 
-684:         Alternates between rollout collection and policy updates for
-685:         ``self.iterations`` cycles. Periodically validates and saves
-686:         checkpoints.
-687: 
-688:         Returns
-689:         -------
-690:         dict[str, Any]
-691:             Training summary: best_val_reward, total_iterations.
-692:         """
-693:         print(f"Starting PPO training for {self.iterations} iterations")
-694:         print(f"  Training questions: {len(self.train_questions)}")
-695:         print(f"  Validation questions: {len(self.val_questions)}")
-696:         print(f"  Batch size: {self.batch_size}")
-697:         print(f"  Episodes per iteration: {self.episodes_per_iter}")
-698:         print(f"  Device: {self.device}")
-699:         print()
-700: 
-701:         for iteration in range(self.iterations):
-702:             self.current_iteration = iteration
-703: 
-704:             # Collect rollouts
-705:             print(f"\nIteration {iteration + 1}/{self.iterations}")
-706:             print("  Collecting rollouts...")
-707:             buffer = self.collect_rollouts(self.episodes_per_iter)
-708: 
-709:             # Compute episode statistics
-710:             episode_rewards = []
-711:             episode_lengths = []
-712:             for rollout in buffer.rollouts:
-713:                 episode_reward = sum(step.reward for step in rollout)
-714:                 episode_rewards.append(episode_reward)
-715:                 episode_lengths.append(len(rollout))
-716: 
-717:             avg_reward = np.mean(episode_rewards) if episode_rewards else 0.0
-718:             avg_length = np.mean(episode_lengths) if episode_lengths else 0.0
-719: 
-720:             print(f"  Avg episode reward: {avg_reward:.4f}")
-721:             print(f"  Avg episode length: {avg_length:.2f}")
-722: 
-723:             # Update policy
-724:             print("  Updating policy...")
-725:             update_metrics = self.update_policy(buffer)
-726: 
-727:             print(f"  Policy loss: {update_metrics['policy_loss']:.4f}")
-728:             print(f"  Value loss: {update_metrics['value_loss']:.4f}")
-729:             print(f"  Entropy: {update_metrics['entropy']:.4f}")
-730: 
-731:             # Validate periodically
-732:             if (iteration + 1) % self.eval_interval == 0:
-733:                 print("\n  Validating...")
-734:                 val_summary = self.validate()
-735:                 val_reward = val_summary.get("average_reward", 0.0)
-736: 
-737:                 print(f"  Val Accuracy: {val_summary['accuracy']:.4f}")
-738:                 print(f"  Val Reward: {val_reward:.4f}")
-739:                 print(
-740:                     f"  Val Avg Length: {val_summary['avg_episode_length']:.2f}"
-741:                 )
-742: 
-743:                 # Save history
-744:                 self.history.append(
-745:                     {
-746:                         "iteration": iteration + 1,
-747:                         "train_reward": float(avg_reward),
-748:                         "train_length": float(avg_length),
-749:                         **update_metrics,
-750:                         "val": val_summary,
-751:                     }
-752:                 )
-753: 
-754:                 # Save best model
-755:                 if val_reward > self.best_val_reward:
-756:                     self.best_val_reward = val_reward
-757:                     self.save_checkpoint(is_best=True)
-758:                     print(
-759:                         f"  -> New best validation reward: {val_reward:.4f}"
-760:                     )
-761: 
-762:             # Save regular checkpoint
-763:             if (iteration + 1) % self.save_interval == 0:
-764:                 self.save_checkpoint(is_best=False)
-765:                 self.save_history()
-766: 
-767:         print("\n" + "=" * 60)
-768:         print("PPO training completed!")
-769:         print(f"Best validation reward: {self.best_val_reward:.4f}")
-770:         print("=" * 60)
-771: 
-772:         # Save final history
-773:         self.save_history()
-774: 
-775:         return {
-776:             "best_val_reward": self.best_val_reward,
-777:             "total_iterations": self.iterations,
-778:         }
-779: 
-780:     def save_checkpoint(self, is_best: bool = False) -> Path:
-781:         """Save model checkpoint to disk.
-782: 
-783:         Parameters
-784:         ----------
-785:         is_best : bool
-786:             If True, save to ``best_model/`` directory.
-787: 
-788:         Returns
-789:         -------
-790:         Path
-791:             Path to the saved checkpoint directory.
-792:         """
-793:         if is_best:
-794:             save_path = self.checkpoint_dir / "best_model"
-795:         else:
-796:             save_path = (
-797:                 self.checkpoint_dir
-798:                 / f"iter_{self.current_iteration + 1}"
-799:             )
-800: 
-801:         # Use T5PolicyModel's save() method
-802:         self.model.save(str(save_path))
-803: 
-804:         # Save training state
-805:         state = {
-806:             "iteration": self.current_iteration + 1,
-807:             "best_val_reward": self.best_val_reward,
-808:             "optimizer_state_dict": self.optimizer.state_dict(),
-809:         }
-810:         torch.save(state, save_path / "training_state.pt")
-811: 
-812:         print(f"  Checkpoint saved to {save_path}")
-813:         return save_path
-814: 
-815:     def save_history(self) -> Path:
-816:         """Save training history to JSON.
-817: 
-818:         Returns
-819:         -------
-820:         Path
-821:             Path to the saved history file.
-822:         """
-823:         history_path = self.checkpoint_dir / "history.json"
-824:         with open(history_path, "w") as f:
-825:             json.dump(self.history, f, indent=2, default=float)
-826:         return history_path
-827: 
-828: 
-829: def run_ppo_training(
-830:     config: Dict[str, Any],
-831:     train_questions: List[MCQuestion],
-832:     val_questions: List[MCQuestion],
-833:     test_questions: Optional[List[MCQuestion]] = None,
-834:     pretrained_model_path: Optional[str] = None,
-835: ) -> Tuple[T5PolicyModel, PPOTrainer]:
-836:     """Run the PPO training pipeline with optional pretrained model.
-837: 
-838:     Creates or loads a T5PolicyModel, trains it with PPO on quiz bowl
-839:     episodes, and optionally evaluates on a test set.
-840: 
-841:     Parameters
-842:     ----------
-843:     config : dict[str, Any]
-844:         Configuration dictionary with model and PPO hyperparameters.
-845:     train_questions : list[MCQuestion]
-846:         Training set questions.
-847:     val_questions : list[MCQuestion]
-848:         Validation set questions.
-849:     test_questions : list[MCQuestion] or None
-850:         Optional test set for final evaluation.
-851:     pretrained_model_path : str or None
-852:         Path to a supervised pretrained checkpoint. If provided, loads the
-853:         model from this path. Otherwise creates a new model.
-854: 
-855:     Returns
-856:     -------
-857:     model : T5PolicyModel
-858:         The trained model.
-859:     trainer : PPOTrainer
-860:         The trainer instance with training history.
-861:     """
-862:     print("=" * 60)
-863:     print("PPO TRAINING PHASE (T5 Policy)")
-864:     print("=" * 60)
-865: 
-866:     # Load or create model
-867:     if pretrained_model_path:
-868:         print(f"Loading pretrained model from {pretrained_model_path}")
-869:         device = config.get("device", "cpu")
-870:         if device == "auto":
-871:             if torch.cuda.is_available():
-872:                 device = "cuda"
-873:             elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-874:                 device = "mps"
-875:             else:
-876:                 device = "cpu"
-877:         model = T5PolicyModel.load_pretrained(
-878:             pretrained_model_path, device=device
-879:         )
-880:     else:
-881:         print("Initializing new model (no pretraining)")
-882:         model_config = {
-883:             "model_name": config.get("model_name", "t5-large"),
-884:             "device": config.get("device", "cpu"),
-885:             "max_input_length": config.get("max_input_length", 512),
-886:             "num_choices": config.get("num_choices", 4),
-887:         }
-888:         model = T5PolicyModel(model_config)
-889: 
-890:     # Create trainer
-891:     trainer = PPOTrainer(
-892:         model=model,
-893:         train_questions=train_questions,
-894:         val_questions=val_questions,
-895:         config=config,
-896:     )
-897: 
-898:     # Train
-899:     summary = trainer.train()
-900: 
-901:     # Evaluate on test set if provided
-902:     if test_questions is not None:
-903:         print("\n" + "=" * 60)
-904:         print("FINAL EVALUATION ON TEST SET")
-905:         print("=" * 60)
-906: 
-907:         # Load best model if it exists
-908:         best_model_path = trainer.checkpoint_dir / "best_model"
-909:         if best_model_path.exists():
-910:             print(f"Loading best model from {best_model_path}")
-911:             model.load(str(best_model_path))
-912: 
-913:         # Run validation on test set
-914:         # Temporarily swap val questions with test questions
-915:         original_val = trainer.val_questions
-916:         trainer.val_questions = list(test_questions)
-917:         test_metrics = trainer.validate()
-918:         trainer.val_questions = original_val
-919: 
-920:         print(f"Test Accuracy: {test_metrics['accuracy']:.4f}")
-921:         print(f"Test Avg Reward: {test_metrics['average_reward']:.4f}")
-922: 
-923:         # Save test results
-924:         test_results = {
-925:             "test_metrics": test_metrics,
-926:             "training_summary": summary,
-927:         }
-928:         results_path = trainer.checkpoint_dir / "test_results.json"
-929:         with open(results_path, "w") as f:
-930:             json.dump(test_results, f, indent=2, default=float)
-931:         print(f"Test results saved to {results_path}")
-932: 
-933:     return model, trainer
-````
-
 ## File: training/train_supervised_t5.py
 ````python
   1: """
@@ -5261,28 +3568,19 @@ requirements.txt
 626:         return obj
 ````
 
-## File: requirements.txt
-````
- 1: # Base runtime dependencies for the unified modular repo.
- 2: # Preferred development setup is: pip install -e .
- 3: 
- 4: torch>=2.0.0
- 5: transformers>=4.30.0
- 6: numpy>=1.24.0
- 7: scikit-learn>=1.3.0
- 8: sentence-transformers>=2.2.0
- 9: datasets>=2.14.0
-10: gymnasium>=1.1.0
-11: stable-baselines3>=2.6.0
-12: PyYAML>=6.0.0
-13: tqdm>=4.65.0
-14: jsonlines>=3.1.0
-15: matplotlib>=3.7.0
-16: seaborn>=0.12.0
-17: pandas>=2.0.0
-18: 
-19: # Optional OpenAI bridge support:
-20: # pip install -e .[openai]
+## File: CLAUDE.md
+````markdown
+ 1: # CLAUDE.md
+ 2: 
+ 3: See **AGENTS.md** for the full repo contract: setup, architecture, testing, smoke pipeline, and configuration.
+ 4: 
+ 5: ## Claude-specific notes
+ 6: 
+ 7: - `.planning/` is durable project memory; respect STATE.md decisions.
+ 8: - Prefer narrow verification over broad cargo-cult test runs.
+ 9: - Do not add dependencies unless required.
+10: - Seeds: use 1, 2, 3 for multi-seed runs.
+11: - NumPy/PyTorch vectorized operations over loops in ML code.
 ````
 
 ## File: agents/__init__.py
@@ -5327,288 +3625,6 @@ requirements.txt
 38: ]
 ````
 
-## File: agents/bayesian_buzzer.py
-````python
-  1: from __future__ import annotations
-  2: 
-  3: from dataclasses import dataclass
-  4: 
-  5: import numpy as np
-  6: 
-  7: from agents._math import sigmoid
-  8: from models.likelihoods import LikelihoodModel
-  9: from qb_data.mc_builder import MCQuestion
- 10: 
- 11: 
- 12: 
- 13: @dataclass
- 14: class SoftmaxEpisodeResult:
- 15:     qid: str
- 16:     buzz_step: int
- 17:     buzz_index: int
- 18:     gold_index: int
- 19:     correct: bool
- 20:     c_trace: list[float]
- 21:     g_trace: list[float]
- 22:     top_p_trace: list[float]
- 23:     entropy_trace: list[float]
- 24: 
- 25: 
- 26: class SoftmaxProfileBuzzer:
- 27:     def __init__(
- 28:         self,
- 29:         likelihood_model: LikelihoodModel,
- 30:         threshold: float = 0.8,
- 31:         beta: float = 5.0,
- 32:         alpha: float = 10.0,
- 33:     ):
- 34:         self.likelihood_model = likelihood_model
- 35:         self.threshold = threshold
- 36:         self.beta = beta
- 37:         self.alpha = alpha
- 38:         self.belief: np.ndarray | None = None
- 39: 
- 40:     def _belief_from_scratch(self, cumulative_prefix: str, option_profiles: list[str]) -> np.ndarray:
- 41:         scores = self.likelihood_model.score(cumulative_prefix, option_profiles)
- 42:         scores = scores - np.max(scores)
- 43:         probs = np.exp(self.beta * scores)
- 44:         probs = probs / max(1e-12, probs.sum())
- 45:         return probs.astype(np.float32)
- 46: 
- 47:     def confidence_proxy(self, top_p: float) -> float:
- 48:         return sigmoid(self.alpha * (top_p - self.threshold))
- 49: 
- 50:     def run_episode(self, question: MCQuestion) -> SoftmaxEpisodeResult:
- 51:         c_trace: list[float] = []
- 52:         g_trace: list[float] = []
- 53:         top_p_trace: list[float] = []
- 54:         entropy_trace: list[float] = []
- 55: 
- 56:         chosen_idx = 0
- 57:         chosen_step = len(question.cumulative_prefixes) - 1
- 58: 
- 59:         for step_idx, prefix in enumerate(question.cumulative_prefixes):
- 60:             belief = self._belief_from_scratch(prefix, question.option_profiles)
- 61:             self.belief = belief
- 62:             top_idx = int(np.argmax(belief))
- 63:             top_p = float(np.max(belief))
- 64:             entropy = float(-(np.clip(belief, 1e-12, 1.0) * np.log(np.clip(belief, 1e-12, 1.0))).sum())
- 65:             c_t = self.confidence_proxy(top_p)
- 66:             g_t = 1.0 if top_idx == question.gold_index else 0.0
- 67: 
- 68:             c_trace.append(c_t)
- 69:             g_trace.append(g_t)
- 70:             top_p_trace.append(top_p)
- 71:             entropy_trace.append(entropy)
- 72: 
- 73:             is_last = step_idx == len(question.cumulative_prefixes) - 1
- 74:             if top_p >= self.threshold or is_last:
- 75:                 chosen_step = step_idx
- 76:                 chosen_idx = top_idx
- 77:                 break
- 78: 
- 79:         return SoftmaxEpisodeResult(
- 80:             qid=question.qid,
- 81:             buzz_step=chosen_step,
- 82:             buzz_index=chosen_idx,
- 83:             gold_index=question.gold_index,
- 84:             correct=(chosen_idx == question.gold_index),
- 85:             c_trace=c_trace,
- 86:             g_trace=g_trace,
- 87:             top_p_trace=top_p_trace,
- 88:             entropy_trace=entropy_trace,
- 89:         )
- 90: 
- 91: 
- 92: class SequentialBayesBuzzer:
- 93:     def __init__(
- 94:         self,
- 95:         likelihood_model: LikelihoodModel,
- 96:         threshold: float = 0.8,
- 97:         beta: float = 5.0,
- 98:         alpha: float = 10.0,
- 99:     ):
-100:         self.likelihood_model = likelihood_model
-101:         self.threshold = threshold
-102:         self.beta = beta
-103:         self.alpha = alpha
-104: 
-105:     def _step_update(self, prior: np.ndarray, fragment: str, option_profiles: list[str]) -> np.ndarray:
-106:         scores = self.likelihood_model.score(fragment, option_profiles)
-107:         scores = scores - np.max(scores)
-108:         likelihood = np.exp(self.beta * scores)
-109:         posterior = prior * likelihood
-110:         denom = posterior.sum()
-111:         if denom <= 0:
-112:             return np.ones_like(prior) / len(prior)
-113:         return (posterior / denom).astype(np.float32)
-114: 
-115:     def run_episode(self, question: MCQuestion) -> SoftmaxEpisodeResult:
-116:         c_trace: list[float] = []
-117:         g_trace: list[float] = []
-118:         top_p_trace: list[float] = []
-119:         entropy_trace: list[float] = []
-120: 
-121:         K = len(question.options)
-122:         belief = np.ones(K, dtype=np.float32) / K
-123:         chosen_idx = 0
-124:         chosen_step = len(question.cumulative_prefixes) - 1
-125: 
-126:         for step_idx, token_idx in enumerate(question.run_indices):
-127:             prev_token_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
-128:             fragment = " ".join(question.tokens[prev_token_idx + 1 : token_idx + 1])
-129:             belief = self._step_update(belief, fragment, question.option_profiles)
-130:             top_idx = int(np.argmax(belief))
-131:             top_p = float(np.max(belief))
-132:             entropy = float(-(np.clip(belief, 1e-12, 1.0) * np.log(np.clip(belief, 1e-12, 1.0))).sum())
-133:             c_t = sigmoid(self.alpha * (top_p - self.threshold))
-134:             g_t = 1.0 if top_idx == question.gold_index else 0.0
-135: 
-136:             c_trace.append(c_t)
-137:             g_trace.append(g_t)
-138:             top_p_trace.append(top_p)
-139:             entropy_trace.append(entropy)
-140: 
-141:             is_last = step_idx == len(question.cumulative_prefixes) - 1
-142:             if top_p >= self.threshold or is_last:
-143:                 chosen_step = step_idx
-144:                 chosen_idx = top_idx
-145:                 break
-146: 
-147:         return SoftmaxEpisodeResult(
-148:             qid=question.qid,
-149:             buzz_step=chosen_step,
-150:             buzz_index=chosen_idx,
-151:             gold_index=question.gold_index,
-152:             correct=(chosen_idx == question.gold_index),
-153:             c_trace=c_trace,
-154:             g_trace=g_trace,
-155:             top_p_trace=top_p_trace,
-156:             entropy_trace=entropy_trace,
-157:         )
-158: 
-159: 
-160: def precompute_sequential_beliefs(
-161:     questions: list[MCQuestion],
-162:     likelihood_model: LikelihoodModel,
-163:     beta: float,
-164: ) -> list["_PrecomputedQuestion"]:
-165:     """Compute Bayesian sequential beliefs at every step for every question.
-166: 
-167:     Starts with a uniform prior and applies Bayesian update
-168:     ``posterior = prior * likelihood`` using token fragments derived from
-169:     ``question.run_indices``.  Returns one ``_PrecomputedQuestion`` per
-170:     question where ``beliefs`` are the Bayesian posteriors (NOT the
-171:     from-scratch softmax beliefs).
-172:     """
-173:     from agents.threshold_buzzer import _PrecomputedQuestion
-174: 
-175:     out: list[_PrecomputedQuestion] = []
-176:     for q in questions:
-177:         K = len(q.options)
-178:         belief = np.ones(K, dtype=np.float32) / K
-179:         beliefs: list[np.ndarray] = []
-180: 
-181:         for step_idx, token_idx in enumerate(q.run_indices):
-182:             prev_token_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
-183:             fragment = " ".join(q.tokens[prev_token_idx + 1 : token_idx + 1])
-184:             scores = likelihood_model.score(fragment, q.option_profiles)
-185:             scores = scores - np.max(scores)
-186:             likelihood = np.exp(beta * scores)
-187:             posterior = belief * likelihood
-188:             denom = posterior.sum()
-189:             if denom <= 0:
-190:                 belief = np.ones_like(belief) / len(belief)
-191:             else:
-192:                 belief = (posterior / denom).astype(np.float32)
-193:             beliefs.append(belief.copy())
-194: 
-195:         out.append(_PrecomputedQuestion(
-196:             qid=q.qid,
-197:             gold_index=q.gold_index,
-198:             num_options=K,
-199:             beliefs=beliefs,
-200:         ))
-201:     return out
-202: 
-203: 
-204: def _sequential_episode_from_precomputed(
-205:     pq: "_PrecomputedQuestion",
-206:     threshold: float,
-207:     alpha: float,
-208: ) -> SoftmaxEpisodeResult:
-209:     """Build a SoftmaxEpisodeResult from pre-computed sequential beliefs.
-210: 
-211:     Identical buzzing logic to ``SequentialBayesBuzzer.run_episode`` but
-212:     reads beliefs from a ``_PrecomputedQuestion`` instead of calling the
-213:     likelihood model.
-214:     """
-215:     from agents.threshold_buzzer import _belief_stats
-216: 
-217:     c_trace: list[float] = []
-218:     g_trace: list[float] = []
-219:     top_p_trace: list[float] = []
-220:     entropy_trace: list[float] = []
-221: 
-222:     chosen_step = len(pq.beliefs) - 1
-223:     chosen_idx = 0
-224: 
-225:     for step_idx, belief in enumerate(pq.beliefs):
-226:         top_idx, top_p, entropy = _belief_stats(belief)
-227:         c_t = sigmoid(alpha * (top_p - threshold))
-228:         g_t = 1.0 if top_idx == pq.gold_index else 0.0
-229: 
-230:         c_trace.append(c_t)
-231:         g_trace.append(g_t)
-232:         top_p_trace.append(top_p)
-233:         entropy_trace.append(entropy)
-234: 
-235:         is_last = step_idx == len(pq.beliefs) - 1
-236:         if top_p >= threshold or is_last:
-237:             chosen_step = step_idx
-238:             chosen_idx = top_idx
-239:             break
-240: 
-241:     correct = chosen_idx == pq.gold_index
-242:     return SoftmaxEpisodeResult(
-243:         qid=pq.qid,
-244:         buzz_step=chosen_step,
-245:         buzz_index=chosen_idx,
-246:         gold_index=pq.gold_index,
-247:         correct=correct,
-248:         c_trace=c_trace,
-249:         g_trace=g_trace,
-250:         top_p_trace=top_p_trace,
-251:         entropy_trace=entropy_trace,
-252:     )
-253: 
-254: 
-255: def sweep_sequential_thresholds(
-256:     questions: list[MCQuestion],
-257:     likelihood_model: LikelihoodModel,
-258:     thresholds: list[float],
-259:     beta: float = 5.0,
-260:     alpha: float = 10.0,
-261:     precomputed: list["_PrecomputedQuestion"] | None = None,
-262: ) -> dict[float, list[SoftmaxEpisodeResult]]:
-263:     """Sweep multiple thresholds with a single sequential belief pass.
-264: 
-265:     If *precomputed* is provided the expensive model calls are skipped
-266:     entirely and the sweep is pure numpy.  Otherwise beliefs are computed
-267:     once internally and reused across thresholds.
-268:     """
-269:     if precomputed is None:
-270:         precomputed = precompute_sequential_beliefs(questions, likelihood_model, beta)
-271: 
-272:     out: dict[float, list[SoftmaxEpisodeResult]] = {}
-273:     for threshold in thresholds:
-274:         out[float(threshold)] = [
-275:             _sequential_episode_from_precomputed(pq, threshold, alpha)
-276:             for pq in precomputed
-277:         ]
-278:     return out
-````
-
 ## File: evaluation/__init__.py
 ````python
  1: """
@@ -5639,419 +3655,6 @@ requirements.txt
 26:     "expected_calibration_error",
 27:     "per_category_accuracy",
 28: ]
-````
-
-## File: evaluation/controls.py
-````python
-  1: """
-  2: Control Experiments for Quiz Bowl Buzzer Evaluation
-  3: 
-  4: Implements three control experiments to validate that the buzzer agent
-  5: genuinely uses question clues rather than exploiting surface-form artifacts:
-  6: 
-  7: 1. **Choices-only control**: Strips all clues, trains a logistic regression
-  8:    on option surface features (char n-grams, length, capitalization). Expected
-  9:    accuracy ~25% (1/K) if options have no exploitable artifacts.
- 10: 
- 11: 2. **Shuffle control**: Randomizes option ordering to verify the agent has
- 12:    no position bias. Performance should be unchanged.
- 13: 
- 14: 3. **Alias substitution control**: Swaps answer text with aliases to verify
- 15:    robustness to surface-form changes.
- 16: 
- 17: Ported from qb-rl reference implementation (evaluation/controls.py) with
- 18: import path adaptations for the unified qanta-buzzer codebase.
- 19: """
- 20: 
- 21: from __future__ import annotations
- 22: 
- 23: import random
- 24: from dataclasses import replace
- 25: from typing import Any, Callable
- 26: 
- 27: import numpy as np
- 28: from sklearn.feature_extraction.text import TfidfVectorizer
- 29: from sklearn.linear_model import LogisticRegression
- 30: 
- 31: from qb_data.mc_builder import MCQuestion
- 32: 
- 33: 
- 34: def _option_scalar_features(option: str) -> list[float]:
- 35:     """Extract scalar surface features from a single option string.
- 36: 
- 37:     Parameters
- 38:     ----------
- 39:     option : str
- 40:         Answer option text.
- 41: 
- 42:     Returns
- 43:     -------
- 44:     list[float]
- 45:         Six scalar features: char length, token count, has_parens,
- 46:         has_comma, is_title, is_lower.
- 47:     """
- 48:     tokens = option.split()
- 49:     has_parens = 1.0 if "(" in option or ")" in option else 0.0
- 50:     has_comma = 1.0 if "," in option else 0.0
- 51:     is_title = 1.0 if option.istitle() else 0.0
- 52:     is_lower = 1.0 if option.islower() else 0.0
- 53:     return [
- 54:         float(len(option)),
- 55:         float(len(tokens)),
- 56:         has_parens,
- 57:         has_comma,
- 58:         is_title,
- 59:         is_lower,
- 60:     ]
- 61: 
- 62: 
- 63: def _cross_option_features(options: list[str]) -> list[float]:
- 64:     """Extract cross-option comparative features.
- 65: 
- 66:     Parameters
- 67:     ----------
- 68:     options : list[str]
- 69:         All answer options for a question.
- 70: 
- 71:     Returns
- 72:     -------
- 73:     list[float]
- 74:         Three features: max/min length ratio, length std, number of
- 75:         distinct capitalization patterns.
- 76:     """
- 77:     lengths = np.array(
- 78:         [max(1, len(o.split())) for o in options], dtype=np.float32
- 79:     )
- 80:     cap_patterns = len(
- 81:         set(
- 82:             ("title" if o.istitle() else "lower" if o.islower() else "mixed")
- 83:             for o in options
- 84:         )
- 85:     )
- 86:     return [
- 87:         float(lengths.max() / lengths.min()),
- 88:         float(lengths.std()),
- 89:         float(cap_patterns),
- 90:     ]
- 91: 
- 92: 
- 93: def run_choices_only_control(
- 94:     questions: list[MCQuestion],
- 95:     random_seed: int = 13,
- 96:     test_fraction: float = 0.25,
- 97: ) -> dict[str, float]:
- 98:     """Run choices-only control: predict answer from surface features only.
- 99: 
-100:     Strips all question clues and trains a logistic regression on option
-101:     surface features (char n-grams, length, capitalization patterns).
-102:     Expected accuracy ~25% (1/K) if options are well-constructed.
-103: 
-104:     Parameters
-105:     ----------
-106:     questions : list[MCQuestion]
-107:         Full MC question dataset.
-108:     random_seed : int
-109:         Seed for reproducible train/test split.
-110:     test_fraction : float
-111:         Fraction of questions held out for testing.
-112: 
-113:     Returns
-114:     -------
-115:     dict[str, float]
-116:         Control results: accuracy, chance baseline, and test set size.
-117:     """
-118:     if not questions:
-119:         return {"accuracy": 0.0, "chance": 0.0, "n_test": 0.0}
-120: 
-121:     rng = random.Random(random_seed)
-122:     shuffled = questions[:]
-123:     rng.shuffle(shuffled)
-124:     split_idx = max(1, int(len(shuffled) * (1.0 - test_fraction)))
-125:     train_q = shuffled[:split_idx]
-126:     test_q = shuffled[split_idx:]
-127:     if not test_q:
-128:         test_q = train_q
-129: 
-130:     vec = TfidfVectorizer(analyzer="char", ngram_range=(3, 3), min_df=1)
-131:     vec.fit([opt for q in train_q for opt in q.options])
-132: 
-133:     def build_matrix(
-134:         rows: list[MCQuestion],
-135:     ) -> tuple[np.ndarray, np.ndarray, list[int]]:
-136:         X = []
-137:         y = []
-138:         group_sizes: list[int] = []
-139:         for q in rows:
-140:             cross = _cross_option_features(q.options)
-141:             group_sizes.append(len(q.options))
-142:             tfidf = vec.transform(q.options).toarray()
-143:             for i, option in enumerate(q.options):
-144:                 feat = np.array(
-145:                     _option_scalar_features(option) + cross, dtype=np.float32
-146:                 )
-147:                 row = np.concatenate([feat, tfidf[i]], axis=0)
-148:                 X.append(row)
-149:                 y.append(1 if i == q.gold_index else 0)
-150:         return np.array(X), np.array(y), group_sizes
-151: 
-152:     X_train, y_train, _ = build_matrix(train_q)
-153:     X_test, y_test, test_group_sizes = build_matrix(test_q)
-154:     clf = LogisticRegression(max_iter=1000)
-155:     clf.fit(X_train, y_train)
-156:     probs = clf.predict_proba(X_test)[:, 1]
-157: 
-158:     offset = 0
-159:     correct = 0
-160:     total = 0
-161:     for q, group_size in zip(test_q, test_group_sizes):
-162:         group_probs = probs[offset : offset + group_size]
-163:         pred_idx = int(np.argmax(group_probs))
-164:         if pred_idx == q.gold_index:
-165:             correct += 1
-166:         total += 1
-167:         offset += group_size
-168: 
-169:     accuracy = correct / max(1, total)
-170:     chance = 1.0 / max(1, len(questions[0].options))
-171:     return {
-172:         "accuracy": float(accuracy),
-173:         "chance": float(chance),
-174:         "n_test": float(total),
-175:     }
-176: 
-177: 
-178: def shuffled_option_copy(
-179:     question: MCQuestion, rng: random.Random
-180: ) -> MCQuestion:
-181:     """Create a copy of an MCQuestion with shuffled option ordering.
-182: 
-183:     Parameters
-184:     ----------
-185:     question : MCQuestion
-186:         Original question.
-187:     rng : random.Random
-188:         Random number generator for shuffling.
-189: 
-190:     Returns
-191:     -------
-192:     MCQuestion
-193:         Copy with permuted options, profiles, answer_primary, and
-194:         updated gold_index.
-195:     """
-196:     perm = list(range(len(question.options)))
-197:     rng.shuffle(perm)
-198:     new_options = [question.options[i] for i in perm]
-199:     new_profiles = [question.option_profiles[i] for i in perm]
-200:     new_answer_primary = [question.option_answer_primary[i] for i in perm]
-201:     new_gold = perm.index(question.gold_index)
-202:     return replace(
-203:         question,
-204:         options=new_options,
-205:         option_profiles=new_profiles,
-206:         option_answer_primary=new_answer_primary,
-207:         gold_index=new_gold,
-208:     )
-209: 
-210: 
-211: def run_shuffle_control(
-212:     questions: list[MCQuestion],
-213:     evaluator: Callable[[list[MCQuestion]], dict[str, Any]],
-214:     random_seed: int = 13,
-215: ) -> dict[str, Any]:
-216:     """Run shuffle control: randomize option ordering and evaluate.
-217: 
-218:     Permutes the answer options for each question and runs the evaluator.
-219:     If the agent has no position bias, performance should be unchanged.
-220: 
-221:     Parameters
-222:     ----------
-223:     questions : list[MCQuestion]
-224:         Full MC question dataset.
-225:     evaluator : callable
-226:         Function that takes a list of MCQuestion and returns a metrics dict.
-227:     random_seed : int
-228:         Seed for reproducible shuffling.
-229: 
-230:     Returns
-231:     -------
-232:     dict[str, Any]
-233:         Evaluation metrics on shuffled questions.
-234:     """
-235:     rng = random.Random(random_seed)
-236:     shuffled = [shuffled_option_copy(q, rng) for q in questions]
-237:     return evaluator(shuffled)
-238: 
-239: 
-240: def alias_substitution_copy(
-241:     question: MCQuestion,
-242:     alias_lookup: dict[str, list[str]],
-243:     rng: random.Random,
-244: ) -> MCQuestion:
-245:     """Create a copy of an MCQuestion with alias-substituted options.
-246: 
-247:     Parameters
-248:     ----------
-249:     question : MCQuestion
-250:         Original question.
-251:     alias_lookup : dict[str, list[str]]
-252:         Mapping from canonical answer to list of known aliases.
-253:     rng : random.Random
-254:         Random number generator for alias selection.
-255: 
-256:     Returns
-257:     -------
-258:     MCQuestion
-259:         Copy with alias-substituted option text and profiles.
-260:     """
-261:     new_options = []
-262:     new_profiles = list(question.option_profiles)
-263:     for i, (option_text, answer_primary) in enumerate(
-264:         zip(question.options, question.option_answer_primary)
-265:     ):
-266:         aliases = [
-267:             a
-268:             for a in alias_lookup.get(answer_primary, [])
-269:             if a and a != option_text
-270:         ]
-271:         if aliases:
-272:             alias = rng.choice(aliases)
-273:             new_options.append(alias)
-274:             if new_profiles[i].strip() == answer_primary.strip():
-275:                 new_profiles[i] = alias
-276:         else:
-277:             new_options.append(option_text)
-278:     return replace(question, options=new_options, option_profiles=new_profiles)
-279: 
-280: 
-281: def run_alias_substitution_control(
-282:     questions: list[MCQuestion],
-283:     alias_lookup: dict[str, list[str]],
-284:     evaluator: Callable[[list[MCQuestion]], dict[str, Any]],
-285:     random_seed: int = 13,
-286: ) -> dict[str, Any]:
-287:     """Run alias substitution control: swap answer text with aliases.
-288: 
-289:     Replaces option text with known aliases to verify the agent is robust
-290:     to surface-form changes. Performance should be similar to full eval.
-291: 
-292:     Parameters
-293:     ----------
-294:     questions : list[MCQuestion]
-295:         Full MC question dataset.
-296:     alias_lookup : dict[str, list[str]]
-297:         Mapping from canonical answer to list of known aliases.
-298:     evaluator : callable
-299:         Function that takes a list of MCQuestion and returns a metrics dict.
-300:     random_seed : int
-301:         Seed for reproducible alias selection.
-302: 
-303:     Returns
-304:     -------
-305:     dict[str, Any]
-306:         Evaluation metrics on alias-substituted questions.
-307:     """
-308:     rng = random.Random(random_seed)
-309:     swapped = [
-310:         alias_substitution_copy(q, alias_lookup=alias_lookup, rng=rng)
-311:         for q in questions
-312:     ]
-313:     return evaluator(swapped)
-314: 
-315: 
-316: def run_shuffle_control_precomputed(
-317:     precomputed: list["_PrecomputedQuestion"],
-318:     threshold: float,
-319:     alpha: float,
-320:     random_seed: int = 13,
-321: ) -> dict[str, Any]:
-322:     """Run shuffle control by permuting precomputed belief vectors.
-323: 
-324:     Produces numerically identical results to ``run_shuffle_control`` with
-325:     a live ``SoftmaxProfileBuzzer`` evaluator, but makes zero
-326:     ``likelihood_model.score()`` calls.  Instead, the belief vectors
-327:     stored in each ``_PrecomputedQuestion`` are reordered according to
-328:     the same random permutation that ``shuffled_option_copy`` would apply.
-329: 
-330:     Parameters
-331:     ----------
-332:     precomputed : list[_PrecomputedQuestion]
-333:         Pre-computed belief distributions (one per question).
-334:     threshold : float
-335:         Buzz threshold for the softmax profile buzzer.
-336:     alpha : float
-337:         Sigmoid steepness for the confidence proxy.
-338:     random_seed : int
-339:         Seed for reproducible shuffling (must match the seed used in
-340:         ``run_shuffle_control`` for equivalence).
-341: 
-342:     Returns
-343:     -------
-344:     dict[str, Any]
-345:         Summary metrics with ``"runs"`` key containing per-question dicts.
-346:     """
-347:     from dataclasses import asdict
-348: 
-349:     from agents.threshold_buzzer import (
-350:         _PrecomputedQuestion,
-351:         _softmax_episode_from_precomputed,
-352:     )
-353:     from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
-354: 
-355:     rng = random.Random(random_seed)
-356:     runs: list[dict[str, Any]] = []
-357:     for pq in precomputed:
-358:         perm = list(range(pq.num_options))
-359:         rng.shuffle(perm)
-360:         new_gold = perm.index(pq.gold_index)
-361:         shuffled_beliefs = [b[perm] for b in pq.beliefs]
-362:         shuffled_pq = _PrecomputedQuestion(
-363:             qid=pq.qid,
-364:             gold_index=new_gold,
-365:             num_options=pq.num_options,
-366:             beliefs=shuffled_beliefs,
-367:         )
-368:         result = _softmax_episode_from_precomputed(shuffled_pq, threshold, alpha)
-369:         runs.append(asdict(result))
-370:     summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
-371:     summary["runs"] = runs
-372:     return summary
-373: 
-374: 
-375: def bootstrap_ci(
-376:     values: list[float],
-377:     n_samples: int = 1000,
-378:     alpha: float = 0.05,
-379:     seed: int = 13,
-380: ) -> tuple[float, float]:
-381:     """Compute bootstrap confidence interval for the mean.
-382: 
-383:     Parameters
-384:     ----------
-385:     values : list[float]
-386:         Observed values.
-387:     n_samples : int
-388:         Number of bootstrap resamples.
-389:     alpha : float
-390:         Significance level (0.05 = 95% CI).
-391:     seed : int
-392:         Random seed for reproducibility.
-393: 
-394:     Returns
-395:     -------
-396:     tuple[float, float]
-397:         Lower and upper bounds of the confidence interval.
-398:     """
-399:     if not values:
-400:         return 0.0, 0.0
-401:     rng = np.random.default_rng(seed)
-402:     arr = np.array(values, dtype=np.float64)
-403:     samples = []
-404:     for _ in range(n_samples):
-405:         idx = rng.integers(0, len(arr), size=len(arr))
-406:         samples.append(float(arr[idx].mean()))
-407:     lo = np.quantile(samples, alpha / 2.0)
-408:     hi = np.quantile(samples, 1.0 - alpha / 2.0)
-409:     return float(lo), float(hi)
 ````
 
 ## File: evaluation/metrics.py
@@ -6591,1090 +4194,737 @@ requirements.txt
 161:     return np.concatenate([padded, extras]).astype(np.float32)
 ````
 
-## File: models/t5_policy.py
+## File: qb_data/data_loader.py
 ````python
   1: """
-  2: T5-based Policy Model for Quiz Bowl RL Agent
-  3: 
-  4: Implements T5PolicyModel with a custom PolicyHead containing three independent
-  5: heads (wait/answer/value) for end-to-end text-based policy learning. This
-  6: provides an alternative to the MLP policy trained on belief features
-  7: (Phase 4 approach).
-  8: 
-  9: Architecture overview:
- 10: 
- 11:     Text input  -->  T5 Encoder  -->  Mean Pooling  -->  PolicyHead
- 12:                                                           |-- Wait head (2)
- 13:                                                           |-- Answer head (K)
- 14:                                                           |-- Value head (1)
- 15: 
- 16: The T5 encoder produces contextual embeddings from tokenized text. Mean pooling
- 17: (attention-masked) reduces the variable-length sequence to a fixed-size vector.
- 18: The PolicyHead then produces three independent outputs:
- 19: 
- 20: - **Wait logits** [B, 2]: probability of waiting vs answering now
- 21: - **Answer logits** [B, K]: probability of selecting each answer option
- 22: - **Value estimate** [B, 1]: state value for PPO advantage computation
- 23: 
- 24: Action space maps to the TossupMCEnv convention:
- 25:     0 = WAIT (wait head selects "wait")
- 26:     1..K = SELECT answer i-1 (wait head selects "answer now", answer head picks i-1)
- 27: 
- 28: Ported from qanta-buzzer reference implementation (model.py) with these changes:
- 29:     - T5EncoderModel replaces T5ForConditionalGeneration (2x faster, 50% less memory)
- 30:     - T5TokenizerFast replaces T5Tokenizer (3-5x faster tokenization via Rust backend)
- 31:     - Config dict replaces qanta-buzzer's Config class for unified codebase compatibility
- 32:     - NumPy-style docstrings added throughout
- 33: """
- 34: 
- 35: from __future__ import annotations
- 36: 
- 37: import os
- 38: from typing import Any, Dict, List, Optional, Tuple
- 39: 
- 40: import numpy as np
- 41: import torch
- 42: import torch.nn as nn
- 43: import torch.nn.functional as F
- 44: 
- 45: 
- 46: class PolicyHead(nn.Module):
- 47:     """Custom policy head with three independent output heads.
- 48: 
- 49:     Attached to a T5 encoder's pooled output, this module produces the three
- 50:     outputs needed for actor-critic RL in the quiz bowl POMDP: a binary
- 51:     wait/answer-now decision, a K-way answer selection, and a scalar value
- 52:     estimate.
- 53: 
- 54:     All three heads are fully independent (no shared hidden layers beyond the
- 55:     encoder), using the same pattern: Linear -> ReLU -> Dropout -> Linear.
- 56: 
- 57:     Parameters
- 58:     ----------
- 59:     hidden_size : int
- 60:         Dimensionality of the input from the T5 encoder's pooled output.
- 61:         Default 1024 matches T5-large (``d_model``). Use 512 for t5-small,
- 62:         768 for t5-base.
- 63:     num_choices : int
- 64:         Number of answer options (K). Default 4 for quiz bowl MC questions.
- 65: 
- 66:     Attributes
- 67:     ----------
- 68:     wait_head : nn.Sequential
- 69:         Binary head producing [wait, answer_now] logits.
- 70:     answer_head : nn.Sequential
- 71:         Multi-class head producing logits over K answer choices.
- 72:     value_head : nn.Sequential
- 73:         Scalar head producing state value estimate.
- 74:     """
- 75: 
- 76:     def __init__(self, hidden_size: int = 1024, num_choices: int = 4) -> None:
- 77:         super().__init__()
- 78: 
- 79:         self.hidden_size = hidden_size
- 80:         self.num_choices = num_choices
- 81: 
- 82:         # Wait/continue decision head (binary: wait vs answer_now)
- 83:         self.wait_head = nn.Sequential(
- 84:             nn.Linear(hidden_size, 256),
- 85:             nn.ReLU(),
- 86:             nn.Dropout(0.1),
- 87:             nn.Linear(256, 2),  # [wait, answer_now]
- 88:         )
- 89: 
- 90:         # Answer selection head (over K choices)
- 91:         self.answer_head = nn.Sequential(
- 92:             nn.Linear(hidden_size, 512),
- 93:             nn.ReLU(),
- 94:             nn.Dropout(0.1),
- 95:             nn.Linear(512, num_choices),
- 96:         )
- 97: 
- 98:         # Value head (state value estimate for PPO)
- 99:         self.value_head = nn.Sequential(
-100:             nn.Linear(hidden_size, 256),
-101:             nn.ReLU(),
-102:             nn.Dropout(0.1),
-103:             nn.Linear(256, 1),
-104:         )
-105: 
-106:     def forward(
-107:         self, encoder_hidden_state: torch.Tensor
-108:     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-109:         """Forward pass through all three heads.
-110: 
-111:         Parameters
-112:         ----------
-113:         encoder_hidden_state : torch.Tensor
-114:             Pooled encoder output of shape ``[batch_size, hidden_size]``.
-115: 
-116:         Returns
-117:         -------
-118:         wait_logits : torch.Tensor
-119:             Shape ``[batch_size, 2]`` -- logits for [wait, answer_now].
-120:         answer_logits : torch.Tensor
-121:             Shape ``[batch_size, num_choices]`` -- logits over answer options.
-122:         values : torch.Tensor
-123:             Shape ``[batch_size, 1]`` -- state value estimates.
-124:         """
-125:         wait_logits = self.wait_head(encoder_hidden_state)
-126:         answer_logits = self.answer_head(encoder_hidden_state)
-127:         values = self.value_head(encoder_hidden_state)
-128: 
-129:         return wait_logits, answer_logits, values
-130: 
-131: 
-132: class T5PolicyModel(nn.Module):
-133:     """T5 encoder with custom policy head for end-to-end RL.
-134: 
-135:     Combines a pre-trained T5 encoder with a ``PolicyHead`` to produce policy
-136:     outputs directly from text observations. This is the alternative approach
-137:     to Phase 4's MLP policy, which operates on numeric belief features.
-138: 
-139:     The model processes text in three stages:
-140: 
-141:     1. **Tokenization**: Text is tokenized with ``T5TokenizerFast`` (Rust-backed
-142:        for speed) with padding and truncation.
-143:     2. **Encoding**: ``T5EncoderModel`` produces contextual hidden states
-144:        ``[B, seq_len, d_model]``.
-145:     3. **Pooling + Heads**: Attention-masked mean pooling reduces to
-146:        ``[B, d_model]``, then PolicyHead produces wait/answer/value outputs.
-147: 
-148:     Action space follows TossupMCEnv convention:
-149:         - 0 = WAIT
-150:         - 1..K = SELECT answer (i-1)
-151: 
-152:     Combined actions are treated as a factorized policy:
-153:         - ``P(WAIT) = p_wait``
-154:         - ``P(BUZZ_i) = p_buzz * p_ans(i)``
-155: 
-156:     The answer distribution only contributes when the policy chooses to buzz.
-157: 
-158:     Parameters
-159:     ----------
-160:     config : dict[str, Any]
-161:         Configuration dictionary with the following keys:
-162: 
-163:         - ``model_name`` (str): HuggingFace T5 model identifier.
-164:           Default ``"t5-large"``. Options: ``"t5-small"``, ``"t5-base"``,
-165:           ``"t5-large"``.
-166:         - ``device`` (str): Torch device. Default auto-detects
-167:           (cuda > mps > cpu).
-168:         - ``max_input_length`` (int): Maximum token sequence length.
-169:           Default 512.
-170:         - ``num_choices`` (int): Number of answer options (K). Default 4.
-171: 
-172:     Attributes
-173:     ----------
-174:     config : dict[str, Any]
-175:         Configuration dictionary.
-176:     device : torch.device
-177:         Computation device.
-178:     encoder : T5EncoderModel
-179:         Pre-trained T5 encoder.
-180:     tokenizer : T5TokenizerFast
-181:         Fast T5 tokenizer.
-182:     policy_head : PolicyHead
-183:         Custom three-head policy module.
-184:     max_input_length : int
-185:         Maximum token sequence length for tokenization.
-186: 
-187:     Examples
-188:     --------
-189:     >>> config = {"model_name": "t5-small", "device": "cpu", "num_choices": 4}
-190:     >>> model = T5PolicyModel(config)
-191:     >>> texts = ["CLUES: first president | CHOICES: (1) Washington (2) Jefferson"]
-192:     >>> wait_logits, answer_logits, values = model(texts)
-193:     >>> wait_logits.shape
-194:     torch.Size([1, 2])
-195:     """
-196: 
-197:     def __init__(self, config: Dict[str, Any]) -> None:
-198:         super().__init__()
-199:         from transformers import T5EncoderModel, T5TokenizerFast
-200: 
-201:         self.config = config
-202:         model_name = config.get("model_name", "t5-large")
-203:         self.max_input_length = config.get("max_input_length", 512)
-204:         num_choices = config.get("num_choices", 4)
-205: 
-206:         # Auto-detect device
-207:         default_device = "cpu"
-208:         if torch.cuda.is_available():
-209:             default_device = "cuda"
-210:         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-211:             default_device = "mps"
-212:         self.device = torch.device(config.get("device", default_device))
-213: 
-214:         # Load T5 encoder only (not full T5ForConditionalGeneration)
-215:         # This is 2x faster and uses 50% less memory since the decoder is unused
-216:         print(f"Loading T5 encoder: {model_name}")
-217:         self.encoder = T5EncoderModel.from_pretrained(model_name)
-218:         self.tokenizer = T5TokenizerFast.from_pretrained(model_name)
-219: 
-220:         # Get hidden size from T5 config (512 for small, 768 for base, 1024 for large)
-221:         hidden_size = self.encoder.config.d_model
-222: 
-223:         # Custom policy head
-224:         self.policy_head = PolicyHead(
-225:             hidden_size=hidden_size,
-226:             num_choices=num_choices,
-227:         )
-228: 
-229:         # Move to device
-230:         self.to(self.device)
-231: 
-232:         # Print model info
-233:         self._print_model_info()
-234: 
-235:     def _print_model_info(self) -> None:
-236:         """Print model architecture summary and parameter counts."""
-237:         encoder_params = sum(p.numel() for p in self.encoder.parameters())
-238:         policy_params = sum(p.numel() for p in self.policy_head.parameters())
-239:         total_params = encoder_params + policy_params
-240: 
-241:         print(f"Model Architecture:")
-242:         print(f"  T5 encoder parameters: {encoder_params:,}")
-243:         print(f"  Policy head parameters: {policy_params:,}")
-244:         print(f"  Total parameters: {total_params:,}")
-245:         print(f"  Device: {self.device}")
-246: 
-247:     def encode_input(
-248:         self,
-249:         text_inputs: List[str],
-250:         max_length: Optional[int] = None,
-251:     ) -> Dict[str, torch.Tensor]:
-252:         """Tokenize text inputs using T5TokenizerFast.
-253: 
-254:         Parameters
-255:         ----------
-256:         text_inputs : list[str]
-257:             List of input text strings to tokenize.
-258:         max_length : int or None
-259:             Maximum sequence length. If None, uses ``self.max_input_length``.
-260: 
-261:         Returns
-262:         -------
-263:         dict[str, torch.Tensor]
-264:             Dictionary with ``"input_ids"`` and ``"attention_mask"`` tensors,
-265:             both of shape ``[batch_size, seq_len]``, moved to ``self.device``.
-266:         """
-267:         if max_length is None:
-268:             max_length = self.max_input_length
-269: 
-270:         encoding = self.tokenizer(
-271:             text_inputs,
-272:             padding=True,
-273:             truncation=True,
-274:             max_length=max_length,
-275:             return_tensors="pt",
-276:         )
-277: 
-278:         return {k: v.to(self.device) for k, v in encoding.items()}
-279: 
-280:     def get_encoder_output(
-281:         self,
-282:         input_ids: torch.Tensor,
-283:         attention_mask: torch.Tensor,
-284:     ) -> torch.Tensor:
-285:         """Compute T5 encoder output and pool to a fixed-size vector.
-286: 
-287:         Uses attention-masked mean pooling: sum hidden states where attention
-288:         mask is 1, divide by number of non-padding tokens. This ensures
-289:         padding tokens contribute zero to the pooled representation.
-290: 
-291:         Parameters
-292:         ----------
-293:         input_ids : torch.Tensor
-294:             Token IDs of shape ``[batch_size, seq_len]``.
-295:         attention_mask : torch.Tensor
-296:             Attention mask of shape ``[batch_size, seq_len]`` (1 for real
-297:             tokens, 0 for padding).
-298: 
-299:         Returns
-300:         -------
-301:         torch.Tensor
-302:             Pooled encoder output of shape ``[batch_size, hidden_size]``.
-303:         """
-304:         # Get encoder outputs
-305:         encoder_outputs = self.encoder(
-306:             input_ids=input_ids,
-307:             attention_mask=attention_mask,
-308:             return_dict=True,
-309:         )
-310: 
-311:         # encoder_outputs.last_hidden_state: [batch_size, seq_len, hidden_size]
-312:         hidden_states = encoder_outputs.last_hidden_state
-313: 
-314:         # Attention-masked mean pooling over sequence dimension
-315:         mask_expanded = attention_mask.unsqueeze(-1).expand(hidden_states.size()).float()
-316:         sum_hidden = torch.sum(hidden_states * mask_expanded, dim=1)
-317:         sum_mask = torch.clamp(mask_expanded.sum(dim=1), min=1e-9)
-318:         pooled_output = sum_hidden / sum_mask
-319: 
-320:         return pooled_output
-321: 
-322:     def forward(
-323:         self,
-324:         text_inputs: List[str],
-325:         return_value: bool = True,
-326:     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-327:         """Forward pass: tokenize, encode, pool, then apply policy head.
-328: 
-329:         Parameters
-330:         ----------
-331:         text_inputs : list[str]
-332:             List of text observations (e.g.,
-333:             ``"CLUES: clue1 clue2 | CHOICES: (1) ans1 (2) ans2"``).
-334:         return_value : bool
-335:             If True, return value estimates. If False, values is None.
-336: 
-337:         Returns
-338:         -------
-339:         wait_logits : torch.Tensor
-340:             Shape ``[batch_size, 2]`` -- logits for [wait, answer_now].
-341:         answer_logits : torch.Tensor
-342:             Shape ``[batch_size, num_choices]`` -- logits over answer options.
-343:         values : torch.Tensor or None
-344:             Shape ``[batch_size, 1]`` if return_value is True, else None.
-345:         """
-346:         # Encode inputs
-347:         encoding = self.encode_input(text_inputs)
-348: 
-349:         # Get pooled encoder output
-350:         pooled_output = self.get_encoder_output(
-351:             encoding["input_ids"],
-352:             encoding["attention_mask"],
-353:         )
-354: 
-355:         # Pass through policy head
-356:         wait_logits, answer_logits, values = self.policy_head(pooled_output)
-357: 
-358:         if not return_value:
-359:             values = None
-360: 
-361:         return wait_logits, answer_logits, values
-362: 
-363:     def predict_answer(
-364:         self,
-365:         input_ids: torch.Tensor,
-366:         attention_mask: torch.Tensor,
-367:     ) -> Tuple[torch.Tensor, torch.Tensor]:
-368:         """Predict answer choice for supervised training.
-369: 
-370:         Only uses the answer head (wait and value heads are ignored). This is
-371:         the interface for supervised warm-start training where the model learns
-372:         to select the correct answer from complete questions.
-373: 
-374:         Parameters
-375:         ----------
-376:         input_ids : torch.Tensor
-377:             Token IDs of shape ``[batch_size, seq_len]``.
-378:         attention_mask : torch.Tensor
-379:             Attention mask of shape ``[batch_size, seq_len]``.
-380: 
-381:         Returns
-382:         -------
-383:         answer_logits : torch.Tensor
-384:             Shape ``[batch_size, num_choices]`` -- logits over answer choices.
-385:         predictions : torch.Tensor
-386:             Shape ``[batch_size]`` -- predicted answer indices (argmax).
-387:         """
-388:         # Get encoder output
-389:         pooled_output = self.get_encoder_output(input_ids, attention_mask)
-390: 
-391:         # Get answer logits from policy head
-392:         _, answer_logits, _ = self.policy_head(pooled_output)
-393: 
-394:         # Get predictions
-395:         predictions = torch.argmax(answer_logits, dim=-1)
-396: 
-397:         return answer_logits, predictions
-398: 
-399:     def _joint_action_log_prob(
-400:         self,
-401:         wait_logits: torch.Tensor,
-402:         answer_logits: torch.Tensor,
-403:         actions: torch.Tensor,
-404:     ) -> torch.Tensor:
-405:         """Compute factorized log-probabilities for flat WAIT/BUZZ actions.
-406: 
-407:         Parameters
-408:         ----------
-409:         wait_logits : torch.Tensor
-410:             Binary logits of shape ``[batch_size, 2]`` for [WAIT, BUZZ].
-411:         answer_logits : torch.Tensor
-412:             Answer logits of shape ``[batch_size, K]``.
-413:         actions : torch.Tensor
-414:             Flat actions of shape ``[batch_size]`` where 0 = WAIT and
-415:             1..K = BUZZ with answer index action-1.
-416: 
-417:         Returns
-418:         -------
-419:         torch.Tensor
-420:             Log-probabilities of shape ``[batch_size]``.
-421:         """
-422:         wait_log_probs = F.log_softmax(wait_logits, dim=-1)
-423:         answer_log_probs = F.log_softmax(answer_logits, dim=-1)
-424: 
-425:         wait_actions = (actions > 0).long()
-426:         answer_actions = torch.clamp(actions - 1, min=0)
-427: 
-428:         selected_wait = wait_log_probs.gather(1, wait_actions.unsqueeze(-1)).squeeze(-1)
-429:         selected_answer = answer_log_probs.gather(
-430:             1, answer_actions.unsqueeze(-1)
-431:         ).squeeze(-1)
-432: 
-433:         return torch.where(actions == 0, selected_wait, selected_wait + selected_answer)
-434: 
-435:     def _joint_entropy(
-436:         self,
-437:         wait_logits: torch.Tensor,
-438:         answer_logits: torch.Tensor,
-439:     ) -> torch.Tensor:
-440:         """Compute chain-rule entropy for the factorized wait/answer policy.
-441: 
-442:         Returns ``H(wait) + p_buzz * H(answer)`` for each example.
-443:         """
-444:         wait_probs = F.softmax(wait_logits, dim=-1)
-445:         wait_log_probs = F.log_softmax(wait_logits, dim=-1)
-446:         answer_probs = F.softmax(answer_logits, dim=-1)
-447:         answer_log_probs = F.log_softmax(answer_logits, dim=-1)
-448: 
-449:         wait_entropy = -(wait_probs * wait_log_probs).sum(dim=-1)
-450:         answer_entropy = -(answer_probs * answer_log_probs).sum(dim=-1)
-451:         return wait_entropy + wait_probs[:, 1] * answer_entropy
-452: 
-453:     def select_action(
-454:         self,
-455:         input_ids: torch.Tensor,
-456:         attention_mask: torch.Tensor,
-457:         deterministic: bool = False,
-458:         temperature: float = 1.0,
-459:     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-460:         """Select flat WAIT/BUZZ actions from the factorized policy.
-461: 
-462:         Produces combined actions following TossupMCEnv convention:
-463:         0 = WAIT, 1..K = SELECT answer 0..K-1. Under the factorized policy:
-464: 
-465:         - ``P(WAIT) = p_wait``
-466:         - ``P(BUZZ_i) = p_buzz * p_ans(i)``
-467: 
-468:         Answer sampling only occurs for examples that actually buzz.
-469: 
-470:         Parameters
-471:         ----------
-472:         input_ids : torch.Tensor
-473:             Token IDs of shape ``[batch_size, seq_len]``.
-474:         attention_mask : torch.Tensor
-475:             Attention mask of shape ``[batch_size, seq_len]``.
-476:         deterministic : bool
-477:             If True, use argmax instead of sampling.
-478:         temperature : float
-479:             Temperature for softmax. Higher values increase randomness.
-480:             Default 1.0 (no scaling).
-481: 
-482:         Returns
-483:         -------
-484:         combined_actions : torch.Tensor
-485:             Shape ``[batch_size]`` -- combined actions (0 = WAIT, 1..K = SELECT).
-486:         info : dict[str, Any]
-487:             Dictionary with keys:
-488: 
-489:             - ``wait_logits``: raw wait head output
-490:             - ``answer_logits``: raw answer head output
-491:             - ``wait_probs``: softmax of wait logits
-492:             - ``answer_probs``: softmax of answer logits
-493:             - ``wait_actions``: sampled wait decisions (0 or 1)
-494:             - ``answer_actions``: sampled answer indices (0..K-1)
-495:             - ``values``: value estimates
-496:             - ``log_probs``: total log probability of the combined action
-497:         """
-498:         with torch.no_grad():
-499:             pooled_output = self.get_encoder_output(input_ids, attention_mask)
-500:             wait_logits, answer_logits, values = self.policy_head(pooled_output)
-501: 
-502:             wait_logits_scaled = wait_logits / temperature
-503:             answer_logits_scaled = answer_logits / temperature
-504: 
-505:             wait_probs = F.softmax(wait_logits_scaled, dim=-1)
-506:             answer_probs = F.softmax(answer_logits_scaled, dim=-1)
-507:             flat_action_probs = torch.cat(
-508:                 [wait_probs[:, :1], wait_probs[:, 1:2] * answer_probs],
-509:                 dim=-1,
-510:             )
-511: 
-512:             if deterministic:
-513:                 combined_actions = torch.argmax(flat_action_probs, dim=-1)
-514:                 wait_actions = (combined_actions > 0).long()
-515:                 answer_actions = torch.clamp(combined_actions - 1, min=0)
-516:             else:
-517:                 wait_actions = torch.distributions.Categorical(wait_probs).sample()
-518:                 answer_actions = torch.argmax(answer_probs, dim=-1)
-519:                 buzz_mask = wait_actions == 1
-520:                 if buzz_mask.any():
-521:                     buzz_answers = torch.distributions.Categorical(
-522:                         answer_probs[buzz_mask]
-523:                     ).sample()
-524:                     answer_actions = answer_actions.clone()
-525:                     answer_actions[buzz_mask] = buzz_answers
-526:                 combined_actions = torch.where(
-527:                     wait_actions == 0,
-528:                     torch.zeros_like(wait_actions),
-529:                     1 + answer_actions,
-530:                 )
-531: 
-532:             log_probs = self._joint_action_log_prob(
-533:                 wait_logits_scaled, answer_logits_scaled, combined_actions
-534:             )
-535: 
-536:             combined_actions = torch.where(
-537:                 wait_actions == 0,
-538:                 torch.zeros_like(wait_actions),
-539:                 1 + answer_actions,
-540:             )
-541: 
-542:             info = {
-543:                 "wait_logits": wait_logits,
-544:                 "answer_logits": answer_logits,
-545:                 "wait_probs": wait_probs,
-546:                 "answer_probs": answer_probs,
-547:                 "wait_actions": wait_actions,
-548:                 "answer_actions": answer_actions,
-549:                 "values": values,
-550:                 "log_probs": log_probs,
-551:             }
-552: 
-553:             return combined_actions, info
-554: 
-555:     def get_action_log_probs(
-556:         self,
-557:         input_ids: torch.Tensor,
-558:         attention_mask: torch.Tensor,
-559:         actions: torch.Tensor,
-560:     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-561:         """Compute log probabilities and entropy for given actions.
-562: 
-563:         Used during PPO training to evaluate old actions under the current
-564:         policy. Combined actions follow the factorized semantics:
-565: 
-566:         - ``P(WAIT) = p_wait``
-567:         - ``P(BUZZ_i) = p_buzz * p_ans(i)``
-568: 
-569:         Parameters
-570:         ----------
-571:         input_ids : torch.Tensor
-572:             Token IDs of shape ``[batch_size, seq_len]``.
-573:         attention_mask : torch.Tensor
-574:             Attention mask of shape ``[batch_size, seq_len]``.
-575:         actions : torch.Tensor
-576:             Combined actions of shape ``[batch_size]``. Values in {0, 1, ..., K}.
-577: 
-578:         Returns
-579:         -------
-580:         log_probs : torch.Tensor
-581:             Shape ``[batch_size]`` -- total log probability of each action.
-582:         entropy : torch.Tensor
-583:             Shape ``[batch_size]`` -- chain-rule entropy for the factorized policy.
-584:         values : torch.Tensor
-585:             Shape ``[batch_size]`` -- value estimates (squeezed).
-586:         """
-587:         pooled_output = self.get_encoder_output(input_ids, attention_mask)
-588:         wait_logits, answer_logits, values = self.policy_head(pooled_output)
-589: 
-590:         log_probs = self._joint_action_log_prob(wait_logits, answer_logits, actions)
-591:         entropy = self._joint_entropy(wait_logits, answer_logits)
-592: 
-593:         return log_probs, entropy, values.squeeze(-1)
-594: 
-595:     def save(self, save_dir: str) -> None:
-596:         """Save model checkpoint to disk.
-597: 
-598:         Saves three components:
-599:         1. T5 encoder weights and config (HuggingFace format)
-600:         2. Tokenizer files (HuggingFace format)
-601:         3. Policy head state dict (PyTorch format as ``policy_head.pt``)
-602: 
-603:         Parameters
-604:         ----------
-605:         save_dir : str
-606:             Directory path to save the checkpoint. Created if it doesn't exist.
-607:         """
-608:         os.makedirs(save_dir, exist_ok=True)
-609: 
-610:         # Save T5 encoder
-611:         self.encoder.save_pretrained(save_dir)
-612:         self.tokenizer.save_pretrained(save_dir)
-613: 
-614:         # Save policy head
-615:         policy_head_path = os.path.join(save_dir, "policy_head.pt")
-616:         torch.save(self.policy_head.state_dict(), policy_head_path)
-617: 
-618:         print(f"Model saved to {save_dir}")
-619: 
-620:     def load(self, load_dir: str) -> None:
-621:         """Load model checkpoint from disk.
-622: 
-623:         Loads T5 encoder weights, tokenizer, and policy head state dict from
-624:         the specified directory. The model is moved to ``self.device`` after
-625:         loading.
-626: 
-627:         Parameters
-628:         ----------
-629:         load_dir : str
-630:             Directory containing a previously saved checkpoint.
-631: 
-632:         Raises
-633:         ------
-634:         FileNotFoundError
-635:             If ``policy_head.pt`` is not found in ``load_dir``.
-636:         """
-637:         from transformers import T5EncoderModel, T5TokenizerFast
-638: 
-639:         # Load T5 encoder
-640:         self.encoder = T5EncoderModel.from_pretrained(load_dir)
-641:         self.tokenizer = T5TokenizerFast.from_pretrained(load_dir)
-642: 
-643:         # Load policy head
-644:         policy_head_path = os.path.join(load_dir, "policy_head.pt")
-645:         self.policy_head.load_state_dict(
-646:             torch.load(policy_head_path, map_location=self.device, weights_only=True)
-647:         )
-648: 
-649:         self.to(self.device)
-650:         print(f"Model loaded from {load_dir}")
-651: 
-652:     @classmethod
-653:     def load_pretrained(
-654:         cls,
-655:         load_dir: str,
-656:         device: Optional[str] = None,
-657:     ) -> "T5PolicyModel":
-658:         """Load a pretrained model from a directory.
-659: 
-660:         Class method that creates a new T5PolicyModel instance and loads
-661:         weights from a saved checkpoint.
-662: 
-663:         Parameters
-664:         ----------
-665:         load_dir : str
-666:             Directory containing a previously saved checkpoint.
-667:         device : str or None
-668:             Device to load model on (e.g., ``"cpu"``, ``"cuda"``, ``"mps"``).
-669:             If None, auto-detects.
-670: 
-671:         Returns
-672:         -------
-673:         T5PolicyModel
-674:             A loaded model instance ready for inference.
-675:         """
-676:         from transformers import T5EncoderModel
-677: 
-678:         # Detect model config from saved checkpoint
-679:         t5_encoder = T5EncoderModel.from_pretrained(load_dir, local_files_only=True)
-680:         hidden_size = t5_encoder.config.d_model
-681: 
-682:         # Infer num_choices from policy head state dict
-683:         policy_head_path = os.path.join(load_dir, "policy_head.pt")
-684:         policy_head_state = torch.load(
-685:             policy_head_path, map_location="cpu", weights_only=True
-686:         )
-687:         # answer_head final linear layer weight shape is [num_choices, hidden_dim]
-688:         num_choices = policy_head_state["answer_head.3.weight"].shape[0]
-689: 
-690:         config = {
-691:             "model_name": load_dir,
-692:             "device": device or "cpu",
-693:             "num_choices": num_choices,
-694:         }
-695: 
-696:         model = cls(config)
-697:         model.load(load_dir)
-698:         return model
-````
-
-## File: qb_data/answer_profiles.py
-````python
-  1: """Answer profile builder with leave-one-out exclusion for quiz bowl questions."""
-  2: 
-  3: from __future__ import annotations
+  2: Data structures and loaders for quiz bowl questions.
+  3: """
   4: 
-  5: from collections import defaultdict
-  6: from typing import Dict, List, Optional, Tuple
-  7: 
-  8: from qb_data.data_loader import TossupQuestion
-  9: 
+  5: import csv
+  6: import hashlib
+  7: from dataclasses import dataclass
+  8: from pathlib import Path
+  9: from typing import List, Optional, Tuple, Any, Dict
  10: 
- 11: class AnswerProfileBuilder:
- 12:     """Builds profiles for answers by aggregating question texts.
+ 11: from qb_data.text_utils import normalize_answer
+ 12: 
  13: 
- 14:     The profile for an answer is created by concatenating all question texts
- 15:     that have that answer. When building profiles for distractors, we use
- 16:     all questions. For the gold answer, we exclude the current question to
- 17:     prevent information leakage (leave-one-out).
+ 14: @dataclass
+ 15: class TossupQuestion:
+ 16:     """
+ 17:     A quiz bowl tossup question with incremental clues.
  18: 
- 19:     Attributes:
- 20:         max_tokens_per_profile: Maximum number of tokens to keep in each profile.
- 21:         min_questions_per_answer: Minimum questions needed to build a profile.
- 22:         _grouped: Dictionary mapping answer_primary to list of (qid, question_text) tuples.
- 23:     """
- 24: 
- 25:     def __init__(
- 26:         self,
- 27:         max_tokens_per_profile: int = 2000,
- 28:         min_questions_per_answer: int = 1
- 29:     ):
- 30:         """Initialize the answer profile builder.
- 31: 
- 32:         Args:
- 33:             max_tokens_per_profile: Maximum tokens to keep in each profile.
- 34:             min_questions_per_answer: Minimum questions needed to build a profile.
- 35:         """
- 36:         self.max_tokens_per_profile = max_tokens_per_profile
- 37:         self.min_questions_per_answer = min_questions_per_answer
- 38:         self._grouped: Dict[str, List[Tuple[str, str]]] = {}
- 39:         self._cache: Dict[Tuple[str, Optional[str]], str] = {}
- 40: 
- 41:     def fit(self, questions: List[TossupQuestion]) -> "AnswerProfileBuilder":
- 42:         """Fit the builder on a set of questions.
- 43: 
- 44:         Groups questions by their primary answer for efficient profile building.
- 45: 
- 46:         Args:
- 47:             questions: List of tossup questions to group by answer.
- 48: 
- 49:         Returns:
- 50:             Self for method chaining.
- 51:         """
- 52:         grouped: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
- 53:         for q in questions:
- 54:             # Store qid and full question text for each answer
- 55:             grouped[q.answer_primary].append((q.qid, q.question))
- 56:         self._grouped = dict(grouped)
- 57:         self._cache = {}
- 58:         return self
+ 19:     Attributes
+ 20:     ----------
+ 21:     qid : str
+ 22:         Unique question identifier
+ 23:     question : str
+ 24:         Full question text (all clues concatenated)
+ 25:     tokens : List[str]
+ 26:         Tokenized question split on whitespace
+ 27:     answer_primary : str
+ 28:         Primary answer text
+ 29:     clean_answers : List[str]
+ 30:         List of acceptable answer variants
+ 31:     run_indices : List[int]
+ 32:         Token indices where clues end (for incremental reveal)
+ 33:     human_buzz_positions : Optional[List[Tuple[int, int]]]
+ 34:         Human buzzer positions as (position, count) tuples
+ 35:     category : str
+ 36:         Question category (e.g., "History", "Literature")
+ 37:     cumulative_prefixes : List[str]
+ 38:         Precomputed text prefixes at each run_index
+ 39:     """
+ 40:     qid: str
+ 41:     question: str
+ 42:     tokens: List[str]
+ 43:     answer_primary: str
+ 44:     clean_answers: List[str]
+ 45:     run_indices: List[int]
+ 46:     human_buzz_positions: Optional[List[Tuple[int, int]]]
+ 47:     category: str
+ 48:     cumulative_prefixes: List[str]
+ 49: 
+ 50: 
+ 51: def _parse_clues_to_tokens(clues: List[str]) -> Tuple[List[str], List[int]]:
+ 52:     """
+ 53:     Convert list of clues to tokens and run indices.
+ 54: 
+ 55:     Parameters
+ 56:     ----------
+ 57:     clues : List[str]
+ 58:         List of clue strings
  59: 
- 60:     def _profile_text(
- 61:         self,
- 62:         answer_primary: str,
- 63:         exclude_qid: Optional[str] = None
- 64:     ) -> str:
- 65:         """Build profile text for an answer with optional exclusion.
- 66: 
- 67:         Args:
- 68:             answer_primary: The answer to build a profile for.
- 69:             exclude_qid: Optional question ID to exclude (leave-one-out).
- 70: 
- 71:         Returns:
- 72:             Profile text truncated to max_tokens_per_profile.
- 73:         """
- 74:         key = (answer_primary, exclude_qid)
- 75:         if key in self._cache:
- 76:             return self._cache[key]
- 77: 
- 78:         items = self._grouped.get(answer_primary, [])
- 79:         texts: List[str] = []
+ 60:     Returns
+ 61:     -------
+ 62:     Tuple[List[str], List[int]]
+ 63:         Tokens (words) and indices where each clue ends
+ 64:     """
+ 65:     tokens = []
+ 66:     run_indices = []
+ 67: 
+ 68:     for clue in clues:
+ 69:         clue_tokens = clue.split()
+ 70:         tokens.extend(clue_tokens)
+ 71:         if clue_tokens:  # Only add index if clue has tokens
+ 72:             run_indices.append(len(tokens) - 1)
+ 73: 
+ 74:     return tokens, run_indices
+ 75: 
+ 76: 
+ 77: def _generate_qid(text: str) -> str:
+ 78:     """
+ 79:     Generate a unique question ID from question text.
  80: 
- 81:         # Collect all question texts except the excluded one
- 82:         for qid, qtext in items:
- 83:             if exclude_qid is not None and qid == exclude_qid:
- 84:                 continue
- 85:             texts.append(qtext)
- 86: 
- 87:         # If not enough questions after exclusion, fall back to answer text
- 88:         if len(texts) < self.min_questions_per_answer:
- 89:             self._cache[key] = answer_primary
- 90:             return answer_primary
- 91: 
- 92:         # Merge all texts and split into tokens
- 93:         merged = " ".join(texts).split()
+ 81:     Parameters
+ 82:     ----------
+ 83:     text : str
+ 84:         Question text to hash
+ 85: 
+ 86:     Returns
+ 87:     -------
+ 88:     str
+ 89:         Unique identifier based on text hash
+ 90:     """
+ 91:     hash_obj = hashlib.md5(text.encode('utf-8'))
+ 92:     return f"qid-{hash_obj.hexdigest()[:12]}"
+ 93: 
  94: 
- 95:         # Truncate to max tokens if specified
- 96:         if self.max_tokens_per_profile > 0:
- 97:             merged = merged[:self.max_tokens_per_profile]
- 98: 
- 99:         result = " ".join(merged) if merged else answer_primary
-100:         self._cache[key] = result
-101:         return result
-102: 
-103:     def profile_for_answer(
-104:         self,
-105:         answer_primary: str,
-106:         exclude_qid: Optional[str] = None
-107:     ) -> str:
-108:         """Get the profile for a specific answer.
-109: 
-110:         Args:
-111:             answer_primary: The answer to get a profile for.
-112:             exclude_qid: Optional question ID to exclude (for gold answer).
-113: 
-114:         Returns:
-115:             Profile text for the answer.
-116:         """
-117:         return self._profile_text(
-118:             answer_primary=answer_primary,
-119:             exclude_qid=exclude_qid
-120:         )
+ 95: def _coerce_human_buzz_positions(value: Any) -> Optional[List[Tuple[int, int]]]:
+ 96:     """Coerce various metadata formats into ``(position, count)`` tuples."""
+ 97:     if value is None:
+ 98:         return None
+ 99: 
+100:     if isinstance(value, list):
+101:         result: List[Tuple[int, int]] = []
+102:         for item in value:
+103:             if isinstance(item, (list, tuple)) and len(item) == 2:
+104:                 try:
+105:                     result.append((int(item[0]), int(item[1])))
+106:                 except (TypeError, ValueError):
+107:                     continue
+108:             elif isinstance(item, dict):
+109:                 pos = item.get("position")
+110:                 count = item.get("count", 1)
+111:                 if pos is None:
+112:                     continue
+113:                 try:
+114:                     result.append((int(pos), int(count)))
+115:                 except (TypeError, ValueError):
+116:                     continue
+117:         return result or None
+118: 
+119:     return None
+120: 
 121: 
-122:     def build_profiles(
-123:         self,
-124:         questions: List[TossupQuestion],
-125:         exclude_qid: Optional[str] = None,
-126:     ) -> Dict[str, str]:
-127:         """Build profiles for all answers in the dataset.
-128: 
-129:         Args:
-130:             questions: List of questions (used to fit if not already fitted).
-131:             exclude_qid: Optional question ID to exclude from all profiles.
-132: 
-133:         Returns:
-134:             Dictionary mapping answer_primary to profile text.
-135:         """
-136:         if not self._grouped:
-137:             self.fit(questions)
-138: 
-139:         return {
-140:             answer: self._profile_text(answer, exclude_qid=exclude_qid)
-141:             for answer in self._grouped.keys()
-142:         }
+122: def _coerce_run_indices(run_indices: Any, token_count: int) -> List[int]:
+123:     """Validate and coerce run indices into a sorted unique list."""
+124:     clean: List[int] = []
+125:     for idx in run_indices or []:
+126:         try:
+127:             clean.append(int(idx))
+128:         except (TypeError, ValueError):
+129:             continue
+130: 
+131:     if not clean:
+132:         if token_count <= 0:
+133:             raise ValueError("question must contain at least one token")
+134:         clean = list(range(token_count))
+135: 
+136:     clean = sorted(set(clean))
+137:     if clean[0] < 0 or clean[-1] > token_count - 1:
+138:         raise ValueError(
+139:             f"run_indices out of bounds: min={clean[0]} max={clean[-1]} token_count={token_count}"
+140:         )
+141:     return clean
+142: 
+143: 
+144: def parse_row(row: Dict[str, Any]) -> TossupQuestion:
+145:     """Parse a qb-rl/HuggingFace-style row into ``TossupQuestion``."""
+146:     question = str(row["question"])
+147:     tokens = question.split()
+148:     metadata = row.get("metadata", {}) or {}
+149:     answer_primary = str(
+150:         row.get("answer_primary") or (row.get("clean_answers") or [""])[0]
+151:     ).strip()
+152:     clean_answers = [str(x) for x in (row.get("clean_answers") or [])]
+153:     if not clean_answers and answer_primary:
+154:         clean_answers = [answer_primary]
+155: 
+156:     run_indices = _coerce_run_indices(
+157:         row.get("run_indices") or [],
+158:         token_count=len(tokens),
+159:     )
+160: 
+161:     normalized_question = " ".join(question.split())
+162:     normalized_tokens = " ".join(tokens)
+163:     if normalized_tokens != normalized_question:
+164:         raise ValueError("tokenization roundtrip mismatch")
+165:     if max(run_indices) > len(tokens) - 1:
+166:         raise ValueError("run_indices out of bounds")
+167: 
+168:     cumulative_prefixes = [" ".join(tokens[: idx + 1]) for idx in run_indices]
+169:     category = str(metadata.get("category") or row.get("category") or "")
+170:     human_buzz_positions = _coerce_human_buzz_positions(
+171:         metadata.get("human_buzz_positions") or row.get("human_buzz_positions")
+172:     )
+173: 
+174:     qid_raw = row.get("qid") or row.get("question_id") or row.get("id")
+175:     if qid_raw is None:
+176:         qid_raw = _generate_qid(question)
+177: 
+178:     return TossupQuestion(
+179:         qid=str(qid_raw),
+180:         question=question,
+181:         tokens=tokens,
+182:         answer_primary=answer_primary,
+183:         clean_answers=clean_answers,
+184:         run_indices=run_indices,
+185:         human_buzz_positions=human_buzz_positions,
+186:         category=category,
+187:         cumulative_prefixes=cumulative_prefixes,
+188:     )
+189: 
+190: 
+191: def load_tossup_questions(
+192:     dataset: str,
+193:     dataset_config: Optional[str] = None,
+194:     split: str = "eval",
+195:     limit: Optional[int] = None,
+196: ) -> List[TossupQuestion]:
+197:     """Load tossup questions from Hugging Face datasets using qb-rl semantics."""
+198:     try:
+199:         from datasets import load_dataset
+200:     except ImportError as exc:
+201:         raise ImportError(
+202:             "datasets is required for Hugging Face loading. Install it with: pip install datasets"
+203:         ) from exc
+204: 
+205:     if dataset_config:
+206:         ds = load_dataset(dataset, dataset_config, split=split)
+207:     else:
+208:         ds = load_dataset(dataset, split=split)
+209: 
+210:     if limit is not None:
+211:         ds = ds.select(range(min(int(limit), len(ds))))
+212: 
+213:     return [parse_row(dict(row)) for row in ds]
+214: 
+215: 
+216: def load_tossup_questions_from_config(
+217:     config: Dict[str, Any],
+218:     smoke: bool = False,
+219: ) -> List[TossupQuestion]:
+220:     """Load tossups from config, supporting qb-rl and qanta-buzzer keys."""
+221:     from qb_data.config import resolve_data_loading_options
+222: 
+223:     data_opts = resolve_data_loading_options(config, smoke=smoke)
+224:     csv_path = data_opts.get("csv_path")
+225:     dataset = data_opts.get("dataset")
+226:     dataset_config = data_opts.get("dataset_config")
+227:     split = data_opts.get("split", "eval")
+228:     limit = data_opts.get("max_questions")
+229: 
+230:     if csv_path and Path(csv_path).exists():
+231:         questions = QANTADatasetLoader.load_from_csv(str(csv_path))
+232:     elif dataset:
+233:         questions = load_tossup_questions(
+234:             dataset=str(dataset),
+235:             dataset_config=str(dataset_config) if dataset_config else None,
+236:             split=str(split),
+237:             limit=int(limit) if limit is not None else None,
+238:         )
+239:     elif csv_path and data_opts.get("use_huggingface"):
+240:         from qb_data.huggingface_loader import try_huggingface_fallback
+241: 
+242:         questions = try_huggingface_fallback(str(csv_path))
+243:         if questions is None:
+244:             raise FileNotFoundError(
+245:                 f"Could not load questions from missing CSV path {csv_path} via Hugging Face fallback"
+246:             )
+247:     else:
+248:         raise FileNotFoundError(
+249:             "No valid data source configured. Provide data.csv_path or "
+250:             "data.dataset/data.dataset_config for qb-rl compatibility."
+251:         )
+252: 
+253:     if limit is not None:
+254:         questions = questions[: int(limit)]
+255: 
+256:     return questions
+257: 
+258: 
+259: class QANTADatasetLoader:
+260:     """
+261:     Loader for QANTA-format quiz bowl CSV files.
+262: 
+263:     The QANTA format has questions with clues separated by ||| delimiters.
+264:     """
+265: 
+266:     @classmethod
+267:     def load_from_csv(cls, filepath: str) -> List[TossupQuestion]:
+268:         """
+269:         Load questions from a QANTA-format CSV file.
+270: 
+271:         Parameters
+272:         ----------
+273:         filepath : str
+274:             Path to the CSV file
+275: 
+276:         Returns
+277:         -------
+278:         List[TossupQuestion]
+279:             List of parsed questions
+280: 
+281:         Raises
+282:         ------
+283:         FileNotFoundError
+284:             If the CSV file doesn't exist
+285:         ValueError
+286:             If required columns are missing or data is malformed
+287:         """
+288:         filepath = Path(filepath)
+289:         if not filepath.exists():
+290:             raise FileNotFoundError(f"CSV file not found: {filepath}")
+291: 
+292:         questions = []
+293: 
+294:         with open(filepath, 'r', encoding='utf-8') as f:
+295:             reader = csv.DictReader(f)
+296: 
+297:             # Validate required columns
+298:             actual_columns = set(reader.fieldnames or [])
+299: 
+300:             # Handle alternate column names
+301:             if 'Text' in actual_columns and 'question' not in actual_columns:
+302:                 # QANTA format uses 'Text' instead of 'question'
+303:                 text_col = 'Text'
+304:             elif 'question' in actual_columns:
+305:                 text_col = 'question'
+306:             else:
+307:                 raise ValueError(f"Missing required column 'question' or 'Text'. Found columns: {actual_columns}")
+308: 
+309:             if 'Answer' in actual_columns and 'answer' not in actual_columns:
+310:                 answer_col = 'Answer'
+311:             elif 'answer' in actual_columns:
+312:                 answer_col = 'answer'
+313:             else:
+314:                 raise ValueError(f"Missing required column 'answer' or 'Answer'. Found columns: {actual_columns}")
+315: 
+316:             # Check for optional columns
+317:             category_col = None
+318:             if 'Category' in actual_columns:
+319:                 category_col = 'Category'
+320:             elif 'category' in actual_columns:
+321:                 category_col = 'category'
+322: 
+323:             qid_col = None
+324:             if 'Question ID' in actual_columns:
+325:                 qid_col = 'Question ID'
+326:             elif 'qid' in actual_columns:
+327:                 qid_col = 'qid'
+328:             elif 'question_id' in actual_columns:
+329:                 qid_col = 'question_id'
+330: 
+331:             # Parse each row
+332:             for row_idx, row in enumerate(reader):
+333:                 try:
+334:                     # Get question text and parse clues
+335:                     question_text = row[text_col]
+336:                     if not question_text or not question_text.strip():
+337:                         continue  # Skip empty questions
+338: 
+339:                     # Split on ||| delimiter
+340:                     if '|||' in question_text:
+341:                         clues = [clue.strip() for clue in question_text.split('|||')]
+342:                         clues = [c for c in clues if c]  # Remove empty clues
+343:                     else:
+344:                         # Treat entire text as single clue if no delimiter
+345:                         clues = [question_text.strip()]
+346: 
+347:                     if not clues:
+348:                         continue  # Skip if no valid clues
+349: 
+350:                     # Get answer
+351:                     answer = row[answer_col].strip()
+352:                     if not answer:
+353:                         continue  # Skip questions without answers
+354: 
+355:                     # Get category (optional)
+356:                     category = ""
+357:                     if category_col:
+358:                         category = row.get(category_col, "").strip()
+359: 
+360:                     # Get or generate question ID
+361:                     if qid_col and row.get(qid_col):
+362:                         qid = row[qid_col].strip()
+363:                     else:
+364:                         qid = _generate_qid(question_text)
+365: 
+366:                     # Parse clues into tokens and run indices
+367:                     tokens, run_indices = _parse_clues_to_tokens(clues)
+368: 
+369:                     # Build cumulative prefixes
+370:                     cumulative_prefixes = []
+371:                     for idx in run_indices:
+372:                         prefix = " ".join(tokens[:idx + 1])
+373:                         cumulative_prefixes.append(prefix)
+374: 
+375:                     # Create clean answers list
+376:                     clean_answers = [normalize_answer(answer)]
+377: 
+378:                     # Full question is all clues joined
+379:                     full_question = " ".join(clues)
+380: 
+381:                     # Create TossupQuestion
+382:                     question = TossupQuestion(
+383:                         qid=qid,
+384:                         question=full_question,
+385:                         tokens=tokens,
+386:                         answer_primary=answer,
+387:                         clean_answers=clean_answers,
+388:                         run_indices=run_indices,
+389:                         human_buzz_positions=None,  # Not available in basic CSV
+390:                         category=category,
+391:                         cumulative_prefixes=cumulative_prefixes
+392:                     )
+393: 
+394:                     questions.append(question)
+395: 
+396:                 except Exception as e:
+397:                     print(f"Warning: Failed to parse row {row_idx + 1}: {e}")
+398:                     continue
+399: 
+400:         if not questions:
+401:             raise ValueError(f"No valid questions found in {filepath}")
+402: 
+403:         return questions
 ````
 
-## File: qb_data/dataset_splits.py
+## File: qb_data/huggingface_loader.py
 ````python
   1: """
-  2: Stratified dataset splitting utilities for quiz bowl data.
+  2: HuggingFace dataset loader for quiz bowl data.
   3: 
-  4: This module provides functions to create train/val/test splits that maintain
-  5: category distribution across all splits.
+  4: This module provides fallback loading from HuggingFace Hub when local CSV files
+  5: are not available.
   6: """
   7: 
-  8: import hashlib
-  9: import json
- 10: import random
- 11: from collections import defaultdict
- 12: from pathlib import Path
- 13: from typing import List, Tuple, Optional, Dict, Any
- 14: 
- 15: from qb_data.data_loader import TossupQuestion
- 16: 
- 17: 
- 18: def create_stratified_splits(
- 19:     questions: List[TossupQuestion],
- 20:     ratios: List[float] = [0.7, 0.15, 0.15],
- 21:     seed: int = 42
- 22: ) -> Tuple[List[TossupQuestion], List[TossupQuestion], List[TossupQuestion]]:
- 23:     """
- 24:     Create stratified train/val/test splits maintaining category distribution.
- 25: 
- 26:     Parameters
- 27:     ----------
- 28:     questions : List[TossupQuestion]
- 29:         List of questions to split
- 30:     ratios : List[float]
- 31:         Train/val/test split ratios (must sum to 1.0)
- 32:     seed : int
- 33:         Random seed for reproducibility
- 34: 
- 35:     Returns
- 36:     -------
- 37:     Tuple[List[TossupQuestion], List[TossupQuestion], List[TossupQuestion]]
- 38:         Train, validation, and test splits
- 39: 
- 40:     Raises
- 41:     ------
- 42:     ValueError
- 43:         If ratios don't sum to 1.0 or questions list is empty
- 44:     """
- 45:     # Validate inputs
- 46:     if not questions:
- 47:         raise ValueError("Cannot split empty question list")
- 48: 
- 49:     if abs(sum(ratios) - 1.0) > 1e-6:
- 50:         raise ValueError(f"Ratios must sum to 1.0, got {sum(ratios)}")
- 51: 
- 52:     # Initialize random generator for reproducibility
- 53:     rng = random.Random(seed)
- 54: 
- 55:     # Group questions by category
- 56:     category_groups = defaultdict(list)
- 57:     for q in questions:
- 58:         category_groups[q.category].append(q)
- 59: 
- 60:     # Initialize output lists
- 61:     train_questions = []
- 62:     val_questions = []
- 63:     test_questions = []
- 64: 
- 65:     # Split each category maintaining ratios
- 66:     for category, category_questions in category_groups.items():
- 67:         # Sort for deterministic splits
- 68:         sorted_questions = sorted(category_questions, key=lambda q: q.qid)
- 69: 
- 70:         # Deterministic per-category seed via MD5 (immune to PYTHONHASHSEED)
- 71:         cat_hash = int(hashlib.md5(category.encode("utf-8")).hexdigest(), 16)
- 72:         category_seed = seed + cat_hash % 1_000_000
- 73:         category_rng = random.Random(category_seed)
- 74:         shuffled = sorted_questions.copy()
- 75:         category_rng.shuffle(shuffled)
- 76: 
- 77:         n = len(shuffled)
- 78: 
- 79:         # Calculate split indices
- 80:         train_end = int(n * ratios[0])
- 81:         val_end = train_end + int(n * ratios[1])
- 82: 
- 83:         # Handle small categories - ensure at least 1 in train if possible
- 84:         if n == 1:
- 85:             train_questions.extend(shuffled)
- 86:         elif n == 2:
- 87:             train_questions.extend(shuffled[:1])
- 88:             val_questions.extend(shuffled[1:])
- 89:         else:
- 90:             # Standard split
- 91:             train_questions.extend(shuffled[:train_end])
- 92:             val_questions.extend(shuffled[train_end:val_end])
- 93:             test_questions.extend(shuffled[val_end:])
+  8: from typing import List, Optional, Dict, Any
+  9: 
+ 10: from qb_data.data_loader import TossupQuestion
+ 11: from qb_data.text_utils import tokenize_text, normalize_answer
+ 12: 
+ 13: 
+ 14: def load_from_huggingface(
+ 15:     dataset_name: str,
+ 16:     config_name: Optional[str] = None,
+ 17:     split: str = "eval"
+ 18: ) -> List[TossupQuestion]:
+ 19:     """
+ 20:     Load quiz bowl dataset from HuggingFace Hub.
+ 21: 
+ 22:     Parameters
+ 23:     ----------
+ 24:     dataset_name : str
+ 25:         Name of the HuggingFace dataset (e.g., "qanta-challenge/acf-co24-tossups")
+ 26:     config_name : Optional[str]
+ 27:         Configuration name for the dataset (e.g., "questions", "tossup")
+ 28:     split : str
+ 29:         Dataset split to load (default: "eval")
+ 30: 
+ 31:     Returns
+ 32:     -------
+ 33:     List[TossupQuestion]
+ 34:         List of parsed questions
+ 35: 
+ 36:     Raises
+ 37:     ------
+ 38:     ImportError
+ 39:         If datasets library is not installed
+ 40:     ValueError
+ 41:         If dataset not found or required fields missing
+ 42:     """
+ 43:     try:
+ 44:         from datasets import load_dataset
+ 45:     except ImportError:
+ 46:         print("Warning: datasets library not installed. Falling back to CSV loader.")
+ 47:         print("Install with: pip install datasets")
+ 48:         raise ImportError("HuggingFace datasets library not available. Please use CSV fallback.")
+ 49: 
+ 50:     # Known dataset configurations from qb-rl
+ 51:     known_configs = {
+ 52:         "qanta-challenge/acf-co24-tossups": "questions",
+ 53:         "qanta-challenge/qanta25-playground": "tossup"
+ 54:     }
+ 55: 
+ 56:     # Use known config if not provided
+ 57:     if config_name is None and dataset_name in known_configs:
+ 58:         config_name = known_configs[dataset_name]
+ 59:         print(f"Using known config '{config_name}' for {dataset_name}")
+ 60: 
+ 61:     # Try to load dataset
+ 62:     try:
+ 63:         print(f"Loading {dataset_name} from HuggingFace Hub...")
+ 64:         if config_name:
+ 65:             dataset = load_dataset(dataset_name, config_name, split=split)
+ 66:         else:
+ 67:             dataset = load_dataset(dataset_name, split=split)
+ 68:         print(f"Successfully loaded {len(dataset)} questions")
+ 69:     except Exception as e:
+ 70:         error_msg = f"Failed to load dataset {dataset_name}: {e}"
+ 71:         print(f"Error: {error_msg}")
+ 72:         print("Falling back to local CSV loader...")
+ 73:         raise ValueError(error_msg)
+ 74: 
+ 75:     # Parse dataset rows into TossupQuestion format
+ 76:     questions = []
+ 77:     for idx, row in enumerate(dataset):
+ 78:         try:
+ 79:             question = parse_huggingface_row(row, idx)
+ 80:             questions.append(question)
+ 81:         except KeyError as e:
+ 82:             print(f"Warning: Skipping row {idx} due to missing field: {e}")
+ 83:             continue
+ 84:         except Exception as e:
+ 85:             print(f"Warning: Failed to parse row {idx}: {e}")
+ 86:             continue
+ 87: 
+ 88:     if not questions:
+ 89:         raise ValueError(f"No valid questions parsed from {dataset_name}")
+ 90: 
+ 91:     print(f"Parsed {len(questions)} questions from HuggingFace dataset")
+ 92:     return questions
+ 93: 
  94: 
- 95:     # Verify all questions assigned exactly once
- 96:     total_original = len(questions)
- 97:     total_split = len(train_questions) + len(val_questions) + len(test_questions)
+ 95: def parse_huggingface_row(row: Dict[str, Any], idx: int = 0) -> TossupQuestion:
+ 96:     """
+ 97:     Parse a HuggingFace dataset row into TossupQuestion format.
  98: 
- 99:     if total_original != total_split:
-100:         raise RuntimeError(f"Split mismatch: {total_original} original vs {total_split} split")
-101: 
-102:     # Log category distribution statistics
-103:     print(f"Dataset split complete:")
-104:     print(f"  Train: {len(train_questions)} questions ({len(train_questions)/total_original:.1%})")
-105:     print(f"  Val:   {len(val_questions)} questions ({len(val_questions)/total_original:.1%})")
-106:     print(f"  Test:  {len(test_questions)} questions ({len(test_questions)/total_original:.1%})")
-107: 
-108:     # Category distribution analysis
-109:     train_categories = defaultdict(int)
-110:     val_categories = defaultdict(int)
-111:     test_categories = defaultdict(int)
-112: 
-113:     for q in train_questions:
-114:         train_categories[q.category] += 1
-115:     for q in val_questions:
-116:         val_categories[q.category] += 1
-117:     for q in test_questions:
-118:         test_categories[q.category] += 1
-119: 
-120:     all_categories = set(train_categories.keys()) | set(val_categories.keys()) | set(test_categories.keys())
-121:     print(f"\nCategory distribution ({len(all_categories)} categories):")
-122: 
-123:     for category in sorted(all_categories)[:5]:  # Show first 5 categories
-124:         orig_count = len(category_groups[category])
-125:         train_count = train_categories.get(category, 0)
-126:         val_count = val_categories.get(category, 0)
-127:         test_count = test_categories.get(category, 0)
-128:         print(f"  {category}: {train_count}/{val_count}/{test_count} (orig: {orig_count})")
-129: 
-130:     if len(all_categories) > 5:
-131:         print(f"  ... and {len(all_categories) - 5} more categories")
-132: 
-133:     return train_questions, val_questions, test_questions
-134: 
-135: 
-136: def save_splits(
-137:     train: List[TossupQuestion],
-138:     val: List[TossupQuestion],
-139:     test: List[TossupQuestion],
-140:     output_dir: str = "data"
-141: ) -> None:
-142:     """
-143:     Save dataset splits to JSON files with metadata.
-144: 
-145:     Parameters
-146:     ----------
-147:     train : List[TossupQuestion]
-148:         Training split
-149:     val : List[TossupQuestion]
-150:         Validation split
-151:     test : List[TossupQuestion]
-152:         Test split
-153:     output_dir : str
-154:         Directory to save split files
-155:     """
-156:     output_path = Path(output_dir)
-157:     output_path.mkdir(parents=True, exist_ok=True)
-158: 
-159:     # Helper to convert TossupQuestion to dict
-160:     def questions_to_dict(questions: List[TossupQuestion]) -> List[Dict[str, Any]]:
-161:         return [
-162:             {
-163:                 "qid": q.qid,
-164:                 "question": q.question,
-165:                 "tokens": q.tokens,
-166:                 "answer_primary": q.answer_primary,
-167:                 "clean_answers": q.clean_answers,
-168:                 "run_indices": q.run_indices,
-169:                 "human_buzz_positions": q.human_buzz_positions,
-170:                 "category": q.category,
-171:                 "cumulative_prefixes": q.cumulative_prefixes
-172:             }
-173:             for q in questions
-174:         ]
-175: 
-176:     # Calculate category distributions for metadata
-177:     def get_category_distribution(questions: List[TossupQuestion]) -> Dict[str, int]:
-178:         dist = defaultdict(int)
-179:         for q in questions:
-180:             dist[q.category] += 1
-181:         return dict(dist)
-182: 
-183:     # Save each split with metadata
-184:     splits = [
-185:         ("train_dataset.json", train),
-186:         ("val_dataset.json", val),
-187:         ("test_dataset.json", test)
-188:     ]
+ 99:     Parameters
+100:     ----------
+101:     row : Dict[str, Any]
+102:         Single row from HuggingFace dataset
+103:     idx : int
+104:         Row index for generating IDs
+105: 
+106:     Returns
+107:     -------
+108:     TossupQuestion
+109:         Parsed question object
+110: 
+111:     Raises
+112:     ------
+113:     KeyError
+114:         If required fields are missing
+115:     """
+116:     # Field mapping for different dataset formats
+117:     # Primary fields
+118:     question_fields = ["question", "text", "question_text", "tossup_text"]
+119:     answer_fields = ["answer_primary", "answer", "clean_answer", "clean_answers", "page"]
+120:     category_fields = ["category", "topic", "subject"]
+121: 
+122:     # Extract question text
+123:     question_text = None
+124:     for field in question_fields:
+125:         if field in row:
+126:             question_text = row[field]
+127:             break
+128: 
+129:     if not question_text:
+130:         raise KeyError(f"No question field found. Available fields: {list(row.keys())}")
+131: 
+132:     # Extract answer
+133:     answer_text = None
+134:     for field in answer_fields:
+135:         if field in row:
+136:             value = row[field]
+137:             # Handle list of answers
+138:             if isinstance(value, list) and value:
+139:                 answer_text = value[0]
+140:             elif isinstance(value, str):
+141:                 answer_text = value
+142:             break
+143: 
+144:     if not answer_text:
+145:         raise KeyError(f"No answer field found. Available fields: {list(row.keys())}")
+146: 
+147:     # Extract category (with default)
+148:     category = "General"
+149:     for field in category_fields:
+150:         if field in row and row[field]:
+151:             category = str(row[field])
+152:             break
+153: 
+154:     # Generate ID if not present
+155:     qid = row.get("qid") or row.get("id") or row.get("qanta_id") or f"hf_{idx:06d}"
+156: 
+157:     # Handle clues that may be separated by ||| or in a list
+158:     if "|||" in question_text:
+159:         # QANTA format with ||| separators
+160:         clues = question_text.split("|||")
+161:         question_text = " ".join(clues)
+162:     elif isinstance(question_text, list):
+163:         # List of clues
+164:         clues = question_text
+165:         question_text = " ".join(clues)
+166:     else:
+167:         # Single text, split by sentences as approximation
+168:         import re
+169:         sentences = re.split(r'(?<=[.!?])\s+', question_text)
+170:         clues = sentences if len(sentences) > 1 else [question_text]
+171: 
+172:     # Tokenize text
+173:     tokens = tokenize_text(question_text)
+174: 
+175:     # Build run indices (boundaries between clues)
+176:     run_indices = []
+177:     current_pos = 0
+178:     for clue in clues:
+179:         clue_tokens = tokenize_text(clue)
+180:         current_pos += len(clue_tokens)
+181:         if current_pos > 0:
+182:             run_indices.append(current_pos - 1)  # Index is 0-based
+183: 
+184:     # Build cumulative prefixes
+185:     cumulative_prefixes = []
+186:     for idx in run_indices:
+187:         prefix = " ".join(tokens[:idx + 1])
+188:         cumulative_prefixes.append(prefix)
 189: 
-190:     for filename, questions in splits:
-191:         filepath = output_path / filename
+190:     # Normalize answer for matching
+191:     clean_answers = [normalize_answer(answer_text)]
 192: 
-193:         data = {
-194:             "metadata": {
-195:                 "total_questions": len(questions),
-196:                 "categories": len(set(q.category for q in questions)),
-197:                 "category_distribution": get_category_distribution(questions),
-198:                 "split_type": filename.replace("_dataset.json", "")
-199:             },
-200:             "questions": questions_to_dict(questions)
-201:         }
-202: 
-203:         with open(filepath, 'w', encoding='utf-8') as f:
-204:             json.dump(data, f, indent=2, ensure_ascii=False)
+193:     return TossupQuestion(
+194:         qid=qid,
+195:         question=question_text,
+196:         tokens=tokens,
+197:         answer_primary=answer_text,  # Keep original answer as primary
+198:         clean_answers=clean_answers,  # Normalized version for matching
+199:         run_indices=run_indices,
+200:         human_buzz_positions=None,  # Not available from HuggingFace
+201:         category=category,
+202:         cumulative_prefixes=cumulative_prefixes
+203:     )
+204: 
 205: 
-206:         print(f"Saved {len(questions)} questions to {filepath}")
-207: 
-208:     # Save combined metadata file
-209:     metadata_path = output_path / "split_metadata.json"
-210:     metadata = {
-211:         "train": {
-212:             "count": len(train),
-213:             "categories": get_category_distribution(train)
-214:         },
-215:         "val": {
-216:             "count": len(val),
-217:             "categories": get_category_distribution(val)
-218:         },
-219:         "test": {
-220:             "count": len(test),
-221:             "categories": get_category_distribution(test)
-222:         },
-223:         "total_questions": len(train) + len(val) + len(test),
-224:         "split_ratios": [
-225:             len(train) / (len(train) + len(val) + len(test)),
-226:             len(val) / (len(train) + len(val) + len(test)),
-227:             len(test) / (len(train) + len(val) + len(test))
-228:         ]
-229:     }
-230: 
-231:     with open(metadata_path, 'w', encoding='utf-8') as f:
-232:         json.dump(metadata, f, indent=2)
-233: 
-234:     print(f"\nSaved split metadata to {metadata_path}")
+206: def try_huggingface_fallback(csv_path: str) -> Optional[List[TossupQuestion]]:
+207:     """
+208:     Attempt to load from HuggingFace if CSV is missing.
+209: 
+210:     Parameters
+211:     ----------
+212:     csv_path : str
+213:         Path to missing CSV file
+214: 
+215:     Returns
+216:     -------
+217:     Optional[List[TossupQuestion]]
+218:         Questions if HuggingFace load succeeds, None otherwise
+219:     """
+220:     print(f"CSV file {csv_path} not found. Attempting HuggingFace fallback...")
+221: 
+222:     # Try known datasets in order
+223:     fallback_datasets = [
+224:         ("qanta-challenge/acf-co24-tossups", "questions"),
+225:         ("qanta-challenge/qanta25-playground", "tossup")
+226:     ]
+227: 
+228:     for dataset_name, config_name in fallback_datasets:
+229:         try:
+230:             questions = load_from_huggingface(dataset_name, config_name)
+231:             if questions:
+232:                 print(f"Successfully loaded {len(questions)} questions from {dataset_name}")
+233:                 return questions
+234:         except Exception as e:
+235:             print(f"Failed to load {dataset_name}: {e}")
+236:             continue
+237: 
+238:     print("All HuggingFace fallback attempts failed")
+239:     return None
+````
+
+## File: qb_data/text_utils.py
+````python
+ 1: """
+ 2: Text utilities for quiz bowl answer normalization and tokenization.
+ 3: """
+ 4: 
+ 5: import re
+ 6: from typing import Optional, List
+ 7: 
+ 8: 
+ 9: def tokenize_text(text: str) -> List[str]:
+10:     """
+11:     Tokenize text by splitting on whitespace.
+12: 
+13:     Parameters
+14:     ----------
+15:     text : str
+16:         Text to tokenize
+17: 
+18:     Returns
+19:     -------
+20:     List[str]
+21:         List of tokens (words)
+22:     """
+23:     if not text:
+24:         return []
+25:     return text.split()
+26: 
+27: 
+28: def normalize_answer(answer: str) -> str:
+29:     """
+30:     Normalize an answer string for comparison.
+31: 
+32:     Removes articles (a, an, the) from the beginning, converts to lowercase,
+33:     strips punctuation and extra whitespace, and handles edge cases.
+34: 
+35:     Parameters
+36:     ----------
+37:     answer : str
+38:         The answer string to normalize
+39: 
+40:     Returns
+41:     -------
+42:     str
+43:         The normalized answer string
+44: 
+45:     Examples
+46:     --------
+47:     >>> normalize_answer("The Great Gatsby")
+48:     'great gatsby'
+49:     >>> normalize_answer("A Tale of Two Cities!")
+50:     'tale of two cities'
+51:     >>> normalize_answer("   An    Example   ")
+52:     'example'
+53:     >>> normalize_answer("")
+54:     ''
+55:     """
+56:     if not answer:
+57:         return ""
+58: 
+59:     # Convert to lowercase
+60:     normalized = answer.lower()
+61: 
+62:     # Remove leading/trailing whitespace
+63:     normalized = normalized.strip()
+64: 
+65:     # Remove leading articles (a, an, the)
+66:     # Use \b word boundary to ensure we match complete words
+67:     normalized = re.sub(r'^(a|an|the)\b\s*', '', normalized)
+68: 
+69:     # Remove punctuation
+70:     # Keep alphanumeric characters and spaces
+71:     normalized = re.sub(r'[^\w\s]', '', normalized)
+72: 
+73:     # Normalize whitespace (collapse multiple spaces to single space)
+74:     normalized = re.sub(r'\s+', ' ', normalized)
+75: 
+76:     # Final strip in case punctuation removal left spaces
+77:     normalized = normalized.strip()
+78: 
+79:     return normalized
 ````
 
 ## File: qb_env/__init__.py
@@ -7984,1512 +5234,6 @@ requirements.txt
 45: 
 46:         chosen_idx = int(np.argmax(self.env.belief))
 47:         return self.env.step(1 + chosen_idx)
-````
-
-## File: scripts/_common.py
-````python
-  1: """Shared utilities for pipeline scripts.
-  2: 
-  3: Provides config loading, JSON serialization, MC question deserialization,
-  4: and path constants used across all pipeline scripts (build, baseline, train,
-  5: evaluate).
-  6: 
-  7: Ported from qb-rl reference implementation with import path adaptations
-  8: for the unified qanta-buzzer codebase.
-  9: """
- 10: 
- 11: from __future__ import annotations
- 12: 
- 13: import json
- 14: from dataclasses import asdict, is_dataclass
- 15: from pathlib import Path
- 16: from typing import Any
- 17: 
- 18: from models.likelihoods import LikelihoodModel, build_likelihood_from_config
- 19: from qb_data.config import load_config as load_yaml_config
- 20: from qb_data.mc_builder import MCQuestion
- 21: 
- 22: PROJECT_ROOT = Path(__file__).resolve().parents[1]
- 23: DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "default.yaml"
- 24: ARTIFACT_DIR = PROJECT_ROOT / "artifacts"
- 25: 
- 26: 
- 27: def load_config(config_path: str | None = None, smoke: bool = False) -> dict[str, Any]:
- 28:     """Load YAML configuration from a file path.
- 29: 
- 30:     Parameters
- 31:     ----------
- 32:     config_path : str or None
- 33:         Path to YAML config file. If None, loads ``configs/default.yaml``.
- 34: 
- 35:     Returns
- 36:     -------
- 37:     dict[str, Any]
- 38:         Parsed config dict with nested structure (data, likelihood,
- 39:         environment, ppo, etc.).
- 40:     """
- 41:     return load_yaml_config(config_path, smoke=smoke)
- 42: 
- 43: 
- 44: def build_likelihood_model(config: dict[str, Any], mc_questions: list[MCQuestion]):
- 45:     """Build a likelihood model with shared TF-IDF corpus handling."""
- 46:     corpus = None
- 47:     if config["likelihood"].get("model") == "tfidf":
- 48:         corpus = [q.question for q in mc_questions] + [
- 49:             profile
- 50:             for question in mc_questions
- 51:             for profile in question.option_profiles
- 52:         ]
- 53:     return build_likelihood_from_config(config, corpus_texts=corpus)
- 54: 
- 55: 
- 56: def ensure_dir(path: str | Path) -> Path:
- 57:     """Create a directory (and parents) if it does not exist.
- 58: 
- 59:     Parameters
- 60:     ----------
- 61:     path : str or Path
- 62:         Directory path to create.
- 63: 
- 64:     Returns
- 65:     -------
- 66:     Path
- 67:         The created (or existing) directory path.
- 68:     """
- 69:     p = Path(path)
- 70:     p.mkdir(parents=True, exist_ok=True)
- 71:     return p
- 72: 
- 73: 
- 74: def to_serializable(item: Any) -> Any:
- 75:     """Recursively convert dataclasses to dicts for JSON serialization.
- 76: 
- 77:     Parameters
- 78:     ----------
- 79:     item : Any
- 80:         Object to convert. Dataclasses are converted via ``asdict()``,
- 81:         dicts and lists are processed recursively.
- 82: 
- 83:     Returns
- 84:     -------
- 85:     Any
- 86:         JSON-serializable version of the input.
- 87:     """
- 88:     if is_dataclass(item):
- 89:         return asdict(item)
- 90:     if isinstance(item, dict):
- 91:         return {k: to_serializable(v) for k, v in item.items()}
- 92:     if isinstance(item, list):
- 93:         return [to_serializable(v) for v in item]
- 94:     return item
- 95: 
- 96: 
- 97: def save_json(path: str | Path, data: Any) -> Path:
- 98:     """Save data to a JSON file, creating parent directories as needed.
- 99: 
-100:     Applies ``to_serializable`` to convert dataclasses before writing.
-101: 
-102:     Parameters
-103:     ----------
-104:     path : str or Path
-105:         Output file path.
-106:     data : Any
-107:         Data to serialize. Dataclasses are converted to dicts automatically.
-108: 
-109:     Returns
-110:     -------
-111:     Path
-112:         The path where the JSON was written.
-113:     """
-114:     p = Path(path)
-115:     p.parent.mkdir(parents=True, exist_ok=True)
-116:     with p.open("w", encoding="utf-8") as f:
-117:         json.dump(to_serializable(data), f, indent=2)
-118:     return p
-119: 
-120: 
-121: def load_json(path: str | Path) -> Any:
-122:     """Load data from a JSON file.
-123: 
-124:     Parameters
-125:     ----------
-126:     path : str or Path
-127:         Path to JSON file.
-128: 
-129:     Returns
-130:     -------
-131:     Any
-132:         Parsed JSON data.
-133:     """
-134:     with Path(path).open("r", encoding="utf-8") as f:
-135:         return json.load(f)
-136: 
-137: 
-138: def mc_question_from_dict(row: dict[str, Any]) -> MCQuestion:
-139:     """Reconstruct an MCQuestion dataclass from a JSON-deserialized dict.
-140: 
-141:     Parameters
-142:     ----------
-143:     row : dict[str, Any]
-144:         Dictionary with all MCQuestion fields.
-145: 
-146:     Returns
-147:     -------
-148:     MCQuestion
-149:         Reconstructed MCQuestion instance.
-150:     """
-151:     return MCQuestion(
-152:         qid=row["qid"],
-153:         question=row["question"],
-154:         tokens=list(row["tokens"]),
-155:         answer_primary=row["answer_primary"],
-156:         clean_answers=list(row["clean_answers"]),
-157:         run_indices=list(row["run_indices"]),
-158:         human_buzz_positions=row.get("human_buzz_positions"),
-159:         category=row.get("category", ""),
-160:         cumulative_prefixes=list(row["cumulative_prefixes"]),
-161:         options=list(row["options"]),
-162:         gold_index=int(row["gold_index"]),
-163:         option_profiles=list(row["option_profiles"]),
-164:         option_answer_primary=list(row["option_answer_primary"]),
-165:         distractor_strategy=row.get("distractor_strategy", "unknown"),
-166:     )
-167: 
-168: 
-169: def load_mc_questions(path: str | Path) -> list[MCQuestion]:
-170:     """Load and deserialize a list of MCQuestions from a JSON file.
-171: 
-172:     Parameters
-173:     ----------
-174:     path : str or Path
-175:         Path to JSON file containing a list of serialized MCQuestion dicts.
-176: 
-177:     Returns
-178:     -------
-179:     list[MCQuestion]
-180:         List of reconstructed MCQuestion instances.
-181:     """
-182:     raw = load_json(path)
-183:     return [mc_question_from_dict(item) for item in raw]
-184: 
-185: 
-186: # ------------------------------------------------------------------ #
-187: # Embedding cache persistence helpers
-188: # ------------------------------------------------------------------ #
-189: 
-190: 
-191: def embedding_cache_path(config: dict[str, Any]) -> Path:
-192:     """Return the resolved embedding cache file path from config.
-193: 
-194:     Uses ``config['likelihood']['cache_dir']`` (default ``'cache/embeddings'``)
-195:     and appends ``'embedding_cache.npz'``.
-196: 
-197:     Parameters
-198:     ----------
-199:     config : dict
-200:         Full YAML config dict.
-201: 
-202:     Returns
-203:     -------
-204:     Path
-205:         Absolute path to the embedding cache ``.npz`` file.
-206:     """
-207:     cache_dir = config.get("likelihood", {}).get("cache_dir", "cache/embeddings")
-208:     return PROJECT_ROOT / cache_dir / "embedding_cache.npz"
-209: 
-210: 
-211: def load_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
-212:     """Load persisted embedding cache into model if file exists.
-213: 
-214:     Parameters
-215:     ----------
-216:     model : LikelihoodModel
-217:         Likelihood model whose embedding_cache will be populated.
-218:     config : dict
-219:         Full YAML config dict (used to resolve cache path).
-220:     """
-221:     path = embedding_cache_path(config)
-222:     n = model.load_cache(path)
-223:     if n > 0:
-224:         print(f"Loaded {n} cached embeddings from {path}")
-225: 
-226: 
-227: def save_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
-228:     """Persist model's embedding cache to disk.
-229: 
-230:     Parameters
-231:     ----------
-232:     model : LikelihoodModel
-233:         Likelihood model whose embedding_cache will be saved.
-234:     config : dict
-235:         Full YAML config dict (used to resolve cache path).
-236:     """
-237:     path = embedding_cache_path(config)
-238:     n = model.save_cache(path)
-239:     if n > 0:
-240:         print(f"Saved {n} embeddings to {path}")
-````
-
-## File: scripts/build_mc_dataset.py
-````python
-  1: #!/usr/bin/env python3
-  2: """
-  3: Build multiple-choice dataset from QANTA quiz bowl questions.
-  4: 
-  5: This script orchestrates the complete data pipeline:
-  6: 1. Load questions from CSV or HuggingFace
-  7: 2. Build answer profiles from training data
-  8: 3. Generate MC questions with anti-artifact guards
-  9: 4. Create stratified train/val/test splits
- 10: 5. Save processed datasets as JSON
- 11: 
- 12: Usage:
- 13:     python scripts/build_mc_dataset.py
- 14:     python scripts/build_mc_dataset.py --smoke  # Quick test with 50 questions in artifacts/smoke
- 15:     python scripts/build_mc_dataset.py --config configs/custom.yaml
- 16:     python scripts/build_mc_dataset.py --data.K=5 --data.distractor_strategy=tfidf_profile
- 17: """
- 18: 
- 19: import argparse
- 20: import json
- 21: import sys
- 22: import time
- 23: from pathlib import Path
- 24: from typing import Any, Dict, List, Optional, Tuple
- 25: 
- 26: # Add parent directory to path for imports
- 27: sys.path.insert(0, str(Path(__file__).parent.parent))
- 28: 
- 29: from qb_data import TossupQuestion
- 30: from qb_data.answer_profiles import AnswerProfileBuilder
- 31: from qb_data.config import load_config, merge_overrides, resolve_data_loading_options
- 32: from qb_data.data_loader import QANTADatasetLoader
- 33: from qb_data.dataset_splits import create_stratified_splits
- 34: from qb_data.huggingface_loader import load_from_huggingface
- 35: from qb_data.mc_builder import MCBuilder, MCQuestion
- 36: 
- 37: DEFAULT_OUTPUT_DIR = Path("data/processed")
- 38: SMOKE_OUTPUT_DIR = Path("artifacts/smoke")
- 39: 
- 40: 
- 41: def _parse_value(value: str) -> Any:
- 42:     """Parse a CLI override value string into a typed Python value.
- 43: 
- 44:     Tries JSON first, then bool/int/float, and falls back to str.
- 45:     """
- 46:     try:
- 47:         return json.loads(value)
- 48:     except json.JSONDecodeError:
- 49:         pass
- 50:     if value.lower() == "true":
- 51:         return True
- 52:     if value.lower() == "false":
- 53:         return False
- 54:     if value.lstrip("-").isdigit():
- 55:         return int(value)
- 56:     try:
- 57:         return float(value)
- 58:     except ValueError:
- 59:         return value
- 60: 
- 61: 
- 62: def parse_overrides(args: argparse.Namespace) -> Dict[str, Any]:
- 63:     """Parse CLI override arguments into flat dotted-key overrides.
- 64: 
- 65:     Returns a dict with dotted keys (e.g. ``{"data.K": 5}``) that
- 66:     ``merge_overrides`` can apply leaf-by-leaf without clobbering
- 67:     sibling config entries.
- 68: 
- 69:     Parameters
- 70:     ----------
- 71:     args : argparse.Namespace
- 72:         Parsed CLI arguments.  Positional ``overrides`` are
- 73:         ``key=value`` strings where *key* uses dot-notation
- 74:         (e.g. ``data.K=5``).
- 75: 
- 76:     Returns
- 77:     -------
- 78:     Dict[str, Any]
- 79:         Flat dotted-key overrides ready for ``merge_overrides()``.
- 80:     """
- 81:     overrides: Dict[str, Any] = {}
- 82:     if hasattr(args, "overrides") and args.overrides:
- 83:         for token in args.overrides:
- 84:             if "=" not in token:
- 85:                 continue
- 86:             key, value = token.split("=", 1)
- 87:             overrides[key] = _parse_value(value)
- 88:     return overrides
- 89: 
- 90: 
- 91: def resolve_output_dir(output_dir: Optional[str], smoke: bool) -> Path:
- 92:     """Resolve the dataset output directory from CLI inputs."""
- 93:     if output_dir is not None:
- 94:         return Path(output_dir)
- 95:     return SMOKE_OUTPUT_DIR if smoke else DEFAULT_OUTPUT_DIR
- 96: 
- 97: 
- 98: def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
- 99:     """Parse CLI arguments for dataset construction."""
-100:     parser = argparse.ArgumentParser(
-101:         description="Build multiple-choice dataset from QANTA questions",
-102:         formatter_class=argparse.RawDescriptionHelpFormatter,
-103:         epilog=__doc__,
-104:     )
-105: 
-106:     parser.add_argument(
-107:         '--config',
-108:         type=str,
-109:         default=None,
-110:         help=(
-111:             "Path to YAML configuration file. Defaults to configs/default.yaml, "
-112:             "or the smoke config path selected by load_config() when --smoke is set."
-113:         ),
-114:     )
-115:     parser.add_argument(
-116:         '--smoke',
-117:         action='store_true',
-118:         help='Use smoke test settings (50 questions, quick run, outputs to artifacts/smoke by default).',
-119:     )
-120:     parser.add_argument(
-121:         '--output-dir',
-122:         type=str,
-123:         default=None,
-124:         help='Directory to save processed datasets. Defaults to data/processed, or artifacts/smoke when --smoke is set.',
-125:     )
-126:     parser.add_argument(
-127:         'overrides',
-128:         nargs='*',
-129:         help='Config overrides in format: data.K=5 data.distractor_strategy=tfidf_profile',
-130:     )
-131: 
-132:     return parser.parse_args(argv)
-133: 
-134: 
-135: def save_json(path: Path, data: List[Any]) -> None:
-136:     """
-137:     Save dataclass objects to JSON file.
-138: 
-139:     Parameters
-140:     ----------
-141:     path : Path
-142:         Output file path
-143:     data : List[Any]
-144:         List of dataclass objects (TossupQuestion or MCQuestion)
-145:     """
-146:     path.parent.mkdir(parents=True, exist_ok=True)
-147: 
-148:     # Convert dataclasses to dictionaries
-149:     if data and hasattr(data[0], '__dataclass_fields__'):
-150:         # It's a dataclass, use asdict
-151:         from dataclasses import asdict
-152:         json_data = [asdict(item) for item in data]
-153:     else:
-154:         json_data = data
-155: 
-156:     with open(path, 'w', encoding='utf-8') as f:
-157:         json.dump(json_data, f, indent=2, ensure_ascii=False)
-158: 
-159:     print(f"Saved {len(data)} items to {path}")
-160: 
-161: 
-162: def print_statistics(
-163:     train: List[MCQuestion],
-164:     val: List[MCQuestion],
-165:     test: List[MCQuestion],
-166:     profile_builder: Optional[AnswerProfileBuilder] = None,
-167:     mc_builder: Optional[MCBuilder] = None
-168: ) -> None:
-169:     """
-170:     Print dataset statistics.
-171: 
-172:     Parameters
-173:     ----------
-174:     train : List[MCQuestion]
-175:         Training split
-176:     val : List[MCQuestion]
-177:         Validation split
-178:     test : List[MCQuestion]
-179:         Test split
-180:     profile_builder : Optional[AnswerProfileBuilder]
-181:         Answer profile builder for profile stats
-182:     mc_builder : Optional[MCBuilder]
-183:         MC builder for guard rejection stats
-184:     """
-185:     print("\n" + "="*60)
-186:     print("Dataset Construction Complete")
-187:     print("="*60)
-188: 
-189:     # Split statistics
-190:     total = len(train) + len(val) + len(test)
-191:     print(f"\nTotal MC questions: {total}")
-192:     print(f"  Train: {len(train)} ({100*len(train)/total:.1f}%)")
-193:     print(f"  Val:   {len(val)} ({100*len(val)/total:.1f}%)")
-194:     print(f"  Test:  {len(test)} ({100*len(test)/total:.1f}%)")
-195: 
-196:     # Category distribution
-197:     def get_categories(questions):
-198:         return set(q.category for q in questions if q.category)
-199: 
-200:     all_categories = get_categories(train) | get_categories(val) | get_categories(test)
-201:     print(f"\nCategories: {len(all_categories)}")
-202: 
-203:     # Sample categories
-204:     sample_cats = sorted(all_categories)[:5]
-205:     print("Sample categories:", ", ".join(sample_cats))
-206: 
-207:     # Answer profile statistics
-208:     if profile_builder and hasattr(profile_builder, '_grouped'):
-209:         print(f"\nAnswer profiles: {len(profile_builder._grouped)}")
-210:         # Get average questions per answer
-211:         avg_questions = sum(len(items) for items in profile_builder._grouped.values()) / len(profile_builder._grouped)
-212:         print(f"Average questions per answer: {avg_questions:.1f}")
-213: 
-214:     # Guard rejection statistics
-215:     if mc_builder and hasattr(mc_builder, 'guard_stats'):
-216:         stats = mc_builder.guard_stats
-217:         if stats:
-218:             print("\nGuard rejection statistics:")
-219:             for guard_name, count in stats.items():
-220:                 print(f"  {guard_name}: {count} rejections")
-221: 
-222:     # Sample MC question
-223:     if train:
-224:         sample = train[0]
-225:         print(f"\nSample MC question:")
-226:         # Get first sentence from the question
-227:         first_sentence = sample.question[:100] + "..." if len(sample.question) > 100 else sample.question
-228:         print(f"  Question: {first_sentence}")
-229:         print(f"  Correct answer: {sample.answer_primary}")
-230:         print(f"  Options: {', '.join(sample.options[:3])}...")
-231:         print(f"  Category: {sample.category}")
-232: 
-233: 
-234: def main(argv: Optional[list[str]] = None):
-235:     """Main entry point for dataset construction."""
-236:     args = parse_args(argv)
-237: 
-238:     # Start timing
-239:     start_time = time.time()
-240: 
-241:     # Load configuration
-242:     print("Loading configuration...")
-243:     config = load_config(args.config, smoke=args.smoke)
-244: 
-245:     # Apply overrides
-246:     overrides = parse_overrides(args)
-247:     if overrides:
-248:         print(f"Applying overrides: {overrides}")
-249:         config = merge_overrides(config, overrides)
-250: 
-251:     # Create output directory
-252:     output_dir = resolve_output_dir(args.output_dir, smoke=args.smoke)
-253:     output_dir.mkdir(parents=True, exist_ok=True)
-254: 
-255:     # Load questions
-256:     print("\nLoading questions...")
-257:     questions = None
-258:     data_opts = resolve_data_loading_options(config, smoke=args.smoke)
-259: 
-260:     # Try CSV first
-261:     csv_path = data_opts.get('csv_path')
-262:     if csv_path and Path(csv_path).exists():
-263:         print(f"Loading from CSV: {csv_path}")
-264:         loader = QANTADatasetLoader()
-265:         questions = loader.load_from_csv(csv_path)
-266:         print(f"Loaded {len(questions)} questions from CSV")
-267: 
-268:     # Fallback to HuggingFace if configured
-269:     if questions is None and data_opts.get('use_huggingface'):
-270:         print("CSV not found, falling back to HuggingFace")
-271:         dataset_name = data_opts.get('dataset') or 'qanta-challenge/acf-co24-tossups'
-272:         questions = load_from_huggingface(
-273:             dataset_name,
-274:             config_name=data_opts.get('dataset_config'),
-275:             split=data_opts.get('split', 'eval'),
-276:         )
-277:         print(f"Loaded {len(questions)} questions from HuggingFace")
-278: 
-279:     if questions is None:
-280:         raise FileNotFoundError(f"Could not load questions from {csv_path} and HuggingFace fallback not enabled")
-281: 
-282:     # Apply configured limit after loading
-283:     max_questions = data_opts.get('max_questions')
-284:     if max_questions is not None and len(questions) > int(max_questions):
-285:         print(f"Limiting dataset to {int(max_questions)} questions")
-286:         questions = questions[: int(max_questions)]
-287: 
-288:     # Build answer profiles
-289:     print("\nBuilding answer profiles...")
-290:     profile_builder = AnswerProfileBuilder(
-291:         max_tokens_per_profile=config['answer_profiles']['max_tokens_per_profile'],
-292:         min_questions_per_answer=config['answer_profiles']['min_questions_per_answer']
-293:     )
-294:     profile_builder.fit(questions)
-295:     print(f"Built {len(profile_builder._grouped)} answer profiles")
-296: 
-297:     # Construct MC questions with guards
-298:     print("\nConstructing MC questions...")
-299:     mc_builder = MCBuilder(
-300:         K=config['data']['K'],
-301:         strategy=config['data']['distractor_strategy'],
-302:         embedding_model=config['likelihood'].get(
-303:             'sbert_name',
-304:             config['likelihood'].get('embedding_model', 'all-MiniLM-L6-v2'),
-305:         ),
-306:         openai_model=config['likelihood'].get('openai_model', 'text-embedding-3-small'),
-307:         **config['mc_guards']
-308:     )
-309: 
-310:     # Track guard statistics
-311:     mc_builder.guard_stats = {}
-312: 
-313:     mc_questions = mc_builder.build(questions, profile_builder)
-314:     print(f"Generated {len(mc_questions)} MC questions")
-315: 
-316:     if len(mc_questions) < len(questions):
-317:         print(f"Note: {len(questions) - len(mc_questions)} questions filtered by guards")
-318: 
-319:     # Create stratified splits
-320:     print("\nCreating stratified splits...")
-321:     ratios = [
-322:         config['data']['train_ratio'],
-323:         config['data']['val_ratio'],
-324:         config['data']['test_ratio']
-325:     ]
-326: 
-327:     train, val, test = create_stratified_splits(mc_questions, ratios=ratios)
-328: 
-329:     # Save datasets
-330:     print("\nSaving datasets...")
-331:     save_json(output_dir / "mc_dataset.json", mc_questions)
-332:     save_json(output_dir / "train_dataset.json", train)
-333:     save_json(output_dir / "val_dataset.json", val)
-334:     save_json(output_dir / "test_dataset.json", test)
-335: 
-336:     # Save answer profiles for debugging
-337:     if profile_builder._grouped:
-338:         profiles_dict = {
-339:             answer: {
-340:                 'question_count': len(items),
-341:                 'sample_qids': [qid for qid, _ in items[:5]]  # First 5 question IDs
-342:             }
-343:             for answer, items in profile_builder._grouped.items()
-344:         }
-345:         with open(output_dir / "answer_profiles.json", 'w') as f:
-346:             json.dump(profiles_dict, f, indent=2)
-347:         print(f"Saved answer profiles to {output_dir / 'answer_profiles.json'}")
-348: 
-349:     # Print statistics
-350:     print_statistics(train, val, test, profile_builder, mc_builder)
-351: 
-352:     # Print timing
-353:     elapsed = time.time() - start_time
-354:     print(f"\nTotal time: {elapsed:.1f} seconds")
-355: 
-356:     if args.smoke:
-357:         # Print sample MC questions for verification
-358:         print("\n" + "="*60)
-359:         print("Sample MC Questions (Smoke Test)")
-360:         print("="*60)
-361: 
-362:         for i, q in enumerate(train[:3], 1):
-363:             print(f"\nQuestion {i}:")
-364:             # Get first clue from cumulative_prefixes if available
-365:             if q.cumulative_prefixes:
-366:                 first_clue = q.cumulative_prefixes[0][:100] + "..." if len(q.cumulative_prefixes[0]) > 100 else q.cumulative_prefixes[0]
-367:             else:
-368:                 first_clue = q.question[:100] + "..." if len(q.question) > 100 else q.question
-369:             print(f"  First clue: {first_clue}")
-370:             print(f"  Category: {q.category}")
-371:             print(f"  Correct: {q.answer_primary}")
-372:             print(f"  Options: {', '.join(q.options[:3])}...")
-373: 
-374:     print("\nDataset construction complete!")
-375:     return 0
-376: 
-377: 
-378: if __name__ == '__main__':
-379:     sys.exit(main())
-````
-
-## File: scripts/compare_policies.py
-````python
-  1: #!/usr/bin/env python3
-  2: """
-  3: Compare T5-as-likelihood (MLP policy) vs T5-as-policy (end-to-end).
-  4: 
-  5: Evaluates both approaches on the same test set using the same metric
-  6: functions (accuracy, S_q, ECE, Brier score, buzz position).
-  7: 
-  8: **Important caveats for numeric comparison:**
-  9: 
- 10: The two evaluation paths are *not* fully apples-to-apples:
- 11: 
- 12: - The MLP path uses config-driven environment settings (e.g. wait_penalty
- 13:   from default.yaml or smoke.yaml).
- 14: - The T5 path uses its own hardcoded reward settings (wait_penalty=0.1,
- 15:   matching the T5 pipeline's default).
- 16: - The MLP path builds TF-IDF from test questions + all option profiles.
- 17:   The T5 path builds TF-IDF from profiles of the first 100 questions
- 18:   only (lightweight env reward computation — the T5 policy does not
- 19:   consume TF-IDF likelihoods).
- 20: - S_q semantics differ: for MLP, c_trace is a sigmoid confidence proxy
- 21:   over belief max; for T5, c_trace is the wait-head buzz probability.
- 22: 
- 23: These differences are inherent to the two architectures.  Accuracy and
- 24: buzz-position comparisons are directly meaningful.  ECE and Brier are
- 25: computed identically (both use top_p at buzz time).  S_q and reward
- 26: comparisons should be interpreted qualitatively.
- 27: 
- 28: MLP Policy (Phase 4):
- 29:     T5/TF-IDF computes likelihood scores -> belief features -> MLP
- 30:     policy decides.  Uses SB3 PPO with belief-feature observations.
- 31: 
- 32: T5 Policy (Phase 6):
- 33:     T5 encoder processes text directly -> PolicyHead decides.
- 34:     Uses custom PPO with text observations via TextObservationWrapper.
- 35: 
- 36: Usage:
- 37:     python scripts/compare_policies.py \\
- 38:         --mlp-checkpoint checkpoints/ppo/best_model \\
- 39:         --t5-checkpoint checkpoints/ppo_t5/best_model \\
- 40:         --output results/t5_comparison.json
- 41: 
- 42:     python scripts/compare_policies.py \\
- 43:         --t5-checkpoint checkpoints/ppo_t5/best_model \\
- 44:         --t5-only
- 45: """
- 46: 
- 47: from __future__ import annotations
- 48: 
- 49: import argparse
- 50: import json
- 51: import sys
- 52: from pathlib import Path
- 53: from typing import Any
- 54: 
- 55: PROJECT_ROOT = Path(__file__).resolve().parents[1]
- 56: if str(PROJECT_ROOT) not in sys.path:
- 57:     sys.path.insert(0, str(PROJECT_ROOT))
- 58: 
- 59: import numpy as np
- 60: 
- 61: from evaluation.metrics import (
- 62:     expected_calibration_error,
- 63:     brier_score,
- 64:     summarize_buzz_metrics,
- 65:     system_score,
- 66: )
- 67: from scripts._common import ARTIFACT_DIR, load_config, load_mc_questions, save_json
- 68: 
- 69: 
- 70: def evaluate_mlp_policy(
- 71:     checkpoint_path: str,
- 72:     test_questions: list,
- 73:     config: dict,
- 74: ) -> dict[str, Any]:
- 75:     """Evaluate Phase 4 MLP policy with T5/TF-IDF likelihood on belief features.
- 76: 
- 77:     Loads a PPOBuzzer from an SB3 checkpoint, runs deterministic episodes
- 78:     on each test question, and computes accuracy, S_q, ECE, and buzz
- 79:     position metrics.
- 80: 
- 81:     Parameters
- 82:     ----------
- 83:     checkpoint_path : str
- 84:         Path to SB3 PPO model checkpoint (`.zip`` file).
- 85:     test_questions : list
- 86:         List of MCQuestion instances to evaluate on.
- 87:     config : dict
- 88:         YAML config dict with environment, likelihood, and data sections.
- 89: 
- 90:     Returns
- 91:     -------
- 92:     dict[str, Any]
- 93:         Evaluation results: accuracy, mean_sq, ece, brier, avg_buzz_pos,
- 94:         n_questions.
- 95:     """
- 96:     from agents.ppo_buzzer import PPOBuzzer
- 97:     from models.likelihoods import TfIdfLikelihood
- 98:     from qb_env.tossup_env import make_env_from_config
- 99: 
-100:     # Build likelihood model
-101:     corpus = (
-102:         [q.question for q in test_questions]
-103:         + [p for q in test_questions for p in q.option_profiles]
-104:     )
-105:     likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
-106: 
-107:     # Build environment with all test questions
-108:     env = make_env_from_config(
-109:         mc_questions=test_questions,
-110:         likelihood_model=likelihood_model,
-111:         config=config,
-112:     )
-113: 
-114:     # Load trained agent
-115:     agent = PPOBuzzer.load(checkpoint_path, env=env)
-116: 
-117:     # Run episodes
-118:     results = []
-119:     for _ in range(len(test_questions)):
-120:         trace = agent.run_episode(deterministic=True)
-121:         results.append(trace)
-122: 
-123:     # Compute metrics
-124:     buzz_metrics = summarize_buzz_metrics(results)
-125: 
-126:     # Extract confidences and outcomes for calibration — use top_p
-127:     from dataclasses import asdict
-128: 
-129:     rows = [asdict(r) for r in results]
-130:     confidences = []
-131:     outcomes = []
-132:     buzz_positions = []
-133:     for row in rows:
-134:         top_p_trace = list(row.get("top_p_trace", []))
-135:         c_trace = list(row.get("c_trace", []))
-136:         conf_trace = top_p_trace if top_p_trace else c_trace
-137:         buzz_step = int(row.get("buzz_step", max(0, len(conf_trace) - 1)))
-138:         if conf_trace:
-139:             idx = min(max(0, buzz_step), len(conf_trace) - 1)
-140:             confidences.append(float(conf_trace[idx]))
-141:             outcomes.append(1 if bool(row.get("correct", False)) else 0)
-142:         buzz_positions.append(buzz_step)
-143: 
-144:     ece = expected_calibration_error(confidences, outcomes)
-145:     brier = brier_score(confidences, outcomes)
-146: 
-147:     return {
-148:         "accuracy": buzz_metrics["buzz_accuracy"],
-149:         "mean_sq": buzz_metrics["mean_sq"],
-150:         "ece": ece,
-151:         "brier": brier,
-152:         "avg_buzz_pos": float(np.mean(buzz_positions)) if buzz_positions else 0.0,
-153:         "mean_reward": buzz_metrics["mean_reward_like"],
-154:         "n_questions": len(test_questions),
-155:     }
-156: 
-157: 
-158: def evaluate_t5_policy(
-159:     checkpoint_path: str,
-160:     test_questions: list,
-161:     config: dict,
-162: ) -> dict[str, Any]:
-163:     """Evaluate Phase 6 T5 end-to-end policy on text observations.
-164: 
-165:     Loads a T5PolicyModel from checkpoint, runs deterministic episodes
-166:     on each test question using TextObservationWrapper, and computes the
-167:     same metrics as evaluate_mlp_policy for fair comparison.
-168: 
-169:     Parameters
-170:     ----------
-171:     checkpoint_path : str
-172:         Path to T5PolicyModel checkpoint directory.
-173:     test_questions : list
-174:         List of MCQuestion instances to evaluate on.
-175:     config : dict
-176:         YAML config dict.
-177: 
-178:     Returns
-179:     -------
-180:     dict[str, Any]
-181:         Evaluation results: accuracy, mean_sq, ece, brier, avg_buzz_pos,
-182:         n_questions.
-183:     """
-184:     import torch
-185:     from models.t5_policy import T5PolicyModel
-186:     from models.likelihoods import TfIdfLikelihood
-187:     from qb_env.text_wrapper import TextObservationWrapper
-188:     from qb_env.tossup_env import TossupMCEnv
-189: 
-190:     # Load T5 policy model
-191:     model = T5PolicyModel.load_pretrained(checkpoint_path, device="cpu")
-192:     model.eval()
-193: 
-194:     # Build lightweight likelihood for environment reward computation
-195:     corpus = []
-196:     for q in test_questions[:100]:
-197:         corpus.extend(q.option_profiles)
-198:     likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
-199: 
-200:     correct_count = 0
-201:     total_count = 0
-202:     sq_scores = []
-203:     confidences = []
-204:     outcomes = []
-205:     buzz_positions = []
-206: 
-207:     with torch.no_grad():
-208:         for question in test_questions:
-209:             env = TossupMCEnv(
-210:                 questions=[question],
-211:                 likelihood_model=likelihood_model,
-212:                 K=len(question.options),
-213:                 reward_mode="time_penalty",
-214:                 wait_penalty=0.1,
-215:                 belief_mode="from_scratch",
-216:             )
-217:             wrapped_env = TextObservationWrapper(env)
-218: 
-219:             obs, info = wrapped_env.reset()
-220:             done = False
-221:             c_trace = []
-222:             g_trace = []
-223:             top_p_trace = []
-224:             episode_reward = 0.0
-225:             step_count = 0
-226: 
-227:             while not done:
-228:                 inputs = model.tokenizer(
-229:                     obs,
-230:                     return_tensors="pt",
-231:                     padding=True,
-232:                     truncation=True,
-233:                     max_length=512,
-234:                 )
-235:                 actions, act_info = model.select_action(
-236:                     inputs["input_ids"],
-237:                     inputs["attention_mask"],
-238:                     deterministic=True,
-239:                 )
-240: 
-241:                 action = actions.item()
-242: 
-243:                 wait_probs = act_info["wait_probs"]
-244:                 buzz_prob = wait_probs[0, 1].item()
-245:                 c_trace.append(buzz_prob)
-246: 
-247:                 answer_probs = act_info["answer_probs"]
-248:                 gold_prob = answer_probs[0, question.gold_index].item()
-249:                 g_trace.append(gold_prob)
-250: 
-251:                 top_p = float(answer_probs[0].max().item())
-252:                 top_p_trace.append(top_p)
-253: 
-254:                 obs, reward, terminated, truncated, step_info = (
-255:                     wrapped_env.step(action)
-256:                 )
-257:                 done = terminated or truncated
-258:                 episode_reward += reward
-259:                 step_count += 1
-260: 
-261:             sq = system_score(c_trace, g_trace)
-262:             sq_scores.append(sq)
-263: 
-264:             is_correct = step_info.get("correct", False) or step_info.get(
-265:                 "forced_correct", False
-266:             )
-267:             if is_correct:
-268:                 correct_count += 1
-269:             total_count += 1
-270: 
-271:             # Calibration: use top_p (max answer prob) for consistency
-272:             # with belief-feature agents
-273:             if top_p_trace:
-274:                 buzz_step = step_count - 1
-275:                 confidences.append(top_p_trace[-1])
-276:                 outcomes.append(1 if is_correct else 0)
-277:                 buzz_positions.append(buzz_step)
-278: 
-279:     accuracy = correct_count / max(1, total_count)
-280:     mean_sq = float(np.mean(sq_scores)) if sq_scores else 0.0
-281:     ece = expected_calibration_error(confidences, outcomes)
-282:     brier_val = brier_score(confidences, outcomes)
-283:     avg_buzz_pos = float(np.mean(buzz_positions)) if buzz_positions else 0.0
-284: 
-285:     return {
-286:         "accuracy": accuracy,
-287:         "mean_sq": mean_sq,
-288:         "ece": ece,
-289:         "brier": brier_val,
-290:         "avg_buzz_pos": avg_buzz_pos,
-291:         "mean_reward": 0.0,  # Not tracked per-episode for T5 policy eval
-292:         "n_questions": total_count,
-293:     }
-294: 
-295: 
-296: def print_comparison(
-297:     mlp_results: dict[str, Any] | None,
-298:     t5_results: dict[str, Any],
-299:     test_size: int,
-300: ) -> dict[str, Any]:
-301:     """Print and return comparison summary.
-302: 
-303:     Parameters
-304:     ----------
-305:     mlp_results : dict or None
-306:         MLP policy evaluation results. None if --t5-only.
-307:     t5_results : dict
-308:         T5 policy evaluation results.
-309:     test_size : int
-310:         Number of test questions evaluated.
-311: 
-312:     Returns
-313:     -------
-314:     dict[str, Any]
-315:         Complete comparison dict for JSON serialization.
-316:     """
-317:     print("\n" + "=" * 70)
-318:     print("COMPARISON RESULTS: T5-as-Likelihood vs T5-as-Policy")
-319:     print("=" * 70)
-320:     print(f"Test set size: {test_size}")
-321:     print()
-322: 
-323:     if mlp_results is not None:
-324:         print(f"{'Metric':<20} {'MLP (T5-likelihood)':>20} {'T5 (end-to-end)':>20} {'Difference':>15}")
-325:         print("-" * 75)
-326:         for metric in ["accuracy", "mean_sq", "ece", "brier", "avg_buzz_pos"]:
-327:             mlp_val = mlp_results.get(metric, 0.0)
-328:             t5_val = t5_results.get(metric, 0.0)
-329:             diff = t5_val - mlp_val
-330:             print(f"{metric:<20} {mlp_val:>20.4f} {t5_val:>20.4f} {diff:>+15.4f}")
-331:     else:
-332:         print("T5 Policy (end-to-end) results:")
-333:         print("-" * 40)
-334:         for metric in ["accuracy", "mean_sq", "ece", "brier", "avg_buzz_pos"]:
-335:             val = t5_results.get(metric, 0.0)
-336:             print(f"  {metric:<20}: {val:.4f}")
-337: 
-338:     # Build comparison dict
-339:     comparison: dict[str, Any] = {
-340:         "test_size": test_size,
-341:         "t5_policy": t5_results,
-342:     }
-343:     if mlp_results is not None:
-344:         comparison["mlp_policy"] = mlp_results
-345:         comparison["difference"] = {
-346:             metric: t5_results.get(metric, 0.0) - mlp_results.get(metric, 0.0)
-347:             for metric in ["accuracy", "mean_sq", "ece", "brier", "avg_buzz_pos"]
-348:         }
-349: 
-350:     return comparison
-351: 
-352: 
-353: def parse_compare_args() -> argparse.Namespace:
-354:     """Parse comparison script arguments.
-355: 
-356:     Returns
-357:     -------
-358:     argparse.Namespace
-359:         Parsed arguments.
-360:     """
-361:     parser = argparse.ArgumentParser(
-362:         description="Compare T5-as-likelihood (MLP) vs T5-as-policy.",
-363:     )
-364:     parser.add_argument(
-365:         "--mlp-checkpoint",
-366:         type=str,
-367:         default=None,
-368:         help="Path to Phase 4 MLP policy checkpoint.",
-369:     )
-370:     parser.add_argument(
-371:         "--t5-checkpoint",
-372:         type=str,
-373:         required=True,
-374:         help="Path to Phase 6 T5 policy checkpoint.",
-375:     )
-376:     parser.add_argument(
-377:         "--config",
-378:         type=str,
-379:         default=None,
-380:         help="Path to YAML config file.",
-381:     )
-382:     parser.add_argument(
-383:         "--mc-path",
-384:         type=str,
-385:         default=None,
-386:         help="Path to MC dataset JSON file.",
-387:     )
-388:     parser.add_argument(
-389:         "--output",
-390:         type=str,
-391:         default="results/t5_comparison.json",
-392:         help="Path for output JSON results.",
-393:     )
-394:     parser.add_argument(
-395:         "--smoke",
-396:         action="store_true",
-397:         help="Quick test with first 50 questions.",
-398:     )
-399:     parser.add_argument(
-400:         "--t5-only",
-401:         action="store_true",
-402:         help="Only evaluate T5 policy (skip MLP comparison).",
-403:     )
-404:     return parser.parse_args()
-405: 
-406: 
-407: def main() -> None:
-408:     """Run the comparison experiment."""
-409:     args = parse_compare_args()
-410: 
-411:     # Load config
-412:     config = load_config(args.config)
-413: 
-414:     # Load test questions
-415:     if args.mc_path:
-416:         mc_path = Path(args.mc_path)
-417:     else:
-418:         candidates = [
-419:             ARTIFACT_DIR / "main" / "mc_dataset.json",
-420:             ARTIFACT_DIR / "smoke" / "mc_dataset.json",
-421:             PROJECT_ROOT / "data" / "processed" / "mc_dataset.json",
-422:         ]
-423:         mc_path = None
-424:         for candidate in candidates:
-425:             if candidate.exists():
-426:                 mc_path = candidate
-427:                 break
-428:         if mc_path is None:
-429:             print("ERROR: No MC dataset found. Run build_mc_dataset.py first.")
-430:             sys.exit(1)
-431: 
-432:     print(f"Loading questions from: {mc_path}")
-433:     all_questions = load_mc_questions(mc_path)
-434:     print(f"Loaded {len(all_questions)} questions")
-435: 
-436:     # Use last 15% as test set (matching standard split)
-437:     import random
-438:     rng = random.Random(42)
-439:     shuffled = all_questions[:]
-440:     rng.shuffle(shuffled)
-441:     test_start = int(len(shuffled) * 0.85)
-442:     test_questions = shuffled[test_start:]
-443: 
-444:     if args.smoke:
-445:         test_questions = test_questions[:50]
-446: 
-447:     print(f"Test set: {len(test_questions)} questions")
-448: 
-449:     # Evaluate MLP policy (if checkpoint provided and not t5-only)
-450:     mlp_results = None
-451:     if args.mlp_checkpoint and not args.t5_only:
-452:         print("\n" + "-" * 40)
-453:         print("Evaluating MLP policy (T5-as-likelihood)...")
-454:         print("-" * 40)
-455:         mlp_results = evaluate_mlp_policy(
-456:             args.mlp_checkpoint, test_questions, config
-457:         )
-458:         print(f"  Accuracy: {mlp_results['accuracy']:.4f}")
-459:         print(f"  Mean S_q: {mlp_results['mean_sq']:.4f}")
-460: 
-461:     # Evaluate T5 policy
-462:     print("\n" + "-" * 40)
-463:     print("Evaluating T5 policy (end-to-end)...")
-464:     print("-" * 40)
-465:     t5_results = evaluate_t5_policy(
-466:         args.t5_checkpoint, test_questions, config
-467:     )
-468:     print(f"  Accuracy: {t5_results['accuracy']:.4f}")
-469:     print(f"  Mean S_q: {t5_results['mean_sq']:.4f}")
-470: 
-471:     # Print comparison
-472:     comparison = print_comparison(mlp_results, t5_results, len(test_questions))
-473: 
-474:     # Save results
-475:     output_path = Path(args.output)
-476:     output_path.parent.mkdir(parents=True, exist_ok=True)
-477:     save_json(output_path, comparison)
-478:     print(f"\nResults saved to {output_path}")
-479: 
-480: 
-481: if __name__ == "__main__":
-482:     main()
-````
-
-## File: scripts/manual-smoke.sh
-````bash
- 1: #!/usr/bin/env bash
- 2: # Manual smoke pipeline -- runs the four-stage belief-feature smoke workflow.
- 3: # Intended for human verification, not CI (stages are heavyweight ML runs).
- 4: #
- 5: # Prereqs: pip install -e .  (see AGENTS.md for full setup)
- 6: # Outputs: artifacts/smoke/
- 7: set -euo pipefail
- 8: 
- 9: echo "=== Stage 1/4: Build MC dataset ==="
-10: python scripts/build_mc_dataset.py --smoke
-11: 
-12: echo "=== Stage 2/4: Run baselines ==="
-13: python scripts/run_baselines.py --smoke
-14: 
-15: echo "=== Stage 3/4: Train PPO ==="
-16: python scripts/train_ppo.py --smoke
-17: 
-18: echo "=== Stage 4/4: Evaluate all ==="
-19: python scripts/evaluate_all.py --smoke
-20: 
-21: echo "=== Smoke pipeline complete. Check artifacts/smoke/ ==="
-````
-
-## File: scripts/train_t5_policy.py
-````python
-  1: #!/usr/bin/env python3
-  2: """
-  3: Train T5 policy with supervised warm-start then PPO fine-tuning.
-  4: 
-  5: End-to-end pipeline for training a T5PolicyModel on quiz bowl questions:
-  6: 1. Supervised warm-start: Train answer selection on complete questions
-  7: 2. PPO fine-tuning: Optimize wait/answer policy on incremental episodes
-  8: 
-  9: Usage:
- 10:     # Full pipeline (supervised + PPO)
- 11:     python scripts/train_t5_policy.py --config configs/t5_policy.yaml
- 12: 
- 13:     # Quick smoke test (t5-small, few epochs)
- 14:     python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke
- 15: 
- 16:     # Skip supervised, load pretrained for PPO only
- 17:     python scripts/train_t5_policy.py --config configs/t5_policy.yaml \
- 18:         --skip-supervised --model-path checkpoints/supervised/best_model
- 19: 
- 20:     # Custom number of PPO iterations
- 21:     python scripts/train_t5_policy.py --config configs/t5_policy.yaml \
- 22:         --ppo-iterations 50
- 23: """
- 24: 
- 25: from __future__ import annotations
- 26: 
- 27: import argparse
- 28: import sys
- 29: from pathlib import Path
- 30: 
- 31: PROJECT_ROOT = Path(__file__).resolve().parents[1]
- 32: if str(PROJECT_ROOT) not in sys.path:
- 33:     sys.path.insert(0, str(PROJECT_ROOT))
- 34: 
- 35: import yaml
- 36: 
- 37: from scripts._common import ARTIFACT_DIR, load_mc_questions
- 38: 
- 39: 
- 40: def parse_args() -> argparse.Namespace:
- 41:     """Parse command-line arguments.
- 42: 
- 43:     Returns
- 44:     -------
- 45:     argparse.Namespace
- 46:         Parsed arguments for training configuration.
- 47:     """
- 48:     parser = argparse.ArgumentParser(
- 49:         description="Train T5 policy with supervised warm-start then PPO.",
- 50:     )
- 51:     parser.add_argument(
- 52:         "--config",
- 53:         type=str,
- 54:         default=str(PROJECT_ROOT / "configs" / "t5_policy.yaml"),
- 55:         help="Path to YAML config file (default: configs/t5_policy.yaml).",
- 56:     )
- 57:     parser.add_argument(
- 58:         "--smoke",
- 59:         action="store_true",
- 60:         help="Quick test run: uses t5-small, 2 epochs, 4 batch size.",
- 61:     )
- 62:     parser.add_argument(
- 63:         "--skip-supervised",
- 64:         action="store_true",
- 65:         help="Skip supervised training phase.",
- 66:     )
- 67:     parser.add_argument(
- 68:         "--model-path",
- 69:         type=str,
- 70:         default=None,
- 71:         help="Path to pretrained model checkpoint (required if --skip-supervised).",
- 72:     )
- 73:     parser.add_argument(
- 74:         "--mc-path",
- 75:         type=str,
- 76:         default=None,
- 77:         help="Path to MC dataset JSON file.",
- 78:     )
- 79:     parser.add_argument(
- 80:         "--ppo-iterations",
- 81:         type=int,
- 82:         default=None,
- 83:         help="Override number of PPO iterations from config.",
- 84:     )
- 85:     parser.add_argument(
- 86:         "--hazard-pretrain",
- 87:         action="store_true",
- 88:         help="Enable the experimental hazard pretraining bridge before PPO.",
- 89:     )
- 90:     parser.add_argument(
- 91:         "--beta-terminal",
- 92:         type=float,
- 93:         default=1.0,
- 94:         help="Terminal survival penalty used by the hazard bridge.",
- 95:     )
- 96:     parser.add_argument(
- 97:         "--freeze-answer-head",
- 98:         action="store_true",
- 99:         help="Freeze the answer head during the hazard bridge phase.",
-100:     )
-101:     return parser.parse_args()
-102: 
-103: 
-104: def load_config_with_overrides(args: argparse.Namespace) -> dict:
-105:     """Load YAML config and apply smoke/CLI overrides.
-106: 
-107:     Parameters
-108:     ----------
-109:     args : argparse.Namespace
-110:         Parsed command-line arguments.
-111: 
-112:     Returns
-113:     -------
-114:     dict
-115:         Configuration dictionary with overrides applied.
-116:     """
-117:     with open(args.config) as f:
-118:         config = yaml.safe_load(f)
-119: 
-120:     if args.smoke:
-121:         smoke = config.get("smoke", {})
-122:         # Override model settings
-123:         if "model" in smoke:
-124:             for key, val in smoke["model"].items():
-125:                 config["model"][key] = val
-126:         # Override supervised settings
-127:         if "supervised" in smoke:
-128:             for key, val in smoke["supervised"].items():
-129:                 config["supervised"][key] = val
-130:         # Override PPO settings
-131:         if "ppo" in smoke:
-132:             for key, val in smoke["ppo"].items():
-133:                 config["ppo"][key] = val
-134:         # Override data settings
-135:         if "data" in smoke:
-136:             for key, val in smoke["data"].items():
-137:                 config["data"][key] = val
-138: 
-139:     if args.ppo_iterations is not None:
-140:         config["ppo"]["iterations"] = args.ppo_iterations
-141: 
-142:     return config
-143: 
-144: 
-145: def flatten_config(config: dict) -> dict:
-146:     """Flatten nested config sections into a single dict for trainer APIs.
-147: 
-148:     Parameters
-149:     ----------
-150:     config : dict
-151:         Nested config dict with sections (model, supervised, ppo, data).
-152: 
-153:     Returns
-154:     -------
-155:     dict
-156:         Flat config dict with prefixed keys for each trainer.
-157:     """
-158:     flat = {}
-159: 
-160:     # Model section
-161:     model = config.get("model", {})
-162:     flat["model_name"] = model.get("model_name", "t5-large")
-163:     device = model.get("device", "auto")
-164:     if device == "auto":
-165:         import torch
-166:         if torch.cuda.is_available():
-167:             device = "cuda"
-168:         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-169:             device = "mps"
-170:         else:
-171:             device = "cpu"
-172:     flat["device"] = device
-173:     flat["max_input_length"] = model.get("max_input_length", 512)
-174:     flat["num_choices"] = model.get("num_choices", config.get("data", {}).get("K", 4))
-175: 
-176:     # Supervised section
-177:     sup = config.get("supervised", {})
-178:     flat["supervised_lr"] = sup.get("lr", 3e-4)
-179:     flat["supervised_epochs"] = sup.get("epochs", 10)
-180:     flat["supervised_batch_size"] = sup.get("batch_size", 8)
-181:     flat["supervised_grad_accum_steps"] = sup.get("grad_accum_steps", 4)
-182:     flat["max_grad_norm"] = sup.get("max_grad_norm", 1.0)
-183:     flat["weight_decay"] = sup.get("weight_decay", 0.01)
-184:     flat["checkpoint_dir"] = sup.get("checkpoint_dir", "checkpoints")
-185: 
-186:     # PPO section
-187:     ppo = config.get("ppo", {})
-188:     flat["ppo_lr"] = ppo.get("lr", 1e-5)
-189:     flat["ppo_iterations"] = ppo.get("iterations", 100)
-190:     flat["ppo_batch_size"] = ppo.get("batch_size", 8)
-191:     flat["ppo_epochs_per_iter"] = ppo.get("epochs_per_iter", 4)
-192:     flat["ppo_gamma"] = ppo.get("gamma", 0.99)
-193:     flat["ppo_gae_lambda"] = ppo.get("gae_lambda", 0.95)
-194:     flat["ppo_clip_ratio"] = ppo.get("clip_ratio", 0.2)
-195:     flat["ppo_value_coef"] = ppo.get("value_coef", 0.5)
-196:     flat["ppo_entropy_coef"] = ppo.get("entropy_coef", 0.01)
-197:     flat["ppo_max_grad_norm"] = ppo.get("max_grad_norm", 0.5)
-198:     flat["ppo_episodes_per_iter"] = ppo.get("episodes_per_iter", 16)
-199:     flat["eval_interval"] = ppo.get("eval_interval", 10)
-200:     flat["save_interval"] = ppo.get("save_interval", 20)
-201: 
-202:     return flat
-203: 
-204: 
-205: def load_questions(args: argparse.Namespace, config: dict) -> list:
-206:     """Load MC questions from file or fallback paths.
-207: 
-208:     Parameters
-209:     ----------
-210:     args : argparse.Namespace
-211:         Parsed arguments, may have mc_path override.
-212:     config : dict
-213:         Config dict with data section.
-214: 
-215:     Returns
-216:     -------
-217:     list
-218:         List of MCQuestion instances.
-219:     """
-220:     if args.mc_path:
-221:         mc_path = Path(args.mc_path)
-222:     else:
-223:         # Try standard locations
-224:         candidates = [
-225:             ARTIFACT_DIR / "main" / "mc_dataset.json",
-226:             ARTIFACT_DIR / "smoke" / "mc_dataset.json",
-227:             PROJECT_ROOT / "data" / "processed" / "mc_dataset.json",
-228:         ]
-229:         mc_path = None
-230:         for candidate in candidates:
-231:             if candidate.exists():
-232:                 mc_path = candidate
-233:                 break
-234: 
-235:         if mc_path is None:
-236:             print("ERROR: No MC dataset found. Run build_mc_dataset.py first.")
-237:             print("Searched locations:")
-238:             for c in candidates:
-239:                 print(f"  {c}")
-240:             sys.exit(1)
-241: 
-242:     print(f"Loading MC questions from: {mc_path}")
-243:     questions = load_mc_questions(mc_path)
-244:     print(f"Loaded {len(questions)} questions")
-245: 
-246:     # Apply max_questions limit (smoke mode)
-247:     max_questions = config.get("data", {}).get("max_questions", None)
-248:     if max_questions and len(questions) > max_questions:
-249:         questions = questions[:max_questions]
-250:         print(f"Limited to {max_questions} questions (smoke mode)")
-251: 
-252:     return questions
-253: 
-254: 
-255: def validate_args(args: argparse.Namespace) -> None:
-256:     """Validate CLI arguments and reject unsupported bridge paths."""
-257:     if args.skip_supervised and args.model_path is None:
-258:         print("ERROR: --model-path is required when using --skip-supervised")
-259:         sys.exit(1)
-260:     if args.hazard_pretrain:
-261:         raise NotImplementedError(
-262:             "Hazard pretraining loop not yet implemented. "
-263:             "The math utilities are available in training/hazard_pretrain.py, "
-264:             "but the end-to-end bridge has not been wired into train_t5_policy.py yet."
-265:         )
-266: 
-267: 
-268: def split_questions(questions: list, config: dict) -> tuple:
-269:     """Split questions into train/val/test sets.
-270: 
-271:     Parameters
-272:     ----------
-273:     questions : list
-274:         Full list of MCQuestion instances.
-275:     config : dict
-276:         Config dict with data section (train_size, val_size, test_size, seed).
-277: 
-278:     Returns
-279:     -------
-280:     tuple[list, list, list]
-281:         Train, validation, and test question lists.
-282:     """
-283:     import random
-284: 
-285:     data = config.get("data", {})
-286:     seed = data.get("seed", 42)
-287:     train_size = data.get("train_size", 0.7)
-288:     val_size = data.get("val_size", 0.15)
-289: 
-290:     rng = random.Random(seed)
-291:     shuffled = questions[:]
-292:     rng.shuffle(shuffled)
-293: 
-294:     n = len(shuffled)
-295:     n_train = int(n * train_size)
-296:     n_val = int(n * val_size)
-297: 
-298:     train_questions = shuffled[:n_train]
-299:     val_questions = shuffled[n_train : n_train + n_val]
-300:     test_questions = shuffled[n_train + n_val :]
-301: 
-302:     print(f"Split: {len(train_questions)} train, {len(val_questions)} val, {len(test_questions)} test")
-303:     return train_questions, val_questions, test_questions
-304: 
-305: 
-306: def main() -> None:
-307:     """Run the full T5 policy training pipeline."""
-308:     args = parse_args()
-309:     validate_args(args)
-310: 
-311:     # Load config with overrides
-312:     config = load_config_with_overrides(args)
-313:     flat_config = flatten_config(config)
-314: 
-315:     # Load and split dataset
-316:     questions = load_questions(args, config)
-317:     train_questions, val_questions, test_questions = split_questions(questions, config)
-318: 
-319:     # Import training modules (lazy to avoid loading transformers until needed)
-320:     from training.train_supervised_t5 import run_supervised_training
-321:     from training.train_ppo_t5 import run_ppo_training
-322: 
-323:     # Phase 1: Supervised warm-start (optional)
-324:     supervised_model_path = None
-325:     if not args.skip_supervised:
-326:         print("\n" + "=" * 60)
-327:         print("PHASE 1: SUPERVISED WARM-START")
-328:         print("=" * 60)
-329: 
-330:         model, trainer = run_supervised_training(
-331:             config=flat_config,
-332:             train_questions=train_questions,
-333:             val_questions=val_questions,
-334:         )
-335:         supervised_model_path = str(
-336:             trainer.checkpoint_dir / "best_model"
-337:         )
-338:         print(f"Supervised model saved to: {supervised_model_path}")
-339:     else:
-340:         supervised_model_path = args.model_path
-341:         print(f"\nSkipping supervised training, using model: {supervised_model_path}")
-342: 
-343:     # Phase 2: PPO fine-tuning
-344:     print("\n" + "=" * 60)
-345:     print("PHASE 2: PPO FINE-TUNING (T5 Policy)")
-346:     print("=" * 60)
-347: 
-348:     model, trainer = run_ppo_training(
-349:         config=flat_config,
-350:         train_questions=train_questions,
-351:         val_questions=val_questions,
-352:         test_questions=test_questions,
-353:         pretrained_model_path=supervised_model_path,
-354:     )
-355: 
-356:     print("\n" + "=" * 60)
-357:     print("TRAINING COMPLETE")
-358:     print("=" * 60)
-359:     print(f"Best PPO model saved to: {trainer.checkpoint_dir / 'best_model'}")
-360:     print(f"Training history: {trainer.checkpoint_dir / 'history.json'}")
-361: 
-362: 
-363: if __name__ == "__main__":
-364:     main()
 ````
 
 ## File: tests/test_action_space_alignment.py
@@ -11901,19 +7645,941 @@ requirements.txt
 46:     return seq_loss.mean()
 ````
 
-## File: CLAUDE.md
-````markdown
- 1: # CLAUDE.md
- 2: 
- 3: See **AGENTS.md** for the full repo contract: setup, architecture, testing, smoke pipeline, and configuration.
- 4: 
- 5: ## Claude-specific notes
- 6: 
- 7: - `.planning/` is durable project memory; respect STATE.md decisions.
- 8: - Prefer narrow verification over broad cargo-cult test runs.
- 9: - Do not add dependencies unless required.
-10: - Seeds: use 1, 2, 3 for multi-seed runs.
-11: - NumPy/PyTorch vectorized operations over loops in ML code.
+## File: training/train_ppo_t5.py
+````python
+  1: """
+  2: Custom PPO Training for T5 Policy Model
+  3: 
+  4: Implements PPOTrainer with RolloutBuffer for end-to-end PPO fine-tuning of
+  5: T5PolicyModel on incremental quiz bowl episodes. Uses Generalized Advantage
+  6: Estimation (GAE) for variance reduction and dynamic batch padding to minimize
+  7: memory footprint.
+  8: 
+  9: Key design decisions:
+ 10:     - Rollout tensors (input_ids, attention_mask) are immediately detached and
+ 11:       moved to CPU after collection to prevent GPU memory accumulation.
+ 12:     - Dynamic padding: each mini-batch is padded to the max length within that
+ 13:       batch, not a global 512-token maximum, saving ~50%+ memory.
+ 14:     - Config-dict interface for compatibility with the unified codebase YAML
+ 15:       config pattern (see configs/t5_policy.yaml).
+ 16: 
+ 17: Ported from qanta-buzzer reference implementation (train_ppo.py) with:
+ 18:     - TextObservationWrapper for text-based rollout collection
+ 19:     - Memory-safe tensor management (detach + CPU storage)
+ 20:     - Dynamic padding per mini-batch
+ 21:     - Config dict interface replacing Config class
+ 22:     - NumPy-style docstrings
+ 23: 
+ 24: Usage
+ 25: -----
+ 26: From Python::
+ 27: 
+ 28:     from training.train_ppo_t5 import PPOTrainer, run_ppo_training
+ 29:     from models.t5_policy import T5PolicyModel
+ 30:     from qb_data.mc_builder import MCQuestion
+ 31: 
+ 32:     model = T5PolicyModel({"model_name": "t5-small", "device": "cpu"})
+ 33:     trainer = PPOTrainer(model, train_qs, val_qs, config)
+ 34:     trainer.train()
+ 35: 
+ 36: From command line::
+ 37: 
+ 38:     python scripts/train_t5_policy.py --config configs/t5_policy.yaml
+ 39: """
+ 40: 
+ 41: from __future__ import annotations
+ 42: 
+ 43: import json
+ 44: import random
+ 45: from dataclasses import dataclass
+ 46: from pathlib import Path
+ 47: from typing import Any, Dict, List, Optional, Tuple
+ 48: 
+ 49: import numpy as np
+ 50: import torch
+ 51: import torch.nn as nn
+ 52: import torch.optim as optim
+ 53: 
+ 54: from models.t5_policy import T5PolicyModel
+ 55: from qb_data.mc_builder import MCQuestion
+ 56: 
+ 57: 
+ 58: @dataclass
+ 59: class RolloutStep:
+ 60:     """Single step in an episode rollout.
+ 61: 
+ 62:     Stores observation text, action, reward, value estimate, and log probability
+ 63:     for a single environment step. Tokenized tensors (input_ids, attention_mask)
+ 64:     are stored on CPU to prevent GPU memory accumulation during rollout collection.
+ 65: 
+ 66:     Attributes
+ 67:     ----------
+ 68:     observation_text : str
+ 69:         Text observation at this step (CLUES: ... | CHOICES: ...).
+ 70:     action : int
+ 71:         Combined action taken (0=WAIT, 1..K=SELECT).
+ 72:     reward : float
+ 73:         Scalar reward received.
+ 74:     done : bool
+ 75:         Whether this step ended the episode.
+ 76:     value : float
+ 77:         Value estimate from the critic at this step.
+ 78:     log_prob : float
+ 79:         Log probability of the action under the policy at collection time.
+ 80:     input_ids : torch.Tensor or None
+ 81:         Tokenized input IDs stored on CPU. Shape ``[1, seq_len]``.
+ 82:     attention_mask : torch.Tensor or None
+ 83:         Attention mask stored on CPU. Shape ``[1, seq_len]``.
+ 84:     return_ : float
+ 85:         Discounted return (filled by ``compute_returns_and_advantages``).
+ 86:     advantage : float
+ 87:         GAE advantage (filled by ``compute_returns_and_advantages``).
+ 88:     """
+ 89: 
+ 90:     observation_text: str
+ 91:     action: int
+ 92:     reward: float
+ 93:     done: bool
+ 94:     value: float
+ 95:     log_prob: float
+ 96:     input_ids: Optional[torch.Tensor] = None
+ 97:     attention_mask: Optional[torch.Tensor] = None
+ 98:     return_: float = 0.0
+ 99:     advantage: float = 0.0
+100: 
+101: 
+102: class RolloutBuffer:
+103:     """Buffer to store and process episode rollouts for PPO updates.
+104: 
+105:     Accumulates complete episode rollouts (lists of RolloutStep), then computes
+106:     discounted returns and GAE advantages across all episodes. Provides a flat
+107:     view of all steps for mini-batch iteration during PPO updates.
+108: 
+109:     Attributes
+110:     ----------
+111:     rollouts : list[list[RolloutStep]]
+112:         List of episode rollouts, each a list of steps.
+113:     """
+114: 
+115:     def __init__(self) -> None:
+116:         self.rollouts: List[List[RolloutStep]] = []
+117: 
+118:     def reset(self) -> None:
+119:         """Clear all stored rollouts."""
+120:         self.rollouts = []
+121: 
+122:     def add_rollout(self, steps: List[RolloutStep]) -> None:
+123:         """Add a complete episode rollout to the buffer.
+124: 
+125:         Parameters
+126:         ----------
+127:         steps : list[RolloutStep]
+128:             Complete episode rollout (ordered list of steps from reset to done).
+129:         """
+130:         self.rollouts.append(steps)
+131: 
+132:     def get_all_steps(self) -> List[RolloutStep]:
+133:         """Get a flat list of all steps from all rollouts.
+134: 
+135:         Returns
+136:         -------
+137:         list[RolloutStep]
+138:             All steps concatenated in order (rollout 0 steps, then rollout 1, ...).
+139:         """
+140:         all_steps: List[RolloutStep] = []
+141:         for rollout in self.rollouts:
+142:             all_steps.extend(rollout)
+143:         return all_steps
+144: 
+145:     def compute_returns_and_advantages(
+146:         self, gamma: float, gae_lambda: float
+147:     ) -> None:
+148:         """Compute discounted returns and GAE advantages for all rollouts.
+149: 
+150:         Uses Generalized Advantage Estimation (GAE) to compute per-step
+151:         advantages. For each rollout, iterates backward from the terminal
+152:         step computing:
+153: 
+154:             delta_t = r_t + gamma * V(s_{t+1}) - V(s_t)
+155:             A_t = delta_t + gamma * lambda * A_{t+1}
+156:             G_t = A_t + V(s_t)
+157: 
+158:         Terminal states reset next_value and gae to 0.
+159: 
+160:         Parameters
+161:         ----------
+162:         gamma : float
+163:             Discount factor in [0, 1]. Higher values weight future rewards more.
+164:         gae_lambda : float
+165:             GAE lambda in [0, 1]. Trades off bias (low) vs variance (high).
+166:         """
+167:         for rollout in self.rollouts:
+168:             rewards = [step.reward for step in rollout]
+169:             values = [step.value for step in rollout]
+170:             dones = [step.done for step in rollout]
+171: 
+172:             # GAE computation (backward pass)
+173:             gae = 0.0
+174:             next_value = 0.0  # Terminal state value
+175: 
+176:             for t in reversed(range(len(rollout))):
+177:                 if dones[t]:
+178:                     next_value = 0.0
+179:                     gae = 0.0
+180: 
+181:                 # TD error
+182:                 delta = rewards[t] + gamma * next_value - values[t]
+183: 
+184:                 # GAE accumulation
+185:                 gae = delta + gamma * gae_lambda * gae
+186: 
+187:                 # Store return and advantage
+188:                 rollout[t].return_ = gae + values[t]
+189:                 rollout[t].advantage = gae
+190: 
+191:                 next_value = values[t]
+192: 
+193:     def __len__(self) -> int:
+194:         return len(self.rollouts)
+195: 
+196: 
+197: class PPOTrainer:
+198:     """Custom PPO trainer for T5PolicyModel on quiz bowl episodes.
+199: 
+200:     Collects rollouts by running T5PolicyModel in text-observation episodes
+201:     (via TextObservationWrapper), then updates the policy using clipped
+202:     surrogate PPO loss with value function and entropy regularization.
+203: 
+204:     The trainer handles the complete training loop:
+205:     1. Collect rollouts (episodes) using the current policy
+206:     2. Compute GAE advantages
+207:     3. Update policy with mini-batch PPO for multiple epochs
+208:     4. Periodically validate and save checkpoints
+209: 
+210:     Parameters
+211:     ----------
+212:     model : T5PolicyModel
+213:         T5 policy model to train. Should be pre-trained via supervised
+214:         warm-start for faster convergence.
+215:     train_questions : list[MCQuestion]
+216:         Training set questions for rollout collection.
+217:     val_questions : list[MCQuestion]
+218:         Validation set questions for periodic evaluation.
+219:     config : dict[str, Any]
+220:         Configuration dictionary with PPO hyperparameters:
+221: 
+222:         - ``ppo_lr`` (float): Learning rate. Default 1e-5.
+223:         - ``ppo_iterations`` (int): Number of collect-update cycles. Default 100.
+224:         - ``ppo_batch_size`` (int): Mini-batch size for PPO updates. Default 8.
+225:         - ``ppo_epochs_per_iter`` (int): PPO epochs per iteration. Default 4.
+226:         - ``ppo_gamma`` (float): Discount factor. Default 0.99.
+227:         - ``ppo_gae_lambda`` (float): GAE lambda. Default 0.95.
+228:         - ``ppo_clip_ratio`` (float): PPO clip ratio. Default 0.2.
+229:         - ``ppo_value_coef`` (float): Value loss coefficient. Default 0.5.
+230:         - ``ppo_entropy_coef`` (float): Entropy bonus coefficient. Default 0.01.
+231:         - ``ppo_max_grad_norm`` (float): Gradient clip norm. Default 0.5.
+232:         - ``ppo_episodes_per_iter`` (int): Episodes per rollout. Default 16.
+233:         - ``eval_interval`` (int): Validate every N iterations. Default 10.
+234:         - ``save_interval`` (int): Save checkpoint every N iterations. Default 20.
+235:         - ``checkpoint_dir`` (str): Base checkpoint directory. Default "checkpoints".
+236:         - ``reward_time_penalty`` (float): Time penalty for env. Default 0.1.
+237: 
+238:     Attributes
+239:     ----------
+240:     model : T5PolicyModel
+241:         The model being trained.
+242:     optimizer : torch.optim.AdamW
+243:         Optimizer with weight decay.
+244:     best_val_reward : float
+245:         Best validation reward seen so far.
+246:     history : list[dict]
+247:         Per-iteration training metrics.
+248:     checkpoint_dir : Path
+249:         Directory for saving PPO checkpoints.
+250:     """
+251: 
+252:     def __init__(
+253:         self,
+254:         model: T5PolicyModel,
+255:         train_questions: List[MCQuestion],
+256:         val_questions: List[MCQuestion],
+257:         config: Dict[str, Any],
+258:     ) -> None:
+259:         self.model = model
+260:         self.train_questions = list(train_questions)
+261:         self.val_questions = list(val_questions)
+262:         self.config = config
+263: 
+264:         self.device = model.device
+265: 
+266:         # PPO hyperparameters
+267:         self.lr = float(config.get("ppo_lr", 1e-5))
+268:         self.iterations = int(config.get("ppo_iterations", 100))
+269:         self.batch_size = int(config.get("ppo_batch_size", 8))
+270:         self.epochs_per_iter = int(config.get("ppo_epochs_per_iter", 4))
+271:         self.gamma = float(config.get("ppo_gamma", 0.99))
+272:         self.gae_lambda = float(config.get("ppo_gae_lambda", 0.95))
+273:         self.clip_ratio = float(config.get("ppo_clip_ratio", 0.2))
+274:         self.value_coef = float(config.get("ppo_value_coef", 0.5))
+275:         self.entropy_coef = float(config.get("ppo_entropy_coef", 0.01))
+276:         self.max_grad_norm = float(config.get("ppo_max_grad_norm", 0.5))
+277:         self.episodes_per_iter = int(config.get("ppo_episodes_per_iter", 16))
+278:         self.eval_interval = int(config.get("eval_interval", 10))
+279:         self.save_interval = int(config.get("save_interval", 20))
+280:         self.reward_time_penalty = float(config.get("reward_time_penalty", 0.1))
+281:         self.max_input_length = int(config.get("max_input_length", 512))
+282: 
+283:         # Optimizer
+284:         self.optimizer = optim.AdamW(
+285:             model.parameters(), lr=self.lr, weight_decay=0.01
+286:         )
+287: 
+288:         # Training state
+289:         self.current_iteration = 0
+290:         self.best_val_reward = -float("inf")
+291:         self.history: List[Dict[str, Any]] = []
+292: 
+293:         # Checkpoint directory
+294:         self.checkpoint_dir = (
+295:             Path(config.get("checkpoint_dir", "checkpoints")) / "ppo_t5"
+296:         )
+297:         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+298: 
+299:     def collect_rollouts(self, num_episodes: int) -> RolloutBuffer:
+300:         """Collect rollouts by running episodes with the current policy.
+301: 
+302:         Creates a TossupMCEnv + TextObservationWrapper for each sampled
+303:         question, runs the policy until episode termination, and stores
+304:         all steps in a RolloutBuffer. Tokenized tensors are detached and
+305:         moved to CPU immediately to prevent GPU memory accumulation.
+306: 
+307:         Parameters
+308:         ----------
+309:         num_episodes : int
+310:             Number of episodes to collect.
+311: 
+312:         Returns
+313:         -------
+314:         RolloutBuffer
+315:             Buffer containing all collected episode rollouts.
+316:         """
+317:         from qb_env.text_wrapper import TextObservationWrapper
+318:         from qb_env.tossup_env import TossupMCEnv
+319:         from models.likelihoods import TfIdfLikelihood
+320: 
+321:         self.model.eval()
+322:         buffer = RolloutBuffer()
+323: 
+324:         # Sample questions for this iteration
+325:         questions = random.choices(self.train_questions, k=num_episodes)
+326: 
+327:         # Build a simple TF-IDF likelihood for environment scoring
+328:         # (The T5 policy reads text directly; likelihood is only used for
+329:         # environment reward computation via belief updates)
+330:         corpus = []
+331:         for q in self.train_questions[:100]:  # Use subset for speed
+332:             corpus.extend(q.option_profiles)
+333:         likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
+334: 
+335:         with torch.no_grad():
+336:             for question in questions:
+337:                 env = TossupMCEnv(
+338:                     questions=[question],
+339:                     likelihood_model=likelihood_model,
+340:                     K=len(question.options),
+341:                     reward_mode="time_penalty",
+342:                     wait_penalty=self.reward_time_penalty,
+343:                     belief_mode="from_scratch",
+344:                 )
+345:                 wrapped_env = TextObservationWrapper(env)
+346: 
+347:                 obs, info = wrapped_env.reset()
+348:                 done = False
+349:                 rollout: List[RolloutStep] = []
+350: 
+351:                 while not done:
+352:                     # Tokenize text observation
+353:                     inputs = self.model.tokenizer(
+354:                         obs,
+355:                         return_tensors="pt",
+356:                         padding=True,
+357:                         truncation=True,
+358:                         max_length=self.max_input_length,
+359:                     ).to(self.device)
+360: 
+361:                     # Get action from policy
+362:                     actions, act_info = self.model.select_action(
+363:                         inputs["input_ids"],
+364:                         inputs["attention_mask"],
+365:                         deterministic=False,
+366:                     )
+367: 
+368:                     action = actions.item()
+369:                     value = act_info["values"].squeeze().item()
+370:                     log_prob = act_info["log_probs"].item()
+371: 
+372:                     # Take environment step
+373:                     next_obs, reward, terminated, truncated, step_info = (
+374:                         wrapped_env.step(action)
+375:                     )
+376:                     done = terminated or truncated
+377: 
+378:                     # CRITICAL: Detach and move tensors to CPU immediately
+379:                     # to prevent GPU memory accumulation during rollout collection
+380:                     step = RolloutStep(
+381:                         observation_text=obs,
+382:                         action=action,
+383:                         reward=reward,
+384:                         done=done,
+385:                         value=value,
+386:                         log_prob=log_prob,
+387:                         input_ids=inputs["input_ids"].detach().cpu(),
+388:                         attention_mask=inputs["attention_mask"].detach().cpu(),
+389:                     )
+390:                     rollout.append(step)
+391: 
+392:                     obs = next_obs
+393: 
+394:                 buffer.add_rollout(rollout)
+395: 
+396:         return buffer
+397: 
+398:     def _pad_batch(
+399:         self, batch_steps: List[RolloutStep]
+400:     ) -> Tuple[torch.Tensor, torch.Tensor]:
+401:         """Dynamically pad a mini-batch of steps to the max length in the batch.
+402: 
+403:         Instead of padding all sequences to the global max (512 tokens), pads
+404:         only to the longest sequence in the current mini-batch. This typically
+405:         saves 50%+ memory since most quiz bowl observations are 100-200 tokens.
+406: 
+407:         Parameters
+408:         ----------
+409:         batch_steps : list[RolloutStep]
+410:             Mini-batch of rollout steps with stored input_ids and attention_mask.
+411: 
+412:         Returns
+413:         -------
+414:         input_ids : torch.Tensor
+415:             Padded input IDs of shape ``[batch_size, max_len]``, on device.
+416:         attention_mask : torch.Tensor
+417:             Padded attention mask of shape ``[batch_size, max_len]``, on device.
+418:         """
+419:         max_len = max(step.input_ids.shape[1] for step in batch_steps)
+420:         pad_token_id = self.model.tokenizer.pad_token_id
+421: 
+422:         padded_input_ids = []
+423:         padded_attention_mask = []
+424: 
+425:         for step in batch_steps:
+426:             seq_len = step.input_ids.shape[1]
+427:             if seq_len < max_len:
+428:                 pad_len = max_len - seq_len
+429:                 input_ids_padded = torch.cat(
+430:                     [
+431:                         step.input_ids,
+432:                         torch.full(
+433:                             (1, pad_len),
+434:                             pad_token_id,
+435:                             dtype=step.input_ids.dtype,
+436:                         ),
+437:                     ],
+438:                     dim=1,
+439:                 )
+440:                 attention_mask_padded = torch.cat(
+441:                     [
+442:                         step.attention_mask,
+443:                         torch.zeros(
+444:                             (1, pad_len), dtype=step.attention_mask.dtype
+445:                         ),
+446:                     ],
+447:                     dim=1,
+448:                 )
+449:             else:
+450:                 input_ids_padded = step.input_ids
+451:                 attention_mask_padded = step.attention_mask
+452: 
+453:             padded_input_ids.append(input_ids_padded)
+454:             padded_attention_mask.append(attention_mask_padded)
+455: 
+456:         input_ids = torch.cat(padded_input_ids).to(self.device)
+457:         attention_mask = torch.cat(padded_attention_mask).to(self.device)
+458: 
+459:         return input_ids, attention_mask
+460: 
+461:     def update_policy(self, buffer: RolloutBuffer) -> Dict[str, float]:
+462:         """Update the policy using PPO with clipped surrogate loss.
+463: 
+464:         Computes GAE advantages, normalizes them, then runs multiple epochs
+465:         of mini-batch PPO updates. Each update computes the clipped surrogate
+466:         policy loss, value function MSE loss, and entropy bonus.
+467: 
+468:         Parameters
+469:         ----------
+470:         buffer : RolloutBuffer
+471:             Buffer with collected rollouts (compute_returns_and_advantages
+472:             will be called internally).
+473: 
+474:         Returns
+475:         -------
+476:         dict[str, float]
+477:             Training metrics: policy_loss, value_loss, entropy, num_updates.
+478:         """
+479:         self.model.train()
+480: 
+481:         # Compute returns and advantages
+482:         buffer.compute_returns_and_advantages(
+483:             gamma=self.gamma, gae_lambda=self.gae_lambda
+484:         )
+485: 
+486:         # Get all steps
+487:         all_steps = buffer.get_all_steps()
+488:         if not all_steps:
+489:             return {
+490:                 "policy_loss": 0.0,
+491:                 "value_loss": 0.0,
+492:                 "entropy": 0.0,
+493:                 "num_updates": 0,
+494:             }
+495: 
+496:         # Normalize advantages
+497:         advantages = torch.tensor(
+498:             [step.advantage for step in all_steps], dtype=torch.float32
+499:         )
+500:         advantages = (advantages - advantages.mean()) / (
+501:             advantages.std() + 1e-8
+502:         )
+503: 
+504:         # Training metrics
+505:         total_policy_loss = 0.0
+506:         total_value_loss = 0.0
+507:         total_entropy = 0.0
+508:         num_updates = 0
+509: 
+510:         # PPO epochs
+511:         for epoch in range(self.epochs_per_iter):
+512:             # Shuffle step indices
+513:             indices = np.random.permutation(len(all_steps))
+514: 
+515:             # Mini-batch updates
+516:             for start_idx in range(0, len(all_steps), self.batch_size):
+517:                 end_idx = min(start_idx + self.batch_size, len(all_steps))
+518:                 batch_indices = indices[start_idx:end_idx]
+519: 
+520:                 # Get batch steps
+521:                 batch_steps = [all_steps[i] for i in batch_indices]
+522: 
+523:                 # Dynamic padding to max length in THIS batch
+524:                 input_ids, attention_mask = self._pad_batch(batch_steps)
+525: 
+526:                 # Prepare batch tensors
+527:                 actions = torch.tensor(
+528:                     [step.action for step in batch_steps],
+529:                     dtype=torch.long,
+530:                 ).to(self.device)
+531:                 old_log_probs = torch.tensor(
+532:                     [step.log_prob for step in batch_steps],
+533:                     dtype=torch.float32,
+534:                 ).to(self.device)
+535:                 returns = torch.tensor(
+536:                     [step.return_ for step in batch_steps],
+537:                     dtype=torch.float32,
+538:                 ).to(self.device)
+539:                 batch_advantages = advantages[batch_indices].to(self.device)
+540: 
+541:                 # Get new log probs, entropy, and values from current policy
+542:                 new_log_probs, entropy, values = (
+543:                     self.model.get_action_log_probs(
+544:                         input_ids, attention_mask, actions
+545:                     )
+546:                 )
+547: 
+548:                 # PPO clipped surrogate policy loss
+549:                 ratio = torch.exp(new_log_probs - old_log_probs)
+550:                 surr1 = ratio * batch_advantages
+551:                 surr2 = (
+552:                     torch.clamp(
+553:                         ratio,
+554:                         1.0 - self.clip_ratio,
+555:                         1.0 + self.clip_ratio,
+556:                     )
+557:                     * batch_advantages
+558:                 )
+559:                 policy_loss = -torch.min(surr1, surr2).mean()
+560: 
+561:                 # Value function loss (MSE)
+562:                 value_loss = nn.MSELoss()(values, returns)
+563: 
+564:                 # Entropy bonus (negative because we maximize entropy)
+565:                 entropy_loss = -entropy.mean()
+566: 
+567:                 # Total loss
+568:                 loss = (
+569:                     policy_loss
+570:                     + self.value_coef * value_loss
+571:                     + self.entropy_coef * entropy_loss
+572:                 )
+573: 
+574:                 # Backward pass and optimizer step
+575:                 self.optimizer.zero_grad()
+576:                 loss.backward()
+577:                 torch.nn.utils.clip_grad_norm_(
+578:                     self.model.parameters(), self.max_grad_norm
+579:                 )
+580:                 self.optimizer.step()
+581: 
+582:                 # Track metrics
+583:                 total_policy_loss += policy_loss.item()
+584:                 total_value_loss += value_loss.item()
+585:                 total_entropy += entropy.mean().item()
+586:                 num_updates += 1
+587: 
+588:         return {
+589:             "policy_loss": total_policy_loss / max(1, num_updates),
+590:             "value_loss": total_value_loss / max(1, num_updates),
+591:             "entropy": total_entropy / max(1, num_updates),
+592:             "num_updates": num_updates,
+593:         }
+594: 
+595:     def validate(self) -> Dict[str, float]:
+596:         """Validate on validation set by running deterministic episodes.
+597: 
+598:         Runs one episode per validation question with deterministic action
+599:         selection (argmax) and computes accuracy and average reward.
+600: 
+601:         Returns
+602:         -------
+603:         dict[str, float]
+604:             Validation metrics: accuracy, average_reward, avg_episode_length.
+605:         """
+606:         from qb_env.text_wrapper import TextObservationWrapper
+607:         from qb_env.tossup_env import TossupMCEnv
+608:         from models.likelihoods import TfIdfLikelihood
+609: 
+610:         self.model.eval()
+611: 
+612:         corpus = []
+613:         for q in self.train_questions[:100]:
+614:             corpus.extend(q.option_profiles)
+615:         likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
+616: 
+617:         correct = 0
+618:         total = 0
+619:         total_reward = 0.0
+620:         total_length = 0
+621: 
+622:         # Limit validation size for speed
+623:         val_questions = self.val_questions[:50]
+624: 
+625:         with torch.no_grad():
+626:             for question in val_questions:
+627:                 env = TossupMCEnv(
+628:                     questions=[question],
+629:                     likelihood_model=likelihood_model,
+630:                     K=len(question.options),
+631:                     reward_mode="time_penalty",
+632:                     wait_penalty=self.reward_time_penalty,
+633:                     belief_mode="from_scratch",
+634:                 )
+635:                 wrapped_env = TextObservationWrapper(env)
+636: 
+637:                 obs, info = wrapped_env.reset()
+638:                 done = False
+639:                 episode_reward = 0.0
+640:                 episode_length = 0
+641: 
+642:                 while not done:
+643:                     inputs = self.model.tokenizer(
+644:                         obs,
+645:                         return_tensors="pt",
+646:                         padding=True,
+647:                         truncation=True,
+648:                         max_length=self.max_input_length,
+649:                     ).to(self.device)
+650: 
+651:                     actions, act_info = self.model.select_action(
+652:                         inputs["input_ids"],
+653:                         inputs["attention_mask"],
+654:                         deterministic=True,
+655:                     )
+656: 
+657:                     action = actions.item()
+658:                     obs, reward, terminated, truncated, step_info = (
+659:                         wrapped_env.step(action)
+660:                     )
+661:                     done = terminated or truncated
+662:                     episode_reward += reward
+663:                     episode_length += 1
+664: 
+665:                 total_reward += episode_reward
+666:                 total_length += episode_length
+667:                 total += 1
+668: 
+669:                 # Check if answer was correct
+670:                 if step_info.get("correct", False) or step_info.get(
+671:                     "forced_correct", False
+672:                 ):
+673:                     correct += 1
+674: 
+675:         return {
+676:             "accuracy": correct / max(1, total),
+677:             "average_reward": total_reward / max(1, total),
+678:             "avg_episode_length": total_length / max(1, total),
+679:         }
+680: 
+681:     def train(self) -> Dict[str, Any]:
+682:         """Run the full PPO training loop.
+683: 
+684:         Alternates between rollout collection and policy updates for
+685:         ``self.iterations`` cycles. Periodically validates and saves
+686:         checkpoints.
+687: 
+688:         Returns
+689:         -------
+690:         dict[str, Any]
+691:             Training summary: best_val_reward, total_iterations.
+692:         """
+693:         print(f"Starting PPO training for {self.iterations} iterations")
+694:         print(f"  Training questions: {len(self.train_questions)}")
+695:         print(f"  Validation questions: {len(self.val_questions)}")
+696:         print(f"  Batch size: {self.batch_size}")
+697:         print(f"  Episodes per iteration: {self.episodes_per_iter}")
+698:         print(f"  Device: {self.device}")
+699:         print()
+700: 
+701:         for iteration in range(self.iterations):
+702:             self.current_iteration = iteration
+703: 
+704:             # Collect rollouts
+705:             print(f"\nIteration {iteration + 1}/{self.iterations}")
+706:             print("  Collecting rollouts...")
+707:             buffer = self.collect_rollouts(self.episodes_per_iter)
+708: 
+709:             # Compute episode statistics
+710:             episode_rewards = []
+711:             episode_lengths = []
+712:             for rollout in buffer.rollouts:
+713:                 episode_reward = sum(step.reward for step in rollout)
+714:                 episode_rewards.append(episode_reward)
+715:                 episode_lengths.append(len(rollout))
+716: 
+717:             avg_reward = np.mean(episode_rewards) if episode_rewards else 0.0
+718:             avg_length = np.mean(episode_lengths) if episode_lengths else 0.0
+719: 
+720:             print(f"  Avg episode reward: {avg_reward:.4f}")
+721:             print(f"  Avg episode length: {avg_length:.2f}")
+722: 
+723:             # Update policy
+724:             print("  Updating policy...")
+725:             update_metrics = self.update_policy(buffer)
+726: 
+727:             print(f"  Policy loss: {update_metrics['policy_loss']:.4f}")
+728:             print(f"  Value loss: {update_metrics['value_loss']:.4f}")
+729:             print(f"  Entropy: {update_metrics['entropy']:.4f}")
+730: 
+731:             # Validate periodically
+732:             if (iteration + 1) % self.eval_interval == 0:
+733:                 print("\n  Validating...")
+734:                 val_summary = self.validate()
+735:                 val_reward = val_summary.get("average_reward", 0.0)
+736: 
+737:                 print(f"  Val Accuracy: {val_summary['accuracy']:.4f}")
+738:                 print(f"  Val Reward: {val_reward:.4f}")
+739:                 print(
+740:                     f"  Val Avg Length: {val_summary['avg_episode_length']:.2f}"
+741:                 )
+742: 
+743:                 # Save history
+744:                 self.history.append(
+745:                     {
+746:                         "iteration": iteration + 1,
+747:                         "train_reward": float(avg_reward),
+748:                         "train_length": float(avg_length),
+749:                         **update_metrics,
+750:                         "val": val_summary,
+751:                     }
+752:                 )
+753: 
+754:                 # Save best model
+755:                 if val_reward > self.best_val_reward:
+756:                     self.best_val_reward = val_reward
+757:                     self.save_checkpoint(is_best=True)
+758:                     print(
+759:                         f"  -> New best validation reward: {val_reward:.4f}"
+760:                     )
+761: 
+762:             # Save regular checkpoint
+763:             if (iteration + 1) % self.save_interval == 0:
+764:                 self.save_checkpoint(is_best=False)
+765:                 self.save_history()
+766: 
+767:         print("\n" + "=" * 60)
+768:         print("PPO training completed!")
+769:         print(f"Best validation reward: {self.best_val_reward:.4f}")
+770:         print("=" * 60)
+771: 
+772:         # Save final history
+773:         self.save_history()
+774: 
+775:         return {
+776:             "best_val_reward": self.best_val_reward,
+777:             "total_iterations": self.iterations,
+778:         }
+779: 
+780:     def save_checkpoint(self, is_best: bool = False) -> Path:
+781:         """Save model checkpoint to disk.
+782: 
+783:         Parameters
+784:         ----------
+785:         is_best : bool
+786:             If True, save to ``best_model/`` directory.
+787: 
+788:         Returns
+789:         -------
+790:         Path
+791:             Path to the saved checkpoint directory.
+792:         """
+793:         if is_best:
+794:             save_path = self.checkpoint_dir / "best_model"
+795:         else:
+796:             save_path = (
+797:                 self.checkpoint_dir
+798:                 / f"iter_{self.current_iteration + 1}"
+799:             )
+800: 
+801:         # Use T5PolicyModel's save() method
+802:         self.model.save(str(save_path))
+803: 
+804:         # Save training state
+805:         state = {
+806:             "iteration": self.current_iteration + 1,
+807:             "best_val_reward": self.best_val_reward,
+808:             "optimizer_state_dict": self.optimizer.state_dict(),
+809:         }
+810:         torch.save(state, save_path / "training_state.pt")
+811: 
+812:         print(f"  Checkpoint saved to {save_path}")
+813:         return save_path
+814: 
+815:     def save_history(self) -> Path:
+816:         """Save training history to JSON.
+817: 
+818:         Returns
+819:         -------
+820:         Path
+821:             Path to the saved history file.
+822:         """
+823:         history_path = self.checkpoint_dir / "history.json"
+824:         with open(history_path, "w") as f:
+825:             json.dump(self.history, f, indent=2, default=float)
+826:         return history_path
+827: 
+828: 
+829: def run_ppo_training(
+830:     config: Dict[str, Any],
+831:     train_questions: List[MCQuestion],
+832:     val_questions: List[MCQuestion],
+833:     test_questions: Optional[List[MCQuestion]] = None,
+834:     pretrained_model_path: Optional[str] = None,
+835: ) -> Tuple[T5PolicyModel, PPOTrainer]:
+836:     """Run the PPO training pipeline with optional pretrained model.
+837: 
+838:     Creates or loads a T5PolicyModel, trains it with PPO on quiz bowl
+839:     episodes, and optionally evaluates on a test set.
+840: 
+841:     Parameters
+842:     ----------
+843:     config : dict[str, Any]
+844:         Configuration dictionary with model and PPO hyperparameters.
+845:     train_questions : list[MCQuestion]
+846:         Training set questions.
+847:     val_questions : list[MCQuestion]
+848:         Validation set questions.
+849:     test_questions : list[MCQuestion] or None
+850:         Optional test set for final evaluation.
+851:     pretrained_model_path : str or None
+852:         Path to a supervised pretrained checkpoint. If provided, loads the
+853:         model from this path. Otherwise creates a new model.
+854: 
+855:     Returns
+856:     -------
+857:     model : T5PolicyModel
+858:         The trained model.
+859:     trainer : PPOTrainer
+860:         The trainer instance with training history.
+861:     """
+862:     print("=" * 60)
+863:     print("PPO TRAINING PHASE (T5 Policy)")
+864:     print("=" * 60)
+865: 
+866:     # Load or create model
+867:     if pretrained_model_path:
+868:         print(f"Loading pretrained model from {pretrained_model_path}")
+869:         device = config.get("device", "cpu")
+870:         if device == "auto":
+871:             if torch.cuda.is_available():
+872:                 device = "cuda"
+873:             elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+874:                 device = "mps"
+875:             else:
+876:                 device = "cpu"
+877:         model = T5PolicyModel.load_pretrained(
+878:             pretrained_model_path, device=device
+879:         )
+880:     else:
+881:         print("Initializing new model (no pretraining)")
+882:         model_config = {
+883:             "model_name": config.get("model_name", "t5-large"),
+884:             "device": config.get("device", "cpu"),
+885:             "max_input_length": config.get("max_input_length", 512),
+886:             "num_choices": config.get("num_choices", 4),
+887:         }
+888:         model = T5PolicyModel(model_config)
+889: 
+890:     # Create trainer
+891:     trainer = PPOTrainer(
+892:         model=model,
+893:         train_questions=train_questions,
+894:         val_questions=val_questions,
+895:         config=config,
+896:     )
+897: 
+898:     # Train
+899:     summary = trainer.train()
+900: 
+901:     # Evaluate on test set if provided
+902:     if test_questions is not None:
+903:         print("\n" + "=" * 60)
+904:         print("FINAL EVALUATION ON TEST SET")
+905:         print("=" * 60)
+906: 
+907:         # Load best model if it exists
+908:         best_model_path = trainer.checkpoint_dir / "best_model"
+909:         if best_model_path.exists():
+910:             print(f"Loading best model from {best_model_path}")
+911:             model.load(str(best_model_path))
+912: 
+913:         # Run validation on test set
+914:         # Temporarily swap val questions with test questions
+915:         original_val = trainer.val_questions
+916:         trainer.val_questions = list(test_questions)
+917:         test_metrics = trainer.validate()
+918:         trainer.val_questions = original_val
+919: 
+920:         print(f"Test Accuracy: {test_metrics['accuracy']:.4f}")
+921:         print(f"Test Avg Reward: {test_metrics['average_reward']:.4f}")
+922: 
+923:         # Save test results
+924:         test_results = {
+925:             "test_metrics": test_metrics,
+926:             "training_summary": summary,
+927:         }
+928:         results_path = trainer.checkpoint_dir / "test_results.json"
+929:         with open(results_path, "w") as f:
+930:             json.dump(test_results, f, indent=2, default=float)
+931:         print(f"Test results saved to {results_path}")
+932: 
+933:     return model, trainer
 ````
 
 ## File: pyproject.toml
@@ -11955,6 +8621,292 @@ requirements.txt
 35: 
 36: [tool.pytest.ini_options]
 37: testpaths = ["tests"]
+````
+
+## File: agents/bayesian_buzzer.py
+````python
+  1: from __future__ import annotations
+  2: 
+  3: from dataclasses import dataclass
+  4: from typing import TYPE_CHECKING
+  5: 
+  6: import numpy as np
+  7: 
+  8: from agents._math import sigmoid
+  9: from models.likelihoods import LikelihoodModel
+ 10: from qb_data.mc_builder import MCQuestion
+ 11: 
+ 12: if TYPE_CHECKING:
+ 13:     from agents.threshold_buzzer import _PrecomputedQuestion
+ 14: 
+ 15: 
+ 16: 
+ 17: @dataclass
+ 18: class SoftmaxEpisodeResult:
+ 19:     qid: str
+ 20:     buzz_step: int
+ 21:     buzz_index: int
+ 22:     gold_index: int
+ 23:     correct: bool
+ 24:     c_trace: list[float]
+ 25:     g_trace: list[float]
+ 26:     top_p_trace: list[float]
+ 27:     entropy_trace: list[float]
+ 28: 
+ 29: 
+ 30: class SoftmaxProfileBuzzer:
+ 31:     def __init__(
+ 32:         self,
+ 33:         likelihood_model: LikelihoodModel,
+ 34:         threshold: float = 0.8,
+ 35:         beta: float = 5.0,
+ 36:         alpha: float = 10.0,
+ 37:     ):
+ 38:         self.likelihood_model = likelihood_model
+ 39:         self.threshold = threshold
+ 40:         self.beta = beta
+ 41:         self.alpha = alpha
+ 42:         self.belief: np.ndarray | None = None
+ 43: 
+ 44:     def _belief_from_scratch(self, cumulative_prefix: str, option_profiles: list[str]) -> np.ndarray:
+ 45:         scores = self.likelihood_model.score(cumulative_prefix, option_profiles)
+ 46:         scores = scores - np.max(scores)
+ 47:         probs = np.exp(self.beta * scores)
+ 48:         probs = probs / max(1e-12, probs.sum())
+ 49:         return probs.astype(np.float32)
+ 50: 
+ 51:     def confidence_proxy(self, top_p: float) -> float:
+ 52:         return sigmoid(self.alpha * (top_p - self.threshold))
+ 53: 
+ 54:     def run_episode(self, question: MCQuestion) -> SoftmaxEpisodeResult:
+ 55:         c_trace: list[float] = []
+ 56:         g_trace: list[float] = []
+ 57:         top_p_trace: list[float] = []
+ 58:         entropy_trace: list[float] = []
+ 59: 
+ 60:         chosen_idx = 0
+ 61:         chosen_step = len(question.cumulative_prefixes) - 1
+ 62: 
+ 63:         for step_idx, prefix in enumerate(question.cumulative_prefixes):
+ 64:             belief = self._belief_from_scratch(prefix, question.option_profiles)
+ 65:             self.belief = belief
+ 66:             top_idx = int(np.argmax(belief))
+ 67:             top_p = float(np.max(belief))
+ 68:             entropy = float(-(np.clip(belief, 1e-12, 1.0) * np.log(np.clip(belief, 1e-12, 1.0))).sum())
+ 69:             c_t = self.confidence_proxy(top_p)
+ 70:             g_t = 1.0 if top_idx == question.gold_index else 0.0
+ 71: 
+ 72:             c_trace.append(c_t)
+ 73:             g_trace.append(g_t)
+ 74:             top_p_trace.append(top_p)
+ 75:             entropy_trace.append(entropy)
+ 76: 
+ 77:             is_last = step_idx == len(question.cumulative_prefixes) - 1
+ 78:             if top_p >= self.threshold or is_last:
+ 79:                 chosen_step = step_idx
+ 80:                 chosen_idx = top_idx
+ 81:                 break
+ 82: 
+ 83:         return SoftmaxEpisodeResult(
+ 84:             qid=question.qid,
+ 85:             buzz_step=chosen_step,
+ 86:             buzz_index=chosen_idx,
+ 87:             gold_index=question.gold_index,
+ 88:             correct=(chosen_idx == question.gold_index),
+ 89:             c_trace=c_trace,
+ 90:             g_trace=g_trace,
+ 91:             top_p_trace=top_p_trace,
+ 92:             entropy_trace=entropy_trace,
+ 93:         )
+ 94: 
+ 95: 
+ 96: class SequentialBayesBuzzer:
+ 97:     def __init__(
+ 98:         self,
+ 99:         likelihood_model: LikelihoodModel,
+100:         threshold: float = 0.8,
+101:         beta: float = 5.0,
+102:         alpha: float = 10.0,
+103:     ):
+104:         self.likelihood_model = likelihood_model
+105:         self.threshold = threshold
+106:         self.beta = beta
+107:         self.alpha = alpha
+108: 
+109:     def _step_update(self, prior: np.ndarray, fragment: str, option_profiles: list[str]) -> np.ndarray:
+110:         scores = self.likelihood_model.score(fragment, option_profiles)
+111:         scores = scores - np.max(scores)
+112:         likelihood = np.exp(self.beta * scores)
+113:         posterior = prior * likelihood
+114:         denom = posterior.sum()
+115:         if denom <= 0:
+116:             return np.ones_like(prior) / len(prior)
+117:         return (posterior / denom).astype(np.float32)
+118: 
+119:     def run_episode(self, question: MCQuestion) -> SoftmaxEpisodeResult:
+120:         c_trace: list[float] = []
+121:         g_trace: list[float] = []
+122:         top_p_trace: list[float] = []
+123:         entropy_trace: list[float] = []
+124: 
+125:         K = len(question.options)
+126:         belief = np.ones(K, dtype=np.float32) / K
+127:         chosen_idx = 0
+128:         chosen_step = len(question.cumulative_prefixes) - 1
+129: 
+130:         for step_idx, token_idx in enumerate(question.run_indices):
+131:             prev_token_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
+132:             fragment = " ".join(question.tokens[prev_token_idx + 1 : token_idx + 1])
+133:             belief = self._step_update(belief, fragment, question.option_profiles)
+134:             top_idx = int(np.argmax(belief))
+135:             top_p = float(np.max(belief))
+136:             entropy = float(-(np.clip(belief, 1e-12, 1.0) * np.log(np.clip(belief, 1e-12, 1.0))).sum())
+137:             c_t = sigmoid(self.alpha * (top_p - self.threshold))
+138:             g_t = 1.0 if top_idx == question.gold_index else 0.0
+139: 
+140:             c_trace.append(c_t)
+141:             g_trace.append(g_t)
+142:             top_p_trace.append(top_p)
+143:             entropy_trace.append(entropy)
+144: 
+145:             is_last = step_idx == len(question.cumulative_prefixes) - 1
+146:             if top_p >= self.threshold or is_last:
+147:                 chosen_step = step_idx
+148:                 chosen_idx = top_idx
+149:                 break
+150: 
+151:         return SoftmaxEpisodeResult(
+152:             qid=question.qid,
+153:             buzz_step=chosen_step,
+154:             buzz_index=chosen_idx,
+155:             gold_index=question.gold_index,
+156:             correct=(chosen_idx == question.gold_index),
+157:             c_trace=c_trace,
+158:             g_trace=g_trace,
+159:             top_p_trace=top_p_trace,
+160:             entropy_trace=entropy_trace,
+161:         )
+162: 
+163: 
+164: def precompute_sequential_beliefs(
+165:     questions: list[MCQuestion],
+166:     likelihood_model: LikelihoodModel,
+167:     beta: float,
+168: ) -> list["_PrecomputedQuestion"]:
+169:     """Compute Bayesian sequential beliefs at every step for every question.
+170: 
+171:     Starts with a uniform prior and applies Bayesian update
+172:     ``posterior = prior * likelihood`` using token fragments derived from
+173:     ``question.run_indices``.  Returns one ``_PrecomputedQuestion`` per
+174:     question where ``beliefs`` are the Bayesian posteriors (NOT the
+175:     from-scratch softmax beliefs).
+176:     """
+177:     from agents.threshold_buzzer import _PrecomputedQuestion
+178: 
+179:     out: list[_PrecomputedQuestion] = []
+180:     for q in questions:
+181:         K = len(q.options)
+182:         belief = np.ones(K, dtype=np.float32) / K
+183:         beliefs: list[np.ndarray] = []
+184: 
+185:         for step_idx, token_idx in enumerate(q.run_indices):
+186:             prev_token_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
+187:             fragment = " ".join(q.tokens[prev_token_idx + 1 : token_idx + 1])
+188:             scores = likelihood_model.score(fragment, q.option_profiles)
+189:             scores = scores - np.max(scores)
+190:             likelihood = np.exp(beta * scores)
+191:             posterior = belief * likelihood
+192:             denom = posterior.sum()
+193:             if denom <= 0:
+194:                 belief = np.ones_like(belief) / len(belief)
+195:             else:
+196:                 belief = (posterior / denom).astype(np.float32)
+197:             beliefs.append(belief.copy())
+198: 
+199:         out.append(_PrecomputedQuestion(
+200:             qid=q.qid,
+201:             gold_index=q.gold_index,
+202:             num_options=K,
+203:             beliefs=beliefs,
+204:         ))
+205:     return out
+206: 
+207: 
+208: def _sequential_episode_from_precomputed(
+209:     pq: "_PrecomputedQuestion",
+210:     threshold: float,
+211:     alpha: float,
+212: ) -> SoftmaxEpisodeResult:
+213:     """Build a SoftmaxEpisodeResult from pre-computed sequential beliefs.
+214: 
+215:     Identical buzzing logic to ``SequentialBayesBuzzer.run_episode`` but
+216:     reads beliefs from a ``_PrecomputedQuestion`` instead of calling the
+217:     likelihood model.
+218:     """
+219:     from agents.threshold_buzzer import _belief_stats
+220: 
+221:     c_trace: list[float] = []
+222:     g_trace: list[float] = []
+223:     top_p_trace: list[float] = []
+224:     entropy_trace: list[float] = []
+225: 
+226:     chosen_step = len(pq.beliefs) - 1
+227:     chosen_idx = 0
+228: 
+229:     for step_idx, belief in enumerate(pq.beliefs):
+230:         top_idx, top_p, entropy = _belief_stats(belief)
+231:         c_t = sigmoid(alpha * (top_p - threshold))
+232:         g_t = 1.0 if top_idx == pq.gold_index else 0.0
+233: 
+234:         c_trace.append(c_t)
+235:         g_trace.append(g_t)
+236:         top_p_trace.append(top_p)
+237:         entropy_trace.append(entropy)
+238: 
+239:         is_last = step_idx == len(pq.beliefs) - 1
+240:         if top_p >= threshold or is_last:
+241:             chosen_step = step_idx
+242:             chosen_idx = top_idx
+243:             break
+244: 
+245:     correct = chosen_idx == pq.gold_index
+246:     return SoftmaxEpisodeResult(
+247:         qid=pq.qid,
+248:         buzz_step=chosen_step,
+249:         buzz_index=chosen_idx,
+250:         gold_index=pq.gold_index,
+251:         correct=correct,
+252:         c_trace=c_trace,
+253:         g_trace=g_trace,
+254:         top_p_trace=top_p_trace,
+255:         entropy_trace=entropy_trace,
+256:     )
+257: 
+258: 
+259: def sweep_sequential_thresholds(
+260:     questions: list[MCQuestion],
+261:     likelihood_model: LikelihoodModel,
+262:     thresholds: list[float],
+263:     beta: float = 5.0,
+264:     alpha: float = 10.0,
+265:     precomputed: list["_PrecomputedQuestion"] | None = None,
+266: ) -> dict[float, list[SoftmaxEpisodeResult]]:
+267:     """Sweep multiple thresholds with a single sequential belief pass.
+268: 
+269:     If *precomputed* is provided the expensive model calls are skipped
+270:     entirely and the sweep is pure numpy.  Otherwise beliefs are computed
+271:     once internally and reused across thresholds.
+272:     """
+273:     if precomputed is None:
+274:         precomputed = precompute_sequential_beliefs(questions, likelihood_model, beta)
+275: 
+276:     out: dict[float, list[SoftmaxEpisodeResult]] = {}
+277:     for threshold in thresholds:
+278:         out[float(threshold)] = [
+279:             _sequential_episode_from_precomputed(pq, threshold, alpha)
+280:             for pq in precomputed
+281:         ]
+282:     return out
 ````
 
 ## File: agents/ppo_buzzer.py
@@ -12338,7 +9290,7 @@ requirements.txt
   1: from __future__ import annotations
   2: 
   3: from dataclasses import dataclass
-  4: from typing import Any
+  4: from typing import TYPE_CHECKING, Any
   5: 
   6: import numpy as np
   7: 
@@ -12346,353 +9298,772 @@ requirements.txt
   9: from models.likelihoods import LikelihoodModel
  10: from qb_data.mc_builder import MCQuestion
  11: 
- 12: 
- 13: @dataclass
- 14: class EpisodeResult:
- 15:     qid: str
- 16:     buzz_step: int
- 17:     buzz_index: int
- 18:     gold_index: int
- 19:     correct: bool
- 20:     reward_like: float
- 21:     c_trace: list[float]
- 22:     g_trace: list[float]
- 23:     top_p_trace: list[float]
- 24:     entropy_trace: list[float]
- 25: 
- 26: 
- 27: def _scores_to_belief(scores: np.ndarray, beta: float) -> np.ndarray:
- 28:     """Convert raw similarity scores to a belief distribution via softmax."""
- 29:     shifted = scores - np.max(scores)
- 30:     probs = np.exp(beta * shifted)
- 31:     probs = probs / max(1e-12, probs.sum())
- 32:     return probs.astype(np.float32)
- 33: 
- 34: 
- 35: def _belief_stats(belief: np.ndarray) -> tuple[int, float, float]:
- 36:     """Return (top_idx, top_p, entropy) from a belief distribution."""
- 37:     top_idx = int(np.argmax(belief))
- 38:     top_p = float(belief[top_idx])
- 39:     clipped = np.clip(belief, 1e-12, 1.0)
- 40:     entropy = float(-(clipped * np.log(clipped)).sum())
- 41:     return top_idx, top_p, entropy
- 42: 
- 43: 
- 44: @dataclass
- 45: class _PrecomputedQuestion:
- 46:     """Pre-computed belief distributions for every clue step of one question."""
- 47:     qid: str
- 48:     gold_index: int
- 49:     num_options: int
- 50:     beliefs: list[np.ndarray]
- 51: 
- 52: 
- 53: def precompute_beliefs(
- 54:     questions: list[MCQuestion],
- 55:     likelihood_model: LikelihoodModel,
- 56:     beta: float,
- 57: ) -> list[_PrecomputedQuestion]:
- 58:     """Compute beliefs at every step for every question (single model pass).
- 59: 
- 60:     After calling ``likelihood_model.precompute_embeddings()`` this is
- 61:     pure cache lookups + numpy math, so it runs in seconds rather than
- 62:     hours.
- 63:     """
- 64:     from tqdm import tqdm
- 65: 
- 66:     out: list[_PrecomputedQuestion] = []
- 67:     for q in tqdm(questions, desc="Computing beliefs"):
- 68:         beliefs = [
- 69:             _scores_to_belief(
- 70:                 likelihood_model.score(prefix, q.option_profiles), beta
- 71:             )
- 72:             for prefix in q.cumulative_prefixes
- 73:         ]
- 74:         out.append(_PrecomputedQuestion(
- 75:             qid=q.qid,
- 76:             gold_index=q.gold_index,
- 77:             num_options=len(q.options),
- 78:             beliefs=beliefs,
- 79:         ))
- 80:     return out
- 81: 
- 82: 
- 83: class ThresholdBuzzer:
- 84:     def __init__(
- 85:         self,
- 86:         likelihood_model: LikelihoodModel,
- 87:         threshold: float = 0.8,
- 88:         beta: float = 5.0,
- 89:         alpha: float = 10.0,
- 90:     ):
- 91:         self.likelihood_model = likelihood_model
- 92:         self.threshold = threshold
- 93:         self.beta = beta
- 94:         self.alpha = alpha
- 95:         self.belief: np.ndarray | None = None
- 96: 
- 97:     def _belief_from_prefix(self, prefix: str, option_profiles: list[str]) -> np.ndarray:
- 98:         scores = self.likelihood_model.score(prefix, option_profiles)
- 99:         return _scores_to_belief(scores, self.beta)
-100: 
-101:     def _confidence_proxy(self, top_p: float) -> float:
-102:         return sigmoid(self.alpha * (top_p - self.threshold))
+ 12: if TYPE_CHECKING:
+ 13:     from agents.bayesian_buzzer import SoftmaxEpisodeResult
+ 14: 
+ 15: 
+ 16: @dataclass
+ 17: class EpisodeResult:
+ 18:     qid: str
+ 19:     buzz_step: int
+ 20:     buzz_index: int
+ 21:     gold_index: int
+ 22:     correct: bool
+ 23:     reward_like: float
+ 24:     c_trace: list[float]
+ 25:     g_trace: list[float]
+ 26:     top_p_trace: list[float]
+ 27:     entropy_trace: list[float]
+ 28: 
+ 29: 
+ 30: def _scores_to_belief(scores: np.ndarray, beta: float) -> np.ndarray:
+ 31:     """Convert raw similarity scores to a belief distribution via softmax."""
+ 32:     shifted = scores - np.max(scores)
+ 33:     probs = np.exp(beta * shifted)
+ 34:     probs = probs / max(1e-12, probs.sum())
+ 35:     return probs.astype(np.float32)
+ 36: 
+ 37: 
+ 38: def _belief_stats(belief: np.ndarray) -> tuple[int, float, float]:
+ 39:     """Return (top_idx, top_p, entropy) from a belief distribution."""
+ 40:     top_idx = int(np.argmax(belief))
+ 41:     top_p = float(belief[top_idx])
+ 42:     clipped = np.clip(belief, 1e-12, 1.0)
+ 43:     entropy = float(-(clipped * np.log(clipped)).sum())
+ 44:     return top_idx, top_p, entropy
+ 45: 
+ 46: 
+ 47: @dataclass
+ 48: class _PrecomputedQuestion:
+ 49:     """Pre-computed belief distributions for every clue step of one question."""
+ 50:     qid: str
+ 51:     gold_index: int
+ 52:     num_options: int
+ 53:     beliefs: list[np.ndarray]
+ 54: 
+ 55: 
+ 56: def precompute_beliefs(
+ 57:     questions: list[MCQuestion],
+ 58:     likelihood_model: LikelihoodModel,
+ 59:     beta: float,
+ 60: ) -> list[_PrecomputedQuestion]:
+ 61:     """Compute beliefs at every step for every question (single model pass).
+ 62: 
+ 63:     After calling ``likelihood_model.precompute_embeddings()`` this is
+ 64:     pure cache lookups + numpy math, so it runs in seconds rather than
+ 65:     hours.
+ 66:     """
+ 67:     from tqdm import tqdm
+ 68: 
+ 69:     out: list[_PrecomputedQuestion] = []
+ 70:     for q in tqdm(questions, desc="Computing beliefs"):
+ 71:         beliefs = [
+ 72:             _scores_to_belief(
+ 73:                 likelihood_model.score(prefix, q.option_profiles), beta
+ 74:             )
+ 75:             for prefix in q.cumulative_prefixes
+ 76:         ]
+ 77:         out.append(_PrecomputedQuestion(
+ 78:             qid=q.qid,
+ 79:             gold_index=q.gold_index,
+ 80:             num_options=len(q.options),
+ 81:             beliefs=beliefs,
+ 82:         ))
+ 83:     return out
+ 84: 
+ 85: 
+ 86: class ThresholdBuzzer:
+ 87:     def __init__(
+ 88:         self,
+ 89:         likelihood_model: LikelihoodModel,
+ 90:         threshold: float = 0.8,
+ 91:         beta: float = 5.0,
+ 92:         alpha: float = 10.0,
+ 93:     ):
+ 94:         self.likelihood_model = likelihood_model
+ 95:         self.threshold = threshold
+ 96:         self.beta = beta
+ 97:         self.alpha = alpha
+ 98:         self.belief: np.ndarray | None = None
+ 99: 
+100:     def _belief_from_prefix(self, prefix: str, option_profiles: list[str]) -> np.ndarray:
+101:         scores = self.likelihood_model.score(prefix, option_profiles)
+102:         return _scores_to_belief(scores, self.beta)
 103: 
-104:     def run_episode(self, question: MCQuestion) -> EpisodeResult:
-105:         c_trace: list[float] = []
-106:         g_trace: list[float] = []
-107:         top_p_trace: list[float] = []
-108:         entropy_trace: list[float] = []
-109: 
-110:         chosen_step = len(question.cumulative_prefixes) - 1
-111:         chosen_idx = 0
+104:     def _confidence_proxy(self, top_p: float) -> float:
+105:         return sigmoid(self.alpha * (top_p - self.threshold))
+106: 
+107:     def run_episode(self, question: MCQuestion) -> EpisodeResult:
+108:         c_trace: list[float] = []
+109:         g_trace: list[float] = []
+110:         top_p_trace: list[float] = []
+111:         entropy_trace: list[float] = []
 112: 
-113:         for step_idx, prefix in enumerate(question.cumulative_prefixes):
-114:             belief = self._belief_from_prefix(prefix, question.option_profiles)
-115:             self.belief = belief
-116:             top_idx, top_p, entropy = _belief_stats(belief)
-117:             c_t = self._confidence_proxy(top_p)
-118:             g_t = 1.0 if top_idx == question.gold_index else 0.0
-119: 
-120:             c_trace.append(c_t)
-121:             g_trace.append(g_t)
-122:             top_p_trace.append(top_p)
-123:             entropy_trace.append(entropy)
-124: 
-125:             is_last = step_idx == len(question.cumulative_prefixes) - 1
-126:             if top_p >= self.threshold or is_last:
-127:                 chosen_step = step_idx
-128:                 chosen_idx = top_idx
-129:                 break
-130: 
-131:         correct = chosen_idx == question.gold_index
-132:         reward_like = 1.0 if correct else -0.5
-133:         return EpisodeResult(
-134:             qid=question.qid,
-135:             buzz_step=chosen_step,
-136:             buzz_index=chosen_idx,
-137:             gold_index=question.gold_index,
-138:             correct=correct,
-139:             reward_like=reward_like,
-140:             c_trace=c_trace,
-141:             g_trace=g_trace,
-142:             top_p_trace=top_p_trace,
-143:             entropy_trace=entropy_trace,
-144:         )
-145: 
-146: 
-147: class AlwaysBuzzFinalBuzzer:
-148:     def __init__(self, likelihood_model: LikelihoodModel, beta: float = 5.0):
-149:         self.likelihood_model = likelihood_model
-150:         self.beta = beta
-151: 
-152:     def run_episode(self, question: MCQuestion) -> EpisodeResult:
-153:         c_trace: list[float] = []
-154:         g_trace: list[float] = []
-155:         top_p_trace: list[float] = []
-156:         entropy_trace: list[float] = []
-157: 
-158:         final_step = len(question.cumulative_prefixes) - 1
-159:         final_belief = np.ones(len(question.options), dtype=np.float32) / len(question.options)
-160:         for prefix in question.cumulative_prefixes:
-161:             scores = self.likelihood_model.score(prefix, question.option_profiles)
-162:             probs = _scores_to_belief(scores, self.beta)
-163:             final_belief = probs
-164:             top_idx, top_p, entropy = _belief_stats(probs)
-165:             c_trace.append(0.0)
-166:             g_trace.append(1.0 if top_idx == question.gold_index else 0.0)
-167:             top_p_trace.append(top_p)
-168:             entropy_trace.append(entropy)
-169: 
-170:         c_trace[-1] = 1.0
-171:         buzz_idx = int(np.argmax(final_belief))
-172:         correct = buzz_idx == question.gold_index
-173:         reward_like = 1.0 if correct else -0.5
-174:         return EpisodeResult(
-175:             qid=question.qid,
-176:             buzz_step=final_step,
-177:             buzz_index=buzz_idx,
-178:             gold_index=question.gold_index,
-179:             correct=correct,
-180:             reward_like=reward_like,
-181:             c_trace=c_trace,
-182:             g_trace=g_trace,
-183:             top_p_trace=top_p_trace,
-184:             entropy_trace=entropy_trace,
-185:         )
-186: 
-187: 
-188: def _softmax_episode_from_precomputed(
-189:     pq: _PrecomputedQuestion,
-190:     threshold: float,
-191:     alpha: float,
-192: ) -> "SoftmaxEpisodeResult":
-193:     """Build a SoftmaxEpisodeResult from pre-computed beliefs (pure numpy).
-194: 
-195:     Identical buzzing logic to ``SoftmaxProfileBuzzer.run_episode`` but
-196:     reads beliefs from a ``_PrecomputedQuestion`` instead of calling the
-197:     likelihood model.
-198:     """
-199:     from agents.bayesian_buzzer import SoftmaxEpisodeResult
-200: 
-201:     c_trace: list[float] = []
-202:     g_trace: list[float] = []
-203:     top_p_trace: list[float] = []
-204:     entropy_trace: list[float] = []
-205: 
-206:     chosen_step = len(pq.beliefs) - 1
-207:     chosen_idx = 0
+113:         chosen_step = len(question.cumulative_prefixes) - 1
+114:         chosen_idx = 0
+115: 
+116:         for step_idx, prefix in enumerate(question.cumulative_prefixes):
+117:             belief = self._belief_from_prefix(prefix, question.option_profiles)
+118:             self.belief = belief
+119:             top_idx, top_p, entropy = _belief_stats(belief)
+120:             c_t = self._confidence_proxy(top_p)
+121:             g_t = 1.0 if top_idx == question.gold_index else 0.0
+122: 
+123:             c_trace.append(c_t)
+124:             g_trace.append(g_t)
+125:             top_p_trace.append(top_p)
+126:             entropy_trace.append(entropy)
+127: 
+128:             is_last = step_idx == len(question.cumulative_prefixes) - 1
+129:             if top_p >= self.threshold or is_last:
+130:                 chosen_step = step_idx
+131:                 chosen_idx = top_idx
+132:                 break
+133: 
+134:         correct = chosen_idx == question.gold_index
+135:         reward_like = 1.0 if correct else -0.5
+136:         return EpisodeResult(
+137:             qid=question.qid,
+138:             buzz_step=chosen_step,
+139:             buzz_index=chosen_idx,
+140:             gold_index=question.gold_index,
+141:             correct=correct,
+142:             reward_like=reward_like,
+143:             c_trace=c_trace,
+144:             g_trace=g_trace,
+145:             top_p_trace=top_p_trace,
+146:             entropy_trace=entropy_trace,
+147:         )
+148: 
+149: 
+150: class AlwaysBuzzFinalBuzzer:
+151:     def __init__(self, likelihood_model: LikelihoodModel, beta: float = 5.0):
+152:         self.likelihood_model = likelihood_model
+153:         self.beta = beta
+154: 
+155:     def run_episode(self, question: MCQuestion) -> EpisodeResult:
+156:         c_trace: list[float] = []
+157:         g_trace: list[float] = []
+158:         top_p_trace: list[float] = []
+159:         entropy_trace: list[float] = []
+160: 
+161:         final_step = len(question.cumulative_prefixes) - 1
+162:         final_belief = np.ones(len(question.options), dtype=np.float32) / len(question.options)
+163:         for prefix in question.cumulative_prefixes:
+164:             scores = self.likelihood_model.score(prefix, question.option_profiles)
+165:             probs = _scores_to_belief(scores, self.beta)
+166:             final_belief = probs
+167:             top_idx, top_p, entropy = _belief_stats(probs)
+168:             c_trace.append(0.0)
+169:             g_trace.append(1.0 if top_idx == question.gold_index else 0.0)
+170:             top_p_trace.append(top_p)
+171:             entropy_trace.append(entropy)
+172: 
+173:         c_trace[-1] = 1.0
+174:         buzz_idx = int(np.argmax(final_belief))
+175:         correct = buzz_idx == question.gold_index
+176:         reward_like = 1.0 if correct else -0.5
+177:         return EpisodeResult(
+178:             qid=question.qid,
+179:             buzz_step=final_step,
+180:             buzz_index=buzz_idx,
+181:             gold_index=question.gold_index,
+182:             correct=correct,
+183:             reward_like=reward_like,
+184:             c_trace=c_trace,
+185:             g_trace=g_trace,
+186:             top_p_trace=top_p_trace,
+187:             entropy_trace=entropy_trace,
+188:         )
+189: 
+190: 
+191: def _softmax_episode_from_precomputed(
+192:     pq: _PrecomputedQuestion,
+193:     threshold: float,
+194:     alpha: float,
+195: ) -> "SoftmaxEpisodeResult":
+196:     """Build a SoftmaxEpisodeResult from pre-computed beliefs (pure numpy).
+197: 
+198:     Identical buzzing logic to ``SoftmaxProfileBuzzer.run_episode`` but
+199:     reads beliefs from a ``_PrecomputedQuestion`` instead of calling the
+200:     likelihood model.
+201:     """
+202:     from agents.bayesian_buzzer import SoftmaxEpisodeResult
+203: 
+204:     c_trace: list[float] = []
+205:     g_trace: list[float] = []
+206:     top_p_trace: list[float] = []
+207:     entropy_trace: list[float] = []
 208: 
-209:     for step_idx, belief in enumerate(pq.beliefs):
-210:         top_idx, top_p, entropy = _belief_stats(belief)
-211:         c_t = sigmoid(alpha * (top_p - threshold))
-212:         g_t = 1.0 if top_idx == pq.gold_index else 0.0
-213: 
-214:         c_trace.append(c_t)
-215:         g_trace.append(g_t)
-216:         top_p_trace.append(top_p)
-217:         entropy_trace.append(entropy)
-218: 
-219:         is_last = step_idx == len(pq.beliefs) - 1
-220:         if top_p >= threshold or is_last:
-221:             chosen_step = step_idx
-222:             chosen_idx = top_idx
-223:             break
-224: 
-225:     correct = chosen_idx == pq.gold_index
-226:     return SoftmaxEpisodeResult(
-227:         qid=pq.qid,
-228:         buzz_step=chosen_step,
-229:         buzz_index=chosen_idx,
-230:         gold_index=pq.gold_index,
-231:         correct=correct,
-232:         c_trace=c_trace,
-233:         g_trace=g_trace,
-234:         top_p_trace=top_p_trace,
-235:         entropy_trace=entropy_trace,
-236:     )
-237: 
-238: 
-239: def _always_final_from_precomputed(pq: _PrecomputedQuestion) -> EpisodeResult:
-240:     """Build an EpisodeResult for AlwaysBuzzFinal from pre-computed beliefs.
+209:     chosen_step = len(pq.beliefs) - 1
+210:     chosen_idx = 0
+211: 
+212:     for step_idx, belief in enumerate(pq.beliefs):
+213:         top_idx, top_p, entropy = _belief_stats(belief)
+214:         c_t = sigmoid(alpha * (top_p - threshold))
+215:         g_t = 1.0 if top_idx == pq.gold_index else 0.0
+216: 
+217:         c_trace.append(c_t)
+218:         g_trace.append(g_t)
+219:         top_p_trace.append(top_p)
+220:         entropy_trace.append(entropy)
+221: 
+222:         is_last = step_idx == len(pq.beliefs) - 1
+223:         if top_p >= threshold or is_last:
+224:             chosen_step = step_idx
+225:             chosen_idx = top_idx
+226:             break
+227: 
+228:     correct = chosen_idx == pq.gold_index
+229:     return SoftmaxEpisodeResult(
+230:         qid=pq.qid,
+231:         buzz_step=chosen_step,
+232:         buzz_index=chosen_idx,
+233:         gold_index=pq.gold_index,
+234:         correct=correct,
+235:         c_trace=c_trace,
+236:         g_trace=g_trace,
+237:         top_p_trace=top_p_trace,
+238:         entropy_trace=entropy_trace,
+239:     )
+240: 
 241: 
-242:     Iterates all beliefs (no early stopping), buzzes at the last step
-243:     with argmax of the final belief.
-244:     """
-245:     c_trace: list[float] = []
-246:     g_trace: list[float] = []
-247:     top_p_trace: list[float] = []
-248:     entropy_trace: list[float] = []
-249: 
-250:     for belief in pq.beliefs:
-251:         top_idx, top_p, entropy = _belief_stats(belief)
-252:         g_t = 1.0 if top_idx == pq.gold_index else 0.0
-253:         c_trace.append(0.0)
-254:         g_trace.append(g_t)
-255:         top_p_trace.append(top_p)
-256:         entropy_trace.append(entropy)
-257: 
-258:     c_trace[-1] = 1.0
-259:     buzz_idx = int(np.argmax(pq.beliefs[-1]))
-260:     correct = buzz_idx == pq.gold_index
-261:     return EpisodeResult(
-262:         qid=pq.qid,
-263:         buzz_step=len(pq.beliefs) - 1,
-264:         buzz_index=buzz_idx,
-265:         gold_index=pq.gold_index,
-266:         correct=correct,
-267:         reward_like=1.0 if correct else -0.5,
-268:         c_trace=c_trace,
-269:         g_trace=g_trace,
-270:         top_p_trace=top_p_trace,
-271:         entropy_trace=entropy_trace,
-272:     )
-273: 
-274: 
-275: def _episode_from_precomputed(
-276:     pq: _PrecomputedQuestion,
-277:     threshold: float,
-278:     alpha: float,
-279: ) -> EpisodeResult:
-280:     """Build an EpisodeResult from pre-computed beliefs (pure numpy)."""
-281:     c_trace: list[float] = []
-282:     g_trace: list[float] = []
-283:     top_p_trace: list[float] = []
-284:     entropy_trace: list[float] = []
-285: 
-286:     chosen_step = len(pq.beliefs) - 1
-287:     chosen_idx = 0
+242: def _always_final_from_precomputed(pq: _PrecomputedQuestion) -> EpisodeResult:
+243:     """Build an EpisodeResult for AlwaysBuzzFinal from pre-computed beliefs.
+244: 
+245:     Iterates all beliefs (no early stopping), buzzes at the last step
+246:     with argmax of the final belief.
+247:     """
+248:     c_trace: list[float] = []
+249:     g_trace: list[float] = []
+250:     top_p_trace: list[float] = []
+251:     entropy_trace: list[float] = []
+252: 
+253:     for belief in pq.beliefs:
+254:         top_idx, top_p, entropy = _belief_stats(belief)
+255:         g_t = 1.0 if top_idx == pq.gold_index else 0.0
+256:         c_trace.append(0.0)
+257:         g_trace.append(g_t)
+258:         top_p_trace.append(top_p)
+259:         entropy_trace.append(entropy)
+260: 
+261:     c_trace[-1] = 1.0
+262:     buzz_idx = int(np.argmax(pq.beliefs[-1]))
+263:     correct = buzz_idx == pq.gold_index
+264:     return EpisodeResult(
+265:         qid=pq.qid,
+266:         buzz_step=len(pq.beliefs) - 1,
+267:         buzz_index=buzz_idx,
+268:         gold_index=pq.gold_index,
+269:         correct=correct,
+270:         reward_like=1.0 if correct else -0.5,
+271:         c_trace=c_trace,
+272:         g_trace=g_trace,
+273:         top_p_trace=top_p_trace,
+274:         entropy_trace=entropy_trace,
+275:     )
+276: 
+277: 
+278: def _episode_from_precomputed(
+279:     pq: _PrecomputedQuestion,
+280:     threshold: float,
+281:     alpha: float,
+282: ) -> EpisodeResult:
+283:     """Build an EpisodeResult from pre-computed beliefs (pure numpy)."""
+284:     c_trace: list[float] = []
+285:     g_trace: list[float] = []
+286:     top_p_trace: list[float] = []
+287:     entropy_trace: list[float] = []
 288: 
-289:     for step_idx, belief in enumerate(pq.beliefs):
-290:         top_idx, top_p, entropy = _belief_stats(belief)
-291:         c_t = sigmoid(alpha * (top_p - threshold))
-292:         g_t = 1.0 if top_idx == pq.gold_index else 0.0
-293: 
-294:         c_trace.append(c_t)
-295:         g_trace.append(g_t)
-296:         top_p_trace.append(top_p)
-297:         entropy_trace.append(entropy)
-298: 
-299:         is_last = step_idx == len(pq.beliefs) - 1
-300:         if top_p >= threshold or is_last:
-301:             chosen_step = step_idx
-302:             chosen_idx = top_idx
-303:             break
-304: 
-305:     correct = chosen_idx == pq.gold_index
-306:     return EpisodeResult(
-307:         qid=pq.qid,
-308:         buzz_step=chosen_step,
-309:         buzz_index=chosen_idx,
-310:         gold_index=pq.gold_index,
-311:         correct=correct,
-312:         reward_like=1.0 if correct else -0.5,
-313:         c_trace=c_trace,
-314:         g_trace=g_trace,
-315:         top_p_trace=top_p_trace,
-316:         entropy_trace=entropy_trace,
-317:     )
+289:     chosen_step = len(pq.beliefs) - 1
+290:     chosen_idx = 0
+291: 
+292:     for step_idx, belief in enumerate(pq.beliefs):
+293:         top_idx, top_p, entropy = _belief_stats(belief)
+294:         c_t = sigmoid(alpha * (top_p - threshold))
+295:         g_t = 1.0 if top_idx == pq.gold_index else 0.0
+296: 
+297:         c_trace.append(c_t)
+298:         g_trace.append(g_t)
+299:         top_p_trace.append(top_p)
+300:         entropy_trace.append(entropy)
+301: 
+302:         is_last = step_idx == len(pq.beliefs) - 1
+303:         if top_p >= threshold or is_last:
+304:             chosen_step = step_idx
+305:             chosen_idx = top_idx
+306:             break
+307: 
+308:     correct = chosen_idx == pq.gold_index
+309:     return EpisodeResult(
+310:         qid=pq.qid,
+311:         buzz_step=chosen_step,
+312:         buzz_index=chosen_idx,
+313:         gold_index=pq.gold_index,
+314:         correct=correct,
+315:         reward_like=1.0 if correct else -0.5,
+316:         c_trace=c_trace,
+317:         g_trace=g_trace,
+318:         top_p_trace=top_p_trace,
+319:         entropy_trace=entropy_trace,
+320:     )
+321: 
+322: 
+323: def sweep_thresholds(
+324:     questions: list[MCQuestion],
+325:     likelihood_model: LikelihoodModel,
+326:     thresholds: list[float],
+327:     beta: float = 5.0,
+328:     alpha: float = 10.0,
+329:     precomputed: list[_PrecomputedQuestion] | None = None,
+330: ) -> dict[float, list[EpisodeResult]]:
+331:     """Sweep multiple thresholds with a single belief-computation pass.
+332: 
+333:     If *precomputed* is provided the expensive model calls are skipped
+334:     entirely and the sweep is pure numpy.  Otherwise beliefs are computed
+335:     once internally and reused across thresholds.
+336:     """
+337:     if precomputed is None:
+338:         precomputed = precompute_beliefs(questions, likelihood_model, beta)
+339: 
+340:     out: dict[float, list[EpisodeResult]] = {}
+341:     for threshold in thresholds:
+342:         out[float(threshold)] = [
+343:             _episode_from_precomputed(pq, threshold, alpha)
+344:             for pq in precomputed
+345:         ]
+346:     return out
+347: 
+348: 
+349: def result_to_dict(result: EpisodeResult) -> dict[str, Any]:
+350:     return {
+351:         "qid": result.qid,
+352:         "buzz_step": result.buzz_step,
+353:         "buzz_index": result.buzz_index,
+354:         "gold_index": result.gold_index,
+355:         "correct": result.correct,
+356:         "reward_like": result.reward_like,
+357:         "c_trace": result.c_trace,
+358:         "g_trace": result.g_trace,
+359:         "top_p_trace": result.top_p_trace,
+360:         "entropy_trace": result.entropy_trace,
+361:     }
+````
+
+## File: evaluation/controls.py
+````python
+  1: """
+  2: Control Experiments for Quiz Bowl Buzzer Evaluation
+  3: 
+  4: Implements three control experiments to validate that the buzzer agent
+  5: genuinely uses question clues rather than exploiting surface-form artifacts:
+  6: 
+  7: 1. **Choices-only control**: Strips all clues, trains a logistic regression
+  8:    on option surface features (char n-grams, length, capitalization). Expected
+  9:    accuracy ~25% (1/K) if options have no exploitable artifacts.
+ 10: 
+ 11: 2. **Shuffle control**: Randomizes option ordering to verify the agent has
+ 12:    no position bias. Performance should be unchanged.
+ 13: 
+ 14: 3. **Alias substitution control**: Swaps answer text with aliases to verify
+ 15:    robustness to surface-form changes.
+ 16: 
+ 17: Ported from qb-rl reference implementation (evaluation/controls.py) with
+ 18: import path adaptations for the unified qanta-buzzer codebase.
+ 19: """
+ 20: 
+ 21: from __future__ import annotations
+ 22: 
+ 23: import random
+ 24: from dataclasses import replace
+ 25: from typing import TYPE_CHECKING, Any, Callable
+ 26: 
+ 27: import numpy as np
+ 28: from sklearn.feature_extraction.text import TfidfVectorizer
+ 29: from sklearn.linear_model import LogisticRegression
+ 30: 
+ 31: from qb_data.mc_builder import MCQuestion
+ 32: 
+ 33: if TYPE_CHECKING:
+ 34:     from agents.threshold_buzzer import _PrecomputedQuestion
+ 35: 
+ 36: 
+ 37: def _option_scalar_features(option: str) -> list[float]:
+ 38:     """Extract scalar surface features from a single option string.
+ 39: 
+ 40:     Parameters
+ 41:     ----------
+ 42:     option : str
+ 43:         Answer option text.
+ 44: 
+ 45:     Returns
+ 46:     -------
+ 47:     list[float]
+ 48:         Six scalar features: char length, token count, has_parens,
+ 49:         has_comma, is_title, is_lower.
+ 50:     """
+ 51:     tokens = option.split()
+ 52:     has_parens = 1.0 if "(" in option or ")" in option else 0.0
+ 53:     has_comma = 1.0 if "," in option else 0.0
+ 54:     is_title = 1.0 if option.istitle() else 0.0
+ 55:     is_lower = 1.0 if option.islower() else 0.0
+ 56:     return [
+ 57:         float(len(option)),
+ 58:         float(len(tokens)),
+ 59:         has_parens,
+ 60:         has_comma,
+ 61:         is_title,
+ 62:         is_lower,
+ 63:     ]
+ 64: 
+ 65: 
+ 66: def _cross_option_features(options: list[str]) -> list[float]:
+ 67:     """Extract cross-option comparative features.
+ 68: 
+ 69:     Parameters
+ 70:     ----------
+ 71:     options : list[str]
+ 72:         All answer options for a question.
+ 73: 
+ 74:     Returns
+ 75:     -------
+ 76:     list[float]
+ 77:         Three features: max/min length ratio, length std, number of
+ 78:         distinct capitalization patterns.
+ 79:     """
+ 80:     lengths = np.array(
+ 81:         [max(1, len(o.split())) for o in options], dtype=np.float32
+ 82:     )
+ 83:     cap_patterns = len(
+ 84:         set(
+ 85:             ("title" if o.istitle() else "lower" if o.islower() else "mixed")
+ 86:             for o in options
+ 87:         )
+ 88:     )
+ 89:     return [
+ 90:         float(lengths.max() / lengths.min()),
+ 91:         float(lengths.std()),
+ 92:         float(cap_patterns),
+ 93:     ]
+ 94: 
+ 95: 
+ 96: def run_choices_only_control(
+ 97:     questions: list[MCQuestion],
+ 98:     random_seed: int = 13,
+ 99:     test_fraction: float = 0.25,
+100: ) -> dict[str, float]:
+101:     """Run choices-only control: predict answer from surface features only.
+102: 
+103:     Strips all question clues and trains a logistic regression on option
+104:     surface features (char n-grams, length, capitalization patterns).
+105:     Expected accuracy ~25% (1/K) if options are well-constructed.
+106: 
+107:     Parameters
+108:     ----------
+109:     questions : list[MCQuestion]
+110:         Full MC question dataset.
+111:     random_seed : int
+112:         Seed for reproducible train/test split.
+113:     test_fraction : float
+114:         Fraction of questions held out for testing.
+115: 
+116:     Returns
+117:     -------
+118:     dict[str, float]
+119:         Control results: accuracy, chance baseline, and test set size.
+120:     """
+121:     if not questions:
+122:         return {"accuracy": 0.0, "chance": 0.0, "n_test": 0.0}
+123: 
+124:     rng = random.Random(random_seed)
+125:     shuffled = questions[:]
+126:     rng.shuffle(shuffled)
+127:     split_idx = max(1, int(len(shuffled) * (1.0 - test_fraction)))
+128:     train_q = shuffled[:split_idx]
+129:     test_q = shuffled[split_idx:]
+130:     if not test_q:
+131:         test_q = train_q
+132: 
+133:     vec = TfidfVectorizer(analyzer="char", ngram_range=(3, 3), min_df=1)
+134:     vec.fit([opt for q in train_q for opt in q.options])
+135: 
+136:     def build_matrix(
+137:         rows: list[MCQuestion],
+138:     ) -> tuple[np.ndarray, np.ndarray, list[int]]:
+139:         X = []
+140:         y = []
+141:         group_sizes: list[int] = []
+142:         for q in rows:
+143:             cross = _cross_option_features(q.options)
+144:             group_sizes.append(len(q.options))
+145:             tfidf = vec.transform(q.options).toarray()
+146:             for i, option in enumerate(q.options):
+147:                 feat = np.array(
+148:                     _option_scalar_features(option) + cross, dtype=np.float32
+149:                 )
+150:                 row = np.concatenate([feat, tfidf[i]], axis=0)
+151:                 X.append(row)
+152:                 y.append(1 if i == q.gold_index else 0)
+153:         return np.array(X), np.array(y), group_sizes
+154: 
+155:     X_train, y_train, _ = build_matrix(train_q)
+156:     X_test, y_test, test_group_sizes = build_matrix(test_q)
+157:     clf = LogisticRegression(max_iter=1000)
+158:     clf.fit(X_train, y_train)
+159:     probs = clf.predict_proba(X_test)[:, 1]
+160: 
+161:     offset = 0
+162:     correct = 0
+163:     total = 0
+164:     for q, group_size in zip(test_q, test_group_sizes):
+165:         group_probs = probs[offset : offset + group_size]
+166:         pred_idx = int(np.argmax(group_probs))
+167:         if pred_idx == q.gold_index:
+168:             correct += 1
+169:         total += 1
+170:         offset += group_size
+171: 
+172:     accuracy = correct / max(1, total)
+173:     chance = 1.0 / max(1, len(questions[0].options))
+174:     return {
+175:         "accuracy": float(accuracy),
+176:         "chance": float(chance),
+177:         "n_test": float(total),
+178:     }
+179: 
+180: 
+181: def shuffled_option_copy(
+182:     question: MCQuestion, rng: random.Random
+183: ) -> MCQuestion:
+184:     """Create a copy of an MCQuestion with shuffled option ordering.
+185: 
+186:     Parameters
+187:     ----------
+188:     question : MCQuestion
+189:         Original question.
+190:     rng : random.Random
+191:         Random number generator for shuffling.
+192: 
+193:     Returns
+194:     -------
+195:     MCQuestion
+196:         Copy with permuted options, profiles, answer_primary, and
+197:         updated gold_index.
+198:     """
+199:     perm = list(range(len(question.options)))
+200:     rng.shuffle(perm)
+201:     new_options = [question.options[i] for i in perm]
+202:     new_profiles = [question.option_profiles[i] for i in perm]
+203:     new_answer_primary = [question.option_answer_primary[i] for i in perm]
+204:     new_gold = perm.index(question.gold_index)
+205:     return replace(
+206:         question,
+207:         options=new_options,
+208:         option_profiles=new_profiles,
+209:         option_answer_primary=new_answer_primary,
+210:         gold_index=new_gold,
+211:     )
+212: 
+213: 
+214: def run_shuffle_control(
+215:     questions: list[MCQuestion],
+216:     evaluator: Callable[[list[MCQuestion]], dict[str, Any]],
+217:     random_seed: int = 13,
+218: ) -> dict[str, Any]:
+219:     """Run shuffle control: randomize option ordering and evaluate.
+220: 
+221:     Permutes the answer options for each question and runs the evaluator.
+222:     If the agent has no position bias, performance should be unchanged.
+223: 
+224:     Parameters
+225:     ----------
+226:     questions : list[MCQuestion]
+227:         Full MC question dataset.
+228:     evaluator : callable
+229:         Function that takes a list of MCQuestion and returns a metrics dict.
+230:     random_seed : int
+231:         Seed for reproducible shuffling.
+232: 
+233:     Returns
+234:     -------
+235:     dict[str, Any]
+236:         Evaluation metrics on shuffled questions.
+237:     """
+238:     rng = random.Random(random_seed)
+239:     shuffled = [shuffled_option_copy(q, rng) for q in questions]
+240:     return evaluator(shuffled)
+241: 
+242: 
+243: def alias_substitution_copy(
+244:     question: MCQuestion,
+245:     alias_lookup: dict[str, list[str]],
+246:     rng: random.Random,
+247: ) -> MCQuestion:
+248:     """Create a copy of an MCQuestion with alias-substituted options.
+249: 
+250:     Parameters
+251:     ----------
+252:     question : MCQuestion
+253:         Original question.
+254:     alias_lookup : dict[str, list[str]]
+255:         Mapping from canonical answer to list of known aliases.
+256:     rng : random.Random
+257:         Random number generator for alias selection.
+258: 
+259:     Returns
+260:     -------
+261:     MCQuestion
+262:         Copy with alias-substituted option text and profiles.
+263:     """
+264:     new_options = []
+265:     new_profiles = list(question.option_profiles)
+266:     for i, (option_text, answer_primary) in enumerate(
+267:         zip(question.options, question.option_answer_primary)
+268:     ):
+269:         aliases = [
+270:             a
+271:             for a in alias_lookup.get(answer_primary, [])
+272:             if a and a != option_text
+273:         ]
+274:         if aliases:
+275:             alias = rng.choice(aliases)
+276:             new_options.append(alias)
+277:             if new_profiles[i].strip() == answer_primary.strip():
+278:                 new_profiles[i] = alias
+279:         else:
+280:             new_options.append(option_text)
+281:     return replace(question, options=new_options, option_profiles=new_profiles)
+282: 
+283: 
+284: def run_alias_substitution_control(
+285:     questions: list[MCQuestion],
+286:     alias_lookup: dict[str, list[str]],
+287:     evaluator: Callable[[list[MCQuestion]], dict[str, Any]],
+288:     random_seed: int = 13,
+289: ) -> dict[str, Any]:
+290:     """Run alias substitution control: swap answer text with aliases.
+291: 
+292:     Replaces option text with known aliases to verify the agent is robust
+293:     to surface-form changes. Performance should be similar to full eval.
+294: 
+295:     Parameters
+296:     ----------
+297:     questions : list[MCQuestion]
+298:         Full MC question dataset.
+299:     alias_lookup : dict[str, list[str]]
+300:         Mapping from canonical answer to list of known aliases.
+301:     evaluator : callable
+302:         Function that takes a list of MCQuestion and returns a metrics dict.
+303:     random_seed : int
+304:         Seed for reproducible alias selection.
+305: 
+306:     Returns
+307:     -------
+308:     dict[str, Any]
+309:         Evaluation metrics on alias-substituted questions.
+310:     """
+311:     rng = random.Random(random_seed)
+312:     swapped = [
+313:         alias_substitution_copy(q, alias_lookup=alias_lookup, rng=rng)
+314:         for q in questions
+315:     ]
+316:     return evaluator(swapped)
+317: 
 318: 
-319: 
-320: def sweep_thresholds(
-321:     questions: list[MCQuestion],
-322:     likelihood_model: LikelihoodModel,
-323:     thresholds: list[float],
-324:     beta: float = 5.0,
-325:     alpha: float = 10.0,
-326:     precomputed: list[_PrecomputedQuestion] | None = None,
-327: ) -> dict[float, list[EpisodeResult]]:
-328:     """Sweep multiple thresholds with a single belief-computation pass.
-329: 
-330:     If *precomputed* is provided the expensive model calls are skipped
-331:     entirely and the sweep is pure numpy.  Otherwise beliefs are computed
-332:     once internally and reused across thresholds.
-333:     """
-334:     if precomputed is None:
-335:         precomputed = precompute_beliefs(questions, likelihood_model, beta)
-336: 
-337:     out: dict[float, list[EpisodeResult]] = {}
-338:     for threshold in thresholds:
-339:         out[float(threshold)] = [
-340:             _episode_from_precomputed(pq, threshold, alpha)
-341:             for pq in precomputed
-342:         ]
-343:     return out
+319: def run_shuffle_control_precomputed(
+320:     precomputed: list["_PrecomputedQuestion"],
+321:     threshold: float,
+322:     alpha: float,
+323:     random_seed: int = 13,
+324: ) -> dict[str, Any]:
+325:     """Run shuffle control by permuting precomputed belief vectors.
+326: 
+327:     Produces numerically identical results to ``run_shuffle_control`` with
+328:     a live ``SoftmaxProfileBuzzer`` evaluator, but makes zero
+329:     ``likelihood_model.score()`` calls.  Instead, the belief vectors
+330:     stored in each ``_PrecomputedQuestion`` are reordered according to
+331:     the same random permutation that ``shuffled_option_copy`` would apply.
+332: 
+333:     Parameters
+334:     ----------
+335:     precomputed : list[_PrecomputedQuestion]
+336:         Pre-computed belief distributions (one per question).
+337:     threshold : float
+338:         Buzz threshold for the softmax profile buzzer.
+339:     alpha : float
+340:         Sigmoid steepness for the confidence proxy.
+341:     random_seed : int
+342:         Seed for reproducible shuffling (must match the seed used in
+343:         ``run_shuffle_control`` for equivalence).
 344: 
-345: 
-346: def result_to_dict(result: EpisodeResult) -> dict[str, Any]:
-347:     return {
-348:         "qid": result.qid,
-349:         "buzz_step": result.buzz_step,
-350:         "buzz_index": result.buzz_index,
-351:         "gold_index": result.gold_index,
-352:         "correct": result.correct,
-353:         "reward_like": result.reward_like,
-354:         "c_trace": result.c_trace,
-355:         "g_trace": result.g_trace,
-356:         "top_p_trace": result.top_p_trace,
-357:         "entropy_trace": result.entropy_trace,
-358:     }
+345:     Returns
+346:     -------
+347:     dict[str, Any]
+348:         Summary metrics with ``"runs"`` key containing per-question dicts.
+349:     """
+350:     from dataclasses import asdict
+351: 
+352:     from agents.threshold_buzzer import (
+353:         _PrecomputedQuestion,
+354:         _softmax_episode_from_precomputed,
+355:     )
+356:     from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+357: 
+358:     rng = random.Random(random_seed)
+359:     runs: list[dict[str, Any]] = []
+360:     for pq in precomputed:
+361:         perm = list(range(pq.num_options))
+362:         rng.shuffle(perm)
+363:         new_gold = perm.index(pq.gold_index)
+364:         shuffled_beliefs = [b[perm] for b in pq.beliefs]
+365:         shuffled_pq = _PrecomputedQuestion(
+366:             qid=pq.qid,
+367:             gold_index=new_gold,
+368:             num_options=pq.num_options,
+369:             beliefs=shuffled_beliefs,
+370:         )
+371:         result = _softmax_episode_from_precomputed(shuffled_pq, threshold, alpha)
+372:         runs.append(asdict(result))
+373:     summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
+374:     summary["runs"] = runs
+375:     return summary
+376: 
+377: 
+378: def bootstrap_ci(
+379:     values: list[float],
+380:     n_samples: int = 1000,
+381:     alpha: float = 0.05,
+382:     seed: int = 13,
+383: ) -> tuple[float, float]:
+384:     """Compute bootstrap confidence interval for the mean.
+385: 
+386:     Parameters
+387:     ----------
+388:     values : list[float]
+389:         Observed values.
+390:     n_samples : int
+391:         Number of bootstrap resamples.
+392:     alpha : float
+393:         Significance level (0.05 = 95% CI).
+394:     seed : int
+395:         Random seed for reproducibility.
+396: 
+397:     Returns
+398:     -------
+399:     tuple[float, float]
+400:         Lower and upper bounds of the confidence interval.
+401:     """
+402:     if not values:
+403:         return 0.0, 0.0
+404:     rng = np.random.default_rng(seed)
+405:     arr = np.array(values, dtype=np.float64)
+406:     samples = []
+407:     for _ in range(n_samples):
+408:         idx = rng.integers(0, len(arr), size=len(arr))
+409:         samples.append(float(arr[idx].mean()))
+410:     lo = np.quantile(samples, alpha / 2.0)
+411:     hi = np.quantile(samples, 1.0 - alpha / 2.0)
+412:     return float(lo), float(hi)
 ````
 
 ## File: models/dspy_likelihood.py
@@ -12852,6 +10223,1091 @@ requirements.txt
 153:             "DSPyLikelihood does not produce embeddings. "
 154:             "Use score() directly."
 155:         )
+````
+
+## File: models/t5_policy.py
+````python
+  1: """
+  2: T5-based Policy Model for Quiz Bowl RL Agent
+  3: 
+  4: Implements T5PolicyModel with a custom PolicyHead containing three independent
+  5: heads (wait/answer/value) for end-to-end text-based policy learning. This
+  6: provides an alternative to the MLP policy trained on belief features
+  7: (Phase 4 approach).
+  8: 
+  9: Architecture overview:
+ 10: 
+ 11:     Text input  -->  T5 Encoder  -->  Mean Pooling  -->  PolicyHead
+ 12:                                                           |-- Wait head (2)
+ 13:                                                           |-- Answer head (K)
+ 14:                                                           |-- Value head (1)
+ 15: 
+ 16: The T5 encoder produces contextual embeddings from tokenized text. Mean pooling
+ 17: (attention-masked) reduces the variable-length sequence to a fixed-size vector.
+ 18: The PolicyHead then produces three independent outputs:
+ 19: 
+ 20: - **Wait logits** [B, 2]: probability of waiting vs answering now
+ 21: - **Answer logits** [B, K]: probability of selecting each answer option
+ 22: - **Value estimate** [B, 1]: state value for PPO advantage computation
+ 23: 
+ 24: Action space maps to the TossupMCEnv convention:
+ 25:     0 = WAIT (wait head selects "wait")
+ 26:     1..K = SELECT answer i-1 (wait head selects "answer now", answer head picks i-1)
+ 27: 
+ 28: Ported from qanta-buzzer reference implementation (model.py) with these changes:
+ 29:     - T5EncoderModel replaces T5ForConditionalGeneration (2x faster, 50% less memory)
+ 30:     - T5TokenizerFast replaces T5Tokenizer (3-5x faster tokenization via Rust backend)
+ 31:     - Config dict replaces qanta-buzzer's Config class for unified codebase compatibility
+ 32:     - NumPy-style docstrings added throughout
+ 33: """
+ 34: 
+ 35: from __future__ import annotations
+ 36: 
+ 37: import os
+ 38: from typing import Any, Dict, List, Optional, Tuple
+ 39: 
+ 40: import torch
+ 41: import torch.nn as nn
+ 42: import torch.nn.functional as F
+ 43: 
+ 44: 
+ 45: class PolicyHead(nn.Module):
+ 46:     """Custom policy head with three independent output heads.
+ 47: 
+ 48:     Attached to a T5 encoder's pooled output, this module produces the three
+ 49:     outputs needed for actor-critic RL in the quiz bowl POMDP: a binary
+ 50:     wait/answer-now decision, a K-way answer selection, and a scalar value
+ 51:     estimate.
+ 52: 
+ 53:     All three heads are fully independent (no shared hidden layers beyond the
+ 54:     encoder), using the same pattern: Linear -> ReLU -> Dropout -> Linear.
+ 55: 
+ 56:     Parameters
+ 57:     ----------
+ 58:     hidden_size : int
+ 59:         Dimensionality of the input from the T5 encoder's pooled output.
+ 60:         Default 1024 matches T5-large (``d_model``). Use 512 for t5-small,
+ 61:         768 for t5-base.
+ 62:     num_choices : int
+ 63:         Number of answer options (K). Default 4 for quiz bowl MC questions.
+ 64: 
+ 65:     Attributes
+ 66:     ----------
+ 67:     wait_head : nn.Sequential
+ 68:         Binary head producing [wait, answer_now] logits.
+ 69:     answer_head : nn.Sequential
+ 70:         Multi-class head producing logits over K answer choices.
+ 71:     value_head : nn.Sequential
+ 72:         Scalar head producing state value estimate.
+ 73:     """
+ 74: 
+ 75:     def __init__(self, hidden_size: int = 1024, num_choices: int = 4) -> None:
+ 76:         super().__init__()
+ 77: 
+ 78:         self.hidden_size = hidden_size
+ 79:         self.num_choices = num_choices
+ 80: 
+ 81:         # Wait/continue decision head (binary: wait vs answer_now)
+ 82:         self.wait_head = nn.Sequential(
+ 83:             nn.Linear(hidden_size, 256),
+ 84:             nn.ReLU(),
+ 85:             nn.Dropout(0.1),
+ 86:             nn.Linear(256, 2),  # [wait, answer_now]
+ 87:         )
+ 88: 
+ 89:         # Answer selection head (over K choices)
+ 90:         self.answer_head = nn.Sequential(
+ 91:             nn.Linear(hidden_size, 512),
+ 92:             nn.ReLU(),
+ 93:             nn.Dropout(0.1),
+ 94:             nn.Linear(512, num_choices),
+ 95:         )
+ 96: 
+ 97:         # Value head (state value estimate for PPO)
+ 98:         self.value_head = nn.Sequential(
+ 99:             nn.Linear(hidden_size, 256),
+100:             nn.ReLU(),
+101:             nn.Dropout(0.1),
+102:             nn.Linear(256, 1),
+103:         )
+104: 
+105:     def forward(
+106:         self, encoder_hidden_state: torch.Tensor
+107:     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+108:         """Forward pass through all three heads.
+109: 
+110:         Parameters
+111:         ----------
+112:         encoder_hidden_state : torch.Tensor
+113:             Pooled encoder output of shape ``[batch_size, hidden_size]``.
+114: 
+115:         Returns
+116:         -------
+117:         wait_logits : torch.Tensor
+118:             Shape ``[batch_size, 2]`` -- logits for [wait, answer_now].
+119:         answer_logits : torch.Tensor
+120:             Shape ``[batch_size, num_choices]`` -- logits over answer options.
+121:         values : torch.Tensor
+122:             Shape ``[batch_size, 1]`` -- state value estimates.
+123:         """
+124:         wait_logits = self.wait_head(encoder_hidden_state)
+125:         answer_logits = self.answer_head(encoder_hidden_state)
+126:         values = self.value_head(encoder_hidden_state)
+127: 
+128:         return wait_logits, answer_logits, values
+129: 
+130: 
+131: class T5PolicyModel(nn.Module):
+132:     """T5 encoder with custom policy head for end-to-end RL.
+133: 
+134:     Combines a pre-trained T5 encoder with a ``PolicyHead`` to produce policy
+135:     outputs directly from text observations. This is the alternative approach
+136:     to Phase 4's MLP policy, which operates on numeric belief features.
+137: 
+138:     The model processes text in three stages:
+139: 
+140:     1. **Tokenization**: Text is tokenized with ``T5TokenizerFast`` (Rust-backed
+141:        for speed) with padding and truncation.
+142:     2. **Encoding**: ``T5EncoderModel`` produces contextual hidden states
+143:        ``[B, seq_len, d_model]``.
+144:     3. **Pooling + Heads**: Attention-masked mean pooling reduces to
+145:        ``[B, d_model]``, then PolicyHead produces wait/answer/value outputs.
+146: 
+147:     Action space follows TossupMCEnv convention:
+148:         - 0 = WAIT
+149:         - 1..K = SELECT answer (i-1)
+150: 
+151:     Combined actions are treated as a factorized policy:
+152:         - ``P(WAIT) = p_wait``
+153:         - ``P(BUZZ_i) = p_buzz * p_ans(i)``
+154: 
+155:     The answer distribution only contributes when the policy chooses to buzz.
+156: 
+157:     Parameters
+158:     ----------
+159:     config : dict[str, Any]
+160:         Configuration dictionary with the following keys:
+161: 
+162:         - ``model_name`` (str): HuggingFace T5 model identifier.
+163:           Default ``"t5-large"``. Options: ``"t5-small"``, ``"t5-base"``,
+164:           ``"t5-large"``.
+165:         - ``device`` (str): Torch device. Default auto-detects
+166:           (cuda > mps > cpu).
+167:         - ``max_input_length`` (int): Maximum token sequence length.
+168:           Default 512.
+169:         - ``num_choices`` (int): Number of answer options (K). Default 4.
+170: 
+171:     Attributes
+172:     ----------
+173:     config : dict[str, Any]
+174:         Configuration dictionary.
+175:     device : torch.device
+176:         Computation device.
+177:     encoder : T5EncoderModel
+178:         Pre-trained T5 encoder.
+179:     tokenizer : T5TokenizerFast
+180:         Fast T5 tokenizer.
+181:     policy_head : PolicyHead
+182:         Custom three-head policy module.
+183:     max_input_length : int
+184:         Maximum token sequence length for tokenization.
+185: 
+186:     Examples
+187:     --------
+188:     >>> config = {"model_name": "t5-small", "device": "cpu", "num_choices": 4}
+189:     >>> model = T5PolicyModel(config)
+190:     >>> texts = ["CLUES: first president | CHOICES: (1) Washington (2) Jefferson"]
+191:     >>> wait_logits, answer_logits, values = model(texts)
+192:     >>> wait_logits.shape
+193:     torch.Size([1, 2])
+194:     """
+195: 
+196:     def __init__(self, config: Dict[str, Any]) -> None:
+197:         super().__init__()
+198:         from transformers import T5EncoderModel, T5TokenizerFast
+199: 
+200:         self.config = config
+201:         model_name = config.get("model_name", "t5-large")
+202:         self.max_input_length = config.get("max_input_length", 512)
+203:         num_choices = config.get("num_choices", 4)
+204: 
+205:         # Auto-detect device
+206:         default_device = "cpu"
+207:         if torch.cuda.is_available():
+208:             default_device = "cuda"
+209:         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+210:             default_device = "mps"
+211:         self.device = torch.device(config.get("device", default_device))
+212: 
+213:         # Load T5 encoder only (not full T5ForConditionalGeneration)
+214:         # This is 2x faster and uses 50% less memory since the decoder is unused
+215:         print(f"Loading T5 encoder: {model_name}")
+216:         self.encoder = T5EncoderModel.from_pretrained(model_name)
+217:         self.tokenizer = T5TokenizerFast.from_pretrained(model_name)
+218: 
+219:         # Get hidden size from T5 config (512 for small, 768 for base, 1024 for large)
+220:         hidden_size = self.encoder.config.d_model
+221: 
+222:         # Custom policy head
+223:         self.policy_head = PolicyHead(
+224:             hidden_size=hidden_size,
+225:             num_choices=num_choices,
+226:         )
+227: 
+228:         # Move to device
+229:         self.to(self.device)
+230: 
+231:         # Print model info
+232:         self._print_model_info()
+233: 
+234:     def _print_model_info(self) -> None:
+235:         """Print model architecture summary and parameter counts."""
+236:         encoder_params = sum(p.numel() for p in self.encoder.parameters())
+237:         policy_params = sum(p.numel() for p in self.policy_head.parameters())
+238:         total_params = encoder_params + policy_params
+239: 
+240:         print("Model Architecture:")
+241:         print(f"  T5 encoder parameters: {encoder_params:,}")
+242:         print(f"  Policy head parameters: {policy_params:,}")
+243:         print(f"  Total parameters: {total_params:,}")
+244:         print(f"  Device: {self.device}")
+245: 
+246:     def encode_input(
+247:         self,
+248:         text_inputs: List[str],
+249:         max_length: Optional[int] = None,
+250:     ) -> Dict[str, torch.Tensor]:
+251:         """Tokenize text inputs using T5TokenizerFast.
+252: 
+253:         Parameters
+254:         ----------
+255:         text_inputs : list[str]
+256:             List of input text strings to tokenize.
+257:         max_length : int or None
+258:             Maximum sequence length. If None, uses ``self.max_input_length``.
+259: 
+260:         Returns
+261:         -------
+262:         dict[str, torch.Tensor]
+263:             Dictionary with ``"input_ids"`` and ``"attention_mask"`` tensors,
+264:             both of shape ``[batch_size, seq_len]``, moved to ``self.device``.
+265:         """
+266:         if max_length is None:
+267:             max_length = self.max_input_length
+268: 
+269:         encoding = self.tokenizer(
+270:             text_inputs,
+271:             padding=True,
+272:             truncation=True,
+273:             max_length=max_length,
+274:             return_tensors="pt",
+275:         )
+276: 
+277:         return {k: v.to(self.device) for k, v in encoding.items()}
+278: 
+279:     def get_encoder_output(
+280:         self,
+281:         input_ids: torch.Tensor,
+282:         attention_mask: torch.Tensor,
+283:     ) -> torch.Tensor:
+284:         """Compute T5 encoder output and pool to a fixed-size vector.
+285: 
+286:         Uses attention-masked mean pooling: sum hidden states where attention
+287:         mask is 1, divide by number of non-padding tokens. This ensures
+288:         padding tokens contribute zero to the pooled representation.
+289: 
+290:         Parameters
+291:         ----------
+292:         input_ids : torch.Tensor
+293:             Token IDs of shape ``[batch_size, seq_len]``.
+294:         attention_mask : torch.Tensor
+295:             Attention mask of shape ``[batch_size, seq_len]`` (1 for real
+296:             tokens, 0 for padding).
+297: 
+298:         Returns
+299:         -------
+300:         torch.Tensor
+301:             Pooled encoder output of shape ``[batch_size, hidden_size]``.
+302:         """
+303:         # Get encoder outputs
+304:         encoder_outputs = self.encoder(
+305:             input_ids=input_ids,
+306:             attention_mask=attention_mask,
+307:             return_dict=True,
+308:         )
+309: 
+310:         # encoder_outputs.last_hidden_state: [batch_size, seq_len, hidden_size]
+311:         hidden_states = encoder_outputs.last_hidden_state
+312: 
+313:         # Attention-masked mean pooling over sequence dimension
+314:         mask_expanded = attention_mask.unsqueeze(-1).expand(hidden_states.size()).float()
+315:         sum_hidden = torch.sum(hidden_states * mask_expanded, dim=1)
+316:         sum_mask = torch.clamp(mask_expanded.sum(dim=1), min=1e-9)
+317:         pooled_output = sum_hidden / sum_mask
+318: 
+319:         return pooled_output
+320: 
+321:     def forward(
+322:         self,
+323:         text_inputs: List[str],
+324:         return_value: bool = True,
+325:     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+326:         """Forward pass: tokenize, encode, pool, then apply policy head.
+327: 
+328:         Parameters
+329:         ----------
+330:         text_inputs : list[str]
+331:             List of text observations (e.g.,
+332:             ``"CLUES: clue1 clue2 | CHOICES: (1) ans1 (2) ans2"``).
+333:         return_value : bool
+334:             If True, return value estimates. If False, values is None.
+335: 
+336:         Returns
+337:         -------
+338:         wait_logits : torch.Tensor
+339:             Shape ``[batch_size, 2]`` -- logits for [wait, answer_now].
+340:         answer_logits : torch.Tensor
+341:             Shape ``[batch_size, num_choices]`` -- logits over answer options.
+342:         values : torch.Tensor or None
+343:             Shape ``[batch_size, 1]`` if return_value is True, else None.
+344:         """
+345:         # Encode inputs
+346:         encoding = self.encode_input(text_inputs)
+347: 
+348:         # Get pooled encoder output
+349:         pooled_output = self.get_encoder_output(
+350:             encoding["input_ids"],
+351:             encoding["attention_mask"],
+352:         )
+353: 
+354:         # Pass through policy head
+355:         wait_logits, answer_logits, values = self.policy_head(pooled_output)
+356: 
+357:         if not return_value:
+358:             values = None
+359: 
+360:         return wait_logits, answer_logits, values
+361: 
+362:     def predict_answer(
+363:         self,
+364:         input_ids: torch.Tensor,
+365:         attention_mask: torch.Tensor,
+366:     ) -> Tuple[torch.Tensor, torch.Tensor]:
+367:         """Predict answer choice for supervised training.
+368: 
+369:         Only uses the answer head (wait and value heads are ignored). This is
+370:         the interface for supervised warm-start training where the model learns
+371:         to select the correct answer from complete questions.
+372: 
+373:         Parameters
+374:         ----------
+375:         input_ids : torch.Tensor
+376:             Token IDs of shape ``[batch_size, seq_len]``.
+377:         attention_mask : torch.Tensor
+378:             Attention mask of shape ``[batch_size, seq_len]``.
+379: 
+380:         Returns
+381:         -------
+382:         answer_logits : torch.Tensor
+383:             Shape ``[batch_size, num_choices]`` -- logits over answer choices.
+384:         predictions : torch.Tensor
+385:             Shape ``[batch_size]`` -- predicted answer indices (argmax).
+386:         """
+387:         # Get encoder output
+388:         pooled_output = self.get_encoder_output(input_ids, attention_mask)
+389: 
+390:         # Get answer logits from policy head
+391:         _, answer_logits, _ = self.policy_head(pooled_output)
+392: 
+393:         # Get predictions
+394:         predictions = torch.argmax(answer_logits, dim=-1)
+395: 
+396:         return answer_logits, predictions
+397: 
+398:     def _joint_action_log_prob(
+399:         self,
+400:         wait_logits: torch.Tensor,
+401:         answer_logits: torch.Tensor,
+402:         actions: torch.Tensor,
+403:     ) -> torch.Tensor:
+404:         """Compute factorized log-probabilities for flat WAIT/BUZZ actions.
+405: 
+406:         Parameters
+407:         ----------
+408:         wait_logits : torch.Tensor
+409:             Binary logits of shape ``[batch_size, 2]`` for [WAIT, BUZZ].
+410:         answer_logits : torch.Tensor
+411:             Answer logits of shape ``[batch_size, K]``.
+412:         actions : torch.Tensor
+413:             Flat actions of shape ``[batch_size]`` where 0 = WAIT and
+414:             1..K = BUZZ with answer index action-1.
+415: 
+416:         Returns
+417:         -------
+418:         torch.Tensor
+419:             Log-probabilities of shape ``[batch_size]``.
+420:         """
+421:         wait_log_probs = F.log_softmax(wait_logits, dim=-1)
+422:         answer_log_probs = F.log_softmax(answer_logits, dim=-1)
+423: 
+424:         wait_actions = (actions > 0).long()
+425:         answer_actions = torch.clamp(actions - 1, min=0)
+426: 
+427:         selected_wait = wait_log_probs.gather(1, wait_actions.unsqueeze(-1)).squeeze(-1)
+428:         selected_answer = answer_log_probs.gather(
+429:             1, answer_actions.unsqueeze(-1)
+430:         ).squeeze(-1)
+431: 
+432:         return torch.where(actions == 0, selected_wait, selected_wait + selected_answer)
+433: 
+434:     def _joint_entropy(
+435:         self,
+436:         wait_logits: torch.Tensor,
+437:         answer_logits: torch.Tensor,
+438:     ) -> torch.Tensor:
+439:         """Compute chain-rule entropy for the factorized wait/answer policy.
+440: 
+441:         Returns ``H(wait) + p_buzz * H(answer)`` for each example.
+442:         """
+443:         wait_probs = F.softmax(wait_logits, dim=-1)
+444:         wait_log_probs = F.log_softmax(wait_logits, dim=-1)
+445:         answer_probs = F.softmax(answer_logits, dim=-1)
+446:         answer_log_probs = F.log_softmax(answer_logits, dim=-1)
+447: 
+448:         wait_entropy = -(wait_probs * wait_log_probs).sum(dim=-1)
+449:         answer_entropy = -(answer_probs * answer_log_probs).sum(dim=-1)
+450:         return wait_entropy + wait_probs[:, 1] * answer_entropy
+451: 
+452:     def select_action(
+453:         self,
+454:         input_ids: torch.Tensor,
+455:         attention_mask: torch.Tensor,
+456:         deterministic: bool = False,
+457:         temperature: float = 1.0,
+458:     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+459:         """Select flat WAIT/BUZZ actions from the factorized policy.
+460: 
+461:         Produces combined actions following TossupMCEnv convention:
+462:         0 = WAIT, 1..K = SELECT answer 0..K-1. Under the factorized policy:
+463: 
+464:         - ``P(WAIT) = p_wait``
+465:         - ``P(BUZZ_i) = p_buzz * p_ans(i)``
+466: 
+467:         Answer sampling only occurs for examples that actually buzz.
+468: 
+469:         Parameters
+470:         ----------
+471:         input_ids : torch.Tensor
+472:             Token IDs of shape ``[batch_size, seq_len]``.
+473:         attention_mask : torch.Tensor
+474:             Attention mask of shape ``[batch_size, seq_len]``.
+475:         deterministic : bool
+476:             If True, use argmax instead of sampling.
+477:         temperature : float
+478:             Temperature for softmax. Higher values increase randomness.
+479:             Default 1.0 (no scaling).
+480: 
+481:         Returns
+482:         -------
+483:         combined_actions : torch.Tensor
+484:             Shape ``[batch_size]`` -- combined actions (0 = WAIT, 1..K = SELECT).
+485:         info : dict[str, Any]
+486:             Dictionary with keys:
+487: 
+488:             - ``wait_logits``: raw wait head output
+489:             - ``answer_logits``: raw answer head output
+490:             - ``wait_probs``: softmax of wait logits
+491:             - ``answer_probs``: softmax of answer logits
+492:             - ``wait_actions``: sampled wait decisions (0 or 1)
+493:             - ``answer_actions``: sampled answer indices (0..K-1)
+494:             - ``values``: value estimates
+495:             - ``log_probs``: total log probability of the combined action
+496:         """
+497:         with torch.no_grad():
+498:             pooled_output = self.get_encoder_output(input_ids, attention_mask)
+499:             wait_logits, answer_logits, values = self.policy_head(pooled_output)
+500: 
+501:             wait_logits_scaled = wait_logits / temperature
+502:             answer_logits_scaled = answer_logits / temperature
+503: 
+504:             wait_probs = F.softmax(wait_logits_scaled, dim=-1)
+505:             answer_probs = F.softmax(answer_logits_scaled, dim=-1)
+506:             flat_action_probs = torch.cat(
+507:                 [wait_probs[:, :1], wait_probs[:, 1:2] * answer_probs],
+508:                 dim=-1,
+509:             )
+510: 
+511:             if deterministic:
+512:                 combined_actions = torch.argmax(flat_action_probs, dim=-1)
+513:                 wait_actions = (combined_actions > 0).long()
+514:                 answer_actions = torch.clamp(combined_actions - 1, min=0)
+515:             else:
+516:                 wait_actions = torch.distributions.Categorical(wait_probs).sample()
+517:                 answer_actions = torch.argmax(answer_probs, dim=-1)
+518:                 buzz_mask = wait_actions == 1
+519:                 if buzz_mask.any():
+520:                     buzz_answers = torch.distributions.Categorical(
+521:                         answer_probs[buzz_mask]
+522:                     ).sample()
+523:                     answer_actions = answer_actions.clone()
+524:                     answer_actions[buzz_mask] = buzz_answers
+525:                 combined_actions = torch.where(
+526:                     wait_actions == 0,
+527:                     torch.zeros_like(wait_actions),
+528:                     1 + answer_actions,
+529:                 )
+530: 
+531:             log_probs = self._joint_action_log_prob(
+532:                 wait_logits_scaled, answer_logits_scaled, combined_actions
+533:             )
+534: 
+535:             combined_actions = torch.where(
+536:                 wait_actions == 0,
+537:                 torch.zeros_like(wait_actions),
+538:                 1 + answer_actions,
+539:             )
+540: 
+541:             info = {
+542:                 "wait_logits": wait_logits,
+543:                 "answer_logits": answer_logits,
+544:                 "wait_probs": wait_probs,
+545:                 "answer_probs": answer_probs,
+546:                 "wait_actions": wait_actions,
+547:                 "answer_actions": answer_actions,
+548:                 "values": values,
+549:                 "log_probs": log_probs,
+550:             }
+551: 
+552:             return combined_actions, info
+553: 
+554:     def get_action_log_probs(
+555:         self,
+556:         input_ids: torch.Tensor,
+557:         attention_mask: torch.Tensor,
+558:         actions: torch.Tensor,
+559:     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+560:         """Compute log probabilities and entropy for given actions.
+561: 
+562:         Used during PPO training to evaluate old actions under the current
+563:         policy. Combined actions follow the factorized semantics:
+564: 
+565:         - ``P(WAIT) = p_wait``
+566:         - ``P(BUZZ_i) = p_buzz * p_ans(i)``
+567: 
+568:         Parameters
+569:         ----------
+570:         input_ids : torch.Tensor
+571:             Token IDs of shape ``[batch_size, seq_len]``.
+572:         attention_mask : torch.Tensor
+573:             Attention mask of shape ``[batch_size, seq_len]``.
+574:         actions : torch.Tensor
+575:             Combined actions of shape ``[batch_size]``. Values in {0, 1, ..., K}.
+576: 
+577:         Returns
+578:         -------
+579:         log_probs : torch.Tensor
+580:             Shape ``[batch_size]`` -- total log probability of each action.
+581:         entropy : torch.Tensor
+582:             Shape ``[batch_size]`` -- chain-rule entropy for the factorized policy.
+583:         values : torch.Tensor
+584:             Shape ``[batch_size]`` -- value estimates (squeezed).
+585:         """
+586:         pooled_output = self.get_encoder_output(input_ids, attention_mask)
+587:         wait_logits, answer_logits, values = self.policy_head(pooled_output)
+588: 
+589:         log_probs = self._joint_action_log_prob(wait_logits, answer_logits, actions)
+590:         entropy = self._joint_entropy(wait_logits, answer_logits)
+591: 
+592:         return log_probs, entropy, values.squeeze(-1)
+593: 
+594:     def save(self, save_dir: str) -> None:
+595:         """Save model checkpoint to disk.
+596: 
+597:         Saves three components:
+598:         1. T5 encoder weights and config (HuggingFace format)
+599:         2. Tokenizer files (HuggingFace format)
+600:         3. Policy head state dict (PyTorch format as ``policy_head.pt``)
+601: 
+602:         Parameters
+603:         ----------
+604:         save_dir : str
+605:             Directory path to save the checkpoint. Created if it doesn't exist.
+606:         """
+607:         os.makedirs(save_dir, exist_ok=True)
+608: 
+609:         # Save T5 encoder
+610:         self.encoder.save_pretrained(save_dir)
+611:         self.tokenizer.save_pretrained(save_dir)
+612: 
+613:         # Save policy head
+614:         policy_head_path = os.path.join(save_dir, "policy_head.pt")
+615:         torch.save(self.policy_head.state_dict(), policy_head_path)
+616: 
+617:         print(f"Model saved to {save_dir}")
+618: 
+619:     def load(self, load_dir: str) -> None:
+620:         """Load model checkpoint from disk.
+621: 
+622:         Loads T5 encoder weights, tokenizer, and policy head state dict from
+623:         the specified directory. The model is moved to ``self.device`` after
+624:         loading.
+625: 
+626:         Parameters
+627:         ----------
+628:         load_dir : str
+629:             Directory containing a previously saved checkpoint.
+630: 
+631:         Raises
+632:         ------
+633:         FileNotFoundError
+634:             If ``policy_head.pt`` is not found in ``load_dir``.
+635:         """
+636:         from transformers import T5EncoderModel, T5TokenizerFast
+637: 
+638:         # Load T5 encoder
+639:         self.encoder = T5EncoderModel.from_pretrained(load_dir)
+640:         self.tokenizer = T5TokenizerFast.from_pretrained(load_dir)
+641: 
+642:         # Load policy head
+643:         policy_head_path = os.path.join(load_dir, "policy_head.pt")
+644:         self.policy_head.load_state_dict(
+645:             torch.load(policy_head_path, map_location=self.device, weights_only=True)
+646:         )
+647: 
+648:         self.to(self.device)
+649:         print(f"Model loaded from {load_dir}")
+650: 
+651:     @classmethod
+652:     def load_pretrained(
+653:         cls,
+654:         load_dir: str,
+655:         device: Optional[str] = None,
+656:     ) -> "T5PolicyModel":
+657:         """Load a pretrained model from a directory.
+658: 
+659:         Class method that creates a new T5PolicyModel instance and loads
+660:         weights from a saved checkpoint.
+661: 
+662:         Parameters
+663:         ----------
+664:         load_dir : str
+665:             Directory containing a previously saved checkpoint.
+666:         device : str or None
+667:             Device to load model on (e.g., ``"cpu"``, ``"cuda"``, ``"mps"``).
+668:             If None, auto-detects.
+669: 
+670:         Returns
+671:         -------
+672:         T5PolicyModel
+673:             A loaded model instance ready for inference.
+674:         """
+675:         from transformers import T5Config
+676: 
+677:         # Validate checkpoint integrity (lightweight — config JSON only)
+678:         T5Config.from_pretrained(load_dir, local_files_only=True)
+679: 
+680:         # Infer num_choices from policy head state dict
+681:         policy_head_path = os.path.join(load_dir, "policy_head.pt")
+682:         policy_head_state = torch.load(
+683:             policy_head_path, map_location="cpu", weights_only=True
+684:         )
+685:         # answer_head final linear layer weight shape is [num_choices, hidden_dim]
+686:         num_choices = policy_head_state["answer_head.3.weight"].shape[0]
+687: 
+688:         config = {
+689:             "model_name": load_dir,
+690:             "num_choices": num_choices,
+691:         }
+692:         if device is not None:
+693:             config["device"] = device
+694: 
+695:         model = cls(config)
+696:         model.load(load_dir)
+697:         return model
+````
+
+## File: qb_data/answer_profiles.py
+````python
+  1: """Answer profile builder with leave-one-out exclusion for quiz bowl questions."""
+  2: 
+  3: from __future__ import annotations
+  4: 
+  5: from collections import defaultdict
+  6: from typing import Dict, List, Optional, Tuple
+  7: 
+  8: from qb_data.data_loader import TossupQuestion
+  9: 
+ 10: 
+ 11: class AnswerProfileBuilder:
+ 12:     """Builds profiles for answers by aggregating question texts.
+ 13: 
+ 14:     The profile for an answer is created by concatenating all question texts
+ 15:     that have that answer. When building profiles for distractors, we use
+ 16:     all questions. For the gold answer, we exclude the current question to
+ 17:     prevent information leakage (leave-one-out).
+ 18: 
+ 19:     Attributes:
+ 20:         max_tokens_per_profile: Maximum number of tokens to keep in each profile.
+ 21:         min_questions_per_answer: Minimum questions needed to build a profile.
+ 22:         _grouped: Dictionary mapping answer_primary to list of (qid, question_text) tuples.
+ 23:     """
+ 24: 
+ 25:     def __init__(
+ 26:         self,
+ 27:         max_tokens_per_profile: int = 2000,
+ 28:         min_questions_per_answer: int = 1
+ 29:     ):
+ 30:         """Initialize the answer profile builder.
+ 31: 
+ 32:         Args:
+ 33:             max_tokens_per_profile: Maximum tokens to keep in each profile.
+ 34:             min_questions_per_answer: Minimum questions needed to build a profile.
+ 35:         """
+ 36:         self.max_tokens_per_profile = max_tokens_per_profile
+ 37:         self.min_questions_per_answer = min_questions_per_answer
+ 38:         self._grouped: Dict[str, List[Tuple[str, str]]] = {}
+ 39:         self._cache: Dict[Tuple[str, Optional[str]], str] = {}
+ 40: 
+ 41:     def fit(self, questions: List[TossupQuestion]) -> "AnswerProfileBuilder":
+ 42:         """Fit the builder on a set of questions.
+ 43: 
+ 44:         Groups questions by their primary answer for efficient profile building.
+ 45: 
+ 46:         Args:
+ 47:             questions: List of tossup questions to group by answer.
+ 48: 
+ 49:         Returns:
+ 50:             Self for method chaining.
+ 51:         """
+ 52:         grouped: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+ 53:         for q in questions:
+ 54:             # Store qid and full question text for each answer
+ 55:             grouped[q.answer_primary].append((q.qid, q.question))
+ 56:         self._grouped = dict(grouped)
+ 57:         self._cache = {}
+ 58:         return self
+ 59: 
+ 60:     def _profile_text(
+ 61:         self,
+ 62:         answer_primary: str,
+ 63:         exclude_qid: Optional[str] = None
+ 64:     ) -> str:
+ 65:         """Build profile text for an answer with optional exclusion.
+ 66: 
+ 67:         Args:
+ 68:             answer_primary: The answer to build a profile for.
+ 69:             exclude_qid: Optional question ID to exclude (leave-one-out).
+ 70: 
+ 71:         Returns:
+ 72:             Profile text truncated to max_tokens_per_profile.
+ 73:         """
+ 74:         key = (answer_primary, exclude_qid)
+ 75:         if key in self._cache:
+ 76:             return self._cache[key]
+ 77: 
+ 78:         items = self._grouped.get(answer_primary, [])
+ 79:         texts: List[str] = []
+ 80: 
+ 81:         # Collect all question texts except the excluded one
+ 82:         for qid, qtext in items:
+ 83:             if exclude_qid is not None and qid == exclude_qid:
+ 84:                 continue
+ 85:             texts.append(qtext)
+ 86: 
+ 87:         # If not enough questions after exclusion, fall back to answer text
+ 88:         if len(texts) < self.min_questions_per_answer:
+ 89:             self._cache[key] = answer_primary
+ 90:             return answer_primary
+ 91: 
+ 92:         # Merge all texts and split into tokens
+ 93:         merged = " ".join(texts).split()
+ 94: 
+ 95:         # Truncate to max tokens if specified
+ 96:         if self.max_tokens_per_profile > 0:
+ 97:             merged = merged[:self.max_tokens_per_profile]
+ 98: 
+ 99:         result = " ".join(merged) if merged else answer_primary
+100:         self._cache[key] = result
+101:         return result
+102: 
+103:     def profile_for_answer(
+104:         self,
+105:         answer_primary: str,
+106:         exclude_qid: Optional[str] = None
+107:     ) -> str:
+108:         """Get the profile for a specific answer.
+109: 
+110:         Args:
+111:             answer_primary: The answer to get a profile for.
+112:             exclude_qid: Optional question ID to exclude (for gold answer).
+113: 
+114:         Returns:
+115:             Profile text for the answer.
+116:         """
+117:         return self._profile_text(
+118:             answer_primary=answer_primary,
+119:             exclude_qid=exclude_qid
+120:         )
+121: 
+122:     def build_profiles(
+123:         self,
+124:         questions: List[TossupQuestion],
+125:         exclude_qid: Optional[str] = None,
+126:     ) -> Dict[str, str]:
+127:         """Build profiles for all answers in the dataset.
+128: 
+129:         Args:
+130:             questions: List of questions (used to fit if not already fitted).
+131:             exclude_qid: Optional question ID to exclude from all profiles.
+132: 
+133:         Returns:
+134:             Dictionary mapping answer_primary to profile text.
+135:         """
+136:         if not self._grouped:
+137:             self.fit(questions)
+138: 
+139:         return {
+140:             answer: self._profile_text(answer, exclude_qid=exclude_qid)
+141:             for answer in self._grouped.keys()
+142:         }
+````
+
+## File: qb_data/dataset_splits.py
+````python
+  1: """
+  2: Stratified dataset splitting utilities for quiz bowl data.
+  3: 
+  4: This module provides functions to create train/val/test splits that maintain
+  5: category distribution across all splits.
+  6: """
+  7: 
+  8: import hashlib
+  9: import json
+ 10: import random
+ 11: from collections import defaultdict
+ 12: from pathlib import Path
+ 13: from typing import List, Tuple, Dict, Any
+ 14: 
+ 15: from qb_data.data_loader import TossupQuestion
+ 16: 
+ 17: 
+ 18: def create_stratified_splits(
+ 19:     questions: List[TossupQuestion],
+ 20:     ratios: List[float] = [0.7, 0.15, 0.15],
+ 21:     seed: int = 42
+ 22: ) -> Tuple[List[TossupQuestion], List[TossupQuestion], List[TossupQuestion]]:
+ 23:     """
+ 24:     Create stratified train/val/test splits maintaining category distribution.
+ 25: 
+ 26:     Parameters
+ 27:     ----------
+ 28:     questions : List[TossupQuestion]
+ 29:         List of questions to split
+ 30:     ratios : List[float]
+ 31:         Train/val/test split ratios (must sum to 1.0)
+ 32:     seed : int
+ 33:         Random seed for reproducibility
+ 34: 
+ 35:     Returns
+ 36:     -------
+ 37:     Tuple[List[TossupQuestion], List[TossupQuestion], List[TossupQuestion]]
+ 38:         Train, validation, and test splits
+ 39: 
+ 40:     Raises
+ 41:     ------
+ 42:     ValueError
+ 43:         If ratios don't sum to 1.0 or questions list is empty
+ 44:     """
+ 45:     # Validate inputs
+ 46:     if not questions:
+ 47:         raise ValueError("Cannot split empty question list")
+ 48: 
+ 49:     if abs(sum(ratios) - 1.0) > 1e-6:
+ 50:         raise ValueError(f"Ratios must sum to 1.0, got {sum(ratios)}")
+ 51: 
+ 52:     # Initialize random generator for reproducibility
+ 53:     rng = random.Random(seed)
+ 54: 
+ 55:     # Group questions by category
+ 56:     category_groups = defaultdict(list)
+ 57:     for q in questions:
+ 58:         category_groups[q.category].append(q)
+ 59: 
+ 60:     # Initialize output lists
+ 61:     train_questions = []
+ 62:     val_questions = []
+ 63:     test_questions = []
+ 64: 
+ 65:     # Split each category maintaining ratios
+ 66:     for category, category_questions in category_groups.items():
+ 67:         # Sort for deterministic splits
+ 68:         sorted_questions = sorted(category_questions, key=lambda q: q.qid)
+ 69: 
+ 70:         # Deterministic per-category seed via MD5 (immune to PYTHONHASHSEED)
+ 71:         cat_hash = int(hashlib.md5(category.encode("utf-8")).hexdigest(), 16)
+ 72:         category_seed = seed + cat_hash % 1_000_000
+ 73:         category_rng = random.Random(category_seed)
+ 74:         shuffled = sorted_questions.copy()
+ 75:         category_rng.shuffle(shuffled)
+ 76: 
+ 77:         n = len(shuffled)
+ 78: 
+ 79:         # Calculate split indices
+ 80:         train_end = int(n * ratios[0])
+ 81:         val_end = train_end + int(n * ratios[1])
+ 82: 
+ 83:         # Handle small categories - ensure at least 1 in train if possible
+ 84:         if n == 1:
+ 85:             train_questions.extend(shuffled)
+ 86:         elif n == 2:
+ 87:             train_questions.extend(shuffled[:1])
+ 88:             val_questions.extend(shuffled[1:])
+ 89:         else:
+ 90:             # Standard split
+ 91:             train_questions.extend(shuffled[:train_end])
+ 92:             val_questions.extend(shuffled[train_end:val_end])
+ 93:             test_questions.extend(shuffled[val_end:])
+ 94: 
+ 95:     # Verify all questions assigned exactly once
+ 96:     total_original = len(questions)
+ 97:     total_split = len(train_questions) + len(val_questions) + len(test_questions)
+ 98: 
+ 99:     if total_original != total_split:
+100:         raise RuntimeError(f"Split mismatch: {total_original} original vs {total_split} split")
+101: 
+102:     # Log category distribution statistics
+103:     print(f"Dataset split complete:")
+104:     print(f"  Train: {len(train_questions)} questions ({len(train_questions)/total_original:.1%})")
+105:     print(f"  Val:   {len(val_questions)} questions ({len(val_questions)/total_original:.1%})")
+106:     print(f"  Test:  {len(test_questions)} questions ({len(test_questions)/total_original:.1%})")
+107: 
+108:     # Category distribution analysis
+109:     train_categories = defaultdict(int)
+110:     val_categories = defaultdict(int)
+111:     test_categories = defaultdict(int)
+112: 
+113:     for q in train_questions:
+114:         train_categories[q.category] += 1
+115:     for q in val_questions:
+116:         val_categories[q.category] += 1
+117:     for q in test_questions:
+118:         test_categories[q.category] += 1
+119: 
+120:     all_categories = set(train_categories.keys()) | set(val_categories.keys()) | set(test_categories.keys())
+121:     print(f"\nCategory distribution ({len(all_categories)} categories):")
+122: 
+123:     for category in sorted(all_categories)[:5]:  # Show first 5 categories
+124:         orig_count = len(category_groups[category])
+125:         train_count = train_categories.get(category, 0)
+126:         val_count = val_categories.get(category, 0)
+127:         test_count = test_categories.get(category, 0)
+128:         print(f"  {category}: {train_count}/{val_count}/{test_count} (orig: {orig_count})")
+129: 
+130:     if len(all_categories) > 5:
+131:         print(f"  ... and {len(all_categories) - 5} more categories")
+132: 
+133:     return train_questions, val_questions, test_questions
+134: 
+135: 
+136: def save_splits(
+137:     train: List[TossupQuestion],
+138:     val: List[TossupQuestion],
+139:     test: List[TossupQuestion],
+140:     output_dir: str = "data"
+141: ) -> None:
+142:     """
+143:     Save dataset splits to JSON files with metadata.
+144: 
+145:     Parameters
+146:     ----------
+147:     train : List[TossupQuestion]
+148:         Training split
+149:     val : List[TossupQuestion]
+150:         Validation split
+151:     test : List[TossupQuestion]
+152:         Test split
+153:     output_dir : str
+154:         Directory to save split files
+155:     """
+156:     output_path = Path(output_dir)
+157:     output_path.mkdir(parents=True, exist_ok=True)
+158: 
+159:     # Helper to convert TossupQuestion to dict
+160:     def questions_to_dict(questions: List[TossupQuestion]) -> List[Dict[str, Any]]:
+161:         return [
+162:             {
+163:                 "qid": q.qid,
+164:                 "question": q.question,
+165:                 "tokens": q.tokens,
+166:                 "answer_primary": q.answer_primary,
+167:                 "clean_answers": q.clean_answers,
+168:                 "run_indices": q.run_indices,
+169:                 "human_buzz_positions": q.human_buzz_positions,
+170:                 "category": q.category,
+171:                 "cumulative_prefixes": q.cumulative_prefixes
+172:             }
+173:             for q in questions
+174:         ]
+175: 
+176:     # Calculate category distributions for metadata
+177:     def get_category_distribution(questions: List[TossupQuestion]) -> Dict[str, int]:
+178:         dist = defaultdict(int)
+179:         for q in questions:
+180:             dist[q.category] += 1
+181:         return dict(dist)
+182: 
+183:     # Save each split with metadata
+184:     splits = [
+185:         ("train_dataset.json", train),
+186:         ("val_dataset.json", val),
+187:         ("test_dataset.json", test)
+188:     ]
+189: 
+190:     for filename, questions in splits:
+191:         filepath = output_path / filename
+192: 
+193:         data = {
+194:             "metadata": {
+195:                 "total_questions": len(questions),
+196:                 "categories": len(set(q.category for q in questions)),
+197:                 "category_distribution": get_category_distribution(questions),
+198:                 "split_type": filename.replace("_dataset.json", "")
+199:             },
+200:             "questions": questions_to_dict(questions)
+201:         }
+202: 
+203:         with open(filepath, 'w', encoding='utf-8') as f:
+204:             json.dump(data, f, indent=2, ensure_ascii=False)
+205: 
+206:         print(f"Saved {len(questions)} questions to {filepath}")
+207: 
+208:     # Save combined metadata file
+209:     metadata_path = output_path / "split_metadata.json"
+210:     metadata = {
+211:         "train": {
+212:             "count": len(train),
+213:             "categories": get_category_distribution(train)
+214:         },
+215:         "val": {
+216:             "count": len(val),
+217:             "categories": get_category_distribution(val)
+218:         },
+219:         "test": {
+220:             "count": len(test),
+221:             "categories": get_category_distribution(test)
+222:         },
+223:         "total_questions": len(train) + len(val) + len(test),
+224:         "split_ratios": [
+225:             len(train) / (len(train) + len(val) + len(test)),
+226:             len(val) / (len(train) + len(val) + len(test)),
+227:             len(test) / (len(train) + len(val) + len(test))
+228:         ]
+229:     }
+230: 
+231:     with open(metadata_path, 'w', encoding='utf-8') as f:
+232:         json.dump(metadata, f, indent=2)
+233: 
+234:     print(f"\nSaved split metadata to {metadata_path}")
 ````
 
 ## File: qb_data/dspy_answer_profiles.py
@@ -13433,6 +11889,703 @@ requirements.txt
 478:         random_seed=random_seed,
 479:     )
 480:     return builder.build(questions=questions, profile_builder=profile_builder)
+````
+
+## File: scripts/_common.py
+````python
+  1: """Shared utilities for pipeline scripts.
+  2: 
+  3: Provides config loading, JSON serialization, MC question deserialization,
+  4: and path constants used across all pipeline scripts (build, baseline, train,
+  5: evaluate).
+  6: 
+  7: Ported from qb-rl reference implementation with import path adaptations
+  8: for the unified qanta-buzzer codebase.
+  9: """
+ 10: 
+ 11: from __future__ import annotations
+ 12: 
+ 13: import argparse
+ 14: import json
+ 15: from dataclasses import asdict, is_dataclass
+ 16: from pathlib import Path
+ 17: from typing import Any
+ 18: 
+ 19: from models.likelihoods import LikelihoodModel, build_likelihood_from_config
+ 20: from qb_data.config import load_config as load_yaml_config
+ 21: from qb_data.mc_builder import MCQuestion
+ 22: 
+ 23: PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ 24: 
+ 25: 
+ 26: def _parse_value(value: str) -> Any:
+ 27:     """Parse a CLI override value string into a typed Python value.
+ 28: 
+ 29:     Tries JSON first, then bool/int/float, and falls back to str.
+ 30:     """
+ 31:     try:
+ 32:         return json.loads(value)
+ 33:     except json.JSONDecodeError:
+ 34:         pass
+ 35:     if value.lower() == "true":
+ 36:         return True
+ 37:     if value.lower() == "false":
+ 38:         return False
+ 39:     if value.lstrip("-").isdigit():
+ 40:         return int(value)
+ 41:     try:
+ 42:         return float(value)
+ 43:     except ValueError:
+ 44:         return value
+ 45: 
+ 46: 
+ 47: def parse_overrides(args: argparse.Namespace) -> dict[str, Any]:
+ 48:     """Parse CLI override arguments into flat dotted-key overrides.
+ 49: 
+ 50:     Returns a dict with dotted keys (e.g. ``{"data.K": 5}``) that
+ 51:     ``merge_overrides`` can apply leaf-by-leaf without clobbering
+ 52:     sibling config entries.
+ 53: 
+ 54:     Parameters
+ 55:     ----------
+ 56:     args : argparse.Namespace
+ 57:         Parsed CLI arguments.  Positional ``overrides`` are
+ 58:         ``key=value`` strings where *key* uses dot-notation
+ 59:         (e.g. ``data.K=5``).
+ 60: 
+ 61:     Returns
+ 62:     -------
+ 63:     dict[str, Any]
+ 64:         Flat dotted-key overrides ready for ``merge_overrides()``.
+ 65:     """
+ 66:     overrides: dict[str, Any] = {}
+ 67:     if hasattr(args, "overrides") and args.overrides:
+ 68:         for token in args.overrides:
+ 69:             if "=" not in token:
+ 70:                 continue
+ 71:             key, value = token.split("=", 1)
+ 72:             overrides[key] = _parse_value(value)
+ 73:     return overrides
+ 74: DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "default.yaml"
+ 75: ARTIFACT_DIR = PROJECT_ROOT / "artifacts"
+ 76: 
+ 77: 
+ 78: def load_config(config_path: str | None = None, smoke: bool = False) -> dict[str, Any]:
+ 79:     """Load YAML configuration from a file path.
+ 80: 
+ 81:     Parameters
+ 82:     ----------
+ 83:     config_path : str or None
+ 84:         Path to YAML config file. If None, loads ``configs/default.yaml``.
+ 85: 
+ 86:     Returns
+ 87:     -------
+ 88:     dict[str, Any]
+ 89:         Parsed config dict with nested structure (data, likelihood,
+ 90:         environment, ppo, etc.).
+ 91:     """
+ 92:     return load_yaml_config(config_path, smoke=smoke)
+ 93: 
+ 94: 
+ 95: def build_likelihood_model(config: dict[str, Any], mc_questions: list[MCQuestion]):
+ 96:     """Build a likelihood model with shared TF-IDF corpus handling."""
+ 97:     corpus = None
+ 98:     if config["likelihood"].get("model") == "tfidf":
+ 99:         corpus = [q.question for q in mc_questions] + [
+100:             profile
+101:             for question in mc_questions
+102:             for profile in question.option_profiles
+103:         ]
+104:     return build_likelihood_from_config(config, corpus_texts=corpus)
+105: 
+106: 
+107: def ensure_dir(path: str | Path) -> Path:
+108:     """Create a directory (and parents) if it does not exist.
+109: 
+110:     Parameters
+111:     ----------
+112:     path : str or Path
+113:         Directory path to create.
+114: 
+115:     Returns
+116:     -------
+117:     Path
+118:         The created (or existing) directory path.
+119:     """
+120:     p = Path(path)
+121:     p.mkdir(parents=True, exist_ok=True)
+122:     return p
+123: 
+124: 
+125: def to_serializable(item: Any) -> Any:
+126:     """Recursively convert dataclasses to dicts for JSON serialization.
+127: 
+128:     Parameters
+129:     ----------
+130:     item : Any
+131:         Object to convert. Dataclasses are converted via ``asdict()``,
+132:         dicts and lists are processed recursively.
+133: 
+134:     Returns
+135:     -------
+136:     Any
+137:         JSON-serializable version of the input.
+138:     """
+139:     if is_dataclass(item):
+140:         return asdict(item)
+141:     if isinstance(item, dict):
+142:         return {k: to_serializable(v) for k, v in item.items()}
+143:     if isinstance(item, list):
+144:         return [to_serializable(v) for v in item]
+145:     return item
+146: 
+147: 
+148: def save_json(path: str | Path, data: Any) -> Path:
+149:     """Save data to a JSON file, creating parent directories as needed.
+150: 
+151:     Applies ``to_serializable`` to convert dataclasses before writing.
+152: 
+153:     Parameters
+154:     ----------
+155:     path : str or Path
+156:         Output file path.
+157:     data : Any
+158:         Data to serialize. Dataclasses are converted to dicts automatically.
+159: 
+160:     Returns
+161:     -------
+162:     Path
+163:         The path where the JSON was written.
+164:     """
+165:     p = Path(path)
+166:     p.parent.mkdir(parents=True, exist_ok=True)
+167:     with p.open("w", encoding="utf-8") as f:
+168:         json.dump(to_serializable(data), f, indent=2)
+169:     return p
+170: 
+171: 
+172: def load_json(path: str | Path) -> Any:
+173:     """Load data from a JSON file.
+174: 
+175:     Parameters
+176:     ----------
+177:     path : str or Path
+178:         Path to JSON file.
+179: 
+180:     Returns
+181:     -------
+182:     Any
+183:         Parsed JSON data.
+184:     """
+185:     with Path(path).open("r", encoding="utf-8") as f:
+186:         return json.load(f)
+187: 
+188: 
+189: def mc_question_from_dict(row: dict[str, Any]) -> MCQuestion:
+190:     """Reconstruct an MCQuestion dataclass from a JSON-deserialized dict.
+191: 
+192:     Parameters
+193:     ----------
+194:     row : dict[str, Any]
+195:         Dictionary with all MCQuestion fields.
+196: 
+197:     Returns
+198:     -------
+199:     MCQuestion
+200:         Reconstructed MCQuestion instance.
+201:     """
+202:     return MCQuestion(
+203:         qid=row["qid"],
+204:         question=row["question"],
+205:         tokens=list(row["tokens"]),
+206:         answer_primary=row["answer_primary"],
+207:         clean_answers=list(row["clean_answers"]),
+208:         run_indices=list(row["run_indices"]),
+209:         human_buzz_positions=row.get("human_buzz_positions"),
+210:         category=row.get("category", ""),
+211:         cumulative_prefixes=list(row["cumulative_prefixes"]),
+212:         options=list(row["options"]),
+213:         gold_index=int(row["gold_index"]),
+214:         option_profiles=list(row["option_profiles"]),
+215:         option_answer_primary=list(row["option_answer_primary"]),
+216:         distractor_strategy=row.get("distractor_strategy", "unknown"),
+217:     )
+218: 
+219: 
+220: def load_mc_questions(path: str | Path) -> list[MCQuestion]:
+221:     """Load and deserialize a list of MCQuestions from a JSON file.
+222: 
+223:     Parameters
+224:     ----------
+225:     path : str or Path
+226:         Path to JSON file containing a list of serialized MCQuestion dicts.
+227: 
+228:     Returns
+229:     -------
+230:     list[MCQuestion]
+231:         List of reconstructed MCQuestion instances.
+232:     """
+233:     raw = load_json(path)
+234:     return [mc_question_from_dict(item) for item in raw]
+235: 
+236: 
+237: # ------------------------------------------------------------------ #
+238: # Embedding cache persistence helpers
+239: # ------------------------------------------------------------------ #
+240: 
+241: 
+242: def embedding_cache_path(config: dict[str, Any]) -> Path:
+243:     """Return the resolved embedding cache file path from config.
+244: 
+245:     Uses ``config['likelihood']['cache_dir']`` (default ``'cache/embeddings'``)
+246:     and appends ``'embedding_cache.npz'``.
+247: 
+248:     Parameters
+249:     ----------
+250:     config : dict
+251:         Full YAML config dict.
+252: 
+253:     Returns
+254:     -------
+255:     Path
+256:         Absolute path to the embedding cache ``.npz`` file.
+257:     """
+258:     cache_dir = config.get("likelihood", {}).get("cache_dir", "cache/embeddings")
+259:     return PROJECT_ROOT / cache_dir / "embedding_cache.npz"
+260: 
+261: 
+262: def load_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
+263:     """Load persisted embedding cache into model if file exists.
+264: 
+265:     Parameters
+266:     ----------
+267:     model : LikelihoodModel
+268:         Likelihood model whose embedding_cache will be populated.
+269:     config : dict
+270:         Full YAML config dict (used to resolve cache path).
+271:     """
+272:     path = embedding_cache_path(config)
+273:     n = model.load_cache(path)
+274:     if n > 0:
+275:         print(f"Loaded {n} cached embeddings from {path}")
+276: 
+277: 
+278: def save_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
+279:     """Persist model's embedding cache to disk.
+280: 
+281:     Parameters
+282:     ----------
+283:     model : LikelihoodModel
+284:         Likelihood model whose embedding_cache will be saved.
+285:     config : dict
+286:         Full YAML config dict (used to resolve cache path).
+287:     """
+288:     path = embedding_cache_path(config)
+289:     n = model.save_cache(path)
+290:     if n > 0:
+291:         print(f"Saved {n} embeddings to {path}")
+````
+
+## File: scripts/ci.sh
+````bash
+ 1: #!/usr/bin/env bash
+ 2: # CI entry point -- runs the full pytest suite from the project venv.
+ 3: # Exit nonzero on any failure so CI gates catch regressions.
+ 4: #
+ 5: # Usage:
+ 6: #   bash scripts/ci.sh              # full suite
+ 7: #   bash scripts/ci.sh -k "not t5"  # skip T5-dependent tests
+ 8: set -euo pipefail
+ 9: 
+10: REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+11: 
+12: if [ -f "$REPO_ROOT/.venv/bin/activate" ]; then
+13:     # shellcheck disable=SC1091
+14:     source "$REPO_ROOT/.venv/bin/activate"
+15: elif ! command -v pytest &>/dev/null; then
+16:     echo "ERROR: No .venv found and pytest not on PATH." >&2
+17:     echo "Run: python3 -m venv .venv && source .venv/bin/activate && pip install -e ." >&2
+18:     exit 1
+19: fi
+20: 
+21: pytest tests/ "$@"
+````
+
+## File: scripts/train_t5_policy.py
+````python
+  1: #!/usr/bin/env python3
+  2: """
+  3: Train T5 policy with supervised warm-start then PPO fine-tuning.
+  4: 
+  5: End-to-end pipeline for training a T5PolicyModel on quiz bowl questions:
+  6: 1. Supervised warm-start: Train answer selection on complete questions
+  7: 2. PPO fine-tuning: Optimize wait/answer policy on incremental episodes
+  8: 
+  9: Usage:
+ 10:     # Full pipeline (supervised + PPO)
+ 11:     python scripts/train_t5_policy.py --config configs/t5_policy.yaml
+ 12: 
+ 13:     # Quick smoke test (t5-small, few epochs)
+ 14:     python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke
+ 15: 
+ 16:     # Skip supervised, load pretrained for PPO only
+ 17:     python scripts/train_t5_policy.py --config configs/t5_policy.yaml \
+ 18:         --skip-supervised --model-path checkpoints/supervised/best_model
+ 19: 
+ 20:     # Custom number of PPO iterations
+ 21:     python scripts/train_t5_policy.py --config configs/t5_policy.yaml \
+ 22:         --ppo-iterations 50
+ 23: """
+ 24: 
+ 25: from __future__ import annotations
+ 26: 
+ 27: import argparse
+ 28: import sys
+ 29: from pathlib import Path
+ 30: 
+ 31: PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ 32: if str(PROJECT_ROOT) not in sys.path:
+ 33:     sys.path.insert(0, str(PROJECT_ROOT))
+ 34: 
+ 35: import yaml
+ 36: 
+ 37: from qb_data.config import merge_overrides
+ 38: from scripts._common import ARTIFACT_DIR, load_mc_questions, parse_overrides
+ 39: 
+ 40: 
+ 41: def parse_args() -> argparse.Namespace:
+ 42:     """Parse command-line arguments.
+ 43: 
+ 44:     Returns
+ 45:     -------
+ 46:     argparse.Namespace
+ 47:         Parsed arguments for training configuration.
+ 48:     """
+ 49:     parser = argparse.ArgumentParser(
+ 50:         description="Train T5 policy with supervised warm-start then PPO.",
+ 51:     )
+ 52:     parser.add_argument(
+ 53:         "--config",
+ 54:         type=str,
+ 55:         default=str(PROJECT_ROOT / "configs" / "t5_policy.yaml"),
+ 56:         help="Path to YAML config file (default: configs/t5_policy.yaml).",
+ 57:     )
+ 58:     parser.add_argument(
+ 59:         "--smoke",
+ 60:         action="store_true",
+ 61:         help="Quick test run: uses t5-small, 2 epochs, 4 batch size.",
+ 62:     )
+ 63:     parser.add_argument(
+ 64:         "--skip-supervised",
+ 65:         action="store_true",
+ 66:         help="Skip supervised training phase.",
+ 67:     )
+ 68:     parser.add_argument(
+ 69:         "--model-path",
+ 70:         type=str,
+ 71:         default=None,
+ 72:         help="Path to pretrained model checkpoint (required if --skip-supervised).",
+ 73:     )
+ 74:     parser.add_argument(
+ 75:         "--mc-path",
+ 76:         type=str,
+ 77:         default=None,
+ 78:         help="Path to MC dataset JSON file.",
+ 79:     )
+ 80:     parser.add_argument(
+ 81:         "--ppo-iterations",
+ 82:         type=int,
+ 83:         default=None,
+ 84:         help="Override number of PPO iterations from config.",
+ 85:     )
+ 86:     parser.add_argument(
+ 87:         "--hazard-pretrain",
+ 88:         action="store_true",
+ 89:         help="Enable the experimental hazard pretraining bridge before PPO.",
+ 90:     )
+ 91:     parser.add_argument(
+ 92:         "--beta-terminal",
+ 93:         type=float,
+ 94:         default=1.0,
+ 95:         help="Terminal survival penalty used by the hazard bridge.",
+ 96:     )
+ 97:     parser.add_argument(
+ 98:         "--freeze-answer-head",
+ 99:         action="store_true",
+100:         help="Freeze the answer head during the hazard bridge phase.",
+101:     )
+102:     parser.add_argument(
+103:         "overrides",
+104:         nargs="*",
+105:         help="Config overrides: key=value (e.g. model.model_name=t5-base)",
+106:     )
+107:     return parser.parse_args()
+108: 
+109: 
+110: def load_config_with_overrides(args: argparse.Namespace) -> dict:
+111:     """Load YAML config and apply smoke/CLI overrides.
+112: 
+113:     Parameters
+114:     ----------
+115:     args : argparse.Namespace
+116:         Parsed command-line arguments.
+117: 
+118:     Returns
+119:     -------
+120:     dict
+121:         Configuration dictionary with overrides applied.
+122:     """
+123:     with open(args.config) as f:
+124:         config = yaml.safe_load(f)
+125: 
+126:     if args.smoke:
+127:         smoke = config.get("smoke", {})
+128:         # Override model settings
+129:         if "model" in smoke:
+130:             for key, val in smoke["model"].items():
+131:                 config["model"][key] = val
+132:         # Override supervised settings
+133:         if "supervised" in smoke:
+134:             for key, val in smoke["supervised"].items():
+135:                 config["supervised"][key] = val
+136:         # Override PPO settings
+137:         if "ppo" in smoke:
+138:             for key, val in smoke["ppo"].items():
+139:                 config["ppo"][key] = val
+140:         # Override data settings
+141:         if "data" in smoke:
+142:             for key, val in smoke["data"].items():
+143:                 config["data"][key] = val
+144: 
+145:     if args.ppo_iterations is not None:
+146:         config["ppo"]["iterations"] = args.ppo_iterations
+147: 
+148:     return config
+149: 
+150: 
+151: def flatten_config(config: dict) -> dict:
+152:     """Flatten nested config sections into a single dict for trainer APIs.
+153: 
+154:     Parameters
+155:     ----------
+156:     config : dict
+157:         Nested config dict with sections (model, supervised, ppo, data).
+158: 
+159:     Returns
+160:     -------
+161:     dict
+162:         Flat config dict with prefixed keys for each trainer.
+163:     """
+164:     flat = {}
+165: 
+166:     # Model section
+167:     model = config.get("model", {})
+168:     flat["model_name"] = model.get("model_name", "t5-large")
+169:     device = model.get("device", "auto")
+170:     if device == "auto":
+171:         import torch
+172:         if torch.cuda.is_available():
+173:             device = "cuda"
+174:         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+175:             device = "mps"
+176:         else:
+177:             device = "cpu"
+178:     flat["device"] = device
+179:     flat["max_input_length"] = model.get("max_input_length", 512)
+180:     flat["num_choices"] = model.get("num_choices", config.get("data", {}).get("K", 4))
+181: 
+182:     # Supervised section
+183:     sup = config.get("supervised", {})
+184:     flat["supervised_lr"] = sup.get("lr", 3e-4)
+185:     flat["supervised_epochs"] = sup.get("epochs", 10)
+186:     flat["supervised_batch_size"] = sup.get("batch_size", 8)
+187:     flat["supervised_grad_accum_steps"] = sup.get("grad_accum_steps", 4)
+188:     flat["max_grad_norm"] = sup.get("max_grad_norm", 1.0)
+189:     flat["weight_decay"] = sup.get("weight_decay", 0.01)
+190:     flat["checkpoint_dir"] = sup.get("checkpoint_dir", "checkpoints")
+191: 
+192:     # PPO section
+193:     ppo = config.get("ppo", {})
+194:     flat["ppo_lr"] = ppo.get("lr", 1e-5)
+195:     flat["ppo_iterations"] = ppo.get("iterations", 100)
+196:     flat["ppo_batch_size"] = ppo.get("batch_size", 8)
+197:     flat["ppo_epochs_per_iter"] = ppo.get("epochs_per_iter", 4)
+198:     flat["ppo_gamma"] = ppo.get("gamma", 0.99)
+199:     flat["ppo_gae_lambda"] = ppo.get("gae_lambda", 0.95)
+200:     flat["ppo_clip_ratio"] = ppo.get("clip_ratio", 0.2)
+201:     flat["ppo_value_coef"] = ppo.get("value_coef", 0.5)
+202:     flat["ppo_entropy_coef"] = ppo.get("entropy_coef", 0.01)
+203:     flat["ppo_max_grad_norm"] = ppo.get("max_grad_norm", 0.5)
+204:     flat["ppo_episodes_per_iter"] = ppo.get("episodes_per_iter", 16)
+205:     flat["eval_interval"] = ppo.get("eval_interval", 10)
+206:     flat["save_interval"] = ppo.get("save_interval", 20)
+207: 
+208:     return flat
+209: 
+210: 
+211: def load_questions(args: argparse.Namespace, config: dict) -> list:
+212:     """Load MC questions from file or fallback paths.
+213: 
+214:     Parameters
+215:     ----------
+216:     args : argparse.Namespace
+217:         Parsed arguments, may have mc_path override.
+218:     config : dict
+219:         Config dict with data section.
+220: 
+221:     Returns
+222:     -------
+223:     list
+224:         List of MCQuestion instances.
+225:     """
+226:     if args.mc_path:
+227:         mc_path = Path(args.mc_path)
+228:     else:
+229:         # Try standard locations
+230:         candidates = [
+231:             ARTIFACT_DIR / "main" / "mc_dataset.json",
+232:             ARTIFACT_DIR / "smoke" / "mc_dataset.json",
+233:             PROJECT_ROOT / "data" / "processed" / "mc_dataset.json",
+234:         ]
+235:         mc_path = None
+236:         for candidate in candidates:
+237:             if candidate.exists():
+238:                 mc_path = candidate
+239:                 break
+240: 
+241:         if mc_path is None:
+242:             print("ERROR: No MC dataset found. Run build_mc_dataset.py first.")
+243:             print("Searched locations:")
+244:             for c in candidates:
+245:                 print(f"  {c}")
+246:             sys.exit(1)
+247: 
+248:     print(f"Loading MC questions from: {mc_path}")
+249:     questions = load_mc_questions(mc_path)
+250:     print(f"Loaded {len(questions)} questions")
+251: 
+252:     # Apply max_questions limit (smoke mode)
+253:     max_questions = config.get("data", {}).get("max_questions", None)
+254:     if max_questions and len(questions) > max_questions:
+255:         questions = questions[:max_questions]
+256:         print(f"Limited to {max_questions} questions (smoke mode)")
+257: 
+258:     return questions
+259: 
+260: 
+261: def validate_args(args: argparse.Namespace) -> None:
+262:     """Validate CLI arguments and reject unsupported bridge paths."""
+263:     if args.skip_supervised and args.model_path is None:
+264:         print("ERROR: --model-path is required when using --skip-supervised")
+265:         sys.exit(1)
+266:     if args.hazard_pretrain:
+267:         raise NotImplementedError(
+268:             "Hazard pretraining loop not yet implemented. "
+269:             "The math utilities are available in training/hazard_pretrain.py, "
+270:             "but the end-to-end bridge has not been wired into train_t5_policy.py yet."
+271:         )
+272: 
+273: 
+274: def split_questions(questions: list, config: dict) -> tuple:
+275:     """Split questions into train/val/test sets.
+276: 
+277:     Parameters
+278:     ----------
+279:     questions : list
+280:         Full list of MCQuestion instances.
+281:     config : dict
+282:         Config dict with data section (train_size, val_size, test_size, seed).
+283: 
+284:     Returns
+285:     -------
+286:     tuple[list, list, list]
+287:         Train, validation, and test question lists.
+288:     """
+289:     import random
+290: 
+291:     data = config.get("data", {})
+292:     seed = data.get("seed", 42)
+293:     train_size = data.get("train_size", 0.7)
+294:     val_size = data.get("val_size", 0.15)
+295: 
+296:     rng = random.Random(seed)
+297:     shuffled = questions[:]
+298:     rng.shuffle(shuffled)
+299: 
+300:     n = len(shuffled)
+301:     n_train = int(n * train_size)
+302:     n_val = int(n * val_size)
+303: 
+304:     train_questions = shuffled[:n_train]
+305:     val_questions = shuffled[n_train : n_train + n_val]
+306:     test_questions = shuffled[n_train + n_val :]
+307: 
+308:     print(f"Split: {len(train_questions)} train, {len(val_questions)} val, {len(test_questions)} test")
+309:     return train_questions, val_questions, test_questions
+310: 
+311: 
+312: def main() -> None:
+313:     """Run the full T5 policy training pipeline."""
+314:     args = parse_args()
+315:     validate_args(args)
+316: 
+317:     # Load config with overrides
+318:     config = load_config_with_overrides(args)
+319:     overrides = parse_overrides(args)
+320:     if overrides:
+321:         config = merge_overrides(config, overrides)
+322:     flat_config = flatten_config(config)
+323: 
+324:     # Load and split dataset
+325:     questions = load_questions(args, config)
+326:     train_questions, val_questions, test_questions = split_questions(questions, config)
+327: 
+328:     # Import training modules (lazy to avoid loading transformers until needed)
+329:     from training.train_supervised_t5 import run_supervised_training
+330:     from training.train_ppo_t5 import run_ppo_training
+331: 
+332:     # Phase 1: Supervised warm-start (optional)
+333:     supervised_model_path = None
+334:     if not args.skip_supervised:
+335:         print("\n" + "=" * 60)
+336:         print("PHASE 1: SUPERVISED WARM-START")
+337:         print("=" * 60)
+338: 
+339:         model, trainer = run_supervised_training(
+340:             config=flat_config,
+341:             train_questions=train_questions,
+342:             val_questions=val_questions,
+343:         )
+344:         supervised_model_path = str(
+345:             trainer.checkpoint_dir / "best_model"
+346:         )
+347:         print(f"Supervised model saved to: {supervised_model_path}")
+348:     else:
+349:         supervised_model_path = args.model_path
+350:         print(f"\nSkipping supervised training, using model: {supervised_model_path}")
+351: 
+352:     # Phase 2: PPO fine-tuning
+353:     print("\n" + "=" * 60)
+354:     print("PHASE 2: PPO FINE-TUNING (T5 Policy)")
+355:     print("=" * 60)
+356: 
+357:     model, trainer = run_ppo_training(
+358:         config=flat_config,
+359:         train_questions=train_questions,
+360:         val_questions=val_questions,
+361:         test_questions=test_questions,
+362:         pretrained_model_path=supervised_model_path,
+363:     )
+364: 
+365:     print("\n" + "=" * 60)
+366:     print("TRAINING COMPLETE")
+367:     print("=" * 60)
+368:     print(f"Best PPO model saved to: {trainer.checkpoint_dir / 'best_model'}")
+369:     print(f"Training history: {trainer.checkpoint_dir / 'history.json'}")
+370: 
+371: 
+372: if __name__ == "__main__":
+373:     main()
 ````
 
 ## File: tests/test_dspy_answer_profiles.py
@@ -14286,393 +13439,833 @@ requirements.txt
 87:   checkpoint_dir: "checkpoints/supervised_smoke"
 ````
 
-## File: scripts/ci.sh
-````bash
- 1: #!/usr/bin/env bash
- 2: # CI entry point -- runs the full pytest suite from the project venv.
- 3: # Exit nonzero on any failure so CI gates catch regressions.
- 4: #
- 5: # Usage:
- 6: #   bash scripts/ci.sh              # full suite
- 7: #   bash scripts/ci.sh -k "not t5"  # skip T5-dependent tests
- 8: set -euo pipefail
- 9: 
-10: REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-11: 
-12: if [ -f "$REPO_ROOT/.venv/bin/activate" ]; then
-13:     # shellcheck disable=SC1091
-14:     source "$REPO_ROOT/.venv/bin/activate"
-15: elif ! command -v pytest &>/dev/null; then
-16:     echo "ERROR: No .venv found and pytest not on PATH." >&2
-17:     echo "Run: python3 -m venv .venv && source .venv/bin/activate && pip install -e ." >&2
-18:     exit 1
-19: fi
-20: 
-21: pytest tests/ "$@"
-````
-
-## File: scripts/evaluate_all.py
+## File: scripts/build_mc_dataset.py
 ````python
   1: #!/usr/bin/env python3
   2: """
-  3: Comprehensive evaluation with control experiments and visualization.
+  3: Build multiple-choice dataset from QANTA quiz bowl questions.
   4: 
-  5: Runs the SoftmaxProfileBuzzer at the best threshold (from baseline sweep),
-  6: then executes control experiments (choices-only, shuffle, alias substitution)
-  7: and generates comparison plots and tables for the CS234 writeup.
-  8: 
-  9: Consumes outputs from:
- 10: - build_mc_dataset.py (mc_dataset.json, alias_lookup.json)
- 11: - run_baselines.py (baseline_summary.json)
- 12: - train_ppo.py (ppo_summary.json)
- 13: 
- 14: Produces:
- 15: - evaluation_report.json (full eval + controls + baseline + PPO summaries)
- 16: - plots/entropy_vs_clue.png
- 17: - plots/calibration.png
- 18: - plots/comparison.csv
- 19: 
- 20: Usage:
- 21:     python scripts/evaluate_all.py --smoke
- 22:     python scripts/evaluate_all.py --config configs/custom.yaml
- 23:     python scripts/evaluate_all.py --mc-path artifacts/main/mc_dataset.json
- 24: 
- 25: Ported from qb-rl reference implementation (scripts/evaluate_all.py) with
- 26: import path adaptations for the unified qanta-buzzer codebase.
- 27: """
+  5: This script orchestrates the complete data pipeline:
+  6: 1. Load questions from CSV or HuggingFace
+  7: 2. Build answer profiles from training data
+  8: 3. Generate MC questions with anti-artifact guards
+  9: 4. Create stratified train/val/test splits
+ 10: 5. Save processed datasets as JSON
+ 11: 
+ 12: Usage:
+ 13:     python scripts/build_mc_dataset.py
+ 14:     python scripts/build_mc_dataset.py --smoke  # Quick test with 50 questions in artifacts/smoke
+ 15:     python scripts/build_mc_dataset.py --config configs/custom.yaml
+ 16:     python scripts/build_mc_dataset.py --data.K=5 --data.distractor_strategy=tfidf_profile
+ 17: """
+ 18: 
+ 19: import argparse
+ 20: import json
+ 21: import sys
+ 22: import time
+ 23: from pathlib import Path
+ 24: from typing import Any, List, Optional
+ 25: 
+ 26: # Add parent directory to path for imports
+ 27: sys.path.insert(0, str(Path(__file__).parent.parent))
  28: 
- 29: from __future__ import annotations
- 30: 
- 31: import argparse
- 32: from dataclasses import asdict
- 33: from pathlib import Path
- 34: import sys
- 35: 
- 36: import numpy as np
+ 29: from qb_data import TossupQuestion
+ 30: from qb_data.answer_profiles import AnswerProfileBuilder
+ 31: from qb_data.config import load_config, merge_overrides, resolve_data_loading_options
+ 32: from qb_data.data_loader import QANTADatasetLoader
+ 33: from qb_data.dataset_splits import create_stratified_splits
+ 34: from qb_data.huggingface_loader import load_from_huggingface
+ 35: from qb_data.mc_builder import MCBuilder, MCQuestion
+ 36: from scripts._common import parse_overrides
  37: 
- 38: PROJECT_ROOT = Path(__file__).resolve().parents[1]
- 39: if str(PROJECT_ROOT) not in sys.path:
- 40:     sys.path.insert(0, str(PROJECT_ROOT))
+ 38: DEFAULT_OUTPUT_DIR = Path("data/processed")
+ 39: SMOKE_OUTPUT_DIR = Path("artifacts/smoke")
+ 40: 
  41: 
- 42: from agents.bayesian_buzzer import SoftmaxProfileBuzzer
- 43: from agents.threshold_buzzer import (
- 44:     _softmax_episode_from_precomputed,
- 45:     precompute_beliefs,
- 46: )
- 47: from evaluation.controls import (
- 48:     run_alias_substitution_control,
- 49:     run_choices_only_control,
- 50:     run_shuffle_control_precomputed,
- 51: )
- 52: from evaluation.metrics import (
- 53:     calibration_at_buzz,
- 54:     per_category_accuracy,
- 55:     summarize_buzz_metrics,
- 56: )
- 57: from evaluation.plotting import (
- 58:     plot_calibration_curve,
- 59:     plot_entropy_vs_clue_index,
- 60:     save_comparison_table,
- 61: )
- 62: from scripts._common import (
- 63:     ARTIFACT_DIR,
- 64:     build_likelihood_model,
- 65:     load_config,
- 66:     load_embedding_cache,
- 67:     load_json,
- 68:     load_mc_questions,
- 69:     save_json,
- 70: )
- 71: 
- 72: 
- 73: def parse_args() -> argparse.Namespace:
- 74:     """Parse command-line arguments.
- 75: 
- 76:     Returns
- 77:     -------
- 78:     argparse.Namespace
- 79:         Parsed arguments with config, smoke, and mc_path fields.
- 80:     """
- 81:     parser = argparse.ArgumentParser(
- 82:         description="Evaluate all agents and controls."
- 83:     )
- 84:     parser.add_argument(
- 85:         "--config", type=str, default=None,
- 86:         help="Path to YAML config file (default: configs/default.yaml).",
- 87:     )
- 88:     parser.add_argument(
- 89:         "--smoke", action="store_true",
- 90:         help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
- 91:     )
- 92:     parser.add_argument(
- 93:         "--mc-path", type=str, default=None,
- 94:         help="Optional MC dataset JSON path (overrides config-derived path).",
- 95:     )
- 96:     return parser.parse_args()
- 97: 
+ 42: def resolve_output_dir(output_dir: Optional[str], smoke: bool) -> Path:
+ 43:     """Resolve the dataset output directory from CLI inputs."""
+ 44:     if output_dir is not None:
+ 45:         return Path(output_dir)
+ 46:     return SMOKE_OUTPUT_DIR if smoke else DEFAULT_OUTPUT_DIR
+ 47: 
+ 48: 
+ 49: def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+ 50:     """Parse CLI arguments for dataset construction."""
+ 51:     parser = argparse.ArgumentParser(
+ 52:         description="Build multiple-choice dataset from QANTA questions",
+ 53:         formatter_class=argparse.RawDescriptionHelpFormatter,
+ 54:         epilog=__doc__,
+ 55:     )
+ 56: 
+ 57:     parser.add_argument(
+ 58:         '--config',
+ 59:         type=str,
+ 60:         default=None,
+ 61:         help=(
+ 62:             "Path to YAML configuration file. Defaults to configs/default.yaml, "
+ 63:             "or the smoke config path selected by load_config() when --smoke is set."
+ 64:         ),
+ 65:     )
+ 66:     parser.add_argument(
+ 67:         '--smoke',
+ 68:         action='store_true',
+ 69:         help='Use smoke test settings (50 questions, quick run, outputs to artifacts/smoke by default).',
+ 70:     )
+ 71:     parser.add_argument(
+ 72:         '--output-dir',
+ 73:         type=str,
+ 74:         default=None,
+ 75:         help='Directory to save processed datasets. Defaults to data/processed, or artifacts/smoke when --smoke is set.',
+ 76:     )
+ 77:     parser.add_argument(
+ 78:         'overrides',
+ 79:         nargs='*',
+ 80:         help='Config overrides in format: data.K=5 data.distractor_strategy=tfidf_profile',
+ 81:     )
+ 82: 
+ 83:     return parser.parse_args(argv)
+ 84: 
+ 85: 
+ 86: def save_json(path: Path, data: List[Any]) -> None:
+ 87:     """
+ 88:     Save dataclass objects to JSON file.
+ 89: 
+ 90:     Parameters
+ 91:     ----------
+ 92:     path : Path
+ 93:         Output file path
+ 94:     data : List[Any]
+ 95:         List of dataclass objects (TossupQuestion or MCQuestion)
+ 96:     """
+ 97:     path.parent.mkdir(parents=True, exist_ok=True)
  98: 
- 99: def pick_best_softmax_threshold(
-100:     out_dir: Path, default_threshold: float
-101: ) -> float:
-102:     """Select the best softmax threshold from baseline sweep results.
-103: 
-104:     Loads baseline_summary.json and extracts the threshold with the
-105:     highest mean S_q score from the softmax_profile results.
+ 99:     # Convert dataclasses to dictionaries
+100:     if data and hasattr(data[0], '__dataclass_fields__'):
+101:         # It's a dataclass, use asdict
+102:         from dataclasses import asdict
+103:         json_data = [asdict(item) for item in data]
+104:     else:
+105:         json_data = data
 106: 
-107:     Parameters
-108:     ----------
-109:     out_dir : Path
-110:         Directory containing baseline_summary.json.
-111:     default_threshold : float
-112:         Fallback threshold if baseline summary is unavailable.
-113: 
-114:     Returns
-115:     -------
-116:     float
-117:         Best threshold by S_q score, or default_threshold if unavailable.
-118:     """
-119:     summary_path = out_dir / "baseline_summary.json"
-120:     if not summary_path.exists():
-121:         return default_threshold
-122:     summary = load_json(summary_path)
-123:     softmax = summary.get("softmax_profile", {})
-124:     if not softmax:
-125:         return default_threshold
-126:     best_t = default_threshold
-127:     best_sq = float("-inf")
-128:     for t_str, metrics in softmax.items():
-129:         sq = float(metrics.get("mean_sq", float("-inf")))
-130:         if sq > best_sq:
-131:             best_sq = sq
-132:             best_t = float(t_str)
-133:     return best_t
-134: 
-135: 
-136: def main() -> None:
-137:     """Run comprehensive evaluation with controls and visualizations."""
-138:     args = parse_args()
+107:     with open(path, 'w', encoding='utf-8') as f:
+108:         json.dump(json_data, f, indent=2, ensure_ascii=False)
+109: 
+110:     print(f"Saved {len(data)} items to {path}")
+111: 
+112: 
+113: def print_statistics(
+114:     train: List[MCQuestion],
+115:     val: List[MCQuestion],
+116:     test: List[MCQuestion],
+117:     profile_builder: Optional[AnswerProfileBuilder] = None,
+118:     mc_builder: Optional[MCBuilder] = None
+119: ) -> None:
+120:     """
+121:     Print dataset statistics.
+122: 
+123:     Parameters
+124:     ----------
+125:     train : List[MCQuestion]
+126:         Training split
+127:     val : List[MCQuestion]
+128:         Validation split
+129:     test : List[MCQuestion]
+130:         Test split
+131:     profile_builder : Optional[AnswerProfileBuilder]
+132:         Answer profile builder for profile stats
+133:     mc_builder : Optional[MCBuilder]
+134:         MC builder for guard rejection stats
+135:     """
+136:     print("\n" + "="*60)
+137:     print("Dataset Construction Complete")
+138:     print("="*60)
 139: 
-140:     config = load_config(args.config, smoke=args.smoke)
-141: 
-142:     split = "smoke" if args.smoke else "main"
-143:     out_dir = ARTIFACT_DIR / split
-144:     mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
-145: 
-146:     # Fallback: check data/processed/ if artifacts path doesn't exist
-147:     if not mc_path.exists():
-148:         fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
-149:         if fallback.exists():
-150:             print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
-151:             mc_path = fallback
-152: 
-153:     print(f"Loading MC questions from: {mc_path}")
-154:     mc_questions = load_mc_questions(mc_path)
-155:     print(f"Loaded {len(mc_questions)} MC questions")
-156: 
-157:     # Load alias lookup (generated by build_mc_dataset.py)
-158:     alias_path = out_dir / "alias_lookup.json"
-159:     if alias_path.exists():
-160:         alias_lookup = load_json(alias_path)
-161:     else:
-162:         print(f"Warning: alias_lookup.json not found at {alias_path}, using empty lookup")
-163:         alias_lookup = {}
+140:     # Split statistics
+141:     total = len(train) + len(val) + len(test)
+142:     print(f"\nTotal MC questions: {total}")
+143:     print(f"  Train: {len(train)} ({100*len(train)/total:.1f}%)")
+144:     print(f"  Val:   {len(val)} ({100*len(val)/total:.1f}%)")
+145:     print(f"  Test:  {len(test)} ({100*len(test)/total:.1f}%)")
+146: 
+147:     # Category distribution
+148:     def get_categories(questions):
+149:         return set(q.category for q in questions if q.category)
+150: 
+151:     all_categories = get_categories(train) | get_categories(val) | get_categories(test)
+152:     print(f"\nCategories: {len(all_categories)}")
+153: 
+154:     # Sample categories
+155:     sample_cats = sorted(all_categories)[:5]
+156:     print("Sample categories:", ", ".join(sample_cats))
+157: 
+158:     # Answer profile statistics
+159:     if profile_builder and hasattr(profile_builder, '_grouped'):
+160:         print(f"\nAnswer profiles: {len(profile_builder._grouped)}")
+161:         # Get average questions per answer
+162:         avg_questions = sum(len(items) for items in profile_builder._grouped.values()) / len(profile_builder._grouped)
+163:         print(f"Average questions per answer: {avg_questions:.1f}")
 164: 
-165:     # Build likelihood model
-166:     print(f"Building likelihood model: {config['likelihood']['model']}")
-167:     likelihood_model = build_likelihood_model(config, mc_questions)
-168:     load_embedding_cache(likelihood_model, config)
-169:     beta = float(config["likelihood"].get("beta", 5.0))
-170:     alpha = float(config["bayesian"].get("alpha", 10.0))
-171:     default_threshold = float(config["bayesian"]["threshold_sweep"][0])
-172:     threshold = pick_best_softmax_threshold(out_dir, default_threshold=default_threshold)
-173:     print(f"Using best softmax threshold: {threshold}")
-174: 
-175:     # Precompute beliefs once (single pass of likelihood_model.score())
-176:     print("Precomputing beliefs...")
-177:     precomputed = precompute_beliefs(mc_questions, likelihood_model, beta)
-178: 
-179:     # Precomputed evaluation (zero extra score() calls)
-180:     def evaluate_questions_precomputed(pqs):
-181:         runs = [asdict(_softmax_episode_from_precomputed(pq, threshold, alpha)) for pq in pqs]
-182:         summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
-183:         summary["runs"] = runs
-184:         return summary
-185: 
-186:     # Live evaluator for controls that genuinely change option text (alias)
-187:     def evaluate_questions_live(qset):
-188:         agent = SoftmaxProfileBuzzer(
-189:             likelihood_model=likelihood_model,
-190:             threshold=threshold,
-191:             beta=beta,
-192:             alpha=alpha,
-193:         )
-194:         runs = [asdict(agent.run_episode(q)) for q in qset]
-195:         summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
-196:         summary["runs"] = runs
-197:         return summary
-198: 
-199:     # --- Run evaluations ---
-200:     print("Running full evaluation...")
-201:     full_eval = evaluate_questions_precomputed(precomputed)
-202: 
-203:     # Compute per-category breakdown
-204:     print("\nComputing per-category breakdown...")
-205:     per_category_results = per_category_accuracy(full_eval["runs"], mc_questions)
-206: 
-207:     # Sort by category name for readability
-208:     per_category_sorted = dict(sorted(per_category_results.items()))
-209: 
-210:     print("\nPer-category accuracy:")
-211:     for category, metrics in per_category_sorted.items():
-212:         print(
-213:             f"  {category:20s} (n={metrics['n']:3.0f}): "
-214:             f"acc={metrics['buzz_accuracy']:.3f}, "
-215:             f"S_q={metrics['mean_sq']:.3f}"
-216:         )
-217:     print()
+165:     # Guard rejection statistics
+166:     if mc_builder and hasattr(mc_builder, 'guard_stats'):
+167:         stats = mc_builder.guard_stats
+168:         if stats:
+169:             print("\nGuard rejection statistics:")
+170:             for guard_name, count in stats.items():
+171:                 print(f"  {guard_name}: {count} rejections")
+172: 
+173:     # Sample MC question
+174:     if train:
+175:         sample = train[0]
+176:         print(f"\nSample MC question:")
+177:         # Get first sentence from the question
+178:         first_sentence = sample.question[:100] + "..." if len(sample.question) > 100 else sample.question
+179:         print(f"  Question: {first_sentence}")
+180:         print(f"  Correct answer: {sample.answer_primary}")
+181:         print(f"  Options: {', '.join(sample.options[:3])}...")
+182:         print(f"  Category: {sample.category}")
+183: 
+184: 
+185: def main(argv: Optional[list[str]] = None):
+186:     """Main entry point for dataset construction."""
+187:     args = parse_args(argv)
+188: 
+189:     # Start timing
+190:     start_time = time.time()
+191: 
+192:     # Load configuration
+193:     print("Loading configuration...")
+194:     config = load_config(args.config, smoke=args.smoke)
+195: 
+196:     # Apply overrides
+197:     overrides = parse_overrides(args)
+198:     if overrides:
+199:         print(f"Applying overrides: {overrides}")
+200:         config = merge_overrides(config, overrides)
+201: 
+202:     # Create output directory
+203:     output_dir = resolve_output_dir(args.output_dir, smoke=args.smoke)
+204:     output_dir.mkdir(parents=True, exist_ok=True)
+205: 
+206:     # Load questions
+207:     print("\nLoading questions...")
+208:     questions = None
+209:     data_opts = resolve_data_loading_options(config, smoke=args.smoke)
+210: 
+211:     # Try CSV first
+212:     csv_path = data_opts.get('csv_path')
+213:     if csv_path and Path(csv_path).exists():
+214:         print(f"Loading from CSV: {csv_path}")
+215:         loader = QANTADatasetLoader()
+216:         questions = loader.load_from_csv(csv_path)
+217:         print(f"Loaded {len(questions)} questions from CSV")
 218: 
-219:     print("Running shuffle control...")
-220:     shuffle_eval = run_shuffle_control_precomputed(precomputed, threshold, alpha)
-221: 
-222:     print("Running alias substitution control...")
-223:     alias_eval = run_alias_substitution_control(
-224:         mc_questions,
-225:         alias_lookup=alias_lookup,
-226:         evaluator=lambda qset: evaluate_questions_live(qset),
-227:     )
-228: 
-229:     print("Running choices-only control...")
-230:     choices_only = run_choices_only_control(mc_questions)
-231: 
-232:     # --- Load existing artifacts ---
-233:     ppo_summary_path = out_dir / "ppo_summary.json"
-234:     ppo_summary = load_json(ppo_summary_path) if ppo_summary_path.exists() else {}
-235:     baseline_summary_path = out_dir / "baseline_summary.json"
-236:     baseline_summary = (
-237:         load_json(baseline_summary_path) if baseline_summary_path.exists() else {}
-238:     )
-239: 
-240:     # --- Build evaluation report ---
-241:     report = {
-242:         "softmax_profile_best_threshold": threshold,
-243:         "full_eval": {k: v for k, v in full_eval.items() if k != "runs"},
-244:         "controls": {
-245:             "choices_only": choices_only,
-246:             "shuffle": {k: v for k, v in shuffle_eval.items() if k != "runs"},
-247:             "alias_substitution": {
-248:                 k: v for k, v in alias_eval.items() if k != "runs"
-249:             },
-250:         },
-251:         "per_category": per_category_sorted,
-252:         "baseline_summary": baseline_summary,
-253:         "ppo_summary": ppo_summary,
-254:     }
-255: 
-256:     # Add Expected Wins summary only when that reward mode is active
-257:     if config.get("environment", {}).get("reward_mode") == "expected_wins":
-258:         from evaluation.metrics import expected_wins_score
-259:         from qb_env.opponent_models import build_opponent_model_from_config
-260: 
-261:         opp_model = build_opponent_model_from_config(mc_questions, config)
-262:         if opp_model is not None:
-263:             ew_scores = []
-264:             for run in full_eval["runs"]:
-265:                 opp_surv = [
-266:                     opp_model.prob_survive_to_step(mc_questions[0], t)
-267:                     for t in range(len(run.get("c_trace", [])))
-268:                 ]
-269:                 ew = expected_wins_score(
-270:                     run.get("c_trace", []),
-271:                     run.get("g_trace", []),
-272:                     opp_surv,
-273:                 )
-274:                 ew_scores.append(ew)
-275:             report["expected_wins"] = {
-276:                 "mean_ew": float(np.mean(ew_scores)) if ew_scores else 0.0,
-277:                 "n": len(ew_scores),
-278:             }
-279: 
-280:     save_json(out_dir / "evaluation_report.json", report)
+219:     # Fallback to HuggingFace if configured
+220:     if questions is None and data_opts.get('use_huggingface'):
+221:         print("CSV not found, falling back to HuggingFace")
+222:         dataset_name = data_opts.get('dataset') or 'qanta-challenge/acf-co24-tossups'
+223:         questions = load_from_huggingface(
+224:             dataset_name,
+225:             config_name=data_opts.get('dataset_config'),
+226:             split=data_opts.get('split', 'eval'),
+227:         )
+228:         print(f"Loaded {len(questions)} questions from HuggingFace")
+229: 
+230:     if questions is None:
+231:         raise FileNotFoundError(f"Could not load questions from {csv_path} and HuggingFace fallback not enabled")
+232: 
+233:     # Apply configured limit after loading
+234:     max_questions = data_opts.get('max_questions')
+235:     if max_questions is not None and len(questions) > int(max_questions):
+236:         print(f"Limiting dataset to {int(max_questions)} questions")
+237:         questions = questions[: int(max_questions)]
+238: 
+239:     # Build answer profiles
+240:     print("\nBuilding answer profiles...")
+241:     profile_builder = AnswerProfileBuilder(
+242:         max_tokens_per_profile=config['answer_profiles']['max_tokens_per_profile'],
+243:         min_questions_per_answer=config['answer_profiles']['min_questions_per_answer']
+244:     )
+245:     profile_builder.fit(questions)
+246:     print(f"Built {len(profile_builder._grouped)} answer profiles")
+247: 
+248:     # Construct MC questions with guards
+249:     print("\nConstructing MC questions...")
+250:     data_cfg = config['data']
+251:     mc_builder = MCBuilder(
+252:         K=data_cfg['K'],
+253:         strategy=data_cfg['distractor_strategy'],
+254:         embedding_model=config['likelihood'].get(
+255:             'sbert_name',
+256:             config['likelihood'].get('embedding_model', 'all-MiniLM-L6-v2'),
+257:         ),
+258:         openai_model=config['likelihood'].get('openai_model', 'text-embedding-3-small'),
+259:         variable_K=bool(data_cfg.get('variable_K', False)),
+260:         min_K=int(data_cfg.get('min_K', 2)),
+261:         max_K=int(data_cfg['max_K']) if data_cfg.get('max_K') is not None else None,
+262:         **config['mc_guards']
+263:     )
+264: 
+265:     # Track guard statistics
+266:     mc_builder.guard_stats = {}
+267: 
+268:     mc_questions = mc_builder.build(questions, profile_builder)
+269:     print(f"Generated {len(mc_questions)} MC questions")
+270: 
+271:     if len(mc_questions) < len(questions):
+272:         print(f"Note: {len(questions) - len(mc_questions)} questions filtered by guards")
+273: 
+274:     # Create stratified splits
+275:     print("\nCreating stratified splits...")
+276:     ratios = [
+277:         config['data']['train_ratio'],
+278:         config['data']['val_ratio'],
+279:         config['data']['test_ratio']
+280:     ]
 281: 
-282:     # --- Generate visualizations ---
-283:     print("Generating plots...")
-284: 
-285:     # Entropy vs clue index
-286:     entropy_traces = [
-287:         list(r["entropy_trace"])
-288:         for r in full_eval["runs"]
-289:         if r.get("entropy_trace")
-290:     ]
-291:     max_len = max((len(t) for t in entropy_traces), default=0)
-292:     padded = np.full((len(entropy_traces), max_len), np.nan, dtype=np.float32)
-293:     for i, trace in enumerate(entropy_traces):
-294:         padded[i, : len(trace)] = np.array(trace, dtype=np.float32)
-295:     entropy_trace = (
-296:         np.nanmean(padded, axis=0).tolist() if max_len > 0 else []
-297:     )
-298:     plot_entropy_vs_clue_index(
-299:         {"softmax_profile": entropy_trace},
-300:         out_dir / "plots" / "entropy_vs_clue.png",
-301:     )
-302: 
-303:     # Calibration curve — use top_p (belief in top answer) as confidence
-304:     confidences = []
-305:     outcomes = []
-306:     for row in full_eval["runs"]:
-307:         top_p = row.get("top_p_trace", row.get("c_trace", []))
-308:         if not top_p:
-309:             continue
-310:         idx = min(int(row["buzz_step"]), len(top_p) - 1)
-311:         confidences.append(float(top_p[idx]))
-312:         outcomes.append(1 if bool(row["correct"]) else 0)
-313:     plot_calibration_curve(
-314:         confidences, outcomes, out_dir / "plots" / "calibration.png"
-315:     )
+282:     train, val, test = create_stratified_splits(mc_questions, ratios=ratios)
+283: 
+284:     # Save datasets
+285:     print("\nSaving datasets...")
+286:     save_json(output_dir / "mc_dataset.json", mc_questions)
+287:     save_json(output_dir / "train_dataset.json", train)
+288:     save_json(output_dir / "val_dataset.json", val)
+289:     save_json(output_dir / "test_dataset.json", test)
+290: 
+291:     # Save answer profiles for debugging
+292:     if profile_builder._grouped:
+293:         profiles_dict = {
+294:             answer: {
+295:                 'question_count': len(items),
+296:                 'sample_qids': [qid for qid, _ in items[:5]]  # First 5 question IDs
+297:             }
+298:             for answer, items in profile_builder._grouped.items()
+299:         }
+300:         with open(output_dir / "answer_profiles.json", 'w') as f:
+301:             json.dump(profiles_dict, f, indent=2)
+302:         print(f"Saved answer profiles to {output_dir / 'answer_profiles.json'}")
+303: 
+304:     # Print statistics
+305:     print_statistics(train, val, test, profile_builder, mc_builder)
+306: 
+307:     # Print timing
+308:     elapsed = time.time() - start_time
+309:     print(f"\nTotal time: {elapsed:.1f} seconds")
+310: 
+311:     if args.smoke:
+312:         # Print sample MC questions for verification
+313:         print("\n" + "="*60)
+314:         print("Sample MC Questions (Smoke Test)")
+315:         print("="*60)
 316: 
-317:     # Comparison table: include baseline sweep, controls, and PPO
-318:     table_rows = []
-319: 
-320:     # Add baseline sweep results (threshold at multiple values)
-321:     if "threshold" in baseline_summary:
-322:         for threshold_str, metrics in baseline_summary["threshold"].items():
-323:             table_rows.append({
-324:                 "agent": f"threshold_{threshold_str}",
-325:                 **{k: v for k, v in metrics.items() if k != "runs"},
-326:             })
-327: 
-328:     # Add softmax_profile sweep results
-329:     if "softmax_profile" in baseline_summary:
-330:         for threshold_str, metrics in baseline_summary["softmax_profile"].items():
-331:             table_rows.append({
-332:                 "agent": f"softmax_{threshold_str}",
-333:                 **{k: v for k, v in metrics.items() if k != "runs"},
-334:             })
-335: 
-336:     # Add full softmax eval (best threshold) and control experiments
-337:     table_rows.append({
-338:         "agent": "full_softmax",
-339:         **{k: v for k, v in full_eval.items() if k != "runs"},
-340:     })
-341:     table_rows.append({
-342:         "agent": "shuffle_control",
-343:         **{k: v for k, v in shuffle_eval.items() if k != "runs"},
-344:     })
-345:     table_rows.append({
-346:         "agent": "alias_control",
-347:         **{k: v for k, v in alias_eval.items() if k != "runs"},
-348:     })
-349: 
-350:     # Add PPO if available
-351:     if ppo_summary:
-352:         table_rows.append({"agent": "ppo", **ppo_summary})
-353: 
-354:     save_comparison_table(table_rows, out_dir / "plots" / "comparison.csv")
-355: 
-356:     print(f"Wrote evaluation report to: {out_dir / 'evaluation_report.json'}")
-357: 
-358: 
-359: if __name__ == "__main__":
-360:     main()
+317:         for i, q in enumerate(train[:3], 1):
+318:             print(f"\nQuestion {i}:")
+319:             # Get first clue from cumulative_prefixes if available
+320:             if q.cumulative_prefixes:
+321:                 first_clue = q.cumulative_prefixes[0][:100] + "..." if len(q.cumulative_prefixes[0]) > 100 else q.cumulative_prefixes[0]
+322:             else:
+323:                 first_clue = q.question[:100] + "..." if len(q.question) > 100 else q.question
+324:             print(f"  First clue: {first_clue}")
+325:             print(f"  Category: {q.category}")
+326:             print(f"  Correct: {q.answer_primary}")
+327:             print(f"  Options: {', '.join(q.options[:3])}...")
+328: 
+329:     print("\nDataset construction complete!")
+330:     return 0
+331: 
+332: 
+333: if __name__ == '__main__':
+334:     sys.exit(main())
+````
+
+## File: scripts/compare_policies.py
+````python
+  1: #!/usr/bin/env python3
+  2: """
+  3: Compare T5-as-likelihood (MLP policy) vs T5-as-policy (end-to-end).
+  4: 
+  5: Evaluates both approaches on the same test set using the same metric
+  6: functions (accuracy, S_q, ECE, Brier score, buzz position).
+  7: 
+  8: **Important caveats for numeric comparison:**
+  9: 
+ 10: The two evaluation paths are *not* fully apples-to-apples:
+ 11: 
+ 12: - The MLP path uses config-driven environment settings (e.g. wait_penalty
+ 13:   from default.yaml or smoke.yaml).
+ 14: - The T5 path uses its own hardcoded reward settings (wait_penalty=0.1,
+ 15:   matching the T5 pipeline's default).
+ 16: - The MLP path builds TF-IDF from test questions + all option profiles.
+ 17:   The T5 path builds TF-IDF from profiles of the first 100 questions
+ 18:   only (lightweight env reward computation — the T5 policy does not
+ 19:   consume TF-IDF likelihoods).
+ 20: - S_q semantics differ: for MLP, c_trace is a sigmoid confidence proxy
+ 21:   over belief max; for T5, c_trace is the wait-head buzz probability.
+ 22: 
+ 23: These differences are inherent to the two architectures.  Accuracy and
+ 24: buzz-position comparisons are directly meaningful.  ECE and Brier are
+ 25: computed identically (both use top_p at buzz time).  S_q and reward
+ 26: comparisons should be interpreted qualitatively.
+ 27: 
+ 28: MLP Policy (Phase 4):
+ 29:     T5/TF-IDF computes likelihood scores -> belief features -> MLP
+ 30:     policy decides.  Uses SB3 PPO with belief-feature observations.
+ 31: 
+ 32: T5 Policy (Phase 6):
+ 33:     T5 encoder processes text directly -> PolicyHead decides.
+ 34:     Uses custom PPO with text observations via TextObservationWrapper.
+ 35: 
+ 36: Usage:
+ 37:     python scripts/compare_policies.py \\
+ 38:         --mlp-checkpoint checkpoints/ppo/best_model \\
+ 39:         --t5-checkpoint checkpoints/ppo_t5/best_model \\
+ 40:         --output results/t5_comparison.json
+ 41: 
+ 42:     python scripts/compare_policies.py \\
+ 43:         --t5-checkpoint checkpoints/ppo_t5/best_model \\
+ 44:         --t5-only
+ 45: """
+ 46: 
+ 47: from __future__ import annotations
+ 48: 
+ 49: import argparse
+ 50: import sys
+ 51: from pathlib import Path
+ 52: from typing import Any
+ 53: 
+ 54: PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ 55: if str(PROJECT_ROOT) not in sys.path:
+ 56:     sys.path.insert(0, str(PROJECT_ROOT))
+ 57: 
+ 58: import numpy as np
+ 59: 
+ 60: from evaluation.metrics import (
+ 61:     expected_calibration_error,
+ 62:     brier_score,
+ 63:     summarize_buzz_metrics,
+ 64:     system_score,
+ 65: )
+ 66: from scripts._common import ARTIFACT_DIR, load_config, load_mc_questions, save_json
+ 67: 
+ 68: 
+ 69: def evaluate_mlp_policy(
+ 70:     checkpoint_path: str,
+ 71:     test_questions: list,
+ 72:     config: dict,
+ 73: ) -> dict[str, Any]:
+ 74:     """Evaluate Phase 4 MLP policy with T5/TF-IDF likelihood on belief features.
+ 75: 
+ 76:     Loads a PPOBuzzer from an SB3 checkpoint, runs deterministic episodes
+ 77:     on each test question, and computes accuracy, S_q, ECE, and buzz
+ 78:     position metrics.
+ 79: 
+ 80:     Parameters
+ 81:     ----------
+ 82:     checkpoint_path : str
+ 83:         Path to SB3 PPO model checkpoint (`.zip`` file).
+ 84:     test_questions : list
+ 85:         List of MCQuestion instances to evaluate on.
+ 86:     config : dict
+ 87:         YAML config dict with environment, likelihood, and data sections.
+ 88: 
+ 89:     Returns
+ 90:     -------
+ 91:     dict[str, Any]
+ 92:         Evaluation results: accuracy, mean_sq, ece, brier, avg_buzz_pos,
+ 93:         n_questions.
+ 94:     """
+ 95:     from agents.ppo_buzzer import PPOBuzzer
+ 96:     from models.likelihoods import TfIdfLikelihood
+ 97:     from qb_env.tossup_env import make_env_from_config
+ 98: 
+ 99:     # Build likelihood model
+100:     corpus = (
+101:         [q.question for q in test_questions]
+102:         + [p for q in test_questions for p in q.option_profiles]
+103:     )
+104:     likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
+105: 
+106:     # Build environment with all test questions
+107:     env = make_env_from_config(
+108:         mc_questions=test_questions,
+109:         likelihood_model=likelihood_model,
+110:         config=config,
+111:     )
+112: 
+113:     # Load trained agent
+114:     agent = PPOBuzzer.load(checkpoint_path, env=env)
+115: 
+116:     # Run episodes
+117:     results = []
+118:     for _ in range(len(test_questions)):
+119:         trace = agent.run_episode(deterministic=True)
+120:         results.append(trace)
+121: 
+122:     # Compute metrics
+123:     buzz_metrics = summarize_buzz_metrics(results)
+124: 
+125:     # Extract confidences and outcomes for calibration — use top_p
+126:     from dataclasses import asdict
+127: 
+128:     rows = [asdict(r) for r in results]
+129:     confidences = []
+130:     outcomes = []
+131:     buzz_positions = []
+132:     for row in rows:
+133:         top_p_trace = list(row.get("top_p_trace", []))
+134:         c_trace = list(row.get("c_trace", []))
+135:         conf_trace = top_p_trace if top_p_trace else c_trace
+136:         buzz_step = int(row.get("buzz_step", max(0, len(conf_trace) - 1)))
+137:         if conf_trace:
+138:             idx = min(max(0, buzz_step), len(conf_trace) - 1)
+139:             confidences.append(float(conf_trace[idx]))
+140:             outcomes.append(1 if bool(row.get("correct", False)) else 0)
+141:         buzz_positions.append(buzz_step)
+142: 
+143:     ece = expected_calibration_error(confidences, outcomes)
+144:     brier = brier_score(confidences, outcomes)
+145: 
+146:     return {
+147:         "accuracy": buzz_metrics["buzz_accuracy"],
+148:         "mean_sq": buzz_metrics["mean_sq"],
+149:         "ece": ece,
+150:         "brier": brier,
+151:         "avg_buzz_pos": float(np.mean(buzz_positions)) if buzz_positions else 0.0,
+152:         "mean_reward": buzz_metrics["mean_reward_like"],
+153:         "n_questions": len(test_questions),
+154:     }
+155: 
+156: 
+157: def evaluate_t5_policy(
+158:     checkpoint_path: str,
+159:     test_questions: list,
+160:     config: dict,
+161: ) -> dict[str, Any]:
+162:     """Evaluate Phase 6 T5 end-to-end policy on text observations.
+163: 
+164:     Loads a T5PolicyModel from checkpoint, runs deterministic episodes
+165:     on each test question using TextObservationWrapper, and computes the
+166:     same metrics as evaluate_mlp_policy for fair comparison.
+167: 
+168:     Parameters
+169:     ----------
+170:     checkpoint_path : str
+171:         Path to T5PolicyModel checkpoint directory.
+172:     test_questions : list
+173:         List of MCQuestion instances to evaluate on.
+174:     config : dict
+175:         YAML config dict.
+176: 
+177:     Returns
+178:     -------
+179:     dict[str, Any]
+180:         Evaluation results: accuracy, mean_sq, ece, brier, avg_buzz_pos,
+181:         n_questions.
+182:     """
+183:     import torch
+184:     from models.t5_policy import T5PolicyModel
+185:     from models.likelihoods import TfIdfLikelihood
+186:     from qb_env.text_wrapper import TextObservationWrapper
+187:     from qb_env.tossup_env import TossupMCEnv
+188: 
+189:     # Load T5 policy model
+190:     model = T5PolicyModel.load_pretrained(checkpoint_path)
+191:     model.eval()
+192: 
+193:     # Build lightweight likelihood for environment reward computation
+194:     corpus = []
+195:     for q in test_questions[:100]:
+196:         corpus.extend(q.option_profiles)
+197:     likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
+198: 
+199:     correct_count = 0
+200:     total_count = 0
+201:     sq_scores = []
+202:     confidences = []
+203:     outcomes = []
+204:     buzz_positions = []
+205: 
+206:     with torch.no_grad():
+207:         for question in test_questions:
+208:             env = TossupMCEnv(
+209:                 questions=[question],
+210:                 likelihood_model=likelihood_model,
+211:                 K=len(question.options),
+212:                 reward_mode="time_penalty",
+213:                 wait_penalty=0.1,
+214:                 belief_mode="from_scratch",
+215:             )
+216:             wrapped_env = TextObservationWrapper(env)
+217: 
+218:             obs, info = wrapped_env.reset()
+219:             done = False
+220:             c_trace = []
+221:             g_trace = []
+222:             top_p_trace = []
+223:             episode_reward = 0.0
+224:             step_count = 0
+225: 
+226:             while not done:
+227:                 inputs = model.tokenizer(
+228:                     obs,
+229:                     return_tensors="pt",
+230:                     padding=True,
+231:                     truncation=True,
+232:                     max_length=512,
+233:                 )
+234:                 actions, act_info = model.select_action(
+235:                     inputs["input_ids"],
+236:                     inputs["attention_mask"],
+237:                     deterministic=True,
+238:                 )
+239: 
+240:                 action = actions.item()
+241: 
+242:                 wait_probs = act_info["wait_probs"]
+243:                 buzz_prob = wait_probs[0, 1].item()
+244:                 c_trace.append(buzz_prob)
+245: 
+246:                 answer_probs = act_info["answer_probs"]
+247:                 gold_prob = answer_probs[0, question.gold_index].item()
+248:                 g_trace.append(gold_prob)
+249: 
+250:                 top_p = float(answer_probs[0].max().item())
+251:                 top_p_trace.append(top_p)
+252: 
+253:                 obs, reward, terminated, truncated, step_info = (
+254:                     wrapped_env.step(action)
+255:                 )
+256:                 done = terminated or truncated
+257:                 episode_reward += reward
+258:                 step_count += 1
+259: 
+260:             sq = system_score(c_trace, g_trace)
+261:             sq_scores.append(sq)
+262: 
+263:             is_correct = step_info.get("correct", False) or step_info.get(
+264:                 "forced_correct", False
+265:             )
+266:             if is_correct:
+267:                 correct_count += 1
+268:             total_count += 1
+269: 
+270:             # Calibration: use top_p (max answer prob) for consistency
+271:             # with belief-feature agents
+272:             if top_p_trace:
+273:                 buzz_step = step_count - 1
+274:                 confidences.append(top_p_trace[-1])
+275:                 outcomes.append(1 if is_correct else 0)
+276:                 buzz_positions.append(buzz_step)
+277: 
+278:     accuracy = correct_count / max(1, total_count)
+279:     mean_sq = float(np.mean(sq_scores)) if sq_scores else 0.0
+280:     ece = expected_calibration_error(confidences, outcomes)
+281:     brier_val = brier_score(confidences, outcomes)
+282:     avg_buzz_pos = float(np.mean(buzz_positions)) if buzz_positions else 0.0
+283: 
+284:     return {
+285:         "accuracy": accuracy,
+286:         "mean_sq": mean_sq,
+287:         "ece": ece,
+288:         "brier": brier_val,
+289:         "avg_buzz_pos": avg_buzz_pos,
+290:         "mean_reward": 0.0,  # Not tracked per-episode for T5 policy eval
+291:         "n_questions": total_count,
+292:     }
+293: 
+294: 
+295: def print_comparison(
+296:     mlp_results: dict[str, Any] | None,
+297:     t5_results: dict[str, Any],
+298:     test_size: int,
+299: ) -> dict[str, Any]:
+300:     """Print and return comparison summary.
+301: 
+302:     Parameters
+303:     ----------
+304:     mlp_results : dict or None
+305:         MLP policy evaluation results. None if --t5-only.
+306:     t5_results : dict
+307:         T5 policy evaluation results.
+308:     test_size : int
+309:         Number of test questions evaluated.
+310: 
+311:     Returns
+312:     -------
+313:     dict[str, Any]
+314:         Complete comparison dict for JSON serialization.
+315:     """
+316:     print("\n" + "=" * 70)
+317:     print("COMPARISON RESULTS: T5-as-Likelihood vs T5-as-Policy")
+318:     print("=" * 70)
+319:     print(f"Test set size: {test_size}")
+320:     print()
+321: 
+322:     if mlp_results is not None:
+323:         print(f"{'Metric':<20} {'MLP (T5-likelihood)':>20} {'T5 (end-to-end)':>20} {'Difference':>15}")
+324:         print("-" * 75)
+325:         for metric in ["accuracy", "mean_sq", "ece", "brier", "avg_buzz_pos"]:
+326:             mlp_val = mlp_results.get(metric, 0.0)
+327:             t5_val = t5_results.get(metric, 0.0)
+328:             diff = t5_val - mlp_val
+329:             print(f"{metric:<20} {mlp_val:>20.4f} {t5_val:>20.4f} {diff:>+15.4f}")
+330:     else:
+331:         print("T5 Policy (end-to-end) results:")
+332:         print("-" * 40)
+333:         for metric in ["accuracy", "mean_sq", "ece", "brier", "avg_buzz_pos"]:
+334:             val = t5_results.get(metric, 0.0)
+335:             print(f"  {metric:<20}: {val:.4f}")
+336: 
+337:     # Build comparison dict
+338:     comparison: dict[str, Any] = {
+339:         "test_size": test_size,
+340:         "t5_policy": t5_results,
+341:     }
+342:     if mlp_results is not None:
+343:         comparison["mlp_policy"] = mlp_results
+344:         comparison["difference"] = {
+345:             metric: t5_results.get(metric, 0.0) - mlp_results.get(metric, 0.0)
+346:             for metric in ["accuracy", "mean_sq", "ece", "brier", "avg_buzz_pos"]
+347:         }
+348: 
+349:     return comparison
+350: 
+351: 
+352: def parse_compare_args() -> argparse.Namespace:
+353:     """Parse comparison script arguments.
+354: 
+355:     Returns
+356:     -------
+357:     argparse.Namespace
+358:         Parsed arguments.
+359:     """
+360:     parser = argparse.ArgumentParser(
+361:         description="Compare T5-as-likelihood (MLP) vs T5-as-policy.",
+362:     )
+363:     parser.add_argument(
+364:         "--mlp-checkpoint",
+365:         type=str,
+366:         default=None,
+367:         help="Path to Phase 4 MLP policy checkpoint.",
+368:     )
+369:     parser.add_argument(
+370:         "--t5-checkpoint",
+371:         type=str,
+372:         required=True,
+373:         help="Path to Phase 6 T5 policy checkpoint.",
+374:     )
+375:     parser.add_argument(
+376:         "--config",
+377:         type=str,
+378:         default=None,
+379:         help="Path to YAML config file.",
+380:     )
+381:     parser.add_argument(
+382:         "--mc-path",
+383:         type=str,
+384:         default=None,
+385:         help="Path to MC dataset JSON file.",
+386:     )
+387:     parser.add_argument(
+388:         "--output",
+389:         type=str,
+390:         default="results/t5_comparison.json",
+391:         help="Path for output JSON results.",
+392:     )
+393:     parser.add_argument(
+394:         "--smoke",
+395:         action="store_true",
+396:         help="Quick test with first 50 questions.",
+397:     )
+398:     parser.add_argument(
+399:         "--t5-only",
+400:         action="store_true",
+401:         help="Only evaluate T5 policy (skip MLP comparison).",
+402:     )
+403:     return parser.parse_args()
+404: 
+405: 
+406: def main() -> None:
+407:     """Run the comparison experiment."""
+408:     args = parse_compare_args()
+409: 
+410:     # Load config
+411:     config = load_config(args.config)
+412: 
+413:     # Load test questions
+414:     if args.mc_path:
+415:         mc_path = Path(args.mc_path)
+416:     else:
+417:         candidates = [
+418:             ARTIFACT_DIR / "main" / "mc_dataset.json",
+419:             ARTIFACT_DIR / "smoke" / "mc_dataset.json",
+420:             PROJECT_ROOT / "data" / "processed" / "mc_dataset.json",
+421:         ]
+422:         mc_path = None
+423:         for candidate in candidates:
+424:             if candidate.exists():
+425:                 mc_path = candidate
+426:                 break
+427:         if mc_path is None:
+428:             print("ERROR: No MC dataset found. Run build_mc_dataset.py first.")
+429:             sys.exit(1)
+430: 
+431:     print(f"Loading questions from: {mc_path}")
+432:     all_questions = load_mc_questions(mc_path)
+433:     print(f"Loaded {len(all_questions)} questions")
+434: 
+435:     # Prefer the persisted test split if it exists alongside mc_dataset.json
+436:     test_split_path = mc_path.parent / "test_dataset.json"
+437:     if test_split_path.exists():
+438:         test_questions = load_mc_questions(test_split_path)
+439:         print(f"Using persisted test split: {len(test_questions)} questions")
+440:     else:
+441:         import random
+442:         rng = random.Random(42)
+443:         shuffled = all_questions[:]
+444:         rng.shuffle(shuffled)
+445:         test_start = int(len(shuffled) * 0.85)
+446:         test_questions = shuffled[test_start:]
+447:         print(f"No test_dataset.json found; using random 15% split: {len(test_questions)} questions")
+448: 
+449:     if args.smoke:
+450:         test_questions = test_questions[:50]
+451: 
+452:     print(f"Test set: {len(test_questions)} questions")
+453: 
+454:     # Evaluate MLP policy (if checkpoint provided and not t5-only)
+455:     mlp_results = None
+456:     if args.mlp_checkpoint and not args.t5_only:
+457:         print("\n" + "-" * 40)
+458:         print("Evaluating MLP policy (T5-as-likelihood)...")
+459:         print("-" * 40)
+460:         mlp_results = evaluate_mlp_policy(
+461:             args.mlp_checkpoint, test_questions, config
+462:         )
+463:         print(f"  Accuracy: {mlp_results['accuracy']:.4f}")
+464:         print(f"  Mean S_q: {mlp_results['mean_sq']:.4f}")
+465: 
+466:     # Evaluate T5 policy
+467:     print("\n" + "-" * 40)
+468:     print("Evaluating T5 policy (end-to-end)...")
+469:     print("-" * 40)
+470:     t5_results = evaluate_t5_policy(
+471:         args.t5_checkpoint, test_questions, config
+472:     )
+473:     print(f"  Accuracy: {t5_results['accuracy']:.4f}")
+474:     print(f"  Mean S_q: {t5_results['mean_sq']:.4f}")
+475: 
+476:     # Print comparison
+477:     comparison = print_comparison(mlp_results, t5_results, len(test_questions))
+478: 
+479:     # Save results
+480:     output_path = Path(args.output)
+481:     output_path.parent.mkdir(parents=True, exist_ok=True)
+482:     save_json(output_path, comparison)
+483:     print(f"\nResults saved to {output_path}")
+484: 
+485: 
+486: if __name__ == "__main__":
+487:     main()
 ````
 
 ## File: scripts/optimize_dspy.py
@@ -14913,405 +14506,219 @@ requirements.txt
  43:     sweep_thresholds,
  44: )
  45: from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
- 46: from scripts._common import (
- 47:     ARTIFACT_DIR,
- 48:     build_likelihood_model,
- 49:     load_config,
- 50:     load_embedding_cache,
- 51:     load_mc_questions,
- 52:     save_embedding_cache,
- 53:     save_json,
- 54: )
- 55: 
- 56: 
- 57: def parse_args() -> argparse.Namespace:
- 58:     """Parse command-line arguments.
- 59: 
- 60:     Returns
- 61:     -------
- 62:     argparse.Namespace
- 63:         Parsed arguments with config, smoke, and mc_path fields.
- 64:     """
- 65:     parser = argparse.ArgumentParser(description="Run non-RL baseline agents.")
- 66:     parser.add_argument(
- 67:         "--config",
- 68:         type=str,
- 69:         default=None,
- 70:         help="Path to YAML config file (default: configs/default.yaml).",
- 71:     )
- 72:     parser.add_argument(
- 73:         "--smoke",
- 74:         action="store_true",
- 75:         help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
- 76:     )
- 77:     parser.add_argument(
- 78:         "--mc-path",
- 79:         type=str,
- 80:         default=None,
- 81:         help="Optional MC dataset JSON path (overrides config-derived path).",
- 82:     )
- 83:     return parser.parse_args()
- 84: 
- 85: 
- 86: def summarize(results: list[dict]) -> dict:
- 87:     """Combine buzz metrics and calibration into a single summary dict.
- 88: 
- 89:     Parameters
- 90:     ----------
- 91:     results : list[dict]
- 92:         List of episode trace dicts (from asdict(EpisodeResult)).
- 93: 
- 94:     Returns
- 95:     -------
- 96:     dict
- 97:         Merged summary with accuracy, S_q, ECE, Brier, etc.
- 98:     """
- 99:     return {
-100:         **summarize_buzz_metrics(results),
-101:         **calibration_at_buzz(results),
-102:     }
-103: 
-104: 
-105: def main() -> None:
-106:     """Run all baseline agents and save artifacts."""
-107:     start_time = time.time()
-108: 
-109:     args = parse_args()
-110: 
-111:     config = load_config(args.config, smoke=args.smoke)
-112: 
-113:     split = "smoke" if args.smoke else "main"
-114:     out_dir = ARTIFACT_DIR / split
-115: 
-116:     # Determine MC dataset path
-117:     mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
-118: 
-119:     # Fallback: check data/processed/ if artifacts path doesn't exist
-120:     if not mc_path.exists():
-121:         fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
-122:         if fallback.exists():
-123:             print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
-124:             mc_path = fallback
-125: 
-126:     print(f"Loading MC questions from: {mc_path}")
-127:     mc_questions = load_mc_questions(mc_path)
-128:     print(f"Loaded {len(mc_questions)} MC questions")
-129: 
-130:     # Build likelihood model
-131:     print(f"Building likelihood model: {config['likelihood']['model']}")
-132:     likelihood_model = build_likelihood_model(config, mc_questions)
-133:     load_embedding_cache(likelihood_model, config)
-134: 
-135:     # Extract hyperparameters
-136:     beta = float(config["likelihood"].get("beta", 5.0))
-137:     alpha = float(config["bayesian"].get("alpha", 10.0))
-138:     thresholds = [float(x) for x in config["bayesian"]["threshold_sweep"]]
-139: 
-140:     print(f"Beta: {beta}, Alpha: {alpha}")
-141:     print(f"Thresholds: {thresholds}")
-142: 
-143:     # --- Pre-compute all embeddings once (batched) ---
-144:     all_texts: list[str] = []
-145:     for q in mc_questions:
-146:         all_texts.extend(q.cumulative_prefixes)
-147:         all_texts.extend(q.option_profiles)
-148:         for step_idx in range(len(q.run_indices)):
-149:             prev_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
-150:             all_texts.append(" ".join(q.tokens[prev_idx + 1 : q.run_indices[step_idx] + 1]))
-151:     print(f"\nPre-computing embeddings for {len(set(all_texts)):,} unique texts...")
-152:     likelihood_model.precompute_embeddings(all_texts, batch_size=64)
-153:     save_embedding_cache(likelihood_model, config)
-154: 
-155:     # --- Pre-compute beliefs (one model pass, all steps) ---
-156:     precomputed = precompute_beliefs(mc_questions, likelihood_model, beta)
-157: 
-158:     # --- Threshold sweep (pure numpy, instant) ---
-159:     print("\nRunning ThresholdBuzzer sweep...")
-160:     threshold_runs = sweep_thresholds(
-161:         questions=mc_questions,
-162:         likelihood_model=likelihood_model,
-163:         thresholds=thresholds,
-164:         beta=beta,
-165:         alpha=alpha,
-166:         precomputed=precomputed,
-167:     )
-168: 
-169:     threshold_payload: dict[str, list[dict]] = {}
-170:     threshold_summary: dict[str, dict] = {}
-171:     for threshold, runs in threshold_runs.items():
-172:         rows = [asdict(r) for r in runs]
-173:         threshold_payload[str(threshold)] = rows
-174:         threshold_summary[str(threshold)] = summarize(rows)
-175: 
-176:     # --- Softmax profile sweep (reuse from_scratch precomputed beliefs) ---
-177:     print("\nRunning SoftmaxProfile sweep (precomputed)...")
-178:     softmax_payload: dict[str, list[dict]] = {}
-179:     softmax_summary: dict[str, dict] = {}
-180:     for threshold in thresholds:
-181:         results = [
-182:             asdict(_softmax_episode_from_precomputed(pq, threshold, alpha))
-183:             for pq in precomputed
-184:         ]
-185:         softmax_payload[str(threshold)] = results
-186:         softmax_summary[str(threshold)] = summarize(results)
-187: 
-188:     # --- Sequential Bayes sweep (one belief pass, pure numpy threshold sweep) ---
-189:     print("Pre-computing sequential Bayes beliefs...")
-190:     seq_precomputed = precompute_sequential_beliefs(mc_questions, likelihood_model, beta)
-191:     print("Running SequentialBayes sweep (precomputed)...")
-192:     seq_results = sweep_sequential_thresholds(
-193:         questions=mc_questions,
-194:         likelihood_model=likelihood_model,
-195:         thresholds=thresholds,
-196:         beta=beta,
-197:         alpha=alpha,
-198:         precomputed=seq_precomputed,
-199:     )
-200:     sequential_payload: dict[str, list[dict]] = {}
-201:     sequential_summary: dict[str, dict] = {}
-202:     for threshold, runs in seq_results.items():
-203:         rows = [asdict(r) for r in runs]
-204:         sequential_payload[str(threshold)] = rows
-205:         sequential_summary[str(threshold)] = summarize(rows)
-206: 
-207:     # --- AlwaysBuzzFinal (reuse from_scratch precomputed beliefs) ---
-208:     print("Running AlwaysBuzzFinal baseline (precomputed)...")
-209:     floor_runs = [asdict(_always_final_from_precomputed(pq)) for pq in precomputed]
-210:     floor_summary = summarize(floor_runs)
-211: 
-212:     # --- Save artifacts ---
-213:     print(f"\nSaving artifacts to: {out_dir}")
-214:     save_json(out_dir / "baseline_threshold_runs.json", threshold_payload)
-215:     save_json(out_dir / "baseline_softmax_profile_runs.json", softmax_payload)
-216:     save_json(out_dir / "baseline_sequential_bayes_runs.json", sequential_payload)
-217:     save_json(out_dir / "baseline_floor_runs.json", floor_runs)
-218: 
-219:     summary = {
-220:         "threshold": threshold_summary,
-221:         "softmax_profile": softmax_summary,
-222:         "sequential_bayes": sequential_summary,
-223:         "always_final": floor_summary,
-224:     }
-225:     save_json(out_dir / "baseline_summary.json", summary)
-226: 
-227:     elapsed = time.time() - start_time
-228:     print(f"\nWrote baseline outputs to: {out_dir}")
-229:     print(f"Total time: {elapsed:.1f} seconds")
-230: 
-231:     # Print summary highlights
-232:     print("\n--- Summary ---")
-233:     for agent_name, agent_summary in summary.items():
-234:         if isinstance(agent_summary, dict) and "buzz_accuracy" in agent_summary:
-235:             # Single-threshold agent (always_final)
-236:             print(f"  {agent_name}: accuracy={agent_summary['buzz_accuracy']:.3f}, "
-237:                   f"mean_sq={agent_summary.get('mean_sq', 0):.3f}")
-238:         elif isinstance(agent_summary, dict):
-239:             # Multi-threshold agent
-240:             for thr, metrics in agent_summary.items():
-241:                 if isinstance(metrics, dict) and "buzz_accuracy" in metrics:
-242:                     print(f"  {agent_name}[{thr}]: accuracy={metrics['buzz_accuracy']:.3f}, "
-243:                           f"mean_sq={metrics.get('mean_sq', 0):.3f}")
-244: 
-245: 
-246: if __name__ == "__main__":
-247:     main()
-````
-
-## File: scripts/train_ppo.py
-````python
-  1: #!/usr/bin/env python3
-  2: """
-  3: Train PPO buzzer agent on belief-feature observations.
-  4: 
-  5: Loads MC questions, builds a likelihood model, creates a Gymnasium environment,
-  6: trains an MLP policy with SB3 PPO, then evaluates with episode traces and
-  7: summary metrics (accuracy, S_q, ECE, Brier score).
-  8: 
-  9: Usage:
- 10:     python scripts/train_ppo.py --smoke              # Quick smoke test
- 11:     python scripts/train_ppo.py --smoke --deterministic-eval
- 12:     python scripts/train_ppo.py --config configs/custom.yaml
- 13:     python scripts/train_ppo.py --timesteps 50000    # Override timesteps
- 14: 
- 15: Ported from qb-rl reference implementation (scripts/train_ppo.py) with
- 16: import path adaptations for the unified qanta-buzzer codebase.
- 17: """
- 18: 
- 19: from __future__ import annotations
- 20: 
- 21: import argparse
- 22: from dataclasses import asdict
- 23: from pathlib import Path
- 24: import sys
- 25: 
- 26: PROJECT_ROOT = Path(__file__).resolve().parents[1]
- 27: if str(PROJECT_ROOT) not in sys.path:
- 28:     sys.path.insert(0, str(PROJECT_ROOT))
- 29: 
- 30: from agents.ppo_buzzer import PPOBuzzer
- 31: from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
- 32: from qb_env.stop_only_env import StopOnlyEnv
- 33: from qb_env.tossup_env import make_env_from_config, precompute_beliefs
- 34: from scripts._common import (
- 35:     ARTIFACT_DIR,
- 36:     build_likelihood_model,
- 37:     load_config,
- 38:     load_embedding_cache,
- 39:     load_mc_questions,
- 40:     save_embedding_cache,
- 41:     save_json,
- 42: )
- 43: 
- 44: 
- 45: def parse_args() -> argparse.Namespace:
- 46:     """Parse command-line arguments.
- 47: 
- 48:     Returns
- 49:     -------
- 50:     argparse.Namespace
- 51:         Parsed arguments with config, smoke, mc_path, timesteps, and
- 52:         deterministic_eval fields.
- 53:     """
- 54:     parser = argparse.ArgumentParser(description="Train PPO buzzer.")
- 55:     parser.add_argument(
- 56:         "--config", type=str, default=None,
- 57:         help="Path to YAML config file (default: configs/default.yaml).",
- 58:     )
- 59:     parser.add_argument(
- 60:         "--smoke", action="store_true",
- 61:         help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
- 62:     )
- 63:     parser.add_argument(
- 64:         "--mc-path", type=str, default=None,
- 65:         help="Optional MC dataset JSON path (overrides config-derived path).",
- 66:     )
- 67:     parser.add_argument(
- 68:         "--timesteps", type=int, default=None,
- 69:         help="Override total_timesteps from config.",
- 70:     )
- 71:     parser.add_argument(
- 72:         "--seed", type=int, default=None,
- 73:         help="Override PPO/environment seed from config.",
- 74:     )
- 75:     parser.add_argument(
- 76:         "--deterministic-eval", action="store_true",
- 77:         help="Use deterministic policy for post-training episode evaluation.",
+ 46: from qb_data.config import merge_overrides
+ 47: from scripts._common import (
+ 48:     ARTIFACT_DIR,
+ 49:     build_likelihood_model,
+ 50:     load_config,
+ 51:     load_embedding_cache,
+ 52:     load_mc_questions,
+ 53:     parse_overrides,
+ 54:     save_embedding_cache,
+ 55:     save_json,
+ 56: )
+ 57: 
+ 58: 
+ 59: def parse_args() -> argparse.Namespace:
+ 60:     """Parse command-line arguments.
+ 61: 
+ 62:     Returns
+ 63:     -------
+ 64:     argparse.Namespace
+ 65:         Parsed arguments with config, smoke, and mc_path fields.
+ 66:     """
+ 67:     parser = argparse.ArgumentParser(description="Run non-RL baseline agents.")
+ 68:     parser.add_argument(
+ 69:         "--config",
+ 70:         type=str,
+ 71:         default=None,
+ 72:         help="Path to YAML config file (default: configs/default.yaml).",
+ 73:     )
+ 74:     parser.add_argument(
+ 75:         "--smoke",
+ 76:         action="store_true",
+ 77:         help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
  78:     )
  79:     parser.add_argument(
- 80:         "--stochastic-eval", action="store_true",
- 81:         help="Force stochastic policy sampling for post-training evaluation.",
- 82:     )
- 83:     parser.add_argument(
- 84:         "--policy-mode",
- 85:         type=str,
- 86:         choices=["flat_kplus1", "stop_only"],
- 87:         default="flat_kplus1",
- 88:         help="Policy action space: flat K+1 actions (default) or binary stop_only.",
+ 80:         "--mc-path",
+ 81:         type=str,
+ 82:         default=None,
+ 83:         help="Optional MC dataset JSON path (overrides config-derived path).",
+ 84:     )
+ 85:     parser.add_argument(
+ 86:         "overrides",
+ 87:         nargs="*",
+ 88:         help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
  89:     )
  90:     return parser.parse_args()
  91: 
  92: 
- 93: def main() -> None:
- 94:     """Train PPO agent and save model + evaluation artifacts."""
- 95:     args = parse_args()
- 96: 
- 97:     config = load_config(args.config, smoke=args.smoke)
- 98: 
- 99:     split = "smoke" if args.smoke else "main"
-100:     out_dir = ARTIFACT_DIR / split
-101:     mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
-102: 
-103:     # Fallback: check data/processed/ if artifacts path doesn't exist
-104:     if not mc_path.exists():
-105:         fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
-106:         if fallback.exists():
-107:             print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
-108:             mc_path = fallback
-109: 
-110:     print(f"Loading MC questions from: {mc_path}")
-111:     mc_questions = load_mc_questions(mc_path)
-112:     print(f"Loaded {len(mc_questions)} MC questions")
-113: 
-114:     print(f"Building likelihood model: {config['likelihood']['model']}")
-115:     likelihood_model = build_likelihood_model(config, mc_questions)
-116:     load_embedding_cache(likelihood_model, config)
+ 93: def summarize(results: list[dict]) -> dict:
+ 94:     """Combine buzz metrics and calibration into a single summary dict.
+ 95: 
+ 96:     Parameters
+ 97:     ----------
+ 98:     results : list[dict]
+ 99:         List of episode trace dicts (from asdict(EpisodeResult)).
+100: 
+101:     Returns
+102:     -------
+103:     dict
+104:         Merged summary with accuracy, S_q, ECE, Brier, etc.
+105:     """
+106:     return {
+107:         **summarize_buzz_metrics(results),
+108:         **calibration_at_buzz(results),
+109:     }
+110: 
+111: 
+112: def main() -> None:
+113:     """Run all baseline agents and save artifacts."""
+114:     start_time = time.time()
+115: 
+116:     args = parse_args()
 117: 
-118:     env_cfg = config["environment"]
-119:     lik_cfg = config["likelihood"]
-120: 
-121:     print(f"Precomputing belief trajectories for {len(mc_questions)} questions...")
-122:     belief_cache = precompute_beliefs(
-123:         questions=mc_questions,
-124:         likelihood_model=likelihood_model,
-125:         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
-126:         beta=float(lik_cfg.get("beta", 5.0)),
-127:         K=int(config["data"].get("K", 4)),
-128:     )
-129:     print(f"Cached {len(belief_cache)} belief vectors")
-130:     save_embedding_cache(likelihood_model, config)
-131: 
-132:     env = make_env_from_config(
-133:         mc_questions=mc_questions,
-134:         likelihood_model=likelihood_model,
-135:         config=config,
-136:         precomputed_beliefs=belief_cache,
-137:     )
-138:     if args.policy_mode == "stop_only":
-139:         print("Wrapping environment with StopOnlyEnv (WAIT/BUZZ only)...")
-140:         env = StopOnlyEnv(env)
-141: 
-142:     ppo_cfg = config["ppo"]
-143:     train_seed = int(args.seed if args.seed is not None else ppo_cfg.get("seed", 13))
-144:     total_timesteps = int(
-145:         args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
-146:     )
-147: 
-148:     print(f"Training PPO for {total_timesteps} timesteps...")
-149:     agent = PPOBuzzer(
-150:         env=env,
-151:         learning_rate=float(ppo_cfg["learning_rate"]),
-152:         n_steps=int(ppo_cfg["n_steps"]),
-153:         batch_size=int(ppo_cfg["batch_size"]),
-154:         n_epochs=int(ppo_cfg["n_epochs"]),
-155:         gamma=float(ppo_cfg["gamma"]),
-156:         seed=train_seed,
-157:         policy_kwargs=ppo_cfg.get("policy_kwargs", {"net_arch": [64, 64]}),
-158:         verbose=1,
-159:     )
-160: 
-161:     agent.train(total_timesteps=total_timesteps)
-162:     model_path = out_dir / "ppo_model"
-163:     agent.save(model_path)
-164: 
-165:     eval_deterministic = True
-166:     if args.stochastic_eval:
-167:         eval_deterministic = False
-168:     elif args.deterministic_eval:
-169:         eval_deterministic = True
-170: 
-171:     print(
-172:         f"Evaluating PPO agent on {len(mc_questions)} questions "
-173:         f"(deterministic={eval_deterministic})..."
-174:     )
-175:     traces = [
-176:         asdict(
-177:             agent.run_episode(
-178:                 deterministic=eval_deterministic,
-179:                 question_idx=i,
-180:             )
-181:         )
-182:         for i in range(len(mc_questions))
-183:     ]
-184:     summary = {**summarize_buzz_metrics(traces), **calibration_at_buzz(traces)}
-185: 
-186:     save_json(out_dir / "ppo_runs.json", traces)
-187:     save_json(out_dir / "ppo_summary.json", summary)
-188:     print(f"Saved PPO model to: {model_path}.zip")
-189:     print(f"Saved PPO summaries to: {out_dir}")
-190: 
-191: 
-192: if __name__ == "__main__":
-193:     main()
+118:     config = load_config(args.config, smoke=args.smoke)
+119:     overrides = parse_overrides(args)
+120:     if overrides:
+121:         print(f"Applying overrides: {overrides}")
+122:         config = merge_overrides(config, overrides)
+123: 
+124:     split = "smoke" if args.smoke else "main"
+125:     out_dir = ARTIFACT_DIR / split
+126: 
+127:     # Determine MC dataset path
+128:     mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
+129: 
+130:     # Fallback: check data/processed/ if artifacts path doesn't exist
+131:     if not mc_path.exists():
+132:         fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
+133:         if fallback.exists():
+134:             print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
+135:             mc_path = fallback
+136: 
+137:     print(f"Loading MC questions from: {mc_path}")
+138:     mc_questions = load_mc_questions(mc_path)
+139:     print(f"Loaded {len(mc_questions)} MC questions")
+140: 
+141:     # Build likelihood model
+142:     print(f"Building likelihood model: {config['likelihood']['model']}")
+143:     likelihood_model = build_likelihood_model(config, mc_questions)
+144:     load_embedding_cache(likelihood_model, config)
+145: 
+146:     # Extract hyperparameters
+147:     beta = float(config["likelihood"].get("beta", 5.0))
+148:     alpha = float(config["bayesian"].get("alpha", 10.0))
+149:     thresholds = [float(x) for x in config["bayesian"]["threshold_sweep"]]
+150: 
+151:     print(f"Beta: {beta}, Alpha: {alpha}")
+152:     print(f"Thresholds: {thresholds}")
+153: 
+154:     # --- Pre-compute all embeddings once (batched) ---
+155:     all_texts: list[str] = []
+156:     for q in mc_questions:
+157:         all_texts.extend(q.cumulative_prefixes)
+158:         all_texts.extend(q.option_profiles)
+159:         for step_idx in range(len(q.run_indices)):
+160:             prev_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
+161:             all_texts.append(" ".join(q.tokens[prev_idx + 1 : q.run_indices[step_idx] + 1]))
+162:     print(f"\nPre-computing embeddings for {len(set(all_texts)):,} unique texts...")
+163:     likelihood_model.precompute_embeddings(all_texts, batch_size=64)
+164:     save_embedding_cache(likelihood_model, config)
+165: 
+166:     # --- Pre-compute beliefs (one model pass, all steps) ---
+167:     precomputed = precompute_beliefs(mc_questions, likelihood_model, beta)
+168: 
+169:     # --- Threshold sweep (pure numpy, instant) ---
+170:     print("\nRunning ThresholdBuzzer sweep...")
+171:     threshold_runs = sweep_thresholds(
+172:         questions=mc_questions,
+173:         likelihood_model=likelihood_model,
+174:         thresholds=thresholds,
+175:         beta=beta,
+176:         alpha=alpha,
+177:         precomputed=precomputed,
+178:     )
+179: 
+180:     threshold_payload: dict[str, list[dict]] = {}
+181:     threshold_summary: dict[str, dict] = {}
+182:     for threshold, runs in threshold_runs.items():
+183:         rows = [asdict(r) for r in runs]
+184:         threshold_payload[str(threshold)] = rows
+185:         threshold_summary[str(threshold)] = summarize(rows)
+186: 
+187:     # --- Softmax profile sweep (reuse from_scratch precomputed beliefs) ---
+188:     print("\nRunning SoftmaxProfile sweep (precomputed)...")
+189:     softmax_payload: dict[str, list[dict]] = {}
+190:     softmax_summary: dict[str, dict] = {}
+191:     for threshold in thresholds:
+192:         results = [
+193:             asdict(_softmax_episode_from_precomputed(pq, threshold, alpha))
+194:             for pq in precomputed
+195:         ]
+196:         softmax_payload[str(threshold)] = results
+197:         softmax_summary[str(threshold)] = summarize(results)
+198: 
+199:     # --- Sequential Bayes sweep (one belief pass, pure numpy threshold sweep) ---
+200:     print("Pre-computing sequential Bayes beliefs...")
+201:     seq_precomputed = precompute_sequential_beliefs(mc_questions, likelihood_model, beta)
+202:     print("Running SequentialBayes sweep (precomputed)...")
+203:     seq_results = sweep_sequential_thresholds(
+204:         questions=mc_questions,
+205:         likelihood_model=likelihood_model,
+206:         thresholds=thresholds,
+207:         beta=beta,
+208:         alpha=alpha,
+209:         precomputed=seq_precomputed,
+210:     )
+211:     sequential_payload: dict[str, list[dict]] = {}
+212:     sequential_summary: dict[str, dict] = {}
+213:     for threshold, runs in seq_results.items():
+214:         rows = [asdict(r) for r in runs]
+215:         sequential_payload[str(threshold)] = rows
+216:         sequential_summary[str(threshold)] = summarize(rows)
+217: 
+218:     # --- AlwaysBuzzFinal (reuse from_scratch precomputed beliefs) ---
+219:     print("Running AlwaysBuzzFinal baseline (precomputed)...")
+220:     floor_runs = [asdict(_always_final_from_precomputed(pq)) for pq in precomputed]
+221:     floor_summary = summarize(floor_runs)
+222: 
+223:     # --- Save artifacts ---
+224:     print(f"\nSaving artifacts to: {out_dir}")
+225:     save_json(out_dir / "baseline_threshold_runs.json", threshold_payload)
+226:     save_json(out_dir / "baseline_softmax_profile_runs.json", softmax_payload)
+227:     save_json(out_dir / "baseline_sequential_bayes_runs.json", sequential_payload)
+228:     save_json(out_dir / "baseline_floor_runs.json", floor_runs)
+229: 
+230:     summary = {
+231:         "threshold": threshold_summary,
+232:         "softmax_profile": softmax_summary,
+233:         "sequential_bayes": sequential_summary,
+234:         "always_final": floor_summary,
+235:     }
+236:     save_json(out_dir / "baseline_summary.json", summary)
+237: 
+238:     elapsed = time.time() - start_time
+239:     print(f"\nWrote baseline outputs to: {out_dir}")
+240:     print(f"Total time: {elapsed:.1f} seconds")
+241: 
+242:     # Print summary highlights
+243:     print("\n--- Summary ---")
+244:     for agent_name, agent_summary in summary.items():
+245:         if isinstance(agent_summary, dict) and "buzz_accuracy" in agent_summary:
+246:             # Single-threshold agent (always_final)
+247:             print(f"  {agent_name}: accuracy={agent_summary['buzz_accuracy']:.3f}, "
+248:                   f"mean_sq={agent_summary.get('mean_sq', 0):.3f}")
+249:         elif isinstance(agent_summary, dict):
+250:             # Multi-threshold agent
+251:             for thr, metrics in agent_summary.items():
+252:                 if isinstance(metrics, dict) and "buzz_accuracy" in metrics:
+253:                     print(f"  {agent_name}[{thr}]: accuracy={metrics['buzz_accuracy']:.3f}, "
+254:                           f"mean_sq={metrics.get('mean_sq', 0):.3f}")
+255: 
+256: 
+257: if __name__ == "__main__":
+258:     main()
 ````
 
 ## File: tests/test_agents.py
@@ -16853,755 +16260,212 @@ requirements.txt
 470:         assert model.cache_memory_bytes == 0
 ````
 
-## File: qb_env/tossup_env.py
+## File: scripts/train_ppo.py
 ````python
-  1: """
-  2: Gymnasium-compliant POMDP Environment for Quiz Bowl
-  3: 
-  4: Implements a tossup question environment where clues are revealed incrementally.
-  5: At each step the agent observes a belief-based feature vector and chooses either
-  6: to WAIT (action 0, reveals next clue) or to BUZZ with a specific answer option
-  7: (actions 1..K, ends the episode).
+  1: #!/usr/bin/env python3
+  2: """
+  3: Train PPO buzzer agent on belief-feature observations.
+  4: 
+  5: Loads MC questions, builds a likelihood model, creates a Gymnasium environment,
+  6: trains an MLP policy with SB3 PPO, then evaluates with episode traces and
+  7: summary metrics (accuracy, S_q, ECE, Brier score).
   8: 
-  9: The environment computes beliefs over K answer options using a pluggable
- 10: LikelihoodModel and converts them to observations via extract_belief_features.
- 11: 
- 12: Ported from qb-rl reference implementation (qb_env/tossup_env.py) and adapted
- 13: for the unified qanta-buzzer codebase.
- 14: """
- 15: 
- 16: from __future__ import annotations
- 17: 
- 18: import random
- 19: from typing import Any
+  9: Usage:
+ 10:     python scripts/train_ppo.py --smoke              # Quick smoke test
+ 11:     python scripts/train_ppo.py --smoke --deterministic-eval
+ 12:     python scripts/train_ppo.py --config configs/custom.yaml
+ 13:     python scripts/train_ppo.py --timesteps 50000    # Override timesteps
+ 14: 
+ 15: Ported from qb-rl reference implementation (scripts/train_ppo.py) with
+ 16: import path adaptations for the unified qanta-buzzer codebase.
+ 17: """
+ 18: 
+ 19: from __future__ import annotations
  20: 
- 21: import gymnasium as gym
- 22: import numpy as np
- 23: from gymnasium import spaces
- 24: 
- 25: from models.features import extract_belief_features
- 26: from models.likelihoods import LikelihoodModel
- 27: from qb_data.mc_builder import MCQuestion
- 28: 
+ 21: import argparse
+ 22: from dataclasses import asdict
+ 23: from pathlib import Path
+ 24: import sys
+ 25: 
+ 26: PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ 27: if str(PROJECT_ROOT) not in sys.path:
+ 28:     sys.path.insert(0, str(PROJECT_ROOT))
  29: 
- 30: def _softmax(scores: np.ndarray, beta: float) -> np.ndarray:
- 31:     """Temperature-scaled softmax with numerical stability.
- 32: 
- 33:     Parameters
- 34:     ----------
- 35:     scores : np.ndarray
- 36:         Raw similarity scores of shape (K,).
- 37:     beta : float
- 38:         Temperature parameter. Higher values produce sharper distributions.
- 39: 
- 40:     Returns
- 41:     -------
- 42:     np.ndarray
- 43:         Probability distribution of shape (K,), dtype float32.
- 44:     """
- 45:     stable = scores - np.max(scores)
- 46:     probs = np.exp(beta * stable)
- 47:     probs_sum = np.sum(probs)
- 48:     if probs_sum <= 0:
- 49:         return np.ones_like(scores, dtype=np.float32) / len(scores)
- 50:     return (probs / probs_sum).astype(np.float32)
- 51: 
- 52: 
- 53: def precompute_beliefs(
- 54:     questions: list[MCQuestion],
- 55:     likelihood_model: LikelihoodModel,
- 56:     belief_mode: str = "from_scratch",
- 57:     beta: float = 5.0,
- 58:     K: int = 4,
- 59: ) -> dict[tuple[int, int], np.ndarray]:
- 60:     """Precompute belief trajectories for all questions and steps.
- 61: 
- 62:     Iterates over each question and each step index, computing the belief
- 63:     using the same logic as ``TossupMCEnv._compute_belief``. The result is
- 64:     a dict keyed by ``(question_index, step_idx)`` for O(1) lookup during
- 65:     training rollouts.
- 66: 
- 67:     Parameters
- 68:     ----------
- 69:     questions : list[MCQuestion]
- 70:         Pool of questions to precompute beliefs for.
- 71:     likelihood_model : LikelihoodModel
- 72:         Model that scores clue text against answer option profiles.
- 73:     belief_mode : str
- 74:         One of ``"from_scratch"``, ``"sequential_bayes"``.
- 75:     beta : float
- 76:         Softmax temperature for converting raw scores to probabilities.
- 77:     K : int
- 78:         Number of answer options per question.
- 79: 
- 80:     Returns
- 81:     -------
- 82:     dict[tuple[int, int], np.ndarray]
- 83:         Maps ``(question_index, step_idx)`` to belief vectors of shape
- 84:         ``(K,)`` with dtype float32. Each belief sums to ~1.0.
- 85:     """
- 86:     cache: dict[tuple[int, int], np.ndarray] = {}
- 87: 
- 88:     for q_idx, question in enumerate(questions):
- 89:         num_steps = len(question.run_indices)
- 90:         belief = np.ones(K, dtype=np.float32) / K
- 91: 
- 92:         for step_idx in range(num_steps):
- 93:             if belief_mode == "from_scratch":
- 94:                 prefix = question.cumulative_prefixes[step_idx]
- 95:                 scores = likelihood_model.score(prefix, question.option_profiles)
- 96:                 belief = _softmax(scores, beta)
- 97: 
- 98:             elif belief_mode == "sequential_bayes":
- 99:                 idx = question.run_indices[step_idx]
-100:                 prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
-101:                 frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
-102:                 scores = likelihood_model.score(frag, question.option_profiles)
-103:                 likelihood = _softmax(scores, beta)
-104:                 posterior = belief * likelihood
-105:                 denom = posterior.sum()
-106:                 if denom <= 0:
-107:                     belief = np.ones(K, dtype=np.float32) / K
-108:                 else:
-109:                     belief = (posterior / denom).astype(np.float32)
-110: 
-111:             else:
-112:                 raise ValueError(f"Unknown belief_mode: {belief_mode}")
+ 30: from agents.ppo_buzzer import PPOBuzzer
+ 31: from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+ 32: from qb_env.stop_only_env import StopOnlyEnv
+ 33: from qb_env.tossup_env import make_env_from_config, precompute_beliefs
+ 34: from qb_data.config import merge_overrides
+ 35: from scripts._common import (
+ 36:     ARTIFACT_DIR,
+ 37:     build_likelihood_model,
+ 38:     load_config,
+ 39:     load_embedding_cache,
+ 40:     load_mc_questions,
+ 41:     parse_overrides,
+ 42:     save_embedding_cache,
+ 43:     save_json,
+ 44: )
+ 45: 
+ 46: 
+ 47: def parse_args() -> argparse.Namespace:
+ 48:     """Parse command-line arguments.
+ 49: 
+ 50:     Returns
+ 51:     -------
+ 52:     argparse.Namespace
+ 53:         Parsed arguments with config, smoke, mc_path, timesteps, and
+ 54:         deterministic_eval fields.
+ 55:     """
+ 56:     parser = argparse.ArgumentParser(description="Train PPO buzzer.")
+ 57:     parser.add_argument(
+ 58:         "--config", type=str, default=None,
+ 59:         help="Path to YAML config file (default: configs/default.yaml).",
+ 60:     )
+ 61:     parser.add_argument(
+ 62:         "--smoke", action="store_true",
+ 63:         help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
+ 64:     )
+ 65:     parser.add_argument(
+ 66:         "--mc-path", type=str, default=None,
+ 67:         help="Optional MC dataset JSON path (overrides config-derived path).",
+ 68:     )
+ 69:     parser.add_argument(
+ 70:         "--timesteps", type=int, default=None,
+ 71:         help="Override total_timesteps from config.",
+ 72:     )
+ 73:     parser.add_argument(
+ 74:         "--seed", type=int, default=None,
+ 75:         help="Override PPO/environment seed from config.",
+ 76:     )
+ 77:     parser.add_argument(
+ 78:         "--deterministic-eval", action="store_true",
+ 79:         help="Use deterministic policy for post-training episode evaluation.",
+ 80:     )
+ 81:     parser.add_argument(
+ 82:         "--stochastic-eval", action="store_true",
+ 83:         help="Force stochastic policy sampling for post-training evaluation.",
+ 84:     )
+ 85:     parser.add_argument(
+ 86:         "--policy-mode",
+ 87:         type=str,
+ 88:         choices=["flat_kplus1", "stop_only"],
+ 89:         default="flat_kplus1",
+ 90:         help="Policy action space: flat K+1 actions (default) or binary stop_only.",
+ 91:     )
+ 92:     parser.add_argument(
+ 93:         "overrides",
+ 94:         nargs="*",
+ 95:         help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
+ 96:     )
+ 97:     return parser.parse_args()
+ 98: 
+ 99: 
+100: def main() -> None:
+101:     """Train PPO agent and save model + evaluation artifacts."""
+102:     args = parse_args()
+103: 
+104:     config = load_config(args.config, smoke=args.smoke)
+105:     overrides = parse_overrides(args)
+106:     if overrides:
+107:         print(f"Applying overrides: {overrides}")
+108:         config = merge_overrides(config, overrides)
+109: 
+110:     split = "smoke" if args.smoke else "main"
+111:     out_dir = ARTIFACT_DIR / split
+112:     mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
 113: 
-114:             cache[(q_idx, step_idx)] = belief.copy()
-115: 
-116:     return cache
-117: 
-118: 
-119: class TossupMCEnv(gym.Env[np.ndarray, int]):
-120:     """Gymnasium environment for quiz bowl tossup questions with MC options.
-121: 
-122:     Models quiz bowl as a POMDP where clues are revealed incrementally.
-123:     The agent maintains a belief distribution over K answer options, updated
-124:     at each step by a likelihood model. The agent decides when to buzz and
-125:     which answer to select.
-126: 
-127:     Action Space
-128:     ------------
-129:     Discrete(K + 1):
-130:         - 0: WAIT -- reveal the next clue and update belief
-131:         - 1..K: BUZZ with answer option (i-1), ending the episode
-132: 
-133:     Observation Space
-134:     -----------------
-135:     Box(K + 6,):
-136:         Belief features: [belief[0..K-1], top_p, margin, entropy,
-137:         stability, progress, clue_idx_norm].
-138:         See ``models.features.extract_belief_features`` for details.
-139: 
-140:     Reward Modes
-141:     ------------
-142:     ``time_penalty`` (default):
-143:         -wait_penalty per WAIT step; +buzz_correct for correct buzz,
-144:         +buzz_incorrect (negative) for wrong buzz.
-145:     ``simple``:
-146:         +1.0 for correct buzz, -1.0 for incorrect buzz, no WAIT penalty.
-147:     ``human_grounded``:
-148:         0.0 if the agent buzzes after the sampled human buzz position;
-149:         otherwise +buzz_correct/-buzz_incorrect for correct/incorrect.
-150: 
-151:     Belief Modes
-152:     ------------
-153:     ``from_scratch``:
-154:         Recompute belief from all clues seen so far via cumulative_prefixes.
-155:     ``sequential_bayes``:
-156:         Bayesian update: multiply prior belief by likelihood of new clue
-157:         fragment, then normalize.
+114:     # Fallback: check data/processed/ if artifacts path doesn't exist
+115:     if not mc_path.exists():
+116:         fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
+117:         if fallback.exists():
+118:             print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
+119:             mc_path = fallback
+120: 
+121:     print(f"Loading MC questions from: {mc_path}")
+122:     mc_questions = load_mc_questions(mc_path)
+123:     print(f"Loaded {len(mc_questions)} MC questions")
+124: 
+125:     print(f"Building likelihood model: {config['likelihood']['model']}")
+126:     likelihood_model = build_likelihood_model(config, mc_questions)
+127:     load_embedding_cache(likelihood_model, config)
+128: 
+129:     env_cfg = config["environment"]
+130:     lik_cfg = config["likelihood"]
+131: 
+132:     print(f"Precomputing belief trajectories for {len(mc_questions)} questions...")
+133:     belief_cache = precompute_beliefs(
+134:         questions=mc_questions,
+135:         likelihood_model=likelihood_model,
+136:         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
+137:         beta=float(lik_cfg.get("beta", 5.0)),
+138:         K=int(config["data"].get("K", 4)),
+139:     )
+140:     print(f"Cached {len(belief_cache)} belief vectors")
+141:     save_embedding_cache(likelihood_model, config)
+142: 
+143:     env = make_env_from_config(
+144:         mc_questions=mc_questions,
+145:         likelihood_model=likelihood_model,
+146:         config=config,
+147:         precomputed_beliefs=belief_cache,
+148:     )
+149:     if args.policy_mode == "stop_only":
+150:         print("Wrapping environment with StopOnlyEnv (WAIT/BUZZ only)...")
+151:         env = StopOnlyEnv(env)
+152: 
+153:     ppo_cfg = config["ppo"]
+154:     train_seed = int(args.seed if args.seed is not None else ppo_cfg.get("seed", 13))
+155:     total_timesteps = int(
+156:         args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
+157:     )
 158: 
-159:     Parameters
-160:     ----------
-161:     questions : list[MCQuestion]
-162:         Pool of questions to sample from. Must be non-empty.
-163:     likelihood_model : LikelihoodModel
-164:         Model that scores clue text against answer option profiles.
-165:     K : int
-166:         Number of answer options per question. Must be >= 2.
-167:     reward_mode : str
-168:         One of ``"time_penalty"``, ``"simple"``, ``"human_grounded"``.
-169:     wait_penalty : float
-170:         Per-step penalty when reward_mode is ``"time_penalty"``.
-171:     buzz_correct : float
-172:         Reward for buzzing with the correct answer.
-173:     buzz_incorrect : float
-174:         Reward (typically negative) for buzzing with an incorrect answer.
-175:     belief_mode : str
-176:         One of ``"from_scratch"``, ``"sequential_bayes"``.
-177:     beta : float
-178:         Softmax temperature for converting raw scores to probabilities.
-179:         Higher values produce sharper distributions.
-180:     end_mode : str
-181:         Horizon behavior when clues are exhausted:
-182:         ``"force_commit"`` (legacy forced answer) or ``"no_buzz"``.
-183:     no_buzz_reward : float
-184:         Reward added at horizon when ``end_mode == "no_buzz"``.
-185:     seed : int
-186:         Random seed for question sampling and human buzz simulation.
-187:     """
-188: 
-189:     metadata = {"render_modes": []}
-190: 
-191:     def __init__(
-192:         self,
-193:         questions: list[MCQuestion],
-194:         likelihood_model: LikelihoodModel,
-195:         K: int = 4,
-196:         reward_mode: str = "time_penalty",
-197:         wait_penalty: float = 0.01,
-198:         early_buzz_penalty: float = 0.0,
-199:         buzz_correct: float = 1.0,
-200:         buzz_incorrect: float = -0.5,
-201:         belief_mode: str = "from_scratch",
-202:         beta: float = 5.0,
-203:         seed: int = 13,
-204:         precomputed_beliefs: dict[tuple[int, int], np.ndarray] | None = None,
-205:         opponent_buzz_model: "OpponentBuzzModel | None" = None,
-206:         ew_reward_correct: float = 10.0,
-207:         ew_reward_incorrect: float = -5.0,
-208:         ew_opponent_expected_value: float = 0.0,
-209:         variable_K: bool = False,
-210:         max_K: int | None = None,
-211:         use_action_masking: bool = False,
-212:         end_mode: str = "force_commit",
-213:         no_buzz_reward: float = 0.0,
-214:     ) -> None:
-215:         if not questions:
-216:             raise ValueError("questions cannot be empty")
-217:         if K < 2:
-218:             raise ValueError("K must be >= 2")
-219: 
-220:         self.questions = questions
-221:         self.likelihood_model = likelihood_model
-222:         self.K = K
-223:         self.reward_mode = reward_mode
-224:         self.wait_penalty = wait_penalty
-225:         self.early_buzz_penalty = early_buzz_penalty
-226:         self.buzz_correct = buzz_correct
-227:         self.buzz_incorrect = buzz_incorrect
-228:         self.belief_mode = belief_mode
-229:         self.beta = beta
-230:         self.rng = random.Random(seed)
-231:         self.precomputed_beliefs = precomputed_beliefs
-232: 
-233:         self.opponent_buzz_model = opponent_buzz_model
-234:         self.ew_reward_correct = ew_reward_correct
-235:         self.ew_reward_incorrect = ew_reward_incorrect
-236:         self.ew_opponent_expected_value = ew_opponent_expected_value
-237: 
-238:         self.variable_K = variable_K
-239:         self.use_action_masking = use_action_masking
-240:         self.end_mode = end_mode
-241:         self.no_buzz_reward = no_buzz_reward
-242:         if variable_K:
-243:             self._max_K = max_K or max(len(q.options) for q in questions)
-244:         else:
-245:             self._max_K = K
-246: 
-247:         # Build qid -> list-index map for precomputed belief lookups
-248:         self._question_index_map: dict[str, int] = {
-249:             q.qid: i for i, q in enumerate(questions)
-250:         }
-251: 
-252:         obs_K = self._max_K if self.variable_K else self.K
-253:         self.action_space = spaces.Discrete(obs_K + 1)
-254:         self.observation_space = spaces.Box(
-255:             low=-np.inf, high=np.inf, shape=(obs_K + 6,), dtype=np.float32
-256:         )
-257: 
-258:         self.question: MCQuestion | None = None
-259:         self.step_idx: int = 0
-260:         self.prev_belief: np.ndarray | None = None
-261:         self.belief: np.ndarray = np.ones(self.K, dtype=np.float32) / self.K
-262:         self.terminated: bool = False
-263:         self.truncated: bool = False
-264:         self._sampled_human_buzz_pos: int | None = None
-265:         self._current_question_idx: int = 0
-266: 
-267:     # ------------------------------------------------------------------
-268:     # Properties
-269:     # ------------------------------------------------------------------
-270: 
-271:     @property
-272:     def total_steps(self) -> int:
-273:         """Total number of incremental clue steps for the current question.
-274: 
-275:         Returns
-276:         -------
-277:         int
-278:             Length of ``question.run_indices`` if a question is loaded, else 1.
-279:         """
-280:         if self.question is None:
-281:             return 1
-282:         return len(self.question.run_indices)
-283: 
-284:     # ------------------------------------------------------------------
-285:     # Helper methods
-286:     # ------------------------------------------------------------------
-287: 
-288:     def _sample_question(self) -> MCQuestion:
-289:         """Sample a random question from the question pool.
-290: 
-291:         Returns
-292:         -------
-293:         MCQuestion
-294:             A randomly selected question.
-295:         """
-296:         return self.rng.choice(self.questions)
-297: 
-298:     def _sample_human_buzz(self, question: MCQuestion) -> int | None:
-299:         """Sample a human buzz position from the question's distribution.
-300: 
-301:         Uses weighted random sampling based on the number of humans who
-302:         buzzed at each position. Returns None if no human buzz data exists.
-303: 
-304:         Parameters
-305:         ----------
-306:         question : MCQuestion
-307:             The question to sample a human buzz position for.
-308: 
-309:         Returns
-310:         -------
-311:         int or None
-312:             Sampled token position, or None if no human buzz data.
-313:         """
-314:         if not question.human_buzz_positions:
-315:             return None
-316:         positions = []
-317:         weights = []
-318:         for pos, count in question.human_buzz_positions:
-319:             positions.append(int(pos))
-320:             weights.append(max(1, int(count)))
-321:         if not positions:
-322:             return None
-323:         return self.rng.choices(positions, weights=weights, k=1)[0]
-324: 
-325:     def _softmax_scores(self, scores: np.ndarray) -> np.ndarray:
-326:         """Convert raw likelihood scores to a probability distribution.
-327: 
-328:         Delegates to module-level ``_softmax`` with this environment's beta.
-329: 
-330:         Parameters
-331:         ----------
-332:         scores : np.ndarray
-333:             Raw similarity scores of shape (K,).
-334: 
-335:         Returns
-336:         -------
-337:         np.ndarray
-338:             Probability distribution of shape (K,), dtype float32.
-339:         """
-340:         return _softmax(scores, self.beta)
-341: 
-342:     def _compute_belief(self, question: MCQuestion, step_idx: int) -> np.ndarray:
-343:         """Compute belief distribution over answer options at a given step.
-344: 
-345:         Two modes are supported:
-346: 
-347:         ``from_scratch``
-348:             Score the cumulative clue prefix against all option profiles,
-349:             then apply softmax. Each step is independent of the previous
-350:             belief.
-351: 
-352:         ``sequential_bayes``
-353:             Extract only the new clue fragment since the last step, score
-354:             it, and perform a Bayesian update: posterior = prior * likelihood,
-355:             then normalize. This is cheaper per step but may accumulate
-356:             approximation errors.
-357: 
-358:         Parameters
-359:         ----------
-360:         question : MCQuestion
-361:             Current question being played.
-362:         step_idx : int
-363:             Current step index (0-based, indexes into run_indices).
-364: 
-365:         Returns
-366:         -------
-367:         np.ndarray
-368:             Updated belief distribution of shape (K,), dtype float32.
-369: 
-370:         Raises
-371:         ------
-372:         ValueError
-373:             If ``self.belief_mode`` is not a recognized mode.
-374:         """
-375:         if self.precomputed_beliefs is not None:
-376:             key = (self._current_question_idx, step_idx)
-377:             return self.precomputed_beliefs[key].copy()
-378: 
-379:         if self.belief_mode == "from_scratch":
-380:             prefix = question.cumulative_prefixes[step_idx]
-381:             scores = self.likelihood_model.score(prefix, question.option_profiles)
-382:             return self._softmax_scores(scores)
-383: 
-384:         if self.belief_mode == "sequential_bayes":
-385:             idx = question.run_indices[step_idx]
-386:             prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
-387:             frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
-388:             scores = self.likelihood_model.score(frag, question.option_profiles)
-389:             likelihood = self._softmax_scores(scores)
-390:             posterior = self.belief * likelihood
-391:             denom = posterior.sum()
-392:             if denom <= 0:
-393:                 posterior = np.ones(self.K, dtype=np.float32) / self.K
-394:             else:
-395:                 posterior = posterior / denom
-396:             return posterior.astype(np.float32)
-397: 
-398:         raise ValueError(f"Unknown belief_mode: {self.belief_mode}")
-399: 
-400:     def _obs(self) -> np.ndarray:
-401:         """Build the observation vector from current belief state.
-402: 
-403:         In variable-K mode, uses padded features sized to ``_max_K``.
-404:         Otherwise delegates to ``extract_belief_features``.
-405: 
-406:         Returns
-407:         -------
-408:         np.ndarray
-409:             Feature vector of shape (obs_K + 6,), dtype float32.
-410:         """
-411:         if self.variable_K:
-412:             from models.features import extract_padded_belief_features
-413: 
-414:             return extract_padded_belief_features(
-415:                 belief=self.belief,
-416:                 prev_belief=self.prev_belief,
-417:                 step_idx=self.step_idx,
-418:                 total_steps=self.total_steps,
-419:                 max_K=self._max_K,
-420:             )
-421:         return extract_belief_features(
-422:             belief=self.belief,
-423:             prev_belief=self.prev_belief,
-424:             step_idx=self.step_idx,
-425:             total_steps=self.total_steps,
-426:         )
-427: 
-428:     def action_masks(self) -> np.ndarray:
-429:         """Return a boolean mask of valid actions.
-430: 
-431:         WAIT (action 0) is always valid.  Buzz actions ``1..K_actual``
-432:         are valid; padded slots ``K_actual+1..max_K`` are invalid.
-433: 
-434:         Returns
-435:         -------
-436:         np.ndarray
-437:             Boolean array of shape ``(max_K + 1,)`` or ``(K + 1,)``.
-438:         """
-439:         n_actions = self._max_K + 1 if self.variable_K else self.K + 1
-440:         mask = np.zeros(n_actions, dtype=bool)
-441:         mask[0] = True  # WAIT
-442:         k_actual = len(self.question.options) if self.question is not None else self.K
-443:         mask[1 : k_actual + 1] = True
-444:         return mask
-445: 
-446:     def _step_to_token_pos(self, step_idx: int) -> int:
-447:         """Convert a step index to the corresponding token position.
-448: 
-449:         Used by the ``human_grounded`` reward mode to compare the agent's
-450:         buzz position against the sampled human buzz position.
-451: 
-452:         Parameters
-453:         ----------
-454:         step_idx : int
-455:             Step index (0-based, indexes into run_indices).
-456: 
-457:         Returns
-458:         -------
-459:         int
-460:             Token position in the original question text.
-461:         """
-462:         if self.question is None or not self.question.run_indices:
-463:             return step_idx
-464:         if step_idx >= len(self.question.run_indices):
-465:             return self.question.run_indices[-1]
-466:         if step_idx < 0:
-467:             return self.question.run_indices[0]
-468:         return self.question.run_indices[step_idx]
-469: 
-470:     def _expected_wins_reward(
-471:         self, question: MCQuestion, chosen_idx: int, last_seen_step: int
-472:     ) -> float:
-473:         """Compute Expected Wins reward at buzz time.
-474: 
-475:         R_t = S_t * V_self + (1 - S_t) * V_opp
-476: 
-477:         where S_t = P(opponent has NOT buzzed by step t).
-478:         """
-479:         correct = chosen_idx == question.gold_index
-480:         v_self = self.ew_reward_correct if correct else self.ew_reward_incorrect
-481:         if self.opponent_buzz_model is None:
-482:             return v_self
-483:         s_t = self.opponent_buzz_model.prob_survive_to_step(question, last_seen_step)
-484:         return s_t * v_self + (1.0 - s_t) * self.ew_opponent_expected_value
-485: 
-486:     def _buzz_reward(self, question: MCQuestion, chosen_idx: int, last_seen_step: int) -> float:
-487:         """Compute the reward for buzzing with a given answer.
-488: 
-489:         Dispatches on ``self.reward_mode``:
-490: 
-491:         ``simple``
-492:             +1.0 for correct, -1.0 for incorrect.
-493:         ``human_grounded``
-494:             0.0 if the agent buzzes after the sampled human would have;
-495:             otherwise +buzz_correct / +buzz_incorrect.
-496:         ``time_penalty`` (default)
-497:             +buzz_correct / +buzz_incorrect. The per-step wait penalty
-498:             is applied separately in ``step()``.
-499:         ``expected_wins``
-500:             S_t * V_self + (1 - S_t) * V_opp via opponent model.
-501: 
-502:         Parameters
-503:         ----------
-504:         question : MCQuestion
-505:             Current question.
-506:         chosen_idx : int
-507:             Index of the chosen answer option (0-based).
-508:         last_seen_step : int
-509:             Step index of the last clue seen before buzzing.
-510: 
-511:         Returns
-512:         -------
-513:         float
-514:             Reward value.
-515:         """
-516:         correct = chosen_idx == question.gold_index
-517:         if self.reward_mode == "simple":
-518:             return 1.0 if correct else -1.0
-519:         if self.reward_mode == "human_grounded":
-520:             token_pos = self._step_to_token_pos(last_seen_step)
-521:             if self._sampled_human_buzz_pos is not None and token_pos > self._sampled_human_buzz_pos:
-522:                 return 0.0
-523:             return self.buzz_correct if correct else self.buzz_incorrect
-524:         if self.reward_mode == "expected_wins":
-525:             return self._expected_wins_reward(question, chosen_idx, last_seen_step)
-526:         # default: time_penalty
-527:         reward = self.buzz_correct if correct else self.buzz_incorrect
-528: 
-529:         if self.early_buzz_penalty > 0 and self.total_steps > 1:
-530:             progress = np.clip((last_seen_step + 1) / self.total_steps, 0.0, 1.0)
-531:             reward -= float(self.early_buzz_penalty) * (1.0 - progress)
-532: 
-533:         return reward
-534: 
-535:     # ------------------------------------------------------------------
-536:     # Gymnasium interface
-537:     # ------------------------------------------------------------------
-538: 
-539:     def reset(
-540:         self, *, seed: int | None = None, options: dict[str, Any] | None = None
-541:     ) -> tuple[np.ndarray, dict[str, Any]]:
-542:         """Reset the environment and start a new episode.
-543: 
-544:         Samples a random question from the pool, initializes belief to a
-545:         uniform distribution, and returns the initial observation.
-546: 
-547:         Parameters
-548:         ----------
-549:         seed : int or None
-550:             If provided, reseeds both the internal RNG and numpy's global
-551:             RNG for reproducibility.
-552:         options : dict or None
-553:             Unused. Included for Gymnasium API compatibility.
-554: 
-555:         Returns
-556:         -------
-557:         observation : np.ndarray
-558:             Initial observation of shape (K + 6,), dtype float32.
-559:             Belief is uniform, so top_p = 1/K, margin = 0, entropy = max.
-560:         info : dict[str, Any]
-561:             Episode metadata. Contains ``"qid"`` (the sampled question ID).
-562:         """
-563:         if seed is not None:
-564:             self.rng.seed(seed)
-565:             np.random.seed(seed)
-566: 
-567:         if options and "question_idx" in options:
-568:             q_idx = int(options["question_idx"])
-569:             if q_idx < 0 or q_idx >= len(self.questions):
-570:                 raise ValueError(f"question_idx out of range: {q_idx}")
-571:             self.question = self.questions[q_idx]
-572:             self._current_question_idx = q_idx
-573:         else:
-574:             self.question = self._sample_question()
-575:             self._current_question_idx = self._question_index_map.get(
-576:                 self.question.qid, self.questions.index(self.question)
-577:             )
-578:         self.step_idx = 0
-579:         self.prev_belief = None
-580:         self.belief = np.ones(self.K, dtype=np.float32) / self.K
-581:         self.terminated = False
-582:         self.truncated = False
-583:         self._sampled_human_buzz_pos = self._sample_human_buzz(self.question)
-584:         return self._obs(), {"qid": self.question.qid}
-585: 
-586:     def step(
-587:         self, action: int
-588:     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-589:         """Execute one step in the environment.
-590: 
-591:         If ``action == 0`` (WAIT):
-592:             - Saves previous belief, computes new belief from current clue.
-593:             - Applies wait_penalty if reward_mode is ``"time_penalty"``.
-594:             - Advances step counter.
-595:             - If all clues exhausted: forced termination with best-guess
-596:               answer (``truncated=True``).
-597: 
-598:         If ``action in 1..K`` (BUZZ):
-599:             - Computes buzz reward for chosen answer option ``action - 1``.
-600:             - Episode ends (``terminated=True``).
-601: 
-602:         Parameters
-603:         ----------
-604:         action : int
-605:             Action to take. 0 = WAIT, 1..K = buzz with option (action-1).
-606: 
-607:         Returns
-608:         -------
-609:         observation : np.ndarray
-610:             Updated observation of shape (K + 6,), dtype float32.
-611:         reward : float
-612:             Scalar reward for this step.
-613:         terminated : bool
-614:             True if the agent buzzed (natural episode end).
-615:         truncated : bool
-616:             True if all clues were exhausted (forced termination).
-617:         info : dict[str, Any]
-618:             Step metadata. Always contains ``"qid"`` and ``"step_idx"``.
-619:             On BUZZ: also ``"chosen_idx"`` and ``"correct"``.
-620:             On forced termination in ``force_commit`` mode: also
-621:             ``"forced_choice"`` and ``"forced_correct"``.
-622:             On forced termination in ``no_buzz`` mode: also ``"no_buzz"``,
-623:             ``"forced_choice" = -1``, and ``"forced_correct" = False``.
-624: 
-625:         Raises
-626:         ------
-627:         RuntimeError
-628:             If called before ``reset()`` or after episode has ended.
-629:         ValueError
-630:             If ``action`` is not in the action space.
-631:         """
-632:         if self.question is None:
-633:             raise RuntimeError("Environment must be reset() before step().")
-634:         if self.terminated or self.truncated:
-635:             raise RuntimeError("Cannot call step() on terminated/truncated episode.")
-636:         if not self.action_space.contains(action):
-637:             raise ValueError(f"Invalid action: {action}")
-638: 
-639:         info: dict[str, Any] = {"qid": self.question.qid}
-640:         reward = 0.0
-641: 
-642:         if action == 0:
-643:             # WAIT: reveal next clue and update belief
-644:             self.prev_belief = self.belief.copy()
-645:             self.belief = self._compute_belief(self.question, self.step_idx)
-646:             if self.reward_mode == "time_penalty":
-647:                 reward -= self.wait_penalty
-648: 
-649:             self.step_idx += 1
-650:             if self.step_idx >= self.total_steps:
-651:                 last_seen = self.step_idx - 1
-652:                 self.truncated = True
-653:                 info["step_idx"] = last_seen
-654:                 if self.end_mode == "force_commit":
-655:                     forced_choice = int(np.argmax(self.belief))
-656:                     reward += self._buzz_reward(self.question, forced_choice, last_seen)
-657:                     info["forced_choice"] = forced_choice
-658:                     info["forced_correct"] = forced_choice == self.question.gold_index
-659:                 elif self.end_mode == "no_buzz":
-660:                     reward += self.no_buzz_reward
-661:                     info["no_buzz"] = True
-662:                     info["forced_choice"] = -1
-663:                     info["forced_correct"] = False
-664:                 else:
-665:                     raise ValueError(f"Unknown end_mode: {self.end_mode}")
-666:             else:
-667:                 info["step_idx"] = self.step_idx
-668: 
-669:         else:
-670:             # BUZZ: select an answer option
-671:             last_seen = max(0, self.step_idx - 1)
-672:             chosen_idx = action - 1
-673:             reward += self._buzz_reward(self.question, chosen_idx, last_seen)
-674:             self.terminated = True
-675:             info["step_idx"] = last_seen
-676:             info["chosen_idx"] = chosen_idx
-677:             info["correct"] = chosen_idx == self.question.gold_index
-678: 
-679:         obs = self._obs()
-680:         return obs, float(reward), self.terminated, self.truncated, info
-681: 
-682: 
-683: def make_env_from_config(
-684:     mc_questions: list[MCQuestion],
-685:     likelihood_model: LikelihoodModel,
-686:     config: dict[str, Any],
-687:     precomputed_beliefs: dict[tuple[int, int], np.ndarray] | None = None,
-688: ) -> TossupMCEnv:
-689:     """Construct a TossupMCEnv from YAML configuration.
-690: 
-691:     Factory function that reads the ``environment``, ``data``, and
-692:     ``likelihood`` sections of a config dict and instantiates a fully
-693:     configured environment. The likelihood model must be pre-constructed
-694:     (e.g., via ``build_likelihood_from_config``).
-695: 
-696:     Parameters
-697:     ----------
-698:     mc_questions : list[MCQuestion]
-699:         List of MCQuestion instances with options and answer profiles.
-700:         Must be non-empty.
-701:     likelihood_model : LikelihoodModel
-702:         Pre-constructed likelihood model for scoring clues against options.
-703:         Use ``build_likelihood_from_config`` to create one from config.
-704:     config : dict[str, Any]
-705:         Full YAML config dict. Must contain the following sections:
-706: 
-707:         - ``environment``: reward mode, penalties, belief mode
-708:         - ``data``: K (number of answer choices)
-709:         - ``likelihood``: beta (softmax temperature)
-710:     precomputed_beliefs : dict or None
-711:         Optional precomputed belief cache from ``precompute_beliefs()``.
-712:         When provided, ``_compute_belief`` uses O(1) lookups instead of
-713:         calling ``likelihood_model.score()``.
-714: 
-715:     Returns
-716:     -------
-717:     TossupMCEnv
-718:         A configured Gymnasium environment ready for ``reset()``.
-719: 
-720:     Examples
-721:     --------
-722:     >>> from qb_data.config import load_config
-723:     >>> from models.likelihoods import build_likelihood_from_config
-724:     >>> config = load_config("configs/default.yaml")
-725:     >>> model = build_likelihood_from_config(config, corpus_texts=corpus)
-726:     >>> env = make_env_from_config(mc_questions, model, config)
-727:     >>> obs, info = env.reset()
-728:     """
-729:     env_cfg = config["environment"]
-730:     data_cfg = config["data"]
-731:     lik_cfg = config["likelihood"]
-732:     return TossupMCEnv(
-733:         questions=mc_questions,
-734:         likelihood_model=likelihood_model,
-735:         K=int(data_cfg.get("K", 4)),
-736:         reward_mode=str(env_cfg.get("reward", env_cfg.get("reward_mode", "time_penalty"))),
-737:         seed=int(env_cfg.get("seed", 13)),
-738:         wait_penalty=float(env_cfg.get("wait_penalty", 0.01)),
-739:         early_buzz_penalty=float(env_cfg.get("early_buzz_penalty", 0.0)),
-740:         buzz_correct=float(env_cfg.get("buzz_correct", 1.0)),
-741:         buzz_incorrect=float(env_cfg.get("buzz_incorrect", -0.5)),
-742:         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
-743:         beta=float(lik_cfg.get("beta", 5.0)),
-744:         precomputed_beliefs=precomputed_beliefs,
-745:         end_mode=str(env_cfg.get("end_mode", "force_commit")),
-746:         no_buzz_reward=float(env_cfg.get("no_buzz_reward", 0.0)),
-747:     )
+159:     print(f"Training PPO for {total_timesteps} timesteps...")
+160:     agent = PPOBuzzer(
+161:         env=env,
+162:         learning_rate=float(ppo_cfg["learning_rate"]),
+163:         n_steps=int(ppo_cfg["n_steps"]),
+164:         batch_size=int(ppo_cfg["batch_size"]),
+165:         n_epochs=int(ppo_cfg["n_epochs"]),
+166:         gamma=float(ppo_cfg["gamma"]),
+167:         seed=train_seed,
+168:         policy_kwargs=ppo_cfg.get("policy_kwargs", {"net_arch": [64, 64]}),
+169:         verbose=1,
+170:     )
+171: 
+172:     agent.train(total_timesteps=total_timesteps)
+173:     model_path = out_dir / "ppo_model"
+174:     agent.save(model_path)
+175: 
+176:     eval_deterministic = True
+177:     if args.stochastic_eval:
+178:         eval_deterministic = False
+179:     elif args.deterministic_eval:
+180:         eval_deterministic = True
+181: 
+182:     print(
+183:         f"Evaluating PPO agent on {len(mc_questions)} questions "
+184:         f"(deterministic={eval_deterministic})..."
+185:     )
+186:     traces = [
+187:         asdict(
+188:             agent.run_episode(
+189:                 deterministic=eval_deterministic,
+190:                 question_idx=i,
+191:             )
+192:         )
+193:         for i in range(len(mc_questions))
+194:     ]
+195:     summary = {**summarize_buzz_metrics(traces), **calibration_at_buzz(traces)}
+196: 
+197:     save_json(out_dir / "ppo_runs.json", traces)
+198:     save_json(out_dir / "ppo_summary.json", summary)
+199:     print(f"Saved PPO model to: {model_path}.zip")
+200:     print(f"Saved PPO summaries to: {out_dir}")
+201: 
+202: 
+203: if __name__ == "__main__":
+204:     main()
 ````
 
 ## File: tests/test_environment.py
@@ -18625,739 +17489,2200 @@ requirements.txt
  22: import os
  23: from abc import ABC, abstractmethod
  24: from pathlib import Path
- 25: from typing import Any
+ 25: from typing import TYPE_CHECKING, Any
  26: 
  27: import numpy as np
  28: 
+ 29: if TYPE_CHECKING:
+ 30:     import torch
+ 31: 
+ 32: 
+ 33: def _text_key(text: str) -> str:
+ 34:     """Compute a SHA-256 hash key for embedding cache lookups.
+ 35: 
+ 36:     Parameters
+ 37:     ----------
+ 38:     text : str
+ 39:         Input text to hash.
+ 40: 
+ 41:     Returns
+ 42:     -------
+ 43:     str
+ 44:         64-character hexadecimal SHA-256 digest.
+ 45: 
+ 46:     Examples
+ 47:     --------
+ 48:     >>> key = _text_key("hello world")
+ 49:     >>> len(key)
+ 50:     64
+ 51:     >>> _text_key("hello world") == _text_key("hello world")
+ 52:     True
+ 53:     """
+ 54:     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+ 55: 
+ 56: 
+ 57: def _best_torch_device() -> "torch.device":
+ 58:     """Select the best available accelerator: CUDA > MPS > CPU."""
+ 59:     import torch
+ 60: 
+ 61:     if torch.cuda.is_available():
+ 62:         return torch.device("cuda")
+ 63:     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+ 64:         return torch.device("mps")
+ 65:     return torch.device("cpu")
+ 66: 
+ 67: 
+ 68: class LikelihoodModel(ABC):
+ 69:     """Abstract base class for likelihood models.
+ 70: 
+ 71:     Likelihood models score how well each answer option matches a given
+ 72:     clue prefix. The environment uses these scores (via softmax) to compute
+ 73:     belief distributions over answer options.
+ 74: 
+ 75:     Subclasses must implement:
+ 76:         - ``score(clue_prefix, option_profiles) -> np.ndarray``
+ 77:         - ``_embed_batch(texts) -> np.ndarray``
+ 78: 
+ 79:     The base class provides ``embed_and_cache()`` which handles caching of
+ 80:     text embeddings via SHA-256 content hashing.
+ 81: 
+ 82:     Attributes
+ 83:     ----------
+ 84:     embedding_cache : dict[str, np.ndarray]
+ 85:         Maps SHA-256 text hashes to float32 embedding vectors.
+ 86:     """
+ 87: 
+ 88:     def __init__(self) -> None:
+ 89:         self.embedding_cache: dict[str, np.ndarray] = {}
+ 90: 
+ 91:     @property
+ 92:     def cache_memory_bytes(self) -> int:
+ 93:         """Approximate memory used by the embedding cache in bytes."""
+ 94:         return sum(v.nbytes for v in self.embedding_cache.values())
+ 95: 
+ 96:     @abstractmethod
+ 97:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
+ 98:         """Return raw similarity scores for each answer option.
+ 99: 
+100:         The caller (environment) converts these to probabilities via
+101:         softmax with a beta temperature parameter. Higher scores indicate
+102:         stronger match between clue and option.
+103: 
+104:         Parameters
+105:         ----------
+106:         clue_prefix : str
+107:             Clue text revealed so far (concatenation of clues up to current step).
+108:         option_profiles : list[str]
+109:             Answer profile text for each of the K answer options.
+110: 
+111:         Returns
+112:         -------
+113:         np.ndarray
+114:             Raw similarity scores of shape (K,) where K = len(option_profiles).
+115:         """
+116: 
+117:     def embed_and_cache(self, texts: list[str]) -> np.ndarray:
+118:         """Embed texts, using cache for previously seen inputs.
+119: 
+120:         Texts are identified by their SHA-256 hash. Only unseen texts
+121:         are passed to ``_embed_batch()`` for actual computation; cached
+122:         results are reused.
+123: 
+124:         Parameters
+125:         ----------
+126:         texts : list[str]
+127:             Texts to embed.
+128: 
+129:         Returns
+130:         -------
+131:         np.ndarray
+132:             Stacked embeddings of shape (len(texts), embed_dim), dtype float32.
+133:         """
+134:         missing = [text for text in texts if _text_key(text) not in self.embedding_cache]
+135:         if missing:
+136:             new_embeddings = self._embed_batch(missing)
+137:             for text, emb in zip(missing, new_embeddings):
+138:                 self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
+139:         return np.stack([self.embedding_cache[_text_key(text)] for text in texts])
+140: 
+141:     def precompute_embeddings(
+142:         self,
+143:         texts: list[str],
+144:         batch_size: int = 64,
+145:         desc: str = "Pre-computing embeddings",
+146:     ) -> None:
+147:         """Bulk pre-embed texts into cache, processing in batches.
+148: 
+149:         Call this before running agents so that all subsequent ``score()``
+150:         calls are pure cache lookups (numpy dot products).  Duplicate and
+151:         already-cached texts are skipped automatically.
+152: 
+153:         Parameters
+154:         ----------
+155:         texts : list[str]
+156:             All texts to embed (clue prefixes, option profiles, fragments).
+157:         batch_size : int
+158:             Number of texts per ``_embed_batch`` call.
+159:         desc : str
+160:             tqdm progress-bar description.
+161:         """
+162:         from tqdm import tqdm
+163: 
+164:         unique = [t for t in dict.fromkeys(texts) if _text_key(t) not in self.embedding_cache]
+165:         if not unique:
+166:             return
+167:         for i in tqdm(range(0, len(unique), batch_size), desc=desc,
+168:                        total=(len(unique) + batch_size - 1) // batch_size):
+169:             batch = unique[i : i + batch_size]
+170:             embeddings = self._embed_batch(batch)
+171:             for text, emb in zip(batch, embeddings):
+172:                 self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
+173: 
+174:     def save_cache(self, path: str | Path) -> int:
+175:         """Persist embedding_cache to disk as compressed ``.npz``.
+176: 
+177:         Creates parent directories if needed. Keys are SHA-256 hex
+178:         strings (valid Python identifiers), values are float32 arrays.
+179: 
+180:         Parameters
+181:         ----------
+182:         path : str or Path
+183:             Destination file path (should end with ``.npz``).
+184: 
+185:         Returns
+186:         -------
+187:         int
+188:             Number of cache entries saved.
+189:         """
+190:         p = Path(path)
+191:         p.parent.mkdir(parents=True, exist_ok=True)
+192:         np.savez_compressed(p, **self.embedding_cache)
+193:         return len(self.embedding_cache)
+194: 
+195:     def load_cache(self, path: str | Path) -> int:
+196:         """Load embedding_cache from a ``.npz`` file on disk.
+197: 
+198:         Merges loaded entries into the existing cache **without**
+199:         overwriting keys that are already present (existing keys win).
+200:         If the file does not exist, silently returns 0 (cold-start).
+201: 
+202:         Parameters
+203:         ----------
+204:         path : str or Path
+205:             Path to ``.npz`` file previously written by ``save_cache``.
+206: 
+207:         Returns
+208:         -------
+209:         int
+210:             Number of *new* entries added to the cache.
+211:         """
+212:         p = Path(path)
+213:         if not p.exists():
+214:             return 0
+215:         with np.load(p) as data:
+216:             loaded = 0
+217:             for key in data.files:
+218:                 if key not in self.embedding_cache:
+219:                     self.embedding_cache[key] = data[key].astype(np.float32)
+220:                     loaded += 1
+221:             return loaded
+222: 
+223:     @abstractmethod
+224:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
+225:         """Embed a batch of texts. Subclasses must implement.
+226: 
+227:         Parameters
+228:         ----------
+229:         texts : list[str]
+230:             Texts to embed (guaranteed non-empty, all cache misses).
+231: 
+232:         Returns
+233:         -------
+234:         np.ndarray
+235:             Embeddings of shape (len(texts), embed_dim), dtype float32.
+236:         """
+237:         raise NotImplementedError
+238: 
+239: 
+240: class TfIdfLikelihood(LikelihoodModel):
+241:     """TF-IDF based likelihood model using cosine similarity.
+242: 
+243:     Uses scikit-learn's ``TfidfVectorizer`` to learn vocabulary and IDF weights
+244:     from a corpus, then scores clue-option similarity via cosine distance in the
+245:     TF-IDF vector space.
+246: 
+247:     The model **must** be ``fit()`` on a corpus before calling ``score()`` or
+248:     ``_embed_batch()``. Calling these methods on an unfitted model raises
+249:     ``RuntimeError``.
+250: 
+251:     This is the fast, interpretable baseline: keyword overlap drives similarity.
+252:     It works well when clues contain distinctive vocabulary but misses semantic
+253:     relationships (e.g., "first president" vs "George Washington").
+254: 
+255:     Parameters
+256:     ----------
+257:     corpus_texts : list[str] or None
+258:         If provided, ``fit()`` is called immediately on these texts.
+259: 
+260:     Attributes
+261:     ----------
+262:     vectorizer : TfidfVectorizer
+263:         Scikit-learn vectorizer with English stop words removed.
+264:     _is_fit : bool
+265:         Whether the vectorizer has been fit on a corpus.
+266: 
+267:     Examples
+268:     --------
+269:     >>> corpus = ["George Washington was the first president",
+270:     ...           "Abraham Lincoln freed the slaves"]
+271:     >>> model = TfIdfLikelihood(corpus_texts=corpus)
+272:     >>> scores = model.score("first president", ["Washington", "Lincoln"])
+273:     >>> scores.shape
+274:     (2,)
+275:     """
+276: 
+277:     def __init__(self, corpus_texts: list[str] | None = None) -> None:
+278:         super().__init__()
+279:         from sklearn.feature_extraction.text import TfidfVectorizer
+280: 
+281:         self.vectorizer = TfidfVectorizer(stop_words="english")
+282:         self._is_fit = False
+283:         if corpus_texts:
+284:             self.fit(corpus_texts)
+285: 
+286:     def save_cache(self, path: str | Path) -> int:
+287:         """No-op: TF-IDF embeddings are vocabulary-specific and not portable.
+288: 
+289:         TF-IDF vectors depend on the fitted vocabulary, which changes
+290:         between ``fit()`` calls. Persisting them would produce wrong
+291:         results if the vocabulary differs.
+292: 
+293:         Returns
+294:         -------
+295:         int
+296:             Always 0.
+297:         """
+298:         return 0
+299: 
+300:     def fit(self, corpus_texts: list[str]) -> "TfIdfLikelihood":
+301:         """Learn vocabulary and IDF weights from a text corpus.
+302: 
+303:         Parameters
+304:         ----------
+305:         corpus_texts : list[str]
+306:             Corpus of documents to learn from. Should include answer profiles,
+307:             clue texts, or both to capture domain vocabulary.
+308: 
+309:         Returns
+310:         -------
+311:         TfIdfLikelihood
+312:             Self, for method chaining.
+313:         """
+314:         self.vectorizer.fit(corpus_texts)
+315:         self._is_fit = True
+316:         return self
+317: 
+318:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
+319:         """Score each option against the clue using TF-IDF cosine similarity.
+320: 
+321:         Uses ``embed_and_cache()`` to embed both the clue and options, so
+322:         repeated calls with the same texts skip vectorizer.transform().
+323:         Since ``_embed_batch()`` returns L2-normalized vectors, the dot
+324:         product equals cosine similarity.
+325: 
+326:         Parameters
+327:         ----------
+328:         clue_prefix : str
+329:             Clue text revealed so far.
+330:         option_profiles : list[str]
+331:             Answer profile text for each of the K answer options.
+332: 
+333:         Returns
+334:         -------
+335:         np.ndarray
+336:             Cosine similarity scores of shape (K,), dtype float32.
+337:             Values in [-1, 1] but typically [0, 1] for TF-IDF.
+338: 
+339:         Raises
+340:         ------
+341:         RuntimeError
+342:             If called before ``fit()``.
+343:         """
+344:         if not self._is_fit:
+345:             raise RuntimeError("TfIdfLikelihood must be fit() before score().")
+346:         clue_emb = self.embed_and_cache([clue_prefix])[0]
+347:         option_embs = self.embed_and_cache(option_profiles)
+348:         sims = option_embs @ clue_emb
+349:         return sims.astype(np.float32)
+350: 
+351:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
+352:         """Embed texts as dense, L2-normalized TF-IDF vectors.
+353: 
+354:         Row-wise L2 normalization ensures that dot product between any
+355:         two embedding vectors equals their cosine similarity, matching
+356:         the convention used by SBERT and T5 likelihood models.
+357: 
+358:         Parameters
+359:         ----------
+360:         texts : list[str]
+361:             Texts to embed (guaranteed non-empty, all cache misses).
+362: 
+363:         Returns
+364:         -------
+365:         np.ndarray
+366:             L2-normalized dense TF-IDF matrix of shape
+367:             (len(texts), vocab_size), dtype float32.
+368: 
+369:         Raises
+370:         ------
+371:         RuntimeError
+372:             If called before ``fit()``.
+373:         """
+374:         if not self._is_fit:
+375:             raise RuntimeError("TfIdfLikelihood must be fit() before embedding.")
+376:         mat = self.vectorizer.transform(texts).toarray().astype(np.float32)
+377:         norms = np.linalg.norm(mat, axis=1, keepdims=True)
+378:         norms[norms == 0] = 1.0  # avoid division by zero for empty docs
+379:         return mat / norms
+380: 
+381: 
+382: class SBERTLikelihood(LikelihoodModel):
+383:     """Sentence-BERT likelihood model using semantic embeddings.
+384: 
+385:     Uses a ``SentenceTransformer`` model to compute dense, L2-normalized
+386:     embeddings. Cosine similarity is computed as a simple dot product since
+387:     embeddings are pre-normalized (``normalize_embeddings=True``).
+388: 
+389:     Inherits ``embed_and_cache()`` from ``LikelihoodModel`` for transparent
+390:     caching of embeddings via SHA-256 content hashing. The first call to
+391:     ``score()`` computes and caches all embeddings; subsequent calls with the
+392:     same texts are fast cache lookups.
+393: 
+394:     Compared to TF-IDF, SBERT captures semantic similarity (e.g., "first
+395:     president" and "George Washington" score highly even without word overlap)
+396:     but is slower due to the neural encoder.
+397: 
+398:     Parameters
+399:     ----------
+400:     model_name : str
+401:         HuggingFace model identifier for ``SentenceTransformer``.
+402:         Default is ``"all-MiniLM-L6-v2"`` (22M params, 384-dim embeddings).
+403:         First run downloads the model (~80MB) from HuggingFace.
+404: 
+405:     Attributes
+406:     ----------
+407:     model_name : str
+408:         The SentenceTransformer model name.
+409:     encoder : SentenceTransformer
+410:         The loaded sentence transformer model.
+411: 
+412:     Examples
+413:     --------
+414:     >>> model = SBERTLikelihood()  # downloads model on first run
+415:     >>> scores = model.score("first president", ["Washington", "Lincoln"])
+416:     >>> scores.shape
+417:     (2,)
+418:     """
+419: 
+420:     def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
+421:         super().__init__()
+422:         from sentence_transformers import SentenceTransformer
+423: 
+424:         self.model_name = model_name
+425:         self.encoder = SentenceTransformer(model_name)
+426: 
+427:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
+428:         """Embed texts using the SentenceTransformer encoder.
+429: 
+430:         Embeddings are L2-normalized so that cosine similarity can be computed
+431:         as a simple dot product (avoiding the division by norms).
+432: 
+433:         Parameters
+434:         ----------
+435:         texts : list[str]
+436:             Texts to embed (guaranteed non-empty, all cache misses).
+437: 
+438:         Returns
+439:         -------
+440:         np.ndarray
+441:             Normalized embeddings of shape (len(texts), embed_dim), dtype float32.
+442:         """
+443:         return self.encoder.encode(
+444:             texts, convert_to_numpy=True, normalize_embeddings=True
+445:         ).astype(np.float32)
+446: 
+447:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
+448:         """Score each option using semantic cosine similarity.
+449: 
+450:         Computes dot product between the clue embedding and each option
+451:         embedding. Since embeddings are L2-normalized, dot product equals
+452:         cosine similarity.
+453: 
+454:         Parameters
+455:         ----------
+456:         clue_prefix : str
+457:             Clue text revealed so far.
+458:         option_profiles : list[str]
+459:             Answer profile text for each of the K answer options.
+460: 
+461:         Returns
+462:         -------
+463:         np.ndarray
+464:             Cosine similarity scores of shape (K,), dtype float32.
+465:             Values in [-1, 1].
+466:         """
+467:         clue_emb = self.embed_and_cache([clue_prefix])[0]
+468:         option_embs = self.embed_and_cache(option_profiles)
+469:         sims = option_embs @ clue_emb
+470:         return sims.astype(np.float32)
+471: 
+472: 
+473: class OpenAILikelihood(LikelihoodModel):
+474:     """OpenAI embedding likelihood model using normalized embedding similarity.
+475: 
+476:     This path is optional and only activates when explicitly selected in config.
+477:     It requires both the ``openai`` Python package and ``OPENAI_API_KEY`` to be
+478:     available at runtime.
+479:     """
+480: 
+481:     def __init__(
+482:         self,
+483:         model: str = "text-embedding-3-small",
+484:         api_key: str | None = None,
+485:     ) -> None:
+486:         super().__init__()
+487: 
+488:         resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
+489:         if not resolved_api_key:
+490:             raise RuntimeError(
+491:                 "OpenAI likelihood requires OPENAI_API_KEY to be set."
+492:             )
+493: 
+494:         try:
+495:             from openai import OpenAI
+496:         except ImportError as exc:
+497:             raise ImportError(
+498:                 "OpenAI likelihood requires the openai package. "
+499:                 "Install it with: pip install -e .[openai] or pip install openai."
+500:             ) from exc
+501: 
+502:         self.model = model
+503:         self.client = OpenAI(api_key=resolved_api_key)
+504: 
+505:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
+506:         """Embed texts via the OpenAI embeddings API and L2-normalize them."""
+507:         response = self.client.embeddings.create(model=self.model, input=texts)
+508:         vectors = [np.array(item.embedding, dtype=np.float32) for item in response.data]
+509:         embeddings = np.stack(vectors)
+510:         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+511:         norms[norms == 0] = 1.0
+512:         return (embeddings / norms).astype(np.float32)
+513: 
+514:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
+515:         """Score each option using cosine similarity over normalized embeddings."""
+516:         clue_emb = self.embed_and_cache([clue_prefix])[0]
+517:         option_embs = self.embed_and_cache(option_profiles)
+518:         sims = option_embs @ clue_emb
+519:         return sims.astype(np.float32)
+520: 
+521: 
+522: class T5Likelihood(LikelihoodModel):
+523:     """T5 encoder likelihood model using mean-pooled semantic embeddings.
+524: 
+525:     Uses ``T5EncoderModel`` (not full ``T5ForConditionalGeneration``) for 2x
+526:     faster inference and half the memory. Embeddings are mean-pooled over
+527:     sequence length with attention mask weighting to handle padding correctly.
+528: 
+529:     Inherits ``embed_and_cache()`` from ``LikelihoodModel`` for transparent
+530:     caching of embeddings via SHA-256 content hashing. The first call to
+531:     ``score()`` computes and caches all embeddings; subsequent calls with the
+532:     same texts are fast cache lookups.
+533: 
+534:     Compared to SBERT, T5 captures deeper semantic relationships via its
+535:     encoder-decoder pre-training on massive text corpora. This is the novel
+536:     contribution: using T5 as a likelihood model rather than just as a policy
+537:     encoder.
+538: 
+539:     Parameters
+540:     ----------
+541:     model_name : str
+542:         HuggingFace T5 model identifier. Default is ``"t5-base"``
+543:         (220M params). Options:
+544: 
+545:         - ``"t5-small"`` (60M params) -- fastest, lowest quality
+546:         - ``"t5-base"`` (220M params) -- balanced (recommended)
+547:         - ``"t5-large"`` (770M params) -- best quality, requires 8GB GPU VRAM
+548: 
+549:         First run downloads the model from HuggingFace (~850MB for t5-base).
+550: 
+551:     Attributes
+552:     ----------
+553:     model_name : str
+554:         The T5 model identifier.
+555:     encoder : T5EncoderModel
+556:         Pre-trained T5 encoder loaded from HuggingFace.
+557:     tokenizer : T5TokenizerFast
+558:         Fast T5 tokenizer for text preprocessing.
+559:     device : torch.device
+560:         Computation device (cuda if available, else cpu).
+561: 
+562:     Examples
+563:     --------
+564:     >>> model = T5Likelihood(model_name="t5-small")
+565:     >>> scores = model.score("first president", ["Washington", "Einstein"])
+566:     >>> scores.shape
+567:     (2,)
+568:     """
+569: 
+570:     def __init__(self, model_name: str = "t5-base") -> None:
+571:         super().__init__()
+572:         import torch
+573:         from transformers import T5EncoderModel, T5TokenizerFast
+574: 
+575:         self.model_name = model_name
+576:         self.encoder = T5EncoderModel.from_pretrained(model_name)
+577:         self.tokenizer = T5TokenizerFast.from_pretrained(model_name)
+578:         self.device = _best_torch_device()
+579:         self.encoder.to(self.device)
+580:         self.encoder.eval()
+581: 
+582:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
+583:         """Embed texts using T5 encoder with attention-masked mean pooling.
+584: 
+585:         Mean pooling uses the attention mask to exclude padding tokens from the
+586:         average, ensuring correct semantic embeddings when sequences have
+587:         different lengths. Embeddings are L2-normalized so that cosine
+588:         similarity can be computed as a simple dot product.
+589: 
+590:         Parameters
+591:         ----------
+592:         texts : list[str]
+593:             Texts to embed (guaranteed non-empty, all cache misses).
+594: 
+595:         Returns
+596:         -------
+597:         np.ndarray
+598:             L2-normalized embeddings of shape (len(texts), hidden_dim),
+599:             dtype float32. Hidden dim is 512 (t5-small), 768 (t5-base),
+600:             or 1024 (t5-large).
+601: 
+602:         Notes
+603:         -----
+604:         Tensors are detached and moved to CPU immediately after computation
+605:         to prevent GPU memory leaks when called repeatedly during episodes.
+606:         """
+607:         import torch
+608: 
+609:         with torch.no_grad():
+610:             encoded = self.tokenizer(
+611:                 texts,
+612:                 padding=True,
+613:                 truncation=True,
+614:                 max_length=512,
+615:                 return_tensors="pt",
+616:             ).to(self.device)
+617: 
+618:             outputs = self.encoder(**encoded)
+619:             last_hidden = outputs.last_hidden_state  # (batch, seq_len, hidden_dim)
+620: 
+621:             # Mean pooling over sequence length with attention mask
+622:             mask = encoded.attention_mask.unsqueeze(-1)  # (batch, seq_len, 1)
+623:             masked_hidden = last_hidden * mask
+624:             sum_hidden = masked_hidden.sum(dim=1)  # (batch, hidden_dim)
+625:             mask_sum = mask.sum(dim=1).clamp(min=1e-9)  # (batch, 1)
+626:             mean_pooled = sum_hidden / mask_sum  # (batch, hidden_dim)
+627: 
+628:             # L2 normalize for cosine similarity via dot product
+629:             embeddings = torch.nn.functional.normalize(mean_pooled, p=2, dim=1)
+630: 
+631:             # Detach and move to CPU to prevent GPU memory leak
+632:             embeddings = embeddings.detach().cpu().numpy().astype(np.float32)
+633: 
+634:         return embeddings
+635: 
+636:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
+637:         """Score each option using T5 semantic cosine similarity.
+638: 
+639:         Computes dot product between the clue embedding and each option
+640:         embedding. Since embeddings are L2-normalized, dot product equals
+641:         cosine similarity.
+642: 
+643:         Parameters
+644:         ----------
+645:         clue_prefix : str
+646:             Clue text revealed so far.
+647:         option_profiles : list[str]
+648:             Answer profile text for each of the K answer options.
+649: 
+650:         Returns
+651:         -------
+652:         np.ndarray
+653:             Cosine similarity scores of shape (K,), dtype float32.
+654:             Values in [-1, 1].
+655:         """
+656:         clue_emb = self.embed_and_cache([clue_prefix])[0]
+657:         option_embs = self.embed_and_cache(option_profiles)
+658:         sims = option_embs @ clue_emb
+659:         return sims.astype(np.float32)
+660: 
+661: 
+662: def build_likelihood_from_config(
+663:     config: dict[str, Any], corpus_texts: list[str] | None = None
+664: ) -> LikelihoodModel:
+665:     """Construct a likelihood model from YAML configuration.
+666: 
+667:     Factory function that reads the ``likelihood`` section of the config dict
+668:     and instantiates the appropriate ``LikelihoodModel`` subclass.
+669: 
+670:     Parameters
+671:     ----------
+672:     config : dict[str, Any]
+673:         Full YAML config dict. Must contain a ``"likelihood"`` key with at
+674:         least a ``"model"`` field specifying the model type.
+675: 
+676:         Supported model types:
+677:         - ``"tfidf"``: TF-IDF cosine similarity (requires ``corpus_texts``)
+678:         - ``"sbert"``: Sentence-BERT semantic similarity
+679:         - ``"openai"``: OpenAI embedding similarity
+680:         - ``"t5"`` / ``"t5-small"`` / ``"t5-base"`` / ``"t5-large"``:
+681:           T5 encoder semantic similarity
+682: 
+683:         Optional config keys:
+684:         - ``"sbert_name"`` or ``"embedding_model"``: SentenceTransformer model
+685:           name (default: ``"all-MiniLM-L6-v2"``)
+686:         - ``"openai_model"``: OpenAI embedding model name
+687:           (default: ``"text-embedding-3-small"``)
+688:         - ``"t5_name"``: T5 model name (default: ``"t5-base"``)
+689: 
+690:     corpus_texts : list[str] or None
+691:         Text corpus for TF-IDF fitting. Required when ``model == "tfidf"``,
+692:         ignored for other models.
+693: 
+694:     Returns
+695:     -------
+696:     LikelihoodModel
+697:         An instantiated and ready-to-use likelihood model.
+698: 
+699:     Raises
+700:     ------
+701:     ValueError
+702:         If ``model`` is ``"tfidf"`` and ``corpus_texts`` is None.
+703:         If ``model`` is not a recognized model type.
+704: 
+705:     Examples
+706:     --------
+707:     >>> from qb_data.config import load_config
+708:     >>> config = load_config("configs/default.yaml")
+709:     >>> model = build_likelihood_from_config(config, corpus_texts=my_corpus)
+710:     >>> scores = model.score("first president", ["Washington", "Lincoln"])
+711:     """
+712:     cfg = config["likelihood"]
+713:     model_name = cfg.get("model", "sbert")
+714: 
+715:     if model_name == "tfidf":
+716:         if not corpus_texts:
+717:             raise ValueError("TF-IDF likelihood requires corpus_texts.")
+718:         return TfIdfLikelihood(corpus_texts=corpus_texts)
+719: 
+720:     if model_name == "sbert":
+721:         # Support both "sbert_name" (qb-rl convention) and
+722:         # "embedding_model" (qanta-buzzer default.yaml convention)
+723:         sbert_name = cfg.get("sbert_name", cfg.get("embedding_model", "all-MiniLM-L6-v2"))
+724:         return SBERTLikelihood(model_name=sbert_name)
+725: 
+726:     if model_name == "openai":
+727:         return OpenAILikelihood(
+728:             model=cfg.get("openai_model", "text-embedding-3-small"),
+729:         )
+730: 
+731:     if model_name == "t5":
+732:         t5_name = cfg.get("t5_name", "t5-base")
+733:         return T5Likelihood(model_name=t5_name)
+734: 
+735:     if isinstance(model_name, str) and model_name.startswith("t5"):
+736:         t5_name = model_name
+737:         return T5Likelihood(model_name=t5_name)
+738: 
+739:     if model_name == "dspy":
+740:         try:
+741:             from models.dspy_likelihood import DSPyLikelihood
+742:         except ImportError as exc:
+743:             raise ImportError(
+744:                 "DSPy likelihood requires the dspy package. "
+745:                 "Install with: pip install -e '.[dspy]'"
+746:             ) from exc
+747:         dspy_cfg = config.get("dspy", {})
+748:         cache_dir = dspy_cfg.get("cache_dir")
+749:         fingerprint = dspy_cfg.get("program_fingerprint", "default")
+750: 
+751:         def _placeholder_scorer(clue: str, options: list[str]) -> list[float]:
+752:             return [1.0 / max(1, len(options))] * len(options)
+753: 
+754:         return DSPyLikelihood(
+755:             scorer=_placeholder_scorer,
+756:             program_fingerprint=fingerprint,
+757:             cache_dir=cache_dir,
+758:         )
+759: 
+760:     raise ValueError(f"Unknown likelihood model: {model_name}")
+````
+
+## File: qb_env/tossup_env.py
+````python
+  1: """
+  2: Gymnasium-compliant POMDP Environment for Quiz Bowl
+  3: 
+  4: Implements a tossup question environment where clues are revealed incrementally.
+  5: At each step the agent observes a belief-based feature vector and chooses either
+  6: to WAIT (action 0, reveals next clue) or to BUZZ with a specific answer option
+  7: (actions 1..K, ends the episode).
+  8: 
+  9: The environment computes beliefs over K answer options using a pluggable
+ 10: LikelihoodModel and converts them to observations via extract_belief_features.
+ 11: 
+ 12: Ported from qb-rl reference implementation (qb_env/tossup_env.py) and adapted
+ 13: for the unified qanta-buzzer codebase.
+ 14: """
+ 15: 
+ 16: from __future__ import annotations
+ 17: 
+ 18: import random
+ 19: from typing import Any
+ 20: 
+ 21: import gymnasium as gym
+ 22: import numpy as np
+ 23: from gymnasium import spaces
+ 24: 
+ 25: from models.features import extract_belief_features
+ 26: from models.likelihoods import LikelihoodModel
+ 27: from qb_data.mc_builder import MCQuestion
+ 28: 
  29: 
- 30: def _text_key(text: str) -> str:
- 31:     """Compute a SHA-256 hash key for embedding cache lookups.
+ 30: def _softmax(scores: np.ndarray, beta: float) -> np.ndarray:
+ 31:     """Temperature-scaled softmax with numerical stability.
  32: 
  33:     Parameters
  34:     ----------
- 35:     text : str
- 36:         Input text to hash.
- 37: 
- 38:     Returns
- 39:     -------
- 40:     str
- 41:         64-character hexadecimal SHA-256 digest.
- 42: 
- 43:     Examples
- 44:     --------
- 45:     >>> key = _text_key("hello world")
- 46:     >>> len(key)
- 47:     64
- 48:     >>> _text_key("hello world") == _text_key("hello world")
- 49:     True
- 50:     """
- 51:     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+ 35:     scores : np.ndarray
+ 36:         Raw similarity scores of shape (K,).
+ 37:     beta : float
+ 38:         Temperature parameter. Higher values produce sharper distributions.
+ 39: 
+ 40:     Returns
+ 41:     -------
+ 42:     np.ndarray
+ 43:         Probability distribution of shape (K,), dtype float32.
+ 44:     """
+ 45:     stable = scores - np.max(scores)
+ 46:     probs = np.exp(beta * stable)
+ 47:     probs_sum = np.sum(probs)
+ 48:     if probs_sum <= 0:
+ 49:         return np.ones_like(scores, dtype=np.float32) / len(scores)
+ 50:     return (probs / probs_sum).astype(np.float32)
+ 51: 
  52: 
- 53: 
- 54: def _best_torch_device() -> "torch.device":
- 55:     """Select the best available accelerator: CUDA > MPS > CPU."""
- 56:     import torch
- 57: 
- 58:     if torch.cuda.is_available():
- 59:         return torch.device("cuda")
- 60:     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
- 61:         return torch.device("mps")
- 62:     return torch.device("cpu")
- 63: 
- 64: 
- 65: class LikelihoodModel(ABC):
- 66:     """Abstract base class for likelihood models.
- 67: 
- 68:     Likelihood models score how well each answer option matches a given
- 69:     clue prefix. The environment uses these scores (via softmax) to compute
- 70:     belief distributions over answer options.
- 71: 
- 72:     Subclasses must implement:
- 73:         - ``score(clue_prefix, option_profiles) -> np.ndarray``
- 74:         - ``_embed_batch(texts) -> np.ndarray``
- 75: 
- 76:     The base class provides ``embed_and_cache()`` which handles caching of
- 77:     text embeddings via SHA-256 content hashing.
- 78: 
- 79:     Attributes
- 80:     ----------
- 81:     embedding_cache : dict[str, np.ndarray]
- 82:         Maps SHA-256 text hashes to float32 embedding vectors.
- 83:     """
- 84: 
- 85:     def __init__(self) -> None:
- 86:         self.embedding_cache: dict[str, np.ndarray] = {}
+ 53: def precompute_beliefs(
+ 54:     questions: list[MCQuestion],
+ 55:     likelihood_model: LikelihoodModel,
+ 56:     belief_mode: str = "from_scratch",
+ 57:     beta: float = 5.0,
+ 58:     K: int = 4,
+ 59: ) -> dict[tuple[int, int], np.ndarray]:
+ 60:     """Precompute belief trajectories for all questions and steps.
+ 61: 
+ 62:     Iterates over each question and each step index, computing the belief
+ 63:     using the same logic as ``TossupMCEnv._compute_belief``. The result is
+ 64:     a dict keyed by ``(question_index, step_idx)`` for O(1) lookup during
+ 65:     training rollouts.
+ 66: 
+ 67:     Parameters
+ 68:     ----------
+ 69:     questions : list[MCQuestion]
+ 70:         Pool of questions to precompute beliefs for.
+ 71:     likelihood_model : LikelihoodModel
+ 72:         Model that scores clue text against answer option profiles.
+ 73:     belief_mode : str
+ 74:         One of ``"from_scratch"``, ``"sequential_bayes"``.
+ 75:     beta : float
+ 76:         Softmax temperature for converting raw scores to probabilities.
+ 77:     K : int
+ 78:         Number of answer options per question.
+ 79: 
+ 80:     Returns
+ 81:     -------
+ 82:     dict[tuple[int, int], np.ndarray]
+ 83:         Maps ``(question_index, step_idx)`` to belief vectors of shape
+ 84:         ``(K,)`` with dtype float32. Each belief sums to ~1.0.
+ 85:     """
+ 86:     cache: dict[tuple[int, int], np.ndarray] = {}
  87: 
- 88:     @property
- 89:     def cache_memory_bytes(self) -> int:
- 90:         """Approximate memory used by the embedding cache in bytes."""
- 91:         return sum(v.nbytes for v in self.embedding_cache.values())
- 92: 
- 93:     @abstractmethod
- 94:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
- 95:         """Return raw similarity scores for each answer option.
- 96: 
- 97:         The caller (environment) converts these to probabilities via
- 98:         softmax with a beta temperature parameter. Higher scores indicate
- 99:         stronger match between clue and option.
-100: 
-101:         Parameters
-102:         ----------
-103:         clue_prefix : str
-104:             Clue text revealed so far (concatenation of clues up to current step).
-105:         option_profiles : list[str]
-106:             Answer profile text for each of the K answer options.
-107: 
-108:         Returns
-109:         -------
-110:         np.ndarray
-111:             Raw similarity scores of shape (K,) where K = len(option_profiles).
-112:         """
+ 88:     for q_idx, question in enumerate(questions):
+ 89:         num_steps = len(question.run_indices)
+ 90:         belief = np.ones(K, dtype=np.float32) / K
+ 91: 
+ 92:         for step_idx in range(num_steps):
+ 93:             if belief_mode == "from_scratch":
+ 94:                 prefix = question.cumulative_prefixes[step_idx]
+ 95:                 scores = likelihood_model.score(prefix, question.option_profiles)
+ 96:                 belief = _softmax(scores, beta)
+ 97: 
+ 98:             elif belief_mode == "sequential_bayes":
+ 99:                 idx = question.run_indices[step_idx]
+100:                 prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
+101:                 frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
+102:                 scores = likelihood_model.score(frag, question.option_profiles)
+103:                 likelihood = _softmax(scores, beta)
+104:                 posterior = belief * likelihood
+105:                 denom = posterior.sum()
+106:                 if denom <= 0:
+107:                     belief = np.ones(K, dtype=np.float32) / K
+108:                 else:
+109:                     belief = (posterior / denom).astype(np.float32)
+110: 
+111:             else:
+112:                 raise ValueError(f"Unknown belief_mode: {belief_mode}")
 113: 
-114:     def embed_and_cache(self, texts: list[str]) -> np.ndarray:
-115:         """Embed texts, using cache for previously seen inputs.
-116: 
-117:         Texts are identified by their SHA-256 hash. Only unseen texts
-118:         are passed to ``_embed_batch()`` for actual computation; cached
-119:         results are reused.
-120: 
-121:         Parameters
-122:         ----------
-123:         texts : list[str]
-124:             Texts to embed.
-125: 
-126:         Returns
-127:         -------
-128:         np.ndarray
-129:             Stacked embeddings of shape (len(texts), embed_dim), dtype float32.
-130:         """
-131:         missing = [text for text in texts if _text_key(text) not in self.embedding_cache]
-132:         if missing:
-133:             new_embeddings = self._embed_batch(missing)
-134:             for text, emb in zip(missing, new_embeddings):
-135:                 self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
-136:         return np.stack([self.embedding_cache[_text_key(text)] for text in texts])
-137: 
-138:     def precompute_embeddings(
-139:         self,
-140:         texts: list[str],
-141:         batch_size: int = 64,
-142:         desc: str = "Pre-computing embeddings",
-143:     ) -> None:
-144:         """Bulk pre-embed texts into cache, processing in batches.
-145: 
-146:         Call this before running agents so that all subsequent ``score()``
-147:         calls are pure cache lookups (numpy dot products).  Duplicate and
-148:         already-cached texts are skipped automatically.
-149: 
-150:         Parameters
-151:         ----------
-152:         texts : list[str]
-153:             All texts to embed (clue prefixes, option profiles, fragments).
-154:         batch_size : int
-155:             Number of texts per ``_embed_batch`` call.
-156:         desc : str
-157:             tqdm progress-bar description.
-158:         """
-159:         from tqdm import tqdm
-160: 
-161:         unique = [t for t in dict.fromkeys(texts) if _text_key(t) not in self.embedding_cache]
-162:         if not unique:
-163:             return
-164:         for i in tqdm(range(0, len(unique), batch_size), desc=desc,
-165:                        total=(len(unique) + batch_size - 1) // batch_size):
-166:             batch = unique[i : i + batch_size]
-167:             embeddings = self._embed_batch(batch)
-168:             for text, emb in zip(batch, embeddings):
-169:                 self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
-170: 
-171:     def save_cache(self, path: str | Path) -> int:
-172:         """Persist embedding_cache to disk as compressed ``.npz``.
-173: 
-174:         Creates parent directories if needed. Keys are SHA-256 hex
-175:         strings (valid Python identifiers), values are float32 arrays.
-176: 
-177:         Parameters
-178:         ----------
-179:         path : str or Path
-180:             Destination file path (should end with ``.npz``).
-181: 
-182:         Returns
-183:         -------
-184:         int
-185:             Number of cache entries saved.
-186:         """
-187:         p = Path(path)
-188:         p.parent.mkdir(parents=True, exist_ok=True)
-189:         np.savez_compressed(p, **self.embedding_cache)
-190:         return len(self.embedding_cache)
-191: 
-192:     def load_cache(self, path: str | Path) -> int:
-193:         """Load embedding_cache from a ``.npz`` file on disk.
-194: 
-195:         Merges loaded entries into the existing cache **without**
-196:         overwriting keys that are already present (existing keys win).
-197:         If the file does not exist, silently returns 0 (cold-start).
-198: 
-199:         Parameters
-200:         ----------
-201:         path : str or Path
-202:             Path to ``.npz`` file previously written by ``save_cache``.
-203: 
-204:         Returns
-205:         -------
-206:         int
-207:             Number of *new* entries added to the cache.
-208:         """
-209:         p = Path(path)
-210:         if not p.exists():
-211:             return 0
-212:         with np.load(p) as data:
-213:             loaded = 0
-214:             for key in data.files:
-215:                 if key not in self.embedding_cache:
-216:                     self.embedding_cache[key] = data[key].astype(np.float32)
-217:                     loaded += 1
-218:             return loaded
+114:             cache[(q_idx, step_idx)] = belief.copy()
+115: 
+116:     return cache
+117: 
+118: 
+119: class TossupMCEnv(gym.Env[np.ndarray, int]):
+120:     """Gymnasium environment for quiz bowl tossup questions with MC options.
+121: 
+122:     Models quiz bowl as a POMDP where clues are revealed incrementally.
+123:     The agent maintains a belief distribution over K answer options, updated
+124:     at each step by a likelihood model. The agent decides when to buzz and
+125:     which answer to select.
+126: 
+127:     Action Space
+128:     ------------
+129:     Discrete(K + 1):
+130:         - 0: WAIT -- reveal the next clue and update belief
+131:         - 1..K: BUZZ with answer option (i-1), ending the episode
+132: 
+133:     Observation Space
+134:     -----------------
+135:     Box(K + 6,):
+136:         Belief features: [belief[0..K-1], top_p, margin, entropy,
+137:         stability, progress, clue_idx_norm].
+138:         See ``models.features.extract_belief_features`` for details.
+139: 
+140:     Reward Modes
+141:     ------------
+142:     ``time_penalty`` (default):
+143:         -wait_penalty per WAIT step; +buzz_correct for correct buzz,
+144:         +buzz_incorrect (negative) for wrong buzz.
+145:     ``simple``:
+146:         +1.0 for correct buzz, -1.0 for incorrect buzz, no WAIT penalty.
+147:     ``human_grounded``:
+148:         0.0 if the agent buzzes after the sampled human buzz position;
+149:         otherwise +buzz_correct/-buzz_incorrect for correct/incorrect.
+150: 
+151:     Belief Modes
+152:     ------------
+153:     ``from_scratch``:
+154:         Recompute belief from all clues seen so far via cumulative_prefixes.
+155:     ``sequential_bayes``:
+156:         Bayesian update: multiply prior belief by likelihood of new clue
+157:         fragment, then normalize.
+158: 
+159:     Parameters
+160:     ----------
+161:     questions : list[MCQuestion]
+162:         Pool of questions to sample from. Must be non-empty.
+163:     likelihood_model : LikelihoodModel
+164:         Model that scores clue text against answer option profiles.
+165:     K : int
+166:         Number of answer options per question. Must be >= 2.
+167:     reward_mode : str
+168:         One of ``"time_penalty"``, ``"simple"``, ``"human_grounded"``.
+169:     wait_penalty : float
+170:         Per-step penalty when reward_mode is ``"time_penalty"``.
+171:     buzz_correct : float
+172:         Reward for buzzing with the correct answer.
+173:     buzz_incorrect : float
+174:         Reward (typically negative) for buzzing with an incorrect answer.
+175:     belief_mode : str
+176:         One of ``"from_scratch"``, ``"sequential_bayes"``.
+177:     beta : float
+178:         Softmax temperature for converting raw scores to probabilities.
+179:         Higher values produce sharper distributions.
+180:     end_mode : str
+181:         Horizon behavior when clues are exhausted:
+182:         ``"force_commit"`` (legacy forced answer) or ``"no_buzz"``.
+183:     no_buzz_reward : float
+184:         Reward added at horizon when ``end_mode == "no_buzz"``.
+185:     seed : int
+186:         Random seed for question sampling and human buzz simulation.
+187:     """
+188: 
+189:     metadata = {"render_modes": []}
+190: 
+191:     def __init__(
+192:         self,
+193:         questions: list[MCQuestion],
+194:         likelihood_model: LikelihoodModel,
+195:         K: int = 4,
+196:         reward_mode: str = "time_penalty",
+197:         wait_penalty: float = 0.01,
+198:         early_buzz_penalty: float = 0.0,
+199:         buzz_correct: float = 1.0,
+200:         buzz_incorrect: float = -0.5,
+201:         belief_mode: str = "from_scratch",
+202:         beta: float = 5.0,
+203:         seed: int = 13,
+204:         precomputed_beliefs: dict[tuple[int, int], np.ndarray] | None = None,
+205:         opponent_buzz_model: "OpponentBuzzModel | None" = None,
+206:         ew_reward_correct: float = 10.0,
+207:         ew_reward_incorrect: float = -5.0,
+208:         ew_opponent_expected_value: float = 0.0,
+209:         variable_K: bool = False,
+210:         max_K: int | None = None,
+211:         use_action_masking: bool = False,
+212:         end_mode: str = "force_commit",
+213:         no_buzz_reward: float = 0.0,
+214:     ) -> None:
+215:         if not questions:
+216:             raise ValueError("questions cannot be empty")
+217:         if K < 2:
+218:             raise ValueError("K must be >= 2")
 219: 
-220:     @abstractmethod
-221:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
-222:         """Embed a batch of texts. Subclasses must implement.
-223: 
-224:         Parameters
-225:         ----------
-226:         texts : list[str]
-227:             Texts to embed (guaranteed non-empty, all cache misses).
-228: 
-229:         Returns
-230:         -------
-231:         np.ndarray
-232:             Embeddings of shape (len(texts), embed_dim), dtype float32.
-233:         """
-234:         raise NotImplementedError
-235: 
-236: 
-237: class TfIdfLikelihood(LikelihoodModel):
-238:     """TF-IDF based likelihood model using cosine similarity.
-239: 
-240:     Uses scikit-learn's ``TfidfVectorizer`` to learn vocabulary and IDF weights
-241:     from a corpus, then scores clue-option similarity via cosine distance in the
-242:     TF-IDF vector space.
-243: 
-244:     The model **must** be ``fit()`` on a corpus before calling ``score()`` or
-245:     ``_embed_batch()``. Calling these methods on an unfitted model raises
-246:     ``RuntimeError``.
-247: 
-248:     This is the fast, interpretable baseline: keyword overlap drives similarity.
-249:     It works well when clues contain distinctive vocabulary but misses semantic
-250:     relationships (e.g., "first president" vs "George Washington").
+220:         self.questions = questions
+221:         self.likelihood_model = likelihood_model
+222:         self.K = K
+223:         self.reward_mode = reward_mode
+224:         self.wait_penalty = wait_penalty
+225:         self.early_buzz_penalty = early_buzz_penalty
+226:         self.buzz_correct = buzz_correct
+227:         self.buzz_incorrect = buzz_incorrect
+228:         self.belief_mode = belief_mode
+229:         self.beta = beta
+230:         self.rng = random.Random(seed)
+231:         self.precomputed_beliefs = precomputed_beliefs
+232: 
+233:         self.opponent_buzz_model = opponent_buzz_model
+234:         self.ew_reward_correct = ew_reward_correct
+235:         self.ew_reward_incorrect = ew_reward_incorrect
+236:         self.ew_opponent_expected_value = ew_opponent_expected_value
+237: 
+238:         self.variable_K = variable_K
+239:         self.use_action_masking = use_action_masking
+240:         self.end_mode = end_mode
+241:         self.no_buzz_reward = no_buzz_reward
+242:         if variable_K:
+243:             self._max_K = max_K or max(len(q.options) for q in questions)
+244:         else:
+245:             self._max_K = K
+246: 
+247:         # Build qid -> list-index map for precomputed belief lookups
+248:         self._question_index_map: dict[str, int] = {
+249:             q.qid: i for i, q in enumerate(questions)
+250:         }
 251: 
-252:     Parameters
-253:     ----------
-254:     corpus_texts : list[str] or None
-255:         If provided, ``fit()`` is called immediately on these texts.
-256: 
-257:     Attributes
-258:     ----------
-259:     vectorizer : TfidfVectorizer
-260:         Scikit-learn vectorizer with English stop words removed.
-261:     _is_fit : bool
-262:         Whether the vectorizer has been fit on a corpus.
-263: 
-264:     Examples
-265:     --------
-266:     >>> corpus = ["George Washington was the first president",
-267:     ...           "Abraham Lincoln freed the slaves"]
-268:     >>> model = TfIdfLikelihood(corpus_texts=corpus)
-269:     >>> scores = model.score("first president", ["Washington", "Lincoln"])
-270:     >>> scores.shape
-271:     (2,)
-272:     """
-273: 
-274:     def __init__(self, corpus_texts: list[str] | None = None) -> None:
-275:         super().__init__()
-276:         from sklearn.feature_extraction.text import TfidfVectorizer
-277: 
-278:         self.vectorizer = TfidfVectorizer(stop_words="english")
-279:         self._is_fit = False
-280:         if corpus_texts:
-281:             self.fit(corpus_texts)
-282: 
-283:     def save_cache(self, path: str | Path) -> int:
-284:         """No-op: TF-IDF embeddings are vocabulary-specific and not portable.
-285: 
-286:         TF-IDF vectors depend on the fitted vocabulary, which changes
-287:         between ``fit()`` calls. Persisting them would produce wrong
-288:         results if the vocabulary differs.
-289: 
-290:         Returns
-291:         -------
-292:         int
-293:             Always 0.
-294:         """
-295:         return 0
-296: 
-297:     def fit(self, corpus_texts: list[str]) -> "TfIdfLikelihood":
-298:         """Learn vocabulary and IDF weights from a text corpus.
-299: 
-300:         Parameters
-301:         ----------
-302:         corpus_texts : list[str]
-303:             Corpus of documents to learn from. Should include answer profiles,
-304:             clue texts, or both to capture domain vocabulary.
-305: 
-306:         Returns
-307:         -------
-308:         TfIdfLikelihood
-309:             Self, for method chaining.
-310:         """
-311:         self.vectorizer.fit(corpus_texts)
-312:         self._is_fit = True
-313:         return self
-314: 
-315:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
-316:         """Score each option against the clue using TF-IDF cosine similarity.
-317: 
-318:         Uses ``embed_and_cache()`` to embed both the clue and options, so
-319:         repeated calls with the same texts skip vectorizer.transform().
-320:         Since ``_embed_batch()`` returns L2-normalized vectors, the dot
-321:         product equals cosine similarity.
-322: 
-323:         Parameters
-324:         ----------
-325:         clue_prefix : str
-326:             Clue text revealed so far.
-327:         option_profiles : list[str]
-328:             Answer profile text for each of the K answer options.
+252:         obs_K = self._max_K if self.variable_K else self.K
+253:         self.action_space = spaces.Discrete(obs_K + 1)
+254:         self.observation_space = spaces.Box(
+255:             low=-np.inf, high=np.inf, shape=(obs_K + 6,), dtype=np.float32
+256:         )
+257: 
+258:         self.question: MCQuestion | None = None
+259:         self.step_idx: int = 0
+260:         self.prev_belief: np.ndarray | None = None
+261:         self.belief: np.ndarray = np.ones(self.K, dtype=np.float32) / self.K
+262:         self.terminated: bool = False
+263:         self.truncated: bool = False
+264:         self._sampled_human_buzz_pos: int | None = None
+265:         self._current_question_idx: int = 0
+266: 
+267:     # ------------------------------------------------------------------
+268:     # Properties
+269:     # ------------------------------------------------------------------
+270: 
+271:     @property
+272:     def total_steps(self) -> int:
+273:         """Total number of incremental clue steps for the current question.
+274: 
+275:         Returns
+276:         -------
+277:         int
+278:             Length of ``question.run_indices`` if a question is loaded, else 1.
+279:         """
+280:         if self.question is None:
+281:             return 1
+282:         return len(self.question.run_indices)
+283: 
+284:     # ------------------------------------------------------------------
+285:     # Helper methods
+286:     # ------------------------------------------------------------------
+287: 
+288:     def _sample_question(self) -> MCQuestion:
+289:         """Sample a random question from the question pool.
+290: 
+291:         Returns
+292:         -------
+293:         MCQuestion
+294:             A randomly selected question.
+295:         """
+296:         return self.rng.choice(self.questions)
+297: 
+298:     def _sample_human_buzz(self, question: MCQuestion) -> int | None:
+299:         """Sample a human buzz position from the question's distribution.
+300: 
+301:         Uses weighted random sampling based on the number of humans who
+302:         buzzed at each position. Returns None if no human buzz data exists.
+303: 
+304:         Parameters
+305:         ----------
+306:         question : MCQuestion
+307:             The question to sample a human buzz position for.
+308: 
+309:         Returns
+310:         -------
+311:         int or None
+312:             Sampled token position, or None if no human buzz data.
+313:         """
+314:         if not question.human_buzz_positions:
+315:             return None
+316:         positions = []
+317:         weights = []
+318:         for pos, count in question.human_buzz_positions:
+319:             positions.append(int(pos))
+320:             weights.append(max(1, int(count)))
+321:         if not positions:
+322:             return None
+323:         return self.rng.choices(positions, weights=weights, k=1)[0]
+324: 
+325:     def _softmax_scores(self, scores: np.ndarray) -> np.ndarray:
+326:         """Convert raw likelihood scores to a probability distribution.
+327: 
+328:         Delegates to module-level ``_softmax`` with this environment's beta.
 329: 
-330:         Returns
-331:         -------
-332:         np.ndarray
-333:             Cosine similarity scores of shape (K,), dtype float32.
-334:             Values in [-1, 1] but typically [0, 1] for TF-IDF.
-335: 
-336:         Raises
-337:         ------
-338:         RuntimeError
-339:             If called before ``fit()``.
-340:         """
-341:         if not self._is_fit:
-342:             raise RuntimeError("TfIdfLikelihood must be fit() before score().")
-343:         clue_emb = self.embed_and_cache([clue_prefix])[0]
-344:         option_embs = self.embed_and_cache(option_profiles)
-345:         sims = option_embs @ clue_emb
-346:         return sims.astype(np.float32)
-347: 
-348:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
-349:         """Embed texts as dense, L2-normalized TF-IDF vectors.
-350: 
-351:         Row-wise L2 normalization ensures that dot product between any
-352:         two embedding vectors equals their cosine similarity, matching
-353:         the convention used by SBERT and T5 likelihood models.
-354: 
-355:         Parameters
-356:         ----------
-357:         texts : list[str]
-358:             Texts to embed (guaranteed non-empty, all cache misses).
-359: 
-360:         Returns
-361:         -------
-362:         np.ndarray
-363:             L2-normalized dense TF-IDF matrix of shape
-364:             (len(texts), vocab_size), dtype float32.
-365: 
-366:         Raises
-367:         ------
-368:         RuntimeError
-369:             If called before ``fit()``.
-370:         """
-371:         if not self._is_fit:
-372:             raise RuntimeError("TfIdfLikelihood must be fit() before embedding.")
-373:         mat = self.vectorizer.transform(texts).toarray().astype(np.float32)
-374:         norms = np.linalg.norm(mat, axis=1, keepdims=True)
-375:         norms[norms == 0] = 1.0  # avoid division by zero for empty docs
-376:         return mat / norms
-377: 
+330:         Parameters
+331:         ----------
+332:         scores : np.ndarray
+333:             Raw similarity scores of shape (K,).
+334: 
+335:         Returns
+336:         -------
+337:         np.ndarray
+338:             Probability distribution of shape (K,), dtype float32.
+339:         """
+340:         return _softmax(scores, self.beta)
+341: 
+342:     def _compute_belief(self, question: MCQuestion, step_idx: int) -> np.ndarray:
+343:         """Compute belief distribution over answer options at a given step.
+344: 
+345:         Two modes are supported:
+346: 
+347:         ``from_scratch``
+348:             Score the cumulative clue prefix against all option profiles,
+349:             then apply softmax. Each step is independent of the previous
+350:             belief.
+351: 
+352:         ``sequential_bayes``
+353:             Extract only the new clue fragment since the last step, score
+354:             it, and perform a Bayesian update: posterior = prior * likelihood,
+355:             then normalize. This is cheaper per step but may accumulate
+356:             approximation errors.
+357: 
+358:         Parameters
+359:         ----------
+360:         question : MCQuestion
+361:             Current question being played.
+362:         step_idx : int
+363:             Current step index (0-based, indexes into run_indices).
+364: 
+365:         Returns
+366:         -------
+367:         np.ndarray
+368:             Updated belief distribution of shape (K,), dtype float32.
+369: 
+370:         Raises
+371:         ------
+372:         ValueError
+373:             If ``self.belief_mode`` is not a recognized mode.
+374:         """
+375:         if self.precomputed_beliefs is not None:
+376:             key = (self._current_question_idx, step_idx)
+377:             return self.precomputed_beliefs[key].copy()
 378: 
-379: class SBERTLikelihood(LikelihoodModel):
-380:     """Sentence-BERT likelihood model using semantic embeddings.
-381: 
-382:     Uses a ``SentenceTransformer`` model to compute dense, L2-normalized
-383:     embeddings. Cosine similarity is computed as a simple dot product since
-384:     embeddings are pre-normalized (``normalize_embeddings=True``).
-385: 
-386:     Inherits ``embed_and_cache()`` from ``LikelihoodModel`` for transparent
-387:     caching of embeddings via SHA-256 content hashing. The first call to
-388:     ``score()`` computes and caches all embeddings; subsequent calls with the
-389:     same texts are fast cache lookups.
-390: 
-391:     Compared to TF-IDF, SBERT captures semantic similarity (e.g., "first
-392:     president" and "George Washington" score highly even without word overlap)
-393:     but is slower due to the neural encoder.
-394: 
-395:     Parameters
-396:     ----------
-397:     model_name : str
-398:         HuggingFace model identifier for ``SentenceTransformer``.
-399:         Default is ``"all-MiniLM-L6-v2"`` (22M params, 384-dim embeddings).
-400:         First run downloads the model (~80MB) from HuggingFace.
-401: 
-402:     Attributes
-403:     ----------
-404:     model_name : str
-405:         The SentenceTransformer model name.
-406:     encoder : SentenceTransformer
-407:         The loaded sentence transformer model.
-408: 
-409:     Examples
-410:     --------
-411:     >>> model = SBERTLikelihood()  # downloads model on first run
-412:     >>> scores = model.score("first president", ["Washington", "Lincoln"])
-413:     >>> scores.shape
-414:     (2,)
-415:     """
-416: 
-417:     def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
-418:         super().__init__()
-419:         from sentence_transformers import SentenceTransformer
-420: 
-421:         self.model_name = model_name
-422:         self.encoder = SentenceTransformer(model_name)
-423: 
-424:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
-425:         """Embed texts using the SentenceTransformer encoder.
-426: 
-427:         Embeddings are L2-normalized so that cosine similarity can be computed
-428:         as a simple dot product (avoiding the division by norms).
-429: 
-430:         Parameters
-431:         ----------
-432:         texts : list[str]
-433:             Texts to embed (guaranteed non-empty, all cache misses).
-434: 
-435:         Returns
-436:         -------
-437:         np.ndarray
-438:             Normalized embeddings of shape (len(texts), embed_dim), dtype float32.
-439:         """
-440:         return self.encoder.encode(
-441:             texts, convert_to_numpy=True, normalize_embeddings=True
-442:         ).astype(np.float32)
-443: 
-444:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
-445:         """Score each option using semantic cosine similarity.
-446: 
-447:         Computes dot product between the clue embedding and each option
-448:         embedding. Since embeddings are L2-normalized, dot product equals
-449:         cosine similarity.
-450: 
-451:         Parameters
-452:         ----------
-453:         clue_prefix : str
-454:             Clue text revealed so far.
-455:         option_profiles : list[str]
-456:             Answer profile text for each of the K answer options.
-457: 
-458:         Returns
-459:         -------
-460:         np.ndarray
-461:             Cosine similarity scores of shape (K,), dtype float32.
-462:             Values in [-1, 1].
-463:         """
-464:         clue_emb = self.embed_and_cache([clue_prefix])[0]
-465:         option_embs = self.embed_and_cache(option_profiles)
-466:         sims = option_embs @ clue_emb
-467:         return sims.astype(np.float32)
-468: 
+379:         if self.belief_mode == "from_scratch":
+380:             prefix = question.cumulative_prefixes[step_idx]
+381:             scores = self.likelihood_model.score(prefix, question.option_profiles)
+382:             return self._softmax_scores(scores)
+383: 
+384:         if self.belief_mode == "sequential_bayes":
+385:             idx = question.run_indices[step_idx]
+386:             prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
+387:             frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
+388:             scores = self.likelihood_model.score(frag, question.option_profiles)
+389:             likelihood = self._softmax_scores(scores)
+390:             posterior = self.belief * likelihood
+391:             denom = posterior.sum()
+392:             if denom <= 0:
+393:                 posterior = np.ones(self.K, dtype=np.float32) / self.K
+394:             else:
+395:                 posterior = posterior / denom
+396:             return posterior.astype(np.float32)
+397: 
+398:         raise ValueError(f"Unknown belief_mode: {self.belief_mode}")
+399: 
+400:     def _obs(self) -> np.ndarray:
+401:         """Build the observation vector from current belief state.
+402: 
+403:         In variable-K mode, uses padded features sized to ``_max_K``.
+404:         Otherwise delegates to ``extract_belief_features``.
+405: 
+406:         Returns
+407:         -------
+408:         np.ndarray
+409:             Feature vector of shape (obs_K + 6,), dtype float32.
+410:         """
+411:         if self.variable_K:
+412:             from models.features import extract_padded_belief_features
+413: 
+414:             return extract_padded_belief_features(
+415:                 belief=self.belief,
+416:                 prev_belief=self.prev_belief,
+417:                 step_idx=self.step_idx,
+418:                 total_steps=self.total_steps,
+419:                 max_K=self._max_K,
+420:             )
+421:         return extract_belief_features(
+422:             belief=self.belief,
+423:             prev_belief=self.prev_belief,
+424:             step_idx=self.step_idx,
+425:             total_steps=self.total_steps,
+426:         )
+427: 
+428:     def action_masks(self) -> np.ndarray:
+429:         """Return a boolean mask of valid actions.
+430: 
+431:         WAIT (action 0) is always valid.  Buzz actions ``1..K_actual``
+432:         are valid; padded slots ``K_actual+1..max_K`` are invalid.
+433: 
+434:         Returns
+435:         -------
+436:         np.ndarray
+437:             Boolean array of shape ``(max_K + 1,)`` or ``(K + 1,)``.
+438:         """
+439:         n_actions = self._max_K + 1 if self.variable_K else self.K + 1
+440:         mask = np.zeros(n_actions, dtype=bool)
+441:         mask[0] = True  # WAIT
+442:         k_actual = len(self.question.options) if self.question is not None else self.K
+443:         mask[1 : k_actual + 1] = True
+444:         return mask
+445: 
+446:     def _step_to_token_pos(self, step_idx: int) -> int:
+447:         """Convert a step index to the corresponding token position.
+448: 
+449:         Used by the ``human_grounded`` reward mode to compare the agent's
+450:         buzz position against the sampled human buzz position.
+451: 
+452:         Parameters
+453:         ----------
+454:         step_idx : int
+455:             Step index (0-based, indexes into run_indices).
+456: 
+457:         Returns
+458:         -------
+459:         int
+460:             Token position in the original question text.
+461:         """
+462:         if self.question is None or not self.question.run_indices:
+463:             return step_idx
+464:         if step_idx >= len(self.question.run_indices):
+465:             return self.question.run_indices[-1]
+466:         if step_idx < 0:
+467:             return self.question.run_indices[0]
+468:         return self.question.run_indices[step_idx]
 469: 
-470: class OpenAILikelihood(LikelihoodModel):
-471:     """OpenAI embedding likelihood model using normalized embedding similarity.
-472: 
-473:     This path is optional and only activates when explicitly selected in config.
-474:     It requires both the ``openai`` Python package and ``OPENAI_API_KEY`` to be
-475:     available at runtime.
-476:     """
-477: 
-478:     def __init__(
-479:         self,
-480:         model: str = "text-embedding-3-small",
-481:         api_key: str | None = None,
-482:     ) -> None:
-483:         super().__init__()
-484: 
-485:         resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
-486:         if not resolved_api_key:
-487:             raise RuntimeError(
-488:                 "OpenAI likelihood requires OPENAI_API_KEY to be set."
-489:             )
+470:     def _expected_wins_reward(
+471:         self, question: MCQuestion, chosen_idx: int, last_seen_step: int
+472:     ) -> float:
+473:         """Compute Expected Wins reward at buzz time.
+474: 
+475:         R_t = S_t * V_self + (1 - S_t) * V_opp
+476: 
+477:         where S_t = P(opponent has NOT buzzed by step t).
+478:         """
+479:         correct = chosen_idx == question.gold_index
+480:         v_self = self.ew_reward_correct if correct else self.ew_reward_incorrect
+481:         if self.opponent_buzz_model is None:
+482:             return v_self
+483:         s_t = self.opponent_buzz_model.prob_survive_to_step(question, last_seen_step)
+484:         return s_t * v_self + (1.0 - s_t) * self.ew_opponent_expected_value
+485: 
+486:     def _buzz_reward(self, question: MCQuestion, chosen_idx: int, last_seen_step: int) -> float:
+487:         """Compute the reward for buzzing with a given answer.
+488: 
+489:         Dispatches on ``self.reward_mode``:
 490: 
-491:         try:
-492:             from openai import OpenAI
-493:         except ImportError as exc:
-494:             raise ImportError(
-495:                 "OpenAI likelihood requires the openai package. "
-496:                 "Install it with: pip install -e .[openai] or pip install openai."
-497:             ) from exc
-498: 
-499:         self.model = model
-500:         self.client = OpenAI(api_key=resolved_api_key)
+491:         ``simple``
+492:             +1.0 for correct, -1.0 for incorrect.
+493:         ``human_grounded``
+494:             0.0 if the agent buzzes after the sampled human would have;
+495:             otherwise +buzz_correct / +buzz_incorrect.
+496:         ``time_penalty`` (default)
+497:             +buzz_correct / +buzz_incorrect. The per-step wait penalty
+498:             is applied separately in ``step()``.
+499:         ``expected_wins``
+500:             S_t * V_self + (1 - S_t) * V_opp via opponent model.
 501: 
-502:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
-503:         """Embed texts via the OpenAI embeddings API and L2-normalize them."""
-504:         response = self.client.embeddings.create(model=self.model, input=texts)
-505:         vectors = [np.array(item.embedding, dtype=np.float32) for item in response.data]
-506:         embeddings = np.stack(vectors)
-507:         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-508:         norms[norms == 0] = 1.0
-509:         return (embeddings / norms).astype(np.float32)
+502:         Parameters
+503:         ----------
+504:         question : MCQuestion
+505:             Current question.
+506:         chosen_idx : int
+507:             Index of the chosen answer option (0-based).
+508:         last_seen_step : int
+509:             Step index of the last clue seen before buzzing.
 510: 
-511:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
-512:         """Score each option using cosine similarity over normalized embeddings."""
-513:         clue_emb = self.embed_and_cache([clue_prefix])[0]
-514:         option_embs = self.embed_and_cache(option_profiles)
-515:         sims = option_embs @ clue_emb
-516:         return sims.astype(np.float32)
-517: 
-518: 
-519: class T5Likelihood(LikelihoodModel):
-520:     """T5 encoder likelihood model using mean-pooled semantic embeddings.
-521: 
-522:     Uses ``T5EncoderModel`` (not full ``T5ForConditionalGeneration``) for 2x
-523:     faster inference and half the memory. Embeddings are mean-pooled over
-524:     sequence length with attention mask weighting to handle padding correctly.
-525: 
-526:     Inherits ``embed_and_cache()`` from ``LikelihoodModel`` for transparent
-527:     caching of embeddings via SHA-256 content hashing. The first call to
-528:     ``score()`` computes and caches all embeddings; subsequent calls with the
-529:     same texts are fast cache lookups.
-530: 
-531:     Compared to SBERT, T5 captures deeper semantic relationships via its
-532:     encoder-decoder pre-training on massive text corpora. This is the novel
-533:     contribution: using T5 as a likelihood model rather than just as a policy
-534:     encoder.
-535: 
-536:     Parameters
-537:     ----------
-538:     model_name : str
-539:         HuggingFace T5 model identifier. Default is ``"t5-base"``
-540:         (220M params). Options:
-541: 
-542:         - ``"t5-small"`` (60M params) -- fastest, lowest quality
-543:         - ``"t5-base"`` (220M params) -- balanced (recommended)
-544:         - ``"t5-large"`` (770M params) -- best quality, requires 8GB GPU VRAM
-545: 
-546:         First run downloads the model from HuggingFace (~850MB for t5-base).
-547: 
-548:     Attributes
-549:     ----------
-550:     model_name : str
-551:         The T5 model identifier.
-552:     encoder : T5EncoderModel
-553:         Pre-trained T5 encoder loaded from HuggingFace.
-554:     tokenizer : T5TokenizerFast
-555:         Fast T5 tokenizer for text preprocessing.
-556:     device : torch.device
-557:         Computation device (cuda if available, else cpu).
-558: 
-559:     Examples
-560:     --------
-561:     >>> model = T5Likelihood(model_name="t5-small")
-562:     >>> scores = model.score("first president", ["Washington", "Einstein"])
-563:     >>> scores.shape
-564:     (2,)
-565:     """
+511:         Returns
+512:         -------
+513:         float
+514:             Reward value.
+515:         """
+516:         correct = chosen_idx == question.gold_index
+517:         if self.reward_mode == "simple":
+518:             return 1.0 if correct else -1.0
+519:         if self.reward_mode == "human_grounded":
+520:             token_pos = self._step_to_token_pos(last_seen_step)
+521:             if self._sampled_human_buzz_pos is not None and token_pos > self._sampled_human_buzz_pos:
+522:                 return 0.0
+523:             return self.buzz_correct if correct else self.buzz_incorrect
+524:         if self.reward_mode == "expected_wins":
+525:             return self._expected_wins_reward(question, chosen_idx, last_seen_step)
+526:         # default: time_penalty
+527:         reward = self.buzz_correct if correct else self.buzz_incorrect
+528: 
+529:         if self.early_buzz_penalty > 0 and self.total_steps > 1:
+530:             progress = np.clip((last_seen_step + 1) / self.total_steps, 0.0, 1.0)
+531:             reward -= float(self.early_buzz_penalty) * (1.0 - progress)
+532: 
+533:         return reward
+534: 
+535:     # ------------------------------------------------------------------
+536:     # Gymnasium interface
+537:     # ------------------------------------------------------------------
+538: 
+539:     def reset(
+540:         self, *, seed: int | None = None, options: dict[str, Any] | None = None
+541:     ) -> tuple[np.ndarray, dict[str, Any]]:
+542:         """Reset the environment and start a new episode.
+543: 
+544:         Samples a random question from the pool, initializes belief to a
+545:         uniform distribution, and returns the initial observation.
+546: 
+547:         Parameters
+548:         ----------
+549:         seed : int or None
+550:             If provided, reseeds both the internal RNG and numpy's global
+551:             RNG for reproducibility.
+552:         options : dict or None
+553:             Unused. Included for Gymnasium API compatibility.
+554: 
+555:         Returns
+556:         -------
+557:         observation : np.ndarray
+558:             Initial observation of shape (K + 6,), dtype float32.
+559:             Belief is uniform, so top_p = 1/K, margin = 0, entropy = max.
+560:         info : dict[str, Any]
+561:             Episode metadata. Contains ``"qid"`` (the sampled question ID).
+562:         """
+563:         if seed is not None:
+564:             self.rng.seed(seed)
+565:             np.random.seed(seed)
 566: 
-567:     def __init__(self, model_name: str = "t5-base") -> None:
-568:         super().__init__()
-569:         import torch
-570:         from transformers import T5EncoderModel, T5TokenizerFast
-571: 
-572:         self.model_name = model_name
-573:         self.encoder = T5EncoderModel.from_pretrained(model_name)
-574:         self.tokenizer = T5TokenizerFast.from_pretrained(model_name)
-575:         self.device = _best_torch_device()
-576:         self.encoder.to(self.device)
-577:         self.encoder.eval()
-578: 
-579:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
-580:         """Embed texts using T5 encoder with attention-masked mean pooling.
-581: 
-582:         Mean pooling uses the attention mask to exclude padding tokens from the
-583:         average, ensuring correct semantic embeddings when sequences have
-584:         different lengths. Embeddings are L2-normalized so that cosine
-585:         similarity can be computed as a simple dot product.
-586: 
-587:         Parameters
-588:         ----------
-589:         texts : list[str]
-590:             Texts to embed (guaranteed non-empty, all cache misses).
-591: 
-592:         Returns
-593:         -------
-594:         np.ndarray
-595:             L2-normalized embeddings of shape (len(texts), hidden_dim),
-596:             dtype float32. Hidden dim is 512 (t5-small), 768 (t5-base),
-597:             or 1024 (t5-large).
-598: 
-599:         Notes
-600:         -----
-601:         Tensors are detached and moved to CPU immediately after computation
-602:         to prevent GPU memory leaks when called repeatedly during episodes.
-603:         """
-604:         import torch
-605: 
-606:         with torch.no_grad():
-607:             encoded = self.tokenizer(
-608:                 texts,
-609:                 padding=True,
-610:                 truncation=True,
-611:                 max_length=512,
-612:                 return_tensors="pt",
-613:             ).to(self.device)
-614: 
-615:             outputs = self.encoder(**encoded)
-616:             last_hidden = outputs.last_hidden_state  # (batch, seq_len, hidden_dim)
-617: 
-618:             # Mean pooling over sequence length with attention mask
-619:             mask = encoded.attention_mask.unsqueeze(-1)  # (batch, seq_len, 1)
-620:             masked_hidden = last_hidden * mask
-621:             sum_hidden = masked_hidden.sum(dim=1)  # (batch, hidden_dim)
-622:             mask_sum = mask.sum(dim=1).clamp(min=1e-9)  # (batch, 1)
-623:             mean_pooled = sum_hidden / mask_sum  # (batch, hidden_dim)
+567:         if options and "question_idx" in options:
+568:             q_idx = int(options["question_idx"])
+569:             if q_idx < 0 or q_idx >= len(self.questions):
+570:                 raise ValueError(f"question_idx out of range: {q_idx}")
+571:             self.question = self.questions[q_idx]
+572:             self._current_question_idx = q_idx
+573:         else:
+574:             self.question = self._sample_question()
+575:             self._current_question_idx = self._question_index_map.get(
+576:                 self.question.qid, self.questions.index(self.question)
+577:             )
+578:         self.step_idx = 0
+579:         self.prev_belief = None
+580:         self.belief = np.ones(self.K, dtype=np.float32) / self.K
+581:         self.terminated = False
+582:         self.truncated = False
+583:         self._sampled_human_buzz_pos = self._sample_human_buzz(self.question)
+584:         return self._obs(), {"qid": self.question.qid}
+585: 
+586:     def step(
+587:         self, action: int
+588:     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+589:         """Execute one step in the environment.
+590: 
+591:         If ``action == 0`` (WAIT):
+592:             - Saves previous belief, computes new belief from current clue.
+593:             - Applies wait_penalty if reward_mode is ``"time_penalty"``.
+594:             - Advances step counter.
+595:             - If all clues exhausted: forced termination with best-guess
+596:               answer (``truncated=True``).
+597: 
+598:         If ``action in 1..K`` (BUZZ):
+599:             - Computes buzz reward for chosen answer option ``action - 1``.
+600:             - Episode ends (``terminated=True``).
+601: 
+602:         Parameters
+603:         ----------
+604:         action : int
+605:             Action to take. 0 = WAIT, 1..K = buzz with option (action-1).
+606: 
+607:         Returns
+608:         -------
+609:         observation : np.ndarray
+610:             Updated observation of shape (K + 6,), dtype float32.
+611:         reward : float
+612:             Scalar reward for this step.
+613:         terminated : bool
+614:             True if the agent buzzed (natural episode end).
+615:         truncated : bool
+616:             True if all clues were exhausted (forced termination).
+617:         info : dict[str, Any]
+618:             Step metadata. Always contains ``"qid"`` and ``"step_idx"``.
+619:             On BUZZ: also ``"chosen_idx"`` and ``"correct"``.
+620:             On forced termination in ``force_commit`` mode: also
+621:             ``"forced_choice"`` and ``"forced_correct"``.
+622:             On forced termination in ``no_buzz`` mode: also ``"no_buzz"``,
+623:             ``"forced_choice" = -1``, and ``"forced_correct" = False``.
 624: 
-625:             # L2 normalize for cosine similarity via dot product
-626:             embeddings = torch.nn.functional.normalize(mean_pooled, p=2, dim=1)
-627: 
-628:             # Detach and move to CPU to prevent GPU memory leak
-629:             embeddings = embeddings.detach().cpu().numpy().astype(np.float32)
-630: 
-631:         return embeddings
-632: 
-633:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
-634:         """Score each option using T5 semantic cosine similarity.
-635: 
-636:         Computes dot product between the clue embedding and each option
-637:         embedding. Since embeddings are L2-normalized, dot product equals
-638:         cosine similarity.
-639: 
-640:         Parameters
-641:         ----------
-642:         clue_prefix : str
-643:             Clue text revealed so far.
-644:         option_profiles : list[str]
-645:             Answer profile text for each of the K answer options.
-646: 
-647:         Returns
-648:         -------
-649:         np.ndarray
-650:             Cosine similarity scores of shape (K,), dtype float32.
-651:             Values in [-1, 1].
-652:         """
-653:         clue_emb = self.embed_and_cache([clue_prefix])[0]
-654:         option_embs = self.embed_and_cache(option_profiles)
-655:         sims = option_embs @ clue_emb
-656:         return sims.astype(np.float32)
-657: 
-658: 
-659: def build_likelihood_from_config(
-660:     config: dict[str, Any], corpus_texts: list[str] | None = None
-661: ) -> LikelihoodModel:
-662:     """Construct a likelihood model from YAML configuration.
-663: 
-664:     Factory function that reads the ``likelihood`` section of the config dict
-665:     and instantiates the appropriate ``LikelihoodModel`` subclass.
-666: 
-667:     Parameters
-668:     ----------
-669:     config : dict[str, Any]
-670:         Full YAML config dict. Must contain a ``"likelihood"`` key with at
-671:         least a ``"model"`` field specifying the model type.
-672: 
-673:         Supported model types:
-674:         - ``"tfidf"``: TF-IDF cosine similarity (requires ``corpus_texts``)
-675:         - ``"sbert"``: Sentence-BERT semantic similarity
-676:         - ``"openai"``: OpenAI embedding similarity
-677:         - ``"t5"`` / ``"t5-small"`` / ``"t5-base"`` / ``"t5-large"``:
-678:           T5 encoder semantic similarity
-679: 
-680:         Optional config keys:
-681:         - ``"sbert_name"`` or ``"embedding_model"``: SentenceTransformer model
-682:           name (default: ``"all-MiniLM-L6-v2"``)
-683:         - ``"openai_model"``: OpenAI embedding model name
-684:           (default: ``"text-embedding-3-small"``)
-685:         - ``"t5_name"``: T5 model name (default: ``"t5-base"``)
-686: 
-687:     corpus_texts : list[str] or None
-688:         Text corpus for TF-IDF fitting. Required when ``model == "tfidf"``,
-689:         ignored for other models.
+625:         Raises
+626:         ------
+627:         RuntimeError
+628:             If called before ``reset()`` or after episode has ended.
+629:         ValueError
+630:             If ``action`` is not in the action space.
+631:         """
+632:         if self.question is None:
+633:             raise RuntimeError("Environment must be reset() before step().")
+634:         if self.terminated or self.truncated:
+635:             raise RuntimeError("Cannot call step() on terminated/truncated episode.")
+636:         if not self.action_space.contains(action):
+637:             raise ValueError(f"Invalid action: {action}")
+638: 
+639:         info: dict[str, Any] = {"qid": self.question.qid}
+640:         reward = 0.0
+641: 
+642:         if action == 0:
+643:             # WAIT: reveal next clue and update belief
+644:             self.prev_belief = self.belief.copy()
+645:             self.belief = self._compute_belief(self.question, self.step_idx)
+646:             if self.reward_mode == "time_penalty":
+647:                 reward -= self.wait_penalty
+648: 
+649:             self.step_idx += 1
+650:             if self.step_idx >= self.total_steps:
+651:                 last_seen = self.step_idx - 1
+652:                 self.truncated = True
+653:                 info["step_idx"] = last_seen
+654:                 if self.end_mode == "force_commit":
+655:                     forced_choice = int(np.argmax(self.belief))
+656:                     reward += self._buzz_reward(self.question, forced_choice, last_seen)
+657:                     info["forced_choice"] = forced_choice
+658:                     info["forced_correct"] = forced_choice == self.question.gold_index
+659:                 elif self.end_mode == "no_buzz":
+660:                     reward += self.no_buzz_reward
+661:                     info["no_buzz"] = True
+662:                     info["forced_choice"] = -1
+663:                     info["forced_correct"] = False
+664:                 else:
+665:                     raise ValueError(f"Unknown end_mode: {self.end_mode}")
+666:             else:
+667:                 info["step_idx"] = self.step_idx
+668: 
+669:         else:
+670:             # BUZZ: select an answer option
+671:             last_seen = max(0, self.step_idx - 1)
+672:             chosen_idx = action - 1
+673:             reward += self._buzz_reward(self.question, chosen_idx, last_seen)
+674:             self.terminated = True
+675:             info["step_idx"] = last_seen
+676:             info["chosen_idx"] = chosen_idx
+677:             info["correct"] = chosen_idx == self.question.gold_index
+678: 
+679:         obs = self._obs()
+680:         return obs, float(reward), self.terminated, self.truncated, info
+681: 
+682: 
+683: def make_env_from_config(
+684:     mc_questions: list[MCQuestion],
+685:     likelihood_model: LikelihoodModel,
+686:     config: dict[str, Any],
+687:     precomputed_beliefs: dict[tuple[int, int], np.ndarray] | None = None,
+688: ) -> TossupMCEnv:
+689:     """Construct a TossupMCEnv from YAML configuration.
 690: 
-691:     Returns
-692:     -------
-693:     LikelihoodModel
-694:         An instantiated and ready-to-use likelihood model.
+691:     Factory function that reads the ``environment``, ``data``, and
+692:     ``likelihood`` sections of a config dict and instantiates a fully
+693:     configured environment. The likelihood model must be pre-constructed
+694:     (e.g., via ``build_likelihood_from_config``).
 695: 
-696:     Raises
-697:     ------
-698:     ValueError
-699:         If ``model`` is ``"tfidf"`` and ``corpus_texts`` is None.
-700:         If ``model`` is not a recognized model type.
-701: 
-702:     Examples
-703:     --------
-704:     >>> from qb_data.config import load_config
-705:     >>> config = load_config("configs/default.yaml")
-706:     >>> model = build_likelihood_from_config(config, corpus_texts=my_corpus)
-707:     >>> scores = model.score("first president", ["Washington", "Lincoln"])
-708:     """
-709:     cfg = config["likelihood"]
-710:     model_name = cfg.get("model", "sbert")
-711: 
-712:     if model_name == "tfidf":
-713:         if not corpus_texts:
-714:             raise ValueError("TF-IDF likelihood requires corpus_texts.")
-715:         return TfIdfLikelihood(corpus_texts=corpus_texts)
-716: 
-717:     if model_name == "sbert":
-718:         # Support both "sbert_name" (qb-rl convention) and
-719:         # "embedding_model" (qanta-buzzer default.yaml convention)
-720:         sbert_name = cfg.get("sbert_name", cfg.get("embedding_model", "all-MiniLM-L6-v2"))
-721:         return SBERTLikelihood(model_name=sbert_name)
-722: 
-723:     if model_name == "openai":
-724:         return OpenAILikelihood(
-725:             model=cfg.get("openai_model", "text-embedding-3-small"),
-726:         )
-727: 
-728:     if model_name == "t5":
-729:         t5_name = cfg.get("t5_name", "t5-base")
-730:         return T5Likelihood(model_name=t5_name)
-731: 
-732:     if isinstance(model_name, str) and model_name.startswith("t5"):
-733:         t5_name = model_name
-734:         return T5Likelihood(model_name=t5_name)
-735: 
-736:     if model_name == "dspy":
-737:         try:
-738:             from models.dspy_likelihood import DSPyLikelihood
-739:         except ImportError as exc:
-740:             raise ImportError(
-741:                 "DSPy likelihood requires the dspy package. "
-742:                 "Install with: pip install -e '.[dspy]'"
-743:             ) from exc
-744:         dspy_cfg = config.get("dspy", {})
-745:         cache_dir = dspy_cfg.get("cache_dir")
-746:         fingerprint = dspy_cfg.get("program_fingerprint", "default")
-747: 
-748:         def _placeholder_scorer(clue: str, options: list[str]) -> list[float]:
-749:             return [1.0 / max(1, len(options))] * len(options)
-750: 
-751:         return DSPyLikelihood(
-752:             scorer=_placeholder_scorer,
-753:             program_fingerprint=fingerprint,
-754:             cache_dir=cache_dir,
-755:         )
-756: 
-757:     raise ValueError(f"Unknown likelihood model: {model_name}")
+696:     Parameters
+697:     ----------
+698:     mc_questions : list[MCQuestion]
+699:         List of MCQuestion instances with options and answer profiles.
+700:         Must be non-empty.
+701:     likelihood_model : LikelihoodModel
+702:         Pre-constructed likelihood model for scoring clues against options.
+703:         Use ``build_likelihood_from_config`` to create one from config.
+704:     config : dict[str, Any]
+705:         Full YAML config dict. Must contain the following sections:
+706: 
+707:         - ``environment``: reward mode, penalties, belief mode
+708:         - ``data``: K (number of answer choices)
+709:         - ``likelihood``: beta (softmax temperature)
+710:     precomputed_beliefs : dict or None
+711:         Optional precomputed belief cache from ``precompute_beliefs()``.
+712:         When provided, ``_compute_belief`` uses O(1) lookups instead of
+713:         calling ``likelihood_model.score()``.
+714: 
+715:     Returns
+716:     -------
+717:     TossupMCEnv
+718:         A configured Gymnasium environment ready for ``reset()``.
+719: 
+720:     Examples
+721:     --------
+722:     >>> from qb_data.config import load_config
+723:     >>> from models.likelihoods import build_likelihood_from_config
+724:     >>> config = load_config("configs/default.yaml")
+725:     >>> model = build_likelihood_from_config(config, corpus_texts=corpus)
+726:     >>> env = make_env_from_config(mc_questions, model, config)
+727:     >>> obs, info = env.reset()
+728:     """
+729:     env_cfg = config["environment"]
+730:     data_cfg = config["data"]
+731:     lik_cfg = config["likelihood"]
+732:     variable_k = bool(data_cfg.get("variable_K", False) or env_cfg.get("variable_K", False))
+733:     max_k_raw = data_cfg.get("max_K") or env_cfg.get("max_K")
+734:     return TossupMCEnv(
+735:         questions=mc_questions,
+736:         likelihood_model=likelihood_model,
+737:         K=int(data_cfg.get("K", 4)),
+738:         reward_mode=str(env_cfg.get("reward", env_cfg.get("reward_mode", "time_penalty"))),
+739:         seed=int(env_cfg.get("seed", 13)),
+740:         wait_penalty=float(env_cfg.get("wait_penalty", 0.01)),
+741:         early_buzz_penalty=float(env_cfg.get("early_buzz_penalty", 0.0)),
+742:         buzz_correct=float(env_cfg.get("buzz_correct", 1.0)),
+743:         buzz_incorrect=float(env_cfg.get("buzz_incorrect", -0.5)),
+744:         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
+745:         beta=float(lik_cfg.get("beta", 5.0)),
+746:         precomputed_beliefs=precomputed_beliefs,
+747:         end_mode=str(env_cfg.get("end_mode", "force_commit")),
+748:         no_buzz_reward=float(env_cfg.get("no_buzz_reward", 0.0)),
+749:         variable_K=variable_k,
+750:         max_K=int(max_k_raw) if max_k_raw is not None else None,
+751:         use_action_masking=bool(env_cfg.get("use_action_masking", False)),
+752:     )
+````
+
+## File: scripts/evaluate_all.py
+````python
+  1: #!/usr/bin/env python3
+  2: """
+  3: Comprehensive evaluation with control experiments and visualization.
+  4: 
+  5: Runs the SoftmaxProfileBuzzer at the best threshold (from baseline sweep),
+  6: then executes control experiments (choices-only, shuffle, alias substitution)
+  7: and generates comparison plots and tables for the CS234 writeup.
+  8: 
+  9: Consumes outputs from:
+ 10: - build_mc_dataset.py (mc_dataset.json, alias_lookup.json)
+ 11: - run_baselines.py (baseline_summary.json)
+ 12: - train_ppo.py (ppo_summary.json)
+ 13: 
+ 14: Produces:
+ 15: - evaluation_report.json (full eval + controls + baseline + PPO summaries)
+ 16: - plots/entropy_vs_clue.png
+ 17: - plots/calibration.png
+ 18: - plots/comparison.csv
+ 19: 
+ 20: Usage:
+ 21:     python scripts/evaluate_all.py --smoke
+ 22:     python scripts/evaluate_all.py --config configs/custom.yaml
+ 23:     python scripts/evaluate_all.py --mc-path artifacts/main/mc_dataset.json
+ 24: 
+ 25: Ported from qb-rl reference implementation (scripts/evaluate_all.py) with
+ 26: import path adaptations for the unified qanta-buzzer codebase.
+ 27: """
+ 28: 
+ 29: from __future__ import annotations
+ 30: 
+ 31: import argparse
+ 32: from dataclasses import asdict
+ 33: from pathlib import Path
+ 34: import sys
+ 35: 
+ 36: import numpy as np
+ 37: 
+ 38: PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ 39: if str(PROJECT_ROOT) not in sys.path:
+ 40:     sys.path.insert(0, str(PROJECT_ROOT))
+ 41: 
+ 42: from agents.bayesian_buzzer import SoftmaxProfileBuzzer
+ 43: from agents.threshold_buzzer import (
+ 44:     _softmax_episode_from_precomputed,
+ 45:     precompute_beliefs,
+ 46: )
+ 47: from evaluation.controls import (
+ 48:     run_alias_substitution_control,
+ 49:     run_choices_only_control,
+ 50:     run_shuffle_control_precomputed,
+ 51: )
+ 52: from evaluation.metrics import (
+ 53:     calibration_at_buzz,
+ 54:     per_category_accuracy,
+ 55:     summarize_buzz_metrics,
+ 56: )
+ 57: from evaluation.plotting import (
+ 58:     plot_calibration_curve,
+ 59:     plot_entropy_vs_clue_index,
+ 60:     save_comparison_table,
+ 61: )
+ 62: from qb_data.config import merge_overrides
+ 63: from scripts._common import (
+ 64:     ARTIFACT_DIR,
+ 65:     build_likelihood_model,
+ 66:     load_config,
+ 67:     load_embedding_cache,
+ 68:     load_json,
+ 69:     load_mc_questions,
+ 70:     parse_overrides,
+ 71:     save_json,
+ 72: )
+ 73: 
+ 74: 
+ 75: def parse_args() -> argparse.Namespace:
+ 76:     """Parse command-line arguments.
+ 77: 
+ 78:     Returns
+ 79:     -------
+ 80:     argparse.Namespace
+ 81:         Parsed arguments with config, smoke, and mc_path fields.
+ 82:     """
+ 83:     parser = argparse.ArgumentParser(
+ 84:         description="Evaluate all agents and controls."
+ 85:     )
+ 86:     parser.add_argument(
+ 87:         "--config", type=str, default=None,
+ 88:         help="Path to YAML config file (default: configs/default.yaml).",
+ 89:     )
+ 90:     parser.add_argument(
+ 91:         "--smoke", action="store_true",
+ 92:         help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
+ 93:     )
+ 94:     parser.add_argument(
+ 95:         "--mc-path", type=str, default=None,
+ 96:         help="Optional MC dataset JSON path (overrides config-derived path).",
+ 97:     )
+ 98:     parser.add_argument(
+ 99:         "overrides",
+100:         nargs="*",
+101:         help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
+102:     )
+103:     return parser.parse_args()
+104: 
+105: 
+106: def pick_best_softmax_threshold(
+107:     out_dir: Path, default_threshold: float
+108: ) -> float:
+109:     """Select the best softmax threshold from baseline sweep results.
+110: 
+111:     Loads baseline_summary.json and extracts the threshold with the
+112:     highest mean S_q score from the softmax_profile results.
+113: 
+114:     Parameters
+115:     ----------
+116:     out_dir : Path
+117:         Directory containing baseline_summary.json.
+118:     default_threshold : float
+119:         Fallback threshold if baseline summary is unavailable.
+120: 
+121:     Returns
+122:     -------
+123:     float
+124:         Best threshold by S_q score, or default_threshold if unavailable.
+125:     """
+126:     summary_path = out_dir / "baseline_summary.json"
+127:     if not summary_path.exists():
+128:         return default_threshold
+129:     summary = load_json(summary_path)
+130:     softmax = summary.get("softmax_profile", {})
+131:     if not softmax:
+132:         return default_threshold
+133:     best_t = default_threshold
+134:     best_sq = float("-inf")
+135:     for t_str, metrics in softmax.items():
+136:         sq = float(metrics.get("mean_sq", float("-inf")))
+137:         if sq > best_sq:
+138:             best_sq = sq
+139:             best_t = float(t_str)
+140:     return best_t
+141: 
+142: 
+143: def main() -> None:
+144:     """Run comprehensive evaluation with controls and visualizations."""
+145:     args = parse_args()
+146: 
+147:     config = load_config(args.config, smoke=args.smoke)
+148:     overrides = parse_overrides(args)
+149:     if overrides:
+150:         print(f"Applying overrides: {overrides}")
+151:         config = merge_overrides(config, overrides)
+152: 
+153:     split = "smoke" if args.smoke else "main"
+154:     out_dir = ARTIFACT_DIR / split
+155:     mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
+156: 
+157:     # Fallback: check data/processed/ if artifacts path doesn't exist
+158:     if not mc_path.exists():
+159:         fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
+160:         if fallback.exists():
+161:             print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
+162:             mc_path = fallback
+163: 
+164:     print(f"Loading MC questions from: {mc_path}")
+165:     mc_questions = load_mc_questions(mc_path)
+166:     print(f"Loaded {len(mc_questions)} MC questions")
+167: 
+168:     # Load alias lookup (generated by build_mc_dataset.py)
+169:     alias_path = out_dir / "alias_lookup.json"
+170:     if alias_path.exists():
+171:         alias_lookup = load_json(alias_path)
+172:     else:
+173:         print(f"Warning: alias_lookup.json not found at {alias_path}, using empty lookup")
+174:         alias_lookup = {}
+175: 
+176:     # Build likelihood model
+177:     print(f"Building likelihood model: {config['likelihood']['model']}")
+178:     likelihood_model = build_likelihood_model(config, mc_questions)
+179:     load_embedding_cache(likelihood_model, config)
+180:     beta = float(config["likelihood"].get("beta", 5.0))
+181:     alpha = float(config["bayesian"].get("alpha", 10.0))
+182:     default_threshold = float(config["bayesian"]["threshold_sweep"][0])
+183:     threshold = pick_best_softmax_threshold(out_dir, default_threshold=default_threshold)
+184:     print(f"Using best softmax threshold: {threshold}")
+185: 
+186:     # Precompute beliefs once (single pass of likelihood_model.score())
+187:     print("Precomputing beliefs...")
+188:     precomputed = precompute_beliefs(mc_questions, likelihood_model, beta)
+189: 
+190:     # Precomputed evaluation (zero extra score() calls)
+191:     def evaluate_questions_precomputed(pqs):
+192:         runs = [asdict(_softmax_episode_from_precomputed(pq, threshold, alpha)) for pq in pqs]
+193:         summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
+194:         summary["runs"] = runs
+195:         return summary
+196: 
+197:     # Live evaluator for controls that genuinely change option text (alias)
+198:     def evaluate_questions_live(qset):
+199:         agent = SoftmaxProfileBuzzer(
+200:             likelihood_model=likelihood_model,
+201:             threshold=threshold,
+202:             beta=beta,
+203:             alpha=alpha,
+204:         )
+205:         runs = [asdict(agent.run_episode(q)) for q in qset]
+206:         summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
+207:         summary["runs"] = runs
+208:         return summary
+209: 
+210:     # --- Run evaluations ---
+211:     print("Running full evaluation...")
+212:     full_eval = evaluate_questions_precomputed(precomputed)
+213: 
+214:     # Compute per-category breakdown
+215:     print("\nComputing per-category breakdown...")
+216:     per_category_results = per_category_accuracy(full_eval["runs"], mc_questions)
+217: 
+218:     # Sort by category name for readability
+219:     per_category_sorted = dict(sorted(per_category_results.items()))
+220: 
+221:     print("\nPer-category accuracy:")
+222:     for category, metrics in per_category_sorted.items():
+223:         print(
+224:             f"  {category:20s} (n={metrics['n']:3.0f}): "
+225:             f"acc={metrics['buzz_accuracy']:.3f}, "
+226:             f"S_q={metrics['mean_sq']:.3f}"
+227:         )
+228:     print()
+229: 
+230:     print("Running shuffle control...")
+231:     shuffle_eval = run_shuffle_control_precomputed(precomputed, threshold, alpha)
+232: 
+233:     print("Running alias substitution control...")
+234:     alias_eval = run_alias_substitution_control(
+235:         mc_questions,
+236:         alias_lookup=alias_lookup,
+237:         evaluator=lambda qset: evaluate_questions_live(qset),
+238:     )
+239: 
+240:     print("Running choices-only control...")
+241:     choices_only = run_choices_only_control(mc_questions)
+242: 
+243:     # --- Load existing artifacts ---
+244:     ppo_summary_path = out_dir / "ppo_summary.json"
+245:     ppo_summary = load_json(ppo_summary_path) if ppo_summary_path.exists() else {}
+246:     baseline_summary_path = out_dir / "baseline_summary.json"
+247:     baseline_summary = (
+248:         load_json(baseline_summary_path) if baseline_summary_path.exists() else {}
+249:     )
+250: 
+251:     # --- Build evaluation report ---
+252:     report = {
+253:         "softmax_profile_best_threshold": threshold,
+254:         "full_eval": {k: v for k, v in full_eval.items() if k != "runs"},
+255:         "controls": {
+256:             "choices_only": choices_only,
+257:             "shuffle": {k: v for k, v in shuffle_eval.items() if k != "runs"},
+258:             "alias_substitution": {
+259:                 k: v for k, v in alias_eval.items() if k != "runs"
+260:             },
+261:         },
+262:         "per_category": per_category_sorted,
+263:         "baseline_summary": baseline_summary,
+264:         "ppo_summary": ppo_summary,
+265:     }
+266: 
+267:     # Add Expected Wins summary only when that reward mode is active
+268:     if config.get("environment", {}).get("reward_mode") == "expected_wins":
+269:         from evaluation.metrics import expected_wins_score
+270:         from qb_env.opponent_models import build_opponent_model_from_config
+271: 
+272:         opp_model = build_opponent_model_from_config(mc_questions, config)
+273:         qid_to_q = {q.qid: q for q in mc_questions}
+274:         if opp_model is not None:
+275:             ew_scores = []
+276:             for run in full_eval["runs"]:
+277:                 q = qid_to_q.get(run.get("qid", ""), mc_questions[0])
+278:                 opp_surv = [
+279:                     opp_model.prob_survive_to_step(q, t)
+280:                     for t in range(len(run.get("c_trace", [])))
+281:                 ]
+282:                 ew = expected_wins_score(
+283:                     run.get("c_trace", []),
+284:                     run.get("g_trace", []),
+285:                     opp_surv,
+286:                 )
+287:                 ew_scores.append(ew)
+288:             report["expected_wins"] = {
+289:                 "mean_ew": float(np.mean(ew_scores)) if ew_scores else 0.0,
+290:                 "n": len(ew_scores),
+291:             }
+292: 
+293:     save_json(out_dir / "evaluation_report.json", report)
+294: 
+295:     # --- Generate visualizations ---
+296:     print("Generating plots...")
+297: 
+298:     # Entropy vs clue index
+299:     entropy_traces = [
+300:         list(r["entropy_trace"])
+301:         for r in full_eval["runs"]
+302:         if r.get("entropy_trace")
+303:     ]
+304:     max_len = max((len(t) for t in entropy_traces), default=0)
+305:     padded = np.full((len(entropy_traces), max_len), np.nan, dtype=np.float32)
+306:     for i, trace in enumerate(entropy_traces):
+307:         padded[i, : len(trace)] = np.array(trace, dtype=np.float32)
+308:     entropy_trace = (
+309:         np.nanmean(padded, axis=0).tolist() if max_len > 0 else []
+310:     )
+311:     plot_entropy_vs_clue_index(
+312:         {"softmax_profile": entropy_trace},
+313:         out_dir / "plots" / "entropy_vs_clue.png",
+314:     )
+315: 
+316:     # Calibration curve — use top_p (belief in top answer) as confidence
+317:     confidences = []
+318:     outcomes = []
+319:     for row in full_eval["runs"]:
+320:         top_p = row.get("top_p_trace", row.get("c_trace", []))
+321:         if not top_p:
+322:             continue
+323:         idx = min(int(row["buzz_step"]), len(top_p) - 1)
+324:         confidences.append(float(top_p[idx]))
+325:         outcomes.append(1 if bool(row["correct"]) else 0)
+326:     plot_calibration_curve(
+327:         confidences, outcomes, out_dir / "plots" / "calibration.png"
+328:     )
+329: 
+330:     # Comparison table: include baseline sweep, controls, and PPO
+331:     table_rows = []
+332: 
+333:     # Add baseline sweep results (threshold at multiple values)
+334:     if "threshold" in baseline_summary:
+335:         for threshold_str, metrics in baseline_summary["threshold"].items():
+336:             table_rows.append({
+337:                 "agent": f"threshold_{threshold_str}",
+338:                 **{k: v for k, v in metrics.items() if k != "runs"},
+339:             })
+340: 
+341:     # Add softmax_profile sweep results
+342:     if "softmax_profile" in baseline_summary:
+343:         for threshold_str, metrics in baseline_summary["softmax_profile"].items():
+344:             table_rows.append({
+345:                 "agent": f"softmax_{threshold_str}",
+346:                 **{k: v for k, v in metrics.items() if k != "runs"},
+347:             })
+348: 
+349:     # Add full softmax eval (best threshold) and control experiments
+350:     table_rows.append({
+351:         "agent": "full_softmax",
+352:         **{k: v for k, v in full_eval.items() if k != "runs"},
+353:     })
+354:     table_rows.append({
+355:         "agent": "shuffle_control",
+356:         **{k: v for k, v in shuffle_eval.items() if k != "runs"},
+357:     })
+358:     table_rows.append({
+359:         "agent": "alias_control",
+360:         **{k: v for k, v in alias_eval.items() if k != "runs"},
+361:     })
+362: 
+363:     # Add PPO if available
+364:     if ppo_summary:
+365:         table_rows.append({"agent": "ppo", **ppo_summary})
+366: 
+367:     save_comparison_table(table_rows, out_dir / "plots" / "comparison.csv")
+368: 
+369:     print(f"Wrote evaluation report to: {out_dir / 'evaluation_report.json'}")
+370: 
+371: 
+372: if __name__ == "__main__":
+373:     main()
+````
+
+## File: scripts/run_full_pipeline.sh
+````bash
+  1: #!/usr/bin/env bash
+  2: # Full pipeline with parallelism — runs the core pipeline plus key extensions.
+  3: # Phases 9/10/12/18/19 require manual execution (see docs/full-pipeline-runbook.md).
+  4: #
+  5: # Dependencies form a DAG:
+  6: #
+  7: #   Phase 1 (build MC dataset)
+  8: #     ├── Wave 1 (3 parallel tracks): Phases 2, 3, 5
+  9: #     │     Track A: baselines → writes artifacts/main/baseline_summary.json
+ 10: #     │     Track B: PPO → writes artifacts/main/ppo_model.zip
+ 11: #     │     Track C: T5 policy → writes checkpoints/
+ 12: #     ├── Wave 2 (sequential, after Wave 1): Phases 4, 6, 11, 15
+ 13: #     │     All read/write artifacts/main/ — must be sequential
+ 14: #     ├── Wave 3 (sequential): Phases 14, 16, 17
+ 15: #     │     PPO ablations that reuse artifacts/main/
+ 16: #     └── Wave 4 (sequential): Phase 13 (K-sensitivity)
+ 17: #         Builds to artifacts/k*/ then runs baselines (writes artifacts/main/)
+ 18: #         Must run after Wave 2 so it doesn't clobber baseline_summary.json
+ 19: #
+ 20: # Usage:
+ 21: #   bash scripts/run_full_pipeline.sh                    # t5-base (balanced)
+ 22: #   bash scripts/run_full_pipeline.sh --t5-model t5-small # fastest
+ 23: #   bash scripts/run_full_pipeline.sh --t5-model t5-large # full quality
+ 24: #   bash scripts/run_full_pipeline.sh --sequential        # no parallelism
+ 25: #
+ 26: # Requirements:
+ 27: #   - Python venv activated with `pip install -e .`
+ 28: #   - questions.csv at repo root
+ 29: #   - ~10 GB free disk space
+ 30: #
+ 31: # Estimated wall time (Apple M3 Max, 64 GB):
+ 32: #   t5-small, parallel: ~2–3 hours
+ 33: #   t5-base, parallel:  ~3–5 hours
+ 34: #   t5-large, parallel: ~6–10 hours
+ 35: 
+ 36: set -euo pipefail
+ 37: 
+ 38: REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ 39: cd "$REPO_ROOT"
+ 40: 
+ 41: # Parse arguments
+ 42: T5_MODEL="t5-base"
+ 43: SEQUENTIAL=false
+ 44: while [ $# -gt 0 ]; do
+ 45:     case "$1" in
+ 46:         --t5-model) T5_MODEL="$2"; shift 2 ;;
+ 47:         --t5-model=*) T5_MODEL="${1#*=}"; shift ;;
+ 48:         --sequential) SEQUENTIAL=true; shift ;;
+ 49:         *) shift ;;
+ 50:     esac
+ 51: done
+ 52: 
+ 53: echo "============================================================"
+ 54: echo "FULL PIPELINE — T5 model: $T5_MODEL, parallel: $([ "$SEQUENTIAL" = true ] && echo no || echo yes)"
+ 55: echo "============================================================"
+ 56: echo ""
+ 57: 
+ 58: RESULTS="$REPO_ROOT/results"
+ 59: mkdir -p "$RESULTS"
+ 60: 
+ 61: # Activate venv if available
+ 62: if [ -f "$REPO_ROOT/.venv/bin/activate" ]; then
+ 63:     source "$REPO_ROOT/.venv/bin/activate"
+ 64: fi
+ 65: 
+ 66: # Helper: run a command, log to file, print status on completion
+ 67: run_phase() {
+ 68:     local PHASE="$1"
+ 69:     local LOG="$RESULTS/phase_${PHASE}.log"
+ 70:     shift
+ 71:     echo "[Phase $PHASE] STARTED at $(date +%H:%M:%S)"
+ 72:     if PYTHONUNBUFFERED=1 "$@" > "$LOG" 2>&1; then
+ 73:         echo "[Phase $PHASE] DONE at $(date +%H:%M:%S) — see $LOG"
+ 74:     else
+ 75:         echo "[Phase $PHASE] FAILED at $(date +%H:%M:%S) — see $LOG"
+ 76:         return 1
+ 77:     fi
+ 78: }
+ 79: 
+ 80: # Helper: wait for background jobs, exit on first failure
+ 81: wait_all() {
+ 82:     local PIDS=("$@")
+ 83:     for pid in "${PIDS[@]}"; do
+ 84:         if ! wait "$pid"; then
+ 85:             echo "ERROR: Background job $pid failed"
+ 86:             kill "${PIDS[@]}" 2>/dev/null || true
+ 87:             exit 1
+ 88:         fi
+ 89:     done
+ 90: }
+ 91: 
+ 92: ########################################################################
+ 93: # PHASE 1: Build MC dataset (sequential — everything depends on this)
+ 94: ########################################################################
+ 95: echo "=== PHASE 1: Build MC dataset ==="
+ 96: python scripts/build_mc_dataset.py \
+ 97:     --config configs/default.yaml \
+ 98:     --output-dir artifacts/main
+ 99: echo "[Phase 1] DONE — $(python -c "import json; print(f'{len(json.load(open(\"artifacts/main/mc_dataset.json\")))} MC questions')")"
+100: echo ""
+101: 
+102: MC="artifacts/main/mc_dataset.json"
+103: 
+104: if [ "$SEQUENTIAL" = true ]; then
+105:     ####################################################################
+106:     # SEQUENTIAL MODE
+107:     ####################################################################
+108:     echo "=== Running all phases sequentially ==="
+109: 
+110:     echo "=== PHASE 2: Baselines (TF-IDF) ==="
+111:     python scripts/run_baselines.py --config configs/default.yaml --mc-path "$MC" likelihood.model=tfidf
+112:     cp artifacts/main/baseline_summary.json "$RESULTS/baselines_tfidf.json"
+113: 
+114:     echo "=== PHASE 3: PPO (100k steps) ==="
+115:     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" --seed 13 --deterministic-eval likelihood.model=tfidf
+116:     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_default.json"
+117:     cp artifacts/main/ppo_model.zip "$RESULTS/ppo_model_default.zip"
+118: 
+119:     echo "=== PHASE 4: Evaluate all ==="
+120:     python scripts/evaluate_all.py --config configs/default.yaml --mc-path "$MC" likelihood.model=tfidf
+121:     cp artifacts/main/evaluation_report.json "$RESULTS/eval_default.json"
+122: 
+123:     echo "=== PHASE 5: T5 policy ==="
+124:     python scripts/train_t5_policy.py --config configs/t5_policy.yaml model.model_name="$T5_MODEL"
+125: 
+126:     echo "=== PHASE 6: Compare policies ==="
+127:     python scripts/compare_policies.py \
+128:         --mlp-checkpoint artifacts/main/ppo_model \
+129:         --t5-checkpoint checkpoints/ppo_t5/best_model \
+130:         --mc-path "$MC" \
+131:         --output "$RESULTS/t5_comparison.json"
+132: 
+133:     echo "=== PHASE 11: Expected Wins ==="
+134:     python scripts/evaluate_all.py --config configs/default.yaml --mc-path "$MC" \
+135:         likelihood.model=tfidf environment.reward_mode=expected_wins environment.opponent_buzz_model.type=logistic
+136:     cp artifacts/main/evaluation_report.json "$RESULTS/eval_ew_logistic.json"
+137: 
+138:     echo "=== PHASE 14: Reward modes ==="
+139:     for MODE in simple human_grounded; do
+140:         python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
+141:             --seed 13 --deterministic-eval likelihood.model=tfidf environment.reward_mode="$MODE"
+142:         cp artifacts/main/ppo_summary.json "$RESULTS/ppo_$MODE.json"
+143:     done
+144: 
+145:     echo "=== PHASE 16: Stop-only PPO ==="
+146:     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
+147:         --seed 13 --deterministic-eval --policy-mode stop_only likelihood.model=tfidf
+148:     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_stop_only.json"
+149: 
+150:     echo "=== PHASE 17: No-buzz horizon ==="
+151:     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
+152:         --seed 13 --deterministic-eval likelihood.model=tfidf environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
+153:     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_no_buzz.json"
+154: 
+155:     echo "=== PHASE 15: Belief mode (sequential_bayes) ==="
+156:     python scripts/run_baselines.py --config configs/default.yaml --mc-path "$MC" \
+157:         environment.belief_mode=sequential_bayes likelihood.model=tfidf
+158:     cp artifacts/main/baseline_summary.json "$RESULTS/baselines_seqbayes.json"
+159: 
+160:     echo "=== PHASE 9: Distractor comparison ==="
+161:     for STRAT in tfidf_profile category_random; do
+162:         python scripts/build_mc_dataset.py --config configs/default.yaml \
+163:             --output-dir "artifacts/distractor_$STRAT" data.distractor_strategy="$STRAT"
+164:         python scripts/run_baselines.py --config configs/default.yaml \
+165:             --mc-path "artifacts/distractor_$STRAT/mc_dataset.json" likelihood.model=tfidf
+166:         cp artifacts/main/baseline_summary.json "$RESULTS/baselines_$STRAT.json"
+167:     done
+168: 
+169:     echo "=== PHASE 13: K-sensitivity ==="
+170:     for K in 2 3 5 6; do
+171:         python scripts/build_mc_dataset.py --config configs/default.yaml \
+172:             --output-dir "artifacts/k$K" data.K="$K" data.distractor_strategy=category_random
+173:         python scripts/run_baselines.py --config configs/default.yaml \
+174:             --mc-path "artifacts/k$K/mc_dataset.json" likelihood.model=tfidf
+175:         cp artifacts/main/baseline_summary.json "$RESULTS/baselines_k$K.json"
+176:     done
+177: 
+178: else
+179:     ####################################################################
+180:     # PARALLEL MODE
+181:     ####################################################################
+182:     echo "=== WAVE 1: Independent phases (3 parallel tracks) ==="
+183:     echo ""
+184: 
+185:     PIDS=()
+186: 
+187:     # Track A: Baselines (writes artifacts/main/baseline_summary.json)
+188:     (
+189:         run_phase "2" python scripts/run_baselines.py \
+190:             --config configs/default.yaml --mc-path "$MC" likelihood.model=tfidf
+191:         cp artifacts/main/baseline_summary.json "$RESULTS/baselines_tfidf.json"
+192:     ) &
+193:     PIDS+=($!)
+194: 
+195:     # Track B: PPO training (writes artifacts/main/ppo_model.zip)
+196:     (
+197:         run_phase "3" python scripts/train_ppo.py \
+198:             --config configs/default.yaml --mc-path "$MC" --seed 13 --deterministic-eval likelihood.model=tfidf
+199:         cp artifacts/main/ppo_summary.json "$RESULTS/ppo_default.json"
+200:         cp artifacts/main/ppo_model.zip "$RESULTS/ppo_model_default.zip"
+201:     ) &
+202:     PIDS+=($!)
+203: 
+204:     # Track C: T5 policy (writes checkpoints/ — no artifact race)
+205:     (
+206:         run_phase "5" python scripts/train_t5_policy.py \
+207:             --config configs/t5_policy.yaml model.model_name="$T5_MODEL"
+208:     ) &
+209:     PIDS+=($!)
+210: 
+211:     echo "Waiting for Wave 1 (${#PIDS[@]} tracks)..."
+212:     wait_all "${PIDS[@]}"
+213:     echo ""
+214: 
+215:     echo "=== WAVE 2: Sequential post-Wave-1 phases (share artifacts/main/) ==="
+216: 
+217:     # Phase 4: Evaluate all (reads baseline_summary.json from Phase 2)
+218:     run_phase "4" python scripts/evaluate_all.py \
+219:         --config configs/default.yaml --mc-path "$MC" likelihood.model=tfidf
+220:     cp artifacts/main/evaluation_report.json "$RESULTS/eval_default.json"
+221: 
+222:     # Phase 6: Compare policies (needs Phase 3 PPO + Phase 5 T5)
+223:     run_phase "6" python scripts/compare_policies.py \
+224:         --mlp-checkpoint artifacts/main/ppo_model \
+225:         --t5-checkpoint checkpoints/ppo_t5/best_model \
+226:         --mc-path "$MC" \
+227:         --output "$RESULTS/t5_comparison.json"
+228: 
+229:     # Phase 11: Expected Wins eval (writes evaluation_report.json)
+230:     run_phase "11" python scripts/evaluate_all.py \
+231:         --config configs/default.yaml --mc-path "$MC" \
+232:         likelihood.model=tfidf environment.reward_mode=expected_wins environment.opponent_buzz_model.type=logistic
+233:     cp artifacts/main/evaluation_report.json "$RESULTS/eval_ew_logistic.json"
+234: 
+235:     # Phase 15: Belief mode comparison (writes baseline_summary.json)
+236:     run_phase "15" python scripts/run_baselines.py \
+237:         --config configs/default.yaml --mc-path "$MC" \
+238:         environment.belief_mode=sequential_bayes likelihood.model=tfidf
+239:     cp artifacts/main/baseline_summary.json "$RESULTS/baselines_seqbayes.json"
+240: 
+241:     echo ""
+242:     echo "=== WAVE 3: PPO ablations (sequential — share artifacts/main/) ==="
+243: 
+244:     echo "[Phase 14a] reward_mode=simple"
+245:     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
+246:         --seed 13 --deterministic-eval likelihood.model=tfidf environment.reward_mode=simple
+247:     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_simple.json"
+248: 
+249:     echo "[Phase 14b] reward_mode=human_grounded"
+250:     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
+251:         --seed 13 --deterministic-eval likelihood.model=tfidf environment.reward_mode=human_grounded
+252:     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_human_grounded.json"
+253: 
+254:     echo "[Phase 16] policy_mode=stop_only"
+255:     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
+256:         --seed 13 --deterministic-eval --policy-mode stop_only likelihood.model=tfidf
+257:     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_stop_only.json"
+258: 
+259:     echo "[Phase 17] end_mode=no_buzz"
+260:     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
+261:         --seed 13 --deterministic-eval likelihood.model=tfidf environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
+262:     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_no_buzz.json"
+263: 
+264:     echo ""
+265:     echo "=== WAVE 4: K-sensitivity (sequential — writes artifacts/main/baseline_summary.json) ==="
+266: 
+267:     for K in 2 3 5 6; do
+268:         echo "[Phase 13-k$K] Building K=$K dataset..."
+269:         run_phase "13-k$K" python scripts/build_mc_dataset.py \
+270:             --config configs/default.yaml \
+271:             --output-dir "artifacts/k$K" data.K="$K" data.distractor_strategy=category_random
+272:         run_phase "13-k${K}-baselines" python scripts/run_baselines.py \
+273:             --config configs/default.yaml \
+274:             --mc-path "artifacts/k$K/mc_dataset.json" likelihood.model=tfidf
+275:         cp artifacts/main/baseline_summary.json "$RESULTS/baselines_k$K.json"
+276:     done
+277: 
+278: fi
+279: 
+280: ########################################################################
+281: # FINAL SUMMARY
+282: ########################################################################
+283: echo ""
+284: echo "============================================================"
+285: echo "PIPELINE COMPLETE"
+286: echo "============================================================"
+287: echo ""
+288: echo "Results directory:"
+289: ls -1 "$RESULTS"/*.json 2>/dev/null | while read f; do echo "  $(basename $f)"; done
+290: echo ""
+291: echo "Artifacts:"
+292: for d in artifacts/main artifacts/k* artifacts/distractor_*; do
+293:     [ -d "$d" ] && echo "  $d/ — $(ls $d/*.json 2>/dev/null | wc -l) JSON files"
+294: done
+295: echo ""
+296: echo "Checkpoints:"
+297: ls -d checkpoints/*/best_model 2>/dev/null | while read d; do echo "  $d/"; done
+298: echo ""
+299: echo "Final comparison table:"
+300: python3 -c "
+301: import json, glob
+302: for f in sorted(glob.glob('results/*.json')):
+303:     s = json.load(open(f))
+304:     name = f.split('/')[-1].replace('.json', '')
+305:     if 'full_eval' in s:
+306:         fe = s['full_eval']
+307:         print(f'{name}: acc={fe.get(\"buzz_accuracy\", \"N/A\")}, S_q={fe.get(\"mean_sq\", \"N/A\")}')
+308:     elif 't5_policy' in s:
+309:         for k in ('mlp_policy', 't5_policy'):
+310:             if k in s:
+311:                 m = s[k]
+312:                 print(f'{name}/{k}: acc={m.get(\"accuracy\", \"N/A\")}, S_q={m.get(\"mean_sq\", \"N/A\")}')
+313:     elif 'softmax_profile' in s:
+314:         sp = s['softmax_profile']
+315:         best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+316:         print(f'{name}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", \"N/A\")}')
+317:     else:
+318:         acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
+319:         sq = s.get('mean_sq', 'N/A')
+320:         print(f'{name}: acc={acc}, S_q={sq}')
+321: "
 ````
 
 ## File: AGENTS.md
@@ -19427,46 +19752,58 @@ requirements.txt
  63: scripts/manual-smoke.sh
  64: ```
  65: 
- 66: ## T5 Policy Pipeline
+ 66: ## Full Pipeline
  67: 
- 68: ```bash
- 69: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
- 70: python scripts/compare_policies.py --config configs/t5_policy.yaml
- 71: ```
- 72: 
- 73: Notes:
- 74: `scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the future hazard bridge. `--hazard-pretrain` intentionally raises `NotImplementedError` until that loop is implemented.
+ 68: For the core pipeline and scripted extensions at full scale with 4-wave parallel execution:
+ 69: 
+ 70: ```bash
+ 71: bash scripts/run_full_pipeline.sh --t5-model t5-base
+ 72: ```
+ 73: 
+ 74: The script forces `likelihood.model=tfidf` for all belief-feature phases. Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19 require manual execution. See `docs/full-pipeline-runbook.md` for phase-by-phase details.
  75: 
- 76: ## Configuration
+ 76: All pipeline scripts accept positional config overrides (e.g. `likelihood.model=tfidf`).
  77: 
- 78: | Config | Purpose |
- 79: |--------|---------|
- 80: | `configs/default.yaml` | Full runs with T5-large likelihood and 100k PPO timesteps |
- 81: | `configs/smoke.yaml` | Quick tests: 50 questions, TF-IDF likelihood, 3k PPO timesteps |
- 82: | `configs/t5_policy.yaml` | T5 policy pipeline: model, supervised, PPO, and data sections |
- 83: 
- 84: qb-rl config aliases are supported (e.g., `data.dataset`, `likelihood.sbert_name`, `environment.reward` as alias for `reward_mode`).
- 85: 
- 86: Additional environment options:
- 87: - `environment.end_mode: force_commit|no_buzz` controls horizon behavior
- 88: - `environment.no_buzz_reward` is only used when `end_mode: no_buzz`
+ 78: ## T5 Policy Pipeline
+ 79: 
+ 80: ```bash
+ 81: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
+ 82: python scripts/compare_policies.py --config configs/t5_policy.yaml
+ 83: ```
+ 84: 
+ 85: Notes:
+ 86: `scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the future hazard bridge. `--hazard-pretrain` intentionally raises `NotImplementedError` until that loop is implemented.
+ 87: 
+ 88: ## Configuration
  89: 
- 90: ## Compatibility Bridge
- 91: 
- 92: Old qb-rl import paths that still resolve:
- 93: 
- 94: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
- 95: - `models.answer_profiles`
- 96: - `agents.softmax_profile_buzzer`
+ 90: | Config | Purpose |
+ 91: |--------|---------|
+ 92: | `configs/default.yaml` | Full runs with T5-large likelihood and 100k PPO timesteps |
+ 93: | `configs/smoke.yaml` | Quick tests: 50 questions, TF-IDF likelihood, 3k PPO timesteps |
+ 94: | `configs/t5_policy.yaml` | T5 policy pipeline: model, supervised, PPO, and data sections |
+ 95: 
+ 96: qb-rl config aliases are supported (e.g., `data.dataset`, `likelihood.sbert_name`, `environment.reward` as alias for `reward_mode`).
  97: 
- 98: OpenAI support is opt-in only. Default local workflows stay offline-friendly and do not require the `openai` package or `OPENAI_API_KEY`.
- 99: 
-100: ## Conventions
+ 98: Additional environment options:
+ 99: - `environment.end_mode: force_commit|no_buzz` controls horizon behavior
+100: - `environment.no_buzz_reward` is only used when `end_mode: no_buzz`
 101: 
-102: - NumPy-style docstrings with Parameters/Returns sections
-103: - RL notation: `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
-104: - Prefer NumPy/PyTorch vectorized operations over loops in ML code
-105: - Explicit seeds for reproducibility (use 1, 2, 3 for multi-seed runs)
+102: ## Compatibility Bridge
+103: 
+104: Old qb-rl import paths that still resolve:
+105: 
+106: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
+107: - `models.answer_profiles`
+108: - `agents.softmax_profile_buzzer`
+109: 
+110: OpenAI support is opt-in only. Default local workflows stay offline-friendly and do not require the `openai` package or `OPENAI_API_KEY`.
+111: 
+112: ## Conventions
+113: 
+114: - NumPy-style docstrings with Parameters/Returns sections
+115: - RL notation: `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
+116: - Prefer NumPy/PyTorch vectorized operations over loops in ML code
+117: - Explicit seeds for reproducibility (use 1, 2, 3 for multi-seed runs)
 ````
 
 ## File: README.md
@@ -19493,148 +19830,168 @@ requirements.txt
  20: pip install -e .
  21: ```
  22: 
- 23: Optional OpenAI support:
+ 23: Optional extras:
  24: 
  25: ```bash
- 26: pip install -e '.[openai]'
- 27: export OPENAI_API_KEY=...
- 28: ```
- 29: 
- 30: ## Main Workflows
- 31: 
- 32: ### Belief-feature / PPO pipeline
- 33: 
- 34: The canonical four-stage smoke pipeline:
- 35: 
- 36: ```bash
- 37: python scripts/build_mc_dataset.py --smoke
- 38: python scripts/run_baselines.py --smoke
- 39: python scripts/train_ppo.py --smoke
- 40: python scripts/evaluate_all.py --smoke
- 41: ```
- 42: 
- 43: `--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`. Drop `--smoke` for full runs (uses `configs/default.yaml`, writes to `artifacts/main/`).
- 44: 
- 45: The smoke config uses tuned reward settings (`wait_penalty=0.05`, `early_buzz_penalty=0.2`, `ppo.seed=13`, `ppo.total_timesteps=3000`).
- 46: 
- 47: `train_ppo.py` also accepts `--seed` to override the PPO/environment seed, and `--stochastic-eval` / `--deterministic-eval` to control post-training evaluation mode.
- 48: 
- 49: ### T5 policy pipeline
- 50: 
- 51: Trains a T5-based policy with supervised warm-start followed by PPO fine-tuning:
- 52: 
- 53: ```bash
- 54: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
- 55: python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke  # quick test with t5-small
- 56: ```
- 57: 
- 58: The T5 pipeline uses its own config (`configs/t5_policy.yaml`) which defines `model`, `supervised`, `ppo`, and `data` sections. It does not inherit `environment` or `likelihood` settings from the belief-feature configs -- the T5 PPO trainer uses default reward settings (`wait_penalty=0.1`).
- 59: 
- 60: The T5 policy uses factorized action semantics: the wait head models `P(WAIT)` vs `P(BUZZ)`, the answer head models `P(answer | BUZZ)`, and the flat action distribution is `P(WAIT)` plus `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`.
- 61: 
- 62: The CLI also reserves `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for an experimental hazard-style warm-start bridge. Those flags are parsed, but `--hazard-pretrain` currently raises `NotImplementedError` until the training loop is wired.
- 63: 
- 64: ### Policy comparison
- 65: 
- 66: ```bash
- 67: python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model
- 68: ```
- 69: 
- 70: Compares the MLP belief-feature policy against the T5 end-to-end policy on the same test set. Accuracy and buzz-position metrics are directly comparable. ECE and Brier are computed identically (top-answer probability at buzz time). S_q and reward comparisons are qualitative because the two architectures use different confidence semantics (belief-sigmoid vs wait-head probability) and different reward settings (config-driven vs T5-pipeline defaults).
- 71: 
- 72: ### Additional scripts
- 73: 
- 74: - `scripts/run_smoke_pipeline.py` -- runs all four smoke stages sequentially and writes a timing summary to `artifacts/smoke/smoke_pipeline_summary.json`
- 75: - `scripts/sweep_reward_shaping.py` -- grid sweep over `wait_penalty` and `early_buzz_penalty` with multi-seed evaluation
- 76: - `scripts/train_ppo.py --policy-mode flat_kplus1|stop_only` -- optional stop-only PPO surface; default remains `flat_kplus1`
- 77: - `generate_presentation.py` -- generates the Marp presentation slides
- 78: 
- 79: ## Configuration
+ 26: pip install -e '.[openai]'    # OpenAI embedding support (requires OPENAI_API_KEY)
+ 27: pip install -e '.[maskable]'  # MaskablePPO for variable-K (sb3-contrib)
+ 28: pip install -e '.[dspy]'      # DSPy LM-based scoring
+ 29: ```
+ 30: 
+ 31: ## Main Workflows
+ 32: 
+ 33: ### Belief-feature / PPO pipeline
+ 34: 
+ 35: The canonical four-stage smoke pipeline:
+ 36: 
+ 37: ```bash
+ 38: python scripts/build_mc_dataset.py --smoke
+ 39: python scripts/run_baselines.py --smoke
+ 40: python scripts/train_ppo.py --smoke
+ 41: python scripts/evaluate_all.py --smoke
+ 42: ```
+ 43: 
+ 44: `--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`. Drop `--smoke` for full runs (uses `configs/default.yaml`, writes to `artifacts/main/`).
+ 45: 
+ 46: The smoke config uses tuned reward settings (`wait_penalty=0.05`, `early_buzz_penalty=0.2`, `ppo.seed=13`, `ppo.total_timesteps=3000`).
+ 47: 
+ 48: `train_ppo.py` also accepts `--seed` to override the PPO/environment seed, and `--stochastic-eval` / `--deterministic-eval` to control post-training evaluation mode.
+ 49: 
+ 50: ### T5 policy pipeline
+ 51: 
+ 52: Trains a T5-based policy with supervised warm-start followed by PPO fine-tuning:
+ 53: 
+ 54: ```bash
+ 55: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
+ 56: python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke  # quick test with t5-small
+ 57: ```
+ 58: 
+ 59: The T5 pipeline uses its own config (`configs/t5_policy.yaml`) which defines `model`, `supervised`, `ppo`, and `data` sections. It does not inherit `environment` or `likelihood` settings from the belief-feature configs -- the T5 PPO trainer uses default reward settings (`wait_penalty=0.1`).
+ 60: 
+ 61: The T5 policy uses factorized action semantics: the wait head models `P(WAIT)` vs `P(BUZZ)`, the answer head models `P(answer | BUZZ)`, and the flat action distribution is `P(WAIT)` plus `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`.
+ 62: 
+ 63: The CLI also reserves `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for an experimental hazard-style warm-start bridge. Those flags are parsed, but `--hazard-pretrain` currently raises `NotImplementedError` until the training loop is wired.
+ 64: 
+ 65: ### Policy comparison
+ 66: 
+ 67: ```bash
+ 68: python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model
+ 69: ```
+ 70: 
+ 71: Compares the MLP belief-feature policy against the T5 end-to-end policy on the same test set. Accuracy and buzz-position metrics are directly comparable. ECE and Brier are computed identically (top-answer probability at buzz time). S_q and reward comparisons are qualitative because the two architectures use different confidence semantics (belief-sigmoid vs wait-head probability) and different reward settings (config-driven vs T5-pipeline defaults).
+ 72: 
+ 73: ### Full pipeline (parallel execution)
+ 74: 
+ 75: For the core pipeline and scripted extensions at full scale with automatic parallelism:
+ 76: 
+ 77: ```bash
+ 78: bash scripts/run_full_pipeline.sh --t5-model t5-base   # ~3-4 hrs on M3 Max
+ 79: ```
  80: 
- 81: Two primary YAML configs:
+ 81: The script forces `likelihood.model=tfidf` for all belief-feature phases. Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19 require manual execution. See `docs/full-pipeline-runbook.md` for the full 19-phase runbook.
  82: 
- 83: | Config | Purpose | Key reward settings |
- 84: |--------|---------|-------------------|
- 85: | `configs/default.yaml` | Full runs | `wait_penalty=0.05`, `early_buzz_penalty=0.2`, `buzz_incorrect=-0.5` |
- 86: | `configs/smoke.yaml` | Quick tests (50 questions) | Same as default except `buzz_incorrect=-1.0`, `total_timesteps=3000` |
- 87: | `configs/t5_policy.yaml` | T5 pipeline | Own `model`/`supervised`/`ppo`/`data` sections; no `environment` |
- 88: 
- 89: qb-rl config aliases are also supported: `data.dataset`, `data.dataset_config`, `likelihood.sbert_name`, `environment.reward` as an alias for `reward_mode`, etc.
+ 83: ### Additional scripts
+ 84: 
+ 85: - `scripts/run_full_pipeline.sh` -- full 19-phase parallel pipeline with 4-wave DAG (forces tfidf)
+ 86: - `scripts/run_smoke_pipeline.py` -- runs all four smoke stages sequentially
+ 87: - `scripts/sweep_reward_shaping.py` -- grid sweep over `wait_penalty` and `early_buzz_penalty` with multi-seed evaluation
+ 88: - `scripts/train_ppo.py --policy-mode flat_kplus1|stop_only` -- optional stop-only PPO surface; default remains `flat_kplus1`
+ 89: - `generate_presentation.py` -- generates the Marp presentation slides
  90: 
- 91: For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy behavior). Set `environment.end_mode: no_buzz` with `environment.no_buzz_reward` to end the episode without forcing a terminal answer.
+ 91: All pipeline scripts accept positional config overrides:
  92: 
- 93: ## Testing
- 94: 
- 95: 342 tests across 24 test files (3 skipped when optional extras not installed):
- 96: 
- 97: ```bash
- 98: pytest                    # full suite
- 99: pytest tests/test_agents.py tests/test_environment.py tests/test_ppo_buzzer.py  # quick iteration
-100: ```
+ 93: ```bash
+ 94: python scripts/run_baselines.py --smoke likelihood.model=tfidf
+ 95: python scripts/train_ppo.py --seed 13 environment.reward_mode=simple
+ 96: ```
+ 97: 
+ 98: ## Configuration
+ 99: 
+100: Two primary YAML configs:
 101: 
-102: The test suite covers:
-103: 
-104: - Baseline agents (threshold, softmax-profile, sequential Bayes) and PPO wrapper
-105: - Gymnasium environment behavior, reward modes (including Expected Wins), and belief computation
-106: - Likelihood model factories (TF-IDF, SBERT, DSPy with offline-safe stubs)
-107: - T5 policy model, supervised trainer, and PPO trainer
-108: - Evaluation metrics (S_q, Expected Wins, ECE, Brier score, calibration at buzz, per-category accuracy)
-109: - Dataset split reproducibility (cross-process determinism)
-110: - Variable-K dataset construction and mixed-K integration
-111: - Opponent buzz models (logistic, empirical)
-112: - qb-rl compatibility bridge
-113: - Text observation wrapper
-114: 
-115: ## Architecture
-116: 
-117: ```
-118: qb_data/        Data loading, answer profiles, stratified splits, MC construction, DSPy profiles
-119: qb_env/         Gymnasium environment, text wrapper, opponent models, optional StopOnlyEnv wrapper, qb-rl shims
-120: models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy
-121: agents/         Threshold, softmax-profile, sequential Bayes, PPO buzzer
-122: evaluation/     S_q metric, Expected Wins, calibration, control experiments, plotting
-123: scripts/        Pipeline entrypoints, DSPy compile, shared helpers
-124: training/       T5 policy supervised + PPO trainers, hazard bridge utilities
-125: configs/        YAML configuration files
-126: artifacts/      Generated pipeline outputs (smoke/ and main/)
-127: _legacy/        Pre-modularization prototypes (not installed)
-128: ```
-129: 
-130: ## Compatibility Bridge
-131: 
-132: These old qb-rl import paths resolve in this repo:
+102: | Config | Purpose | Key reward settings |
+103: |--------|---------|-------------------|
+104: | `configs/default.yaml` | Full runs | `wait_penalty=0.05`, `early_buzz_penalty=0.2`, `buzz_incorrect=-0.5` |
+105: | `configs/smoke.yaml` | Quick tests (50 questions) | Same as default except `buzz_incorrect=-1.0`, `total_timesteps=3000` |
+106: | `configs/t5_policy.yaml` | T5 pipeline | Own `model`/`supervised`/`ppo`/`data` sections; no `environment` |
+107: 
+108: qb-rl config aliases are also supported: `data.dataset`, `data.dataset_config`, `likelihood.sbert_name`, `environment.reward` as an alias for `reward_mode`, etc.
+109: 
+110: For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy behavior). Set `environment.end_mode: no_buzz` with `environment.no_buzz_reward` to end the episode without forcing a terminal answer.
+111: 
+112: ## Testing
+113: 
+114: 342 tests across 24 test files (3 skipped when optional extras not installed):
+115: 
+116: ```bash
+117: pytest                    # full suite
+118: pytest tests/test_agents.py tests/test_environment.py tests/test_ppo_buzzer.py  # quick iteration
+119: ```
+120: 
+121: The test suite covers:
+122: 
+123: - Baseline agents (threshold, softmax-profile, sequential Bayes) and PPO wrapper
+124: - Gymnasium environment behavior, reward modes (including Expected Wins), and belief computation
+125: - Likelihood model factories (TF-IDF, SBERT, DSPy with offline-safe stubs)
+126: - T5 policy model, supervised trainer, and PPO trainer
+127: - Evaluation metrics (S_q, Expected Wins, ECE, Brier score, calibration at buzz, per-category accuracy)
+128: - Dataset split reproducibility (cross-process determinism)
+129: - Variable-K dataset construction and mixed-K integration
+130: - Opponent buzz models (logistic, empirical)
+131: - qb-rl compatibility bridge
+132: - Text observation wrapper
 133: 
-134: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
-135: - `models.answer_profiles`
-136: - `agents.softmax_profile_buzzer`
-137: 
-138: The bridge is additive. `qb_data/` remains the canonical home for data loading and MC construction. OpenAI support is opt-in only -- default local workflows stay offline-friendly.
-139: 
-140: ## Documentation
-141: 
-142: - `AGENTS.md` -- canonical repo contract for all coding agents (setup, architecture, testing, configuration)
-143: - `CLAUDE.md` -- thin shim pointing to AGENTS.md with Claude-specific notes
-144: - `walkthrough.md` -- end-to-end walkthrough exercising both pipelines (pre-remediation snapshot)
-145: - `PRESENTATION.md` -- Marp presentation slides for the CS234 final project
-146: - `.planning/` -- canonical project state, roadmap, architectural decisions, and remediation log
-147: 
-148: ## Extensions (opt-in)
-149: 
-150: Three opt-in extensions are available. All are disabled by default — the smoke pipeline and T5 smoke path work unchanged.
-151: 
-152: ### Expected Wins reward mode
-153: 
-154: Set `environment.reward_mode: expected_wins` and configure `environment.opponent_buzz_model` in YAML. Supports logistic and empirical (from `human_buzz_positions`) opponent models. Offline `expected_wins_score()` in `evaluation/metrics.py` uses the continuous formula: `V_self = g * R_correct + (1-g) * R_incorrect`.
-155: 
-156: ### Variable-K answer choices
-157: 
-158: Set `data.variable_K: true` and `data.min_K` / `data.max_K` in YAML. `MCBuilder` samples K per question. The env uses padded observations and `action_masks()`. Optional `MaskablePPO` via `pip install -e '.[maskable]'`.
-159: 
-160: ### DSPy integration (experimental)
-161: 
-162: Set `likelihood.model: dspy` and configure the `dspy` section in YAML. Requires `pip install -e '.[dspy]'`. Offline compile via `python scripts/optimize_dspy.py`. Does NOT integrate prompt optimization into PPO rollouts.
-163: 
-164: ## Legacy Prototype
-165: 
-166: The pre-modularization prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`, etc.) has been moved to `_legacy/`. These files are not part of the installed package and are preserved only for reference. The modular `scripts/` pipeline above is the canonical workflow.
+134: ## Architecture
+135: 
+136: ```
+137: qb_data/        Data loading, answer profiles, stratified splits, MC construction, DSPy profiles
+138: qb_env/         Gymnasium environment, text wrapper, opponent models, optional StopOnlyEnv wrapper, qb-rl shims
+139: models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy
+140: agents/         Threshold, softmax-profile, sequential Bayes, PPO buzzer
+141: evaluation/     S_q metric, Expected Wins, calibration, control experiments, plotting
+142: scripts/        Pipeline entrypoints, DSPy compile, shared helpers
+143: training/       T5 policy supervised + PPO trainers, hazard bridge utilities
+144: configs/        YAML configuration files
+145: artifacts/      Generated pipeline outputs (smoke/ and main/)
+146: _legacy/        Pre-modularization prototypes (not installed)
+147: ```
+148: 
+149: ## Compatibility Bridge
+150: 
+151: These old qb-rl import paths resolve in this repo:
+152: 
+153: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
+154: - `models.answer_profiles`
+155: - `agents.softmax_profile_buzzer`
+156: 
+157: The bridge is additive. `qb_data/` remains the canonical home for data loading and MC construction. OpenAI support is opt-in only -- default local workflows stay offline-friendly.
+158: 
+159: ## Documentation
+160: 
+161: - `docs/full-pipeline-runbook.md` -- deterministic 19-phase runbook with wall-time estimates and parallel execution
+162: - `AGENTS.md` -- canonical repo contract for all coding agents (setup, architecture, testing, configuration)
+163: - `CLAUDE.md` -- thin shim pointing to AGENTS.md with Claude-specific notes
+164: - `walkthrough.md` -- end-to-end walkthrough exercising both pipelines (pre-remediation snapshot)
+165: - `PRESENTATION.md` -- Marp presentation slides for the CS234 final project
+166: - `.planning/` -- canonical project state, roadmap, architectural decisions, and remediation log
+167: 
+168: ## Extensions (opt-in)
+169: 
+170: Three opt-in extensions are available. All are disabled by default — the smoke pipeline and T5 smoke path work unchanged.
+171: 
+172: ### Expected Wins reward mode
+173: 
+174: Set `environment.reward_mode: expected_wins` and configure `environment.opponent_buzz_model` in YAML. Supports logistic and empirical (from `human_buzz_positions`) opponent models. Offline `expected_wins_score()` in `evaluation/metrics.py` uses the continuous formula: `V_self = g * R_correct + (1-g) * R_incorrect`.
+175: 
+176: ### Variable-K answer choices
+177: 
+178: Set `data.variable_K: true` and `data.min_K` / `data.max_K` in YAML. `MCBuilder` samples K per question. The env uses padded observations and `action_masks()`. Optional `MaskablePPO` via `pip install -e '.[maskable]'`.
+179: 
+180: ### DSPy integration (experimental)
+181: 
+182: Set `likelihood.model: dspy` and configure the `dspy` section in YAML. Requires `pip install -e '.[dspy]'`. Offline compile via `python scripts/optimize_dspy.py`. Does NOT integrate prompt optimization into PPO rollouts.
+183: 
+184: ## Legacy Prototype
+185: 
+186: The pre-modularization prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`, etc.) has been moved to `_legacy/`. These files are not part of the installed package and are preserved only for reference. The modular `scripts/` pipeline above is the canonical workflow.
 ````

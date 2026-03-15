@@ -72,17 +72,17 @@ Compares the MLP belief-feature policy against the T5 end-to-end policy on the s
 
 ### Full pipeline (parallel execution)
 
-For the complete pipeline at full scale with automatic parallelism:
+For the core pipeline and scripted extensions at full scale with automatic parallelism:
 
 ```bash
 bash scripts/run_full_pipeline.sh --t5-model t5-base   # ~3-4 hrs on M3 Max
 ```
 
-See `docs/full-pipeline-runbook.md` for the full 19-phase runbook with per-phase estimates and manual fallback commands.
+The script forces `likelihood.model=tfidf` for all belief-feature phases. Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19 require manual execution. See `docs/full-pipeline-runbook.md` for the full 19-phase runbook.
 
 ### Additional scripts
 
-- `scripts/run_full_pipeline.sh` -- full 19-phase parallel pipeline with 3-wave DAG
+- `scripts/run_full_pipeline.sh` -- full 19-phase parallel pipeline with 4-wave DAG (forces tfidf)
 - `scripts/run_smoke_pipeline.py` -- runs all four smoke stages sequentially
 - `scripts/sweep_reward_shaping.py` -- grid sweep over `wait_penalty` and `early_buzz_penalty` with multi-seed evaluation
 - `scripts/train_ppo.py --policy-mode flat_kplus1|stop_only` -- optional stop-only PPO surface; default remains `flat_kplus1`

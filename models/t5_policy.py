@@ -687,9 +687,10 @@ class T5PolicyModel(nn.Module):
 
         config = {
             "model_name": load_dir,
-            "device": device or "cpu",
             "num_choices": num_choices,
         }
+        if device is not None:
+            config["device"] = device
 
         model = cls(config)
         model.load(load_dir)
