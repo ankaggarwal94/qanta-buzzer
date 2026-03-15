@@ -23,7 +23,7 @@ testing:
   framework: pytest
   command: pytest
   test_dir: tests
-  test_files: 22
+  test_files: 24
   ci_script: scripts/ci.sh
 
 smoke:
