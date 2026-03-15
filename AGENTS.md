@@ -63,6 +63,18 @@ Or run all four stages via the wrapper script:
 scripts/manual-smoke.sh
 ```
 
+## Full Pipeline
+
+For the complete 19-phase pipeline at full scale with parallel execution:
+
+```bash
+bash scripts/run_full_pipeline.sh --t5-model t5-base
+```
+
+See `docs/full-pipeline-runbook.md` for phase-by-phase details and wall-time estimates.
+
+All pipeline scripts accept positional config overrides (e.g. `likelihood.model=tfidf`).
+
 ## T5 Policy Pipeline
 
 ```bash

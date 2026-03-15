@@ -175,10 +175,9 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 ## Session Continuity
 
 ### Last Session Summary
-- Extension campaign (18 patches): Expected Wins reward, Variable-K, DSPy integration
-- Post-extension code review: 7 issues found by ChatGPT 5.4 Pro, all verified and fixed
-- Fixed: DSPyLikelihood inheritance, score shape validation, stale config key/comments, weak tests
-- PR #1 review-remediation reconciliation: DSPy likelihood/factory contract verified-closed, compile path metric extraction fix committed, answer-profile docs/tests verified-closed
+- Config override support ported to all pipeline scripts (run_baselines, train_ppo, evaluate_all)
+- Lint fixes cherry-picked from Copilot PR #3: TYPE_CHECKING imports, unused import removal, T5Config validation
+- Full pipeline runbook with 19 phases and parallel execution script (`scripts/run_full_pipeline.sh`)
 - 342 tests across 24 test files (3 skipped for optional extras)
 
 ### Next Session Priority
@@ -196,4 +195,4 @@ Unified quiz bowl RL buzzer with two tracks plus three opt-in extensions (Expect
 
 ---
 *State file initialized: 2026-02-25*
-Last activity: 2026-03-15 - PR #1 reconciliation complete, docs synced to 342 tests/24 files
+Last activity: 2026-03-15 - Config override port, lint fixes, pipeline runbook

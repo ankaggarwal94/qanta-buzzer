@@ -70,12 +70,30 @@ python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model
 
 Compares the MLP belief-feature policy against the T5 end-to-end policy on the same test set. Accuracy and buzz-position metrics are directly comparable. ECE and Brier are computed identically (top-answer probability at buzz time). S_q and reward comparisons are qualitative because the two architectures use different confidence semantics (belief-sigmoid vs wait-head probability) and different reward settings (config-driven vs T5-pipeline defaults).
 
+### Full pipeline (parallel execution)
+
+For the complete pipeline at full scale with automatic parallelism:
+
+```bash
+bash scripts/run_full_pipeline.sh --t5-model t5-base   # ~3-4 hrs on M3 Max
+```
+
+See `docs/full-pipeline-runbook.md` for the full 19-phase runbook with per-phase estimates and manual fallback commands.
+
 ### Additional scripts
 
-- `scripts/run_smoke_pipeline.py` -- runs all four smoke stages sequentially and writes a timing summary to `artifacts/smoke/smoke_pipeline_summary.json`
+- `scripts/run_full_pipeline.sh` -- full 19-phase parallel pipeline with 3-wave DAG
+- `scripts/run_smoke_pipeline.py` -- runs all four smoke stages sequentially
 - `scripts/sweep_reward_shaping.py` -- grid sweep over `wait_penalty` and `early_buzz_penalty` with multi-seed evaluation
 - `scripts/train_ppo.py --policy-mode flat_kplus1|stop_only` -- optional stop-only PPO surface; default remains `flat_kplus1`
 - `generate_presentation.py` -- generates the Marp presentation slides
+
+All pipeline scripts accept positional config overrides:
+
+```bash
+python scripts/run_baselines.py --smoke likelihood.model=tfidf
+python scripts/train_ppo.py --seed 13 environment.reward_mode=simple
+```
 
 ## Configuration
 
@@ -140,6 +158,7 @@ The bridge is additive. `qb_data/` remains the canonical home for data loading a
 
 ## Documentation
 
+- `docs/full-pipeline-runbook.md` -- deterministic 19-phase runbook with wall-time estimates and parallel execution
 - `AGENTS.md` -- canonical repo contract for all coding agents (setup, architecture, testing, configuration)
 - `CLAUDE.md` -- thin shim pointing to AGENTS.md with Claude-specific notes
 - `walkthrough.md` -- end-to-end walkthrough exercising both pipelines (pre-remediation snapshot)
