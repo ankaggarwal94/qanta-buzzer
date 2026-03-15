@@ -200,6 +200,67 @@ Configs:
 
 ---
 
+## Training (Smoke)
+
+Practical training path used in this repo:
+
+1. `python scripts/build_mc_dataset.py --smoke`
+2. `python scripts/run_baselines.py --smoke`
+3. `python scripts/train_ppo.py --smoke`
+
+What this gives us:
+
+- reproducible MC episodes
+- baseline timing/accuracy reference points
+- PPO fine-tuning focused on buzz timing decisions
+
+---
+
+## Evaluation (Smoke)
+
+Evaluation source:
+
+- `artifacts/smoke/evaluation_report.json`
+
+Main metrics:
+
+- `S_q`
+- buzz accuracy
+- mean buzz step
+- reward-like score
+- calibration at buzz (ECE, Brier)
+
+Controls:
+
+- choices-only
+- shuffle
+- alias substitution
+
+---
+
+## Results Snapshot (Smoke)
+
+Baseline from `artifacts/smoke/evaluation_report.json`; PPO from best aggregate in `artifacts/smoke/reward_sweep_results.json`:
+
+| Model | mean `S_q` | buzz acc | mean step | reward-like | ECE / Brier |
+|---|---:|---:|---:|---:|---:|
+| `always_final` (best baseline) | `0.386` | `38.6%` | `4.05` | `0.080` | `0.000 / 0.000` |
+| PPO (best sweep aggregate) | `0.340` | `34.1%` | `0.00` | `n/a` | `0.006 / 0.000` |
+
+---
+
+## Results Interpretation (Smoke)
+
+Interpretation:
+
+- In this smoke run, `always_final` is the strongest baseline on `S_q`.
+- PPO currently trails the strongest baseline on both `S_q` and buzz accuracy.
+- Likely cause: short smoke budget and reward-shaping sensitivity.
+- Next run knobs: `ppo.total_timesteps`, `wait_penalty`, `early_buzz_penalty`.
+- These are smoke diagnostics for pipeline validation, not final quality claims.
+
+---
+
 ## Baselines And Learned Agents
 
 Implemented agents:
@@ -212,11 +273,9 @@ Implemented agents:
 
 Why this baseline set is useful:
 
-- thresholded confidence
-- from-scratch belief recomputation
-- sequential Bayesian belief updates
-- always-buzz-final control
-- learned timing policy with PPO
+- confidence-threshold policy (`ThresholdBuzzer`)
+- belief-update policy (`SequentialBayesBuzzer`)
+- learned timing policy (PPO), compared against `AlwaysBuzzFinalBuzzer`
 
 ---
 
@@ -224,19 +283,13 @@ Why this baseline set is useful:
 
 `evaluation/` measures more than final accuracy:
 
-- `S_q`
-- buzz accuracy
-- mean buzz step
-- calibration-at-buzz
-- ECE
-- Brier score
+- `S_q`, buzz accuracy, and mean buzz step
+- calibration-at-buzz (`ECE`, `Brier`)
 - per-category accuracy
 
 The code also includes explicit controls:
 
-- choices-only
-- shuffle
-- alias substitution
+- choices-only, shuffle, alias substitution
 
 This is important because a buzzer can look strong while exploiting answer artifacts instead of clue content.
 

@@ -50,6 +50,17 @@ def _text_key(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _best_torch_device() -> "torch.device":
+    """Select the best available accelerator: CUDA > MPS > CPU."""
+    import torch
+
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 class LikelihoodModel(ABC):
     """Abstract base class for likelihood models.
 
@@ -117,6 +128,39 @@ class LikelihoodModel(ABC):
             for text, emb in zip(missing, new_embeddings):
                 self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
         return np.stack([self.embedding_cache[_text_key(text)] for text in texts])
+
+    def precompute_embeddings(
+        self,
+        texts: list[str],
+        batch_size: int = 64,
+        desc: str = "Pre-computing embeddings",
+    ) -> None:
+        """Bulk pre-embed texts into cache, processing in batches.
+
+        Call this before running agents so that all subsequent ``score()``
+        calls are pure cache lookups (numpy dot products).  Duplicate and
+        already-cached texts are skipped automatically.
+
+        Parameters
+        ----------
+        texts : list[str]
+            All texts to embed (clue prefixes, option profiles, fragments).
+        batch_size : int
+            Number of texts per ``_embed_batch`` call.
+        desc : str
+            tqdm progress-bar description.
+        """
+        from tqdm import tqdm
+
+        unique = [t for t in dict.fromkeys(texts) if _text_key(t) not in self.embedding_cache]
+        if not unique:
+            return
+        for i in tqdm(range(0, len(unique), batch_size), desc=desc,
+                       total=(len(unique) + batch_size - 1) // batch_size):
+            batch = unique[i : i + batch_size]
+            embeddings = self._embed_batch(batch)
+            for text, emb in zip(batch, embeddings):
+                self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
 
     @abstractmethod
     def _embed_batch(self, texts: list[str]) -> np.ndarray:
@@ -452,7 +496,7 @@ class T5Likelihood(LikelihoodModel):
         self.model_name = model_name
         self.encoder = T5EncoderModel.from_pretrained(model_name)
         self.tokenizer = T5TokenizerFast.from_pretrained(model_name)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = _best_torch_device()
         self.encoder.to(self.device)
         self.encoder.eval()
 
