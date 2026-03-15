@@ -117,22 +117,24 @@ and 19 (MIPROv2) require manual execution — see the individual phase sections 
 ```
 Phase 1 (sequential — builds the shared MC dataset)
   │
-  ├─ Wave 1 (4 parallel tracks):
-  │    Track A: Phase 2  — baseline sweeps (TF-IDF)
-  │    Track B: Phase 3  — PPO training (100k steps, [64,64] MLP)
-  │    Track C: Phase 5  — T5 policy (supervised + PPO)
-  │    Track D: Phase 13 — K-sensitivity (K=2,3,5,6 builds + baselines)
+  ├─ Wave 1 (3 parallel tracks):
+  │    Track A: Phase 2  — baseline sweeps (→ artifacts/main/baseline_summary.json)
+  │    Track B: Phase 3  — PPO training (→ artifacts/main/ppo_model.zip)
+  │    Track C: Phase 5  — T5 policy (→ checkpoints/)
   │
-  ├─ Wave 2 (sequential — share artifacts/main/, starts after Wave 1):
-  │    Phase 4  — full evaluation + controls (reads baseline_summary)
-  │    Phase 6  — MLP vs T5 comparison (reads PPO + T5 models)
-  │    Phase 11 — Expected Wins evaluation (writes evaluation_report)
-  │    Phase 15 — belief mode comparison (writes baseline_summary)
+  ├─ Wave 2 (sequential — all read/write artifacts/main/):
+  │    Phase 4  — full evaluation + controls
+  │    Phase 6  — MLP vs T5 comparison
+  │    Phase 11 — Expected Wins evaluation
+  │    Phase 15 — belief mode comparison
   │
-  └─ Wave 3 (sequential — PPO ablations):
-       Phase 14 — reward modes (simple, human_grounded)
-       Phase 16 — stop-only PPO
-       Phase 17 — no-buzz horizon
+  ├─ Wave 3 (sequential — PPO ablations):
+  │    Phase 14 — reward modes (simple, human_grounded)
+  │    Phase 16 — stop-only PPO
+  │    Phase 17 — no-buzz horizon
+  │
+  └─ Wave 4 (sequential — K-sensitivity, clobbers baseline_summary.json):
+       Phase 13 — K=2,3,5,6 builds + baselines (each result copied to results/)
 
 Not in script (run manually):
   Phase 9  — distractor comparison
@@ -174,7 +176,7 @@ outputs are already written.
 
 If you are an AI coding agent executing this runbook:
 
-1. **Preferred path:** Run `bash scripts/run_full_pipeline.sh --t5-model t5-base` and monitor the logs. This handles parallelism and dependency ordering for the core pipeline and key extensions. Note: parallel tracks share `artifacts/main/` for intermediate files — the script copies final results to `results/*.json` immediately after each phase to avoid clobber.
+1. **Preferred path:** Run `bash scripts/run_full_pipeline.sh --t5-model t5-base` and monitor the logs. This handles dependency ordering for the core pipeline and extensions. Only Wave 1 (baselines, PPO, T5) runs in parallel — all subsequent waves are sequential to avoid artifact races on `artifacts/main/`.
 
 2. **If the script fails:** Read the failing `results/phase_*.log`, diagnose the issue, fix it, then re-run only the failed phase using the manual commands in the sections below.
 

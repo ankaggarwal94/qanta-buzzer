@@ -5,19 +5,17 @@
 # Dependencies form a DAG:
 #
 #   Phase 1 (build MC dataset)
-#     ├── Wave 1 (parallel): Phases 2, 3, 5, 13
-#     │     Tracks A/B/C write to different artifact types (baselines vs PPO vs T5)
-#     │     Track D (K-sensitivity) writes to artifacts/k*/ (isolated)
-#     ├── Wave 2 (sequential after Wave 1): Phases 4, 6
-#     │     Must be sequential — share artifacts/main/ for reads and writes
-#     └── Wave 3 (sequential): Phases 11, 14, 15, 16, 17
-#         PPO/eval ablations that reuse artifacts/main/
-#
-# Wave 1 tracks A and D both write artifacts/main/baseline_summary.json,
-# but Track D's baselines use different --mc-path so results are copied
-# to results/ immediately and the final baseline_summary.json is from
-# whichever track finishes last. Phase 4 (Wave 2) reads baseline_summary.json
-# only after Wave 1 completes, so there is no read-during-write race.
+#     ├── Wave 1 (3 parallel tracks): Phases 2, 3, 5
+#     │     Track A: baselines → writes artifacts/main/baseline_summary.json
+#     │     Track B: PPO → writes artifacts/main/ppo_model.zip
+#     │     Track C: T5 policy → writes checkpoints/
+#     ├── Wave 2 (sequential, after Wave 1): Phases 4, 6, 11, 15
+#     │     All read/write artifacts/main/ — must be sequential
+#     ├── Wave 3 (sequential): Phases 14, 16, 17
+#     │     PPO ablations that reuse artifacts/main/
+#     └── Wave 4 (sequential): Phase 13 (K-sensitivity)
+#         Builds to artifacts/k*/ then runs baselines (writes artifacts/main/)
+#         Must run after Wave 2 so it doesn't clobber baseline_summary.json
 #
 # Usage:
 #   bash scripts/run_full_pipeline.sh                    # t5-base (balanced)
@@ -181,13 +179,12 @@ else
     ####################################################################
     # PARALLEL MODE
     ####################################################################
-    echo "=== WAVE 1: Independent phases (parallel) ==="
-    echo "Launching 4 parallel tracks..."
+    echo "=== WAVE 1: Independent phases (3 parallel tracks) ==="
     echo ""
 
     PIDS=()
 
-    # Track A: Baselines + eval (writes to artifacts/main/)
+    # Track A: Baselines (writes artifacts/main/baseline_summary.json)
     (
         run_phase "2" python scripts/run_baselines.py \
             --config configs/default.yaml --mc-path "$MC" likelihood.model=tfidf
@@ -195,9 +192,8 @@ else
     ) &
     PIDS+=($!)
 
-    # Track B: PPO training (writes to artifacts/ppo_default/)
+    # Track B: PPO training (writes artifacts/main/ppo_model.zip)
     (
-        mkdir -p artifacts/ppo_default
         run_phase "3" python scripts/train_ppo.py \
             --config configs/default.yaml --mc-path "$MC" --seed 13 --deterministic-eval
         cp artifacts/main/ppo_summary.json "$RESULTS/ppo_default.json"
@@ -205,24 +201,10 @@ else
     ) &
     PIDS+=($!)
 
-    # Track C: T5 policy (writes to checkpoints/, independent)
+    # Track C: T5 policy (writes checkpoints/ — no artifact race)
     (
         run_phase "5" python scripts/train_t5_policy.py \
             --config configs/t5_policy.yaml model.model_name="$T5_MODEL"
-    ) &
-    PIDS+=($!)
-
-    # Track D: K-sensitivity builds (writes to artifacts/k*/)
-    (
-        for K in 2 3 5 6; do
-            run_phase "13-k$K" python scripts/build_mc_dataset.py \
-                --config configs/default.yaml \
-                --output-dir "artifacts/k$K" data.K="$K" data.distractor_strategy=category_random
-            run_phase "13-k${K}-baselines" python scripts/run_baselines.py \
-                --config configs/default.yaml \
-                --mc-path "artifacts/k$K/mc_dataset.json" likelihood.model=tfidf
-            cp artifacts/main/baseline_summary.json "$RESULTS/baselines_k$K.json"
-        done
     ) &
     PIDS+=($!)
 
@@ -278,6 +260,20 @@ else
     python scripts/train_ppo.py --config configs/default.yaml --mc-path "$MC" \
         --seed 13 --deterministic-eval environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
     cp artifacts/main/ppo_summary.json "$RESULTS/ppo_no_buzz.json"
+
+    echo ""
+    echo "=== WAVE 4: K-sensitivity (sequential — writes artifacts/main/baseline_summary.json) ==="
+
+    for K in 2 3 5 6; do
+        echo "[Phase 13-k$K] Building K=$K dataset..."
+        run_phase "13-k$K" python scripts/build_mc_dataset.py \
+            --config configs/default.yaml \
+            --output-dir "artifacts/k$K" data.K="$K" data.distractor_strategy=category_random
+        run_phase "13-k${K}-baselines" python scripts/run_baselines.py \
+            --config configs/default.yaml \
+            --mc-path "artifacts/k$K/mc_dataset.json" likelihood.model=tfidf
+        cp artifacts/main/baseline_summary.json "$RESULTS/baselines_k$K.json"
+    done
 
 fi
 
