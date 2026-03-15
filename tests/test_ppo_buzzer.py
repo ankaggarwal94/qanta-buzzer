@@ -195,6 +195,7 @@ class TestRunEpisode:
 
         assert isinstance(trace, PPOEpisodeTrace)
         assert len(trace.c_trace) == len(trace.g_trace)
+        assert len(trace.c_trace) == len(trace.top_p_trace)
         assert len(trace.c_trace) == len(trace.entropy_trace)
         assert len(trace.c_trace) > 0, "Episode should have at least one step"
 
@@ -209,8 +210,29 @@ class TestRunEpisode:
             assert 0.0 <= c_val <= 1.0, f"c_trace value {c_val} out of [0,1]"
         for g_val in trace.g_trace:
             assert g_val >= 0.0, f"g_trace value {g_val} should be non-negative"
+        for top_p in trace.top_p_trace:
+            assert 0.0 <= top_p <= 1.0, f"top_p_trace value {top_p} out of [0,1]"
         for ent in trace.entropy_trace:
             assert ent >= 0.0, f"entropy {ent} should be non-negative"
+
+    def test_ppo_calibration_uses_top_p_trace(
+        self, sample_tfidf_env: TossupMCEnv
+    ) -> None:
+        """calibration_at_buzz on PPO traces uses top_p_trace, not c_trace."""
+        from dataclasses import asdict
+        from evaluation.metrics import calibration_at_buzz
+
+        buzzer = PPOBuzzer(env=sample_tfidf_env)
+        trace = buzzer.run_episode(seed=42)
+        assert len(trace.top_p_trace) > 0, "top_p_trace must be populated"
+
+        cal = calibration_at_buzz([asdict(trace)])
+        assert cal["n_calibration"] == 1.0
+        # Confidence should be top_p_trace[buzz_step], not c_trace[buzz_step]
+        idx = min(max(0, trace.buzz_step), len(trace.top_p_trace) - 1)
+        expected_conf = trace.top_p_trace[idx]
+        expected_brier = (expected_conf - (1.0 if trace.correct else 0.0)) ** 2
+        assert abs(cal["brier"] - expected_brier) < 1e-9
 
     def test_run_episode_deterministic(
         self, sample_tfidf_env: TossupMCEnv
@@ -240,6 +262,71 @@ class TestRunEpisode:
         trace = buzzer.run_episode(seed=42)
         assert trace.correct == (trace.buzz_index == trace.gold_index)
 
+    def test_run_episode_stop_only_uses_env_chosen_idx(
+        self, sample_tfidf_env: TossupMCEnv
+    ) -> None:
+        """Stop-only episodes must use the env-selected answer index."""
+        sample_obs, _ = sample_tfidf_env.reset(seed=42)
+        buzzer = PPOBuzzer(env=sample_tfidf_env)
+
+        class FakeStopOnlyEnv:
+            def __init__(self, obs_shape):
+                self.obs_shape = obs_shape
+                self.question = type("Question", (), {"gold_index": 2})()
+                self.belief = np.array([0.1, 0.2, 0.6, 0.1], dtype=np.float32)
+
+            def reset(self, seed=None, options=None):
+                self.question = type("Question", (), {"gold_index": 2})()
+                self.belief = np.array([0.1, 0.2, 0.6, 0.1], dtype=np.float32)
+                return np.zeros(self.obs_shape, dtype=np.float32), {"qid": "stop_only_q"}
+
+            def step(self, action):
+                assert action == 1
+                return (
+                    np.zeros(self.obs_shape, dtype=np.float32),
+                    1.0,
+                    True,
+                    False,
+                    {"qid": "stop_only_q", "step_idx": 0, "chosen_idx": 2, "correct": True},
+                )
+
+        buzzer.env = FakeStopOnlyEnv(sample_obs.shape)
+        buzzer.action_probabilities = lambda _obs: np.array([0.1, 0.9], dtype=np.float32)
+
+        trace = buzzer.run_episode(deterministic=True, seed=42)
+
+        assert trace.buzz_index == 2
+        assert trace.gold_index == 2
+        assert trace.correct is True
+        assert trace.g_trace == pytest.approx([0.6])
+
+    def test_run_episode_no_buzz_keeps_buzz_step_unset(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """no_buzz truncations stay distinct from voluntary buzz episodes."""
+        from models.likelihoods import TfIdfLikelihood
+
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        env = TossupMCEnv(
+            questions=[sample_mc_question],
+            likelihood_model=model,
+            K=4,
+            reward_mode="simple",
+            end_mode="no_buzz",
+            no_buzz_reward=0.0,
+        )
+        buzzer = PPOBuzzer(env=env)
+        buzzer.action_probabilities = lambda _obs: np.array(
+            [1.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32
+        )
+
+        trace = buzzer.run_episode(deterministic=True, seed=42)
+
+        assert trace.buzz_step == -1
+        assert trace.buzz_index == -1
+        assert trace.correct is False
+
 
 # ------------------------------------------------------------------ #
 # Tests: Checkpoint save/load
@@ -268,3 +355,18 @@ class TestCheckpointSaveLoad:
         probs = loaded.action_probabilities(obs)
         assert probs.shape == (sample_tfidf_env.K + 1,)
         assert abs(probs.sum() - 1.0) < 1e-5
+
+
+class TestMaskablePPO:
+    """Tests for optional MaskablePPO path."""
+
+    def test_default_ppo_unchanged(self, sample_tfidf_env) -> None:
+        buzzer = PPOBuzzer(env=sample_tfidf_env, use_maskable_ppo=False)
+        assert not buzzer._use_maskable
+        trace = buzzer.run_episode(seed=42)
+        assert len(trace.c_trace) > 0
+
+    def test_maskable_import_error(self, sample_tfidf_env) -> None:
+        sb3_contrib = pytest.importorskip("sb3_contrib", reason="sb3-contrib not installed")
+        buzzer = PPOBuzzer(env=sample_tfidf_env, use_maskable_ppo=True)
+        assert buzzer._use_maskable

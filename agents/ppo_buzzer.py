@@ -30,7 +30,8 @@ from qb_env.tossup_env import TossupMCEnv
 class PPOEpisodeTrace:
     """Record of a single episode with per-step action probability traces.
 
-    Used to compute the S_q scoring metric: S_q = sum(c_t * g_t) over steps.
+    Used to compute the S_q scoring metric: S_q = sum(c_t * g_t) over steps,
+    and calibration metrics (ECE, Brier) via ``top_p_trace``.
 
     Attributes
     ----------
@@ -50,6 +51,10 @@ class PPOEpisodeTrace:
         Per-step buzz probability: 1 - P(wait) at each timestep.
     g_trace : list[float]
         Per-step correctness probability: P(gold_option) / P(buzz).
+    top_p_trace : list[float]
+        Per-step max belief probability: max(env.belief). Used as the
+        confidence proxy for calibration metrics, consistent with
+        baseline agents.
     entropy_trace : list[float]
         Per-step policy entropy over the full action distribution.
     """
@@ -62,6 +67,7 @@ class PPOEpisodeTrace:
     episode_reward: float
     c_trace: list[float]
     g_trace: list[float]
+    top_p_trace: list[float]
     entropy_trace: list[float]
 
 
@@ -104,23 +110,47 @@ class PPOBuzzer:
         seed: int | None = None,
         policy_kwargs: dict[str, Any] | None = None,
         verbose: int = 0,
+        use_maskable_ppo: bool = False,
     ):
         if policy_kwargs is None:
             policy_kwargs = {"net_arch": [64, 64]}
 
         self.env = env
-        self.model = PPO(
-            "MlpPolicy",
-            env,
-            verbose=verbose,
-            seed=seed,
-            learning_rate=learning_rate,
-            n_steps=n_steps,
-            batch_size=batch_size,
-            n_epochs=n_epochs,
-            gamma=gamma,
-            policy_kwargs=policy_kwargs,
-        )
+        self._use_maskable = use_maskable_ppo
+
+        if use_maskable_ppo:
+            try:
+                from sb3_contrib import MaskablePPO
+            except ImportError as exc:
+                raise ImportError(
+                    "MaskablePPO requires sb3-contrib. "
+                    "Install with: pip install -e '.[maskable]'"
+                ) from exc
+            self.model = MaskablePPO(
+                "MlpPolicy",
+                env,
+                verbose=verbose,
+                seed=seed,
+                learning_rate=learning_rate,
+                n_steps=n_steps,
+                batch_size=batch_size,
+                n_epochs=n_epochs,
+                gamma=gamma,
+                policy_kwargs=policy_kwargs,
+            )
+        else:
+            self.model = PPO(
+                "MlpPolicy",
+                env,
+                verbose=verbose,
+                seed=seed,
+                learning_rate=learning_rate,
+                n_steps=n_steps,
+                batch_size=batch_size,
+                n_epochs=n_epochs,
+                gamma=gamma,
+                policy_kwargs=policy_kwargs,
+            )
 
     def train(self, total_timesteps: int = 100_000) -> None:
         """Train the PPO policy for the specified number of timesteps.
@@ -183,6 +213,10 @@ class PPOBuzzer:
         probs = dist.distribution.probs[0].detach().cpu().numpy()
         return probs.astype(np.float32)
 
+    def _base_env(self) -> TossupMCEnv:
+        """Return the underlying TossupMCEnv, unwrapping if needed."""
+        return getattr(self.env, "unwrapped", self.env)
+
     def c_t(self, obs: np.ndarray) -> float:
         """Compute buzz probability at the current step.
 
@@ -219,9 +253,14 @@ class PPOBuzzer:
             probability is near zero (< 1e-12).
         """
         probs = self.action_probabilities(obs)
+        base_env = self._base_env()
         c_t = float(1.0 - probs[0])
         if c_t <= 1e-12:
             return 0.0
+        if len(probs) == 2:
+            if gold_index < 0 or base_env.belief is None:
+                return 0.0
+            return float(base_env.belief[gold_index])
         return float(probs[gold_index + 1] / c_t)
 
     def run_episode(
@@ -258,6 +297,7 @@ class PPOBuzzer:
         total_reward = 0.0
         c_trace: list[float] = []
         g_trace: list[float] = []
+        top_p_trace: list[float] = []
         entropy_trace: list[float] = []
 
         buzz_step = -1
@@ -265,19 +305,29 @@ class PPOBuzzer:
         gold_index = (
             self.env.question.gold_index if self.env.question is not None else -1
         )
+        base_env = self._base_env()
 
         while not (terminated or truncated):
             probs = self.action_probabilities(obs)
-            c_val = float(1.0 - probs[0])
-            g_val = (
-                float(probs[gold_index + 1] / c_val) if c_val > 1e-12 else 0.0
-            )
+            c_val = float(probs[1] if len(probs) == 2 else 1.0 - probs[0])
+            if len(probs) == 2:
+                g_val = (
+                    float(base_env.belief[gold_index])
+                    if gold_index >= 0 and base_env.belief is not None
+                    else 0.0
+                )
+            else:
+                g_val = (
+                    float(probs[gold_index + 1] / c_val) if c_val > 1e-12 else 0.0
+                )
             entropy = float(
                 -(np.clip(probs, 1e-12, 1.0) * np.log(np.clip(probs, 1e-12, 1.0))).sum()
             )
 
+            top_p_val = float(np.max(base_env.belief)) if base_env.belief is not None else c_val
             c_trace.append(c_val)
             g_trace.append(g_val)
+            top_p_trace.append(top_p_val)
             entropy_trace.append(entropy)
 
             if deterministic:
@@ -290,13 +340,21 @@ class PPOBuzzer:
 
             if action != 0 and buzz_step < 0:
                 buzz_step = int(step_info.get("step_idx", 0))
-                buzz_index = action - 1
-            if truncated and buzz_step < 0:
+                if len(probs) == 2:
+                    buzz_index = int(
+                        step_info.get(
+                            "chosen_idx",
+                            step_info.get("forced_choice", np.argmax(base_env.belief)),
+                        )
+                    )
+                else:
+                    buzz_index = action - 1
+            if truncated and buzz_step < 0 and not step_info.get("no_buzz", False):
                 buzz_step = int(
                     step_info.get("step_idx", len(c_trace) - 1)
                 )
                 buzz_index = int(
-                    step_info.get("forced_choice", np.argmax(self.env.belief))
+                    step_info.get("forced_choice", np.argmax(base_env.belief))
                 )
 
         correct = buzz_index == gold_index
@@ -309,5 +367,6 @@ class PPOBuzzer:
             episode_reward=total_reward,
             c_trace=c_trace,
             g_trace=g_trace,
+            top_p_trace=top_p_trace,
             entropy_trace=entropy_trace,
         )

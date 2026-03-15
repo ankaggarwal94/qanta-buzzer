@@ -150,3 +150,43 @@ class TestExtractBeliefFeatures:
         belief = np.array([[0.5, 0.5]], dtype=np.float32)
         with pytest.raises(ValueError, match="1D"):
             extract_belief_features(belief, None, 0, 1)
+
+
+class TestPaddedBeliefFeatures:
+    """Tests for extract_padded_belief_features."""
+
+    def test_shape_equals_max_k_plus_6(self) -> None:
+        from models.features import extract_padded_belief_features
+
+        belief = np.array([0.5, 0.3, 0.2], dtype=np.float32)
+        feats = extract_padded_belief_features(belief, None, 0, 6, max_K=8)
+        assert feats.shape == (8 + 6,)
+
+    def test_valid_slots_preserved(self) -> None:
+        from models.features import extract_padded_belief_features
+
+        belief = np.array([0.6, 0.3, 0.1], dtype=np.float32)
+        feats = extract_padded_belief_features(belief, None, 0, 6, max_K=5)
+        np.testing.assert_allclose(feats[:3], belief, atol=1e-7)
+
+    def test_padded_slots_zero(self) -> None:
+        from models.features import extract_padded_belief_features
+
+        belief = np.array([0.5, 0.5], dtype=np.float32)
+        feats = extract_padded_belief_features(belief, None, 0, 6, max_K=6)
+        np.testing.assert_array_equal(feats[2:6], [0.0, 0.0, 0.0, 0.0])
+
+    def test_extras_match_unpadded(self) -> None:
+        from models.features import extract_padded_belief_features
+
+        belief = np.array([0.4, 0.3, 0.2, 0.1], dtype=np.float32)
+        unpadded = extract_belief_features(belief, None, 2, 6)
+        padded = extract_padded_belief_features(belief, None, 2, 6, max_K=4)
+        np.testing.assert_allclose(unpadded[4:], padded[4:], atol=1e-7)
+
+    def test_dtype(self) -> None:
+        from models.features import extract_padded_belief_features
+
+        belief = np.array([0.5, 0.5], dtype=np.float32)
+        feats = extract_padded_belief_features(belief, None, 0, 4, max_K=4)
+        assert feats.dtype == np.float32

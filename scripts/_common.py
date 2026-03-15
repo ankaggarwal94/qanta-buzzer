@@ -15,7 +15,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
-from models.likelihoods import build_likelihood_from_config
+from models.likelihoods import LikelihoodModel, build_likelihood_from_config
 from qb_data.config import load_config as load_yaml_config
 from qb_data.mc_builder import MCQuestion
 
@@ -181,3 +181,60 @@ def load_mc_questions(path: str | Path) -> list[MCQuestion]:
     """
     raw = load_json(path)
     return [mc_question_from_dict(item) for item in raw]
+
+
+# ------------------------------------------------------------------ #
+# Embedding cache persistence helpers
+# ------------------------------------------------------------------ #
+
+
+def embedding_cache_path(config: dict[str, Any]) -> Path:
+    """Return the resolved embedding cache file path from config.
+
+    Uses ``config['likelihood']['cache_dir']`` (default ``'cache/embeddings'``)
+    and appends ``'embedding_cache.npz'``.
+
+    Parameters
+    ----------
+    config : dict
+        Full YAML config dict.
+
+    Returns
+    -------
+    Path
+        Absolute path to the embedding cache ``.npz`` file.
+    """
+    cache_dir = config.get("likelihood", {}).get("cache_dir", "cache/embeddings")
+    return PROJECT_ROOT / cache_dir / "embedding_cache.npz"
+
+
+def load_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
+    """Load persisted embedding cache into model if file exists.
+
+    Parameters
+    ----------
+    model : LikelihoodModel
+        Likelihood model whose embedding_cache will be populated.
+    config : dict
+        Full YAML config dict (used to resolve cache path).
+    """
+    path = embedding_cache_path(config)
+    n = model.load_cache(path)
+    if n > 0:
+        print(f"Loaded {n} cached embeddings from {path}")
+
+
+def save_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
+    """Persist model's embedding cache to disk.
+
+    Parameters
+    ----------
+    model : LikelihoodModel
+        Likelihood model whose embedding_cache will be saved.
+    config : dict
+        Full YAML config dict (used to resolve cache path).
+    """
+    path = embedding_cache_path(config)
+    n = model.save_cache(path)
+    if n > 0:
+        print(f"Saved {n} embeddings to {path}")

@@ -57,18 +57,23 @@ python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke  # qui
 
 The T5 pipeline uses its own config (`configs/t5_policy.yaml`) which defines `model`, `supervised`, `ppo`, and `data` sections. It does not inherit `environment` or `likelihood` settings from the belief-feature configs -- the T5 PPO trainer uses default reward settings (`wait_penalty=0.1`).
 
+The T5 policy uses factorized action semantics: the wait head models `P(WAIT)` vs `P(BUZZ)`, the answer head models `P(answer | BUZZ)`, and the flat action distribution is `P(WAIT)` plus `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`.
+
+The CLI also reserves `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for an experimental hazard-style warm-start bridge. Those flags are parsed, but `--hazard-pretrain` currently raises `NotImplementedError` until the training loop is wired.
+
 ### Policy comparison
 
 ```bash
 python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model
 ```
 
-Compares the MLP belief-feature policy against the T5 end-to-end policy on the same test set. Both evaluation paths use TF-IDF likelihood internally. Note: the MLP side uses config-driven env settings while the T5 side hardcodes its own defaults, so numeric comparisons should be interpreted with care.
+Compares the MLP belief-feature policy against the T5 end-to-end policy on the same test set. Accuracy and buzz-position metrics are directly comparable. ECE and Brier are computed identically (top-answer probability at buzz time). S_q and reward comparisons are qualitative because the two architectures use different confidence semantics (belief-sigmoid vs wait-head probability) and different reward settings (config-driven vs T5-pipeline defaults).
 
 ### Additional scripts
 
 - `scripts/run_smoke_pipeline.py` -- runs all four smoke stages sequentially and writes a timing summary to `artifacts/smoke/smoke_pipeline_summary.json`
 - `scripts/sweep_reward_shaping.py` -- grid sweep over `wait_penalty` and `early_buzz_penalty` with multi-seed evaluation
+- `scripts/train_ppo.py --policy-mode flat_kplus1|stop_only` -- optional stop-only PPO surface; default remains `flat_kplus1`
 - `generate_presentation.py` -- generates the Marp presentation slides
 
 ## Configuration
@@ -83,9 +88,11 @@ Two primary YAML configs:
 
 qb-rl config aliases are also supported: `data.dataset`, `data.dataset_config`, `likelihood.sbert_name`, `environment.reward` as an alias for `reward_mode`, etc.
 
+For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy behavior). Set `environment.end_mode: no_buzz` with `environment.no_buzz_reward` to end the episode without forcing a terminal answer.
+
 ## Testing
 
-220 tests across 13 test files:
+342 tests across 24 test files (3 skipped when optional extras not installed):
 
 ```bash
 pytest                    # full suite
@@ -95,25 +102,29 @@ pytest tests/test_agents.py tests/test_environment.py tests/test_ppo_buzzer.py  
 The test suite covers:
 
 - Baseline agents (threshold, softmax-profile, sequential Bayes) and PPO wrapper
-- Gymnasium environment behavior, reward modes, and belief computation
-- Likelihood model factories (TF-IDF, SBERT with offline-safe stubs)
+- Gymnasium environment behavior, reward modes (including Expected Wins), and belief computation
+- Likelihood model factories (TF-IDF, SBERT, DSPy with offline-safe stubs)
 - T5 policy model, supervised trainer, and PPO trainer
-- Evaluation metrics (S_q, ECE, Brier score, per-category accuracy)
+- Evaluation metrics (S_q, Expected Wins, ECE, Brier score, calibration at buzz, per-category accuracy)
+- Dataset split reproducibility (cross-process determinism)
+- Variable-K dataset construction and mixed-K integration
+- Opponent buzz models (logistic, empirical)
 - qb-rl compatibility bridge
 - Text observation wrapper
 
 ## Architecture
 
 ```
-qb_data/        Data loading, answer profiles, stratified splits, MC construction
-qb_env/         Gymnasium environment, text wrapper, qb-rl compatibility shims
-models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI), belief features, T5 policy
+qb_data/        Data loading, answer profiles, stratified splits, MC construction, DSPy profiles
+qb_env/         Gymnasium environment, text wrapper, opponent models, optional StopOnlyEnv wrapper, qb-rl shims
+models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy
 agents/         Threshold, softmax-profile, sequential Bayes, PPO buzzer
-evaluation/     S_q metric, calibration, control experiments, plotting
-scripts/        Pipeline entrypoints and shared helpers
-training/       T5 policy supervised + PPO trainers
+evaluation/     S_q metric, Expected Wins, calibration, control experiments, plotting
+scripts/        Pipeline entrypoints, DSPy compile, shared helpers
+training/       T5 policy supervised + PPO trainers, hazard bridge utilities
 configs/        YAML configuration files
 artifacts/      Generated pipeline outputs (smoke/ and main/)
+_legacy/        Pre-modularization prototypes (not installed)
 ```
 
 ## Compatibility Bridge
@@ -128,11 +139,28 @@ The bridge is additive. `qb_data/` remains the canonical home for data loading a
 
 ## Documentation
 
-- `walkthrough.md` -- showboat-generated end-to-end walkthrough exercising both pipelines
-- `CLAUDE.md` -- agent guidance with setup, commands, and architecture reference
+- `AGENTS.md` -- canonical repo contract for all coding agents (setup, architecture, testing, configuration)
+- `CLAUDE.md` -- thin shim pointing to AGENTS.md with Claude-specific notes
+- `walkthrough.md` -- end-to-end walkthrough exercising both pipelines (pre-remediation snapshot)
 - `PRESENTATION.md` -- Marp presentation slides for the CS234 final project
-- `.planning/` -- canonical project state, roadmap, and architectural decisions
+- `.planning/` -- canonical project state, roadmap, architectural decisions, and remediation log
+
+## Extensions (opt-in)
+
+Three opt-in extensions are available. All are disabled by default — the smoke pipeline and T5 smoke path work unchanged.
+
+### Expected Wins reward mode
+
+Set `environment.reward_mode: expected_wins` and configure `environment.opponent_buzz_model` in YAML. Supports logistic and empirical (from `human_buzz_positions`) opponent models. Offline `expected_wins_score()` in `evaluation/metrics.py` uses the continuous formula: `V_self = g * R_correct + (1-g) * R_incorrect`.
+
+### Variable-K answer choices
+
+Set `data.variable_K: true` and `data.min_K` / `data.max_K` in YAML. `MCBuilder` samples K per question. The env uses padded observations and `action_masks()`. Optional `MaskablePPO` via `pip install -e '.[maskable]'`.
+
+### DSPy integration (experimental)
+
+Set `likelihood.model: dspy` and configure the `dspy` section in YAML. Requires `pip install -e '.[dspy]'`. Offline compile via `python scripts/optimize_dspy.py`. Does NOT integrate prompt optimization into PPO rollouts.
 
 ## Legacy Prototype
 
-The older root-level prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`) is still present but is no longer the primary path. The modular `scripts/` pipeline above is the canonical workflow.
+The pre-modularization prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`, etc.) has been moved to `_legacy/`. These files are not part of the installed package and are preserved only for reference. The modular `scripts/` pipeline above is the canonical workflow.

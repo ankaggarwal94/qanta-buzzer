@@ -38,62 +38,53 @@ DEFAULT_OUTPUT_DIR = Path("data/processed")
 SMOKE_OUTPUT_DIR = Path("artifacts/smoke")
 
 
-def parse_overrides(args: argparse.Namespace) -> Dict[str, Any]:
-    """
-    Parse CLI override arguments into nested dictionary.
+def _parse_value(value: str) -> Any:
+    """Parse a CLI override value string into a typed Python value.
 
-    Converts args like --data.K=5 into {"data": {"K": 5}}
+    Tries JSON first, then bool/int/float, and falls back to str.
+    """
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        pass
+    if value.lower() == "true":
+        return True
+    if value.lower() == "false":
+        return False
+    if value.lstrip("-").isdigit():
+        return int(value)
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def parse_overrides(args: argparse.Namespace) -> Dict[str, Any]:
+    """Parse CLI override arguments into flat dotted-key overrides.
+
+    Returns a dict with dotted keys (e.g. ``{"data.K": 5}``) that
+    ``merge_overrides`` can apply leaf-by-leaf without clobbering
+    sibling config entries.
 
     Parameters
     ----------
     args : argparse.Namespace
-        Command line arguments
+        Parsed CLI arguments.  Positional ``overrides`` are
+        ``key=value`` strings where *key* uses dot-notation
+        (e.g. ``data.K=5``).
 
     Returns
     -------
     Dict[str, Any]
-        Nested dictionary of config overrides
+        Flat dotted-key overrides ready for ``merge_overrides()``.
     """
-    overrides = {}
-
-    # Check for any attributes that look like overrides (contain dots)
-    for key, value in vars(args).items():
-        if value is not None and '.' not in key:
-            continue  # Skip non-override args
-
-    # Parse remaining args for dot notation overrides
-    if hasattr(args, 'overrides') and args.overrides:
-        for override in args.overrides:
-            if '=' not in override:
+    overrides: Dict[str, Any] = {}
+    if hasattr(args, "overrides") and args.overrides:
+        for token in args.overrides:
+            if "=" not in token:
                 continue
-
-            key, value = override.split('=', 1)
-            keys = key.split('.')
-
-            # Try to parse value as JSON first, then as int/float/bool
-            try:
-                parsed_value = json.loads(value)
-            except json.JSONDecodeError:
-                if value.lower() == 'true':
-                    parsed_value = True
-                elif value.lower() == 'false':
-                    parsed_value = False
-                elif value.isdigit():
-                    parsed_value = int(value)
-                else:
-                    try:
-                        parsed_value = float(value)
-                    except ValueError:
-                        parsed_value = value  # Keep as string
-
-            # Build nested dictionary
-            d = overrides
-            for k in keys[:-1]:
-                if k not in d:
-                    d[k] = {}
-                d = d[k]
-            d[keys[-1]] = parsed_value
-
+            key, value = token.split("=", 1)
+            overrides[key] = _parse_value(value)
     return overrides
 
 

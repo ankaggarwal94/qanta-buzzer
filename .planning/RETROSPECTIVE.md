@@ -2,8 +2,8 @@
 
 ## Milestone: v1.0 — Quiz Bowl RL Buzzer
 
-**Shipped:** 2026-02-26
-**Phases:** 6 | **Plans:** 20 | **Tests:** 204
+**Shipped:** 2026-03-13
+**Phases:** 6 | **Plans:** 20 | **Tests:** 250 | **Quick Tasks:** 10
 
 ### What Was Built
 - Complete data pipeline with anti-artifact guards and YAML configuration
@@ -41,10 +41,25 @@
 4. Supervised warm-start is important for T5 policy — PPO from scratch is unstable with 770M params
 5. The S_q metric better captures buzzer quality than raw accuracy
 
+### Post-Milestone Optimization Campaign (10 quick tasks)
+
+After core v1.0 was built, a targeted optimization campaign addressed 7 ranked bottlenecks:
+1. Precomputed belief trajectories for PPO (bypass likelihood_model.score())
+2. Persistent embedding cache across subprocess stages (.npz)
+3. Collapsed duplicate baseline sweeps into one-pass precomputed evaluation
+4. Memoized answer profiles (leave-one-out gold profiles)
+5. Top-M distractor ranking via np.argpartition (O(N+M log M) vs O(N log N))
+6. TF-IDF score() wired through embed_and_cache with L2 normalization
+7. Precomputed shuffle control (belief permutation, zero re-scoring)
+
+Plus: repo-contract scaffolding (AGENTS.md, ci.sh, manual-smoke.sh), final verification handoff, ci.sh scoping fix.
+
+All optimizations are behavior-preserving with equivalence tests. 30 new tests added.
+
 ### Cost Observations
-- Model mix: 100% Opus 4.6 for main conversation, Sonnet for subagents (researcher, planner, checker, executor)
+- Model mix: 100% Opus 4.6 for main conversation, Sonnet for subagents (researcher, planner, checker, executor, verifier)
 - Haiku used only for codebase mapping
-- Notable: Parallel Wave 1 execution (2 plans simultaneously) was the most cost-efficient pattern
+- Notable: GSD quick-full mode (plan + check + execute + verify) completed each optimization in ~10-15 min
 
 ---
 
@@ -54,8 +69,8 @@
 |--------|------|
 | Phases | 6 |
 | Plans | 20 |
-| Tests | 204 |
-| LOC | 16,675 |
-| Python files | 61 |
-| Commits | 108 |
-| Timeline | 2 days |
+| Quick Tasks | 10 |
+| Tests | 250 |
+| LOC | 22,464 |
+| Commits | 196 |
+| Timeline | 17 days |

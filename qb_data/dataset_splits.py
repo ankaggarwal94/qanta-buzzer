@@ -5,6 +5,7 @@ This module provides functions to create train/val/test splits that maintain
 category distribution across all splits.
 """
 
+import hashlib
 import json
 import random
 from collections import defaultdict
@@ -66,8 +67,9 @@ def create_stratified_splits(
         # Sort for deterministic splits
         sorted_questions = sorted(category_questions, key=lambda q: q.qid)
 
-        # Shuffle with fixed seed for this category
-        category_seed = seed + hash(category) % 1000000
+        # Deterministic per-category seed via MD5 (immune to PYTHONHASHSEED)
+        cat_hash = int(hashlib.md5(category.encode("utf-8")).hexdigest(), 16)
+        category_seed = seed + cat_hash % 1_000_000
         category_rng = random.Random(category_seed)
         shuffled = sorted_questions.copy()
         category_rng.shuffle(shuffled)

@@ -40,10 +40,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from agents.bayesian_buzzer import SoftmaxProfileBuzzer
+from agents.threshold_buzzer import (
+    _softmax_episode_from_precomputed,
+    precompute_beliefs,
+)
 from evaluation.controls import (
     run_alias_substitution_control,
     run_choices_only_control,
-    run_shuffle_control,
+    run_shuffle_control_precomputed,
 )
 from evaluation.metrics import (
     calibration_at_buzz,
@@ -59,6 +63,7 @@ from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
     load_config,
+    load_embedding_cache,
     load_json,
     load_mc_questions,
     save_json,
@@ -160,14 +165,26 @@ def main() -> None:
     # Build likelihood model
     print(f"Building likelihood model: {config['likelihood']['model']}")
     likelihood_model = build_likelihood_model(config, mc_questions)
+    load_embedding_cache(likelihood_model, config)
     beta = float(config["likelihood"].get("beta", 5.0))
     alpha = float(config["bayesian"].get("alpha", 10.0))
     default_threshold = float(config["bayesian"]["threshold_sweep"][0])
     threshold = pick_best_softmax_threshold(out_dir, default_threshold=default_threshold)
     print(f"Using best softmax threshold: {threshold}")
 
-    # Evaluator function using SoftmaxProfileBuzzer
-    def evaluate_questions(qset):
+    # Precompute beliefs once (single pass of likelihood_model.score())
+    print("Precomputing beliefs...")
+    precomputed = precompute_beliefs(mc_questions, likelihood_model, beta)
+
+    # Precomputed evaluation (zero extra score() calls)
+    def evaluate_questions_precomputed(pqs):
+        runs = [asdict(_softmax_episode_from_precomputed(pq, threshold, alpha)) for pq in pqs]
+        summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
+        summary["runs"] = runs
+        return summary
+
+    # Live evaluator for controls that genuinely change option text (alias)
+    def evaluate_questions_live(qset):
         agent = SoftmaxProfileBuzzer(
             likelihood_model=likelihood_model,
             threshold=threshold,
@@ -181,7 +198,7 @@ def main() -> None:
 
     # --- Run evaluations ---
     print("Running full evaluation...")
-    full_eval = evaluate_questions(mc_questions)
+    full_eval = evaluate_questions_precomputed(precomputed)
 
     # Compute per-category breakdown
     print("\nComputing per-category breakdown...")
@@ -200,15 +217,13 @@ def main() -> None:
     print()
 
     print("Running shuffle control...")
-    shuffle_eval = run_shuffle_control(
-        mc_questions, evaluator=lambda qset: evaluate_questions(qset)
-    )
+    shuffle_eval = run_shuffle_control_precomputed(precomputed, threshold, alpha)
 
     print("Running alias substitution control...")
     alias_eval = run_alias_substitution_control(
         mc_questions,
         alias_lookup=alias_lookup,
-        evaluator=lambda qset: evaluate_questions(qset),
+        evaluator=lambda qset: evaluate_questions_live(qset),
     )
 
     print("Running choices-only control...")
@@ -237,6 +252,31 @@ def main() -> None:
         "baseline_summary": baseline_summary,
         "ppo_summary": ppo_summary,
     }
+
+    # Add Expected Wins summary only when that reward mode is active
+    if config.get("environment", {}).get("reward_mode") == "expected_wins":
+        from evaluation.metrics import expected_wins_score
+        from qb_env.opponent_models import build_opponent_model_from_config
+
+        opp_model = build_opponent_model_from_config(mc_questions, config)
+        if opp_model is not None:
+            ew_scores = []
+            for run in full_eval["runs"]:
+                opp_surv = [
+                    opp_model.prob_survive_to_step(mc_questions[0], t)
+                    for t in range(len(run.get("c_trace", [])))
+                ]
+                ew = expected_wins_score(
+                    run.get("c_trace", []),
+                    run.get("g_trace", []),
+                    opp_surv,
+                )
+                ew_scores.append(ew)
+            report["expected_wins"] = {
+                "mean_ew": float(np.mean(ew_scores)) if ew_scores else 0.0,
+                "n": len(ew_scores),
+            }
+
     save_json(out_dir / "evaluation_report.json", report)
 
     # --- Generate visualizations ---
@@ -260,12 +300,15 @@ def main() -> None:
         out_dir / "plots" / "entropy_vs_clue.png",
     )
 
-    # Calibration curve
+    # Calibration curve — use top_p (belief in top answer) as confidence
     confidences = []
     outcomes = []
     for row in full_eval["runs"]:
-        idx = min(int(row["buzz_step"]), len(row["g_trace"]) - 1)
-        confidences.append(float(row["g_trace"][idx]))
+        top_p = row.get("top_p_trace", row.get("c_trace", []))
+        if not top_p:
+            continue
+        idx = min(int(row["buzz_step"]), len(top_p) - 1)
+        confidences.append(float(top_p[idx]))
         outcomes.append(1 if bool(row["correct"]) else 0)
     plot_calibration_curve(
         confidences, outcomes, out_dir / "plots" / "calibration.png"

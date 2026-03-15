@@ -313,6 +313,65 @@ def run_alias_substitution_control(
     return evaluator(swapped)
 
 
+def run_shuffle_control_precomputed(
+    precomputed: list["_PrecomputedQuestion"],
+    threshold: float,
+    alpha: float,
+    random_seed: int = 13,
+) -> dict[str, Any]:
+    """Run shuffle control by permuting precomputed belief vectors.
+
+    Produces numerically identical results to ``run_shuffle_control`` with
+    a live ``SoftmaxProfileBuzzer`` evaluator, but makes zero
+    ``likelihood_model.score()`` calls.  Instead, the belief vectors
+    stored in each ``_PrecomputedQuestion`` are reordered according to
+    the same random permutation that ``shuffled_option_copy`` would apply.
+
+    Parameters
+    ----------
+    precomputed : list[_PrecomputedQuestion]
+        Pre-computed belief distributions (one per question).
+    threshold : float
+        Buzz threshold for the softmax profile buzzer.
+    alpha : float
+        Sigmoid steepness for the confidence proxy.
+    random_seed : int
+        Seed for reproducible shuffling (must match the seed used in
+        ``run_shuffle_control`` for equivalence).
+
+    Returns
+    -------
+    dict[str, Any]
+        Summary metrics with ``"runs"`` key containing per-question dicts.
+    """
+    from dataclasses import asdict
+
+    from agents.threshold_buzzer import (
+        _PrecomputedQuestion,
+        _softmax_episode_from_precomputed,
+    )
+    from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+
+    rng = random.Random(random_seed)
+    runs: list[dict[str, Any]] = []
+    for pq in precomputed:
+        perm = list(range(pq.num_options))
+        rng.shuffle(perm)
+        new_gold = perm.index(pq.gold_index)
+        shuffled_beliefs = [b[perm] for b in pq.beliefs]
+        shuffled_pq = _PrecomputedQuestion(
+            qid=pq.qid,
+            gold_index=new_gold,
+            num_options=pq.num_options,
+            beliefs=shuffled_beliefs,
+        )
+        result = _softmax_episode_from_precomputed(shuffled_pq, threshold, alpha)
+        runs.append(asdict(result))
+    summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
+    summary["runs"] = runs
+    return summary
+
+
 def bootstrap_ci(
     values: list[float],
     n_samples: int = 1000,

@@ -3,3 +3,9 @@ __pycache__/
 venv/
 .venv/
 *.egg-info/
+.DS_Store
+checkpoints/
+cache/
+*.pyc
+__pycache__/
+.secrets.env

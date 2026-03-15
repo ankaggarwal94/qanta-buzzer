@@ -49,7 +49,7 @@ A principled, modular RL system that produces rigorous experimental results — 
 
 ## Context
 
-**v1.0 shipped** with 16,675 lines of Python across 61 files, 204 pytest tests, and a complete four-stage pipeline.
+**v1.0 shipped** with 22,464 lines of Python, 250 pytest tests, and a complete four-stage pipeline. Post-milestone optimization campaign added 7 performance optimizations (precomputed beliefs, embedding cache persistence, collapsed baseline sweeps, profile memoization, top-M distractor ranking, TF-IDF caching, precomputed shuffle control) with 30 new equivalence tests.
 
 **Architecture:** `qb_data/` (data pipeline) → `models/` (likelihood + belief features) → `qb_env/` (Gymnasium env) → `agents/` (baselines + PPO) → `evaluation/` (metrics + controls + plots) → `scripts/` (pipeline orchestration) → `training/` (T5 policy training).
 
@@ -84,4 +84,4 @@ A principled, modular RL system that produces rigorous experimental results — 
 | TF-IDF for fast agent tests, SBERT/T5 for semantic | Keeps test suite fast (<30s) | ✓ Good — 204 tests in ~10s |
 
 ---
-*Last updated: 2026-03-08 after smoke-contract and agent-stability remediation*
+*Last updated: 2026-03-13 after v1.0 milestone completion*

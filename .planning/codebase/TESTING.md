@@ -1,21 +1,73 @@
-# Testing Patterns
+# Testing
 
-**Analysis Date:** 2026-03-08
+## Framework
 
-## Test Framework
+- **pytest** with shared fixtures in `tests/conftest.py`
+- No pytest plugins or custom markers in use
+- Tests run from project root: `pytest` or `pytest tests/`
 
-**Runner:** `pytest`
+## Test Structure
 
-**Primary suites:**
-- `tests/test_features.py`: belief-feature extraction
-- `tests/test_likelihoods.py`: TF-IDF, SBERT, T5, and optional OpenAI likelihood behavior
-- `tests/test_environment.py`: `TossupMCEnv` reset/step semantics and reward modes
-- `tests/test_agents.py`: threshold, Bayesian, and floor baselines
-- `tests/test_ppo_buzzer.py`: PPO agent utilities and trace handling
-- `tests/test_supervised_t5.py`, `tests/test_ppo_t5.py`, `tests/test_t5_policy.py`, `tests/test_text_wrapper.py`: T5 policy track
-- `tests/test_qb_rl_bridge.py`: qb-rl compatibility shims and loader/config bridge
+```
+tests/
+├── conftest.py                   # Shared fixtures (module-scoped for heavy models)
+├── test_action_space_alignment.py # Factored action semantics integration guards
+├── test_agents.py                # ThresholdBuzzer, SoftmaxProfileBuzzer, precomputed equivalence, K-agnostic
+├── test_answer_profile_cache.py  # Answer profile memoization cache correctness
+├── test_build_mc_dataset.py      # MC dataset construction, CLI overrides, anti-artifact guards
+├── test_dataset_splits.py        # Stratified split reproducibility (cross-process determinism)
+├── test_dspy_answer_profiles.py  # DSPy answer profile augmentation (importorskip)
+├── test_dspy_likelihood.py       # DSPyLikelihood score cache, shape validation, inheritance
+├── test_dspy_optimize.py         # Offline DSPy compile trainset builder (importorskip)
+├── test_environment.py           # TossupMCEnv reset/step/reward, Expected Wins, variable-K, masks
+├── test_factories.py             # Factory functions including DSPy dispatch
+├── test_features.py              # Belief feature extraction, padded features
+├── test_hazard_pretrain.py       # Hazard bridge survival terms and expected NLL loss
+├── test_likelihoods.py           # TfIdf, SBERT, T5 scoring (shape, dtype, cache, memory)
+├── test_mc_builder_topk.py       # Top-M argpartition distractor ranking correctness
+├── test_mc_builder_variable_k.py # Variable-K dataset build: mixed option counts, guards
+├── test_metrics.py               # S_q, Expected Wins, ECE, Brier, calibration_at_buzz
+├── test_opponent_models.py       # Logistic/empirical opponent models, config factory
+├── test_ppo_buzzer.py            # PPOBuzzer training, traces, calibration, MaskablePPO
+├── test_ppo_t5.py                # T5 PPO training integration
+├── test_qb_rl_bridge.py          # qb-rl backward compatibility (import paths work)
+├── test_supervised_t5.py         # T5 supervised warm-start training
+├── test_t5_policy.py             # T5PolicyModel forward/backward pass
+├── test_text_wrapper.py          # TextObservationWrapper including K=3 formatting
+└── test_variable_k_integration.py # Mixed-K build→env→baseline→wrapper integration
+```
 
-**Smoke validation:** the canonical smoke workflow exercises the full modular pipeline:
+## Key Fixtures (`tests/conftest.py`)
+
+| Fixture | Scope | Purpose |
+|---------|-------|---------|
+| `sample_mc_question` | function | Single MCQuestion with 4 options, 6 clue steps |
+| `sample_config` | function | Minimal config dict (simple reward, sbert likelihood) |
+| `sample_corpus` | function | 10 short texts for TF-IDF fitting |
+| `sample_t5_model` | module | T5Likelihood with t5-small (loaded once per file) |
+| `sample_tfidf_env` | function | TossupMCEnv with TF-IDF likelihood, 3 questions |
+
+The `sample_t5_model` fixture uses `scope="module"` to avoid reloading the T5 model per test function.
+
+## Running Tests
+
+```bash
+# Full suite
+pytest
+
+# Focused bridge/runtime checks
+pytest tests/test_qb_rl_bridge.py tests/test_factories.py tests/test_ppo_buzzer.py
+
+# Single file
+pytest tests/test_environment.py -v
+
+# Single test
+pytest tests/test_metrics.py::test_system_score_basic -v
+```
+
+## Smoke Testing
+
+Pipeline scripts support `--smoke` flag for fast end-to-end validation:
 
 ```bash
 python scripts/build_mc_dataset.py --smoke
@@ -24,79 +76,21 @@ python scripts/train_ppo.py --smoke
 python scripts/evaluate_all.py --smoke
 ```
 
-**Walkthrough validation:** the generated walkthrough is verified with Showboat:
-
-```bash
-uvx showboat verify walkthrough.md
-```
-
-## Test File Organization
-
-**Location:** canonical tests live under `tests/` with shared fixtures in `tests/conftest.py`.
-
-```text
-qanta-buzzer/
-├── tests/
-│   ├── conftest.py
-│   ├── test_agents.py
-│   ├── test_build_mc_dataset.py
-│   ├── test_environment.py
-│   ├── test_factories.py
-│   ├── test_likelihoods.py
-│   ├── test_qb_rl_bridge.py
-│   └── ...
-├── scripts/
-├── qb_data/
-├── qb_env/
-└── models/
-```
-
-**Naming:**
-- Test modules use the `test_*.py` pattern.
-- Suites are organized by subsystem rather than by historical prototype file.
-- Shared fixtures live in `tests/conftest.py`; heavier model fixtures are module-scoped to keep runtime reasonable.
-
-## Execution Hierarchy
-
-**Fastest path first:**
-1. Run the narrowest relevant pytest module or test case.
-2. Run the smoke pipeline if a change affects cross-module orchestration.
-3. Re-verify `walkthrough.md` if Showboat content or recorded smoke evidence changes.
-
-**Common commands:**
-
-```bash
-venv/bin/python -m pytest
-venv/bin/python -m pytest tests/test_agents.py -q
-venv/bin/python -m pytest tests/test_build_mc_dataset.py tests/test_qb_rl_bridge.py -q
-```
+Smoke mode uses `configs/smoke.yaml` with reduced dataset size and training steps. Output goes to `artifacts/smoke/`.
 
 ## Test Patterns
 
-**Data and environment tests:**
-- Prefer TF-IDF-based fixtures for speed and determinism.
-- Build small synthetic or smoke-sized question sets rather than loading the full corpus.
-- Assert trace lengths, probability ranges, reward behavior, and anti-artifact guard outcomes directly.
+- **Dataclass fixtures:** Tests construct minimal `MCQuestion` instances with known values
+- **Environment tests:** Verify reset/step/done cycle, reward computation, observation shape
+- **Likelihood tests:** Check output shape, dtype (float32), score ordering for known inputs
+- **Agent tests:** Run single episodes and verify trace lengths, buzz decisions
+- **Bridge tests:** Import from `qb_env.*` paths and verify they resolve to `qb_data.*` implementations
 
-**Agent and math tests:**
-- Treat warnings as errors for numerical-stability checks.
-- Verify `c_trace`, `g_trace`, entropy, and buzz timing invariants explicitly.
-- Keep agent tests focused on behavioral contracts, not heavyweight training.
+## No Mocking
 
-**T5-track tests:**
-- Keep fixtures scoped so expensive model setup happens once per module.
-- Test architecture wiring, text observation conversion, and trainer bookkeeping without requiring a full end-to-end training run.
+Tests use real (lightweight) model instances:
+- `TfIdfLikelihood` with small corpus (fast, no downloads)
+- `t5-small` for T5 tests (60M params, downloads on first run)
+- `SBERTLikelihood` with default model (downloads on first run)
 
-## Legacy Notes
-
-The older root-level prototype path still contains ad-hoc scripts and verification helpers, but the current branch’s canonical validation strategy is `pytest` plus smoke scripts. Historical one-off scripts should be treated as supplementary inspection tools, not the primary regression suite.
-
-## Coverage and Gaps
-
-- There is no enforced coverage threshold in CI.
-- OpenAI-backed paths are tested with mocks rather than live API calls.
-- Full T5 training is documented and partially unit-tested, but not treated as a routine verification step.
-
----
-
-*Testing analysis: 2026-03-08*
+Most tests use real (lightweight) model instances with no mocking. The exception is Expected Wins env tests which use `unittest.mock.MagicMock` for a fixed-survival opponent model. Optional-extra tests (DSPy, MaskablePPO) use `pytest.importorskip` to skip gracefully when the extra is not installed.

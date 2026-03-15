@@ -12,6 +12,7 @@ dataclass structures.
 from evaluation.metrics import (
     calibration_at_buzz,
     expected_calibration_error,
+    expected_wins_score,
     per_category_accuracy,
     summarize_buzz_metrics,
     system_score,
@@ -19,6 +20,7 @@ from evaluation.metrics import (
 
 __all__ = [
     "system_score",
+    "expected_wins_score",
     "summarize_buzz_metrics",
     "calibration_at_buzz",
     "expected_calibration_error",

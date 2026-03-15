@@ -9,13 +9,16 @@ Covers:
 
 from __future__ import annotations
 
+import sys
+from unittest.mock import MagicMock
+
 import gymnasium as gym
 import numpy as np
 import pytest
 
 from models.likelihoods import SBERTLikelihood, TfIdfLikelihood
 from qb_data.mc_builder import MCQuestion
-from qb_env.tossup_env import TossupMCEnv
+from qb_env.tossup_env import TossupMCEnv, precompute_beliefs
 
 
 # ------------------------------------------------------------------ #
@@ -216,6 +219,128 @@ class TestEpisodeFlow:
         env.reset()
         with pytest.raises(ValueError, match="Invalid action"):
             env.step(99)
+
+    def test_default_end_mode_is_force_commit(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Default env keeps legacy forced-commit behavior."""
+        env = _make_env(sample_mc_question)
+        assert env.end_mode == "force_commit"
+
+    def test_no_buzz_end_mode_returns_marker_and_reward(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """no_buzz mode truncates without forcing an answer choice."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        env = TossupMCEnv(
+            questions=[sample_mc_question],
+            likelihood_model=model,
+            K=4,
+            reward_mode="simple",
+            end_mode="no_buzz",
+            no_buzz_reward=0.25,
+        )
+        env.reset()
+
+        for _ in range(env.total_steps):
+            _obs, reward, _terminated, truncated, info = env.step(0)
+            if truncated:
+                break
+
+        assert truncated is True
+        assert reward == pytest.approx(0.25)
+        assert info["no_buzz"] is True
+        assert info["forced_choice"] == -1
+        assert info["forced_correct"] is False
+
+    def test_invalid_end_mode_raises_on_terminal_wait(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Unknown end_mode raises ValueError at horizon."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        env = TossupMCEnv(
+            questions=[sample_mc_question],
+            likelihood_model=model,
+            K=4,
+            reward_mode="simple",
+            end_mode="unknown_mode",
+        )
+        env.reset()
+
+        with pytest.raises(ValueError, match="Unknown end_mode"):
+            for _ in range(env.total_steps):
+                env.step(0)
+
+
+class TestStopOnlyEnv:
+    """Tests for the stop-only WAIT/BUZZ wrapper."""
+
+    def test_stop_only_env_has_discrete2_action_space(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """StopOnlyEnv exposes a binary action space."""
+        from qb_env import StopOnlyEnv
+
+        env = StopOnlyEnv(_make_env(sample_mc_question))
+        assert isinstance(env.action_space, gym.spaces.Discrete)
+        assert env.action_space.n == 2
+
+    def test_stop_only_wait_delegates_to_base_env(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Action 0 remains a WAIT in the wrapped env."""
+        from qb_env import StopOnlyEnv
+
+        base_env = _make_env(sample_mc_question)
+        env = StopOnlyEnv(base_env)
+        env.reset()
+
+        _obs, _reward, terminated, truncated, _info = env.step(0)
+        assert not terminated
+        assert not truncated
+        assert base_env.step_idx == 1
+
+    def test_stop_only_buzz_uses_argmax_belief(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Action 1 maps to BUZZ with the current belief argmax."""
+        from qb_env import StopOnlyEnv
+
+        base_env = _make_env(sample_mc_question)
+        env = StopOnlyEnv(base_env)
+        env.reset()
+        base_env.belief = np.array([0.05, 0.8, 0.1, 0.05], dtype=np.float32)
+
+        _obs, _reward, terminated, truncated, info = env.step(1)
+        assert terminated
+        assert not truncated
+        assert info["chosen_idx"] == 1
+        assert info["correct"] is False
+
+    def test_stop_only_invalid_action_raises(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """StopOnlyEnv rejects actions outside its Discrete(2) contract."""
+        from qb_env import StopOnlyEnv
+
+        base_env = _make_env(sample_mc_question)
+        env = StopOnlyEnv(base_env)
+        env.reset()
+
+        with pytest.raises(ValueError, match="Invalid action"):
+            env.step(2)
+
+    def test_train_ppo_policy_mode_defaults_flat_kplus1(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """train_ppo CLI defaults to flat_kplus1 for compatibility."""
+        from scripts.train_ppo import parse_args
+
+        monkeypatch.setattr(sys, "argv", ["train_ppo.py"])
+        args = parse_args()
+        assert args.policy_mode == "flat_kplus1"
 
 
 # ------------------------------------------------------------------ #
@@ -467,3 +592,293 @@ class TestConstructorValidation:
             TossupMCEnv(
                 questions=[sample_mc_question], likelihood_model=model, K=1
             )
+
+
+# ------------------------------------------------------------------ #
+# Tests: Precomputed Beliefs (OPT-1)
+# ------------------------------------------------------------------ #
+
+
+class TestPrecomputedBeliefs:
+    """Tests for precomputed belief trajectory bypass."""
+
+    def test_precomputed_matches_live_from_scratch(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Precomputed env produces identical beliefs as live env (from_scratch)."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        questions = [sample_mc_question]
+
+        # Run live env and record beliefs at each step
+        live_env = TossupMCEnv(
+            questions=questions, likelihood_model=model, K=4,
+            belief_mode="from_scratch", beta=5.0,
+        )
+        live_env.reset(seed=42, options={"question_idx": 0})
+        live_beliefs = []
+        for _ in range(live_env.total_steps):
+            live_env.step(0)  # WAIT
+            live_beliefs.append(live_env.belief.copy())
+            if live_env.truncated:
+                break
+
+        # Build precomputed cache
+        cache = precompute_beliefs(
+            questions=questions, likelihood_model=model,
+            belief_mode="from_scratch", beta=5.0, K=4,
+        )
+
+        # Run precomputed env and compare beliefs
+        pre_env = TossupMCEnv(
+            questions=questions, likelihood_model=model, K=4,
+            belief_mode="from_scratch", beta=5.0,
+            precomputed_beliefs=cache,
+        )
+        pre_env.reset(seed=42, options={"question_idx": 0})
+        for i in range(len(live_beliefs)):
+            pre_env.step(0)
+            np.testing.assert_allclose(
+                pre_env.belief, live_beliefs[i], atol=1e-6,
+                err_msg=f"Belief mismatch at step {i} (from_scratch)",
+            )
+            if pre_env.truncated:
+                break
+
+    def test_precomputed_matches_live_sequential_bayes(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Precomputed env produces identical beliefs as live env (sequential_bayes)."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        questions = [sample_mc_question]
+
+        # Run live env
+        live_env = TossupMCEnv(
+            questions=questions, likelihood_model=model, K=4,
+            belief_mode="sequential_bayes", beta=5.0,
+        )
+        live_env.reset(seed=42, options={"question_idx": 0})
+        live_beliefs = []
+        for _ in range(live_env.total_steps):
+            live_env.step(0)
+            live_beliefs.append(live_env.belief.copy())
+            if live_env.truncated:
+                break
+
+        # Build precomputed cache
+        cache = precompute_beliefs(
+            questions=questions, likelihood_model=model,
+            belief_mode="sequential_bayes", beta=5.0, K=4,
+        )
+
+        # Run precomputed env
+        pre_env = TossupMCEnv(
+            questions=questions, likelihood_model=model, K=4,
+            belief_mode="sequential_bayes", beta=5.0,
+            precomputed_beliefs=cache,
+        )
+        pre_env.reset(seed=42, options={"question_idx": 0})
+        for i in range(len(live_beliefs)):
+            pre_env.step(0)
+            np.testing.assert_allclose(
+                pre_env.belief, live_beliefs[i], atol=1e-6,
+                err_msg=f"Belief mismatch at step {i} (sequential_bayes)",
+            )
+            if pre_env.truncated:
+                break
+
+    def test_precomputed_skips_scoring(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Precomputed env never calls likelihood_model.score()."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        questions = [sample_mc_question]
+
+        cache = precompute_beliefs(
+            questions=questions, likelihood_model=model,
+            belief_mode="from_scratch", beta=5.0, K=4,
+        )
+
+        # Replace score with a mock
+        mock_model = MagicMock(spec=TfIdfLikelihood)
+        mock_model.score = MagicMock()
+
+        env = TossupMCEnv(
+            questions=questions, likelihood_model=mock_model, K=4,
+            belief_mode="from_scratch", beta=5.0,
+            precomputed_beliefs=cache,
+        )
+        env.reset(seed=42, options={"question_idx": 0})
+        for _ in range(env.total_steps):
+            env.step(0)
+            if env.truncated:
+                break
+
+        mock_model.score.assert_not_called()
+
+    def test_no_precomputed_backward_compat(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Env with precomputed_beliefs=None behaves identically to default."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        questions = [sample_mc_question]
+
+        # Default env (no precomputed_beliefs arg)
+        env_default = TossupMCEnv(
+            questions=questions, likelihood_model=model, K=4,
+            belief_mode="from_scratch", beta=5.0,
+        )
+        env_default.reset(seed=42, options={"question_idx": 0})
+        obs_default, _, _, _, _ = env_default.step(0)
+
+        # Explicit None
+        env_none = TossupMCEnv(
+            questions=questions, likelihood_model=model, K=4,
+            belief_mode="from_scratch", beta=5.0,
+            precomputed_beliefs=None,
+        )
+        env_none.reset(seed=42, options={"question_idx": 0})
+        obs_none, _, _, _, _ = env_none.step(0)
+
+        np.testing.assert_array_equal(obs_default, obs_none)
+
+    def test_precompute_beliefs_helper_shape(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """precompute_beliefs returns correct keys and belief shapes."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        questions = [sample_mc_question]
+
+        cache = precompute_beliefs(
+            questions=questions, likelihood_model=model,
+            belief_mode="from_scratch", beta=5.0, K=4,
+        )
+
+        total_steps = len(sample_mc_question.run_indices)
+        for s in range(total_steps):
+            key = (0, s)
+            assert key in cache, f"Missing key {key}"
+            belief = cache[key]
+            assert belief.shape == (4,), f"Expected (4,), got {belief.shape}"
+            assert belief.dtype == np.float32, f"Expected float32, got {belief.dtype}"
+            assert abs(belief.sum() - 1.0) < 1e-5, (
+                f"Belief should sum to ~1.0, got {belief.sum()}"
+            )
+
+
+class TestExpectedWinsRewardMode:
+    """Tests for the expected_wins reward mode in TossupMCEnv."""
+
+    def _make_env(self, sample_mc_question, survival: float):
+        """Build an EW env with a fixed-survival opponent model."""
+        from unittest.mock import MagicMock
+
+        from models.likelihoods import TfIdfLikelihood
+
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        opp = MagicMock()
+        opp.prob_survive_to_step = MagicMock(return_value=survival)
+        opp.prob_buzzed_before_step = MagicMock(return_value=1.0 - survival)
+        return TossupMCEnv(
+            questions=[sample_mc_question],
+            likelihood_model=model,
+            K=4,
+            reward_mode="expected_wins",
+            opponent_buzz_model=opp,
+            ew_reward_correct=10.0,
+            ew_reward_incorrect=-5.0,
+            ew_opponent_expected_value=0.0,
+            belief_mode="from_scratch",
+            beta=5.0,
+        )
+
+    def test_survival_1_correct_gives_ew_correct(self, sample_mc_question):
+        env = self._make_env(sample_mc_question, survival=1.0)
+        env.reset(seed=42, options={"question_idx": 0})
+        gold = sample_mc_question.gold_index
+        _, reward, _, _, _ = env.step(gold + 1)
+        assert abs(reward - 10.0) < 1e-9
+
+    def test_survival_1_incorrect_gives_ew_incorrect(self, sample_mc_question):
+        env = self._make_env(sample_mc_question, survival=1.0)
+        env.reset(seed=42, options={"question_idx": 0})
+        wrong = (sample_mc_question.gold_index + 1) % 4
+        _, reward, _, _, _ = env.step(wrong + 1)
+        assert abs(reward - (-5.0)) < 1e-9
+
+    def test_survival_0_gives_opponent_value(self, sample_mc_question):
+        env = self._make_env(sample_mc_question, survival=0.0)
+        env.reset(seed=42, options={"question_idx": 0})
+        _, reward, _, _, _ = env.step(1)
+        assert abs(reward - 0.0) < 1e-9
+
+    def test_non_ew_modes_unchanged(self, sample_tfidf_env):
+        """Non-EW reward modes are unaffected by the new EW plumbing."""
+        env = sample_tfidf_env
+        obs, _ = env.reset(seed=42)
+        _, reward, _, _, _ = env.step(0)
+        assert isinstance(reward, float)
+
+
+class TestVariableKEnv:
+    """Tests for variable-K mode and action masks in TossupMCEnv."""
+
+    def _make_mixed_k_questions(self, sample_mc_question):
+        """Create a K=3 variant alongside the K=4 original."""
+        from dataclasses import replace
+
+        q3 = replace(
+            sample_mc_question,
+            qid="q_k3",
+            options=sample_mc_question.options[:3],
+            option_profiles=sample_mc_question.option_profiles[:3],
+            option_answer_primary=sample_mc_question.option_answer_primary[:3],
+            gold_index=0,
+        )
+        return [sample_mc_question, q3]
+
+    def test_variable_k_obs_shape(self, sample_mc_question):
+        from models.likelihoods import TfIdfLikelihood
+
+        questions = self._make_mixed_k_questions(sample_mc_question)
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        env = TossupMCEnv(
+            questions=questions, likelihood_model=model,
+            K=4, variable_K=True, max_K=4,
+            reward_mode="simple", belief_mode="from_scratch",
+        )
+        obs, _ = env.reset(seed=42, options={"question_idx": 1})
+        assert obs.shape == (4 + 6,)
+
+    def test_action_mask_shape_and_validity(self, sample_mc_question):
+        from models.likelihoods import TfIdfLikelihood
+
+        questions = self._make_mixed_k_questions(sample_mc_question)
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        env = TossupMCEnv(
+            questions=questions, likelihood_model=model,
+            K=4, variable_K=True, max_K=4,
+            reward_mode="simple", belief_mode="from_scratch",
+        )
+        env.reset(seed=42, options={"question_idx": 1})
+        mask = env.action_masks()
+        assert mask.shape == (5,)
+        assert mask[0]
+        assert mask[1] and mask[2] and mask[3]
+        assert not mask[4]
+
+    def test_fixed_k_path_unchanged(self, sample_tfidf_env):
+        """Fixed-K env (variable_K=False) behavior is unchanged."""
+        env = sample_tfidf_env
+        obs, _ = env.reset(seed=42)
+        assert obs.shape == (4 + 6,)
+        mask = env.action_masks()
+        assert mask.shape == (5,)
+        assert all(mask)

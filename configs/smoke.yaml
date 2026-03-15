@@ -34,6 +34,8 @@ environment:
   buzz_correct: 1.0
   buzz_incorrect: -1.0
   max_steps: 10  # Fewer steps for quick testing
+  opponent_buzz_model:
+    type: "none"
 
 mc_guards:
   alias_edit_distance_threshold: 0.2

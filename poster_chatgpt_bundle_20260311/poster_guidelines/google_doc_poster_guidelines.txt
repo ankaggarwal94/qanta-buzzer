@@ -1,0 +1,33 @@
+﻿CS 234 Poster and Video Guidelines
+These guidelines were adapted from CS224Nʼs poster session guidelines.
+Poster Guidelines
+The point of a poster is to give the viewer a quick summary of the work, which not only draws their interest but motivates them to learn more about the project. For an intro to creating academic posters, see https://guides.nyu.edu/posters. Hereʼs a sample structure that might be helpful:
+- Problem: what are you trying to solve? Reference current challenges and why your work is meaningful.
+- Background: problem setup + notation; maybe previous work
+- Methods: explain your technical contributions; figures can really help understanding especially for a neural model!
+- Experiments: what is the task? What are the inputs and outputs to the model? What are the results? Compare against baselines; for results, a graph can say a lot more than a table of the same size!
+- Analysis: provide some in-depth analysis of certain cases of interest, or contextualize your results within existing literature! Add some plots/examples/visualizations.
+- Conclusions: briefly draw some conclusions from the work
+- References: if space permits, consider adding 1-3 very important references (donʼt do more than this!) 
+Formatting suggestions:
+● A larger font size is strongly recommended.
+● Prefer bullet points over long paragraphs (save those for the paper).
+● Try using color to emphasize interesting findings and key words.
+● Be visual, not textual. The visual impact is almost more important than the textual content.
+How to print your poster
+We recommend landscape orientation, size 20”x30” since we provide foam (other sizes are acceptable, but please ensure that they're not too big/small).
+You are expected to print out the posters yourself, so please plan ahead!
+Here are some options available for 20”x30” poster printing. For each option, make sure to verify turnaround and services yourself—the info below is just gathered from the corresponding websites!
+● Lathrop Libraryʼs Tech Desk: order online for a 3-day turnaround.
+● FedEx: approximately 2-day turnaround. Offers customizability (e.g. laminate the poster for greater durability; add grommets).
+● CVS Photo: Affordable, same-day pick up on some options; can use code 50SITE for offer.        
+● Walgreens: claims to have same-day pickup for 24”x36”.
+● Biotech Productions: specialized for research posters and offers same-day free delivery to Stanford campus.
+● Walmart: Different printing options and templates; home-delivery option.
+Video Guidelines (SCPD-only or Extenuating Circumstances):
+* The video should be 3-5 minutes long.and should cover all relevant sections of the poster
+* Speaking should be divided amongst all group members as equally as possible
+* You may present slides if you wish, but you still need submit a poster on Gradescope
+* We recommend screen sharing on Zoom for video recording
+* Upload the video either to YouTube or to Google Drive. Please make sure the video will be visible to the staff.
+* Submit a link to the video on Gradescope

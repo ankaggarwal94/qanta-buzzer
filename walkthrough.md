@@ -2,6 +2,13 @@
 
 *2026-03-11T02:08:30Z*
 
+> **Note (2026-03-14):** This walkthrough was generated before the
+> post-optimization audit remediation. Some outputs shown below reflect the
+> pre-remediation state: legacy `.py` files at repo root (now in `_legacy/`),
+> older CLAUDE.md content (now a thin shim to AGENTS.md), and calibration
+> metrics computed from binary `g_trace` (now corrected to use `top_p_trace`).
+> The pipeline commands themselves remain valid.
+
 ## Repo orientation
 
 This walkthrough exercises both the modular belief-feature pipeline and the T5 policy pipeline in smoke mode. All commands are run from the repo root with the project venv activated.

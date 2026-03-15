@@ -29,12 +29,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.ppo_buzzer import PPOBuzzer
 from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
-from qb_env.tossup_env import make_env_from_config
+from qb_env.stop_only_env import StopOnlyEnv
+from qb_env.tossup_env import make_env_from_config, precompute_beliefs
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
     load_config,
+    load_embedding_cache,
     load_mc_questions,
+    save_embedding_cache,
     save_json,
 )
 
@@ -77,6 +80,13 @@ def parse_args() -> argparse.Namespace:
         "--stochastic-eval", action="store_true",
         help="Force stochastic policy sampling for post-training evaluation.",
     )
+    parser.add_argument(
+        "--policy-mode",
+        type=str,
+        choices=["flat_kplus1", "stop_only"],
+        default="flat_kplus1",
+        help="Policy action space: flat K+1 actions (default) or binary stop_only.",
+    )
     return parser.parse_args()
 
 
@@ -103,11 +113,31 @@ def main() -> None:
 
     print(f"Building likelihood model: {config['likelihood']['model']}")
     likelihood_model = build_likelihood_model(config, mc_questions)
+    load_embedding_cache(likelihood_model, config)
+
+    env_cfg = config["environment"]
+    lik_cfg = config["likelihood"]
+
+    print(f"Precomputing belief trajectories for {len(mc_questions)} questions...")
+    belief_cache = precompute_beliefs(
+        questions=mc_questions,
+        likelihood_model=likelihood_model,
+        belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
+        beta=float(lik_cfg.get("beta", 5.0)),
+        K=int(config["data"].get("K", 4)),
+    )
+    print(f"Cached {len(belief_cache)} belief vectors")
+    save_embedding_cache(likelihood_model, config)
+
     env = make_env_from_config(
         mc_questions=mc_questions,
         likelihood_model=likelihood_model,
         config=config,
+        precomputed_beliefs=belief_cache,
     )
+    if args.policy_mode == "stop_only":
+        print("Wrapping environment with StopOnlyEnv (WAIT/BUZZ only)...")
+        env = StopOnlyEnv(env)
 
     ppo_cfg = config["ppo"]
     train_seed = int(args.seed if args.seed is not None else ppo_cfg.get("seed", 13))

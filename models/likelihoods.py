@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -83,6 +84,11 @@ class LikelihoodModel(ABC):
 
     def __init__(self) -> None:
         self.embedding_cache: dict[str, np.ndarray] = {}
+
+    @property
+    def cache_memory_bytes(self) -> int:
+        """Approximate memory used by the embedding cache in bytes."""
+        return sum(v.nbytes for v in self.embedding_cache.values())
 
     @abstractmethod
     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
@@ -162,6 +168,55 @@ class LikelihoodModel(ABC):
             for text, emb in zip(batch, embeddings):
                 self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
 
+    def save_cache(self, path: str | Path) -> int:
+        """Persist embedding_cache to disk as compressed ``.npz``.
+
+        Creates parent directories if needed. Keys are SHA-256 hex
+        strings (valid Python identifiers), values are float32 arrays.
+
+        Parameters
+        ----------
+        path : str or Path
+            Destination file path (should end with ``.npz``).
+
+        Returns
+        -------
+        int
+            Number of cache entries saved.
+        """
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(p, **self.embedding_cache)
+        return len(self.embedding_cache)
+
+    def load_cache(self, path: str | Path) -> int:
+        """Load embedding_cache from a ``.npz`` file on disk.
+
+        Merges loaded entries into the existing cache **without**
+        overwriting keys that are already present (existing keys win).
+        If the file does not exist, silently returns 0 (cold-start).
+
+        Parameters
+        ----------
+        path : str or Path
+            Path to ``.npz`` file previously written by ``save_cache``.
+
+        Returns
+        -------
+        int
+            Number of *new* entries added to the cache.
+        """
+        p = Path(path)
+        if not p.exists():
+            return 0
+        with np.load(p) as data:
+            loaded = 0
+            for key in data.files:
+                if key not in self.embedding_cache:
+                    self.embedding_cache[key] = data[key].astype(np.float32)
+                    loaded += 1
+            return loaded
+
     @abstractmethod
     def _embed_batch(self, texts: list[str]) -> np.ndarray:
         """Embed a batch of texts. Subclasses must implement.
@@ -225,6 +280,20 @@ class TfIdfLikelihood(LikelihoodModel):
         if corpus_texts:
             self.fit(corpus_texts)
 
+    def save_cache(self, path: str | Path) -> int:
+        """No-op: TF-IDF embeddings are vocabulary-specific and not portable.
+
+        TF-IDF vectors depend on the fitted vocabulary, which changes
+        between ``fit()`` calls. Persisting them would produce wrong
+        results if the vocabulary differs.
+
+        Returns
+        -------
+        int
+            Always 0.
+        """
+        return 0
+
     def fit(self, corpus_texts: list[str]) -> "TfIdfLikelihood":
         """Learn vocabulary and IDF weights from a text corpus.
 
@@ -246,8 +315,10 @@ class TfIdfLikelihood(LikelihoodModel):
     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
         """Score each option against the clue using TF-IDF cosine similarity.
 
-        Transforms both the clue and options into TF-IDF space, then computes
-        cosine similarity between the clue vector and each option vector.
+        Uses ``embed_and_cache()`` to embed both the clue and options, so
+        repeated calls with the same texts skip vectorizer.transform().
+        Since ``_embed_batch()`` returns L2-normalized vectors, the dot
+        product equals cosine similarity.
 
         Parameters
         ----------
@@ -269,15 +340,17 @@ class TfIdfLikelihood(LikelihoodModel):
         """
         if not self._is_fit:
             raise RuntimeError("TfIdfLikelihood must be fit() before score().")
-        clue_vec = self.vectorizer.transform([clue_prefix])
-        option_vecs = self.vectorizer.transform(option_profiles)
-        from sklearn.metrics.pairwise import cosine_similarity
-
-        sims = cosine_similarity(clue_vec, option_vecs)[0]
+        clue_emb = self.embed_and_cache([clue_prefix])[0]
+        option_embs = self.embed_and_cache(option_profiles)
+        sims = option_embs @ clue_emb
         return sims.astype(np.float32)
 
     def _embed_batch(self, texts: list[str]) -> np.ndarray:
-        """Embed texts as dense TF-IDF vectors.
+        """Embed texts as dense, L2-normalized TF-IDF vectors.
+
+        Row-wise L2 normalization ensures that dot product between any
+        two embedding vectors equals their cosine similarity, matching
+        the convention used by SBERT and T5 likelihood models.
 
         Parameters
         ----------
@@ -287,7 +360,8 @@ class TfIdfLikelihood(LikelihoodModel):
         Returns
         -------
         np.ndarray
-            Dense TF-IDF matrix of shape (len(texts), vocab_size), dtype float32.
+            L2-normalized dense TF-IDF matrix of shape
+            (len(texts), vocab_size), dtype float32.
 
         Raises
         ------
@@ -296,8 +370,10 @@ class TfIdfLikelihood(LikelihoodModel):
         """
         if not self._is_fit:
             raise RuntimeError("TfIdfLikelihood must be fit() before embedding.")
-        mat = self.vectorizer.transform(texts).toarray()
-        return mat.astype(np.float32)
+        mat = self.vectorizer.transform(texts).toarray().astype(np.float32)
+        norms = np.linalg.norm(mat, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0  # avoid division by zero for empty docs
+        return mat / norms
 
 
 class SBERTLikelihood(LikelihoodModel):
@@ -656,5 +732,26 @@ def build_likelihood_from_config(
     if isinstance(model_name, str) and model_name.startswith("t5"):
         t5_name = model_name
         return T5Likelihood(model_name=t5_name)
+
+    if model_name == "dspy":
+        try:
+            from models.dspy_likelihood import DSPyLikelihood
+        except ImportError as exc:
+            raise ImportError(
+                "DSPy likelihood requires the dspy package. "
+                "Install with: pip install -e '.[dspy]'"
+            ) from exc
+        dspy_cfg = config.get("dspy", {})
+        cache_dir = dspy_cfg.get("cache_dir")
+        fingerprint = dspy_cfg.get("program_fingerprint", "default")
+
+        def _placeholder_scorer(clue: str, options: list[str]) -> list[float]:
+            return [1.0 / max(1, len(options))] * len(options)
+
+        return DSPyLikelihood(
+            scorer=_placeholder_scorer,
+            program_fingerprint=fingerprint,
+            cache_dir=cache_dir,
+        )
 
     raise ValueError(f"Unknown likelihood model: {model_name}")

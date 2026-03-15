@@ -1,198 +1,162 @@
-# Codebase Structure
-
-**Analysis Date:** 2026-02-24
+# Structure
 
 ## Directory Layout
 
 ```
 qanta-buzzer/
-├── main.py                    # CLI entry point, mode routing, phase orchestration
-├── config.py                  # Centralized configuration (Config class)
-├── model.py                   # T5PolicyModel + PolicyHead architecture
-├── environment.py             # QuizBowlEnvironment, BatchedEnvironment, Question
-├── dataset.py                 # QuizBowlDataset, QANTADatasetLoader, SyntheticDatasetGenerator
-├── train_supervised.py        # SupervisedTrainer, run_supervised_training()
-├── train_ppo.py               # PPOTrainer, RolloutBuffer, RolloutStep, run_ppo_training()
-├── metrics.py                 # MetricsTracker, evaluate_model(), evaluate_choices_only()
-├── demo.py                    # Interactive question answering demo
-├── visualize.py               # Visualization utilities for checkpoints
-├── test_imports.py            # Module import verification
-├── test_csv_loader.py         # Dataset loading verification
-├── run.sh                      # Interactive shell script menu
-├── README.md                  # Project documentation
-├── IMPLEMENTATION_README.md   # Implementation details
-├── PROJECT_OVERVIEW.md        # High-level overview
-├── CLAUDE.md                  # Development guidance for Claude
-└── .planning/
-    └── codebase/
-        ├── ARCHITECTURE.md    # (This analysis)
-        ├── STRUCTURE.md       # (This file)
+├── agents/                     # Buzzer agent implementations
+│   ├── __init__.py             # Public API: ThresholdBuzzer, SoftmaxProfileBuzzer, PPOBuzzer
+│   ├── _math.py                # Shared math utils (sigmoid)
+│   ├── bayesian_buzzer.py      # SoftmaxProfileBuzzer, SequentialBayesBuzzer
+│   ├── ppo_buzzer.py           # PPOBuzzer (SB3 PPO wrapper), PPOEpisodeTrace
+│   ├── softmax_profile_buzzer.py  # Alternative profile buzzer (may be legacy)
+│   └── threshold_buzzer.py     # ThresholdBuzzer, AlwaysBuzzFinalBuzzer, sweep_thresholds
+│
+├── evaluation/                 # Metrics and plotting
+│   ├── __init__.py             # Public API: system_score, expected_wins_score, calibration_at_buzz
+│   ├── controls.py             # Control experiments (shuffle, choices-only, alias substitution)
+│   ├── metrics.py              # S_q, Expected Wins, ECE, Brier, buzz accuracy, per-category
+│   └── plotting.py             # Calibration curves, entropy plots, comparison tables
+│
+├── models/                     # Likelihood models and feature extraction
+│   ├── __init__.py             # Public API: LikelihoodModel subclasses, features, T5PolicyModel
+│   ├── answer_profiles.py      # Re-export shim → qb_data.answer_profiles
+│   ├── dspy_likelihood.py      # DSPyLikelihood (LM-based scorer with score cache)
+│   ├── features.py             # extract_belief_features(), extract_padded_belief_features()
+│   ├── likelihoods.py          # LikelihoodModel ABC + TfIdf, SBERT, T5, OpenAI, factory
+│   └── t5_policy.py            # T5PolicyModel, PolicyHead for end-to-end text policy
+│
+├── qb_data/                    # Canonical data layer
+│   ├── __init__.py             # Public API: TossupQuestion, QANTADatasetLoader, normalize_answer
+│   ├── answer_profiles.py      # AnswerProfileBuilder (TF-IDF profiles per answer)
+│   ├── config.py               # YAML config loading, merge_overrides, smoke config support
+│   ├── data_loader.py          # TossupQuestion dataclass, QANTADatasetLoader, CSV/HF parsing
+│   ├── dataset_splits.py       # create_stratified_splits() with category balancing
+│   ├── dspy_answer_profiles.py # Optional DSPy LM-augmented answer profiles
+│   ├── huggingface_loader.py   # load_from_huggingface() fallback for QANTA data
+│   ├── mc_builder.py           # MCQuestion, MCBuilder with guards and variable-K
+│   └── text_utils.py           # normalize_answer(), tokenize_text()
+│
+├── qb_env/                     # Gymnasium environment + qb-rl compatibility
+│   ├── __init__.py             # Public API: TossupMCEnv, TextObservationWrapper, shims
+│   ├── data_loader.py          # Re-export shim → qb_data.data_loader
+│   ├── mc_builder.py           # Re-export shim → qb_data.mc_builder
+│   ├── opponent_models.py      # OpponentBuzzModel protocol + logistic/empirical impls
+│   ├── text_utils.py           # Re-export shim → qb_data.text_utils
+│   ├── stop_only_env.py         # StopOnlyEnv: Discrete(2) WAIT/BUZZ wrapper
+│   ├── text_wrapper.py         # TextObservationWrapper for T5 policy pipeline
+│   └── tossup_env.py           # TossupMCEnv (main env: EW, variable-K, action masks)
+│
+├── training/                   # T5 policy training loops
+│   ├── __init__.py
+│   ├── hazard_pretrain.py      # Hazard bridge loss utilities
+│   ├── train_ppo_t5.py         # PPO fine-tuning for T5 policy
+│   └── train_supervised_t5.py  # Supervised warm-start for T5 policy
+│
+├── scripts/                    # Pipeline entrypoints
+│   ├── __init__.py
+│   ├── _common.py              # Shared helpers: config loading, JSON I/O, path constants
+│   ├── build_mc_dataset.py     # Step 1: Load questions → build MC dataset → save
+│   ├── run_baselines.py        # Step 2: Sweep threshold/Bayesian buzzers
+│   ├── train_ppo.py            # Step 3: Train PPO on belief features
+│   ├── evaluate_all.py         # Step 4: Full evaluation + controls + plots
+│   ├── train_t5_policy.py      # T5 pipeline: supervised + PPO
+│   ├── compare_policies.py     # T5 pipeline: policy comparison
+│   ├── sweep_reward_shaping.py # Multi-seed reward parameter sweep
+│   ├── run_smoke_pipeline.py   # End-to-end smoke test runner
+│   ├── optimize_dspy.py        # Offline DSPy compile/optimize workflow
+│   └── test_mc_builder.py      # Standalone MC builder test script
+│
+├── tests/                            # pytest test suite (342 tests, 24 files)
+│   ├── __init__.py
+│   ├── conftest.py                   # Shared fixtures
+│   ├── test_action_space_alignment.py # Factored action semantics guards
+│   ├── test_agents.py                # Baseline agents, precomputed equivalence, K-agnostic
+│   ├── test_answer_profile_cache.py  # Answer profile memoization cache
+│   ├── test_build_mc_dataset.py      # MC dataset construction, CLI overrides
+│   ├── test_dataset_splits.py        # Split reproducibility (cross-process determinism)
+│   ├── test_dspy_answer_profiles.py  # DSPy answer profile augmentation (importorskip)
+│   ├── test_dspy_likelihood.py       # DSPyLikelihood cache, shape, inheritance
+│   ├── test_dspy_optimize.py         # Offline DSPy compile trainset (importorskip)
+│   ├── test_environment.py           # TossupMCEnv: reward modes, EW, variable-K, masks
+│   ├── test_factories.py             # Factories including DSPy dispatch
+│   ├── test_features.py              # Belief features, padded features
+│   ├── test_hazard_pretrain.py       # Hazard bridge survival terms and NLL loss
+│   ├── test_likelihoods.py           # TfIdf, SBERT, T5 scoring, cache, memory
+│   ├── test_mc_builder_topk.py       # Top-M argpartition distractor ranking
+│   ├── test_mc_builder_variable_k.py # Variable-K dataset build
+│   ├── test_metrics.py               # S_q, Expected Wins, ECE, Brier, calibration
+│   ├── test_opponent_models.py       # Logistic/empirical opponent models
+│   ├── test_ppo_buzzer.py            # PPOBuzzer training, traces, MaskablePPO
+│   ├── test_ppo_t5.py                # T5 PPO training
+│   ├── test_qb_rl_bridge.py          # qb-rl compatibility imports
+│   ├── test_supervised_t5.py         # T5 supervised training
+│   ├── test_t5_policy.py             # T5PolicyModel forward/backward
+│   ├── test_text_wrapper.py          # TextObservationWrapper, K=3 formatting
+│   └── test_variable_k_integration.py # Mixed-K build→env→baseline integration
+│
+├── configs/                    # YAML configuration files
+│   ├── default.yaml            # Full production config
+│   ├── smoke.yaml              # Minimal config for smoke tests
+│   └── t5_policy.yaml          # T5 policy pipeline config
+│
+├── generated/                  # Generated outputs (poster, presentation)
+├── checkpoints/                # Model checkpoints (gitignored runtime)
+├── artifacts/                  # Pipeline output artifacts (runtime)
+│
+├── pyproject.toml              # Package definition, dependencies, pytest config
+├── requirements.txt            # Flat dependency list (legacy)
+├── setup.cfg                   # Setuptools config
+├── AGENTS.md                   # Canonical repo contract for all coding agents
+├── CLAUDE.md                   # Claude-specific shim (points to AGENTS.md)
+├── README.md                   # Project documentation
+│
+├── _legacy/                    # Pre-modularization prototypes (not installed)
+│   ├── config.py, dataset.py, environment.py, model.py
+│   ├── main.py, train_supervised.py, train_ppo.py
+│   ├── metrics.py, visualize.py, demo.py
+│   └── verify_data_loader.py, test_csv_loader.py, test_imports.py
+│
+└── repomix/                    # AI-consumable repo snapshots (XML + Markdown, line-numbered)
+    ├── repomix-code.{xml,md}   # Core code + tests
+    ├── repomix-docs.{xml,md}   # Documentation + planning
+    └── repomix-smoke.{xml,md}  # Smoke artifact data
 ```
-
-Data and checkpoints (generated at runtime):
-```
-qanta-buzzer/
-├── data/                      # Dataset storage
-│   ├── questions.csv          # Input: QANTA quiz bowl data (14.9MB)
-│   ├── processed_dataset.json # Parsed dataset with distractors
-│   ├── train_dataset.json     # 70% of questions
-│   ├── val_dataset.json       # 15% of questions
-│   └── test_dataset.json      # 15% of questions
-├── checkpoints/               # Model checkpoints
-│   ├── supervised/
-│   │   ├── best_model/        # Best supervised model (T5 + policy_head.pt)
-│   │   ├── epoch_1/           # Intermediate checkpoints
-│   │   └── history.json       # Training history
-│   └── ppo/
-│       ├── best_model/        # Best PPO model
-│       ├── iter_50/           # Intermediate checkpoints
-│       └── history.json       # PPO training history
-└── results/                   # Evaluation outputs
-    └── evaluation_results.json
-```
-
-## Directory Purposes
-
-**Root directory (qanta-buzzer/):**
-- Purpose: Python source code for training pipeline
-- Contains: Model definition, training loops, CLI orchestration
-- Key files: `main.py` (entry point), `config.py` (hyperparameters), `model.py` (neural net)
-
-**data/ directory:**
-- Purpose: Dataset storage and preprocessing
-- Contains: Raw QANTA CSV, processed question objects (JSON), train/val/test splits
-- Generated at runtime if not present; loads from `questions.csv` if available
-- Falls back to synthetic data generation if CSV missing
-
-**checkpoints/ directory:**
-- Purpose: Model weights and training state persistence
-- Contains: Supervised and PPO model directories with T5 weights, policy head weights, optimizer states
-- Structure: Two phases (supervised/, ppo/) each with best_model/ and periodic snapshots
-- Each checkpoint includes: pytorch_model.bin (T5 weights), config.json (T5 config), sentencepiece.model (tokenizer), policy_head.pt, training_state.pt
-
-**results/ directory:**
-- Purpose: Final evaluation outputs
-- Contains: JSON files with metrics (accuracy, ECE, rewards, per-category breakdown)
 
 ## Key File Locations
 
-**Entry Points:**
-- `main.py`: Primary CLI entry point - routes to supervised/PPO/eval modes
-- `run.sh`: Interactive shell script menu (wrapper around main.py)
-- `demo.py`: Interactive demo for manual testing
-
-**Configuration:**
-- `config.py`: Single Config class with all hyperparameters (model, learning rates, batch sizes, paths, device selection)
-
-**Core Logic:**
-- `model.py`: T5PolicyModel class (encoder + policy heads), PolicyHead neural network
-- `environment.py`: QuizBowlEnvironment (POMDP simulation), Question dataclass
-- `dataset.py`: QuizBowlDataset (data wrapper), QANTADatasetLoader (CSV parsing), SyntheticDatasetGenerator
-
-**Training:**
-- `train_supervised.py`: SupervisedTrainer class, run_supervised_training() function
-- `train_ppo.py`: PPOTrainer class, RolloutBuffer, RolloutStep, run_ppo_training() function
-
-**Evaluation & Metrics:**
-- `metrics.py`: MetricsTracker class, evaluate_model(), evaluate_choices_only() functions
-
-**Testing & Utilities:**
-- `test_imports.py`: Verifies all modules can be imported
-- `test_csv_loader.py`: Verifies dataset loading from CSV
-- `visualize.py`: Checkpoint visualization utilities
+| What | Where |
+|------|-------|
+| Main Gymnasium environment | `qb_env/tossup_env.py` |
+| Likelihood model hierarchy | `models/likelihoods.py` |
+| DSPy likelihood scorer | `models/dspy_likelihood.py` |
+| Opponent buzz models | `qb_env/opponent_models.py` |
+| Belief feature extraction | `models/features.py` |
+| MC question construction | `qb_data/mc_builder.py` |
+| Data loading + TossupQuestion | `qb_data/data_loader.py` |
+| Offline DSPy compile | `scripts/optimize_dspy.py` |
+| Pipeline shared helpers | `scripts/_common.py` |
+| Default YAML config | `configs/default.yaml` |
+| Test fixtures | `tests/conftest.py` |
 
 ## Naming Conventions
 
-**Files:**
-- Training phases use underscore separators: `train_supervised.py`, `train_ppo.py`
-- Utility/test files use underscore separators: `test_imports.py`, `test_csv_loader.py`
-- Config file lowercase: `config.py`
-- Single-word modules lowercase: `model.py`, `environment.py`, `dataset.py`, `metrics.py`
-
-**Classes:**
-- PascalCase: `T5PolicyModel`, `PolicyHead`, `QuizBowlEnvironment`, `BatchedEnvironment`, `Question`, `SupervisedTrainer`, `PPOTrainer`, `RolloutBuffer`, `RolloutStep`, `MetricsTracker`, `QANTADatasetLoader`, `SyntheticDatasetGenerator`, `QuizBowlDataset`, `Config`
-- Exceptions: ValueError (built-in), always raised with descriptive messages
-
-**Functions:**
-- snake_case: `run_supervised_training()`, `run_ppo_training()`, `setup_datasets()`, `create_train_val_test_splits()`, `evaluate_model()`, `evaluate_choices_only()`, `compute_system_score()`, `parse_args()`, `setup_config()`, `get_text_representation()`, `get_choices_only_text()`, `get_encoder_output()`, `select_action()`, `get_action_log_probs()`, `predict_answer()`
-- Internal/private functions use leading underscore: `_get_observation()`, `_print_model_info()`, `_question_to_dict()`, `_dict_to_question()`, `convert_to_json_serializable()` (helper function, not private)
-
-**Variables:**
-- snake_case: `model`, `train_dataset`, `val_dataset`, `test_dataset`, `batch_size`, `learning_rate`, `epoch`, `iteration`, `loss`, `reward`, `best_val_acc`, `best_val_reward`
-- RL notation: `gamma` (discount), `gae_lambda`, `action`, `observation`, `reward`, `done`, `value`, `log_prob`, `advantage`, `return_`, `entropy`
-- Abbreviations: `ppo` (PPO trainer), `env` (environment), `obs` (observation), `pred` (prediction), `acc` (accuracy), `ece` (expected calibration error)
-
-**Paths (in code):**
-- Relative to config.DATA_DIR: "questions.csv" → `data/questions.csv`
-- Checkpoint subdirs: config.CHECKPOINT_DIR / "supervised" / "best_model"
-- Results: config.RESULTS_DIR / "evaluation_results.json"
+- **Packages:** snake_case (`qb_data`, `qb_env`)
+- **Modules:** snake_case matching their primary class (`bayesian_buzzer.py` → `SoftmaxProfileBuzzer`)
+- **Classes:** PascalCase (`TossupMCEnv`, `MCQuestion`, `LikelihoodModel`)
+- **Functions:** snake_case (`extract_belief_features`, `normalize_answer`)
+- **Private helpers:** leading underscore (`_text_key`, `_best_torch_device`, `_to_dict`)
+- **Constants:** UPPER_SNAKE_CASE (`PROJECT_ROOT`, `ARTIFACT_DIR`, `DEFAULT_CONFIG`)
+- **Config keys:** snake_case in YAML (`train_ratio`, `buzz_correct`, `max_length`)
 
 ## Where to Add New Code
 
-**New Feature (e.g., different reward shaping):**
-- Primary code: `environment.py` → Modify `QuizBowlEnvironment.step()` reward computation
-- Config: `config.py` → Add hyperparameter (e.g., `REWARD_PENALTY_SCHEME`)
-- Tests: `test_csv_loader.py` or new test file for validation
-
-**New Model Component (e.g., different encoder):**
-- Implementation: `model.py` → Create new class inheriting or replacing T5PolicyModel
-- Config: `config.py` → Add MODEL_NAME or similar override
-- Entry point: `main.py` → Update initialization to use new model class
-- Tests: Verify tokenization and forward pass in test file
-
-**New Training Algorithm (e.g., A2C instead of PPO):**
-- Implementation: Create new file `train_a2c.py` mirroring `train_ppo.py` structure
-- Trainer class: `A2CTrainer` with collect_rollouts(), update_policy() methods
-- Entry point: `main.py` → Add new mode (e.g., `--mode a2c`)
-- Orchestration: New function `run_a2c_training()` called from main.py
-
-**New Utility/Metric:**
-- Metrics: Add method to `MetricsTracker` class in `metrics.py`
-- Helper: Create new file `utils.py` if utility is general purpose
-- Tests: Add to `test_csv_loader.py` or create dedicated test file
-
-**New Dataset Source:**
-- Loader: Add new class in `dataset.py` (e.g., `EBQADatasetLoader`)
-- Configuration: `config.py` → Add path constants
-- Integration: Modify `setup_datasets()` to check for new source and load appropriately
-
-## Special Directories
-
-**data/ directory:**
-- Purpose: Input data and processed datasets
-- Generated: Yes (processed_dataset.json, splits created at runtime if not present)
-- Committed: No (data is generated, .gitignore excludes *.json in data/)
-- Notes: questions.csv should be placed here for CSV-based loading
-
-**checkpoints/ directory:**
-- Purpose: Model weights, optimizer states, training history
-- Generated: Yes (created during training)
-- Committed: No (large files, excluded via .gitignore)
-- Contents: Each checkpoint is a directory with:
-  - `pytorch_model.bin` - T5 encoder weights
-  - `config.json` - T5 model config
-  - `sentencepiece.model` - T5 tokenizer
-  - `policy_head.pt` - PolicyHead weights (custom)
-  - `training_state.pt` - Optimizer state dict and training metadata
-  - `history.json` - Training curves
-
-**results/ directory:**
-- Purpose: Final evaluation metrics and predictions
-- Generated: Yes (created during eval mode)
-- Committed: No (excluded via .gitignore)
-- Contains: JSON files with accuracy, ECE, per-category breakdown, etc.
-
-**logs/ directory:**
-- Purpose: Optional detailed logging (not currently used in codebase)
-- Referenced in: `config.py` as LOG_DIR = "logs"
-- Usage: Can be expanded for TensorBoard logs or detailed metric logging
-
-**.planning/codebase/ directory:**
-- Purpose: GSD (Code Mapper) analysis documents
-- Generated: By codebase mapper tool
-- Committed: Yes (reference documentation for future Claude instances)
-- Contains: ARCHITECTURE.md, STRUCTURE.md, CONVENTIONS.md, TESTING.md, etc.
-
----
-
-*Structure analysis: 2026-02-24*
+| Adding... | Put it in... |
+|-----------|-------------|
+| New likelihood model | `models/likelihoods.py` (subclass `LikelihoodModel`), register in `build_likelihood_from_config()` |
+| New buzzer agent | `agents/` (new file), export from `agents/__init__.py` |
+| New evaluation metric | `evaluation/metrics.py` |
+| New control experiment | `evaluation/controls.py` |
+| New data source | `qb_data/` (new loader), integrate in `scripts/build_mc_dataset.py` |
+| New pipeline script | `scripts/` (use `scripts/_common.py` helpers) |
+| New test | `tests/test_*.py` (use fixtures from `tests/conftest.py`) |

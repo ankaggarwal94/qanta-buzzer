@@ -3,8 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 current_plan: Not started
-status: completed
-last_updated: "2026-03-08T18:00:00.000Z"
+status: milestone_complete
+last_updated: "2026-03-14T03:00:00.000Z"
+last_activity: 2026-03-14 - Post-optimization audit remediation (evidence-verified)
 progress:
   total_phases: 6
   completed_phases: 5
@@ -16,8 +17,8 @@ progress:
 # Project State: Quiz Bowl RL Buzzer (Unified)
 
 **Project:** Quiz Bowl RL Buzzer (Unified System)
-**Last Updated:** 2026-02-25
-**Current Sprint:** Milestone 1
+**Last Updated:** 2026-03-14
+**Current Sprint:** v1.0 complete — no active milestone
 
 ## Project Reference
 
@@ -142,58 +143,57 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 - Gymnasium-compliant environment
 - SB3 PPO for MLP policy, custom for T5 policy
 
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Status | Directory |
+|---|-------------|------|--------|--------|-----------|
+| 1 | Repo-contract scaffolding: AGENTS.md, thin CLAUDE.md shim, .agentic.yml, ci.sh, manual-smoke.sh | 2026-03-13 | f478d1b3 | Verified | [1-repo-contract-scaffolding-agents-md-thin](./quick/1-repo-contract-scaffolding-agents-md-thin/) |
+| 2 | Precompute belief-observation trajectories for PPO training speedup | 2026-03-13 | c3a69552, 0e8a60fa | Verified | [2-precompute-belief-observation-trajectori](./quick/2-precompute-belief-observation-trajectori/) |
+| 3 | Persist embedding cache across subprocesses via .npz | 2026-03-13 | 553c78a1, d17f0f3b | Verified | [3-persist-cache-artifacts-across-subproces](./quick/3-persist-cache-artifacts-across-subproces/) |
+| 4 | Collapse duplicate baseline sweeps into one-pass precomputed evaluation | 2026-03-13 | cdb89290, a9fb6da6, e56f125c | Verified | [4-collapse-duplicate-baseline-sweeps-into-](./quick/4-collapse-duplicate-baseline-sweeps-into-/) |
+| 5 | Cache answer profiles: memoize _profile_text with (answer, exclude_qid) dict | 2026-03-13 | 476a24de, dcce59d8 | Verified | [5-cache-answer-profiles-especially-leave-o](./quick/5-cache-answer-profiles-especially-leave-o/) |
+| 6 | Replace full all-pairs distractor ranking with top-M argpartition | 2026-03-13 | b0d5d21b, bc8b3b46 | Verified | [6-replace-full-all-pairs-distractor-rankin](./quick/6-replace-full-all-pairs-distractor-rankin/) |
+| 7 | Make TF-IDF score() use embed_and_cache with L2-normalized embeddings | 2026-03-13 | e65b5cab, ba773e72 | Verified | [7-make-tf-idf-caching-real-in-score](./quick/7-make-tf-idf-caching-real-in-score/) |
+| 8 | Stop re-scoring control experiments: precomputed shuffle control | 2026-03-13 | 01902552, af199b8b | Verified | [8-stop-rescoring-control-experiments-from-](./quick/8-stop-rescoring-control-experiments-from-/) |
+| 9 | Final repo verification and handoff report | 2026-03-13 | 5f42852a | Verified | [9-final-repo-verification-and-handoff-for-](./quick/9-final-repo-verification-and-handoff-for-/) |
+| 10 | Fix scripts/ci.sh to scope pytest to tests/ directory | 2026-03-13 | 0b48b1c2 | Verified | — |
+
 ### Known Issues
-None yet
+- compare_policies.py: MLP and T5 evaluation paths use different reward settings and confidence semantics; accuracy/buzz-position are directly comparable but S_q/reward are qualitative
+- TF-IDF embedding cache stores dense vocab-sized vectors; measured ~1.9 MB for 44 questions, projected ~42 MB for 1000 questions (see `cache_memory_bytes` property)
+- Full 100k PPO training run (default.yaml) has not been verified end-to-end; smoke and reduced-scale paths are tested
+- SBERT/T5-large likelihood paths and sbert_profile distractor strategy require large model downloads; not exercised in local verification
+- MaskablePPO integration requires sb3-contrib (optional, not installed locally)
+- DSPy compile/optimize requires live LM backend (optional, not exercised locally)
 
 ### Technical Debt
-- Two existing codebases to merge (qb-rl and qanta-buzzer)
-- Different observation spaces (numeric beliefs vs text)
-- Memory requirements for T5-large (may need T5-base)
+- Memory requirements for T5-large (may need T5-base on memory-constrained machines)
 
 ### Performance Bottlenecks
-None identified yet
+- likelihood_model.score() dominated PPO training wall time (mitigated by quick task 2: precomputed belief cache)
 
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 06-03: Custom PPO trainer and comparison experiment
-- PPOTrainer with RolloutBuffer, GAE, dynamic padding, memory-safe rollouts (933 lines)
-- End-to-end supervised-to-PPO training script with smoke mode (338 lines)
-- Comparison experiment: T5-as-likelihood vs T5-as-policy on same test set (468 lines)
-- 14 new tests passing, total project tests ~52+
-- 4 files created
-- All 20 plans across 6 phases now complete (100%)
+- Extension campaign (18 patches): Expected Wins reward, Variable-K, DSPy integration
+- Post-extension code review: 7 issues found by ChatGPT 5.4 Pro, all verified and fixed
+- Fixed: DSPyLikelihood inheritance, score shape validation, stale config key/comments, weak tests
+- PR #1 review-remediation reconciliation: DSPy likelihood/factory contract verified-closed, compile path metric extraction fix committed, answer-profile docs/tests verified-closed
+- 342 tests across 24 test files (3 skipped for optional extras)
 
 ### Next Session Priority
-1. CS234 writeup preparation
-2. Run full training pipeline: `python scripts/train_t5_policy.py --config configs/t5_policy.yaml`
-3. Run comparison experiment for paper results
+1. CS234 writeup — all infrastructure is ready for generating paper results
+2. Full training run: `python scripts/train_t5_policy.py --config configs/t5_policy.yaml`
+3. Comparison experiment: `python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model`
 
-### Context for Next Claude
-This is a CS234 final project due this week. We're merging two existing codebases:
-- qb-rl: Has the modular architecture we want (Gymnasium env, belief features, S_q metric, baselines)
-- qanta-buzzer: Has T5 integration we need (encoder, policy heads, supervised warm-start)
-
-The novel contribution is using T5 as a likelihood model to compute beliefs for an MLP policy, then comparing with T5 as an end-to-end policy. Phase 1-5 is the critical path for the deadline. Phase 6 (T5 policy) is optional if time permits.
-
-Key risks to watch:
-- Scope explosion (stick to critical path)
-- Memory issues with T5-large (have T5-base ready)
-- Observation space incompatibility (keep interfaces clean)
-- Belief state collapse (pre-compute answer profiles)
-
-### Open Questions
-1. Should we start with existing qanta-buzzer data loading or rebuild from qb-rl?
-2. Is supervised warm-start necessary for T5 policy or just helpful?
-3. What's the optimal time penalty coefficient for reward shaping?
-4. Should we implement all 4 baselines or just threshold for MVP?
+### Context for Next Agent
+Unified quiz bowl RL buzzer with two tracks plus three opt-in extensions (Expected Wins, Variable-K, DSPy). v1.0 milestone complete. Extensions and code review complete. The novel contribution is using T5 as a likelihood model to compute beliefs for an MLP policy, then comparing with T5 as an end-to-end policy.
 
 ### Environment State
 - Working directory: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer`
-- Python environment: Not yet configured (needs 3.11+)
-- Git status: Roadmap files created, not yet committed
-- Dependencies: Not yet installed
+- Python environment: `.venv/` with Python 3.13, `pip install -e .` done
+- 342 tests passing (3 skipped), CI green, smoke pipeline green, T5 smoke green
 
 ---
 *State file initialized: 2026-02-25*
-*Last update: 2026-03-08 (smoke-contract and agent-stability remediation consolidated into PR #1)*
+Last activity: 2026-03-15 - PR #1 reconciliation complete, docs synced to 342 tests/24 files
