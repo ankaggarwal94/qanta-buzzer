@@ -357,6 +357,221 @@ results/
 
 ---
 
+## Extension Experiments
+
+These phases exercise the three opt-in extensions. Each is independent
+and can be run after the core pipeline (Phases 1–6) completes.
+
+### Phase 9: Distractor strategy comparison
+
+Build three MC datasets with different distractor selection strategies
+and compare baseline performance across them.
+
+```bash
+mkdir -p artifacts/distractor_comparison
+
+# Strategy A: SBERT semantic ranking (default — already built in Phase 1)
+cp artifacts/main/mc_dataset.json artifacts/distractor_comparison/mc_sbert.json
+
+# Strategy B: TF-IDF profile ranking
+python scripts/build_mc_dataset.py \
+    --config configs/default.yaml \
+    --output-dir artifacts/distractor_comparison/tfidf \
+    data.distractor_strategy=tfidf_profile
+cp artifacts/distractor_comparison/tfidf/mc_dataset.json artifacts/distractor_comparison/mc_tfidf.json
+
+# Strategy C: Category-random (no semantic ranking)
+python scripts/build_mc_dataset.py \
+    --config configs/default.yaml \
+    --output-dir artifacts/distractor_comparison/catrandom \
+    data.distractor_strategy=category_random
+cp artifacts/distractor_comparison/catrandom/mc_dataset.json artifacts/distractor_comparison/mc_catrandom.json
+
+# Run baselines on each (TF-IDF likelihood for speed)
+for STRATEGY in sbert tfidf catrandom; do
+    echo "=== Baselines on $STRATEGY distractors ==="
+    python scripts/run_baselines.py \
+        --config configs/default.yaml \
+        --mc-path "artifacts/distractor_comparison/mc_${STRATEGY}.json" \
+        likelihood.model=tfidf
+    cp artifacts/main/baseline_summary.json "results/baselines_${STRATEGY}.json"
+done
+```
+
+**Checkpoint:**
+```bash
+for STRATEGY in sbert tfidf catrandom; do
+    python -c "
+import json
+s = json.load(open('results/baselines_${STRATEGY}.json'))
+best = max(s.get('softmax_profile', {}).items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+print(f'${STRATEGY}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", 0):.3f}')
+"
+done
+```
+
+---
+
+### Phase 10: Variable-K experiment
+
+Build a mixed-K dataset and train PPO with action masking to evaluate
+how varying the number of answer options affects buzzer performance.
+
+```bash
+mkdir -p artifacts/variable_k
+
+# Build mixed-K dataset (K sampled uniformly from 2 to 6 per question)
+python scripts/build_mc_dataset.py \
+    --config configs/default.yaml \
+    --output-dir artifacts/variable_k \
+    data.variable_K=true data.min_K=2 data.max_K=6 data.K=6 \
+    data.distractor_strategy=category_random
+
+# Verify mixed K
+python -c "
+import json
+qs = json.load(open('artifacts/variable_k/mc_dataset.json'))
+from collections import Counter
+k_counts = Counter(len(q['options']) for q in qs)
+print(f'{len(qs)} questions, K distribution: {dict(sorted(k_counts.items()))}')
+"
+
+# Run baselines (agents are K-agnostic)
+python scripts/run_baselines.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/variable_k/mc_dataset.json \
+    likelihood.model=tfidf
+cp artifacts/main/baseline_summary.json results/baselines_variable_k.json
+```
+
+**Note:** PPO with variable-K requires `MaskablePPO` from `sb3-contrib`:
+```bash
+pip install -e '.[maskable]'
+python scripts/train_ppo.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/variable_k/mc_dataset.json \
+    --seed 13 \
+    --deterministic-eval \
+    environment.variable_K=true environment.max_K=6 environment.use_action_masking=true \
+    ppo.algorithm=maskable_ppo
+```
+
+---
+
+### Phase 11: Expected Wins evaluation
+
+Re-evaluate the trained PPO model from Phase 3 using the Expected Wins
+metric with a logistic opponent model.
+
+```bash
+# Evaluate with Expected Wins reward mode and logistic opponent
+python scripts/evaluate_all.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    environment.reward_mode=expected_wins \
+    environment.opponent_buzz_model.type=logistic \
+    environment.opponent_buzz_model.midpoint=0.6 \
+    environment.opponent_buzz_model.steepness=6.0
+cp artifacts/main/evaluation_report.json results/eval_expected_wins_logistic.json
+
+# Also try empirical opponent (uses human_buzz_positions from QANTA data)
+python scripts/evaluate_all.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    environment.reward_mode=expected_wins \
+    environment.opponent_buzz_model.type=empirical
+cp artifacts/main/evaluation_report.json results/eval_expected_wins_empirical.json
+```
+
+**Checkpoint:**
+```bash
+for MODEL in logistic empirical; do
+    python -c "
+import json
+r = json.load(open('results/eval_expected_wins_${MODEL}.json'))
+ew = r.get('expected_wins', {})
+fe = r['full_eval']
+print(f'EW (${MODEL}): mean_ew={ew.get(\"mean_ew\", \"N/A\")}, S_q={fe[\"mean_sq\"]:.3f}, acc={fe[\"buzz_accuracy\"]:.3f}')
+"
+done
+```
+
+**Train PPO with Expected Wins reward** (trains a new model optimizing for EW):
+```bash
+python scripts/train_ppo.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    --seed 13 \
+    --deterministic-eval \
+    environment.reward_mode=expected_wins \
+    environment.opponent_buzz_model.type=logistic
+cp artifacts/main/ppo_summary.json results/ppo_expected_wins.json
+cp artifacts/main/ppo_model.zip results/ppo_model_expected_wins.zip
+```
+
+---
+
+### Phase 12: DSPy offline compile (experimental)
+
+Compile a DSPy-optimized scorer using the training split, then evaluate.
+Requires the `dspy` extra and an LM API key.
+
+```bash
+pip install -e '.[dspy]'
+export OPENAI_API_KEY=...  # or configure another LM backend
+
+# Compile scorer against training split
+python scripts/optimize_dspy.py \
+    --config configs/default.yaml \
+    --max-examples 100
+
+# Evaluate with DSPy scorer
+python scripts/run_baselines.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    likelihood.model=dspy
+cp artifacts/main/baseline_summary.json results/baselines_dspy.json
+```
+
+---
+
+### Phase 13: K-sensitivity analysis (fixed K = 2, 3, 4, 5, 6)
+
+Build 5 separate datasets with different fixed K values and compare baseline
+performance to measure how answer-set size affects difficulty.
+
+```bash
+mkdir -p results/k_sensitivity
+
+for K in 2 3 4 5 6; do
+    echo "=== K=$K ==="
+    python scripts/build_mc_dataset.py \
+        --config configs/default.yaml \
+        --output-dir "artifacts/k${K}" \
+        data.K=$K data.distractor_strategy=category_random
+
+    python scripts/run_baselines.py \
+        --config configs/default.yaml \
+        --mc-path "artifacts/k${K}/mc_dataset.json" \
+        likelihood.model=tfidf
+
+    cp artifacts/main/baseline_summary.json "results/k_sensitivity/baselines_k${K}.json"
+done
+
+# Summarize
+python -c "
+import json
+for k in [2, 3, 4, 5, 6]:
+    s = json.load(open(f'results/k_sensitivity/baselines_k{k}.json'))
+    sp = s.get('softmax_profile', {})
+    best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+    n = json.load(open(f'artifacts/k{k}/mc_dataset.json'))
+    print(f'K={k}: {len(n)} questions, best S_q={best[1].get(\"mean_sq\", 0):.3f}, acc={best[1].get(\"buzz_accuracy\", 0):.3f}')
+"
+```
+
+---
+
 ## Reproducibility notes
 
 - All random seeds are explicit: `data.shuffle_seed=42`, `environment.seed=13`, `ppo.seed=13`
