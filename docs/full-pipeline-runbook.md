@@ -572,6 +572,166 @@ for k in [2, 3, 4, 5, 6]:
 
 ---
 
+### Phase 14: Reward mode comparison
+
+Train PPO under each reward mode and compare final metrics.
+
+```bash
+mkdir -p results/reward_modes
+
+# time_penalty (default — already done in Phase 3)
+cp artifacts/main/ppo_summary.json results/reward_modes/ppo_time_penalty.json
+
+# simple (+1/-1, no wait penalty)
+python scripts/train_ppo.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    --seed 13 --deterministic-eval \
+    environment.reward_mode=simple
+cp artifacts/main/ppo_summary.json results/reward_modes/ppo_simple.json
+
+# human_grounded (0 reward if agent buzzes after sampled human position)
+python scripts/train_ppo.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    --seed 13 --deterministic-eval \
+    environment.reward_mode=human_grounded
+cp artifacts/main/ppo_summary.json results/reward_modes/ppo_human_grounded.json
+
+# Summarize
+python -c "
+import json
+for mode in ['time_penalty', 'simple', 'human_grounded']:
+    s = json.load(open(f'results/reward_modes/ppo_{mode}.json'))
+    print(f'{mode}: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}, reward={s[\"mean_reward_like\"]:.3f}')
+"
+```
+
+---
+
+### Phase 15: Belief mode comparison
+
+Compare from-scratch vs sequential-Bayes belief computation for baselines.
+
+```bash
+mkdir -p results/belief_modes
+
+# from_scratch (default — already done in Phase 2)
+cp artifacts/main/baseline_summary.json results/belief_modes/baselines_from_scratch.json
+
+# sequential_bayes (Bayesian update: posterior = prior * likelihood)
+python scripts/run_baselines.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    environment.belief_mode=sequential_bayes \
+    likelihood.model=tfidf
+cp artifacts/main/baseline_summary.json results/belief_modes/baselines_sequential_bayes.json
+
+python -c "
+import json
+for mode in ['from_scratch', 'sequential_bayes']:
+    s = json.load(open(f'results/belief_modes/baselines_{mode}.json'))
+    sp = s.get('softmax_profile', {})
+    best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+    print(f'{mode}: best S_q={best[1].get(\"mean_sq\", 0):.3f}, acc={best[1].get(\"buzz_accuracy\", 0):.3f}')
+"
+```
+
+---
+
+### Phase 16: Stop-only PPO (factored action space)
+
+Train PPO with the Discrete(2) stop-only wrapper where the agent only
+decides WAIT/BUZZ and the answer is selected by argmax(belief).
+
+```bash
+mkdir -p results/policy_modes
+
+# flat_kplus1 (default — already done in Phase 3)
+cp artifacts/main/ppo_summary.json results/policy_modes/ppo_flat_kplus1.json
+
+# stop_only (Discrete(2), answer = argmax belief)
+python scripts/train_ppo.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    --seed 13 --deterministic-eval \
+    --policy-mode stop_only
+cp artifacts/main/ppo_summary.json results/policy_modes/ppo_stop_only.json
+
+python -c "
+import json
+for mode in ['flat_kplus1', 'stop_only']:
+    s = json.load(open(f'results/policy_modes/ppo_{mode}.json'))
+    print(f'{mode}: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}')
+"
+```
+
+---
+
+### Phase 17: No-buzz horizon mode
+
+Evaluate with `end_mode=no_buzz` where the agent receives `no_buzz_reward`
+instead of being forced to answer at the end of the question.
+
+```bash
+python scripts/train_ppo.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    --seed 13 --deterministic-eval \
+    environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
+cp artifacts/main/ppo_summary.json results/ppo_no_buzz.json
+
+python -c "
+import json
+s = json.load(open('results/ppo_no_buzz.json'))
+print(f'no_buzz: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}, reward={s[\"mean_reward_like\"]:.3f}')
+"
+```
+
+---
+
+### Phase 18: OpenAI embedding pipeline (requires API key)
+
+Run the full pipeline with OpenAI embeddings for both likelihood scoring
+and distractor generation.
+
+```bash
+pip install -e '.[openai]'
+export OPENAI_API_KEY=...
+
+# Build dataset with OpenAI-profile distractors
+python scripts/build_mc_dataset.py \
+    --config configs/default.yaml \
+    --output-dir artifacts/openai \
+    data.distractor_strategy=openai_profile
+
+# Run baselines with OpenAI likelihood
+python scripts/run_baselines.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/openai/mc_dataset.json \
+    likelihood.model=openai
+cp artifacts/main/baseline_summary.json results/baselines_openai.json
+```
+
+---
+
+### Phase 19: DSPy MIPROv2 optimizer (experimental)
+
+Compare BootstrapFewShot vs MIPROv2 optimizers for DSPy scorer compilation.
+
+```bash
+pip install -e '.[dspy]'
+export OPENAI_API_KEY=...
+
+# BootstrapFewShot (default — already done in Phase 12 if run)
+python scripts/optimize_dspy.py --config configs/default.yaml --optimizer BootstrapFewShot
+
+# MIPROv2
+python scripts/optimize_dspy.py --config configs/default.yaml --optimizer MIPROv2
+```
+
+---
+
 ## Reproducibility notes
 
 - All random seeds are explicit: `data.shuffle_seed=42`, `environment.seed=13`, `ppo.seed=13`
