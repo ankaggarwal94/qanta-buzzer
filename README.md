@@ -20,11 +20,12 @@ pip install -U pip
 pip install -e .
 ```
 
-Optional OpenAI support:
+Optional extras:
 
 ```bash
-pip install -e '.[openai]'
-export OPENAI_API_KEY=...
+pip install -e '.[openai]'    # OpenAI embedding support (requires OPENAI_API_KEY)
+pip install -e '.[maskable]'  # MaskablePPO for variable-K (sb3-contrib)
+pip install -e '.[dspy]'      # DSPy LM-based scoring
 ```
 
 ## Main Workflows
