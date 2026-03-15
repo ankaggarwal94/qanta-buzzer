@@ -9,12 +9,54 @@ at full scale on the QANTA dataset (~20,407 questions).
 
 ### Hardware
 
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
-| RAM | 16 GB | 32+ GB |
-| GPU VRAM | — (MPS/CPU ok for t5-base) | 8+ GB CUDA (for t5-large) |
-| Disk | 10 GB free | 20 GB free |
-| Time (total) | ~6–12 hours (MPS/CPU) | ~2–4 hours (CUDA) |
+| Resource | Minimum | This machine (Apple M3 Max) |
+|----------|---------|---------------------------|
+| CPU | 8 cores | 16 cores |
+| RAM | 16 GB | 64 GB |
+| GPU | — (CPU ok for tfidf) | MPS (Apple Silicon) |
+| Disk | 10 GB free | 38 GB free |
+
+### Local wall-time estimates (Apple M3 Max, 64 GB, MPS)
+
+All estimates assume the full QANTA dataset (~20,407 questions). Phases
+marked ★ are the core pipeline; others are optional extensions/ablations.
+
+| Phase | Description | Likelihood | Estimated time |
+|-------|------------|------------|----------------|
+| **★ 1** | Build MC dataset (SBERT distractors) | — | 5–10 min |
+| **★ 2** | Baseline sweeps (TF-IDF) | tfidf | 5–10 min |
+| **★ 2** | Baseline sweeps (T5-large) | t5-large | 2–4 hrs |
+| **★ 2** | Baseline sweeps (T5-base) | t5-base | 45–90 min |
+| **★ 3** | PPO 100k steps (TF-IDF beliefs) | tfidf | 30–60 min |
+| **★ 4** | Evaluate all + controls | tfidf | 5–15 min |
+| **★ 5** | T5 policy: supervised (t5-large, 10 epochs) | — | 4–8 hrs |
+| **★ 5** | T5 policy: supervised (t5-base, 10 epochs) | — | 1.5–3 hrs |
+| **★ 5** | T5 policy: supervised (t5-small, 10 epochs) | — | 15–30 min |
+| **★ 6** | Compare policies | tfidf | 10–20 min |
+| 7 | Multi-seed PPO (3 seeds) | tfidf | 1.5–3 hrs |
+| 8 | Reward sweep | tfidf | varies |
+| 9 | Distractor comparison (3 strategies) | tfidf | 15–30 min |
+| 10 | Variable-K + MaskablePPO | tfidf | 40–80 min |
+| 11 | Expected Wins eval + EW-trained PPO | tfidf | 40–80 min |
+| 12 | DSPy compile | API-bound | 5–10 min |
+| 13 | K-sensitivity (5 values) | tfidf | 30–60 min |
+| 14 | Reward mode comparison (3 modes) | tfidf | 1.5–3 hrs |
+| 15 | Belief mode comparison | tfidf | 5–10 min |
+| 16 | Stop-only PPO | tfidf | 30–60 min |
+| 17 | No-buzz horizon | tfidf | 30–60 min |
+| 18 | OpenAI embeddings | API-bound | 10–30 min |
+| 19 | DSPy MIPROv2 | API-bound | 5–10 min |
+
+**Totals (wall-clock, sequential):**
+
+| Scope | T5-large | T5-base | T5-small / TF-IDF only |
+|-------|----------|---------|------------------------|
+| Core pipeline (★ Phases 1–6) | 7–13 hrs | 3–5.5 hrs | 1–2 hrs |
+| Core + all extensions (1–19) | 12–22 hrs | 7–13 hrs | 5–9 hrs |
+
+**Parallelism opportunities:** After Phase 1 completes, Phases 2/3/5/9/10/13
+are independent and can run in separate terminal sessions simultaneously,
+reducing wall time by ~2–3x on this 16-core machine.
 
 ### Software
 
