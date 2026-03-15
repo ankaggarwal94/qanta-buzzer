@@ -177,6 +177,11 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
     beta : float
         Softmax temperature for converting raw scores to probabilities.
         Higher values produce sharper distributions.
+    end_mode : str
+        Horizon behavior when clues are exhausted:
+        ``"force_commit"`` (legacy forced answer) or ``"no_buzz"``.
+    no_buzz_reward : float
+        Reward added at horizon when ``end_mode == "no_buzz"``.
     seed : int
         Random seed for question sampling and human buzz simulation.
     """
@@ -204,6 +209,8 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         variable_K: bool = False,
         max_K: int | None = None,
         use_action_masking: bool = False,
+        end_mode: str = "force_commit",
+        no_buzz_reward: float = 0.0,
     ) -> None:
         if not questions:
             raise ValueError("questions cannot be empty")
@@ -230,6 +237,8 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
 
         self.variable_K = variable_K
         self.use_action_masking = use_action_masking
+        self.end_mode = end_mode
+        self.no_buzz_reward = no_buzz_reward
         if variable_K:
             self._max_K = max_K or max(len(q.options) for q in questions)
         else:
@@ -608,8 +617,10 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         info : dict[str, Any]
             Step metadata. Always contains ``"qid"`` and ``"step_idx"``.
             On BUZZ: also ``"chosen_idx"`` and ``"correct"``.
-            On forced termination: also ``"forced_choice"`` and
-            ``"forced_correct"``.
+            On forced termination in ``force_commit`` mode: also
+            ``"forced_choice"`` and ``"forced_correct"``.
+            On forced termination in ``no_buzz`` mode: also ``"no_buzz"``,
+            ``"forced_choice" = -1``, and ``"forced_correct" = False``.
 
         Raises
         ------
@@ -637,14 +648,21 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
 
             self.step_idx += 1
             if self.step_idx >= self.total_steps:
-                # Forced termination: pick best answer from current belief
                 last_seen = self.step_idx - 1
-                forced_choice = int(np.argmax(self.belief))
-                reward += self._buzz_reward(self.question, forced_choice, last_seen)
                 self.truncated = True
                 info["step_idx"] = last_seen
-                info["forced_choice"] = forced_choice
-                info["forced_correct"] = forced_choice == self.question.gold_index
+                if self.end_mode == "force_commit":
+                    forced_choice = int(np.argmax(self.belief))
+                    reward += self._buzz_reward(self.question, forced_choice, last_seen)
+                    info["forced_choice"] = forced_choice
+                    info["forced_correct"] = forced_choice == self.question.gold_index
+                elif self.end_mode == "no_buzz":
+                    reward += self.no_buzz_reward
+                    info["no_buzz"] = True
+                    info["forced_choice"] = -1
+                    info["forced_correct"] = False
+                else:
+                    raise ValueError(f"Unknown end_mode: {self.end_mode}")
             else:
                 info["step_idx"] = self.step_idx
 
@@ -724,4 +742,6 @@ def make_env_from_config(
         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
         beta=float(lik_cfg.get("beta", 5.0)),
         precomputed_beliefs=precomputed_beliefs,
+        end_mode=str(env_cfg.get("end_mode", "force_commit")),
+        no_buzz_reward=float(env_cfg.get("no_buzz_reward", 0.0)),
     )

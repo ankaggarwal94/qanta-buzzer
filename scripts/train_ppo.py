@@ -29,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.ppo_buzzer import PPOBuzzer
 from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+from qb_env.stop_only_env import StopOnlyEnv
 from qb_env.tossup_env import make_env_from_config, precompute_beliefs
 from scripts._common import (
     ARTIFACT_DIR,
@@ -79,6 +80,13 @@ def parse_args() -> argparse.Namespace:
         "--stochastic-eval", action="store_true",
         help="Force stochastic policy sampling for post-training evaluation.",
     )
+    parser.add_argument(
+        "--policy-mode",
+        type=str,
+        choices=["flat_kplus1", "stop_only"],
+        default="flat_kplus1",
+        help="Policy action space: flat K+1 actions (default) or binary stop_only.",
+    )
     return parser.parse_args()
 
 
@@ -127,6 +135,9 @@ def main() -> None:
         config=config,
         precomputed_beliefs=belief_cache,
     )
+    if args.policy_mode == "stop_only":
+        print("Wrapping environment with StopOnlyEnv (WAIT/BUZZ only)...")
+        env = StopOnlyEnv(env)
 
     ppo_cfg = config["ppo"]
     train_seed = int(args.seed if args.seed is not None else ppo_cfg.get("seed", 13))

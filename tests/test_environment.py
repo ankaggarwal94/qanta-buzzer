@@ -9,6 +9,7 @@ Covers:
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock
 
 import gymnasium as gym
@@ -218,6 +219,128 @@ class TestEpisodeFlow:
         env.reset()
         with pytest.raises(ValueError, match="Invalid action"):
             env.step(99)
+
+    def test_default_end_mode_is_force_commit(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Default env keeps legacy forced-commit behavior."""
+        env = _make_env(sample_mc_question)
+        assert env.end_mode == "force_commit"
+
+    def test_no_buzz_end_mode_returns_marker_and_reward(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """no_buzz mode truncates without forcing an answer choice."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        env = TossupMCEnv(
+            questions=[sample_mc_question],
+            likelihood_model=model,
+            K=4,
+            reward_mode="simple",
+            end_mode="no_buzz",
+            no_buzz_reward=0.25,
+        )
+        env.reset()
+
+        for _ in range(env.total_steps):
+            _obs, reward, _terminated, truncated, info = env.step(0)
+            if truncated:
+                break
+
+        assert truncated is True
+        assert reward == pytest.approx(0.25)
+        assert info["no_buzz"] is True
+        assert info["forced_choice"] == -1
+        assert info["forced_correct"] is False
+
+    def test_invalid_end_mode_raises_on_terminal_wait(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Unknown end_mode raises ValueError at horizon."""
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        env = TossupMCEnv(
+            questions=[sample_mc_question],
+            likelihood_model=model,
+            K=4,
+            reward_mode="simple",
+            end_mode="unknown_mode",
+        )
+        env.reset()
+
+        with pytest.raises(ValueError, match="Unknown end_mode"):
+            for _ in range(env.total_steps):
+                env.step(0)
+
+
+class TestStopOnlyEnv:
+    """Tests for the stop-only WAIT/BUZZ wrapper."""
+
+    def test_stop_only_env_has_discrete2_action_space(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """StopOnlyEnv exposes a binary action space."""
+        from qb_env import StopOnlyEnv
+
+        env = StopOnlyEnv(_make_env(sample_mc_question))
+        assert isinstance(env.action_space, gym.spaces.Discrete)
+        assert env.action_space.n == 2
+
+    def test_stop_only_wait_delegates_to_base_env(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Action 0 remains a WAIT in the wrapped env."""
+        from qb_env import StopOnlyEnv
+
+        base_env = _make_env(sample_mc_question)
+        env = StopOnlyEnv(base_env)
+        env.reset()
+
+        _obs, _reward, terminated, truncated, _info = env.step(0)
+        assert not terminated
+        assert not truncated
+        assert base_env.step_idx == 1
+
+    def test_stop_only_buzz_uses_argmax_belief(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Action 1 maps to BUZZ with the current belief argmax."""
+        from qb_env import StopOnlyEnv
+
+        base_env = _make_env(sample_mc_question)
+        env = StopOnlyEnv(base_env)
+        env.reset()
+        base_env.belief = np.array([0.05, 0.8, 0.1, 0.05], dtype=np.float32)
+
+        _obs, _reward, terminated, truncated, info = env.step(1)
+        assert terminated
+        assert not truncated
+        assert info["chosen_idx"] == 1
+        assert info["correct"] is False
+
+    def test_stop_only_invalid_action_raises(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """StopOnlyEnv rejects actions outside its Discrete(2) contract."""
+        from qb_env import StopOnlyEnv
+
+        base_env = _make_env(sample_mc_question)
+        env = StopOnlyEnv(base_env)
+        env.reset()
+
+        with pytest.raises(ValueError, match="Invalid action"):
+            env.step(2)
+
+    def test_train_ppo_policy_mode_defaults_flat_kplus1(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """train_ppo CLI defaults to flat_kplus1 for compatibility."""
+        from scripts.train_ppo import parse_args
+
+        monkeypatch.setattr(sys, "argv", ["train_ppo.py"])
+        args = parse_args()
+        assert args.policy_mode == "flat_kplus1"
 
 
 # ------------------------------------------------------------------ #

@@ -262,6 +262,71 @@ class TestRunEpisode:
         trace = buzzer.run_episode(seed=42)
         assert trace.correct == (trace.buzz_index == trace.gold_index)
 
+    def test_run_episode_stop_only_uses_env_chosen_idx(
+        self, sample_tfidf_env: TossupMCEnv
+    ) -> None:
+        """Stop-only episodes must use the env-selected answer index."""
+        sample_obs, _ = sample_tfidf_env.reset(seed=42)
+        buzzer = PPOBuzzer(env=sample_tfidf_env)
+
+        class FakeStopOnlyEnv:
+            def __init__(self, obs_shape):
+                self.obs_shape = obs_shape
+                self.question = type("Question", (), {"gold_index": 2})()
+                self.belief = np.array([0.1, 0.2, 0.6, 0.1], dtype=np.float32)
+
+            def reset(self, seed=None, options=None):
+                self.question = type("Question", (), {"gold_index": 2})()
+                self.belief = np.array([0.1, 0.2, 0.6, 0.1], dtype=np.float32)
+                return np.zeros(self.obs_shape, dtype=np.float32), {"qid": "stop_only_q"}
+
+            def step(self, action):
+                assert action == 1
+                return (
+                    np.zeros(self.obs_shape, dtype=np.float32),
+                    1.0,
+                    True,
+                    False,
+                    {"qid": "stop_only_q", "step_idx": 0, "chosen_idx": 2, "correct": True},
+                )
+
+        buzzer.env = FakeStopOnlyEnv(sample_obs.shape)
+        buzzer.action_probabilities = lambda _obs: np.array([0.1, 0.9], dtype=np.float32)
+
+        trace = buzzer.run_episode(deterministic=True, seed=42)
+
+        assert trace.buzz_index == 2
+        assert trace.gold_index == 2
+        assert trace.correct is True
+        assert trace.g_trace == pytest.approx([0.6])
+
+    def test_run_episode_no_buzz_keeps_buzz_step_unset(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """no_buzz truncations stay distinct from voluntary buzz episodes."""
+        from models.likelihoods import TfIdfLikelihood
+
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        env = TossupMCEnv(
+            questions=[sample_mc_question],
+            likelihood_model=model,
+            K=4,
+            reward_mode="simple",
+            end_mode="no_buzz",
+            no_buzz_reward=0.0,
+        )
+        buzzer = PPOBuzzer(env=env)
+        buzzer.action_probabilities = lambda _obs: np.array(
+            [1.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32
+        )
+
+        trace = buzzer.run_episode(deterministic=True, seed=42)
+
+        assert trace.buzz_step == -1
+        assert trace.buzz_index == -1
+        assert trace.correct is False
+
 
 # ------------------------------------------------------------------ #
 # Tests: Checkpoint save/load

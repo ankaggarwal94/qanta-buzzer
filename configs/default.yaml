@@ -39,6 +39,8 @@ environment:
   # Expected Wins opponent model (only used when reward_mode: expected_wins)
   opponent_buzz_model:
     type: "none"  # none | logistic | empirical
+  end_mode: "force_commit"  # force_commit | no_buzz
+  no_buzz_reward: 0.0  # Only used when end_mode == no_buzz
 
 mc_guards:  # Anti-artifact guards from qb-rl
   alias_edit_distance_threshold: 0.2  # Reject similar answer aliases

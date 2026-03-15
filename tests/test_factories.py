@@ -208,6 +208,28 @@ class TestMakeEnvFromConfig:
             f"Expected 'time_penalty', got '{env.reward_mode}'"
         )
 
+    def test_env_factory_end_mode_and_no_buzz_reward(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Factory reads end_mode and no_buzz_reward from config."""
+        config = {
+            "data": {"K": 4},
+            "environment": {
+                "reward_mode": "simple",
+                "end_mode": "no_buzz",
+                "no_buzz_reward": 0.25,
+                "wait_penalty": 0.1,
+                "buzz_correct": 1.0,
+                "buzz_incorrect": -0.5,
+            },
+            "likelihood": {"beta": 5.0},
+        }
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        env = make_env_from_config([sample_mc_question], model, config)
+        assert getattr(env, "end_mode") == "no_buzz"
+        assert getattr(env, "no_buzz_reward") == 0.25
+
 
 class TestDSPyFactoryIntegration:
     """Factory dispatches to DSPyLikelihood when configured."""
