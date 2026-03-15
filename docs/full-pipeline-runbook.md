@@ -788,3 +788,54 @@ python scripts/optimize_dspy.py --config configs/default.yaml --optimizer MIPROv
 - **100k PPO timesteps** takes 30–90 minutes on CPU. Reduce with `--timesteps 10000` for quick validation.
 - **SBERT distractor ranking** downloads `all-MiniLM-L6-v2` (~90 MB) on first run. Use `data.distractor_strategy=category_random` to skip.
 - **Embedding cache** grows to ~42 MB for ~1000 questions with TF-IDF. Monitor via `model.cache_memory_bytes`.
+
+---
+
+## Parallel execution script
+
+The script `scripts/run_full_pipeline.sh` implements the full DAG with
+output isolation and 3-wave parallelism:
+
+```
+Wave 1 (parallel, after Phase 1):
+  Track A: Phase 2 (baselines)
+  Track B: Phase 3 (PPO training)
+  Track C: Phase 5 (T5 policy)
+  Track D: Phase 13 (K-sensitivity)
+
+Wave 2 (parallel, after Wave 1):
+  Phase 4 (evaluate — needs Phase 2)
+  Phase 6 (compare — needs Phase 3+5)
+  Phase 11 (EW eval)
+  Phase 15 (belief mode)
+
+Wave 3 (sequential — PPO ablations share artifacts/main/):
+  Phase 14 (reward modes)
+  Phase 16 (stop-only)
+  Phase 17 (no-buzz)
+```
+
+Usage:
+
+```bash
+# Parallel with t5-base (recommended)
+bash scripts/run_full_pipeline.sh --t5-model t5-base
+
+# Parallel with t5-small (fastest)
+bash scripts/run_full_pipeline.sh --t5-model t5-small
+
+# Sequential (safe, no background jobs)
+bash scripts/run_full_pipeline.sh --sequential
+
+# Full quality
+bash scripts/run_full_pipeline.sh --t5-model t5-large
+```
+
+All results land in `results/*.json`. Each phase logs to `results/phase_*.log`.
+
+Estimated wall time with parallelism (Apple M3 Max):
+
+| Mode | t5-small | t5-base | t5-large |
+|------|----------|---------|----------|
+| Parallel (3 waves) | ~2 hrs | ~3–4 hrs | ~6–8 hrs |
+| Sequential | ~5 hrs | ~7–10 hrs | ~12–18 hrs |
