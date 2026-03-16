@@ -6,7 +6,7 @@
 ## Critical: Use the Main Repo
 
 ```bash
-cd /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer
+cd <repo-root>
 git rev-parse --short HEAD   # should be on main or pr-to-origin branch
 source .venv/bin/activate
 ```
@@ -49,8 +49,8 @@ not the full dataset.
 python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000
 ```
 
-**Expected output:** printed sweep table to stdout. No JSON artifact is produced
-for `results/`. Capture the output manually:
+**Expected output:** printed sweep table to stdout, plus
+`artifacts/smoke/reward_sweep_results.json` and `.csv`. Capture stdout manually:
 
 ```bash
 python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000 | tee results/phase_8_sweep.txt

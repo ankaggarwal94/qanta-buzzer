@@ -1,11 +1,11 @@
 # Codex: Full Clean Pipeline Run (All Non-API Phases)
 
-**Generated:** 2026-03-16 | **Repo commit:** `6304875` (review-fixes branch)
+**Generated:** 2026-03-16 | **Repo commit:** `692c276` (review-fixes branch)
 
 ## Critical: Use the Main Repo
 
 ```bash
-cd /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer
+cd <repo-root>
 git rev-parse --short HEAD
 ```
 
@@ -30,7 +30,7 @@ Produce `results/FULL_RUN_REPORT.md` as the canonical handoff artifact.
 ## Setup
 
 ```bash
-cd /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer
+cd <repo-root>
 git checkout review-fixes
 source .venv/bin/activate
 pip install -e .
