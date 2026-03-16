@@ -258,8 +258,15 @@ def embedding_cache_path(config: dict[str, Any]) -> Path:
     """
     lik_cfg = config.get("likelihood", {})
     cache_dir = lik_cfg.get("cache_dir", "cache/embeddings")
-    model_name = str(lik_cfg.get("model", "unknown")).replace("/", "_")
-    return PROJECT_ROOT / cache_dir / f"embedding_cache_{model_name}.npz"
+    model_family = str(lik_cfg.get("model", "unknown"))
+    if model_family == "sbert":
+        variant = lik_cfg.get("sbert_name", lik_cfg.get("embedding_model", "all-MiniLM-L6-v2"))
+    elif model_family.startswith("t5"):
+        variant = lik_cfg.get("t5_name", model_family)
+    else:
+        variant = model_family
+    safe_name = str(variant).replace("/", "_")
+    return PROJECT_ROOT / cache_dir / f"embedding_cache_{safe_name}.npz"
 
 
 def load_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:

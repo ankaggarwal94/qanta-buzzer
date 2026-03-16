@@ -711,12 +711,11 @@ python scripts/run_baselines.py \
 cp artifacts/main/baseline_summary.json results/baselines_variable_k.json
 ```
 
-**Note:** PPO with variable-K and MaskablePPO is not yet wired end-to-end
-through `train_ppo.py`. The `PPOBuzzer` class supports `use_maskable_ppo=True`
-and the env supports `action_masks()`, but `train_ppo.py` does not read
-`ppo.algorithm` from config or pass `use_maskable_ppo` to the constructor.
-This requires a code change to `train_ppo.py` before it will work.
-For now, variable-K baselines (which don't need MaskablePPO) work correctly.
+**Note:** Variable-K PPO with MaskablePPO is now wired through config:
+set `ppo.use_maskable_ppo: true` in YAML (requires `pip install -e '.[maskable]'`).
+`train_ppo.py` reads the flag and passes it to `PPOBuzzer`, and
+`PPOBuzzer.load()` supports loading MaskablePPO checkpoints.
+Variable-K baselines work without MaskablePPO.
 
 ---
 

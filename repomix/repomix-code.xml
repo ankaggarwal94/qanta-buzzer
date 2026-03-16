@@ -15930,205 +15930,217 @@ This section contains the contents of the repository's files.
 173:         self.model.save(str(path))
 174: 
 175:     @classmethod
-176:     def load(cls, path: str | Path, env: TossupMCEnv) -> "PPOBuzzer":
-177:         """Load a previously saved PPO model.
-178: 
-179:         Parameters
-180:         ----------
-181:         path : str or Path
-182:             Path to the saved model file.
-183:         env : TossupMCEnv
-184:             Environment to attach to the loaded model.
-185: 
-186:         Returns
-187:         -------
-188:         PPOBuzzer
-189:             A PPOBuzzer with the loaded model weights.
-190:         """
-191:         agent = cls(env=env)
-192:         agent.model = PPO.load(str(path), env=env)
-193:         return agent
-194: 
-195:     def action_probabilities(self, obs: np.ndarray) -> np.ndarray:
-196:         """Extract action probabilities from the policy for a given observation.
-197: 
-198:         Parameters
-199:         ----------
-200:         obs : np.ndarray
-201:             Observation vector of shape (K + 6,).
-202: 
-203:         Returns
-204:         -------
-205:         np.ndarray
-206:             Action probability vector of shape (K + 1,), dtype float32.
-207:             Index 0 = P(wait), indices 1..K = P(buzz with option i).
-208:         """
-209:         obs_tensor = th.as_tensor(
-210:             obs, dtype=th.float32, device=self.model.device
-211:         ).unsqueeze(0)
-212:         dist = self.model.policy.get_distribution(obs_tensor)
-213:         probs = dist.distribution.probs[0].detach().cpu().numpy()
-214:         return probs.astype(np.float32)
-215: 
-216:     def _base_env(self) -> TossupMCEnv:
-217:         """Return the underlying TossupMCEnv, unwrapping if needed."""
-218:         return getattr(self.env, "unwrapped", self.env)
-219: 
-220:     def c_t(self, obs: np.ndarray) -> float:
-221:         """Compute buzz probability at the current step.
-222: 
-223:         Parameters
-224:         ----------
-225:         obs : np.ndarray
-226:             Observation vector of shape (K + 6,).
+176:     def load(
+177:         cls,
+178:         path: str | Path,
+179:         env: TossupMCEnv,
+180:         use_maskable_ppo: bool = False,
+181:     ) -> "PPOBuzzer":
+182:         """Load a previously saved PPO model.
+183: 
+184:         Parameters
+185:         ----------
+186:         path : str or Path
+187:             Path to the saved model file.
+188:         env : TossupMCEnv
+189:             Environment to attach to the loaded model.
+190:         use_maskable_ppo : bool
+191:             If True, load with ``MaskablePPO`` from sb3-contrib instead
+192:             of plain SB3 ``PPO``.
+193: 
+194:         Returns
+195:         -------
+196:         PPOBuzzer
+197:             A PPOBuzzer with the loaded model weights.
+198:         """
+199:         agent = cls(env=env, use_maskable_ppo=use_maskable_ppo)
+200:         if use_maskable_ppo:
+201:             from sb3_contrib import MaskablePPO
+202:             agent.model = MaskablePPO.load(str(path), env=env)
+203:         else:
+204:             agent.model = PPO.load(str(path), env=env)
+205:         return agent
+206: 
+207:     def action_probabilities(self, obs: np.ndarray) -> np.ndarray:
+208:         """Extract action probabilities from the policy for a given observation.
+209: 
+210:         Parameters
+211:         ----------
+212:         obs : np.ndarray
+213:             Observation vector of shape (K + 6,).
+214: 
+215:         Returns
+216:         -------
+217:         np.ndarray
+218:             Action probability vector of shape (K + 1,), dtype float32.
+219:             Index 0 = P(wait), indices 1..K = P(buzz with option i).
+220:         """
+221:         obs_tensor = th.as_tensor(
+222:             obs, dtype=th.float32, device=self.model.device
+223:         ).unsqueeze(0)
+224:         dist = self.model.policy.get_distribution(obs_tensor)
+225:         probs = dist.distribution.probs[0].detach().cpu().numpy()
+226:         return probs.astype(np.float32)
 227: 
-228:         Returns
-229:         -------
-230:         float
-231:             Probability of buzzing: 1 - P(wait). Range [0, 1].
-232:         """
-233:         probs = self.action_probabilities(obs)
-234:         return float(1.0 - probs[0])
-235: 
-236:     def g_t(self, obs: np.ndarray, gold_index: int) -> float:
-237:         """Compute correctness probability at the current step.
-238: 
-239:         Given that the agent buzzes, what is the probability it selects
-240:         the correct answer? Formally: P(gold_action) / P(buzz).
-241: 
-242:         Parameters
-243:         ----------
-244:         obs : np.ndarray
-245:             Observation vector of shape (K + 6,).
-246:         gold_index : int
-247:             Index of the correct answer option (0-based).
-248: 
-249:         Returns
-250:         -------
-251:         float
-252:             Conditional correctness probability. Returns 0.0 if buzz
-253:             probability is near zero (< 1e-12).
-254:         """
-255:         probs = self.action_probabilities(obs)
-256:         base_env = self._base_env()
-257:         c_t = float(1.0 - probs[0])
-258:         if c_t <= 1e-12:
-259:             return 0.0
-260:         if len(probs) == 2:
-261:             if gold_index < 0 or base_env.belief is None:
-262:                 return 0.0
-263:             return float(base_env.belief[gold_index])
-264:         return float(probs[gold_index + 1] / c_t)
-265: 
-266:     def run_episode(
-267:         self,
-268:         deterministic: bool = False,
-269:         seed: int | None = None,
-270:         question_idx: int | None = None,
-271:     ) -> PPOEpisodeTrace:
-272:         """Run a full episode and record per-step action probability traces.
-273: 
-274:         Executes the policy in the environment, computing c_trace (buzz
-275:         probability), g_trace (correctness probability), and entropy_trace
-276:         at each step. These traces are needed to compute the S_q metric.
+228:     def _base_env(self) -> TossupMCEnv:
+229:         """Return the underlying TossupMCEnv, unwrapping if needed."""
+230:         return getattr(self.env, "unwrapped", self.env)
+231: 
+232:     def c_t(self, obs: np.ndarray) -> float:
+233:         """Compute buzz probability at the current step.
+234: 
+235:         Parameters
+236:         ----------
+237:         obs : np.ndarray
+238:             Observation vector of shape (K + 6,).
+239: 
+240:         Returns
+241:         -------
+242:         float
+243:             Probability of buzzing: 1 - P(wait). Range [0, 1].
+244:         """
+245:         probs = self.action_probabilities(obs)
+246:         return float(1.0 - probs[0])
+247: 
+248:     def g_t(self, obs: np.ndarray, gold_index: int) -> float:
+249:         """Compute correctness probability at the current step.
+250: 
+251:         Given that the agent buzzes, what is the probability it selects
+252:         the correct answer? Formally: P(gold_action) / P(buzz).
+253: 
+254:         Parameters
+255:         ----------
+256:         obs : np.ndarray
+257:             Observation vector of shape (K + 6,).
+258:         gold_index : int
+259:             Index of the correct answer option (0-based).
+260: 
+261:         Returns
+262:         -------
+263:         float
+264:             Conditional correctness probability. Returns 0.0 if buzz
+265:             probability is near zero (< 1e-12).
+266:         """
+267:         probs = self.action_probabilities(obs)
+268:         base_env = self._base_env()
+269:         c_t = float(1.0 - probs[0])
+270:         if c_t <= 1e-12:
+271:             return 0.0
+272:         if len(probs) == 2:
+273:             if gold_index < 0 or base_env.belief is None:
+274:                 return 0.0
+275:             return float(base_env.belief[gold_index])
+276:         return float(probs[gold_index + 1] / c_t)
 277: 
-278:         Parameters
-279:         ----------
-280:         deterministic : bool
-281:             If True, select actions by argmax instead of sampling.
-282:         seed : int or None
-283:             If provided, seeds the environment reset for reproducibility.
-284: 
-285:         Returns
-286:         -------
-287:         PPOEpisodeTrace
-288:             Complete episode record with action traces and outcome.
-289:         """
-290:         reset_options = None
-291:         if question_idx is not None:
-292:             reset_options = {"question_idx": int(question_idx)}
-293: 
-294:         obs, info = self.env.reset(seed=seed, options=reset_options)
-295:         terminated = False
-296:         truncated = False
-297:         total_reward = 0.0
-298:         c_trace: list[float] = []
-299:         g_trace: list[float] = []
-300:         top_p_trace: list[float] = []
-301:         entropy_trace: list[float] = []
-302: 
-303:         base_env = self._base_env()
-304:         buzz_step = -1
-305:         buzz_index = -1
-306:         gold_index = (
-307:             base_env.question.gold_index
-308:             if getattr(base_env, "question", None) is not None
-309:             else -1
-310:         )
-311: 
-312:         while not (terminated or truncated):
-313:             probs = self.action_probabilities(obs)
-314:             c_val = float(probs[1] if len(probs) == 2 else 1.0 - probs[0])
-315:             if len(probs) == 2:
-316:                 g_val = (
-317:                     float(base_env.belief[gold_index])
-318:                     if gold_index >= 0 and base_env.belief is not None
-319:                     else 0.0
-320:                 )
-321:             else:
-322:                 g_val = (
-323:                     float(probs[gold_index + 1] / c_val) if c_val > 1e-12 else 0.0
-324:                 )
-325:             entropy = float(
-326:                 -(np.clip(probs, 1e-12, 1.0) * np.log(np.clip(probs, 1e-12, 1.0))).sum()
-327:             )
-328: 
-329:             top_p_val = float(np.max(base_env.belief)) if base_env.belief is not None else c_val
-330:             c_trace.append(c_val)
-331:             g_trace.append(g_val)
-332:             top_p_trace.append(top_p_val)
-333:             entropy_trace.append(entropy)
-334: 
-335:             if deterministic:
-336:                 action = int(np.argmax(probs))
-337:             else:
-338:                 action = int(np.random.choice(len(probs), p=probs))
-339: 
-340:             obs, reward, terminated, truncated, step_info = self.env.step(action)
-341:             total_reward += reward
-342: 
-343:             if action != 0 and buzz_step < 0:
-344:                 buzz_step = int(step_info.get("step_idx", 0))
-345:                 if len(probs) == 2:
-346:                     buzz_index = int(
-347:                         step_info.get(
-348:                             "chosen_idx",
-349:                             step_info.get("forced_choice", np.argmax(base_env.belief)),
-350:                         )
-351:                     )
-352:                 else:
-353:                     buzz_index = action - 1
-354:             if truncated and buzz_step < 0 and not step_info.get("no_buzz", False):
-355:                 buzz_step = int(
-356:                     step_info.get("step_idx", len(c_trace) - 1)
-357:                 )
-358:                 buzz_index = int(
-359:                     step_info.get("forced_choice", np.argmax(base_env.belief))
-360:                 )
-361: 
-362:         correct = buzz_index == gold_index
-363:         return PPOEpisodeTrace(
-364:             qid=info.get("qid", ""),
-365:             buzz_step=buzz_step,
-366:             buzz_index=buzz_index,
-367:             gold_index=gold_index,
-368:             correct=correct,
-369:             episode_reward=total_reward,
-370:             c_trace=c_trace,
-371:             g_trace=g_trace,
-372:             top_p_trace=top_p_trace,
-373:             entropy_trace=entropy_trace,
-374:         )
+278:     def run_episode(
+279:         self,
+280:         deterministic: bool = False,
+281:         seed: int | None = None,
+282:         question_idx: int | None = None,
+283:     ) -> PPOEpisodeTrace:
+284:         """Run a full episode and record per-step action probability traces.
+285: 
+286:         Executes the policy in the environment, computing c_trace (buzz
+287:         probability), g_trace (correctness probability), and entropy_trace
+288:         at each step. These traces are needed to compute the S_q metric.
+289: 
+290:         Parameters
+291:         ----------
+292:         deterministic : bool
+293:             If True, select actions by argmax instead of sampling.
+294:         seed : int or None
+295:             If provided, seeds the environment reset for reproducibility.
+296: 
+297:         Returns
+298:         -------
+299:         PPOEpisodeTrace
+300:             Complete episode record with action traces and outcome.
+301:         """
+302:         reset_options = None
+303:         if question_idx is not None:
+304:             reset_options = {"question_idx": int(question_idx)}
+305: 
+306:         obs, info = self.env.reset(seed=seed, options=reset_options)
+307:         terminated = False
+308:         truncated = False
+309:         total_reward = 0.0
+310:         c_trace: list[float] = []
+311:         g_trace: list[float] = []
+312:         top_p_trace: list[float] = []
+313:         entropy_trace: list[float] = []
+314: 
+315:         base_env = self._base_env()
+316:         buzz_step = -1
+317:         buzz_index = -1
+318:         gold_index = (
+319:             base_env.question.gold_index
+320:             if getattr(base_env, "question", None) is not None
+321:             else -1
+322:         )
+323: 
+324:         while not (terminated or truncated):
+325:             probs = self.action_probabilities(obs)
+326:             c_val = float(probs[1] if len(probs) == 2 else 1.0 - probs[0])
+327:             if len(probs) == 2:
+328:                 g_val = (
+329:                     float(base_env.belief[gold_index])
+330:                     if gold_index >= 0 and base_env.belief is not None
+331:                     else 0.0
+332:                 )
+333:             else:
+334:                 g_val = (
+335:                     float(probs[gold_index + 1] / c_val) if c_val > 1e-12 else 0.0
+336:                 )
+337:             entropy = float(
+338:                 -(np.clip(probs, 1e-12, 1.0) * np.log(np.clip(probs, 1e-12, 1.0))).sum()
+339:             )
+340: 
+341:             top_p_val = float(np.max(base_env.belief)) if base_env.belief is not None else c_val
+342:             c_trace.append(c_val)
+343:             g_trace.append(g_val)
+344:             top_p_trace.append(top_p_val)
+345:             entropy_trace.append(entropy)
+346: 
+347:             if deterministic:
+348:                 action = int(np.argmax(probs))
+349:             else:
+350:                 action = int(np.random.choice(len(probs), p=probs))
+351: 
+352:             obs, reward, terminated, truncated, step_info = self.env.step(action)
+353:             total_reward += reward
+354: 
+355:             if action != 0 and buzz_step < 0:
+356:                 buzz_step = int(step_info.get("step_idx", 0))
+357:                 if len(probs) == 2:
+358:                     buzz_index = int(
+359:                         step_info.get(
+360:                             "chosen_idx",
+361:                             step_info.get("forced_choice", np.argmax(base_env.belief)),
+362:                         )
+363:                     )
+364:                 else:
+365:                     buzz_index = action - 1
+366:             if truncated and buzz_step < 0 and not step_info.get("no_buzz", False):
+367:                 buzz_step = int(
+368:                     step_info.get("step_idx", len(c_trace) - 1)
+369:                 )
+370:                 buzz_index = int(
+371:                     step_info.get("forced_choice", np.argmax(base_env.belief))
+372:                 )
+373: 
+374:         correct = buzz_index == gold_index
+375:         return PPOEpisodeTrace(
+376:             qid=info.get("qid", ""),
+377:             buzz_step=buzz_step,
+378:             buzz_index=buzz_index,
+379:             gold_index=gold_index,
+380:             correct=correct,
+381:             episode_reward=total_reward,
+382:             c_trace=c_trace,
+383:             g_trace=g_trace,
+384:             top_p_trace=top_p_trace,
+385:             entropy_trace=entropy_trace,
+386:         )
 </file>
 
 <file path="agents/threshold_buzzer.py">
@@ -18375,40 +18387,47 @@ This section contains the contents of the repository's files.
 258:     """
 259:     lik_cfg = config.get("likelihood", {})
 260:     cache_dir = lik_cfg.get("cache_dir", "cache/embeddings")
-261:     model_name = str(lik_cfg.get("model", "unknown")).replace("/", "_")
-262:     return PROJECT_ROOT / cache_dir / f"embedding_cache_{model_name}.npz"
-263: 
-264: 
-265: def load_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
-266:     """Load persisted embedding cache into model if file exists.
-267: 
-268:     Parameters
-269:     ----------
-270:     model : LikelihoodModel
-271:         Likelihood model whose embedding_cache will be populated.
-272:     config : dict
-273:         Full YAML config dict (used to resolve cache path).
-274:     """
-275:     path = embedding_cache_path(config)
-276:     n = model.load_cache(path)
-277:     if n > 0:
-278:         print(f"Loaded {n} cached embeddings from {path}")
-279: 
-280: 
-281: def save_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
-282:     """Persist model's embedding cache to disk.
-283: 
-284:     Parameters
-285:     ----------
-286:     model : LikelihoodModel
-287:         Likelihood model whose embedding_cache will be saved.
-288:     config : dict
-289:         Full YAML config dict (used to resolve cache path).
-290:     """
-291:     path = embedding_cache_path(config)
-292:     n = model.save_cache(path)
-293:     if n > 0:
-294:         print(f"Saved {n} embeddings to {path}")
+261:     model_family = str(lik_cfg.get("model", "unknown"))
+262:     if model_family == "sbert":
+263:         variant = lik_cfg.get("sbert_name", lik_cfg.get("embedding_model", "all-MiniLM-L6-v2"))
+264:     elif model_family.startswith("t5"):
+265:         variant = lik_cfg.get("t5_name", model_family)
+266:     else:
+267:         variant = model_family
+268:     safe_name = str(variant).replace("/", "_")
+269:     return PROJECT_ROOT / cache_dir / f"embedding_cache_{safe_name}.npz"
+270: 
+271: 
+272: def load_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
+273:     """Load persisted embedding cache into model if file exists.
+274: 
+275:     Parameters
+276:     ----------
+277:     model : LikelihoodModel
+278:         Likelihood model whose embedding_cache will be populated.
+279:     config : dict
+280:         Full YAML config dict (used to resolve cache path).
+281:     """
+282:     path = embedding_cache_path(config)
+283:     n = model.load_cache(path)
+284:     if n > 0:
+285:         print(f"Loaded {n} cached embeddings from {path}")
+286: 
+287: 
+288: def save_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
+289:     """Persist model's embedding cache to disk.
+290: 
+291:     Parameters
+292:     ----------
+293:     model : LikelihoodModel
+294:         Likelihood model whose embedding_cache will be saved.
+295:     config : dict
+296:         Full YAML config dict (used to resolve cache path).
+297:     """
+298:     path = embedding_cache_path(config)
+299:     n = model.save_cache(path)
+300:     if n > 0:
+301:         print(f"Saved {n} embeddings to {path}")
 </file>
 
 <file path="scripts/evaluate_all.py">

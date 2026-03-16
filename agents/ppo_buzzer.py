@@ -173,7 +173,12 @@ class PPOBuzzer:
         self.model.save(str(path))
 
     @classmethod
-    def load(cls, path: str | Path, env: TossupMCEnv) -> "PPOBuzzer":
+    def load(
+        cls,
+        path: str | Path,
+        env: TossupMCEnv,
+        use_maskable_ppo: bool = False,
+    ) -> "PPOBuzzer":
         """Load a previously saved PPO model.
 
         Parameters
@@ -182,14 +187,21 @@ class PPOBuzzer:
             Path to the saved model file.
         env : TossupMCEnv
             Environment to attach to the loaded model.
+        use_maskable_ppo : bool
+            If True, load with ``MaskablePPO`` from sb3-contrib instead
+            of plain SB3 ``PPO``.
 
         Returns
         -------
         PPOBuzzer
             A PPOBuzzer with the loaded model weights.
         """
-        agent = cls(env=env)
-        agent.model = PPO.load(str(path), env=env)
+        agent = cls(env=env, use_maskable_ppo=use_maskable_ppo)
+        if use_maskable_ppo:
+            from sb3_contrib import MaskablePPO
+            agent.model = MaskablePPO.load(str(path), env=env)
+        else:
+            agent.model = PPO.load(str(path), env=env)
         return agent
 
     def action_probabilities(self, obs: np.ndarray) -> np.ndarray:
