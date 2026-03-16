@@ -78,13 +78,14 @@ def precompute_beliefs(
     beta : float
         Softmax temperature for converting raw scores to probabilities.
     K : int
-        Number of answer options per question.
+        Deprecated — ignored. Each question uses ``len(question.options)``
+        as its local K. Kept for backward compatibility with callers.
 
     Returns
     -------
     dict[tuple[int, int], np.ndarray]
         Maps ``(question_index, step_idx)`` to belief vectors of shape
-        ``(K,)`` with dtype float32. Each belief sums to ~1.0.
+        ``(len(question.options),)`` with dtype float32. Each belief sums to ~1.0.
     """
     cache: dict[tuple[int, int], np.ndarray] = {}
 

@@ -378,136 +378,136 @@ val_dataset.json                      63M
 
 artifacts/main/plots:
 total 96
--rw-r--r--@ 1 ankit.aggarwal  staff    20K Mar 15 16:04 calibration.png
--rw-r--r--@ 1 ankit.aggarwal  staff   1.9K Mar 15 16:04 comparison.csv
--rw-r--r--@ 1 ankit.aggarwal  staff    23K Mar 15 16:04 entropy_vs_clue.png
+-rw-r--r--@ 1    20K Mar 15 16:04 calibration.png
+-rw-r--r--@ 1   1.9K Mar 15 16:04 comparison.csv
+-rw-r--r--@ 1    23K Mar 15 16:04 entropy_vs_clue.png
 
 checkpoints:
 total 0
-drwxr-xr-x@ 10 ankit.aggarwal  staff   320B Mar 15 05:34 ppo_t5
-drwxr-xr-x@  4 ankit.aggarwal  staff   128B Mar 15 05:27 supervised
+drwxr-xr-x@ 10   320B Mar 15 05:34 ppo_t5
+drwxr-xr-x@  4   128B Mar 15 05:27 supervised
 
 checkpoints/ppo_t5:
 total 16
-drwxr-xr-x@ 8 ankit.aggarwal  staff   256B Mar 15 05:28 best_model
--rw-r--r--@ 1 ankit.aggarwal  staff   3.4K Mar 15 15:48 history.json
-drwxr-xr-x@ 8 ankit.aggarwal  staff   256B Mar 15 05:33 iter_100
-drwxr-xr-x@ 8 ankit.aggarwal  staff   256B Mar 15 05:29 iter_20
-drwxr-xr-x@ 8 ankit.aggarwal  staff   256B Mar 15 05:30 iter_40
-drwxr-xr-x@ 8 ankit.aggarwal  staff   256B Mar 15 05:31 iter_60
-drwxr-xr-x@ 8 ankit.aggarwal  staff   256B Mar 15 05:32 iter_80
--rw-r--r--@ 1 ankit.aggarwal  staff   223B Mar 15 15:48 test_results.json
+drwxr-xr-x@ 8   256B Mar 15 05:28 best_model
+-rw-r--r--@ 1   3.4K Mar 15 15:48 history.json
+drwxr-xr-x@ 8   256B Mar 15 05:33 iter_100
+drwxr-xr-x@ 8   256B Mar 15 05:29 iter_20
+drwxr-xr-x@ 8   256B Mar 15 05:30 iter_40
+drwxr-xr-x@ 8   256B Mar 15 05:31 iter_60
+drwxr-xr-x@ 8   256B Mar 15 05:32 iter_80
+-rw-r--r--@ 1   223B Mar 15 15:48 test_results.json
 
 checkpoints/ppo_t5/best_model:
 total 2592912
--rw-r--r--@ 1 ankit.aggarwal  staff   1.5K Mar 15 15:40 config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   418M Mar 15 15:40 model.safetensors
--rw-r--r--@ 1 ankit.aggarwal  staff   3.0M Mar 15 15:40 policy_head.pt
--rw-r--r--@ 1 ankit.aggarwal  staff   2.3M Mar 15 15:40 tokenizer.json
--rw-r--r--@ 1 ankit.aggarwal  staff   2.5K Mar 15 15:40 tokenizer_config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   843M Mar 15 15:40 training_state.pt
+-rw-r--r--@ 1   1.5K Mar 15 15:40 config.json
+-rw-r--r--@ 1   418M Mar 15 15:40 model.safetensors
+-rw-r--r--@ 1   3.0M Mar 15 15:40 policy_head.pt
+-rw-r--r--@ 1   2.3M Mar 15 15:40 tokenizer.json
+-rw-r--r--@ 1   2.5K Mar 15 15:40 tokenizer_config.json
+-rw-r--r--@ 1   843M Mar 15 15:40 training_state.pt
 
 checkpoints/ppo_t5/iter_100:
 total 2592912
--rw-r--r--@ 1 ankit.aggarwal  staff   1.5K Mar 15 15:48 config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   418M Mar 15 15:48 model.safetensors
--rw-r--r--@ 1 ankit.aggarwal  staff   3.0M Mar 15 15:48 policy_head.pt
--rw-r--r--@ 1 ankit.aggarwal  staff   2.3M Mar 15 15:48 tokenizer.json
--rw-r--r--@ 1 ankit.aggarwal  staff   2.5K Mar 15 15:48 tokenizer_config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   843M Mar 15 15:48 training_state.pt
+-rw-r--r--@ 1   1.5K Mar 15 15:48 config.json
+-rw-r--r--@ 1   418M Mar 15 15:48 model.safetensors
+-rw-r--r--@ 1   3.0M Mar 15 15:48 policy_head.pt
+-rw-r--r--@ 1   2.3M Mar 15 15:48 tokenizer.json
+-rw-r--r--@ 1   2.5K Mar 15 15:48 tokenizer_config.json
+-rw-r--r--@ 1   843M Mar 15 15:48 training_state.pt
 
 checkpoints/ppo_t5/iter_20:
 total 2592912
--rw-r--r--@ 1 ankit.aggarwal  staff   1.5K Mar 15 15:41 config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   418M Mar 15 15:41 model.safetensors
--rw-r--r--@ 1 ankit.aggarwal  staff   3.0M Mar 15 15:41 policy_head.pt
--rw-r--r--@ 1 ankit.aggarwal  staff   2.3M Mar 15 15:41 tokenizer.json
--rw-r--r--@ 1 ankit.aggarwal  staff   2.5K Mar 15 15:41 tokenizer_config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   843M Mar 15 15:41 training_state.pt
+-rw-r--r--@ 1   1.5K Mar 15 15:41 config.json
+-rw-r--r--@ 1   418M Mar 15 15:41 model.safetensors
+-rw-r--r--@ 1   3.0M Mar 15 15:41 policy_head.pt
+-rw-r--r--@ 1   2.3M Mar 15 15:41 tokenizer.json
+-rw-r--r--@ 1   2.5K Mar 15 15:41 tokenizer_config.json
+-rw-r--r--@ 1   843M Mar 15 15:41 training_state.pt
 
 checkpoints/ppo_t5/iter_40:
 total 2592912
--rw-r--r--@ 1 ankit.aggarwal  staff   1.5K Mar 15 15:44 config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   418M Mar 15 15:44 model.safetensors
--rw-r--r--@ 1 ankit.aggarwal  staff   3.0M Mar 15 15:44 policy_head.pt
--rw-r--r--@ 1 ankit.aggarwal  staff   2.3M Mar 15 15:44 tokenizer.json
--rw-r--r--@ 1 ankit.aggarwal  staff   2.5K Mar 15 15:44 tokenizer_config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   843M Mar 15 15:44 training_state.pt
+-rw-r--r--@ 1   1.5K Mar 15 15:44 config.json
+-rw-r--r--@ 1   418M Mar 15 15:44 model.safetensors
+-rw-r--r--@ 1   3.0M Mar 15 15:44 policy_head.pt
+-rw-r--r--@ 1   2.3M Mar 15 15:44 tokenizer.json
+-rw-r--r--@ 1   2.5K Mar 15 15:44 tokenizer_config.json
+-rw-r--r--@ 1   843M Mar 15 15:44 training_state.pt
 
 checkpoints/ppo_t5/iter_60:
 total 2592912
--rw-r--r--@ 1 ankit.aggarwal  staff   1.5K Mar 15 15:45 config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   418M Mar 15 15:45 model.safetensors
--rw-r--r--@ 1 ankit.aggarwal  staff   3.0M Mar 15 15:45 policy_head.pt
--rw-r--r--@ 1 ankit.aggarwal  staff   2.3M Mar 15 15:45 tokenizer.json
--rw-r--r--@ 1 ankit.aggarwal  staff   2.5K Mar 15 15:45 tokenizer_config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   843M Mar 15 15:45 training_state.pt
+-rw-r--r--@ 1   1.5K Mar 15 15:45 config.json
+-rw-r--r--@ 1   418M Mar 15 15:45 model.safetensors
+-rw-r--r--@ 1   3.0M Mar 15 15:45 policy_head.pt
+-rw-r--r--@ 1   2.3M Mar 15 15:45 tokenizer.json
+-rw-r--r--@ 1   2.5K Mar 15 15:45 tokenizer_config.json
+-rw-r--r--@ 1   843M Mar 15 15:45 training_state.pt
 
 checkpoints/ppo_t5/iter_80:
 total 2592912
--rw-r--r--@ 1 ankit.aggarwal  staff   1.5K Mar 15 15:46 config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   418M Mar 15 15:46 model.safetensors
--rw-r--r--@ 1 ankit.aggarwal  staff   3.0M Mar 15 15:46 policy_head.pt
--rw-r--r--@ 1 ankit.aggarwal  staff   2.3M Mar 15 15:46 tokenizer.json
--rw-r--r--@ 1 ankit.aggarwal  staff   2.5K Mar 15 15:46 tokenizer_config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   843M Mar 15 15:46 training_state.pt
+-rw-r--r--@ 1   1.5K Mar 15 15:46 config.json
+-rw-r--r--@ 1   418M Mar 15 15:46 model.safetensors
+-rw-r--r--@ 1   3.0M Mar 15 15:46 policy_head.pt
+-rw-r--r--@ 1   2.3M Mar 15 15:46 tokenizer.json
+-rw-r--r--@ 1   2.5K Mar 15 15:46 tokenizer_config.json
+-rw-r--r--@ 1   843M Mar 15 15:46 training_state.pt
 
 checkpoints/supervised:
 total 8
-drwxr-xr-x@ 8 ankit.aggarwal  staff   256B Mar 15 04:40 best_model
--rw-r--r--@ 1 ankit.aggarwal  staff   2.1K Mar 15 15:23 history.json
+drwxr-xr-x@ 8   256B Mar 15 04:40 best_model
+-rw-r--r--@ 1   2.1K Mar 15 15:23 history.json
 
 checkpoints/supervised/best_model:
 total 2586736
--rw-r--r--@ 1 ankit.aggarwal  staff   1.5K Mar 15 15:09 config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   418M Mar 15 15:09 model.safetensors
--rw-r--r--@ 1 ankit.aggarwal  staff   3.0M Mar 15 15:09 policy_head.pt
--rw-r--r--@ 1 ankit.aggarwal  staff   2.3M Mar 15 15:09 tokenizer.json
--rw-r--r--@ 1 ankit.aggarwal  staff   2.3K Mar 15 15:09 tokenizer_config.json
--rw-r--r--@ 1 ankit.aggarwal  staff   840M Mar 15 15:09 training_state.pt
+-rw-r--r--@ 1   1.5K Mar 15 15:09 config.json
+-rw-r--r--@ 1   418M Mar 15 15:09 model.safetensors
+-rw-r--r--@ 1   3.0M Mar 15 15:09 policy_head.pt
+-rw-r--r--@ 1   2.3M Mar 15 15:09 tokenizer.json
+-rw-r--r--@ 1   2.3K Mar 15 15:09 tokenizer_config.json
+-rw-r--r--@ 1   840M Mar 15 15:09 training_state.pt
 
 results:
 total 3032
--rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:32 baselines_distractor_catrandom.json
--rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:30 baselines_distractor_sbert.json
--rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:31 baselines_distractor_tfidf.json
--rw-r--r--@ 1 ankit.aggarwal  staff   4.7K Mar 15 16:18 baselines_k2.json
--rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:19 baselines_k3.json
--rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 19:06 baselines_k4.json
--rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:21 baselines_k5.json
--rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:22 baselines_k6.json
--rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:05 baselines_seqbayes.json
--rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 13:51 baselines_tfidf.json
--rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:34 baselines_variable_k.json
--rw-r--r--@ 1 ankit.aggarwal  staff    15K Mar 15 15:50 eval_default.json
--rw-r--r--@ 1 ankit.aggarwal  staff    15K Mar 15 16:04 eval_ew_logistic.json
--rw-r--r--@ 1 ankit.aggarwal  staff    15K Mar 15 19:04 eval_expected_wins_empirical.json
--rw-r--r--@ 1 ankit.aggarwal  staff    37K Mar 15 13:51 phase_2.log
--rw-r--r--@ 1 ankit.aggarwal  staff   657K Mar 15 13:52 phase_3.log
--rw-r--r--@ 1 ankit.aggarwal  staff    24K Mar 15 15:50 phase_4.log
--rw-r--r--@ 1 ankit.aggarwal  staff    26K Mar 15 15:48 phase_5.log
--rw-r--r--@ 1 ankit.aggarwal  staff   4.9K Mar 15 15:50 phase_6.log
--rw-r--r--@ 1 ankit.aggarwal  staff   2.2M Mar 15 19:01 phase_8_sweep.txt
--rw-r--r--@ 1 ankit.aggarwal  staff   252B Mar 15 13:52 ppo_default.json
--rw-r--r--@ 1 ankit.aggarwal  staff   252B Mar 15 19:02 ppo_expected_wins.json
--rw-r--r--@ 1 ankit.aggarwal  staff   252B Mar 15 16:10 ppo_human_grounded.json
--rw-r--r--@ 1 ankit.aggarwal  staff   150K Mar 15 13:52 ppo_model_default.zip
--rw-r--r--@ 1 ankit.aggarwal  staff   150K Mar 15 19:02 ppo_model_expected_wins.zip
--rw-r--r--@ 1 ankit.aggarwal  staff   150K Mar 15 16:25 ppo_model_seed1.zip
--rw-r--r--@ 1 ankit.aggarwal  staff   150K Mar 15 16:27 ppo_model_seed2.zip
--rw-r--r--@ 1 ankit.aggarwal  staff   150K Mar 15 16:28 ppo_model_seed3.zip
--rw-r--r--@ 1 ankit.aggarwal  staff   249B Mar 15 16:16 ppo_no_buzz.json
--rw-r--r--@ 1 ankit.aggarwal  staff   251B Mar 15 16:25 ppo_seed1.json
--rw-r--r--@ 1 ankit.aggarwal  staff   251B Mar 15 16:27 ppo_seed2.json
--rw-r--r--@ 1 ankit.aggarwal  staff   263B Mar 15 16:28 ppo_seed3.json
--rw-r--r--@ 1 ankit.aggarwal  staff   252B Mar 15 16:08 ppo_simple.json
--rw-r--r--@ 1 ankit.aggarwal  staff   263B Mar 15 16:14 ppo_stop_only.json
--rw-r--r--@ 1 ankit.aggarwal  staff   717B Mar 15 16:02 t5_comparison.json
+-rw-r--r--@ 1   4.8K Mar 15 16:32 baselines_distractor_catrandom.json
+-rw-r--r--@ 1   4.8K Mar 15 16:30 baselines_distractor_sbert.json
+-rw-r--r--@ 1   4.8K Mar 15 16:31 baselines_distractor_tfidf.json
+-rw-r--r--@ 1   4.7K Mar 15 16:18 baselines_k2.json
+-rw-r--r--@ 1   4.8K Mar 15 16:19 baselines_k3.json
+-rw-r--r--@ 1   4.8K Mar 15 19:06 baselines_k4.json
+-rw-r--r--@ 1   4.8K Mar 15 16:21 baselines_k5.json
+-rw-r--r--@ 1   4.8K Mar 15 16:22 baselines_k6.json
+-rw-r--r--@ 1   4.8K Mar 15 16:05 baselines_seqbayes.json
+-rw-r--r--@ 1   4.8K Mar 15 13:51 baselines_tfidf.json
+-rw-r--r--@ 1   4.8K Mar 15 16:34 baselines_variable_k.json
+-rw-r--r--@ 1    15K Mar 15 15:50 eval_default.json
+-rw-r--r--@ 1    15K Mar 15 16:04 eval_ew_logistic.json
+-rw-r--r--@ 1    15K Mar 15 19:04 eval_expected_wins_empirical.json
+-rw-r--r--@ 1    37K Mar 15 13:51 phase_2.log
+-rw-r--r--@ 1   657K Mar 15 13:52 phase_3.log
+-rw-r--r--@ 1    24K Mar 15 15:50 phase_4.log
+-rw-r--r--@ 1    26K Mar 15 15:48 phase_5.log
+-rw-r--r--@ 1   4.9K Mar 15 15:50 phase_6.log
+-rw-r--r--@ 1   2.2M Mar 15 19:01 phase_8_sweep.txt
+-rw-r--r--@ 1   252B Mar 15 13:52 ppo_default.json
+-rw-r--r--@ 1   252B Mar 15 19:02 ppo_expected_wins.json
+-rw-r--r--@ 1   252B Mar 15 16:10 ppo_human_grounded.json
+-rw-r--r--@ 1   150K Mar 15 13:52 ppo_model_default.zip
+-rw-r--r--@ 1   150K Mar 15 19:02 ppo_model_expected_wins.zip
+-rw-r--r--@ 1   150K Mar 15 16:25 ppo_model_seed1.zip
+-rw-r--r--@ 1   150K Mar 15 16:27 ppo_model_seed2.zip
+-rw-r--r--@ 1   150K Mar 15 16:28 ppo_model_seed3.zip
+-rw-r--r--@ 1   249B Mar 15 16:16 ppo_no_buzz.json
+-rw-r--r--@ 1   251B Mar 15 16:25 ppo_seed1.json
+-rw-r--r--@ 1   251B Mar 15 16:27 ppo_seed2.json
+-rw-r--r--@ 1   263B Mar 15 16:28 ppo_seed3.json
+-rw-r--r--@ 1   252B Mar 15 16:08 ppo_simple.json
+-rw-r--r--@ 1   263B Mar 15 16:14 ppo_stop_only.json
+-rw-r--r--@ 1   717B Mar 15 16:02 t5_comparison.json
 
 artifacts/smoke:
 total 96
--rw-r--r--@ 1 ankit.aggarwal  staff    14K Mar 15 19:00 reward_sweep_results.csv
--rw-r--r--@ 1 ankit.aggarwal  staff    25K Mar 15 19:00 reward_sweep_results.json
+-rw-r--r--@ 1    14K Mar 15 19:00 reward_sweep_results.csv
+-rw-r--r--@ 1    25K Mar 15 19:00 reward_sweep_results.json
 ```
 
 ## Post-run validation

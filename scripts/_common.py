@@ -243,7 +243,8 @@ def embedding_cache_path(config: dict[str, Any]) -> Path:
     """Return the resolved embedding cache file path from config.
 
     Uses ``config['likelihood']['cache_dir']`` (default ``'cache/embeddings'``)
-    and appends ``'embedding_cache.npz'``.
+    and appends ``'embedding_cache_{model}.npz'`` where ``{model}`` is the
+    likelihood model name from config (e.g., ``tfidf``, ``t5-base``).
 
     Parameters
     ----------
