@@ -357,7 +357,9 @@ def calibration_at_buzz(results: list[Any]) -> dict[str, float]:
         if not conf_trace:
             continue
         buzz_step = int(row.get("buzz_step", max(0, len(conf_trace) - 1)))
-        idx = min(max(0, buzz_step), len(conf_trace) - 1)
+        if buzz_step < 0:
+            continue
+        idx = min(buzz_step, len(conf_trace) - 1)
         confidences.append(float(conf_trace[idx]))
         outcomes.append(1 if bool(row.get("correct", False)) else 0)
 

@@ -1,14 +1,18 @@
 # FULL RUN REPORT
 
-- Commit: `efe6697`
-- Date: `2026-03-15`
-- Repo: `<path-to-local-qanta-buzzer-clone>`
+- Commit history:
+  - Initial full-scale run: `efe6697`
+  - Remaining-phase completion pass: `3256e3c`
+- Date(s): `2026-03-15`
+- Repo: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer`
 - Machine: Apple M3 Max, 64 GB unified memory, MPS available
 - Python: `3.13.5` in `.venv`
 - Preflight:
   - `python3 -c "import torch; print(f'MPS: {torch.backends.mps.is_available()}')"` -> `MPS: True`
   - `pytest tests/ -q --tb=short` -> `342 passed, 3 skipped`
-- Total live run window: approximately `13:49` to `16:34` Pacific for the executed phases below
+- Live run windows:
+  - Initial run: approximately `13:49` to `16:34` Pacific
+  - Remaining-phase completion pass: approximately `19:01` to `19:06` Pacific
 
 ## Scope
 
@@ -17,11 +21,10 @@ Executed live at full scale:
 - Core: Phases `1, 2, 3, 4, 5, 6`
 - Scripted extensions recovered after wrapper abort: `11, 13, 14, 15, 16, 17`
 - Manual extensions requested in the prompt: `7, 9, 10`
+- Remaining phases completed in a follow-up pass: `8`, `11` EW-trained PPO, `11` empirical EW evaluation, `13` explicit `K=4`
 
 Skipped by instruction or scope:
 
-- `8` reward sweep
-- `11` EW-trained PPO
 - `12` DSPy (not wired end-to-end / API-dependent)
 - `18` OpenAI embeddings
 - `19` DSPy MIPROv2
@@ -156,6 +159,40 @@ python scripts/run_baselines.py \
     --mc-path artifacts/variable_k/mc_dataset.json \
     likelihood.model=tfidf
 cp artifacts/main/baseline_summary.json results/baselines_variable_k.json
+
+# Remaining phases completed in follow-up pass
+python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000 \
+    | tee results/phase_8_sweep.txt
+
+cp results/baselines_tfidf.json artifacts/main/baseline_summary.json
+python scripts/train_ppo.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    --seed 13 \
+    --deterministic-eval \
+    likelihood.model=tfidf \
+    environment.reward_mode=expected_wins \
+    environment.opponent_buzz_model.type=logistic
+cp artifacts/main/ppo_summary.json results/ppo_expected_wins.json
+cp artifacts/main/ppo_model.zip results/ppo_model_expected_wins.zip
+
+python scripts/evaluate_all.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    likelihood.model=tfidf \
+    environment.reward_mode=expected_wins \
+    environment.opponent_buzz_model.type=empirical
+cp artifacts/main/evaluation_report.json results/eval_expected_wins_empirical.json
+
+python scripts/build_mc_dataset.py \
+    --config configs/default.yaml \
+    --output-dir artifacts/k4 \
+    data.K=4 data.distractor_strategy=category_random
+python scripts/run_baselines.py \
+    --config configs/default.yaml \
+    --mc-path artifacts/k4/mc_dataset.json \
+    likelihood.model=tfidf
+cp artifacts/main/baseline_summary.json results/baselines_k4.json
 ```
 
 ## Per-Phase Results
@@ -169,10 +206,14 @@ cp artifacts/main/baseline_summary.json results/baselines_variable_k.json
 | 5 | T5 policy supervised + PPO | `~1h58m` | supervised best val acc=`0.2652`; test acc=`0.94`; avg reward=`0.416`; avg episode length=`4.94` | Yes | Pass | Long pole of the run; logs update only at epoch boundaries during supervised warm-start |
 | 6 | Compare policies | initial wrapper attempt failed; rerun `~4m50s` | MLP(T5-likelihood): acc=`0.2546`, `S_q=0.2546`; T5 policy: acc=`0.9334`, `S_q=0.2394` | Yes | Pass after fix | Wrapper failed on Apple Silicon MPS; recovered manually after patch |
 | 7 | PPO multi-seed | `~6m` total | seed1 acc=`0.2445`, `S_q=0.2445`; seed2 acc=`0.2445`, `S_q=0.2445`; seed3 acc=`0.9755`, `S_q=0.000069` | No | Pass | Very high variance / multimodal collapse |
+| 8 | Reward sweep (smoke) | `~2m` | best config `wait_penalty=0.0`, `early_buzz_penalty=0.8`; acc=`0.3712`, `S_q=0.2914`, objective=`0.6219` | No | Pass | Captured to `results/phase_8_sweep.txt`; script also wrote `artifacts/smoke/reward_sweep_results.{json,csv}` |
 | 9 | Distractor comparison | `~7m` total | `SBERT`: best seqbayes `S_q=0.7413`; `tfidf_profile`: `0.6651`; `category_random`: `0.7962` | No | Pass | Category-random performed best on this run |
 | 10 | Variable-K baselines | `~1m25s` | mixed-K distribution `{2:3875,3:3492,4:3232,5:2859,6:2585}`; best seqbayes `S_q=0.7804 @ 0.6` | No | Pass | Baselines only; PPO/MaskablePPO still not wired |
 | 11 | Expected Wins eval | `~1m42s` | `mean_ew=4.4929` vs logistic opponent; `full_eval` metrics unchanged from Phase 4 report | No | Pass | Evaluates baseline agents, not PPO |
-| 13 | K-sensitivity | `~4m` total | best seqbayes `S_q`: `K=2 0.7765`, `K=3 0.7946`, `K=4 0.7413`, `K=5 0.8000`, `K=6 0.7983` | No | Pass | `K=4` point comes from default Phase 2 baseline |
+| 11b | EW-trained PPO | `~1m25s` | acc=`0.2525`, `S_q=0.2525`, reward-like=`-0.2777` | No | Pass | Converged to the same degenerate regime as default PPO |
+| 11c | Expected Wins eval (empirical opponent) | `~1m00s` | `mean_ew=4.4929`; `full_eval` acc=`0.9748`, `S_q=0.6858` | No | Pass | Empirical-opponent EW matched logistic-opponent EW in this run |
+| 13 | K-sensitivity | `~4m` total | best seqbayes `S_q`: `K=2 0.7765`, `K=3 0.7946`, `K=4 0.7413`, `K=5 0.8000`, `K=6 0.7983` | No | Pass | Original `K=4` point comes from default Phase 2 SBERT-distractor baseline |
+| 13b | K=4 explicit category-random run | `~1m29s` | best seqbayes `S_q=0.7962 @ 0.6`; acc=`0.9942` | No | Pass | Controlled `K=4` comparison aligned with the category-random `K=2,3,5,6` runs |
 | 14 | Reward-mode PPO ablations | `~3m` total | `simple` same as default (`S_q=0.2525`); `human_grounded` same as default (`S_q=0.2525`) | No | Pass | No improvement over default PPO on this configuration |
 | 15 | Belief-mode comparison | `~1m06s` | `sequential_bayes` best `S_q=0.7413 @ 0.5` | No | Pass | Strongest belief-feature baseline in the run |
 | 16 | Stop-only PPO | initial run failed; rerun `~1m25s` | acc=`0.9755`, `S_q=0.000029`, reward-like=`0.7174` | No | Pass after fix | Training succeeds, but policy is unusable by `S_q` despite high accuracy |
@@ -186,6 +227,7 @@ cp artifacts/main/baseline_summary.json results/baselines_variable_k.json
 | High | `Phase 16: Stop-only PPO` | The stop-only ablation crashed at evaluation time with `AttributeError: 'StopOnlyEnv' object has no attribute 'question'` in `agents/ppo_buzzer.py`. | Patched `PPOBuzzer.run_episode()` to read `gold_index` from the unwrapped base env and strengthened `tests/test_ppo_buzzer.py` to mimic an actual wrapper without `.question` on the wrapper itself. | Keep the patch; ensure the test remains in the main repo and not only a worktree. |
 | Medium | `Phase 5` wall-time / monitoring guidance | `t5-base` full-scale training was much slower than the optimistic table suggests. The run took nearly two hours, and the log remained quiet between epoch boundaries during supervised warm-start. | Let the run continue and used `ps`/process liveness instead of log churn as the health signal. | Update the Phase 5 time estimate upward for Apple Silicon full-scale runs and note that log output during supervised warm-start is sparse even with unbuffered Python. |
 | Medium | `Phase 4` evaluation expectations | Full evaluation was memory-heavy on the full dataset, peaking around 32 GB RSS while running controls after the main evaluation. | Waited for the process to complete and recorded the observed memory footprint. | Add a memory note for `evaluate_all.py` on full-scale runs. |
+| Low | `Phase 8` reward sweep documentation | The follow-up prompt treated Phase 8 as stdout-only, but the script also wrote `artifacts/smoke/reward_sweep_results.json` and `.csv` in addition to the captured stdout. | Captured stdout to `results/phase_8_sweep.txt` and used the JSON artifact in `artifacts/smoke/` to verify the best configuration. | Document the extra smoke-scale artifacts so follow-up analysis does not rely on parsing raw stdout alone. |
 
 ## Final Results Summary
 
@@ -220,7 +262,9 @@ Takeaway: the T5 policy is much better at eventual correctness, but its calibrat
 ### Expected Wins
 
 - Logistic-opponent Expected Wins evaluation: `mean_ew = 4.4929`
-- The `full_eval` metrics in `results/eval_ew_logistic.json` are otherwise the same SoftmaxProfile baseline metrics reported in Phase 4.
+- Empirical-opponent Expected Wins evaluation: `mean_ew = 4.4929`
+- The `full_eval` metrics in `results/eval_ew_logistic.json` and `results/eval_expected_wins_empirical.json` are otherwise the same SoftmaxProfile baseline metrics reported in Phase 4.
+- EW-trained PPO converged to the same degenerate solution as the default PPO run: acc=`0.2525`, `S_q=0.2525`, reward-like=`-0.2777`.
 
 ### Reward-mode ablations (Phase 14)
 
@@ -261,17 +305,21 @@ No useful gain from the no-buzz horizon on this run.
 
 ### K-sensitivity (Phase 13)
 
-`K=4` is the default Phase 2 dataset. The wrapper reran `K=2,3,5,6`.
+`K=4` appeared in two forms in this project:
+
+- the default Phase 2 dataset with SBERT distractors, and
+- a follow-up explicit `K=4` run with category-random distractors to match the `K=2,3,5,6` follow-up runs.
 
 | Fixed K | Best baseline | Best threshold | Accuracy | `S_q` |
 |---|---|---:|---:|---:|
 | 2 | SequentialBayes | `0.7` | `0.9971` | `0.7765` |
 | 3 | SequentialBayes | `0.6` | `0.9939` | `0.7946` |
-| 4 | SequentialBayes | `0.5` | `0.9697` | `0.7413` |
+| 4 (default SBERT) | SequentialBayes | `0.5` | `0.9697` | `0.7413` |
+| 4 (explicit category-random) | SequentialBayes | `0.6` | `0.9942` | `0.7962` |
 | 5 | SequentialBayes | `0.5` | `0.9918` | `0.8000` |
 | 6 | SequentialBayes | `0.5` | `0.9908` | `0.7983` |
 
-Observed pattern: `S_q` improved for `K=5/6` relative to the default `K=4` dataset in this run.
+Observed pattern: the original default `K=4` point looked artificially weak because it used SBERT distractors. Under the controlled category-random comparison, `K=4` improved to `S_q=0.7962`, much closer to the `K=3/5/6` points.
 
 ### Multi-seed PPO variance (Phase 7)
 
@@ -425,6 +473,7 @@ total 3032
 -rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:31 baselines_distractor_tfidf.json
 -rw-r--r--@ 1 ankit.aggarwal  staff   4.7K Mar 15 16:18 baselines_k2.json
 -rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:19 baselines_k3.json
+-rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 19:06 baselines_k4.json
 -rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:21 baselines_k5.json
 -rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:22 baselines_k6.json
 -rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:05 baselines_seqbayes.json
@@ -432,14 +481,18 @@ total 3032
 -rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:34 baselines_variable_k.json
 -rw-r--r--@ 1 ankit.aggarwal  staff    15K Mar 15 15:50 eval_default.json
 -rw-r--r--@ 1 ankit.aggarwal  staff    15K Mar 15 16:04 eval_ew_logistic.json
+-rw-r--r--@ 1 ankit.aggarwal  staff    15K Mar 15 19:04 eval_expected_wins_empirical.json
 -rw-r--r--@ 1 ankit.aggarwal  staff    37K Mar 15 13:51 phase_2.log
 -rw-r--r--@ 1 ankit.aggarwal  staff   657K Mar 15 13:52 phase_3.log
 -rw-r--r--@ 1 ankit.aggarwal  staff    24K Mar 15 15:50 phase_4.log
 -rw-r--r--@ 1 ankit.aggarwal  staff    26K Mar 15 15:48 phase_5.log
 -rw-r--r--@ 1 ankit.aggarwal  staff   4.9K Mar 15 15:50 phase_6.log
+-rw-r--r--@ 1 ankit.aggarwal  staff   2.2M Mar 15 19:01 phase_8_sweep.txt
 -rw-r--r--@ 1 ankit.aggarwal  staff   252B Mar 15 13:52 ppo_default.json
+-rw-r--r--@ 1 ankit.aggarwal  staff   252B Mar 15 19:02 ppo_expected_wins.json
 -rw-r--r--@ 1 ankit.aggarwal  staff   252B Mar 15 16:10 ppo_human_grounded.json
 -rw-r--r--@ 1 ankit.aggarwal  staff   150K Mar 15 13:52 ppo_model_default.zip
+-rw-r--r--@ 1 ankit.aggarwal  staff   150K Mar 15 19:02 ppo_model_expected_wins.zip
 -rw-r--r--@ 1 ankit.aggarwal  staff   150K Mar 15 16:25 ppo_model_seed1.zip
 -rw-r--r--@ 1 ankit.aggarwal  staff   150K Mar 15 16:27 ppo_model_seed2.zip
 -rw-r--r--@ 1 ankit.aggarwal  staff   150K Mar 15 16:28 ppo_model_seed3.zip
@@ -450,12 +503,18 @@ total 3032
 -rw-r--r--@ 1 ankit.aggarwal  staff   252B Mar 15 16:08 ppo_simple.json
 -rw-r--r--@ 1 ankit.aggarwal  staff   263B Mar 15 16:14 ppo_stop_only.json
 -rw-r--r--@ 1 ankit.aggarwal  staff   717B Mar 15 16:02 t5_comparison.json
+
+artifacts/smoke:
+total 96
+-rw-r--r--@ 1 ankit.aggarwal  staff    14K Mar 15 19:00 reward_sweep_results.csv
+-rw-r--r--@ 1 ankit.aggarwal  staff    25K Mar 15 19:00 reward_sweep_results.json
 ```
 
 ## Post-run validation
 
 - `pytest tests/ -q --tb=short` -> `342 passed, 3 skipped`
 - Targeted tests after the two live fixes -> `44 passed, 1 skipped`
+- Remaining-phase summary snippet run after completion and new artifacts verified in `results/`
 - No mixed likelihood regime was used in the executed comparisons:
   - TF-IDF for all belief-feature phases
   - `t5-base` only for the end-to-end T5 policy pipeline
