@@ -2,7 +2,7 @@
 
 - Commit: `efe6697`
 - Date: `2026-03-15`
-- Repo: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer`
+- Repo: `<path-to-local-qanta-buzzer-clone>`
 - Machine: Apple M3 Max, 64 GB unified memory, MPS available
 - Python: `3.13.5` in `.venv`
 - Preflight:
