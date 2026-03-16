@@ -36,15 +36,15 @@ def test_action_masks_shape_and_dtype():
 def test_action_masks_both_true_when_belief_present():
     env = StopOnlyEnv(FakeBaseEnv(belief=np.array([0.2, 0.8])))
     masks = env.action_masks()
-    assert masks[0] is np.True_
-    assert masks[1] is np.True_
+    assert masks[0]
+    assert masks[1]
 
 
 def test_action_masks_buzz_false_when_no_belief():
     env = StopOnlyEnv(FakeBaseEnv(belief=None))
     masks = env.action_masks()
-    assert masks[0] is np.True_
-    assert masks[1] is np.False_
+    assert masks[0]
+    assert not masks[1]
 
 
 def test_step_buzz_maps_to_argmax():
@@ -52,3 +52,11 @@ def test_step_buzz_maps_to_argmax():
     env = StopOnlyEnv(base)
     env.step(1)
     assert base._last_action == 3  # 1 + argmax([0.1, 0.3, 0.6]) = 1 + 2
+
+
+@pytest.mark.parametrize("belief", [None, np.array([])])
+def test_step_buzz_raises_when_belief_unavailable(belief):
+    env = StopOnlyEnv(FakeBaseEnv(belief=belief))
+
+    with pytest.raises(ValueError, match="belief is unavailable"):
+        env.step(1)
