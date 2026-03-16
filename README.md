@@ -111,7 +111,7 @@ For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy 
 
 ## Testing
 
-342 tests across 24 test files (3 skipped when optional extras not installed):
+344 tests across 24 test files (3 skipped when optional extras not installed):
 
 ```bash
 pytest                    # full suite
@@ -124,7 +124,7 @@ The test suite covers:
 - Gymnasium environment behavior, reward modes (including Expected Wins), and belief computation
 - Likelihood model factories (TF-IDF, SBERT, DSPy with offline-safe stubs)
 - T5 policy model, supervised trainer, and PPO trainer
-- Evaluation metrics (S_q, Expected Wins, ECE, Brier score, calibration at buzz, per-category accuracy)
+- Evaluation metrics (S_q, Expected Wins, ECE, Brier score, calibration pairs extraction, per-category accuracy)
 - Dataset split reproducibility (cross-process determinism)
 - Variable-K dataset construction and mixed-K integration
 - Opponent buzz models (logistic, empirical)
