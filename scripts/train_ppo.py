@@ -156,6 +156,9 @@ def main() -> None:
         args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
     )
 
+    use_maskable = bool(ppo_cfg.get("use_maskable_ppo", False))
+    if use_maskable:
+        print("Using MaskablePPO for variable-K action masking")
     print(f"Training PPO for {total_timesteps} timesteps...")
     agent = PPOBuzzer(
         env=env,
@@ -167,6 +170,7 @@ def main() -> None:
         seed=train_seed,
         policy_kwargs=ppo_cfg.get("policy_kwargs", {"net_arch": [64, 64]}),
         verbose=1,
+        use_maskable_ppo=use_maskable,
     )
 
     agent.train(total_timesteps=total_timesteps)

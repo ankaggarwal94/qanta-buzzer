@@ -297,6 +297,10 @@ class TfIdfLikelihood(LikelihoodModel):
         """
         return 0
 
+    def load_cache(self, path: str | Path) -> int:
+        """No-op: TF-IDF embeddings are not portable across fits."""
+        return 0
+
     def fit(self, corpus_texts: list[str]) -> "TfIdfLikelihood":
         """Learn vocabulary and IDF weights from a text corpus.
 

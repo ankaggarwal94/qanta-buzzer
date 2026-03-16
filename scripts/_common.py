@@ -255,8 +255,10 @@ def embedding_cache_path(config: dict[str, Any]) -> Path:
     Path
         Absolute path to the embedding cache ``.npz`` file.
     """
-    cache_dir = config.get("likelihood", {}).get("cache_dir", "cache/embeddings")
-    return PROJECT_ROOT / cache_dir / "embedding_cache.npz"
+    lik_cfg = config.get("likelihood", {})
+    cache_dir = lik_cfg.get("cache_dir", "cache/embeddings")
+    model_name = str(lik_cfg.get("model", "unknown")).replace("/", "_")
+    return PROJECT_ROOT / cache_dir / f"embedding_cache_{model_name}.npz"
 
 
 def load_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
