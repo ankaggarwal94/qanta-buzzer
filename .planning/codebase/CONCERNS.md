@@ -13,6 +13,9 @@ The following concerns were identified by ChatGPT 5.4 Pro and Copilot code revie
 - **Padded action acceptance:** `step()` rejects padded buzz actions in variable-K mode
 - **MaskablePPO wiring:** fully wired train/save/load/eval; `action_probabilities()` passes `action_masks` to the policy distribution when maskable
 - **Deterministic eval loop:** `compare_policies.py` passes `question_idx=i` for per-question evaluation instead of random sampling with replacement
+- **StopOnlyEnv action masks:** `action_masks()` exposes binary WAIT/BUZZ mask; BUZZ disabled when belief is unavailable
+- **Eval config resolution:** `compare_policies.py` loads `config_used.json` sidecar from checkpoint dir instead of hardcoding TfIdfLikelihood
+- **Config sidecar:** `train_ppo.py` saves `config_used.json` next to the checkpoint for eval reproducibility
 
 ## Tech Debt
 

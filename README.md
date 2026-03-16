@@ -111,7 +111,7 @@ For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy 
 
 ## Testing
 
-344 tests across 24 test files (3 skipped when optional extras not installed):
+350 tests across 26 test files (3 skipped when optional extras not installed):
 
 ```bash
 pytest                    # full suite
@@ -135,7 +135,7 @@ The test suite covers:
 
 ```
 qb_data/        Data loading, answer profiles, stratified splits, MC construction, DSPy profiles
-qb_env/         Gymnasium environment, text wrapper, opponent models, optional StopOnlyEnv wrapper, qb-rl shims
+qb_env/         Gymnasium environment, text wrapper, opponent models, StopOnlyEnv wrapper (with action_masks), qb-rl shims
 models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy
 agents/         Threshold, softmax-profile, sequential Bayes, PPO buzzer
 evaluation/     S_q metric, Expected Wins, calibration, control experiments, plotting

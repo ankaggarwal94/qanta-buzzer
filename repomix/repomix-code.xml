@@ -106,6 +106,7 @@ tests/
   test_agents.py
   test_answer_profile_cache.py
   test_build_mc_dataset.py
+  test_compare_policies.py
   test_dataset_splits.py
   test_dspy_answer_profiles.py
   test_dspy_likelihood.py
@@ -122,6 +123,7 @@ tests/
   test_ppo_buzzer.py
   test_ppo_t5.py
   test_qb_rl_bridge.py
+  test_stop_only_env.py
   test_supervised_t5.py
   test_t5_policy.py
   test_text_wrapper.py
@@ -627,56 +629,6 @@ This section contains the contents of the repository's files.
 214:         )
 215: 
 216:     raise ValueError(f"Unknown opponent_buzz_model type: {model_type}")
-</file>
-
-<file path="qb_env/stop_only_env.py">
- 1: """Stop-only action-space wrapper for the quiz bowl environment."""
- 2: 
- 3: from __future__ import annotations
- 4: 
- 5: from typing import Any
- 6: 
- 7: import gymnasium as gym
- 8: import numpy as np
- 9: from gymnasium import spaces
-10: 
-11: from qb_env.tossup_env import TossupMCEnv
-12: 
-13: 
-14: class StopOnlyEnv(gym.Wrapper):
-15:     """Wrap TossupMCEnv with a binary WAIT/BUZZ action space.
-16: 
-17:     Action mapping:
-18:     - 0 -> WAIT
-19:     - 1 -> BUZZ using the current answer-selection strategy
-20: 
-21:     The default answer-selection strategy commits to the current belief argmax.
-22:     """
-23: 
-24:     def __init__(self, env: TossupMCEnv, answer_mode: str = "argmax_belief") -> None:
-25:         super().__init__(env)
-26:         self.answer_mode = answer_mode
-27:         self.action_space = spaces.Discrete(2)
-28: 
-29:     def reset(
-30:         self,
-31:         *,
-32:         seed: int | None = None,
-33:         options: dict[str, Any] | None = None,
-34:     ) -> tuple[np.ndarray, dict[str, Any]]:
-35:         return self.env.reset(seed=seed, options=options)
-36: 
-37:     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-38:         if not self.action_space.contains(action):
-39:             raise ValueError(f"Invalid action: {action}")
-40:         if action == 0:
-41:             return self.env.step(0)
-42: 
-43:         if self.answer_mode != "argmax_belief":
-44:             raise ValueError(f"Unknown answer_mode: {self.answer_mode}")
-45: 
-46:         chosen_idx = int(np.argmax(self.env.belief))
-47:         return self.env.step(1 + chosen_idx)
 </file>
 
 <file path="scripts/ci.sh">
@@ -1996,6 +1948,41 @@ This section contains the contents of the repository's files.
 160:         assert len([k for k in builder._cache if k[0] == "Lincoln"]) == 1
 </file>
 
+<file path="tests/test_compare_policies.py">
+ 1: """Tests for compare_policies helper functions."""
+ 2: 
+ 3: import json
+ 4: import pytest
+ 5: from pathlib import Path
+ 6: 
+ 7: 
+ 8: def test_resolve_mlp_eval_config_prefers_checkpoint_sidecar(tmp_path):
+ 9:     from scripts.compare_policies import resolve_mlp_eval_config
+10: 
+11:     sidecar_config = {"likelihood": {"model": "t5-base"}, "ppo": {"seed": 99}}
+12:     sidecar_path = tmp_path / "config_used.json"
+13:     sidecar_path.write_text(json.dumps(sidecar_config))
+14: 
+15:     fake_checkpoint = tmp_path / "ppo_model.zip"
+16:     fake_checkpoint.touch()
+17: 
+18:     fallback = {"likelihood": {"model": "tfidf"}}
+19:     resolved = resolve_mlp_eval_config(str(fake_checkpoint), fallback)
+20:     assert resolved["likelihood"]["model"] == "t5-base"
+21:     assert resolved["ppo"]["seed"] == 99
+22: 
+23: 
+24: def test_resolve_mlp_eval_config_uses_fallback_when_no_sidecar(tmp_path):
+25:     from scripts.compare_policies import resolve_mlp_eval_config
+26: 
+27:     fake_checkpoint = tmp_path / "ppo_model.zip"
+28:     fake_checkpoint.touch()
+29: 
+30:     fallback = {"likelihood": {"model": "tfidf"}}
+31:     resolved = resolve_mlp_eval_config(str(fake_checkpoint), fallback)
+32:     assert resolved is fallback
+</file>
+
 <file path="tests/test_dataset_splits.py">
   1: """Tests for stratified dataset splitting reproducibility.
   2: 
@@ -2729,6 +2716,63 @@ This section contains the contents of the repository's files.
 113:         assert isinstance(model, EmpiricalHistogramOpponentModel)
 </file>
 
+<file path="tests/test_stop_only_env.py">
+ 1: """Tests for StopOnlyEnv wrapper action_masks and step mapping."""
+ 2: 
+ 3: import gymnasium as gym
+ 4: import numpy as np
+ 5: import pytest
+ 6: from gymnasium import spaces
+ 7: 
+ 8: from qb_env.stop_only_env import StopOnlyEnv
+ 9: 
+10: 
+11: class FakeBaseEnv(gym.Env):
+12:     """Minimal fake TossupMCEnv for testing StopOnlyEnv."""
+13: 
+14:     def __init__(self, belief=None):
+15:         super().__init__()
+16:         self.belief = belief
+17:         self.observation_space = spaces.Box(low=-1, high=1, shape=(10,))
+18:         self.action_space = spaces.Discrete(5)
+19:         self._last_action = None
+20: 
+21:     def reset(self, seed=None, options=None):
+22:         return np.zeros(10, dtype=np.float32), {}
+23: 
+24:     def step(self, action):
+25:         self._last_action = action
+26:         return np.zeros(10, dtype=np.float32), 0.0, True, False, {"step_idx": 0}
+27: 
+28: 
+29: def test_action_masks_shape_and_dtype():
+30:     env = StopOnlyEnv(FakeBaseEnv(belief=np.array([0.2, 0.8])))
+31:     masks = env.action_masks()
+32:     assert masks.shape == (2,)
+33:     assert masks.dtype == bool
+34: 
+35: 
+36: def test_action_masks_both_true_when_belief_present():
+37:     env = StopOnlyEnv(FakeBaseEnv(belief=np.array([0.2, 0.8])))
+38:     masks = env.action_masks()
+39:     assert masks[0] is np.True_
+40:     assert masks[1] is np.True_
+41: 
+42: 
+43: def test_action_masks_buzz_false_when_no_belief():
+44:     env = StopOnlyEnv(FakeBaseEnv(belief=None))
+45:     masks = env.action_masks()
+46:     assert masks[0] is np.True_
+47:     assert masks[1] is np.False_
+48: 
+49: 
+50: def test_step_buzz_maps_to_argmax():
+51:     base = FakeBaseEnv(belief=np.array([0.1, 0.3, 0.6]))
+52:     env = StopOnlyEnv(base)
+53:     env.step(1)
+54:     assert base._last_action == 3  # 1 + argmax([0.1, 0.3, 0.6]) = 1 + 2
+</file>
+
 <file path="tests/test_variable_k_integration.py">
   1: """Integration test exercising a mixed-K pipeline path."""
   2: 
@@ -2886,126 +2930,6 @@ This section contains the contents of the repository's files.
 44:         weighted_nll = weighted_nll * mask
 45:     seq_loss = weighted_nll.sum(dim=1) + beta_terminal * survival[:, -1]
 46:     return seq_loss.mean()
-</file>
-
-<file path="AGENTS.md">
-  1: # AGENTS.md
-  2: 
-  3: Canonical repo contract for all coding agents (Claude, Copilot, Cursor, etc.).
-  4: 
-  5: ## Project Overview
-  6: 
-  7: Stanford CS234 final project: a unified quiz bowl RL buzzer system with two tracks. The belief-feature pipeline builds MC tossups, scores answer profiles with TF-IDF / SBERT / T5 / optional OpenAI / optional DSPy, trains or compares buzzers, and evaluates with S_q, Expected Wins, and calibration metrics. The T5 policy pipeline provides supervised warm-start and PPO for an end-to-end text policy using factorized stop/answer semantics (`P(WAIT)` and `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`). Three opt-in extensions: Expected Wins reward mode, variable-K answer choices, and DSPy integration. Additional opt-in feature-port surfaces are available for stop-only PPO (`scripts/train_ppo.py --policy-mode stop_only`) and no-buzz horizon behavior (`environment.end_mode: no_buzz`). `qanta-buzzer` is the canonical repo. qb-rl compatibility is preserved through additive shims rather than structural rewrites.
-  8: 
-  9: ## Setup
- 10: 
- 11: Requires Python >= 3.11.
- 12: 
- 13: ```bash
- 14: python3 -m venv .venv && source .venv/bin/activate
- 15: pip install -U pip && pip install -e .
- 16: ```
- 17: 
- 18: Optional extras:
- 19: 
- 20: ```bash
- 21: pip install -e '.[openai]'    # OpenAI embedding support
- 22: pip install -e '.[maskable]'  # MaskablePPO for variable-K
- 23: pip install -e '.[dspy]'      # DSPy LM-based scoring
- 24: ```
- 25: 
- 26: ## Architecture
- 27: 
- 28: | Package | Purpose |
- 29: |---------|---------|
- 30: | `qb_data/` | Data loading, answer profiles, stratified splits, MC construction, DSPy profiles |
- 31: | `qb_env/` | Gymnasium environment, text wrapper, opponent models, optional StopOnlyEnv wrapper, qb-rl shims |
- 32: | `models/` | Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy |
- 33: | `agents/` | Threshold, softmax-profile, sequential Bayes, PPO wrapper |
- 34: | `evaluation/` | S_q metric, Expected Wins, calibration, control experiments, plotting |
- 35: | `scripts/` | Pipeline entrypoints, DSPy compile, shared helpers |
- 36: | `training/` | T5 policy supervised + PPO trainers, hazard bridge utilities |
- 37: | `configs/` | YAML configuration files (default, smoke, t5_policy) |
- 38: 
- 39: ## Testing
- 40: 
- 41: 344 tests across 24 test files (3 skipped when optional extras not installed).
- 42: 
- 43: ```bash
- 44: pytest                    # full suite
- 45: pytest tests/test_qb_rl_bridge.py tests/test_factories.py tests/test_ppo_buzzer.py  # focused bridge/runtime checks
- 46: scripts/ci.sh             # CI entry point (runs pytest, exits nonzero on failure)
- 47: ```
- 48: 
- 49: ## Smoke Pipeline
- 50: 
- 51: Four-stage belief-feature smoke workflow. `--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`.
- 52: 
- 53: ```bash
- 54: python scripts/build_mc_dataset.py --smoke
- 55: python scripts/run_baselines.py --smoke
- 56: python scripts/train_ppo.py --smoke
- 57: python scripts/evaluate_all.py --smoke
- 58: ```
- 59: 
- 60: Or run all four stages via the wrapper script:
- 61: 
- 62: ```bash
- 63: scripts/manual-smoke.sh
- 64: ```
- 65: 
- 66: ## Full Pipeline
- 67: 
- 68: For the core pipeline and scripted extensions at full scale with 4-wave parallel execution:
- 69: 
- 70: ```bash
- 71: bash scripts/run_full_pipeline.sh --t5-model t5-base
- 72: ```
- 73: 
- 74: The script forces `likelihood.model=tfidf` for all belief-feature phases. Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19 require manual execution. See `docs/full-pipeline-runbook.md` for phase-by-phase details.
- 75: 
- 76: All pipeline scripts accept positional config overrides (e.g. `likelihood.model=tfidf`).
- 77: 
- 78: ## T5 Policy Pipeline
- 79: 
- 80: ```bash
- 81: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
- 82: python scripts/compare_policies.py --config configs/t5_policy.yaml
- 83: ```
- 84: 
- 85: Notes:
- 86: `scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the future hazard bridge. `--hazard-pretrain` intentionally raises `NotImplementedError` until that loop is implemented.
- 87: 
- 88: ## Configuration
- 89: 
- 90: | Config | Purpose |
- 91: |--------|---------|
- 92: | `configs/default.yaml` | Full runs with T5-large likelihood and 100k PPO timesteps |
- 93: | `configs/smoke.yaml` | Quick tests: 50 questions, TF-IDF likelihood, 3k PPO timesteps |
- 94: | `configs/t5_policy.yaml` | T5 policy pipeline: model, supervised, PPO, and data sections |
- 95: 
- 96: qb-rl config aliases are supported (e.g., `data.dataset`, `likelihood.sbert_name`, `environment.reward` as alias for `reward_mode`).
- 97: 
- 98: Additional environment options:
- 99: - `environment.end_mode: force_commit|no_buzz` controls horizon behavior
-100: - `environment.no_buzz_reward` is only used when `end_mode: no_buzz`
-101: 
-102: ## Compatibility Bridge
-103: 
-104: Old qb-rl import paths that still resolve:
-105: 
-106: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
-107: - `models.answer_profiles`
-108: - `agents.softmax_profile_buzzer`
-109: 
-110: OpenAI support is opt-in only. Default local workflows stay offline-friendly and do not require the `openai` package or `OPENAI_API_KEY`.
-111: 
-112: ## Conventions
-113: 
-114: - NumPy-style docstrings with Parameters/Returns sections
-115: - RL notation: `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
-116: - Prefer NumPy/PyTorch vectorized operations over loops in ML code
-117: - Explicit seeds for reproducibility (use 1, 2, 3 for multi-seed runs)
 </file>
 
 <file path="agents/softmax_profile_buzzer.py">
@@ -4575,6 +4499,71 @@ This section contains the contents of the repository's files.
 3: from qb_data.mc_builder import MCBuilder, MCQuestion, _token_overlap
 4: 
 5: __all__ = ["MCQuestion", "MCBuilder", "_token_overlap"]
+</file>
+
+<file path="qb_env/stop_only_env.py">
+ 1: """Stop-only action-space wrapper for the quiz bowl environment."""
+ 2: 
+ 3: from __future__ import annotations
+ 4: 
+ 5: from typing import Any
+ 6: 
+ 7: import gymnasium as gym
+ 8: import numpy as np
+ 9: from gymnasium import spaces
+10: 
+11: from qb_env.tossup_env import TossupMCEnv
+12: 
+13: 
+14: class StopOnlyEnv(gym.Wrapper):
+15:     """Wrap TossupMCEnv with a binary WAIT/BUZZ action space.
+16: 
+17:     Action mapping:
+18:     - 0 -> WAIT
+19:     - 1 -> BUZZ using the current answer-selection strategy
+20: 
+21:     The default answer-selection strategy commits to the current belief argmax.
+22:     """
+23: 
+24:     def __init__(self, env: TossupMCEnv, answer_mode: str = "argmax_belief") -> None:
+25:         super().__init__(env)
+26:         self.answer_mode = answer_mode
+27:         self.action_space = spaces.Discrete(2)
+28: 
+29:     def reset(
+30:         self,
+31:         *,
+32:         seed: int | None = None,
+33:         options: dict[str, Any] | None = None,
+34:     ) -> tuple[np.ndarray, dict[str, Any]]:
+35:         return self.env.reset(seed=seed, options=options)
+36: 
+37:     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+38:         if not self.action_space.contains(action):
+39:             raise ValueError(f"Invalid action: {action}")
+40:         if action == 0:
+41:             return self.env.step(0)
+42: 
+43:         if self.answer_mode != "argmax_belief":
+44:             raise ValueError(f"Unknown answer_mode: {self.answer_mode}")
+45: 
+46:         chosen_idx = int(np.argmax(self.env.belief))
+47:         return self.env.step(1 + chosen_idx)
+48: 
+49:     def action_masks(self) -> np.ndarray:
+50:         """Return a binary action mask for the WAIT/BUZZ action space.
+51: 
+52:         WAIT (0) is always valid. BUZZ (1) is valid when the wrapped env
+53:         has a non-empty belief vector that argmax can act on.
+54:         """
+55:         mask = np.array([True, False], dtype=bool)
+56:         if (
+57:             self.answer_mode == "argmax_belief"
+58:             and getattr(self.env, "belief", None) is not None
+59:             and len(self.env.belief) > 0
+60:         ):
+61:             mask[1] = True
+62:         return mask
 </file>
 
 <file path="qb_env/text_utils.py">
@@ -7579,6 +7568,126 @@ This section contains the contents of the repository's files.
 626:         return obj
 </file>
 
+<file path="AGENTS.md">
+  1: # AGENTS.md
+  2: 
+  3: Canonical repo contract for all coding agents (Claude, Copilot, Cursor, etc.).
+  4: 
+  5: ## Project Overview
+  6: 
+  7: Stanford CS234 final project: a unified quiz bowl RL buzzer system with two tracks. The belief-feature pipeline builds MC tossups, scores answer profiles with TF-IDF / SBERT / T5 / optional OpenAI / optional DSPy, trains or compares buzzers, and evaluates with S_q, Expected Wins, and calibration metrics. The T5 policy pipeline provides supervised warm-start and PPO for an end-to-end text policy using factorized stop/answer semantics (`P(WAIT)` and `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`). Three opt-in extensions: Expected Wins reward mode, variable-K answer choices, and DSPy integration. Additional opt-in feature-port surfaces are available for stop-only PPO (`scripts/train_ppo.py --policy-mode stop_only`) and no-buzz horizon behavior (`environment.end_mode: no_buzz`). `qanta-buzzer` is the canonical repo. qb-rl compatibility is preserved through additive shims rather than structural rewrites.
+  8: 
+  9: ## Setup
+ 10: 
+ 11: Requires Python >= 3.11.
+ 12: 
+ 13: ```bash
+ 14: python3 -m venv .venv && source .venv/bin/activate
+ 15: pip install -U pip && pip install -e .
+ 16: ```
+ 17: 
+ 18: Optional extras:
+ 19: 
+ 20: ```bash
+ 21: pip install -e '.[openai]'    # OpenAI embedding support
+ 22: pip install -e '.[maskable]'  # MaskablePPO for variable-K
+ 23: pip install -e '.[dspy]'      # DSPy LM-based scoring
+ 24: ```
+ 25: 
+ 26: ## Architecture
+ 27: 
+ 28: | Package | Purpose |
+ 29: |---------|---------|
+ 30: | `qb_data/` | Data loading, answer profiles, stratified splits, MC construction, DSPy profiles |
+ 31: | `qb_env/` | Gymnasium environment, text wrapper, opponent models, StopOnlyEnv wrapper (with action_masks), qb-rl shims |
+ 32: | `models/` | Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy |
+ 33: | `agents/` | Threshold, softmax-profile, sequential Bayes, PPO wrapper |
+ 34: | `evaluation/` | S_q metric, Expected Wins, calibration, control experiments, plotting |
+ 35: | `scripts/` | Pipeline entrypoints, DSPy compile, shared helpers |
+ 36: | `training/` | T5 policy supervised + PPO trainers, hazard bridge utilities |
+ 37: | `configs/` | YAML configuration files (default, smoke, t5_policy) |
+ 38: 
+ 39: ## Testing
+ 40: 
+ 41: 350 tests across 26 test files (3 skipped when optional extras not installed).
+ 42: 
+ 43: ```bash
+ 44: pytest                    # full suite
+ 45: pytest tests/test_qb_rl_bridge.py tests/test_factories.py tests/test_ppo_buzzer.py  # focused bridge/runtime checks
+ 46: scripts/ci.sh             # CI entry point (runs pytest, exits nonzero on failure)
+ 47: ```
+ 48: 
+ 49: ## Smoke Pipeline
+ 50: 
+ 51: Four-stage belief-feature smoke workflow. `--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`.
+ 52: 
+ 53: ```bash
+ 54: python scripts/build_mc_dataset.py --smoke
+ 55: python scripts/run_baselines.py --smoke
+ 56: python scripts/train_ppo.py --smoke
+ 57: python scripts/evaluate_all.py --smoke
+ 58: ```
+ 59: 
+ 60: Or run all four stages via the wrapper script:
+ 61: 
+ 62: ```bash
+ 63: scripts/manual-smoke.sh
+ 64: ```
+ 65: 
+ 66: ## Full Pipeline
+ 67: 
+ 68: For the core pipeline and scripted extensions at full scale with 4-wave parallel execution:
+ 69: 
+ 70: ```bash
+ 71: bash scripts/run_full_pipeline.sh --t5-model t5-base
+ 72: ```
+ 73: 
+ 74: The script forces `likelihood.model=tfidf` for all belief-feature phases. Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19 require manual execution. See `docs/full-pipeline-runbook.md` for phase-by-phase details.
+ 75: 
+ 76: All pipeline scripts accept positional config overrides (e.g. `likelihood.model=tfidf`).
+ 77: 
+ 78: ## T5 Policy Pipeline
+ 79: 
+ 80: ```bash
+ 81: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
+ 82: python scripts/compare_policies.py --config configs/t5_policy.yaml
+ 83: ```
+ 84: 
+ 85: Notes:
+ 86: `scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the future hazard bridge. `--hazard-pretrain` intentionally raises `NotImplementedError` until that loop is implemented.
+ 87: 
+ 88: ## Configuration
+ 89: 
+ 90: | Config | Purpose |
+ 91: |--------|---------|
+ 92: | `configs/default.yaml` | Full runs with T5-large likelihood and 100k PPO timesteps |
+ 93: | `configs/smoke.yaml` | Quick tests: 50 questions, TF-IDF likelihood, 3k PPO timesteps |
+ 94: | `configs/t5_policy.yaml` | T5 policy pipeline: model, supervised, PPO, and data sections |
+ 95: 
+ 96: qb-rl config aliases are supported (e.g., `data.dataset`, `likelihood.sbert_name`, `environment.reward` as alias for `reward_mode`).
+ 97: 
+ 98: Additional environment options:
+ 99: - `environment.end_mode: force_commit|no_buzz` controls horizon behavior
+100: - `environment.no_buzz_reward` is only used when `end_mode: no_buzz`
+101: 
+102: ## Compatibility Bridge
+103: 
+104: Old qb-rl import paths that still resolve:
+105: 
+106: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
+107: - `models.answer_profiles`
+108: - `agents.softmax_profile_buzzer`
+109: 
+110: OpenAI support is opt-in only. Default local workflows stay offline-friendly and do not require the `openai` package or `OPENAI_API_KEY`.
+111: 
+112: ## Conventions
+113: 
+114: - NumPy-style docstrings with Parameters/Returns sections
+115: - RL notation: `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
+116: - Prefer NumPy/PyTorch vectorized operations over loops in ML code
+117: - Explicit seeds for reproducibility (use 1, 2, 3 for multi-seed runs)
+</file>
+
 <file path="agents/bayesian_buzzer.py">
   1: from __future__ import annotations
   2: 
@@ -10285,6 +10394,217 @@ This section contains the contents of the repository's files.
 371: 
 372: if __name__ == "__main__":
 373:     main()
+</file>
+
+<file path="tests/conftest.py">
+  1: """Shared pytest fixtures for test suites.
+  2: 
+  3: Provides reusable test data for environment, likelihood, features,
+  4: factory, and agent test suites. All fixtures create minimal but complete
+  5: data structures that satisfy the interfaces expected by the codebase modules.
+  6: 
+  7: Fixtures
+  8: --------
+  9: sample_mc_question
+ 10:     A single MCQuestion with 4 options (gold_index=0), 6 clue steps,
+ 11:     and pre-computed cumulative prefixes. Suitable for environment and
+ 12:     feature extraction tests.
+ 13: 
+ 14: sample_config
+ 15:     A minimal config dict matching the YAML structure expected by
+ 16:     ``make_env_from_config`` and ``build_likelihood_from_config``.
+ 17:     Uses "simple" reward mode for predictable test outcomes.
+ 18: 
+ 19: sample_corpus
+ 20:     A list of 10 short text strings about US presidents and historical
+ 21:     events. Suitable for fitting TF-IDF vectorizers in tests.
+ 22: 
+ 23: sample_tfidf_env
+ 24:     A TossupMCEnv with TF-IDF likelihood and 3 sample MCQuestions.
+ 25:     Fast to construct, suitable for agent and PPO tests.
+ 26: """
+ 27: 
+ 28: from __future__ import annotations
+ 29: 
+ 30: from typing import TYPE_CHECKING
+ 31: 
+ 32: import pytest
+ 33: 
+ 34: from qb_data.mc_builder import MCQuestion
+ 35: 
+ 36: if TYPE_CHECKING:
+ 37:     from qb_env.tossup_env import TossupMCEnv
+ 38: 
+ 39: 
+ 40: @pytest.fixture
+ 41: def sample_mc_question() -> MCQuestion:
+ 42:     """Return a minimal MCQuestion for testing.
+ 43: 
+ 44:     The question is about the first US president with 4 answer options.
+ 45:     Gold answer is "George Washington" at index 0. Six clue steps are
+ 46:     defined via run_indices with pre-computed cumulative prefixes.
+ 47: 
+ 48:     Returns
+ 49:     -------
+ 50:     MCQuestion
+ 51:         A complete MCQuestion suitable for environment testing.
+ 52:     """
+ 53:     tokens = [
+ 54:         "Who", "was", "the", "first", "president",
+ 55:         "of", "the", "United", "States", "?",
+ 56:     ]
+ 57:     run_indices = [0, 2, 4, 6, 8, 9]
+ 58:     cumulative_prefixes = [
+ 59:         "Who",
+ 60:         "Who was the",
+ 61:         "Who was the first president",
+ 62:         "Who was the first president of the",
+ 63:         "Who was the first president of the United States",
+ 64:         "Who was the first president of the United States ?",
+ 65:     ]
+ 66:     return MCQuestion(
+ 67:         qid="test_q1",
+ 68:         question="Who was the first president of the United States?",
+ 69:         tokens=tokens,
+ 70:         answer_primary="George Washington",
+ 71:         clean_answers=["George Washington", "Washington"],
+ 72:         run_indices=run_indices,
+ 73:         human_buzz_positions=[],
+ 74:         category="History",
+ 75:         cumulative_prefixes=cumulative_prefixes,
+ 76:         options=[
+ 77:             "George Washington",
+ 78:             "Thomas Jefferson",
+ 79:             "John Adams",
+ 80:             "Benjamin Franklin",
+ 81:         ],
+ 82:         gold_index=0,
+ 83:         option_profiles=[
+ 84:             "George Washington first president commander revolutionary war continental army",
+ 85:             "Thomas Jefferson third president declaration independence Virginia",
+ 86:             "John Adams second president Massachusetts diplomat",
+ 87:             "Benjamin Franklin inventor diplomat Philadelphia printing press",
+ 88:         ],
+ 89:         option_answer_primary=[
+ 90:             "George Washington",
+ 91:             "Thomas Jefferson",
+ 92:             "John Adams",
+ 93:             "Benjamin Franklin",
+ 94:         ],
+ 95:         distractor_strategy="test",
+ 96:     )
+ 97: 
+ 98: 
+ 99: @pytest.fixture
+100: def sample_config() -> dict:
+101:     """Return a minimal config dict for factory tests.
+102: 
+103:     Matches the YAML structure expected by ``make_env_from_config`` and
+104:     ``build_likelihood_from_config``. Uses "simple" reward mode and
+105:     "from_scratch" belief mode for predictable test outcomes.
+106: 
+107:     Returns
+108:     -------
+109:     dict
+110:         Config dict with data, environment, and likelihood sections.
+111:     """
+112:     return {
+113:         "data": {"K": 4},
+114:         "environment": {
+115:             "reward": "simple",
+116:             "wait_penalty": 0.0,
+117:             "buzz_correct": 1.0,
+118:             "buzz_incorrect": -1.0,
+119:             "belief_mode": "from_scratch",
+120:         },
+121:         "likelihood": {
+122:             "model": "sbert",
+123:             "beta": 5.0,
+124:         },
+125:     }
+126: 
+127: 
+128: @pytest.fixture
+129: def sample_corpus() -> list[str]:
+130:     """Return a list of 10 short text strings for TF-IDF fitting.
+131: 
+132:     Topics cover US presidents and major historical events, providing
+133:     sufficient vocabulary variety for TF-IDF vectorizer tests.
+134: 
+135:     Returns
+136:     -------
+137:     list[str]
+138:         Ten text strings suitable for corpus fitting.
+139:     """
+140:     return [
+141:         "George Washington was the first president of the United States",
+142:         "Thomas Jefferson wrote the Declaration of Independence",
+143:         "John Adams served as the second president after Washington",
+144:         "Benjamin Franklin was an inventor and diplomat in Philadelphia",
+145:         "Abraham Lincoln freed the slaves during the Civil War",
+146:         "Alexander Hamilton established the national banking system",
+147:         "James Madison authored the Bill of Rights and Constitution",
+148:         "Andrew Jackson was a military hero and populist president",
+149:         "The American Revolution established independence from Britain",
+150:         "The Constitution created a federal system of government",
+151:     ]
+152: 
+153: 
+154: @pytest.fixture(scope="module")
+155: def sample_t5_model():
+156:     """Return a T5Likelihood model for testing.
+157: 
+158:     Uses t5-small (60M params) for fast test execution. Scoped to module
+159:     level so the model is loaded once per test file, not per test function.
+160: 
+161:     Returns
+162:     -------
+163:     T5Likelihood
+164:         A T5 likelihood model suitable for testing semantic scoring.
+165: 
+166:     Notes
+167:     -----
+168:     This fixture may take 5-10 seconds on first run to download the model
+169:     from HuggingFace. Subsequent runs use cached weights.
+170:     """
+171:     from models.likelihoods import T5Likelihood
+172: 
+173:     return T5Likelihood(model_name="t5-small")
+174: 
+175: 
+176: @pytest.fixture
+177: def sample_tfidf_env(sample_mc_question: MCQuestion) -> "TossupMCEnv":
+178:     """Return a TossupMCEnv with TF-IDF likelihood and 3 sample questions.
+179: 
+180:     Creates a lightweight environment suitable for PPOBuzzer and agent
+181:     tests. Uses TF-IDF likelihood for fast execution (< 1ms per score).
+182:     Three copies of the sample question are used to provide enough data
+183:     for environment sampling.
+184: 
+185:     Returns
+186:     -------
+187:     TossupMCEnv
+188:         A configured environment with simple reward mode.
+189:     """
+190:     from models.likelihoods import TfIdfLikelihood
+191:     from qb_env.tossup_env import TossupMCEnv
+192: 
+193:     corpus = sample_mc_question.option_profiles[:]
+194:     model = TfIdfLikelihood(corpus_texts=corpus)
+195: 
+196:     # Use 3 copies for variety in sampling
+197:     questions = [sample_mc_question] * 3
+198:     return TossupMCEnv(
+199:         questions=questions,
+200:         likelihood_model=model,
+201:         K=4,
+202:         reward_mode="simple",
+203:         wait_penalty=0.0,
+204:         buzz_correct=1.0,
+205:         buzz_incorrect=-1.0,
+206:         belief_mode="from_scratch",
+207:         beta=5.0,
+208:     )
 </file>
 
 <file path="tests/test_build_mc_dataset.py">
@@ -13637,217 +13957,6 @@ This section contains the contents of the repository's files.
 334:     sys.exit(main())
 </file>
 
-<file path="tests/conftest.py">
-  1: """Shared pytest fixtures for test suites.
-  2: 
-  3: Provides reusable test data for environment, likelihood, features,
-  4: factory, and agent test suites. All fixtures create minimal but complete
-  5: data structures that satisfy the interfaces expected by the codebase modules.
-  6: 
-  7: Fixtures
-  8: --------
-  9: sample_mc_question
- 10:     A single MCQuestion with 4 options (gold_index=0), 6 clue steps,
- 11:     and pre-computed cumulative prefixes. Suitable for environment and
- 12:     feature extraction tests.
- 13: 
- 14: sample_config
- 15:     A minimal config dict matching the YAML structure expected by
- 16:     ``make_env_from_config`` and ``build_likelihood_from_config``.
- 17:     Uses "simple" reward mode for predictable test outcomes.
- 18: 
- 19: sample_corpus
- 20:     A list of 10 short text strings about US presidents and historical
- 21:     events. Suitable for fitting TF-IDF vectorizers in tests.
- 22: 
- 23: sample_tfidf_env
- 24:     A TossupMCEnv with TF-IDF likelihood and 3 sample MCQuestions.
- 25:     Fast to construct, suitable for agent and PPO tests.
- 26: """
- 27: 
- 28: from __future__ import annotations
- 29: 
- 30: from typing import TYPE_CHECKING
- 31: 
- 32: import pytest
- 33: 
- 34: from qb_data.mc_builder import MCQuestion
- 35: 
- 36: if TYPE_CHECKING:
- 37:     from qb_env.tossup_env import TossupMCEnv
- 38: 
- 39: 
- 40: @pytest.fixture
- 41: def sample_mc_question() -> MCQuestion:
- 42:     """Return a minimal MCQuestion for testing.
- 43: 
- 44:     The question is about the first US president with 4 answer options.
- 45:     Gold answer is "George Washington" at index 0. Six clue steps are
- 46:     defined via run_indices with pre-computed cumulative prefixes.
- 47: 
- 48:     Returns
- 49:     -------
- 50:     MCQuestion
- 51:         A complete MCQuestion suitable for environment testing.
- 52:     """
- 53:     tokens = [
- 54:         "Who", "was", "the", "first", "president",
- 55:         "of", "the", "United", "States", "?",
- 56:     ]
- 57:     run_indices = [0, 2, 4, 6, 8, 9]
- 58:     cumulative_prefixes = [
- 59:         "Who",
- 60:         "Who was the",
- 61:         "Who was the first president",
- 62:         "Who was the first president of the",
- 63:         "Who was the first president of the United States",
- 64:         "Who was the first president of the United States ?",
- 65:     ]
- 66:     return MCQuestion(
- 67:         qid="test_q1",
- 68:         question="Who was the first president of the United States?",
- 69:         tokens=tokens,
- 70:         answer_primary="George Washington",
- 71:         clean_answers=["George Washington", "Washington"],
- 72:         run_indices=run_indices,
- 73:         human_buzz_positions=[],
- 74:         category="History",
- 75:         cumulative_prefixes=cumulative_prefixes,
- 76:         options=[
- 77:             "George Washington",
- 78:             "Thomas Jefferson",
- 79:             "John Adams",
- 80:             "Benjamin Franklin",
- 81:         ],
- 82:         gold_index=0,
- 83:         option_profiles=[
- 84:             "George Washington first president commander revolutionary war continental army",
- 85:             "Thomas Jefferson third president declaration independence Virginia",
- 86:             "John Adams second president Massachusetts diplomat",
- 87:             "Benjamin Franklin inventor diplomat Philadelphia printing press",
- 88:         ],
- 89:         option_answer_primary=[
- 90:             "George Washington",
- 91:             "Thomas Jefferson",
- 92:             "John Adams",
- 93:             "Benjamin Franklin",
- 94:         ],
- 95:         distractor_strategy="test",
- 96:     )
- 97: 
- 98: 
- 99: @pytest.fixture
-100: def sample_config() -> dict:
-101:     """Return a minimal config dict for factory tests.
-102: 
-103:     Matches the YAML structure expected by ``make_env_from_config`` and
-104:     ``build_likelihood_from_config``. Uses "simple" reward mode and
-105:     "from_scratch" belief mode for predictable test outcomes.
-106: 
-107:     Returns
-108:     -------
-109:     dict
-110:         Config dict with data, environment, and likelihood sections.
-111:     """
-112:     return {
-113:         "data": {"K": 4},
-114:         "environment": {
-115:             "reward": "simple",
-116:             "wait_penalty": 0.0,
-117:             "buzz_correct": 1.0,
-118:             "buzz_incorrect": -1.0,
-119:             "belief_mode": "from_scratch",
-120:         },
-121:         "likelihood": {
-122:             "model": "sbert",
-123:             "beta": 5.0,
-124:         },
-125:     }
-126: 
-127: 
-128: @pytest.fixture
-129: def sample_corpus() -> list[str]:
-130:     """Return a list of 10 short text strings for TF-IDF fitting.
-131: 
-132:     Topics cover US presidents and major historical events, providing
-133:     sufficient vocabulary variety for TF-IDF vectorizer tests.
-134: 
-135:     Returns
-136:     -------
-137:     list[str]
-138:         Ten text strings suitable for corpus fitting.
-139:     """
-140:     return [
-141:         "George Washington was the first president of the United States",
-142:         "Thomas Jefferson wrote the Declaration of Independence",
-143:         "John Adams served as the second president after Washington",
-144:         "Benjamin Franklin was an inventor and diplomat in Philadelphia",
-145:         "Abraham Lincoln freed the slaves during the Civil War",
-146:         "Alexander Hamilton established the national banking system",
-147:         "James Madison authored the Bill of Rights and Constitution",
-148:         "Andrew Jackson was a military hero and populist president",
-149:         "The American Revolution established independence from Britain",
-150:         "The Constitution created a federal system of government",
-151:     ]
-152: 
-153: 
-154: @pytest.fixture(scope="module")
-155: def sample_t5_model():
-156:     """Return a T5Likelihood model for testing.
-157: 
-158:     Uses t5-small (60M params) for fast test execution. Scoped to module
-159:     level so the model is loaded once per test file, not per test function.
-160: 
-161:     Returns
-162:     -------
-163:     T5Likelihood
-164:         A T5 likelihood model suitable for testing semantic scoring.
-165: 
-166:     Notes
-167:     -----
-168:     This fixture may take 5-10 seconds on first run to download the model
-169:     from HuggingFace. Subsequent runs use cached weights.
-170:     """
-171:     from models.likelihoods import T5Likelihood
-172: 
-173:     return T5Likelihood(model_name="t5-small")
-174: 
-175: 
-176: @pytest.fixture
-177: def sample_tfidf_env(sample_mc_question: MCQuestion) -> "TossupMCEnv":
-178:     """Return a TossupMCEnv with TF-IDF likelihood and 3 sample questions.
-179: 
-180:     Creates a lightweight environment suitable for PPOBuzzer and agent
-181:     tests. Uses TF-IDF likelihood for fast execution (< 1ms per score).
-182:     Three copies of the sample question are used to provide enough data
-183:     for environment sampling.
-184: 
-185:     Returns
-186:     -------
-187:     TossupMCEnv
-188:         A configured environment with simple reward mode.
-189:     """
-190:     from models.likelihoods import TfIdfLikelihood
-191:     from qb_env.tossup_env import TossupMCEnv
-192: 
-193:     corpus = sample_mc_question.option_profiles[:]
-194:     model = TfIdfLikelihood(corpus_texts=corpus)
-195: 
-196:     # Use 3 copies for variety in sampling
-197:     questions = [sample_mc_question] * 3
-198:     return TossupMCEnv(
-199:         questions=questions,
-200:         likelihood_model=model,
-201:         K=4,
-202:         reward_mode="simple",
-203:         wait_penalty=0.0,
-204:         buzz_correct=1.0,
-205:         buzz_incorrect=-1.0,
-206:         belief_mode="from_scratch",
-207:         beta=5.0,
-208:     )
-</file>
-
 <file path="tests/test_agents.py">
   1: """Test suite for agents/ -- baseline agent execution and episode result schemas.
   2: 
@@ -16627,474 +16736,6 @@ This section contains the contents of the repository's files.
 764:     raise ValueError(f"Unknown likelihood model: {model_name}")
 </file>
 
-<file path="scripts/compare_policies.py">
-  1: #!/usr/bin/env python3
-  2: """
-  3: Compare T5-as-likelihood (MLP policy) vs T5-as-policy (end-to-end).
-  4: 
-  5: Evaluates both approaches on the same test set using the same metric
-  6: functions (accuracy, S_q, ECE, Brier score, buzz position).
-  7: 
-  8: **Important caveats for numeric comparison:**
-  9: 
- 10: The two evaluation paths are *not* fully apples-to-apples:
- 11: 
- 12: - The MLP path uses config-driven environment settings (e.g. wait_penalty
- 13:   from default.yaml or smoke.yaml).
- 14: - The T5 path uses its own hardcoded reward settings (wait_penalty=0.1,
- 15:   matching the T5 pipeline's default).
- 16: - The MLP path builds TF-IDF from test questions + all option profiles.
- 17:   The T5 path builds TF-IDF from profiles of the first 100 questions
- 18:   only (lightweight env reward computation — the T5 policy does not
- 19:   consume TF-IDF likelihoods).
- 20: - S_q semantics differ: for MLP, c_trace is a sigmoid confidence proxy
- 21:   over belief max; for T5, c_trace is the wait-head buzz probability.
- 22: 
- 23: These differences are inherent to the two architectures.  Accuracy and
- 24: buzz-position comparisons are directly meaningful.  ECE and Brier are
- 25: computed identically (both use top_p at buzz time).  S_q and reward
- 26: comparisons should be interpreted qualitatively.
- 27: 
- 28: MLP Policy (Phase 4):
- 29:     T5/TF-IDF computes likelihood scores -> belief features -> MLP
- 30:     policy decides.  Uses SB3 PPO with belief-feature observations.
- 31: 
- 32: T5 Policy (Phase 6):
- 33:     T5 encoder processes text directly -> PolicyHead decides.
- 34:     Uses custom PPO with text observations via TextObservationWrapper.
- 35: 
- 36: Usage:
- 37:     python scripts/compare_policies.py \\
- 38:         --mlp-checkpoint checkpoints/ppo/best_model \\
- 39:         --t5-checkpoint checkpoints/ppo_t5/best_model \\
- 40:         --output results/t5_comparison.json
- 41: 
- 42:     python scripts/compare_policies.py \\
- 43:         --t5-checkpoint checkpoints/ppo_t5/best_model \\
- 44:         --t5-only
- 45: """
- 46: 
- 47: from __future__ import annotations
- 48: 
- 49: import argparse
- 50: import sys
- 51: from pathlib import Path
- 52: from typing import Any
- 53: 
- 54: PROJECT_ROOT = Path(__file__).resolve().parents[1]
- 55: if str(PROJECT_ROOT) not in sys.path:
- 56:     sys.path.insert(0, str(PROJECT_ROOT))
- 57: 
- 58: import numpy as np
- 59: 
- 60: from evaluation.metrics import (
- 61:     calibration_pairs_at_buzz,
- 62:     expected_calibration_error,
- 63:     brier_score,
- 64:     summarize_buzz_metrics,
- 65:     system_score,
- 66: )
- 67: from scripts._common import ARTIFACT_DIR, load_config, load_mc_questions, save_json
- 68: 
- 69: 
- 70: def evaluate_mlp_policy(
- 71:     checkpoint_path: str,
- 72:     test_questions: list,
- 73:     config: dict,
- 74: ) -> dict[str, Any]:
- 75:     """Evaluate Phase 4 MLP policy with T5/TF-IDF likelihood on belief features.
- 76: 
- 77:     Loads a PPOBuzzer from an SB3 checkpoint, runs deterministic episodes
- 78:     on each test question, and computes accuracy, S_q, ECE, and buzz
- 79:     position metrics.
- 80: 
- 81:     Parameters
- 82:     ----------
- 83:     checkpoint_path : str
- 84:         Path to SB3 PPO model checkpoint (`.zip`` file).
- 85:     test_questions : list
- 86:         List of MCQuestion instances to evaluate on.
- 87:     config : dict
- 88:         YAML config dict with environment, likelihood, and data sections.
- 89: 
- 90:     Returns
- 91:     -------
- 92:     dict[str, Any]
- 93:         Evaluation results: accuracy, mean_sq, ece, brier, avg_buzz_pos,
- 94:         n_questions.
- 95:     """
- 96:     from agents.ppo_buzzer import PPOBuzzer
- 97:     from models.likelihoods import TfIdfLikelihood
- 98:     from qb_env.tossup_env import make_env_from_config
- 99: 
-100:     # Build likelihood model
-101:     corpus = (
-102:         [q.question for q in test_questions]
-103:         + [p for q in test_questions for p in q.option_profiles]
-104:     )
-105:     likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
-106: 
-107:     # Build environment with all test questions
-108:     env = make_env_from_config(
-109:         mc_questions=test_questions,
-110:         likelihood_model=likelihood_model,
-111:         config=config,
-112:     )
-113: 
-114:     # Load trained agent
-115:     use_maskable = bool(config.get("ppo", {}).get("use_maskable_ppo", False))
-116:     agent = PPOBuzzer.load(checkpoint_path, env=env, use_maskable_ppo=use_maskable)
-117: 
-118:     # Run episodes — one per test question, deterministic order
-119:     results = [
-120:         agent.run_episode(deterministic=True, question_idx=i)
-121:         for i in range(len(test_questions))
-122:     ]
-123: 
-124:     # Compute metrics
-125:     buzz_metrics = summarize_buzz_metrics(results)
-126:     confidences, outcomes = calibration_pairs_at_buzz(results)
-127:     ece = expected_calibration_error(confidences, outcomes)
-128:     brier = brier_score(confidences, outcomes)
-129: 
-130:     return {
-131:         "accuracy": buzz_metrics["buzz_accuracy"],
-132:         "mean_sq": buzz_metrics["mean_sq"],
-133:         "ece": ece,
-134:         "brier": brier,
-135:         "avg_buzz_pos": float(np.mean(buzz_positions)) if buzz_positions else 0.0,
-136:         "mean_reward": buzz_metrics["mean_reward_like"],
-137:         "n_questions": len(test_questions),
-138:     }
-139: 
-140: 
-141: def evaluate_t5_policy(
-142:     checkpoint_path: str,
-143:     test_questions: list,
-144:     config: dict,
-145: ) -> dict[str, Any]:
-146:     """Evaluate Phase 6 T5 end-to-end policy on text observations.
-147: 
-148:     Loads a T5PolicyModel from checkpoint, runs deterministic episodes
-149:     on each test question using TextObservationWrapper, and computes the
-150:     same metrics as evaluate_mlp_policy for fair comparison.
-151: 
-152:     Parameters
-153:     ----------
-154:     checkpoint_path : str
-155:         Path to T5PolicyModel checkpoint directory.
-156:     test_questions : list
-157:         List of MCQuestion instances to evaluate on.
-158:     config : dict
-159:         YAML config dict.
-160: 
-161:     Returns
-162:     -------
-163:     dict[str, Any]
-164:         Evaluation results: accuracy, mean_sq, ece, brier, avg_buzz_pos,
-165:         n_questions.
-166:     """
-167:     import torch
-168:     from models.t5_policy import T5PolicyModel
-169:     from models.likelihoods import TfIdfLikelihood
-170:     from qb_env.text_wrapper import TextObservationWrapper
-171:     from qb_env.tossup_env import TossupMCEnv
-172: 
-173:     # Load T5 policy model
-174:     model = T5PolicyModel.load_pretrained(checkpoint_path)
-175:     model.eval()
-176: 
-177:     # Build lightweight likelihood for environment reward computation
-178:     corpus = []
-179:     for q in test_questions[:100]:
-180:         corpus.extend(q.option_profiles)
-181:     likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
-182: 
-183:     correct_count = 0
-184:     total_count = 0
-185:     sq_scores = []
-186:     confidences = []
-187:     outcomes = []
-188:     buzz_positions = []
-189: 
-190:     with torch.no_grad():
-191:         for question in test_questions:
-192:             env = TossupMCEnv(
-193:                 questions=[question],
-194:                 likelihood_model=likelihood_model,
-195:                 K=len(question.options),
-196:                 reward_mode="time_penalty",
-197:                 wait_penalty=0.1,
-198:                 belief_mode="from_scratch",
-199:             )
-200:             wrapped_env = TextObservationWrapper(env)
-201: 
-202:             obs, info = wrapped_env.reset()
-203:             done = False
-204:             c_trace = []
-205:             g_trace = []
-206:             top_p_trace = []
-207:             episode_reward = 0.0
-208:             step_count = 0
-209: 
-210:             while not done:
-211:                 inputs = model.encode_input([obs], max_length=512)
-212:                 actions, act_info = model.select_action(
-213:                     inputs["input_ids"],
-214:                     inputs["attention_mask"],
-215:                     deterministic=True,
-216:                 )
-217: 
-218:                 action = actions.item()
-219: 
-220:                 wait_probs = act_info["wait_probs"]
-221:                 buzz_prob = wait_probs[0, 1].item()
-222:                 c_trace.append(buzz_prob)
-223: 
-224:                 answer_probs = act_info["answer_probs"]
-225:                 gold_prob = answer_probs[0, question.gold_index].item()
-226:                 g_trace.append(gold_prob)
-227: 
-228:                 top_p = float(answer_probs[0].max().item())
-229:                 top_p_trace.append(top_p)
-230: 
-231:                 obs, reward, terminated, truncated, step_info = (
-232:                     wrapped_env.step(action)
-233:                 )
-234:                 done = terminated or truncated
-235:                 episode_reward += reward
-236:                 step_count += 1
-237: 
-238:             sq = system_score(c_trace, g_trace)
-239:             sq_scores.append(sq)
-240: 
-241:             is_correct = step_info.get("correct", False) or step_info.get(
-242:                 "forced_correct", False
-243:             )
-244:             if is_correct:
-245:                 correct_count += 1
-246:             total_count += 1
-247: 
-248:             # Calibration: use top_p (max answer prob) for consistency
-249:             # with belief-feature agents
-250:             if top_p_trace:
-251:                 buzz_step = step_count - 1
-252:                 confidences.append(top_p_trace[-1])
-253:                 outcomes.append(1 if is_correct else 0)
-254:                 buzz_positions.append(buzz_step)
-255: 
-256:     accuracy = correct_count / max(1, total_count)
-257:     mean_sq = float(np.mean(sq_scores)) if sq_scores else 0.0
-258:     ece = expected_calibration_error(confidences, outcomes)
-259:     brier_val = brier_score(confidences, outcomes)
-260:     avg_buzz_pos = float(np.mean(buzz_positions)) if buzz_positions else 0.0
-261: 
-262:     return {
-263:         "accuracy": accuracy,
-264:         "mean_sq": mean_sq,
-265:         "ece": ece,
-266:         "brier": brier_val,
-267:         "avg_buzz_pos": avg_buzz_pos,
-268:         "mean_reward": 0.0,  # Not tracked per-episode for T5 policy eval
-269:         "n_questions": total_count,
-270:     }
-271: 
-272: 
-273: def print_comparison(
-274:     mlp_results: dict[str, Any] | None,
-275:     t5_results: dict[str, Any],
-276:     test_size: int,
-277: ) -> dict[str, Any]:
-278:     """Print and return comparison summary.
-279: 
-280:     Parameters
-281:     ----------
-282:     mlp_results : dict or None
-283:         MLP policy evaluation results. None if --t5-only.
-284:     t5_results : dict
-285:         T5 policy evaluation results.
-286:     test_size : int
-287:         Number of test questions evaluated.
-288: 
-289:     Returns
-290:     -------
-291:     dict[str, Any]
-292:         Complete comparison dict for JSON serialization.
-293:     """
-294:     print("\n" + "=" * 70)
-295:     print("COMPARISON RESULTS: T5-as-Likelihood vs T5-as-Policy")
-296:     print("=" * 70)
-297:     print(f"Test set size: {test_size}")
-298:     print()
-299: 
-300:     if mlp_results is not None:
-301:         print(f"{'Metric':<20} {'MLP (T5-likelihood)':>20} {'T5 (end-to-end)':>20} {'Difference':>15}")
-302:         print("-" * 75)
-303:         for metric in ["accuracy", "mean_sq", "ece", "brier", "avg_buzz_pos"]:
-304:             mlp_val = mlp_results.get(metric, 0.0)
-305:             t5_val = t5_results.get(metric, 0.0)
-306:             diff = t5_val - mlp_val
-307:             print(f"{metric:<20} {mlp_val:>20.4f} {t5_val:>20.4f} {diff:>+15.4f}")
-308:     else:
-309:         print("T5 Policy (end-to-end) results:")
-310:         print("-" * 40)
-311:         for metric in ["accuracy", "mean_sq", "ece", "brier", "avg_buzz_pos"]:
-312:             val = t5_results.get(metric, 0.0)
-313:             print(f"  {metric:<20}: {val:.4f}")
-314: 
-315:     # Build comparison dict
-316:     comparison: dict[str, Any] = {
-317:         "test_size": test_size,
-318:         "t5_policy": t5_results,
-319:     }
-320:     if mlp_results is not None:
-321:         comparison["mlp_policy"] = mlp_results
-322:         comparison["difference"] = {
-323:             metric: t5_results.get(metric, 0.0) - mlp_results.get(metric, 0.0)
-324:             for metric in ["accuracy", "mean_sq", "ece", "brier", "avg_buzz_pos"]
-325:         }
-326: 
-327:     return comparison
-328: 
-329: 
-330: def parse_compare_args() -> argparse.Namespace:
-331:     """Parse comparison script arguments.
-332: 
-333:     Returns
-334:     -------
-335:     argparse.Namespace
-336:         Parsed arguments.
-337:     """
-338:     parser = argparse.ArgumentParser(
-339:         description="Compare T5-as-likelihood (MLP) vs T5-as-policy.",
-340:     )
-341:     parser.add_argument(
-342:         "--mlp-checkpoint",
-343:         type=str,
-344:         default=None,
-345:         help="Path to Phase 4 MLP policy checkpoint.",
-346:     )
-347:     parser.add_argument(
-348:         "--t5-checkpoint",
-349:         type=str,
-350:         required=True,
-351:         help="Path to Phase 6 T5 policy checkpoint.",
-352:     )
-353:     parser.add_argument(
-354:         "--config",
-355:         type=str,
-356:         default=None,
-357:         help="Path to YAML config file.",
-358:     )
-359:     parser.add_argument(
-360:         "--mc-path",
-361:         type=str,
-362:         default=None,
-363:         help="Path to MC dataset JSON file.",
-364:     )
-365:     parser.add_argument(
-366:         "--output",
-367:         type=str,
-368:         default="results/t5_comparison.json",
-369:         help="Path for output JSON results.",
-370:     )
-371:     parser.add_argument(
-372:         "--smoke",
-373:         action="store_true",
-374:         help="Quick test with first 50 questions.",
-375:     )
-376:     parser.add_argument(
-377:         "--t5-only",
-378:         action="store_true",
-379:         help="Only evaluate T5 policy (skip MLP comparison).",
-380:     )
-381:     return parser.parse_args()
-382: 
-383: 
-384: def main() -> None:
-385:     """Run the comparison experiment."""
-386:     args = parse_compare_args()
-387: 
-388:     # Load config
-389:     config = load_config(args.config)
-390: 
-391:     # Load test questions
-392:     if args.mc_path:
-393:         mc_path = Path(args.mc_path)
-394:     else:
-395:         candidates = [
-396:             ARTIFACT_DIR / "main" / "mc_dataset.json",
-397:             ARTIFACT_DIR / "smoke" / "mc_dataset.json",
-398:             PROJECT_ROOT / "data" / "processed" / "mc_dataset.json",
-399:         ]
-400:         mc_path = None
-401:         for candidate in candidates:
-402:             if candidate.exists():
-403:                 mc_path = candidate
-404:                 break
-405:         if mc_path is None:
-406:             print("ERROR: No MC dataset found. Run build_mc_dataset.py first.")
-407:             sys.exit(1)
-408: 
-409:     print(f"Loading questions from: {mc_path}")
-410:     all_questions = load_mc_questions(mc_path)
-411:     print(f"Loaded {len(all_questions)} questions")
-412: 
-413:     # Prefer the persisted test split if it exists alongside mc_dataset.json
-414:     test_split_path = mc_path.parent / "test_dataset.json"
-415:     if test_split_path.exists():
-416:         test_questions = load_mc_questions(test_split_path)
-417:         print(f"Using persisted test split: {len(test_questions)} questions")
-418:     else:
-419:         import random
-420:         rng = random.Random(42)
-421:         shuffled = all_questions[:]
-422:         rng.shuffle(shuffled)
-423:         test_start = int(len(shuffled) * 0.85)
-424:         test_questions = shuffled[test_start:]
-425:         print(f"No test_dataset.json found; using random 15% split: {len(test_questions)} questions")
-426: 
-427:     if args.smoke:
-428:         test_questions = test_questions[:50]
-429: 
-430:     print(f"Test set: {len(test_questions)} questions")
-431: 
-432:     # Evaluate MLP policy (if checkpoint provided and not t5-only)
-433:     mlp_results = None
-434:     if args.mlp_checkpoint and not args.t5_only:
-435:         print("\n" + "-" * 40)
-436:         print("Evaluating MLP policy (T5-as-likelihood)...")
-437:         print("-" * 40)
-438:         mlp_results = evaluate_mlp_policy(
-439:             args.mlp_checkpoint, test_questions, config
-440:         )
-441:         print(f"  Accuracy: {mlp_results['accuracy']:.4f}")
-442:         print(f"  Mean S_q: {mlp_results['mean_sq']:.4f}")
-443: 
-444:     # Evaluate T5 policy
-445:     print("\n" + "-" * 40)
-446:     print("Evaluating T5 policy (end-to-end)...")
-447:     print("-" * 40)
-448:     t5_results = evaluate_t5_policy(
-449:         args.t5_checkpoint, test_questions, config
-450:     )
-451:     print(f"  Accuracy: {t5_results['accuracy']:.4f}")
-452:     print(f"  Mean S_q: {t5_results['mean_sq']:.4f}")
-453: 
-454:     # Print comparison
-455:     comparison = print_comparison(mlp_results, t5_results, len(test_questions))
-456: 
-457:     # Save results
-458:     output_path = Path(args.output)
-459:     output_path.parent.mkdir(parents=True, exist_ok=True)
-460:     save_json(output_path, comparison)
-461:     print(f"\nResults saved to {output_path}")
-462: 
-463: 
-464: if __name__ == "__main__":
-465:     main()
-</file>
-
 <file path="scripts/run_baselines.py">
   1: #!/usr/bin/env python3
   2: """
@@ -18540,6 +18181,493 @@ This section contains the contents of the repository's files.
 772:     )
 </file>
 
+<file path="scripts/compare_policies.py">
+  1: #!/usr/bin/env python3
+  2: """
+  3: Compare T5-as-likelihood (MLP policy) vs T5-as-policy (end-to-end).
+  4: 
+  5: Evaluates both approaches on the same test set using the same metric
+  6: functions (accuracy, S_q, ECE, Brier score, buzz position).
+  7: 
+  8: **Important caveats for numeric comparison:**
+  9: 
+ 10: The two evaluation paths are *not* fully apples-to-apples:
+ 11: 
+ 12: - The MLP path uses config-driven environment settings (e.g. wait_penalty
+ 13:   from default.yaml or smoke.yaml).
+ 14: - The T5 path uses its own hardcoded reward settings (wait_penalty=0.1,
+ 15:   matching the T5 pipeline's default).
+ 16: - The MLP path builds TF-IDF from test questions + all option profiles.
+ 17:   The T5 path builds TF-IDF from profiles of the first 100 questions
+ 18:   only (lightweight env reward computation — the T5 policy does not
+ 19:   consume TF-IDF likelihoods).
+ 20: - S_q semantics differ: for MLP, c_trace is a sigmoid confidence proxy
+ 21:   over belief max; for T5, c_trace is the wait-head buzz probability.
+ 22: 
+ 23: These differences are inherent to the two architectures.  Accuracy and
+ 24: buzz-position comparisons are directly meaningful.  ECE and Brier are
+ 25: computed identically (both use top_p at buzz time).  S_q and reward
+ 26: comparisons should be interpreted qualitatively.
+ 27: 
+ 28: MLP Policy (Phase 4):
+ 29:     T5/TF-IDF computes likelihood scores -> belief features -> MLP
+ 30:     policy decides.  Uses SB3 PPO with belief-feature observations.
+ 31: 
+ 32: T5 Policy (Phase 6):
+ 33:     T5 encoder processes text directly -> PolicyHead decides.
+ 34:     Uses custom PPO with text observations via TextObservationWrapper.
+ 35: 
+ 36: Usage:
+ 37:     python scripts/compare_policies.py \\
+ 38:         --mlp-checkpoint checkpoints/ppo/best_model \\
+ 39:         --t5-checkpoint checkpoints/ppo_t5/best_model \\
+ 40:         --output results/t5_comparison.json
+ 41: 
+ 42:     python scripts/compare_policies.py \\
+ 43:         --t5-checkpoint checkpoints/ppo_t5/best_model \\
+ 44:         --t5-only
+ 45: """
+ 46: 
+ 47: from __future__ import annotations
+ 48: 
+ 49: import argparse
+ 50: import sys
+ 51: from pathlib import Path
+ 52: from typing import Any
+ 53: 
+ 54: PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ 55: if str(PROJECT_ROOT) not in sys.path:
+ 56:     sys.path.insert(0, str(PROJECT_ROOT))
+ 57: 
+ 58: import numpy as np
+ 59: 
+ 60: from evaluation.metrics import (
+ 61:     calibration_pairs_at_buzz,
+ 62:     expected_calibration_error,
+ 63:     brier_score,
+ 64:     summarize_buzz_metrics,
+ 65:     system_score,
+ 66: )
+ 67: from scripts._common import (
+ 68:     ARTIFACT_DIR,
+ 69:     build_likelihood_model,
+ 70:     load_config,
+ 71:     load_mc_questions,
+ 72:     save_json,
+ 73: )
+ 74: 
+ 75: 
+ 76: def resolve_mlp_eval_config(
+ 77:     checkpoint_path: str | Path,
+ 78:     fallback_config: dict[str, Any],
+ 79: ) -> dict[str, Any]:
+ 80:     """Resolve the config that was used to train an MLP checkpoint.
+ 81: 
+ 82:     If a ``config_used.json`` sidecar exists next to the checkpoint,
+ 83:     load and return it. Otherwise return ``fallback_config`` unchanged.
+ 84:     """
+ 85:     import json
+ 86: 
+ 87:     checkpoint_dir = Path(checkpoint_path).resolve().parent
+ 88:     sidecar = checkpoint_dir / "config_used.json"
+ 89:     if sidecar.exists():
+ 90:         with open(sidecar) as f:
+ 91:             return json.load(f)
+ 92:     return fallback_config
+ 93: 
+ 94: 
+ 95: def evaluate_mlp_policy(
+ 96:     checkpoint_path: str,
+ 97:     test_questions: list,
+ 98:     config: dict,
+ 99: ) -> dict[str, Any]:
+100:     """Evaluate Phase 4 MLP policy on belief features.
+101: 
+102:     Uses the likelihood model specified by the checkpoint's sidecar
+103:     config (``config_used.json``) when available, otherwise falls back
+104:     to the provided config. If the resolved config selects TF-IDF, the
+105:     corpus is fit on the evaluation set's question/option text.
+106: 
+107:     Parameters
+108:     ----------
+109:     checkpoint_path : str
+110:         Path to SB3 PPO model checkpoint (`.zip`` file).
+111:     test_questions : list
+112:         List of MCQuestion instances to evaluate on.
+113:     config : dict
+114:         YAML config dict (fallback if no checkpoint sidecar exists).
+115: 
+116:     Returns
+117:     -------
+118:     dict[str, Any]
+119:         Evaluation results: accuracy, mean_sq, ece, brier, avg_buzz_pos,
+120:         n_questions.
+121:     """
+122:     from agents.ppo_buzzer import PPOBuzzer
+123:     from qb_env.tossup_env import make_env_from_config
+124: 
+125:     resolved_config = resolve_mlp_eval_config(checkpoint_path, config)
+126:     likelihood_model = build_likelihood_model(resolved_config, test_questions)
+127: 
+128:     env = make_env_from_config(
+129:         mc_questions=test_questions,
+130:         likelihood_model=likelihood_model,
+131:         config=resolved_config,
+132:     )
+133: 
+134:     use_maskable = bool(resolved_config.get("ppo", {}).get("use_maskable_ppo", False))
+135:     agent = PPOBuzzer.load(checkpoint_path, env=env, use_maskable_ppo=use_maskable)
+136: 
+137:     # Run episodes — one per test question, deterministic order
+138:     results = [
+139:         agent.run_episode(deterministic=True, question_idx=i)
+140:         for i in range(len(test_questions))
+141:     ]
+142: 
+143:     # Compute metrics
+144:     buzz_metrics = summarize_buzz_metrics(results)
+145:     confidences, outcomes = calibration_pairs_at_buzz(results)
+146:     ece = expected_calibration_error(confidences, outcomes)
+147:     brier = brier_score(confidences, outcomes)
+148: 
+149:     return {
+150:         "accuracy": buzz_metrics["buzz_accuracy"],
+151:         "mean_sq": buzz_metrics["mean_sq"],
+152:         "ece": ece,
+153:         "brier": brier,
+154:         "avg_buzz_pos": buzz_metrics.get("mean_buzz_step", 0.0),
+155:         "mean_reward": buzz_metrics["mean_reward_like"],
+156:         "n_questions": len(test_questions),
+157:     }
+158: 
+159: 
+160: def evaluate_t5_policy(
+161:     checkpoint_path: str,
+162:     test_questions: list,
+163:     config: dict,
+164: ) -> dict[str, Any]:
+165:     """Evaluate Phase 6 T5 end-to-end policy on text observations.
+166: 
+167:     Loads a T5PolicyModel from checkpoint, runs deterministic episodes
+168:     on each test question using TextObservationWrapper, and computes the
+169:     same metrics as evaluate_mlp_policy for fair comparison.
+170: 
+171:     Parameters
+172:     ----------
+173:     checkpoint_path : str
+174:         Path to T5PolicyModel checkpoint directory.
+175:     test_questions : list
+176:         List of MCQuestion instances to evaluate on.
+177:     config : dict
+178:         YAML config dict.
+179: 
+180:     Returns
+181:     -------
+182:     dict[str, Any]
+183:         Evaluation results: accuracy, mean_sq, ece, brier, avg_buzz_pos,
+184:         n_questions.
+185:     """
+186:     import torch
+187:     from models.t5_policy import T5PolicyModel
+188:     from models.likelihoods import TfIdfLikelihood
+189:     from qb_env.text_wrapper import TextObservationWrapper
+190:     from qb_env.tossup_env import TossupMCEnv
+191: 
+192:     # Load T5 policy model
+193:     model = T5PolicyModel.load_pretrained(checkpoint_path)
+194:     model.eval()
+195: 
+196:     # Build lightweight likelihood for environment reward computation
+197:     corpus = []
+198:     for q in test_questions[:100]:
+199:         corpus.extend(q.option_profiles)
+200:     likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
+201: 
+202:     correct_count = 0
+203:     total_count = 0
+204:     sq_scores = []
+205:     confidences = []
+206:     outcomes = []
+207:     buzz_positions = []
+208: 
+209:     with torch.no_grad():
+210:         for question in test_questions:
+211:             env = TossupMCEnv(
+212:                 questions=[question],
+213:                 likelihood_model=likelihood_model,
+214:                 K=len(question.options),
+215:                 reward_mode="time_penalty",
+216:                 wait_penalty=0.1,
+217:                 belief_mode="from_scratch",
+218:             )
+219:             wrapped_env = TextObservationWrapper(env)
+220: 
+221:             obs, info = wrapped_env.reset()
+222:             done = False
+223:             c_trace = []
+224:             g_trace = []
+225:             top_p_trace = []
+226:             episode_reward = 0.0
+227:             step_count = 0
+228: 
+229:             while not done:
+230:                 inputs = model.encode_input([obs], max_length=512)
+231:                 actions, act_info = model.select_action(
+232:                     inputs["input_ids"],
+233:                     inputs["attention_mask"],
+234:                     deterministic=True,
+235:                 )
+236: 
+237:                 action = actions.item()
+238: 
+239:                 wait_probs = act_info["wait_probs"]
+240:                 buzz_prob = wait_probs[0, 1].item()
+241:                 c_trace.append(buzz_prob)
+242: 
+243:                 answer_probs = act_info["answer_probs"]
+244:                 gold_prob = answer_probs[0, question.gold_index].item()
+245:                 g_trace.append(gold_prob)
+246: 
+247:                 top_p = float(answer_probs[0].max().item())
+248:                 top_p_trace.append(top_p)
+249: 
+250:                 obs, reward, terminated, truncated, step_info = (
+251:                     wrapped_env.step(action)
+252:                 )
+253:                 done = terminated or truncated
+254:                 episode_reward += reward
+255:                 step_count += 1
+256: 
+257:             sq = system_score(c_trace, g_trace)
+258:             sq_scores.append(sq)
+259: 
+260:             is_correct = step_info.get("correct", False) or step_info.get(
+261:                 "forced_correct", False
+262:             )
+263:             if is_correct:
+264:                 correct_count += 1
+265:             total_count += 1
+266: 
+267:             # Calibration: use top_p (max answer prob) for consistency
+268:             # with belief-feature agents
+269:             if top_p_trace:
+270:                 buzz_step = step_count - 1
+271:                 confidences.append(top_p_trace[-1])
+272:                 outcomes.append(1 if is_correct else 0)
+273:                 buzz_positions.append(buzz_step)
+274: 
+275:     accuracy = correct_count / max(1, total_count)
+276:     mean_sq = float(np.mean(sq_scores)) if sq_scores else 0.0
+277:     ece = expected_calibration_error(confidences, outcomes)
+278:     brier_val = brier_score(confidences, outcomes)
+279:     avg_buzz_pos = float(np.mean(buzz_positions)) if buzz_positions else 0.0
+280: 
+281:     return {
+282:         "accuracy": accuracy,
+283:         "mean_sq": mean_sq,
+284:         "ece": ece,
+285:         "brier": brier_val,
+286:         "avg_buzz_pos": avg_buzz_pos,
+287:         "mean_reward": 0.0,  # Not tracked per-episode for T5 policy eval
+288:         "n_questions": total_count,
+289:     }
+290: 
+291: 
+292: def print_comparison(
+293:     mlp_results: dict[str, Any] | None,
+294:     t5_results: dict[str, Any],
+295:     test_size: int,
+296: ) -> dict[str, Any]:
+297:     """Print and return comparison summary.
+298: 
+299:     Parameters
+300:     ----------
+301:     mlp_results : dict or None
+302:         MLP policy evaluation results. None if --t5-only.
+303:     t5_results : dict
+304:         T5 policy evaluation results.
+305:     test_size : int
+306:         Number of test questions evaluated.
+307: 
+308:     Returns
+309:     -------
+310:     dict[str, Any]
+311:         Complete comparison dict for JSON serialization.
+312:     """
+313:     print("\n" + "=" * 70)
+314:     print("COMPARISON RESULTS: T5-as-Likelihood vs T5-as-Policy")
+315:     print("=" * 70)
+316:     print(f"Test set size: {test_size}")
+317:     print()
+318: 
+319:     if mlp_results is not None:
+320:         print(f"{'Metric':<20} {'MLP (T5-likelihood)':>20} {'T5 (end-to-end)':>20} {'Difference':>15}")
+321:         print("-" * 75)
+322:         for metric in ["accuracy", "mean_sq", "ece", "brier", "avg_buzz_pos"]:
+323:             mlp_val = mlp_results.get(metric, 0.0)
+324:             t5_val = t5_results.get(metric, 0.0)
+325:             diff = t5_val - mlp_val
+326:             print(f"{metric:<20} {mlp_val:>20.4f} {t5_val:>20.4f} {diff:>+15.4f}")
+327:     else:
+328:         print("T5 Policy (end-to-end) results:")
+329:         print("-" * 40)
+330:         for metric in ["accuracy", "mean_sq", "ece", "brier", "avg_buzz_pos"]:
+331:             val = t5_results.get(metric, 0.0)
+332:             print(f"  {metric:<20}: {val:.4f}")
+333: 
+334:     # Build comparison dict
+335:     comparison: dict[str, Any] = {
+336:         "test_size": test_size,
+337:         "t5_policy": t5_results,
+338:     }
+339:     if mlp_results is not None:
+340:         comparison["mlp_policy"] = mlp_results
+341:         comparison["difference"] = {
+342:             metric: t5_results.get(metric, 0.0) - mlp_results.get(metric, 0.0)
+343:             for metric in ["accuracy", "mean_sq", "ece", "brier", "avg_buzz_pos"]
+344:         }
+345: 
+346:     return comparison
+347: 
+348: 
+349: def parse_compare_args() -> argparse.Namespace:
+350:     """Parse comparison script arguments.
+351: 
+352:     Returns
+353:     -------
+354:     argparse.Namespace
+355:         Parsed arguments.
+356:     """
+357:     parser = argparse.ArgumentParser(
+358:         description="Compare T5-as-likelihood (MLP) vs T5-as-policy.",
+359:     )
+360:     parser.add_argument(
+361:         "--mlp-checkpoint",
+362:         type=str,
+363:         default=None,
+364:         help="Path to Phase 4 MLP policy checkpoint.",
+365:     )
+366:     parser.add_argument(
+367:         "--t5-checkpoint",
+368:         type=str,
+369:         required=True,
+370:         help="Path to Phase 6 T5 policy checkpoint.",
+371:     )
+372:     parser.add_argument(
+373:         "--config",
+374:         type=str,
+375:         default=None,
+376:         help="Path to YAML config file.",
+377:     )
+378:     parser.add_argument(
+379:         "--mc-path",
+380:         type=str,
+381:         default=None,
+382:         help="Path to MC dataset JSON file.",
+383:     )
+384:     parser.add_argument(
+385:         "--output",
+386:         type=str,
+387:         default="results/t5_comparison.json",
+388:         help="Path for output JSON results.",
+389:     )
+390:     parser.add_argument(
+391:         "--smoke",
+392:         action="store_true",
+393:         help="Quick test with first 50 questions.",
+394:     )
+395:     parser.add_argument(
+396:         "--t5-only",
+397:         action="store_true",
+398:         help="Only evaluate T5 policy (skip MLP comparison).",
+399:     )
+400:     return parser.parse_args()
+401: 
+402: 
+403: def main() -> None:
+404:     """Run the comparison experiment."""
+405:     args = parse_compare_args()
+406: 
+407:     # Load config
+408:     config = load_config(args.config)
+409: 
+410:     # Load test questions
+411:     if args.mc_path:
+412:         mc_path = Path(args.mc_path)
+413:     else:
+414:         candidates = [
+415:             ARTIFACT_DIR / "main" / "mc_dataset.json",
+416:             ARTIFACT_DIR / "smoke" / "mc_dataset.json",
+417:             PROJECT_ROOT / "data" / "processed" / "mc_dataset.json",
+418:         ]
+419:         mc_path = None
+420:         for candidate in candidates:
+421:             if candidate.exists():
+422:                 mc_path = candidate
+423:                 break
+424:         if mc_path is None:
+425:             print("ERROR: No MC dataset found. Run build_mc_dataset.py first.")
+426:             sys.exit(1)
+427: 
+428:     print(f"Loading questions from: {mc_path}")
+429:     all_questions = load_mc_questions(mc_path)
+430:     print(f"Loaded {len(all_questions)} questions")
+431: 
+432:     # Prefer the persisted test split if it exists alongside mc_dataset.json
+433:     test_split_path = mc_path.parent / "test_dataset.json"
+434:     if test_split_path.exists():
+435:         test_questions = load_mc_questions(test_split_path)
+436:         print(f"Using persisted test split: {len(test_questions)} questions")
+437:     else:
+438:         import random
+439:         rng = random.Random(42)
+440:         shuffled = all_questions[:]
+441:         rng.shuffle(shuffled)
+442:         test_start = int(len(shuffled) * 0.85)
+443:         test_questions = shuffled[test_start:]
+444:         print(f"No test_dataset.json found; using random 15% split: {len(test_questions)} questions")
+445: 
+446:     if args.smoke:
+447:         test_questions = test_questions[:50]
+448: 
+449:     print(f"Test set: {len(test_questions)} questions")
+450: 
+451:     # Evaluate MLP policy (if checkpoint provided and not t5-only)
+452:     mlp_results = None
+453:     if args.mlp_checkpoint and not args.t5_only:
+454:         print("\n" + "-" * 40)
+455:         print("Evaluating MLP policy (T5-as-likelihood)...")
+456:         print("-" * 40)
+457:         mlp_results = evaluate_mlp_policy(
+458:             args.mlp_checkpoint, test_questions, config
+459:         )
+460:         print(f"  Accuracy: {mlp_results['accuracy']:.4f}")
+461:         print(f"  Mean S_q: {mlp_results['mean_sq']:.4f}")
+462: 
+463:     # Evaluate T5 policy
+464:     print("\n" + "-" * 40)
+465:     print("Evaluating T5 policy (end-to-end)...")
+466:     print("-" * 40)
+467:     t5_results = evaluate_t5_policy(
+468:         args.t5_checkpoint, test_questions, config
+469:     )
+470:     print(f"  Accuracy: {t5_results['accuracy']:.4f}")
+471:     print(f"  Mean S_q: {t5_results['mean_sq']:.4f}")
+472: 
+473:     # Print comparison
+474:     comparison = print_comparison(mlp_results, t5_results, len(test_questions))
+475: 
+476:     # Save results
+477:     output_path = Path(args.output)
+478:     output_path.parent.mkdir(parents=True, exist_ok=True)
+479:     save_json(output_path, comparison)
+480:     print(f"\nResults saved to {output_path}")
+481: 
+482: 
+483: if __name__ == "__main__":
+484:     main()
+</file>
+
 <file path="scripts/evaluate_all.py">
   1: #!/usr/bin/env python3
   2: """
@@ -18907,217 +19035,6 @@ This section contains the contents of the repository's files.
 364: 
 365: if __name__ == "__main__":
 366:     main()
-</file>
-
-<file path="scripts/train_ppo.py">
-  1: #!/usr/bin/env python3
-  2: """
-  3: Train PPO buzzer agent on belief-feature observations.
-  4: 
-  5: Loads MC questions, builds a likelihood model, creates a Gymnasium environment,
-  6: trains an MLP policy with SB3 PPO, then evaluates with episode traces and
-  7: summary metrics (accuracy, S_q, ECE, Brier score).
-  8: 
-  9: Usage:
- 10:     python scripts/train_ppo.py --smoke              # Quick smoke test
- 11:     python scripts/train_ppo.py --smoke --deterministic-eval
- 12:     python scripts/train_ppo.py --config configs/custom.yaml
- 13:     python scripts/train_ppo.py --timesteps 50000    # Override timesteps
- 14: 
- 15: Ported from qb-rl reference implementation (scripts/train_ppo.py) with
- 16: import path adaptations for the unified qanta-buzzer codebase.
- 17: """
- 18: 
- 19: from __future__ import annotations
- 20: 
- 21: import argparse
- 22: from dataclasses import asdict
- 23: from pathlib import Path
- 24: import sys
- 25: 
- 26: PROJECT_ROOT = Path(__file__).resolve().parents[1]
- 27: if str(PROJECT_ROOT) not in sys.path:
- 28:     sys.path.insert(0, str(PROJECT_ROOT))
- 29: 
- 30: from agents.ppo_buzzer import PPOBuzzer
- 31: from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
- 32: from qb_env.stop_only_env import StopOnlyEnv
- 33: from qb_env.tossup_env import make_env_from_config, precompute_beliefs
- 34: from qb_data.config import merge_overrides
- 35: from scripts._common import (
- 36:     ARTIFACT_DIR,
- 37:     build_likelihood_model,
- 38:     load_config,
- 39:     load_embedding_cache,
- 40:     load_mc_questions,
- 41:     parse_overrides,
- 42:     save_embedding_cache,
- 43:     save_json,
- 44: )
- 45: 
- 46: 
- 47: def parse_args() -> argparse.Namespace:
- 48:     """Parse command-line arguments.
- 49: 
- 50:     Returns
- 51:     -------
- 52:     argparse.Namespace
- 53:         Parsed arguments with config, smoke, mc_path, timesteps, and
- 54:         deterministic_eval fields.
- 55:     """
- 56:     parser = argparse.ArgumentParser(description="Train PPO buzzer.")
- 57:     parser.add_argument(
- 58:         "--config", type=str, default=None,
- 59:         help="Path to YAML config file (default: configs/default.yaml).",
- 60:     )
- 61:     parser.add_argument(
- 62:         "--smoke", action="store_true",
- 63:         help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
- 64:     )
- 65:     parser.add_argument(
- 66:         "--mc-path", type=str, default=None,
- 67:         help="Optional MC dataset JSON path (overrides config-derived path).",
- 68:     )
- 69:     parser.add_argument(
- 70:         "--timesteps", type=int, default=None,
- 71:         help="Override total_timesteps from config.",
- 72:     )
- 73:     parser.add_argument(
- 74:         "--seed", type=int, default=None,
- 75:         help="Override PPO/environment seed from config.",
- 76:     )
- 77:     parser.add_argument(
- 78:         "--deterministic-eval", action="store_true",
- 79:         help="Use deterministic policy for post-training episode evaluation.",
- 80:     )
- 81:     parser.add_argument(
- 82:         "--stochastic-eval", action="store_true",
- 83:         help="Force stochastic policy sampling for post-training evaluation.",
- 84:     )
- 85:     parser.add_argument(
- 86:         "--policy-mode",
- 87:         type=str,
- 88:         choices=["flat_kplus1", "stop_only"],
- 89:         default="flat_kplus1",
- 90:         help="Policy action space: flat K+1 actions (default) or binary stop_only.",
- 91:     )
- 92:     parser.add_argument(
- 93:         "overrides",
- 94:         nargs="*",
- 95:         help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
- 96:     )
- 97:     return parser.parse_args()
- 98: 
- 99: 
-100: def main() -> None:
-101:     """Train PPO agent and save model + evaluation artifacts."""
-102:     args = parse_args()
-103: 
-104:     config = load_config(args.config, smoke=args.smoke)
-105:     overrides = parse_overrides(args)
-106:     if overrides:
-107:         print(f"Applying overrides: {overrides}")
-108:         config = merge_overrides(config, overrides)
-109: 
-110:     split = "smoke" if args.smoke else "main"
-111:     out_dir = ARTIFACT_DIR / split
-112:     mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
-113: 
-114:     # Fallback: check data/processed/ if artifacts path doesn't exist
-115:     if not mc_path.exists():
-116:         fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
-117:         if fallback.exists():
-118:             print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
-119:             mc_path = fallback
-120: 
-121:     print(f"Loading MC questions from: {mc_path}")
-122:     mc_questions = load_mc_questions(mc_path)
-123:     print(f"Loaded {len(mc_questions)} MC questions")
-124: 
-125:     print(f"Building likelihood model: {config['likelihood']['model']}")
-126:     likelihood_model = build_likelihood_model(config, mc_questions)
-127:     load_embedding_cache(likelihood_model, config)
-128: 
-129:     env_cfg = config["environment"]
-130:     lik_cfg = config["likelihood"]
-131: 
-132:     print(f"Precomputing belief trajectories for {len(mc_questions)} questions...")
-133:     belief_cache = precompute_beliefs(
-134:         questions=mc_questions,
-135:         likelihood_model=likelihood_model,
-136:         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
-137:         beta=float(lik_cfg.get("beta", 5.0)),
-138:         K=int(config["data"].get("K", 4)),
-139:     )
-140:     print(f"Cached {len(belief_cache)} belief vectors")
-141:     save_embedding_cache(likelihood_model, config)
-142: 
-143:     env = make_env_from_config(
-144:         mc_questions=mc_questions,
-145:         likelihood_model=likelihood_model,
-146:         config=config,
-147:         precomputed_beliefs=belief_cache,
-148:     )
-149:     if args.policy_mode == "stop_only":
-150:         print("Wrapping environment with StopOnlyEnv (WAIT/BUZZ only)...")
-151:         env = StopOnlyEnv(env)
-152: 
-153:     ppo_cfg = config["ppo"]
-154:     train_seed = int(args.seed if args.seed is not None else ppo_cfg.get("seed", 13))
-155:     total_timesteps = int(
-156:         args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
-157:     )
-158: 
-159:     use_maskable = bool(ppo_cfg.get("use_maskable_ppo", False))
-160:     if use_maskable:
-161:         print("Using MaskablePPO for variable-K action masking")
-162:     print(f"Training PPO for {total_timesteps} timesteps...")
-163:     agent = PPOBuzzer(
-164:         env=env,
-165:         learning_rate=float(ppo_cfg["learning_rate"]),
-166:         n_steps=int(ppo_cfg["n_steps"]),
-167:         batch_size=int(ppo_cfg["batch_size"]),
-168:         n_epochs=int(ppo_cfg["n_epochs"]),
-169:         gamma=float(ppo_cfg["gamma"]),
-170:         seed=train_seed,
-171:         policy_kwargs=ppo_cfg.get("policy_kwargs", {"net_arch": [64, 64]}),
-172:         verbose=1,
-173:         use_maskable_ppo=use_maskable,
-174:     )
-175: 
-176:     agent.train(total_timesteps=total_timesteps)
-177:     model_path = out_dir / "ppo_model"
-178:     agent.save(model_path)
-179: 
-180:     eval_deterministic = True
-181:     if args.stochastic_eval:
-182:         eval_deterministic = False
-183:     elif args.deterministic_eval:
-184:         eval_deterministic = True
-185: 
-186:     print(
-187:         f"Evaluating PPO agent on {len(mc_questions)} questions "
-188:         f"(deterministic={eval_deterministic})..."
-189:     )
-190:     traces = [
-191:         asdict(
-192:             agent.run_episode(
-193:                 deterministic=eval_deterministic,
-194:                 question_idx=i,
-195:             )
-196:         )
-197:         for i in range(len(mc_questions))
-198:     ]
-199:     summary = {**summarize_buzz_metrics(traces), **calibration_at_buzz(traces)}
-200: 
-201:     save_json(out_dir / "ppo_runs.json", traces)
-202:     save_json(out_dir / "ppo_summary.json", summary)
-203:     print(f"Saved PPO model to: {model_path}.zip")
-204:     print(f"Saved PPO summaries to: {out_dir}")
-205: 
-206: 
-207: if __name__ == "__main__":
-208:     main()
 </file>
 
 <file path="agents/ppo_buzzer.py">
@@ -19532,6 +19449,218 @@ This section contains the contents of the repository's files.
 409:             top_p_trace=top_p_trace,
 410:             entropy_trace=entropy_trace,
 411:         )
+</file>
+
+<file path="scripts/train_ppo.py">
+  1: #!/usr/bin/env python3
+  2: """
+  3: Train PPO buzzer agent on belief-feature observations.
+  4: 
+  5: Loads MC questions, builds a likelihood model, creates a Gymnasium environment,
+  6: trains an MLP policy with SB3 PPO, then evaluates with episode traces and
+  7: summary metrics (accuracy, S_q, ECE, Brier score).
+  8: 
+  9: Usage:
+ 10:     python scripts/train_ppo.py --smoke              # Quick smoke test
+ 11:     python scripts/train_ppo.py --smoke --deterministic-eval
+ 12:     python scripts/train_ppo.py --config configs/custom.yaml
+ 13:     python scripts/train_ppo.py --timesteps 50000    # Override timesteps
+ 14: 
+ 15: Ported from qb-rl reference implementation (scripts/train_ppo.py) with
+ 16: import path adaptations for the unified qanta-buzzer codebase.
+ 17: """
+ 18: 
+ 19: from __future__ import annotations
+ 20: 
+ 21: import argparse
+ 22: from dataclasses import asdict
+ 23: from pathlib import Path
+ 24: import sys
+ 25: 
+ 26: PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ 27: if str(PROJECT_ROOT) not in sys.path:
+ 28:     sys.path.insert(0, str(PROJECT_ROOT))
+ 29: 
+ 30: from agents.ppo_buzzer import PPOBuzzer
+ 31: from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+ 32: from qb_env.stop_only_env import StopOnlyEnv
+ 33: from qb_env.tossup_env import make_env_from_config, precompute_beliefs
+ 34: from qb_data.config import merge_overrides
+ 35: from scripts._common import (
+ 36:     ARTIFACT_DIR,
+ 37:     build_likelihood_model,
+ 38:     load_config,
+ 39:     load_embedding_cache,
+ 40:     load_mc_questions,
+ 41:     parse_overrides,
+ 42:     save_embedding_cache,
+ 43:     save_json,
+ 44: )
+ 45: 
+ 46: 
+ 47: def parse_args() -> argparse.Namespace:
+ 48:     """Parse command-line arguments.
+ 49: 
+ 50:     Returns
+ 51:     -------
+ 52:     argparse.Namespace
+ 53:         Parsed arguments with config, smoke, mc_path, timesteps, and
+ 54:         deterministic_eval fields.
+ 55:     """
+ 56:     parser = argparse.ArgumentParser(description="Train PPO buzzer.")
+ 57:     parser.add_argument(
+ 58:         "--config", type=str, default=None,
+ 59:         help="Path to YAML config file (default: configs/default.yaml).",
+ 60:     )
+ 61:     parser.add_argument(
+ 62:         "--smoke", action="store_true",
+ 63:         help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
+ 64:     )
+ 65:     parser.add_argument(
+ 66:         "--mc-path", type=str, default=None,
+ 67:         help="Optional MC dataset JSON path (overrides config-derived path).",
+ 68:     )
+ 69:     parser.add_argument(
+ 70:         "--timesteps", type=int, default=None,
+ 71:         help="Override total_timesteps from config.",
+ 72:     )
+ 73:     parser.add_argument(
+ 74:         "--seed", type=int, default=None,
+ 75:         help="Override PPO/environment seed from config.",
+ 76:     )
+ 77:     parser.add_argument(
+ 78:         "--deterministic-eval", action="store_true",
+ 79:         help="Use deterministic policy for post-training episode evaluation.",
+ 80:     )
+ 81:     parser.add_argument(
+ 82:         "--stochastic-eval", action="store_true",
+ 83:         help="Force stochastic policy sampling for post-training evaluation.",
+ 84:     )
+ 85:     parser.add_argument(
+ 86:         "--policy-mode",
+ 87:         type=str,
+ 88:         choices=["flat_kplus1", "stop_only"],
+ 89:         default="flat_kplus1",
+ 90:         help="Policy action space: flat K+1 actions (default) or binary stop_only.",
+ 91:     )
+ 92:     parser.add_argument(
+ 93:         "overrides",
+ 94:         nargs="*",
+ 95:         help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
+ 96:     )
+ 97:     return parser.parse_args()
+ 98: 
+ 99: 
+100: def main() -> None:
+101:     """Train PPO agent and save model + evaluation artifacts."""
+102:     args = parse_args()
+103: 
+104:     config = load_config(args.config, smoke=args.smoke)
+105:     overrides = parse_overrides(args)
+106:     if overrides:
+107:         print(f"Applying overrides: {overrides}")
+108:         config = merge_overrides(config, overrides)
+109: 
+110:     split = "smoke" if args.smoke else "main"
+111:     out_dir = ARTIFACT_DIR / split
+112:     mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
+113: 
+114:     # Fallback: check data/processed/ if artifacts path doesn't exist
+115:     if not mc_path.exists():
+116:         fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
+117:         if fallback.exists():
+118:             print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
+119:             mc_path = fallback
+120: 
+121:     print(f"Loading MC questions from: {mc_path}")
+122:     mc_questions = load_mc_questions(mc_path)
+123:     print(f"Loaded {len(mc_questions)} MC questions")
+124: 
+125:     print(f"Building likelihood model: {config['likelihood']['model']}")
+126:     likelihood_model = build_likelihood_model(config, mc_questions)
+127:     load_embedding_cache(likelihood_model, config)
+128: 
+129:     env_cfg = config["environment"]
+130:     lik_cfg = config["likelihood"]
+131: 
+132:     print(f"Precomputing belief trajectories for {len(mc_questions)} questions...")
+133:     belief_cache = precompute_beliefs(
+134:         questions=mc_questions,
+135:         likelihood_model=likelihood_model,
+136:         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
+137:         beta=float(lik_cfg.get("beta", 5.0)),
+138:         K=int(config["data"].get("K", 4)),
+139:     )
+140:     print(f"Cached {len(belief_cache)} belief vectors")
+141:     save_embedding_cache(likelihood_model, config)
+142: 
+143:     env = make_env_from_config(
+144:         mc_questions=mc_questions,
+145:         likelihood_model=likelihood_model,
+146:         config=config,
+147:         precomputed_beliefs=belief_cache,
+148:     )
+149:     if args.policy_mode == "stop_only":
+150:         print("Wrapping environment with StopOnlyEnv (WAIT/BUZZ only)...")
+151:         env = StopOnlyEnv(env)
+152: 
+153:     ppo_cfg = config["ppo"]
+154:     train_seed = int(args.seed if args.seed is not None else ppo_cfg.get("seed", 13))
+155:     total_timesteps = int(
+156:         args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
+157:     )
+158: 
+159:     use_maskable = bool(ppo_cfg.get("use_maskable_ppo", False))
+160:     if use_maskable:
+161:         print("Using MaskablePPO for variable-K action masking")
+162:     print(f"Training PPO for {total_timesteps} timesteps...")
+163:     agent = PPOBuzzer(
+164:         env=env,
+165:         learning_rate=float(ppo_cfg["learning_rate"]),
+166:         n_steps=int(ppo_cfg["n_steps"]),
+167:         batch_size=int(ppo_cfg["batch_size"]),
+168:         n_epochs=int(ppo_cfg["n_epochs"]),
+169:         gamma=float(ppo_cfg["gamma"]),
+170:         seed=train_seed,
+171:         policy_kwargs=ppo_cfg.get("policy_kwargs", {"net_arch": [64, 64]}),
+172:         verbose=1,
+173:         use_maskable_ppo=use_maskable,
+174:     )
+175: 
+176:     agent.train(total_timesteps=total_timesteps)
+177:     model_path = out_dir / "ppo_model"
+178:     agent.save(model_path)
+179:     save_json(config, out_dir / "config_used.json")
+180: 
+181:     eval_deterministic = True
+182:     if args.stochastic_eval:
+183:         eval_deterministic = False
+184:     elif args.deterministic_eval:
+185:         eval_deterministic = True
+186: 
+187:     print(
+188:         f"Evaluating PPO agent on {len(mc_questions)} questions "
+189:         f"(deterministic={eval_deterministic})..."
+190:     )
+191:     traces = [
+192:         asdict(
+193:             agent.run_episode(
+194:                 deterministic=eval_deterministic,
+195:                 question_idx=i,
+196:             )
+197:         )
+198:         for i in range(len(mc_questions))
+199:     ]
+200:     summary = {**summarize_buzz_metrics(traces), **calibration_at_buzz(traces)}
+201: 
+202:     save_json(out_dir / "ppo_runs.json", traces)
+203:     save_json(out_dir / "ppo_summary.json", summary)
+204:     print(f"Saved PPO model to: {model_path}.zip")
+205:     print(f"Saved PPO summaries to: {out_dir}")
+206: 
+207: 
+208: if __name__ == "__main__":
+209:     main()
 </file>
 
 <file path="scripts/_common.py">
@@ -19956,7 +20085,7 @@ This section contains the contents of the repository's files.
 111: 
 112: ## Testing
 113: 
-114: 344 tests across 24 test files (3 skipped when optional extras not installed):
+114: 350 tests across 26 test files (3 skipped when optional extras not installed):
 115: 
 116: ```bash
 117: pytest                    # full suite
@@ -19980,7 +20109,7 @@ This section contains the contents of the repository's files.
 135: 
 136: ```
 137: qb_data/        Data loading, answer profiles, stratified splits, MC construction, DSPy profiles
-138: qb_env/         Gymnasium environment, text wrapper, opponent models, optional StopOnlyEnv wrapper, qb-rl shims
+138: qb_env/         Gymnasium environment, text wrapper, opponent models, StopOnlyEnv wrapper (with action_masks), qb-rl shims
 139: models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy
 140: agents/         Threshold, softmax-profile, sequential Bayes, PPO buzzer
 141: evaluation/     S_q metric, Expected Wins, calibration, control experiments, plotting

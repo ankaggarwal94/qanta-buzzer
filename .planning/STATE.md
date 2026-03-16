@@ -164,7 +164,7 @@ None identified yet
 - calibration_at_buzz skips no-buzz episodes instead of clamping to step 0
 - step() rejects padded buzz actions in variable-K mode
 - MaskablePPO wired through train_ppo.py via ppo.use_maskable_ppo config
-- 344 tests across 24 test files (3 skipped for optional extras)
+- 350 tests across 26 test files (3 skipped for optional extras)
 
 ### Next Session Priority
 1. CS234 writeup finalization using results from full-scale run
@@ -177,7 +177,7 @@ Unified quiz bowl RL buzzer with two tracks plus three opt-in extensions (Expect
 - Working directory: qanta-buzzer repo
 - Python environment: `.venv/` with Python 3.13.5, `pip install -e .` done
 - MPS available (Apple M3 Max, 64 GB)
-- 344 tests passing (3 skipped), CI green
+- 350 tests passing (3 skipped), CI green
 
 ---
 *State file initialized: 2026-02-25*
