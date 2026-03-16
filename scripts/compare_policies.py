@@ -107,7 +107,7 @@ def evaluate_mlp_policy(
     Parameters
     ----------
     checkpoint_path : str
-        Path to SB3 PPO model checkpoint (`.zip`` file).
+        Path to SB3 PPO model checkpoint (``.zip`` file).
     test_questions : list
         List of MCQuestion instances to evaluate on.
     config : dict

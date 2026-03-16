@@ -1,12 +1,16 @@
 """Tests for compare_policies helper functions."""
 
+from __future__ import annotations
+
 import json
-import pytest
 from pathlib import Path
+
+import pytest
+
+from scripts.compare_policies import resolve_mlp_eval_config
 
 
 def test_resolve_mlp_eval_config_prefers_checkpoint_sidecar(tmp_path):
-    from scripts.compare_policies import resolve_mlp_eval_config
 
     sidecar_config = {"likelihood": {"model": "t5-base"}, "ppo": {"seed": 99}}
     sidecar_path = tmp_path / "config_used.json"
@@ -22,8 +26,6 @@ def test_resolve_mlp_eval_config_prefers_checkpoint_sidecar(tmp_path):
 
 
 def test_resolve_mlp_eval_config_uses_fallback_when_no_sidecar(tmp_path):
-    from scripts.compare_policies import resolve_mlp_eval_config
-
     fake_checkpoint = tmp_path / "ppo_model.zip"
     fake_checkpoint.touch()
 
