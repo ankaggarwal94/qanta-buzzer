@@ -64,7 +64,32 @@ from evaluation.metrics import (
     summarize_buzz_metrics,
     system_score,
 )
-from scripts._common import ARTIFACT_DIR, load_config, load_mc_questions, save_json
+from scripts._common import (
+    ARTIFACT_DIR,
+    build_likelihood_model,
+    load_config,
+    load_mc_questions,
+    save_json,
+)
+
+
+def resolve_mlp_eval_config(
+    checkpoint_path: str | Path,
+    fallback_config: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve the config that was used to train an MLP checkpoint.
+
+    If a ``config_used.json`` sidecar exists next to the checkpoint,
+    load and return it. Otherwise return ``fallback_config`` unchanged.
+    """
+    import json
+
+    checkpoint_dir = Path(checkpoint_path).resolve().parent
+    sidecar = checkpoint_dir / "config_used.json"
+    if sidecar.exists():
+        with open(sidecar) as f:
+            return json.load(f)
+    return fallback_config
 
 
 def evaluate_mlp_policy(
@@ -72,11 +97,12 @@ def evaluate_mlp_policy(
     test_questions: list,
     config: dict,
 ) -> dict[str, Any]:
-    """Evaluate Phase 4 MLP policy with T5/TF-IDF likelihood on belief features.
+    """Evaluate Phase 4 MLP policy on belief features.
 
-    Loads a PPOBuzzer from an SB3 checkpoint, runs deterministic episodes
-    on each test question, and computes accuracy, S_q, ECE, and buzz
-    position metrics.
+    Uses the likelihood model specified by the checkpoint's sidecar
+    config (``config_used.json``) when available, otherwise falls back
+    to the provided config. If the resolved config selects TF-IDF, the
+    corpus is fit on the evaluation set's question/option text.
 
     Parameters
     ----------
@@ -85,7 +111,7 @@ def evaluate_mlp_policy(
     test_questions : list
         List of MCQuestion instances to evaluate on.
     config : dict
-        YAML config dict with environment, likelihood, and data sections.
+        YAML config dict (fallback if no checkpoint sidecar exists).
 
     Returns
     -------
@@ -94,25 +120,18 @@ def evaluate_mlp_policy(
         n_questions.
     """
     from agents.ppo_buzzer import PPOBuzzer
-    from models.likelihoods import TfIdfLikelihood
     from qb_env.tossup_env import make_env_from_config
 
-    # Build likelihood model
-    corpus = (
-        [q.question for q in test_questions]
-        + [p for q in test_questions for p in q.option_profiles]
-    )
-    likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
+    resolved_config = resolve_mlp_eval_config(checkpoint_path, config)
+    likelihood_model = build_likelihood_model(resolved_config, test_questions)
 
-    # Build environment with all test questions
     env = make_env_from_config(
         mc_questions=test_questions,
         likelihood_model=likelihood_model,
-        config=config,
+        config=resolved_config,
     )
 
-    # Load trained agent
-    use_maskable = bool(config.get("ppo", {}).get("use_maskable_ppo", False))
+    use_maskable = bool(resolved_config.get("ppo", {}).get("use_maskable_ppo", False))
     agent = PPOBuzzer.load(checkpoint_path, env=env, use_maskable_ppo=use_maskable)
 
     # Run episodes — one per test question, deterministic order

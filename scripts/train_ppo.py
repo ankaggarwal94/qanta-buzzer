@@ -176,6 +176,7 @@ def main() -> None:
     agent.train(total_timesteps=total_timesteps)
     model_path = out_dir / "ppo_model"
     agent.save(model_path)
+    save_json(config, out_dir / "config_used.json")
 
     eval_deterministic = True
     if args.stochastic_eval:
