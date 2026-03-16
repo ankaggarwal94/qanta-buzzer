@@ -4934,6 +4934,1014 @@ walkthrough.md
 131: _Verifier: Claude (gsd-verifier)_
 ````
 
+## File: .planning/phases/03-baseline-agents-and-t5-likelihood/03-01-PLAN.md
+````markdown
+  1: ---
+  2: phase: 03-baseline-agents-and-t5-likelihood
+  3: plan: 01
+  4: type: execute
+  5: wave: 1
+  6: depends_on: []
+  7: files_modified:
+  8:   - agents/__init__.py
+  9:   - agents/threshold_buzzer.py
+ 10:   - agents/bayesian_buzzer.py
+ 11: autonomous: true
+ 12: requirements: [AGT-02, AGT-03, AGT-04, AGT-05, AGT-06]
+ 13: 
+ 14: must_haves:
+ 15:   truths:
+ 16:     - "ThresholdBuzzer produces valid episodes with c_trace and g_trace"
+ 17:     - "AlwaysBuzzFinal waits until last clue, then buzzes (c_trace[-1]=1.0)"
+ 18:     - "SoftmaxProfile recomputes belief from cumulative prefix each step"
+ 19:     - "SequentialBayes applies incremental Bayesian updates on clue fragments"
+ 20:     - "All agents return EpisodeResult/SoftmaxEpisodeResult with trace fields"
+ 21:   artifacts:
+ 22:     - path: "agents/threshold_buzzer.py"
+ 23:       provides: "ThresholdBuzzer, AlwaysBuzzFinalBuzzer, EpisodeResult, sweep_thresholds, result_to_dict"
+ 24:       exports: ["ThresholdBuzzer", "AlwaysBuzzFinalBuzzer", "EpisodeResult", "sweep_thresholds", "result_to_dict"]
+ 25:     - path: "agents/bayesian_buzzer.py"
+ 26:       provides: "SoftmaxProfileBuzzer, SequentialBayesBuzzer, SoftmaxEpisodeResult"
+ 27:       exports: ["SoftmaxProfileBuzzer", "SequentialBayesBuzzer", "SoftmaxEpisodeResult"]
+ 28:     - path: "agents/__init__.py"
+ 29:       provides: "Agent package exports"
+ 30:       exports: ["ThresholdBuzzer", "AlwaysBuzzFinalBuzzer", "SoftmaxProfileBuzzer", "SequentialBayesBuzzer", "EpisodeResult", "SoftmaxEpisodeResult", "sweep_thresholds", "result_to_dict"]
+ 31:   key_links:
+ 32:     - from: "agents/threshold_buzzer.py"
+ 33:       to: "models.likelihoods.LikelihoodModel"
+ 34:       via: "agent constructor accepts likelihood_model parameter"
+ 35:       pattern: "def __init__.*likelihood_model: LikelihoodModel"
+ 36:     - from: "agents/bayesian_buzzer.py"
+ 37:       to: "qb_data.mc_builder.MCQuestion"
+ 38:       via: "run_episode accepts MCQuestion"
+ 39:       pattern: "def run_episode.*question: MCQuestion"
+ 40:     - from: "agents"
+ 41:       to: "models.likelihoods"
+ 42:       via: "import LikelihoodModel from models.likelihoods"
+ 43:       pattern: "from models\\.likelihoods import LikelihoodModel"
+ 44: ---
+ 45: 
+ 46: <objective>
+ 47: Port all four baseline agents from qb-rl reference implementation, adjusting only import paths for this codebase's structure.
+ 48: 
+ 49: Purpose: Establish performance baselines for comparison with PPO-trained MLP policy. These agents use different decision strategies (threshold, always-final, softmax recomputation, sequential Bayes) but share the common pattern of computing beliefs via likelihood models and returning episode traces.
+ 50: 
+ 51: Output: Working baseline agents that can run on MCQuestion data and produce episode results with c_trace (buzz probability) and g_trace (correctness) for S_q evaluation.
+ 52: </objective>
+ 53: 
+ 54: <execution_context>
+ 55: @/Users/ankit.aggarwal/.claude/get-shit-done/workflows/execute-plan.md
+ 56: @/Users/ankit.aggarwal/.claude/get-shit-done/templates/summary.md
+ 57: </execution_context>
+ 58: 
+ 59: <context>
+ 60: @.planning/PROJECT.md
+ 61: @.planning/ROADMAP.md
+ 62: @.planning/STATE.md
+ 63: @.planning/phases/03-baseline-agents-and-t5-likelihood/03-RESEARCH.md
+ 64: 
+ 65: # Reference implementations (read for porting)
+ 66: @/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/agents/threshold_buzzer.py
+ 67: @/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/agents/softmax_profile_buzzer.py
+ 68: @/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/agents/bayesian_buzzer.py
+ 69: 
+ 70: # Phase 2 interfaces to build on
+ 71: @models/likelihoods.py
+ 72: @qb_data/mc_builder.py
+ 73: </context>
+ 74: 
+ 75: <interfaces>
+ 76: <!-- Key types and contracts the executor needs. Extracted from codebase. -->
+ 77: <!-- Executor should use these directly — no codebase exploration needed. -->
+ 78: 
+ 79: From models/likelihoods.py:
+ 80: ```python
+ 81: class LikelihoodModel(ABC):
+ 82:     def __init__(self) -> None:
+ 83:         self.embedding_cache: dict[str, np.ndarray] = {}
+ 84: 
+ 85:     @abstractmethod
+ 86:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
+ 87:         """Return raw similarity scores for each answer option."""
+ 88: ```
+ 89: 
+ 90: From qb_data/mc_builder.py:
+ 91: ```python
+ 92: @dataclass
+ 93: class MCQuestion:
+ 94:     qid: str
+ 95:     question: str
+ 96:     tokens: list[str]
+ 97:     answer_primary: str
+ 98:     clean_answers: list[str]
+ 99:     run_indices: list[int]
+100:     human_buzz_positions: list[int]
+101:     category: str
+102:     cumulative_prefixes: list[str]
+103:     options: list[str]
+104:     gold_index: int
+105:     option_profiles: list[str]
+106:     option_answer_primary: list[str]
+107:     distractor_strategy: str
+108: ```
+109: </interfaces>
+110: 
+111: <tasks>
+112: 
+113: <task type="auto">
+114:   <name>Task 1: Port ThresholdBuzzer and AlwaysBuzzFinalBuzzer</name>
+115:   <files>agents/threshold_buzzer.py</files>
+116:   <action>
+117: Create agents/threshold_buzzer.py by direct port from qb-rl reference implementation (/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/agents/threshold_buzzer.py lines 1-176).
+118: 
+119: Import path changes:
+120: - `from models.likelihoods import LikelihoodModel` (same path, verify it works)
+121: - `from qb_env.mc_builder import MCQuestion` → `from qb_data.mc_builder import MCQuestion` (CRITICAL: qb-rl uses qb_env, this codebase uses qb_data)
+122: 
+123: Include all components:
+124: - _sigmoid() helper function (lines 12-13)
+125: - EpisodeResult dataclass (lines 16-28)
+126: - ThresholdBuzzer class (lines 30-96):
+127:   - Constructor accepts likelihood_model, threshold=0.8, beta=5.0, alpha=10.0
+128:   - _belief_from_prefix() method computes softmax belief from likelihood scores
+129:   - _confidence_proxy() method converts top_p to buzz confidence via sigmoid
+130:   - run_episode() method iterates through cumulative prefixes, tracks c_trace/g_trace, buzzes when top_p >= threshold or at last step
+131: - AlwaysBuzzFinalBuzzer class (lines 99-141):
+132:   - Constructor accepts likelihood_model, beta=5.0
+133:   - run_episode() computes beliefs at each step but always waits until final step, sets c_trace[-1]=1.0
+134: - sweep_thresholds() utility (lines 144-160): runs ThresholdBuzzer over multiple threshold values
+135: - result_to_dict() utility (lines 163-176): converts EpisodeResult to dict for serialization
+136: 
+137: Do NOT modify agent logic. Only change import paths. Keep all hyperparameter defaults exactly as in qb-rl.
+138:   </action>
+139:   <verify>
+140:     <automated>python -c "from agents.threshold_buzzer import ThresholdBuzzer, AlwaysBuzzFinalBuzzer, EpisodeResult, sweep_thresholds, result_to_dict; print('Imports successful')"</automated>
+141:   </verify>
+142:   <done>agents/threshold_buzzer.py exists with all classes and utilities, imports work, no syntax errors</done>
+143: </task>
+144: 
+145: <task type="auto">
+146:   <name>Task 2: Port SoftmaxProfileBuzzer and SequentialBayesBuzzer</name>
+147:   <files>agents/bayesian_buzzer.py</files>
+148:   <action>
+149: Create agents/bayesian_buzzer.py by direct port from qb-rl reference implementation. Note: qb-rl has agents/softmax_profile_buzzer.py and agents/bayesian_buzzer.py (export-only), but the actual implementations are in softmax_profile_buzzer.py. We consolidate into bayesian_buzzer.py for this codebase.
+150: 
+151: Port from /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/agents/softmax_profile_buzzer.py:
+152: 
+153: Import path changes:
+154: - `from models.likelihoods import LikelihoodModel` (verify)
+155: - `from qb_env.mc_builder import MCQuestion` → `from qb_data.mc_builder import MCQuestion`
+156: 
+157: Include all components:
+158: - _sigmoid() helper function (lines 11-12)
+159: - SoftmaxEpisodeResult dataclass (lines 15-26)
+160: - SoftmaxProfileBuzzer class (lines 28-91):
+161:   - Constructor accepts likelihood_model, threshold=0.8, beta=5.0, alpha=10.0
+162:   - _belief_from_scratch() recomputes belief from full cumulative prefix each step (not incremental)
+163:   - confidence_proxy() method (public, not private)
+164:   - run_episode() iterates through cumulative prefixes, buzzes when top_p >= threshold
+165: - SequentialBayesBuzzer class (lines 94-159):
+166:   - Constructor accepts likelihood_model, threshold=0.8, beta=5.0, alpha=10.0
+167:   - _step_update() applies Bayesian update: posterior ∝ prior × likelihood
+168:   - run_episode() uses question.run_indices to extract clue fragments, applies incremental updates starting from uniform prior
+169: 
+170: CRITICAL: SequentialBayesBuzzer relies on question.run_indices and question.tokens fields being populated. MCQuestion dataclass already has these from Phase 1.
+171: 
+172: Do NOT modify agent logic. Only change import paths.
+173:   </action>
+174:   <verify>
+175:     <automated>python -c "from agents.bayesian_buzzer import SoftmaxProfileBuzzer, SequentialBayesBuzzer, SoftmaxEpisodeResult; print('Imports successful')"</automated>
+176:   </verify>
+177:   <done>agents/bayesian_buzzer.py exists with all classes, imports work, no syntax errors</done>
+178: </task>
+179: 
+180: <task type="auto">
+181:   <name>Task 3: Create agents package exports</name>
+182:   <files>agents/__init__.py</files>
+183:   <action>
+184: Create agents/__init__.py to export all agent classes and utilities.
+185: 
+186: Export structure:
+187: ```python
+188: from agents.threshold_buzzer import (
+189:     ThresholdBuzzer,
+190:     AlwaysBuzzFinalBuzzer,
+191:     EpisodeResult,
+192:     sweep_thresholds,
+193:     result_to_dict,
+194: )
+195: from agents.bayesian_buzzer import (
+196:     SoftmaxProfileBuzzer,
+197:     SequentialBayesBuzzer,
+198:     SoftmaxEpisodeResult,
+199: )
+200: 
+201: __all__ = [
+202:     "ThresholdBuzzer",
+203:     "AlwaysBuzzFinalBuzzer",
+204:     "SoftmaxProfileBuzzer",
+205:     "SequentialBayesBuzzer",
+206:     "EpisodeResult",
+207:     "SoftmaxEpisodeResult",
+208:     "sweep_thresholds",
+209:     "result_to_dict",
+210: ]
+211: ```
+212: 
+213: This matches qb-rl's export pattern (agents/__init__.py imports from both files, exports all public classes).
+214:   </action>
+215:   <verify>
+216:     <automated>python -c "from agents import ThresholdBuzzer, AlwaysBuzzFinalBuzzer, SoftmaxProfileBuzzer, SequentialBayesBuzzer, EpisodeResult, SoftmaxEpisodeResult; print(f'Exported {len([ThresholdBuzzer, AlwaysBuzzFinalBuzzer, SoftmaxProfileBuzzer, SequentialBayesBuzzer, EpisodeResult, SoftmaxEpisodeResult])} classes')"</automated>
+217:   </verify>
+218:   <done>agents/__init__.py exports all agent classes and utilities, can import from agents package directly</done>
+219: </task>
+220: 
+221: </tasks>
+222: 
+223: <verification>
+224: All agents are importable from the agents package. Basic smoke test runs without errors:
+225: 
+226: ```python
+227: from agents import ThresholdBuzzer, EpisodeResult
+228: from models.likelihoods import TfIdfLikelihood
+229: from qb_data.mc_builder import MCQuestion
+230: 
+231: # Use Phase 2 test fixture data
+232: question = sample_mc_question  # From conftest.py
+233: corpus = sample_corpus
+234: likelihood = TfIdfLikelihood(corpus_texts=corpus)
+235: agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
+236: result = agent.run_episode(question)
+237: 
+238: assert isinstance(result, EpisodeResult)
+239: assert len(result.c_trace) > 0
+240: assert len(result.g_trace) == len(result.c_trace)
+241: assert result.buzz_index in range(len(question.options))
+242: ```
+243: </verification>
+244: 
+245: <success_criteria>
+246: - [ ] agents/threshold_buzzer.py exists with ThresholdBuzzer, AlwaysBuzzFinalBuzzer, EpisodeResult, sweep_thresholds, result_to_dict
+247: - [ ] agents/bayesian_buzzer.py exists with SoftmaxProfileBuzzer, SequentialBayesBuzzer, SoftmaxEpisodeResult
+248: - [ ] agents/__init__.py exports all 6 agent classes and 2 utilities
+249: - [ ] All imports work: `from agents import ThresholdBuzzer` succeeds
+250: - [ ] Import paths corrected: qb_env.mc_builder → qb_data.mc_builder
+251: - [ ] Agent logic unchanged from qb-rl reference (only import paths modified)
+252: </success_criteria>
+253: 
+254: <output>
+255: After completion, create `.planning/phases/03-baseline-agents-and-t5-likelihood/03-01-SUMMARY.md`
+256: </output>
+````
+
+## File: .planning/phases/03-baseline-agents-and-t5-likelihood/03-02-PLAN.md
+````markdown
+  1: ---
+  2: phase: 03-baseline-agents-and-t5-likelihood
+  3: plan: 02
+  4: type: execute
+  5: wave: 1
+  6: depends_on: []
+  7: files_modified:
+  8:   - models/likelihoods.py
+  9: autonomous: true
+ 10: requirements: [LIK-04, LIK-05]
+ 11: 
+ 12: must_haves:
+ 13:   truths:
+ 14:     - "T5Likelihood computes semantic similarity scores using T5 encoder"
+ 15:     - "T5 embeddings are cached automatically via inherited embed_and_cache()"
+ 16:     - "T5 scores 'first president' higher for 'Washington' than 'Einstein'"
+ 17:     - "GPU tensors are detached and moved to CPU to prevent memory leaks"
+ 18:   artifacts:
+ 19:     - path: "models/likelihoods.py"
+ 20:       provides: "T5Likelihood class"
+ 21:       exports: ["T5Likelihood"]
+ 22:       min_lines: 450
+ 23:   key_links:
+ 24:     - from: "models/likelihoods.T5Likelihood"
+ 25:       to: "transformers.T5EncoderModel"
+ 26:       via: "T5EncoderModel.from_pretrained() in constructor"
+ 27:       pattern: "T5EncoderModel\\.from_pretrained"
+ 28:     - from: "models/likelihoods.T5Likelihood._embed_batch"
+ 29:       to: "torch tensor operations"
+ 30:       via: "mean pooling with attention mask"
+ 31:       pattern: "mask\\.sum.*masked_hidden\\.sum"
+ 32:     - from: "models/likelihoods.T5Likelihood.score"
+ 33:       to: "LikelihoodModel.embed_and_cache"
+ 34:       via: "inherited cache lookup"
+ 35:       pattern: "self\\.embed_and_cache"
+ 36: ---
+ 37: 
+ 38: <objective>
+ 39: Implement T5Likelihood using T5 encoder for semantic similarity scoring, following the exact pattern of SBERTLikelihood from Phase 2.
+ 40: 
+ 41: Purpose: Enable semantic understanding for belief computation. T5 pre-trained on massive text corpora can distinguish "first president" context better than TF-IDF token matching. This is the novel contribution — using T5 as a likelihood model rather than just as a policy encoder.
+ 42: 
+ 43: Output: T5Likelihood class that inherits from LikelihoodModel ABC, returns raw cosine similarity scores, and automatically benefits from embedding caching.
+ 44: </objective>
+ 45: 
+ 46: <execution_context>
+ 47: @/Users/ankit.aggarwal/.claude/get-shit-done/workflows/execute-plan.md
+ 48: @/Users/ankit.aggarwal/.claude/get-shit-done/templates/summary.md
+ 49: </execution_context>
+ 50: 
+ 51: <context>
+ 52: @.planning/PROJECT.md
+ 53: @.planning/ROADMAP.md
+ 54: @.planning/STATE.md
+ 55: @.planning/phases/03-baseline-agents-and-t5-likelihood/03-RESEARCH.md
+ 56: 
+ 57: # Phase 2 implementation to follow
+ 58: @models/likelihoods.py
+ 59: </context>
+ 60: 
+ 61: <interfaces>
+ 62: <!-- Existing interfaces to extend -->
+ 63: 
+ 64: From models/likelihoods.py (lines 52-143):
+ 65: ```python
+ 66: class LikelihoodModel(ABC):
+ 67:     """Abstract base class for likelihood models.
+ 68: 
+ 69:     Subclasses must implement:
+ 70:         - score(clue_prefix, option_profiles) -> np.ndarray
+ 71:         - _embed_batch(texts) -> np.ndarray
+ 72: 
+ 73:     The base class provides embed_and_cache() which handles caching of
+ 74:     text embeddings via SHA-256 content hashing.
+ 75:     """
+ 76: 
+ 77:     def __init__(self) -> None:
+ 78:         self.embedding_cache: dict[str, np.ndarray] = {}
+ 79: 
+ 80:     @abstractmethod
+ 81:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
+ 82:         """Return raw similarity scores for each answer option."""
+ 83: 
+ 84:     def embed_and_cache(self, texts: list[str]) -> np.ndarray:
+ 85:         """Embed texts, using cache for previously seen inputs."""
+ 86:         missing = [text for text in texts if _text_key(text) not in self.embedding_cache]
+ 87:         if missing:
+ 88:             new_embeddings = self._embed_batch(missing)
+ 89:             for text, emb in zip(missing, new_embeddings):
+ 90:                 self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
+ 91:         return np.stack([self.embedding_cache[_text_key(text)] for text in texts])
+ 92: 
+ 93:     @abstractmethod
+ 94:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
+ 95:         """Embed a batch of texts. Returns float32 array of shape (len(texts), embed_dim)."""
+ 96: ```
+ 97: 
+ 98: SBERTLikelihood pattern to follow (lines 258-346):
+ 99: ```python
+100: class SBERTLikelihood(LikelihoodModel):
+101:     def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
+102:         super().__init__()
+103:         from sentence_transformers import SentenceTransformer
+104:         self.model_name = model_name
+105:         self.model = SentenceTransformer(model_name)
+106: 
+107:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
+108:         embeddings = self.model.encode(
+109:             texts,
+110:             convert_to_numpy=True,
+111:             normalize_embeddings=True,
+112:             show_progress_bar=False,
+113:         )
+114:         return embeddings.astype(np.float32)
+115: 
+116:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
+117:         clue_emb = self.embed_and_cache([clue_prefix])[0]
+118:         option_embs = self.embed_and_cache(option_profiles)
+119:         sims = option_embs @ clue_emb
+120:         return sims.astype(np.float32)
+121: ```
+122: </interfaces>
+123: 
+124: <tasks>
+125: 
+126: <task type="auto">
+127:   <name>Task 1: Implement T5Likelihood class with mean-pooled embeddings</name>
+128:   <files>models/likelihoods.py</files>
+129:   <action>
+130: Add T5Likelihood class to models/likelihoods.py following the SBERTLikelihood pattern (lines 258-346) but using T5EncoderModel.
+131: 
+132: Add after SBERTLikelihood class, before build_likelihood_from_config():
+133: 
+134: ```python
+135: class T5Likelihood(LikelihoodModel):
+136:     """T5 encoder likelihood model using mean-pooled semantic embeddings.
+137: 
+138:     Uses T5EncoderModel (not full T5ForConditionalGeneration) for 2x faster
+139:     inference and half the memory. Embeddings are mean-pooled over sequence
+140:     length with attention mask weighting to handle padding correctly.
+141: 
+142:     Parameters
+143:     ----------
+144:     model_name : str, default="t5-base"
+145:         HuggingFace T5 model identifier. Options:
+146:         - "t5-small" (60M params) — fastest, lowest quality
+147:         - "t5-base" (220M params) — balanced (recommended)
+148:         - "t5-large" (770M params) — best quality, requires 8GB GPU VRAM
+149: 
+150:     Attributes
+151:     ----------
+152:     encoder : T5EncoderModel
+153:         Pre-trained T5 encoder loaded from HuggingFace.
+154:     tokenizer : T5Tokenizer
+155:         T5 tokenizer for text preprocessing.
+156:     device : torch.device
+157:         Computation device (cuda if available, else cpu).
+158:     """
+159: 
+160:     def __init__(self, model_name: str = "t5-base") -> None:
+161:         super().__init__()
+162:         # Lazy import to avoid dependency issues if transformers not installed
+163:         import torch
+164:         from transformers import T5EncoderModel, T5Tokenizer
+165: 
+166:         self.model_name = model_name
+167:         self.encoder = T5EncoderModel.from_pretrained(model_name)
+168:         self.tokenizer = T5Tokenizer.from_pretrained(model_name)
+169:         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+170:         self.encoder.to(self.device)
+171:         self.encoder.eval()
+172: 
+173:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
+174:         """Embed texts using T5 encoder with attention-masked mean pooling.
+175: 
+176:         Parameters
+177:         ----------
+178:         texts : list[str]
+179:             Texts to embed.
+180: 
+181:         Returns
+182:         -------
+183:         np.ndarray
+184:             L2-normalized embeddings of shape (len(texts), hidden_dim), dtype float32.
+185: 
+186:         Notes
+187:         -----
+188:         Mean pooling uses attention mask to exclude padding tokens from the average.
+189:         Embeddings are L2-normalized for cosine similarity via dot product.
+190:         Tensors are detached and moved to CPU immediately to prevent memory leaks.
+191:         """
+192:         import torch
+193: 
+194:         with torch.no_grad():
+195:             encoded = self.tokenizer(
+196:                 texts,
+197:                 padding=True,
+198:                 truncation=True,
+199:                 max_length=512,
+200:                 return_tensors="pt"
+201:             ).to(self.device)
+202: 
+203:             outputs = self.encoder(**encoded)
+204:             last_hidden = outputs.last_hidden_state  # (batch, seq_len, hidden_dim)
+205: 
+206:             # Mean pooling over sequence length with attention mask
+207:             mask = encoded.attention_mask.unsqueeze(-1)  # (batch, seq_len, 1)
+208:             masked_hidden = last_hidden * mask
+209:             sum_hidden = masked_hidden.sum(dim=1)  # (batch, hidden_dim)
+210:             mask_sum = mask.sum(dim=1).clamp(min=1e-9)  # (batch, 1)
+211:             mean_pooled = sum_hidden / mask_sum  # (batch, hidden_dim)
+212: 
+213:             # L2 normalize for cosine similarity via dot product
+214:             embeddings = torch.nn.functional.normalize(mean_pooled, p=2, dim=1)
+215: 
+216:             # CRITICAL: Detach and move to CPU to prevent memory leak
+217:             embeddings = embeddings.detach().cpu().numpy().astype(np.float32)
+218: 
+219:         return embeddings
+220: 
+221:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
+222:         """Score each option using T5 semantic cosine similarity.
+223: 
+224:         Parameters
+225:         ----------
+226:         clue_prefix : str
+227:             Clue text revealed so far.
+228:         option_profiles : list[str]
+229:             Answer profile text for each option.
+230: 
+231:         Returns
+232:         -------
+233:         np.ndarray
+234:             Raw cosine similarity scores of shape (len(option_profiles),).
+235:         """
+236:         clue_emb = self.embed_and_cache([clue_prefix])[0]
+237:         option_embs = self.embed_and_cache(option_profiles)
+238:         sims = option_embs @ clue_emb
+239:         return sims.astype(np.float32)
+240: ```
+241: 
+242: Follow SBERTLikelihood pattern exactly:
+243: - Lazy import transformers and torch inside __init__ and _embed_batch
+244: - Use embed_and_cache() in score() method (inherited from base class, provides caching automatically)
+245: - Return raw similarity scores (not probabilities) from score()
+246: - L2 normalize embeddings so dot product = cosine similarity
+247: - Detach tensors and move to CPU immediately after computation (prevents memory leaks)
+248: 
+249: Critical detail: Use attention_mask in mean pooling to exclude padding tokens. This is essential for correct semantic embeddings when sequences have different lengths.
+250:   </action>
+251:   <verify>
+252:     <automated>python -c "from models.likelihoods import T5Likelihood; model = T5Likelihood(model_name='t5-small'); import numpy as np; scores = model.score('first president', ['George Washington', 'Albert Einstein']); assert isinstance(scores, np.ndarray) and len(scores) == 2; print(f'T5Likelihood smoke test passed: scores shape {scores.shape}')"</automated>
+253:   </verify>
+254:   <done>T5Likelihood class exists in models/likelihoods.py, smoke test passes, returns float32 ndarray scores</done>
+255: </task>
+256: 
+257: <task type="auto">
+258:   <name>Task 2: Update build_likelihood_from_config factory to support T5</name>
+259:   <files>models/likelihoods.py</files>
+260:   <action>
+261: Update build_likelihood_from_config() function (currently at lines 349-379) to add T5 support.
+262: 
+263: Add new branch before the final ValueError:
+264: 
+265: ```python
+266:     if model_name == "t5":
+267:         t5_name = cfg.get("t5_name", "t5-base")
+268:         return T5Likelihood(model_name=t5_name)
+269: ```
+270: 
+271: This follows the existing pattern for "tfidf" and "sbert" branches. Config structure:
+272: ```yaml
+273: likelihood:
+274:   model: t5
+275:   t5_name: t5-base  # Optional, defaults to t5-base
+276:   beta: 5.0
+277: ```
+278: 
+279: The factory extracts `t5_name` from config (with fallback to "t5-base") and constructs T5Likelihood.
+280:   </action>
+281:   <verify>
+282:     <automated>python -c "from models.likelihoods import build_likelihood_from_config, T5Likelihood; config = {'likelihood': {'model': 't5', 't5_name': 't5-small'}}; model = build_likelihood_from_config(config); assert isinstance(model, T5Likelihood); print('Factory test passed')"</automated>
+283:   </verify>
+284:   <done>build_likelihood_from_config supports model="t5", constructs T5Likelihood with configurable t5_name</done>
+285: </task>
+286: 
+287: <task type="auto">
+288:   <name>Task 3: Update models/__init__.py to export T5Likelihood</name>
+289:   <files>models/__init__.py</files>
+290:   <action>
+291: Read models/__init__.py and add T5Likelihood to the imports and __all__ list.
+292: 
+293: Current exports (from Phase 2 Plan 04 summary):
+294: ```python
+295: from models.likelihoods import (
+296:     LikelihoodModel,
+297:     TfIdfLikelihood,
+298:     SBERTLikelihood,
+299:     build_likelihood_from_config,
+300: )
+301: ```
+302: 
+303: Update to:
+304: ```python
+305: from models.likelihoods import (
+306:     LikelihoodModel,
+307:     TfIdfLikelihood,
+308:     SBERTLikelihood,
+309:     T5Likelihood,
+310:     build_likelihood_from_config,
+311: )
+312: ```
+313: 
+314: And add "T5Likelihood" to __all__ list.
+315:   </action>
+316:   <verify>
+317:     <automated>python -c "from models import T5Likelihood; print('T5Likelihood exported from models package')"</automated>
+318:   </verify>
+319:   <done>models/__init__.py exports T5Likelihood, can import from models package</done>
+320: </task>
+321: 
+322: </tasks>
+323: 
+324: <verification>
+325: T5Likelihood produces semantically meaningful scores:
+326: 
+327: ```python
+328: from models import T5Likelihood
+329: import numpy as np
+330: 
+331: model = T5Likelihood(model_name="t5-small")  # Use small for fast test
+332: 
+333: # Test semantic discrimination
+334: clue = "This person was the first president of the United States"
+335: options = [
+336:     "George Washington first president",
+337:     "Albert Einstein physicist relativity",
+338: ]
+339: 
+340: scores = model.score(clue, options)
+341: assert scores[0] > scores[1], "T5 should score Washington higher than Einstein"
+342: 
+343: # Test caching
+344: scores2 = model.score(clue, options)
+345: np.testing.assert_array_equal(scores, scores2, err_msg="Cached scores should match")
+346: 
+347: print("T5 semantic scoring verified")
+348: ```
+349: </verification>
+350: 
+351: <success_criteria>
+352: - [ ] T5Likelihood class exists in models/likelihoods.py
+353: - [ ] T5Likelihood inherits from LikelihoodModel, implements score() and _embed_batch()
+354: - [ ] _embed_batch() uses T5EncoderModel with mean pooling and attention mask
+355: - [ ] score() uses embed_and_cache() for automatic caching
+356: - [ ] Tensors are detached and moved to CPU (prevents memory leaks)
+357: - [ ] build_likelihood_from_config() supports model="t5"
+358: - [ ] models/__init__.py exports T5Likelihood
+359: - [ ] Smoke test passes: T5 scores "Washington" higher than "Einstein" for "first president"
+360: </success_criteria>
+361: 
+362: <output>
+363: After completion, create `.planning/phases/03-baseline-agents-and-t5-likelihood/03-02-SUMMARY.md`
+364: </output>
+````
+
+## File: .planning/phases/03-baseline-agents-and-t5-likelihood/03-03-PLAN.md
+````markdown
+  1: ---
+  2: phase: 03-baseline-agents-and-t5-likelihood
+  3: plan: 03
+  4: type: execute
+  5: wave: 2
+  6: depends_on: ["03-01", "03-02"]
+  7: files_modified:
+  8:   - tests/conftest.py
+  9:   - tests/test_agents.py
+ 10:   - tests/test_likelihoods.py
+ 11: autonomous: true
+ 12: requirements: [AGT-06, LIK-04, LIK-05]
+ 13: 
+ 14: must_haves:
+ 15:   truths:
+ 16:     - "All four baseline agents execute without errors on test questions"
+ 17:     - "Agents return valid EpisodeResult/SoftmaxEpisodeResult with c_trace and g_trace"
+ 18:     - "T5Likelihood produces semantically meaningful scores"
+ 19:     - "T5 embedding cache reduces redundant computations"
+ 20:     - "Test suite runs in under 60 seconds"
+ 21:   artifacts:
+ 22:     - path: "tests/conftest.py"
+ 23:       provides: "sample_t5_model fixture for fast testing"
+ 24:       contains: "@pytest.fixture.*sample_t5_model"
+ 25:       min_lines: 150
+ 26:     - path: "tests/test_agents.py"
+ 27:       provides: "Baseline agent execution tests"
+ 28:       contains: "def test_threshold_buzzer"
+ 29:       min_lines: 200
+ 30:     - path: "tests/test_likelihoods.py"
+ 31:       provides: "T5 semantic scoring and cache tests"
+ 32:       contains: "def test_t5_semantic_scoring"
+ 33:       min_lines: 300
+ 34:   key_links:
+ 35:     - from: "tests/test_agents.py"
+ 36:       to: "agents.ThresholdBuzzer"
+ 37:       via: "instantiate with likelihood model and test question"
+ 38:       pattern: "ThresholdBuzzer.*run_episode"
+ 39:     - from: "tests/test_likelihoods.py"
+ 40:       to: "models.T5Likelihood"
+ 41:       via: "test semantic similarity and caching"
+ 42:       pattern: "T5Likelihood.*score"
+ 43: ---
+ 44: 
+ 45: <objective>
+ 46: Create comprehensive test suite covering all baseline agents and T5 likelihood model to verify Phase 3 requirements.
+ 47: 
+ 48: Purpose: Ensure all agents execute correctly and produce valid episode traces for S_q evaluation. Verify T5 provides semantic discrimination and benefits from caching. Tests serve as regression safety for future phases.
+ 49: 
+ 50: Output: 30+ tests verifying agent execution, episode result schemas, T5 semantic scoring, and embedding cache efficiency.
+ 51: </objective>
+ 52: 
+ 53: <execution_context>
+ 54: @/Users/ankit.aggarwal/.claude/get-shit-done/workflows/execute-plan.md
+ 55: @/Users/ankit.aggarwal/.claude/get-shit-done/templates/summary.md
+ 56: </execution_context>
+ 57: 
+ 58: <context>
+ 59: @.planning/PROJECT.md
+ 60: @.planning/ROADMAP.md
+ 61: @.planning/STATE.md
+ 62: @.planning/phases/03-baseline-agents-and-t5-likelihood/03-RESEARCH.md
+ 63: 
+ 64: # Phase 2 test patterns to follow
+ 65: @tests/conftest.py
+ 66: @tests/test_likelihoods.py
+ 67: @tests/test_environment.py
+ 68: 
+ 69: # Implementations to test
+ 70: @agents/threshold_buzzer.py
+ 71: @agents/bayesian_buzzer.py
+ 72: @models/likelihoods.py
+ 73: </context>
+ 74: 
+ 75: <interfaces>
+ 76: <!-- Test fixtures and patterns from Phase 2 -->
+ 77: 
+ 78: From tests/conftest.py:
+ 79: ```python
+ 80: @pytest.fixture
+ 81: def sample_mc_question() -> MCQuestion:
+ 82:     """Minimal MCQuestion with 4 options, 6 clue steps."""
+ 83:     return MCQuestion(
+ 84:         qid="test_q1",
+ 85:         question="Who was the first president of the United States?",
+ 86:         tokens=["Who", "was", "the", "first", "president", "of", "the", "United", "States", "?"],
+ 87:         run_indices=[0, 2, 4, 6, 8, 9],
+ 88:         cumulative_prefixes=["Who", "Who was the", ...],
+ 89:         options=["George Washington", "Thomas Jefferson", "John Adams", "Benjamin Franklin"],
+ 90:         gold_index=0,
+ 91:         option_profiles=["George Washington first president ...", ...],
+ 92:         # ... other fields
+ 93:     )
+ 94: 
+ 95: @pytest.fixture
+ 96: def sample_corpus() -> list[str]:
+ 97:     """Ten text strings for TF-IDF fitting."""
+ 98:     return ["George Washington was the first president...", ...]
+ 99: ```
+100: 
+101: Agent interfaces:
+102: ```python
+103: class ThresholdBuzzer:
+104:     def __init__(self, likelihood_model: LikelihoodModel, threshold: float = 0.8, beta: float = 5.0, alpha: float = 10.0):
+105:         ...
+106:     def run_episode(self, question: MCQuestion) -> EpisodeResult:
+107:         ...
+108: 
+109: @dataclass
+110: class EpisodeResult:
+111:     qid: str
+112:     buzz_step: int
+113:     buzz_index: int
+114:     gold_index: int
+115:     correct: bool
+116:     reward_like: float
+117:     c_trace: list[float]
+118:     g_trace: list[float]
+119:     top_p_trace: list[float]
+120:     entropy_trace: list[float]
+121: ```
+122: </interfaces>
+123: 
+124: <tasks>
+125: 
+126: <task type="auto">
+127:   <name>Task 1: Add T5 test fixture to conftest.py</name>
+128:   <files>tests/conftest.py</files>
+129:   <action>
+130: Add a new pytest fixture to tests/conftest.py for T5 model testing. Use t5-small (60M params) for fast test execution, not t5-base or t5-large.
+131: 
+132: Add after sample_corpus fixture:
+133: 
+134: ```python
+135: @pytest.fixture(scope="module")
+136: def sample_t5_model():
+137:     """Return a T5Likelihood model for testing.
+138: 
+139:     Uses t5-small (60M params) for fast test execution. Scoped to module
+140:     level so the model is loaded once per test file, not per test function.
+141: 
+142:     Returns
+143:     -------
+144:     T5Likelihood
+145:         A T5 likelihood model suitable for testing semantic scoring.
+146: 
+147:     Notes
+148:     -----
+149:     This fixture may take 5-10 seconds on first run to download the model
+150:     from HuggingFace. Subsequent runs use cached weights.
+151:     """
+152:     from models.likelihoods import T5Likelihood
+153:     return T5Likelihood(model_name="t5-small")
+154: ```
+155: 
+156: Scope="module" means the model is instantiated once per test file, not once per test. This reduces test runtime significantly (model loading is expensive).
+157:   </action>
+158:   <verify>
+159:     <automated>python -c "import pytest; from tests.conftest import sample_t5_model; print('Fixture defined')"</automated>
+160:   </verify>
+161:   <done>sample_t5_model fixture exists in tests/conftest.py with module scope</done>
+162: </task>
+163: 
+164: <task type="auto">
+165:   <name>Task 2: Create agent test suite (test_agents.py)</name>
+166:   <files>tests/test_agents.py</files>
+167:   <action>
+168: Create tests/test_agents.py to cover all baseline agents (AGT-02 through AGT-06).
+169: 
+170: Test structure (30+ tests):
+171: 
+172: 1. **ThresholdBuzzer tests (AGT-02):**
+173:    - test_threshold_buzzer_executes: Runs episode without error, returns EpisodeResult
+174:    - test_threshold_buzzer_buzzes_on_threshold: Buzzes when top_p >= threshold
+175:    - test_threshold_buzzer_waits_on_low_confidence: Continues when top_p < threshold
+176:    - test_threshold_buzzer_buzzes_at_final: Always buzzes on final step regardless of threshold
+177:    - test_threshold_buzzer_traces_valid: c_trace and g_trace have correct lengths
+178:    - test_threshold_buzzer_confidence_proxy: c_t values in [0, 1] via sigmoid
+179: 
+180: 2. **AlwaysBuzzFinalBuzzer tests (AGT-03):**
+181:    - test_always_buzz_final_waits: c_trace[:-1] all equal 0.0
+182:    - test_always_buzz_final_buzzes_last: c_trace[-1] == 1.0
+183:    - test_always_buzz_final_computes_beliefs: Beliefs computed at each step (not skipped)
+184:    - test_always_buzz_final_buzz_step: buzz_step == len(cumulative_prefixes) - 1
+185: 
+186: 3. **SoftmaxProfileBuzzer tests (AGT-04):**
+187:    - test_softmax_profile_executes: Runs episode without error
+188:    - test_softmax_profile_recomputes_belief: Calls _belief_from_scratch each step (not incremental)
+189:    - test_softmax_profile_result_schema: Returns SoftmaxEpisodeResult
+190: 
+191: 4. **SequentialBayesBuzzer tests (AGT-05):**
+192:    - test_sequential_bayes_executes: Runs episode without error
+193:    - test_sequential_bayes_uses_run_indices: Requires question.run_indices field
+194:    - test_sequential_bayes_bayesian_update: Belief is posterior ∝ prior × likelihood
+195:    - test_sequential_bayes_result_schema: Returns SoftmaxEpisodeResult
+196: 
+197: 5. **Episode result schema tests (AGT-06):**
+198:    - test_episode_result_fields: EpisodeResult has all required fields
+199:    - test_softmax_episode_result_fields: SoftmaxEpisodeResult has all required fields
+200:    - test_traces_same_length: len(c_trace) == len(g_trace) for all agents
+201:    - test_g_trace_binary: g_trace values are 0.0 or 1.0 (correctness is binary)
+202:    - test_buzz_index_valid: buzz_index in range(K) where K = len(options)
+203:    - test_result_to_dict: result_to_dict() converts EpisodeResult to dict
+204: 
+205: 6. **Threshold sweep utility tests:**
+206:    - test_sweep_thresholds_runs: sweep_thresholds() returns dict[float, list[EpisodeResult]]
+207:    - test_sweep_thresholds_multiple_values: Sweeps over [0.6, 0.7, 0.8, 0.9]
+208: 
+209: Use fixtures from conftest.py: sample_mc_question, sample_corpus, sample_config.
+210: 
+211: Pattern each test:
+212: ```python
+213: def test_threshold_buzzer_executes(sample_mc_question, sample_corpus):
+214:     from agents import ThresholdBuzzer, EpisodeResult
+215:     from models.likelihoods import TfIdfLikelihood
+216: 
+217:     likelihood = TfIdfLikelihood(corpus_texts=sample_corpus)
+218:     agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
+219:     result = agent.run_episode(sample_mc_question)
+220: 
+221:     assert isinstance(result, EpisodeResult)
+222:     assert result.qid == sample_mc_question.qid
+223:     assert len(result.c_trace) > 0
+224: ```
+225: 
+226: Use TF-IDF likelihood (fast) for most tests, not T5 or SBERT. Only test agent logic, not likelihood quality.
+227:   </action>
+228:   <verify>
+229:     <automated>pytest tests/test_agents.py -x</automated>
+230:   </verify>
+231:   <done>tests/test_agents.py exists with 30+ tests covering all baseline agents, all tests pass</done>
+232: </task>
+233: 
+234: <task type="auto">
+235:   <name>Task 3: Add T5 tests to test_likelihoods.py</name>
+236:   <files>tests/test_likelihoods.py</files>
+237:   <action>
+238: Add T5 tests to existing tests/test_likelihoods.py (Phase 2 has TF-IDF and SBERT tests).
+239: 
+240: Add at end of file, after existing SBERT tests:
+241: 
+242: 1. **T5 semantic scoring test (LIK-04):**
+243: ```python
+244: def test_t5_semantic_scoring(sample_t5_model):
+245:     """T5 should score semantically relevant options higher."""
+246:     clue = "This person was the first president of the United States"
+247:     options = [
+248:         "George Washington first president commander revolutionary war",
+249:         "Albert Einstein physicist theory relativity Nobel Prize",
+250:     ]
+251: 
+252:     scores = sample_t5_model.score(clue, options)
+253: 
+254:     assert isinstance(scores, np.ndarray)
+255:     assert scores.dtype == np.float32
+256:     assert len(scores) == 2
+257:     # Washington should score higher than Einstein for "first president" query
+258:     assert scores[0] > scores[1], f"Expected Washington > Einstein, got {scores}"
+259: ```
+260: 
+261: 2. **T5 embedding cache test (LIK-05):**
+262: ```python
+263: def test_t5_embedding_cache(sample_t5_model):
+264:     """T5 should cache embeddings and reuse them."""
+265:     texts = ["George Washington", "Thomas Jefferson"]
+266: 
+267:     # First call embeds and caches
+268:     emb1 = sample_t5_model.embed_and_cache(texts)
+269:     cache_size_1 = len(sample_t5_model.embedding_cache)
+270: 
+271:     # Second call reuses cache
+272:     emb2 = sample_t5_model.embed_and_cache(texts)
+273:     cache_size_2 = len(sample_t5_model.embedding_cache)
+274: 
+275:     np.testing.assert_array_equal(emb1, emb2, err_msg="Cached embeddings should match")
+276:     assert cache_size_1 == cache_size_2 == 2, "Cache size should not grow on reuse"
+277: ```
+278: 
+279: 3. **T5 score return type test:**
+280: ```python
+281: def test_t5_score_returns_float32(sample_t5_model):
+282:     """T5 score should return float32 array, not probabilities."""
+283:     scores = sample_t5_model.score("test clue", ["option 1", "option 2"])
+284:     assert scores.dtype == np.float32
+285:     # Scores are raw similarities, not probabilities (don't sum to 1)
+286: ```
+287: 
+288: 4. **T5 factory construction test:**
+289: ```python
+290: def test_build_t5_from_config():
+291:     """Factory should construct T5Likelihood from config."""
+292:     from models.likelihoods import build_likelihood_from_config, T5Likelihood
+293: 
+294:     config = {
+295:         "likelihood": {
+296:             "model": "t5",
+297:             "t5_name": "t5-small",
+298:         }
+299:     }
+300: 
+301:     model = build_likelihood_from_config(config)
+302:     assert isinstance(model, T5Likelihood)
+303:     assert model.model_name == "t5-small"
+304: ```
+305: 
+306: 5. **T5 attention mask test:**
+307: ```python
+308: def test_t5_handles_variable_length(sample_t5_model):
+309:     """T5 should handle variable-length texts via attention mask."""
+310:     short = "Washington"
+311:     long = "George Washington was the first president of the United States and commander of the Continental Army during the Revolutionary War"
+312: 
+313:     # Both should embed without error
+314:     embs = sample_t5_model.embed_and_cache([short, long])
+315:     assert embs.shape == (2, sample_t5_model.encoder.config.d_model)
+316: ```
+317: 
+318: These tests verify T5 semantic scoring (LIK-04) and automatic caching (LIK-05 inherited from LikelihoodModel base class).
+319:   </action>
+320:   <verify>
+321:     <automated>pytest tests/test_likelihoods.py::test_t5_semantic_scoring tests/test_likelihoods.py::test_t5_embedding_cache -x</automated>
+322:   </verify>
+323:   <done>tests/test_likelihoods.py has 5 new T5 tests, all pass, semantic scoring verified</done>
+324: </task>
+325: 
+326: </tasks>
+327: 
+328: <verification>
+329: Full test suite passes:
+330: 
+331: ```bash
+332: pytest tests/ -v
+333: 
+334: # Expected output:
+335: # tests/test_features.py: 17 passed (from Phase 2)
+336: # tests/test_likelihoods.py: 20 passed (15 from Phase 2 + 5 new T5)
+337: # tests/test_environment.py: 32 passed (from Phase 2)
+338: # tests/test_factories.py: 14 passed (from Phase 2)
+339: # tests/test_agents.py: 30 passed (new)
+340: # Total: 113 passed
+341: ```
+342: 
+343: Agents produce valid episode traces:
+344: 
+345: ```python
+346: from agents import ThresholdBuzzer, EpisodeResult
+347: from models import TfIdfLikelihood
+348: from tests.conftest import sample_mc_question, sample_corpus
+349: 
+350: question = sample_mc_question
+351: corpus = sample_corpus
+352: likelihood = TfIdfLikelihood(corpus_texts=corpus)
+353: agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.8)
+354: result = agent.run_episode(question)
+355: 
+356: assert isinstance(result, EpisodeResult)
+357: assert len(result.c_trace) == len(result.g_trace)
+358: assert all(0.0 <= c <= 1.0 for c in result.c_trace)
+359: assert all(g in [0.0, 1.0] for g in result.g_trace)
+360: ```
+361: </verification>
+362: 
+363: <success_criteria>
+364: - [ ] tests/conftest.py has sample_t5_model fixture with module scope
+365: - [ ] tests/test_agents.py exists with 30+ tests covering all 4 baseline agents
+366: - [ ] tests/test_agents.py verifies EpisodeResult and SoftmaxEpisodeResult schemas (AGT-06)
+367: - [ ] tests/test_likelihoods.py has 5 new T5 tests (semantic scoring, caching, factory, attention mask)
+368: - [ ] test_t5_semantic_scoring verifies T5 scores "Washington" higher than "Einstein" for "first president"
+369: - [ ] test_t5_embedding_cache verifies cache reuse (LIK-05)
+370: - [ ] All tests pass: pytest tests/ returns 113+ passed
+371: - [ ] Test runtime under 60 seconds (use TF-IDF for agent tests, t5-small for T5 tests)
+372: </success_criteria>
+373: 
+374: <output>
+375: After completion, create `.planning/phases/03-baseline-agents-and-t5-likelihood/03-03-SUMMARY.md`
+376: </output>
+````
+
 ## File: .planning/phases/03-baseline-agents-and-t5-likelihood/03-RESEARCH.md
 ````markdown
   1: # Phase 3: Baseline Agents and T5 Likelihood - Research
@@ -7509,1053 +8517,6 @@ walkthrough.md
 471: **Invariants verified:** all 6 hold
 472: 
 473: The one genuinely open risk is WP-A (T5 joint action factorization) — highest value deferred item that would improve T5 PPO training quality. Everything else is either pre-existing or blocked on PR bug fixes.
-````
-
-## File: docs/full-pipeline-runbook.md
-````markdown
-   1: # Full End-to-End Pipeline Runbook
-   2: 
-   3: Deterministic instruction set for running the complete qanta-buzzer pipeline
-   4: at full scale on the QANTA dataset (~20,407 questions).
-   5: 
-   6: ---
-   7: 
-   8: ## Prerequisites
-   9: 
-  10: ### Hardware
-  11: 
-  12: | Resource | Minimum | This machine (Apple M3 Max) |
-  13: |----------|---------|---------------------------|
-  14: | CPU | 8 cores | 16 cores |
-  15: | RAM | 32 GB (t5-base on MPS) | 64 GB |
-  16: | GPU | — (CPU ok for tfidf) | MPS (Apple Silicon) |
-  17: | Disk | 10 GB free | 38 GB free |
-  18: 
-  19: ### Local wall-time estimates (Apple M3 Max, 64 GB, MPS)
-  20: 
-  21: All estimates assume the full QANTA dataset (~20,407 questions). Phases
-  22: marked ★ are the core pipeline; others are optional extensions/ablations.
-  23: 
-  24: | Phase | Description | Likelihood | Estimated time |
-  25: |-------|------------|------------|----------------|
-  26: | **★ 1** | Build MC dataset (SBERT distractors) | — | 5–10 min |
-  27: | **★ 2** | Baseline sweeps (TF-IDF) | tfidf | 5–10 min |
-  28: | **★ 2** | Baseline sweeps (T5-large) | t5-large | 2–4 hrs |
-  29: | **★ 2** | Baseline sweeps (T5-base) | t5-base | 45–90 min |
-  30: | **★ 3** | PPO 100k steps (TF-IDF beliefs) | tfidf | 30–60 min |
-  31: | **★ 4** | Evaluate all + controls | tfidf | 5–15 min |
-  32: | **★ 5** | T5 policy: supervised + PPO (t5-large) | — | 4–8 hrs |
-  33: | **★ 5** | T5 policy: supervised + PPO (t5-base) | — | 1.5–3 hrs |
-  34: | **★ 5** | T5 policy: supervised + PPO (t5-small) | — | 15–30 min |
-  35: | **★ 6** | Compare policies | tfidf | 10–20 min |
-  36: | 7 | Multi-seed PPO (3 seeds) | tfidf | 1.5–3 hrs |
-  37: | 8 | Reward sweep | tfidf | varies |
-  38: | 9 | Distractor comparison (3 strategies) | tfidf | 15–30 min |
-  39: | 10 | Variable-K baselines (MaskablePPO not wired) | tfidf | 15–30 min |
-  40: | 11 | Expected Wins eval (EW-trained PPO is manual only) | tfidf | 5–15 min |
-  41: | 12 | DSPy compile | API-bound | 5–10 min |
-  42: | 13 | K-sensitivity (5 values) | tfidf | 30–60 min |
-  43: | 14 | Reward mode comparison (3 modes) | tfidf | 1.5–3 hrs |
-  44: | 15 | Belief mode comparison | tfidf | 5–10 min |
-  45: | 16 | Stop-only PPO | tfidf | 30–60 min |
-  46: | 17 | No-buzz horizon | tfidf | 30–60 min |
-  47: | 18 | OpenAI embeddings | API-bound | 10–30 min |
-  48: | 19 | DSPy MIPROv2 | API-bound | 5–10 min |
-  49: 
-  50: **Totals (wall-clock, sequential):**
-  51: 
-  52: | Scope | T5-large | T5-base | T5-small / TF-IDF only |
-  53: |-------|----------|---------|------------------------|
-  54: | Core pipeline (★ Phases 1–6) | 7–13 hrs | 3–5.5 hrs | 1–2 hrs |
-  55: | Core + all extensions (1–19) | 12–22 hrs | 7–13 hrs | 5–9 hrs |
-  56: 
-  57: **Parallelism opportunities:** After Phase 1 completes, Phases 2/3/5 are
-  58: independent and can run in parallel (Wave 1 of `run_full_pipeline.sh`).
-  59: Phase 4 must follow Phase 2 (reads `baseline_summary.json`). Phase 11
-  60: must follow Phase 4 and run before Phase 15 (it reads `baseline_summary.json`
-  61: which Phase 15 overwrites). Phases 9/13/15 each overwrite
-  62: `baseline_summary.json` and must run sequentially after Phase 11.
-  63: 
-  64: ### Software
-  65: 
-  66: ```bash
-  67: cd /path/to/qanta-buzzer
-  68: python3 -m venv .venv
-  69: source .venv/bin/activate
-  70: pip install -U pip
-  71: pip install -e .
-  72: ```
-  73: 
-  74: ### Data
-  75: 
-  76: The file `questions.csv` must exist at the repo root. It contains ~20,407
-  77: QANTA quiz bowl questions with `|||`-separated clue tokens.
-  78: 
-  79: ### Verify baseline
-  80: 
-  81: ```bash
-  82: pytest tests/ -q --tb=no      # expect: 342 passed, 3 skipped
-  83: bash scripts/manual-smoke.sh   # expect: 4/4 stages complete
-  84: ```
-  85: 
-  86: ---
-  87: 
-  88: ## Quick start: automated parallel execution
-  89: 
-  90: For an automated run of the core pipeline and scripted extensions, use
-  91: `run_full_pipeline.sh`. Parallel mode runs Phases 1–6, 11 (eval only),
-  92: 13–17; sequential mode (`--sequential`) also includes Phase 9.
-  93: Phases 7, 8, 10, 11 (EW-trained PPO), 12, 18, 19 require manual
-  94: execution. This is the **recommended path** for
-  95: local agents and unattended runs.
-  96: 
-  97: ```bash
-  98: # 1. Clean previous artifacts
-  99: rm -rf artifacts/main/ artifacts/k* artifacts/distractor_*
- 100: rm -rf cache/embeddings/
- 101: rm -rf checkpoints/supervised/ checkpoints/ppo/ checkpoints/ppo_t5/
- 102: rm -rf results/
- 103: 
- 104: # 2. Run the full pipeline (pick ONE)
- 105: 
- 106: # Fastest — t5-small for T5 policy, TF-IDF for baselines (~2 hrs on M3 Max)
- 107: bash scripts/run_full_pipeline.sh --t5-model t5-small
- 108: 
- 109: # Balanced — t5-base for T5 policy (~3–4 hrs on M3 Max)
- 110: bash scripts/run_full_pipeline.sh --t5-model t5-base
- 111: 
- 112: # Full quality — t5-large (requires CUDA with 8+ GB VRAM; will likely OOM on Apple Silicon)
- 113: # bash scripts/run_full_pipeline.sh --t5-model t5-large
- 114: 
- 115: # Sequential (no background jobs, safe for debugging)
- 116: bash scripts/run_full_pipeline.sh --sequential --t5-model t5-base
- 117: ```
- 118: 
- 119: The script executes the **core pipeline and extensions** in a 4-wave DAG.
- 120: Phases 7 (multi-seed), 8 (reward sweep), 10 (variable-K baselines),
- 121: 11 EW-trained PPO, 12 (DSPy compile), 18 (OpenAI), and 19 (MIPROv2)
- 122: require manual execution — see the individual phase sections below.
- 123: 
- 124: ```
- 125: Phase 1 (sequential — builds the shared MC dataset)
- 126:   │
- 127:   ├─ Wave 1 (3 parallel tracks):
- 128:   │    Track A: Phase 2  — baseline sweeps (→ artifacts/main/baseline_summary.json)
- 129:   │    Track B: Phase 3  — PPO training (→ artifacts/main/ppo_model.zip)
- 130:   │    Track C: Phase 5  — T5 policy (→ checkpoints/)
- 131:   │
- 132:   ├─ Wave 2 (sequential — all read/write artifacts/main/):
- 133:   │    Phase 4  — full evaluation + controls
- 134:   │    Phase 6  — MLP vs T5 comparison
- 135:   │    Phase 11 — Expected Wins evaluation
- 136:   │    Phase 15 — belief mode comparison
- 137:   │
- 138:   ├─ Wave 3 (sequential — PPO ablations):
- 139:   │    Phase 14 — reward modes (simple, human_grounded)
- 140:   │    Phase 16 — stop-only PPO
- 141:   │    Phase 17 — no-buzz horizon
- 142:   │
- 143:   └─ Wave 4 (sequential — K-sensitivity, clobbers baseline_summary.json):
- 144:        Phase 13 — K=2,3,5,6 builds + baselines (each result copied to results/)
- 145: 
- 146: Not in parallel mode (sequential only or run manually):
- 147:   Phase 9  — distractor comparison (sequential mode only)
- 148:   Phase 10 — variable-K baselines (MaskablePPO not wired through train_ppo.py)
- 149:   Phase 12 — DSPy compile (requires API key)
- 150:   Phase 18 — OpenAI embeddings (requires API key)
- 151:   Phase 19 — DSPy MIPROv2 (requires API key)
- 152: ```
- 153: 
- 154: **Output:** All JSON results in `results/`. In parallel mode, Waves 1, 2,
- 155: and 4 write per-phase logs to `results/phase_*.log` (via `run_phase()`);
- 156: Wave 3 (PPO ablations) prints directly to stdout.
- 157: In `--sequential` mode, all output goes to stdout (no per-phase logs).
- 158: 
- 159: **Monitoring:** Phase logs are written via stdout redirection, so output is
- 160: buffered — `tail -f` may show no updates for extended periods (Phase 5 can
- 161: appear stuck for 40+ minutes during supervised warm-start). This is normal;
- 162: check the process is still running with `ps aux | grep train_`.
- 163: ```bash
- 164: tail -f results/phase_3.log   # PPO training (updates every ~30s)
- 165: tail -f results/phase_5.log   # T5 policy (may buffer for long periods)
- 166: ```
- 167: 
- 168: **After completion:** Generate summary table:
- 169: ```bash
- 170: python3 -c "
- 171: import json, glob
- 172: for f in sorted(glob.glob('results/*.json')):
- 173:     s = json.load(open(f))
- 174:     name = f.split('/')[-1].replace('.json', '')
- 175:     if 'full_eval' in s:
- 176:         fe = s['full_eval']
- 177:         print(f'{name}: acc={fe.get(\"buzz_accuracy\", \"N/A\")}, S_q={fe.get(\"mean_sq\", \"N/A\")}')
- 178:     elif 't5_policy' in s:
- 179:         for k in ('mlp_policy', 't5_policy'):
- 180:             if k in s:
- 181:                 m = s[k]
- 182:                 print(f'{name}/{k}: acc={m.get(\"accuracy\", \"N/A\")}, S_q={m.get(\"mean_sq\", \"N/A\")}')
- 183:     elif 'softmax_profile' in s:
- 184:         sp = s['softmax_profile']
- 185:         best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
- 186:         print(f'{name}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", \"N/A\")}')
- 187:     else:
- 188:         acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
- 189:         sq = s.get('mean_sq', 'N/A')
- 190:         print(f'{name}: acc={acc}, S_q={sq}')
- 191: "
- 192: ```
- 193: 
- 194: **If a phase fails:** Check the phase log (if available) or stdout, fix the
- 195: issue, and re-run just that phase manually (see individual phase sections
- 196: below). The script exits on first failure — completed phases don't need
- 197: re-running since their outputs are already written.
- 198: 
- 199: ---
- 200: 
- 201: ## Agent instructions
- 202: 
- 203: If you are an AI coding agent executing this runbook:
- 204: 
- 205: 1. **Preferred path:** Run `bash scripts/run_full_pipeline.sh --t5-model t5-base` and monitor the logs. This handles dependency ordering for the core pipeline and extensions. Only Wave 1 (baselines, PPO, T5) runs in parallel — all subsequent waves are sequential to avoid artifact races on `artifacts/main/`.
- 206: 
- 207: 2. **If the script fails:** Check `results/phase_*.log` if available (Waves 1, 2, 4 in parallel mode); for Wave 3 and `--sequential` mode, check stdout. Diagnose, fix, then re-run only the failed phase using the manual commands below.
- 208: 
- 209: 3. **Do not run phases 2/3/5 sequentially** if the parallel script is available — they are independent and running them in parallel saves 2–3x wall time. Phase 11 must run after Phase 4 and before Phase 15 (it reads `baseline_summary.json` which Phase 15 overwrites). Phases 9/13/15 each overwrite `baseline_summary.json` and must run sequentially after Phase 11.
- 210: 
- 211: 4. **Do not modify `artifacts/main/mc_dataset.json`** after Phase 1 — every subsequent phase reads it.
- 212: 
- 213: 5. **Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19** are not in the automated script. Run them manually if needed.
- 214: 
- 215: ---
- 216: 
- 217: ## Manual phase-by-phase instructions
- 218: 
- 219: The sections below document each phase individually for debugging,
- 220: selective re-runs, or environments where the parallel script cannot be used.
- 221: 
- 222: ---
- 223: 
- 224: ## Phase 0: Clean state
- 225: 
- 226: ```bash
- 227: rm -rf artifacts/main/ artifacts/k* artifacts/distractor_*
- 228: rm -rf cache/embeddings/
- 229: rm -rf checkpoints/supervised/ checkpoints/ppo/ checkpoints/ppo_t5/
- 230: rm -rf results/
- 231: mkdir -p artifacts/main results
- 232: ```
- 233: 
- 234: ---
- 235: 
- 236: ## Phase 1: Build MC dataset
- 237: 
- 238: **Config:** `configs/default.yaml`
- 239: **Distractor strategy:** `sbert_profile` (SBERT-based semantic ranking)
- 240: **K:** 4 fixed answer choices
- 241: **Expected output:** `artifacts/main/mc_dataset.json`, split files, answer profiles
- 242: 
- 243: ```bash
- 244: python scripts/build_mc_dataset.py \
- 245:     --config configs/default.yaml \
- 246:     --output-dir artifacts/main
- 247: ```
- 248: 
- 249: **Expected behavior:**
- 250: - Loads ~20,407 questions from `questions.csv`
- 251: - Downloads `all-MiniLM-L6-v2` SBERT model (~90 MB) on first run
- 252: - Builds answer profiles with leave-one-out
- 253: - Ranks distractors by SBERT profile similarity (top-M argpartition)
- 254: - Applies 4 anti-artifact guards
- 255: - Creates stratified train/val/test splits (70/15/15)
- 256: - Writes `mc_dataset.json`, `train_dataset.json`, `val_dataset.json`, `test_dataset.json`, `answer_profiles.json`
- 257: 
- 258: **Estimated time:** 5–15 minutes (SBERT encoding is the bottleneck)
- 259: 
- 260: **Checkpoint:** Verify `artifacts/main/mc_dataset.json` exists and has >10,000 entries:
- 261: ```bash
- 262: python -c "import json; d=json.load(open('artifacts/main/mc_dataset.json')); print(f'{len(d)} MC questions')"
- 263: ```
- 264: 
- 265: ---
- 266: 
- 267: ## Phase 2: Run baseline sweeps
- 268: 
- 269: **Config:** `configs/default.yaml`
- 270: **Thresholds:** [0.5, 0.6, 0.7, 0.8, 0.9]
- 271: **Agents:** ThresholdBuzzer, SoftmaxProfileBuzzer, SequentialBayesBuzzer, AlwaysBuzzFinal
- 272: **Likelihood:** t5-large (from config); override to tfidf for speed
- 273: 
- 274: For a **fast first pass** using TF-IDF (minutes, not hours):
- 275: 
- 276: ```bash
- 277: python scripts/run_baselines.py \
- 278:     --config configs/default.yaml \
- 279:     --mc-path artifacts/main/mc_dataset.json \
- 280:     likelihood.model=tfidf
- 281: ```
- 282: 
- 283: For **T5-base baseline** (balanced quality/speed, ~45–90 min):
- 284: 
- 285: ```bash
- 286: python scripts/run_baselines.py \
- 287:     --config configs/default.yaml \
- 288:     --mc-path artifacts/main/mc_dataset.json \
- 289:     likelihood.model=t5-base
- 290: ```
- 291: 
- 292: For **T5-large baseline** (requires CUDA or 64+ GB RAM on MPS, hours of compute):
- 293: 
- 294: ```bash
- 295: python scripts/run_baselines.py \
- 296:     --config configs/default.yaml \
- 297:     --mc-path artifacts/main/mc_dataset.json
- 298: ```
- 299: 
- 300: **Expected output:** `artifacts/main/baseline_summary.json`, per-agent run files
- 301: 
- 302: **Checkpoint:**
- 303: ```bash
- 304: python -c "
- 305: import json
- 306: s = json.load(open('artifacts/main/baseline_summary.json'))
- 307: for agent, data in s.items():
- 308:     if isinstance(list(data.values())[0], dict):
- 309:         best = max(data.items(), key=lambda x: x[1].get('mean_sq', 0))
- 310:         print(f'{agent}: best_t={best[0]}, S_q={best[1][\"mean_sq\"]:.3f}, acc={best[1][\"buzz_accuracy\"]:.3f}')
- 311:     else:
- 312:         print(f'{agent}: S_q={data.get(\"mean_sq\", 0):.3f}, acc={data.get(\"buzz_accuracy\", 0):.3f}')
- 313: "
- 314: ```
- 315: 
- 316: **Archive default baselines** (later phases clobber `artifacts/main/baseline_summary.json`):
- 317: ```bash
- 318: # If you ran the TF-IDF command above (recommended):
- 319: cp artifacts/main/baseline_summary.json results/baselines_tfidf.json
- 320: # If you ran T5-base instead:
- 321: # cp artifacts/main/baseline_summary.json results/baselines_t5base.json
- 322: # If you ran T5-large instead:
- 323: # cp artifacts/main/baseline_summary.json results/baselines_t5large.json
- 324: ```
- 325: 
- 326: > Phases 14–16 assume `results/baselines_tfidf.json` exists for apples-to-apples
- 327: > comparisons. If you used T5-large here, those comparisons will mix regimes.
- 328: 
- 329: ---
- 330: 
- 331: ## Phase 3: Train PPO (MLP on belief features)
- 332: 
- 333: **Config:** `configs/default.yaml`
- 334: **Timesteps:** 100,000
- 335: **Network:** [64, 64] MLP
- 336: **Reward:** time_penalty (wait_penalty=0.05, early_buzz_penalty=0.2, buzz_incorrect=-0.5)
- 337: **Likelihood:** add `likelihood.model=tfidf` to match the wrapper and extension phases
- 338: 
- 339: ```bash
- 340: python scripts/train_ppo.py \
- 341:     --config configs/default.yaml \
- 342:     --mc-path artifacts/main/mc_dataset.json \
- 343:     --seed 13 \
- 344:     --deterministic-eval \
- 345:     likelihood.model=tfidf
- 346: ```
- 347: 
- 348: **Expected behavior:**
- 349: - Precomputes belief trajectories for all questions (one-time, ~minutes)
- 350: - Trains SB3 PPO for 100k timesteps
- 351: - Evaluates with deterministic policy
- 352: - Saves model to `artifacts/main/ppo_model.zip`
- 353: 
- 354: **Estimated time:** 30–90 minutes (CPU-bound: env stepping, not GPU)
- 355: 
- 356: **Checkpoint:**
- 357: ```bash
- 358: ls -lh artifacts/main/ppo_model.zip
- 359: python -c "import json; s=json.load(open('artifacts/main/ppo_summary.json')); print(f'PPO: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}')"
- 360: ```
- 361: 
- 362: **Archive default PPO** (later phases clobber `artifacts/main/ppo_summary.json`):
- 363: ```bash
- 364: cp artifacts/main/ppo_summary.json results/ppo_default.json
- 365: cp artifacts/main/ppo_model.zip results/ppo_model_default.zip
- 366: ```
- 367: 
- 368: ---
- 369: 
- 370: ## Phase 4: Evaluate all (belief-feature pipeline)
- 371: 
- 372: **Config:** `configs/default.yaml`
- 373: **Controls:** choices-only, shuffle, alias substitution (alias control is a
- 374: no-op unless `alias_lookup.json` is provided externally — `build_mc_dataset.py`
- 375: does not generate it)
- 376: **Metrics:** S_q, ECE, Brier, per-category accuracy
- 377: 
- 378: ```bash
- 379: python scripts/evaluate_all.py \
- 380:     --config configs/default.yaml \
- 381:     --mc-path artifacts/main/mc_dataset.json \
- 382:     likelihood.model=tfidf
- 383: ```
- 384: 
- 385: > **Selective re-run note:** `evaluate_all.py` reads
- 386: > `artifacts/main/baseline_summary.json` for the softmax threshold. If later
- 387: > phases (13, 15) have overwritten it, restore the TF-IDF archive first
- 388: > (this command uses `likelihood.model=tfidf`, so the baseline must match):
- 389: > `cp results/baselines_tfidf.json artifacts/main/baseline_summary.json`
- 390: 
- 391: **Expected output:** `artifacts/main/evaluation_report.json`, `artifacts/main/plots/`
- 392: 
- 393: **Checkpoint:**
- 394: ```bash
- 395: python -c "
- 396: import json
- 397: r = json.load(open('artifacts/main/evaluation_report.json'))
- 398: fe = r['full_eval']
- 399: print(f'Full eval: acc={fe[\"buzz_accuracy\"]:.3f}, S_q={fe[\"mean_sq\"]:.3f}, ECE={fe[\"ece\"]:.3f}, Brier={fe[\"brier\"]:.3f}')
- 400: for name, ctrl in r['controls'].items():
- 401:     print(f'  {name}: acc={ctrl.get(\"accuracy\", ctrl.get(\"buzz_accuracy\", \"N/A\"))}')
- 402: "
- 403: ```
- 404: 
- 405: ---
- 406: 
- 407: ## Phase 5: Train T5 policy (end-to-end)
- 408: 
- 409: **Config:** `configs/t5_policy.yaml`
- 410: **Model:** t5-base recommended (220M params); t5-large (770M) is slower and needs more memory
- 411: **Supervised:** 10 epochs, effective batch 32
- 412: **PPO:** 100 iterations
- 413: 
- 414: > **Memory warning (Apple Silicon / MPS):** A full-scale t5-base run on
- 415: > 20,407 questions reached ~41 GB physical memory footprint on an M3 Max.
- 416: > The "fits in 8 GB" claim from earlier docs was based on model weight size,
- 417: > not the actual working set with 20k-question tokenization, gradient buffers,
- 418: > and MPS allocations. **Minimum 32 GB RAM is recommended for t5-base at full
- 419: > scale.** t5-large will exceed 64 GB and likely OOM on most Apple Silicon Macs.
- 420: 
- 421: For **t5-base** (recommended path, matches `run_full_pipeline.sh --t5-model t5-base`):
- 422: 
- 423: ```bash
- 424: python scripts/train_t5_policy.py \
- 425:     --config configs/t5_policy.yaml \
- 426:     model.model_name=t5-base
- 427: ```
- 428: 
- 429: For **t5-large** (requires CUDA with 8+ GB VRAM, or 64+ GB system RAM on MPS):
- 430: 
- 431: ```bash
- 432: python scripts/train_t5_policy.py \
- 433:     --config configs/t5_policy.yaml
- 434: ```
- 435: 
- 436: **Expected behavior:**
- 437: 1. Supervised warm-start: trains answer selection on complete questions (10 epochs)
- 438: 2. PPO fine-tuning: optimizes wait/answer policy on incremental episodes (100 iterations)
- 439: 3. Saves best model to `checkpoints/ppo_t5/best_model/`
- 440: 
- 441: **Estimated time:** t5-base ~2–3 hrs on M3 Max MPS; t5-large ~6–8 hrs on CUDA
- 442: 
- 443: **Checkpoint:**
- 444: ```bash
- 445: ls checkpoints/ppo_t5/best_model/
- 446: cat checkpoints/ppo_t5/test_results.json
- 447: ```
- 448: 
- 449: ---
- 450: 
- 451: ## Phase 6: Compare policies
- 452: 
- 453: **Requires:** Phase 3 PPO model + Phase 5 T5 model
- 454: 
- 455: > **Comparison caveats:** The MLP and T5 policies use different confidence
- 456: > semantics (belief-sigmoid vs wait-head probability) and different reward
- 457: > settings (config-driven vs T5-pipeline defaults). Accuracy and buzz-position
- 458: > are directly comparable; S_q, ECE, Brier, and reward comparisons are
- 459: > qualitative. See the docstring in `compare_policies.py` for details.
- 460: >
- 461: > `compare_policies.py` auto-detects the device for T5 inference (MPS on
- 462: > Apple Silicon, CUDA if available, otherwise CPU).
- 463: >
- 464: > **Selective re-run note:** Phases 11 (EW-trained PPO), 14, 16, and 17 all
- 465: > overwrite `artifacts/main/ppo_model`. If re-running after ablations, restore:
- 466: > `cp results/ppo_model_default.zip artifacts/main/ppo_model.zip`
- 467: 
- 468: ```bash
- 469: python scripts/compare_policies.py \
- 470:     --mlp-checkpoint artifacts/main/ppo_model \
- 471:     --t5-checkpoint checkpoints/ppo_t5/best_model \
- 472:     --mc-path artifacts/main/mc_dataset.json \
- 473:     --output results/t5_comparison.json
- 474: ```
- 475: 
- 476: **Expected output:** Side-by-side metrics table + `results/t5_comparison.json`
- 477: 
- 478: **Checkpoint:**
- 479: ```bash
- 480: python -c "
- 481: import json
- 482: c = json.load(open('results/t5_comparison.json'))
- 483: for policy in ['mlp_policy', 't5_policy']:
- 484:     if policy in c:
- 485:         p = c[policy]
- 486:         print(f'{policy}: acc={p[\"accuracy\"]:.3f}, S_q={p[\"mean_sq\"]:.3f}, ECE={p[\"ece\"]:.3f}')
- 487: if 'difference' in c:
- 488:     d = c['difference']
- 489:     print(f'Δ accuracy: {d[\"accuracy\"]:+.3f}, Δ S_q: {d[\"mean_sq\"]:+.3f}')
- 490: "
- 491: ```
- 492: 
- 493: ---
- 494: 
- 495: ## Phase 7: Multi-seed validation (optional)
- 496: 
- 497: Run PPO training with 3 seeds to assess variance:
- 498: 
- 499: ```bash
- 500: for SEED in 1 2 3; do
- 501:     echo "=== Seed $SEED ==="
- 502:     python scripts/train_ppo.py \
- 503:         --config configs/default.yaml \
- 504:         --mc-path artifacts/main/mc_dataset.json \
- 505:         --seed $SEED \
- 506:         --deterministic-eval \
- 507:         likelihood.model=tfidf
- 508:     cp artifacts/main/ppo_summary.json "results/ppo_seed${SEED}.json"
- 509:     cp artifacts/main/ppo_model.zip "results/ppo_model_seed${SEED}.zip"
- 510: done
- 511: 
- 512: python -c "
- 513: import json
- 514: for seed in [1, 2, 3]:
- 515:     s = json.load(open(f'results/ppo_seed{seed}.json'))
- 516:     print(f'Seed {seed}: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}, reward={s[\"mean_reward_like\"]:.3f}')
- 517: "
- 518: ```
- 519: 
- 520: ---
- 521: 
- 522: ## Phase 8: Reward sweep (optional)
- 523: 
- 524: Grid search over wait_penalty and early_buzz_penalty. Note: this script
- 525: is hardwired to use `configs/smoke.yaml` and `artifacts/smoke/` — it does
- 526: not accept `--config` or `--mc-path`.
- 527: 
- 528: ```bash
- 529: python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000
- 530: ```
- 531: 
- 532: ---
- 533: 
- 534: ## Full pipeline single-script execution
- 535: 
- 536: Run the core pipeline sequentially (Phases 1–6) with TF-IDF beliefs and
- 537: t5-base for the T5 policy. Includes archive steps so extension phases
- 538: can reference Phase 2/3 defaults from `results/`.
- 539: 
- 540: ```bash
- 541: #!/usr/bin/env bash
- 542: set -euo pipefail
- 543: mkdir -p results
- 544: 
- 545: echo "=== Phase 1: Build MC dataset ==="
- 546: python scripts/build_mc_dataset.py --config configs/default.yaml --output-dir artifacts/main
- 547: 
- 548: echo "=== Phase 2: Run baselines ==="
- 549: python scripts/run_baselines.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json likelihood.model=tfidf
- 550: cp artifacts/main/baseline_summary.json results/baselines_tfidf.json
- 551: 
- 552: echo "=== Phase 3: Train PPO ==="
- 553: python scripts/train_ppo.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json --seed 13 --deterministic-eval likelihood.model=tfidf
- 554: cp artifacts/main/ppo_summary.json results/ppo_default.json
- 555: cp artifacts/main/ppo_model.zip results/ppo_model_default.zip
- 556: 
- 557: echo "=== Phase 4: Evaluate all ==="
- 558: python scripts/evaluate_all.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json likelihood.model=tfidf
- 559: cp artifacts/main/evaluation_report.json results/eval_default.json
- 560: 
- 561: echo "=== Phase 5: Train T5 policy (t5-base) ==="
- 562: python scripts/train_t5_policy.py --config configs/t5_policy.yaml model.model_name=t5-base
- 563: 
- 564: echo "=== Phase 6: Compare policies ==="
- 565: python scripts/compare_policies.py \
- 566:     --mlp-checkpoint artifacts/main/ppo_model \
- 567:     --t5-checkpoint checkpoints/ppo_t5/best_model \
- 568:     --mc-path artifacts/main/mc_dataset.json \
- 569:     --output results/t5_comparison.json
- 570: 
- 571: echo "=== Pipeline complete ==="
- 572: ```
- 573: 
- 574: ---
- 575: 
- 576: ## Expected artifact tree after full run
- 577: 
- 578: **`artifacts/main/` is a working directory** — files are overwritten by later
- 579: phases (e.g. K-sensitivity clobbers `baseline_summary.json`, PPO ablations
- 580: clobber `ppo_summary.json`). The **stable outputs** are in `results/*.json`,
- 581: which are copied after each phase completes.
- 582: 
- 583: The wrapper (`run_full_pipeline.sh`) writes all outputs to top-level
- 584: `results/*.json`. The manual extension sections write to subdirectories
- 585: (`results/k_sensitivity/`, `results/reward_modes/`, `results/belief_modes/`,
- 586: `results/policy_modes/`). Both are valid — the tree below shows the wrapper
- 587: layout; see manual phase sections for subdirectory paths.
- 588: 
- 589: ```
- 590: results/                         # Stable per-phase outputs (wrapper layout)
- 591: ├── baselines_tfidf.json         # Phase 2 baseline summary
- 592: ├── ppo_default.json             # Phase 3 PPO summary
- 593: ├── ppo_model_default.zip        # Phase 3 PPO model
- 594: ├── eval_default.json            # Phase 4 evaluation report
- 595: ├── t5_comparison.json           # Phase 6 policy comparison
- 596: ├── eval_ew_logistic.json        # Phase 11 Expected Wins eval
- 597: ├── baselines_seqbayes.json      # Phase 15 belief mode
- 598: ├── ppo_simple.json              # Phase 14 reward ablation
- 599: ├── ppo_human_grounded.json      # Phase 14 reward ablation
- 600: ├── ppo_stop_only.json           # Phase 16 stop-only PPO
- 601: ├── ppo_no_buzz.json             # Phase 17 no-buzz horizon
- 602: ├── baselines_k{2,3,5,6}.json   # Phase 13 K-sensitivity (k4 is default)
- 603: ├── baselines_tfidf_profile.json # Phase 9 (sequential mode only)
- 604: ├── baselines_category_random.json # Phase 9 (sequential mode only)
- 605: │
- 606: │  # Manual extension subdirectories (not created by wrapper):
- 607: ├── k_sensitivity/               # Phase 13 manual
- 608: ├── reward_modes/                # Phase 14 manual
- 609: ├── belief_modes/                # Phase 15 manual
- 610: └── policy_modes/                # Phase 16 manual
- 611: 
- 612: artifacts/main/                  # Working directory (overwritten by later phases)
- 613: ├── mc_dataset.json              # Stable — built in Phase 1, never overwritten
- 614: ├── train_dataset.json
- 615: ├── val_dataset.json
- 616: ├── test_dataset.json
- 617: ├── answer_profiles.json
- 618: └── (baseline/ppo/eval files)    # Overwritten by later phases
- 619: 
- 620: checkpoints/
- 621: ├── supervised/best_model/       # T5 supervised checkpoint
- 622: └── ppo_t5/best_model/           # T5 PPO checkpoint
- 623: ```
- 624: 
- 625: ---
- 626: 
- 627: ## Extension Experiments
- 628: 
- 629: These phases exercise the three opt-in extensions. Each is independent
- 630: and can be run after the core pipeline (Phases 1–6) completes.
- 631: 
- 632: ### Phase 9: Distractor strategy comparison
- 633: 
- 634: Build three MC datasets with different distractor selection strategies
- 635: and compare baseline performance across them.
- 636: 
- 637: ```bash
- 638: mkdir -p artifacts/distractor_comparison
- 639: 
- 640: # Strategy A: SBERT semantic ranking (default — already built in Phase 1)
- 641: cp artifacts/main/mc_dataset.json artifacts/distractor_comparison/mc_sbert.json
- 642: 
- 643: # Strategy B: TF-IDF profile ranking
- 644: python scripts/build_mc_dataset.py \
- 645:     --config configs/default.yaml \
- 646:     --output-dir artifacts/distractor_comparison/tfidf \
- 647:     data.distractor_strategy=tfidf_profile
- 648: cp artifacts/distractor_comparison/tfidf/mc_dataset.json artifacts/distractor_comparison/mc_tfidf.json
- 649: 
- 650: # Strategy C: Category-random (no semantic ranking)
- 651: python scripts/build_mc_dataset.py \
- 652:     --config configs/default.yaml \
- 653:     --output-dir artifacts/distractor_comparison/catrandom \
- 654:     data.distractor_strategy=category_random
- 655: cp artifacts/distractor_comparison/catrandom/mc_dataset.json artifacts/distractor_comparison/mc_catrandom.json
- 656: 
- 657: # Run baselines on each (TF-IDF likelihood for speed)
- 658: for STRATEGY in sbert tfidf catrandom; do
- 659:     echo "=== Baselines on $STRATEGY distractors ==="
- 660:     python scripts/run_baselines.py \
- 661:         --config configs/default.yaml \
- 662:         --mc-path "artifacts/distractor_comparison/mc_${STRATEGY}.json" \
- 663:         likelihood.model=tfidf
- 664:     cp artifacts/main/baseline_summary.json "results/baselines_distractor_${STRATEGY}.json"
- 665: done
- 666: ```
- 667: 
- 668: **Checkpoint:**
- 669: ```bash
- 670: for STRATEGY in sbert tfidf catrandom; do
- 671:     python -c "
- 672: import json
- 673: s = json.load(open('results/baselines_distractor_${STRATEGY}.json'))
- 674: best = max(s.get('softmax_profile', {}).items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
- 675: print(f'${STRATEGY}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", 0):.3f}')
- 676: "
- 677: done
- 678: ```
- 679: 
- 680: ---
- 681: 
- 682: ### Phase 10: Variable-K experiment
- 683: 
- 684: Build a mixed-K dataset and train PPO with action masking to evaluate
- 685: how varying the number of answer options affects buzzer performance.
- 686: 
- 687: ```bash
- 688: mkdir -p artifacts/variable_k
- 689: 
- 690: # Build mixed-K dataset (K sampled uniformly from 2 to 6 per question)
- 691: python scripts/build_mc_dataset.py \
- 692:     --config configs/default.yaml \
- 693:     --output-dir artifacts/variable_k \
- 694:     data.variable_K=true data.min_K=2 data.max_K=6 data.K=6 \
- 695:     data.distractor_strategy=category_random
- 696: 
- 697: # Verify mixed K
- 698: python -c "
- 699: import json
- 700: qs = json.load(open('artifacts/variable_k/mc_dataset.json'))
- 701: from collections import Counter
- 702: k_counts = Counter(len(q['options']) for q in qs)
- 703: print(f'{len(qs)} questions, K distribution: {dict(sorted(k_counts.items()))}')
- 704: "
- 705: 
- 706: # Run baselines (agents are K-agnostic)
- 707: python scripts/run_baselines.py \
- 708:     --config configs/default.yaml \
- 709:     --mc-path artifacts/variable_k/mc_dataset.json \
- 710:     likelihood.model=tfidf
- 711: cp artifacts/main/baseline_summary.json results/baselines_variable_k.json
- 712: ```
- 713: 
- 714: **Note:** Variable-K PPO with MaskablePPO is now wired through config:
- 715: set `ppo.use_maskable_ppo: true` in YAML (requires `pip install -e '.[maskable]'`).
- 716: `train_ppo.py` reads the flag and passes it to `PPOBuzzer`, and
- 717: `PPOBuzzer.load()` supports loading MaskablePPO checkpoints.
- 718: Variable-K baselines work without MaskablePPO.
- 719: 
- 720: ---
- 721: 
- 722: ### Phase 11: Expected Wins evaluation
- 723: 
- 724: Evaluate the SoftmaxProfile baseline (from `evaluate_all.py`) using the
- 725: Expected Wins metric with a logistic opponent model. Note: this evaluates
- 726: the baseline agents, not the PPO model — to train PPO with Expected Wins
- 727: reward, see the separate command below.
- 728: 
- 729: > **Selective re-run note:** Like Phase 4, this reads
- 730: > `artifacts/main/baseline_summary.json`. If later phases have overwritten it,
- 731: > restore the TF-IDF archive (this command uses `likelihood.model=tfidf`):
- 732: > `cp results/baselines_tfidf.json artifacts/main/baseline_summary.json`
- 733: 
- 734: ```bash
- 735: # Evaluate with Expected Wins reward mode and logistic opponent
- 736: python scripts/evaluate_all.py \
- 737:     --config configs/default.yaml \
- 738:     --mc-path artifacts/main/mc_dataset.json \
- 739:     likelihood.model=tfidf \
- 740:     environment.reward_mode=expected_wins \
- 741:     environment.opponent_buzz_model.type=logistic \
- 742:     environment.opponent_buzz_model.midpoint=0.6 \
- 743:     environment.opponent_buzz_model.steepness=6.0
- 744: cp artifacts/main/evaluation_report.json results/eval_expected_wins_logistic.json
- 745: 
- 746: # Also try empirical opponent (uses human_buzz_positions from QANTA data)
- 747: python scripts/evaluate_all.py \
- 748:     --config configs/default.yaml \
- 749:     --mc-path artifacts/main/mc_dataset.json \
- 750:     likelihood.model=tfidf \
- 751:     environment.reward_mode=expected_wins \
- 752:     environment.opponent_buzz_model.type=empirical
- 753: cp artifacts/main/evaluation_report.json results/eval_expected_wins_empirical.json
- 754: ```
- 755: 
- 756: **Checkpoint:**
- 757: ```bash
- 758: for MODEL in logistic empirical; do
- 759:     python -c "
- 760: import json
- 761: r = json.load(open('results/eval_expected_wins_${MODEL}.json'))
- 762: ew = r.get('expected_wins', {})
- 763: fe = r['full_eval']
- 764: print(f'EW (${MODEL}): mean_ew={ew.get(\"mean_ew\", \"N/A\")}, S_q={fe[\"mean_sq\"]:.3f}, acc={fe[\"buzz_accuracy\"]:.3f}')
- 765: "
- 766: done
- 767: ```
- 768: 
- 769: **Train PPO with Expected Wins reward** (trains a new model optimizing for EW):
- 770: ```bash
- 771: python scripts/train_ppo.py \
- 772:     --config configs/default.yaml \
- 773:     --mc-path artifacts/main/mc_dataset.json \
- 774:     --seed 13 \
- 775:     --deterministic-eval \
- 776:     likelihood.model=tfidf \
- 777:     environment.reward_mode=expected_wins \
- 778:     environment.opponent_buzz_model.type=logistic
- 779: cp artifacts/main/ppo_summary.json results/ppo_expected_wins.json
- 780: cp artifacts/main/ppo_model.zip results/ppo_model_expected_wins.zip
- 781: ```
- 782: 
- 783: ---
- 784: 
- 785: ### Phase 12: DSPy offline compile (experimental — not wired end-to-end)
- 786: 
- 787: Compile a DSPy-optimized scorer using the training split.
- 788: Requires the `dspy` extra and an LM API key.
- 789: 
- 790: > **Limitation:** `optimize_dspy.py` compiles and reports metrics, but does
- 791: > not persist the compiled program in a way that `build_likelihood_from_config()`
- 792: > can load it. Setting `likelihood.model=dspy` constructs `DSPyLikelihood`
- 793: > with a placeholder uniform scorer, not the compiled program. This phase
- 794: > is useful for validating the DSPy pipeline contract, but the evaluated
- 795: > baselines below will use uniform scores — not the compiled model's.
- 796: >
- 797: > **Data path caveat:** `optimize_dspy.py` prefers
- 798: > `artifacts/smoke/train_dataset.json` over `artifacts/main/train_dataset.json`.
- 799: > If you have run the smoke pipeline, it will silently compile on the 50-question
- 800: > smoke split. To force the full training split, remove or rename the smoke
- 801: > artifact first: `rm artifacts/smoke/train_dataset.json`
- 802: 
- 803: ```bash
- 804: pip install -e '.[dspy]'
- 805: export OPENAI_API_KEY=...  # or configure another LM backend
- 806: 
- 807: # Compile scorer against training split (reports metrics but does not persist)
- 808: python scripts/optimize_dspy.py \
- 809:     --config configs/default.yaml \
- 810:     --max-examples 100
- 811: 
- 812: # Evaluate with DSPy scorer (NOTE: uses placeholder uniform scorer, not compiled)
- 813: python scripts/run_baselines.py \
- 814:     --config configs/default.yaml \
- 815:     --mc-path artifacts/main/mc_dataset.json \
- 816:     likelihood.model=dspy
- 817: cp artifacts/main/baseline_summary.json results/baselines_dspy.json
- 818: ```
- 819: 
- 820: ---
- 821: 
- 822: ### Phase 13: K-sensitivity analysis (fixed K = 2, 3, 4, 5, 6)
- 823: 
- 824: Build 5 separate datasets with different fixed K values and compare baseline
- 825: performance to measure how answer-set size affects difficulty.
- 826: 
- 827: ```bash
- 828: mkdir -p results/k_sensitivity
- 829: 
- 830: for K in 2 3 4 5 6; do
- 831:     echo "=== K=$K ==="
- 832:     python scripts/build_mc_dataset.py \
- 833:         --config configs/default.yaml \
- 834:         --output-dir "artifacts/k${K}" \
- 835:         data.K=$K data.distractor_strategy=category_random
- 836: 
- 837:     python scripts/run_baselines.py \
- 838:         --config configs/default.yaml \
- 839:         --mc-path "artifacts/k${K}/mc_dataset.json" \
- 840:         likelihood.model=tfidf
- 841: 
- 842:     cp artifacts/main/baseline_summary.json "results/k_sensitivity/baselines_k${K}.json"
- 843: done
- 844: 
- 845: # Summarize
- 846: python -c "
- 847: import json
- 848: for k in [2, 3, 4, 5, 6]:
- 849:     s = json.load(open(f'results/k_sensitivity/baselines_k{k}.json'))
- 850:     sp = s.get('softmax_profile', {})
- 851:     best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
- 852:     n = json.load(open(f'artifacts/k{k}/mc_dataset.json'))
- 853:     print(f'K={k}: {len(n)} questions, best S_q={best[1].get(\"mean_sq\", 0):.3f}, acc={best[1].get(\"buzz_accuracy\", 0):.3f}')
- 854: "
- 855: ```
- 856: 
- 857: ---
- 858: 
- 859: ### Phase 14: Reward mode comparison
- 860: 
- 861: Train PPO under each reward mode and compare final metrics.
- 862: 
- 863: ```bash
- 864: mkdir -p results/reward_modes
- 865: 
- 866: # time_penalty (default — already done in Phase 3, archived to results/ppo_default.json)
- 867: cp results/ppo_default.json results/reward_modes/ppo_time_penalty.json
- 868: 
- 869: # simple (+1/-1, no wait penalty)
- 870: python scripts/train_ppo.py \
- 871:     --config configs/default.yaml \
- 872:     --mc-path artifacts/main/mc_dataset.json \
- 873:     --seed 13 --deterministic-eval \
- 874:     likelihood.model=tfidf environment.reward_mode=simple
- 875: cp artifacts/main/ppo_summary.json results/reward_modes/ppo_simple.json
- 876: 
- 877: # human_grounded (0 reward if agent buzzes after sampled human position)
- 878: python scripts/train_ppo.py \
- 879:     --config configs/default.yaml \
- 880:     --mc-path artifacts/main/mc_dataset.json \
- 881:     --seed 13 --deterministic-eval \
- 882:     likelihood.model=tfidf environment.reward_mode=human_grounded
- 883: cp artifacts/main/ppo_summary.json results/reward_modes/ppo_human_grounded.json
- 884: 
- 885: # Summarize
- 886: python -c "
- 887: import json
- 888: for mode in ['time_penalty', 'simple', 'human_grounded']:
- 889:     s = json.load(open(f'results/reward_modes/ppo_{mode}.json'))
- 890:     print(f'{mode}: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}, reward={s[\"mean_reward_like\"]:.3f}')
- 891: "
- 892: ```
- 893: 
- 894: ---
- 895: 
- 896: ### Phase 15: Belief mode comparison
- 897: 
- 898: Compare from-scratch vs sequential-Bayes belief computation for baselines.
- 899: 
- 900: ```bash
- 901: mkdir -p results/belief_modes
- 902: 
- 903: # from_scratch (default — already done in Phase 2, archived to results/baselines_tfidf.json)
- 904: cp results/baselines_tfidf.json results/belief_modes/baselines_from_scratch.json
- 905: 
- 906: # sequential_bayes (Bayesian update: posterior = prior * likelihood)
- 907: python scripts/run_baselines.py \
- 908:     --config configs/default.yaml \
- 909:     --mc-path artifacts/main/mc_dataset.json \
- 910:     environment.belief_mode=sequential_bayes \
- 911:     likelihood.model=tfidf
- 912: cp artifacts/main/baseline_summary.json results/belief_modes/baselines_sequential_bayes.json
- 913: 
- 914: python -c "
- 915: import json
- 916: for mode in ['from_scratch', 'sequential_bayes']:
- 917:     s = json.load(open(f'results/belief_modes/baselines_{mode}.json'))
- 918:     sp = s.get('softmax_profile', {})
- 919:     best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
- 920:     print(f'{mode}: best S_q={best[1].get(\"mean_sq\", 0):.3f}, acc={best[1].get(\"buzz_accuracy\", 0):.3f}')
- 921: "
- 922: ```
- 923: 
- 924: ---
- 925: 
- 926: ### Phase 16: Stop-only PPO (factored action space)
- 927: 
- 928: Train PPO with the Discrete(2) stop-only wrapper where the agent only
- 929: decides WAIT/BUZZ and the answer is selected by argmax(belief).
- 930: 
- 931: ```bash
- 932: mkdir -p results/policy_modes
- 933: 
- 934: # flat_kplus1 (default — already done in Phase 3, archived to results/ppo_default.json)
- 935: cp results/ppo_default.json results/policy_modes/ppo_flat_kplus1.json
- 936: 
- 937: # stop_only (Discrete(2), answer = argmax belief)
- 938: python scripts/train_ppo.py \
- 939:     --config configs/default.yaml \
- 940:     --mc-path artifacts/main/mc_dataset.json \
- 941:     --seed 13 --deterministic-eval \
- 942:     --policy-mode stop_only likelihood.model=tfidf
- 943: cp artifacts/main/ppo_summary.json results/policy_modes/ppo_stop_only.json
- 944: 
- 945: python -c "
- 946: import json
- 947: for mode in ['flat_kplus1', 'stop_only']:
- 948:     s = json.load(open(f'results/policy_modes/ppo_{mode}.json'))
- 949:     print(f'{mode}: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}')
- 950: "
- 951: ```
- 952: 
- 953: ---
- 954: 
- 955: ### Phase 17: No-buzz horizon mode
- 956: 
- 957: Evaluate with `end_mode=no_buzz` where the agent receives `no_buzz_reward`
- 958: instead of being forced to answer at the end of the question.
- 959: 
- 960: ```bash
- 961: python scripts/train_ppo.py \
- 962:     --config configs/default.yaml \
- 963:     --mc-path artifacts/main/mc_dataset.json \
- 964:     --seed 13 --deterministic-eval \
- 965:     likelihood.model=tfidf environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
- 966: cp artifacts/main/ppo_summary.json results/ppo_no_buzz.json
- 967: 
- 968: python -c "
- 969: import json
- 970: s = json.load(open('results/ppo_no_buzz.json'))
- 971: print(f'no_buzz: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}, reward={s[\"mean_reward_like\"]:.3f}')
- 972: "
- 973: ```
- 974: 
- 975: ---
- 976: 
- 977: ### Phase 18: OpenAI embedding pipeline (requires API key)
- 978: 
- 979: Run the full pipeline with OpenAI embeddings for both likelihood scoring
- 980: and distractor generation.
- 981: 
- 982: ```bash
- 983: pip install -e '.[openai]'
- 984: export OPENAI_API_KEY=...
- 985: 
- 986: # Build dataset with OpenAI-profile distractors
- 987: python scripts/build_mc_dataset.py \
- 988:     --config configs/default.yaml \
- 989:     --output-dir artifacts/openai \
- 990:     data.distractor_strategy=openai_profile
- 991: 
- 992: # Run baselines with OpenAI likelihood
- 993: python scripts/run_baselines.py \
- 994:     --config configs/default.yaml \
- 995:     --mc-path artifacts/openai/mc_dataset.json \
- 996:     likelihood.model=openai
- 997: cp artifacts/main/baseline_summary.json results/baselines_openai.json
- 998: ```
- 999: 
-1000: ---
-1001: 
-1002: ### Phase 19: DSPy MIPROv2 optimizer (experimental)
-1003: 
-1004: Compare BootstrapFewShot vs MIPROv2 optimizers for DSPy scorer compilation.
-1005: 
-1006: ```bash
-1007: pip install -e '.[dspy]'
-1008: export OPENAI_API_KEY=...
-1009: 
-1010: # BootstrapFewShot (default — already done in Phase 12 if run)
-1011: python scripts/optimize_dspy.py --config configs/default.yaml --optimizer BootstrapFewShot
-1012: 
-1013: # MIPROv2
-1014: python scripts/optimize_dspy.py --config configs/default.yaml --optimizer MIPROv2
-1015: ```
-1016: 
-1017: ---
-1018: 
-1019: ## Reproducibility notes
-1020: 
-1021: - All random seeds are explicit: `data.shuffle_seed=42`, `environment.seed=13`, `ppo.seed=13`
-1022: - Dataset splits use `hashlib.md5` (immune to PYTHONHASHSEED)
-1023: - Same seed + same data + same code = identical results
-1024: - To reproduce exactly: pin the git commit hash and Python version
-1025: - Current: commit `40cb9a3`, Python 3.13.5
-1026: 
-1027: ## Known scale risks
-1028: 
-1029: - **T5-large likelihood** requires ~3 GB VRAM and is slow on CPU. Use `likelihood.model=tfidf` or `likelihood.model=t5-base` for faster iteration.
-1030: - **100k PPO timesteps** takes 30–90 minutes on CPU. Reduce with `--timesteps 10000` for quick validation.
-1031: - **SBERT distractor ranking** downloads `all-MiniLM-L6-v2` (~90 MB) on first run. Use `data.distractor_strategy=category_random` to skip.
-1032: - **Embedding cache** grows to ~42 MB for ~1000 questions with TF-IDF. Monitor via `model.cache_memory_bytes`.
-1033: 
-1034: ---
-1035: 
-1036: ## Wall-time summary (Apple M3 Max, parallel vs sequential)
-1037: 
-1038: | Mode | t5-small | t5-base | t5-large (CUDA only) |
-1039: |------|----------|---------|---------------------|
-1040: | `run_full_pipeline.sh` (parallel) | ~2 hrs | ~3–4 hrs | ~6–8 hrs |
-1041: | `run_full_pipeline.sh --sequential` | ~5 hrs | ~7–10 hrs | ~12–18 hrs |
-1042: 
-1043: t5-large will likely OOM on Apple Silicon Macs (64 GB) at full scale. Use t5-base on MPS.
 ````
 
 ## File: docs/pipeline-proof.md
@@ -12894,266 +12855,6 @@ walkthrough.md
 151: ## Self-Check: PASSED
 ````
 
-## File: .planning/phases/03-baseline-agents-and-t5-likelihood/03-01-PLAN.md
-````markdown
-  1: ---
-  2: phase: 03-baseline-agents-and-t5-likelihood
-  3: plan: 01
-  4: type: execute
-  5: wave: 1
-  6: depends_on: []
-  7: files_modified:
-  8:   - agents/__init__.py
-  9:   - agents/threshold_buzzer.py
- 10:   - agents/bayesian_buzzer.py
- 11: autonomous: true
- 12: requirements: [AGT-02, AGT-03, AGT-04, AGT-05, AGT-06]
- 13: 
- 14: must_haves:
- 15:   truths:
- 16:     - "ThresholdBuzzer produces valid episodes with c_trace and g_trace"
- 17:     - "AlwaysBuzzFinal waits until last clue, then buzzes (c_trace[-1]=1.0)"
- 18:     - "SoftmaxProfile recomputes belief from cumulative prefix each step"
- 19:     - "SequentialBayes applies incremental Bayesian updates on clue fragments"
- 20:     - "All agents return EpisodeResult/SoftmaxEpisodeResult with trace fields"
- 21:   artifacts:
- 22:     - path: "agents/threshold_buzzer.py"
- 23:       provides: "ThresholdBuzzer, AlwaysBuzzFinalBuzzer, EpisodeResult, sweep_thresholds, result_to_dict"
- 24:       exports: ["ThresholdBuzzer", "AlwaysBuzzFinalBuzzer", "EpisodeResult", "sweep_thresholds", "result_to_dict"]
- 25:     - path: "agents/bayesian_buzzer.py"
- 26:       provides: "SoftmaxProfileBuzzer, SequentialBayesBuzzer, SoftmaxEpisodeResult"
- 27:       exports: ["SoftmaxProfileBuzzer", "SequentialBayesBuzzer", "SoftmaxEpisodeResult"]
- 28:     - path: "agents/__init__.py"
- 29:       provides: "Agent package exports"
- 30:       exports: ["ThresholdBuzzer", "AlwaysBuzzFinalBuzzer", "SoftmaxProfileBuzzer", "SequentialBayesBuzzer", "EpisodeResult", "SoftmaxEpisodeResult", "sweep_thresholds", "result_to_dict"]
- 31:   key_links:
- 32:     - from: "agents/threshold_buzzer.py"
- 33:       to: "models.likelihoods.LikelihoodModel"
- 34:       via: "agent constructor accepts likelihood_model parameter"
- 35:       pattern: "def __init__.*likelihood_model: LikelihoodModel"
- 36:     - from: "agents/bayesian_buzzer.py"
- 37:       to: "qb_data.mc_builder.MCQuestion"
- 38:       via: "run_episode accepts MCQuestion"
- 39:       pattern: "def run_episode.*question: MCQuestion"
- 40:     - from: "agents"
- 41:       to: "models.likelihoods"
- 42:       via: "import LikelihoodModel from models.likelihoods"
- 43:       pattern: "from models\\.likelihoods import LikelihoodModel"
- 44: ---
- 45: 
- 46: <objective>
- 47: Port all four baseline agents from qb-rl reference implementation, adjusting only import paths for this codebase's structure.
- 48: 
- 49: Purpose: Establish performance baselines for comparison with PPO-trained MLP policy. These agents use different decision strategies (threshold, always-final, softmax recomputation, sequential Bayes) but share the common pattern of computing beliefs via likelihood models and returning episode traces.
- 50: 
- 51: Output: Working baseline agents that can run on MCQuestion data and produce episode results with c_trace (buzz probability) and g_trace (correctness) for S_q evaluation.
- 52: </objective>
- 53: 
- 54: <execution_context>
- 55: @/Users/ankit.aggarwal/.claude/get-shit-done/workflows/execute-plan.md
- 56: @/Users/ankit.aggarwal/.claude/get-shit-done/templates/summary.md
- 57: </execution_context>
- 58: 
- 59: <context>
- 60: @.planning/PROJECT.md
- 61: @.planning/ROADMAP.md
- 62: @.planning/STATE.md
- 63: @.planning/phases/03-baseline-agents-and-t5-likelihood/03-RESEARCH.md
- 64: 
- 65: # Reference implementations (read for porting)
- 66: @/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/agents/threshold_buzzer.py
- 67: @/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/agents/softmax_profile_buzzer.py
- 68: @/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/agents/bayesian_buzzer.py
- 69: 
- 70: # Phase 2 interfaces to build on
- 71: @models/likelihoods.py
- 72: @qb_data/mc_builder.py
- 73: </context>
- 74: 
- 75: <interfaces>
- 76: <!-- Key types and contracts the executor needs. Extracted from codebase. -->
- 77: <!-- Executor should use these directly — no codebase exploration needed. -->
- 78: 
- 79: From models/likelihoods.py:
- 80: ```python
- 81: class LikelihoodModel(ABC):
- 82:     def __init__(self) -> None:
- 83:         self.embedding_cache: dict[str, np.ndarray] = {}
- 84: 
- 85:     @abstractmethod
- 86:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
- 87:         """Return raw similarity scores for each answer option."""
- 88: ```
- 89: 
- 90: From qb_data/mc_builder.py:
- 91: ```python
- 92: @dataclass
- 93: class MCQuestion:
- 94:     qid: str
- 95:     question: str
- 96:     tokens: list[str]
- 97:     answer_primary: str
- 98:     clean_answers: list[str]
- 99:     run_indices: list[int]
-100:     human_buzz_positions: list[int]
-101:     category: str
-102:     cumulative_prefixes: list[str]
-103:     options: list[str]
-104:     gold_index: int
-105:     option_profiles: list[str]
-106:     option_answer_primary: list[str]
-107:     distractor_strategy: str
-108: ```
-109: </interfaces>
-110: 
-111: <tasks>
-112: 
-113: <task type="auto">
-114:   <name>Task 1: Port ThresholdBuzzer and AlwaysBuzzFinalBuzzer</name>
-115:   <files>agents/threshold_buzzer.py</files>
-116:   <action>
-117: Create agents/threshold_buzzer.py by direct port from qb-rl reference implementation (/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/agents/threshold_buzzer.py lines 1-176).
-118: 
-119: Import path changes:
-120: - `from models.likelihoods import LikelihoodModel` (same path, verify it works)
-121: - `from qb_env.mc_builder import MCQuestion` → `from qb_data.mc_builder import MCQuestion` (CRITICAL: qb-rl uses qb_env, this codebase uses qb_data)
-122: 
-123: Include all components:
-124: - _sigmoid() helper function (lines 12-13)
-125: - EpisodeResult dataclass (lines 16-28)
-126: - ThresholdBuzzer class (lines 30-96):
-127:   - Constructor accepts likelihood_model, threshold=0.8, beta=5.0, alpha=10.0
-128:   - _belief_from_prefix() method computes softmax belief from likelihood scores
-129:   - _confidence_proxy() method converts top_p to buzz confidence via sigmoid
-130:   - run_episode() method iterates through cumulative prefixes, tracks c_trace/g_trace, buzzes when top_p >= threshold or at last step
-131: - AlwaysBuzzFinalBuzzer class (lines 99-141):
-132:   - Constructor accepts likelihood_model, beta=5.0
-133:   - run_episode() computes beliefs at each step but always waits until final step, sets c_trace[-1]=1.0
-134: - sweep_thresholds() utility (lines 144-160): runs ThresholdBuzzer over multiple threshold values
-135: - result_to_dict() utility (lines 163-176): converts EpisodeResult to dict for serialization
-136: 
-137: Do NOT modify agent logic. Only change import paths. Keep all hyperparameter defaults exactly as in qb-rl.
-138:   </action>
-139:   <verify>
-140:     <automated>python -c "from agents.threshold_buzzer import ThresholdBuzzer, AlwaysBuzzFinalBuzzer, EpisodeResult, sweep_thresholds, result_to_dict; print('Imports successful')"</automated>
-141:   </verify>
-142:   <done>agents/threshold_buzzer.py exists with all classes and utilities, imports work, no syntax errors</done>
-143: </task>
-144: 
-145: <task type="auto">
-146:   <name>Task 2: Port SoftmaxProfileBuzzer and SequentialBayesBuzzer</name>
-147:   <files>agents/bayesian_buzzer.py</files>
-148:   <action>
-149: Create agents/bayesian_buzzer.py by direct port from qb-rl reference implementation. Note: qb-rl has agents/softmax_profile_buzzer.py and agents/bayesian_buzzer.py (export-only), but the actual implementations are in softmax_profile_buzzer.py. We consolidate into bayesian_buzzer.py for this codebase.
-150: 
-151: Port from /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qb-rl/agents/softmax_profile_buzzer.py:
-152: 
-153: Import path changes:
-154: - `from models.likelihoods import LikelihoodModel` (verify)
-155: - `from qb_env.mc_builder import MCQuestion` → `from qb_data.mc_builder import MCQuestion`
-156: 
-157: Include all components:
-158: - _sigmoid() helper function (lines 11-12)
-159: - SoftmaxEpisodeResult dataclass (lines 15-26)
-160: - SoftmaxProfileBuzzer class (lines 28-91):
-161:   - Constructor accepts likelihood_model, threshold=0.8, beta=5.0, alpha=10.0
-162:   - _belief_from_scratch() recomputes belief from full cumulative prefix each step (not incremental)
-163:   - confidence_proxy() method (public, not private)
-164:   - run_episode() iterates through cumulative prefixes, buzzes when top_p >= threshold
-165: - SequentialBayesBuzzer class (lines 94-159):
-166:   - Constructor accepts likelihood_model, threshold=0.8, beta=5.0, alpha=10.0
-167:   - _step_update() applies Bayesian update: posterior ∝ prior × likelihood
-168:   - run_episode() uses question.run_indices to extract clue fragments, applies incremental updates starting from uniform prior
-169: 
-170: CRITICAL: SequentialBayesBuzzer relies on question.run_indices and question.tokens fields being populated. MCQuestion dataclass already has these from Phase 1.
-171: 
-172: Do NOT modify agent logic. Only change import paths.
-173:   </action>
-174:   <verify>
-175:     <automated>python -c "from agents.bayesian_buzzer import SoftmaxProfileBuzzer, SequentialBayesBuzzer, SoftmaxEpisodeResult; print('Imports successful')"</automated>
-176:   </verify>
-177:   <done>agents/bayesian_buzzer.py exists with all classes, imports work, no syntax errors</done>
-178: </task>
-179: 
-180: <task type="auto">
-181:   <name>Task 3: Create agents package exports</name>
-182:   <files>agents/__init__.py</files>
-183:   <action>
-184: Create agents/__init__.py to export all agent classes and utilities.
-185: 
-186: Export structure:
-187: ```python
-188: from agents.threshold_buzzer import (
-189:     ThresholdBuzzer,
-190:     AlwaysBuzzFinalBuzzer,
-191:     EpisodeResult,
-192:     sweep_thresholds,
-193:     result_to_dict,
-194: )
-195: from agents.bayesian_buzzer import (
-196:     SoftmaxProfileBuzzer,
-197:     SequentialBayesBuzzer,
-198:     SoftmaxEpisodeResult,
-199: )
-200: 
-201: __all__ = [
-202:     "ThresholdBuzzer",
-203:     "AlwaysBuzzFinalBuzzer",
-204:     "SoftmaxProfileBuzzer",
-205:     "SequentialBayesBuzzer",
-206:     "EpisodeResult",
-207:     "SoftmaxEpisodeResult",
-208:     "sweep_thresholds",
-209:     "result_to_dict",
-210: ]
-211: ```
-212: 
-213: This matches qb-rl's export pattern (agents/__init__.py imports from both files, exports all public classes).
-214:   </action>
-215:   <verify>
-216:     <automated>python -c "from agents import ThresholdBuzzer, AlwaysBuzzFinalBuzzer, SoftmaxProfileBuzzer, SequentialBayesBuzzer, EpisodeResult, SoftmaxEpisodeResult; print(f'Exported {len([ThresholdBuzzer, AlwaysBuzzFinalBuzzer, SoftmaxProfileBuzzer, SequentialBayesBuzzer, EpisodeResult, SoftmaxEpisodeResult])} classes')"</automated>
-217:   </verify>
-218:   <done>agents/__init__.py exports all agent classes and utilities, can import from agents package directly</done>
-219: </task>
-220: 
-221: </tasks>
-222: 
-223: <verification>
-224: All agents are importable from the agents package. Basic smoke test runs without errors:
-225: 
-226: ```python
-227: from agents import ThresholdBuzzer, EpisodeResult
-228: from models.likelihoods import TfIdfLikelihood
-229: from qb_data.mc_builder import MCQuestion
-230: 
-231: # Use Phase 2 test fixture data
-232: question = sample_mc_question  # From conftest.py
-233: corpus = sample_corpus
-234: likelihood = TfIdfLikelihood(corpus_texts=corpus)
-235: agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
-236: result = agent.run_episode(question)
-237: 
-238: assert isinstance(result, EpisodeResult)
-239: assert len(result.c_trace) > 0
-240: assert len(result.g_trace) == len(result.c_trace)
-241: assert result.buzz_index in range(len(question.options))
-242: ```
-243: </verification>
-244: 
-245: <success_criteria>
-246: - [ ] agents/threshold_buzzer.py exists with ThresholdBuzzer, AlwaysBuzzFinalBuzzer, EpisodeResult, sweep_thresholds, result_to_dict
-247: - [ ] agents/bayesian_buzzer.py exists with SoftmaxProfileBuzzer, SequentialBayesBuzzer, SoftmaxEpisodeResult
-248: - [ ] agents/__init__.py exports all 6 agent classes and 2 utilities
-249: - [ ] All imports work: `from agents import ThresholdBuzzer` succeeds
-250: - [ ] Import paths corrected: qb_env.mc_builder → qb_data.mc_builder
-251: - [ ] Agent logic unchanged from qb-rl reference (only import paths modified)
-252: </success_criteria>
-253: 
-254: <output>
-255: After completion, create `.planning/phases/03-baseline-agents-and-t5-likelihood/03-01-SUMMARY.md`
-256: </output>
-````
-
 ## File: .planning/phases/03-baseline-agents-and-t5-likelihood/03-01-SUMMARY.md
 ````markdown
   1: ---
@@ -13268,374 +12969,6 @@ walkthrough.md
 110: ---
 111: *Phase: 03-baseline-agents-and-t5-likelihood*
 112: *Completed: 2026-02-26*
-````
-
-## File: .planning/phases/03-baseline-agents-and-t5-likelihood/03-02-PLAN.md
-````markdown
-  1: ---
-  2: phase: 03-baseline-agents-and-t5-likelihood
-  3: plan: 02
-  4: type: execute
-  5: wave: 1
-  6: depends_on: []
-  7: files_modified:
-  8:   - models/likelihoods.py
-  9: autonomous: true
- 10: requirements: [LIK-04, LIK-05]
- 11: 
- 12: must_haves:
- 13:   truths:
- 14:     - "T5Likelihood computes semantic similarity scores using T5 encoder"
- 15:     - "T5 embeddings are cached automatically via inherited embed_and_cache()"
- 16:     - "T5 scores 'first president' higher for 'Washington' than 'Einstein'"
- 17:     - "GPU tensors are detached and moved to CPU to prevent memory leaks"
- 18:   artifacts:
- 19:     - path: "models/likelihoods.py"
- 20:       provides: "T5Likelihood class"
- 21:       exports: ["T5Likelihood"]
- 22:       min_lines: 450
- 23:   key_links:
- 24:     - from: "models/likelihoods.T5Likelihood"
- 25:       to: "transformers.T5EncoderModel"
- 26:       via: "T5EncoderModel.from_pretrained() in constructor"
- 27:       pattern: "T5EncoderModel\\.from_pretrained"
- 28:     - from: "models/likelihoods.T5Likelihood._embed_batch"
- 29:       to: "torch tensor operations"
- 30:       via: "mean pooling with attention mask"
- 31:       pattern: "mask\\.sum.*masked_hidden\\.sum"
- 32:     - from: "models/likelihoods.T5Likelihood.score"
- 33:       to: "LikelihoodModel.embed_and_cache"
- 34:       via: "inherited cache lookup"
- 35:       pattern: "self\\.embed_and_cache"
- 36: ---
- 37: 
- 38: <objective>
- 39: Implement T5Likelihood using T5 encoder for semantic similarity scoring, following the exact pattern of SBERTLikelihood from Phase 2.
- 40: 
- 41: Purpose: Enable semantic understanding for belief computation. T5 pre-trained on massive text corpora can distinguish "first president" context better than TF-IDF token matching. This is the novel contribution — using T5 as a likelihood model rather than just as a policy encoder.
- 42: 
- 43: Output: T5Likelihood class that inherits from LikelihoodModel ABC, returns raw cosine similarity scores, and automatically benefits from embedding caching.
- 44: </objective>
- 45: 
- 46: <execution_context>
- 47: @/Users/ankit.aggarwal/.claude/get-shit-done/workflows/execute-plan.md
- 48: @/Users/ankit.aggarwal/.claude/get-shit-done/templates/summary.md
- 49: </execution_context>
- 50: 
- 51: <context>
- 52: @.planning/PROJECT.md
- 53: @.planning/ROADMAP.md
- 54: @.planning/STATE.md
- 55: @.planning/phases/03-baseline-agents-and-t5-likelihood/03-RESEARCH.md
- 56: 
- 57: # Phase 2 implementation to follow
- 58: @models/likelihoods.py
- 59: </context>
- 60: 
- 61: <interfaces>
- 62: <!-- Existing interfaces to extend -->
- 63: 
- 64: From models/likelihoods.py (lines 52-143):
- 65: ```python
- 66: class LikelihoodModel(ABC):
- 67:     """Abstract base class for likelihood models.
- 68: 
- 69:     Subclasses must implement:
- 70:         - score(clue_prefix, option_profiles) -> np.ndarray
- 71:         - _embed_batch(texts) -> np.ndarray
- 72: 
- 73:     The base class provides embed_and_cache() which handles caching of
- 74:     text embeddings via SHA-256 content hashing.
- 75:     """
- 76: 
- 77:     def __init__(self) -> None:
- 78:         self.embedding_cache: dict[str, np.ndarray] = {}
- 79: 
- 80:     @abstractmethod
- 81:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
- 82:         """Return raw similarity scores for each answer option."""
- 83: 
- 84:     def embed_and_cache(self, texts: list[str]) -> np.ndarray:
- 85:         """Embed texts, using cache for previously seen inputs."""
- 86:         missing = [text for text in texts if _text_key(text) not in self.embedding_cache]
- 87:         if missing:
- 88:             new_embeddings = self._embed_batch(missing)
- 89:             for text, emb in zip(missing, new_embeddings):
- 90:                 self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
- 91:         return np.stack([self.embedding_cache[_text_key(text)] for text in texts])
- 92: 
- 93:     @abstractmethod
- 94:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
- 95:         """Embed a batch of texts. Returns float32 array of shape (len(texts), embed_dim)."""
- 96: ```
- 97: 
- 98: SBERTLikelihood pattern to follow (lines 258-346):
- 99: ```python
-100: class SBERTLikelihood(LikelihoodModel):
-101:     def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
-102:         super().__init__()
-103:         from sentence_transformers import SentenceTransformer
-104:         self.model_name = model_name
-105:         self.model = SentenceTransformer(model_name)
-106: 
-107:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
-108:         embeddings = self.model.encode(
-109:             texts,
-110:             convert_to_numpy=True,
-111:             normalize_embeddings=True,
-112:             show_progress_bar=False,
-113:         )
-114:         return embeddings.astype(np.float32)
-115: 
-116:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
-117:         clue_emb = self.embed_and_cache([clue_prefix])[0]
-118:         option_embs = self.embed_and_cache(option_profiles)
-119:         sims = option_embs @ clue_emb
-120:         return sims.astype(np.float32)
-121: ```
-122: </interfaces>
-123: 
-124: <tasks>
-125: 
-126: <task type="auto">
-127:   <name>Task 1: Implement T5Likelihood class with mean-pooled embeddings</name>
-128:   <files>models/likelihoods.py</files>
-129:   <action>
-130: Add T5Likelihood class to models/likelihoods.py following the SBERTLikelihood pattern (lines 258-346) but using T5EncoderModel.
-131: 
-132: Add after SBERTLikelihood class, before build_likelihood_from_config():
-133: 
-134: ```python
-135: class T5Likelihood(LikelihoodModel):
-136:     """T5 encoder likelihood model using mean-pooled semantic embeddings.
-137: 
-138:     Uses T5EncoderModel (not full T5ForConditionalGeneration) for 2x faster
-139:     inference and half the memory. Embeddings are mean-pooled over sequence
-140:     length with attention mask weighting to handle padding correctly.
-141: 
-142:     Parameters
-143:     ----------
-144:     model_name : str, default="t5-base"
-145:         HuggingFace T5 model identifier. Options:
-146:         - "t5-small" (60M params) — fastest, lowest quality
-147:         - "t5-base" (220M params) — balanced (recommended)
-148:         - "t5-large" (770M params) — best quality, requires 8GB GPU VRAM
-149: 
-150:     Attributes
-151:     ----------
-152:     encoder : T5EncoderModel
-153:         Pre-trained T5 encoder loaded from HuggingFace.
-154:     tokenizer : T5Tokenizer
-155:         T5 tokenizer for text preprocessing.
-156:     device : torch.device
-157:         Computation device (cuda if available, else cpu).
-158:     """
-159: 
-160:     def __init__(self, model_name: str = "t5-base") -> None:
-161:         super().__init__()
-162:         # Lazy import to avoid dependency issues if transformers not installed
-163:         import torch
-164:         from transformers import T5EncoderModel, T5Tokenizer
-165: 
-166:         self.model_name = model_name
-167:         self.encoder = T5EncoderModel.from_pretrained(model_name)
-168:         self.tokenizer = T5Tokenizer.from_pretrained(model_name)
-169:         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-170:         self.encoder.to(self.device)
-171:         self.encoder.eval()
-172: 
-173:     def _embed_batch(self, texts: list[str]) -> np.ndarray:
-174:         """Embed texts using T5 encoder with attention-masked mean pooling.
-175: 
-176:         Parameters
-177:         ----------
-178:         texts : list[str]
-179:             Texts to embed.
-180: 
-181:         Returns
-182:         -------
-183:         np.ndarray
-184:             L2-normalized embeddings of shape (len(texts), hidden_dim), dtype float32.
-185: 
-186:         Notes
-187:         -----
-188:         Mean pooling uses attention mask to exclude padding tokens from the average.
-189:         Embeddings are L2-normalized for cosine similarity via dot product.
-190:         Tensors are detached and moved to CPU immediately to prevent memory leaks.
-191:         """
-192:         import torch
-193: 
-194:         with torch.no_grad():
-195:             encoded = self.tokenizer(
-196:                 texts,
-197:                 padding=True,
-198:                 truncation=True,
-199:                 max_length=512,
-200:                 return_tensors="pt"
-201:             ).to(self.device)
-202: 
-203:             outputs = self.encoder(**encoded)
-204:             last_hidden = outputs.last_hidden_state  # (batch, seq_len, hidden_dim)
-205: 
-206:             # Mean pooling over sequence length with attention mask
-207:             mask = encoded.attention_mask.unsqueeze(-1)  # (batch, seq_len, 1)
-208:             masked_hidden = last_hidden * mask
-209:             sum_hidden = masked_hidden.sum(dim=1)  # (batch, hidden_dim)
-210:             mask_sum = mask.sum(dim=1).clamp(min=1e-9)  # (batch, 1)
-211:             mean_pooled = sum_hidden / mask_sum  # (batch, hidden_dim)
-212: 
-213:             # L2 normalize for cosine similarity via dot product
-214:             embeddings = torch.nn.functional.normalize(mean_pooled, p=2, dim=1)
-215: 
-216:             # CRITICAL: Detach and move to CPU to prevent memory leak
-217:             embeddings = embeddings.detach().cpu().numpy().astype(np.float32)
-218: 
-219:         return embeddings
-220: 
-221:     def score(self, clue_prefix: str, option_profiles: list[str]) -> np.ndarray:
-222:         """Score each option using T5 semantic cosine similarity.
-223: 
-224:         Parameters
-225:         ----------
-226:         clue_prefix : str
-227:             Clue text revealed so far.
-228:         option_profiles : list[str]
-229:             Answer profile text for each option.
-230: 
-231:         Returns
-232:         -------
-233:         np.ndarray
-234:             Raw cosine similarity scores of shape (len(option_profiles),).
-235:         """
-236:         clue_emb = self.embed_and_cache([clue_prefix])[0]
-237:         option_embs = self.embed_and_cache(option_profiles)
-238:         sims = option_embs @ clue_emb
-239:         return sims.astype(np.float32)
-240: ```
-241: 
-242: Follow SBERTLikelihood pattern exactly:
-243: - Lazy import transformers and torch inside __init__ and _embed_batch
-244: - Use embed_and_cache() in score() method (inherited from base class, provides caching automatically)
-245: - Return raw similarity scores (not probabilities) from score()
-246: - L2 normalize embeddings so dot product = cosine similarity
-247: - Detach tensors and move to CPU immediately after computation (prevents memory leaks)
-248: 
-249: Critical detail: Use attention_mask in mean pooling to exclude padding tokens. This is essential for correct semantic embeddings when sequences have different lengths.
-250:   </action>
-251:   <verify>
-252:     <automated>python -c "from models.likelihoods import T5Likelihood; model = T5Likelihood(model_name='t5-small'); import numpy as np; scores = model.score('first president', ['George Washington', 'Albert Einstein']); assert isinstance(scores, np.ndarray) and len(scores) == 2; print(f'T5Likelihood smoke test passed: scores shape {scores.shape}')"</automated>
-253:   </verify>
-254:   <done>T5Likelihood class exists in models/likelihoods.py, smoke test passes, returns float32 ndarray scores</done>
-255: </task>
-256: 
-257: <task type="auto">
-258:   <name>Task 2: Update build_likelihood_from_config factory to support T5</name>
-259:   <files>models/likelihoods.py</files>
-260:   <action>
-261: Update build_likelihood_from_config() function (currently at lines 349-379) to add T5 support.
-262: 
-263: Add new branch before the final ValueError:
-264: 
-265: ```python
-266:     if model_name == "t5":
-267:         t5_name = cfg.get("t5_name", "t5-base")
-268:         return T5Likelihood(model_name=t5_name)
-269: ```
-270: 
-271: This follows the existing pattern for "tfidf" and "sbert" branches. Config structure:
-272: ```yaml
-273: likelihood:
-274:   model: t5
-275:   t5_name: t5-base  # Optional, defaults to t5-base
-276:   beta: 5.0
-277: ```
-278: 
-279: The factory extracts `t5_name` from config (with fallback to "t5-base") and constructs T5Likelihood.
-280:   </action>
-281:   <verify>
-282:     <automated>python -c "from models.likelihoods import build_likelihood_from_config, T5Likelihood; config = {'likelihood': {'model': 't5', 't5_name': 't5-small'}}; model = build_likelihood_from_config(config); assert isinstance(model, T5Likelihood); print('Factory test passed')"</automated>
-283:   </verify>
-284:   <done>build_likelihood_from_config supports model="t5", constructs T5Likelihood with configurable t5_name</done>
-285: </task>
-286: 
-287: <task type="auto">
-288:   <name>Task 3: Update models/__init__.py to export T5Likelihood</name>
-289:   <files>models/__init__.py</files>
-290:   <action>
-291: Read models/__init__.py and add T5Likelihood to the imports and __all__ list.
-292: 
-293: Current exports (from Phase 2 Plan 04 summary):
-294: ```python
-295: from models.likelihoods import (
-296:     LikelihoodModel,
-297:     TfIdfLikelihood,
-298:     SBERTLikelihood,
-299:     build_likelihood_from_config,
-300: )
-301: ```
-302: 
-303: Update to:
-304: ```python
-305: from models.likelihoods import (
-306:     LikelihoodModel,
-307:     TfIdfLikelihood,
-308:     SBERTLikelihood,
-309:     T5Likelihood,
-310:     build_likelihood_from_config,
-311: )
-312: ```
-313: 
-314: And add "T5Likelihood" to __all__ list.
-315:   </action>
-316:   <verify>
-317:     <automated>python -c "from models import T5Likelihood; print('T5Likelihood exported from models package')"</automated>
-318:   </verify>
-319:   <done>models/__init__.py exports T5Likelihood, can import from models package</done>
-320: </task>
-321: 
-322: </tasks>
-323: 
-324: <verification>
-325: T5Likelihood produces semantically meaningful scores:
-326: 
-327: ```python
-328: from models import T5Likelihood
-329: import numpy as np
-330: 
-331: model = T5Likelihood(model_name="t5-small")  # Use small for fast test
-332: 
-333: # Test semantic discrimination
-334: clue = "This person was the first president of the United States"
-335: options = [
-336:     "George Washington first president",
-337:     "Albert Einstein physicist relativity",
-338: ]
-339: 
-340: scores = model.score(clue, options)
-341: assert scores[0] > scores[1], "T5 should score Washington higher than Einstein"
-342: 
-343: # Test caching
-344: scores2 = model.score(clue, options)
-345: np.testing.assert_array_equal(scores, scores2, err_msg="Cached scores should match")
-346: 
-347: print("T5 semantic scoring verified")
-348: ```
-349: </verification>
-350: 
-351: <success_criteria>
-352: - [ ] T5Likelihood class exists in models/likelihoods.py
-353: - [ ] T5Likelihood inherits from LikelihoodModel, implements score() and _embed_batch()
-354: - [ ] _embed_batch() uses T5EncoderModel with mean pooling and attention mask
-355: - [ ] score() uses embed_and_cache() for automatic caching
-356: - [ ] Tensors are detached and moved to CPU (prevents memory leaks)
-357: - [ ] build_likelihood_from_config() supports model="t5"
-358: - [ ] models/__init__.py exports T5Likelihood
-359: - [ ] Smoke test passes: T5 scores "Washington" higher than "Einstein" for "first president"
-360: </success_criteria>
-361: 
-362: <output>
-363: After completion, create `.planning/phases/03-baseline-agents-and-t5-likelihood/03-02-SUMMARY.md`
-364: </output>
 ````
 
 ## File: .planning/phases/03-baseline-agents-and-t5-likelihood/03-02-SUMMARY.md
@@ -13754,386 +13087,6 @@ walkthrough.md
 112: ---
 113: *Phase: 03-baseline-agents-and-t5-likelihood*
 114: *Completed: 2026-02-26*
-````
-
-## File: .planning/phases/03-baseline-agents-and-t5-likelihood/03-03-PLAN.md
-````markdown
-  1: ---
-  2: phase: 03-baseline-agents-and-t5-likelihood
-  3: plan: 03
-  4: type: execute
-  5: wave: 2
-  6: depends_on: ["03-01", "03-02"]
-  7: files_modified:
-  8:   - tests/conftest.py
-  9:   - tests/test_agents.py
- 10:   - tests/test_likelihoods.py
- 11: autonomous: true
- 12: requirements: [AGT-06, LIK-04, LIK-05]
- 13: 
- 14: must_haves:
- 15:   truths:
- 16:     - "All four baseline agents execute without errors on test questions"
- 17:     - "Agents return valid EpisodeResult/SoftmaxEpisodeResult with c_trace and g_trace"
- 18:     - "T5Likelihood produces semantically meaningful scores"
- 19:     - "T5 embedding cache reduces redundant computations"
- 20:     - "Test suite runs in under 60 seconds"
- 21:   artifacts:
- 22:     - path: "tests/conftest.py"
- 23:       provides: "sample_t5_model fixture for fast testing"
- 24:       contains: "@pytest.fixture.*sample_t5_model"
- 25:       min_lines: 150
- 26:     - path: "tests/test_agents.py"
- 27:       provides: "Baseline agent execution tests"
- 28:       contains: "def test_threshold_buzzer"
- 29:       min_lines: 200
- 30:     - path: "tests/test_likelihoods.py"
- 31:       provides: "T5 semantic scoring and cache tests"
- 32:       contains: "def test_t5_semantic_scoring"
- 33:       min_lines: 300
- 34:   key_links:
- 35:     - from: "tests/test_agents.py"
- 36:       to: "agents.ThresholdBuzzer"
- 37:       via: "instantiate with likelihood model and test question"
- 38:       pattern: "ThresholdBuzzer.*run_episode"
- 39:     - from: "tests/test_likelihoods.py"
- 40:       to: "models.T5Likelihood"
- 41:       via: "test semantic similarity and caching"
- 42:       pattern: "T5Likelihood.*score"
- 43: ---
- 44: 
- 45: <objective>
- 46: Create comprehensive test suite covering all baseline agents and T5 likelihood model to verify Phase 3 requirements.
- 47: 
- 48: Purpose: Ensure all agents execute correctly and produce valid episode traces for S_q evaluation. Verify T5 provides semantic discrimination and benefits from caching. Tests serve as regression safety for future phases.
- 49: 
- 50: Output: 30+ tests verifying agent execution, episode result schemas, T5 semantic scoring, and embedding cache efficiency.
- 51: </objective>
- 52: 
- 53: <execution_context>
- 54: @/Users/ankit.aggarwal/.claude/get-shit-done/workflows/execute-plan.md
- 55: @/Users/ankit.aggarwal/.claude/get-shit-done/templates/summary.md
- 56: </execution_context>
- 57: 
- 58: <context>
- 59: @.planning/PROJECT.md
- 60: @.planning/ROADMAP.md
- 61: @.planning/STATE.md
- 62: @.planning/phases/03-baseline-agents-and-t5-likelihood/03-RESEARCH.md
- 63: 
- 64: # Phase 2 test patterns to follow
- 65: @tests/conftest.py
- 66: @tests/test_likelihoods.py
- 67: @tests/test_environment.py
- 68: 
- 69: # Implementations to test
- 70: @agents/threshold_buzzer.py
- 71: @agents/bayesian_buzzer.py
- 72: @models/likelihoods.py
- 73: </context>
- 74: 
- 75: <interfaces>
- 76: <!-- Test fixtures and patterns from Phase 2 -->
- 77: 
- 78: From tests/conftest.py:
- 79: ```python
- 80: @pytest.fixture
- 81: def sample_mc_question() -> MCQuestion:
- 82:     """Minimal MCQuestion with 4 options, 6 clue steps."""
- 83:     return MCQuestion(
- 84:         qid="test_q1",
- 85:         question="Who was the first president of the United States?",
- 86:         tokens=["Who", "was", "the", "first", "president", "of", "the", "United", "States", "?"],
- 87:         run_indices=[0, 2, 4, 6, 8, 9],
- 88:         cumulative_prefixes=["Who", "Who was the", ...],
- 89:         options=["George Washington", "Thomas Jefferson", "John Adams", "Benjamin Franklin"],
- 90:         gold_index=0,
- 91:         option_profiles=["George Washington first president ...", ...],
- 92:         # ... other fields
- 93:     )
- 94: 
- 95: @pytest.fixture
- 96: def sample_corpus() -> list[str]:
- 97:     """Ten text strings for TF-IDF fitting."""
- 98:     return ["George Washington was the first president...", ...]
- 99: ```
-100: 
-101: Agent interfaces:
-102: ```python
-103: class ThresholdBuzzer:
-104:     def __init__(self, likelihood_model: LikelihoodModel, threshold: float = 0.8, beta: float = 5.0, alpha: float = 10.0):
-105:         ...
-106:     def run_episode(self, question: MCQuestion) -> EpisodeResult:
-107:         ...
-108: 
-109: @dataclass
-110: class EpisodeResult:
-111:     qid: str
-112:     buzz_step: int
-113:     buzz_index: int
-114:     gold_index: int
-115:     correct: bool
-116:     reward_like: float
-117:     c_trace: list[float]
-118:     g_trace: list[float]
-119:     top_p_trace: list[float]
-120:     entropy_trace: list[float]
-121: ```
-122: </interfaces>
-123: 
-124: <tasks>
-125: 
-126: <task type="auto">
-127:   <name>Task 1: Add T5 test fixture to conftest.py</name>
-128:   <files>tests/conftest.py</files>
-129:   <action>
-130: Add a new pytest fixture to tests/conftest.py for T5 model testing. Use t5-small (60M params) for fast test execution, not t5-base or t5-large.
-131: 
-132: Add after sample_corpus fixture:
-133: 
-134: ```python
-135: @pytest.fixture(scope="module")
-136: def sample_t5_model():
-137:     """Return a T5Likelihood model for testing.
-138: 
-139:     Uses t5-small (60M params) for fast test execution. Scoped to module
-140:     level so the model is loaded once per test file, not per test function.
-141: 
-142:     Returns
-143:     -------
-144:     T5Likelihood
-145:         A T5 likelihood model suitable for testing semantic scoring.
-146: 
-147:     Notes
-148:     -----
-149:     This fixture may take 5-10 seconds on first run to download the model
-150:     from HuggingFace. Subsequent runs use cached weights.
-151:     """
-152:     from models.likelihoods import T5Likelihood
-153:     return T5Likelihood(model_name="t5-small")
-154: ```
-155: 
-156: Scope="module" means the model is instantiated once per test file, not once per test. This reduces test runtime significantly (model loading is expensive).
-157:   </action>
-158:   <verify>
-159:     <automated>python -c "import pytest; from tests.conftest import sample_t5_model; print('Fixture defined')"</automated>
-160:   </verify>
-161:   <done>sample_t5_model fixture exists in tests/conftest.py with module scope</done>
-162: </task>
-163: 
-164: <task type="auto">
-165:   <name>Task 2: Create agent test suite (test_agents.py)</name>
-166:   <files>tests/test_agents.py</files>
-167:   <action>
-168: Create tests/test_agents.py to cover all baseline agents (AGT-02 through AGT-06).
-169: 
-170: Test structure (30+ tests):
-171: 
-172: 1. **ThresholdBuzzer tests (AGT-02):**
-173:    - test_threshold_buzzer_executes: Runs episode without error, returns EpisodeResult
-174:    - test_threshold_buzzer_buzzes_on_threshold: Buzzes when top_p >= threshold
-175:    - test_threshold_buzzer_waits_on_low_confidence: Continues when top_p < threshold
-176:    - test_threshold_buzzer_buzzes_at_final: Always buzzes on final step regardless of threshold
-177:    - test_threshold_buzzer_traces_valid: c_trace and g_trace have correct lengths
-178:    - test_threshold_buzzer_confidence_proxy: c_t values in [0, 1] via sigmoid
-179: 
-180: 2. **AlwaysBuzzFinalBuzzer tests (AGT-03):**
-181:    - test_always_buzz_final_waits: c_trace[:-1] all equal 0.0
-182:    - test_always_buzz_final_buzzes_last: c_trace[-1] == 1.0
-183:    - test_always_buzz_final_computes_beliefs: Beliefs computed at each step (not skipped)
-184:    - test_always_buzz_final_buzz_step: buzz_step == len(cumulative_prefixes) - 1
-185: 
-186: 3. **SoftmaxProfileBuzzer tests (AGT-04):**
-187:    - test_softmax_profile_executes: Runs episode without error
-188:    - test_softmax_profile_recomputes_belief: Calls _belief_from_scratch each step (not incremental)
-189:    - test_softmax_profile_result_schema: Returns SoftmaxEpisodeResult
-190: 
-191: 4. **SequentialBayesBuzzer tests (AGT-05):**
-192:    - test_sequential_bayes_executes: Runs episode without error
-193:    - test_sequential_bayes_uses_run_indices: Requires question.run_indices field
-194:    - test_sequential_bayes_bayesian_update: Belief is posterior ∝ prior × likelihood
-195:    - test_sequential_bayes_result_schema: Returns SoftmaxEpisodeResult
-196: 
-197: 5. **Episode result schema tests (AGT-06):**
-198:    - test_episode_result_fields: EpisodeResult has all required fields
-199:    - test_softmax_episode_result_fields: SoftmaxEpisodeResult has all required fields
-200:    - test_traces_same_length: len(c_trace) == len(g_trace) for all agents
-201:    - test_g_trace_binary: g_trace values are 0.0 or 1.0 (correctness is binary)
-202:    - test_buzz_index_valid: buzz_index in range(K) where K = len(options)
-203:    - test_result_to_dict: result_to_dict() converts EpisodeResult to dict
-204: 
-205: 6. **Threshold sweep utility tests:**
-206:    - test_sweep_thresholds_runs: sweep_thresholds() returns dict[float, list[EpisodeResult]]
-207:    - test_sweep_thresholds_multiple_values: Sweeps over [0.6, 0.7, 0.8, 0.9]
-208: 
-209: Use fixtures from conftest.py: sample_mc_question, sample_corpus, sample_config.
-210: 
-211: Pattern each test:
-212: ```python
-213: def test_threshold_buzzer_executes(sample_mc_question, sample_corpus):
-214:     from agents import ThresholdBuzzer, EpisodeResult
-215:     from models.likelihoods import TfIdfLikelihood
-216: 
-217:     likelihood = TfIdfLikelihood(corpus_texts=sample_corpus)
-218:     agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
-219:     result = agent.run_episode(sample_mc_question)
-220: 
-221:     assert isinstance(result, EpisodeResult)
-222:     assert result.qid == sample_mc_question.qid
-223:     assert len(result.c_trace) > 0
-224: ```
-225: 
-226: Use TF-IDF likelihood (fast) for most tests, not T5 or SBERT. Only test agent logic, not likelihood quality.
-227:   </action>
-228:   <verify>
-229:     <automated>pytest tests/test_agents.py -x</automated>
-230:   </verify>
-231:   <done>tests/test_agents.py exists with 30+ tests covering all baseline agents, all tests pass</done>
-232: </task>
-233: 
-234: <task type="auto">
-235:   <name>Task 3: Add T5 tests to test_likelihoods.py</name>
-236:   <files>tests/test_likelihoods.py</files>
-237:   <action>
-238: Add T5 tests to existing tests/test_likelihoods.py (Phase 2 has TF-IDF and SBERT tests).
-239: 
-240: Add at end of file, after existing SBERT tests:
-241: 
-242: 1. **T5 semantic scoring test (LIK-04):**
-243: ```python
-244: def test_t5_semantic_scoring(sample_t5_model):
-245:     """T5 should score semantically relevant options higher."""
-246:     clue = "This person was the first president of the United States"
-247:     options = [
-248:         "George Washington first president commander revolutionary war",
-249:         "Albert Einstein physicist theory relativity Nobel Prize",
-250:     ]
-251: 
-252:     scores = sample_t5_model.score(clue, options)
-253: 
-254:     assert isinstance(scores, np.ndarray)
-255:     assert scores.dtype == np.float32
-256:     assert len(scores) == 2
-257:     # Washington should score higher than Einstein for "first president" query
-258:     assert scores[0] > scores[1], f"Expected Washington > Einstein, got {scores}"
-259: ```
-260: 
-261: 2. **T5 embedding cache test (LIK-05):**
-262: ```python
-263: def test_t5_embedding_cache(sample_t5_model):
-264:     """T5 should cache embeddings and reuse them."""
-265:     texts = ["George Washington", "Thomas Jefferson"]
-266: 
-267:     # First call embeds and caches
-268:     emb1 = sample_t5_model.embed_and_cache(texts)
-269:     cache_size_1 = len(sample_t5_model.embedding_cache)
-270: 
-271:     # Second call reuses cache
-272:     emb2 = sample_t5_model.embed_and_cache(texts)
-273:     cache_size_2 = len(sample_t5_model.embedding_cache)
-274: 
-275:     np.testing.assert_array_equal(emb1, emb2, err_msg="Cached embeddings should match")
-276:     assert cache_size_1 == cache_size_2 == 2, "Cache size should not grow on reuse"
-277: ```
-278: 
-279: 3. **T5 score return type test:**
-280: ```python
-281: def test_t5_score_returns_float32(sample_t5_model):
-282:     """T5 score should return float32 array, not probabilities."""
-283:     scores = sample_t5_model.score("test clue", ["option 1", "option 2"])
-284:     assert scores.dtype == np.float32
-285:     # Scores are raw similarities, not probabilities (don't sum to 1)
-286: ```
-287: 
-288: 4. **T5 factory construction test:**
-289: ```python
-290: def test_build_t5_from_config():
-291:     """Factory should construct T5Likelihood from config."""
-292:     from models.likelihoods import build_likelihood_from_config, T5Likelihood
-293: 
-294:     config = {
-295:         "likelihood": {
-296:             "model": "t5",
-297:             "t5_name": "t5-small",
-298:         }
-299:     }
-300: 
-301:     model = build_likelihood_from_config(config)
-302:     assert isinstance(model, T5Likelihood)
-303:     assert model.model_name == "t5-small"
-304: ```
-305: 
-306: 5. **T5 attention mask test:**
-307: ```python
-308: def test_t5_handles_variable_length(sample_t5_model):
-309:     """T5 should handle variable-length texts via attention mask."""
-310:     short = "Washington"
-311:     long = "George Washington was the first president of the United States and commander of the Continental Army during the Revolutionary War"
-312: 
-313:     # Both should embed without error
-314:     embs = sample_t5_model.embed_and_cache([short, long])
-315:     assert embs.shape == (2, sample_t5_model.encoder.config.d_model)
-316: ```
-317: 
-318: These tests verify T5 semantic scoring (LIK-04) and automatic caching (LIK-05 inherited from LikelihoodModel base class).
-319:   </action>
-320:   <verify>
-321:     <automated>pytest tests/test_likelihoods.py::test_t5_semantic_scoring tests/test_likelihoods.py::test_t5_embedding_cache -x</automated>
-322:   </verify>
-323:   <done>tests/test_likelihoods.py has 5 new T5 tests, all pass, semantic scoring verified</done>
-324: </task>
-325: 
-326: </tasks>
-327: 
-328: <verification>
-329: Full test suite passes:
-330: 
-331: ```bash
-332: pytest tests/ -v
-333: 
-334: # Expected output:
-335: # tests/test_features.py: 17 passed (from Phase 2)
-336: # tests/test_likelihoods.py: 20 passed (15 from Phase 2 + 5 new T5)
-337: # tests/test_environment.py: 32 passed (from Phase 2)
-338: # tests/test_factories.py: 14 passed (from Phase 2)
-339: # tests/test_agents.py: 30 passed (new)
-340: # Total: 113 passed
-341: ```
-342: 
-343: Agents produce valid episode traces:
-344: 
-345: ```python
-346: from agents import ThresholdBuzzer, EpisodeResult
-347: from models import TfIdfLikelihood
-348: from tests.conftest import sample_mc_question, sample_corpus
-349: 
-350: question = sample_mc_question
-351: corpus = sample_corpus
-352: likelihood = TfIdfLikelihood(corpus_texts=corpus)
-353: agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.8)
-354: result = agent.run_episode(question)
-355: 
-356: assert isinstance(result, EpisodeResult)
-357: assert len(result.c_trace) == len(result.g_trace)
-358: assert all(0.0 <= c <= 1.0 for c in result.c_trace)
-359: assert all(g in [0.0, 1.0] for g in result.g_trace)
-360: ```
-361: </verification>
-362: 
-363: <success_criteria>
-364: - [ ] tests/conftest.py has sample_t5_model fixture with module scope
-365: - [ ] tests/test_agents.py exists with 30+ tests covering all 4 baseline agents
-366: - [ ] tests/test_agents.py verifies EpisodeResult and SoftmaxEpisodeResult schemas (AGT-06)
-367: - [ ] tests/test_likelihoods.py has 5 new T5 tests (semantic scoring, caching, factory, attention mask)
-368: - [ ] test_t5_semantic_scoring verifies T5 scores "Washington" higher than "Einstein" for "first president"
-369: - [ ] test_t5_embedding_cache verifies cache reuse (LIK-05)
-370: - [ ] All tests pass: pytest tests/ returns 113+ passed
-371: - [ ] Test runtime under 60 seconds (use TF-IDF for agent tests, t5-small for T5 tests)
-372: </success_criteria>
-373: 
-374: <output>
-375: After completion, create `.planning/phases/03-baseline-agents-and-t5-likelihood/03-03-SUMMARY.md`
-376: </output>
 ````
 
 ## File: .planning/phases/03-baseline-agents-and-t5-likelihood/03-03-SUMMARY.md
@@ -20772,6 +19725,1053 @@ walkthrough.md
 360: </output>
 ````
 
+## File: docs/full-pipeline-runbook.md
+````markdown
+   1: # Full End-to-End Pipeline Runbook
+   2: 
+   3: Deterministic instruction set for running the complete qanta-buzzer pipeline
+   4: at full scale on the QANTA dataset (~20,407 questions).
+   5: 
+   6: ---
+   7: 
+   8: ## Prerequisites
+   9: 
+  10: ### Hardware
+  11: 
+  12: | Resource | Minimum | This machine (Apple M3 Max) |
+  13: |----------|---------|---------------------------|
+  14: | CPU | 8 cores | 16 cores |
+  15: | RAM | 32 GB (t5-base on MPS) | 64 GB |
+  16: | GPU | — (CPU ok for tfidf) | MPS (Apple Silicon) |
+  17: | Disk | 10 GB free | 38 GB free |
+  18: 
+  19: ### Local wall-time estimates (Apple M3 Max, 64 GB, MPS)
+  20: 
+  21: All estimates assume the full QANTA dataset (~20,407 questions). Phases
+  22: marked ★ are the core pipeline; others are optional extensions/ablations.
+  23: 
+  24: | Phase | Description | Likelihood | Estimated time |
+  25: |-------|------------|------------|----------------|
+  26: | **★ 1** | Build MC dataset (SBERT distractors) | — | 5–10 min |
+  27: | **★ 2** | Baseline sweeps (TF-IDF) | tfidf | 5–10 min |
+  28: | **★ 2** | Baseline sweeps (T5-large) | t5-large | 2–4 hrs |
+  29: | **★ 2** | Baseline sweeps (T5-base) | t5-base | 45–90 min |
+  30: | **★ 3** | PPO 100k steps (TF-IDF beliefs) | tfidf | 30–60 min |
+  31: | **★ 4** | Evaluate all + controls | tfidf | 5–15 min |
+  32: | **★ 5** | T5 policy: supervised + PPO (t5-large) | — | 4–8 hrs |
+  33: | **★ 5** | T5 policy: supervised + PPO (t5-base) | — | 1.5–3 hrs |
+  34: | **★ 5** | T5 policy: supervised + PPO (t5-small) | — | 15–30 min |
+  35: | **★ 6** | Compare policies | tfidf | 10–20 min |
+  36: | 7 | Multi-seed PPO (3 seeds) | tfidf | 1.5–3 hrs |
+  37: | 8 | Reward sweep | tfidf | varies |
+  38: | 9 | Distractor comparison (3 strategies) | tfidf | 15–30 min |
+  39: | 10 | Variable-K baselines + optional MaskablePPO | tfidf | 15–30 min |
+  40: | 11 | Expected Wins eval (EW-trained PPO is manual only) | tfidf | 5–15 min |
+  41: | 12 | DSPy compile | API-bound | 5–10 min |
+  42: | 13 | K-sensitivity (5 values) | tfidf | 30–60 min |
+  43: | 14 | Reward mode comparison (3 modes) | tfidf | 1.5–3 hrs |
+  44: | 15 | Belief mode comparison | tfidf | 5–10 min |
+  45: | 16 | Stop-only PPO | tfidf | 30–60 min |
+  46: | 17 | No-buzz horizon | tfidf | 30–60 min |
+  47: | 18 | OpenAI embeddings | API-bound | 10–30 min |
+  48: | 19 | DSPy MIPROv2 | API-bound | 5–10 min |
+  49: 
+  50: **Totals (wall-clock, sequential):**
+  51: 
+  52: | Scope | T5-large | T5-base | T5-small / TF-IDF only |
+  53: |-------|----------|---------|------------------------|
+  54: | Core pipeline (★ Phases 1–6) | 7–13 hrs | 3–5.5 hrs | 1–2 hrs |
+  55: | Core + all extensions (1–19) | 12–22 hrs | 7–13 hrs | 5–9 hrs |
+  56: 
+  57: **Parallelism opportunities:** After Phase 1 completes, Phases 2/3/5 are
+  58: independent and can run in parallel (Wave 1 of `run_full_pipeline.sh`).
+  59: Phase 4 must follow Phase 2 (reads `baseline_summary.json`). Phase 11
+  60: must follow Phase 4 and run before Phase 15 (it reads `baseline_summary.json`
+  61: which Phase 15 overwrites). Phases 9/13/15 each overwrite
+  62: `baseline_summary.json` and must run sequentially after Phase 11.
+  63: 
+  64: ### Software
+  65: 
+  66: ```bash
+  67: cd /path/to/qanta-buzzer
+  68: python3 -m venv .venv
+  69: source .venv/bin/activate
+  70: pip install -U pip
+  71: pip install -e .
+  72: ```
+  73: 
+  74: ### Data
+  75: 
+  76: The file `questions.csv` must exist at the repo root. It contains ~20,407
+  77: QANTA quiz bowl questions with `|||`-separated clue tokens.
+  78: 
+  79: ### Verify baseline
+  80: 
+  81: ```bash
+  82: pytest tests/ -q --tb=no      # expect: 342 passed, 3 skipped
+  83: bash scripts/manual-smoke.sh   # expect: 4/4 stages complete
+  84: ```
+  85: 
+  86: ---
+  87: 
+  88: ## Quick start: automated parallel execution
+  89: 
+  90: For an automated run of the core pipeline and scripted extensions, use
+  91: `run_full_pipeline.sh`. Parallel mode runs Phases 1–6, 11 (eval only),
+  92: 13–17; sequential mode (`--sequential`) also includes Phase 9.
+  93: Phases 7, 8, 10, 11 (EW-trained PPO), 12, 18, 19 require manual
+  94: execution. This is the **recommended path** for
+  95: local agents and unattended runs.
+  96: 
+  97: ```bash
+  98: # 1. Clean previous artifacts
+  99: rm -rf artifacts/main/ artifacts/k* artifacts/distractor_*
+ 100: rm -rf cache/embeddings/
+ 101: rm -rf checkpoints/supervised/ checkpoints/ppo/ checkpoints/ppo_t5/
+ 102: rm -rf results/
+ 103: 
+ 104: # 2. Run the full pipeline (pick ONE)
+ 105: 
+ 106: # Fastest — t5-small for T5 policy, TF-IDF for baselines (~2 hrs on M3 Max)
+ 107: bash scripts/run_full_pipeline.sh --t5-model t5-small
+ 108: 
+ 109: # Balanced — t5-base for T5 policy (~3–4 hrs on M3 Max)
+ 110: bash scripts/run_full_pipeline.sh --t5-model t5-base
+ 111: 
+ 112: # Full quality — t5-large (requires CUDA with 8+ GB VRAM; will likely OOM on Apple Silicon)
+ 113: # bash scripts/run_full_pipeline.sh --t5-model t5-large
+ 114: 
+ 115: # Sequential (no background jobs, safe for debugging)
+ 116: bash scripts/run_full_pipeline.sh --sequential --t5-model t5-base
+ 117: ```
+ 118: 
+ 119: The script executes the **core pipeline and extensions** in a 4-wave DAG.
+ 120: Phases 7 (multi-seed), 8 (reward sweep), 10 (variable-K baselines),
+ 121: 11 EW-trained PPO, 12 (DSPy compile), 18 (OpenAI), and 19 (MIPROv2)
+ 122: require manual execution — see the individual phase sections below.
+ 123: 
+ 124: ```
+ 125: Phase 1 (sequential — builds the shared MC dataset)
+ 126:   │
+ 127:   ├─ Wave 1 (3 parallel tracks):
+ 128:   │    Track A: Phase 2  — baseline sweeps (→ artifacts/main/baseline_summary.json)
+ 129:   │    Track B: Phase 3  — PPO training (→ artifacts/main/ppo_model.zip)
+ 130:   │    Track C: Phase 5  — T5 policy (→ checkpoints/)
+ 131:   │
+ 132:   ├─ Wave 2 (sequential — all read/write artifacts/main/):
+ 133:   │    Phase 4  — full evaluation + controls
+ 134:   │    Phase 6  — MLP vs T5 comparison
+ 135:   │    Phase 11 — Expected Wins evaluation
+ 136:   │    Phase 15 — belief mode comparison
+ 137:   │
+ 138:   ├─ Wave 3 (sequential — PPO ablations):
+ 139:   │    Phase 14 — reward modes (simple, human_grounded)
+ 140:   │    Phase 16 — stop-only PPO
+ 141:   │    Phase 17 — no-buzz horizon
+ 142:   │
+ 143:   └─ Wave 4 (sequential — K-sensitivity, clobbers baseline_summary.json):
+ 144:        Phase 13 — K=2,3,5,6 builds + baselines (each result copied to results/)
+ 145: 
+ 146: Not in parallel mode (sequential only or run manually):
+ 147:   Phase 9  — distractor comparison (sequential mode only)
+ 148:   Phase 10 — variable-K baselines + optional MaskablePPO (via ppo.use_maskable_ppo)
+ 149:   Phase 12 — DSPy compile (requires API key)
+ 150:   Phase 18 — OpenAI embeddings (requires API key)
+ 151:   Phase 19 — DSPy MIPROv2 (requires API key)
+ 152: ```
+ 153: 
+ 154: **Output:** All JSON results in `results/`. In parallel mode, Waves 1, 2,
+ 155: and 4 write per-phase logs to `results/phase_*.log` (via `run_phase()`);
+ 156: Wave 3 (PPO ablations) prints directly to stdout.
+ 157: In `--sequential` mode, all output goes to stdout (no per-phase logs).
+ 158: 
+ 159: **Monitoring:** Phase logs are written via stdout redirection, so output is
+ 160: buffered — `tail -f` may show no updates for extended periods (Phase 5 can
+ 161: appear stuck for 40+ minutes during supervised warm-start). This is normal;
+ 162: check the process is still running with `ps aux | grep train_`.
+ 163: ```bash
+ 164: tail -f results/phase_3.log   # PPO training (updates every ~30s)
+ 165: tail -f results/phase_5.log   # T5 policy (may buffer for long periods)
+ 166: ```
+ 167: 
+ 168: **After completion:** Generate summary table:
+ 169: ```bash
+ 170: python3 -c "
+ 171: import json, glob
+ 172: for f in sorted(glob.glob('results/*.json')):
+ 173:     s = json.load(open(f))
+ 174:     name = f.split('/')[-1].replace('.json', '')
+ 175:     if 'full_eval' in s:
+ 176:         fe = s['full_eval']
+ 177:         print(f'{name}: acc={fe.get(\"buzz_accuracy\", \"N/A\")}, S_q={fe.get(\"mean_sq\", \"N/A\")}')
+ 178:     elif 't5_policy' in s:
+ 179:         for k in ('mlp_policy', 't5_policy'):
+ 180:             if k in s:
+ 181:                 m = s[k]
+ 182:                 print(f'{name}/{k}: acc={m.get(\"accuracy\", \"N/A\")}, S_q={m.get(\"mean_sq\", \"N/A\")}')
+ 183:     elif 'softmax_profile' in s:
+ 184:         sp = s['softmax_profile']
+ 185:         best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+ 186:         print(f'{name}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", \"N/A\")}')
+ 187:     else:
+ 188:         acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
+ 189:         sq = s.get('mean_sq', 'N/A')
+ 190:         print(f'{name}: acc={acc}, S_q={sq}')
+ 191: "
+ 192: ```
+ 193: 
+ 194: **If a phase fails:** Check the phase log (if available) or stdout, fix the
+ 195: issue, and re-run just that phase manually (see individual phase sections
+ 196: below). The script exits on first failure — completed phases don't need
+ 197: re-running since their outputs are already written.
+ 198: 
+ 199: ---
+ 200: 
+ 201: ## Agent instructions
+ 202: 
+ 203: If you are an AI coding agent executing this runbook:
+ 204: 
+ 205: 1. **Preferred path:** Run `bash scripts/run_full_pipeline.sh --t5-model t5-base` and monitor the logs. This handles dependency ordering for the core pipeline and extensions. Only Wave 1 (baselines, PPO, T5) runs in parallel — all subsequent waves are sequential to avoid artifact races on `artifacts/main/`.
+ 206: 
+ 207: 2. **If the script fails:** Check `results/phase_*.log` if available (Waves 1, 2, 4 in parallel mode); for Wave 3 and `--sequential` mode, check stdout. Diagnose, fix, then re-run only the failed phase using the manual commands below.
+ 208: 
+ 209: 3. **Do not run phases 2/3/5 sequentially** if the parallel script is available — they are independent and running them in parallel saves 2–3x wall time. Phase 11 must run after Phase 4 and before Phase 15 (it reads `baseline_summary.json` which Phase 15 overwrites). Phases 9/13/15 each overwrite `baseline_summary.json` and must run sequentially after Phase 11.
+ 210: 
+ 211: 4. **Do not modify `artifacts/main/mc_dataset.json`** after Phase 1 — every subsequent phase reads it.
+ 212: 
+ 213: 5. **Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19** are not in the automated script. Run them manually if needed.
+ 214: 
+ 215: ---
+ 216: 
+ 217: ## Manual phase-by-phase instructions
+ 218: 
+ 219: The sections below document each phase individually for debugging,
+ 220: selective re-runs, or environments where the parallel script cannot be used.
+ 221: 
+ 222: ---
+ 223: 
+ 224: ## Phase 0: Clean state
+ 225: 
+ 226: ```bash
+ 227: rm -rf artifacts/main/ artifacts/k* artifacts/distractor_*
+ 228: rm -rf cache/embeddings/
+ 229: rm -rf checkpoints/supervised/ checkpoints/ppo/ checkpoints/ppo_t5/
+ 230: rm -rf results/
+ 231: mkdir -p artifacts/main results
+ 232: ```
+ 233: 
+ 234: ---
+ 235: 
+ 236: ## Phase 1: Build MC dataset
+ 237: 
+ 238: **Config:** `configs/default.yaml`
+ 239: **Distractor strategy:** `sbert_profile` (SBERT-based semantic ranking)
+ 240: **K:** 4 fixed answer choices
+ 241: **Expected output:** `artifacts/main/mc_dataset.json`, split files, answer profiles
+ 242: 
+ 243: ```bash
+ 244: python scripts/build_mc_dataset.py \
+ 245:     --config configs/default.yaml \
+ 246:     --output-dir artifacts/main
+ 247: ```
+ 248: 
+ 249: **Expected behavior:**
+ 250: - Loads ~20,407 questions from `questions.csv`
+ 251: - Downloads `all-MiniLM-L6-v2` SBERT model (~90 MB) on first run
+ 252: - Builds answer profiles with leave-one-out
+ 253: - Ranks distractors by SBERT profile similarity (top-M argpartition)
+ 254: - Applies 4 anti-artifact guards
+ 255: - Creates stratified train/val/test splits (70/15/15)
+ 256: - Writes `mc_dataset.json`, `train_dataset.json`, `val_dataset.json`, `test_dataset.json`, `answer_profiles.json`
+ 257: 
+ 258: **Estimated time:** 5–15 minutes (SBERT encoding is the bottleneck)
+ 259: 
+ 260: **Checkpoint:** Verify `artifacts/main/mc_dataset.json` exists and has >10,000 entries:
+ 261: ```bash
+ 262: python -c "import json; d=json.load(open('artifacts/main/mc_dataset.json')); print(f'{len(d)} MC questions')"
+ 263: ```
+ 264: 
+ 265: ---
+ 266: 
+ 267: ## Phase 2: Run baseline sweeps
+ 268: 
+ 269: **Config:** `configs/default.yaml`
+ 270: **Thresholds:** [0.5, 0.6, 0.7, 0.8, 0.9]
+ 271: **Agents:** ThresholdBuzzer, SoftmaxProfileBuzzer, SequentialBayesBuzzer, AlwaysBuzzFinal
+ 272: **Likelihood:** t5-large (from config); override to tfidf for speed
+ 273: 
+ 274: For a **fast first pass** using TF-IDF (minutes, not hours):
+ 275: 
+ 276: ```bash
+ 277: python scripts/run_baselines.py \
+ 278:     --config configs/default.yaml \
+ 279:     --mc-path artifacts/main/mc_dataset.json \
+ 280:     likelihood.model=tfidf
+ 281: ```
+ 282: 
+ 283: For **T5-base baseline** (balanced quality/speed, ~45–90 min):
+ 284: 
+ 285: ```bash
+ 286: python scripts/run_baselines.py \
+ 287:     --config configs/default.yaml \
+ 288:     --mc-path artifacts/main/mc_dataset.json \
+ 289:     likelihood.model=t5-base
+ 290: ```
+ 291: 
+ 292: For **T5-large baseline** (requires CUDA or 64+ GB RAM on MPS, hours of compute):
+ 293: 
+ 294: ```bash
+ 295: python scripts/run_baselines.py \
+ 296:     --config configs/default.yaml \
+ 297:     --mc-path artifacts/main/mc_dataset.json
+ 298: ```
+ 299: 
+ 300: **Expected output:** `artifacts/main/baseline_summary.json`, per-agent run files
+ 301: 
+ 302: **Checkpoint:**
+ 303: ```bash
+ 304: python -c "
+ 305: import json
+ 306: s = json.load(open('artifacts/main/baseline_summary.json'))
+ 307: for agent, data in s.items():
+ 308:     if isinstance(list(data.values())[0], dict):
+ 309:         best = max(data.items(), key=lambda x: x[1].get('mean_sq', 0))
+ 310:         print(f'{agent}: best_t={best[0]}, S_q={best[1][\"mean_sq\"]:.3f}, acc={best[1][\"buzz_accuracy\"]:.3f}')
+ 311:     else:
+ 312:         print(f'{agent}: S_q={data.get(\"mean_sq\", 0):.3f}, acc={data.get(\"buzz_accuracy\", 0):.3f}')
+ 313: "
+ 314: ```
+ 315: 
+ 316: **Archive default baselines** (later phases clobber `artifacts/main/baseline_summary.json`):
+ 317: ```bash
+ 318: # If you ran the TF-IDF command above (recommended):
+ 319: cp artifacts/main/baseline_summary.json results/baselines_tfidf.json
+ 320: # If you ran T5-base instead:
+ 321: # cp artifacts/main/baseline_summary.json results/baselines_t5base.json
+ 322: # If you ran T5-large instead:
+ 323: # cp artifacts/main/baseline_summary.json results/baselines_t5large.json
+ 324: ```
+ 325: 
+ 326: > Phases 14–16 assume `results/baselines_tfidf.json` exists for apples-to-apples
+ 327: > comparisons. If you used T5-large here, those comparisons will mix regimes.
+ 328: 
+ 329: ---
+ 330: 
+ 331: ## Phase 3: Train PPO (MLP on belief features)
+ 332: 
+ 333: **Config:** `configs/default.yaml`
+ 334: **Timesteps:** 100,000
+ 335: **Network:** [64, 64] MLP
+ 336: **Reward:** time_penalty (wait_penalty=0.05, early_buzz_penalty=0.2, buzz_incorrect=-0.5)
+ 337: **Likelihood:** add `likelihood.model=tfidf` to match the wrapper and extension phases
+ 338: 
+ 339: ```bash
+ 340: python scripts/train_ppo.py \
+ 341:     --config configs/default.yaml \
+ 342:     --mc-path artifacts/main/mc_dataset.json \
+ 343:     --seed 13 \
+ 344:     --deterministic-eval \
+ 345:     likelihood.model=tfidf
+ 346: ```
+ 347: 
+ 348: **Expected behavior:**
+ 349: - Precomputes belief trajectories for all questions (one-time, ~minutes)
+ 350: - Trains SB3 PPO for 100k timesteps
+ 351: - Evaluates with deterministic policy
+ 352: - Saves model to `artifacts/main/ppo_model.zip`
+ 353: 
+ 354: **Estimated time:** 30–90 minutes (CPU-bound: env stepping, not GPU)
+ 355: 
+ 356: **Checkpoint:**
+ 357: ```bash
+ 358: ls -lh artifacts/main/ppo_model.zip
+ 359: python -c "import json; s=json.load(open('artifacts/main/ppo_summary.json')); print(f'PPO: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}')"
+ 360: ```
+ 361: 
+ 362: **Archive default PPO** (later phases clobber `artifacts/main/ppo_summary.json`):
+ 363: ```bash
+ 364: cp artifacts/main/ppo_summary.json results/ppo_default.json
+ 365: cp artifacts/main/ppo_model.zip results/ppo_model_default.zip
+ 366: ```
+ 367: 
+ 368: ---
+ 369: 
+ 370: ## Phase 4: Evaluate all (belief-feature pipeline)
+ 371: 
+ 372: **Config:** `configs/default.yaml`
+ 373: **Controls:** choices-only, shuffle, alias substitution (alias control is a
+ 374: no-op unless `alias_lookup.json` is provided externally — `build_mc_dataset.py`
+ 375: does not generate it)
+ 376: **Metrics:** S_q, ECE, Brier, per-category accuracy
+ 377: 
+ 378: ```bash
+ 379: python scripts/evaluate_all.py \
+ 380:     --config configs/default.yaml \
+ 381:     --mc-path artifacts/main/mc_dataset.json \
+ 382:     likelihood.model=tfidf
+ 383: ```
+ 384: 
+ 385: > **Selective re-run note:** `evaluate_all.py` reads
+ 386: > `artifacts/main/baseline_summary.json` for the softmax threshold. If later
+ 387: > phases (13, 15) have overwritten it, restore the TF-IDF archive first
+ 388: > (this command uses `likelihood.model=tfidf`, so the baseline must match):
+ 389: > `cp results/baselines_tfidf.json artifacts/main/baseline_summary.json`
+ 390: 
+ 391: **Expected output:** `artifacts/main/evaluation_report.json`, `artifacts/main/plots/`
+ 392: 
+ 393: **Checkpoint:**
+ 394: ```bash
+ 395: python -c "
+ 396: import json
+ 397: r = json.load(open('artifacts/main/evaluation_report.json'))
+ 398: fe = r['full_eval']
+ 399: print(f'Full eval: acc={fe[\"buzz_accuracy\"]:.3f}, S_q={fe[\"mean_sq\"]:.3f}, ECE={fe[\"ece\"]:.3f}, Brier={fe[\"brier\"]:.3f}')
+ 400: for name, ctrl in r['controls'].items():
+ 401:     print(f'  {name}: acc={ctrl.get(\"accuracy\", ctrl.get(\"buzz_accuracy\", \"N/A\"))}')
+ 402: "
+ 403: ```
+ 404: 
+ 405: ---
+ 406: 
+ 407: ## Phase 5: Train T5 policy (end-to-end)
+ 408: 
+ 409: **Config:** `configs/t5_policy.yaml`
+ 410: **Model:** t5-base recommended (220M params); t5-large (770M) is slower and needs more memory
+ 411: **Supervised:** 10 epochs, effective batch 32
+ 412: **PPO:** 100 iterations
+ 413: 
+ 414: > **Memory warning (Apple Silicon / MPS):** A full-scale t5-base run on
+ 415: > 20,407 questions reached ~41 GB physical memory footprint on an M3 Max.
+ 416: > The "fits in 8 GB" claim from earlier docs was based on model weight size,
+ 417: > not the actual working set with 20k-question tokenization, gradient buffers,
+ 418: > and MPS allocations. **Minimum 32 GB RAM is recommended for t5-base at full
+ 419: > scale.** t5-large will exceed 64 GB and likely OOM on most Apple Silicon Macs.
+ 420: 
+ 421: For **t5-base** (recommended path, matches `run_full_pipeline.sh --t5-model t5-base`):
+ 422: 
+ 423: ```bash
+ 424: python scripts/train_t5_policy.py \
+ 425:     --config configs/t5_policy.yaml \
+ 426:     model.model_name=t5-base
+ 427: ```
+ 428: 
+ 429: For **t5-large** (requires CUDA with 8+ GB VRAM, or 64+ GB system RAM on MPS):
+ 430: 
+ 431: ```bash
+ 432: python scripts/train_t5_policy.py \
+ 433:     --config configs/t5_policy.yaml
+ 434: ```
+ 435: 
+ 436: **Expected behavior:**
+ 437: 1. Supervised warm-start: trains answer selection on complete questions (10 epochs)
+ 438: 2. PPO fine-tuning: optimizes wait/answer policy on incremental episodes (100 iterations)
+ 439: 3. Saves best model to `checkpoints/ppo_t5/best_model/`
+ 440: 
+ 441: **Estimated time:** t5-base ~2–3 hrs on M3 Max MPS; t5-large ~6–8 hrs on CUDA
+ 442: 
+ 443: **Checkpoint:**
+ 444: ```bash
+ 445: ls checkpoints/ppo_t5/best_model/
+ 446: cat checkpoints/ppo_t5/test_results.json
+ 447: ```
+ 448: 
+ 449: ---
+ 450: 
+ 451: ## Phase 6: Compare policies
+ 452: 
+ 453: **Requires:** Phase 3 PPO model + Phase 5 T5 model
+ 454: 
+ 455: > **Comparison caveats:** The MLP and T5 policies use different confidence
+ 456: > semantics (belief-sigmoid vs wait-head probability) and different reward
+ 457: > settings (config-driven vs T5-pipeline defaults). Accuracy and buzz-position
+ 458: > are directly comparable; S_q, ECE, Brier, and reward comparisons are
+ 459: > qualitative. See the docstring in `compare_policies.py` for details.
+ 460: >
+ 461: > `compare_policies.py` auto-detects the device for T5 inference (MPS on
+ 462: > Apple Silicon, CUDA if available, otherwise CPU).
+ 463: >
+ 464: > **Selective re-run note:** Phases 11 (EW-trained PPO), 14, 16, and 17 all
+ 465: > overwrite `artifacts/main/ppo_model`. If re-running after ablations, restore:
+ 466: > `cp results/ppo_model_default.zip artifacts/main/ppo_model.zip`
+ 467: 
+ 468: ```bash
+ 469: python scripts/compare_policies.py \
+ 470:     --mlp-checkpoint artifacts/main/ppo_model \
+ 471:     --t5-checkpoint checkpoints/ppo_t5/best_model \
+ 472:     --mc-path artifacts/main/mc_dataset.json \
+ 473:     --output results/t5_comparison.json
+ 474: ```
+ 475: 
+ 476: **Expected output:** Side-by-side metrics table + `results/t5_comparison.json`
+ 477: 
+ 478: **Checkpoint:**
+ 479: ```bash
+ 480: python -c "
+ 481: import json
+ 482: c = json.load(open('results/t5_comparison.json'))
+ 483: for policy in ['mlp_policy', 't5_policy']:
+ 484:     if policy in c:
+ 485:         p = c[policy]
+ 486:         print(f'{policy}: acc={p[\"accuracy\"]:.3f}, S_q={p[\"mean_sq\"]:.3f}, ECE={p[\"ece\"]:.3f}')
+ 487: if 'difference' in c:
+ 488:     d = c['difference']
+ 489:     print(f'Δ accuracy: {d[\"accuracy\"]:+.3f}, Δ S_q: {d[\"mean_sq\"]:+.3f}')
+ 490: "
+ 491: ```
+ 492: 
+ 493: ---
+ 494: 
+ 495: ## Phase 7: Multi-seed validation (optional)
+ 496: 
+ 497: Run PPO training with 3 seeds to assess variance:
+ 498: 
+ 499: ```bash
+ 500: for SEED in 1 2 3; do
+ 501:     echo "=== Seed $SEED ==="
+ 502:     python scripts/train_ppo.py \
+ 503:         --config configs/default.yaml \
+ 504:         --mc-path artifacts/main/mc_dataset.json \
+ 505:         --seed $SEED \
+ 506:         --deterministic-eval \
+ 507:         likelihood.model=tfidf
+ 508:     cp artifacts/main/ppo_summary.json "results/ppo_seed${SEED}.json"
+ 509:     cp artifacts/main/ppo_model.zip "results/ppo_model_seed${SEED}.zip"
+ 510: done
+ 511: 
+ 512: python -c "
+ 513: import json
+ 514: for seed in [1, 2, 3]:
+ 515:     s = json.load(open(f'results/ppo_seed{seed}.json'))
+ 516:     print(f'Seed {seed}: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}, reward={s[\"mean_reward_like\"]:.3f}')
+ 517: "
+ 518: ```
+ 519: 
+ 520: ---
+ 521: 
+ 522: ## Phase 8: Reward sweep (optional)
+ 523: 
+ 524: Grid search over wait_penalty and early_buzz_penalty. Note: this script
+ 525: is hardwired to use `configs/smoke.yaml` and `artifacts/smoke/` — it does
+ 526: not accept `--config` or `--mc-path`.
+ 527: 
+ 528: ```bash
+ 529: python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000
+ 530: ```
+ 531: 
+ 532: ---
+ 533: 
+ 534: ## Full pipeline single-script execution
+ 535: 
+ 536: Run the core pipeline sequentially (Phases 1–6) with TF-IDF beliefs and
+ 537: t5-base for the T5 policy. Includes archive steps so extension phases
+ 538: can reference Phase 2/3 defaults from `results/`.
+ 539: 
+ 540: ```bash
+ 541: #!/usr/bin/env bash
+ 542: set -euo pipefail
+ 543: mkdir -p results
+ 544: 
+ 545: echo "=== Phase 1: Build MC dataset ==="
+ 546: python scripts/build_mc_dataset.py --config configs/default.yaml --output-dir artifacts/main
+ 547: 
+ 548: echo "=== Phase 2: Run baselines ==="
+ 549: python scripts/run_baselines.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json likelihood.model=tfidf
+ 550: cp artifacts/main/baseline_summary.json results/baselines_tfidf.json
+ 551: 
+ 552: echo "=== Phase 3: Train PPO ==="
+ 553: python scripts/train_ppo.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json --seed 13 --deterministic-eval likelihood.model=tfidf
+ 554: cp artifacts/main/ppo_summary.json results/ppo_default.json
+ 555: cp artifacts/main/ppo_model.zip results/ppo_model_default.zip
+ 556: 
+ 557: echo "=== Phase 4: Evaluate all ==="
+ 558: python scripts/evaluate_all.py --config configs/default.yaml --mc-path artifacts/main/mc_dataset.json likelihood.model=tfidf
+ 559: cp artifacts/main/evaluation_report.json results/eval_default.json
+ 560: 
+ 561: echo "=== Phase 5: Train T5 policy (t5-base) ==="
+ 562: python scripts/train_t5_policy.py --config configs/t5_policy.yaml model.model_name=t5-base
+ 563: 
+ 564: echo "=== Phase 6: Compare policies ==="
+ 565: python scripts/compare_policies.py \
+ 566:     --mlp-checkpoint artifacts/main/ppo_model \
+ 567:     --t5-checkpoint checkpoints/ppo_t5/best_model \
+ 568:     --mc-path artifacts/main/mc_dataset.json \
+ 569:     --output results/t5_comparison.json
+ 570: 
+ 571: echo "=== Pipeline complete ==="
+ 572: ```
+ 573: 
+ 574: ---
+ 575: 
+ 576: ## Expected artifact tree after full run
+ 577: 
+ 578: **`artifacts/main/` is a working directory** — files are overwritten by later
+ 579: phases (e.g. K-sensitivity clobbers `baseline_summary.json`, PPO ablations
+ 580: clobber `ppo_summary.json`). The **stable outputs** are in `results/*.json`,
+ 581: which are copied after each phase completes.
+ 582: 
+ 583: The wrapper (`run_full_pipeline.sh`) writes all outputs to top-level
+ 584: `results/*.json`. The manual extension sections write to subdirectories
+ 585: (`results/k_sensitivity/`, `results/reward_modes/`, `results/belief_modes/`,
+ 586: `results/policy_modes/`). Both are valid — the tree below shows the wrapper
+ 587: layout; see manual phase sections for subdirectory paths.
+ 588: 
+ 589: ```
+ 590: results/                         # Stable per-phase outputs (wrapper layout)
+ 591: ├── baselines_tfidf.json         # Phase 2 baseline summary
+ 592: ├── ppo_default.json             # Phase 3 PPO summary
+ 593: ├── ppo_model_default.zip        # Phase 3 PPO model
+ 594: ├── eval_default.json            # Phase 4 evaluation report
+ 595: ├── t5_comparison.json           # Phase 6 policy comparison
+ 596: ├── eval_ew_logistic.json        # Phase 11 Expected Wins eval
+ 597: ├── baselines_seqbayes.json      # Phase 15 belief mode
+ 598: ├── ppo_simple.json              # Phase 14 reward ablation
+ 599: ├── ppo_human_grounded.json      # Phase 14 reward ablation
+ 600: ├── ppo_stop_only.json           # Phase 16 stop-only PPO
+ 601: ├── ppo_no_buzz.json             # Phase 17 no-buzz horizon
+ 602: ├── baselines_k{2,3,5,6}.json   # Phase 13 K-sensitivity (k4 is default)
+ 603: ├── baselines_tfidf_profile.json # Phase 9 (sequential mode only)
+ 604: ├── baselines_category_random.json # Phase 9 (sequential mode only)
+ 605: │
+ 606: │  # Manual extension subdirectories (not created by wrapper):
+ 607: ├── k_sensitivity/               # Phase 13 manual
+ 608: ├── reward_modes/                # Phase 14 manual
+ 609: ├── belief_modes/                # Phase 15 manual
+ 610: └── policy_modes/                # Phase 16 manual
+ 611: 
+ 612: artifacts/main/                  # Working directory (overwritten by later phases)
+ 613: ├── mc_dataset.json              # Stable — built in Phase 1, never overwritten
+ 614: ├── train_dataset.json
+ 615: ├── val_dataset.json
+ 616: ├── test_dataset.json
+ 617: ├── answer_profiles.json
+ 618: └── (baseline/ppo/eval files)    # Overwritten by later phases
+ 619: 
+ 620: checkpoints/
+ 621: ├── supervised/best_model/       # T5 supervised checkpoint
+ 622: └── ppo_t5/best_model/           # T5 PPO checkpoint
+ 623: ```
+ 624: 
+ 625: ---
+ 626: 
+ 627: ## Extension Experiments
+ 628: 
+ 629: These phases exercise the three opt-in extensions. Each is independent
+ 630: and can be run after the core pipeline (Phases 1–6) completes.
+ 631: 
+ 632: ### Phase 9: Distractor strategy comparison
+ 633: 
+ 634: Build three MC datasets with different distractor selection strategies
+ 635: and compare baseline performance across them.
+ 636: 
+ 637: ```bash
+ 638: mkdir -p artifacts/distractor_comparison
+ 639: 
+ 640: # Strategy A: SBERT semantic ranking (default — already built in Phase 1)
+ 641: cp artifacts/main/mc_dataset.json artifacts/distractor_comparison/mc_sbert.json
+ 642: 
+ 643: # Strategy B: TF-IDF profile ranking
+ 644: python scripts/build_mc_dataset.py \
+ 645:     --config configs/default.yaml \
+ 646:     --output-dir artifacts/distractor_comparison/tfidf \
+ 647:     data.distractor_strategy=tfidf_profile
+ 648: cp artifacts/distractor_comparison/tfidf/mc_dataset.json artifacts/distractor_comparison/mc_tfidf.json
+ 649: 
+ 650: # Strategy C: Category-random (no semantic ranking)
+ 651: python scripts/build_mc_dataset.py \
+ 652:     --config configs/default.yaml \
+ 653:     --output-dir artifacts/distractor_comparison/catrandom \
+ 654:     data.distractor_strategy=category_random
+ 655: cp artifacts/distractor_comparison/catrandom/mc_dataset.json artifacts/distractor_comparison/mc_catrandom.json
+ 656: 
+ 657: # Run baselines on each (TF-IDF likelihood for speed)
+ 658: for STRATEGY in sbert tfidf catrandom; do
+ 659:     echo "=== Baselines on $STRATEGY distractors ==="
+ 660:     python scripts/run_baselines.py \
+ 661:         --config configs/default.yaml \
+ 662:         --mc-path "artifacts/distractor_comparison/mc_${STRATEGY}.json" \
+ 663:         likelihood.model=tfidf
+ 664:     cp artifacts/main/baseline_summary.json "results/baselines_distractor_${STRATEGY}.json"
+ 665: done
+ 666: ```
+ 667: 
+ 668: **Checkpoint:**
+ 669: ```bash
+ 670: for STRATEGY in sbert tfidf catrandom; do
+ 671:     python -c "
+ 672: import json
+ 673: s = json.load(open('results/baselines_distractor_${STRATEGY}.json'))
+ 674: best = max(s.get('softmax_profile', {}).items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+ 675: print(f'${STRATEGY}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", 0):.3f}')
+ 676: "
+ 677: done
+ 678: ```
+ 679: 
+ 680: ---
+ 681: 
+ 682: ### Phase 10: Variable-K experiment
+ 683: 
+ 684: Build a mixed-K dataset and train PPO with action masking to evaluate
+ 685: how varying the number of answer options affects buzzer performance.
+ 686: 
+ 687: ```bash
+ 688: mkdir -p artifacts/variable_k
+ 689: 
+ 690: # Build mixed-K dataset (K sampled uniformly from 2 to 6 per question)
+ 691: python scripts/build_mc_dataset.py \
+ 692:     --config configs/default.yaml \
+ 693:     --output-dir artifacts/variable_k \
+ 694:     data.variable_K=true data.min_K=2 data.max_K=6 data.K=6 \
+ 695:     data.distractor_strategy=category_random
+ 696: 
+ 697: # Verify mixed K
+ 698: python -c "
+ 699: import json
+ 700: qs = json.load(open('artifacts/variable_k/mc_dataset.json'))
+ 701: from collections import Counter
+ 702: k_counts = Counter(len(q['options']) for q in qs)
+ 703: print(f'{len(qs)} questions, K distribution: {dict(sorted(k_counts.items()))}')
+ 704: "
+ 705: 
+ 706: # Run baselines (agents are K-agnostic)
+ 707: python scripts/run_baselines.py \
+ 708:     --config configs/default.yaml \
+ 709:     --mc-path artifacts/variable_k/mc_dataset.json \
+ 710:     likelihood.model=tfidf
+ 711: cp artifacts/main/baseline_summary.json results/baselines_variable_k.json
+ 712: ```
+ 713: 
+ 714: **Note:** Variable-K PPO with MaskablePPO is now wired through config:
+ 715: set `ppo.use_maskable_ppo: true` in YAML (requires `pip install -e '.[maskable]'`).
+ 716: `train_ppo.py` reads the flag and passes it to `PPOBuzzer`, and
+ 717: `PPOBuzzer.load()` supports loading MaskablePPO checkpoints.
+ 718: Variable-K baselines work without MaskablePPO.
+ 719: 
+ 720: ---
+ 721: 
+ 722: ### Phase 11: Expected Wins evaluation
+ 723: 
+ 724: Evaluate the SoftmaxProfile baseline (from `evaluate_all.py`) using the
+ 725: Expected Wins metric with a logistic opponent model. Note: this evaluates
+ 726: the baseline agents, not the PPO model — to train PPO with Expected Wins
+ 727: reward, see the separate command below.
+ 728: 
+ 729: > **Selective re-run note:** Like Phase 4, this reads
+ 730: > `artifacts/main/baseline_summary.json`. If later phases have overwritten it,
+ 731: > restore the TF-IDF archive (this command uses `likelihood.model=tfidf`):
+ 732: > `cp results/baselines_tfidf.json artifacts/main/baseline_summary.json`
+ 733: 
+ 734: ```bash
+ 735: # Evaluate with Expected Wins reward mode and logistic opponent
+ 736: python scripts/evaluate_all.py \
+ 737:     --config configs/default.yaml \
+ 738:     --mc-path artifacts/main/mc_dataset.json \
+ 739:     likelihood.model=tfidf \
+ 740:     environment.reward_mode=expected_wins \
+ 741:     environment.opponent_buzz_model.type=logistic \
+ 742:     environment.opponent_buzz_model.midpoint=0.6 \
+ 743:     environment.opponent_buzz_model.steepness=6.0
+ 744: cp artifacts/main/evaluation_report.json results/eval_expected_wins_logistic.json
+ 745: 
+ 746: # Also try empirical opponent (uses human_buzz_positions from QANTA data)
+ 747: python scripts/evaluate_all.py \
+ 748:     --config configs/default.yaml \
+ 749:     --mc-path artifacts/main/mc_dataset.json \
+ 750:     likelihood.model=tfidf \
+ 751:     environment.reward_mode=expected_wins \
+ 752:     environment.opponent_buzz_model.type=empirical
+ 753: cp artifacts/main/evaluation_report.json results/eval_expected_wins_empirical.json
+ 754: ```
+ 755: 
+ 756: **Checkpoint:**
+ 757: ```bash
+ 758: for MODEL in logistic empirical; do
+ 759:     python -c "
+ 760: import json
+ 761: r = json.load(open('results/eval_expected_wins_${MODEL}.json'))
+ 762: ew = r.get('expected_wins', {})
+ 763: fe = r['full_eval']
+ 764: print(f'EW (${MODEL}): mean_ew={ew.get(\"mean_ew\", \"N/A\")}, S_q={fe[\"mean_sq\"]:.3f}, acc={fe[\"buzz_accuracy\"]:.3f}')
+ 765: "
+ 766: done
+ 767: ```
+ 768: 
+ 769: **Train PPO with Expected Wins reward** (trains a new model optimizing for EW):
+ 770: ```bash
+ 771: python scripts/train_ppo.py \
+ 772:     --config configs/default.yaml \
+ 773:     --mc-path artifacts/main/mc_dataset.json \
+ 774:     --seed 13 \
+ 775:     --deterministic-eval \
+ 776:     likelihood.model=tfidf \
+ 777:     environment.reward_mode=expected_wins \
+ 778:     environment.opponent_buzz_model.type=logistic
+ 779: cp artifacts/main/ppo_summary.json results/ppo_expected_wins.json
+ 780: cp artifacts/main/ppo_model.zip results/ppo_model_expected_wins.zip
+ 781: ```
+ 782: 
+ 783: ---
+ 784: 
+ 785: ### Phase 12: DSPy offline compile (experimental — not wired end-to-end)
+ 786: 
+ 787: Compile a DSPy-optimized scorer using the training split.
+ 788: Requires the `dspy` extra and an LM API key.
+ 789: 
+ 790: > **Limitation:** `optimize_dspy.py` compiles and reports metrics, but does
+ 791: > not persist the compiled program in a way that `build_likelihood_from_config()`
+ 792: > can load it. Setting `likelihood.model=dspy` constructs `DSPyLikelihood`
+ 793: > with a placeholder uniform scorer, not the compiled program. This phase
+ 794: > is useful for validating the DSPy pipeline contract, but the evaluated
+ 795: > baselines below will use uniform scores — not the compiled model's.
+ 796: >
+ 797: > **Data path caveat:** `optimize_dspy.py` prefers
+ 798: > `artifacts/smoke/train_dataset.json` over `artifacts/main/train_dataset.json`.
+ 799: > If you have run the smoke pipeline, it will silently compile on the 50-question
+ 800: > smoke split. To force the full training split, remove or rename the smoke
+ 801: > artifact first: `rm artifacts/smoke/train_dataset.json`
+ 802: 
+ 803: ```bash
+ 804: pip install -e '.[dspy]'
+ 805: export OPENAI_API_KEY=...  # or configure another LM backend
+ 806: 
+ 807: # Compile scorer against training split (reports metrics but does not persist)
+ 808: python scripts/optimize_dspy.py \
+ 809:     --config configs/default.yaml \
+ 810:     --max-examples 100
+ 811: 
+ 812: # Evaluate with DSPy scorer (NOTE: uses placeholder uniform scorer, not compiled)
+ 813: python scripts/run_baselines.py \
+ 814:     --config configs/default.yaml \
+ 815:     --mc-path artifacts/main/mc_dataset.json \
+ 816:     likelihood.model=dspy
+ 817: cp artifacts/main/baseline_summary.json results/baselines_dspy.json
+ 818: ```
+ 819: 
+ 820: ---
+ 821: 
+ 822: ### Phase 13: K-sensitivity analysis (fixed K = 2, 3, 4, 5, 6)
+ 823: 
+ 824: Build 5 separate datasets with different fixed K values and compare baseline
+ 825: performance to measure how answer-set size affects difficulty.
+ 826: 
+ 827: ```bash
+ 828: mkdir -p results/k_sensitivity
+ 829: 
+ 830: for K in 2 3 4 5 6; do
+ 831:     echo "=== K=$K ==="
+ 832:     python scripts/build_mc_dataset.py \
+ 833:         --config configs/default.yaml \
+ 834:         --output-dir "artifacts/k${K}" \
+ 835:         data.K=$K data.distractor_strategy=category_random
+ 836: 
+ 837:     python scripts/run_baselines.py \
+ 838:         --config configs/default.yaml \
+ 839:         --mc-path "artifacts/k${K}/mc_dataset.json" \
+ 840:         likelihood.model=tfidf
+ 841: 
+ 842:     cp artifacts/main/baseline_summary.json "results/k_sensitivity/baselines_k${K}.json"
+ 843: done
+ 844: 
+ 845: # Summarize
+ 846: python -c "
+ 847: import json
+ 848: for k in [2, 3, 4, 5, 6]:
+ 849:     s = json.load(open(f'results/k_sensitivity/baselines_k{k}.json'))
+ 850:     sp = s.get('softmax_profile', {})
+ 851:     best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+ 852:     n = json.load(open(f'artifacts/k{k}/mc_dataset.json'))
+ 853:     print(f'K={k}: {len(n)} questions, best S_q={best[1].get(\"mean_sq\", 0):.3f}, acc={best[1].get(\"buzz_accuracy\", 0):.3f}')
+ 854: "
+ 855: ```
+ 856: 
+ 857: ---
+ 858: 
+ 859: ### Phase 14: Reward mode comparison
+ 860: 
+ 861: Train PPO under each reward mode and compare final metrics.
+ 862: 
+ 863: ```bash
+ 864: mkdir -p results/reward_modes
+ 865: 
+ 866: # time_penalty (default — already done in Phase 3, archived to results/ppo_default.json)
+ 867: cp results/ppo_default.json results/reward_modes/ppo_time_penalty.json
+ 868: 
+ 869: # simple (+1/-1, no wait penalty)
+ 870: python scripts/train_ppo.py \
+ 871:     --config configs/default.yaml \
+ 872:     --mc-path artifacts/main/mc_dataset.json \
+ 873:     --seed 13 --deterministic-eval \
+ 874:     likelihood.model=tfidf environment.reward_mode=simple
+ 875: cp artifacts/main/ppo_summary.json results/reward_modes/ppo_simple.json
+ 876: 
+ 877: # human_grounded (0 reward if agent buzzes after sampled human position)
+ 878: python scripts/train_ppo.py \
+ 879:     --config configs/default.yaml \
+ 880:     --mc-path artifacts/main/mc_dataset.json \
+ 881:     --seed 13 --deterministic-eval \
+ 882:     likelihood.model=tfidf environment.reward_mode=human_grounded
+ 883: cp artifacts/main/ppo_summary.json results/reward_modes/ppo_human_grounded.json
+ 884: 
+ 885: # Summarize
+ 886: python -c "
+ 887: import json
+ 888: for mode in ['time_penalty', 'simple', 'human_grounded']:
+ 889:     s = json.load(open(f'results/reward_modes/ppo_{mode}.json'))
+ 890:     print(f'{mode}: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}, reward={s[\"mean_reward_like\"]:.3f}')
+ 891: "
+ 892: ```
+ 893: 
+ 894: ---
+ 895: 
+ 896: ### Phase 15: Belief mode comparison
+ 897: 
+ 898: Compare from-scratch vs sequential-Bayes belief computation for baselines.
+ 899: 
+ 900: ```bash
+ 901: mkdir -p results/belief_modes
+ 902: 
+ 903: # from_scratch (default — already done in Phase 2, archived to results/baselines_tfidf.json)
+ 904: cp results/baselines_tfidf.json results/belief_modes/baselines_from_scratch.json
+ 905: 
+ 906: # sequential_bayes (Bayesian update: posterior = prior * likelihood)
+ 907: python scripts/run_baselines.py \
+ 908:     --config configs/default.yaml \
+ 909:     --mc-path artifacts/main/mc_dataset.json \
+ 910:     environment.belief_mode=sequential_bayes \
+ 911:     likelihood.model=tfidf
+ 912: cp artifacts/main/baseline_summary.json results/belief_modes/baselines_sequential_bayes.json
+ 913: 
+ 914: python -c "
+ 915: import json
+ 916: for mode in ['from_scratch', 'sequential_bayes']:
+ 917:     s = json.load(open(f'results/belief_modes/baselines_{mode}.json'))
+ 918:     sp = s.get('softmax_profile', {})
+ 919:     best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+ 920:     print(f'{mode}: best S_q={best[1].get(\"mean_sq\", 0):.3f}, acc={best[1].get(\"buzz_accuracy\", 0):.3f}')
+ 921: "
+ 922: ```
+ 923: 
+ 924: ---
+ 925: 
+ 926: ### Phase 16: Stop-only PPO (factored action space)
+ 927: 
+ 928: Train PPO with the Discrete(2) stop-only wrapper where the agent only
+ 929: decides WAIT/BUZZ and the answer is selected by argmax(belief).
+ 930: 
+ 931: ```bash
+ 932: mkdir -p results/policy_modes
+ 933: 
+ 934: # flat_kplus1 (default — already done in Phase 3, archived to results/ppo_default.json)
+ 935: cp results/ppo_default.json results/policy_modes/ppo_flat_kplus1.json
+ 936: 
+ 937: # stop_only (Discrete(2), answer = argmax belief)
+ 938: python scripts/train_ppo.py \
+ 939:     --config configs/default.yaml \
+ 940:     --mc-path artifacts/main/mc_dataset.json \
+ 941:     --seed 13 --deterministic-eval \
+ 942:     --policy-mode stop_only likelihood.model=tfidf
+ 943: cp artifacts/main/ppo_summary.json results/policy_modes/ppo_stop_only.json
+ 944: 
+ 945: python -c "
+ 946: import json
+ 947: for mode in ['flat_kplus1', 'stop_only']:
+ 948:     s = json.load(open(f'results/policy_modes/ppo_{mode}.json'))
+ 949:     print(f'{mode}: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}')
+ 950: "
+ 951: ```
+ 952: 
+ 953: ---
+ 954: 
+ 955: ### Phase 17: No-buzz horizon mode
+ 956: 
+ 957: Evaluate with `end_mode=no_buzz` where the agent receives `no_buzz_reward`
+ 958: instead of being forced to answer at the end of the question.
+ 959: 
+ 960: ```bash
+ 961: python scripts/train_ppo.py \
+ 962:     --config configs/default.yaml \
+ 963:     --mc-path artifacts/main/mc_dataset.json \
+ 964:     --seed 13 --deterministic-eval \
+ 965:     likelihood.model=tfidf environment.end_mode=no_buzz environment.no_buzz_reward=-0.25
+ 966: cp artifacts/main/ppo_summary.json results/ppo_no_buzz.json
+ 967: 
+ 968: python -c "
+ 969: import json
+ 970: s = json.load(open('results/ppo_no_buzz.json'))
+ 971: print(f'no_buzz: acc={s[\"buzz_accuracy\"]:.3f}, S_q={s[\"mean_sq\"]:.3f}, reward={s[\"mean_reward_like\"]:.3f}')
+ 972: "
+ 973: ```
+ 974: 
+ 975: ---
+ 976: 
+ 977: ### Phase 18: OpenAI embedding pipeline (requires API key)
+ 978: 
+ 979: Run the full pipeline with OpenAI embeddings for both likelihood scoring
+ 980: and distractor generation.
+ 981: 
+ 982: ```bash
+ 983: pip install -e '.[openai]'
+ 984: export OPENAI_API_KEY=...
+ 985: 
+ 986: # Build dataset with OpenAI-profile distractors
+ 987: python scripts/build_mc_dataset.py \
+ 988:     --config configs/default.yaml \
+ 989:     --output-dir artifacts/openai \
+ 990:     data.distractor_strategy=openai_profile
+ 991: 
+ 992: # Run baselines with OpenAI likelihood
+ 993: python scripts/run_baselines.py \
+ 994:     --config configs/default.yaml \
+ 995:     --mc-path artifacts/openai/mc_dataset.json \
+ 996:     likelihood.model=openai
+ 997: cp artifacts/main/baseline_summary.json results/baselines_openai.json
+ 998: ```
+ 999: 
+1000: ---
+1001: 
+1002: ### Phase 19: DSPy MIPROv2 optimizer (experimental)
+1003: 
+1004: Compare BootstrapFewShot vs MIPROv2 optimizers for DSPy scorer compilation.
+1005: 
+1006: ```bash
+1007: pip install -e '.[dspy]'
+1008: export OPENAI_API_KEY=...
+1009: 
+1010: # BootstrapFewShot (default — already done in Phase 12 if run)
+1011: python scripts/optimize_dspy.py --config configs/default.yaml --optimizer BootstrapFewShot
+1012: 
+1013: # MIPROv2
+1014: python scripts/optimize_dspy.py --config configs/default.yaml --optimizer MIPROv2
+1015: ```
+1016: 
+1017: ---
+1018: 
+1019: ## Reproducibility notes
+1020: 
+1021: - All random seeds are explicit: `data.shuffle_seed=42`, `environment.seed=13`, `ppo.seed=13`
+1022: - Dataset splits use `hashlib.md5` (immune to PYTHONHASHSEED)
+1023: - Same seed + same data + same code = identical results
+1024: - To reproduce exactly: pin the git commit hash and Python version
+1025: - Current: commit `40cb9a3`, Python 3.13.5
+1026: 
+1027: ## Known scale risks
+1028: 
+1029: - **T5-large likelihood** requires ~3 GB VRAM and is slow on CPU. Use `likelihood.model=tfidf` or `likelihood.model=t5-base` for faster iteration.
+1030: - **100k PPO timesteps** takes 30–90 minutes on CPU. Reduce with `--timesteps 10000` for quick validation.
+1031: - **SBERT distractor ranking** downloads `all-MiniLM-L6-v2` (~90 MB) on first run. Use `data.distractor_strategy=category_random` to skip.
+1032: - **Embedding cache** grows to ~42 MB for ~1000 questions with TF-IDF. Monitor via `model.cache_memory_bytes`.
+1033: 
+1034: ---
+1035: 
+1036: ## Wall-time summary (Apple M3 Max, parallel vs sequential)
+1037: 
+1038: | Mode | t5-small | t5-base | t5-large (CUDA only) |
+1039: |------|----------|---------|---------------------|
+1040: | `run_full_pipeline.sh` (parallel) | ~2 hrs | ~3–4 hrs | ~6–8 hrs |
+1041: | `run_full_pipeline.sh --sequential` | ~5 hrs | ~7–10 hrs | ~12–18 hrs |
+1042: 
+1043: t5-large will likely OOM on Apple Silicon Macs (64 GB) at full scale. Use t5-base on MPS.
+````
+
 ## File: .planning/milestones/v1.0-ROADMAP.md
 ````markdown
   1: # Project Roadmap: Quiz Bowl RL Buzzer (Unified)
@@ -21040,6 +21040,184 @@ walkthrough.md
 85: 
 86: ---
 87: *Last updated: 2026-03-08 after smoke-contract and agent-stability remediation*
+````
+
+## File: .planning/ROADMAP.md
+````markdown
+  1: # Project Roadmap: Quiz Bowl RL Buzzer (Unified)
+  2: 
+  3: **Project:** Quiz Bowl RL Buzzer (Unified System)
+  4: **Mode:** yolo
+  5: **Depth:** comprehensive
+  6: **Created:** 2026-02-25
+  7: 
+  8: ## Phases
+  9: 
+ 10: - [x] **Phase 1: Data Pipeline Foundation** - Build MC dataset construction with anti-artifact guards and YAML configuration
+ 11: - [x] **Phase 2: Environment and Core Likelihood Models** - Implement Gymnasium environment with belief features and TF-IDF/SBERT likelihood models
+ 12: - [x] **Phase 3: Baseline Agents and T5 Likelihood** - Add baseline agents, T5 likelihood model, and episode trace generation
+ 13: - [x] **Phase 4: PPO Training Pipeline** - Train MLP policy with SB3 PPO and pipeline scripts
+ 14: - [ ] **Phase 5: Evaluation Framework** - Complete S_q metric, control experiments, and visualization
+ 15: - [ ] **Phase 6: T5 Policy Integration** - Optional T5 policy model with supervised warm-start
+ 16: 
+ 17: ## Phase Details
+ 18: 
+ 19: ### Phase 1: Data Pipeline Foundation
+ 20: **Goal**: Users can load quiz bowl questions and construct valid multiple-choice questions with anti-artifact protection
+ 21: **Depends on**: Nothing (first phase)
+ 22: **Requirements**: DATA-01, DATA-02, DATA-03, DATA-04, DATA-05, DATA-06, CFG-01, CFG-04
+ 23: **Success Criteria** (what must be TRUE):
+ 24:   1. User can load quiz bowl questions from local CSV file with clues separated by `|||`
+ 25:   2. System constructs K=4 multiple-choice questions with distractor generation that passes anti-artifact guards
+ 26:   3. Answer profiles are built with leave-one-out exclusion per question
+ 27:   4. Dataset splits are stratified by category (train 70% / val 15% / test 15%)
+ 28:   5. YAML configuration system loads and can be overridden via CLI
+ 29: **Plans**: 5 plans
+ 30: 
+ 31: Plans:
+ 32: - [x] 01-01-PLAN.md — Create core data structures and CSV loading ✓
+ 33: - [x] 01-02-PLAN.md — Set up YAML configuration system ✓
+ 34: - [x] 01-03-PLAN.md — Port MCBuilder and answer profiles with guards ✓
+ 35: - [x] 01-04-PLAN.md — Implement stratified splits and HuggingFace loader ✓
+ 36: - [x] 01-05-PLAN.md — Create main dataset construction script ✓
+ 37: 
+ 38: ### Phase 2: Environment and Core Likelihood Models
+ 39: **Goal**: Users can run quiz bowl episodes in a Gymnasium environment with belief-based observations
+ 40: **Depends on**: Phase 1
+ 41: **Requirements**: ENV-01, ENV-02, ENV-03, ENV-04, ENV-05, LIK-01, LIK-02, LIK-03, LIK-06, CFG-02
+ 42: **Success Criteria** (what must be TRUE):
+ 43:   1. TossupMCEnv implements full Gymnasium interface and can be instantiated via factory
+ 44:   2. Action space properly implements Discrete(K+1) with WAIT and buzz actions
+ 45:   3. Environment computes all belief features (belief[K], top_p, margin, entropy, stability, progress)
+ 46:   4. User can configure different reward modes (time_penalty, simple, human_grounded)
+ 47:   5. TF-IDF and SBERT likelihood models produce valid belief distributions
+ 48: **Plans**: 4 plans
+ 49: 
+ 50: Plans:
+ 51: - [x] 02-01-PLAN.md — Belief features and LikelihoodModel ABC ✓
+ 52: - [x] 02-02-PLAN.md — TF-IDF and SBERT likelihood models with factory ✓
+ 53: - [x] 02-03-PLAN.md — TossupMCEnv Gymnasium environment ✓
+ 54: - [x] 02-04-PLAN.md — Factory functions and pytest test scaffolding ✓
+ 55: 
+ 56: ### Phase 3: Baseline Agents and T5 Likelihood
+ 57: **Goal**: Users can run baseline agents and leverage T5 for semantic similarity scoring
+ 58: **Depends on**: Phase 2
+ 59: **Requirements**: AGT-02, AGT-03, AGT-04, AGT-05, AGT-06, LIK-04, LIK-05
+ 60: **Success Criteria** (what must be TRUE):
+ 61:   1. All four baseline agents (Threshold, AlwaysBuzzFinal, SoftmaxProfile, SequentialBayes) produce valid episodes
+ 62:   2. T5 likelihood model computes semantic similarity scores for belief updates
+ 63:   3. Embedding cache reduces redundant T5 computations
+ 64:   4. All agents generate episode traces with c_trace (buzz probability) and g_trace (correctness)
+ 65: **Plans**: 3 plans
+ 66: 
+ 67: Plans:
+ 68: - [x] 03-01-PLAN.md — Port baseline agents from qb-rl (ThresholdBuzzer, AlwaysBuzzFinal, SoftmaxProfile, SequentialBayes) ✓
+ 69: - [x] 03-02-PLAN.md — Implement T5Likelihood with semantic similarity scoring ✓
+ 70: - [x] 03-03-PLAN.md — Create agent and T5 test suite ✓
+ 71: 
+ 72: ### Phase 4: PPO Training Pipeline
+ 73: **Goal**: Users can train an MLP policy with SB3 PPO and run smoke tests for validation
+ 74: **Depends on**: Phase 3
+ 75: **Requirements**: AGT-01, AGT-07, CFG-03
+ 76: **Success Criteria** (what must be TRUE):
+ 77:   1. MLP policy trains successfully with SB3 PPO on belief feature observations
+ 78:   2. Smoke test mode runs complete pipeline in under 2 minutes with small dataset
+ 79:   3. Four-stage pipeline scripts (build_mc, run_baselines, train_ppo, evaluate_all) execute without errors
+ 80:   4. Training produces checkpoints that can be loaded for evaluation
+ 81: **Plans**: 3 plans
+ 82: 
+ 83: Plans:
+ 84: - [x] 04-01-PLAN.md — Create _common.py utilities and PPOBuzzer wrapper ✓
+ 85: - [x] 04-02-PLAN.md — Implement run_baselines.py script ✓
+ 86: - [x] 04-03-PLAN.md — Implement train_ppo.py and evaluate_all.py scripts ✓
+ 87: 
+ 88: ### Phase 5: Evaluation Framework
+ 89: **Goal**: Users can evaluate agents with S_q metric, control experiments, and comprehensive visualizations
+ 90: **Depends on**: Phase 4
+ 91: **Requirements**: EVAL-01, EVAL-02, EVAL-03, EVAL-04, EVAL-05, EVAL-06, EVAL-07
+ 92: **Success Criteria** (what must be TRUE):
+ 93:   1. S_q metric correctly computes system score = Σ(b_t × g_t) per episode
+ 94:   2. Calibration metrics (ECE and Brier score) quantify uncertainty quality
+ 95:   3. Control experiments (choices-only, shuffle, alias) verify agent uses clues properly
+ 96:   4. Comparison plots and tables show relative performance of all agents
+ 97:   5. Per-category accuracy breakdown reveals performance patterns
+ 98: **Plans**: 2 plans
+ 99: 
+100: Plans:
+101: - [x] 05-01-PLAN.md — Add per-category accuracy and S_q edge case tests ✓
+102: - [x] 05-02-PLAN.md — Enhance comparison table with baseline sweep and per-category breakdown ✓
+103: 
+104: ### Phase 6: T5 Policy Integration
+105: **Goal**: Users can train and compare T5-based policy with custom heads as alternative to MLP
+106: **Depends on**: Phase 2
+107: **Requirements**: STR-01, STR-02, STR-03
+108: **Success Criteria** (what must be TRUE):
+109:   1. T5PolicyModel with custom policy heads (wait/answer/value) trains successfully
+110:   2. Supervised warm-start on complete questions improves convergence
+111:   3. Comparison experiment shows performance difference between T5-as-likelihood vs T5-as-policy
+112: **Plans**: 3 plans
+113: 
+114: Plans:
+115: - [ ] 06-01-PLAN.md — Port T5PolicyModel and PolicyHead architecture
+116: - [ ] 06-02-PLAN.md — Create TextObservationWrapper and supervised training
+117: - [ ] 06-03-PLAN.md — Implement custom PPO and comparison experiment
+118: 
+119: ## Progress
+120: 
+121: | Phase | Plans Complete | Status | Completed |
+122: |-------|----------------|--------|-----------|
+123: | 1. Data Pipeline Foundation | 5/5 | Complete| ✅ |
+124: | 2. Environment and Core Likelihood Models | 4/4 | Complete| ✅ |
+125: | 3. Baseline Agents and T5 Likelihood | 3/3 | Complete| ✅ |
+126: | 4. PPO Training Pipeline | 3/3 | Complete | ✅ |
+127: | 5. Evaluation Framework | 2/2 | Complete | ✅ |
+128: | 6. T5 Policy Integration | 0/3 | Not started | - |
+129: 
+130: ## Success Metrics
+131: 
+132: - **Phase Success**: Phase is complete when all success criteria are met
+133: - **Project Success**: Working RL system with S_q evaluation and CS234 writeup
+134: - **Quality Indicators**:
+135:   - S_q score improvement over baselines
+136:   - Control experiments pass (choices-only ~25%, no position bias)
+137:   - Calibration error < 0.1
+138:   - Smoke tests complete in < 2 minutes
+139: 
+140: ## Dependencies
+141: 
+142: ### Phase Dependencies
+143: ```
+144: Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
+145:                 ↘                        ↗
+146:                   Phase 6 ---------------
+147: ```
+148: 
+149: ### Key Integration Points
+150: - Phase 2 defines LikelihoodModel interface that Phase 3 implements for T5
+151: - Phase 3 agents must produce traces that Phase 5 uses for S_q computation
+152: - Phase 4 implements PPO training with evaluation metrics (S_q, ECE, Brier) that Phase 5 extends
+153: - Phase 6 is independent path after Phase 2 (alternative to Phase 3-4 pipeline)
+154: 
+155: ## Risks and Mitigations
+156: 
+157: | Risk | Impact | Mitigation |
+158: |------|--------|------------|
+159: | Scope explosion with tight deadline | HIGH | Focus on Phase 1-5 critical path, defer Phase 6 |
+160: | T5 memory requirements | MEDIUM | Support T5-base (220M) as fallback option |
+161: | Belief state collapse in early training | MEDIUM | Pre-compute answer profiles, add margin threshold |
+162: | Observation space incompatibility | HIGH | Clear interfaces (BeliefObservation vs TextObservation) |
+163: 
+164: ---
+165: *Roadmap created: 2026-02-25*
+166: *Phase 1 planned: 2026-02-25*
+167: *Phase 2 replanned: 2026-02-25*
+168: *Phase 3 planned: 2026-02-25*
+169: *Phase 4 planned: 2026-02-26*
+170: *Phase 4 completed: 2026-02-26*
+171: *Phase 5 planned: 2026-02-26*
+172: *Phase 5 completed: 2026-02-26*
+173: *Phase 6 planned: 2026-02-26*
+174: *Next: `/gsd:execute-phase 6` (optional stretch goal)*
 ````
 
 ## File: CLAUDE.md
@@ -23493,184 +23671,6 @@ walkthrough.md
 2432: **Test verification**: 176/176 tests passed (132 belief-feature + 44 T5-specific)
 2433: 
 2434: Training outputs contain nondeterministic elements (timings, SB3 verbose logs, gradient values) so this walkthrough is a demonstration document, not an exact-output reproducible proof.
-````
-
-## File: .planning/ROADMAP.md
-````markdown
-  1: # Project Roadmap: Quiz Bowl RL Buzzer (Unified)
-  2: 
-  3: **Project:** Quiz Bowl RL Buzzer (Unified System)
-  4: **Mode:** yolo
-  5: **Depth:** comprehensive
-  6: **Created:** 2026-02-25
-  7: 
-  8: ## Phases
-  9: 
- 10: - [x] **Phase 1: Data Pipeline Foundation** - Build MC dataset construction with anti-artifact guards and YAML configuration
- 11: - [x] **Phase 2: Environment and Core Likelihood Models** - Implement Gymnasium environment with belief features and TF-IDF/SBERT likelihood models
- 12: - [x] **Phase 3: Baseline Agents and T5 Likelihood** - Add baseline agents, T5 likelihood model, and episode trace generation
- 13: - [x] **Phase 4: PPO Training Pipeline** - Train MLP policy with SB3 PPO and pipeline scripts
- 14: - [ ] **Phase 5: Evaluation Framework** - Complete S_q metric, control experiments, and visualization
- 15: - [ ] **Phase 6: T5 Policy Integration** - Optional T5 policy model with supervised warm-start
- 16: 
- 17: ## Phase Details
- 18: 
- 19: ### Phase 1: Data Pipeline Foundation
- 20: **Goal**: Users can load quiz bowl questions and construct valid multiple-choice questions with anti-artifact protection
- 21: **Depends on**: Nothing (first phase)
- 22: **Requirements**: DATA-01, DATA-02, DATA-03, DATA-04, DATA-05, DATA-06, CFG-01, CFG-04
- 23: **Success Criteria** (what must be TRUE):
- 24:   1. User can load quiz bowl questions from local CSV file with clues separated by `|||`
- 25:   2. System constructs K=4 multiple-choice questions with distractor generation that passes anti-artifact guards
- 26:   3. Answer profiles are built with leave-one-out exclusion per question
- 27:   4. Dataset splits are stratified by category (train 70% / val 15% / test 15%)
- 28:   5. YAML configuration system loads and can be overridden via CLI
- 29: **Plans**: 5 plans
- 30: 
- 31: Plans:
- 32: - [x] 01-01-PLAN.md — Create core data structures and CSV loading ✓
- 33: - [x] 01-02-PLAN.md — Set up YAML configuration system ✓
- 34: - [x] 01-03-PLAN.md — Port MCBuilder and answer profiles with guards ✓
- 35: - [x] 01-04-PLAN.md — Implement stratified splits and HuggingFace loader ✓
- 36: - [x] 01-05-PLAN.md — Create main dataset construction script ✓
- 37: 
- 38: ### Phase 2: Environment and Core Likelihood Models
- 39: **Goal**: Users can run quiz bowl episodes in a Gymnasium environment with belief-based observations
- 40: **Depends on**: Phase 1
- 41: **Requirements**: ENV-01, ENV-02, ENV-03, ENV-04, ENV-05, LIK-01, LIK-02, LIK-03, LIK-06, CFG-02
- 42: **Success Criteria** (what must be TRUE):
- 43:   1. TossupMCEnv implements full Gymnasium interface and can be instantiated via factory
- 44:   2. Action space properly implements Discrete(K+1) with WAIT and buzz actions
- 45:   3. Environment computes all belief features (belief[K], top_p, margin, entropy, stability, progress)
- 46:   4. User can configure different reward modes (time_penalty, simple, human_grounded)
- 47:   5. TF-IDF and SBERT likelihood models produce valid belief distributions
- 48: **Plans**: 4 plans
- 49: 
- 50: Plans:
- 51: - [x] 02-01-PLAN.md — Belief features and LikelihoodModel ABC ✓
- 52: - [x] 02-02-PLAN.md — TF-IDF and SBERT likelihood models with factory ✓
- 53: - [x] 02-03-PLAN.md — TossupMCEnv Gymnasium environment ✓
- 54: - [x] 02-04-PLAN.md — Factory functions and pytest test scaffolding ✓
- 55: 
- 56: ### Phase 3: Baseline Agents and T5 Likelihood
- 57: **Goal**: Users can run baseline agents and leverage T5 for semantic similarity scoring
- 58: **Depends on**: Phase 2
- 59: **Requirements**: AGT-02, AGT-03, AGT-04, AGT-05, AGT-06, LIK-04, LIK-05
- 60: **Success Criteria** (what must be TRUE):
- 61:   1. All four baseline agents (Threshold, AlwaysBuzzFinal, SoftmaxProfile, SequentialBayes) produce valid episodes
- 62:   2. T5 likelihood model computes semantic similarity scores for belief updates
- 63:   3. Embedding cache reduces redundant T5 computations
- 64:   4. All agents generate episode traces with c_trace (buzz probability) and g_trace (correctness)
- 65: **Plans**: 3 plans
- 66: 
- 67: Plans:
- 68: - [x] 03-01-PLAN.md — Port baseline agents from qb-rl (ThresholdBuzzer, AlwaysBuzzFinal, SoftmaxProfile, SequentialBayes) ✓
- 69: - [x] 03-02-PLAN.md — Implement T5Likelihood with semantic similarity scoring ✓
- 70: - [x] 03-03-PLAN.md — Create agent and T5 test suite ✓
- 71: 
- 72: ### Phase 4: PPO Training Pipeline
- 73: **Goal**: Users can train an MLP policy with SB3 PPO and run smoke tests for validation
- 74: **Depends on**: Phase 3
- 75: **Requirements**: AGT-01, AGT-07, CFG-03
- 76: **Success Criteria** (what must be TRUE):
- 77:   1. MLP policy trains successfully with SB3 PPO on belief feature observations
- 78:   2. Smoke test mode runs complete pipeline in under 2 minutes with small dataset
- 79:   3. Four-stage pipeline scripts (build_mc, run_baselines, train_ppo, evaluate_all) execute without errors
- 80:   4. Training produces checkpoints that can be loaded for evaluation
- 81: **Plans**: 3 plans
- 82: 
- 83: Plans:
- 84: - [x] 04-01-PLAN.md — Create _common.py utilities and PPOBuzzer wrapper ✓
- 85: - [x] 04-02-PLAN.md — Implement run_baselines.py script ✓
- 86: - [x] 04-03-PLAN.md — Implement train_ppo.py and evaluate_all.py scripts ✓
- 87: 
- 88: ### Phase 5: Evaluation Framework
- 89: **Goal**: Users can evaluate agents with S_q metric, control experiments, and comprehensive visualizations
- 90: **Depends on**: Phase 4
- 91: **Requirements**: EVAL-01, EVAL-02, EVAL-03, EVAL-04, EVAL-05, EVAL-06, EVAL-07
- 92: **Success Criteria** (what must be TRUE):
- 93:   1. S_q metric correctly computes system score = Σ(b_t × g_t) per episode
- 94:   2. Calibration metrics (ECE and Brier score) quantify uncertainty quality
- 95:   3. Control experiments (choices-only, shuffle, alias) verify agent uses clues properly
- 96:   4. Comparison plots and tables show relative performance of all agents
- 97:   5. Per-category accuracy breakdown reveals performance patterns
- 98: **Plans**: 2 plans
- 99: 
-100: Plans:
-101: - [x] 05-01-PLAN.md — Add per-category accuracy and S_q edge case tests ✓
-102: - [x] 05-02-PLAN.md — Enhance comparison table with baseline sweep and per-category breakdown ✓
-103: 
-104: ### Phase 6: T5 Policy Integration
-105: **Goal**: Users can train and compare T5-based policy with custom heads as alternative to MLP
-106: **Depends on**: Phase 2
-107: **Requirements**: STR-01, STR-02, STR-03
-108: **Success Criteria** (what must be TRUE):
-109:   1. T5PolicyModel with custom policy heads (wait/answer/value) trains successfully
-110:   2. Supervised warm-start on complete questions improves convergence
-111:   3. Comparison experiment shows performance difference between T5-as-likelihood vs T5-as-policy
-112: **Plans**: 3 plans
-113: 
-114: Plans:
-115: - [ ] 06-01-PLAN.md — Port T5PolicyModel and PolicyHead architecture
-116: - [ ] 06-02-PLAN.md — Create TextObservationWrapper and supervised training
-117: - [ ] 06-03-PLAN.md — Implement custom PPO and comparison experiment
-118: 
-119: ## Progress
-120: 
-121: | Phase | Plans Complete | Status | Completed |
-122: |-------|----------------|--------|-----------|
-123: | 1. Data Pipeline Foundation | 5/5 | Complete| ✅ |
-124: | 2. Environment and Core Likelihood Models | 4/4 | Complete| ✅ |
-125: | 3. Baseline Agents and T5 Likelihood | 3/3 | Complete| ✅ |
-126: | 4. PPO Training Pipeline | 3/3 | Complete | ✅ |
-127: | 5. Evaluation Framework | 2/2 | Complete | ✅ |
-128: | 6. T5 Policy Integration | 0/3 | Not started | - |
-129: 
-130: ## Success Metrics
-131: 
-132: - **Phase Success**: Phase is complete when all success criteria are met
-133: - **Project Success**: Working RL system with S_q evaluation and CS234 writeup
-134: - **Quality Indicators**:
-135:   - S_q score improvement over baselines
-136:   - Control experiments pass (choices-only ~25%, no position bias)
-137:   - Calibration error < 0.1
-138:   - Smoke tests complete in < 2 minutes
-139: 
-140: ## Dependencies
-141: 
-142: ### Phase Dependencies
-143: ```
-144: Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
-145:                 ↘                        ↗
-146:                   Phase 6 ---------------
-147: ```
-148: 
-149: ### Key Integration Points
-150: - Phase 2 defines LikelihoodModel interface that Phase 3 implements for T5
-151: - Phase 3 agents must produce traces that Phase 5 uses for S_q computation
-152: - Phase 4 implements PPO training with evaluation metrics (S_q, ECE, Brier) that Phase 5 extends
-153: - Phase 6 is independent path after Phase 2 (alternative to Phase 3-4 pipeline)
-154: 
-155: ## Risks and Mitigations
-156: 
-157: | Risk | Impact | Mitigation |
-158: |------|--------|------------|
-159: | Scope explosion with tight deadline | HIGH | Focus on Phase 1-5 critical path, defer Phase 6 |
-160: | T5 memory requirements | MEDIUM | Support T5-base (220M) as fallback option |
-161: | Belief state collapse in early training | MEDIUM | Pre-compute answer profiles, add margin threshold |
-162: | Observation space incompatibility | HIGH | Clear interfaces (BeliefObservation vs TextObservation) |
-163: 
-164: ---
-165: *Roadmap created: 2026-02-25*
-166: *Phase 1 planned: 2026-02-25*
-167: *Phase 2 replanned: 2026-02-25*
-168: *Phase 3 planned: 2026-02-25*
-169: *Phase 4 planned: 2026-02-26*
-170: *Phase 4 completed: 2026-02-26*
-171: *Phase 5 planned: 2026-02-26*
-172: *Phase 5 completed: 2026-02-26*
-173: *Phase 6 planned: 2026-02-26*
-174: *Next: `/gsd:execute-phase 6` (optional stretch goal)*
 ````
 
 ## File: README.md
