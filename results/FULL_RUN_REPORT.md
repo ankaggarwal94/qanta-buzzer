@@ -312,21 +312,21 @@ Unexpectedly, category-random distractors were easiest for the TF-IDF baseline f
 ```text
 artifacts/main:
 total 2077280
--rw-r--r--@ 1 ankit.aggarwal  staff   361K Mar 15 13:49 answer_profiles.json
--rw-r--r--@ 1 ankit.aggarwal  staff   9.2M Mar 15 16:34 baseline_floor_runs.json
--rw-r--r--@ 1 ankit.aggarwal  staff    44M Mar 15 16:34 baseline_sequential_bayes_runs.json
--rw-r--r--@ 1 ankit.aggarwal  staff    49M Mar 15 16:34 baseline_softmax_profile_runs.json
--rw-r--r--@ 1 ankit.aggarwal  staff   4.8K Mar 15 16:34 baseline_summary.json
--rw-r--r--@ 1 ankit.aggarwal  staff    51M Mar 15 16:34 baseline_threshold_runs.json
--rw-r--r--@ 1 ankit.aggarwal  staff    15K Mar 15 16:04 evaluation_report.json
--rw-r--r--@ 1 ankit.aggarwal  staff   422M Mar 15 13:49 mc_dataset.json
-drwxr-xr-x@ 5 ankit.aggarwal  staff   160B Mar 15 15:50 plots
--rw-r--r--@ 1 ankit.aggarwal  staff   150K Mar 15 16:28 ppo_model.zip
--rw-r--r--@ 1 ankit.aggarwal  staff    11M Mar 15 16:28 ppo_runs.json
--rw-r--r--@ 1 ankit.aggarwal  staff   263B Mar 15 16:28 ppo_summary.json
--rw-r--r--@ 1 ankit.aggarwal  staff    64M Mar 15 13:49 test_dataset.json
--rw-r--r--@ 1 ankit.aggarwal  staff   295M Mar 15 13:49 train_dataset.json
--rw-r--r--@ 1 ankit.aggarwal  staff    63M Mar 15 13:49 val_dataset.json
+answer_profiles.json                  361K
+baseline_floor_runs.json             9.2M
+baseline_sequential_bayes_runs.json   44M
+baseline_softmax_profile_runs.json    49M
+baseline_summary.json                4.8K
+baseline_threshold_runs.json          51M
+evaluation_report.json                15K
+mc_dataset.json                      422M
+plots/                               160B
+ppo_model.zip                        150K
+ppo_runs.json                         11M
+ppo_summary.json                     263B
+test_dataset.json                     64M
+train_dataset.json                   295M
+val_dataset.json                      63M
 
 artifacts/main/plots:
 total 96
