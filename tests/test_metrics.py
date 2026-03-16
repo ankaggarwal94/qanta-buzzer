@@ -9,6 +9,7 @@ import pytest
 from evaluation.metrics import (
     brier_score,
     calibration_at_buzz,
+    calibration_pairs_at_buzz,
     expected_calibration_error,
     expected_wins_score,
     per_category_accuracy,
@@ -390,3 +391,30 @@ def test_expected_wins_does_not_regress_system_score():
     g = [0.0, 0.0, 1.0]
     expected = 0.35
     assert abs(system_score(c, g) - expected) < 1e-9
+
+
+def test_calibration_pairs_skip_no_buzz():
+    """calibration_pairs_at_buzz must skip episodes with buzz_step < 0."""
+    results = [
+        {"buzz_step": -1, "correct": True, "top_p_trace": [0.9, 0.95]},
+        {"buzz_step": 1, "correct": False, "top_p_trace": [0.3, 0.7]},
+        {"buzz_step": 0, "correct": True, "c_trace": [0.8]},
+    ]
+    confs, outs = calibration_pairs_at_buzz(results)
+    assert len(confs) == 2
+    assert len(outs) == 2
+    assert confs[0] == pytest.approx(0.7)
+    assert outs[0] == 0
+    assert confs[1] == pytest.approx(0.8)
+    assert outs[1] == 1
+
+
+def test_calibration_at_buzz_consistent_with_pairs():
+    """calibration_at_buzz must use calibration_pairs_at_buzz internally."""
+    results = [
+        {"buzz_step": 0, "correct": True, "top_p_trace": [0.9]},
+        {"buzz_step": -1, "correct": False, "top_p_trace": [0.1]},
+    ]
+    cal = calibration_at_buzz(results)
+    confs, outs = calibration_pairs_at_buzz(results)
+    assert cal["n_calibration"] == len(confs)

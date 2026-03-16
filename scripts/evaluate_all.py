@@ -313,16 +313,9 @@ def main() -> None:
         out_dir / "plots" / "entropy_vs_clue.png",
     )
 
-    # Calibration curve — use top_p (belief in top answer) as confidence
-    confidences = []
-    outcomes = []
-    for row in full_eval["runs"]:
-        top_p = row.get("top_p_trace", row.get("c_trace", []))
-        if not top_p:
-            continue
-        idx = min(int(row["buzz_step"]), len(top_p) - 1)
-        confidences.append(float(top_p[idx]))
-        outcomes.append(1 if bool(row["correct"]) else 0)
+    # Calibration curve — use canonical helper for consistency
+    from evaluation.metrics import calibration_pairs_at_buzz
+    confidences, outcomes = calibration_pairs_at_buzz(full_eval["runs"])
     plot_calibration_curve(
         confidences, outcomes, out_dir / "plots" / "calibration.png"
     )

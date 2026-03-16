@@ -208,8 +208,21 @@ class PPOBuzzer:
             agent.model = PPO.load(str(path), env=env)
         return agent
 
+    def _current_action_masks(self) -> np.ndarray | None:
+        """Return action masks from the env, or None if not maskable."""
+        if not self._use_maskable:
+            return None
+        env_for_mask = self.env if hasattr(self.env, "action_masks") else self._base_env()
+        if not hasattr(env_for_mask, "action_masks"):
+            return None
+        return np.asarray(env_for_mask.action_masks(), dtype=bool)
+
     def action_probabilities(self, obs: np.ndarray) -> np.ndarray:
         """Extract action probabilities from the policy for a given observation.
+
+        When ``use_maskable_ppo=True``, passes ``action_masks`` to the
+        policy distribution so that probabilities for invalid actions are
+        zeroed out before action selection.
 
         Parameters
         ----------
@@ -225,7 +238,15 @@ class PPOBuzzer:
         obs_tensor = th.as_tensor(
             obs, dtype=th.float32, device=self.model.device
         ).unsqueeze(0)
-        dist = self.model.policy.get_distribution(obs_tensor)
+
+        masks = self._current_action_masks()
+        if masks is not None:
+            dist = self.model.policy.get_distribution(
+                obs_tensor, action_masks=th.as_tensor(masks, dtype=th.bool).unsqueeze(0)
+            )
+        else:
+            dist = self.model.policy.get_distribution(obs_tensor)
+
         probs = dist.distribution.probs[0].detach().cpu().numpy()
         return probs.astype(np.float32)
 

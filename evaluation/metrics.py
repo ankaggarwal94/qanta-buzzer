@@ -347,6 +347,33 @@ def calibration_at_buzz(results: list[Any]) -> dict[str, float]:
     dict[str, float]
         Calibration metrics: ece, brier, n_calibration.
     """
+    confidences, outcomes = calibration_pairs_at_buzz(results)
+    return {
+        "ece": expected_calibration_error(confidences, outcomes),
+        "brier": brier_score(confidences, outcomes),
+        "n_calibration": float(len(confidences)),
+    }
+
+
+def calibration_pairs_at_buzz(
+    results: list[Any],
+) -> tuple[list[float], list[int]]:
+    """Extract (confidence, outcome) pairs at the buzz step.
+
+    Canonical helper for all calibration consumers. Episodes with
+    ``buzz_step < 0`` (no-buzz) are skipped. Uses ``top_p_trace`` when
+    available, falling back to ``c_trace``.
+
+    Parameters
+    ----------
+    results : list[Any]
+        Episode results (dicts or dataclass instances).
+
+    Returns
+    -------
+    tuple[list[float], list[int]]
+        (confidences, outcomes) lists of equal length.
+    """
     rows = [_to_dict(r) for r in results]
     confidences: list[float] = []
     outcomes: list[int] = []
@@ -362,9 +389,4 @@ def calibration_at_buzz(results: list[Any]) -> dict[str, float]:
         idx = min(buzz_step, len(conf_trace) - 1)
         confidences.append(float(conf_trace[idx]))
         outcomes.append(1 if bool(row.get("correct", False)) else 0)
-
-    return {
-        "ece": expected_calibration_error(confidences, outcomes),
-        "brier": brier_score(confidences, outcomes),
-        "n_calibration": float(len(confidences)),
-    }
+    return confidences, outcomes

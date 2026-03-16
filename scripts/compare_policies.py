@@ -58,6 +58,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import numpy as np
 
 from evaluation.metrics import (
+    calibration_pairs_at_buzz,
     expected_calibration_error,
     brier_score,
     summarize_buzz_metrics,
@@ -114,33 +115,15 @@ def evaluate_mlp_policy(
     use_maskable = bool(config.get("ppo", {}).get("use_maskable_ppo", False))
     agent = PPOBuzzer.load(checkpoint_path, env=env, use_maskable_ppo=use_maskable)
 
-    # Run episodes
-    results = []
-    for _ in range(len(test_questions)):
-        trace = agent.run_episode(deterministic=True)
-        results.append(trace)
+    # Run episodes — one per test question, deterministic order
+    results = [
+        agent.run_episode(deterministic=True, question_idx=i)
+        for i in range(len(test_questions))
+    ]
 
     # Compute metrics
     buzz_metrics = summarize_buzz_metrics(results)
-
-    # Extract confidences and outcomes for calibration — use top_p
-    from dataclasses import asdict
-
-    rows = [asdict(r) for r in results]
-    confidences = []
-    outcomes = []
-    buzz_positions = []
-    for row in rows:
-        top_p_trace = list(row.get("top_p_trace", []))
-        c_trace = list(row.get("c_trace", []))
-        conf_trace = top_p_trace if top_p_trace else c_trace
-        buzz_step = int(row.get("buzz_step", max(0, len(conf_trace) - 1)))
-        if conf_trace:
-            idx = min(max(0, buzz_step), len(conf_trace) - 1)
-            confidences.append(float(conf_trace[idx]))
-            outcomes.append(1 if bool(row.get("correct", False)) else 0)
-        buzz_positions.append(buzz_step)
-
+    confidences, outcomes = calibration_pairs_at_buzz(results)
     ece = expected_calibration_error(confidences, outcomes)
     brier = brier_score(confidences, outcomes)
 
