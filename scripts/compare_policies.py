@@ -111,7 +111,8 @@ def evaluate_mlp_policy(
     )
 
     # Load trained agent
-    agent = PPOBuzzer.load(checkpoint_path, env=env)
+    use_maskable = bool(config.get("ppo", {}).get("use_maskable_ppo", False))
+    agent = PPOBuzzer.load(checkpoint_path, env=env, use_maskable_ppo=use_maskable)
 
     # Run episodes
     results = []

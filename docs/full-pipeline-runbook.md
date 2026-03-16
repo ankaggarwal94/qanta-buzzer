@@ -36,7 +36,7 @@ marked ★ are the core pipeline; others are optional extensions/ablations.
 | 7 | Multi-seed PPO (3 seeds) | tfidf | 1.5–3 hrs |
 | 8 | Reward sweep | tfidf | varies |
 | 9 | Distractor comparison (3 strategies) | tfidf | 15–30 min |
-| 10 | Variable-K baselines (MaskablePPO not wired) | tfidf | 15–30 min |
+| 10 | Variable-K baselines + optional MaskablePPO | tfidf | 15–30 min |
 | 11 | Expected Wins eval (EW-trained PPO is manual only) | tfidf | 5–15 min |
 | 12 | DSPy compile | API-bound | 5–10 min |
 | 13 | K-sensitivity (5 values) | tfidf | 30–60 min |
@@ -145,7 +145,7 @@ Phase 1 (sequential — builds the shared MC dataset)
 
 Not in parallel mode (sequential only or run manually):
   Phase 9  — distractor comparison (sequential mode only)
-  Phase 10 — variable-K baselines (MaskablePPO not wired through train_ppo.py)
+  Phase 10 — variable-K baselines + optional MaskablePPO (via ppo.use_maskable_ppo)
   Phase 12 — DSPy compile (requires API key)
   Phase 18 — OpenAI embeddings (requires API key)
   Phase 19 — DSPy MIPROv2 (requires API key)
