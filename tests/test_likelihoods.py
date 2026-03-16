@@ -10,6 +10,8 @@ Covers:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -118,6 +120,50 @@ class TestTfIdfLikelihood:
         )
         assert scores.shape == (4,), f"Expected shape (4,), got {scores.shape}"
         assert all(np.isfinite(scores)), "All scores should be finite"
+
+    def test_tfidf_embed_batch_normalized(self, sample_corpus: list[str]) -> None:
+        """_embed_batch returns L2-normalized vectors (row norms ~1.0)."""
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        embeddings = model._embed_batch(["George Washington president", "Thomas Jefferson"])
+        norms = np.linalg.norm(embeddings, axis=1)
+        np.testing.assert_array_almost_equal(norms, np.ones(2), decimal=5)
+
+    def test_tfidf_score_uses_cache(self, sample_corpus: list[str]) -> None:
+        """score() populates embedding_cache via embed_and_cache()."""
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        assert len(model.embedding_cache) == 0
+        model.score("first president", ["Washington profile", "Lincoln profile"])
+        assert len(model.embedding_cache) == 3  # 1 clue + 2 options
+
+    def test_tfidf_score_cache_hit(self, sample_corpus: list[str]) -> None:
+        """Repeated score() with same options reuses cache."""
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        options = ["George Washington president", "Thomas Jefferson declaration"]
+        model.score("first president", options)
+        cache_after_first = len(model.embedding_cache)
+        model.score("second president", options)
+        # Only the new clue should be added; options are cached
+        assert len(model.embedding_cache) == cache_after_first + 1
+
+    def test_tfidf_score_matches_cosine_reference(self, sample_corpus: list[str]) -> None:
+        """New cached score() matches sklearn cosine_similarity reference."""
+        from sklearn.metrics.pairwise import cosine_similarity as sklearn_cos
+
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        clue = "Who was the first president?"
+        options = [
+            "George Washington first president commander revolutionary",
+            "Abraham Lincoln Civil War emancipation",
+            "Thomas Jefferson declaration independence Virginia",
+            "Benjamin Franklin inventor Philadelphia diplomat",
+        ]
+        # Compute reference via sklearn cosine_similarity (old method)
+        clue_vec = model.vectorizer.transform([clue])
+        option_vecs = model.vectorizer.transform(options)
+        ref_scores = sklearn_cos(clue_vec, option_vecs)[0].astype(np.float32)
+        # Compute via new cached path
+        actual_scores = model.score(clue, options)
+        np.testing.assert_allclose(actual_scores, ref_scores, atol=1e-6)
 
 
 # ------------------------------------------------------------------ #
@@ -313,3 +359,112 @@ class TestT5Likelihood:
             f"Expected shape (2, {sample_t5_model.encoder.config.d_model}), "
             f"got {embs.shape}"
         )
+
+
+# ------------------------------------------------------------------ #
+# Tests for Embedding Cache Persistence
+# ------------------------------------------------------------------ #
+
+
+class TestEmbeddingCachePersistence:
+    """Tests for save_cache / load_cache disk persistence on LikelihoodModel."""
+
+    def test_save_load_cache_round_trip(self, tmp_path: Path, sample_corpus: list[str]) -> None:
+        """save_cache writes .npz; load_cache restores identical entries."""
+        model = SBERTLikelihood()
+        texts = ["George Washington", "Thomas Jefferson", "Abraham Lincoln"]
+        model.embed_and_cache(texts)
+        assert len(model.embedding_cache) == 3
+
+        cache_path = tmp_path / "cache.npz"
+        saved = model.save_cache(cache_path)
+        assert saved == 3
+        assert cache_path.exists()
+
+        model2 = SBERTLikelihood()
+        assert len(model2.embedding_cache) == 0
+        loaded = model2.load_cache(cache_path)
+        assert loaded == 3
+
+        for key in model.embedding_cache:
+            np.testing.assert_array_equal(
+                model.embedding_cache[key],
+                model2.embedding_cache[key],
+                err_msg=f"Mismatch for key {key}",
+            )
+
+    def test_load_cache_missing_file(self, tmp_path: Path) -> None:
+        """load_cache with nonexistent file returns 0 and leaves cache empty."""
+        model = SBERTLikelihood()
+        result = model.load_cache(tmp_path / "nonexistent.npz")
+        assert result == 0
+        assert len(model.embedding_cache) == 0
+
+    def test_save_cache_empty(self, tmp_path: Path) -> None:
+        """save_cache with empty cache creates a valid .npz with zero arrays."""
+        model = SBERTLikelihood()
+        cache_path = tmp_path / "empty.npz"
+        saved = model.save_cache(cache_path)
+        assert saved == 0
+        assert cache_path.exists()
+
+        # Should be loadable
+        model2 = SBERTLikelihood()
+        loaded = model2.load_cache(cache_path)
+        assert loaded == 0
+
+    def test_tfidf_save_cache_noop(self, sample_corpus: list[str]) -> None:
+        """TfIdfLikelihood.save_cache is a no-op returning 0."""
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        # Populate the cache with some embeddings
+        model.embed_and_cache(["test text one", "test text two"])
+        assert len(model.embedding_cache) > 0
+
+        import tempfile
+        import os
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "should_not_exist.npz"
+            result = model.save_cache(path)
+            assert result == 0
+            assert not path.exists(), "TfIdfLikelihood should NOT write a cache file"
+
+    def test_load_cache_does_not_overwrite(self, tmp_path: Path) -> None:
+        """load_cache merges without overwriting existing cache entries."""
+        model = SBERTLikelihood()
+        texts = ["Hello world"]
+        model.embed_and_cache(texts)
+
+        # Save this cache
+        cache_path = tmp_path / "cache.npz"
+        model.save_cache(cache_path)
+
+        # Create a second model, pre-populate with the same key but different value
+        model2 = SBERTLikelihood()
+        from models.likelihoods import _text_key
+        key = _text_key("Hello world")
+        original_value = np.ones(384, dtype=np.float32)  # dummy
+        model2.embedding_cache[key] = original_value
+
+        loaded = model2.load_cache(cache_path)
+        assert loaded == 0, "Key already present, so nothing should be loaded"
+
+        # Original value should be preserved (not overwritten)
+        np.testing.assert_array_equal(
+            model2.embedding_cache[key],
+            original_value,
+            err_msg="Existing cache entry was overwritten by load_cache",
+        )
+
+
+class TestCacheMemory:
+    """Verify cache_memory_bytes property for resource monitoring."""
+
+    def test_tfidf_cache_memory_bytes(self, sample_corpus):
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        assert model.cache_memory_bytes == 0
+        model.embed_and_cache(["George Washington"])
+        assert model.cache_memory_bytes > 0
+
+    def test_empty_cache_zero_bytes(self, sample_corpus):
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        assert model.cache_memory_bytes == 0

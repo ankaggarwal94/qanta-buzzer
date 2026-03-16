@@ -232,6 +232,104 @@ class TestActionDecomposition:
             assert log_probs.shape == (1,)
             assert (log_probs <= 0).all()
 
+    def test_joint_action_log_prob_wait_vs_buzz(self, t5_small_model):
+        """WAIT uses only wait prob; BUZZ uses wait+buzzed-answer prob."""
+        model = t5_small_model
+        wait_logits = torch.tensor(
+            [[2.0, 0.0], [0.0, 2.0]],
+            dtype=torch.float32,
+            device=model.device,
+        )
+        answer_logits = torch.tensor(
+            [[0.1, 0.2, 0.3, 0.4], [1.0, 0.0, -1.0, -2.0]],
+            dtype=torch.float32,
+            device=model.device,
+        )
+        actions = torch.tensor([0, 2], dtype=torch.long, device=model.device)
+
+        log_probs = model._joint_action_log_prob(wait_logits, answer_logits, actions)
+
+        wait_log_probs = torch.log_softmax(wait_logits, dim=-1)
+        answer_log_probs = torch.log_softmax(answer_logits, dim=-1)
+        expected = torch.stack(
+            [
+                wait_log_probs[0, 0],
+                wait_log_probs[1, 1] + answer_log_probs[1, 1],
+            ]
+        )
+        assert torch.allclose(log_probs, expected, atol=1e-6)
+
+    def test_joint_entropy_matches_chain_rule(self, t5_small_model):
+        """Entropy follows H(wait) + p_buzz * H(answer)."""
+        model = t5_small_model
+        wait_logits = torch.tensor(
+            [[1.0, 0.0], [0.0, 1.0]],
+            dtype=torch.float32,
+            device=model.device,
+        )
+        answer_logits = torch.tensor(
+            [[0.1, 0.2, 0.3, 0.4], [2.0, 1.0, 0.0, -1.0]],
+            dtype=torch.float32,
+            device=model.device,
+        )
+
+        entropy = model._joint_entropy(wait_logits, answer_logits)
+
+        wait_probs = torch.softmax(wait_logits, dim=-1)
+        wait_log_probs = torch.log_softmax(wait_logits, dim=-1)
+        answer_probs = torch.softmax(answer_logits, dim=-1)
+        answer_log_probs = torch.log_softmax(answer_logits, dim=-1)
+        expected = (
+            -(wait_probs * wait_log_probs).sum(dim=-1)
+            + wait_probs[:, 1] * (-(answer_probs * answer_log_probs).sum(dim=-1))
+        )
+        assert torch.allclose(entropy, expected, atol=1e-6)
+
+    def test_select_action_skips_answer_sampling_when_all_wait(
+        self, t5_small_model, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Answer sampling only runs for buzz examples, not all WAIT examples."""
+        model = t5_small_model
+        encoding = model.encode_input(["alpha", "beta"])
+
+        hidden_size = model.encoder.config.d_model
+        fake_pooled = torch.zeros((2, hidden_size), dtype=torch.float32, device=model.device)
+        monkeypatch.setattr(model, "get_encoder_output", lambda *_args, **_kwargs: fake_pooled)
+
+        def fake_head(_pooled):
+            wait_logits = torch.tensor(
+                [[10.0, -10.0], [8.0, -8.0]],
+                dtype=torch.float32,
+                device=model.device,
+            )
+            answer_logits = torch.tensor(
+                [[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]],
+                dtype=torch.float32,
+                device=model.device,
+            )
+            values = torch.zeros((2, 1), dtype=torch.float32, device=model.device)
+            return wait_logits, answer_logits, values
+
+        monkeypatch.setattr(model.policy_head, "forward", fake_head)
+
+        sample_shapes = []
+        original_sample = torch.distributions.Categorical.sample
+
+        def fake_sample(self, sample_shape=torch.Size()):
+            sample_shapes.append(tuple(self.probs.shape))
+            return torch.zeros(self.probs.shape[:-1], dtype=torch.long, device=self.probs.device)
+
+        monkeypatch.setattr(torch.distributions.Categorical, "sample", fake_sample)
+
+        actions, _info = model.select_action(
+            encoding["input_ids"],
+            encoding["attention_mask"],
+            deterministic=False,
+        )
+
+        assert torch.equal(actions.cpu(), torch.zeros(2, dtype=torch.long))
+        assert sample_shapes == [(2, 2)]
+
     def test_select_action_deterministic(self, t5_small_model, sample_texts):
         """Deterministic mode produces consistent actions."""
         model = t5_small_model

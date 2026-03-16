@@ -2,31 +2,43 @@
 """
 Compare T5-as-likelihood (MLP policy) vs T5-as-policy (end-to-end).
 
-Evaluates both approaches on the same test set with identical metrics
-(accuracy, S_q, ECE, Brier score, buzz position) for a fair comparison.
+Evaluates both approaches on the same test set using the same metric
+functions (accuracy, S_q, ECE, Brier score, buzz position).
+
+**Important caveats for numeric comparison:**
+
+The two evaluation paths are *not* fully apples-to-apples:
+
+- The MLP path uses config-driven environment settings (e.g. wait_penalty
+  from default.yaml or smoke.yaml).
+- The T5 path uses its own hardcoded reward settings (wait_penalty=0.1,
+  matching the T5 pipeline's default).
+- The MLP path builds TF-IDF from test questions + all option profiles.
+  The T5 path builds TF-IDF from profiles of the first 100 questions
+  only (lightweight env reward computation — the T5 policy does not
+  consume TF-IDF likelihoods).
+- S_q semantics differ: for MLP, c_trace is a sigmoid confidence proxy
+  over belief max; for T5, c_trace is the wait-head buzz probability.
+
+These differences are inherent to the two architectures.  Accuracy and
+buzz-position comparisons are directly meaningful.  ECE and Brier are
+computed identically (both use top_p at buzz time).  S_q and reward
+comparisons should be interpreted qualitatively.
 
 MLP Policy (Phase 4):
-    T5 computes likelihood scores -> belief features -> MLP policy decides.
-    Uses SB3 PPO with belief-feature observations from TossupMCEnv.
+    T5/TF-IDF computes likelihood scores -> belief features -> MLP
+    policy decides.  Uses SB3 PPO with belief-feature observations.
 
 T5 Policy (Phase 6):
     T5 encoder processes text directly -> PolicyHead decides.
     Uses custom PPO with text observations via TextObservationWrapper.
 
 Usage:
-    # With trained checkpoints
     python scripts/compare_policies.py \\
         --mlp-checkpoint checkpoints/ppo/best_model \\
         --t5-checkpoint checkpoints/ppo_t5/best_model \\
         --output results/t5_comparison.json
 
-    # Smoke test with subset
-    python scripts/compare_policies.py \\
-        --mlp-checkpoint checkpoints/ppo/best_model \\
-        --t5-checkpoint checkpoints/ppo_t5/best_model \\
-        --smoke
-
-    # Only evaluate T5 policy (skip MLP if not trained)
     python scripts/compare_policies.py \\
         --t5-checkpoint checkpoints/ppo_t5/best_model \\
         --t5-only
@@ -35,7 +47,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -111,7 +122,7 @@ def evaluate_mlp_policy(
     # Compute metrics
     buzz_metrics = summarize_buzz_metrics(results)
 
-    # Extract confidences and outcomes for calibration
+    # Extract confidences and outcomes for calibration — use top_p
     from dataclasses import asdict
 
     rows = [asdict(r) for r in results]
@@ -119,12 +130,13 @@ def evaluate_mlp_policy(
     outcomes = []
     buzz_positions = []
     for row in rows:
+        top_p_trace = list(row.get("top_p_trace", []))
         c_trace = list(row.get("c_trace", []))
-        g_trace = list(row.get("g_trace", []))
-        buzz_step = int(row.get("buzz_step", max(0, len(g_trace) - 1)))
-        if g_trace:
-            idx = min(max(0, buzz_step), len(g_trace) - 1)
-            confidences.append(float(g_trace[idx]))
+        conf_trace = top_p_trace if top_p_trace else c_trace
+        buzz_step = int(row.get("buzz_step", max(0, len(conf_trace) - 1)))
+        if conf_trace:
+            idx = min(max(0, buzz_step), len(conf_trace) - 1)
+            confidences.append(float(conf_trace[idx]))
             outcomes.append(1 if bool(row.get("correct", False)) else 0)
         buzz_positions.append(buzz_step)
 
@@ -175,7 +187,7 @@ def evaluate_t5_policy(
     from qb_env.tossup_env import TossupMCEnv
 
     # Load T5 policy model
-    model = T5PolicyModel.load_pretrained(checkpoint_path, device="cpu")
+    model = T5PolicyModel.load_pretrained(checkpoint_path)
     model.eval()
 
     # Build lightweight likelihood for environment reward computation
@@ -198,7 +210,7 @@ def evaluate_t5_policy(
                 likelihood_model=likelihood_model,
                 K=len(question.options),
                 reward_mode="time_penalty",
-                wait_penalty=0.01,
+                wait_penalty=0.1,
                 belief_mode="from_scratch",
             )
             wrapped_env = TextObservationWrapper(env)
@@ -207,17 +219,12 @@ def evaluate_t5_policy(
             done = False
             c_trace = []
             g_trace = []
+            top_p_trace = []
             episode_reward = 0.0
             step_count = 0
 
             while not done:
-                inputs = model.tokenizer(
-                    obs,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=512,
-                )
+                inputs = model.encode_input([obs], max_length=512)
                 actions, act_info = model.select_action(
                     inputs["input_ids"],
                     inputs["attention_mask"],
@@ -226,15 +233,16 @@ def evaluate_t5_policy(
 
                 action = actions.item()
 
-                # Extract buzz probability from wait head
                 wait_probs = act_info["wait_probs"]
-                buzz_prob = wait_probs[0, 1].item()  # P(answer_now)
+                buzz_prob = wait_probs[0, 1].item()
                 c_trace.append(buzz_prob)
 
-                # Correctness at this step: P(gold answer | answering)
                 answer_probs = act_info["answer_probs"]
                 gold_prob = answer_probs[0, question.gold_index].item()
                 g_trace.append(gold_prob)
+
+                top_p = float(answer_probs[0].max().item())
+                top_p_trace.append(top_p)
 
                 obs, reward, terminated, truncated, step_info = (
                     wrapped_env.step(action)
@@ -243,11 +251,9 @@ def evaluate_t5_policy(
                 episode_reward += reward
                 step_count += 1
 
-            # Compute S_q for this episode
             sq = system_score(c_trace, g_trace)
             sq_scores.append(sq)
 
-            # Check correctness
             is_correct = step_info.get("correct", False) or step_info.get(
                 "forced_correct", False
             )
@@ -255,10 +261,11 @@ def evaluate_t5_policy(
                 correct_count += 1
             total_count += 1
 
-            # Calibration data at buzz point
-            if c_trace:
+            # Calibration: use top_p (max answer prob) for consistency
+            # with belief-feature agents
+            if top_p_trace:
                 buzz_step = step_count - 1
-                confidences.append(c_trace[-1])
+                confidences.append(top_p_trace[-1])
                 outcomes.append(1 if is_correct else 0)
                 buzz_positions.append(buzz_step)
 
@@ -419,13 +426,19 @@ def main() -> None:
     all_questions = load_mc_questions(mc_path)
     print(f"Loaded {len(all_questions)} questions")
 
-    # Use last 15% as test set (matching standard split)
-    import random
-    rng = random.Random(42)
-    shuffled = all_questions[:]
-    rng.shuffle(shuffled)
-    test_start = int(len(shuffled) * 0.85)
-    test_questions = shuffled[test_start:]
+    # Prefer the persisted test split if it exists alongside mc_dataset.json
+    test_split_path = mc_path.parent / "test_dataset.json"
+    if test_split_path.exists():
+        test_questions = load_mc_questions(test_split_path)
+        print(f"Using persisted test split: {len(test_questions)} questions")
+    else:
+        import random
+        rng = random.Random(42)
+        shuffled = all_questions[:]
+        rng.shuffle(shuffled)
+        test_start = int(len(shuffled) * 0.85)
+        test_questions = shuffled[test_start:]
+        print(f"No test_dataset.json found; using random 15% split: {len(test_questions)} questions")
 
     if args.smoke:
         test_questions = test_questions[:50]

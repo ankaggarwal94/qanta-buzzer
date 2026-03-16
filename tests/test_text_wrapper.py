@@ -245,3 +245,31 @@ class TestTextObservationWrapper:
 
         # Episode must have ended (6 clue steps)
         assert terminated or truncated, "Episode should end within 20 steps"
+
+    def test_wrapper_k3_formats_three_choices(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Text wrapper dynamically formats K=3 questions correctly."""
+        from dataclasses import replace
+
+        q3 = replace(
+            sample_mc_question,
+            qid="q_k3",
+            options=sample_mc_question.options[:3],
+            option_profiles=sample_mc_question.option_profiles[:3],
+            option_answer_primary=sample_mc_question.option_answer_primary[:3],
+            gold_index=0,
+        )
+        corpus = sample_mc_question.option_profiles[:]
+        model = TfIdfLikelihood(corpus_texts=corpus)
+        env = TossupMCEnv(
+            questions=[q3],
+            likelihood_model=model,
+            K=3,
+            reward_mode="simple",
+            belief_mode="from_scratch",
+        )
+        wrapped = TextObservationWrapper(env)
+        obs, _ = wrapped.reset(seed=42)
+        assert "(3)" in obs
+        assert "(4)" not in obs

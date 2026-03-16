@@ -36,6 +36,7 @@ class AnswerProfileBuilder:
         self.max_tokens_per_profile = max_tokens_per_profile
         self.min_questions_per_answer = min_questions_per_answer
         self._grouped: Dict[str, List[Tuple[str, str]]] = {}
+        self._cache: Dict[Tuple[str, Optional[str]], str] = {}
 
     def fit(self, questions: List[TossupQuestion]) -> "AnswerProfileBuilder":
         """Fit the builder on a set of questions.
@@ -53,6 +54,7 @@ class AnswerProfileBuilder:
             # Store qid and full question text for each answer
             grouped[q.answer_primary].append((q.qid, q.question))
         self._grouped = dict(grouped)
+        self._cache = {}
         return self
 
     def _profile_text(
@@ -69,6 +71,10 @@ class AnswerProfileBuilder:
         Returns:
             Profile text truncated to max_tokens_per_profile.
         """
+        key = (answer_primary, exclude_qid)
+        if key in self._cache:
+            return self._cache[key]
+
         items = self._grouped.get(answer_primary, [])
         texts: List[str] = []
 
@@ -80,6 +86,7 @@ class AnswerProfileBuilder:
 
         # If not enough questions after exclusion, fall back to answer text
         if len(texts) < self.min_questions_per_answer:
+            self._cache[key] = answer_primary
             return answer_primary
 
         # Merge all texts and split into tokens
@@ -89,7 +96,9 @@ class AnswerProfileBuilder:
         if self.max_tokens_per_profile > 0:
             merged = merged[:self.max_tokens_per_profile]
 
-        return " ".join(merged) if merged else answer_primary
+        result = " ".join(merged) if merged else answer_primary
+        self._cache[key] = result
+        return result
 
     def profile_for_answer(
         self,

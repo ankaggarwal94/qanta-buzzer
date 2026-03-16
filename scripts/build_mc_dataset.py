@@ -21,7 +21,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -33,68 +33,10 @@ from qb_data.data_loader import QANTADatasetLoader
 from qb_data.dataset_splits import create_stratified_splits
 from qb_data.huggingface_loader import load_from_huggingface
 from qb_data.mc_builder import MCBuilder, MCQuestion
+from scripts._common import parse_overrides
 
 DEFAULT_OUTPUT_DIR = Path("data/processed")
 SMOKE_OUTPUT_DIR = Path("artifacts/smoke")
-
-
-def parse_overrides(args: argparse.Namespace) -> Dict[str, Any]:
-    """
-    Parse CLI override arguments into nested dictionary.
-
-    Converts args like --data.K=5 into {"data": {"K": 5}}
-
-    Parameters
-    ----------
-    args : argparse.Namespace
-        Command line arguments
-
-    Returns
-    -------
-    Dict[str, Any]
-        Nested dictionary of config overrides
-    """
-    overrides = {}
-
-    # Check for any attributes that look like overrides (contain dots)
-    for key, value in vars(args).items():
-        if value is not None and '.' not in key:
-            continue  # Skip non-override args
-
-    # Parse remaining args for dot notation overrides
-    if hasattr(args, 'overrides') and args.overrides:
-        for override in args.overrides:
-            if '=' not in override:
-                continue
-
-            key, value = override.split('=', 1)
-            keys = key.split('.')
-
-            # Try to parse value as JSON first, then as int/float/bool
-            try:
-                parsed_value = json.loads(value)
-            except json.JSONDecodeError:
-                if value.lower() == 'true':
-                    parsed_value = True
-                elif value.lower() == 'false':
-                    parsed_value = False
-                elif value.isdigit():
-                    parsed_value = int(value)
-                else:
-                    try:
-                        parsed_value = float(value)
-                    except ValueError:
-                        parsed_value = value  # Keep as string
-
-            # Build nested dictionary
-            d = overrides
-            for k in keys[:-1]:
-                if k not in d:
-                    d[k] = {}
-                d = d[k]
-            d[keys[-1]] = parsed_value
-
-    return overrides
 
 
 def resolve_output_dir(output_dir: Optional[str], smoke: bool) -> Path:
@@ -305,14 +247,18 @@ def main(argv: Optional[list[str]] = None):
 
     # Construct MC questions with guards
     print("\nConstructing MC questions...")
+    data_cfg = config['data']
     mc_builder = MCBuilder(
-        K=config['data']['K'],
-        strategy=config['data']['distractor_strategy'],
+        K=data_cfg['K'],
+        strategy=data_cfg['distractor_strategy'],
         embedding_model=config['likelihood'].get(
             'sbert_name',
             config['likelihood'].get('embedding_model', 'all-MiniLM-L6-v2'),
         ),
         openai_model=config['likelihood'].get('openai_model', 'text-embedding-3-small'),
+        variable_K=bool(data_cfg.get('variable_K', False)),
+        min_K=int(data_cfg.get('min_K', 2)),
+        max_K=int(data_cfg['max_K']) if data_cfg.get('max_K') is not None else None,
         **config['mc_guards']
     )
 
