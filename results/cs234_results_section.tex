@@ -1,0 +1,209 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{array}
+\usepackage{hyperref}
+
+\title{CS234 Results Draft}
+\date{2026-03-15}
+
+\begin{document}
+\maketitle
+
+\section{Results}
+
+We ran the full-scale pipeline on the complete multiple-choice quiz bowl dataset
+produced by our preprocessing pipeline. After answer-profile construction and
+MC filtering, the final dataset contained \textbf{14,961} tossups, split into
+\textbf{10,453 train / 2,226 validation / 2,282 test}. For the belief-feature
+pipeline, all reported baseline and PPO experiments used \textbf{TF-IDF}
+likelihoods; for the end-to-end text policy pipeline, we trained a
+\textbf{T5-base} model on Apple Silicon MPS.
+
+\subsection{Baseline Performance}
+
+Our strongest classical baseline was the \textbf{SequentialBayesBuzzer}, which
+achieved the best overall quiz-bowl utility score of
+\textbf{$S_q = 0.7413$} at threshold 0.5, with \textbf{96.97\%} buzz accuracy,
+\textbf{ECE $= 0.3470$}, and \textbf{Brier $= 0.1535$}. By comparison, both the
+\textbf{ThresholdBuzzer} and \textbf{SoftmaxProfileBuzzer} peaked at
+\textbf{$S_q = 0.6858$} with \textbf{97.48\%} buzz accuracy. This gap suggests
+that belief tracking matters more than simply thresholding top-answer
+confidence. In particular, Sequential Bayes trades a small drop in raw accuracy
+for substantially better timing behavior, which is exactly what $S_q$ is
+intended to reward.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrrr}
+\toprule
+Agent & Threshold & Accuracy & $S_q$ & ECE & Brier \\
+\midrule
+ThresholdBuzzer & 0.5 & 0.9748 & 0.6858 & 0.4555 & 0.2326 \\
+SoftmaxProfileBuzzer & 0.5 & 0.9748 & 0.6858 & 0.4555 & 0.2326 \\
+SequentialBayesBuzzer & 0.5 & 0.9697 & 0.7413 & 0.3470 & 0.1535 \\
+\bottomrule
+\end{tabular}
+\caption{Best baseline results on the TF-IDF belief-feature pipeline.}
+\end{table}
+
+\noindent\textbf{Takeaway.} Among belief-feature methods, Sequential Bayes is
+the strongest overall policy under our utility metric.
+
+\subsection{PPO Performance}
+
+In contrast, the default PPO agent performed poorly. Its final test performance
+was only \textbf{25.25\%} accuracy with \textbf{$S_q = 0.2525$} and negative
+reward-like return (\textbf{$-0.2777$}). This is far below all three baseline
+families and indicates that, under our current state representation and
+training budget, PPO is not learning a useful buzzing policy. The low ECE
+(\textbf{0.0025}) is misleading here: the model is not well calibrated in a
+meaningful decision-theoretic sense, but rather collapsed into a low-confidence
+regime that produces a numerically small calibration gap.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+Policy & Accuracy & $S_q$ & Reward-like & ECE \\
+\midrule
+PPO default & 0.2525 & 0.2525 & -0.2777 & 0.0025 \\
+Best baseline (SequentialBayes) & 0.9697 & 0.7413 & --- & 0.3470 \\
+\bottomrule
+\end{tabular}
+\caption{Default PPO versus the best TF-IDF baseline.}
+\end{table}
+
+\noindent\textbf{Takeaway.} PPO, as implemented here, is not competitive with
+the engineered baseline pipeline.
+
+\subsection{End-to-End T5 Policy}
+
+The end-to-end T5 policy tells a more nuanced story. After supervised warm-start
+and PPO fine-tuning, the \textbf{T5 policy} reached \textbf{93.34\%} answer
+accuracy, far above the MLP policy used in the belief-feature RL pipeline
+(\textbf{25.46\%}). However, its quiz-bowl utility remained low, with
+\textbf{$S_q = 0.2394$}, \textbf{ECE $= 0.6816$}, and
+\textbf{Brier $= 0.5268$}. The model appears to be much better at eventually
+producing the correct answer, but much worse at calibrated buzzing and timing.
+By comparison, the MLP policy had lower accuracy but slightly higher $S_q$
+(\textbf{0.2546}) simply because both policies are weak under the
+timing-sensitive objective.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrrr}
+\toprule
+Model & Accuracy & $S_q$ & ECE & Brier & Avg buzz pos \\
+\midrule
+MLP policy (T5-as-likelihood) & 0.2546 & 0.2546 & 0.0046 & 0.1898 & 0.0000 \\
+T5 policy (end-to-end) & 0.9334 & 0.2394 & 0.6816 & 0.5268 & 3.8966 \\
+\bottomrule
+\end{tabular}
+\caption{Phase 6 comparison between the belief-feature MLP policy and the
+end-to-end T5 policy.}
+\end{table}
+
+\noindent\textbf{Takeaway.} The end-to-end text policy is strong at final
+correctness but not yet strong at calibrated early buzzing.
+
+\subsection{Expected Wins}
+
+Against a logistic opponent model, our Expected Wins evaluation gave a mean
+score of \textbf{4.4929}. This experiment is best interpreted as an alternate
+downstream metric rather than a new training success: it evaluates the same
+baseline family under a different reward model. We did not complete the
+separate EW-trained PPO phase in this run, so these results should be read as
+evaluation-only, not as evidence that PPO improved under Expected Wins
+training.
+
+\subsection{Ablation Studies}
+
+Our ablations reinforce the central result that baseline design matters more
+than PPO configuration.
+
+\paragraph{Reward-mode ablations.}
+Switching PPO from the default time-penalty reward to either \texttt{simple} or
+\texttt{human\_grounded} produced \textbf{no measurable improvement}: all three
+variants stayed at roughly \textbf{25.25\%} accuracy and
+\textbf{$S_q = 0.2525$}. Under the current setup, reward reshaping alone is not
+enough to recover a strong learned policy.
+
+\paragraph{Belief-mode ablation.}
+Replacing the default from-scratch confidence with \textbf{sequential Bayes
+belief updates} increased $S_q$ from \textbf{0.6858} to \textbf{0.7413},
+making this the most effective single ablation in the entire run.
+
+\paragraph{Stop-only PPO.}
+The stop-only policy produced a striking failure mode: \textbf{97.55\%}
+accuracy but only \textbf{$S_q \approx 2.9 \times 10^{-5}$}. In other words,
+the agent learned behavior that looks good under eventual correctness but is
+essentially useless under the quiz-bowl timing metric. This is a clear example
+of reward/objective mismatch.
+
+\paragraph{No-buzz horizon.}
+Allowing a no-buzz end state did not help. The no-buzz variant remained
+effectively identical to the default PPO model, with \textbf{25.15\%} accuracy
+and \textbf{$S_q = 0.2515$}.
+
+\subsection{Variance Across Seeds}
+
+PPO training was highly unstable across seeds. Two seeds converged to the
+low-performing default regime (\textbf{24.45\%} accuracy,
+\textbf{$S_q \approx 0.2445$}), while one seed converged to the same
+high-accuracy / near-zero-$S_q$ failure mode seen in the stop-only variant
+(\textbf{97.55\%} accuracy, \textbf{$S_q = 0.000069$}). Across seeds, the mean
+$S_q$ was \textbf{0.1630} with population standard deviation \textbf{0.1152} ($n=3$), confirming
+that PPO behavior is not only weak on average but also qualitatively
+inconsistent.
+
+\noindent\textbf{Takeaway.} The learned RL policy is unstable and often
+converges to degenerate local optima.
+
+\subsection{Distractor and K-Sensitivity Analyses}
+
+The distractor study produced a somewhat surprising result. With the same
+Sequential Bayes baseline, \textbf{category-random distractors} gave the best
+score (\textbf{$S_q = 0.7962$}), \textbf{SBERT-ranked distractors} matched the
+default setup (\textbf{0.7413}), and \textbf{TF-IDF-profile distractors} were
+the hardest (\textbf{0.6651}). This suggests that the exact negative-answer
+construction strategy materially changes task difficulty.
+
+We also tested fixed and mixed values of $K$, the number of answer choices. On
+the mixed-$K$ dataset, Sequential Bayes reached \textbf{$S_q = 0.7804$}.
+Across fixed $K$, performance improved over the default $K=4$ setting and
+peaked around \textbf{$K=5$} with \textbf{$S_q = 0.8000$}, then remained
+similarly high at \textbf{$K=6$} (\textbf{0.7983}). This suggests that the
+default $K=4$ setting is not necessarily the easiest or best-conditioned
+version of the task.
+
+\subsection{Overall Interpretation}
+
+The overall picture is clear. The \textbf{belief-feature baseline pipeline},
+especially \textbf{Sequential Bayes}, is currently the strongest approach in
+this project. PPO-based learned policies are either weak, unstable, or
+vulnerable to objective mismatch. The end-to-end T5 policy demonstrates that
+high answer accuracy is achievable, but it does not yet translate into good
+buzzing utility. For this project, the most defensible conclusion is that
+\textbf{carefully engineered uncertainty and belief-tracking methods outperform
+our current RL formulations on the quiz-bowl buzzing objective}.
+
+\section{Discussion and Limitations}
+
+Two implementation issues surfaced during the live run and were fixed: an Apple
+Silicon MPS device-placement bug in Phase 6 and a \texttt{StopOnlyEnv}
+evaluation bug in Phase 16. These did not change the final substantive
+conclusions, but they do highlight that full-scale execution exposed issues
+that were not caught by smoke tests alone.
+
+The main empirical limitation is that our PPO results are based on a relatively
+modest training budget and a state/action design that may be poorly matched to
+the true structure of the task. In addition, some optional extensions,
+including EW-trained PPO and DSPy/OpenAI-based paths, were not run in this
+full-scale pass. Future work should focus on stabilizing policy learning,
+aligning the reward more tightly with $S_q$, and improving calibration for the
+end-to-end T5 model.
+
+\end{document}

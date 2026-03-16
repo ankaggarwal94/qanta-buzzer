@@ -19,7 +19,9 @@ brier_score(confidences, outcomes)
 summarize_buzz_metrics(results)
     Aggregate accuracy, buzz step, S_q, and reward across episodes.
 calibration_at_buzz(results)
-    Extract buzz-time confidence and compute ECE + Brier score.
+    Extract buzz-time top_p confidence and compute ECE + Brier score.
+expected_wins_score(c_trace, g_trace, opponent_survival_trace, ...)
+    Offline Expected Wins scoring over an episode.
 """
 
 from __future__ import annotations
@@ -80,6 +82,69 @@ def system_score(c_trace: list[float], g_trace: list[float]) -> float:
         b[t] = c[t] * survival
         survival *= (1.0 - c[t])
     return float(np.sum(b * g))
+
+
+def expected_wins_score(
+    c_trace: list[float],
+    g_trace: list[float],
+    opponent_survival_trace: list[float],
+    reward_correct: float = 10.0,
+    reward_incorrect: float = -5.0,
+    opponent_expected_value: float = 0.0,
+) -> float:
+    """Compute offline Expected Wins score for a single episode.
+
+    Uses the continuous V_self formulation::
+
+        V_self_t = g_t * reward_correct + (1 - g_t) * reward_incorrect
+
+    NOT a binary branch on ``g_t``.
+
+    The full formula is::
+
+        EW = sum_t  b_t * [S_t * V_self_t + (1 - S_t) * V_opp]
+
+    where ``b_t = c_t * prod_{i<t}(1 - c_i)`` is the agent's buzz
+    probability mass at step *t*, and ``S_t`` is opponent survival.
+
+    Parameters
+    ----------
+    c_trace : list[float]
+        Per-step buzz probability from the agent.
+    g_trace : list[float]
+        Per-step correctness probability (P(gold) / P(buzz) for PPO,
+        binary 0/1 for baseline agents).
+    opponent_survival_trace : list[float]
+        Per-step P(opponent has not buzzed before step t).
+    reward_correct : float
+        Points for buzzing correctly before the opponent.
+    reward_incorrect : float
+        Points for buzzing incorrectly before the opponent.
+    opponent_expected_value : float
+        Expected score when the opponent buzzes first.
+
+    Returns
+    -------
+    float
+        Expected Wins score for the episode.
+    """
+    c = np.array(c_trace, dtype=np.float64)
+    g = np.array(g_trace, dtype=np.float64)
+    s = np.array(opponent_survival_trace, dtype=np.float64)
+    if len(c) == 0:
+        return 0.0
+    n = min(len(c), len(g), len(s))
+    c, g, s = c[:n], g[:n], s[:n]
+
+    b = np.zeros(n, dtype=np.float64)
+    survival = 1.0
+    for t in range(n):
+        b[t] = c[t] * survival
+        survival *= 1.0 - c[t]
+
+    v_self = g * reward_correct + (1.0 - g) * reward_incorrect
+    v = s * v_self + (1.0 - s) * opponent_expected_value
+    return float(np.sum(b * v))
 
 
 def expected_calibration_error(
@@ -260,14 +325,22 @@ def per_category_accuracy(
 def calibration_at_buzz(results: list[Any]) -> dict[str, float]:
     """Compute calibration metrics at the buzz decision point.
 
-    Extracts buzz-time confidence (from g_trace at buzz_step) and
-    correctness outcome, then computes ECE and Brier score.
+    Uses the belief model's top-answer probability (``top_p_trace``) at
+    buzz time as the confidence proxy.  This measures whether the belief
+    distribution is well-calibrated: when the model assigns 0.8
+    probability to its top answer, that answer should be correct ~80% of
+    the time.
+
+    Falls back to ``c_trace`` (sigmoid confidence) when ``top_p_trace``
+    is unavailable (e.g. PPO episode traces that lack per-step belief
+    breakdowns).
 
     Parameters
     ----------
     results : list[Any]
         List of episode results (dicts or dataclass instances). Each must
-        have: c_trace, g_trace, buzz_step, correct.
+        have: buzz_step, correct, and at least one of top_p_trace or
+        c_trace.
 
     Returns
     -------
@@ -278,13 +351,14 @@ def calibration_at_buzz(results: list[Any]) -> dict[str, float]:
     confidences: list[float] = []
     outcomes: list[int] = []
     for row in rows:
+        top_p_trace = list(row.get("top_p_trace", []))
         c_trace = list(row.get("c_trace", []))
-        g_trace = list(row.get("g_trace", []))
-        buzz_step = int(row.get("buzz_step", max(0, len(g_trace) - 1)))
-        if not g_trace:
+        conf_trace = top_p_trace if top_p_trace else c_trace
+        if not conf_trace:
             continue
-        idx = min(max(0, buzz_step), len(g_trace) - 1)
-        confidences.append(float(g_trace[idx]))
+        buzz_step = int(row.get("buzz_step", max(0, len(conf_trace) - 1)))
+        idx = min(max(0, buzz_step), len(conf_trace) - 1)
+        confidences.append(float(conf_trace[idx]))
         outcomes.append(1 if bool(row.get("correct", False)) else 0)
 
     return {

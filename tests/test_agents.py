@@ -700,3 +700,278 @@ class TestSweepThresholds:
                 f"(step {buzz_steps[i]}) > threshold {thresholds[i+1]} "
                 f"(step {buzz_steps[i+1]})"
             )
+
+
+# ------------------------------------------------------------------ #
+# Precomputed equivalence tests
+# ------------------------------------------------------------------ #
+
+
+class TestPrecomputedEquivalence:
+    """Prove precomputed-path functions are numerically identical to live agents."""
+
+    def test_softmax_precomputed_matches_live(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        """_softmax_episode_from_precomputed matches SoftmaxProfileBuzzer.run_episode."""
+        from agents.threshold_buzzer import (
+            _softmax_episode_from_precomputed,
+            precompute_beliefs,
+        )
+
+        likelihood = _make_likelihood(sample_corpus)
+        threshold, beta, alpha = 0.7, 5.0, 10.0
+
+        # Live agent
+        agent = SoftmaxProfileBuzzer(
+            likelihood_model=likelihood, threshold=threshold, beta=beta, alpha=alpha
+        )
+        live = agent.run_episode(sample_mc_question)
+
+        # Precomputed path
+        pqs = precompute_beliefs([sample_mc_question], likelihood, beta)
+        pre = _softmax_episode_from_precomputed(pqs[0], threshold, alpha)
+
+        assert pre.buzz_step == live.buzz_step
+        assert pre.buzz_index == live.buzz_index
+        assert pre.correct == live.correct
+        np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
+        np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
+        np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
+        np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
+
+    def test_always_final_precomputed_matches_live(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        """_always_final_from_precomputed matches AlwaysBuzzFinalBuzzer.run_episode."""
+        from agents.threshold_buzzer import (
+            _always_final_from_precomputed,
+            precompute_beliefs,
+        )
+
+        likelihood = _make_likelihood(sample_corpus)
+        beta = 5.0
+
+        # Live agent
+        agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood, beta=beta)
+        live = agent.run_episode(sample_mc_question)
+
+        # Precomputed path
+        pqs = precompute_beliefs([sample_mc_question], likelihood, beta)
+        pre = _always_final_from_precomputed(pqs[0])
+
+        assert pre.buzz_step == live.buzz_step
+        assert pre.buzz_index == live.buzz_index
+        assert pre.correct == live.correct
+        assert pre.reward_like == live.reward_like
+        np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
+        np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
+        np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
+        np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
+
+    def test_sequential_precomputed_matches_live(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        """_sequential_episode_from_precomputed matches SequentialBayesBuzzer.run_episode."""
+        from agents.bayesian_buzzer import (
+            _sequential_episode_from_precomputed,
+            precompute_sequential_beliefs,
+        )
+
+        likelihood = _make_likelihood(sample_corpus)
+        threshold, beta, alpha = 0.7, 5.0, 10.0
+
+        # Live agent
+        agent = SequentialBayesBuzzer(
+            likelihood_model=likelihood, threshold=threshold, beta=beta, alpha=alpha
+        )
+        live = agent.run_episode(sample_mc_question)
+
+        # Precomputed path
+        pqs = precompute_sequential_beliefs([sample_mc_question], likelihood, beta)
+        pre = _sequential_episode_from_precomputed(pqs[0], threshold, alpha)
+
+        assert pre.buzz_step == live.buzz_step
+        assert pre.buzz_index == live.buzz_index
+        assert pre.correct == live.correct
+        np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
+        np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
+        np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
+        np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
+
+    def test_sweep_sequential_matches_per_threshold(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        """sweep_sequential_thresholds matches per-threshold SequentialBayesBuzzer."""
+        from agents.bayesian_buzzer import sweep_sequential_thresholds
+
+        likelihood = _make_likelihood(sample_corpus)
+        thresholds = [0.5, 0.7, 0.9]
+        beta, alpha = 5.0, 10.0
+
+        # Sweep
+        sweep = sweep_sequential_thresholds(
+            questions=[sample_mc_question],
+            likelihood_model=likelihood,
+            thresholds=thresholds,
+            beta=beta,
+            alpha=alpha,
+        )
+
+        # Per-threshold live agents
+        for threshold in thresholds:
+            agent = SequentialBayesBuzzer(
+                likelihood_model=likelihood,
+                threshold=threshold,
+                beta=beta,
+                alpha=alpha,
+            )
+            live = agent.run_episode(sample_mc_question)
+            pre = sweep[float(threshold)][0]
+
+            assert pre.buzz_step == live.buzz_step, (
+                f"threshold={threshold}: buzz_step {pre.buzz_step} != {live.buzz_step}"
+            )
+            assert pre.buzz_index == live.buzz_index
+            assert pre.correct == live.correct
+            np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
+            np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
+            np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
+            np.testing.assert_array_almost_equal(
+                pre.entropy_trace, live.entropy_trace
+            )
+
+
+# ------------------------------------------------------------------ #
+# Shuffle precomputed equivalence tests
+# ------------------------------------------------------------------ #
+
+
+class TestShufflePrecomputedEquivalence:
+    """Prove precomputed shuffle control matches live rescore shuffle control."""
+
+    def test_shuffle_precomputed_matches_rescore(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        """Precomputed shuffle control matches live rescore shuffle control."""
+        from dataclasses import asdict
+
+        from agents.threshold_buzzer import precompute_beliefs
+        from evaluation.controls import (
+            run_shuffle_control,
+            run_shuffle_control_precomputed,
+        )
+        from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+
+        likelihood = _make_likelihood(sample_corpus)
+        threshold, beta, alpha = 0.7, 5.0, 10.0
+        questions = [sample_mc_question]
+
+        # Live rescore path
+        def evaluator(qset):
+            agent = SoftmaxProfileBuzzer(
+                likelihood_model=likelihood,
+                threshold=threshold,
+                beta=beta,
+                alpha=alpha,
+            )
+            runs = [asdict(agent.run_episode(q)) for q in qset]
+            summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
+            summary["runs"] = runs
+            return summary
+
+        live_result = run_shuffle_control(questions, evaluator=evaluator, random_seed=13)
+
+        # Precomputed path
+        precomputed = precompute_beliefs(questions, likelihood, beta)
+        pre_result = run_shuffle_control_precomputed(
+            precomputed, threshold, alpha, random_seed=13
+        )
+
+        # Compare summary metrics
+        assert live_result["mean_sq"] == pytest.approx(pre_result["mean_sq"])
+        assert live_result["buzz_accuracy"] == pytest.approx(pre_result["buzz_accuracy"])
+
+        # Compare per-run results
+        for live_run, pre_run in zip(live_result["runs"], pre_result["runs"]):
+            assert live_run["buzz_step"] == pre_run["buzz_step"]
+            assert live_run["buzz_index"] == pre_run["buzz_index"]
+            assert live_run["correct"] == pre_run["correct"]
+            np.testing.assert_array_almost_equal(
+                live_run["c_trace"], pre_run["c_trace"]
+            )
+            np.testing.assert_array_almost_equal(
+                live_run["g_trace"], pre_run["g_trace"]
+            )
+            np.testing.assert_array_almost_equal(
+                live_run["top_p_trace"], pre_run["top_p_trace"]
+            )
+            np.testing.assert_array_almost_equal(
+                live_run["entropy_trace"], pre_run["entropy_trace"]
+            )
+
+    def test_permutation_consistency(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        """Permutation applied to beliefs matches permutation applied to gold_index."""
+        import random as random_mod
+
+        from agents.threshold_buzzer import _PrecomputedQuestion, precompute_beliefs
+        from evaluation.controls import shuffled_option_copy
+
+        likelihood = _make_likelihood(sample_corpus)
+        beta = 5.0
+        questions = [sample_mc_question]
+        precomputed = precompute_beliefs(questions, likelihood, beta)
+
+        # Reproduce the permutation that shuffled_option_copy would use
+        rng_live = random_mod.Random(13)
+        shuffled_q = shuffled_option_copy(sample_mc_question, rng_live)
+
+        # Reproduce the same permutation for precomputed
+        rng_pre = random_mod.Random(13)
+        pq = precomputed[0]
+        perm = list(range(pq.num_options))
+        rng_pre.shuffle(perm)
+        new_gold = perm.index(pq.gold_index)
+
+        # The gold index should match
+        assert new_gold == shuffled_q.gold_index
+
+
+class TestBaselineAgentsVariableK:
+    """Baseline agents work on non-K=4 questions (K-agnostic check)."""
+
+    def test_threshold_buzzer_k3(self, sample_corpus):
+        from agents.threshold_buzzer import ThresholdBuzzer
+        from dataclasses import replace
+        from models.likelihoods import TfIdfLikelihood
+        from tests.conftest import sample_mc_question as _  # reuse fixture pattern
+
+        model = TfIdfLikelihood(corpus_texts=sample_corpus)
+        q4 = MCQuestion(
+            qid="q_k3",
+            question="Who was the first president?",
+            tokens=["Who", "was", "the", "first", "president"],
+            answer_primary="George Washington",
+            clean_answers=["George Washington"],
+            run_indices=[1, 3, 4],
+            human_buzz_positions=[],
+            category="History",
+            cumulative_prefixes=["Who was", "Who was the first", "Who was the first president"],
+            options=["George Washington", "Thomas Jefferson", "John Adams"],
+            gold_index=0,
+            option_profiles=[
+                "George Washington first president",
+                "Thomas Jefferson third president",
+                "John Adams second president",
+            ],
+            option_answer_primary=["George Washington", "Thomas Jefferson", "John Adams"],
+            distractor_strategy="test",
+        )
+        buzzer = ThresholdBuzzer(
+            likelihood_model=model, threshold=0.5, beta=5.0, alpha=10.0,
+        )
+        result = buzzer.run_episode(q4)
+        assert len(result.c_trace) > 0
+        assert 0 <= result.buzz_index < 3

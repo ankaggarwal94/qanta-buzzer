@@ -3,8 +3,11 @@
 
 data:
   csv_path: "questions.csv"  # Raw QANTA CSV with ||| separated clues
-  K: 4  # Number of answer choices
-  distractor_strategy: "sbert_profile"  # sbert_profile | category_random | embedding_based
+  K: 4  # Default number of answer choices
+  distractor_strategy: "sbert_profile"  # sbert_profile | tfidf_profile | category_random | openai_profile
+  variable_K: false  # If true, sample K per question from [min_K, max_K]
+  min_K: 2
+  max_K: null  # Defaults to K when null
   train_ratio: 0.7
   val_ratio: 0.15
   test_ratio: 0.15
@@ -26,13 +29,18 @@ likelihood:
   max_length: 512  # Max input tokens for T5
 
 environment:
-  reward_mode: "time_penalty"  # time_penalty | simple
+  reward_mode: "time_penalty"  # time_penalty | simple | expected_wins
   seed: 13
   wait_penalty: 0.05  # Tuned candidate from multi-seed smoke sweep
   early_buzz_penalty: 0.2  # Tuned candidate from multi-seed smoke sweep
   buzz_correct: 1.0  # Reward for correct answer
   buzz_incorrect: -0.5  # Penalty for wrong answer
   max_steps: 20  # Maximum clues to reveal
+  # Expected Wins opponent model (only used when reward_mode: expected_wins)
+  opponent_buzz_model:
+    type: "none"  # none | logistic | empirical
+  end_mode: "force_commit"  # force_commit | no_buzz
+  no_buzz_reward: 0.0  # Only used when end_mode == no_buzz
 
 mc_guards:  # Anti-artifact guards from qb-rl
   alias_edit_distance_threshold: 0.2  # Reject similar answer aliases
@@ -73,6 +81,14 @@ evaluation:
   bootstrap_ci_samples: 1000  # Bootstrap confidence intervals
   save_predictions: true
   prediction_dir: "results/predictions"
+
+# DSPy integration (optional, offline-first)
+# Activated by setting likelihood.model: dspy — no separate enable flag.
+dspy:
+  model: "openai/gpt-4o-mini"  # DSPy LM identifier
+  optimizer: "BootstrapFewShot"  # BootstrapFewShot | MIPROv2
+  cache_dir: "cache/dspy"
+  max_examples: 50
 
 # Supervised warm-start settings (for T5 policy)
 supervised:
