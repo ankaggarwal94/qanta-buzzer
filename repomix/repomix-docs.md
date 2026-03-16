@@ -7633,235 +7633,6 @@ walkthrough.md
 157: If you find zero new verified issues, say so explicitly and list what you checked. An honest "clean" report is the ideal outcome of a convergence review.
 ````
 
-## File: docs/codex-remaining-phases-prompt.md
-````markdown
-  1: # Codex: Complete Remaining Pipeline Phases
-  2: 
-  3: **Date:** 2026-03-16
-  4: **Prerequisite:** The first full-scale run already completed Phases 1–7, 9–11 (eval), 13–17.
-  5: 
-  6: ## Critical: Use the Main Repo
-  7: 
-  8: ```bash
-  9: cd /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer
- 10: git rev-parse --short HEAD   # should be on main or pr-to-origin branch
- 11: source .venv/bin/activate
- 12: ```
- 13: 
- 14: Do **NOT** use any Codex worktree at `~/.codex/worktrees/*/`.
- 15: 
- 16: ## What Was Already Run
- 17: 
- 18: These phases completed in the first run and their results exist in `results/`:
- 19: 
- 20: | Phase | Status | Output |
- 21: |-------|--------|--------|
- 22: | 1 | Done | `artifacts/main/mc_dataset.json` (14,961 questions) |
- 23: | 2 | Done | `results/baselines_tfidf.json` |
- 24: | 3 | Done | `results/ppo_default.json`, `results/ppo_model_default.zip` |
- 25: | 4 | Done | `results/eval_default.json` |
- 26: | 5 | Done | `checkpoints/ppo_t5/best_model/` (t5-base) |
- 27: | 6 | Done | `results/t5_comparison.json` |
- 28: | 7 | Done | `results/ppo_seed{1,2,3}.json` |
- 29: | 9 | Done | `results/baselines_distractor_{sbert,tfidf,catrandom}.json` |
- 30: | 10 | Done | `results/baselines_variable_k.json` |
- 31: | 11 eval | Done | `results/eval_ew_logistic.json` |
- 32: | 13 | Done | `results/baselines_k{2,3,5,6}.json` |
- 33: | 14 | Done | `results/ppo_simple.json`, `results/ppo_human_grounded.json` |
- 34: | 15 | Done | `results/baselines_seqbayes.json` |
- 35: | 16 | Done | `results/ppo_stop_only.json` |
- 36: | 17 | Done | `results/ppo_no_buzz.json` |
- 37: 
- 38: **Do NOT re-run any of the above.** Their outputs are authoritative.
- 39: 
- 40: ## What Still Needs to Run
- 41: 
- 42: ### Phase 8: Reward sweep
- 43: 
- 44: This script is hardwired to use `configs/smoke.yaml` and `artifacts/smoke/`.
- 45: It does not accept `--config` or `--mc-path`. It runs on the smoke dataset,
- 46: not the full dataset.
- 47: 
- 48: ```bash
- 49: python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000
- 50: ```
- 51: 
- 52: **Expected output:** printed sweep table to stdout. No JSON artifact is produced
- 53: for `results/`. Capture the output manually:
- 54: 
- 55: ```bash
- 56: python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000 | tee results/phase_8_sweep.txt
- 57: ```
- 58: 
- 59: **Estimated time:** ~5–15 minutes (smoke-scale, not full-scale).
- 60: 
- 61: ### Phase 11: EW-trained PPO
- 62: 
- 63: The previous run only did the EW *evaluation* (logistic opponent). This phase
- 64: trains a new PPO model optimizing for Expected Wins reward.
- 65: 
- 66: > **Important:** This overwrites `artifacts/main/ppo_model.zip`. The default
- 67: > PPO model is already archived at `results/ppo_model_default.zip`.
- 68: 
- 69: ```bash
- 70: # Restore baseline_summary.json if it was clobbered by Phase 13/15:
- 71: cp results/baselines_tfidf.json artifacts/main/baseline_summary.json
- 72: 
- 73: # Train PPO with Expected Wins reward
- 74: python scripts/train_ppo.py \
- 75:     --config configs/default.yaml \
- 76:     --mc-path artifacts/main/mc_dataset.json \
- 77:     --seed 13 \
- 78:     --deterministic-eval \
- 79:     likelihood.model=tfidf \
- 80:     environment.reward_mode=expected_wins \
- 81:     environment.opponent_buzz_model.type=logistic
- 82: cp artifacts/main/ppo_summary.json results/ppo_expected_wins.json
- 83: cp artifacts/main/ppo_model.zip results/ppo_model_expected_wins.zip
- 84: ```
- 85: 
- 86: **Checkpoint:**
- 87: ```bash
- 88: python3 -c "
- 89: import json
- 90: s = json.load(open('results/ppo_expected_wins.json'))
- 91: print(f'EW PPO: acc={s[\"buzz_accuracy\"]:.4f}, S_q={s[\"mean_sq\"]:.4f}, reward={s[\"mean_reward_like\"]:.4f}')
- 92: "
- 93: ```
- 94: 
- 95: **Estimated time:** ~2–3 minutes (TF-IDF beliefs, 100k timesteps).
- 96: 
- 97: ### Phase 11: EW empirical evaluation
- 98: 
- 99: The first run only evaluated with a logistic opponent. Also run with empirical:
-100: 
-101: ```bash
-102: python scripts/evaluate_all.py \
-103:     --config configs/default.yaml \
-104:     --mc-path artifacts/main/mc_dataset.json \
-105:     likelihood.model=tfidf \
-106:     environment.reward_mode=expected_wins \
-107:     environment.opponent_buzz_model.type=empirical
-108: cp artifacts/main/evaluation_report.json results/eval_expected_wins_empirical.json
-109: ```
-110: 
-111: **Checkpoint:**
-112: ```bash
-113: python3 -c "
-114: import json
-115: r = json.load(open('results/eval_expected_wins_empirical.json'))
-116: ew = r.get('expected_wins', {})
-117: fe = r['full_eval']
-118: print(f'EW (empirical): mean_ew={ew.get(\"mean_ew\", \"N/A\")}, S_q={fe[\"mean_sq\"]:.3f}')
-119: "
-120: ```
-121: 
-122: **Estimated time:** ~2 minutes.
-123: 
-124: ### Phase 13: K=4 explicit run (optional)
-125: 
-126: The first run used Phase 2's default K=4 baseline. For a complete K-sensitivity
-127: comparison with all 5 values run under identical conditions, you can explicitly
-128: run K=4:
-129: 
-130: ```bash
-131: python scripts/build_mc_dataset.py \
-132:     --config configs/default.yaml \
-133:     --output-dir "artifacts/k4" \
-134:     data.K=4 data.distractor_strategy=category_random
-135: python scripts/run_baselines.py \
-136:     --config configs/default.yaml \
-137:     --mc-path "artifacts/k4/mc_dataset.json" \
-138:     likelihood.model=tfidf
-139: cp artifacts/main/baseline_summary.json "results/baselines_k4.json"
-140: ```
-141: 
-142: **Estimated time:** ~2 minutes.
-143: 
-144: **Note:** This uses `category_random` distractors (like K=2,3,5,6) instead
-145: of the default `sbert_profile` that Phase 2 used. The K=4 point from Phase 2
-146: (`S_q=0.7413`) used SBERT distractors, so this gives a more controlled comparison.
-147: 
-148: ## Phases to Skip
-149: 
-150: | Phase | Reason |
-151: |-------|--------|
-152: | 12 (DSPy) | Not wired end-to-end; compiled scorer is not consumed by the factory. Requires API key. |
-153: | 18 (OpenAI embeddings) | Requires `OPENAI_API_KEY`. |
-154: | 19 (DSPy MIPROv2) | Requires API key. |
-155: 
-156: If you have an OpenAI API key available, you may run Phase 18:
-157: 
-158: ```bash
-159: pip install -e '.[openai]'
-160: export OPENAI_API_KEY=...
-161: python scripts/run_baselines.py \
-162:     --config configs/default.yaml \
-163:     --mc-path artifacts/main/mc_dataset.json \
-164:     likelihood.model=openai
-165: cp artifacts/main/baseline_summary.json results/baselines_openai.json
-166: ```
-167: 
-168: ## After All Phases Complete
-169: 
-170: ### Update FULL_RUN_REPORT.md
-171: 
-172: Add the new phase results to the per-phase table and final summary in
-173: `results/FULL_RUN_REPORT.md`. Include:
-174: 
-175: - Phase 8 sweep results (from captured stdout)
-176: - Phase 11 EW-trained PPO metrics
-177: - Phase 11 empirical EW evaluation metrics
-178: - Phase 13 K=4 explicit (if run)
-179: 
-180: ### Run the summary snippet
-181: 
-182: ```bash
-183: python3 -c "
-184: import json, glob
-185: for f in sorted(glob.glob('results/*.json')):
-186:     s = json.load(open(f))
-187:     name = f.split('/')[-1].replace('.json', '')
-188:     if 'full_eval' in s:
-189:         fe = s['full_eval']
-190:         print(f'{name}: acc={fe.get(\"buzz_accuracy\", \"N/A\")}, S_q={fe.get(\"mean_sq\", \"N/A\")}')
-191:     elif 't5_policy' in s:
-192:         for k in ('mlp_policy', 't5_policy'):
-193:             if k in s:
-194:                 m = s[k]
-195:                 print(f'{name}/{k}: acc={m.get(\"accuracy\", \"N/A\")}, S_q={m.get(\"mean_sq\", \"N/A\")}')
-196:     elif 'softmax_profile' in s:
-197:         sp = s['softmax_profile']
-198:         best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
-199:         print(f'{name}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", \"N/A\")}')
-200:     else:
-201:         acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
-202:         sq = s.get('mean_sq', 'N/A')
-203:         print(f'{name}: acc={acc}, S_q={sq}')
-204: "
-205: ```
-206: 
-207: ## Success Criteria
-208: 
-209: 1. Phase 8 sweep completes and output is captured
-210: 2. `results/ppo_expected_wins.json` exists with valid metrics
-211: 3. `results/eval_expected_wins_empirical.json` exists with `mean_ew`
-212: 4. `results/FULL_RUN_REPORT.md` is updated with all new results
-213: 5. No mixed likelihood regimes (all belief-feature phases use TF-IDF)
-214: 
-215: ## Estimated Total Time
-216: 
-217: ~15–25 minutes for all remaining phases. This is a short session compared
-218: to the original 3+ hour run.
-219: 
-220: ## Machine & Environment
-221: 
-222: - Apple M3 Max, 64 GB RAM, MPS available
-223: - Python 3.13.5 in `.venv/`
-224: - All remaining phases use TF-IDF (CPU-only, no MPS needed)
-225: - Phase 8 uses smoke config (50 questions, fast)
-````
-
 ## File: docs/cursor_reconciliation_process_for_upstr.md
 ````markdown
   1: # Reconciliation process for upstream PR #1
@@ -17727,488 +17498,233 @@ walkthrough.md
 61: | Timeline | 2 days |
 ````
 
-## File: docs/codex-full-run-prompt.md
+## File: docs/codex-remaining-phases-prompt.md
 ````markdown
-  1: # Codex Full-Scale Pipeline Run — Prompt
+  1: # Codex: Complete Remaining Pipeline Phases
   2: 
-  3: **Commit:** `efe6697` | **Generated:** 2026-03-15
-  4: 
-  5: ## Critical: Use the Main Repo, Not a Worktree
-  6: 
-  7: You MUST operate on your primary **qanta-buzzer** clone, referred to here as `$REPO_ROOT` (the directory that contains this `docs/` folder).
-  8: 
-  9: Do **NOT** use any Codex worktree (e.g., `$HOME/.codex/worktrees/*/qanta-buzzer`). Those are stale snapshots. If your current working directory is a worktree, `cd` to `$REPO_ROOT` before doing anything.
- 10: 
- 11: Verify you're in the right place:
- 12: ```bash
- 13: cd "$REPO_ROOT"
- 14: git rev-parse --short HEAD   # must be efe6697 or later
- 15: ```
- 16: 
- 17: ## Objective
- 18: 
- 19: Execute the complete qanta-buzzer pipeline end-to-end at full scale. Two purposes:
- 20: 
- 21: 1. **Produce real experimental results** for the CS234 final project
- 22: 2. **Create `results/FULL_RUN_REPORT.md`** as a handoff artifact with per-phase metrics, runbook issues, and a final comparison table
- 23: 
- 24: ## Machine & Environment
- 25: 
- 26: - **Hardware:** Apple M3 Max, 16 cores, 64 GB RAM, Apple MPS GPU
- 27: - **MPS:** auto-detected by `_best_torch_device()` in `models/likelihoods.py` and `models/t5_policy.py`
- 28: - **Python:** 3.13.5 in `.venv/`
- 29: - **Memory warning:** t5-base at full scale reaches ~41 GB on MPS. t5-large will OOM on this machine.
- 30: 
- 31: ## Setup
- 32: 
- 33: ```bash
- 34: cd "$REPO_ROOT"   # your main qanta-buzzer repo
- 35: source .venv/bin/activate
- 36: pip install -e .
- 37: python3 -c "import torch; print(f'MPS: {torch.backends.mps.is_available()}')"
- 38: pytest tests/ -q --tb=short    # expect: 350 passed, 3 skipped
- 39: ```
- 40: 
- 41: ## Execution Plan
- 42: 
- 43: ### Step 1: Core pipeline via wrapper (Phases 1–6, 11, 13–17)
- 44: 
- 45: ```bash
- 46: bash scripts/run_full_pipeline.sh --t5-model t5-base
- 47: ```
- 48: 
- 49: This runs the 4-wave DAG with `likelihood.model=tfidf` forced for all belief-feature phases. Logs for Waves 1/2/4 are in `results/phase_*.log`; Wave 3 prints to stdout. Logs are now unbuffered (`PYTHONUNBUFFERED=1`), but Phase 5 may still appear slow during supervised warm-start (normal).
- 50: 
- 51: Monitor in another terminal:
- 52: ```bash
- 53: tail -f results/phase_5.log       # T5 training
- 54: ps aux | grep train_t5_policy     # verify process is running
- 55: ```
- 56: 
- 57: **Estimated time:** ~3–4 hours for the full wrapper.
- 58: 
- 59: ### Step 2: Manual extension phases
- 60: 
- 61: After the wrapper completes, run these manually from the runbook's individual phase sections. All commands already include `likelihood.model=tfidf`.
- 62: 
- 63: | Phase | Description | Est. time |
- 64: |-------|-------------|-----------|
- 65: | 7 | Multi-seed PPO (seeds 1,2,3) | 1.5–3 hrs |
- 66: | 9 | Distractor comparison (sbert/tfidf/catrandom) | 15–30 min |
- 67: | 10 | Variable-K baselines | 15–30 min |
- 68: | 13 | K-sensitivity (K=2,3,4,5,6) | 30–60 min |
- 69: 
- 70: Skip Phases 8, 11 (EW PPO), 12, 18, 19 unless specifically needed.
- 71: 
- 72: ### Step 3: Generate the summary table
- 73: 
- 74: ```bash
- 75: python3 -c "
- 76: import json, glob
- 77: for f in sorted(glob.glob('results/*.json')):
- 78:     s = json.load(open(f))
- 79:     name = f.split('/')[-1].replace('.json', '')
- 80:     if 'full_eval' in s:
- 81:         fe = s['full_eval']
- 82:         print(f'{name}: acc={fe.get(\"buzz_accuracy\", \"N/A\")}, S_q={fe.get(\"mean_sq\", \"N/A\")}')
- 83:     elif 't5_policy' in s:
- 84:         for k in ('mlp_policy', 't5_policy'):
- 85:             if k in s:
- 86:                 m = s[k]
- 87:                 print(f'{name}/{k}: acc={m.get(\"accuracy\", \"N/A\")}, S_q={m.get(\"mean_sq\", \"N/A\")}')
- 88:     elif 'softmax_profile' in s:
- 89:         sp = s['softmax_profile']
- 90:         best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
- 91:         print(f'{name}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", \"N/A\")}')
- 92:     else:
- 93:         acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
- 94:         sq = s.get('mean_sq', 'N/A')
- 95:         print(f'{name}: acc={acc}, S_q={sq}')
- 96: "
- 97: ```
- 98: 
- 99: ## What to Document in `results/FULL_RUN_REPORT.md`
-100: 
-101: 1. **Per-phase results table:** phase number, exact command, wall-time, key metrics, MPS usage, pass/fail, deviations
-102: 2. **Runbook issues found:** severity, location, what was wrong, what you did, suggested fix
-103: 3. **Final results summary:** baseline comparison table, PPO vs baseline S_q, T5 vs MLP policy comparison, ablation summaries (reward/belief/policy/horizon modes), K-sensitivity data
-104: 4. **Artifact inventory:** `ls -lhR results/ artifacts/main/ checkpoints/` output
-105: 
-106: ## Decision-Making Guidelines
-107: 
-108: - If a command fails: diagnose, fix if obvious, document, continue
-109: - If a phase takes longer than estimated: note actual time, don't kill unless hung (no output 10+ min)
-110: - If MPS causes issues: set `PYTORCH_MPS_FALLBACK=1` or pass `device=cpu`, document the error
-111: - If `artifacts/main/` is clobbered: restore from `results/` archives (documented in runbook re-run notes)
-112: - Phase ordering: 4 after 2, 11 before 15, 9/13/15 sequential after 11
-113: 
-114: ## Success Criteria
-115: 
-116: 1. All core phases (1–6) complete with valid outputs
-117: 2. At least 4 extension phases complete
-118: 3. `results/FULL_RUN_REPORT.md` exists with metrics and comparison tables
-119: 4. No mixed likelihood regimes in comparisons
-````
-
-## File: AGENTS.md
-````markdown
-  1: # AGENTS.md
-  2: 
-  3: Canonical repo contract for all coding agents (Claude, Copilot, Cursor, etc.).
-  4: 
-  5: ## Project Overview
-  6: 
-  7: Stanford CS234 final project: a unified quiz bowl RL buzzer system with two tracks. The belief-feature pipeline builds MC tossups, scores answer profiles with TF-IDF / SBERT / T5 / optional OpenAI / optional DSPy, trains or compares buzzers, and evaluates with S_q, Expected Wins, and calibration metrics. The T5 policy pipeline provides supervised warm-start and PPO for an end-to-end text policy using factorized stop/answer semantics (`P(WAIT)` and `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`). Three opt-in extensions: Expected Wins reward mode, variable-K answer choices, and DSPy integration. Additional opt-in feature-port surfaces are available for stop-only PPO (`scripts/train_ppo.py --policy-mode stop_only`) and no-buzz horizon behavior (`environment.end_mode: no_buzz`). `qanta-buzzer` is the canonical repo. qb-rl compatibility is preserved through additive shims rather than structural rewrites.
-  8: 
-  9: ## Setup
- 10: 
- 11: Requires Python >= 3.11.
- 12: 
- 13: ```bash
- 14: python3 -m venv .venv && source .venv/bin/activate
- 15: pip install -U pip && pip install -e .
- 16: ```
+  3: **Date:** 2026-03-16
+  4: **Prerequisite:** The first full-scale run already completed Phases 1–7, 9–11 (eval), 13–17.
+  5: 
+  6: ## Critical: Use the Main Repo
+  7: 
+  8: ```bash
+  9: cd <repo-root>
+ 10: git rev-parse --short HEAD   # should be on main or pr-to-origin branch
+ 11: source .venv/bin/activate
+ 12: ```
+ 13: 
+ 14: Do **NOT** use any Codex worktree at `~/.codex/worktrees/*/`.
+ 15: 
+ 16: ## What Was Already Run
  17: 
- 18: Optional extras:
+ 18: These phases completed in the first run and their results exist in `results/`:
  19: 
- 20: ```bash
- 21: pip install -e '.[openai]'    # OpenAI embedding support
- 22: pip install -e '.[maskable]'  # MaskablePPO for variable-K
- 23: pip install -e '.[dspy]'      # DSPy LM-based scoring
- 24: ```
- 25: 
- 26: ## Architecture
- 27: 
- 28: | Package | Purpose |
- 29: |---------|---------|
- 30: | `qb_data/` | Data loading, answer profiles, stratified splits, MC construction, DSPy profiles |
- 31: | `qb_env/` | Gymnasium environment, text wrapper, opponent models, StopOnlyEnv wrapper (with action_masks), qb-rl shims |
- 32: | `models/` | Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy |
- 33: | `agents/` | Threshold, softmax-profile, sequential Bayes, PPO wrapper |
- 34: | `evaluation/` | S_q metric, Expected Wins, calibration, control experiments, plotting |
- 35: | `scripts/` | Pipeline entrypoints, DSPy compile, shared helpers |
- 36: | `training/` | T5 policy supervised + PPO trainers, hazard bridge utilities |
- 37: | `configs/` | YAML configuration files (default, smoke, t5_policy) |
- 38: 
- 39: ## Testing
- 40: 
- 41: 350 tests across 26 test files (3 skipped when optional extras not installed).
- 42: 
- 43: ```bash
- 44: pytest                    # full suite
- 45: pytest tests/test_qb_rl_bridge.py tests/test_factories.py tests/test_ppo_buzzer.py  # focused bridge/runtime checks
- 46: scripts/ci.sh             # CI entry point (runs pytest, exits nonzero on failure)
- 47: ```
- 48: 
- 49: ## Smoke Pipeline
- 50: 
- 51: Four-stage belief-feature smoke workflow. `--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`.
- 52: 
- 53: ```bash
- 54: python scripts/build_mc_dataset.py --smoke
- 55: python scripts/run_baselines.py --smoke
- 56: python scripts/train_ppo.py --smoke
- 57: python scripts/evaluate_all.py --smoke
- 58: ```
- 59: 
- 60: Or run all four stages via the wrapper script:
- 61: 
- 62: ```bash
- 63: scripts/manual-smoke.sh
- 64: ```
- 65: 
- 66: ## Full Pipeline
- 67: 
- 68: For the core pipeline and scripted extensions at full scale with 4-wave parallel execution:
- 69: 
- 70: ```bash
- 71: bash scripts/run_full_pipeline.sh --t5-model t5-base
- 72: ```
- 73: 
- 74: The script forces `likelihood.model=tfidf` for all belief-feature phases. Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19 require manual execution. See `docs/full-pipeline-runbook.md` for phase-by-phase details.
- 75: 
- 76: All pipeline scripts accept positional config overrides (e.g. `likelihood.model=tfidf`).
- 77: 
- 78: ## T5 Policy Pipeline
- 79: 
- 80: ```bash
- 81: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
- 82: python scripts/compare_policies.py --config configs/t5_policy.yaml
- 83: ```
- 84: 
- 85: Notes:
- 86: `scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the future hazard bridge. `--hazard-pretrain` intentionally raises `NotImplementedError` until that loop is implemented.
- 87: 
- 88: ## Configuration
- 89: 
- 90: | Config | Purpose |
- 91: |--------|---------|
- 92: | `configs/default.yaml` | Full runs with T5-large likelihood and 100k PPO timesteps |
- 93: | `configs/smoke.yaml` | Quick tests: 50 questions, TF-IDF likelihood, 3k PPO timesteps |
- 94: | `configs/t5_policy.yaml` | T5 policy pipeline: model, supervised, PPO, and data sections |
- 95: 
- 96: qb-rl config aliases are supported (e.g., `data.dataset`, `likelihood.sbert_name`, `environment.reward` as alias for `reward_mode`).
- 97: 
- 98: Additional environment options:
- 99: - `environment.end_mode: force_commit|no_buzz` controls horizon behavior
-100: - `environment.no_buzz_reward` is only used when `end_mode: no_buzz`
-101: 
-102: ## Compatibility Bridge
-103: 
-104: Old qb-rl import paths that still resolve:
-105: 
-106: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
-107: - `models.answer_profiles`
-108: - `agents.softmax_profile_buzzer`
-109: 
-110: OpenAI support is opt-in only. Default local workflows stay offline-friendly and do not require the `openai` package or `OPENAI_API_KEY`.
-111: 
-112: ## Conventions
-113: 
-114: - NumPy-style docstrings with Parameters/Returns sections
-115: - RL notation: `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
-116: - Prefer NumPy/PyTorch vectorized operations over loops in ML code
-117: - Explicit seeds for reproducibility (use 1, 2, 3 for multi-seed runs)
-````
-
-## File: .planning/codebase/CONCERNS.md
-````markdown
-  1: # Codebase Concerns
-  2: 
-  3: **Analysis Date:** 2026-02-24 (original), 2026-03-16 (runtime fixes update)
-  4: 
-  5: ## Recently Fixed (2026-03-16)
-  6: 
-  7: The following concerns were identified by ChatGPT 5.4 Pro and Copilot code review and are now resolved:
-  8: 
-  9: - **Expected Wins factory wiring:** `make_env_from_config()` now builds and passes `opponent_buzz_model` from config
- 10: - **Variable-K belief shape mismatch:** `reset()` and `precompute_beliefs()` use question-local K
- 11: - **Embedding cache cross-model contamination:** cache filename includes model variant (sbert_name, t5_name, openai_model); TF-IDF `load_cache()` is a no-op
- 12: - **No-buzz calibration bias:** unified via `calibration_pairs_at_buzz()` helper; all consumers (metrics, compare_policies, evaluate_all) use one codepath that skips `buzz_step < 0`
- 13: - **Padded action acceptance:** `step()` rejects padded buzz actions in variable-K mode
- 14: - **MaskablePPO wiring:** fully wired train/save/load/eval; `action_probabilities()` passes `action_masks` to the policy distribution when maskable
- 15: - **Deterministic eval loop:** `compare_policies.py` passes `question_idx=i` for per-question evaluation instead of random sampling with replacement
- 16: - **StopOnlyEnv action masks:** `action_masks()` exposes binary WAIT/BUZZ mask; BUZZ disabled when belief is unavailable
- 17: - **Eval config resolution:** `compare_policies.py` loads `config_used.json` sidecar from checkpoint dir instead of hardcoding TfIdfLikelihood
- 18: - **Config sidecar:** `train_ppo.py` saves `config_used.json` next to the checkpoint for eval reproducibility
- 19: 
- 20: ## Tech Debt
- 21: 
- 22: **PPO Training State Management:**
- 23: - Issue: Incomplete training state persistence. Only saves optimizer state, not learning rate schedule or model intermediate layers
- 24: - Files: `train_ppo.py:275-280` (save_checkpoint method)
- 25: - Impact: Cannot reliably resume PPO training from checkpoints. Restarting mid-training loses optimization momentum and may cause training instability
- 26: - Fix approach: Save complete trainer state including scheduler state, batch statistics, and gradient accumulation counters. Implement proper resume logic in `PPOTrainer.__init__`
- 27: 
- 28: **Gradient Accumulation Inconsistency:**
- 29: - Issue: Supervised training uses gradient accumulation (`SUPERVISED_GRAD_ACCUM_STEPS = 4`, effective batch = 32) but final backward pass may use incomplete accumulation
- 30: - Files: `train_supervised.py:88-100` (gradient accumulation logic)
- 31: - Impact: Effective batch size fluctuates at end of each epoch. Produces different optimization dynamics than intended
- 32: - Fix approach: Implement proper gradient accumulation with accumulation step counter and final step flush at epoch end
- 33: 
- 34: **Model Loading Bug:**
- 35: - Issue: `T5PolicyModel.load_pretrained()` attempts to reload entire T5 model from saved directory, but doesn't verify T5 config matches runtime config (e.g., MODEL_NAME in config.py)
- 36: - Files: `model.py:233-252` (load_pretrained classmethod)
- 37: - Impact: If config.MODEL_NAME changes after model is saved, loading may fail or load mismatched architecture. No version validation
- 38: - Fix approach: Store model name in saved checkpoint metadata, validate during load, emit clear error if mismatch detected
+ 20: | Phase | Status | Output |
+ 21: |-------|--------|--------|
+ 22: | 1 | Done | `artifacts/main/mc_dataset.json` (14,961 questions) |
+ 23: | 2 | Done | `results/baselines_tfidf.json` |
+ 24: | 3 | Done | `results/ppo_default.json`, `results/ppo_model_default.zip` |
+ 25: | 4 | Done | `results/eval_default.json` |
+ 26: | 5 | Done | `checkpoints/ppo_t5/best_model/` (t5-base) |
+ 27: | 6 | Done | `results/t5_comparison.json` |
+ 28: | 7 | Done | `results/ppo_seed{1,2,3}.json` |
+ 29: | 9 | Done | `results/baselines_distractor_{sbert,tfidf,catrandom}.json` |
+ 30: | 10 | Done | `results/baselines_variable_k.json` |
+ 31: | 11 eval | Done | `results/eval_ew_logistic.json` |
+ 32: | 13 | Done | `results/baselines_k{2,3,5,6}.json` |
+ 33: | 14 | Done | `results/ppo_simple.json`, `results/ppo_human_grounded.json` |
+ 34: | 15 | Done | `results/baselines_seqbayes.json` |
+ 35: | 16 | Done | `results/ppo_stop_only.json` |
+ 36: | 17 | Done | `results/ppo_no_buzz.json` |
+ 37: 
+ 38: **Do NOT re-run any of the above.** Their outputs are authoritative.
  39: 
- 40: **Device Handling Fragility:**
- 41: - Issue: Device detection logic scattered across files. Auto-detection in config happens at import time before CLI args are parsed
- 42: - Files: `config.py:37` (DEVICE auto-detection)
- 43: - Impact: Cannot override device via CLI after config import if GPU becomes unavailable mid-run. If running on different hardware after training, checkpoint loading may fail silently with wrong device
- 44: - Fix approach: Defer device detection until after CLI args parsed. Add validation in checkpoint loading to move tensors to specified device
- 45: 
- 46: ## Known Issues
+ 40: ## What Still Needs to Run
+ 41: 
+ 42: ### Phase 8: Reward sweep
+ 43: 
+ 44: This script is hardwired to use `configs/smoke.yaml` and `artifacts/smoke/`.
+ 45: It does not accept `--config` or `--mc-path`. It runs on the smoke dataset,
+ 46: not the full dataset.
  47: 
- 48: **Dataset Loading Multiple Fallback Levels:**
- 49: - Problem: Three-tier fallback (JSON splits → CSV → synthetic) with unclear priority and silent failures
- 50: - Files: `dataset.py:548-620` (setup_datasets function)
- 51: - Symptoms: If train_dataset.json exists but is corrupted, function silently falls back to CSV. If CSV path not found in multiple locations, generates synthetic data without clear indication to user
- 52: - Workaround: Always manually verify data/processed_dataset.json and ensure questions.csv in project root
- 53: - Recommendation: Add explicit error messages and --data-source flag to clarify which dataset is being used
+ 48: ```bash
+ 49: python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000
+ 50: ```
+ 51: 
+ 52: **Expected output:** printed sweep table to stdout, plus
+ 53: `artifacts/smoke/reward_sweep_results.json` and `.csv`. Capture stdout manually:
  54: 
- 55: **PPO Episode Collection Memory Leak Risk:**
- 56: - Problem: RolloutStep stores full tokenized input_ids and attention_mask for all steps. For long episodes (6-12 steps) and large batch sizes, memory accumulation is not properly cleaned
- 57: - Files: `train_ppo.py:28-40` (RolloutStep dataclass), `train_ppo.py:158-185` (collect_rollouts)
- 58: - Trigger: Running PPO with batch_size=32 and PPO_BATCH_SIZE=32 and max sequence length 512
- 59: - Workaround: Reduce PPO_BATCH_SIZE or SUPERVISED_BATCH_SIZE in config.py to reduce concurrent episodes
- 60: - Current mitigation: tensors stored on CPU (.cpu() calls in line 180), but never explicitly freed
- 61: 
- 62: **Distractor Generation Edge Case:**
- 63: - Problem: If not enough unique distractors exist across categories, falls back to padding with "[No answer X]" placeholders
- 64: - Files: `dataset.py:235-244` (answer choice padding)
- 65: - Symptoms: Model may learn spurious "placeholder detection" pattern that doesn't transfer to real data
- 66: - Workaround: Verify data/train_dataset.json has valid non-placeholder distractors for all questions before training
- 67: - Risk: Low for QANTA data, high for synthetic data with small category sets
+ 55: ```bash
+ 56: python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000 | tee results/phase_8_sweep.txt
+ 57: ```
+ 58: 
+ 59: **Estimated time:** ~5–15 minutes (smoke-scale, not full-scale).
+ 60: 
+ 61: ### Phase 11: EW-trained PPO
+ 62: 
+ 63: The previous run only did the EW *evaluation* (logistic opponent). This phase
+ 64: trains a new PPO model optimizing for Expected Wins reward.
+ 65: 
+ 66: > **Important:** This overwrites `artifacts/main/ppo_model.zip`. The default
+ 67: > PPO model is already archived at `results/ppo_model_default.zip`.
  68: 
- 69: ## Performance Bottlenecks
- 70: 
- 71: **T5 Encoder Forward Pass Repeated:**
- 72: - Problem: `model.py:137-149` (get_encoder_output) re-computes T5 encoder outputs on every forward pass, even in evaluation. Mean pooling is not cached
- 73: - Files: `model.py:137-149`, `model.py:195-219` (select_action), `model.py:245-284` (get_action_log_probs)
- 74: - Cause: Stateless design requires re-encoding same text representations multiple times per trajectory
- 75: - Improvement path: Implement single-encoder-output → multiple-head design with intermediate caching (requires refactoring forward signature)
- 76: - Current impact: ~30% overhead on inference time per action step
- 77: 
- 78: **Validation Evaluation is Full Forward Pass:**
- 79: - Problem: `evaluate_model` runs full episodes with intermediate observations for every validation sample, instead of just computing final answer accuracy
- 80: - Files: `metrics.py:180-240` (evaluate_model function)
- 81: - Cause: Captures realistic POMDP behavior but at cost of O(num_clues * num_samples) forward passes
- 82: - Improvement path: Add --eval-mode fast flag to use only complete questions during validation (like supervised training does)
- 83: - Current impact: Validation takes 3-5x longer than training epoch on small datasets
- 84: 
- 85: **Batch Padding Inefficient:**
- 86: - Problem: `train_ppo.py:222-238` manually pads sequences to max_len in batch with explicit loops
- 87: - Files: `train_ppo.py:222-238` (batch padding)
- 88: - Cause: Torch DataLoader not used; manual batch assembly needed
- 89: - Improvement path: Switch to DataLoader with collate_fn for automatic efficient padding
- 90: - Current impact: Negligible for small batches (<32) but becomes noticeable at 128+ batch size
- 91: 
- 92: ## Scaling Limits
- 93: 
- 94: **T5-Large Model Size:**
- 95: - Current capacity: 770M parameters requires 8GB+ GPU VRAM for training, 4GB for inference
- 96: - Limit: Cannot run on T4 GPUs (16GB) with batch_size > 16 due to gradient storage. OOM on consumer GPUs
- 97: - Scaling path: Switch MODEL_NAME to t5-base (220M, 2GB) or t5-small (60M, 0.5GB). Trade off quality for accessibility
- 98: - Configuration impact: No code changes needed, just update config.MODEL_NAME
- 99: 
-100: **Dataset Scale:**
-101: - Current: NUM_QUESTIONS = 500 loads fully in memory (~50MB JSON)
-102: - Limit: QANTA full dataset (~100K questions) requires memory-mapped loading or streaming
-103: - Scaling path: Implement streaming dataset with online sampling instead of loading all questions at once
-104: - Risk: If scaling to 100K questions, current train loop will crash on memory-full system
-105: 
-106: **Checkpoint Disk Usage:**
-107: - Current: Each PPO checkpoint saves full T5 model (~3GB) + policy head (1MB) + optimizer state (~3GB)
-108: - Limit: With SAVE_INTERVAL=50 and PPO_ITERATIONS=250, creates 15 checkpoints = 90GB total
-109: - Scaling path: Implement checkpoint pruning (keep only best + last 2) or use only_state_dict saving
+ 69: ```bash
+ 70: # Restore baseline_summary.json if it was clobbered by Phase 13/15:
+ 71: cp results/baselines_tfidf.json artifacts/main/baseline_summary.json
+ 72: 
+ 73: # Train PPO with Expected Wins reward
+ 74: python scripts/train_ppo.py \
+ 75:     --config configs/default.yaml \
+ 76:     --mc-path artifacts/main/mc_dataset.json \
+ 77:     --seed 13 \
+ 78:     --deterministic-eval \
+ 79:     likelihood.model=tfidf \
+ 80:     environment.reward_mode=expected_wins \
+ 81:     environment.opponent_buzz_model.type=logistic
+ 82: cp artifacts/main/ppo_summary.json results/ppo_expected_wins.json
+ 83: cp artifacts/main/ppo_model.zip results/ppo_model_expected_wins.zip
+ 84: ```
+ 85: 
+ 86: **Checkpoint:**
+ 87: ```bash
+ 88: python3 -c "
+ 89: import json
+ 90: s = json.load(open('results/ppo_expected_wins.json'))
+ 91: print(f'EW PPO: acc={s[\"buzz_accuracy\"]:.4f}, S_q={s[\"mean_sq\"]:.4f}, reward={s[\"mean_reward_like\"]:.4f}')
+ 92: "
+ 93: ```
+ 94: 
+ 95: **Estimated time:** ~2–3 minutes (TF-IDF beliefs, 100k timesteps).
+ 96: 
+ 97: ### Phase 11: EW empirical evaluation
+ 98: 
+ 99: The first run only evaluated with a logistic opponent. Also run with empirical:
+100: 
+101: ```bash
+102: python scripts/evaluate_all.py \
+103:     --config configs/default.yaml \
+104:     --mc-path artifacts/main/mc_dataset.json \
+105:     likelihood.model=tfidf \
+106:     environment.reward_mode=expected_wins \
+107:     environment.opponent_buzz_model.type=empirical
+108: cp artifacts/main/evaluation_report.json results/eval_expected_wins_empirical.json
+109: ```
 110: 
-111: ## Dependencies at Risk
-112: 
-113: **Transformers Version Pinning:**
-114: - Risk: `transformers>=4.30.0` is very loose. API changes between 4.30 and 5.0 may break T5ForConditionalGeneration interface
-115: - Current mitigation: Code tested on 4.35.2 only
-116: - Migration plan: Add explicit upper bound (transformers<5.0.0) and test on version boundaries. Consider moving to huggingface_hub for future T5 variants
-117: 
-118: **PyTorch Device API Deprecation:**
-119: - Risk: `torch.cuda.is_available()` and `torch.backends.mps.is_available()` may be deprecated in torch 2.5+
-120: - Files: `config.py:37-38`
-121: - Migration plan: Use `torch.device()` context manager. Already using correct API but consider future-proofing with version check
-122: 
-123: **scikit-learn Usage:**
-124: - Risk: Only used for `accuracy_score()`. Minimal but adds 30MB+ dependency for one function
-125: - Files: `metrics.py:9` (import), `metrics.py:73` (usage)
-126: - Migration plan: Replace with simple numpy implementation: `np.mean(predictions == targets)`
-127: 
-128: ## Missing Critical Features
+111: **Checkpoint:**
+112: ```bash
+113: python3 -c "
+114: import json
+115: r = json.load(open('results/eval_expected_wins_empirical.json'))
+116: ew = r.get('expected_wins', {})
+117: fe = r['full_eval']
+118: print(f'EW (empirical): mean_ew={ew.get(\"mean_ew\", \"N/A\")}, S_q={fe[\"mean_sq\"]:.3f}')
+119: "
+120: ```
+121: 
+122: **Estimated time:** ~2 minutes.
+123: 
+124: ### Phase 13: K=4 explicit run (optional)
+125: 
+126: The first run used Phase 2's default K=4 baseline. For a complete K-sensitivity
+127: comparison with all 5 values run under identical conditions, you can explicitly
+128: run K=4:
 129: 
-130: **No Experiment Tracking:**
-131: - What's missing: Metrics saved only to JSON files. No integration with W&B, MLflow, or TensorBoard
-132: - Blocks: Cannot easily compare runs, visualize training curves in real-time, or share results
-133: - Impact: Requires manual post-processing of history.json to analyze results
-134: - Fix approach: Add --log-wandb flag and optional wandb.log() calls (already commented in requirements.txt)
-135: 
-136: **No Early Stopping:**
-137: - What's missing: Training runs for fixed epochs/iterations regardless of validation performance
-138: - Blocks: Cannot prevent wasted compute on plateaued validation metrics
-139: - Files: `train_supervised.py` and `train_ppo.py` lack early stopping logic
-140: - Impact: 50 supervised epochs or 250 PPO iterations always execute even if val accuracy stagnates after epoch 20
-141: - Fix approach: Add patience parameter, track best val metric, stop if no improvement for N epochs
-142: 
-143: **No Hyperparameter Search:**
-144: - What's missing: All hyperparameters fixed in config.py or CLI args. No grid/random search
-145: - Blocks: Cannot systematically explore learning rates, batch sizes, PPO coefficients
-146: - Impact: Requires manual trial-and-error or separate script to sweep hyperparameters
-147: - Fix approach: Add optuna integration with config space specification
-148: 
-149: **No Distributed Training:**
-150: - What's missing: Single GPU only. T5 model and PPO training not distributed
-151: - Blocks: Cannot scale to multiple GPUs or leverage DDP/FSDP
-152: - Impact: Max throughput limited by single GPU memory and compute
-153: - Fix approach: Integrate PyTorch DistributedDataParallel for supervised; async PPO collection for RL phase
-154: 
-155: ## Test Coverage Gaps
-156: 
-157: **No Unit Tests for Core Logic:**
-158: - Untested: `QuizBowlEnvironment` step logic, reward computation, action decoding
-159: - Files: `environment.py:25-120` (step function, action handling)
-160: - Risk: Bug in reward calculation or action parsing could go unnoticed for weeks of training
-161: - Priority: High - core POMDP mechanics critical to RL performance
-162: - Recommendation: Add pytest suite for environment state transitions, edge cases (last clue, invalid actions)
-163: 
-164: **No Integration Tests:**
-165: - Untested: Full pipeline flow (supervised → PPO → eval) with real data
-166: - Files: `main.py` (mode='full'), data loading, checkpoint saving/loading chain
-167: - Risk: Changes to one module break full training pipeline silently
-168: - Priority: High - integration failures only discovered after long training run
-169: - Recommendation: Add smoke test that runs full pipeline on 10 synthetic questions with 1 epoch
-170: 
-171: **No Tests for Metrics Computation:**
-172: - Untested: ECE, Brier score, calibration calculations, especially edge cases
-173: - Files: `metrics.py:83-127` (compute_ece, compute_brier_score)
-174: - Risk: Metrics reported incorrectly but training appears normal
-175: - Priority: Medium - affects evaluation only, not training
-176: - Recommendation: Add tests for known metric values on synthetic 100-sample dataset
-177: 
-178: **No Tests for Dataset Loading:**
-179: - Untested: CSV parsing, distractor generation, edge cases with missing categories
-180: - Files: `dataset.py:148-245` (QANTADatasetLoader.load_from_csv)
-181: - Risk: Dataset corruption silently goes to training, producing spurious results
-182: - Priority: Medium - caught by spot-checking data but not automated
-183: 
-184: ## Fragile Areas
-185: 
-186: **PPO Advantage Normalization:**
-187: - Why fragile: Line `advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)` in train_ppo.py:306
-188: - Files: `train_ppo.py:306`
-189: - Fragility: If all advantages are identical (rare but possible early in training), std() becomes 0. Adding 1e-8 epsilon is defensive but unclear. No warning issued
-190: - Safe modification: Add assertion `assert advantages.std() > 1e-6, "Advantages have zero variance"` before normalization. Document epsilon choice
-191: - Test coverage: None
-192: 
-193: **T5 Tokenization Assumptions:**
-194: - Why fragile: Code assumes T5Tokenizer.pad_token_id is valid and consistent across saves
-195: - Files: `train_ppo.py:235` (uses self.model.tokenizer.pad_token_id)
-196: - Fragility: If tokenizer config is corrupted or different T5 variant used, pad_token_id might be None, causing TypeError
-197: - Safe modification: Add initialization validation: `assert model.tokenizer.pad_token_id is not None` after loading
-198: - Test coverage: None
-199: 
-200: **Action Decoding Logic:**
-201: - Why fragile: Complex bit-packing logic in `model.py:268-273` where action 0=WAIT, 1-4=SELECT answer
-202: - Files: `model.py:268-273` (combined_actions computation)
-203: - Fragility: Off-by-one errors easy to introduce when refactoring. Mismatch with environment.py:21 action space definition
-204: - Safe modification: Add comprehensive tests for all action combinations (0-4) round-tripping through encode/decode
-205: - Test coverage: None - only manual testing during development
+130: ```bash
+131: python scripts/build_mc_dataset.py \
+132:     --config configs/default.yaml \
+133:     --output-dir "artifacts/k4" \
+134:     data.K=4 data.distractor_strategy=category_random
+135: python scripts/run_baselines.py \
+136:     --config configs/default.yaml \
+137:     --mc-path "artifacts/k4/mc_dataset.json" \
+138:     likelihood.model=tfidf
+139: cp artifacts/main/baseline_summary.json "results/baselines_k4.json"
+140: ```
+141: 
+142: **Estimated time:** ~2 minutes.
+143: 
+144: **Note:** This uses `category_random` distractors (like K=2,3,5,6) instead
+145: of the default `sbert_profile` that Phase 2 used. The K=4 point from Phase 2
+146: (`S_q=0.7413`) used SBERT distractors, so this gives a more controlled comparison.
+147: 
+148: ## Phases to Skip
+149: 
+150: | Phase | Reason |
+151: |-------|--------|
+152: | 12 (DSPy) | Not wired end-to-end; compiled scorer is not consumed by the factory. Requires API key. |
+153: | 18 (OpenAI embeddings) | Requires `OPENAI_API_KEY`. |
+154: | 19 (DSPy MIPROv2) | Requires API key. |
+155: 
+156: If you have an OpenAI API key available, you may run Phase 18:
+157: 
+158: ```bash
+159: pip install -e '.[openai]'
+160: export OPENAI_API_KEY=...
+161: python scripts/run_baselines.py \
+162:     --config configs/default.yaml \
+163:     --mc-path artifacts/main/mc_dataset.json \
+164:     likelihood.model=openai
+165: cp artifacts/main/baseline_summary.json results/baselines_openai.json
+166: ```
+167: 
+168: ## After All Phases Complete
+169: 
+170: ### Update FULL_RUN_REPORT.md
+171: 
+172: Add the new phase results to the per-phase table and final summary in
+173: `results/FULL_RUN_REPORT.md`. Include:
+174: 
+175: - Phase 8 sweep results (from captured stdout)
+176: - Phase 11 EW-trained PPO metrics
+177: - Phase 11 empirical EW evaluation metrics
+178: - Phase 13 K=4 explicit (if run)
+179: 
+180: ### Run the summary snippet
+181: 
+182: ```bash
+183: python3 -c "
+184: import json, glob
+185: for f in sorted(glob.glob('results/*.json')):
+186:     s = json.load(open(f))
+187:     name = f.split('/')[-1].replace('.json', '')
+188:     if 'full_eval' in s:
+189:         fe = s['full_eval']
+190:         print(f'{name}: acc={fe.get(\"buzz_accuracy\", \"N/A\")}, S_q={fe.get(\"mean_sq\", \"N/A\")}')
+191:     elif 't5_policy' in s:
+192:         for k in ('mlp_policy', 't5_policy'):
+193:             if k in s:
+194:                 m = s[k]
+195:                 print(f'{name}/{k}: acc={m.get(\"accuracy\", \"N/A\")}, S_q={m.get(\"mean_sq\", \"N/A\")}')
+196:     elif 'softmax_profile' in s:
+197:         sp = s['softmax_profile']
+198:         best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+199:         print(f'{name}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", \"N/A\")}')
+200:     else:
+201:         acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
+202:         sq = s.get('mean_sq', 'N/A')
+203:         print(f'{name}: acc={acc}, S_q={sq}')
+204: "
+205: ```
 206: 
-207: **Environment Reset State:**
-208: - Why fragile: `QuizBowlEnvironment.reset()` must be called before first step(). No guard against calling step() without reset()
-209: - Files: `environment.py:60-68`, `train_ppo.py:159-184` (step called after reset in line 169 but reset called in line 165)
-210: - Fragility: If collect_rollouts loop exits early without resetting, next iteration may use stale environment state
-211: - Safe modification: Add `if not hasattr(self, '_initialized'): raise RuntimeError(...)` guard in step()
-212: - Test coverage: None
-213: 
-214: ## Security Considerations
-215: 
-216: **Model Checkpoint Integrity:**
-217: - Risk: Saving and loading T5 models from arbitrary directories without checksum verification
-218: - Files: `model.py:215-225` (save), `model.py:228-237` (load)
-219: - Current mitigation: None
-220: - Recommendations: Compute SHA256 hash of saved files, store in metadata.json, verify on load. Prevents accidental corruption or tampering
+207: ## Success Criteria
+208: 
+209: 1. Phase 8 sweep completes and output is captured
+210: 2. `results/ppo_expected_wins.json` exists with valid metrics
+211: 3. `results/eval_expected_wins_empirical.json` exists with `mean_ew`
+212: 4. `results/FULL_RUN_REPORT.md` is updated with all new results
+213: 5. No mixed likelihood regimes (all belief-feature phases use TF-IDF)
+214: 
+215: ## Estimated Total Time
+216: 
+217: ~15–25 minutes for all remaining phases. This is a short session compared
+218: to the original 3+ hour run.
+219: 
+220: ## Machine & Environment
 221: 
-222: **Tokenizer Injection Risk:**
-223: - Risk: Loading tokenizer from saved checkpoint directory could load modified tokenizer if directory is writable by other users
-224: - Files: `model.py:228` (T5Tokenizer.from_pretrained from directory)
-225: - Current mitigation: Standard permissions on checkpoint directory
-226: - Recommendations: Add explicit tokenizer config validation after load. Consider shipping tokenizer as code constant rather than file
-227: 
-228: **No Input Validation on User Data:**
-229: - Risk: Questions loaded from CSV or JSON with no schema validation. Text fields could contain adversarial inputs or injections
-230: - Files: `dataset.py:167-180` (CSV loading without validation)
-231: - Current mitigation: None
-232: - Recommendations: Add JSON schema validation. Sanitize text fields (max length, character set checks)
-233: 
-234: ---
-235: 
-236: *Concerns audit: 2026-02-24*
+222: - Apple M3 Max, 64 GB RAM, MPS available
+223: - Python 3.13.5 in `.venv/`
+224: - All remaining phases use TF-IDF (CPU-only, no MPS needed)
+225: - Phase 8 uses smoke config (50 questions, fast)
 ````
 
 ## File: .planning/codebase/CONVENTIONS.md
@@ -19438,297 +18954,488 @@ walkthrough.md
 360: </output>
 ````
 
-## File: docs/codex-full-clean-run-prompt.md
+## File: docs/codex-full-run-prompt.md
 ````markdown
-  1: # Codex: Full Clean Pipeline Run (All Non-API Phases)
+  1: # Codex Full-Scale Pipeline Run — Prompt
   2: 
-  3: **Generated:** 2026-03-16 | **Repo commit:** `6304875` (review-fixes branch)
+  3: **Commit:** `efe6697` | **Generated:** 2026-03-15
   4: 
-  5: ## Critical: Use the Main Repo
+  5: ## Critical: Use the Main Repo, Not a Worktree
   6: 
-  7: ```bash
-  8: cd /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer
-  9: git rev-parse --short HEAD
- 10: ```
- 11: 
- 12: Do **NOT** use any Codex worktree at `~/.codex/worktrees/*/`.
- 13: 
- 14: ## Objective
- 15: 
- 16: Run the complete qanta-buzzer pipeline from scratch — all phases except those
- 17: requiring OpenAI/DSPy API keys. This is a clean run on the codebase that
- 18: includes all runtime correctness fixes from PR #13: opponent model wiring,
- 19: variable-K belief shapes, model-variant-specific embedding cache, no-buzz
- 20: calibration, padded action guards, and full MaskablePPO train/load/eval wiring.
- 21: 
- 22: Produce `results/FULL_RUN_REPORT.md` as the canonical handoff artifact.
+  7: You MUST operate on your primary **qanta-buzzer** clone, referred to here as `$REPO_ROOT` (the directory that contains this `docs/` folder).
+  8: 
+  9: Do **NOT** use any Codex worktree (e.g., `$HOME/.codex/worktrees/*/qanta-buzzer`). Those are stale snapshots. If your current working directory is a worktree, `cd` to `$REPO_ROOT` before doing anything.
+ 10: 
+ 11: Verify you're in the right place:
+ 12: ```bash
+ 13: cd "$REPO_ROOT"
+ 14: git rev-parse --short HEAD   # must be efe6697 or later
+ 15: ```
+ 16: 
+ 17: ## Objective
+ 18: 
+ 19: Execute the complete qanta-buzzer pipeline end-to-end at full scale. Two purposes:
+ 20: 
+ 21: 1. **Produce real experimental results** for the CS234 final project
+ 22: 2. **Create `results/FULL_RUN_REPORT.md`** as a handoff artifact with per-phase metrics, runbook issues, and a final comparison table
  23: 
- 24: ## Machine
+ 24: ## Machine & Environment
  25: 
- 26: - Apple M3 Max, 16 cores, 64 GB RAM, MPS available
- 27: - Python 3.13.5 in `.venv/`
- 28: - Memory warning: t5-base at full scale reaches ~41 GB on MPS
- 29: 
- 30: ## Setup
- 31: 
- 32: ```bash
- 33: cd /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer
- 34: git checkout review-fixes
+ 26: - **Hardware:** Apple M3 Max, 16 cores, 64 GB RAM, Apple MPS GPU
+ 27: - **MPS:** auto-detected by `_best_torch_device()` in `models/likelihoods.py` and `models/t5_policy.py`
+ 28: - **Python:** 3.13.5 in `.venv/`
+ 29: - **Memory warning:** t5-base at full scale reaches ~41 GB on MPS. t5-large will OOM on this machine.
+ 30: 
+ 31: ## Setup
+ 32: 
+ 33: ```bash
+ 34: cd "$REPO_ROOT"   # your main qanta-buzzer repo
  35: source .venv/bin/activate
  36: pip install -e .
  37: python3 -c "import torch; print(f'MPS: {torch.backends.mps.is_available()}')"
  38: pytest tests/ -q --tb=short    # expect: 350 passed, 3 skipped
  39: ```
  40: 
- 41: ## Phase 0: Clean state
+ 41: ## Execution Plan
+ 42: 
+ 43: ### Step 1: Core pipeline via wrapper (Phases 1–6, 11, 13–17)
+ 44: 
+ 45: ```bash
+ 46: bash scripts/run_full_pipeline.sh --t5-model t5-base
+ 47: ```
+ 48: 
+ 49: This runs the 4-wave DAG with `likelihood.model=tfidf` forced for all belief-feature phases. Logs for Waves 1/2/4 are in `results/phase_*.log`; Wave 3 prints to stdout. Logs are now unbuffered (`PYTHONUNBUFFERED=1`), but Phase 5 may still appear slow during supervised warm-start (normal).
+ 50: 
+ 51: Monitor in another terminal:
+ 52: ```bash
+ 53: tail -f results/phase_5.log       # T5 training
+ 54: ps aux | grep train_t5_policy     # verify process is running
+ 55: ```
+ 56: 
+ 57: **Estimated time:** ~3–4 hours for the full wrapper.
+ 58: 
+ 59: ### Step 2: Manual extension phases
+ 60: 
+ 61: After the wrapper completes, run these manually from the runbook's individual phase sections. All commands already include `likelihood.model=tfidf`.
+ 62: 
+ 63: | Phase | Description | Est. time |
+ 64: |-------|-------------|-----------|
+ 65: | 7 | Multi-seed PPO (seeds 1,2,3) | 1.5–3 hrs |
+ 66: | 9 | Distractor comparison (sbert/tfidf/catrandom) | 15–30 min |
+ 67: | 10 | Variable-K baselines | 15–30 min |
+ 68: | 13 | K-sensitivity (K=2,3,4,5,6) | 30–60 min |
+ 69: 
+ 70: Skip Phases 8, 11 (EW PPO), 12, 18, 19 unless specifically needed.
+ 71: 
+ 72: ### Step 3: Generate the summary table
+ 73: 
+ 74: ```bash
+ 75: python3 -c "
+ 76: import json, glob
+ 77: for f in sorted(glob.glob('results/*.json')):
+ 78:     s = json.load(open(f))
+ 79:     name = f.split('/')[-1].replace('.json', '')
+ 80:     if 'full_eval' in s:
+ 81:         fe = s['full_eval']
+ 82:         print(f'{name}: acc={fe.get(\"buzz_accuracy\", \"N/A\")}, S_q={fe.get(\"mean_sq\", \"N/A\")}')
+ 83:     elif 't5_policy' in s:
+ 84:         for k in ('mlp_policy', 't5_policy'):
+ 85:             if k in s:
+ 86:                 m = s[k]
+ 87:                 print(f'{name}/{k}: acc={m.get(\"accuracy\", \"N/A\")}, S_q={m.get(\"mean_sq\", \"N/A\")}')
+ 88:     elif 'softmax_profile' in s:
+ 89:         sp = s['softmax_profile']
+ 90:         best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+ 91:         print(f'{name}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", \"N/A\")}')
+ 92:     else:
+ 93:         acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
+ 94:         sq = s.get('mean_sq', 'N/A')
+ 95:         print(f'{name}: acc={acc}, S_q={sq}')
+ 96: "
+ 97: ```
+ 98: 
+ 99: ## What to Document in `results/FULL_RUN_REPORT.md`
+100: 
+101: 1. **Per-phase results table:** phase number, exact command, wall-time, key metrics, MPS usage, pass/fail, deviations
+102: 2. **Runbook issues found:** severity, location, what was wrong, what you did, suggested fix
+103: 3. **Final results summary:** baseline comparison table, PPO vs baseline S_q, T5 vs MLP policy comparison, ablation summaries (reward/belief/policy/horizon modes), K-sensitivity data
+104: 4. **Artifact inventory:** `ls -lhR results/ artifacts/main/ checkpoints/` output
+105: 
+106: ## Decision-Making Guidelines
+107: 
+108: - If a command fails: diagnose, fix if obvious, document, continue
+109: - If a phase takes longer than estimated: note actual time, don't kill unless hung (no output 10+ min)
+110: - If MPS causes issues: set `PYTORCH_MPS_FALLBACK=1` or pass `device=cpu`, document the error
+111: - If `artifacts/main/` is clobbered: restore from `results/` archives (documented in runbook re-run notes)
+112: - Phase ordering: 4 after 2, 11 before 15, 9/13/15 sequential after 11
+113: 
+114: ## Success Criteria
+115: 
+116: 1. All core phases (1–6) complete with valid outputs
+117: 2. At least 4 extension phases complete
+118: 3. `results/FULL_RUN_REPORT.md` exists with metrics and comparison tables
+119: 4. No mixed likelihood regimes in comparisons
+````
+
+## File: AGENTS.md
+````markdown
+  1: # AGENTS.md
+  2: 
+  3: Canonical repo contract for all coding agents (Claude, Copilot, Cursor, etc.).
+  4: 
+  5: ## Project Overview
+  6: 
+  7: Stanford CS234 final project: a unified quiz bowl RL buzzer system with two tracks. The belief-feature pipeline builds MC tossups, scores answer profiles with TF-IDF / SBERT / T5 / optional OpenAI / optional DSPy, trains or compares buzzers, and evaluates with S_q, Expected Wins, and calibration metrics. The T5 policy pipeline provides supervised warm-start and PPO for an end-to-end text policy using factorized stop/answer semantics (`P(WAIT)` and `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`). Three opt-in extensions: Expected Wins reward mode, variable-K answer choices, and DSPy integration. Additional opt-in feature-port surfaces are available for stop-only PPO (`scripts/train_ppo.py --policy-mode stop_only`) and no-buzz horizon behavior (`environment.end_mode: no_buzz`). `qanta-buzzer` is the canonical repo. qb-rl compatibility is preserved through additive shims rather than structural rewrites.
+  8: 
+  9: ## Setup
+ 10: 
+ 11: Requires Python >= 3.11.
+ 12: 
+ 13: ```bash
+ 14: python3 -m venv .venv && source .venv/bin/activate
+ 15: pip install -U pip && pip install -e .
+ 16: ```
+ 17: 
+ 18: Optional extras:
+ 19: 
+ 20: ```bash
+ 21: pip install -e '.[openai]'    # OpenAI embedding support
+ 22: pip install -e '.[maskable]'  # MaskablePPO for variable-K
+ 23: pip install -e '.[dspy]'      # DSPy LM-based scoring
+ 24: ```
+ 25: 
+ 26: ## Architecture
+ 27: 
+ 28: | Package | Purpose |
+ 29: |---------|---------|
+ 30: | `qb_data/` | Data loading, answer profiles, stratified splits, MC construction, DSPy profiles |
+ 31: | `qb_env/` | Gymnasium environment, text wrapper, opponent models, StopOnlyEnv wrapper (with action_masks), qb-rl shims |
+ 32: | `models/` | Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy |
+ 33: | `agents/` | Threshold, softmax-profile, sequential Bayes, PPO wrapper |
+ 34: | `evaluation/` | S_q metric, Expected Wins, calibration, control experiments, plotting |
+ 35: | `scripts/` | Pipeline entrypoints, DSPy compile, shared helpers |
+ 36: | `training/` | T5 policy supervised + PPO trainers, hazard bridge utilities |
+ 37: | `configs/` | YAML configuration files (default, smoke, t5_policy) |
+ 38: 
+ 39: ## Testing
+ 40: 
+ 41: 350 tests across 26 test files (3 skipped when optional extras not installed).
  42: 
  43: ```bash
- 44: rm -rf artifacts/main/ artifacts/k* artifacts/distractor_* artifacts/variable_k/
- 45: rm -rf cache/embeddings/
- 46: rm -rf checkpoints/supervised/ checkpoints/ppo/ checkpoints/ppo_t5/
- 47: rm -rf results/
- 48: mkdir -p artifacts/main results
- 49: ```
+ 44: pytest                    # full suite
+ 45: pytest tests/test_qb_rl_bridge.py tests/test_factories.py tests/test_ppo_buzzer.py  # focused bridge/runtime checks
+ 46: scripts/ci.sh             # CI entry point (runs pytest, exits nonzero on failure)
+ 47: ```
+ 48: 
+ 49: ## Smoke Pipeline
  50: 
- 51: ## Execution Plan
+ 51: Four-stage belief-feature smoke workflow. `--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`.
  52: 
- 53: ### Step 1: Core pipeline via wrapper (Phases 1–6, 11, 13–17)
- 54: 
- 55: ```bash
- 56: bash scripts/run_full_pipeline.sh --t5-model t5-base 2>&1 | tee results/wrapper_stdout.log
- 57: ```
- 58: 
- 59: The wrapper runs a 4-wave DAG:
- 60: - **Wave 1 (parallel):** Phase 2 (TF-IDF baselines), Phase 3 (PPO), Phase 5 (T5 policy)
- 61: - **Wave 2 (sequential):** Phase 4 (evaluate), Phase 6 (compare), Phase 11 (EW eval), Phase 15 (belief mode)
- 62: - **Wave 3 (sequential):** Phase 14 (reward modes), Phase 16 (stop-only), Phase 17 (no-buzz)
- 63: - **Wave 4 (sequential):** Phase 13 (K-sensitivity: K=2,3,5,6)
- 64: 
- 65: All belief-feature phases use `likelihood.model=tfidf`. Phase 5 uses t5-base on MPS.
- 66: Logs for Waves 1/2/4 are in `results/phase_*.log` (unbuffered via `PYTHONUNBUFFERED=1`).
- 67: Wave 3 prints to stdout.
- 68: 
- 69: **Monitoring:**
+ 53: ```bash
+ 54: python scripts/build_mc_dataset.py --smoke
+ 55: python scripts/run_baselines.py --smoke
+ 56: python scripts/train_ppo.py --smoke
+ 57: python scripts/evaluate_all.py --smoke
+ 58: ```
+ 59: 
+ 60: Or run all four stages via the wrapper script:
+ 61: 
+ 62: ```bash
+ 63: scripts/manual-smoke.sh
+ 64: ```
+ 65: 
+ 66: ## Full Pipeline
+ 67: 
+ 68: For the core pipeline and scripted extensions at full scale with 4-wave parallel execution:
+ 69: 
  70: ```bash
- 71: tail -f results/phase_5.log       # T5 training (may be sparse during supervised warm-start)
- 72: ps aux | grep train_t5_policy     # verify process is running
- 73: ```
- 74: 
- 75: **Estimated time:** ~3–4 hours.
- 76: 
- 77: ### Step 2: Phase 7 — Multi-seed PPO
- 78: 
- 79: ```bash
- 80: for SEED in 1 2 3; do
- 81:     echo "=== Seed $SEED ==="
- 82:     python scripts/train_ppo.py \
- 83:         --config configs/default.yaml \
- 84:         --mc-path artifacts/main/mc_dataset.json \
- 85:         --seed $SEED \
- 86:         --deterministic-eval \
- 87:         likelihood.model=tfidf
- 88:     cp artifacts/main/ppo_summary.json "results/ppo_seed${SEED}.json"
- 89:     cp artifacts/main/ppo_model.zip "results/ppo_model_seed${SEED}.zip"
- 90: done
- 91: ```
- 92: 
- 93: **Estimated time:** ~6–10 minutes.
- 94: 
- 95: ### Step 3: Phase 8 — Reward sweep (smoke-scale)
- 96: 
- 97: ```bash
- 98: python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000 \
- 99:     | tee results/phase_8_sweep.txt
-100: ```
+ 71: bash scripts/run_full_pipeline.sh --t5-model t5-base
+ 72: ```
+ 73: 
+ 74: The script forces `likelihood.model=tfidf` for all belief-feature phases. Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19 require manual execution. See `docs/full-pipeline-runbook.md` for phase-by-phase details.
+ 75: 
+ 76: All pipeline scripts accept positional config overrides (e.g. `likelihood.model=tfidf`).
+ 77: 
+ 78: ## T5 Policy Pipeline
+ 79: 
+ 80: ```bash
+ 81: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
+ 82: python scripts/compare_policies.py --config configs/t5_policy.yaml
+ 83: ```
+ 84: 
+ 85: Notes:
+ 86: `scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the future hazard bridge. `--hazard-pretrain` intentionally raises `NotImplementedError` until that loop is implemented.
+ 87: 
+ 88: ## Configuration
+ 89: 
+ 90: | Config | Purpose |
+ 91: |--------|---------|
+ 92: | `configs/default.yaml` | Full runs with T5-large likelihood and 100k PPO timesteps |
+ 93: | `configs/smoke.yaml` | Quick tests: 50 questions, TF-IDF likelihood, 3k PPO timesteps |
+ 94: | `configs/t5_policy.yaml` | T5 policy pipeline: model, supervised, PPO, and data sections |
+ 95: 
+ 96: qb-rl config aliases are supported (e.g., `data.dataset`, `likelihood.sbert_name`, `environment.reward` as alias for `reward_mode`).
+ 97: 
+ 98: Additional environment options:
+ 99: - `environment.end_mode: force_commit|no_buzz` controls horizon behavior
+100: - `environment.no_buzz_reward` is only used when `end_mode: no_buzz`
 101: 
-102: Note: this script uses `configs/smoke.yaml` and `artifacts/smoke/` — it does
-103: not run on the full dataset. It also writes `artifacts/smoke/reward_sweep_results.json`.
-104: 
-105: **Estimated time:** ~5–15 minutes.
-106: 
-107: ### Step 4: Phase 9 — Distractor comparison
-108: 
-109: ```bash
-110: mkdir -p artifacts/distractor_comparison
+102: ## Compatibility Bridge
+103: 
+104: Old qb-rl import paths that still resolve:
+105: 
+106: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
+107: - `models.answer_profiles`
+108: - `agents.softmax_profile_buzzer`
+109: 
+110: OpenAI support is opt-in only. Default local workflows stay offline-friendly and do not require the `openai` package or `OPENAI_API_KEY`.
 111: 
-112: # SBERT distractors (default — reuse Phase 1 dataset)
-113: cp artifacts/main/mc_dataset.json artifacts/distractor_comparison/mc_sbert.json
-114: 
-115: # TF-IDF profile distractors
-116: python scripts/build_mc_dataset.py \
-117:     --config configs/default.yaml \
-118:     --output-dir artifacts/distractor_comparison/tfidf \
-119:     data.distractor_strategy=tfidf_profile
-120: cp artifacts/distractor_comparison/tfidf/mc_dataset.json artifacts/distractor_comparison/mc_tfidf.json
-121: 
-122: # Category-random distractors
-123: python scripts/build_mc_dataset.py \
-124:     --config configs/default.yaml \
-125:     --output-dir artifacts/distractor_comparison/catrandom \
-126:     data.distractor_strategy=category_random
-127: cp artifacts/distractor_comparison/catrandom/mc_dataset.json artifacts/distractor_comparison/mc_catrandom.json
-128: 
-129: for STRATEGY in sbert tfidf catrandom; do
-130:     echo "=== Baselines on $STRATEGY distractors ==="
-131:     python scripts/run_baselines.py \
-132:         --config configs/default.yaml \
-133:         --mc-path "artifacts/distractor_comparison/mc_${STRATEGY}.json" \
-134:         likelihood.model=tfidf
-135:     cp artifacts/main/baseline_summary.json "results/baselines_distractor_${STRATEGY}.json"
-136: done
-137: ```
-138: 
-139: **Estimated time:** ~7–10 minutes.
-140: 
-141: ### Step 5: Phase 10 — Variable-K baselines
+112: ## Conventions
+113: 
+114: - NumPy-style docstrings with Parameters/Returns sections
+115: - RL notation: `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
+116: - Prefer NumPy/PyTorch vectorized operations over loops in ML code
+117: - Explicit seeds for reproducibility (use 1, 2, 3 for multi-seed runs)
+````
+
+## File: .planning/codebase/CONCERNS.md
+````markdown
+  1: # Codebase Concerns
+  2: 
+  3: **Analysis Date:** 2026-02-24 (original), 2026-03-16 (runtime fixes update)
+  4: 
+  5: ## Recently Fixed (2026-03-16)
+  6: 
+  7: The following concerns were identified by ChatGPT 5.4 Pro and Copilot code review and are now resolved:
+  8: 
+  9: - **Expected Wins factory wiring:** `make_env_from_config()` now builds and passes `opponent_buzz_model` from config
+ 10: - **Variable-K belief shape mismatch:** `reset()` and `precompute_beliefs()` use question-local K
+ 11: - **Embedding cache cross-model contamination:** cache filename includes model variant (sbert_name, t5_name, openai_model); TF-IDF `load_cache()` is a no-op
+ 12: - **No-buzz calibration bias:** unified via `calibration_pairs_at_buzz()` helper; all consumers (metrics, compare_policies, evaluate_all) use one codepath that skips `buzz_step < 0`
+ 13: - **Padded action acceptance:** `step()` rejects padded buzz actions in variable-K mode
+ 14: - **MaskablePPO wiring:** fully wired train/save/load/eval; `action_probabilities()` passes `action_masks` to the policy distribution when maskable
+ 15: - **Deterministic eval loop:** `compare_policies.py` passes `question_idx=i` for per-question evaluation instead of random sampling with replacement
+ 16: - **StopOnlyEnv action masks:** `action_masks()` exposes binary WAIT/BUZZ mask; BUZZ disabled when belief is unavailable
+ 17: - **Eval config resolution:** `compare_policies.py` loads `config_used.json` sidecar from checkpoint dir instead of hardcoding TfIdfLikelihood
+ 18: - **Config sidecar:** `train_ppo.py` saves `config_used.json` next to the checkpoint for eval reproducibility
+ 19: 
+ 20: ## Tech Debt
+ 21: 
+ 22: **PPO Training State Management:**
+ 23: - Issue: Incomplete training state persistence. Only saves optimizer state, not learning rate schedule or model intermediate layers
+ 24: - Files: `train_ppo.py:275-280` (save_checkpoint method)
+ 25: - Impact: Cannot reliably resume PPO training from checkpoints. Restarting mid-training loses optimization momentum and may cause training instability
+ 26: - Fix approach: Save complete trainer state including scheduler state, batch statistics, and gradient accumulation counters. Implement proper resume logic in `PPOTrainer.__init__`
+ 27: 
+ 28: **Gradient Accumulation Inconsistency:**
+ 29: - Issue: Supervised training uses gradient accumulation (`SUPERVISED_GRAD_ACCUM_STEPS = 4`, effective batch = 32) but final backward pass may use incomplete accumulation
+ 30: - Files: `train_supervised.py:88-100` (gradient accumulation logic)
+ 31: - Impact: Effective batch size fluctuates at end of each epoch. Produces different optimization dynamics than intended
+ 32: - Fix approach: Implement proper gradient accumulation with accumulation step counter and final step flush at epoch end
+ 33: 
+ 34: **Model Loading Bug:**
+ 35: - Issue: `T5PolicyModel.load_pretrained()` attempts to reload entire T5 model from saved directory, but doesn't verify T5 config matches runtime config (e.g., MODEL_NAME in config.py)
+ 36: - Files: `model.py:233-252` (load_pretrained classmethod)
+ 37: - Impact: If config.MODEL_NAME changes after model is saved, loading may fail or load mismatched architecture. No version validation
+ 38: - Fix approach: Store model name in saved checkpoint metadata, validate during load, emit clear error if mismatch detected
+ 39: 
+ 40: **Device Handling Fragility:**
+ 41: - Issue: Device detection logic scattered across files. Auto-detection in config happens at import time before CLI args are parsed
+ 42: - Files: `config.py:37` (DEVICE auto-detection)
+ 43: - Impact: Cannot override device via CLI after config import if GPU becomes unavailable mid-run. If running on different hardware after training, checkpoint loading may fail silently with wrong device
+ 44: - Fix approach: Defer device detection until after CLI args parsed. Add validation in checkpoint loading to move tensors to specified device
+ 45: 
+ 46: ## Known Issues
+ 47: 
+ 48: **Dataset Loading Multiple Fallback Levels:**
+ 49: - Problem: Three-tier fallback (JSON splits → CSV → synthetic) with unclear priority and silent failures
+ 50: - Files: `dataset.py:548-620` (setup_datasets function)
+ 51: - Symptoms: If train_dataset.json exists but is corrupted, function silently falls back to CSV. If CSV path not found in multiple locations, generates synthetic data without clear indication to user
+ 52: - Workaround: Always manually verify data/processed_dataset.json and ensure questions.csv in project root
+ 53: - Recommendation: Add explicit error messages and --data-source flag to clarify which dataset is being used
+ 54: 
+ 55: **PPO Episode Collection Memory Leak Risk:**
+ 56: - Problem: RolloutStep stores full tokenized input_ids and attention_mask for all steps. For long episodes (6-12 steps) and large batch sizes, memory accumulation is not properly cleaned
+ 57: - Files: `train_ppo.py:28-40` (RolloutStep dataclass), `train_ppo.py:158-185` (collect_rollouts)
+ 58: - Trigger: Running PPO with batch_size=32 and PPO_BATCH_SIZE=32 and max sequence length 512
+ 59: - Workaround: Reduce PPO_BATCH_SIZE or SUPERVISED_BATCH_SIZE in config.py to reduce concurrent episodes
+ 60: - Current mitigation: tensors stored on CPU (.cpu() calls in line 180), but never explicitly freed
+ 61: 
+ 62: **Distractor Generation Edge Case:**
+ 63: - Problem: If not enough unique distractors exist across categories, falls back to padding with "[No answer X]" placeholders
+ 64: - Files: `dataset.py:235-244` (answer choice padding)
+ 65: - Symptoms: Model may learn spurious "placeholder detection" pattern that doesn't transfer to real data
+ 66: - Workaround: Verify data/train_dataset.json has valid non-placeholder distractors for all questions before training
+ 67: - Risk: Low for QANTA data, high for synthetic data with small category sets
+ 68: 
+ 69: ## Performance Bottlenecks
+ 70: 
+ 71: **T5 Encoder Forward Pass Repeated:**
+ 72: - Problem: `model.py:137-149` (get_encoder_output) re-computes T5 encoder outputs on every forward pass, even in evaluation. Mean pooling is not cached
+ 73: - Files: `model.py:137-149`, `model.py:195-219` (select_action), `model.py:245-284` (get_action_log_probs)
+ 74: - Cause: Stateless design requires re-encoding same text representations multiple times per trajectory
+ 75: - Improvement path: Implement single-encoder-output → multiple-head design with intermediate caching (requires refactoring forward signature)
+ 76: - Current impact: ~30% overhead on inference time per action step
+ 77: 
+ 78: **Validation Evaluation is Full Forward Pass:**
+ 79: - Problem: `evaluate_model` runs full episodes with intermediate observations for every validation sample, instead of just computing final answer accuracy
+ 80: - Files: `metrics.py:180-240` (evaluate_model function)
+ 81: - Cause: Captures realistic POMDP behavior but at cost of O(num_clues * num_samples) forward passes
+ 82: - Improvement path: Add --eval-mode fast flag to use only complete questions during validation (like supervised training does)
+ 83: - Current impact: Validation takes 3-5x longer than training epoch on small datasets
+ 84: 
+ 85: **Batch Padding Inefficient:**
+ 86: - Problem: `train_ppo.py:222-238` manually pads sequences to max_len in batch with explicit loops
+ 87: - Files: `train_ppo.py:222-238` (batch padding)
+ 88: - Cause: Torch DataLoader not used; manual batch assembly needed
+ 89: - Improvement path: Switch to DataLoader with collate_fn for automatic efficient padding
+ 90: - Current impact: Negligible for small batches (<32) but becomes noticeable at 128+ batch size
+ 91: 
+ 92: ## Scaling Limits
+ 93: 
+ 94: **T5-Large Model Size:**
+ 95: - Current capacity: 770M parameters requires 8GB+ GPU VRAM for training, 4GB for inference
+ 96: - Limit: Cannot run on T4 GPUs (16GB) with batch_size > 16 due to gradient storage. OOM on consumer GPUs
+ 97: - Scaling path: Switch MODEL_NAME to t5-base (220M, 2GB) or t5-small (60M, 0.5GB). Trade off quality for accessibility
+ 98: - Configuration impact: No code changes needed, just update config.MODEL_NAME
+ 99: 
+100: **Dataset Scale:**
+101: - Current: NUM_QUESTIONS = 500 loads fully in memory (~50MB JSON)
+102: - Limit: QANTA full dataset (~100K questions) requires memory-mapped loading or streaming
+103: - Scaling path: Implement streaming dataset with online sampling instead of loading all questions at once
+104: - Risk: If scaling to 100K questions, current train loop will crash on memory-full system
+105: 
+106: **Checkpoint Disk Usage:**
+107: - Current: Each PPO checkpoint saves full T5 model (~3GB) + policy head (1MB) + optimizer state (~3GB)
+108: - Limit: With SAVE_INTERVAL=50 and PPO_ITERATIONS=250, creates 15 checkpoints = 90GB total
+109: - Scaling path: Implement checkpoint pruning (keep only best + last 2) or use only_state_dict saving
+110: 
+111: ## Dependencies at Risk
+112: 
+113: **Transformers Version Pinning:**
+114: - Risk: `transformers>=4.30.0` is very loose. API changes between 4.30 and 5.0 may break T5ForConditionalGeneration interface
+115: - Current mitigation: Code tested on 4.35.2 only
+116: - Migration plan: Add explicit upper bound (transformers<5.0.0) and test on version boundaries. Consider moving to huggingface_hub for future T5 variants
+117: 
+118: **PyTorch Device API Deprecation:**
+119: - Risk: `torch.cuda.is_available()` and `torch.backends.mps.is_available()` may be deprecated in torch 2.5+
+120: - Files: `config.py:37-38`
+121: - Migration plan: Use `torch.device()` context manager. Already using correct API but consider future-proofing with version check
+122: 
+123: **scikit-learn Usage:**
+124: - Risk: Only used for `accuracy_score()`. Minimal but adds 30MB+ dependency for one function
+125: - Files: `metrics.py:9` (import), `metrics.py:73` (usage)
+126: - Migration plan: Replace with simple numpy implementation: `np.mean(predictions == targets)`
+127: 
+128: ## Missing Critical Features
+129: 
+130: **No Experiment Tracking:**
+131: - What's missing: Metrics saved only to JSON files. No integration with W&B, MLflow, or TensorBoard
+132: - Blocks: Cannot easily compare runs, visualize training curves in real-time, or share results
+133: - Impact: Requires manual post-processing of history.json to analyze results
+134: - Fix approach: Add --log-wandb flag and optional wandb.log() calls (already commented in requirements.txt)
+135: 
+136: **No Early Stopping:**
+137: - What's missing: Training runs for fixed epochs/iterations regardless of validation performance
+138: - Blocks: Cannot prevent wasted compute on plateaued validation metrics
+139: - Files: `train_supervised.py` and `train_ppo.py` lack early stopping logic
+140: - Impact: 50 supervised epochs or 250 PPO iterations always execute even if val accuracy stagnates after epoch 20
+141: - Fix approach: Add patience parameter, track best val metric, stop if no improvement for N epochs
 142: 
-143: ```bash
-144: mkdir -p artifacts/variable_k
-145: python scripts/build_mc_dataset.py \
-146:     --config configs/default.yaml \
-147:     --output-dir artifacts/variable_k \
-148:     data.variable_K=true data.min_K=2 data.max_K=6 data.K=6 \
-149:     data.distractor_strategy=category_random
-150: 
-151: python scripts/run_baselines.py \
-152:     --config configs/default.yaml \
-153:     --mc-path artifacts/variable_k/mc_dataset.json \
-154:     likelihood.model=tfidf
-155: cp artifacts/main/baseline_summary.json results/baselines_variable_k.json
-156: ```
-157: 
-158: **Estimated time:** ~2–3 minutes.
-159: 
-160: ### Step 6: Phase 11 extended — EW-trained PPO + empirical eval
-161: 
-162: ```bash
-163: # Restore baseline_summary.json (clobbered by Phase 13/15)
-164: cp results/baselines_tfidf.json artifacts/main/baseline_summary.json
-165: 
-166: # Train PPO with Expected Wins reward
-167: python scripts/train_ppo.py \
-168:     --config configs/default.yaml \
-169:     --mc-path artifacts/main/mc_dataset.json \
-170:     --seed 13 \
-171:     --deterministic-eval \
-172:     likelihood.model=tfidf \
-173:     environment.reward_mode=expected_wins \
-174:     environment.opponent_buzz_model.type=logistic
-175: cp artifacts/main/ppo_summary.json results/ppo_expected_wins.json
-176: cp artifacts/main/ppo_model.zip results/ppo_model_expected_wins.zip
+143: **No Hyperparameter Search:**
+144: - What's missing: All hyperparameters fixed in config.py or CLI args. No grid/random search
+145: - Blocks: Cannot systematically explore learning rates, batch sizes, PPO coefficients
+146: - Impact: Requires manual trial-and-error or separate script to sweep hyperparameters
+147: - Fix approach: Add optuna integration with config space specification
+148: 
+149: **No Distributed Training:**
+150: - What's missing: Single GPU only. T5 model and PPO training not distributed
+151: - Blocks: Cannot scale to multiple GPUs or leverage DDP/FSDP
+152: - Impact: Max throughput limited by single GPU memory and compute
+153: - Fix approach: Integrate PyTorch DistributedDataParallel for supervised; async PPO collection for RL phase
+154: 
+155: ## Test Coverage Gaps
+156: 
+157: **No Unit Tests for Core Logic:**
+158: - Untested: `QuizBowlEnvironment` step logic, reward computation, action decoding
+159: - Files: `environment.py:25-120` (step function, action handling)
+160: - Risk: Bug in reward calculation or action parsing could go unnoticed for weeks of training
+161: - Priority: High - core POMDP mechanics critical to RL performance
+162: - Recommendation: Add pytest suite for environment state transitions, edge cases (last clue, invalid actions)
+163: 
+164: **No Integration Tests:**
+165: - Untested: Full pipeline flow (supervised → PPO → eval) with real data
+166: - Files: `main.py` (mode='full'), data loading, checkpoint saving/loading chain
+167: - Risk: Changes to one module break full training pipeline silently
+168: - Priority: High - integration failures only discovered after long training run
+169: - Recommendation: Add smoke test that runs full pipeline on 10 synthetic questions with 1 epoch
+170: 
+171: **No Tests for Metrics Computation:**
+172: - Untested: ECE, Brier score, calibration calculations, especially edge cases
+173: - Files: `metrics.py:83-127` (compute_ece, compute_brier_score)
+174: - Risk: Metrics reported incorrectly but training appears normal
+175: - Priority: Medium - affects evaluation only, not training
+176: - Recommendation: Add tests for known metric values on synthetic 100-sample dataset
 177: 
-178: # Empirical opponent eval
-179: python scripts/evaluate_all.py \
-180:     --config configs/default.yaml \
-181:     --mc-path artifacts/main/mc_dataset.json \
-182:     likelihood.model=tfidf \
-183:     environment.reward_mode=expected_wins \
-184:     environment.opponent_buzz_model.type=empirical
-185: cp artifacts/main/evaluation_report.json results/eval_expected_wins_empirical.json
-186: ```
-187: 
-188: **Estimated time:** ~5 minutes.
-189: 
-190: ### Step 7: Phase 13 supplement — explicit K=4
-191: 
-192: ```bash
-193: python scripts/build_mc_dataset.py \
-194:     --config configs/default.yaml \
-195:     --output-dir "artifacts/k4" \
-196:     data.K=4 data.distractor_strategy=category_random
-197: python scripts/run_baselines.py \
-198:     --config configs/default.yaml \
-199:     --mc-path "artifacts/k4/mc_dataset.json" \
-200:     likelihood.model=tfidf
-201: cp artifacts/main/baseline_summary.json "results/baselines_k4.json"
-202: ```
-203: 
-204: **Estimated time:** ~2 minutes.
-205: 
-206: ## Phases Skipped (require API keys)
-207: 
-208: | Phase | Reason |
-209: |-------|--------|
-210: | 12 | DSPy compile — not wired end-to-end, requires LM API key |
-211: | 18 | OpenAI embeddings — requires OPENAI_API_KEY |
-212: | 19 | DSPy MIPROv2 — requires LM API key |
+178: **No Tests for Dataset Loading:**
+179: - Untested: CSV parsing, distractor generation, edge cases with missing categories
+180: - Files: `dataset.py:148-245` (QANTADatasetLoader.load_from_csv)
+181: - Risk: Dataset corruption silently goes to training, producing spurious results
+182: - Priority: Medium - caught by spot-checking data but not automated
+183: 
+184: ## Fragile Areas
+185: 
+186: **PPO Advantage Normalization:**
+187: - Why fragile: Line `advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)` in train_ppo.py:306
+188: - Files: `train_ppo.py:306`
+189: - Fragility: If all advantages are identical (rare but possible early in training), std() becomes 0. Adding 1e-8 epsilon is defensive but unclear. No warning issued
+190: - Safe modification: Add assertion `assert advantages.std() > 1e-6, "Advantages have zero variance"` before normalization. Document epsilon choice
+191: - Test coverage: None
+192: 
+193: **T5 Tokenization Assumptions:**
+194: - Why fragile: Code assumes T5Tokenizer.pad_token_id is valid and consistent across saves
+195: - Files: `train_ppo.py:235` (uses self.model.tokenizer.pad_token_id)
+196: - Fragility: If tokenizer config is corrupted or different T5 variant used, pad_token_id might be None, causing TypeError
+197: - Safe modification: Add initialization validation: `assert model.tokenizer.pad_token_id is not None` after loading
+198: - Test coverage: None
+199: 
+200: **Action Decoding Logic:**
+201: - Why fragile: Complex bit-packing logic in `model.py:268-273` where action 0=WAIT, 1-4=SELECT answer
+202: - Files: `model.py:268-273` (combined_actions computation)
+203: - Fragility: Off-by-one errors easy to introduce when refactoring. Mismatch with environment.py:21 action space definition
+204: - Safe modification: Add comprehensive tests for all action combinations (0-4) round-tripping through encode/decode
+205: - Test coverage: None - only manual testing during development
+206: 
+207: **Environment Reset State:**
+208: - Why fragile: `QuizBowlEnvironment.reset()` must be called before first step(). No guard against calling step() without reset()
+209: - Files: `environment.py:60-68`, `train_ppo.py:159-184` (step called after reset in line 169 but reset called in line 165)
+210: - Fragility: If collect_rollouts loop exits early without resetting, next iteration may use stale environment state
+211: - Safe modification: Add `if not hasattr(self, '_initialized'): raise RuntimeError(...)` guard in step()
+212: - Test coverage: None
 213: 
-214: ## After All Phases Complete
+214: ## Security Considerations
 215: 
-216: ### Generate summary table
-217: 
-218: ```bash
-219: python3 -c "
-220: import json, glob
-221: for f in sorted(glob.glob('results/*.json')):
-222:     s = json.load(open(f))
-223:     name = f.split('/')[-1].replace('.json', '')
-224:     if 'full_eval' in s:
-225:         fe = s['full_eval']
-226:         print(f'{name}: acc={fe.get(\"buzz_accuracy\", \"N/A\")}, S_q={fe.get(\"mean_sq\", \"N/A\")}')
-227:     elif 't5_policy' in s:
-228:         for k in ('mlp_policy', 't5_policy'):
-229:             if k in s:
-230:                 m = s[k]
-231:                 print(f'{name}/{k}: acc={m.get(\"accuracy\", \"N/A\")}, S_q={m.get(\"mean_sq\", \"N/A\")}')
-232:     elif 'softmax_profile' in s:
-233:         sp = s['softmax_profile']
-234:         best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
-235:         print(f'{name}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", \"N/A\")}')
-236:     else:
-237:         acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
-238:         sq = s.get('mean_sq', 'N/A')
-239:         print(f'{name}: acc={acc}, S_q={sq}')
-240: "
-241: ```
-242: 
-243: ### Create FULL_RUN_REPORT.md
-244: 
-245: Write `results/FULL_RUN_REPORT.md` containing:
-246: 
-247: 1. **Per-phase results table:** phase number, exact command, wall-time, key metrics (accuracy, S_q, ECE, Brier), MPS usage, pass/fail, deviations from this prompt
-248: 2. **Runbook issues found:** severity, section, what went wrong, what you did, suggested fix
-249: 3. **Final results summary:**
-250:    - Baseline comparison table (Threshold, SoftmaxProfile, SequentialBayes)
-251:    - PPO vs baseline S_q
-252:    - T5 vs MLP policy comparison
-253:    - Ablation summaries: reward modes (14), belief modes (15), policy modes (16), horizon (17)
-254:    - K-sensitivity curve (K=2,3,4,5,6 including controlled K=4)
-255:    - Multi-seed variance (7)
-256:    - Distractor comparison (9)
-257:    - Variable-K (10)
-258:    - Expected Wins eval + EW PPO (11)
-259:    - Reward sweep best config (8)
-260: 4. **Artifact inventory:** `ls -lhR results/ artifacts/main/ checkpoints/`
-261: 
-262: ### Verify
-263: 
-264: ```bash
-265: pytest tests/ -q --tb=short
-266: bash -n scripts/run_full_pipeline.sh
-267: ```
-268: 
-269: ## Decision-Making Guidelines
-270: 
-271: - If a command fails: diagnose, fix if obvious, document, continue
-272: - If a phase takes longer than estimated: note actual time, don't kill unless hung (no output 10+ min)
-273: - If MPS causes issues: set `PYTORCH_MPS_FALLBACK=1`, document the error
-274: - If `artifacts/main/` is clobbered: restore from `results/` archives
-275: - Phase ordering: Wave 1 is parallel; everything else is sequential
-276: - Correctness fixes in this codebase: opponent models wired in EW PPO via `make_env_from_config`, variable-K belief shapes use question-local K, embedding cache keyed by model variant (not family), no-buzz calibration skips `buzz_step<0`, padded actions rejected in `step()`, MaskablePPO fully wired through train/load/eval, TF-IDF cache load is a no-op
-277: 
-278: ## Success Criteria
-279: 
-280: 1. All core phases (1–6) complete with valid outputs
-281: 2. All extension phases (7–11, 13–17) complete
-282: 3. `results/FULL_RUN_REPORT.md` exists with per-phase metrics and comparison tables
-283: 4. No mixed likelihood regimes
-284: 5. No silent shape mismatches in variable-K phases
-285: 6. `pytest tests/ -q --tb=short` passes after the run
-286: 
-287: ## Estimated Total Time
-288: 
-289: ~4–5 hours (wrapper ~3–4 hrs, manual extensions ~1 hr).
+216: **Model Checkpoint Integrity:**
+217: - Risk: Saving and loading T5 models from arbitrary directories without checksum verification
+218: - Files: `model.py:215-225` (save), `model.py:228-237` (load)
+219: - Current mitigation: None
+220: - Recommendations: Compute SHA256 hash of saved files, store in metadata.json, verify on load. Prevents accidental corruption or tampering
+221: 
+222: **Tokenizer Injection Risk:**
+223: - Risk: Loading tokenizer from saved checkpoint directory could load modified tokenizer if directory is writable by other users
+224: - Files: `model.py:228` (T5Tokenizer.from_pretrained from directory)
+225: - Current mitigation: Standard permissions on checkpoint directory
+226: - Recommendations: Add explicit tokenizer config validation after load. Consider shipping tokenizer as code constant rather than file
+227: 
+228: **No Input Validation on User Data:**
+229: - Risk: Questions loaded from CSV or JSON with no schema validation. Text fields could contain adversarial inputs or injections
+230: - Files: `dataset.py:167-180` (CSV loading without validation)
+231: - Current mitigation: None
+232: - Recommendations: Add JSON schema validation. Sanitize text fields (max length, character set checks)
+233: 
+234: ---
+235: 
+236: *Concerns audit: 2026-02-24*
 ````
 
 ## File: .planning/milestones/v1.0-ROADMAP.md
@@ -19999,6 +19706,477 @@ walkthrough.md
 85: 
 86: ---
 87: *Last updated: 2026-03-08 after smoke-contract and agent-stability remediation*
+````
+
+## File: .planning/ROADMAP.md
+````markdown
+  1: # Project Roadmap: Quiz Bowl RL Buzzer (Unified)
+  2: 
+  3: **Project:** Quiz Bowl RL Buzzer (Unified System)
+  4: **Mode:** yolo
+  5: **Depth:** comprehensive
+  6: **Created:** 2026-02-25
+  7: 
+  8: ## Phases
+  9: 
+ 10: - [x] **Phase 1: Data Pipeline Foundation** - Build MC dataset construction with anti-artifact guards and YAML configuration
+ 11: - [x] **Phase 2: Environment and Core Likelihood Models** - Implement Gymnasium environment with belief features and TF-IDF/SBERT likelihood models
+ 12: - [x] **Phase 3: Baseline Agents and T5 Likelihood** - Add baseline agents, T5 likelihood model, and episode trace generation
+ 13: - [x] **Phase 4: PPO Training Pipeline** - Train MLP policy with SB3 PPO and pipeline scripts
+ 14: - [ ] **Phase 5: Evaluation Framework** - Complete S_q metric, control experiments, and visualization
+ 15: - [ ] **Phase 6: T5 Policy Integration** - Optional T5 policy model with supervised warm-start
+ 16: 
+ 17: ## Phase Details
+ 18: 
+ 19: ### Phase 1: Data Pipeline Foundation
+ 20: **Goal**: Users can load quiz bowl questions and construct valid multiple-choice questions with anti-artifact protection
+ 21: **Depends on**: Nothing (first phase)
+ 22: **Requirements**: DATA-01, DATA-02, DATA-03, DATA-04, DATA-05, DATA-06, CFG-01, CFG-04
+ 23: **Success Criteria** (what must be TRUE):
+ 24:   1. User can load quiz bowl questions from local CSV file with clues separated by `|||`
+ 25:   2. System constructs K=4 multiple-choice questions with distractor generation that passes anti-artifact guards
+ 26:   3. Answer profiles are built with leave-one-out exclusion per question
+ 27:   4. Dataset splits are stratified by category (train 70% / val 15% / test 15%)
+ 28:   5. YAML configuration system loads and can be overridden via CLI
+ 29: **Plans**: 5 plans
+ 30: 
+ 31: Plans:
+ 32: - [x] 01-01-PLAN.md — Create core data structures and CSV loading ✓
+ 33: - [x] 01-02-PLAN.md — Set up YAML configuration system ✓
+ 34: - [x] 01-03-PLAN.md — Port MCBuilder and answer profiles with guards ✓
+ 35: - [x] 01-04-PLAN.md — Implement stratified splits and HuggingFace loader ✓
+ 36: - [x] 01-05-PLAN.md — Create main dataset construction script ✓
+ 37: 
+ 38: ### Phase 2: Environment and Core Likelihood Models
+ 39: **Goal**: Users can run quiz bowl episodes in a Gymnasium environment with belief-based observations
+ 40: **Depends on**: Phase 1
+ 41: **Requirements**: ENV-01, ENV-02, ENV-03, ENV-04, ENV-05, LIK-01, LIK-02, LIK-03, LIK-06, CFG-02
+ 42: **Success Criteria** (what must be TRUE):
+ 43:   1. TossupMCEnv implements full Gymnasium interface and can be instantiated via factory
+ 44:   2. Action space properly implements Discrete(K+1) with WAIT and buzz actions
+ 45:   3. Environment computes all belief features (belief[K], top_p, margin, entropy, stability, progress)
+ 46:   4. User can configure different reward modes (time_penalty, simple, human_grounded)
+ 47:   5. TF-IDF and SBERT likelihood models produce valid belief distributions
+ 48: **Plans**: 4 plans
+ 49: 
+ 50: Plans:
+ 51: - [x] 02-01-PLAN.md — Belief features and LikelihoodModel ABC ✓
+ 52: - [x] 02-02-PLAN.md — TF-IDF and SBERT likelihood models with factory ✓
+ 53: - [x] 02-03-PLAN.md — TossupMCEnv Gymnasium environment ✓
+ 54: - [x] 02-04-PLAN.md — Factory functions and pytest test scaffolding ✓
+ 55: 
+ 56: ### Phase 3: Baseline Agents and T5 Likelihood
+ 57: **Goal**: Users can run baseline agents and leverage T5 for semantic similarity scoring
+ 58: **Depends on**: Phase 2
+ 59: **Requirements**: AGT-02, AGT-03, AGT-04, AGT-05, AGT-06, LIK-04, LIK-05
+ 60: **Success Criteria** (what must be TRUE):
+ 61:   1. All four baseline agents (Threshold, AlwaysBuzzFinal, SoftmaxProfile, SequentialBayes) produce valid episodes
+ 62:   2. T5 likelihood model computes semantic similarity scores for belief updates
+ 63:   3. Embedding cache reduces redundant T5 computations
+ 64:   4. All agents generate episode traces with c_trace (buzz probability) and g_trace (correctness)
+ 65: **Plans**: 3 plans
+ 66: 
+ 67: Plans:
+ 68: - [x] 03-01-PLAN.md — Port baseline agents from qb-rl (ThresholdBuzzer, AlwaysBuzzFinal, SoftmaxProfile, SequentialBayes) ✓
+ 69: - [x] 03-02-PLAN.md — Implement T5Likelihood with semantic similarity scoring ✓
+ 70: - [x] 03-03-PLAN.md — Create agent and T5 test suite ✓
+ 71: 
+ 72: ### Phase 4: PPO Training Pipeline
+ 73: **Goal**: Users can train an MLP policy with SB3 PPO and run smoke tests for validation
+ 74: **Depends on**: Phase 3
+ 75: **Requirements**: AGT-01, AGT-07, CFG-03
+ 76: **Success Criteria** (what must be TRUE):
+ 77:   1. MLP policy trains successfully with SB3 PPO on belief feature observations
+ 78:   2. Smoke test mode runs complete pipeline in under 2 minutes with small dataset
+ 79:   3. Four-stage pipeline scripts (build_mc, run_baselines, train_ppo, evaluate_all) execute without errors
+ 80:   4. Training produces checkpoints that can be loaded for evaluation
+ 81: **Plans**: 3 plans
+ 82: 
+ 83: Plans:
+ 84: - [x] 04-01-PLAN.md — Create _common.py utilities and PPOBuzzer wrapper ✓
+ 85: - [x] 04-02-PLAN.md — Implement run_baselines.py script ✓
+ 86: - [x] 04-03-PLAN.md — Implement train_ppo.py and evaluate_all.py scripts ✓
+ 87: 
+ 88: ### Phase 5: Evaluation Framework
+ 89: **Goal**: Users can evaluate agents with S_q metric, control experiments, and comprehensive visualizations
+ 90: **Depends on**: Phase 4
+ 91: **Requirements**: EVAL-01, EVAL-02, EVAL-03, EVAL-04, EVAL-05, EVAL-06, EVAL-07
+ 92: **Success Criteria** (what must be TRUE):
+ 93:   1. S_q metric correctly computes system score = Σ(b_t × g_t) per episode
+ 94:   2. Calibration metrics (ECE and Brier score) quantify uncertainty quality
+ 95:   3. Control experiments (choices-only, shuffle, alias) verify agent uses clues properly
+ 96:   4. Comparison plots and tables show relative performance of all agents
+ 97:   5. Per-category accuracy breakdown reveals performance patterns
+ 98: **Plans**: 2 plans
+ 99: 
+100: Plans:
+101: - [x] 05-01-PLAN.md — Add per-category accuracy and S_q edge case tests ✓
+102: - [x] 05-02-PLAN.md — Enhance comparison table with baseline sweep and per-category breakdown ✓
+103: 
+104: ### Phase 6: T5 Policy Integration
+105: **Goal**: Users can train and compare T5-based policy with custom heads as alternative to MLP
+106: **Depends on**: Phase 2
+107: **Requirements**: STR-01, STR-02, STR-03
+108: **Success Criteria** (what must be TRUE):
+109:   1. T5PolicyModel with custom policy heads (wait/answer/value) trains successfully
+110:   2. Supervised warm-start on complete questions improves convergence
+111:   3. Comparison experiment shows performance difference between T5-as-likelihood vs T5-as-policy
+112: **Plans**: 3 plans
+113: 
+114: Plans:
+115: - [ ] 06-01-PLAN.md — Port T5PolicyModel and PolicyHead architecture
+116: - [ ] 06-02-PLAN.md — Create TextObservationWrapper and supervised training
+117: - [ ] 06-03-PLAN.md — Implement custom PPO and comparison experiment
+118: 
+119: ## Progress
+120: 
+121: | Phase | Plans Complete | Status | Completed |
+122: |-------|----------------|--------|-----------|
+123: | 1. Data Pipeline Foundation | 5/5 | Complete| ✅ |
+124: | 2. Environment and Core Likelihood Models | 4/4 | Complete| ✅ |
+125: | 3. Baseline Agents and T5 Likelihood | 3/3 | Complete| ✅ |
+126: | 4. PPO Training Pipeline | 3/3 | Complete | ✅ |
+127: | 5. Evaluation Framework | 2/2 | Complete | ✅ |
+128: | 6. T5 Policy Integration | 0/3 | Not started | - |
+129: 
+130: ## Success Metrics
+131: 
+132: - **Phase Success**: Phase is complete when all success criteria are met
+133: - **Project Success**: Working RL system with S_q evaluation and CS234 writeup
+134: - **Quality Indicators**:
+135:   - S_q score improvement over baselines
+136:   - Control experiments pass (choices-only ~25%, no position bias)
+137:   - Calibration error < 0.1
+138:   - Smoke tests complete in < 2 minutes
+139: 
+140: ## Dependencies
+141: 
+142: ### Phase Dependencies
+143: ```
+144: Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
+145:                 ↘                        ↗
+146:                   Phase 6 ---------------
+147: ```
+148: 
+149: ### Key Integration Points
+150: - Phase 2 defines LikelihoodModel interface that Phase 3 implements for T5
+151: - Phase 3 agents must produce traces that Phase 5 uses for S_q computation
+152: - Phase 4 implements PPO training with evaluation metrics (S_q, ECE, Brier) that Phase 5 extends
+153: - Phase 6 is independent path after Phase 2 (alternative to Phase 3-4 pipeline)
+154: 
+155: ## Risks and Mitigations
+156: 
+157: | Risk | Impact | Mitigation |
+158: |------|--------|------------|
+159: | Scope explosion with tight deadline | HIGH | Focus on Phase 1-5 critical path, defer Phase 6 |
+160: | T5 memory requirements | MEDIUM | Support T5-base (220M) as fallback option |
+161: | Belief state collapse in early training | MEDIUM | Pre-compute answer profiles, add margin threshold |
+162: | Observation space incompatibility | HIGH | Clear interfaces (BeliefObservation vs TextObservation) |
+163: 
+164: ---
+165: *Roadmap created: 2026-02-25*
+166: *Phase 1 planned: 2026-02-25*
+167: *Phase 2 replanned: 2026-02-25*
+168: *Phase 3 planned: 2026-02-25*
+169: *Phase 4 planned: 2026-02-26*
+170: *Phase 4 completed: 2026-02-26*
+171: *Phase 5 planned: 2026-02-26*
+172: *Phase 5 completed: 2026-02-26*
+173: *Phase 6 planned: 2026-02-26*
+174: *Next: `/gsd:execute-phase 6` (optional stretch goal)*
+````
+
+## File: docs/codex-full-clean-run-prompt.md
+````markdown
+  1: # Codex: Full Clean Pipeline Run (All Non-API Phases)
+  2: 
+  3: **Generated:** 2026-03-16 | **Repo commit:** `692c276` (review-fixes branch)
+  4: 
+  5: ## Critical: Use the Main Repo
+  6: 
+  7: ```bash
+  8: cd <repo-root>
+  9: git rev-parse --short HEAD
+ 10: ```
+ 11: 
+ 12: Do **NOT** use any Codex worktree at `~/.codex/worktrees/*/`.
+ 13: 
+ 14: ## Objective
+ 15: 
+ 16: Run the complete qanta-buzzer pipeline from scratch — all phases except those
+ 17: requiring OpenAI/DSPy API keys. This is a clean run on the codebase that
+ 18: includes all runtime correctness fixes from PR #13: opponent model wiring,
+ 19: variable-K belief shapes, model-variant-specific embedding cache, no-buzz
+ 20: calibration, padded action guards, and full MaskablePPO train/load/eval wiring.
+ 21: 
+ 22: Produce `results/FULL_RUN_REPORT.md` as the canonical handoff artifact.
+ 23: 
+ 24: ## Machine
+ 25: 
+ 26: - Apple M3 Max, 16 cores, 64 GB RAM, MPS available
+ 27: - Python 3.13.5 in `.venv/`
+ 28: - Memory warning: t5-base at full scale reaches ~41 GB on MPS
+ 29: 
+ 30: ## Setup
+ 31: 
+ 32: ```bash
+ 33: cd <repo-root>
+ 34: git checkout review-fixes
+ 35: source .venv/bin/activate
+ 36: pip install -e .
+ 37: python3 -c "import torch; print(f'MPS: {torch.backends.mps.is_available()}')"
+ 38: pytest tests/ -q --tb=short    # expect: 350 passed, 3 skipped
+ 39: ```
+ 40: 
+ 41: ## Phase 0: Clean state
+ 42: 
+ 43: ```bash
+ 44: rm -rf artifacts/main/ artifacts/k* artifacts/distractor_* artifacts/variable_k/
+ 45: rm -rf cache/embeddings/
+ 46: rm -rf checkpoints/supervised/ checkpoints/ppo/ checkpoints/ppo_t5/
+ 47: rm -rf results/
+ 48: mkdir -p artifacts/main results
+ 49: ```
+ 50: 
+ 51: ## Execution Plan
+ 52: 
+ 53: ### Step 1: Core pipeline via wrapper (Phases 1–6, 11, 13–17)
+ 54: 
+ 55: ```bash
+ 56: bash scripts/run_full_pipeline.sh --t5-model t5-base 2>&1 | tee results/wrapper_stdout.log
+ 57: ```
+ 58: 
+ 59: The wrapper runs a 4-wave DAG:
+ 60: - **Wave 1 (parallel):** Phase 2 (TF-IDF baselines), Phase 3 (PPO), Phase 5 (T5 policy)
+ 61: - **Wave 2 (sequential):** Phase 4 (evaluate), Phase 6 (compare), Phase 11 (EW eval), Phase 15 (belief mode)
+ 62: - **Wave 3 (sequential):** Phase 14 (reward modes), Phase 16 (stop-only), Phase 17 (no-buzz)
+ 63: - **Wave 4 (sequential):** Phase 13 (K-sensitivity: K=2,3,5,6)
+ 64: 
+ 65: All belief-feature phases use `likelihood.model=tfidf`. Phase 5 uses t5-base on MPS.
+ 66: Logs for Waves 1/2/4 are in `results/phase_*.log` (unbuffered via `PYTHONUNBUFFERED=1`).
+ 67: Wave 3 prints to stdout.
+ 68: 
+ 69: **Monitoring:**
+ 70: ```bash
+ 71: tail -f results/phase_5.log       # T5 training (may be sparse during supervised warm-start)
+ 72: ps aux | grep train_t5_policy     # verify process is running
+ 73: ```
+ 74: 
+ 75: **Estimated time:** ~3–4 hours.
+ 76: 
+ 77: ### Step 2: Phase 7 — Multi-seed PPO
+ 78: 
+ 79: ```bash
+ 80: for SEED in 1 2 3; do
+ 81:     echo "=== Seed $SEED ==="
+ 82:     python scripts/train_ppo.py \
+ 83:         --config configs/default.yaml \
+ 84:         --mc-path artifacts/main/mc_dataset.json \
+ 85:         --seed $SEED \
+ 86:         --deterministic-eval \
+ 87:         likelihood.model=tfidf
+ 88:     cp artifacts/main/ppo_summary.json "results/ppo_seed${SEED}.json"
+ 89:     cp artifacts/main/ppo_model.zip "results/ppo_model_seed${SEED}.zip"
+ 90: done
+ 91: ```
+ 92: 
+ 93: **Estimated time:** ~6–10 minutes.
+ 94: 
+ 95: ### Step 3: Phase 8 — Reward sweep (smoke-scale)
+ 96: 
+ 97: ```bash
+ 98: python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000 \
+ 99:     | tee results/phase_8_sweep.txt
+100: ```
+101: 
+102: Note: this script uses `configs/smoke.yaml` and `artifacts/smoke/` — it does
+103: not run on the full dataset. It also writes `artifacts/smoke/reward_sweep_results.json`.
+104: 
+105: **Estimated time:** ~5–15 minutes.
+106: 
+107: ### Step 4: Phase 9 — Distractor comparison
+108: 
+109: ```bash
+110: mkdir -p artifacts/distractor_comparison
+111: 
+112: # SBERT distractors (default — reuse Phase 1 dataset)
+113: cp artifacts/main/mc_dataset.json artifacts/distractor_comparison/mc_sbert.json
+114: 
+115: # TF-IDF profile distractors
+116: python scripts/build_mc_dataset.py \
+117:     --config configs/default.yaml \
+118:     --output-dir artifacts/distractor_comparison/tfidf \
+119:     data.distractor_strategy=tfidf_profile
+120: cp artifacts/distractor_comparison/tfidf/mc_dataset.json artifacts/distractor_comparison/mc_tfidf.json
+121: 
+122: # Category-random distractors
+123: python scripts/build_mc_dataset.py \
+124:     --config configs/default.yaml \
+125:     --output-dir artifacts/distractor_comparison/catrandom \
+126:     data.distractor_strategy=category_random
+127: cp artifacts/distractor_comparison/catrandom/mc_dataset.json artifacts/distractor_comparison/mc_catrandom.json
+128: 
+129: for STRATEGY in sbert tfidf catrandom; do
+130:     echo "=== Baselines on $STRATEGY distractors ==="
+131:     python scripts/run_baselines.py \
+132:         --config configs/default.yaml \
+133:         --mc-path "artifacts/distractor_comparison/mc_${STRATEGY}.json" \
+134:         likelihood.model=tfidf
+135:     cp artifacts/main/baseline_summary.json "results/baselines_distractor_${STRATEGY}.json"
+136: done
+137: ```
+138: 
+139: **Estimated time:** ~7–10 minutes.
+140: 
+141: ### Step 5: Phase 10 — Variable-K baselines
+142: 
+143: ```bash
+144: mkdir -p artifacts/variable_k
+145: python scripts/build_mc_dataset.py \
+146:     --config configs/default.yaml \
+147:     --output-dir artifacts/variable_k \
+148:     data.variable_K=true data.min_K=2 data.max_K=6 data.K=6 \
+149:     data.distractor_strategy=category_random
+150: 
+151: python scripts/run_baselines.py \
+152:     --config configs/default.yaml \
+153:     --mc-path artifacts/variable_k/mc_dataset.json \
+154:     likelihood.model=tfidf
+155: cp artifacts/main/baseline_summary.json results/baselines_variable_k.json
+156: ```
+157: 
+158: **Estimated time:** ~2–3 minutes.
+159: 
+160: ### Step 6: Phase 11 extended — EW-trained PPO + empirical eval
+161: 
+162: ```bash
+163: # Restore baseline_summary.json (clobbered by Phase 13/15)
+164: cp results/baselines_tfidf.json artifacts/main/baseline_summary.json
+165: 
+166: # Train PPO with Expected Wins reward
+167: python scripts/train_ppo.py \
+168:     --config configs/default.yaml \
+169:     --mc-path artifacts/main/mc_dataset.json \
+170:     --seed 13 \
+171:     --deterministic-eval \
+172:     likelihood.model=tfidf \
+173:     environment.reward_mode=expected_wins \
+174:     environment.opponent_buzz_model.type=logistic
+175: cp artifacts/main/ppo_summary.json results/ppo_expected_wins.json
+176: cp artifacts/main/ppo_model.zip results/ppo_model_expected_wins.zip
+177: 
+178: # Empirical opponent eval
+179: python scripts/evaluate_all.py \
+180:     --config configs/default.yaml \
+181:     --mc-path artifacts/main/mc_dataset.json \
+182:     likelihood.model=tfidf \
+183:     environment.reward_mode=expected_wins \
+184:     environment.opponent_buzz_model.type=empirical
+185: cp artifacts/main/evaluation_report.json results/eval_expected_wins_empirical.json
+186: ```
+187: 
+188: **Estimated time:** ~5 minutes.
+189: 
+190: ### Step 7: Phase 13 supplement — explicit K=4
+191: 
+192: ```bash
+193: python scripts/build_mc_dataset.py \
+194:     --config configs/default.yaml \
+195:     --output-dir "artifacts/k4" \
+196:     data.K=4 data.distractor_strategy=category_random
+197: python scripts/run_baselines.py \
+198:     --config configs/default.yaml \
+199:     --mc-path "artifacts/k4/mc_dataset.json" \
+200:     likelihood.model=tfidf
+201: cp artifacts/main/baseline_summary.json "results/baselines_k4.json"
+202: ```
+203: 
+204: **Estimated time:** ~2 minutes.
+205: 
+206: ## Phases Skipped (require API keys)
+207: 
+208: | Phase | Reason |
+209: |-------|--------|
+210: | 12 | DSPy compile — not wired end-to-end, requires LM API key |
+211: | 18 | OpenAI embeddings — requires OPENAI_API_KEY |
+212: | 19 | DSPy MIPROv2 — requires LM API key |
+213: 
+214: ## After All Phases Complete
+215: 
+216: ### Generate summary table
+217: 
+218: ```bash
+219: python3 -c "
+220: import json, glob
+221: for f in sorted(glob.glob('results/*.json')):
+222:     s = json.load(open(f))
+223:     name = f.split('/')[-1].replace('.json', '')
+224:     if 'full_eval' in s:
+225:         fe = s['full_eval']
+226:         print(f'{name}: acc={fe.get(\"buzz_accuracy\", \"N/A\")}, S_q={fe.get(\"mean_sq\", \"N/A\")}')
+227:     elif 't5_policy' in s:
+228:         for k in ('mlp_policy', 't5_policy'):
+229:             if k in s:
+230:                 m = s[k]
+231:                 print(f'{name}/{k}: acc={m.get(\"accuracy\", \"N/A\")}, S_q={m.get(\"mean_sq\", \"N/A\")}')
+232:     elif 'softmax_profile' in s:
+233:         sp = s['softmax_profile']
+234:         best = max(sp.items(), key=lambda x: x[1].get('mean_sq', 0), default=('N/A', {}))
+235:         print(f'{name}: best_threshold={best[0]}, S_q={best[1].get(\"mean_sq\", \"N/A\")}')
+236:     else:
+237:         acc = s.get('buzz_accuracy', s.get('accuracy', 'N/A'))
+238:         sq = s.get('mean_sq', 'N/A')
+239:         print(f'{name}: acc={acc}, S_q={sq}')
+240: "
+241: ```
+242: 
+243: ### Create FULL_RUN_REPORT.md
+244: 
+245: Write `results/FULL_RUN_REPORT.md` containing:
+246: 
+247: 1. **Per-phase results table:** phase number, exact command, wall-time, key metrics (accuracy, S_q, ECE, Brier), MPS usage, pass/fail, deviations from this prompt
+248: 2. **Runbook issues found:** severity, section, what went wrong, what you did, suggested fix
+249: 3. **Final results summary:**
+250:    - Baseline comparison table (Threshold, SoftmaxProfile, SequentialBayes)
+251:    - PPO vs baseline S_q
+252:    - T5 vs MLP policy comparison
+253:    - Ablation summaries: reward modes (14), belief modes (15), policy modes (16), horizon (17)
+254:    - K-sensitivity curve (K=2,3,4,5,6 including controlled K=4)
+255:    - Multi-seed variance (7)
+256:    - Distractor comparison (9)
+257:    - Variable-K (10)
+258:    - Expected Wins eval + EW PPO (11)
+259:    - Reward sweep best config (8)
+260: 4. **Artifact inventory:** `ls -lhR results/ artifacts/main/ checkpoints/`
+261: 
+262: ### Verify
+263: 
+264: ```bash
+265: pytest tests/ -q --tb=short
+266: bash -n scripts/run_full_pipeline.sh
+267: ```
+268: 
+269: ## Decision-Making Guidelines
+270: 
+271: - If a command fails: diagnose, fix if obvious, document, continue
+272: - If a phase takes longer than estimated: note actual time, don't kill unless hung (no output 10+ min)
+273: - If MPS causes issues: set `PYTORCH_MPS_FALLBACK=1`, document the error
+274: - If `artifacts/main/` is clobbered: restore from `results/` archives
+275: - Phase ordering: Wave 1 is parallel; everything else is sequential
+276: - Correctness fixes in this codebase: opponent models wired in EW PPO via `make_env_from_config`, variable-K belief shapes use question-local K, embedding cache keyed by model variant (not family), no-buzz calibration skips `buzz_step<0`, padded actions rejected in `step()`, MaskablePPO fully wired through train/load/eval, TF-IDF cache load is a no-op
+277: 
+278: ## Success Criteria
+279: 
+280: 1. All core phases (1–6) complete with valid outputs
+281: 2. All extension phases (7–11, 13–17) complete
+282: 3. `results/FULL_RUN_REPORT.md` exists with per-phase metrics and comparison tables
+283: 4. No mixed likelihood regimes
+284: 5. No silent shape mismatches in variable-K phases
+285: 6. `pytest tests/ -q --tb=short` passes after the run
+286: 
+287: ## Estimated Total Time
+288: 
+289: ~4–5 hours (wrapper ~3–4 hrs, manual extensions ~1 hr).
 ````
 
 ## File: docs/full-pipeline-runbook.md
@@ -21046,184 +21224,6 @@ walkthrough.md
 1041: | `run_full_pipeline.sh --sequential` | ~5 hrs | ~7–10 hrs | ~12–18 hrs |
 1042: 
 1043: t5-large will likely OOM on Apple Silicon Macs (64 GB) at full scale. Use t5-base on MPS.
-````
-
-## File: .planning/ROADMAP.md
-````markdown
-  1: # Project Roadmap: Quiz Bowl RL Buzzer (Unified)
-  2: 
-  3: **Project:** Quiz Bowl RL Buzzer (Unified System)
-  4: **Mode:** yolo
-  5: **Depth:** comprehensive
-  6: **Created:** 2026-02-25
-  7: 
-  8: ## Phases
-  9: 
- 10: - [x] **Phase 1: Data Pipeline Foundation** - Build MC dataset construction with anti-artifact guards and YAML configuration
- 11: - [x] **Phase 2: Environment and Core Likelihood Models** - Implement Gymnasium environment with belief features and TF-IDF/SBERT likelihood models
- 12: - [x] **Phase 3: Baseline Agents and T5 Likelihood** - Add baseline agents, T5 likelihood model, and episode trace generation
- 13: - [x] **Phase 4: PPO Training Pipeline** - Train MLP policy with SB3 PPO and pipeline scripts
- 14: - [ ] **Phase 5: Evaluation Framework** - Complete S_q metric, control experiments, and visualization
- 15: - [ ] **Phase 6: T5 Policy Integration** - Optional T5 policy model with supervised warm-start
- 16: 
- 17: ## Phase Details
- 18: 
- 19: ### Phase 1: Data Pipeline Foundation
- 20: **Goal**: Users can load quiz bowl questions and construct valid multiple-choice questions with anti-artifact protection
- 21: **Depends on**: Nothing (first phase)
- 22: **Requirements**: DATA-01, DATA-02, DATA-03, DATA-04, DATA-05, DATA-06, CFG-01, CFG-04
- 23: **Success Criteria** (what must be TRUE):
- 24:   1. User can load quiz bowl questions from local CSV file with clues separated by `|||`
- 25:   2. System constructs K=4 multiple-choice questions with distractor generation that passes anti-artifact guards
- 26:   3. Answer profiles are built with leave-one-out exclusion per question
- 27:   4. Dataset splits are stratified by category (train 70% / val 15% / test 15%)
- 28:   5. YAML configuration system loads and can be overridden via CLI
- 29: **Plans**: 5 plans
- 30: 
- 31: Plans:
- 32: - [x] 01-01-PLAN.md — Create core data structures and CSV loading ✓
- 33: - [x] 01-02-PLAN.md — Set up YAML configuration system ✓
- 34: - [x] 01-03-PLAN.md — Port MCBuilder and answer profiles with guards ✓
- 35: - [x] 01-04-PLAN.md — Implement stratified splits and HuggingFace loader ✓
- 36: - [x] 01-05-PLAN.md — Create main dataset construction script ✓
- 37: 
- 38: ### Phase 2: Environment and Core Likelihood Models
- 39: **Goal**: Users can run quiz bowl episodes in a Gymnasium environment with belief-based observations
- 40: **Depends on**: Phase 1
- 41: **Requirements**: ENV-01, ENV-02, ENV-03, ENV-04, ENV-05, LIK-01, LIK-02, LIK-03, LIK-06, CFG-02
- 42: **Success Criteria** (what must be TRUE):
- 43:   1. TossupMCEnv implements full Gymnasium interface and can be instantiated via factory
- 44:   2. Action space properly implements Discrete(K+1) with WAIT and buzz actions
- 45:   3. Environment computes all belief features (belief[K], top_p, margin, entropy, stability, progress)
- 46:   4. User can configure different reward modes (time_penalty, simple, human_grounded)
- 47:   5. TF-IDF and SBERT likelihood models produce valid belief distributions
- 48: **Plans**: 4 plans
- 49: 
- 50: Plans:
- 51: - [x] 02-01-PLAN.md — Belief features and LikelihoodModel ABC ✓
- 52: - [x] 02-02-PLAN.md — TF-IDF and SBERT likelihood models with factory ✓
- 53: - [x] 02-03-PLAN.md — TossupMCEnv Gymnasium environment ✓
- 54: - [x] 02-04-PLAN.md — Factory functions and pytest test scaffolding ✓
- 55: 
- 56: ### Phase 3: Baseline Agents and T5 Likelihood
- 57: **Goal**: Users can run baseline agents and leverage T5 for semantic similarity scoring
- 58: **Depends on**: Phase 2
- 59: **Requirements**: AGT-02, AGT-03, AGT-04, AGT-05, AGT-06, LIK-04, LIK-05
- 60: **Success Criteria** (what must be TRUE):
- 61:   1. All four baseline agents (Threshold, AlwaysBuzzFinal, SoftmaxProfile, SequentialBayes) produce valid episodes
- 62:   2. T5 likelihood model computes semantic similarity scores for belief updates
- 63:   3. Embedding cache reduces redundant T5 computations
- 64:   4. All agents generate episode traces with c_trace (buzz probability) and g_trace (correctness)
- 65: **Plans**: 3 plans
- 66: 
- 67: Plans:
- 68: - [x] 03-01-PLAN.md — Port baseline agents from qb-rl (ThresholdBuzzer, AlwaysBuzzFinal, SoftmaxProfile, SequentialBayes) ✓
- 69: - [x] 03-02-PLAN.md — Implement T5Likelihood with semantic similarity scoring ✓
- 70: - [x] 03-03-PLAN.md — Create agent and T5 test suite ✓
- 71: 
- 72: ### Phase 4: PPO Training Pipeline
- 73: **Goal**: Users can train an MLP policy with SB3 PPO and run smoke tests for validation
- 74: **Depends on**: Phase 3
- 75: **Requirements**: AGT-01, AGT-07, CFG-03
- 76: **Success Criteria** (what must be TRUE):
- 77:   1. MLP policy trains successfully with SB3 PPO on belief feature observations
- 78:   2. Smoke test mode runs complete pipeline in under 2 minutes with small dataset
- 79:   3. Four-stage pipeline scripts (build_mc, run_baselines, train_ppo, evaluate_all) execute without errors
- 80:   4. Training produces checkpoints that can be loaded for evaluation
- 81: **Plans**: 3 plans
- 82: 
- 83: Plans:
- 84: - [x] 04-01-PLAN.md — Create _common.py utilities and PPOBuzzer wrapper ✓
- 85: - [x] 04-02-PLAN.md — Implement run_baselines.py script ✓
- 86: - [x] 04-03-PLAN.md — Implement train_ppo.py and evaluate_all.py scripts ✓
- 87: 
- 88: ### Phase 5: Evaluation Framework
- 89: **Goal**: Users can evaluate agents with S_q metric, control experiments, and comprehensive visualizations
- 90: **Depends on**: Phase 4
- 91: **Requirements**: EVAL-01, EVAL-02, EVAL-03, EVAL-04, EVAL-05, EVAL-06, EVAL-07
- 92: **Success Criteria** (what must be TRUE):
- 93:   1. S_q metric correctly computes system score = Σ(b_t × g_t) per episode
- 94:   2. Calibration metrics (ECE and Brier score) quantify uncertainty quality
- 95:   3. Control experiments (choices-only, shuffle, alias) verify agent uses clues properly
- 96:   4. Comparison plots and tables show relative performance of all agents
- 97:   5. Per-category accuracy breakdown reveals performance patterns
- 98: **Plans**: 2 plans
- 99: 
-100: Plans:
-101: - [x] 05-01-PLAN.md — Add per-category accuracy and S_q edge case tests ✓
-102: - [x] 05-02-PLAN.md — Enhance comparison table with baseline sweep and per-category breakdown ✓
-103: 
-104: ### Phase 6: T5 Policy Integration
-105: **Goal**: Users can train and compare T5-based policy with custom heads as alternative to MLP
-106: **Depends on**: Phase 2
-107: **Requirements**: STR-01, STR-02, STR-03
-108: **Success Criteria** (what must be TRUE):
-109:   1. T5PolicyModel with custom policy heads (wait/answer/value) trains successfully
-110:   2. Supervised warm-start on complete questions improves convergence
-111:   3. Comparison experiment shows performance difference between T5-as-likelihood vs T5-as-policy
-112: **Plans**: 3 plans
-113: 
-114: Plans:
-115: - [ ] 06-01-PLAN.md — Port T5PolicyModel and PolicyHead architecture
-116: - [ ] 06-02-PLAN.md — Create TextObservationWrapper and supervised training
-117: - [ ] 06-03-PLAN.md — Implement custom PPO and comparison experiment
-118: 
-119: ## Progress
-120: 
-121: | Phase | Plans Complete | Status | Completed |
-122: |-------|----------------|--------|-----------|
-123: | 1. Data Pipeline Foundation | 5/5 | Complete| ✅ |
-124: | 2. Environment and Core Likelihood Models | 4/4 | Complete| ✅ |
-125: | 3. Baseline Agents and T5 Likelihood | 3/3 | Complete| ✅ |
-126: | 4. PPO Training Pipeline | 3/3 | Complete | ✅ |
-127: | 5. Evaluation Framework | 2/2 | Complete | ✅ |
-128: | 6. T5 Policy Integration | 0/3 | Not started | - |
-129: 
-130: ## Success Metrics
-131: 
-132: - **Phase Success**: Phase is complete when all success criteria are met
-133: - **Project Success**: Working RL system with S_q evaluation and CS234 writeup
-134: - **Quality Indicators**:
-135:   - S_q score improvement over baselines
-136:   - Control experiments pass (choices-only ~25%, no position bias)
-137:   - Calibration error < 0.1
-138:   - Smoke tests complete in < 2 minutes
-139: 
-140: ## Dependencies
-141: 
-142: ### Phase Dependencies
-143: ```
-144: Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
-145:                 ↘                        ↗
-146:                   Phase 6 ---------------
-147: ```
-148: 
-149: ### Key Integration Points
-150: - Phase 2 defines LikelihoodModel interface that Phase 3 implements for T5
-151: - Phase 3 agents must produce traces that Phase 5 uses for S_q computation
-152: - Phase 4 implements PPO training with evaluation metrics (S_q, ECE, Brier) that Phase 5 extends
-153: - Phase 6 is independent path after Phase 2 (alternative to Phase 3-4 pipeline)
-154: 
-155: ## Risks and Mitigations
-156: 
-157: | Risk | Impact | Mitigation |
-158: |------|--------|------------|
-159: | Scope explosion with tight deadline | HIGH | Focus on Phase 1-5 critical path, defer Phase 6 |
-160: | T5 memory requirements | MEDIUM | Support T5-base (220M) as fallback option |
-161: | Belief state collapse in early training | MEDIUM | Pre-compute answer profiles, add margin threshold |
-162: | Observation space incompatibility | HIGH | Clear interfaces (BeliefObservation vs TextObservation) |
-163: 
-164: ---
-165: *Roadmap created: 2026-02-25*
-166: *Phase 1 planned: 2026-02-25*
-167: *Phase 2 replanned: 2026-02-25*
-168: *Phase 3 planned: 2026-02-25*
-169: *Phase 4 planned: 2026-02-26*
-170: *Phase 4 completed: 2026-02-26*
-171: *Phase 5 planned: 2026-02-26*
-172: *Phase 5 completed: 2026-02-26*
-173: *Phase 6 planned: 2026-02-26*
-174: *Next: `/gsd:execute-phase 6` (optional stretch goal)*
 ````
 
 ## File: CLAUDE.md

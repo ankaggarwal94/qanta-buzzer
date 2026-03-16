@@ -5838,6 +5838,479 @@ This section contains the contents of the repository's files.
 192:         assert feats.dtype == np.float32
 </file>
 
+<file path="tests/test_likelihoods.py">
+  1: """Test suite for models/likelihoods.py — likelihood model interface and implementations.
+  2: 
+  3: Covers:
+  4: - LIK-01: LikelihoodModel ABC contract
+  5: - LIK-02: TfIdfLikelihood with corpus fitting and cosine scoring
+  6: - LIK-03: SBERTLikelihood with semantic embeddings and caching
+  7: - LIK-04: T5Likelihood semantic scoring and embedding shape
+  8: - LIK-05: T5 embedding cache reuse and factory construction
+  9: """
+ 10: 
+ 11: from __future__ import annotations
+ 12: 
+ 13: from pathlib import Path
+ 14: 
+ 15: import numpy as np
+ 16: import pytest
+ 17: 
+ 18: from models.likelihoods import (
+ 19:     LikelihoodModel,
+ 20:     SBERTLikelihood,
+ 21:     TfIdfLikelihood,
+ 22: )
+ 23: 
+ 24: 
+ 25: # ------------------------------------------------------------------ #
+ 26: # Tests for LikelihoodModel ABC
+ 27: # ------------------------------------------------------------------ #
+ 28: 
+ 29: 
+ 30: class TestLikelihoodModelABC:
+ 31:     """Tests for the abstract base class contract."""
+ 32: 
+ 33:     def test_abstract_interface_cannot_instantiate(self) -> None:
+ 34:         """LikelihoodModel ABC cannot be instantiated directly."""
+ 35:         with pytest.raises(TypeError):
+ 36:             LikelihoodModel()  # type: ignore[abstract]
+ 37: 
+ 38:     def test_embedding_cache_on_subclass(self, sample_corpus: list[str]) -> None:
+ 39:         """Concrete subclass inherits embedding_cache dict."""
+ 40:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
+ 41:         assert hasattr(model, "embedding_cache"), "Missing embedding_cache attribute"
+ 42:         assert isinstance(model.embedding_cache, dict), "embedding_cache should be dict"
+ 43: 
+ 44: 
+ 45: # ------------------------------------------------------------------ #
+ 46: # Tests for TfIdfLikelihood
+ 47: # ------------------------------------------------------------------ #
+ 48: 
+ 49: 
+ 50: class TestTfIdfLikelihood:
+ 51:     """Tests for TF-IDF based likelihood model."""
+ 52: 
+ 53:     def test_tfidf_requires_fit(self) -> None:
+ 54:         """score() before fit() raises RuntimeError."""
+ 55:         model = TfIdfLikelihood()
+ 56:         with pytest.raises(RuntimeError, match="must be fit"):
+ 57:             model.score("test clue", ["option1", "option2"])
+ 58: 
+ 59:     def test_tfidf_embed_requires_fit(self) -> None:
+ 60:         """_embed_batch() before fit() raises RuntimeError."""
+ 61:         model = TfIdfLikelihood()
+ 62:         with pytest.raises(RuntimeError, match="must be fit"):
+ 63:             model._embed_batch(["test text"])
+ 64: 
+ 65:     def test_tfidf_fit_and_score(self, sample_corpus: list[str]) -> None:
+ 66:         """After fitting, score returns correct shape and dtype.
+ 67: 
+ 68:         Also verifies that more relevant text scores higher.
+ 69:         """
+ 70:         model = TfIdfLikelihood()
+ 71:         model.fit(sample_corpus)
+ 72: 
+ 73:         scores = model.score(
+ 74:             "Who was the first president?",
+ 75:             ["George Washington first president", "Abraham Lincoln Civil War"],
+ 76:         )
+ 77:         assert scores.shape == (2,), f"Expected shape (2,), got {scores.shape}"
+ 78:         assert scores.dtype == np.float32, f"Expected float32, got {scores.dtype}"
+ 79:         # Washington should score higher for "first president" clue
+ 80:         assert scores[0] >= scores[1], (
+ 81:             f"Washington ({scores[0]:.3f}) should score >= Lincoln ({scores[1]:.3f})"
+ 82:         )
+ 83: 
+ 84:     def test_tfidf_embed_batch(self, sample_corpus: list[str]) -> None:
+ 85:         """_embed_batch produces dense vectors of correct shape."""
+ 86:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
+ 87:         embeddings = model._embed_batch(["test text one", "test text two"])
+ 88:         assert embeddings.shape[0] == 2, f"Expected 2 rows, got {embeddings.shape[0]}"
+ 89:         assert embeddings.dtype == np.float32, f"Expected float32, got {embeddings.dtype}"
+ 90:         vocab_size = len(model.vectorizer.vocabulary_)
+ 91:         assert embeddings.shape[1] == vocab_size, (
+ 92:             f"Expected {vocab_size} cols, got {embeddings.shape[1]}"
+ 93:         )
+ 94: 
+ 95:     def test_tfidf_corpus_in_constructor(self, sample_corpus: list[str]) -> None:
+ 96:         """Passing corpus_texts to __init__ auto-fits the model."""
+ 97:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
+ 98:         assert model._is_fit is True, "Model should be fit after corpus in constructor"
+ 99:         # Should work without explicit fit()
+100:         scores = model.score("president", ["Washington", "Lincoln"])
+101:         assert scores.shape == (2,)
+102: 
+103:     def test_tfidf_fit_returns_self(self, sample_corpus: list[str]) -> None:
+104:         """fit() returns self for method chaining."""
+105:         model = TfIdfLikelihood()
+106:         result = model.fit(sample_corpus)
+107:         assert result is model, "fit() should return self"
+108: 
+109:     def test_tfidf_score_all_options(self, sample_corpus: list[str]) -> None:
+110:         """Score works with 4 options matching K=4 environment setup."""
+111:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
+112:         scores = model.score(
+113:             "first president United States",
+114:             [
+115:                 "George Washington commander revolutionary",
+116:                 "Thomas Jefferson declaration independence",
+117:                 "John Adams Massachusetts diplomat",
+118:                 "Benjamin Franklin inventor Philadelphia",
+119:             ],
+120:         )
+121:         assert scores.shape == (4,), f"Expected shape (4,), got {scores.shape}"
+122:         assert all(np.isfinite(scores)), "All scores should be finite"
+123: 
+124:     def test_tfidf_embed_batch_normalized(self, sample_corpus: list[str]) -> None:
+125:         """_embed_batch returns L2-normalized vectors (row norms ~1.0)."""
+126:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
+127:         embeddings = model._embed_batch(["George Washington president", "Thomas Jefferson"])
+128:         norms = np.linalg.norm(embeddings, axis=1)
+129:         np.testing.assert_array_almost_equal(norms, np.ones(2), decimal=5)
+130: 
+131:     def test_tfidf_score_uses_cache(self, sample_corpus: list[str]) -> None:
+132:         """score() populates embedding_cache via embed_and_cache()."""
+133:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
+134:         assert len(model.embedding_cache) == 0
+135:         model.score("first president", ["Washington profile", "Lincoln profile"])
+136:         assert len(model.embedding_cache) == 3  # 1 clue + 2 options
+137: 
+138:     def test_tfidf_score_cache_hit(self, sample_corpus: list[str]) -> None:
+139:         """Repeated score() with same options reuses cache."""
+140:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
+141:         options = ["George Washington president", "Thomas Jefferson declaration"]
+142:         model.score("first president", options)
+143:         cache_after_first = len(model.embedding_cache)
+144:         model.score("second president", options)
+145:         # Only the new clue should be added; options are cached
+146:         assert len(model.embedding_cache) == cache_after_first + 1
+147: 
+148:     def test_tfidf_score_matches_cosine_reference(self, sample_corpus: list[str]) -> None:
+149:         """New cached score() matches sklearn cosine_similarity reference."""
+150:         from sklearn.metrics.pairwise import cosine_similarity as sklearn_cos
+151: 
+152:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
+153:         clue = "Who was the first president?"
+154:         options = [
+155:             "George Washington first president commander revolutionary",
+156:             "Abraham Lincoln Civil War emancipation",
+157:             "Thomas Jefferson declaration independence Virginia",
+158:             "Benjamin Franklin inventor Philadelphia diplomat",
+159:         ]
+160:         # Compute reference via sklearn cosine_similarity (old method)
+161:         clue_vec = model.vectorizer.transform([clue])
+162:         option_vecs = model.vectorizer.transform(options)
+163:         ref_scores = sklearn_cos(clue_vec, option_vecs)[0].astype(np.float32)
+164:         # Compute via new cached path
+165:         actual_scores = model.score(clue, options)
+166:         np.testing.assert_allclose(actual_scores, ref_scores, atol=1e-6)
+167: 
+168: 
+169: # ------------------------------------------------------------------ #
+170: # Tests for SBERTLikelihood
+171: # ------------------------------------------------------------------ #
+172: 
+173: 
+174: class TestSBERTLikelihood:
+175:     """Tests for Sentence-BERT likelihood model."""
+176: 
+177:     def test_sbert_instantiation(self) -> None:
+178:         """SBERTLikelihood can be instantiated with default model."""
+179:         model = SBERTLikelihood()
+180:         assert hasattr(model, "encoder"), "Missing encoder attribute"
+181:         assert model.model_name == "all-MiniLM-L6-v2"
+182: 
+183:     def test_sbert_score_shape_and_dtype(self) -> None:
+184:         """score() returns correct shape and dtype for 4 options."""
+185:         model = SBERTLikelihood()
+186:         scores = model.score(
+187:             "first president United States",
+188:             [
+189:                 "George Washington first president commander",
+190:                 "Thomas Jefferson third president declaration",
+191:                 "John Adams second president Massachusetts",
+192:                 "Benjamin Franklin inventor diplomat",
+193:             ],
+194:         )
+195:         assert scores.shape == (4,), f"Expected shape (4,), got {scores.shape}"
+196:         assert scores.dtype == np.float32, f"Expected float32, got {scores.dtype}"
+197: 
+198:     def test_sbert_semantic_ranking(self) -> None:
+199:         """SBERT ranks semantically similar text higher."""
+200:         model = SBERTLikelihood()
+201:         scores = model.score(
+202:             "George Washington was the first president of the United States and led the Continental Army",
+203:             [
+204:                 "George Washington first president commander revolutionary war continental army",
+205:                 "The theory of relativity was developed by Albert Einstein in physics",
+206:             ],
+207:         )
+208:         # Washington profile should score much higher than Einstein
+209:         assert scores[0] > scores[1], (
+210:             f"Washington ({scores[0]:.3f}) should score > Einstein ({scores[1]:.3f})"
+211:         )
+212: 
+213:     def test_sbert_embedding_cache_populated(self) -> None:
+214:         """Embedding cache grows after first scoring call."""
+215:         model = SBERTLikelihood()
+216:         assert len(model.embedding_cache) == 0, "Cache should start empty"
+217: 
+218:         model.score("test clue", ["option A", "option B"])
+219:         cache_after_first = len(model.embedding_cache)
+220:         assert cache_after_first > 0, "Cache should be populated after score()"
+221: 
+222:     def test_sbert_embedding_cache_hit(self) -> None:
+223:         """Repeated calls with same text use cache (size unchanged)."""
+224:         model = SBERTLikelihood()
+225:         scores1 = model.score("test clue", ["option A", "option B"])
+226:         cache_size_1 = len(model.embedding_cache)
+227: 
+228:         scores2 = model.score("test clue", ["option A", "option B"])
+229:         cache_size_2 = len(model.embedding_cache)
+230: 
+231:         assert cache_size_2 == cache_size_1, (
+232:             f"Cache grew from {cache_size_1} to {cache_size_2} on repeated call"
+233:         )
+234:         np.testing.assert_array_almost_equal(
+235:             scores1, scores2, decimal=5,
+236:             err_msg="Cached results should match original",
+237:         )
+238: 
+239:     def test_sbert_normalized_embeddings(self) -> None:
+240:         """SBERT embeddings are L2-normalized (norm ~ 1.0)."""
+241:         model = SBERTLikelihood()
+242:         embeddings = model._embed_batch(["test sentence one", "test sentence two"])
+243:         norms = np.linalg.norm(embeddings, axis=1)
+244:         np.testing.assert_array_almost_equal(
+245:             norms, np.ones(2), decimal=4,
+246:             err_msg="Embeddings should be L2-normalized",
+247:         )
+248: 
+249: 
+250: # ------------------------------------------------------------------ #
+251: # Tests for T5Likelihood (LIK-04, LIK-05)
+252: # ------------------------------------------------------------------ #
+253: 
+254: 
+255: class TestT5Likelihood:
+256:     """Tests for T5 encoder likelihood model.
+257: 
+258:     Uses the sample_t5_model fixture (t5-small, module-scoped) from conftest.py
+259:     so the model is loaded once per test file, not per test function.
+260:     """
+261: 
+262:     def test_t5_semantic_scoring(self, sample_t5_model) -> None:
+263:         """T5 should score semantically relevant options higher (LIK-04).
+264: 
+265:         "First president" clue should rank Washington higher than Einstein,
+266:         demonstrating that T5 captures semantic similarity between question
+267:         content and answer profiles.
+268:         """
+269:         clue = "This person was the first president of the United States"
+270:         options = [
+271:             "George Washington first president commander revolutionary war",
+272:             "Albert Einstein physicist theory relativity Nobel Prize",
+273:         ]
+274: 
+275:         scores = sample_t5_model.score(clue, options)
+276: 
+277:         assert isinstance(scores, np.ndarray)
+278:         assert scores.dtype == np.float32
+279:         assert len(scores) == 2
+280:         # Washington should score higher than Einstein for "first president" query
+281:         assert scores[0] > scores[1], (
+282:             f"Expected Washington > Einstein, got {scores}"
+283:         )
+284: 
+285:     def test_t5_embedding_cache(self, sample_t5_model) -> None:
+286:         """T5 should cache embeddings and reuse them (LIK-05).
+287: 
+288:         After embedding two texts, the cache should contain 2 entries.
+289:         Re-embedding the same texts should not grow the cache, and the
+290:         returned embeddings should be identical.
+291:         """
+292:         # Clear cache to get a clean test
+293:         sample_t5_model.embedding_cache.clear()
+294: 
+295:         texts = ["George Washington", "Thomas Jefferson"]
+296: 
+297:         # First call embeds and caches
+298:         emb1 = sample_t5_model.embed_and_cache(texts)
+299:         cache_size_1 = len(sample_t5_model.embedding_cache)
+300: 
+301:         # Second call reuses cache
+302:         emb2 = sample_t5_model.embed_and_cache(texts)
+303:         cache_size_2 = len(sample_t5_model.embedding_cache)
+304: 
+305:         np.testing.assert_array_equal(
+306:             emb1, emb2, err_msg="Cached embeddings should match"
+307:         )
+308:         assert cache_size_1 == cache_size_2 == 2, (
+309:             f"Cache size should not grow on reuse, got {cache_size_1} -> {cache_size_2}"
+310:         )
+311: 
+312:     def test_t5_score_returns_float32(self, sample_t5_model) -> None:
+313:         """T5 score should return float32 array, not probabilities.
+314: 
+315:         Scores are raw cosine similarities (not softmax probabilities),
+316:         so they do not necessarily sum to 1.
+317:         """
+318:         scores = sample_t5_model.score("test clue", ["option 1", "option 2"])
+319:         assert scores.dtype == np.float32
+320:         assert scores.shape == (2,)
+321:         # Scores are raw similarities, not probabilities (don't sum to 1)
+322:         assert all(np.isfinite(scores)), "All scores should be finite"
+323: 
+324:     def test_build_t5_from_config(self) -> None:
+325:         """Factory should construct T5Likelihood from config (LIK-04).
+326: 
+327:         The build_likelihood_from_config factory should recognize
+328:         model="t5" and instantiate a T5Likelihood with the specified
+329:         t5_name parameter.
+330:         """
+331:         from models.likelihoods import T5Likelihood, build_likelihood_from_config
+332: 
+333:         config = {
+334:             "likelihood": {
+335:                 "model": "t5",
+336:                 "t5_name": "t5-small",
+337:             }
+338:         }
+339: 
+340:         model = build_likelihood_from_config(config)
+341:         assert isinstance(model, T5Likelihood)
+342:         assert model.model_name == "t5-small"
+343: 
+344:     def test_t5_handles_variable_length(self, sample_t5_model) -> None:
+345:         """T5 should handle variable-length texts via attention mask.
+346: 
+347:         Short and long texts should both embed without error, producing
+348:         embeddings of the same hidden dimension regardless of input length.
+349:         """
+350:         short = "Washington"
+351:         long = (
+352:             "George Washington was the first president of the United States "
+353:             "and commander of the Continental Army during the Revolutionary War"
+354:         )
+355: 
+356:         # Both should embed without error
+357:         embs = sample_t5_model.embed_and_cache([short, long])
+358:         assert embs.shape == (2, sample_t5_model.encoder.config.d_model), (
+359:             f"Expected shape (2, {sample_t5_model.encoder.config.d_model}), "
+360:             f"got {embs.shape}"
+361:         )
+362: 
+363: 
+364: # ------------------------------------------------------------------ #
+365: # Tests for Embedding Cache Persistence
+366: # ------------------------------------------------------------------ #
+367: 
+368: 
+369: class TestEmbeddingCachePersistence:
+370:     """Tests for save_cache / load_cache disk persistence on LikelihoodModel."""
+371: 
+372:     def test_save_load_cache_round_trip(self, tmp_path: Path, sample_corpus: list[str]) -> None:
+373:         """save_cache writes .npz; load_cache restores identical entries."""
+374:         model = SBERTLikelihood()
+375:         texts = ["George Washington", "Thomas Jefferson", "Abraham Lincoln"]
+376:         model.embed_and_cache(texts)
+377:         assert len(model.embedding_cache) == 3
+378: 
+379:         cache_path = tmp_path / "cache.npz"
+380:         saved = model.save_cache(cache_path)
+381:         assert saved == 3
+382:         assert cache_path.exists()
+383: 
+384:         model2 = SBERTLikelihood()
+385:         assert len(model2.embedding_cache) == 0
+386:         loaded = model2.load_cache(cache_path)
+387:         assert loaded == 3
+388: 
+389:         for key in model.embedding_cache:
+390:             np.testing.assert_array_equal(
+391:                 model.embedding_cache[key],
+392:                 model2.embedding_cache[key],
+393:                 err_msg=f"Mismatch for key {key}",
+394:             )
+395: 
+396:     def test_load_cache_missing_file(self, tmp_path: Path) -> None:
+397:         """load_cache with nonexistent file returns 0 and leaves cache empty."""
+398:         model = SBERTLikelihood()
+399:         result = model.load_cache(tmp_path / "nonexistent.npz")
+400:         assert result == 0
+401:         assert len(model.embedding_cache) == 0
+402: 
+403:     def test_save_cache_empty(self, tmp_path: Path) -> None:
+404:         """save_cache with empty cache creates a valid .npz with zero arrays."""
+405:         model = SBERTLikelihood()
+406:         cache_path = tmp_path / "empty.npz"
+407:         saved = model.save_cache(cache_path)
+408:         assert saved == 0
+409:         assert cache_path.exists()
+410: 
+411:         # Should be loadable
+412:         model2 = SBERTLikelihood()
+413:         loaded = model2.load_cache(cache_path)
+414:         assert loaded == 0
+415: 
+416:     def test_tfidf_save_cache_noop(self, sample_corpus: list[str]) -> None:
+417:         """TfIdfLikelihood.save_cache is a no-op returning 0."""
+418:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
+419:         # Populate the cache with some embeddings
+420:         model.embed_and_cache(["test text one", "test text two"])
+421:         assert len(model.embedding_cache) > 0
+422: 
+423:         import tempfile
+424:         import os
+425:         with tempfile.TemporaryDirectory() as td:
+426:             path = Path(td) / "should_not_exist.npz"
+427:             result = model.save_cache(path)
+428:             assert result == 0
+429:             assert not path.exists(), "TfIdfLikelihood should NOT write a cache file"
+430: 
+431:     def test_load_cache_does_not_overwrite(self, tmp_path: Path) -> None:
+432:         """load_cache merges without overwriting existing cache entries."""
+433:         model = SBERTLikelihood()
+434:         texts = ["Hello world"]
+435:         model.embed_and_cache(texts)
+436: 
+437:         # Save this cache
+438:         cache_path = tmp_path / "cache.npz"
+439:         model.save_cache(cache_path)
+440: 
+441:         # Create a second model, pre-populate with the same key but different value
+442:         model2 = SBERTLikelihood()
+443:         from models.likelihoods import _text_key
+444:         key = _text_key("Hello world")
+445:         original_value = np.ones(384, dtype=np.float32)  # dummy
+446:         model2.embedding_cache[key] = original_value
+447: 
+448:         loaded = model2.load_cache(cache_path)
+449:         assert loaded == 0, "Key already present, so nothing should be loaded"
+450: 
+451:         # Original value should be preserved (not overwritten)
+452:         np.testing.assert_array_equal(
+453:             model2.embedding_cache[key],
+454:             original_value,
+455:             err_msg="Existing cache entry was overwritten by load_cache",
+456:         )
+457: 
+458: 
+459: class TestCacheMemory:
+460:     """Verify cache_memory_bytes property for resource monitoring."""
+461: 
+462:     def test_tfidf_cache_memory_bytes(self, sample_corpus):
+463:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
+464:         assert model.cache_memory_bytes == 0
+465:         model.embed_and_cache(["George Washington"])
+466:         assert model.cache_memory_bytes > 0
+467: 
+468:     def test_empty_cache_zero_bytes(self, sample_corpus):
+469:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
+470:         assert model.cache_memory_bytes == 0
+</file>
+
 <file path="tests/test_ppo_t5.py">
   1: """Unit tests for custom PPO trainer for T5PolicyModel.
   2: 
@@ -7566,126 +8039,6 @@ This section contains the contents of the repository's files.
 624:         return _convert_to_native(obj.tolist())
 625:     else:
 626:         return obj
-</file>
-
-<file path="AGENTS.md">
-  1: # AGENTS.md
-  2: 
-  3: Canonical repo contract for all coding agents (Claude, Copilot, Cursor, etc.).
-  4: 
-  5: ## Project Overview
-  6: 
-  7: Stanford CS234 final project: a unified quiz bowl RL buzzer system with two tracks. The belief-feature pipeline builds MC tossups, scores answer profiles with TF-IDF / SBERT / T5 / optional OpenAI / optional DSPy, trains or compares buzzers, and evaluates with S_q, Expected Wins, and calibration metrics. The T5 policy pipeline provides supervised warm-start and PPO for an end-to-end text policy using factorized stop/answer semantics (`P(WAIT)` and `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`). Three opt-in extensions: Expected Wins reward mode, variable-K answer choices, and DSPy integration. Additional opt-in feature-port surfaces are available for stop-only PPO (`scripts/train_ppo.py --policy-mode stop_only`) and no-buzz horizon behavior (`environment.end_mode: no_buzz`). `qanta-buzzer` is the canonical repo. qb-rl compatibility is preserved through additive shims rather than structural rewrites.
-  8: 
-  9: ## Setup
- 10: 
- 11: Requires Python >= 3.11.
- 12: 
- 13: ```bash
- 14: python3 -m venv .venv && source .venv/bin/activate
- 15: pip install -U pip && pip install -e .
- 16: ```
- 17: 
- 18: Optional extras:
- 19: 
- 20: ```bash
- 21: pip install -e '.[openai]'    # OpenAI embedding support
- 22: pip install -e '.[maskable]'  # MaskablePPO for variable-K
- 23: pip install -e '.[dspy]'      # DSPy LM-based scoring
- 24: ```
- 25: 
- 26: ## Architecture
- 27: 
- 28: | Package | Purpose |
- 29: |---------|---------|
- 30: | `qb_data/` | Data loading, answer profiles, stratified splits, MC construction, DSPy profiles |
- 31: | `qb_env/` | Gymnasium environment, text wrapper, opponent models, StopOnlyEnv wrapper (with action_masks), qb-rl shims |
- 32: | `models/` | Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy |
- 33: | `agents/` | Threshold, softmax-profile, sequential Bayes, PPO wrapper |
- 34: | `evaluation/` | S_q metric, Expected Wins, calibration, control experiments, plotting |
- 35: | `scripts/` | Pipeline entrypoints, DSPy compile, shared helpers |
- 36: | `training/` | T5 policy supervised + PPO trainers, hazard bridge utilities |
- 37: | `configs/` | YAML configuration files (default, smoke, t5_policy) |
- 38: 
- 39: ## Testing
- 40: 
- 41: 350 tests across 26 test files (3 skipped when optional extras not installed).
- 42: 
- 43: ```bash
- 44: pytest                    # full suite
- 45: pytest tests/test_qb_rl_bridge.py tests/test_factories.py tests/test_ppo_buzzer.py  # focused bridge/runtime checks
- 46: scripts/ci.sh             # CI entry point (runs pytest, exits nonzero on failure)
- 47: ```
- 48: 
- 49: ## Smoke Pipeline
- 50: 
- 51: Four-stage belief-feature smoke workflow. `--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`.
- 52: 
- 53: ```bash
- 54: python scripts/build_mc_dataset.py --smoke
- 55: python scripts/run_baselines.py --smoke
- 56: python scripts/train_ppo.py --smoke
- 57: python scripts/evaluate_all.py --smoke
- 58: ```
- 59: 
- 60: Or run all four stages via the wrapper script:
- 61: 
- 62: ```bash
- 63: scripts/manual-smoke.sh
- 64: ```
- 65: 
- 66: ## Full Pipeline
- 67: 
- 68: For the core pipeline and scripted extensions at full scale with 4-wave parallel execution:
- 69: 
- 70: ```bash
- 71: bash scripts/run_full_pipeline.sh --t5-model t5-base
- 72: ```
- 73: 
- 74: The script forces `likelihood.model=tfidf` for all belief-feature phases. Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19 require manual execution. See `docs/full-pipeline-runbook.md` for phase-by-phase details.
- 75: 
- 76: All pipeline scripts accept positional config overrides (e.g. `likelihood.model=tfidf`).
- 77: 
- 78: ## T5 Policy Pipeline
- 79: 
- 80: ```bash
- 81: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
- 82: python scripts/compare_policies.py --config configs/t5_policy.yaml
- 83: ```
- 84: 
- 85: Notes:
- 86: `scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the future hazard bridge. `--hazard-pretrain` intentionally raises `NotImplementedError` until that loop is implemented.
- 87: 
- 88: ## Configuration
- 89: 
- 90: | Config | Purpose |
- 91: |--------|---------|
- 92: | `configs/default.yaml` | Full runs with T5-large likelihood and 100k PPO timesteps |
- 93: | `configs/smoke.yaml` | Quick tests: 50 questions, TF-IDF likelihood, 3k PPO timesteps |
- 94: | `configs/t5_policy.yaml` | T5 policy pipeline: model, supervised, PPO, and data sections |
- 95: 
- 96: qb-rl config aliases are supported (e.g., `data.dataset`, `likelihood.sbert_name`, `environment.reward` as alias for `reward_mode`).
- 97: 
- 98: Additional environment options:
- 99: - `environment.end_mode: force_commit|no_buzz` controls horizon behavior
-100: - `environment.no_buzz_reward` is only used when `end_mode: no_buzz`
-101: 
-102: ## Compatibility Bridge
-103: 
-104: Old qb-rl import paths that still resolve:
-105: 
-106: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
-107: - `models.answer_profiles`
-108: - `agents.softmax_profile_buzzer`
-109: 
-110: OpenAI support is opt-in only. Default local workflows stay offline-friendly and do not require the `openai` package or `OPENAI_API_KEY`.
-111: 
-112: ## Conventions
-113: 
-114: - NumPy-style docstrings with Parameters/Returns sections
-115: - RL notation: `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
-116: - Prefer NumPy/PyTorch vectorized operations over loops in ML code
-117: - Explicit seeds for reproducibility (use 1, 2, 3 for multi-seed runs)
 </file>
 
 <file path="agents/bayesian_buzzer.py">
@@ -10607,6 +10960,986 @@ This section contains the contents of the repository's files.
 208:     )
 </file>
 
+<file path="tests/test_agents.py">
+  1: """Test suite for agents/ -- baseline agent execution and episode result schemas.
+  2: 
+  3: Covers:
+  4: - AGT-02: ThresholdBuzzer execution and buzzing logic
+  5: - AGT-03: AlwaysBuzzFinalBuzzer wait-then-buzz behavior
+  6: - AGT-04: SoftmaxProfileBuzzer from-scratch belief recomputation
+  7: - AGT-05: SequentialBayesBuzzer incremental Bayesian updates
+  8: - AGT-06: EpisodeResult and SoftmaxEpisodeResult schema validation
+  9: - Threshold sweep utility tests
+ 10: """
+ 11: 
+ 12: from __future__ import annotations
+ 13: 
+ 14: import warnings
+ 15: 
+ 16: import numpy as np
+ 17: import pytest
+ 18: 
+ 19: from agents import (
+ 20:     AlwaysBuzzFinalBuzzer,
+ 21:     EpisodeResult,
+ 22:     SequentialBayesBuzzer,
+ 23:     SoftmaxEpisodeResult,
+ 24:     SoftmaxProfileBuzzer,
+ 25:     ThresholdBuzzer,
+ 26:     result_to_dict,
+ 27:     sweep_thresholds,
+ 28: )
+ 29: from agents._math import sigmoid
+ 30: from models.likelihoods import TfIdfLikelihood
+ 31: from qb_data.mc_builder import MCQuestion
+ 32: 
+ 33: 
+ 34: # ------------------------------------------------------------------ #
+ 35: # Helpers
+ 36: # ------------------------------------------------------------------ #
+ 37: 
+ 38: 
+ 39: def _make_likelihood(corpus: list[str]) -> TfIdfLikelihood:
+ 40:     """Create a fitted TF-IDF likelihood model from a corpus.
+ 41: 
+ 42:     Uses TF-IDF (fast) for agent logic tests so tests run quickly.
+ 43:     """
+ 44:     return TfIdfLikelihood(corpus_texts=corpus)
+ 45: 
+ 46: 
+ 47: class TestSigmoidMath:
+ 48:     """Tests for stable scalar sigmoid helper."""
+ 49: 
+ 50:     def test_sigmoid_handles_extreme_inputs_without_warning(self) -> None:
+ 51:         with warnings.catch_warnings():
+ 52:             warnings.simplefilter("error", RuntimeWarning)
+ 53:             assert sigmoid(1000.0) == pytest.approx(1.0)
+ 54:             assert sigmoid(-1000.0) == pytest.approx(0.0)
+ 55: 
+ 56: 
+ 57: # ------------------------------------------------------------------ #
+ 58: # ThresholdBuzzer tests (AGT-02)
+ 59: # ------------------------------------------------------------------ #
+ 60: 
+ 61: 
+ 62: class TestThresholdBuzzer:
+ 63:     """Tests for ThresholdBuzzer execution and buzzing logic."""
+ 64: 
+ 65:     def test_threshold_buzzer_executes(
+ 66:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+ 67:     ) -> None:
+ 68:         """ThresholdBuzzer runs an episode without error and returns EpisodeResult."""
+ 69:         likelihood = _make_likelihood(sample_corpus)
+ 70:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
+ 71:         result = agent.run_episode(sample_mc_question)
+ 72: 
+ 73:         assert isinstance(result, EpisodeResult)
+ 74:         assert result.qid == sample_mc_question.qid
+ 75:         assert len(result.c_trace) > 0
+ 76: 
+ 77:     def test_threshold_buzzer_buzzes_on_threshold(
+ 78:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+ 79:     ) -> None:
+ 80:         """ThresholdBuzzer buzzes when top_p >= threshold.
+ 81: 
+ 82:         With threshold=0.0, the agent should buzz immediately at step 0
+ 83:         because any non-negative top_p will meet the threshold.
+ 84:         """
+ 85:         likelihood = _make_likelihood(sample_corpus)
+ 86:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.0)
+ 87:         result = agent.run_episode(sample_mc_question)
+ 88: 
+ 89:         # With threshold 0.0, should buzz at step 0
+ 90:         assert result.buzz_step == 0, (
+ 91:             f"Expected buzz at step 0 with threshold=0.0, got step {result.buzz_step}"
+ 92:         )
+ 93: 
+ 94:     def test_threshold_buzzer_waits_on_low_confidence(
+ 95:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+ 96:     ) -> None:
+ 97:         """ThresholdBuzzer waits when top_p < threshold.
+ 98: 
+ 99:         With threshold=1.0 (impossible for softmax to reach exactly 1.0 in
+100:         practice), the agent should wait until the final step.
+101:         """
+102:         likelihood = _make_likelihood(sample_corpus)
+103:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=1.0)
+104:         result = agent.run_episode(sample_mc_question)
+105: 
+106:         # With threshold 1.0, should wait until the last step
+107:         expected_final = len(sample_mc_question.cumulative_prefixes) - 1
+108:         assert result.buzz_step == expected_final, (
+109:             f"Expected buzz at final step {expected_final} with threshold=1.0, "
+110:             f"got step {result.buzz_step}"
+111:         )
+112: 
+113:     def test_threshold_buzzer_buzzes_at_final(
+114:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+115:     ) -> None:
+116:         """ThresholdBuzzer always buzzes on final step regardless of threshold.
+117: 
+118:         Even with threshold=1.0 (unreachable), the agent must buzz at the
+119:         final step as a forced fallback.
+120:         """
+121:         likelihood = _make_likelihood(sample_corpus)
+122:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=1.0)
+123:         result = agent.run_episode(sample_mc_question)
+124: 
+125:         final_step = len(sample_mc_question.cumulative_prefixes) - 1
+126:         assert result.buzz_step == final_step
+127:         assert result.buzz_index in range(len(sample_mc_question.options))
+128: 
+129:     def test_threshold_buzzer_traces_valid(
+130:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+131:     ) -> None:
+132:         """c_trace and g_trace have correct and matching lengths.
+133: 
+134:         Traces should have length equal to buzz_step + 1 (one entry per
+135:         step from 0 to buzz_step inclusive).
+136:         """
+137:         likelihood = _make_likelihood(sample_corpus)
+138:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
+139:         result = agent.run_episode(sample_mc_question)
+140: 
+141:         trace_len = result.buzz_step + 1
+142:         assert len(result.c_trace) == trace_len, (
+143:             f"c_trace length {len(result.c_trace)} != expected {trace_len}"
+144:         )
+145:         assert len(result.g_trace) == trace_len, (
+146:             f"g_trace length {len(result.g_trace)} != expected {trace_len}"
+147:         )
+148:         assert len(result.top_p_trace) == trace_len
+149:         assert len(result.entropy_trace) == trace_len
+150: 
+151:     def test_threshold_buzzer_confidence_proxy(
+152:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+153:     ) -> None:
+154:         """c_t values in [0, 1] via sigmoid transformation."""
+155:         likelihood = _make_likelihood(sample_corpus)
+156:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
+157:         result = agent.run_episode(sample_mc_question)
+158: 
+159:         for c_t in result.c_trace:
+160:             assert 0.0 <= c_t <= 1.0, (
+161:                 f"Confidence proxy {c_t} outside [0, 1]"
+162:             )
+163: 
+164:     def test_threshold_buzzer_custom_params(
+165:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+166:     ) -> None:
+167:         """ThresholdBuzzer accepts custom beta and alpha parameters."""
+168:         likelihood = _make_likelihood(sample_corpus)
+169:         agent = ThresholdBuzzer(
+170:             likelihood_model=likelihood,
+171:             threshold=0.5,
+172:             beta=10.0,
+173:             alpha=20.0,
+174:         )
+175:         assert agent.beta == 10.0
+176:         assert agent.alpha == 20.0
+177: 
+178:         result = agent.run_episode(sample_mc_question)
+179:         assert isinstance(result, EpisodeResult)
+180: 
+181:     def test_threshold_buzzer_confidence_proxy_stable_extremes(
+182:         self, sample_corpus: list[str]
+183:     ) -> None:
+184:         likelihood = _make_likelihood(sample_corpus)
+185:         agent = ThresholdBuzzer(
+186:             likelihood_model=likelihood,
+187:             threshold=-100.0,
+188:             alpha=100.0,
+189:         )
+190: 
+191:         with warnings.catch_warnings():
+192:             warnings.simplefilter("error", RuntimeWarning)
+193:             assert agent._confidence_proxy(1.0) == pytest.approx(1.0)
+194: 
+195:         agent = ThresholdBuzzer(
+196:             likelihood_model=likelihood,
+197:             threshold=100.0,
+198:             alpha=100.0,
+199:         )
+200:         with warnings.catch_warnings():
+201:             warnings.simplefilter("error", RuntimeWarning)
+202:             assert agent._confidence_proxy(0.0) == pytest.approx(0.0)
+203: 
+204:     def test_threshold_buzzer_top_p_in_range(
+205:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+206:     ) -> None:
+207:         """top_p_trace values are valid probabilities in [0, 1]."""
+208:         likelihood = _make_likelihood(sample_corpus)
+209:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
+210:         result = agent.run_episode(sample_mc_question)
+211: 
+212:         for p in result.top_p_trace:
+213:             assert 0.0 <= p <= 1.0, f"top_p {p} outside [0, 1]"
+214: 
+215:     def test_threshold_buzzer_entropy_nonnegative(
+216:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+217:     ) -> None:
+218:         """Entropy values are non-negative (Shannon entropy >= 0)."""
+219:         likelihood = _make_likelihood(sample_corpus)
+220:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
+221:         result = agent.run_episode(sample_mc_question)
+222: 
+223:         for h in result.entropy_trace:
+224:             assert h >= 0.0, f"Entropy {h} is negative"
+225: 
+226: 
+227: # ------------------------------------------------------------------ #
+228: # AlwaysBuzzFinalBuzzer tests (AGT-03)
+229: # ------------------------------------------------------------------ #
+230: 
+231: 
+232: class TestAlwaysBuzzFinalBuzzer:
+233:     """Tests for AlwaysBuzzFinalBuzzer wait-then-buzz behavior."""
+234: 
+235:     def test_always_buzz_final_waits(
+236:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+237:     ) -> None:
+238:         """All c_trace entries except the last are 0.0 (agent waits)."""
+239:         likelihood = _make_likelihood(sample_corpus)
+240:         agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood)
+241:         result = agent.run_episode(sample_mc_question)
+242: 
+243:         # All entries except last should be 0.0
+244:         for c_t in result.c_trace[:-1]:
+245:             assert c_t == 0.0, f"Expected c_t=0.0 for waiting, got {c_t}"
+246: 
+247:     def test_always_buzz_final_buzzes_last(
+248:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+249:     ) -> None:
+250:         """The last c_trace entry is 1.0 (agent buzzes at final step)."""
+251:         likelihood = _make_likelihood(sample_corpus)
+252:         agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood)
+253:         result = agent.run_episode(sample_mc_question)
+254: 
+255:         assert result.c_trace[-1] == 1.0, (
+256:             f"Expected c_trace[-1]=1.0, got {result.c_trace[-1]}"
+257:         )
+258: 
+259:     def test_always_buzz_final_computes_beliefs(
+260:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+261:     ) -> None:
+262:         """Beliefs are computed at each step (not skipped).
+263: 
+264:         All top_p_trace entries should have valid probability values,
+265:         demonstrating the model computed beliefs at every step.
+266:         """
+267:         likelihood = _make_likelihood(sample_corpus)
+268:         agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood)
+269:         result = agent.run_episode(sample_mc_question)
+270: 
+271:         n_steps = len(sample_mc_question.cumulative_prefixes)
+272:         assert len(result.top_p_trace) == n_steps, (
+273:             f"Expected {n_steps} top_p entries, got {len(result.top_p_trace)}"
+274:         )
+275:         for p in result.top_p_trace:
+276:             assert 0.0 <= p <= 1.0, f"top_p {p} outside [0, 1]"
+277: 
+278:     def test_always_buzz_final_buzz_step(
+279:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+280:     ) -> None:
+281:         """buzz_step equals len(cumulative_prefixes) - 1 (last step)."""
+282:         likelihood = _make_likelihood(sample_corpus)
+283:         agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood)
+284:         result = agent.run_episode(sample_mc_question)
+285: 
+286:         expected = len(sample_mc_question.cumulative_prefixes) - 1
+287:         assert result.buzz_step == expected, (
+288:             f"Expected buzz_step={expected}, got {result.buzz_step}"
+289:         )
+290: 
+291:     def test_always_buzz_final_full_trace(
+292:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+293:     ) -> None:
+294:         """All traces have length equal to number of cumulative prefixes."""
+295:         likelihood = _make_likelihood(sample_corpus)
+296:         agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood)
+297:         result = agent.run_episode(sample_mc_question)
+298: 
+299:         n = len(sample_mc_question.cumulative_prefixes)
+300:         assert len(result.c_trace) == n
+301:         assert len(result.g_trace) == n
+302:         assert len(result.top_p_trace) == n
+303:         assert len(result.entropy_trace) == n
+304: 
+305: 
+306: # ------------------------------------------------------------------ #
+307: # SoftmaxProfileBuzzer tests (AGT-04)
+308: # ------------------------------------------------------------------ #
+309: 
+310: 
+311: class TestSoftmaxProfileBuzzer:
+312:     """Tests for SoftmaxProfileBuzzer from-scratch belief computation."""
+313: 
+314:     def test_softmax_profile_executes(
+315:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+316:     ) -> None:
+317:         """SoftmaxProfileBuzzer runs an episode without error."""
+318:         likelihood = _make_likelihood(sample_corpus)
+319:         agent = SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7)
+320:         result = agent.run_episode(sample_mc_question)
+321: 
+322:         assert isinstance(result, SoftmaxEpisodeResult)
+323:         assert result.qid == sample_mc_question.qid
+324: 
+325:     def test_softmax_profile_recomputes_belief(
+326:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+327:     ) -> None:
+328:         """SoftmaxProfileBuzzer calls _belief_from_scratch each step.
+329: 
+330:         Verifies the method exists and the agent stores beliefs, confirming
+331:         from-scratch recomputation (not incremental Bayesian updates).
+332:         """
+333:         likelihood = _make_likelihood(sample_corpus)
+334:         agent = SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7)
+335: 
+336:         # Verify the from-scratch method exists
+337:         assert hasattr(agent, "_belief_from_scratch")
+338: 
+339:         result = agent.run_episode(sample_mc_question)
+340: 
+341:         # After episode, agent should have a stored belief
+342:         assert agent.belief is not None
+343:         assert isinstance(agent.belief, np.ndarray)
+344:         assert agent.belief.shape == (len(sample_mc_question.options),)
+345: 
+346:     def test_softmax_profile_result_schema(
+347:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+348:     ) -> None:
+349:         """SoftmaxProfileBuzzer returns SoftmaxEpisodeResult, not EpisodeResult."""
+350:         likelihood = _make_likelihood(sample_corpus)
+351:         agent = SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7)
+352:         result = agent.run_episode(sample_mc_question)
+353: 
+354:         assert isinstance(result, SoftmaxEpisodeResult)
+355:         # SoftmaxEpisodeResult should NOT be an EpisodeResult (different dataclass)
+356:         assert not isinstance(result, EpisodeResult)
+357: 
+358:     def test_softmax_profile_confidence_proxy(
+359:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+360:     ) -> None:
+361:         """SoftmaxProfileBuzzer c_t values in [0, 1] via sigmoid."""
+362:         likelihood = _make_likelihood(sample_corpus)
+363:         agent = SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7)
+364:         result = agent.run_episode(sample_mc_question)
+365: 
+366:         for c_t in result.c_trace:
+367:             assert 0.0 <= c_t <= 1.0, f"c_t {c_t} outside [0, 1]"
+368: 
+369:     def test_softmax_profile_threshold_behavior(
+370:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+371:     ) -> None:
+372:         """SoftmaxProfileBuzzer respects threshold for buzzing."""
+373:         likelihood = _make_likelihood(sample_corpus)
+374: 
+375:         # With threshold 0.0, should buzz immediately
+376:         agent_low = SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.0)
+377:         result_low = agent_low.run_episode(sample_mc_question)
+378:         assert result_low.buzz_step == 0
+379: 
+380:         # With threshold 1.0, should wait until the end
+381:         agent_high = SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=1.0)
+382:         result_high = agent_high.run_episode(sample_mc_question)
+383:         assert result_high.buzz_step == len(sample_mc_question.cumulative_prefixes) - 1
+384: 
+385:     def test_softmax_profile_confidence_proxy_stable_extremes(
+386:         self, sample_corpus: list[str]
+387:     ) -> None:
+388:         likelihood = _make_likelihood(sample_corpus)
+389:         agent = SoftmaxProfileBuzzer(
+390:             likelihood_model=likelihood,
+391:             threshold=-100.0,
+392:             alpha=100.0,
+393:         )
+394: 
+395:         with warnings.catch_warnings():
+396:             warnings.simplefilter("error", RuntimeWarning)
+397:             assert agent.confidence_proxy(1.0) == pytest.approx(1.0)
+398: 
+399:         agent = SoftmaxProfileBuzzer(
+400:             likelihood_model=likelihood,
+401:             threshold=100.0,
+402:             alpha=100.0,
+403:         )
+404:         with warnings.catch_warnings():
+405:             warnings.simplefilter("error", RuntimeWarning)
+406:             assert agent.confidence_proxy(0.0) == pytest.approx(0.0)
+407: 
+408: 
+409: # ------------------------------------------------------------------ #
+410: # SequentialBayesBuzzer tests (AGT-05)
+411: # ------------------------------------------------------------------ #
+412: 
+413: 
+414: class TestSequentialBayesBuzzer:
+415:     """Tests for SequentialBayesBuzzer incremental Bayesian update."""
+416: 
+417:     def test_sequential_bayes_executes(
+418:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+419:     ) -> None:
+420:         """SequentialBayesBuzzer runs an episode without error."""
+421:         likelihood = _make_likelihood(sample_corpus)
+422:         agent = SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7)
+423:         result = agent.run_episode(sample_mc_question)
+424: 
+425:         assert isinstance(result, SoftmaxEpisodeResult)
+426:         assert result.qid == sample_mc_question.qid
+427: 
+428:     def test_sequential_bayes_uses_run_indices(
+429:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+430:     ) -> None:
+431:         """SequentialBayesBuzzer requires question.run_indices field.
+432: 
+433:         The agent iterates over run_indices to extract token fragments,
+434:         not over cumulative_prefixes. The number of trace entries should
+435:         match the number of run_indices steps processed.
+436:         """
+437:         likelihood = _make_likelihood(sample_corpus)
+438:         agent = SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7)
+439:         result = agent.run_episode(sample_mc_question)
+440: 
+441:         # Trace length should be <= len(run_indices)
+442:         assert len(result.c_trace) <= len(sample_mc_question.run_indices), (
+443:             f"Trace length {len(result.c_trace)} > run_indices length "
+444:             f"{len(sample_mc_question.run_indices)}"
+445:         )
+446: 
+447:     def test_sequential_bayes_bayesian_update(
+448:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+449:     ) -> None:
+450:         """Belief is posterior proportional to prior * likelihood.
+451: 
+452:         Verify the _step_update method produces valid posterior:
+453:         all entries >= 0 and sum to 1.
+454:         """
+455:         likelihood = _make_likelihood(sample_corpus)
+456:         agent = SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7)
+457: 
+458:         K = len(sample_mc_question.options)
+459:         prior = np.ones(K, dtype=np.float32) / K
+460:         fragment = "first president"
+461:         profiles = sample_mc_question.option_profiles
+462: 
+463:         posterior = agent._step_update(prior, fragment, profiles)
+464: 
+465:         assert posterior.shape == (K,), f"Expected shape ({K},), got {posterior.shape}"
+466:         assert all(posterior >= 0), "Posterior has negative entries"
+467:         np.testing.assert_almost_equal(
+468:             posterior.sum(), 1.0, decimal=5,
+469:             err_msg="Posterior should sum to 1.0",
+470:         )
+471: 
+472:     def test_sequential_bayes_result_schema(
+473:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+474:     ) -> None:
+475:         """SequentialBayesBuzzer returns SoftmaxEpisodeResult."""
+476:         likelihood = _make_likelihood(sample_corpus)
+477:         agent = SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7)
+478:         result = agent.run_episode(sample_mc_question)
+479: 
+480:         assert isinstance(result, SoftmaxEpisodeResult)
+481:         assert not isinstance(result, EpisodeResult)
+482: 
+483:     def test_sequential_bayes_fragments(
+484:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+485:     ) -> None:
+486:         """SequentialBayesBuzzer processes token fragments, not full prefixes.
+487: 
+488:         With threshold 1.0 (never buzzes early), all run_indices should be
+489:         processed, producing traces of length len(run_indices).
+490:         """
+491:         likelihood = _make_likelihood(sample_corpus)
+492:         agent = SequentialBayesBuzzer(likelihood_model=likelihood, threshold=1.0)
+493:         result = agent.run_episode(sample_mc_question)
+494: 
+495:         n_steps = len(sample_mc_question.run_indices)
+496:         assert len(result.c_trace) == n_steps, (
+497:             f"Expected {n_steps} trace entries, got {len(result.c_trace)}"
+498:         )
+499: 
+500: 
+501: # ------------------------------------------------------------------ #
+502: # Episode result schema tests (AGT-06)
+503: # ------------------------------------------------------------------ #
+504: 
+505: 
+506: class TestEpisodeResultSchema:
+507:     """Tests for EpisodeResult and SoftmaxEpisodeResult dataclass schemas."""
+508: 
+509:     def test_episode_result_fields(self) -> None:
+510:         """EpisodeResult has all required fields."""
+511:         result = EpisodeResult(
+512:             qid="test_q",
+513:             buzz_step=3,
+514:             buzz_index=1,
+515:             gold_index=0,
+516:             correct=False,
+517:             reward_like=-0.5,
+518:             c_trace=[0.1, 0.2, 0.3, 0.4],
+519:             g_trace=[0.0, 0.0, 0.0, 1.0],
+520:             top_p_trace=[0.3, 0.4, 0.5, 0.6],
+521:             entropy_trace=[1.4, 1.2, 1.0, 0.8],
+522:         )
+523:         assert result.qid == "test_q"
+524:         assert result.buzz_step == 3
+525:         assert result.buzz_index == 1
+526:         assert result.gold_index == 0
+527:         assert result.correct is False
+528:         assert result.reward_like == -0.5
+529: 
+530:     def test_softmax_episode_result_fields(self) -> None:
+531:         """SoftmaxEpisodeResult has all required fields."""
+532:         result = SoftmaxEpisodeResult(
+533:             qid="test_q",
+534:             buzz_step=2,
+535:             buzz_index=0,
+536:             gold_index=0,
+537:             correct=True,
+538:             c_trace=[0.1, 0.5, 0.9],
+539:             g_trace=[1.0, 1.0, 1.0],
+540:             top_p_trace=[0.4, 0.6, 0.9],
+541:             entropy_trace=[1.2, 0.8, 0.3],
+542:         )
+543:         assert result.qid == "test_q"
+544:         assert result.buzz_step == 2
+545:         assert result.correct is True
+546: 
+547:     def test_traces_same_length(
+548:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+549:     ) -> None:
+550:         """len(c_trace) == len(g_trace) for all agents."""
+551:         likelihood = _make_likelihood(sample_corpus)
+552: 
+553:         agents = [
+554:             ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7),
+555:             AlwaysBuzzFinalBuzzer(likelihood_model=likelihood),
+556:             SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7),
+557:             SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7),
+558:         ]
+559: 
+560:         for agent in agents:
+561:             result = agent.run_episode(sample_mc_question)
+562:             agent_name = type(agent).__name__
+563:             assert len(result.c_trace) == len(result.g_trace), (
+564:                 f"{agent_name}: c_trace ({len(result.c_trace)}) != "
+565:                 f"g_trace ({len(result.g_trace)})"
+566:             )
+567:             assert len(result.c_trace) == len(result.top_p_trace), (
+568:                 f"{agent_name}: c_trace ({len(result.c_trace)}) != "
+569:                 f"top_p_trace ({len(result.top_p_trace)})"
+570:             )
+571:             assert len(result.c_trace) == len(result.entropy_trace), (
+572:                 f"{agent_name}: c_trace ({len(result.c_trace)}) != "
+573:                 f"entropy_trace ({len(result.entropy_trace)})"
+574:             )
+575: 
+576:     def test_g_trace_binary(
+577:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+578:     ) -> None:
+579:         """g_trace values are 0.0 or 1.0 (correctness is binary)."""
+580:         likelihood = _make_likelihood(sample_corpus)
+581: 
+582:         agents = [
+583:             ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7),
+584:             AlwaysBuzzFinalBuzzer(likelihood_model=likelihood),
+585:             SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7),
+586:             SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7),
+587:         ]
+588: 
+589:         for agent in agents:
+590:             result = agent.run_episode(sample_mc_question)
+591:             agent_name = type(agent).__name__
+592:             for g_t in result.g_trace:
+593:                 assert g_t in (0.0, 1.0), (
+594:                     f"{agent_name}: g_t={g_t} not in {{0.0, 1.0}}"
+595:                 )
+596: 
+597:     def test_buzz_index_valid(
+598:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+599:     ) -> None:
+600:         """buzz_index in range(K) where K = len(options)."""
+601:         likelihood = _make_likelihood(sample_corpus)
+602:         K = len(sample_mc_question.options)
+603: 
+604:         agents = [
+605:             ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7),
+606:             AlwaysBuzzFinalBuzzer(likelihood_model=likelihood),
+607:             SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7),
+608:             SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7),
+609:         ]
+610: 
+611:         for agent in agents:
+612:             result = agent.run_episode(sample_mc_question)
+613:             agent_name = type(agent).__name__
+614:             assert 0 <= result.buzz_index < K, (
+615:                 f"{agent_name}: buzz_index={result.buzz_index} not in [0, {K})"
+616:             )
+617: 
+618:     def test_result_to_dict(
+619:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+620:     ) -> None:
+621:         """result_to_dict() converts EpisodeResult to dict."""
+622:         likelihood = _make_likelihood(sample_corpus)
+623:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
+624:         result = agent.run_episode(sample_mc_question)
+625: 
+626:         d = result_to_dict(result)
+627:         assert isinstance(d, dict)
+628:         assert d["qid"] == sample_mc_question.qid
+629:         assert "buzz_step" in d
+630:         assert "buzz_index" in d
+631:         assert "gold_index" in d
+632:         assert "correct" in d
+633:         assert "reward_like" in d
+634:         assert "c_trace" in d
+635:         assert "g_trace" in d
+636:         assert isinstance(d["c_trace"], list)
+637: 
+638: 
+639: # ------------------------------------------------------------------ #
+640: # Threshold sweep utility tests
+641: # ------------------------------------------------------------------ #
+642: 
+643: 
+644: class TestSweepThresholds:
+645:     """Tests for sweep_thresholds utility function."""
+646: 
+647:     def test_sweep_thresholds_runs(
+648:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+649:     ) -> None:
+650:         """sweep_thresholds() returns dict[float, list[EpisodeResult]]."""
+651:         likelihood = _make_likelihood(sample_corpus)
+652:         results = sweep_thresholds(
+653:             questions=[sample_mc_question],
+654:             likelihood_model=likelihood,
+655:             thresholds=[0.7],
+656:         )
+657: 
+658:         assert isinstance(results, dict)
+659:         assert 0.7 in results
+660:         assert len(results[0.7]) == 1
+661:         assert isinstance(results[0.7][0], EpisodeResult)
+662: 
+663:     def test_sweep_thresholds_multiple_values(
+664:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+665:     ) -> None:
+666:         """Sweeps over [0.6, 0.7, 0.8, 0.9] and returns results for each."""
+667:         likelihood = _make_likelihood(sample_corpus)
+668:         thresholds = [0.6, 0.7, 0.8, 0.9]
+669:         results = sweep_thresholds(
+670:             questions=[sample_mc_question],
+671:             likelihood_model=likelihood,
+672:             thresholds=thresholds,
+673:         )
+674: 
+675:         assert len(results) == len(thresholds)
+676:         for thresh in thresholds:
+677:             assert thresh in results, f"Missing results for threshold {thresh}"
+678:             assert len(results[thresh]) == 1
+679: 
+680:     def test_sweep_thresholds_monotonic_buzz_step(
+681:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+682:     ) -> None:
+683:         """Higher thresholds should produce later or equal buzz steps.
+684: 
+685:         A higher threshold means the agent needs more confidence to buzz,
+686:         so it should wait at least as long as with a lower threshold.
+687:         """
+688:         likelihood = _make_likelihood(sample_corpus)
+689:         thresholds = [0.3, 0.5, 0.7, 0.9]
+690:         results = sweep_thresholds(
+691:             questions=[sample_mc_question],
+692:             likelihood_model=likelihood,
+693:             thresholds=thresholds,
+694:         )
+695: 
+696:         buzz_steps = [results[t][0].buzz_step for t in thresholds]
+697:         for i in range(len(buzz_steps) - 1):
+698:             assert buzz_steps[i] <= buzz_steps[i + 1], (
+699:                 f"Buzz step not monotonic: threshold {thresholds[i]} "
+700:                 f"(step {buzz_steps[i]}) > threshold {thresholds[i+1]} "
+701:                 f"(step {buzz_steps[i+1]})"
+702:             )
+703: 
+704: 
+705: # ------------------------------------------------------------------ #
+706: # Precomputed equivalence tests
+707: # ------------------------------------------------------------------ #
+708: 
+709: 
+710: class TestPrecomputedEquivalence:
+711:     """Prove precomputed-path functions are numerically identical to live agents."""
+712: 
+713:     def test_softmax_precomputed_matches_live(
+714:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+715:     ) -> None:
+716:         """_softmax_episode_from_precomputed matches SoftmaxProfileBuzzer.run_episode."""
+717:         from agents.threshold_buzzer import (
+718:             _softmax_episode_from_precomputed,
+719:             precompute_beliefs,
+720:         )
+721: 
+722:         likelihood = _make_likelihood(sample_corpus)
+723:         threshold, beta, alpha = 0.7, 5.0, 10.0
+724: 
+725:         # Live agent
+726:         agent = SoftmaxProfileBuzzer(
+727:             likelihood_model=likelihood, threshold=threshold, beta=beta, alpha=alpha
+728:         )
+729:         live = agent.run_episode(sample_mc_question)
+730: 
+731:         # Precomputed path
+732:         pqs = precompute_beliefs([sample_mc_question], likelihood, beta)
+733:         pre = _softmax_episode_from_precomputed(pqs[0], threshold, alpha)
+734: 
+735:         assert pre.buzz_step == live.buzz_step
+736:         assert pre.buzz_index == live.buzz_index
+737:         assert pre.correct == live.correct
+738:         np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
+739:         np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
+740:         np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
+741:         np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
+742: 
+743:     def test_always_final_precomputed_matches_live(
+744:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+745:     ) -> None:
+746:         """_always_final_from_precomputed matches AlwaysBuzzFinalBuzzer.run_episode."""
+747:         from agents.threshold_buzzer import (
+748:             _always_final_from_precomputed,
+749:             precompute_beliefs,
+750:         )
+751: 
+752:         likelihood = _make_likelihood(sample_corpus)
+753:         beta = 5.0
+754: 
+755:         # Live agent
+756:         agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood, beta=beta)
+757:         live = agent.run_episode(sample_mc_question)
+758: 
+759:         # Precomputed path
+760:         pqs = precompute_beliefs([sample_mc_question], likelihood, beta)
+761:         pre = _always_final_from_precomputed(pqs[0])
+762: 
+763:         assert pre.buzz_step == live.buzz_step
+764:         assert pre.buzz_index == live.buzz_index
+765:         assert pre.correct == live.correct
+766:         assert pre.reward_like == live.reward_like
+767:         np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
+768:         np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
+769:         np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
+770:         np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
+771: 
+772:     def test_sequential_precomputed_matches_live(
+773:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+774:     ) -> None:
+775:         """_sequential_episode_from_precomputed matches SequentialBayesBuzzer.run_episode."""
+776:         from agents.bayesian_buzzer import (
+777:             _sequential_episode_from_precomputed,
+778:             precompute_sequential_beliefs,
+779:         )
+780: 
+781:         likelihood = _make_likelihood(sample_corpus)
+782:         threshold, beta, alpha = 0.7, 5.0, 10.0
+783: 
+784:         # Live agent
+785:         agent = SequentialBayesBuzzer(
+786:             likelihood_model=likelihood, threshold=threshold, beta=beta, alpha=alpha
+787:         )
+788:         live = agent.run_episode(sample_mc_question)
+789: 
+790:         # Precomputed path
+791:         pqs = precompute_sequential_beliefs([sample_mc_question], likelihood, beta)
+792:         pre = _sequential_episode_from_precomputed(pqs[0], threshold, alpha)
+793: 
+794:         assert pre.buzz_step == live.buzz_step
+795:         assert pre.buzz_index == live.buzz_index
+796:         assert pre.correct == live.correct
+797:         np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
+798:         np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
+799:         np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
+800:         np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
+801: 
+802:     def test_sweep_sequential_matches_per_threshold(
+803:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+804:     ) -> None:
+805:         """sweep_sequential_thresholds matches per-threshold SequentialBayesBuzzer."""
+806:         from agents.bayesian_buzzer import sweep_sequential_thresholds
+807: 
+808:         likelihood = _make_likelihood(sample_corpus)
+809:         thresholds = [0.5, 0.7, 0.9]
+810:         beta, alpha = 5.0, 10.0
+811: 
+812:         # Sweep
+813:         sweep = sweep_sequential_thresholds(
+814:             questions=[sample_mc_question],
+815:             likelihood_model=likelihood,
+816:             thresholds=thresholds,
+817:             beta=beta,
+818:             alpha=alpha,
+819:         )
+820: 
+821:         # Per-threshold live agents
+822:         for threshold in thresholds:
+823:             agent = SequentialBayesBuzzer(
+824:                 likelihood_model=likelihood,
+825:                 threshold=threshold,
+826:                 beta=beta,
+827:                 alpha=alpha,
+828:             )
+829:             live = agent.run_episode(sample_mc_question)
+830:             pre = sweep[float(threshold)][0]
+831: 
+832:             assert pre.buzz_step == live.buzz_step, (
+833:                 f"threshold={threshold}: buzz_step {pre.buzz_step} != {live.buzz_step}"
+834:             )
+835:             assert pre.buzz_index == live.buzz_index
+836:             assert pre.correct == live.correct
+837:             np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
+838:             np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
+839:             np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
+840:             np.testing.assert_array_almost_equal(
+841:                 pre.entropy_trace, live.entropy_trace
+842:             )
+843: 
+844: 
+845: # ------------------------------------------------------------------ #
+846: # Shuffle precomputed equivalence tests
+847: # ------------------------------------------------------------------ #
+848: 
+849: 
+850: class TestShufflePrecomputedEquivalence:
+851:     """Prove precomputed shuffle control matches live rescore shuffle control."""
+852: 
+853:     def test_shuffle_precomputed_matches_rescore(
+854:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+855:     ) -> None:
+856:         """Precomputed shuffle control matches live rescore shuffle control."""
+857:         from dataclasses import asdict
+858: 
+859:         from agents.threshold_buzzer import precompute_beliefs
+860:         from evaluation.controls import (
+861:             run_shuffle_control,
+862:             run_shuffle_control_precomputed,
+863:         )
+864:         from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+865: 
+866:         likelihood = _make_likelihood(sample_corpus)
+867:         threshold, beta, alpha = 0.7, 5.0, 10.0
+868:         questions = [sample_mc_question]
+869: 
+870:         # Live rescore path
+871:         def evaluator(qset):
+872:             agent = SoftmaxProfileBuzzer(
+873:                 likelihood_model=likelihood,
+874:                 threshold=threshold,
+875:                 beta=beta,
+876:                 alpha=alpha,
+877:             )
+878:             runs = [asdict(agent.run_episode(q)) for q in qset]
+879:             summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
+880:             summary["runs"] = runs
+881:             return summary
+882: 
+883:         live_result = run_shuffle_control(questions, evaluator=evaluator, random_seed=13)
+884: 
+885:         # Precomputed path
+886:         precomputed = precompute_beliefs(questions, likelihood, beta)
+887:         pre_result = run_shuffle_control_precomputed(
+888:             precomputed, threshold, alpha, random_seed=13
+889:         )
+890: 
+891:         # Compare summary metrics
+892:         assert live_result["mean_sq"] == pytest.approx(pre_result["mean_sq"])
+893:         assert live_result["buzz_accuracy"] == pytest.approx(pre_result["buzz_accuracy"])
+894: 
+895:         # Compare per-run results
+896:         for live_run, pre_run in zip(live_result["runs"], pre_result["runs"]):
+897:             assert live_run["buzz_step"] == pre_run["buzz_step"]
+898:             assert live_run["buzz_index"] == pre_run["buzz_index"]
+899:             assert live_run["correct"] == pre_run["correct"]
+900:             np.testing.assert_array_almost_equal(
+901:                 live_run["c_trace"], pre_run["c_trace"]
+902:             )
+903:             np.testing.assert_array_almost_equal(
+904:                 live_run["g_trace"], pre_run["g_trace"]
+905:             )
+906:             np.testing.assert_array_almost_equal(
+907:                 live_run["top_p_trace"], pre_run["top_p_trace"]
+908:             )
+909:             np.testing.assert_array_almost_equal(
+910:                 live_run["entropy_trace"], pre_run["entropy_trace"]
+911:             )
+912: 
+913:     def test_permutation_consistency(
+914:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+915:     ) -> None:
+916:         """Permutation applied to beliefs matches permutation applied to gold_index."""
+917:         import random as random_mod
+918: 
+919:         from agents.threshold_buzzer import _PrecomputedQuestion, precompute_beliefs
+920:         from evaluation.controls import shuffled_option_copy
+921: 
+922:         likelihood = _make_likelihood(sample_corpus)
+923:         beta = 5.0
+924:         questions = [sample_mc_question]
+925:         precomputed = precompute_beliefs(questions, likelihood, beta)
+926: 
+927:         # Reproduce the permutation that shuffled_option_copy would use
+928:         rng_live = random_mod.Random(13)
+929:         shuffled_q = shuffled_option_copy(sample_mc_question, rng_live)
+930: 
+931:         # Reproduce the same permutation for precomputed
+932:         rng_pre = random_mod.Random(13)
+933:         pq = precomputed[0]
+934:         perm = list(range(pq.num_options))
+935:         rng_pre.shuffle(perm)
+936:         new_gold = perm.index(pq.gold_index)
+937: 
+938:         # The gold index should match
+939:         assert new_gold == shuffled_q.gold_index
+940: 
+941: 
+942: class TestBaselineAgentsVariableK:
+943:     """Baseline agents work on non-K=4 questions (K-agnostic check)."""
+944: 
+945:     def test_threshold_buzzer_k3(self, sample_corpus):
+946:         from agents.threshold_buzzer import ThresholdBuzzer
+947:         from dataclasses import replace
+948:         from models.likelihoods import TfIdfLikelihood
+949:         from tests.conftest import sample_mc_question as _  # reuse fixture pattern
+950: 
+951:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
+952:         q4 = MCQuestion(
+953:             qid="q_k3",
+954:             question="Who was the first president?",
+955:             tokens=["Who", "was", "the", "first", "president"],
+956:             answer_primary="George Washington",
+957:             clean_answers=["George Washington"],
+958:             run_indices=[1, 3, 4],
+959:             human_buzz_positions=[],
+960:             category="History",
+961:             cumulative_prefixes=["Who was", "Who was the first", "Who was the first president"],
+962:             options=["George Washington", "Thomas Jefferson", "John Adams"],
+963:             gold_index=0,
+964:             option_profiles=[
+965:                 "George Washington first president",
+966:                 "Thomas Jefferson third president",
+967:                 "John Adams second president",
+968:             ],
+969:             option_answer_primary=["George Washington", "Thomas Jefferson", "John Adams"],
+970:             distractor_strategy="test",
+971:         )
+972:         buzzer = ThresholdBuzzer(
+973:             likelihood_model=model, threshold=0.5, beta=5.0, alpha=10.0,
+974:         )
+975:         result = buzzer.run_episode(q4)
+976:         assert len(result.c_trace) > 0
+977:         assert 0 <= result.buzz_index < 3
+</file>
+
 <file path="tests/test_build_mc_dataset.py">
   1: """Regression tests for scripts/build_mc_dataset.py CLI defaults."""
   2: 
@@ -10968,479 +12301,6 @@ This section contains the contents of the repository's files.
 248:         config = {"likelihood": {"model": "tfidf"}}
 249:         model = build_likelihood_from_config(config, corpus_texts=sample_corpus)
 250:         assert isinstance(model, TfIdfLikelihood)
-</file>
-
-<file path="tests/test_likelihoods.py">
-  1: """Test suite for models/likelihoods.py — likelihood model interface and implementations.
-  2: 
-  3: Covers:
-  4: - LIK-01: LikelihoodModel ABC contract
-  5: - LIK-02: TfIdfLikelihood with corpus fitting and cosine scoring
-  6: - LIK-03: SBERTLikelihood with semantic embeddings and caching
-  7: - LIK-04: T5Likelihood semantic scoring and embedding shape
-  8: - LIK-05: T5 embedding cache reuse and factory construction
-  9: """
- 10: 
- 11: from __future__ import annotations
- 12: 
- 13: from pathlib import Path
- 14: 
- 15: import numpy as np
- 16: import pytest
- 17: 
- 18: from models.likelihoods import (
- 19:     LikelihoodModel,
- 20:     SBERTLikelihood,
- 21:     TfIdfLikelihood,
- 22: )
- 23: 
- 24: 
- 25: # ------------------------------------------------------------------ #
- 26: # Tests for LikelihoodModel ABC
- 27: # ------------------------------------------------------------------ #
- 28: 
- 29: 
- 30: class TestLikelihoodModelABC:
- 31:     """Tests for the abstract base class contract."""
- 32: 
- 33:     def test_abstract_interface_cannot_instantiate(self) -> None:
- 34:         """LikelihoodModel ABC cannot be instantiated directly."""
- 35:         with pytest.raises(TypeError):
- 36:             LikelihoodModel()  # type: ignore[abstract]
- 37: 
- 38:     def test_embedding_cache_on_subclass(self, sample_corpus: list[str]) -> None:
- 39:         """Concrete subclass inherits embedding_cache dict."""
- 40:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
- 41:         assert hasattr(model, "embedding_cache"), "Missing embedding_cache attribute"
- 42:         assert isinstance(model.embedding_cache, dict), "embedding_cache should be dict"
- 43: 
- 44: 
- 45: # ------------------------------------------------------------------ #
- 46: # Tests for TfIdfLikelihood
- 47: # ------------------------------------------------------------------ #
- 48: 
- 49: 
- 50: class TestTfIdfLikelihood:
- 51:     """Tests for TF-IDF based likelihood model."""
- 52: 
- 53:     def test_tfidf_requires_fit(self) -> None:
- 54:         """score() before fit() raises RuntimeError."""
- 55:         model = TfIdfLikelihood()
- 56:         with pytest.raises(RuntimeError, match="must be fit"):
- 57:             model.score("test clue", ["option1", "option2"])
- 58: 
- 59:     def test_tfidf_embed_requires_fit(self) -> None:
- 60:         """_embed_batch() before fit() raises RuntimeError."""
- 61:         model = TfIdfLikelihood()
- 62:         with pytest.raises(RuntimeError, match="must be fit"):
- 63:             model._embed_batch(["test text"])
- 64: 
- 65:     def test_tfidf_fit_and_score(self, sample_corpus: list[str]) -> None:
- 66:         """After fitting, score returns correct shape and dtype.
- 67: 
- 68:         Also verifies that more relevant text scores higher.
- 69:         """
- 70:         model = TfIdfLikelihood()
- 71:         model.fit(sample_corpus)
- 72: 
- 73:         scores = model.score(
- 74:             "Who was the first president?",
- 75:             ["George Washington first president", "Abraham Lincoln Civil War"],
- 76:         )
- 77:         assert scores.shape == (2,), f"Expected shape (2,), got {scores.shape}"
- 78:         assert scores.dtype == np.float32, f"Expected float32, got {scores.dtype}"
- 79:         # Washington should score higher for "first president" clue
- 80:         assert scores[0] >= scores[1], (
- 81:             f"Washington ({scores[0]:.3f}) should score >= Lincoln ({scores[1]:.3f})"
- 82:         )
- 83: 
- 84:     def test_tfidf_embed_batch(self, sample_corpus: list[str]) -> None:
- 85:         """_embed_batch produces dense vectors of correct shape."""
- 86:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
- 87:         embeddings = model._embed_batch(["test text one", "test text two"])
- 88:         assert embeddings.shape[0] == 2, f"Expected 2 rows, got {embeddings.shape[0]}"
- 89:         assert embeddings.dtype == np.float32, f"Expected float32, got {embeddings.dtype}"
- 90:         vocab_size = len(model.vectorizer.vocabulary_)
- 91:         assert embeddings.shape[1] == vocab_size, (
- 92:             f"Expected {vocab_size} cols, got {embeddings.shape[1]}"
- 93:         )
- 94: 
- 95:     def test_tfidf_corpus_in_constructor(self, sample_corpus: list[str]) -> None:
- 96:         """Passing corpus_texts to __init__ auto-fits the model."""
- 97:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
- 98:         assert model._is_fit is True, "Model should be fit after corpus in constructor"
- 99:         # Should work without explicit fit()
-100:         scores = model.score("president", ["Washington", "Lincoln"])
-101:         assert scores.shape == (2,)
-102: 
-103:     def test_tfidf_fit_returns_self(self, sample_corpus: list[str]) -> None:
-104:         """fit() returns self for method chaining."""
-105:         model = TfIdfLikelihood()
-106:         result = model.fit(sample_corpus)
-107:         assert result is model, "fit() should return self"
-108: 
-109:     def test_tfidf_score_all_options(self, sample_corpus: list[str]) -> None:
-110:         """Score works with 4 options matching K=4 environment setup."""
-111:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
-112:         scores = model.score(
-113:             "first president United States",
-114:             [
-115:                 "George Washington commander revolutionary",
-116:                 "Thomas Jefferson declaration independence",
-117:                 "John Adams Massachusetts diplomat",
-118:                 "Benjamin Franklin inventor Philadelphia",
-119:             ],
-120:         )
-121:         assert scores.shape == (4,), f"Expected shape (4,), got {scores.shape}"
-122:         assert all(np.isfinite(scores)), "All scores should be finite"
-123: 
-124:     def test_tfidf_embed_batch_normalized(self, sample_corpus: list[str]) -> None:
-125:         """_embed_batch returns L2-normalized vectors (row norms ~1.0)."""
-126:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
-127:         embeddings = model._embed_batch(["George Washington president", "Thomas Jefferson"])
-128:         norms = np.linalg.norm(embeddings, axis=1)
-129:         np.testing.assert_array_almost_equal(norms, np.ones(2), decimal=5)
-130: 
-131:     def test_tfidf_score_uses_cache(self, sample_corpus: list[str]) -> None:
-132:         """score() populates embedding_cache via embed_and_cache()."""
-133:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
-134:         assert len(model.embedding_cache) == 0
-135:         model.score("first president", ["Washington profile", "Lincoln profile"])
-136:         assert len(model.embedding_cache) == 3  # 1 clue + 2 options
-137: 
-138:     def test_tfidf_score_cache_hit(self, sample_corpus: list[str]) -> None:
-139:         """Repeated score() with same options reuses cache."""
-140:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
-141:         options = ["George Washington president", "Thomas Jefferson declaration"]
-142:         model.score("first president", options)
-143:         cache_after_first = len(model.embedding_cache)
-144:         model.score("second president", options)
-145:         # Only the new clue should be added; options are cached
-146:         assert len(model.embedding_cache) == cache_after_first + 1
-147: 
-148:     def test_tfidf_score_matches_cosine_reference(self, sample_corpus: list[str]) -> None:
-149:         """New cached score() matches sklearn cosine_similarity reference."""
-150:         from sklearn.metrics.pairwise import cosine_similarity as sklearn_cos
-151: 
-152:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
-153:         clue = "Who was the first president?"
-154:         options = [
-155:             "George Washington first president commander revolutionary",
-156:             "Abraham Lincoln Civil War emancipation",
-157:             "Thomas Jefferson declaration independence Virginia",
-158:             "Benjamin Franklin inventor Philadelphia diplomat",
-159:         ]
-160:         # Compute reference via sklearn cosine_similarity (old method)
-161:         clue_vec = model.vectorizer.transform([clue])
-162:         option_vecs = model.vectorizer.transform(options)
-163:         ref_scores = sklearn_cos(clue_vec, option_vecs)[0].astype(np.float32)
-164:         # Compute via new cached path
-165:         actual_scores = model.score(clue, options)
-166:         np.testing.assert_allclose(actual_scores, ref_scores, atol=1e-6)
-167: 
-168: 
-169: # ------------------------------------------------------------------ #
-170: # Tests for SBERTLikelihood
-171: # ------------------------------------------------------------------ #
-172: 
-173: 
-174: class TestSBERTLikelihood:
-175:     """Tests for Sentence-BERT likelihood model."""
-176: 
-177:     def test_sbert_instantiation(self) -> None:
-178:         """SBERTLikelihood can be instantiated with default model."""
-179:         model = SBERTLikelihood()
-180:         assert hasattr(model, "encoder"), "Missing encoder attribute"
-181:         assert model.model_name == "all-MiniLM-L6-v2"
-182: 
-183:     def test_sbert_score_shape_and_dtype(self) -> None:
-184:         """score() returns correct shape and dtype for 4 options."""
-185:         model = SBERTLikelihood()
-186:         scores = model.score(
-187:             "first president United States",
-188:             [
-189:                 "George Washington first president commander",
-190:                 "Thomas Jefferson third president declaration",
-191:                 "John Adams second president Massachusetts",
-192:                 "Benjamin Franklin inventor diplomat",
-193:             ],
-194:         )
-195:         assert scores.shape == (4,), f"Expected shape (4,), got {scores.shape}"
-196:         assert scores.dtype == np.float32, f"Expected float32, got {scores.dtype}"
-197: 
-198:     def test_sbert_semantic_ranking(self) -> None:
-199:         """SBERT ranks semantically similar text higher."""
-200:         model = SBERTLikelihood()
-201:         scores = model.score(
-202:             "George Washington was the first president of the United States and led the Continental Army",
-203:             [
-204:                 "George Washington first president commander revolutionary war continental army",
-205:                 "The theory of relativity was developed by Albert Einstein in physics",
-206:             ],
-207:         )
-208:         # Washington profile should score much higher than Einstein
-209:         assert scores[0] > scores[1], (
-210:             f"Washington ({scores[0]:.3f}) should score > Einstein ({scores[1]:.3f})"
-211:         )
-212: 
-213:     def test_sbert_embedding_cache_populated(self) -> None:
-214:         """Embedding cache grows after first scoring call."""
-215:         model = SBERTLikelihood()
-216:         assert len(model.embedding_cache) == 0, "Cache should start empty"
-217: 
-218:         model.score("test clue", ["option A", "option B"])
-219:         cache_after_first = len(model.embedding_cache)
-220:         assert cache_after_first > 0, "Cache should be populated after score()"
-221: 
-222:     def test_sbert_embedding_cache_hit(self) -> None:
-223:         """Repeated calls with same text use cache (size unchanged)."""
-224:         model = SBERTLikelihood()
-225:         scores1 = model.score("test clue", ["option A", "option B"])
-226:         cache_size_1 = len(model.embedding_cache)
-227: 
-228:         scores2 = model.score("test clue", ["option A", "option B"])
-229:         cache_size_2 = len(model.embedding_cache)
-230: 
-231:         assert cache_size_2 == cache_size_1, (
-232:             f"Cache grew from {cache_size_1} to {cache_size_2} on repeated call"
-233:         )
-234:         np.testing.assert_array_almost_equal(
-235:             scores1, scores2, decimal=5,
-236:             err_msg="Cached results should match original",
-237:         )
-238: 
-239:     def test_sbert_normalized_embeddings(self) -> None:
-240:         """SBERT embeddings are L2-normalized (norm ~ 1.0)."""
-241:         model = SBERTLikelihood()
-242:         embeddings = model._embed_batch(["test sentence one", "test sentence two"])
-243:         norms = np.linalg.norm(embeddings, axis=1)
-244:         np.testing.assert_array_almost_equal(
-245:             norms, np.ones(2), decimal=4,
-246:             err_msg="Embeddings should be L2-normalized",
-247:         )
-248: 
-249: 
-250: # ------------------------------------------------------------------ #
-251: # Tests for T5Likelihood (LIK-04, LIK-05)
-252: # ------------------------------------------------------------------ #
-253: 
-254: 
-255: class TestT5Likelihood:
-256:     """Tests for T5 encoder likelihood model.
-257: 
-258:     Uses the sample_t5_model fixture (t5-small, module-scoped) from conftest.py
-259:     so the model is loaded once per test file, not per test function.
-260:     """
-261: 
-262:     def test_t5_semantic_scoring(self, sample_t5_model) -> None:
-263:         """T5 should score semantically relevant options higher (LIK-04).
-264: 
-265:         "First president" clue should rank Washington higher than Einstein,
-266:         demonstrating that T5 captures semantic similarity between question
-267:         content and answer profiles.
-268:         """
-269:         clue = "This person was the first president of the United States"
-270:         options = [
-271:             "George Washington first president commander revolutionary war",
-272:             "Albert Einstein physicist theory relativity Nobel Prize",
-273:         ]
-274: 
-275:         scores = sample_t5_model.score(clue, options)
-276: 
-277:         assert isinstance(scores, np.ndarray)
-278:         assert scores.dtype == np.float32
-279:         assert len(scores) == 2
-280:         # Washington should score higher than Einstein for "first president" query
-281:         assert scores[0] > scores[1], (
-282:             f"Expected Washington > Einstein, got {scores}"
-283:         )
-284: 
-285:     def test_t5_embedding_cache(self, sample_t5_model) -> None:
-286:         """T5 should cache embeddings and reuse them (LIK-05).
-287: 
-288:         After embedding two texts, the cache should contain 2 entries.
-289:         Re-embedding the same texts should not grow the cache, and the
-290:         returned embeddings should be identical.
-291:         """
-292:         # Clear cache to get a clean test
-293:         sample_t5_model.embedding_cache.clear()
-294: 
-295:         texts = ["George Washington", "Thomas Jefferson"]
-296: 
-297:         # First call embeds and caches
-298:         emb1 = sample_t5_model.embed_and_cache(texts)
-299:         cache_size_1 = len(sample_t5_model.embedding_cache)
-300: 
-301:         # Second call reuses cache
-302:         emb2 = sample_t5_model.embed_and_cache(texts)
-303:         cache_size_2 = len(sample_t5_model.embedding_cache)
-304: 
-305:         np.testing.assert_array_equal(
-306:             emb1, emb2, err_msg="Cached embeddings should match"
-307:         )
-308:         assert cache_size_1 == cache_size_2 == 2, (
-309:             f"Cache size should not grow on reuse, got {cache_size_1} -> {cache_size_2}"
-310:         )
-311: 
-312:     def test_t5_score_returns_float32(self, sample_t5_model) -> None:
-313:         """T5 score should return float32 array, not probabilities.
-314: 
-315:         Scores are raw cosine similarities (not softmax probabilities),
-316:         so they do not necessarily sum to 1.
-317:         """
-318:         scores = sample_t5_model.score("test clue", ["option 1", "option 2"])
-319:         assert scores.dtype == np.float32
-320:         assert scores.shape == (2,)
-321:         # Scores are raw similarities, not probabilities (don't sum to 1)
-322:         assert all(np.isfinite(scores)), "All scores should be finite"
-323: 
-324:     def test_build_t5_from_config(self) -> None:
-325:         """Factory should construct T5Likelihood from config (LIK-04).
-326: 
-327:         The build_likelihood_from_config factory should recognize
-328:         model="t5" and instantiate a T5Likelihood with the specified
-329:         t5_name parameter.
-330:         """
-331:         from models.likelihoods import T5Likelihood, build_likelihood_from_config
-332: 
-333:         config = {
-334:             "likelihood": {
-335:                 "model": "t5",
-336:                 "t5_name": "t5-small",
-337:             }
-338:         }
-339: 
-340:         model = build_likelihood_from_config(config)
-341:         assert isinstance(model, T5Likelihood)
-342:         assert model.model_name == "t5-small"
-343: 
-344:     def test_t5_handles_variable_length(self, sample_t5_model) -> None:
-345:         """T5 should handle variable-length texts via attention mask.
-346: 
-347:         Short and long texts should both embed without error, producing
-348:         embeddings of the same hidden dimension regardless of input length.
-349:         """
-350:         short = "Washington"
-351:         long = (
-352:             "George Washington was the first president of the United States "
-353:             "and commander of the Continental Army during the Revolutionary War"
-354:         )
-355: 
-356:         # Both should embed without error
-357:         embs = sample_t5_model.embed_and_cache([short, long])
-358:         assert embs.shape == (2, sample_t5_model.encoder.config.d_model), (
-359:             f"Expected shape (2, {sample_t5_model.encoder.config.d_model}), "
-360:             f"got {embs.shape}"
-361:         )
-362: 
-363: 
-364: # ------------------------------------------------------------------ #
-365: # Tests for Embedding Cache Persistence
-366: # ------------------------------------------------------------------ #
-367: 
-368: 
-369: class TestEmbeddingCachePersistence:
-370:     """Tests for save_cache / load_cache disk persistence on LikelihoodModel."""
-371: 
-372:     def test_save_load_cache_round_trip(self, tmp_path: Path, sample_corpus: list[str]) -> None:
-373:         """save_cache writes .npz; load_cache restores identical entries."""
-374:         model = SBERTLikelihood()
-375:         texts = ["George Washington", "Thomas Jefferson", "Abraham Lincoln"]
-376:         model.embed_and_cache(texts)
-377:         assert len(model.embedding_cache) == 3
-378: 
-379:         cache_path = tmp_path / "cache.npz"
-380:         saved = model.save_cache(cache_path)
-381:         assert saved == 3
-382:         assert cache_path.exists()
-383: 
-384:         model2 = SBERTLikelihood()
-385:         assert len(model2.embedding_cache) == 0
-386:         loaded = model2.load_cache(cache_path)
-387:         assert loaded == 3
-388: 
-389:         for key in model.embedding_cache:
-390:             np.testing.assert_array_equal(
-391:                 model.embedding_cache[key],
-392:                 model2.embedding_cache[key],
-393:                 err_msg=f"Mismatch for key {key}",
-394:             )
-395: 
-396:     def test_load_cache_missing_file(self, tmp_path: Path) -> None:
-397:         """load_cache with nonexistent file returns 0 and leaves cache empty."""
-398:         model = SBERTLikelihood()
-399:         result = model.load_cache(tmp_path / "nonexistent.npz")
-400:         assert result == 0
-401:         assert len(model.embedding_cache) == 0
-402: 
-403:     def test_save_cache_empty(self, tmp_path: Path) -> None:
-404:         """save_cache with empty cache creates a valid .npz with zero arrays."""
-405:         model = SBERTLikelihood()
-406:         cache_path = tmp_path / "empty.npz"
-407:         saved = model.save_cache(cache_path)
-408:         assert saved == 0
-409:         assert cache_path.exists()
-410: 
-411:         # Should be loadable
-412:         model2 = SBERTLikelihood()
-413:         loaded = model2.load_cache(cache_path)
-414:         assert loaded == 0
-415: 
-416:     def test_tfidf_save_cache_noop(self, sample_corpus: list[str]) -> None:
-417:         """TfIdfLikelihood.save_cache is a no-op returning 0."""
-418:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
-419:         # Populate the cache with some embeddings
-420:         model.embed_and_cache(["test text one", "test text two"])
-421:         assert len(model.embedding_cache) > 0
-422: 
-423:         import tempfile
-424:         import os
-425:         with tempfile.TemporaryDirectory() as td:
-426:             path = Path(td) / "should_not_exist.npz"
-427:             result = model.save_cache(path)
-428:             assert result == 0
-429:             assert not path.exists(), "TfIdfLikelihood should NOT write a cache file"
-430: 
-431:     def test_load_cache_does_not_overwrite(self, tmp_path: Path) -> None:
-432:         """load_cache merges without overwriting existing cache entries."""
-433:         model = SBERTLikelihood()
-434:         texts = ["Hello world"]
-435:         model.embed_and_cache(texts)
-436: 
-437:         # Save this cache
-438:         cache_path = tmp_path / "cache.npz"
-439:         model.save_cache(cache_path)
-440: 
-441:         # Create a second model, pre-populate with the same key but different value
-442:         model2 = SBERTLikelihood()
-443:         from models.likelihoods import _text_key
-444:         key = _text_key("Hello world")
-445:         original_value = np.ones(384, dtype=np.float32)  # dummy
-446:         model2.embedding_cache[key] = original_value
-447: 
-448:         loaded = model2.load_cache(cache_path)
-449:         assert loaded == 0, "Key already present, so nothing should be loaded"
-450: 
-451:         # Original value should be preserved (not overwritten)
-452:         np.testing.assert_array_equal(
-453:             model2.embedding_cache[key],
-454:             original_value,
-455:             err_msg="Existing cache entry was overwritten by load_cache",
-456:         )
-457: 
-458: 
-459: class TestCacheMemory:
-460:     """Verify cache_memory_bytes property for resource monitoring."""
-461: 
-462:     def test_tfidf_cache_memory_bytes(self, sample_corpus):
-463:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
-464:         assert model.cache_memory_bytes == 0
-465:         model.embed_and_cache(["George Washington"])
-466:         assert model.cache_memory_bytes > 0
-467: 
-468:     def test_empty_cache_zero_bytes(self, sample_corpus):
-469:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
-470:         assert model.cache_memory_bytes == 0
 </file>
 
 <file path="tests/test_t5_policy.py">
@@ -13138,6 +13998,126 @@ This section contains the contents of the repository's files.
 933:     return model, trainer
 </file>
 
+<file path="AGENTS.md">
+  1: # AGENTS.md
+  2: 
+  3: Canonical repo contract for all coding agents (Claude, Copilot, Cursor, etc.).
+  4: 
+  5: ## Project Overview
+  6: 
+  7: Stanford CS234 final project: a unified quiz bowl RL buzzer system with two tracks. The belief-feature pipeline builds MC tossups, scores answer profiles with TF-IDF / SBERT / T5 / optional OpenAI / optional DSPy, trains or compares buzzers, and evaluates with S_q, Expected Wins, and calibration metrics. The T5 policy pipeline provides supervised warm-start and PPO for an end-to-end text policy using factorized stop/answer semantics (`P(WAIT)` and `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`). Three opt-in extensions: Expected Wins reward mode, variable-K answer choices, and DSPy integration. Additional opt-in feature-port surfaces are available for stop-only PPO (`scripts/train_ppo.py --policy-mode stop_only`) and no-buzz horizon behavior (`environment.end_mode: no_buzz`). `qanta-buzzer` is the canonical repo. qb-rl compatibility is preserved through additive shims rather than structural rewrites.
+  8: 
+  9: ## Setup
+ 10: 
+ 11: Requires Python >= 3.11.
+ 12: 
+ 13: ```bash
+ 14: python3 -m venv .venv && source .venv/bin/activate
+ 15: pip install -U pip && pip install -e .
+ 16: ```
+ 17: 
+ 18: Optional extras:
+ 19: 
+ 20: ```bash
+ 21: pip install -e '.[openai]'    # OpenAI embedding support
+ 22: pip install -e '.[maskable]'  # MaskablePPO for variable-K
+ 23: pip install -e '.[dspy]'      # DSPy LM-based scoring
+ 24: ```
+ 25: 
+ 26: ## Architecture
+ 27: 
+ 28: | Package | Purpose |
+ 29: |---------|---------|
+ 30: | `qb_data/` | Data loading, answer profiles, stratified splits, MC construction, DSPy profiles |
+ 31: | `qb_env/` | Gymnasium environment, text wrapper, opponent models, StopOnlyEnv wrapper (with action_masks), qb-rl shims |
+ 32: | `models/` | Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy |
+ 33: | `agents/` | Threshold, softmax-profile, sequential Bayes, PPO wrapper |
+ 34: | `evaluation/` | S_q metric, Expected Wins, calibration, control experiments, plotting |
+ 35: | `scripts/` | Pipeline entrypoints, DSPy compile, shared helpers |
+ 36: | `training/` | T5 policy supervised + PPO trainers, hazard bridge utilities |
+ 37: | `configs/` | YAML configuration files (default, smoke, t5_policy) |
+ 38: 
+ 39: ## Testing
+ 40: 
+ 41: 350 tests across 26 test files (3 skipped when optional extras not installed).
+ 42: 
+ 43: ```bash
+ 44: pytest                    # full suite
+ 45: pytest tests/test_qb_rl_bridge.py tests/test_factories.py tests/test_ppo_buzzer.py  # focused bridge/runtime checks
+ 46: scripts/ci.sh             # CI entry point (runs pytest, exits nonzero on failure)
+ 47: ```
+ 48: 
+ 49: ## Smoke Pipeline
+ 50: 
+ 51: Four-stage belief-feature smoke workflow. `--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`.
+ 52: 
+ 53: ```bash
+ 54: python scripts/build_mc_dataset.py --smoke
+ 55: python scripts/run_baselines.py --smoke
+ 56: python scripts/train_ppo.py --smoke
+ 57: python scripts/evaluate_all.py --smoke
+ 58: ```
+ 59: 
+ 60: Or run all four stages via the wrapper script:
+ 61: 
+ 62: ```bash
+ 63: scripts/manual-smoke.sh
+ 64: ```
+ 65: 
+ 66: ## Full Pipeline
+ 67: 
+ 68: For the core pipeline and scripted extensions at full scale with 4-wave parallel execution:
+ 69: 
+ 70: ```bash
+ 71: bash scripts/run_full_pipeline.sh --t5-model t5-base
+ 72: ```
+ 73: 
+ 74: The script forces `likelihood.model=tfidf` for all belief-feature phases. Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19 require manual execution. See `docs/full-pipeline-runbook.md` for phase-by-phase details.
+ 75: 
+ 76: All pipeline scripts accept positional config overrides (e.g. `likelihood.model=tfidf`).
+ 77: 
+ 78: ## T5 Policy Pipeline
+ 79: 
+ 80: ```bash
+ 81: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
+ 82: python scripts/compare_policies.py --config configs/t5_policy.yaml
+ 83: ```
+ 84: 
+ 85: Notes:
+ 86: `scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the future hazard bridge. `--hazard-pretrain` intentionally raises `NotImplementedError` until that loop is implemented.
+ 87: 
+ 88: ## Configuration
+ 89: 
+ 90: | Config | Purpose |
+ 91: |--------|---------|
+ 92: | `configs/default.yaml` | Full runs with T5-large likelihood and 100k PPO timesteps |
+ 93: | `configs/smoke.yaml` | Quick tests: 50 questions, TF-IDF likelihood, 3k PPO timesteps |
+ 94: | `configs/t5_policy.yaml` | T5 policy pipeline: model, supervised, PPO, and data sections |
+ 95: 
+ 96: qb-rl config aliases are supported (e.g., `data.dataset`, `likelihood.sbert_name`, `environment.reward` as alias for `reward_mode`).
+ 97: 
+ 98: Additional environment options:
+ 99: - `environment.end_mode: force_commit|no_buzz` controls horizon behavior
+100: - `environment.no_buzz_reward` is only used when `end_mode: no_buzz`
+101: 
+102: ## Compatibility Bridge
+103: 
+104: Old qb-rl import paths that still resolve:
+105: 
+106: - `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
+107: - `models.answer_profiles`
+108: - `agents.softmax_profile_buzzer`
+109: 
+110: OpenAI support is opt-in only. Default local workflows stay offline-friendly and do not require the `openai` package or `OPENAI_API_KEY`.
+111: 
+112: ## Conventions
+113: 
+114: - NumPy-style docstrings with Parameters/Returns sections
+115: - RL notation: `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
+116: - Prefer NumPy/PyTorch vectorized operations over loops in ML code
+117: - Explicit seeds for reproducibility (use 1, 2, 3 for multi-seed runs)
+</file>
+
 <file path="pyproject.toml">
  1: [build-system]
  2: requires = ["setuptools>=69.0"]
@@ -13955,986 +14935,6 @@ This section contains the contents of the repository's files.
 332: 
 333: if __name__ == '__main__':
 334:     sys.exit(main())
-</file>
-
-<file path="tests/test_agents.py">
-  1: """Test suite for agents/ -- baseline agent execution and episode result schemas.
-  2: 
-  3: Covers:
-  4: - AGT-02: ThresholdBuzzer execution and buzzing logic
-  5: - AGT-03: AlwaysBuzzFinalBuzzer wait-then-buzz behavior
-  6: - AGT-04: SoftmaxProfileBuzzer from-scratch belief recomputation
-  7: - AGT-05: SequentialBayesBuzzer incremental Bayesian updates
-  8: - AGT-06: EpisodeResult and SoftmaxEpisodeResult schema validation
-  9: - Threshold sweep utility tests
- 10: """
- 11: 
- 12: from __future__ import annotations
- 13: 
- 14: import warnings
- 15: 
- 16: import numpy as np
- 17: import pytest
- 18: 
- 19: from agents import (
- 20:     AlwaysBuzzFinalBuzzer,
- 21:     EpisodeResult,
- 22:     SequentialBayesBuzzer,
- 23:     SoftmaxEpisodeResult,
- 24:     SoftmaxProfileBuzzer,
- 25:     ThresholdBuzzer,
- 26:     result_to_dict,
- 27:     sweep_thresholds,
- 28: )
- 29: from agents._math import sigmoid
- 30: from models.likelihoods import TfIdfLikelihood
- 31: from qb_data.mc_builder import MCQuestion
- 32: 
- 33: 
- 34: # ------------------------------------------------------------------ #
- 35: # Helpers
- 36: # ------------------------------------------------------------------ #
- 37: 
- 38: 
- 39: def _make_likelihood(corpus: list[str]) -> TfIdfLikelihood:
- 40:     """Create a fitted TF-IDF likelihood model from a corpus.
- 41: 
- 42:     Uses TF-IDF (fast) for agent logic tests so tests run quickly.
- 43:     """
- 44:     return TfIdfLikelihood(corpus_texts=corpus)
- 45: 
- 46: 
- 47: class TestSigmoidMath:
- 48:     """Tests for stable scalar sigmoid helper."""
- 49: 
- 50:     def test_sigmoid_handles_extreme_inputs_without_warning(self) -> None:
- 51:         with warnings.catch_warnings():
- 52:             warnings.simplefilter("error", RuntimeWarning)
- 53:             assert sigmoid(1000.0) == pytest.approx(1.0)
- 54:             assert sigmoid(-1000.0) == pytest.approx(0.0)
- 55: 
- 56: 
- 57: # ------------------------------------------------------------------ #
- 58: # ThresholdBuzzer tests (AGT-02)
- 59: # ------------------------------------------------------------------ #
- 60: 
- 61: 
- 62: class TestThresholdBuzzer:
- 63:     """Tests for ThresholdBuzzer execution and buzzing logic."""
- 64: 
- 65:     def test_threshold_buzzer_executes(
- 66:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
- 67:     ) -> None:
- 68:         """ThresholdBuzzer runs an episode without error and returns EpisodeResult."""
- 69:         likelihood = _make_likelihood(sample_corpus)
- 70:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
- 71:         result = agent.run_episode(sample_mc_question)
- 72: 
- 73:         assert isinstance(result, EpisodeResult)
- 74:         assert result.qid == sample_mc_question.qid
- 75:         assert len(result.c_trace) > 0
- 76: 
- 77:     def test_threshold_buzzer_buzzes_on_threshold(
- 78:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
- 79:     ) -> None:
- 80:         """ThresholdBuzzer buzzes when top_p >= threshold.
- 81: 
- 82:         With threshold=0.0, the agent should buzz immediately at step 0
- 83:         because any non-negative top_p will meet the threshold.
- 84:         """
- 85:         likelihood = _make_likelihood(sample_corpus)
- 86:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.0)
- 87:         result = agent.run_episode(sample_mc_question)
- 88: 
- 89:         # With threshold 0.0, should buzz at step 0
- 90:         assert result.buzz_step == 0, (
- 91:             f"Expected buzz at step 0 with threshold=0.0, got step {result.buzz_step}"
- 92:         )
- 93: 
- 94:     def test_threshold_buzzer_waits_on_low_confidence(
- 95:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
- 96:     ) -> None:
- 97:         """ThresholdBuzzer waits when top_p < threshold.
- 98: 
- 99:         With threshold=1.0 (impossible for softmax to reach exactly 1.0 in
-100:         practice), the agent should wait until the final step.
-101:         """
-102:         likelihood = _make_likelihood(sample_corpus)
-103:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=1.0)
-104:         result = agent.run_episode(sample_mc_question)
-105: 
-106:         # With threshold 1.0, should wait until the last step
-107:         expected_final = len(sample_mc_question.cumulative_prefixes) - 1
-108:         assert result.buzz_step == expected_final, (
-109:             f"Expected buzz at final step {expected_final} with threshold=1.0, "
-110:             f"got step {result.buzz_step}"
-111:         )
-112: 
-113:     def test_threshold_buzzer_buzzes_at_final(
-114:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-115:     ) -> None:
-116:         """ThresholdBuzzer always buzzes on final step regardless of threshold.
-117: 
-118:         Even with threshold=1.0 (unreachable), the agent must buzz at the
-119:         final step as a forced fallback.
-120:         """
-121:         likelihood = _make_likelihood(sample_corpus)
-122:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=1.0)
-123:         result = agent.run_episode(sample_mc_question)
-124: 
-125:         final_step = len(sample_mc_question.cumulative_prefixes) - 1
-126:         assert result.buzz_step == final_step
-127:         assert result.buzz_index in range(len(sample_mc_question.options))
-128: 
-129:     def test_threshold_buzzer_traces_valid(
-130:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-131:     ) -> None:
-132:         """c_trace and g_trace have correct and matching lengths.
-133: 
-134:         Traces should have length equal to buzz_step + 1 (one entry per
-135:         step from 0 to buzz_step inclusive).
-136:         """
-137:         likelihood = _make_likelihood(sample_corpus)
-138:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
-139:         result = agent.run_episode(sample_mc_question)
-140: 
-141:         trace_len = result.buzz_step + 1
-142:         assert len(result.c_trace) == trace_len, (
-143:             f"c_trace length {len(result.c_trace)} != expected {trace_len}"
-144:         )
-145:         assert len(result.g_trace) == trace_len, (
-146:             f"g_trace length {len(result.g_trace)} != expected {trace_len}"
-147:         )
-148:         assert len(result.top_p_trace) == trace_len
-149:         assert len(result.entropy_trace) == trace_len
-150: 
-151:     def test_threshold_buzzer_confidence_proxy(
-152:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-153:     ) -> None:
-154:         """c_t values in [0, 1] via sigmoid transformation."""
-155:         likelihood = _make_likelihood(sample_corpus)
-156:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
-157:         result = agent.run_episode(sample_mc_question)
-158: 
-159:         for c_t in result.c_trace:
-160:             assert 0.0 <= c_t <= 1.0, (
-161:                 f"Confidence proxy {c_t} outside [0, 1]"
-162:             )
-163: 
-164:     def test_threshold_buzzer_custom_params(
-165:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-166:     ) -> None:
-167:         """ThresholdBuzzer accepts custom beta and alpha parameters."""
-168:         likelihood = _make_likelihood(sample_corpus)
-169:         agent = ThresholdBuzzer(
-170:             likelihood_model=likelihood,
-171:             threshold=0.5,
-172:             beta=10.0,
-173:             alpha=20.0,
-174:         )
-175:         assert agent.beta == 10.0
-176:         assert agent.alpha == 20.0
-177: 
-178:         result = agent.run_episode(sample_mc_question)
-179:         assert isinstance(result, EpisodeResult)
-180: 
-181:     def test_threshold_buzzer_confidence_proxy_stable_extremes(
-182:         self, sample_corpus: list[str]
-183:     ) -> None:
-184:         likelihood = _make_likelihood(sample_corpus)
-185:         agent = ThresholdBuzzer(
-186:             likelihood_model=likelihood,
-187:             threshold=-100.0,
-188:             alpha=100.0,
-189:         )
-190: 
-191:         with warnings.catch_warnings():
-192:             warnings.simplefilter("error", RuntimeWarning)
-193:             assert agent._confidence_proxy(1.0) == pytest.approx(1.0)
-194: 
-195:         agent = ThresholdBuzzer(
-196:             likelihood_model=likelihood,
-197:             threshold=100.0,
-198:             alpha=100.0,
-199:         )
-200:         with warnings.catch_warnings():
-201:             warnings.simplefilter("error", RuntimeWarning)
-202:             assert agent._confidence_proxy(0.0) == pytest.approx(0.0)
-203: 
-204:     def test_threshold_buzzer_top_p_in_range(
-205:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-206:     ) -> None:
-207:         """top_p_trace values are valid probabilities in [0, 1]."""
-208:         likelihood = _make_likelihood(sample_corpus)
-209:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
-210:         result = agent.run_episode(sample_mc_question)
-211: 
-212:         for p in result.top_p_trace:
-213:             assert 0.0 <= p <= 1.0, f"top_p {p} outside [0, 1]"
-214: 
-215:     def test_threshold_buzzer_entropy_nonnegative(
-216:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-217:     ) -> None:
-218:         """Entropy values are non-negative (Shannon entropy >= 0)."""
-219:         likelihood = _make_likelihood(sample_corpus)
-220:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
-221:         result = agent.run_episode(sample_mc_question)
-222: 
-223:         for h in result.entropy_trace:
-224:             assert h >= 0.0, f"Entropy {h} is negative"
-225: 
-226: 
-227: # ------------------------------------------------------------------ #
-228: # AlwaysBuzzFinalBuzzer tests (AGT-03)
-229: # ------------------------------------------------------------------ #
-230: 
-231: 
-232: class TestAlwaysBuzzFinalBuzzer:
-233:     """Tests for AlwaysBuzzFinalBuzzer wait-then-buzz behavior."""
-234: 
-235:     def test_always_buzz_final_waits(
-236:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-237:     ) -> None:
-238:         """All c_trace entries except the last are 0.0 (agent waits)."""
-239:         likelihood = _make_likelihood(sample_corpus)
-240:         agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood)
-241:         result = agent.run_episode(sample_mc_question)
-242: 
-243:         # All entries except last should be 0.0
-244:         for c_t in result.c_trace[:-1]:
-245:             assert c_t == 0.0, f"Expected c_t=0.0 for waiting, got {c_t}"
-246: 
-247:     def test_always_buzz_final_buzzes_last(
-248:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-249:     ) -> None:
-250:         """The last c_trace entry is 1.0 (agent buzzes at final step)."""
-251:         likelihood = _make_likelihood(sample_corpus)
-252:         agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood)
-253:         result = agent.run_episode(sample_mc_question)
-254: 
-255:         assert result.c_trace[-1] == 1.0, (
-256:             f"Expected c_trace[-1]=1.0, got {result.c_trace[-1]}"
-257:         )
-258: 
-259:     def test_always_buzz_final_computes_beliefs(
-260:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-261:     ) -> None:
-262:         """Beliefs are computed at each step (not skipped).
-263: 
-264:         All top_p_trace entries should have valid probability values,
-265:         demonstrating the model computed beliefs at every step.
-266:         """
-267:         likelihood = _make_likelihood(sample_corpus)
-268:         agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood)
-269:         result = agent.run_episode(sample_mc_question)
-270: 
-271:         n_steps = len(sample_mc_question.cumulative_prefixes)
-272:         assert len(result.top_p_trace) == n_steps, (
-273:             f"Expected {n_steps} top_p entries, got {len(result.top_p_trace)}"
-274:         )
-275:         for p in result.top_p_trace:
-276:             assert 0.0 <= p <= 1.0, f"top_p {p} outside [0, 1]"
-277: 
-278:     def test_always_buzz_final_buzz_step(
-279:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-280:     ) -> None:
-281:         """buzz_step equals len(cumulative_prefixes) - 1 (last step)."""
-282:         likelihood = _make_likelihood(sample_corpus)
-283:         agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood)
-284:         result = agent.run_episode(sample_mc_question)
-285: 
-286:         expected = len(sample_mc_question.cumulative_prefixes) - 1
-287:         assert result.buzz_step == expected, (
-288:             f"Expected buzz_step={expected}, got {result.buzz_step}"
-289:         )
-290: 
-291:     def test_always_buzz_final_full_trace(
-292:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-293:     ) -> None:
-294:         """All traces have length equal to number of cumulative prefixes."""
-295:         likelihood = _make_likelihood(sample_corpus)
-296:         agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood)
-297:         result = agent.run_episode(sample_mc_question)
-298: 
-299:         n = len(sample_mc_question.cumulative_prefixes)
-300:         assert len(result.c_trace) == n
-301:         assert len(result.g_trace) == n
-302:         assert len(result.top_p_trace) == n
-303:         assert len(result.entropy_trace) == n
-304: 
-305: 
-306: # ------------------------------------------------------------------ #
-307: # SoftmaxProfileBuzzer tests (AGT-04)
-308: # ------------------------------------------------------------------ #
-309: 
-310: 
-311: class TestSoftmaxProfileBuzzer:
-312:     """Tests for SoftmaxProfileBuzzer from-scratch belief computation."""
-313: 
-314:     def test_softmax_profile_executes(
-315:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-316:     ) -> None:
-317:         """SoftmaxProfileBuzzer runs an episode without error."""
-318:         likelihood = _make_likelihood(sample_corpus)
-319:         agent = SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7)
-320:         result = agent.run_episode(sample_mc_question)
-321: 
-322:         assert isinstance(result, SoftmaxEpisodeResult)
-323:         assert result.qid == sample_mc_question.qid
-324: 
-325:     def test_softmax_profile_recomputes_belief(
-326:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-327:     ) -> None:
-328:         """SoftmaxProfileBuzzer calls _belief_from_scratch each step.
-329: 
-330:         Verifies the method exists and the agent stores beliefs, confirming
-331:         from-scratch recomputation (not incremental Bayesian updates).
-332:         """
-333:         likelihood = _make_likelihood(sample_corpus)
-334:         agent = SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7)
-335: 
-336:         # Verify the from-scratch method exists
-337:         assert hasattr(agent, "_belief_from_scratch")
-338: 
-339:         result = agent.run_episode(sample_mc_question)
-340: 
-341:         # After episode, agent should have a stored belief
-342:         assert agent.belief is not None
-343:         assert isinstance(agent.belief, np.ndarray)
-344:         assert agent.belief.shape == (len(sample_mc_question.options),)
-345: 
-346:     def test_softmax_profile_result_schema(
-347:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-348:     ) -> None:
-349:         """SoftmaxProfileBuzzer returns SoftmaxEpisodeResult, not EpisodeResult."""
-350:         likelihood = _make_likelihood(sample_corpus)
-351:         agent = SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7)
-352:         result = agent.run_episode(sample_mc_question)
-353: 
-354:         assert isinstance(result, SoftmaxEpisodeResult)
-355:         # SoftmaxEpisodeResult should NOT be an EpisodeResult (different dataclass)
-356:         assert not isinstance(result, EpisodeResult)
-357: 
-358:     def test_softmax_profile_confidence_proxy(
-359:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-360:     ) -> None:
-361:         """SoftmaxProfileBuzzer c_t values in [0, 1] via sigmoid."""
-362:         likelihood = _make_likelihood(sample_corpus)
-363:         agent = SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7)
-364:         result = agent.run_episode(sample_mc_question)
-365: 
-366:         for c_t in result.c_trace:
-367:             assert 0.0 <= c_t <= 1.0, f"c_t {c_t} outside [0, 1]"
-368: 
-369:     def test_softmax_profile_threshold_behavior(
-370:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-371:     ) -> None:
-372:         """SoftmaxProfileBuzzer respects threshold for buzzing."""
-373:         likelihood = _make_likelihood(sample_corpus)
-374: 
-375:         # With threshold 0.0, should buzz immediately
-376:         agent_low = SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.0)
-377:         result_low = agent_low.run_episode(sample_mc_question)
-378:         assert result_low.buzz_step == 0
-379: 
-380:         # With threshold 1.0, should wait until the end
-381:         agent_high = SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=1.0)
-382:         result_high = agent_high.run_episode(sample_mc_question)
-383:         assert result_high.buzz_step == len(sample_mc_question.cumulative_prefixes) - 1
-384: 
-385:     def test_softmax_profile_confidence_proxy_stable_extremes(
-386:         self, sample_corpus: list[str]
-387:     ) -> None:
-388:         likelihood = _make_likelihood(sample_corpus)
-389:         agent = SoftmaxProfileBuzzer(
-390:             likelihood_model=likelihood,
-391:             threshold=-100.0,
-392:             alpha=100.0,
-393:         )
-394: 
-395:         with warnings.catch_warnings():
-396:             warnings.simplefilter("error", RuntimeWarning)
-397:             assert agent.confidence_proxy(1.0) == pytest.approx(1.0)
-398: 
-399:         agent = SoftmaxProfileBuzzer(
-400:             likelihood_model=likelihood,
-401:             threshold=100.0,
-402:             alpha=100.0,
-403:         )
-404:         with warnings.catch_warnings():
-405:             warnings.simplefilter("error", RuntimeWarning)
-406:             assert agent.confidence_proxy(0.0) == pytest.approx(0.0)
-407: 
-408: 
-409: # ------------------------------------------------------------------ #
-410: # SequentialBayesBuzzer tests (AGT-05)
-411: # ------------------------------------------------------------------ #
-412: 
-413: 
-414: class TestSequentialBayesBuzzer:
-415:     """Tests for SequentialBayesBuzzer incremental Bayesian update."""
-416: 
-417:     def test_sequential_bayes_executes(
-418:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-419:     ) -> None:
-420:         """SequentialBayesBuzzer runs an episode without error."""
-421:         likelihood = _make_likelihood(sample_corpus)
-422:         agent = SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7)
-423:         result = agent.run_episode(sample_mc_question)
-424: 
-425:         assert isinstance(result, SoftmaxEpisodeResult)
-426:         assert result.qid == sample_mc_question.qid
-427: 
-428:     def test_sequential_bayes_uses_run_indices(
-429:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-430:     ) -> None:
-431:         """SequentialBayesBuzzer requires question.run_indices field.
-432: 
-433:         The agent iterates over run_indices to extract token fragments,
-434:         not over cumulative_prefixes. The number of trace entries should
-435:         match the number of run_indices steps processed.
-436:         """
-437:         likelihood = _make_likelihood(sample_corpus)
-438:         agent = SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7)
-439:         result = agent.run_episode(sample_mc_question)
-440: 
-441:         # Trace length should be <= len(run_indices)
-442:         assert len(result.c_trace) <= len(sample_mc_question.run_indices), (
-443:             f"Trace length {len(result.c_trace)} > run_indices length "
-444:             f"{len(sample_mc_question.run_indices)}"
-445:         )
-446: 
-447:     def test_sequential_bayes_bayesian_update(
-448:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-449:     ) -> None:
-450:         """Belief is posterior proportional to prior * likelihood.
-451: 
-452:         Verify the _step_update method produces valid posterior:
-453:         all entries >= 0 and sum to 1.
-454:         """
-455:         likelihood = _make_likelihood(sample_corpus)
-456:         agent = SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7)
-457: 
-458:         K = len(sample_mc_question.options)
-459:         prior = np.ones(K, dtype=np.float32) / K
-460:         fragment = "first president"
-461:         profiles = sample_mc_question.option_profiles
-462: 
-463:         posterior = agent._step_update(prior, fragment, profiles)
-464: 
-465:         assert posterior.shape == (K,), f"Expected shape ({K},), got {posterior.shape}"
-466:         assert all(posterior >= 0), "Posterior has negative entries"
-467:         np.testing.assert_almost_equal(
-468:             posterior.sum(), 1.0, decimal=5,
-469:             err_msg="Posterior should sum to 1.0",
-470:         )
-471: 
-472:     def test_sequential_bayes_result_schema(
-473:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-474:     ) -> None:
-475:         """SequentialBayesBuzzer returns SoftmaxEpisodeResult."""
-476:         likelihood = _make_likelihood(sample_corpus)
-477:         agent = SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7)
-478:         result = agent.run_episode(sample_mc_question)
-479: 
-480:         assert isinstance(result, SoftmaxEpisodeResult)
-481:         assert not isinstance(result, EpisodeResult)
-482: 
-483:     def test_sequential_bayes_fragments(
-484:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-485:     ) -> None:
-486:         """SequentialBayesBuzzer processes token fragments, not full prefixes.
-487: 
-488:         With threshold 1.0 (never buzzes early), all run_indices should be
-489:         processed, producing traces of length len(run_indices).
-490:         """
-491:         likelihood = _make_likelihood(sample_corpus)
-492:         agent = SequentialBayesBuzzer(likelihood_model=likelihood, threshold=1.0)
-493:         result = agent.run_episode(sample_mc_question)
-494: 
-495:         n_steps = len(sample_mc_question.run_indices)
-496:         assert len(result.c_trace) == n_steps, (
-497:             f"Expected {n_steps} trace entries, got {len(result.c_trace)}"
-498:         )
-499: 
-500: 
-501: # ------------------------------------------------------------------ #
-502: # Episode result schema tests (AGT-06)
-503: # ------------------------------------------------------------------ #
-504: 
-505: 
-506: class TestEpisodeResultSchema:
-507:     """Tests for EpisodeResult and SoftmaxEpisodeResult dataclass schemas."""
-508: 
-509:     def test_episode_result_fields(self) -> None:
-510:         """EpisodeResult has all required fields."""
-511:         result = EpisodeResult(
-512:             qid="test_q",
-513:             buzz_step=3,
-514:             buzz_index=1,
-515:             gold_index=0,
-516:             correct=False,
-517:             reward_like=-0.5,
-518:             c_trace=[0.1, 0.2, 0.3, 0.4],
-519:             g_trace=[0.0, 0.0, 0.0, 1.0],
-520:             top_p_trace=[0.3, 0.4, 0.5, 0.6],
-521:             entropy_trace=[1.4, 1.2, 1.0, 0.8],
-522:         )
-523:         assert result.qid == "test_q"
-524:         assert result.buzz_step == 3
-525:         assert result.buzz_index == 1
-526:         assert result.gold_index == 0
-527:         assert result.correct is False
-528:         assert result.reward_like == -0.5
-529: 
-530:     def test_softmax_episode_result_fields(self) -> None:
-531:         """SoftmaxEpisodeResult has all required fields."""
-532:         result = SoftmaxEpisodeResult(
-533:             qid="test_q",
-534:             buzz_step=2,
-535:             buzz_index=0,
-536:             gold_index=0,
-537:             correct=True,
-538:             c_trace=[0.1, 0.5, 0.9],
-539:             g_trace=[1.0, 1.0, 1.0],
-540:             top_p_trace=[0.4, 0.6, 0.9],
-541:             entropy_trace=[1.2, 0.8, 0.3],
-542:         )
-543:         assert result.qid == "test_q"
-544:         assert result.buzz_step == 2
-545:         assert result.correct is True
-546: 
-547:     def test_traces_same_length(
-548:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-549:     ) -> None:
-550:         """len(c_trace) == len(g_trace) for all agents."""
-551:         likelihood = _make_likelihood(sample_corpus)
-552: 
-553:         agents = [
-554:             ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7),
-555:             AlwaysBuzzFinalBuzzer(likelihood_model=likelihood),
-556:             SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7),
-557:             SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7),
-558:         ]
-559: 
-560:         for agent in agents:
-561:             result = agent.run_episode(sample_mc_question)
-562:             agent_name = type(agent).__name__
-563:             assert len(result.c_trace) == len(result.g_trace), (
-564:                 f"{agent_name}: c_trace ({len(result.c_trace)}) != "
-565:                 f"g_trace ({len(result.g_trace)})"
-566:             )
-567:             assert len(result.c_trace) == len(result.top_p_trace), (
-568:                 f"{agent_name}: c_trace ({len(result.c_trace)}) != "
-569:                 f"top_p_trace ({len(result.top_p_trace)})"
-570:             )
-571:             assert len(result.c_trace) == len(result.entropy_trace), (
-572:                 f"{agent_name}: c_trace ({len(result.c_trace)}) != "
-573:                 f"entropy_trace ({len(result.entropy_trace)})"
-574:             )
-575: 
-576:     def test_g_trace_binary(
-577:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-578:     ) -> None:
-579:         """g_trace values are 0.0 or 1.0 (correctness is binary)."""
-580:         likelihood = _make_likelihood(sample_corpus)
-581: 
-582:         agents = [
-583:             ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7),
-584:             AlwaysBuzzFinalBuzzer(likelihood_model=likelihood),
-585:             SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7),
-586:             SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7),
-587:         ]
-588: 
-589:         for agent in agents:
-590:             result = agent.run_episode(sample_mc_question)
-591:             agent_name = type(agent).__name__
-592:             for g_t in result.g_trace:
-593:                 assert g_t in (0.0, 1.0), (
-594:                     f"{agent_name}: g_t={g_t} not in {{0.0, 1.0}}"
-595:                 )
-596: 
-597:     def test_buzz_index_valid(
-598:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-599:     ) -> None:
-600:         """buzz_index in range(K) where K = len(options)."""
-601:         likelihood = _make_likelihood(sample_corpus)
-602:         K = len(sample_mc_question.options)
-603: 
-604:         agents = [
-605:             ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7),
-606:             AlwaysBuzzFinalBuzzer(likelihood_model=likelihood),
-607:             SoftmaxProfileBuzzer(likelihood_model=likelihood, threshold=0.7),
-608:             SequentialBayesBuzzer(likelihood_model=likelihood, threshold=0.7),
-609:         ]
-610: 
-611:         for agent in agents:
-612:             result = agent.run_episode(sample_mc_question)
-613:             agent_name = type(agent).__name__
-614:             assert 0 <= result.buzz_index < K, (
-615:                 f"{agent_name}: buzz_index={result.buzz_index} not in [0, {K})"
-616:             )
-617: 
-618:     def test_result_to_dict(
-619:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-620:     ) -> None:
-621:         """result_to_dict() converts EpisodeResult to dict."""
-622:         likelihood = _make_likelihood(sample_corpus)
-623:         agent = ThresholdBuzzer(likelihood_model=likelihood, threshold=0.7)
-624:         result = agent.run_episode(sample_mc_question)
-625: 
-626:         d = result_to_dict(result)
-627:         assert isinstance(d, dict)
-628:         assert d["qid"] == sample_mc_question.qid
-629:         assert "buzz_step" in d
-630:         assert "buzz_index" in d
-631:         assert "gold_index" in d
-632:         assert "correct" in d
-633:         assert "reward_like" in d
-634:         assert "c_trace" in d
-635:         assert "g_trace" in d
-636:         assert isinstance(d["c_trace"], list)
-637: 
-638: 
-639: # ------------------------------------------------------------------ #
-640: # Threshold sweep utility tests
-641: # ------------------------------------------------------------------ #
-642: 
-643: 
-644: class TestSweepThresholds:
-645:     """Tests for sweep_thresholds utility function."""
-646: 
-647:     def test_sweep_thresholds_runs(
-648:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-649:     ) -> None:
-650:         """sweep_thresholds() returns dict[float, list[EpisodeResult]]."""
-651:         likelihood = _make_likelihood(sample_corpus)
-652:         results = sweep_thresholds(
-653:             questions=[sample_mc_question],
-654:             likelihood_model=likelihood,
-655:             thresholds=[0.7],
-656:         )
-657: 
-658:         assert isinstance(results, dict)
-659:         assert 0.7 in results
-660:         assert len(results[0.7]) == 1
-661:         assert isinstance(results[0.7][0], EpisodeResult)
-662: 
-663:     def test_sweep_thresholds_multiple_values(
-664:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-665:     ) -> None:
-666:         """Sweeps over [0.6, 0.7, 0.8, 0.9] and returns results for each."""
-667:         likelihood = _make_likelihood(sample_corpus)
-668:         thresholds = [0.6, 0.7, 0.8, 0.9]
-669:         results = sweep_thresholds(
-670:             questions=[sample_mc_question],
-671:             likelihood_model=likelihood,
-672:             thresholds=thresholds,
-673:         )
-674: 
-675:         assert len(results) == len(thresholds)
-676:         for thresh in thresholds:
-677:             assert thresh in results, f"Missing results for threshold {thresh}"
-678:             assert len(results[thresh]) == 1
-679: 
-680:     def test_sweep_thresholds_monotonic_buzz_step(
-681:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-682:     ) -> None:
-683:         """Higher thresholds should produce later or equal buzz steps.
-684: 
-685:         A higher threshold means the agent needs more confidence to buzz,
-686:         so it should wait at least as long as with a lower threshold.
-687:         """
-688:         likelihood = _make_likelihood(sample_corpus)
-689:         thresholds = [0.3, 0.5, 0.7, 0.9]
-690:         results = sweep_thresholds(
-691:             questions=[sample_mc_question],
-692:             likelihood_model=likelihood,
-693:             thresholds=thresholds,
-694:         )
-695: 
-696:         buzz_steps = [results[t][0].buzz_step for t in thresholds]
-697:         for i in range(len(buzz_steps) - 1):
-698:             assert buzz_steps[i] <= buzz_steps[i + 1], (
-699:                 f"Buzz step not monotonic: threshold {thresholds[i]} "
-700:                 f"(step {buzz_steps[i]}) > threshold {thresholds[i+1]} "
-701:                 f"(step {buzz_steps[i+1]})"
-702:             )
-703: 
-704: 
-705: # ------------------------------------------------------------------ #
-706: # Precomputed equivalence tests
-707: # ------------------------------------------------------------------ #
-708: 
-709: 
-710: class TestPrecomputedEquivalence:
-711:     """Prove precomputed-path functions are numerically identical to live agents."""
-712: 
-713:     def test_softmax_precomputed_matches_live(
-714:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-715:     ) -> None:
-716:         """_softmax_episode_from_precomputed matches SoftmaxProfileBuzzer.run_episode."""
-717:         from agents.threshold_buzzer import (
-718:             _softmax_episode_from_precomputed,
-719:             precompute_beliefs,
-720:         )
-721: 
-722:         likelihood = _make_likelihood(sample_corpus)
-723:         threshold, beta, alpha = 0.7, 5.0, 10.0
-724: 
-725:         # Live agent
-726:         agent = SoftmaxProfileBuzzer(
-727:             likelihood_model=likelihood, threshold=threshold, beta=beta, alpha=alpha
-728:         )
-729:         live = agent.run_episode(sample_mc_question)
-730: 
-731:         # Precomputed path
-732:         pqs = precompute_beliefs([sample_mc_question], likelihood, beta)
-733:         pre = _softmax_episode_from_precomputed(pqs[0], threshold, alpha)
-734: 
-735:         assert pre.buzz_step == live.buzz_step
-736:         assert pre.buzz_index == live.buzz_index
-737:         assert pre.correct == live.correct
-738:         np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
-739:         np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
-740:         np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
-741:         np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
-742: 
-743:     def test_always_final_precomputed_matches_live(
-744:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-745:     ) -> None:
-746:         """_always_final_from_precomputed matches AlwaysBuzzFinalBuzzer.run_episode."""
-747:         from agents.threshold_buzzer import (
-748:             _always_final_from_precomputed,
-749:             precompute_beliefs,
-750:         )
-751: 
-752:         likelihood = _make_likelihood(sample_corpus)
-753:         beta = 5.0
-754: 
-755:         # Live agent
-756:         agent = AlwaysBuzzFinalBuzzer(likelihood_model=likelihood, beta=beta)
-757:         live = agent.run_episode(sample_mc_question)
-758: 
-759:         # Precomputed path
-760:         pqs = precompute_beliefs([sample_mc_question], likelihood, beta)
-761:         pre = _always_final_from_precomputed(pqs[0])
-762: 
-763:         assert pre.buzz_step == live.buzz_step
-764:         assert pre.buzz_index == live.buzz_index
-765:         assert pre.correct == live.correct
-766:         assert pre.reward_like == live.reward_like
-767:         np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
-768:         np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
-769:         np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
-770:         np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
-771: 
-772:     def test_sequential_precomputed_matches_live(
-773:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-774:     ) -> None:
-775:         """_sequential_episode_from_precomputed matches SequentialBayesBuzzer.run_episode."""
-776:         from agents.bayesian_buzzer import (
-777:             _sequential_episode_from_precomputed,
-778:             precompute_sequential_beliefs,
-779:         )
-780: 
-781:         likelihood = _make_likelihood(sample_corpus)
-782:         threshold, beta, alpha = 0.7, 5.0, 10.0
-783: 
-784:         # Live agent
-785:         agent = SequentialBayesBuzzer(
-786:             likelihood_model=likelihood, threshold=threshold, beta=beta, alpha=alpha
-787:         )
-788:         live = agent.run_episode(sample_mc_question)
-789: 
-790:         # Precomputed path
-791:         pqs = precompute_sequential_beliefs([sample_mc_question], likelihood, beta)
-792:         pre = _sequential_episode_from_precomputed(pqs[0], threshold, alpha)
-793: 
-794:         assert pre.buzz_step == live.buzz_step
-795:         assert pre.buzz_index == live.buzz_index
-796:         assert pre.correct == live.correct
-797:         np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
-798:         np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
-799:         np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
-800:         np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
-801: 
-802:     def test_sweep_sequential_matches_per_threshold(
-803:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-804:     ) -> None:
-805:         """sweep_sequential_thresholds matches per-threshold SequentialBayesBuzzer."""
-806:         from agents.bayesian_buzzer import sweep_sequential_thresholds
-807: 
-808:         likelihood = _make_likelihood(sample_corpus)
-809:         thresholds = [0.5, 0.7, 0.9]
-810:         beta, alpha = 5.0, 10.0
-811: 
-812:         # Sweep
-813:         sweep = sweep_sequential_thresholds(
-814:             questions=[sample_mc_question],
-815:             likelihood_model=likelihood,
-816:             thresholds=thresholds,
-817:             beta=beta,
-818:             alpha=alpha,
-819:         )
-820: 
-821:         # Per-threshold live agents
-822:         for threshold in thresholds:
-823:             agent = SequentialBayesBuzzer(
-824:                 likelihood_model=likelihood,
-825:                 threshold=threshold,
-826:                 beta=beta,
-827:                 alpha=alpha,
-828:             )
-829:             live = agent.run_episode(sample_mc_question)
-830:             pre = sweep[float(threshold)][0]
-831: 
-832:             assert pre.buzz_step == live.buzz_step, (
-833:                 f"threshold={threshold}: buzz_step {pre.buzz_step} != {live.buzz_step}"
-834:             )
-835:             assert pre.buzz_index == live.buzz_index
-836:             assert pre.correct == live.correct
-837:             np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
-838:             np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
-839:             np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
-840:             np.testing.assert_array_almost_equal(
-841:                 pre.entropy_trace, live.entropy_trace
-842:             )
-843: 
-844: 
-845: # ------------------------------------------------------------------ #
-846: # Shuffle precomputed equivalence tests
-847: # ------------------------------------------------------------------ #
-848: 
-849: 
-850: class TestShufflePrecomputedEquivalence:
-851:     """Prove precomputed shuffle control matches live rescore shuffle control."""
-852: 
-853:     def test_shuffle_precomputed_matches_rescore(
-854:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-855:     ) -> None:
-856:         """Precomputed shuffle control matches live rescore shuffle control."""
-857:         from dataclasses import asdict
-858: 
-859:         from agents.threshold_buzzer import precompute_beliefs
-860:         from evaluation.controls import (
-861:             run_shuffle_control,
-862:             run_shuffle_control_precomputed,
-863:         )
-864:         from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
-865: 
-866:         likelihood = _make_likelihood(sample_corpus)
-867:         threshold, beta, alpha = 0.7, 5.0, 10.0
-868:         questions = [sample_mc_question]
-869: 
-870:         # Live rescore path
-871:         def evaluator(qset):
-872:             agent = SoftmaxProfileBuzzer(
-873:                 likelihood_model=likelihood,
-874:                 threshold=threshold,
-875:                 beta=beta,
-876:                 alpha=alpha,
-877:             )
-878:             runs = [asdict(agent.run_episode(q)) for q in qset]
-879:             summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
-880:             summary["runs"] = runs
-881:             return summary
-882: 
-883:         live_result = run_shuffle_control(questions, evaluator=evaluator, random_seed=13)
-884: 
-885:         # Precomputed path
-886:         precomputed = precompute_beliefs(questions, likelihood, beta)
-887:         pre_result = run_shuffle_control_precomputed(
-888:             precomputed, threshold, alpha, random_seed=13
-889:         )
-890: 
-891:         # Compare summary metrics
-892:         assert live_result["mean_sq"] == pytest.approx(pre_result["mean_sq"])
-893:         assert live_result["buzz_accuracy"] == pytest.approx(pre_result["buzz_accuracy"])
-894: 
-895:         # Compare per-run results
-896:         for live_run, pre_run in zip(live_result["runs"], pre_result["runs"]):
-897:             assert live_run["buzz_step"] == pre_run["buzz_step"]
-898:             assert live_run["buzz_index"] == pre_run["buzz_index"]
-899:             assert live_run["correct"] == pre_run["correct"]
-900:             np.testing.assert_array_almost_equal(
-901:                 live_run["c_trace"], pre_run["c_trace"]
-902:             )
-903:             np.testing.assert_array_almost_equal(
-904:                 live_run["g_trace"], pre_run["g_trace"]
-905:             )
-906:             np.testing.assert_array_almost_equal(
-907:                 live_run["top_p_trace"], pre_run["top_p_trace"]
-908:             )
-909:             np.testing.assert_array_almost_equal(
-910:                 live_run["entropy_trace"], pre_run["entropy_trace"]
-911:             )
-912: 
-913:     def test_permutation_consistency(
-914:         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
-915:     ) -> None:
-916:         """Permutation applied to beliefs matches permutation applied to gold_index."""
-917:         import random as random_mod
-918: 
-919:         from agents.threshold_buzzer import _PrecomputedQuestion, precompute_beliefs
-920:         from evaluation.controls import shuffled_option_copy
-921: 
-922:         likelihood = _make_likelihood(sample_corpus)
-923:         beta = 5.0
-924:         questions = [sample_mc_question]
-925:         precomputed = precompute_beliefs(questions, likelihood, beta)
-926: 
-927:         # Reproduce the permutation that shuffled_option_copy would use
-928:         rng_live = random_mod.Random(13)
-929:         shuffled_q = shuffled_option_copy(sample_mc_question, rng_live)
-930: 
-931:         # Reproduce the same permutation for precomputed
-932:         rng_pre = random_mod.Random(13)
-933:         pq = precomputed[0]
-934:         perm = list(range(pq.num_options))
-935:         rng_pre.shuffle(perm)
-936:         new_gold = perm.index(pq.gold_index)
-937: 
-938:         # The gold index should match
-939:         assert new_gold == shuffled_q.gold_index
-940: 
-941: 
-942: class TestBaselineAgentsVariableK:
-943:     """Baseline agents work on non-K=4 questions (K-agnostic check)."""
-944: 
-945:     def test_threshold_buzzer_k3(self, sample_corpus):
-946:         from agents.threshold_buzzer import ThresholdBuzzer
-947:         from dataclasses import replace
-948:         from models.likelihoods import TfIdfLikelihood
-949:         from tests.conftest import sample_mc_question as _  # reuse fixture pattern
-950: 
-951:         model = TfIdfLikelihood(corpus_texts=sample_corpus)
-952:         q4 = MCQuestion(
-953:             qid="q_k3",
-954:             question="Who was the first president?",
-955:             tokens=["Who", "was", "the", "first", "president"],
-956:             answer_primary="George Washington",
-957:             clean_answers=["George Washington"],
-958:             run_indices=[1, 3, 4],
-959:             human_buzz_positions=[],
-960:             category="History",
-961:             cumulative_prefixes=["Who was", "Who was the first", "Who was the first president"],
-962:             options=["George Washington", "Thomas Jefferson", "John Adams"],
-963:             gold_index=0,
-964:             option_profiles=[
-965:                 "George Washington first president",
-966:                 "Thomas Jefferson third president",
-967:                 "John Adams second president",
-968:             ],
-969:             option_answer_primary=["George Washington", "Thomas Jefferson", "John Adams"],
-970:             distractor_strategy="test",
-971:         )
-972:         buzzer = ThresholdBuzzer(
-973:             likelihood_model=model, threshold=0.5, beta=5.0, alpha=10.0,
-974:         )
-975:         result = buzzer.run_episode(q4)
-976:         assert len(result.c_trace) > 0
-977:         assert 0 <= result.buzz_index < 3
 </file>
 
 <file path="tests/test_metrics.py">
