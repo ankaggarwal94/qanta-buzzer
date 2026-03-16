@@ -824,6 +824,23 @@ class TestExpectedWinsRewardMode:
         _, reward, _, _, _ = env.step(0)
         assert isinstance(reward, float)
 
+    def test_expected_wins_no_buzz_end_mode(self, sample_mc_question):
+        """expected_wins + no_buzz should truncate without forced choice."""
+        env = self._make_env(sample_mc_question, survival=0.5)
+        env.end_mode = "no_buzz"
+        env.no_buzz_reward = 0.25
+        env.reset(seed=42, options={"question_idx": 0})
+        done = False
+        truncated = False
+        reward = 0.0
+        info = {}
+        while not (done or truncated):
+            _, reward, done, truncated, info = env.step(0)
+        assert truncated is True
+        assert info["no_buzz"] is True
+        assert info["forced_choice"] == -1
+        assert reward == pytest.approx(0.25)
+
 
 class TestVariableKEnv:
     """Tests for variable-K mode and action masks in TossupMCEnv."""

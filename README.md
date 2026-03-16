@@ -111,7 +111,7 @@ For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy 
 
 ## Testing
 
-350 tests across 26 test files (3 skipped when optional extras not installed):
+360 tests across 27 test files (3 skipped when optional extras not installed):
 
 ```bash
 pytest                    # full suite
@@ -143,7 +143,7 @@ scripts/        Pipeline entrypoints, DSPy compile, shared helpers
 training/       T5 policy supervised + PPO trainers, hazard bridge utilities
 configs/        YAML configuration files
 artifacts/      Generated pipeline outputs (smoke/ and main/)
-_legacy/        Pre-modularization prototypes (not installed)
+root *.py files Pre-modularization prototypes (not installed; still live at repo root)
 ```
 
 ## Compatibility Bridge
@@ -183,4 +183,4 @@ Set `likelihood.model: dspy` and configure the `dspy` section in YAML. Requires 
 
 ## Legacy Prototype
 
-The pre-modularization prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`, etc.) has been moved to `_legacy/`. These files are not part of the installed package and are preserved only for reference. The modular `scripts/` pipeline above is the canonical workflow.
+The pre-modularization prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`, etc.) still lives at the repo root. These files are not part of the installed package and are preserved only for reference / backward compatibility. The modular `scripts/` pipeline above is the canonical workflow.

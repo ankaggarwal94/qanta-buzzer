@@ -105,3 +105,34 @@ def test_mixed_k_text_wrapper_formats_correctly() -> None:
         assert f"({n_opts})" in obs
         if n_opts < max_k:
             assert f"({n_opts + 1})" not in obs
+
+
+def test_variable_k_sequential_bayes_wait_step_shapes() -> None:
+    """Variable-K env should handle sequential_bayes without shape mismatch."""
+    questions = _make_questions(30)
+    builder = MCBuilder(
+        K=5, strategy="category_random", random_seed=42,
+        variable_K=True, min_K=2, max_K=5,
+    )
+    profile = AnswerProfileBuilder()
+    mc = builder.build(questions, profile)
+    assert len(mc) > 0
+
+    corpus = [q.question for q in mc] + [p for q in mc for p in q.option_profiles]
+    lm = TfIdfLikelihood(corpus_texts=corpus)
+
+    max_k = max(len(q.options) for q in mc)
+    env = TossupMCEnv(
+        questions=mc, likelihood_model=lm,
+        K=max_k, variable_K=True, max_K=max_k,
+        reward_mode="simple", belief_mode="sequential_bayes",
+    )
+
+    obs, _ = env.reset(seed=42, options={"question_idx": 0})
+    assert obs.shape == (max_k + 6,)
+    assert len(env.belief) == len(mc[0].options)
+
+    obs2, reward, done, truncated, info = env.step(0)
+    assert obs2.shape == (max_k + 6,)
+    assert len(env.belief) == len(mc[0].options)
+    assert isinstance(reward, float)

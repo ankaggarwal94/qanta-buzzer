@@ -30,3 +30,50 @@ def test_resolve_mlp_eval_config_uses_fallback_when_no_sidecar(tmp_path):
     fallback = {"likelihood": {"model": "tfidf"}}
     resolved = resolve_mlp_eval_config(str(fake_checkpoint), fallback)
     assert resolved is fallback
+
+
+def test_evaluate_mlp_policy_uses_builder_and_question_idx(monkeypatch):
+    import scripts.compare_policies as cp
+    from agents.ppo_buzzer import PPOBuzzer
+    import qb_env.tossup_env as te
+
+    calls: dict[str, object] = {
+        "builder_count": 0,
+        "builder_args": None,
+        "question_idx": [],
+    }
+
+    def fake_builder(config, test_questions):
+        calls["builder_count"] += 1
+        calls["builder_args"] = (config, test_questions)
+        return object()
+
+    def fake_make_env_from_config(mc_questions, likelihood_model, config):
+        return object()
+
+    class FakeAgent:
+        def run_episode(self, deterministic=True, question_idx=None):
+            calls["question_idx"].append(question_idx)
+            return {"buzz_step": 0, "correct": True, "top_p_trace": [0.9]}
+
+    monkeypatch.setattr(cp, "build_likelihood_model", fake_builder)
+    monkeypatch.setattr(te, "make_env_from_config", fake_make_env_from_config)
+    monkeypatch.setattr(
+        PPOBuzzer,
+        "load",
+        classmethod(lambda cls, checkpoint_path, env, use_maskable_ppo=False: FakeAgent()),
+    )
+    monkeypatch.setattr(cp, "summarize_buzz_metrics", lambda results: {"buzz_accuracy": 1.0, "mean_sq": 1.0, "mean_buzz_step": 0.0, "mean_reward_like": 0.0})
+    monkeypatch.setattr(cp, "calibration_pairs_at_buzz", lambda results: ([0.9], [1]))
+    monkeypatch.setattr(cp, "expected_calibration_error", lambda c, o: 0.0)
+    monkeypatch.setattr(cp, "brier_score", lambda c, o: 0.0)
+
+    out = cp.evaluate_mlp_policy(
+        checkpoint_path="artifacts/main/ppo_model",
+        test_questions=[object(), object(), object()],
+        config={"likelihood": {"model": "tfidf"}, "ppo": {}},
+    )
+
+    assert calls["builder_count"] == 1
+    assert calls["question_idx"] == [0, 1, 2]
+    assert out["accuracy"] == 1.0

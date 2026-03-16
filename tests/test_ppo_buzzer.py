@@ -12,9 +12,12 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+import sys
+import types
 
 import numpy as np
 import pytest
+import torch as th
 
 from agents.ppo_buzzer import PPOBuzzer, PPOEpisodeTrace
 from qb_data.mc_builder import MCQuestion
@@ -375,3 +378,75 @@ class TestMaskablePPO:
         sb3_contrib = pytest.importorskip("sb3_contrib", reason="sb3-contrib not installed")
         buzzer = PPOBuzzer(env=sample_tfidf_env, use_maskable_ppo=True)
         assert buzzer._use_maskable
+
+    def test_current_action_masks_prefers_wrapper(self, sample_tfidf_env) -> None:
+        """Wrapper-provided binary masks should win over base-env masks."""
+        buzzer = PPOBuzzer(env=sample_tfidf_env)
+        buzzer._use_maskable = True
+
+        class Wrapper:
+            def __init__(self, base):
+                self.unwrapped = base
+
+            def action_masks(self):
+                return np.array([True, False], dtype=bool)
+
+        buzzer.env = Wrapper(sample_tfidf_env)
+        masks = buzzer._current_action_masks()
+        assert masks.tolist() == [True, False]
+
+    def test_action_probabilities_passes_masks_when_maskable(self, sample_tfidf_env) -> None:
+        """action_probabilities should pass binary masks to the policy distribution."""
+        buzzer = PPOBuzzer(env=sample_tfidf_env)
+        buzzer._use_maskable = True
+
+        class Wrapper:
+            def __init__(self, base):
+                self.unwrapped = base
+
+            def action_masks(self):
+                return np.array([True, False], dtype=bool)
+
+        class FakeDist:
+            def __init__(self):
+                self.distribution = types.SimpleNamespace(
+                    probs=th.tensor([[0.8, 0.2]], dtype=th.float32)
+                )
+
+        seen = {}
+
+        class FakePolicy:
+            def get_distribution(self, obs_tensor, action_masks=None):
+                seen["masks"] = action_masks
+                return FakeDist()
+
+        class FakeModel:
+            device = th.device("cpu")
+            policy = FakePolicy()
+
+        buzzer.env = Wrapper(sample_tfidf_env)
+        buzzer.model = FakeModel()
+        probs = buzzer.action_probabilities(np.zeros(sample_tfidf_env.observation_space.shape, dtype=np.float32))
+        assert probs.tolist() == pytest.approx([0.8, 0.2])
+        assert seen["masks"] is not None
+        assert seen["masks"].shape == (1, 2)
+
+    def test_maskable_checkpoint_load_path(self, sample_tfidf_env, tmp_path, monkeypatch) -> None:
+        """PPOBuzzer.load(..., use_maskable_ppo=True) should use MaskablePPO.load."""
+        calls = {}
+
+        class FakeMaskablePPO:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            @classmethod
+            def load(cls, path, env=None):
+                calls["path"] = path
+                calls["env"] = env
+                return object()
+
+        monkeypatch.setitem(sys.modules, "sb3_contrib", types.SimpleNamespace(MaskablePPO=FakeMaskablePPO))
+        loaded = PPOBuzzer.load(tmp_path / "ppo_test", env=sample_tfidf_env, use_maskable_ppo=True)
+        assert calls["path"].endswith("ppo_test")
+        assert calls["env"] is sample_tfidf_env
+        assert loaded.model is not None

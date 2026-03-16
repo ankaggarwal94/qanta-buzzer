@@ -24,7 +24,7 @@ Your job is to verify current alignment and make only the minimal reconciliation
 Hard rules:
 - Do not use Cloud Agent
 - Do not use worktrees or extra branches unless explicitly asked
-- Do not touch _legacy/ except to verify that it remains non-canonical
+- Do not touch the root-level legacy prototype files except to verify that they remain non-canonical
 - Do not regress the current modular architecture
 - Do not re-open the extension campaign
 - Preserve default behavior:
@@ -86,7 +86,7 @@ Ledger created. Here is my summary of the current repo state:
 
 2. **Extension campaign is complete (18 patches)** — Expected Wins (EW-01..04), Variable-K (VK-01..07), DSPy (DSPY-01..05), plus final docs and two ChatGPT review rounds. All tracked in `.planning/quick/extensions-master-run.md`.
 
-3. **320 tests across 22 files (3 skipped)** — CI via `scripts/ci.sh` runs `pytest tests/`. Skips are for optional extras (MaskablePPO, DSPy).
+3. **360 tests across 27 files (3 skipped)** — CI via `scripts/ci.sh` runs `pytest tests/`. Skips are for optional extras (MaskablePPO, DSPy).
 
 4. **Smoke pipeline is green** — `scripts/manual-smoke.sh` runs four stages (build_mc_dataset, run_baselines, train_ppo, evaluate_all) with `--smoke` flag, outputs to `artifacts/smoke/`.
 
@@ -96,7 +96,7 @@ Ledger created. Here is my summary of the current repo state:
 
 7. **`top_p_trace` is the canonical confidence field** for calibration — introduced during remediation, verified across 3 review rounds. The PR's `p_correct_trace` rename is explicitly excluded because its `@property` shim breaks `asdict()`.
 
-8. **`_legacy/` exists and is non-canonical** — pre-modularization prototypes, not installed via `setup.py`, preserved for reference only.
+8. **Root-level legacy files remain non-canonical** — pre-modularization prototypes still exist at the repo root, are not installed via `setup.py`, and are preserved for reference / backward compatibility.
 
 9. **v1.0 milestone is complete** per `.planning/STATE.md` — all 6 phases done, 19/20 plans complete. Next priority is CS234 writeup and full training runs.
 
@@ -396,7 +396,7 @@ Verification summary for WP-4 (Durable Docs — PR #1 Absorption Statement):
 | 1. Docs reflect current local reality | Verified — README, AGENTS, CLAUDE all describe modular pipeline, correct test counts, local architecture; no stale upstream references |
 | 2. Modular scripts pipeline presented as canonical | Verified — README "The canonical four-stage smoke pipeline"; AGENTS "Smoke Pipeline" section with `scripts/` commands |
 | 3. Three extensions documented as opt-in | Verified — README "All are disabled by default — the smoke pipeline and T5 smoke path work unchanged"; AGENTS "Three opt-in extensions" |
-| 4. Validation status truthful | Verified — "320 tests across 22 test files (3 skipped)" consistent across README, AGENTS, STATE |
+| 4. Validation status truthful | Verified — current docs should state 360 tests across 27 test files (3 skipped) |
 | 5. PR #1 framed as consolidation/reconciliation | Verified — no PR #1 mention in public docs; STATE.md and extensions ledger now cross-reference the reconciliation ledger |
 
 - **Files changed:** `.planning/STATE.md`, `.planning/quick/extensions-master-run.md`
@@ -451,7 +451,7 @@ Now I have everything. Let me write the final reconciliation report.
 | Command | Result |
 |---------|--------|
 | DSPy + factory targeted tests | **31 passed, 2 skipped** (0.06s) |
-| Full test suite | **320 passed, 3 skipped** (57.64s) |
+| Full test suite | **357 passed, 3 skipped** (current branch) |
 | Manual smoke pipeline | **4/4 stages complete** (10.6s) |
 | T5 smoke (supervised + PPO) | **62.5% test accuracy** (23.9s) |
 

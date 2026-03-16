@@ -110,7 +110,7 @@ Building unified system by merging qb-rl's modular architecture with qanta-buzze
 | Fallback MC dataset path | run_baselines.py checks data/processed/ when artifacts/ not found | 2026-02-26 |
 | 3 thresholds in smoke config | Reduced sweep (0.5, 0.7, 0.9) vs 5 in default for quick validation | 2026-02-26 |
 | Matplotlib Agg backend | Non-interactive backend for headless environments and CI | 2026-02-26 |
-| Graceful alias_lookup fallback | Empty dict when alias_lookup.json missing, controls still run | 2026-02-26 |
+| Graceful alias_lookup fallback | Alias control is skipped with a warning when alias_lookup.json is missing | 2026-02-26 / updated 2026-03-16 |
 | MC dataset path fallback | Check data/processed/ when artifacts/ not found for portability | 2026-02-26 |
 | Port qb-rl controls exactly | choices-only, shuffle, alias substitution controls from reference | 2026-02-26 |
 | T5EncoderModel for T5PolicyModel | 2x faster, 50% less memory vs T5ForConditionalGeneration (decoder unused) | 2026-02-26 |
@@ -164,7 +164,7 @@ None identified yet
 - calibration_at_buzz skips no-buzz episodes instead of clamping to step 0
 - step() rejects padded buzz actions in variable-K mode
 - MaskablePPO wired through train_ppo.py via ppo.use_maskable_ppo config
-- 350 tests across 26 test files (3 skipped for optional extras)
+- 360 tests across 27 test files (3 skipped for optional extras)
 
 ### Next Session Priority
 1. CS234 writeup finalization using results from full-scale run
@@ -177,7 +177,7 @@ Unified quiz bowl RL buzzer with two tracks plus three opt-in extensions (Expect
 - Working directory: qanta-buzzer repo
 - Python environment: `.venv/` with Python 3.13.5, `pip install -e .` done
 - MPS available (Apple M3 Max, 64 GB)
-- 350 tests passing (3 skipped), CI green
+- 357 tests passing (3 skipped), CI green
 
 ---
 *State file initialized: 2026-02-25*

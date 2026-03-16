@@ -230,12 +230,22 @@ def main() -> None:
     print("Running shuffle control...")
     shuffle_eval = run_shuffle_control_precomputed(precomputed, threshold, alpha)
 
-    print("Running alias substitution control...")
-    alias_eval = run_alias_substitution_control(
-        mc_questions,
-        alias_lookup=alias_lookup,
-        evaluator=lambda qset: evaluate_questions_live(qset),
-    )
+    if alias_lookup:
+        print("Running alias substitution control...")
+        alias_eval = run_alias_substitution_control(
+            mc_questions,
+            alias_lookup=alias_lookup,
+            evaluator=lambda qset: evaluate_questions_live(qset),
+        )
+        alias_control_report = {k: v for k, v in alias_eval.items() if k != "runs"}
+    else:
+        print(
+            "Skipping alias substitution control: alias_lookup.json missing or empty"
+        )
+        alias_control_report = {
+            "skipped": True,
+            "reason": "alias_lookup.json missing or empty",
+        }
 
     print("Running choices-only control...")
     choices_only = run_choices_only_control(mc_questions)
@@ -255,9 +265,7 @@ def main() -> None:
         "controls": {
             "choices_only": choices_only,
             "shuffle": {k: v for k, v in shuffle_eval.items() if k != "runs"},
-            "alias_substitution": {
-                k: v for k, v in alias_eval.items() if k != "runs"
-            },
+            "alias_substitution": alias_control_report,
         },
         "per_category": per_category_sorted,
         "baseline_summary": baseline_summary,

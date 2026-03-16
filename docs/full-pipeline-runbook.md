@@ -79,7 +79,7 @@ QANTA quiz bowl questions with `|||`-separated clue tokens.
 ### Verify baseline
 
 ```bash
-pytest tests/ -q --tb=short    # expect: 350 passed, 3 skipped
+pytest tests/ -q --tb=short    # expect: 357 passed, 3 skipped
 bash scripts/manual-smoke.sh   # expect: 4/4 stages complete
 ```
 
@@ -370,8 +370,8 @@ cp artifacts/main/ppo_model.zip results/ppo_model_default.zip
 ## Phase 4: Evaluate all (belief-feature pipeline)
 
 **Config:** `configs/default.yaml`
-**Controls:** choices-only, shuffle, alias substitution (alias control is a
-no-op unless `alias_lookup.json` is provided externally — `build_mc_dataset.py`
+**Controls:** choices-only, shuffle, alias substitution (alias control is
+skipped unless `alias_lookup.json` is provided externally — `build_mc_dataset.py`
 does not generate it)
 **Metrics:** S_q, ECE, Brier, per-category accuracy
 

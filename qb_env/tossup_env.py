@@ -213,7 +213,6 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         ew_opponent_expected_value: float = 0.0,
         variable_K: bool = False,
         max_K: int | None = None,
-        use_action_masking: bool = False,
         end_mode: str = "force_commit",
         no_buzz_reward: float = 0.0,
     ) -> None:
@@ -241,7 +240,6 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         self.ew_opponent_expected_value = ew_opponent_expected_value
 
         self.variable_K = variable_K
-        self.use_action_masking = use_action_masking
         self.end_mode = end_mode
         self.no_buzz_reward = no_buzz_reward
         if variable_K:
@@ -768,5 +766,4 @@ def make_env_from_config(
         no_buzz_reward=float(env_cfg.get("no_buzz_reward", 0.0)),
         variable_K=variable_k,
         max_K=int(max_k_raw) if max_k_raw is not None else None,
-        use_action_masking=bool(env_cfg.get("use_action_masking", False)),
     )
