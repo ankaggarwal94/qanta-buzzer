@@ -4,16 +4,13 @@
 
 ## Critical: Use the Main Repo, Not a Worktree
 
-You MUST operate on the **main repo** at:
-```
-/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer
-```
+You MUST operate on your primary **qanta-buzzer** clone, referred to here as `$REPO_ROOT` (the directory that contains this `docs/` folder).
 
-Do **NOT** use any Codex worktree (e.g., `/Users/ankit.aggarwal/.codex/worktrees/*/qanta-buzzer`). Those are stale snapshots. If your current working directory is a worktree, `cd` to the main repo path above before doing anything.
+Do **NOT** use any Codex worktree (e.g., `$HOME/.codex/worktrees/*/qanta-buzzer`). Those are stale snapshots. If your current working directory is a worktree, `cd` to `$REPO_ROOT` before doing anything.
 
 Verify you're in the right place:
 ```bash
-cd /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer
+cd "$REPO_ROOT"
 git rev-parse --short HEAD   # must be efe6697 or later
 ```
 
@@ -34,7 +31,7 @@ Execute the complete qanta-buzzer pipeline end-to-end at full scale. Two purpose
 ## Setup
 
 ```bash
-cd /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer
+cd "$REPO_ROOT"   # your main qanta-buzzer repo
 source .venv/bin/activate
 pip install -e .
 python3 -c "import torch; print(f'MPS: {torch.backends.mps.is_available()}')"
