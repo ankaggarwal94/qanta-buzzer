@@ -224,13 +224,7 @@ def evaluate_t5_policy(
             step_count = 0
 
             while not done:
-                inputs = model.tokenizer(
-                    obs,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=512,
-                )
+                inputs = model.encode_input([obs], max_length=512)
                 actions, act_info = model.select_action(
                     inputs["input_ids"],
                     inputs["attention_mask"],

@@ -300,12 +300,14 @@ class PPOBuzzer:
         top_p_trace: list[float] = []
         entropy_trace: list[float] = []
 
+        base_env = self._base_env()
         buzz_step = -1
         buzz_index = -1
         gold_index = (
-            self.env.question.gold_index if self.env.question is not None else -1
+            base_env.question.gold_index
+            if getattr(base_env, "question", None) is not None
+            else -1
         )
-        base_env = self._base_env()
 
         while not (terminated or truncated):
             probs = self.action_probabilities(obs)

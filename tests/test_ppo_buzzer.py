@@ -272,12 +272,17 @@ class TestRunEpisode:
         class FakeStopOnlyEnv:
             def __init__(self, obs_shape):
                 self.obs_shape = obs_shape
-                self.question = type("Question", (), {"gold_index": 2})()
-                self.belief = np.array([0.1, 0.2, 0.6, 0.1], dtype=np.float32)
+                self.unwrapped = type("BaseEnv", (), {})()
+                self.unwrapped.question = type("Question", (), {"gold_index": 2})()
+                self.unwrapped.belief = np.array(
+                    [0.1, 0.2, 0.6, 0.1], dtype=np.float32
+                )
 
             def reset(self, seed=None, options=None):
-                self.question = type("Question", (), {"gold_index": 2})()
-                self.belief = np.array([0.1, 0.2, 0.6, 0.1], dtype=np.float32)
+                self.unwrapped.question = type("Question", (), {"gold_index": 2})()
+                self.unwrapped.belief = np.array(
+                    [0.1, 0.2, 0.6, 0.1], dtype=np.float32
+                )
                 return np.zeros(self.obs_shape, dtype=np.float32), {"qid": "stop_only_q"}
 
             def step(self, action):
