@@ -156,44 +156,29 @@ None identified yet
 ## Session Continuity
 
 ### Last Session Summary
-- Executed Plan 06-03: Custom PPO trainer and comparison experiment
-- PPOTrainer with RolloutBuffer, GAE, dynamic padding, memory-safe rollouts (933 lines)
-- End-to-end supervised-to-PPO training script with smoke mode (338 lines)
-- Comparison experiment: T5-as-likelihood vs T5-as-policy on same test set (468 lines)
-- 14 new tests passing, total project tests ~52+
-- 4 files created
-- All 20 plans across 6 phases now complete (100%)
+- Fixed 8 runtime correctness issues from ChatGPT 5.4 Pro / Copilot code review
+- Expected Wins opponent model now wired through make_env_from_config
+- Variable-K belief initialization uses question-local K, not config K
+- precompute_beliefs uses question-local K per question
+- Embedding cache filename includes model name; TF-IDF load_cache is no-op
+- calibration_at_buzz skips no-buzz episodes instead of clamping to step 0
+- step() rejects padded buzz actions in variable-K mode
+- MaskablePPO wired through train_ppo.py via ppo.use_maskable_ppo config
+- 342 tests across 24 test files (3 skipped for optional extras)
 
 ### Next Session Priority
-1. CS234 writeup preparation
-2. Run full training pipeline: `python scripts/train_t5_policy.py --config configs/t5_policy.yaml`
-3. Run comparison experiment for paper results
+1. CS234 writeup finalization using results from full-scale run
+2. Address any remaining feedback on PR #13
 
-### Context for Next Claude
-This is a CS234 final project due this week. We're merging two existing codebases:
-- qb-rl: Has the modular architecture we want (Gymnasium env, belief features, S_q metric, baselines)
-- qanta-buzzer: Has T5 integration we need (encoder, policy heads, supervised warm-start)
-
-The novel contribution is using T5 as a likelihood model to compute beliefs for an MLP policy, then comparing with T5 as an end-to-end policy. Phase 1-5 is the critical path for the deadline. Phase 6 (T5 policy) is optional if time permits.
-
-Key risks to watch:
-- Scope explosion (stick to critical path)
-- Memory issues with T5-large (have T5-base ready)
-- Observation space incompatibility (keep interfaces clean)
-- Belief state collapse (pre-compute answer profiles)
-
-### Open Questions
-1. Should we start with existing qanta-buzzer data loading or rebuild from qb-rl?
-2. Is supervised warm-start necessary for T5 policy or just helpful?
-3. What's the optimal time penalty coefficient for reward shaping?
-4. Should we implement all 4 baselines or just threshold for MVP?
+### Context for Next Agent
+Unified quiz bowl RL buzzer with two tracks plus three opt-in extensions (Expected Wins, Variable-K, DSPy). v1.0 milestone complete. Full-scale run completed on Apple M3 Max with all core phases plus extensions. All review-identified correctness issues fixed. The novel contribution is using T5 as a likelihood model to compute beliefs for an MLP policy, then comparing with T5 as an end-to-end policy. Best baseline: SequentialBayesBuzzer S_q = 0.7413. T5 end-to-end: 93.3% accuracy but S_q = 0.24.
 
 ### Environment State
-- Working directory: `/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer`
-- Python environment: Not yet configured (needs 3.11+)
-- Git status: Roadmap files created, not yet committed
-- Dependencies: Not yet installed
+- Working directory: qanta-buzzer repo
+- Python environment: `.venv/` with Python 3.13.5, `pip install -e .` done
+- MPS available (Apple M3 Max, 64 GB)
+- 342 tests passing (3 skipped), CI green
 
 ---
 *State file initialized: 2026-02-25*
-*Last update: 2026-03-08 (smoke-contract and agent-stability remediation consolidated into PR #1)*
+*Last update: 2026-03-16 — 8 runtime correctness fixes from code review, PR #13*

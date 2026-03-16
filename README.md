@@ -175,7 +175,7 @@ Set `environment.reward_mode: expected_wins` and configure `environment.opponent
 
 ### Variable-K answer choices
 
-Set `data.variable_K: true` and `data.min_K` / `data.max_K` in YAML. `MCBuilder` samples K per question. The env uses padded observations and `action_masks()`. Optional `MaskablePPO` via `pip install -e '.[maskable]'`.
+Set `data.variable_K: true` and `data.min_K` / `data.max_K` in YAML. `MCBuilder` samples K per question. The env uses padded observations and `action_masks()`, and rejects padded buzz actions with a clear error. Set `ppo.use_maskable_ppo: true` in config to enable `MaskablePPO` (requires `pip install -e '.[maskable]'`).
 
 ### DSPy integration (experimental)
 
