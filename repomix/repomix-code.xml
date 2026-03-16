@@ -10553,6 +10553,259 @@ This section contains the contents of the repository's files.
 107:         assert result["environment"]["reward_mode"] == "time_penalty"
 </file>
 
+<file path="tests/test_factories.py">
+  1: """Test suite for factory functions — build_likelihood_from_config and make_env_from_config.
+  2: 
+  3: Covers:
+  4: - LIK-06: build_likelihood_from_config dispatches on config["likelihood"]["model"]
+  5: - CFG-02: make_env_from_config constructs TossupMCEnv from YAML config
+  6: """
+  7: 
+  8: from __future__ import annotations
+  9: 
+ 10: import numpy as np
+ 11: import pytest
+ 12: 
+ 13: from models.likelihoods import (
+ 14:     LikelihoodModel,
+ 15:     SBERTLikelihood,
+ 16:     TfIdfLikelihood,
+ 17:     build_likelihood_from_config,
+ 18: )
+ 19: from qb_data.mc_builder import MCQuestion
+ 20: from qb_env.tossup_env import TossupMCEnv, make_env_from_config
+ 21: 
+ 22: 
+ 23: # ------------------------------------------------------------------ #
+ 24: # Tests: build_likelihood_from_config (LIK-06)
+ 25: # ------------------------------------------------------------------ #
+ 26: 
+ 27: 
+ 28: class TestBuildLikelihoodFromConfig:
+ 29:     """Tests for likelihood model factory function."""
+ 30: 
+ 31:     @pytest.fixture
+ 32:     def stub_sbert_init(self, monkeypatch: pytest.MonkeyPatch) -> None:
+ 33:         """Stub SBERT model loading so factory tests stay offline-safe."""
+ 34: 
+ 35:         def fake_init(self, model_name: str = "all-MiniLM-L6-v2") -> None:
+ 36:             LikelihoodModel.__init__(self)
+ 37:             self.model_name = model_name
+ 38:             self.encoder = object()
+ 39: 
+ 40:         monkeypatch.setattr(SBERTLikelihood, "__init__", fake_init)
+ 41: 
+ 42:     def test_likelihood_factory_sbert(
+ 43:         self, sample_config: dict, stub_sbert_init: None
+ 44:     ) -> None:
+ 45:         """Config with model='sbert' creates SBERTLikelihood."""
+ 46:         sample_config["likelihood"]["model"] = "sbert"
+ 47:         model = build_likelihood_from_config(sample_config)
+ 48:         assert isinstance(model, SBERTLikelihood), (
+ 49:             f"Expected SBERTLikelihood, got {type(model).__name__}"
+ 50:         )
+ 51: 
+ 52:     def test_likelihood_factory_tfidf(
+ 53:         self, sample_config: dict, sample_corpus: list[str]
+ 54:     ) -> None:
+ 55:         """Config with model='tfidf' creates TfIdfLikelihood (fitted)."""
+ 56:         sample_config["likelihood"]["model"] = "tfidf"
+ 57:         model = build_likelihood_from_config(sample_config, corpus_texts=sample_corpus)
+ 58:         assert isinstance(model, TfIdfLikelihood), (
+ 59:             f"Expected TfIdfLikelihood, got {type(model).__name__}"
+ 60:         )
+ 61:         assert model._is_fit is True, "TF-IDF model should be fitted after construction"
+ 62: 
+ 63:     def test_likelihood_factory_tfidf_missing_corpus(
+ 64:         self, sample_config: dict
+ 65:     ) -> None:
+ 66:         """TF-IDF factory without corpus_texts raises ValueError."""
+ 67:         sample_config["likelihood"]["model"] = "tfidf"
+ 68:         with pytest.raises(ValueError, match="corpus_texts"):
+ 69:             build_likelihood_from_config(sample_config)
+ 70: 
+ 71:     def test_likelihood_factory_unknown_model(self, sample_config: dict) -> None:
+ 72:         """Unknown model name raises ValueError."""
+ 73:         sample_config["likelihood"]["model"] = "unknown_model"
+ 74:         with pytest.raises(ValueError, match="Unknown likelihood model"):
+ 75:             build_likelihood_from_config(sample_config)
+ 76: 
+ 77:     def test_likelihood_factory_sbert_name_override(
+ 78:         self, sample_config: dict, stub_sbert_init: None
+ 79:     ) -> None:
+ 80:         """sbert_name config key overrides default model name."""
+ 81:         sample_config["likelihood"]["model"] = "sbert"
+ 82:         sample_config["likelihood"]["sbert_name"] = "all-MiniLM-L6-v2"
+ 83:         model = build_likelihood_from_config(sample_config)
+ 84:         assert isinstance(model, SBERTLikelihood)
+ 85:         assert model.model_name == "all-MiniLM-L6-v2", (
+ 86:             f"Expected all-MiniLM-L6-v2, got {model.model_name}"
+ 87:         )
+ 88: 
+ 89:     def test_likelihood_factory_embedding_model_key(
+ 90:         self, sample_config: dict, stub_sbert_init: None
+ 91:     ) -> None:
+ 92:         """embedding_model config key works as fallback for sbert_name."""
+ 93:         sample_config["likelihood"]["model"] = "sbert"
+ 94:         sample_config["likelihood"]["embedding_model"] = "all-MiniLM-L6-v2"
+ 95:         # Remove sbert_name if present to test fallback
+ 96:         sample_config["likelihood"].pop("sbert_name", None)
+ 97:         model = build_likelihood_from_config(sample_config)
+ 98:         assert isinstance(model, SBERTLikelihood)
+ 99:         assert model.model_name == "all-MiniLM-L6-v2"
+100: 
+101: 
+102: # ------------------------------------------------------------------ #
+103: # Tests: make_env_from_config (CFG-02)
+104: # ------------------------------------------------------------------ #
+105: 
+106: 
+107: class TestMakeEnvFromConfig:
+108:     """Tests for environment factory function."""
+109: 
+110:     def _make_model_and_env(
+111:         self, mc_question: MCQuestion, config: dict
+112:     ) -> TossupMCEnv:
+113:         """Helper to create a model and env from config."""
+114:         corpus = mc_question.option_profiles[:]
+115:         model = TfIdfLikelihood(corpus_texts=corpus)
+116:         return make_env_from_config([mc_question], model, config)
+117: 
+118:     def test_env_factory_creates_tossup_env(
+119:         self, sample_mc_question: MCQuestion, sample_config: dict
+120:     ) -> None:
+121:         """Factory creates a TossupMCEnv instance."""
+122:         env = self._make_model_and_env(sample_mc_question, sample_config)
+123:         assert isinstance(env, TossupMCEnv), (
+124:             f"Expected TossupMCEnv, got {type(env).__name__}"
+125:         )
+126: 
+127:     def test_env_factory_config_values(
+128:         self, sample_mc_question: MCQuestion, sample_config: dict
+129:     ) -> None:
+130:         """Factory correctly extracts config values."""
+131:         env = self._make_model_and_env(sample_mc_question, sample_config)
+132:         assert env.K == 4, f"Expected K=4, got {env.K}"
+133:         assert env.reward_mode == "simple", (
+134:             f"Expected 'simple', got '{env.reward_mode}'"
+135:         )
+136:         assert env.belief_mode == "from_scratch", (
+137:             f"Expected 'from_scratch', got '{env.belief_mode}'"
+138:         )
+139:         assert env.beta == 5.0, f"Expected beta=5.0, got {env.beta}"
+140: 
+141:     def test_env_factory_reward_mode_override(
+142:         self, sample_mc_question: MCQuestion, sample_config: dict
+143:     ) -> None:
+144:         """Config overrides reward mode."""
+145:         sample_config["environment"]["reward"] = "human_grounded"
+146:         env = self._make_model_and_env(sample_mc_question, sample_config)
+147:         assert env.reward_mode == "human_grounded", (
+148:             f"Expected 'human_grounded', got '{env.reward_mode}'"
+149:         )
+150: 
+151:     def test_env_factory_beta_override(
+152:         self, sample_mc_question: MCQuestion, sample_config: dict
+153:     ) -> None:
+154:         """Config overrides beta value."""
+155:         sample_config["likelihood"]["beta"] = 10.0
+156:         env = self._make_model_and_env(sample_mc_question, sample_config)
+157:         assert env.beta == 10.0, f"Expected beta=10.0, got {env.beta}"
+158: 
+159:     def test_env_factory_wait_penalty_override(
+160:         self, sample_mc_question: MCQuestion, sample_config: dict
+161:     ) -> None:
+162:         """Config overrides wait_penalty value."""
+163:         sample_config["environment"]["wait_penalty"] = 0.05
+164:         env = self._make_model_and_env(sample_mc_question, sample_config)
+165:         assert env.wait_penalty == 0.05, (
+166:             f"Expected wait_penalty=0.05, got {env.wait_penalty}"
+167:         )
+168: 
+169:     def test_env_factory_reset_works(
+170:         self, sample_mc_question: MCQuestion, sample_config: dict
+171:     ) -> None:
+172:         """Factory-created env can reset and produce valid observation."""
+173:         env = self._make_model_and_env(sample_mc_question, sample_config)
+174:         obs, info = env.reset()
+175:         assert obs.shape == (10,), f"Expected (10,), got {obs.shape}"
+176:         assert "qid" in info, "Info should contain 'qid'"
+177:         assert np.all(np.isfinite(obs)), "All observations should be finite"
+178: 
+179:     def test_env_factory_step_works(
+180:         self, sample_mc_question: MCQuestion, sample_config: dict
+181:     ) -> None:
+182:         """Factory-created env can step and return valid results."""
+183:         env = self._make_model_and_env(sample_mc_question, sample_config)
+184:         env.reset()
+185:         obs, reward, terminated, truncated, info = env.step(0)
+186:         assert obs.shape == (10,), f"Expected (10,), got {obs.shape}"
+187:         assert isinstance(reward, float), f"Reward should be float, got {type(reward)}"
+188:         assert terminated is False, "WAIT should not terminate"
+189: 
+190:     def test_env_factory_reward_mode_key_fallback(
+191:         self, sample_mc_question: MCQuestion
+192:     ) -> None:
+193:         """Factory supports 'reward_mode' key (default.yaml uses this)."""
+194:         config = {
+195:             "data": {"K": 4},
+196:             "environment": {
+197:                 "reward_mode": "time_penalty",
+198:                 "wait_penalty": 0.1,
+199:                 "buzz_correct": 1.0,
+200:                 "buzz_incorrect": -0.5,
+201:             },
+202:             "likelihood": {"beta": 5.0},
+203:         }
+204:         corpus = sample_mc_question.option_profiles[:]
+205:         model = TfIdfLikelihood(corpus_texts=corpus)
+206:         env = make_env_from_config([sample_mc_question], model, config)
+207:         assert env.reward_mode == "time_penalty", (
+208:             f"Expected 'time_penalty', got '{env.reward_mode}'"
+209:         )
+210: 
+211:     def test_env_factory_end_mode_and_no_buzz_reward(
+212:         self, sample_mc_question: MCQuestion
+213:     ) -> None:
+214:         """Factory reads end_mode and no_buzz_reward from config."""
+215:         config = {
+216:             "data": {"K": 4},
+217:             "environment": {
+218:                 "reward_mode": "simple",
+219:                 "end_mode": "no_buzz",
+220:                 "no_buzz_reward": 0.25,
+221:                 "wait_penalty": 0.1,
+222:                 "buzz_correct": 1.0,
+223:                 "buzz_incorrect": -0.5,
+224:             },
+225:             "likelihood": {"beta": 5.0},
+226:         }
+227:         corpus = sample_mc_question.option_profiles[:]
+228:         model = TfIdfLikelihood(corpus_texts=corpus)
+229:         env = make_env_from_config([sample_mc_question], model, config)
+230:         assert getattr(env, "end_mode") == "no_buzz"
+231:         assert getattr(env, "no_buzz_reward") == 0.25
+232: 
+233: 
+234: class TestDSPyFactoryIntegration:
+235:     """Factory dispatches to DSPyLikelihood when configured."""
+236: 
+237:     def test_factory_returns_dspy_likelihood(self):
+238:         from models.dspy_likelihood import DSPyLikelihood
+239: 
+240:         config = {
+241:             "likelihood": {"model": "dspy"},
+242:             "dspy": {"cache_dir": None, "program_fingerprint": "test"},
+243:         }
+244:         model = build_likelihood_from_config(config)
+245:         assert isinstance(model, DSPyLikelihood)
+246: 
+247:     def test_default_paths_unchanged(self, sample_corpus):
+248:         config = {"likelihood": {"model": "tfidf"}}
+249:         model = build_likelihood_from_config(config, corpus_texts=sample_corpus)
+250:         assert isinstance(model, TfIdfLikelihood)
+</file>
+
 <file path="tests/test_likelihoods.py">
   1: """Test suite for models/likelihoods.py — likelihood model interface and implementations.
   2: 
@@ -15080,259 +15333,6 @@ This section contains the contents of the repository's files.
 977:         assert 0 <= result.buzz_index < 3
 </file>
 
-<file path="tests/test_factories.py">
-  1: """Test suite for factory functions — build_likelihood_from_config and make_env_from_config.
-  2: 
-  3: Covers:
-  4: - LIK-06: build_likelihood_from_config dispatches on config["likelihood"]["model"]
-  5: - CFG-02: make_env_from_config constructs TossupMCEnv from YAML config
-  6: """
-  7: 
-  8: from __future__ import annotations
-  9: 
- 10: import numpy as np
- 11: import pytest
- 12: 
- 13: from models.likelihoods import (
- 14:     LikelihoodModel,
- 15:     SBERTLikelihood,
- 16:     TfIdfLikelihood,
- 17:     build_likelihood_from_config,
- 18: )
- 19: from qb_data.mc_builder import MCQuestion
- 20: from qb_env.tossup_env import TossupMCEnv, make_env_from_config
- 21: 
- 22: 
- 23: # ------------------------------------------------------------------ #
- 24: # Tests: build_likelihood_from_config (LIK-06)
- 25: # ------------------------------------------------------------------ #
- 26: 
- 27: 
- 28: class TestBuildLikelihoodFromConfig:
- 29:     """Tests for likelihood model factory function."""
- 30: 
- 31:     @pytest.fixture
- 32:     def stub_sbert_init(self, monkeypatch: pytest.MonkeyPatch) -> None:
- 33:         """Stub SBERT model loading so factory tests stay offline-safe."""
- 34: 
- 35:         def fake_init(self, model_name: str = "all-MiniLM-L6-v2") -> None:
- 36:             LikelihoodModel.__init__(self)
- 37:             self.model_name = model_name
- 38:             self.encoder = object()
- 39: 
- 40:         monkeypatch.setattr(SBERTLikelihood, "__init__", fake_init)
- 41: 
- 42:     def test_likelihood_factory_sbert(
- 43:         self, sample_config: dict, stub_sbert_init: None
- 44:     ) -> None:
- 45:         """Config with model='sbert' creates SBERTLikelihood."""
- 46:         sample_config["likelihood"]["model"] = "sbert"
- 47:         model = build_likelihood_from_config(sample_config)
- 48:         assert isinstance(model, SBERTLikelihood), (
- 49:             f"Expected SBERTLikelihood, got {type(model).__name__}"
- 50:         )
- 51: 
- 52:     def test_likelihood_factory_tfidf(
- 53:         self, sample_config: dict, sample_corpus: list[str]
- 54:     ) -> None:
- 55:         """Config with model='tfidf' creates TfIdfLikelihood (fitted)."""
- 56:         sample_config["likelihood"]["model"] = "tfidf"
- 57:         model = build_likelihood_from_config(sample_config, corpus_texts=sample_corpus)
- 58:         assert isinstance(model, TfIdfLikelihood), (
- 59:             f"Expected TfIdfLikelihood, got {type(model).__name__}"
- 60:         )
- 61:         assert model._is_fit is True, "TF-IDF model should be fitted after construction"
- 62: 
- 63:     def test_likelihood_factory_tfidf_missing_corpus(
- 64:         self, sample_config: dict
- 65:     ) -> None:
- 66:         """TF-IDF factory without corpus_texts raises ValueError."""
- 67:         sample_config["likelihood"]["model"] = "tfidf"
- 68:         with pytest.raises(ValueError, match="corpus_texts"):
- 69:             build_likelihood_from_config(sample_config)
- 70: 
- 71:     def test_likelihood_factory_unknown_model(self, sample_config: dict) -> None:
- 72:         """Unknown model name raises ValueError."""
- 73:         sample_config["likelihood"]["model"] = "unknown_model"
- 74:         with pytest.raises(ValueError, match="Unknown likelihood model"):
- 75:             build_likelihood_from_config(sample_config)
- 76: 
- 77:     def test_likelihood_factory_sbert_name_override(
- 78:         self, sample_config: dict, stub_sbert_init: None
- 79:     ) -> None:
- 80:         """sbert_name config key overrides default model name."""
- 81:         sample_config["likelihood"]["model"] = "sbert"
- 82:         sample_config["likelihood"]["sbert_name"] = "all-MiniLM-L6-v2"
- 83:         model = build_likelihood_from_config(sample_config)
- 84:         assert isinstance(model, SBERTLikelihood)
- 85:         assert model.model_name == "all-MiniLM-L6-v2", (
- 86:             f"Expected all-MiniLM-L6-v2, got {model.model_name}"
- 87:         )
- 88: 
- 89:     def test_likelihood_factory_embedding_model_key(
- 90:         self, sample_config: dict, stub_sbert_init: None
- 91:     ) -> None:
- 92:         """embedding_model config key works as fallback for sbert_name."""
- 93:         sample_config["likelihood"]["model"] = "sbert"
- 94:         sample_config["likelihood"]["embedding_model"] = "all-MiniLM-L6-v2"
- 95:         # Remove sbert_name if present to test fallback
- 96:         sample_config["likelihood"].pop("sbert_name", None)
- 97:         model = build_likelihood_from_config(sample_config)
- 98:         assert isinstance(model, SBERTLikelihood)
- 99:         assert model.model_name == "all-MiniLM-L6-v2"
-100: 
-101: 
-102: # ------------------------------------------------------------------ #
-103: # Tests: make_env_from_config (CFG-02)
-104: # ------------------------------------------------------------------ #
-105: 
-106: 
-107: class TestMakeEnvFromConfig:
-108:     """Tests for environment factory function."""
-109: 
-110:     def _make_model_and_env(
-111:         self, mc_question: MCQuestion, config: dict
-112:     ) -> TossupMCEnv:
-113:         """Helper to create a model and env from config."""
-114:         corpus = mc_question.option_profiles[:]
-115:         model = TfIdfLikelihood(corpus_texts=corpus)
-116:         return make_env_from_config([mc_question], model, config)
-117: 
-118:     def test_env_factory_creates_tossup_env(
-119:         self, sample_mc_question: MCQuestion, sample_config: dict
-120:     ) -> None:
-121:         """Factory creates a TossupMCEnv instance."""
-122:         env = self._make_model_and_env(sample_mc_question, sample_config)
-123:         assert isinstance(env, TossupMCEnv), (
-124:             f"Expected TossupMCEnv, got {type(env).__name__}"
-125:         )
-126: 
-127:     def test_env_factory_config_values(
-128:         self, sample_mc_question: MCQuestion, sample_config: dict
-129:     ) -> None:
-130:         """Factory correctly extracts config values."""
-131:         env = self._make_model_and_env(sample_mc_question, sample_config)
-132:         assert env.K == 4, f"Expected K=4, got {env.K}"
-133:         assert env.reward_mode == "simple", (
-134:             f"Expected 'simple', got '{env.reward_mode}'"
-135:         )
-136:         assert env.belief_mode == "from_scratch", (
-137:             f"Expected 'from_scratch', got '{env.belief_mode}'"
-138:         )
-139:         assert env.beta == 5.0, f"Expected beta=5.0, got {env.beta}"
-140: 
-141:     def test_env_factory_reward_mode_override(
-142:         self, sample_mc_question: MCQuestion, sample_config: dict
-143:     ) -> None:
-144:         """Config overrides reward mode."""
-145:         sample_config["environment"]["reward"] = "human_grounded"
-146:         env = self._make_model_and_env(sample_mc_question, sample_config)
-147:         assert env.reward_mode == "human_grounded", (
-148:             f"Expected 'human_grounded', got '{env.reward_mode}'"
-149:         )
-150: 
-151:     def test_env_factory_beta_override(
-152:         self, sample_mc_question: MCQuestion, sample_config: dict
-153:     ) -> None:
-154:         """Config overrides beta value."""
-155:         sample_config["likelihood"]["beta"] = 10.0
-156:         env = self._make_model_and_env(sample_mc_question, sample_config)
-157:         assert env.beta == 10.0, f"Expected beta=10.0, got {env.beta}"
-158: 
-159:     def test_env_factory_wait_penalty_override(
-160:         self, sample_mc_question: MCQuestion, sample_config: dict
-161:     ) -> None:
-162:         """Config overrides wait_penalty value."""
-163:         sample_config["environment"]["wait_penalty"] = 0.05
-164:         env = self._make_model_and_env(sample_mc_question, sample_config)
-165:         assert env.wait_penalty == 0.05, (
-166:             f"Expected wait_penalty=0.05, got {env.wait_penalty}"
-167:         )
-168: 
-169:     def test_env_factory_reset_works(
-170:         self, sample_mc_question: MCQuestion, sample_config: dict
-171:     ) -> None:
-172:         """Factory-created env can reset and produce valid observation."""
-173:         env = self._make_model_and_env(sample_mc_question, sample_config)
-174:         obs, info = env.reset()
-175:         assert obs.shape == (10,), f"Expected (10,), got {obs.shape}"
-176:         assert "qid" in info, "Info should contain 'qid'"
-177:         assert np.all(np.isfinite(obs)), "All observations should be finite"
-178: 
-179:     def test_env_factory_step_works(
-180:         self, sample_mc_question: MCQuestion, sample_config: dict
-181:     ) -> None:
-182:         """Factory-created env can step and return valid results."""
-183:         env = self._make_model_and_env(sample_mc_question, sample_config)
-184:         env.reset()
-185:         obs, reward, terminated, truncated, info = env.step(0)
-186:         assert obs.shape == (10,), f"Expected (10,), got {obs.shape}"
-187:         assert isinstance(reward, float), f"Reward should be float, got {type(reward)}"
-188:         assert terminated is False, "WAIT should not terminate"
-189: 
-190:     def test_env_factory_reward_mode_key_fallback(
-191:         self, sample_mc_question: MCQuestion
-192:     ) -> None:
-193:         """Factory supports 'reward_mode' key (default.yaml uses this)."""
-194:         config = {
-195:             "data": {"K": 4},
-196:             "environment": {
-197:                 "reward_mode": "time_penalty",
-198:                 "wait_penalty": 0.1,
-199:                 "buzz_correct": 1.0,
-200:                 "buzz_incorrect": -0.5,
-201:             },
-202:             "likelihood": {"beta": 5.0},
-203:         }
-204:         corpus = sample_mc_question.option_profiles[:]
-205:         model = TfIdfLikelihood(corpus_texts=corpus)
-206:         env = make_env_from_config([sample_mc_question], model, config)
-207:         assert env.reward_mode == "time_penalty", (
-208:             f"Expected 'time_penalty', got '{env.reward_mode}'"
-209:         )
-210: 
-211:     def test_env_factory_end_mode_and_no_buzz_reward(
-212:         self, sample_mc_question: MCQuestion
-213:     ) -> None:
-214:         """Factory reads end_mode and no_buzz_reward from config."""
-215:         config = {
-216:             "data": {"K": 4},
-217:             "environment": {
-218:                 "reward_mode": "simple",
-219:                 "end_mode": "no_buzz",
-220:                 "no_buzz_reward": 0.25,
-221:                 "wait_penalty": 0.1,
-222:                 "buzz_correct": 1.0,
-223:                 "buzz_incorrect": -0.5,
-224:             },
-225:             "likelihood": {"beta": 5.0},
-226:         }
-227:         corpus = sample_mc_question.option_profiles[:]
-228:         model = TfIdfLikelihood(corpus_texts=corpus)
-229:         env = make_env_from_config([sample_mc_question], model, config)
-230:         assert getattr(env, "end_mode") == "no_buzz"
-231:         assert getattr(env, "no_buzz_reward") == 0.25
-232: 
-233: 
-234: class TestDSPyFactoryIntegration:
-235:     """Factory dispatches to DSPyLikelihood when configured."""
-236: 
-237:     def test_factory_returns_dspy_likelihood(self):
-238:         from models.dspy_likelihood import DSPyLikelihood
-239: 
-240:         config = {
-241:             "likelihood": {"model": "dspy"},
-242:             "dspy": {"cache_dir": None, "program_fingerprint": "test"},
-243:         }
-244:         model = build_likelihood_from_config(config)
-245:         assert isinstance(model, DSPyLikelihood)
-246: 
-247:     def test_default_paths_unchanged(self, sample_corpus):
-248:         config = {"likelihood": {"model": "tfidf"}}
-249:         model = build_likelihood_from_config(config, corpus_texts=sample_corpus)
-250:         assert isinstance(model, TfIdfLikelihood)
-</file>
-
 <file path="tests/test_ppo_buzzer.py">
   1: """Test suite for scripts/_common.py and agents/ppo_buzzer.py.
   2: 
@@ -17064,1076 +17064,6 @@ This section contains the contents of the repository's files.
 370:     }
 </file>
 
-<file path="qb_env/tossup_env.py">
-  1: """
-  2: Gymnasium-compliant POMDP Environment for Quiz Bowl
-  3: 
-  4: Implements a tossup question environment where clues are revealed incrementally.
-  5: At each step the agent observes a belief-based feature vector and chooses either
-  6: to WAIT (action 0, reveals next clue) or to BUZZ with a specific answer option
-  7: (actions 1..K, ends the episode).
-  8: 
-  9: The environment computes beliefs over K answer options using a pluggable
- 10: LikelihoodModel and converts them to observations via extract_belief_features.
- 11: 
- 12: Ported from qb-rl reference implementation (qb_env/tossup_env.py) and adapted
- 13: for the unified qanta-buzzer codebase.
- 14: """
- 15: 
- 16: from __future__ import annotations
- 17: 
- 18: import random
- 19: from typing import TYPE_CHECKING, Any
- 20: 
- 21: if TYPE_CHECKING:
- 22:     from qb_env.opponent_models import OpponentBuzzModel
- 23: 
- 24: import gymnasium as gym
- 25: import numpy as np
- 26: from gymnasium import spaces
- 27: 
- 28: from models.features import extract_belief_features
- 29: from models.likelihoods import LikelihoodModel
- 30: from qb_data.mc_builder import MCQuestion
- 31: 
- 32: 
- 33: def _softmax(scores: np.ndarray, beta: float) -> np.ndarray:
- 34:     """Temperature-scaled softmax with numerical stability.
- 35: 
- 36:     Parameters
- 37:     ----------
- 38:     scores : np.ndarray
- 39:         Raw similarity scores of shape (K,).
- 40:     beta : float
- 41:         Temperature parameter. Higher values produce sharper distributions.
- 42: 
- 43:     Returns
- 44:     -------
- 45:     np.ndarray
- 46:         Probability distribution of shape (K,), dtype float32.
- 47:     """
- 48:     stable = scores - np.max(scores)
- 49:     probs = np.exp(beta * stable)
- 50:     probs_sum = np.sum(probs)
- 51:     if probs_sum <= 0:
- 52:         return np.ones_like(scores, dtype=np.float32) / len(scores)
- 53:     return (probs / probs_sum).astype(np.float32)
- 54: 
- 55: 
- 56: def precompute_beliefs(
- 57:     questions: list[MCQuestion],
- 58:     likelihood_model: LikelihoodModel,
- 59:     belief_mode: str = "from_scratch",
- 60:     beta: float = 5.0,
- 61:     K: int = 4,
- 62: ) -> dict[tuple[int, int], np.ndarray]:
- 63:     """Precompute belief trajectories for all questions and steps.
- 64: 
- 65:     Iterates over each question and each step index, computing the belief
- 66:     using the same logic as ``TossupMCEnv._compute_belief``. The result is
- 67:     a dict keyed by ``(question_index, step_idx)`` for O(1) lookup during
- 68:     training rollouts.
- 69: 
- 70:     Parameters
- 71:     ----------
- 72:     questions : list[MCQuestion]
- 73:         Pool of questions to precompute beliefs for.
- 74:     likelihood_model : LikelihoodModel
- 75:         Model that scores clue text against answer option profiles.
- 76:     belief_mode : str
- 77:         One of ``"from_scratch"``, ``"sequential_bayes"``.
- 78:     beta : float
- 79:         Softmax temperature for converting raw scores to probabilities.
- 80:     K : int
- 81:         Number of answer options per question.
- 82: 
- 83:     Returns
- 84:     -------
- 85:     dict[tuple[int, int], np.ndarray]
- 86:         Maps ``(question_index, step_idx)`` to belief vectors of shape
- 87:         ``(K,)`` with dtype float32. Each belief sums to ~1.0.
- 88:     """
- 89:     cache: dict[tuple[int, int], np.ndarray] = {}
- 90: 
- 91:     for q_idx, question in enumerate(questions):
- 92:         num_steps = len(question.run_indices)
- 93:         q_k = len(question.options)
- 94:         belief = np.ones(q_k, dtype=np.float32) / q_k
- 95: 
- 96:         for step_idx in range(num_steps):
- 97:             if belief_mode == "from_scratch":
- 98:                 prefix = question.cumulative_prefixes[step_idx]
- 99:                 scores = likelihood_model.score(prefix, question.option_profiles)
-100:                 belief = _softmax(scores, beta)
-101: 
-102:             elif belief_mode == "sequential_bayes":
-103:                 idx = question.run_indices[step_idx]
-104:                 prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
-105:                 frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
-106:                 scores = likelihood_model.score(frag, question.option_profiles)
-107:                 likelihood = _softmax(scores, beta)
-108:                 posterior = belief * likelihood
-109:                 denom = posterior.sum()
-110:                 if denom <= 0:
-111:                     belief = np.ones(q_k, dtype=np.float32) / q_k
-112:                 else:
-113:                     belief = (posterior / denom).astype(np.float32)
-114: 
-115:             else:
-116:                 raise ValueError(f"Unknown belief_mode: {belief_mode}")
-117: 
-118:             cache[(q_idx, step_idx)] = belief.copy()
-119: 
-120:     return cache
-121: 
-122: 
-123: class TossupMCEnv(gym.Env[np.ndarray, int]):
-124:     """Gymnasium environment for quiz bowl tossup questions with MC options.
-125: 
-126:     Models quiz bowl as a POMDP where clues are revealed incrementally.
-127:     The agent maintains a belief distribution over K answer options, updated
-128:     at each step by a likelihood model. The agent decides when to buzz and
-129:     which answer to select.
-130: 
-131:     Action Space
-132:     ------------
-133:     Discrete(K + 1):
-134:         - 0: WAIT -- reveal the next clue and update belief
-135:         - 1..K: BUZZ with answer option (i-1), ending the episode
-136: 
-137:     Observation Space
-138:     -----------------
-139:     Box(K + 6,):
-140:         Belief features: [belief[0..K-1], top_p, margin, entropy,
-141:         stability, progress, clue_idx_norm].
-142:         See ``models.features.extract_belief_features`` for details.
-143: 
-144:     Reward Modes
-145:     ------------
-146:     ``time_penalty`` (default):
-147:         -wait_penalty per WAIT step; +buzz_correct for correct buzz,
-148:         +buzz_incorrect (negative) for wrong buzz.
-149:     ``simple``:
-150:         +1.0 for correct buzz, -1.0 for incorrect buzz, no WAIT penalty.
-151:     ``human_grounded``:
-152:         0.0 if the agent buzzes after the sampled human buzz position;
-153:         otherwise +buzz_correct/-buzz_incorrect for correct/incorrect.
-154: 
-155:     Belief Modes
-156:     ------------
-157:     ``from_scratch``:
-158:         Recompute belief from all clues seen so far via cumulative_prefixes.
-159:     ``sequential_bayes``:
-160:         Bayesian update: multiply prior belief by likelihood of new clue
-161:         fragment, then normalize.
-162: 
-163:     Parameters
-164:     ----------
-165:     questions : list[MCQuestion]
-166:         Pool of questions to sample from. Must be non-empty.
-167:     likelihood_model : LikelihoodModel
-168:         Model that scores clue text against answer option profiles.
-169:     K : int
-170:         Number of answer options per question. Must be >= 2.
-171:     reward_mode : str
-172:         One of ``"time_penalty"``, ``"simple"``, ``"human_grounded"``.
-173:     wait_penalty : float
-174:         Per-step penalty when reward_mode is ``"time_penalty"``.
-175:     buzz_correct : float
-176:         Reward for buzzing with the correct answer.
-177:     buzz_incorrect : float
-178:         Reward (typically negative) for buzzing with an incorrect answer.
-179:     belief_mode : str
-180:         One of ``"from_scratch"``, ``"sequential_bayes"``.
-181:     beta : float
-182:         Softmax temperature for converting raw scores to probabilities.
-183:         Higher values produce sharper distributions.
-184:     end_mode : str
-185:         Horizon behavior when clues are exhausted:
-186:         ``"force_commit"`` (legacy forced answer) or ``"no_buzz"``.
-187:     no_buzz_reward : float
-188:         Reward added at horizon when ``end_mode == "no_buzz"``.
-189:     seed : int
-190:         Random seed for question sampling and human buzz simulation.
-191:     """
-192: 
-193:     metadata = {"render_modes": []}
-194: 
-195:     def __init__(
-196:         self,
-197:         questions: list[MCQuestion],
-198:         likelihood_model: LikelihoodModel,
-199:         K: int = 4,
-200:         reward_mode: str = "time_penalty",
-201:         wait_penalty: float = 0.01,
-202:         early_buzz_penalty: float = 0.0,
-203:         buzz_correct: float = 1.0,
-204:         buzz_incorrect: float = -0.5,
-205:         belief_mode: str = "from_scratch",
-206:         beta: float = 5.0,
-207:         seed: int = 13,
-208:         precomputed_beliefs: dict[tuple[int, int], np.ndarray] | None = None,
-209:         opponent_buzz_model: "OpponentBuzzModel | None" = None,
-210:         ew_reward_correct: float = 10.0,
-211:         ew_reward_incorrect: float = -5.0,
-212:         ew_opponent_expected_value: float = 0.0,
-213:         variable_K: bool = False,
-214:         max_K: int | None = None,
-215:         use_action_masking: bool = False,
-216:         end_mode: str = "force_commit",
-217:         no_buzz_reward: float = 0.0,
-218:     ) -> None:
-219:         if not questions:
-220:             raise ValueError("questions cannot be empty")
-221:         if K < 2:
-222:             raise ValueError("K must be >= 2")
-223: 
-224:         self.questions = questions
-225:         self.likelihood_model = likelihood_model
-226:         self.K = K
-227:         self.reward_mode = reward_mode
-228:         self.wait_penalty = wait_penalty
-229:         self.early_buzz_penalty = early_buzz_penalty
-230:         self.buzz_correct = buzz_correct
-231:         self.buzz_incorrect = buzz_incorrect
-232:         self.belief_mode = belief_mode
-233:         self.beta = beta
-234:         self.rng = random.Random(seed)
-235:         self.precomputed_beliefs = precomputed_beliefs
-236: 
-237:         self.opponent_buzz_model = opponent_buzz_model
-238:         self.ew_reward_correct = ew_reward_correct
-239:         self.ew_reward_incorrect = ew_reward_incorrect
-240:         self.ew_opponent_expected_value = ew_opponent_expected_value
-241: 
-242:         self.variable_K = variable_K
-243:         self.use_action_masking = use_action_masking
-244:         self.end_mode = end_mode
-245:         self.no_buzz_reward = no_buzz_reward
-246:         if variable_K:
-247:             self._max_K = max_K or max(len(q.options) for q in questions)
-248:         else:
-249:             self._max_K = K
-250: 
-251:         # Build qid -> list-index map for precomputed belief lookups
-252:         self._question_index_map: dict[str, int] = {
-253:             q.qid: i for i, q in enumerate(questions)
-254:         }
-255: 
-256:         obs_K = self._max_K if self.variable_K else self.K
-257:         self.action_space = spaces.Discrete(obs_K + 1)
-258:         self.observation_space = spaces.Box(
-259:             low=-np.inf, high=np.inf, shape=(obs_K + 6,), dtype=np.float32
-260:         )
-261: 
-262:         self.question: MCQuestion | None = None
-263:         self.step_idx: int = 0
-264:         self.prev_belief: np.ndarray | None = None
-265:         self.belief: np.ndarray = np.ones(self.K, dtype=np.float32) / self.K
-266:         self.terminated: bool = False
-267:         self.truncated: bool = False
-268:         self._sampled_human_buzz_pos: int | None = None
-269:         self._current_question_idx: int = 0
-270: 
-271:     # ------------------------------------------------------------------
-272:     # Properties
-273:     # ------------------------------------------------------------------
-274: 
-275:     @property
-276:     def total_steps(self) -> int:
-277:         """Total number of incremental clue steps for the current question.
-278: 
-279:         Returns
-280:         -------
-281:         int
-282:             Length of ``question.run_indices`` if a question is loaded, else 1.
-283:         """
-284:         if self.question is None:
-285:             return 1
-286:         return len(self.question.run_indices)
-287: 
-288:     # ------------------------------------------------------------------
-289:     # Helper methods
-290:     # ------------------------------------------------------------------
-291: 
-292:     def _sample_question(self) -> MCQuestion:
-293:         """Sample a random question from the question pool.
-294: 
-295:         Returns
-296:         -------
-297:         MCQuestion
-298:             A randomly selected question.
-299:         """
-300:         return self.rng.choice(self.questions)
-301: 
-302:     def _sample_human_buzz(self, question: MCQuestion) -> int | None:
-303:         """Sample a human buzz position from the question's distribution.
-304: 
-305:         Uses weighted random sampling based on the number of humans who
-306:         buzzed at each position. Returns None if no human buzz data exists.
-307: 
-308:         Parameters
-309:         ----------
-310:         question : MCQuestion
-311:             The question to sample a human buzz position for.
-312: 
-313:         Returns
-314:         -------
-315:         int or None
-316:             Sampled token position, or None if no human buzz data.
-317:         """
-318:         if not question.human_buzz_positions:
-319:             return None
-320:         positions = []
-321:         weights = []
-322:         for pos, count in question.human_buzz_positions:
-323:             positions.append(int(pos))
-324:             weights.append(max(1, int(count)))
-325:         if not positions:
-326:             return None
-327:         return self.rng.choices(positions, weights=weights, k=1)[0]
-328: 
-329:     def _softmax_scores(self, scores: np.ndarray) -> np.ndarray:
-330:         """Convert raw likelihood scores to a probability distribution.
-331: 
-332:         Delegates to module-level ``_softmax`` with this environment's beta.
-333: 
-334:         Parameters
-335:         ----------
-336:         scores : np.ndarray
-337:             Raw similarity scores of shape (K,).
-338: 
-339:         Returns
-340:         -------
-341:         np.ndarray
-342:             Probability distribution of shape (K,), dtype float32.
-343:         """
-344:         return _softmax(scores, self.beta)
-345: 
-346:     def _compute_belief(self, question: MCQuestion, step_idx: int) -> np.ndarray:
-347:         """Compute belief distribution over answer options at a given step.
-348: 
-349:         Two modes are supported:
-350: 
-351:         ``from_scratch``
-352:             Score the cumulative clue prefix against all option profiles,
-353:             then apply softmax. Each step is independent of the previous
-354:             belief.
-355: 
-356:         ``sequential_bayes``
-357:             Extract only the new clue fragment since the last step, score
-358:             it, and perform a Bayesian update: posterior = prior * likelihood,
-359:             then normalize. This is cheaper per step but may accumulate
-360:             approximation errors.
-361: 
-362:         Parameters
-363:         ----------
-364:         question : MCQuestion
-365:             Current question being played.
-366:         step_idx : int
-367:             Current step index (0-based, indexes into run_indices).
-368: 
-369:         Returns
-370:         -------
-371:         np.ndarray
-372:             Updated belief distribution of shape (K,), dtype float32.
-373: 
-374:         Raises
-375:         ------
-376:         ValueError
-377:             If ``self.belief_mode`` is not a recognized mode.
-378:         """
-379:         if self.precomputed_beliefs is not None:
-380:             key = (self._current_question_idx, step_idx)
-381:             return self.precomputed_beliefs[key].copy()
-382: 
-383:         if self.belief_mode == "from_scratch":
-384:             prefix = question.cumulative_prefixes[step_idx]
-385:             scores = self.likelihood_model.score(prefix, question.option_profiles)
-386:             return self._softmax_scores(scores)
-387: 
-388:         if self.belief_mode == "sequential_bayes":
-389:             idx = question.run_indices[step_idx]
-390:             prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
-391:             frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
-392:             scores = self.likelihood_model.score(frag, question.option_profiles)
-393:             likelihood = self._softmax_scores(scores)
-394:             posterior = self.belief * likelihood
-395:             denom = posterior.sum()
-396:             if denom <= 0:
-397:                 n = len(self.belief)
-398:                 posterior = np.ones(n, dtype=np.float32) / n
-399:             else:
-400:                 posterior = posterior / denom
-401:             return posterior.astype(np.float32)
-402: 
-403:         raise ValueError(f"Unknown belief_mode: {self.belief_mode}")
-404: 
-405:     def _obs(self) -> np.ndarray:
-406:         """Build the observation vector from current belief state.
-407: 
-408:         In variable-K mode, uses padded features sized to ``_max_K``.
-409:         Otherwise delegates to ``extract_belief_features``.
-410: 
-411:         Returns
-412:         -------
-413:         np.ndarray
-414:             Feature vector of shape (obs_K + 6,), dtype float32.
-415:         """
-416:         if self.variable_K:
-417:             from models.features import extract_padded_belief_features
-418: 
-419:             return extract_padded_belief_features(
-420:                 belief=self.belief,
-421:                 prev_belief=self.prev_belief,
-422:                 step_idx=self.step_idx,
-423:                 total_steps=self.total_steps,
-424:                 max_K=self._max_K,
-425:             )
-426:         return extract_belief_features(
-427:             belief=self.belief,
-428:             prev_belief=self.prev_belief,
-429:             step_idx=self.step_idx,
-430:             total_steps=self.total_steps,
-431:         )
-432: 
-433:     def action_masks(self) -> np.ndarray:
-434:         """Return a boolean mask of valid actions.
-435: 
-436:         WAIT (action 0) is always valid.  Buzz actions ``1..K_actual``
-437:         are valid; padded slots ``K_actual+1..max_K`` are invalid.
-438: 
-439:         Returns
-440:         -------
-441:         np.ndarray
-442:             Boolean array of shape ``(max_K + 1,)`` or ``(K + 1,)``.
-443:         """
-444:         n_actions = self._max_K + 1 if self.variable_K else self.K + 1
-445:         mask = np.zeros(n_actions, dtype=bool)
-446:         mask[0] = True  # WAIT
-447:         k_actual = len(self.question.options) if self.question is not None else self.K
-448:         mask[1 : k_actual + 1] = True
-449:         return mask
-450: 
-451:     def _step_to_token_pos(self, step_idx: int) -> int:
-452:         """Convert a step index to the corresponding token position.
-453: 
-454:         Used by the ``human_grounded`` reward mode to compare the agent's
-455:         buzz position against the sampled human buzz position.
-456: 
-457:         Parameters
-458:         ----------
-459:         step_idx : int
-460:             Step index (0-based, indexes into run_indices).
-461: 
-462:         Returns
-463:         -------
-464:         int
-465:             Token position in the original question text.
-466:         """
-467:         if self.question is None or not self.question.run_indices:
-468:             return step_idx
-469:         if step_idx >= len(self.question.run_indices):
-470:             return self.question.run_indices[-1]
-471:         if step_idx < 0:
-472:             return self.question.run_indices[0]
-473:         return self.question.run_indices[step_idx]
-474: 
-475:     def _expected_wins_reward(
-476:         self, question: MCQuestion, chosen_idx: int, last_seen_step: int
-477:     ) -> float:
-478:         """Compute Expected Wins reward at buzz time.
-479: 
-480:         R_t = S_t * V_self + (1 - S_t) * V_opp
-481: 
-482:         where S_t = P(opponent has NOT buzzed by step t).
-483:         """
-484:         correct = chosen_idx == question.gold_index
-485:         v_self = self.ew_reward_correct if correct else self.ew_reward_incorrect
-486:         if self.opponent_buzz_model is None:
-487:             return v_self
-488:         s_t = self.opponent_buzz_model.prob_survive_to_step(question, last_seen_step)
-489:         return s_t * v_self + (1.0 - s_t) * self.ew_opponent_expected_value
-490: 
-491:     def _buzz_reward(self, question: MCQuestion, chosen_idx: int, last_seen_step: int) -> float:
-492:         """Compute the reward for buzzing with a given answer.
-493: 
-494:         Dispatches on ``self.reward_mode``:
-495: 
-496:         ``simple``
-497:             +1.0 for correct, -1.0 for incorrect.
-498:         ``human_grounded``
-499:             0.0 if the agent buzzes after the sampled human would have;
-500:             otherwise +buzz_correct / +buzz_incorrect.
-501:         ``time_penalty`` (default)
-502:             +buzz_correct / +buzz_incorrect. The per-step wait penalty
-503:             is applied separately in ``step()``.
-504:         ``expected_wins``
-505:             S_t * V_self + (1 - S_t) * V_opp via opponent model.
-506: 
-507:         Parameters
-508:         ----------
-509:         question : MCQuestion
-510:             Current question.
-511:         chosen_idx : int
-512:             Index of the chosen answer option (0-based).
-513:         last_seen_step : int
-514:             Step index of the last clue seen before buzzing.
-515: 
-516:         Returns
-517:         -------
-518:         float
-519:             Reward value.
-520:         """
-521:         correct = chosen_idx == question.gold_index
-522:         if self.reward_mode == "simple":
-523:             return 1.0 if correct else -1.0
-524:         if self.reward_mode == "human_grounded":
-525:             token_pos = self._step_to_token_pos(last_seen_step)
-526:             if self._sampled_human_buzz_pos is not None and token_pos > self._sampled_human_buzz_pos:
-527:                 return 0.0
-528:             return self.buzz_correct if correct else self.buzz_incorrect
-529:         if self.reward_mode == "expected_wins":
-530:             return self._expected_wins_reward(question, chosen_idx, last_seen_step)
-531:         # default: time_penalty
-532:         reward = self.buzz_correct if correct else self.buzz_incorrect
-533: 
-534:         if self.early_buzz_penalty > 0 and self.total_steps > 1:
-535:             progress = np.clip((last_seen_step + 1) / self.total_steps, 0.0, 1.0)
-536:             reward -= float(self.early_buzz_penalty) * (1.0 - progress)
-537: 
-538:         return reward
-539: 
-540:     # ------------------------------------------------------------------
-541:     # Gymnasium interface
-542:     # ------------------------------------------------------------------
-543: 
-544:     def reset(
-545:         self, *, seed: int | None = None, options: dict[str, Any] | None = None
-546:     ) -> tuple[np.ndarray, dict[str, Any]]:
-547:         """Reset the environment and start a new episode.
-548: 
-549:         Samples a random question from the pool, initializes belief to a
-550:         uniform distribution, and returns the initial observation.
-551: 
-552:         Parameters
-553:         ----------
-554:         seed : int or None
-555:             If provided, reseeds both the internal RNG and numpy's global
-556:             RNG for reproducibility.
-557:         options : dict or None
-558:             Unused. Included for Gymnasium API compatibility.
-559: 
-560:         Returns
-561:         -------
-562:         observation : np.ndarray
-563:             Initial observation of shape (K + 6,), dtype float32.
-564:             Belief is uniform, so top_p = 1/K, margin = 0, entropy = max.
-565:         info : dict[str, Any]
-566:             Episode metadata. Contains ``"qid"`` (the sampled question ID).
-567:         """
-568:         if seed is not None:
-569:             self.rng.seed(seed)
-570:             np.random.seed(seed)
-571: 
-572:         if options and "question_idx" in options:
-573:             q_idx = int(options["question_idx"])
-574:             if q_idx < 0 or q_idx >= len(self.questions):
-575:                 raise ValueError(f"question_idx out of range: {q_idx}")
-576:             self.question = self.questions[q_idx]
-577:             self._current_question_idx = q_idx
-578:         else:
-579:             self.question = self._sample_question()
-580:             self._current_question_idx = self._question_index_map.get(
-581:                 self.question.qid, self.questions.index(self.question)
-582:             )
-583:         self.step_idx = 0
-584:         self.prev_belief = None
-585:         actual_k = len(self.question.options) if self.variable_K else self.K
-586:         self.belief = np.ones(actual_k, dtype=np.float32) / actual_k
-587:         self.terminated = False
-588:         self.truncated = False
-589:         self._sampled_human_buzz_pos = self._sample_human_buzz(self.question)
-590:         return self._obs(), {"qid": self.question.qid}
-591: 
-592:     def step(
-593:         self, action: int
-594:     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-595:         """Execute one step in the environment.
-596: 
-597:         If ``action == 0`` (WAIT):
-598:             - Saves previous belief, computes new belief from current clue.
-599:             - Applies wait_penalty if reward_mode is ``"time_penalty"``.
-600:             - Advances step counter.
-601:             - If all clues exhausted: forced termination with best-guess
-602:               answer (``truncated=True``).
-603: 
-604:         If ``action in 1..K`` (BUZZ):
-605:             - Computes buzz reward for chosen answer option ``action - 1``.
-606:             - Episode ends (``terminated=True``).
-607: 
-608:         Parameters
-609:         ----------
-610:         action : int
-611:             Action to take. 0 = WAIT, 1..K = buzz with option (action-1).
-612: 
-613:         Returns
-614:         -------
-615:         observation : np.ndarray
-616:             Updated observation of shape (K + 6,), dtype float32.
-617:         reward : float
-618:             Scalar reward for this step.
-619:         terminated : bool
-620:             True if the agent buzzed (natural episode end).
-621:         truncated : bool
-622:             True if all clues were exhausted (forced termination).
-623:         info : dict[str, Any]
-624:             Step metadata. Always contains ``"qid"`` and ``"step_idx"``.
-625:             On BUZZ: also ``"chosen_idx"`` and ``"correct"``.
-626:             On forced termination in ``force_commit`` mode: also
-627:             ``"forced_choice"`` and ``"forced_correct"``.
-628:             On forced termination in ``no_buzz`` mode: also ``"no_buzz"``,
-629:             ``"forced_choice" = -1``, and ``"forced_correct" = False``.
-630: 
-631:         Raises
-632:         ------
-633:         RuntimeError
-634:             If called before ``reset()`` or after episode has ended.
-635:         ValueError
-636:             If ``action`` is not in the action space.
-637:         """
-638:         if self.question is None:
-639:             raise RuntimeError("Environment must be reset() before step().")
-640:         if self.terminated or self.truncated:
-641:             raise RuntimeError("Cannot call step() on terminated/truncated episode.")
-642:         if not self.action_space.contains(action):
-643:             raise ValueError(f"Invalid action: {action}")
-644:         if self.variable_K and action > 0:
-645:             actual_k = len(self.question.options)
-646:             if action - 1 >= actual_k:
-647:                 raise ValueError(
-648:                     f"Buzz action {action} targets padded option index "
-649:                     f"{action - 1}, but question only has {actual_k} options"
-650:                 )
-651: 
-652:         info: dict[str, Any] = {"qid": self.question.qid}
-653:         reward = 0.0
-654: 
-655:         if action == 0:
-656:             # WAIT: reveal next clue and update belief
-657:             self.prev_belief = self.belief.copy()
-658:             self.belief = self._compute_belief(self.question, self.step_idx)
-659:             if self.reward_mode == "time_penalty":
-660:                 reward -= self.wait_penalty
-661: 
-662:             self.step_idx += 1
-663:             if self.step_idx >= self.total_steps:
-664:                 last_seen = self.step_idx - 1
-665:                 self.truncated = True
-666:                 info["step_idx"] = last_seen
-667:                 if self.end_mode == "force_commit":
-668:                     forced_choice = int(np.argmax(self.belief))
-669:                     reward += self._buzz_reward(self.question, forced_choice, last_seen)
-670:                     info["forced_choice"] = forced_choice
-671:                     info["forced_correct"] = forced_choice == self.question.gold_index
-672:                 elif self.end_mode == "no_buzz":
-673:                     reward += self.no_buzz_reward
-674:                     info["no_buzz"] = True
-675:                     info["forced_choice"] = -1
-676:                     info["forced_correct"] = False
-677:                 else:
-678:                     raise ValueError(f"Unknown end_mode: {self.end_mode}")
-679:             else:
-680:                 info["step_idx"] = self.step_idx
-681: 
-682:         else:
-683:             # BUZZ: select an answer option
-684:             last_seen = max(0, self.step_idx - 1)
-685:             chosen_idx = action - 1
-686:             reward += self._buzz_reward(self.question, chosen_idx, last_seen)
-687:             self.terminated = True
-688:             info["step_idx"] = last_seen
-689:             info["chosen_idx"] = chosen_idx
-690:             info["correct"] = chosen_idx == self.question.gold_index
-691: 
-692:         obs = self._obs()
-693:         return obs, float(reward), self.terminated, self.truncated, info
-694: 
-695: 
-696: def make_env_from_config(
-697:     mc_questions: list[MCQuestion],
-698:     likelihood_model: LikelihoodModel,
-699:     config: dict[str, Any],
-700:     precomputed_beliefs: dict[tuple[int, int], np.ndarray] | None = None,
-701: ) -> TossupMCEnv:
-702:     """Construct a TossupMCEnv from YAML configuration.
-703: 
-704:     Factory function that reads the ``environment``, ``data``, and
-705:     ``likelihood`` sections of a config dict and instantiates a fully
-706:     configured environment. The likelihood model must be pre-constructed
-707:     (e.g., via ``build_likelihood_from_config``).
-708: 
-709:     Parameters
-710:     ----------
-711:     mc_questions : list[MCQuestion]
-712:         List of MCQuestion instances with options and answer profiles.
-713:         Must be non-empty.
-714:     likelihood_model : LikelihoodModel
-715:         Pre-constructed likelihood model for scoring clues against options.
-716:         Use ``build_likelihood_from_config`` to create one from config.
-717:     config : dict[str, Any]
-718:         Full YAML config dict. Must contain the following sections:
-719: 
-720:         - ``environment``: reward mode, penalties, belief mode
-721:         - ``data``: K (number of answer choices)
-722:         - ``likelihood``: beta (softmax temperature)
-723:     precomputed_beliefs : dict or None
-724:         Optional precomputed belief cache from ``precompute_beliefs()``.
-725:         When provided, ``_compute_belief`` uses O(1) lookups instead of
-726:         calling ``likelihood_model.score()``.
-727: 
-728:     Returns
-729:     -------
-730:     TossupMCEnv
-731:         A configured Gymnasium environment ready for ``reset()``.
-732: 
-733:     Examples
-734:     --------
-735:     >>> from qb_data.config import load_config
-736:     >>> from models.likelihoods import build_likelihood_from_config
-737:     >>> config = load_config("configs/default.yaml")
-738:     >>> model = build_likelihood_from_config(config, corpus_texts=corpus)
-739:     >>> env = make_env_from_config(mc_questions, model, config)
-740:     >>> obs, info = env.reset()
-741:     """
-742:     from qb_env.opponent_models import build_opponent_model_from_config
-743: 
-744:     env_cfg = config["environment"]
-745:     data_cfg = config["data"]
-746:     lik_cfg = config["likelihood"]
-747:     variable_k = bool(data_cfg.get("variable_K", False) or env_cfg.get("variable_K", False))
-748:     max_k_raw = data_cfg.get("max_K") or env_cfg.get("max_K")
-749:     opponent_model = build_opponent_model_from_config(
-750:         questions=mc_questions, config=config,
-751:     )
-752:     return TossupMCEnv(
-753:         questions=mc_questions,
-754:         likelihood_model=likelihood_model,
-755:         K=int(data_cfg.get("K", 4)),
-756:         reward_mode=str(env_cfg.get("reward", env_cfg.get("reward_mode", "time_penalty"))),
-757:         seed=int(env_cfg.get("seed", 13)),
-758:         wait_penalty=float(env_cfg.get("wait_penalty", 0.01)),
-759:         early_buzz_penalty=float(env_cfg.get("early_buzz_penalty", 0.0)),
-760:         buzz_correct=float(env_cfg.get("buzz_correct", 1.0)),
-761:         buzz_incorrect=float(env_cfg.get("buzz_incorrect", -0.5)),
-762:         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
-763:         beta=float(lik_cfg.get("beta", 5.0)),
-764:         precomputed_beliefs=precomputed_beliefs,
-765:         opponent_buzz_model=opponent_model,
-766:         end_mode=str(env_cfg.get("end_mode", "force_commit")),
-767:         no_buzz_reward=float(env_cfg.get("no_buzz_reward", 0.0)),
-768:         variable_K=variable_k,
-769:         max_K=int(max_k_raw) if max_k_raw is not None else None,
-770:         use_action_masking=bool(env_cfg.get("use_action_masking", False)),
-771:     )
-</file>
-
-<file path="scripts/_common.py">
-  1: """Shared utilities for pipeline scripts.
-  2: 
-  3: Provides config loading, JSON serialization, MC question deserialization,
-  4: and path constants used across all pipeline scripts (build, baseline, train,
-  5: evaluate).
-  6: 
-  7: Ported from qb-rl reference implementation with import path adaptations
-  8: for the unified qanta-buzzer codebase.
-  9: """
- 10: 
- 11: from __future__ import annotations
- 12: 
- 13: import argparse
- 14: import json
- 15: from dataclasses import asdict, is_dataclass
- 16: from pathlib import Path
- 17: from typing import Any
- 18: 
- 19: from models.likelihoods import LikelihoodModel, build_likelihood_from_config
- 20: from qb_data.config import load_config as load_yaml_config
- 21: from qb_data.mc_builder import MCQuestion
- 22: 
- 23: PROJECT_ROOT = Path(__file__).resolve().parents[1]
- 24: 
- 25: 
- 26: def _parse_value(value: str) -> Any:
- 27:     """Parse a CLI override value string into a typed Python value.
- 28: 
- 29:     Tries JSON first, then bool/int/float, and falls back to str.
- 30:     """
- 31:     try:
- 32:         return json.loads(value)
- 33:     except json.JSONDecodeError:
- 34:         pass
- 35:     if value.lower() == "true":
- 36:         return True
- 37:     if value.lower() == "false":
- 38:         return False
- 39:     if value.lstrip("-").isdigit():
- 40:         return int(value)
- 41:     try:
- 42:         return float(value)
- 43:     except ValueError:
- 44:         return value
- 45: 
- 46: 
- 47: def parse_overrides(args: argparse.Namespace) -> dict[str, Any]:
- 48:     """Parse CLI override arguments into flat dotted-key overrides.
- 49: 
- 50:     Returns a dict with dotted keys (e.g. ``{"data.K": 5}``) that
- 51:     ``merge_overrides`` can apply leaf-by-leaf without clobbering
- 52:     sibling config entries.
- 53: 
- 54:     Parameters
- 55:     ----------
- 56:     args : argparse.Namespace
- 57:         Parsed CLI arguments.  Positional ``overrides`` are
- 58:         ``key=value`` strings where *key* uses dot-notation
- 59:         (e.g. ``data.K=5``).
- 60: 
- 61:     Returns
- 62:     -------
- 63:     dict[str, Any]
- 64:         Flat dotted-key overrides ready for ``merge_overrides()``.
- 65:     """
- 66:     overrides: dict[str, Any] = {}
- 67:     if hasattr(args, "overrides") and args.overrides:
- 68:         for token in args.overrides:
- 69:             if "=" not in token:
- 70:                 continue
- 71:             key, value = token.split("=", 1)
- 72:             overrides[key] = _parse_value(value)
- 73:     return overrides
- 74: DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "default.yaml"
- 75: ARTIFACT_DIR = PROJECT_ROOT / "artifacts"
- 76: 
- 77: 
- 78: def load_config(config_path: str | None = None, smoke: bool = False) -> dict[str, Any]:
- 79:     """Load YAML configuration from a file path.
- 80: 
- 81:     Parameters
- 82:     ----------
- 83:     config_path : str or None
- 84:         Path to YAML config file. If None, loads ``configs/default.yaml``.
- 85: 
- 86:     Returns
- 87:     -------
- 88:     dict[str, Any]
- 89:         Parsed config dict with nested structure (data, likelihood,
- 90:         environment, ppo, etc.).
- 91:     """
- 92:     return load_yaml_config(config_path, smoke=smoke)
- 93: 
- 94: 
- 95: def build_likelihood_model(config: dict[str, Any], mc_questions: list[MCQuestion]):
- 96:     """Build a likelihood model with shared TF-IDF corpus handling."""
- 97:     corpus = None
- 98:     if config["likelihood"].get("model") == "tfidf":
- 99:         corpus = [q.question for q in mc_questions] + [
-100:             profile
-101:             for question in mc_questions
-102:             for profile in question.option_profiles
-103:         ]
-104:     return build_likelihood_from_config(config, corpus_texts=corpus)
-105: 
-106: 
-107: def ensure_dir(path: str | Path) -> Path:
-108:     """Create a directory (and parents) if it does not exist.
-109: 
-110:     Parameters
-111:     ----------
-112:     path : str or Path
-113:         Directory path to create.
-114: 
-115:     Returns
-116:     -------
-117:     Path
-118:         The created (or existing) directory path.
-119:     """
-120:     p = Path(path)
-121:     p.mkdir(parents=True, exist_ok=True)
-122:     return p
-123: 
-124: 
-125: def to_serializable(item: Any) -> Any:
-126:     """Recursively convert dataclasses to dicts for JSON serialization.
-127: 
-128:     Parameters
-129:     ----------
-130:     item : Any
-131:         Object to convert. Dataclasses are converted via ``asdict()``,
-132:         dicts and lists are processed recursively.
-133: 
-134:     Returns
-135:     -------
-136:     Any
-137:         JSON-serializable version of the input.
-138:     """
-139:     if is_dataclass(item):
-140:         return asdict(item)
-141:     if isinstance(item, dict):
-142:         return {k: to_serializable(v) for k, v in item.items()}
-143:     if isinstance(item, list):
-144:         return [to_serializable(v) for v in item]
-145:     return item
-146: 
-147: 
-148: def save_json(path: str | Path, data: Any) -> Path:
-149:     """Save data to a JSON file, creating parent directories as needed.
-150: 
-151:     Applies ``to_serializable`` to convert dataclasses before writing.
-152: 
-153:     Parameters
-154:     ----------
-155:     path : str or Path
-156:         Output file path.
-157:     data : Any
-158:         Data to serialize. Dataclasses are converted to dicts automatically.
-159: 
-160:     Returns
-161:     -------
-162:     Path
-163:         The path where the JSON was written.
-164:     """
-165:     p = Path(path)
-166:     p.parent.mkdir(parents=True, exist_ok=True)
-167:     with p.open("w", encoding="utf-8") as f:
-168:         json.dump(to_serializable(data), f, indent=2)
-169:     return p
-170: 
-171: 
-172: def load_json(path: str | Path) -> Any:
-173:     """Load data from a JSON file.
-174: 
-175:     Parameters
-176:     ----------
-177:     path : str or Path
-178:         Path to JSON file.
-179: 
-180:     Returns
-181:     -------
-182:     Any
-183:         Parsed JSON data.
-184:     """
-185:     with Path(path).open("r", encoding="utf-8") as f:
-186:         return json.load(f)
-187: 
-188: 
-189: def mc_question_from_dict(row: dict[str, Any]) -> MCQuestion:
-190:     """Reconstruct an MCQuestion dataclass from a JSON-deserialized dict.
-191: 
-192:     Parameters
-193:     ----------
-194:     row : dict[str, Any]
-195:         Dictionary with all MCQuestion fields.
-196: 
-197:     Returns
-198:     -------
-199:     MCQuestion
-200:         Reconstructed MCQuestion instance.
-201:     """
-202:     return MCQuestion(
-203:         qid=row["qid"],
-204:         question=row["question"],
-205:         tokens=list(row["tokens"]),
-206:         answer_primary=row["answer_primary"],
-207:         clean_answers=list(row["clean_answers"]),
-208:         run_indices=list(row["run_indices"]),
-209:         human_buzz_positions=row.get("human_buzz_positions"),
-210:         category=row.get("category", ""),
-211:         cumulative_prefixes=list(row["cumulative_prefixes"]),
-212:         options=list(row["options"]),
-213:         gold_index=int(row["gold_index"]),
-214:         option_profiles=list(row["option_profiles"]),
-215:         option_answer_primary=list(row["option_answer_primary"]),
-216:         distractor_strategy=row.get("distractor_strategy", "unknown"),
-217:     )
-218: 
-219: 
-220: def load_mc_questions(path: str | Path) -> list[MCQuestion]:
-221:     """Load and deserialize a list of MCQuestions from a JSON file.
-222: 
-223:     Parameters
-224:     ----------
-225:     path : str or Path
-226:         Path to JSON file containing a list of serialized MCQuestion dicts.
-227: 
-228:     Returns
-229:     -------
-230:     list[MCQuestion]
-231:         List of reconstructed MCQuestion instances.
-232:     """
-233:     raw = load_json(path)
-234:     return [mc_question_from_dict(item) for item in raw]
-235: 
-236: 
-237: # ------------------------------------------------------------------ #
-238: # Embedding cache persistence helpers
-239: # ------------------------------------------------------------------ #
-240: 
-241: 
-242: def embedding_cache_path(config: dict[str, Any]) -> Path:
-243:     """Return the resolved embedding cache file path from config.
-244: 
-245:     Uses ``config['likelihood']['cache_dir']`` (default ``'cache/embeddings'``)
-246:     and appends ``'embedding_cache.npz'``.
-247: 
-248:     Parameters
-249:     ----------
-250:     config : dict
-251:         Full YAML config dict.
-252: 
-253:     Returns
-254:     -------
-255:     Path
-256:         Absolute path to the embedding cache ``.npz`` file.
-257:     """
-258:     lik_cfg = config.get("likelihood", {})
-259:     cache_dir = lik_cfg.get("cache_dir", "cache/embeddings")
-260:     model_name = str(lik_cfg.get("model", "unknown")).replace("/", "_")
-261:     return PROJECT_ROOT / cache_dir / f"embedding_cache_{model_name}.npz"
-262: 
-263: 
-264: def load_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
-265:     """Load persisted embedding cache into model if file exists.
-266: 
-267:     Parameters
-268:     ----------
-269:     model : LikelihoodModel
-270:         Likelihood model whose embedding_cache will be populated.
-271:     config : dict
-272:         Full YAML config dict (used to resolve cache path).
-273:     """
-274:     path = embedding_cache_path(config)
-275:     n = model.load_cache(path)
-276:     if n > 0:
-277:         print(f"Loaded {n} cached embeddings from {path}")
-278: 
-279: 
-280: def save_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
-281:     """Persist model's embedding cache to disk.
-282: 
-283:     Parameters
-284:     ----------
-285:     model : LikelihoodModel
-286:         Likelihood model whose embedding_cache will be saved.
-287:     config : dict
-288:         Full YAML config dict (used to resolve cache path).
-289:     """
-290:     path = embedding_cache_path(config)
-291:     n = model.save_cache(path)
-292:     if n > 0:
-293:         print(f"Saved {n} embeddings to {path}")
-</file>
-
 <file path="scripts/run_baselines.py">
   1: #!/usr/bin/env python3
   2: """
@@ -18407,6 +17337,1078 @@ This section contains the contents of the repository's files.
  9: - Do not add dependencies unless required.
 10: - Seeds: use 1, 2, 3 for multi-seed runs.
 11: - NumPy/PyTorch vectorized operations over loops in ML code.
+</file>
+
+<file path="qb_env/tossup_env.py">
+  1: """
+  2: Gymnasium-compliant POMDP Environment for Quiz Bowl
+  3: 
+  4: Implements a tossup question environment where clues are revealed incrementally.
+  5: At each step the agent observes a belief-based feature vector and chooses either
+  6: to WAIT (action 0, reveals next clue) or to BUZZ with a specific answer option
+  7: (actions 1..K, ends the episode).
+  8: 
+  9: The environment computes beliefs over K answer options using a pluggable
+ 10: LikelihoodModel and converts them to observations via extract_belief_features.
+ 11: 
+ 12: Ported from qb-rl reference implementation (qb_env/tossup_env.py) and adapted
+ 13: for the unified qanta-buzzer codebase.
+ 14: """
+ 15: 
+ 16: from __future__ import annotations
+ 17: 
+ 18: import random
+ 19: from typing import TYPE_CHECKING, Any
+ 20: 
+ 21: if TYPE_CHECKING:
+ 22:     from qb_env.opponent_models import OpponentBuzzModel
+ 23: 
+ 24: import gymnasium as gym
+ 25: import numpy as np
+ 26: from gymnasium import spaces
+ 27: 
+ 28: from models.features import extract_belief_features
+ 29: from models.likelihoods import LikelihoodModel
+ 30: from qb_data.mc_builder import MCQuestion
+ 31: 
+ 32: 
+ 33: def _softmax(scores: np.ndarray, beta: float) -> np.ndarray:
+ 34:     """Temperature-scaled softmax with numerical stability.
+ 35: 
+ 36:     Parameters
+ 37:     ----------
+ 38:     scores : np.ndarray
+ 39:         Raw similarity scores of shape (K,).
+ 40:     beta : float
+ 41:         Temperature parameter. Higher values produce sharper distributions.
+ 42: 
+ 43:     Returns
+ 44:     -------
+ 45:     np.ndarray
+ 46:         Probability distribution of shape (K,), dtype float32.
+ 47:     """
+ 48:     stable = scores - np.max(scores)
+ 49:     probs = np.exp(beta * stable)
+ 50:     probs_sum = np.sum(probs)
+ 51:     if probs_sum <= 0:
+ 52:         return np.ones_like(scores, dtype=np.float32) / len(scores)
+ 53:     return (probs / probs_sum).astype(np.float32)
+ 54: 
+ 55: 
+ 56: def precompute_beliefs(
+ 57:     questions: list[MCQuestion],
+ 58:     likelihood_model: LikelihoodModel,
+ 59:     belief_mode: str = "from_scratch",
+ 60:     beta: float = 5.0,
+ 61:     K: int = 4,
+ 62: ) -> dict[tuple[int, int], np.ndarray]:
+ 63:     """Precompute belief trajectories for all questions and steps.
+ 64: 
+ 65:     Iterates over each question and each step index, computing the belief
+ 66:     using the same logic as ``TossupMCEnv._compute_belief``. The result is
+ 67:     a dict keyed by ``(question_index, step_idx)`` for O(1) lookup during
+ 68:     training rollouts.
+ 69: 
+ 70:     Parameters
+ 71:     ----------
+ 72:     questions : list[MCQuestion]
+ 73:         Pool of questions to precompute beliefs for.
+ 74:     likelihood_model : LikelihoodModel
+ 75:         Model that scores clue text against answer option profiles.
+ 76:     belief_mode : str
+ 77:         One of ``"from_scratch"``, ``"sequential_bayes"``.
+ 78:     beta : float
+ 79:         Softmax temperature for converting raw scores to probabilities.
+ 80:     K : int
+ 81:         Deprecated — ignored. Each question uses ``len(question.options)``
+ 82:         as its local K. Kept for backward compatibility with callers.
+ 83: 
+ 84:     Returns
+ 85:     -------
+ 86:     dict[tuple[int, int], np.ndarray]
+ 87:         Maps ``(question_index, step_idx)`` to belief vectors of shape
+ 88:         ``(len(question.options),)`` with dtype float32. Each belief sums to ~1.0.
+ 89:     """
+ 90:     cache: dict[tuple[int, int], np.ndarray] = {}
+ 91: 
+ 92:     for q_idx, question in enumerate(questions):
+ 93:         num_steps = len(question.run_indices)
+ 94:         q_k = len(question.options)
+ 95:         belief = np.ones(q_k, dtype=np.float32) / q_k
+ 96: 
+ 97:         for step_idx in range(num_steps):
+ 98:             if belief_mode == "from_scratch":
+ 99:                 prefix = question.cumulative_prefixes[step_idx]
+100:                 scores = likelihood_model.score(prefix, question.option_profiles)
+101:                 belief = _softmax(scores, beta)
+102: 
+103:             elif belief_mode == "sequential_bayes":
+104:                 idx = question.run_indices[step_idx]
+105:                 prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
+106:                 frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
+107:                 scores = likelihood_model.score(frag, question.option_profiles)
+108:                 likelihood = _softmax(scores, beta)
+109:                 posterior = belief * likelihood
+110:                 denom = posterior.sum()
+111:                 if denom <= 0:
+112:                     belief = np.ones(q_k, dtype=np.float32) / q_k
+113:                 else:
+114:                     belief = (posterior / denom).astype(np.float32)
+115: 
+116:             else:
+117:                 raise ValueError(f"Unknown belief_mode: {belief_mode}")
+118: 
+119:             cache[(q_idx, step_idx)] = belief.copy()
+120: 
+121:     return cache
+122: 
+123: 
+124: class TossupMCEnv(gym.Env[np.ndarray, int]):
+125:     """Gymnasium environment for quiz bowl tossup questions with MC options.
+126: 
+127:     Models quiz bowl as a POMDP where clues are revealed incrementally.
+128:     The agent maintains a belief distribution over K answer options, updated
+129:     at each step by a likelihood model. The agent decides when to buzz and
+130:     which answer to select.
+131: 
+132:     Action Space
+133:     ------------
+134:     Discrete(K + 1):
+135:         - 0: WAIT -- reveal the next clue and update belief
+136:         - 1..K: BUZZ with answer option (i-1), ending the episode
+137: 
+138:     Observation Space
+139:     -----------------
+140:     Box(K + 6,):
+141:         Belief features: [belief[0..K-1], top_p, margin, entropy,
+142:         stability, progress, clue_idx_norm].
+143:         See ``models.features.extract_belief_features`` for details.
+144: 
+145:     Reward Modes
+146:     ------------
+147:     ``time_penalty`` (default):
+148:         -wait_penalty per WAIT step; +buzz_correct for correct buzz,
+149:         +buzz_incorrect (negative) for wrong buzz.
+150:     ``simple``:
+151:         +1.0 for correct buzz, -1.0 for incorrect buzz, no WAIT penalty.
+152:     ``human_grounded``:
+153:         0.0 if the agent buzzes after the sampled human buzz position;
+154:         otherwise +buzz_correct/-buzz_incorrect for correct/incorrect.
+155: 
+156:     Belief Modes
+157:     ------------
+158:     ``from_scratch``:
+159:         Recompute belief from all clues seen so far via cumulative_prefixes.
+160:     ``sequential_bayes``:
+161:         Bayesian update: multiply prior belief by likelihood of new clue
+162:         fragment, then normalize.
+163: 
+164:     Parameters
+165:     ----------
+166:     questions : list[MCQuestion]
+167:         Pool of questions to sample from. Must be non-empty.
+168:     likelihood_model : LikelihoodModel
+169:         Model that scores clue text against answer option profiles.
+170:     K : int
+171:         Number of answer options per question. Must be >= 2.
+172:     reward_mode : str
+173:         One of ``"time_penalty"``, ``"simple"``, ``"human_grounded"``.
+174:     wait_penalty : float
+175:         Per-step penalty when reward_mode is ``"time_penalty"``.
+176:     buzz_correct : float
+177:         Reward for buzzing with the correct answer.
+178:     buzz_incorrect : float
+179:         Reward (typically negative) for buzzing with an incorrect answer.
+180:     belief_mode : str
+181:         One of ``"from_scratch"``, ``"sequential_bayes"``.
+182:     beta : float
+183:         Softmax temperature for converting raw scores to probabilities.
+184:         Higher values produce sharper distributions.
+185:     end_mode : str
+186:         Horizon behavior when clues are exhausted:
+187:         ``"force_commit"`` (legacy forced answer) or ``"no_buzz"``.
+188:     no_buzz_reward : float
+189:         Reward added at horizon when ``end_mode == "no_buzz"``.
+190:     seed : int
+191:         Random seed for question sampling and human buzz simulation.
+192:     """
+193: 
+194:     metadata = {"render_modes": []}
+195: 
+196:     def __init__(
+197:         self,
+198:         questions: list[MCQuestion],
+199:         likelihood_model: LikelihoodModel,
+200:         K: int = 4,
+201:         reward_mode: str = "time_penalty",
+202:         wait_penalty: float = 0.01,
+203:         early_buzz_penalty: float = 0.0,
+204:         buzz_correct: float = 1.0,
+205:         buzz_incorrect: float = -0.5,
+206:         belief_mode: str = "from_scratch",
+207:         beta: float = 5.0,
+208:         seed: int = 13,
+209:         precomputed_beliefs: dict[tuple[int, int], np.ndarray] | None = None,
+210:         opponent_buzz_model: "OpponentBuzzModel | None" = None,
+211:         ew_reward_correct: float = 10.0,
+212:         ew_reward_incorrect: float = -5.0,
+213:         ew_opponent_expected_value: float = 0.0,
+214:         variable_K: bool = False,
+215:         max_K: int | None = None,
+216:         use_action_masking: bool = False,
+217:         end_mode: str = "force_commit",
+218:         no_buzz_reward: float = 0.0,
+219:     ) -> None:
+220:         if not questions:
+221:             raise ValueError("questions cannot be empty")
+222:         if K < 2:
+223:             raise ValueError("K must be >= 2")
+224: 
+225:         self.questions = questions
+226:         self.likelihood_model = likelihood_model
+227:         self.K = K
+228:         self.reward_mode = reward_mode
+229:         self.wait_penalty = wait_penalty
+230:         self.early_buzz_penalty = early_buzz_penalty
+231:         self.buzz_correct = buzz_correct
+232:         self.buzz_incorrect = buzz_incorrect
+233:         self.belief_mode = belief_mode
+234:         self.beta = beta
+235:         self.rng = random.Random(seed)
+236:         self.precomputed_beliefs = precomputed_beliefs
+237: 
+238:         self.opponent_buzz_model = opponent_buzz_model
+239:         self.ew_reward_correct = ew_reward_correct
+240:         self.ew_reward_incorrect = ew_reward_incorrect
+241:         self.ew_opponent_expected_value = ew_opponent_expected_value
+242: 
+243:         self.variable_K = variable_K
+244:         self.use_action_masking = use_action_masking
+245:         self.end_mode = end_mode
+246:         self.no_buzz_reward = no_buzz_reward
+247:         if variable_K:
+248:             self._max_K = max_K or max(len(q.options) for q in questions)
+249:         else:
+250:             self._max_K = K
+251: 
+252:         # Build qid -> list-index map for precomputed belief lookups
+253:         self._question_index_map: dict[str, int] = {
+254:             q.qid: i for i, q in enumerate(questions)
+255:         }
+256: 
+257:         obs_K = self._max_K if self.variable_K else self.K
+258:         self.action_space = spaces.Discrete(obs_K + 1)
+259:         self.observation_space = spaces.Box(
+260:             low=-np.inf, high=np.inf, shape=(obs_K + 6,), dtype=np.float32
+261:         )
+262: 
+263:         self.question: MCQuestion | None = None
+264:         self.step_idx: int = 0
+265:         self.prev_belief: np.ndarray | None = None
+266:         self.belief: np.ndarray = np.ones(self.K, dtype=np.float32) / self.K
+267:         self.terminated: bool = False
+268:         self.truncated: bool = False
+269:         self._sampled_human_buzz_pos: int | None = None
+270:         self._current_question_idx: int = 0
+271: 
+272:     # ------------------------------------------------------------------
+273:     # Properties
+274:     # ------------------------------------------------------------------
+275: 
+276:     @property
+277:     def total_steps(self) -> int:
+278:         """Total number of incremental clue steps for the current question.
+279: 
+280:         Returns
+281:         -------
+282:         int
+283:             Length of ``question.run_indices`` if a question is loaded, else 1.
+284:         """
+285:         if self.question is None:
+286:             return 1
+287:         return len(self.question.run_indices)
+288: 
+289:     # ------------------------------------------------------------------
+290:     # Helper methods
+291:     # ------------------------------------------------------------------
+292: 
+293:     def _sample_question(self) -> MCQuestion:
+294:         """Sample a random question from the question pool.
+295: 
+296:         Returns
+297:         -------
+298:         MCQuestion
+299:             A randomly selected question.
+300:         """
+301:         return self.rng.choice(self.questions)
+302: 
+303:     def _sample_human_buzz(self, question: MCQuestion) -> int | None:
+304:         """Sample a human buzz position from the question's distribution.
+305: 
+306:         Uses weighted random sampling based on the number of humans who
+307:         buzzed at each position. Returns None if no human buzz data exists.
+308: 
+309:         Parameters
+310:         ----------
+311:         question : MCQuestion
+312:             The question to sample a human buzz position for.
+313: 
+314:         Returns
+315:         -------
+316:         int or None
+317:             Sampled token position, or None if no human buzz data.
+318:         """
+319:         if not question.human_buzz_positions:
+320:             return None
+321:         positions = []
+322:         weights = []
+323:         for pos, count in question.human_buzz_positions:
+324:             positions.append(int(pos))
+325:             weights.append(max(1, int(count)))
+326:         if not positions:
+327:             return None
+328:         return self.rng.choices(positions, weights=weights, k=1)[0]
+329: 
+330:     def _softmax_scores(self, scores: np.ndarray) -> np.ndarray:
+331:         """Convert raw likelihood scores to a probability distribution.
+332: 
+333:         Delegates to module-level ``_softmax`` with this environment's beta.
+334: 
+335:         Parameters
+336:         ----------
+337:         scores : np.ndarray
+338:             Raw similarity scores of shape (K,).
+339: 
+340:         Returns
+341:         -------
+342:         np.ndarray
+343:             Probability distribution of shape (K,), dtype float32.
+344:         """
+345:         return _softmax(scores, self.beta)
+346: 
+347:     def _compute_belief(self, question: MCQuestion, step_idx: int) -> np.ndarray:
+348:         """Compute belief distribution over answer options at a given step.
+349: 
+350:         Two modes are supported:
+351: 
+352:         ``from_scratch``
+353:             Score the cumulative clue prefix against all option profiles,
+354:             then apply softmax. Each step is independent of the previous
+355:             belief.
+356: 
+357:         ``sequential_bayes``
+358:             Extract only the new clue fragment since the last step, score
+359:             it, and perform a Bayesian update: posterior = prior * likelihood,
+360:             then normalize. This is cheaper per step but may accumulate
+361:             approximation errors.
+362: 
+363:         Parameters
+364:         ----------
+365:         question : MCQuestion
+366:             Current question being played.
+367:         step_idx : int
+368:             Current step index (0-based, indexes into run_indices).
+369: 
+370:         Returns
+371:         -------
+372:         np.ndarray
+373:             Updated belief distribution of shape (K,), dtype float32.
+374: 
+375:         Raises
+376:         ------
+377:         ValueError
+378:             If ``self.belief_mode`` is not a recognized mode.
+379:         """
+380:         if self.precomputed_beliefs is not None:
+381:             key = (self._current_question_idx, step_idx)
+382:             return self.precomputed_beliefs[key].copy()
+383: 
+384:         if self.belief_mode == "from_scratch":
+385:             prefix = question.cumulative_prefixes[step_idx]
+386:             scores = self.likelihood_model.score(prefix, question.option_profiles)
+387:             return self._softmax_scores(scores)
+388: 
+389:         if self.belief_mode == "sequential_bayes":
+390:             idx = question.run_indices[step_idx]
+391:             prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
+392:             frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
+393:             scores = self.likelihood_model.score(frag, question.option_profiles)
+394:             likelihood = self._softmax_scores(scores)
+395:             posterior = self.belief * likelihood
+396:             denom = posterior.sum()
+397:             if denom <= 0:
+398:                 n = len(self.belief)
+399:                 posterior = np.ones(n, dtype=np.float32) / n
+400:             else:
+401:                 posterior = posterior / denom
+402:             return posterior.astype(np.float32)
+403: 
+404:         raise ValueError(f"Unknown belief_mode: {self.belief_mode}")
+405: 
+406:     def _obs(self) -> np.ndarray:
+407:         """Build the observation vector from current belief state.
+408: 
+409:         In variable-K mode, uses padded features sized to ``_max_K``.
+410:         Otherwise delegates to ``extract_belief_features``.
+411: 
+412:         Returns
+413:         -------
+414:         np.ndarray
+415:             Feature vector of shape (obs_K + 6,), dtype float32.
+416:         """
+417:         if self.variable_K:
+418:             from models.features import extract_padded_belief_features
+419: 
+420:             return extract_padded_belief_features(
+421:                 belief=self.belief,
+422:                 prev_belief=self.prev_belief,
+423:                 step_idx=self.step_idx,
+424:                 total_steps=self.total_steps,
+425:                 max_K=self._max_K,
+426:             )
+427:         return extract_belief_features(
+428:             belief=self.belief,
+429:             prev_belief=self.prev_belief,
+430:             step_idx=self.step_idx,
+431:             total_steps=self.total_steps,
+432:         )
+433: 
+434:     def action_masks(self) -> np.ndarray:
+435:         """Return a boolean mask of valid actions.
+436: 
+437:         WAIT (action 0) is always valid.  Buzz actions ``1..K_actual``
+438:         are valid; padded slots ``K_actual+1..max_K`` are invalid.
+439: 
+440:         Returns
+441:         -------
+442:         np.ndarray
+443:             Boolean array of shape ``(max_K + 1,)`` or ``(K + 1,)``.
+444:         """
+445:         n_actions = self._max_K + 1 if self.variable_K else self.K + 1
+446:         mask = np.zeros(n_actions, dtype=bool)
+447:         mask[0] = True  # WAIT
+448:         k_actual = len(self.question.options) if self.question is not None else self.K
+449:         mask[1 : k_actual + 1] = True
+450:         return mask
+451: 
+452:     def _step_to_token_pos(self, step_idx: int) -> int:
+453:         """Convert a step index to the corresponding token position.
+454: 
+455:         Used by the ``human_grounded`` reward mode to compare the agent's
+456:         buzz position against the sampled human buzz position.
+457: 
+458:         Parameters
+459:         ----------
+460:         step_idx : int
+461:             Step index (0-based, indexes into run_indices).
+462: 
+463:         Returns
+464:         -------
+465:         int
+466:             Token position in the original question text.
+467:         """
+468:         if self.question is None or not self.question.run_indices:
+469:             return step_idx
+470:         if step_idx >= len(self.question.run_indices):
+471:             return self.question.run_indices[-1]
+472:         if step_idx < 0:
+473:             return self.question.run_indices[0]
+474:         return self.question.run_indices[step_idx]
+475: 
+476:     def _expected_wins_reward(
+477:         self, question: MCQuestion, chosen_idx: int, last_seen_step: int
+478:     ) -> float:
+479:         """Compute Expected Wins reward at buzz time.
+480: 
+481:         R_t = S_t * V_self + (1 - S_t) * V_opp
+482: 
+483:         where S_t = P(opponent has NOT buzzed by step t).
+484:         """
+485:         correct = chosen_idx == question.gold_index
+486:         v_self = self.ew_reward_correct if correct else self.ew_reward_incorrect
+487:         if self.opponent_buzz_model is None:
+488:             return v_self
+489:         s_t = self.opponent_buzz_model.prob_survive_to_step(question, last_seen_step)
+490:         return s_t * v_self + (1.0 - s_t) * self.ew_opponent_expected_value
+491: 
+492:     def _buzz_reward(self, question: MCQuestion, chosen_idx: int, last_seen_step: int) -> float:
+493:         """Compute the reward for buzzing with a given answer.
+494: 
+495:         Dispatches on ``self.reward_mode``:
+496: 
+497:         ``simple``
+498:             +1.0 for correct, -1.0 for incorrect.
+499:         ``human_grounded``
+500:             0.0 if the agent buzzes after the sampled human would have;
+501:             otherwise +buzz_correct / +buzz_incorrect.
+502:         ``time_penalty`` (default)
+503:             +buzz_correct / +buzz_incorrect. The per-step wait penalty
+504:             is applied separately in ``step()``.
+505:         ``expected_wins``
+506:             S_t * V_self + (1 - S_t) * V_opp via opponent model.
+507: 
+508:         Parameters
+509:         ----------
+510:         question : MCQuestion
+511:             Current question.
+512:         chosen_idx : int
+513:             Index of the chosen answer option (0-based).
+514:         last_seen_step : int
+515:             Step index of the last clue seen before buzzing.
+516: 
+517:         Returns
+518:         -------
+519:         float
+520:             Reward value.
+521:         """
+522:         correct = chosen_idx == question.gold_index
+523:         if self.reward_mode == "simple":
+524:             return 1.0 if correct else -1.0
+525:         if self.reward_mode == "human_grounded":
+526:             token_pos = self._step_to_token_pos(last_seen_step)
+527:             if self._sampled_human_buzz_pos is not None and token_pos > self._sampled_human_buzz_pos:
+528:                 return 0.0
+529:             return self.buzz_correct if correct else self.buzz_incorrect
+530:         if self.reward_mode == "expected_wins":
+531:             return self._expected_wins_reward(question, chosen_idx, last_seen_step)
+532:         # default: time_penalty
+533:         reward = self.buzz_correct if correct else self.buzz_incorrect
+534: 
+535:         if self.early_buzz_penalty > 0 and self.total_steps > 1:
+536:             progress = np.clip((last_seen_step + 1) / self.total_steps, 0.0, 1.0)
+537:             reward -= float(self.early_buzz_penalty) * (1.0 - progress)
+538: 
+539:         return reward
+540: 
+541:     # ------------------------------------------------------------------
+542:     # Gymnasium interface
+543:     # ------------------------------------------------------------------
+544: 
+545:     def reset(
+546:         self, *, seed: int | None = None, options: dict[str, Any] | None = None
+547:     ) -> tuple[np.ndarray, dict[str, Any]]:
+548:         """Reset the environment and start a new episode.
+549: 
+550:         Samples a random question from the pool, initializes belief to a
+551:         uniform distribution, and returns the initial observation.
+552: 
+553:         Parameters
+554:         ----------
+555:         seed : int or None
+556:             If provided, reseeds both the internal RNG and numpy's global
+557:             RNG for reproducibility.
+558:         options : dict or None
+559:             Unused. Included for Gymnasium API compatibility.
+560: 
+561:         Returns
+562:         -------
+563:         observation : np.ndarray
+564:             Initial observation of shape (K + 6,), dtype float32.
+565:             Belief is uniform, so top_p = 1/K, margin = 0, entropy = max.
+566:         info : dict[str, Any]
+567:             Episode metadata. Contains ``"qid"`` (the sampled question ID).
+568:         """
+569:         if seed is not None:
+570:             self.rng.seed(seed)
+571:             np.random.seed(seed)
+572: 
+573:         if options and "question_idx" in options:
+574:             q_idx = int(options["question_idx"])
+575:             if q_idx < 0 or q_idx >= len(self.questions):
+576:                 raise ValueError(f"question_idx out of range: {q_idx}")
+577:             self.question = self.questions[q_idx]
+578:             self._current_question_idx = q_idx
+579:         else:
+580:             self.question = self._sample_question()
+581:             self._current_question_idx = self._question_index_map.get(
+582:                 self.question.qid, self.questions.index(self.question)
+583:             )
+584:         self.step_idx = 0
+585:         self.prev_belief = None
+586:         actual_k = len(self.question.options) if self.variable_K else self.K
+587:         self.belief = np.ones(actual_k, dtype=np.float32) / actual_k
+588:         self.terminated = False
+589:         self.truncated = False
+590:         self._sampled_human_buzz_pos = self._sample_human_buzz(self.question)
+591:         return self._obs(), {"qid": self.question.qid}
+592: 
+593:     def step(
+594:         self, action: int
+595:     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+596:         """Execute one step in the environment.
+597: 
+598:         If ``action == 0`` (WAIT):
+599:             - Saves previous belief, computes new belief from current clue.
+600:             - Applies wait_penalty if reward_mode is ``"time_penalty"``.
+601:             - Advances step counter.
+602:             - If all clues exhausted: forced termination with best-guess
+603:               answer (``truncated=True``).
+604: 
+605:         If ``action in 1..K`` (BUZZ):
+606:             - Computes buzz reward for chosen answer option ``action - 1``.
+607:             - Episode ends (``terminated=True``).
+608: 
+609:         Parameters
+610:         ----------
+611:         action : int
+612:             Action to take. 0 = WAIT, 1..K = buzz with option (action-1).
+613: 
+614:         Returns
+615:         -------
+616:         observation : np.ndarray
+617:             Updated observation of shape (K + 6,), dtype float32.
+618:         reward : float
+619:             Scalar reward for this step.
+620:         terminated : bool
+621:             True if the agent buzzed (natural episode end).
+622:         truncated : bool
+623:             True if all clues were exhausted (forced termination).
+624:         info : dict[str, Any]
+625:             Step metadata. Always contains ``"qid"`` and ``"step_idx"``.
+626:             On BUZZ: also ``"chosen_idx"`` and ``"correct"``.
+627:             On forced termination in ``force_commit`` mode: also
+628:             ``"forced_choice"`` and ``"forced_correct"``.
+629:             On forced termination in ``no_buzz`` mode: also ``"no_buzz"``,
+630:             ``"forced_choice" = -1``, and ``"forced_correct" = False``.
+631: 
+632:         Raises
+633:         ------
+634:         RuntimeError
+635:             If called before ``reset()`` or after episode has ended.
+636:         ValueError
+637:             If ``action`` is not in the action space.
+638:         """
+639:         if self.question is None:
+640:             raise RuntimeError("Environment must be reset() before step().")
+641:         if self.terminated or self.truncated:
+642:             raise RuntimeError("Cannot call step() on terminated/truncated episode.")
+643:         if not self.action_space.contains(action):
+644:             raise ValueError(f"Invalid action: {action}")
+645:         if self.variable_K and action > 0:
+646:             actual_k = len(self.question.options)
+647:             if action - 1 >= actual_k:
+648:                 raise ValueError(
+649:                     f"Buzz action {action} targets padded option index "
+650:                     f"{action - 1}, but question only has {actual_k} options"
+651:                 )
+652: 
+653:         info: dict[str, Any] = {"qid": self.question.qid}
+654:         reward = 0.0
+655: 
+656:         if action == 0:
+657:             # WAIT: reveal next clue and update belief
+658:             self.prev_belief = self.belief.copy()
+659:             self.belief = self._compute_belief(self.question, self.step_idx)
+660:             if self.reward_mode == "time_penalty":
+661:                 reward -= self.wait_penalty
+662: 
+663:             self.step_idx += 1
+664:             if self.step_idx >= self.total_steps:
+665:                 last_seen = self.step_idx - 1
+666:                 self.truncated = True
+667:                 info["step_idx"] = last_seen
+668:                 if self.end_mode == "force_commit":
+669:                     forced_choice = int(np.argmax(self.belief))
+670:                     reward += self._buzz_reward(self.question, forced_choice, last_seen)
+671:                     info["forced_choice"] = forced_choice
+672:                     info["forced_correct"] = forced_choice == self.question.gold_index
+673:                 elif self.end_mode == "no_buzz":
+674:                     reward += self.no_buzz_reward
+675:                     info["no_buzz"] = True
+676:                     info["forced_choice"] = -1
+677:                     info["forced_correct"] = False
+678:                 else:
+679:                     raise ValueError(f"Unknown end_mode: {self.end_mode}")
+680:             else:
+681:                 info["step_idx"] = self.step_idx
+682: 
+683:         else:
+684:             # BUZZ: select an answer option
+685:             last_seen = max(0, self.step_idx - 1)
+686:             chosen_idx = action - 1
+687:             reward += self._buzz_reward(self.question, chosen_idx, last_seen)
+688:             self.terminated = True
+689:             info["step_idx"] = last_seen
+690:             info["chosen_idx"] = chosen_idx
+691:             info["correct"] = chosen_idx == self.question.gold_index
+692: 
+693:         obs = self._obs()
+694:         return obs, float(reward), self.terminated, self.truncated, info
+695: 
+696: 
+697: def make_env_from_config(
+698:     mc_questions: list[MCQuestion],
+699:     likelihood_model: LikelihoodModel,
+700:     config: dict[str, Any],
+701:     precomputed_beliefs: dict[tuple[int, int], np.ndarray] | None = None,
+702: ) -> TossupMCEnv:
+703:     """Construct a TossupMCEnv from YAML configuration.
+704: 
+705:     Factory function that reads the ``environment``, ``data``, and
+706:     ``likelihood`` sections of a config dict and instantiates a fully
+707:     configured environment. The likelihood model must be pre-constructed
+708:     (e.g., via ``build_likelihood_from_config``).
+709: 
+710:     Parameters
+711:     ----------
+712:     mc_questions : list[MCQuestion]
+713:         List of MCQuestion instances with options and answer profiles.
+714:         Must be non-empty.
+715:     likelihood_model : LikelihoodModel
+716:         Pre-constructed likelihood model for scoring clues against options.
+717:         Use ``build_likelihood_from_config`` to create one from config.
+718:     config : dict[str, Any]
+719:         Full YAML config dict. Must contain the following sections:
+720: 
+721:         - ``environment``: reward mode, penalties, belief mode
+722:         - ``data``: K (number of answer choices)
+723:         - ``likelihood``: beta (softmax temperature)
+724:     precomputed_beliefs : dict or None
+725:         Optional precomputed belief cache from ``precompute_beliefs()``.
+726:         When provided, ``_compute_belief`` uses O(1) lookups instead of
+727:         calling ``likelihood_model.score()``.
+728: 
+729:     Returns
+730:     -------
+731:     TossupMCEnv
+732:         A configured Gymnasium environment ready for ``reset()``.
+733: 
+734:     Examples
+735:     --------
+736:     >>> from qb_data.config import load_config
+737:     >>> from models.likelihoods import build_likelihood_from_config
+738:     >>> config = load_config("configs/default.yaml")
+739:     >>> model = build_likelihood_from_config(config, corpus_texts=corpus)
+740:     >>> env = make_env_from_config(mc_questions, model, config)
+741:     >>> obs, info = env.reset()
+742:     """
+743:     from qb_env.opponent_models import build_opponent_model_from_config
+744: 
+745:     env_cfg = config["environment"]
+746:     data_cfg = config["data"]
+747:     lik_cfg = config["likelihood"]
+748:     variable_k = bool(data_cfg.get("variable_K", False) or env_cfg.get("variable_K", False))
+749:     max_k_raw = data_cfg.get("max_K") or env_cfg.get("max_K")
+750:     opponent_model = build_opponent_model_from_config(
+751:         questions=mc_questions, config=config,
+752:     )
+753:     return TossupMCEnv(
+754:         questions=mc_questions,
+755:         likelihood_model=likelihood_model,
+756:         K=int(data_cfg.get("K", 4)),
+757:         reward_mode=str(env_cfg.get("reward", env_cfg.get("reward_mode", "time_penalty"))),
+758:         seed=int(env_cfg.get("seed", 13)),
+759:         wait_penalty=float(env_cfg.get("wait_penalty", 0.01)),
+760:         early_buzz_penalty=float(env_cfg.get("early_buzz_penalty", 0.0)),
+761:         buzz_correct=float(env_cfg.get("buzz_correct", 1.0)),
+762:         buzz_incorrect=float(env_cfg.get("buzz_incorrect", -0.5)),
+763:         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
+764:         beta=float(lik_cfg.get("beta", 5.0)),
+765:         precomputed_beliefs=precomputed_beliefs,
+766:         opponent_buzz_model=opponent_model,
+767:         end_mode=str(env_cfg.get("end_mode", "force_commit")),
+768:         no_buzz_reward=float(env_cfg.get("no_buzz_reward", 0.0)),
+769:         variable_K=variable_k,
+770:         max_K=int(max_k_raw) if max_k_raw is not None else None,
+771:         use_action_masking=bool(env_cfg.get("use_action_masking", False)),
+772:     )
+</file>
+
+<file path="scripts/_common.py">
+  1: """Shared utilities for pipeline scripts.
+  2: 
+  3: Provides config loading, JSON serialization, MC question deserialization,
+  4: and path constants used across all pipeline scripts (build, baseline, train,
+  5: evaluate).
+  6: 
+  7: Ported from qb-rl reference implementation with import path adaptations
+  8: for the unified qanta-buzzer codebase.
+  9: """
+ 10: 
+ 11: from __future__ import annotations
+ 12: 
+ 13: import argparse
+ 14: import json
+ 15: from dataclasses import asdict, is_dataclass
+ 16: from pathlib import Path
+ 17: from typing import Any
+ 18: 
+ 19: from models.likelihoods import LikelihoodModel, build_likelihood_from_config
+ 20: from qb_data.config import load_config as load_yaml_config
+ 21: from qb_data.mc_builder import MCQuestion
+ 22: 
+ 23: PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ 24: 
+ 25: 
+ 26: def _parse_value(value: str) -> Any:
+ 27:     """Parse a CLI override value string into a typed Python value.
+ 28: 
+ 29:     Tries JSON first, then bool/int/float, and falls back to str.
+ 30:     """
+ 31:     try:
+ 32:         return json.loads(value)
+ 33:     except json.JSONDecodeError:
+ 34:         pass
+ 35:     if value.lower() == "true":
+ 36:         return True
+ 37:     if value.lower() == "false":
+ 38:         return False
+ 39:     if value.lstrip("-").isdigit():
+ 40:         return int(value)
+ 41:     try:
+ 42:         return float(value)
+ 43:     except ValueError:
+ 44:         return value
+ 45: 
+ 46: 
+ 47: def parse_overrides(args: argparse.Namespace) -> dict[str, Any]:
+ 48:     """Parse CLI override arguments into flat dotted-key overrides.
+ 49: 
+ 50:     Returns a dict with dotted keys (e.g. ``{"data.K": 5}``) that
+ 51:     ``merge_overrides`` can apply leaf-by-leaf without clobbering
+ 52:     sibling config entries.
+ 53: 
+ 54:     Parameters
+ 55:     ----------
+ 56:     args : argparse.Namespace
+ 57:         Parsed CLI arguments.  Positional ``overrides`` are
+ 58:         ``key=value`` strings where *key* uses dot-notation
+ 59:         (e.g. ``data.K=5``).
+ 60: 
+ 61:     Returns
+ 62:     -------
+ 63:     dict[str, Any]
+ 64:         Flat dotted-key overrides ready for ``merge_overrides()``.
+ 65:     """
+ 66:     overrides: dict[str, Any] = {}
+ 67:     if hasattr(args, "overrides") and args.overrides:
+ 68:         for token in args.overrides:
+ 69:             if "=" not in token:
+ 70:                 continue
+ 71:             key, value = token.split("=", 1)
+ 72:             overrides[key] = _parse_value(value)
+ 73:     return overrides
+ 74: DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "default.yaml"
+ 75: ARTIFACT_DIR = PROJECT_ROOT / "artifacts"
+ 76: 
+ 77: 
+ 78: def load_config(config_path: str | None = None, smoke: bool = False) -> dict[str, Any]:
+ 79:     """Load YAML configuration from a file path.
+ 80: 
+ 81:     Parameters
+ 82:     ----------
+ 83:     config_path : str or None
+ 84:         Path to YAML config file. If None, loads ``configs/default.yaml``.
+ 85: 
+ 86:     Returns
+ 87:     -------
+ 88:     dict[str, Any]
+ 89:         Parsed config dict with nested structure (data, likelihood,
+ 90:         environment, ppo, etc.).
+ 91:     """
+ 92:     return load_yaml_config(config_path, smoke=smoke)
+ 93: 
+ 94: 
+ 95: def build_likelihood_model(config: dict[str, Any], mc_questions: list[MCQuestion]):
+ 96:     """Build a likelihood model with shared TF-IDF corpus handling."""
+ 97:     corpus = None
+ 98:     if config["likelihood"].get("model") == "tfidf":
+ 99:         corpus = [q.question for q in mc_questions] + [
+100:             profile
+101:             for question in mc_questions
+102:             for profile in question.option_profiles
+103:         ]
+104:     return build_likelihood_from_config(config, corpus_texts=corpus)
+105: 
+106: 
+107: def ensure_dir(path: str | Path) -> Path:
+108:     """Create a directory (and parents) if it does not exist.
+109: 
+110:     Parameters
+111:     ----------
+112:     path : str or Path
+113:         Directory path to create.
+114: 
+115:     Returns
+116:     -------
+117:     Path
+118:         The created (or existing) directory path.
+119:     """
+120:     p = Path(path)
+121:     p.mkdir(parents=True, exist_ok=True)
+122:     return p
+123: 
+124: 
+125: def to_serializable(item: Any) -> Any:
+126:     """Recursively convert dataclasses to dicts for JSON serialization.
+127: 
+128:     Parameters
+129:     ----------
+130:     item : Any
+131:         Object to convert. Dataclasses are converted via ``asdict()``,
+132:         dicts and lists are processed recursively.
+133: 
+134:     Returns
+135:     -------
+136:     Any
+137:         JSON-serializable version of the input.
+138:     """
+139:     if is_dataclass(item):
+140:         return asdict(item)
+141:     if isinstance(item, dict):
+142:         return {k: to_serializable(v) for k, v in item.items()}
+143:     if isinstance(item, list):
+144:         return [to_serializable(v) for v in item]
+145:     return item
+146: 
+147: 
+148: def save_json(path: str | Path, data: Any) -> Path:
+149:     """Save data to a JSON file, creating parent directories as needed.
+150: 
+151:     Applies ``to_serializable`` to convert dataclasses before writing.
+152: 
+153:     Parameters
+154:     ----------
+155:     path : str or Path
+156:         Output file path.
+157:     data : Any
+158:         Data to serialize. Dataclasses are converted to dicts automatically.
+159: 
+160:     Returns
+161:     -------
+162:     Path
+163:         The path where the JSON was written.
+164:     """
+165:     p = Path(path)
+166:     p.parent.mkdir(parents=True, exist_ok=True)
+167:     with p.open("w", encoding="utf-8") as f:
+168:         json.dump(to_serializable(data), f, indent=2)
+169:     return p
+170: 
+171: 
+172: def load_json(path: str | Path) -> Any:
+173:     """Load data from a JSON file.
+174: 
+175:     Parameters
+176:     ----------
+177:     path : str or Path
+178:         Path to JSON file.
+179: 
+180:     Returns
+181:     -------
+182:     Any
+183:         Parsed JSON data.
+184:     """
+185:     with Path(path).open("r", encoding="utf-8") as f:
+186:         return json.load(f)
+187: 
+188: 
+189: def mc_question_from_dict(row: dict[str, Any]) -> MCQuestion:
+190:     """Reconstruct an MCQuestion dataclass from a JSON-deserialized dict.
+191: 
+192:     Parameters
+193:     ----------
+194:     row : dict[str, Any]
+195:         Dictionary with all MCQuestion fields.
+196: 
+197:     Returns
+198:     -------
+199:     MCQuestion
+200:         Reconstructed MCQuestion instance.
+201:     """
+202:     return MCQuestion(
+203:         qid=row["qid"],
+204:         question=row["question"],
+205:         tokens=list(row["tokens"]),
+206:         answer_primary=row["answer_primary"],
+207:         clean_answers=list(row["clean_answers"]),
+208:         run_indices=list(row["run_indices"]),
+209:         human_buzz_positions=row.get("human_buzz_positions"),
+210:         category=row.get("category", ""),
+211:         cumulative_prefixes=list(row["cumulative_prefixes"]),
+212:         options=list(row["options"]),
+213:         gold_index=int(row["gold_index"]),
+214:         option_profiles=list(row["option_profiles"]),
+215:         option_answer_primary=list(row["option_answer_primary"]),
+216:         distractor_strategy=row.get("distractor_strategy", "unknown"),
+217:     )
+218: 
+219: 
+220: def load_mc_questions(path: str | Path) -> list[MCQuestion]:
+221:     """Load and deserialize a list of MCQuestions from a JSON file.
+222: 
+223:     Parameters
+224:     ----------
+225:     path : str or Path
+226:         Path to JSON file containing a list of serialized MCQuestion dicts.
+227: 
+228:     Returns
+229:     -------
+230:     list[MCQuestion]
+231:         List of reconstructed MCQuestion instances.
+232:     """
+233:     raw = load_json(path)
+234:     return [mc_question_from_dict(item) for item in raw]
+235: 
+236: 
+237: # ------------------------------------------------------------------ #
+238: # Embedding cache persistence helpers
+239: # ------------------------------------------------------------------ #
+240: 
+241: 
+242: def embedding_cache_path(config: dict[str, Any]) -> Path:
+243:     """Return the resolved embedding cache file path from config.
+244: 
+245:     Uses ``config['likelihood']['cache_dir']`` (default ``'cache/embeddings'``)
+246:     and appends ``'embedding_cache_{model}.npz'`` where ``{model}`` is the
+247:     likelihood model name from config (e.g., ``tfidf``, ``t5-base``).
+248: 
+249:     Parameters
+250:     ----------
+251:     config : dict
+252:         Full YAML config dict.
+253: 
+254:     Returns
+255:     -------
+256:     Path
+257:         Absolute path to the embedding cache ``.npz`` file.
+258:     """
+259:     lik_cfg = config.get("likelihood", {})
+260:     cache_dir = lik_cfg.get("cache_dir", "cache/embeddings")
+261:     model_name = str(lik_cfg.get("model", "unknown")).replace("/", "_")
+262:     return PROJECT_ROOT / cache_dir / f"embedding_cache_{model_name}.npz"
+263: 
+264: 
+265: def load_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
+266:     """Load persisted embedding cache into model if file exists.
+267: 
+268:     Parameters
+269:     ----------
+270:     model : LikelihoodModel
+271:         Likelihood model whose embedding_cache will be populated.
+272:     config : dict
+273:         Full YAML config dict (used to resolve cache path).
+274:     """
+275:     path = embedding_cache_path(config)
+276:     n = model.load_cache(path)
+277:     if n > 0:
+278:         print(f"Loaded {n} cached embeddings from {path}")
+279: 
+280: 
+281: def save_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:
+282:     """Persist model's embedding cache to disk.
+283: 
+284:     Parameters
+285:     ----------
+286:     model : LikelihoodModel
+287:         Likelihood model whose embedding_cache will be saved.
+288:     config : dict
+289:         Full YAML config dict (used to resolve cache path).
+290:     """
+291:     path = embedding_cache_path(config)
+292:     n = model.save_cache(path)
+293:     if n > 0:
+294:         print(f"Saved {n} embeddings to {path}")
 </file>
 
 <file path="scripts/evaluate_all.py">
