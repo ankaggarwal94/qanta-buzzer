@@ -132,7 +132,7 @@ def evaluate_mlp_policy(
         "mean_sq": buzz_metrics["mean_sq"],
         "ece": ece,
         "brier": brier,
-        "avg_buzz_pos": float(np.mean(buzz_positions)) if buzz_positions else 0.0,
+        "avg_buzz_pos": buzz_metrics.get("mean_buzz_step", 0.0),
         "mean_reward": buzz_metrics["mean_reward_like"],
         "n_questions": len(test_questions),
     }
