@@ -208,7 +208,7 @@ cp artifacts/main/baseline_summary.json results/baselines_k4.json
 | 7 | PPO multi-seed | `~6m` total | seed1 acc=`0.2445`, `S_q=0.2445`; seed2 acc=`0.2445`, `S_q=0.2445`; seed3 acc=`0.9755`, `S_q=0.000069` | No | Pass | Very high variance / multimodal collapse |
 | 8 | Reward sweep (smoke) | `~2m` | best config `wait_penalty=0.0`, `early_buzz_penalty=0.8`; acc=`0.3712`, `S_q=0.2914`, objective=`0.6219` | No | Pass | Captured to `results/phase_8_sweep.txt`; script also wrote `artifacts/smoke/reward_sweep_results.{json,csv}` |
 | 9 | Distractor comparison | `~7m` total | `SBERT`: best seqbayes `S_q=0.7413`; `tfidf_profile`: `0.6651`; `category_random`: `0.7962` | No | Pass | Category-random performed best on this run |
-| 10 | Variable-K baselines | `~1m25s` | mixed-K distribution `{2:3875,3:3492,4:3232,5:2859,6:2585}`; best seqbayes `S_q=0.7804 @ 0.6` | No | Pass | Baselines only; PPO/MaskablePPO still not wired |
+| 10 | Variable-K baselines | `~1m25s` | mixed-K distribution `{2:3875,3:3492,4:3232,5:2859,6:2585}`; best seqbayes `S_q=0.7804 @ 0.6` | No | Pass | Baselines only; MaskablePPO now wired via `ppo.use_maskable_ppo` config |
 | 11 | Expected Wins eval | `~1m42s` | `mean_ew=4.4929` vs logistic opponent; `full_eval` metrics unchanged from Phase 4 report | No | Pass | Evaluates baseline agents, not PPO |
 | 11b | EW-trained PPO | `~1m25s` | acc=`0.2525`, `S_q=0.2525`, reward-like=`-0.2777` | No | Pass | Converged to the same degenerate regime as default PPO |
 | 11c | Expected Wins eval (empirical opponent) | `~1m00s` | `mean_ew=4.4929`; `full_eval` acc=`0.9748`, `S_q=0.6858` | No | Pass | Empirical-opponent EW matched logistic-opponent EW in this run |

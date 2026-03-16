@@ -261,8 +261,10 @@ def embedding_cache_path(config: dict[str, Any]) -> Path:
     model_family = str(lik_cfg.get("model", "unknown"))
     if model_family == "sbert":
         variant = lik_cfg.get("sbert_name", lik_cfg.get("embedding_model", "all-MiniLM-L6-v2"))
+    elif model_family == "openai":
+        variant = lik_cfg.get("openai_model", "text-embedding-3-small")
     elif model_family.startswith("t5"):
-        variant = lik_cfg.get("t5_name", model_family)
+        variant = model_family
     else:
         variant = model_family
     safe_name = str(variant).replace("/", "_")

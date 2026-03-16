@@ -165,6 +165,10 @@ class PPOBuzzer:
     def save(self, path: str | Path) -> None:
         """Save the trained PPO model to disk.
 
+        The checkpoint does not record whether it was trained with PPO or
+        MaskablePPO. Callers must pass ``use_maskable_ppo`` to ``load()``
+        matching the training configuration.
+
         Parameters
         ----------
         path : str or Path
