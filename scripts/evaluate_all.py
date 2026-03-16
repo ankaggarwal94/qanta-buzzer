@@ -356,10 +356,11 @@ def main() -> None:
         "agent": "shuffle_control",
         **{k: v for k, v in shuffle_eval.items() if k != "runs"},
     })
-    table_rows.append({
-        "agent": "alias_control",
-        **{k: v for k, v in alias_eval.items() if k != "runs"},
-    })
+    if not alias_control_report.get("skipped"):
+        table_rows.append({
+            "agent": "alias_control",
+            **{k: v for k, v in alias_control_report.items() if k != "runs"},
+        })
 
     # Add PPO if available
     if ppo_summary:
