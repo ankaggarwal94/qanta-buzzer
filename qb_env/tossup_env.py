@@ -16,7 +16,10 @@ for the unified qanta-buzzer codebase.
 from __future__ import annotations
 
 import random
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from qb_env.opponent_models import OpponentBuzzModel
 
 import gymnasium as gym
 import numpy as np
