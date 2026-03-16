@@ -1,6 +1,6 @@
 # Codex: Full Clean Pipeline Run (All Non-API Phases)
 
-**Generated:** 2026-03-16 | **Repo commit:** `0fcfec7` (review-fixes branch)
+**Generated:** 2026-03-16 | **Repo commit:** `4786a06` (review-fixes branch)
 
 ## Critical: Use the Main Repo
 
@@ -15,7 +15,9 @@ Do **NOT** use any Codex worktree at `~/.codex/worktrees/*/`.
 
 Run the complete qanta-buzzer pipeline from scratch — all phases except those
 requiring OpenAI/DSPy API keys. This is a clean run on the codebase that
-includes the 8 runtime correctness fixes from PR #13.
+includes all runtime correctness fixes from PR #13: opponent model wiring,
+variable-K belief shapes, model-variant-specific embedding cache, no-buzz
+calibration, padded action guards, and full MaskablePPO train/load/eval wiring.
 
 Produce `results/FULL_RUN_REPORT.md` as the canonical handoff artifact.
 
@@ -271,7 +273,7 @@ bash -n scripts/run_full_pipeline.sh
 - If MPS causes issues: set `PYTORCH_MPS_FALLBACK=1`, document the error
 - If `artifacts/main/` is clobbered: restore from `results/` archives
 - Phase ordering: Wave 1 is parallel; everything else is sequential
-- The 8 correctness fixes in this codebase mean: opponent models are now wired in EW PPO, variable-K belief shapes are correct, embedding cache is model-scoped, no-buzz calibration is clean, and padded actions are rejected
+- Correctness fixes in this codebase: opponent models wired in EW PPO via `make_env_from_config`, variable-K belief shapes use question-local K, embedding cache keyed by model variant (not family), no-buzz calibration skips `buzz_step<0`, padded actions rejected in `step()`, MaskablePPO fully wired through train/load/eval, TF-IDF cache load is a no-op
 
 ## Success Criteria
 
