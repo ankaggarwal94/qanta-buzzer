@@ -166,6 +166,19 @@ def main() -> None:
     beta = float(config["likelihood"].get("beta", 5.0))
     alpha = float(config["bayesian"].get("alpha", 10.0))
     thresholds = [float(x) for x in config["bayesian"]["threshold_sweep"]]
+    env_cfg = config.get("environment", {})
+    reward_mode = str(env_cfg.get("reward_mode", "time_penalty"))
+    wait_penalty = float(env_cfg.get("wait_penalty", 0.0))
+    buzz_correct = float(env_cfg.get("buzz_correct", 1.0))
+    buzz_incorrect = float(env_cfg.get("buzz_incorrect", -0.5))
+    early_buzz_penalty = float(env_cfg.get("early_buzz_penalty", 0.0))
+
+    if reward_mode not in {"time_penalty", "simple"}:
+        print(
+            "Warning: exact baseline reward parity is only supported for "
+            "time_penalty and simple reward modes. Reported mean_reward_like "
+            "will not be config-comparable in this run."
+        )
 
     print(f"Beta: {beta}, Alpha: {alpha}")
     print(f"Thresholds: {thresholds}")
@@ -193,6 +206,11 @@ def main() -> None:
         thresholds=thresholds,
         beta=beta,
         alpha=alpha,
+        reward_mode=reward_mode,
+        wait_penalty=wait_penalty,
+        buzz_correct=buzz_correct,
+        buzz_incorrect=buzz_incorrect,
+        early_buzz_penalty=early_buzz_penalty,
         precomputed=precomputed,
     )
 
@@ -209,7 +227,18 @@ def main() -> None:
     softmax_summary: dict[str, dict] = {}
     for threshold in thresholds:
         results = [
-            asdict(_softmax_episode_from_precomputed(pq, threshold, alpha))
+            asdict(
+                _softmax_episode_from_precomputed(
+                    pq,
+                    threshold,
+                    alpha,
+                    reward_mode=reward_mode,
+                    wait_penalty=wait_penalty,
+                    buzz_correct=buzz_correct,
+                    buzz_incorrect=buzz_incorrect,
+                    early_buzz_penalty=early_buzz_penalty,
+                )
+            )
             for pq in precomputed
         ]
         softmax_payload[str(threshold)] = results
@@ -225,6 +254,11 @@ def main() -> None:
         thresholds=thresholds,
         beta=beta,
         alpha=alpha,
+        reward_mode=reward_mode,
+        wait_penalty=wait_penalty,
+        buzz_correct=buzz_correct,
+        buzz_incorrect=buzz_incorrect,
+        early_buzz_penalty=early_buzz_penalty,
         precomputed=seq_precomputed,
     )
     sequential_payload: dict[str, list[dict]] = {}
@@ -236,7 +270,19 @@ def main() -> None:
 
     # --- AlwaysBuzzFinal (reuse from_scratch precomputed beliefs) ---
     print("Running AlwaysBuzzFinal baseline (precomputed)...")
-    floor_runs = [asdict(_always_final_from_precomputed(pq)) for pq in precomputed]
+    floor_runs = [
+        asdict(
+            _always_final_from_precomputed(
+                pq,
+                reward_mode=reward_mode,
+                wait_penalty=wait_penalty,
+                buzz_correct=buzz_correct,
+                buzz_incorrect=buzz_incorrect,
+                early_buzz_penalty=early_buzz_penalty,
+            )
+        )
+        for pq in precomputed
+    ]
     floor_summary = summarize(floor_runs)
 
     # --- Save artifacts ---
@@ -253,6 +299,7 @@ def main() -> None:
         "always_final": floor_summary,
         "dataset_split": dataset_split,
         "selection_metric": "mean_sq",
+        "reward_supported": reward_mode in {"time_penalty", "simple"},
     }
     save_json(out_dir / "baseline_summary.json", summary)
 
