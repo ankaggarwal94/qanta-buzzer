@@ -412,12 +412,16 @@ class TestMaskablePPO:
                 self.distribution = types.SimpleNamespace(
                     probs=th.tensor([[0.8, 0.2]], dtype=th.float32)
                 )
+                self._masking_applied = False
+
+            def apply_masking(self, masks):
+                self._masking_applied = True
+                seen["masks"] = masks
 
         seen = {}
 
         class FakePolicy:
-            def get_distribution(self, obs_tensor, action_masks=None):
-                seen["masks"] = action_masks
+            def get_distribution(self, obs_tensor):
                 return FakeDist()
 
         class FakeModel:

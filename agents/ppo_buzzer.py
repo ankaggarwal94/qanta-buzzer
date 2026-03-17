@@ -240,12 +240,9 @@ class PPOBuzzer:
         ).unsqueeze(0)
 
         masks = self._current_action_masks()
+        dist = self.model.policy.get_distribution(obs_tensor)
         if masks is not None:
-            dist = self.model.policy.get_distribution(
-                obs_tensor, action_masks=th.as_tensor(masks, dtype=th.bool).unsqueeze(0)
-            )
-        else:
-            dist = self.model.policy.get_distribution(obs_tensor)
+            dist.apply_masking(th.as_tensor(masks, dtype=th.bool).unsqueeze(0))
 
         probs = dist.distribution.probs[0].detach().cpu().numpy()
         return probs.astype(np.float32)
