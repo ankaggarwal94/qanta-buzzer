@@ -38,7 +38,7 @@ Two prior review rounds found and fixed **12 issues total**:
 
 ## Current state
 
-- 320 tests pass, 3 skipped (optional extras not installed)
+- 365 tests pass, 4 skipped (3 optional extras + 1 E2E pipeline)
 - Smoke pipeline and T5 smoke both green
 - Three opt-in extensions: Expected Wins, Variable-K, DSPy (all disabled by default)
 - Optional extras: `[openai]`, `[maskable]`, `[dspy]`
@@ -58,7 +58,7 @@ These are explicitly documented in `.planning/quick/extensions-master-run.md` an
 
 1. Full 100k PPO training run not verified end-to-end
 2. SBERT/T5-large likelihood paths not exercised locally
-3. MaskablePPO path untested at integration level (requires sb3-contrib)
+3. MaskablePPO path now has focused unit coverage, but still lacks a full long-running `sb3-contrib` integration training pass
 4. DSPy compile/optimize requires live LM backend not tested locally
 5. compare_policies S_q/reward comparisons remain qualitative across architectures
 6. TF-IDF cache memory grows with corpus size
@@ -125,7 +125,7 @@ Focus on the extension test files:
 
 Verify these specific factual claims against the code:
 
-1. README says "320 tests across 22 test files" — count the actual `test_*.py` files in the tests/ directory listing and test count in the attached code
+1. README says "369 tests across 28 test files" — count the actual `test_*.py` files in the tests/ directory listing and test count in the attached code
 2. README says "Four reward modes: time_penalty, simple, human_grounded, expected_wins" — verify `_buzz_reward()` in `tossup_env.py` dispatches all four
 3. AGENTS.md says `evaluation/` contains "Expected Wins" — verify `expected_wins_score` exists in `evaluation/metrics.py`
 4. The `dspy` config section in `default.yaml` — verify every key is read by some code path

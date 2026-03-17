@@ -1,6 +1,21 @@
 # Codebase Concerns
 
-**Analysis Date:** 2026-02-24
+**Analysis Date:** 2026-02-24 (original), 2026-03-16 (runtime fixes update)
+
+## Recently Fixed (2026-03-16)
+
+The following concerns were identified by ChatGPT 5.4 Pro and Copilot code review and are now resolved:
+
+- **Expected Wins factory wiring:** `make_env_from_config()` now builds and passes `opponent_buzz_model` from config
+- **Variable-K belief shape mismatch:** `reset()` and `precompute_beliefs()` use question-local K
+- **Embedding cache cross-model contamination:** cache filename includes model variant (sbert_name, t5_name, openai_model); TF-IDF `load_cache()` is a no-op
+- **No-buzz calibration bias:** unified via `calibration_pairs_at_buzz()` helper; all consumers (metrics, compare_policies, evaluate_all) use one codepath that skips `buzz_step < 0`
+- **Padded action acceptance:** `step()` rejects padded buzz actions in variable-K mode
+- **MaskablePPO wiring:** fully wired train/save/load/eval; `action_probabilities()` passes `action_masks` to the policy distribution when maskable
+- **Deterministic eval loop:** `compare_policies.py` passes `question_idx=i` for per-question evaluation instead of random sampling with replacement
+- **StopOnlyEnv action masks:** `action_masks()` exposes binary WAIT/BUZZ mask; BUZZ disabled when belief is unavailable
+- **Eval config resolution:** `compare_policies.py` loads `config_used.json` sidecar from checkpoint dir instead of hardcoding TfIdfLikelihood
+- **Config sidecar:** `train_ppo.py` saves `config_used.json` next to the checkpoint for eval reproducibility
 
 ## Tech Debt
 

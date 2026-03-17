@@ -165,6 +165,10 @@ class PPOBuzzer:
     def save(self, path: str | Path) -> None:
         """Save the trained PPO model to disk.
 
+        The checkpoint does not record whether it was trained with PPO or
+        MaskablePPO. Callers must pass ``use_maskable_ppo`` to ``load()``
+        matching the training configuration.
+
         Parameters
         ----------
         path : str or Path
@@ -173,7 +177,12 @@ class PPOBuzzer:
         self.model.save(str(path))
 
     @classmethod
-    def load(cls, path: str | Path, env: TossupMCEnv) -> "PPOBuzzer":
+    def load(
+        cls,
+        path: str | Path,
+        env: TossupMCEnv,
+        use_maskable_ppo: bool = False,
+    ) -> "PPOBuzzer":
         """Load a previously saved PPO model.
 
         Parameters
@@ -182,18 +191,46 @@ class PPOBuzzer:
             Path to the saved model file.
         env : TossupMCEnv
             Environment to attach to the loaded model.
+        use_maskable_ppo : bool
+            If True, load with ``MaskablePPO`` from sb3-contrib instead
+            of plain SB3 ``PPO``.
 
         Returns
         -------
         PPOBuzzer
             A PPOBuzzer with the loaded model weights.
         """
-        agent = cls(env=env)
-        agent.model = PPO.load(str(path), env=env)
+        agent = cls.__new__(cls)
+        agent.env = env
+        agent._use_maskable = use_maskable_ppo
+        if use_maskable_ppo:
+            try:
+                from sb3_contrib import MaskablePPO
+            except ImportError as exc:
+                raise ImportError(
+                    "MaskablePPO requires sb3-contrib. "
+                    "Install with: pip install -e '.[maskable]'"
+                ) from exc
+            agent.model = MaskablePPO.load(str(path), env=env)
+        else:
+            agent.model = PPO.load(str(path), env=env)
         return agent
+
+    def _current_action_masks(self) -> np.ndarray | None:
+        """Return action masks from the env, or None if not maskable."""
+        if not self._use_maskable:
+            return None
+        env_for_mask = self.env if hasattr(self.env, "action_masks") else self._base_env()
+        if not hasattr(env_for_mask, "action_masks"):
+            return None
+        return np.asarray(env_for_mask.action_masks(), dtype=bool)
 
     def action_probabilities(self, obs: np.ndarray) -> np.ndarray:
         """Extract action probabilities from the policy for a given observation.
+
+        When ``use_maskable_ppo=True``, passes ``action_masks`` to the
+        policy distribution so that probabilities for invalid actions are
+        zeroed out before action selection.
 
         Parameters
         ----------
@@ -209,7 +246,15 @@ class PPOBuzzer:
         obs_tensor = th.as_tensor(
             obs, dtype=th.float32, device=self.model.device
         ).unsqueeze(0)
+
+        masks = self._current_action_masks()
         dist = self.model.policy.get_distribution(obs_tensor)
+        if masks is not None:
+            masks_tensor = th.as_tensor(
+                masks, dtype=th.bool, device=self.model.device
+            ).unsqueeze(0)
+            dist.apply_masking(masks_tensor)
+
         probs = dist.distribution.probs[0].detach().cpu().numpy()
         return probs.astype(np.float32)
 

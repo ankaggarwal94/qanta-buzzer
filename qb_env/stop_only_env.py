@@ -43,5 +43,24 @@ class StopOnlyEnv(gym.Wrapper):
         if self.answer_mode != "argmax_belief":
             raise ValueError(f"Unknown answer_mode: {self.answer_mode}")
 
-        chosen_idx = int(np.argmax(self.env.belief))
+        belief = getattr(self.env, "belief", None)
+        if belief is None or len(belief) == 0:
+            raise ValueError("BUZZ is invalid when belief is unavailable")
+
+        chosen_idx = int(np.argmax(belief))
         return self.env.step(1 + chosen_idx)
+
+    def action_masks(self) -> np.ndarray:
+        """Return a binary action mask for the WAIT/BUZZ action space.
+
+        WAIT (0) is always valid. BUZZ (1) is valid when the wrapped env
+        has a non-empty belief vector that argmax can act on.
+        """
+        mask = np.array([True, False], dtype=bool)
+        if (
+            self.answer_mode == "argmax_belief"
+            and getattr(self.env, "belief", None) is not None
+            and len(self.env.belief) > 0
+        ):
+            mask[1] = True
+        return mask

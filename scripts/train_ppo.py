@@ -90,6 +90,10 @@ def parse_args() -> argparse.Namespace:
         help="Policy action space: flat K+1 actions (default) or binary stop_only.",
     )
     parser.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Override output directory (default: artifacts/<split>).",
+    )
+    parser.add_argument(
         "overrides",
         nargs="*",
         help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
@@ -108,7 +112,8 @@ def main() -> None:
         config = merge_overrides(config, overrides)
 
     split = "smoke" if args.smoke else "main"
-    out_dir = ARTIFACT_DIR / split
+    out_dir = Path(args.output_dir) if args.output_dir else ARTIFACT_DIR / split
+    out_dir.mkdir(parents=True, exist_ok=True)
     mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
 
     # Fallback: check data/processed/ if artifacts path doesn't exist
@@ -156,6 +161,9 @@ def main() -> None:
         args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
     )
 
+    use_maskable = bool(ppo_cfg.get("use_maskable_ppo", False))
+    if use_maskable:
+        print("Using MaskablePPO for variable-K action masking")
     print(f"Training PPO for {total_timesteps} timesteps...")
     agent = PPOBuzzer(
         env=env,
@@ -167,11 +175,13 @@ def main() -> None:
         seed=train_seed,
         policy_kwargs=ppo_cfg.get("policy_kwargs", {"net_arch": [64, 64]}),
         verbose=1,
+        use_maskable_ppo=use_maskable,
     )
 
     agent.train(total_timesteps=total_timesteps)
     model_path = out_dir / "ppo_model"
     agent.save(model_path)
+    save_json(out_dir / "config_used.json", config)
 
     eval_deterministic = True
     if args.stochastic_eval:

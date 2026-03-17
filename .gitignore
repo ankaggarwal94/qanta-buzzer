@@ -3,3 +3,34 @@ __pycache__/
 venv/
 .venv/
 *.egg-info/
+
+# macOS / IDE
+.DS_Store
+.specstory/
+.cursorindexingignore
+
+# Large derived artifacts (reproducible from source, synced via Dropbox)
+# Dataset JSONs
+artifacts/*/mc_dataset.json
+artifacts/*/train_dataset.json
+artifacts/*/val_dataset.json
+artifacts/*/test_dataset.json
+# Per-episode trace files (tens of MB each)
+artifacts/*/baseline_*_runs.json
+artifacts/*/ppo_runs.json
+# Model files
+artifacts/*/ppo_model.zip
+# Answer profiles (derived from dataset)
+artifacts/*/answer_profiles.json
+# Exclude all non-smoke artifact directories entirely;
+# smoke/ is small enough to serve as CI reference output
+artifacts/main/
+artifacts/k[0-9]*/
+artifacts/distractor_*/
+
+# Full-run results (reproducible, kept locally via Dropbox)
+results/*.log
+results/*.zip
+
+# Model checkpoints and training state (synced via Dropbox, not git)
+checkpoints/

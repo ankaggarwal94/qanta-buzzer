@@ -45,7 +45,7 @@ source .venv/bin/activate && pytest -q 2>&1
 ........................................................................ [ 66%]
 ............................................s........................... [ 89%]
 ...................................                                      [100%]
-320 passed, 3 skipped in 52.84s
+365 passed, 4 skipped on the current review-fixes branch
 ```
 
 ## Four-stage belief-feature smoke pipeline
@@ -150,8 +150,12 @@ Beta: 5.0, Alpha: 10.0
 Thresholds: [0.5, 0.7, 0.9]
 
 Pre-computing embeddings for 441 unique texts...
-Pre-computing embeddings:   0%|          | 0/7 [00:00<?, ?it/s]Pre-computing embeddings: 100%|██████████| 7/7 [00:00<00:00, 689.04it/s]
-Computing beliefs:   0%|          | 0/44 [00:00<?, ?it/s]Computing beliefs: 100%|██████████| 44/44 [00:00<00:00, 8526.98it/s]
+
+Pre-computing embeddings:   0%|          | 0/7 [00:00<?, ?it/s]
+Pre-computing embeddings: 100%|██████████| 7/7 [00:00<00:00, 689.04it/s]
+
+Computing beliefs:   0%|          | 0/44 [00:00<?, ?it/s]
+Computing beliefs: 100%|██████████| 44/44 [00:00<00:00, 8526.98it/s]
 
 Running ThresholdBuzzer sweep...
 
@@ -2171,7 +2175,9 @@ Warning: alias_lookup.json not found at /Users/ankit.aggarwal/Dropbox/Stanford/C
 Building likelihood model: tfidf
 Using best softmax threshold: 0.5
 Precomputing beliefs...
-Computing beliefs:   0%|          | 0/44 [00:00<?, ?it/s]Computing beliefs: 100%|██████████| 44/44 [00:00<00:00, 905.09it/s]
+
+Computing beliefs:   0%|          | 0/44 [00:00<?, ?it/s]
+Computing beliefs: 100%|██████████| 44/44 [00:00<00:00, 905.09it/s]
 Running full evaluation...
 
 Computing per-category breakdown...
@@ -2214,7 +2220,9 @@ PHASE 1: SUPERVISED WARM-START
 SUPERVISED TRAINING PHASE
 ============================================================
 Loading T5 encoder: t5-small
-Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 15035.46it/s]
+
+Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]
+Loading weights: 100%|██████████| 51/51 [00:00<00:00, 15035.46it/s]
 Model Architecture:
   T5 encoder parameters: 35,330,816
   Policy head parameters: 528,135
@@ -2229,11 +2237,17 @@ Starting supervised training for 2 epochs
   Device: mps
 
 Epoch 1/2 - Train Loss: 1.3862, Train Acc: 0.1429 - Val Loss: 1.3858, Val Acc: 0.5000
-Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  4.39it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  4.38it/s]
+
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]
+Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  4.39it/s]
+Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  4.38it/s]
 Model saved to checkpoints/supervised/best_model
   -> New best validation accuracy: 0.5000
 Epoch 2/2 - Train Loss: 1.3580, Train Acc: 0.5357 - Val Loss: 1.3631, Val Acc: 0.7500
-Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  6.94it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  6.93it/s]
+
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]
+Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  6.94it/s]
+Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  6.93it/s]
 Model saved to checkpoints/supervised/best_model
   -> New best validation accuracy: 0.7500
 
@@ -2249,15 +2263,21 @@ PHASE 2: PPO FINE-TUNING (T5 Policy)
 PPO TRAINING PHASE (T5 Policy)
 ============================================================
 Loading pretrained model from checkpoints/supervised/best_model
-Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 8219.07it/s]
+
+Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]
+Loading weights: 100%|██████████| 51/51 [00:00<00:00, 8219.07it/s]
 Loading T5 encoder: checkpoints/supervised/best_model
-Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 11268.48it/s]
+
+Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]
+Loading weights: 100%|██████████| 51/51 [00:00<00:00, 11268.48it/s]
 Model Architecture:
   T5 encoder parameters: 35,330,816
   Policy head parameters: 528,135
   Total parameters: 35,858,951
   Device: mps
-Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 26102.44it/s]
+
+Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]
+Loading weights: 100%|██████████| 51/51 [00:00<00:00, 26102.44it/s]
 Model loaded from checkpoints/supervised/best_model
 Starting PPO training for 5 iterations
   Training questions: 30

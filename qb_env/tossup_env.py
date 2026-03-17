@@ -78,19 +78,21 @@ def precompute_beliefs(
     beta : float
         Softmax temperature for converting raw scores to probabilities.
     K : int
-        Number of answer options per question.
+        Deprecated — ignored. Each question uses ``len(question.options)``
+        as its local K. Kept for backward compatibility with callers.
 
     Returns
     -------
     dict[tuple[int, int], np.ndarray]
         Maps ``(question_index, step_idx)`` to belief vectors of shape
-        ``(K,)`` with dtype float32. Each belief sums to ~1.0.
+        ``(len(question.options),)`` with dtype float32. Each belief sums to ~1.0.
     """
     cache: dict[tuple[int, int], np.ndarray] = {}
 
     for q_idx, question in enumerate(questions):
         num_steps = len(question.run_indices)
-        belief = np.ones(K, dtype=np.float32) / K
+        q_k = len(question.options)
+        belief = np.ones(q_k, dtype=np.float32) / q_k
 
         for step_idx in range(num_steps):
             if belief_mode == "from_scratch":
@@ -107,7 +109,7 @@ def precompute_beliefs(
                 posterior = belief * likelihood
                 denom = posterior.sum()
                 if denom <= 0:
-                    belief = np.ones(K, dtype=np.float32) / K
+                    belief = np.ones(q_k, dtype=np.float32) / q_k
                 else:
                     belief = (posterior / denom).astype(np.float32)
 
@@ -211,7 +213,6 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         ew_opponent_expected_value: float = 0.0,
         variable_K: bool = False,
         max_K: int | None = None,
-        use_action_masking: bool = False,
         end_mode: str = "force_commit",
         no_buzz_reward: float = 0.0,
     ) -> None:
@@ -239,7 +240,6 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         self.ew_opponent_expected_value = ew_opponent_expected_value
 
         self.variable_K = variable_K
-        self.use_action_masking = use_action_masking
         self.end_mode = end_mode
         self.no_buzz_reward = no_buzz_reward
         if variable_K:
@@ -393,7 +393,8 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
             posterior = self.belief * likelihood
             denom = posterior.sum()
             if denom <= 0:
-                posterior = np.ones(self.K, dtype=np.float32) / self.K
+                n = len(self.belief)
+                posterior = np.ones(n, dtype=np.float32) / n
             else:
                 posterior = posterior / denom
             return posterior.astype(np.float32)
@@ -580,7 +581,8 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
             )
         self.step_idx = 0
         self.prev_belief = None
-        self.belief = np.ones(self.K, dtype=np.float32) / self.K
+        actual_k = len(self.question.options) if self.variable_K else self.K
+        self.belief = np.ones(actual_k, dtype=np.float32) / actual_k
         self.terminated = False
         self.truncated = False
         self._sampled_human_buzz_pos = self._sample_human_buzz(self.question)
@@ -638,6 +640,13 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
             raise RuntimeError("Cannot call step() on terminated/truncated episode.")
         if not self.action_space.contains(action):
             raise ValueError(f"Invalid action: {action}")
+        if self.variable_K and action > 0:
+            actual_k = len(self.question.options)
+            if action - 1 >= actual_k:
+                raise ValueError(
+                    f"Buzz action {action} targets padded option index "
+                    f"{action - 1}, but question only has {actual_k} options"
+                )
 
         info: dict[str, Any] = {"qid": self.question.qid}
         reward = 0.0
@@ -729,11 +738,16 @@ def make_env_from_config(
     >>> env = make_env_from_config(mc_questions, model, config)
     >>> obs, info = env.reset()
     """
+    from qb_env.opponent_models import build_opponent_model_from_config
+
     env_cfg = config["environment"]
     data_cfg = config["data"]
     lik_cfg = config["likelihood"]
     variable_k = bool(data_cfg.get("variable_K", False) or env_cfg.get("variable_K", False))
     max_k_raw = data_cfg.get("max_K") or env_cfg.get("max_K")
+    opponent_model = build_opponent_model_from_config(
+        questions=mc_questions, config=config,
+    )
     return TossupMCEnv(
         questions=mc_questions,
         likelihood_model=likelihood_model,
@@ -747,9 +761,9 @@ def make_env_from_config(
         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
         beta=float(lik_cfg.get("beta", 5.0)),
         precomputed_beliefs=precomputed_beliefs,
+        opponent_buzz_model=opponent_model,
         end_mode=str(env_cfg.get("end_mode", "force_commit")),
         no_buzz_reward=float(env_cfg.get("no_buzz_reward", 0.0)),
         variable_K=variable_k,
         max_K=int(max_k_raw) if max_k_raw is not None else None,
-        use_action_masking=bool(env_cfg.get("use_action_masking", False)),
     )

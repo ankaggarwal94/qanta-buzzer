@@ -42,7 +42,7 @@ This is a quiz bowl RL buzzer with:
   - **Variable-K** answer choices with padded observations and action masks
   - **DSPy** integration for LM-based scoring with offline compilation
 
-Current state: 315 tests pass, 3 skipped (optional extras not installed). Smoke pipeline green. T5 smoke green.
+Current state: 365 tests pass, 4 skipped (3 optional extras + 1 E2E pipeline). Smoke pipeline green. T5 smoke green.
 
 ## Review tasks
 
@@ -102,7 +102,7 @@ The `repomix-smoke.md` file contains the actual JSON/CSV outputs from the most r
 ### Task 6: Documentation Truthfulness
 
 Cross-check every factual claim in `README.md` and `AGENTS.md` against the actual code:
-- Test counts (claimed: 315 tests across 22 files)
+- Test counts (claimed: 369 tests across 28 files)
 - Config table (claimed defaults vs actual YAML values)
 - Architecture diagram (claimed packages vs actual directory contents)
 - Extension descriptions (claimed behavior vs actual implementation)

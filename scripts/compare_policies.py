@@ -58,12 +58,45 @@ if str(PROJECT_ROOT) not in sys.path:
 import numpy as np
 
 from evaluation.metrics import (
+    calibration_pairs_at_buzz,
     expected_calibration_error,
     brier_score,
     summarize_buzz_metrics,
     system_score,
 )
-from scripts._common import ARTIFACT_DIR, load_config, load_mc_questions, save_json
+from scripts._common import (
+    ARTIFACT_DIR,
+    build_likelihood_model,
+    load_config,
+    load_embedding_cache,
+    load_mc_questions,
+    save_json,
+)
+
+
+def resolve_mlp_eval_config(
+    checkpoint_path: str | Path,
+    fallback_config: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve the config that was used to train an MLP checkpoint.
+
+    If a ``config_used.json`` sidecar exists next to the checkpoint,
+    load and return it. Otherwise return ``fallback_config`` unchanged.
+    """
+    import json
+
+    cp = Path(checkpoint_path).resolve()
+    candidates = [cp / "config_used.json"] if cp.is_dir() else []
+    candidates.append(cp.parent / "config_used.json")
+
+    for sidecar in candidates:
+        if sidecar.exists():
+            try:
+                with open(sidecar, encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+    return fallback_config
 
 
 def evaluate_mlp_policy(
@@ -71,20 +104,21 @@ def evaluate_mlp_policy(
     test_questions: list,
     config: dict,
 ) -> dict[str, Any]:
-    """Evaluate Phase 4 MLP policy with T5/TF-IDF likelihood on belief features.
+    """Evaluate Phase 4 MLP policy on belief features.
 
-    Loads a PPOBuzzer from an SB3 checkpoint, runs deterministic episodes
-    on each test question, and computes accuracy, S_q, ECE, and buzz
-    position metrics.
+    Uses the likelihood model specified by the checkpoint's sidecar
+    config (``config_used.json``) when available, otherwise falls back
+    to the provided config. If the resolved config selects TF-IDF, the
+    corpus is fit on the evaluation set's question/option text.
 
     Parameters
     ----------
     checkpoint_path : str
-        Path to SB3 PPO model checkpoint (`.zip`` file).
+        Path to SB3 PPO model checkpoint (``.zip`` file).
     test_questions : list
         List of MCQuestion instances to evaluate on.
     config : dict
-        YAML config dict with environment, likelihood, and data sections.
+        YAML config dict (fallback if no checkpoint sidecar exists).
 
     Returns
     -------
@@ -93,53 +127,30 @@ def evaluate_mlp_policy(
         n_questions.
     """
     from agents.ppo_buzzer import PPOBuzzer
-    from models.likelihoods import TfIdfLikelihood
     from qb_env.tossup_env import make_env_from_config
 
-    # Build likelihood model
-    corpus = (
-        [q.question for q in test_questions]
-        + [p for q in test_questions for p in q.option_profiles]
-    )
-    likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
+    resolved_config = resolve_mlp_eval_config(checkpoint_path, config)
+    likelihood_model = build_likelihood_model(resolved_config, test_questions)
+    load_embedding_cache(likelihood_model, resolved_config)
 
-    # Build environment with all test questions
     env = make_env_from_config(
         mc_questions=test_questions,
         likelihood_model=likelihood_model,
-        config=config,
+        config=resolved_config,
     )
 
-    # Load trained agent
-    agent = PPOBuzzer.load(checkpoint_path, env=env)
+    use_maskable = bool(resolved_config.get("ppo", {}).get("use_maskable_ppo", False))
+    agent = PPOBuzzer.load(checkpoint_path, env=env, use_maskable_ppo=use_maskable)
 
-    # Run episodes
-    results = []
-    for _ in range(len(test_questions)):
-        trace = agent.run_episode(deterministic=True)
-        results.append(trace)
+    # Run episodes — one per test question, deterministic order
+    results = [
+        agent.run_episode(deterministic=True, question_idx=i)
+        for i in range(len(test_questions))
+    ]
 
     # Compute metrics
     buzz_metrics = summarize_buzz_metrics(results)
-
-    # Extract confidences and outcomes for calibration — use top_p
-    from dataclasses import asdict
-
-    rows = [asdict(r) for r in results]
-    confidences = []
-    outcomes = []
-    buzz_positions = []
-    for row in rows:
-        top_p_trace = list(row.get("top_p_trace", []))
-        c_trace = list(row.get("c_trace", []))
-        conf_trace = top_p_trace if top_p_trace else c_trace
-        buzz_step = int(row.get("buzz_step", max(0, len(conf_trace) - 1)))
-        if conf_trace:
-            idx = min(max(0, buzz_step), len(conf_trace) - 1)
-            confidences.append(float(conf_trace[idx]))
-            outcomes.append(1 if bool(row.get("correct", False)) else 0)
-        buzz_positions.append(buzz_step)
-
+    confidences, outcomes = calibration_pairs_at_buzz(results)
     ece = expected_calibration_error(confidences, outcomes)
     brier = brier_score(confidences, outcomes)
 
@@ -148,7 +159,7 @@ def evaluate_mlp_policy(
         "mean_sq": buzz_metrics["mean_sq"],
         "ece": ece,
         "brier": brier,
-        "avg_buzz_pos": float(np.mean(buzz_positions)) if buzz_positions else 0.0,
+        "avg_buzz_pos": buzz_metrics.get("mean_buzz_step", 0.0),
         "mean_reward": buzz_metrics["mean_reward_like"],
         "n_questions": len(test_questions),
     }

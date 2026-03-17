@@ -3,7 +3,7 @@
 **Branch:** `pr/final-sync-and-extensions` → `main`
 **Squashed from:** 83 local commits
 **422 files changed, +380,006 / -5,997 lines**
-**342 tests pass, 3 skipped (optional extras not installed)**
+**365 tests pass, 4 skipped (3 optional extras + 1 E2E pipeline)**
 
 ---
 
@@ -41,7 +41,7 @@ Evidence-verified fixes for correctness, reproducibility, and truthfulness:
 | **Compare policies honesty** | Docstring no longer claims "identical metrics". T5 `wait_penalty` corrected from 0.01 to 0.1. |
 | **CI robustness** | `ci.sh` auto-activates `.venv/`. `pyproject.toml` sets `testpaths = ["tests"]`. |
 | **Config override clobbering** | `parse_overrides()` returns flat dotted keys (`{"data.K": 5}`) not nested dicts that replace sibling sections. |
-| **Legacy file cleanup** | 13 root-level prototype files moved to `_legacy/`. |
+| **Legacy root workflow** | Root-level prototype files still exist and remain non-canonical; cleanup deferred to a separate decision. |
 | **Memory monitoring** | `LikelihoodModel.cache_memory_bytes` property added. Measured: 1.87 MB for 44 questions. |
 
 ### 3. Extension A: Expected Wins Reward Mode
@@ -69,7 +69,7 @@ Supports arbitrary numbers of answer options (2 to N) per question instead of fi
 **Modified files:**
 - `qb_data/mc_builder.py` — `MCBuilder` gains `variable_K`/`min_K`/`max_K` with `_target_k()` per-question sampling
 - `models/features.py` — `extract_padded_belief_features()` zero-pads belief to `max_K`
-- `qb_env/tossup_env.py` — `variable_K`/`max_K`/`use_action_masking` params, `action_masks()` method
+- `qb_env/tossup_env.py` — `variable_K`/`max_K` params, `action_masks()` method, padded-action rejection
 - `agents/ppo_buzzer.py` — `use_maskable_ppo` flag for optional `MaskablePPO` (via `sb3-contrib`)
 - `qb_env/text_wrapper.py` — already K-agnostic (verified with K=3 test)
 - `configs/default.yaml` — `variable_K: false`, `min_K: 2`, `max_K: null`
@@ -216,7 +216,7 @@ These were verified across every commit and review round:
 
 ## Test Plan
 
-- [x] `pytest tests/` — **342 passed, 3 skipped** (58s)
+- [x] `pytest tests/` — **365 passed, 4 skipped** (current branch)
 - [x] `bash scripts/manual-smoke.sh` — 4/4 stages complete (10.6s)
 - [x] `python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke` — supervised 75% val acc → PPO 5 iters → test acc 62.5% (23.9s)
 - [x] Reduced-scale default.yaml preflight — default reward settings, [64,64] MLP, 500 PPO timesteps
@@ -234,7 +234,7 @@ These were verified across every commit and review round:
 
 1. Full 100k PPO training run not verified end-to-end
 2. SBERT/T5-large likelihood paths not exercised locally
-3. MaskablePPO path untested at integration level
+3. MaskablePPO path now has focused unit coverage (wrapper masks, masked inference, config plumbing), but no long-running integration training pass with `sb3-contrib`
 4. DSPy compile/optimize requires live LM backend
 5. `compare_policies` S_q/reward comparisons remain qualitative across architectures
 6. TF-IDF cache memory grows with corpus size (~42 MB projected for 1000 questions)

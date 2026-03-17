@@ -111,7 +111,7 @@ For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy 
 
 ## Testing
 
-342 tests across 24 test files (3 skipped when optional extras not installed):
+369 tests across 28 test files (4 skipped when optional extras not installed):
 
 ```bash
 pytest                    # full suite
@@ -124,7 +124,7 @@ The test suite covers:
 - Gymnasium environment behavior, reward modes (including Expected Wins), and belief computation
 - Likelihood model factories (TF-IDF, SBERT, DSPy with offline-safe stubs)
 - T5 policy model, supervised trainer, and PPO trainer
-- Evaluation metrics (S_q, Expected Wins, ECE, Brier score, calibration at buzz, per-category accuracy)
+- Evaluation metrics (S_q, Expected Wins, ECE, Brier score, calibration pairs extraction, per-category accuracy)
 - Dataset split reproducibility (cross-process determinism)
 - Variable-K dataset construction and mixed-K integration
 - Opponent buzz models (logistic, empirical)
@@ -135,7 +135,7 @@ The test suite covers:
 
 ```
 qb_data/        Data loading, answer profiles, stratified splits, MC construction, DSPy profiles
-qb_env/         Gymnasium environment, text wrapper, opponent models, optional StopOnlyEnv wrapper, qb-rl shims
+qb_env/         Gymnasium environment, text wrapper, opponent models, StopOnlyEnv wrapper (with action_masks), qb-rl shims
 models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy
 agents/         Threshold, softmax-profile, sequential Bayes, PPO buzzer
 evaluation/     S_q metric, Expected Wins, calibration, control experiments, plotting
@@ -143,7 +143,7 @@ scripts/        Pipeline entrypoints, DSPy compile, shared helpers
 training/       T5 policy supervised + PPO trainers, hazard bridge utilities
 configs/        YAML configuration files
 artifacts/      Generated pipeline outputs (smoke/ and main/)
-_legacy/        Pre-modularization prototypes (not installed)
+root *.py files Pre-modularization prototypes (not installed; still live at repo root)
 ```
 
 ## Compatibility Bridge
@@ -175,7 +175,7 @@ Set `environment.reward_mode: expected_wins` and configure `environment.opponent
 
 ### Variable-K answer choices
 
-Set `data.variable_K: true` and `data.min_K` / `data.max_K` in YAML. `MCBuilder` samples K per question. The env uses padded observations and `action_masks()`. Optional `MaskablePPO` via `pip install -e '.[maskable]'`.
+Set `data.variable_K: true` and `data.min_K` / `data.max_K` in YAML. `MCBuilder` samples K per question. The env uses padded observations and `action_masks()`, and rejects padded buzz actions with a clear error. Set `ppo.use_maskable_ppo: true` in config to enable `MaskablePPO` (requires `pip install -e '.[maskable]'`).
 
 ### DSPy integration (experimental)
 
@@ -183,4 +183,4 @@ Set `likelihood.model: dspy` and configure the `dspy` section in YAML. Requires 
 
 ## Legacy Prototype
 
-The pre-modularization prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`, etc.) has been moved to `_legacy/`. These files are not part of the installed package and are preserved only for reference. The modular `scripts/` pipeline above is the canonical workflow.
+The pre-modularization prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`, etc.) still lives at the repo root. These files are not part of the installed package and are preserved only for reference / backward compatibility. The modular `scripts/` pipeline above is the canonical workflow.

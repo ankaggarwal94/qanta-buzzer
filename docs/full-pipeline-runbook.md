@@ -36,7 +36,7 @@ marked ★ are the core pipeline; others are optional extensions/ablations.
 | 7 | Multi-seed PPO (3 seeds) | tfidf | 1.5–3 hrs |
 | 8 | Reward sweep | tfidf | varies |
 | 9 | Distractor comparison (3 strategies) | tfidf | 15–30 min |
-| 10 | Variable-K baselines (MaskablePPO not wired) | tfidf | 15–30 min |
+| 10 | Variable-K baselines + optional MaskablePPO | tfidf | 15–30 min |
 | 11 | Expected Wins eval (EW-trained PPO is manual only) | tfidf | 5–15 min |
 | 12 | DSPy compile | API-bound | 5–10 min |
 | 13 | K-sensitivity (5 values) | tfidf | 30–60 min |
@@ -79,7 +79,7 @@ QANTA quiz bowl questions with `|||`-separated clue tokens.
 ### Verify baseline
 
 ```bash
-pytest tests/ -q --tb=no      # expect: 342 passed, 3 skipped
+pytest tests/ -q --tb=short    # expect: 365 passed, 4 skipped
 bash scripts/manual-smoke.sh   # expect: 4/4 stages complete
 ```
 
@@ -145,7 +145,7 @@ Phase 1 (sequential — builds the shared MC dataset)
 
 Not in parallel mode (sequential only or run manually):
   Phase 9  — distractor comparison (sequential mode only)
-  Phase 10 — variable-K baselines (MaskablePPO not wired through train_ppo.py)
+  Phase 10 — variable-K baselines + optional MaskablePPO (via ppo.use_maskable_ppo)
   Phase 12 — DSPy compile (requires API key)
   Phase 18 — OpenAI embeddings (requires API key)
   Phase 19 — DSPy MIPROv2 (requires API key)
@@ -370,8 +370,8 @@ cp artifacts/main/ppo_model.zip results/ppo_model_default.zip
 ## Phase 4: Evaluate all (belief-feature pipeline)
 
 **Config:** `configs/default.yaml`
-**Controls:** choices-only, shuffle, alias substitution (alias control is a
-no-op unless `alias_lookup.json` is provided externally — `build_mc_dataset.py`
+**Controls:** choices-only, shuffle, alias substitution (alias control is
+skipped unless `alias_lookup.json` is provided externally — `build_mc_dataset.py`
 does not generate it)
 **Metrics:** S_q, ECE, Brier, per-category accuracy
 
@@ -711,12 +711,11 @@ python scripts/run_baselines.py \
 cp artifacts/main/baseline_summary.json results/baselines_variable_k.json
 ```
 
-**Note:** PPO with variable-K and MaskablePPO is not yet wired end-to-end
-through `train_ppo.py`. The `PPOBuzzer` class supports `use_maskable_ppo=True`
-and the env supports `action_masks()`, but `train_ppo.py` does not read
-`ppo.algorithm` from config or pass `use_maskable_ppo` to the constructor.
-This requires a code change to `train_ppo.py` before it will work.
-For now, variable-K baselines (which don't need MaskablePPO) work correctly.
+**Note:** Variable-K PPO with MaskablePPO is now wired through config:
+set `ppo.use_maskable_ppo: true` in YAML (requires `pip install -e '.[maskable]'`).
+`train_ppo.py` reads the flag and passes it to `PPOBuzzer`, and
+`PPOBuzzer.load()` supports loading MaskablePPO checkpoints.
+Variable-K baselines work without MaskablePPO.
 
 ---
 

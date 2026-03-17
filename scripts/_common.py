@@ -243,7 +243,8 @@ def embedding_cache_path(config: dict[str, Any]) -> Path:
     """Return the resolved embedding cache file path from config.
 
     Uses ``config['likelihood']['cache_dir']`` (default ``'cache/embeddings'``)
-    and appends ``'embedding_cache.npz'``.
+    and appends ``'embedding_cache_{model}.npz'`` where ``{model}`` is the
+    likelihood model name from config (e.g., ``tfidf``, ``t5-base``).
 
     Parameters
     ----------
@@ -255,8 +256,21 @@ def embedding_cache_path(config: dict[str, Any]) -> Path:
     Path
         Absolute path to the embedding cache ``.npz`` file.
     """
-    cache_dir = config.get("likelihood", {}).get("cache_dir", "cache/embeddings")
-    return PROJECT_ROOT / cache_dir / "embedding_cache.npz"
+    lik_cfg = config.get("likelihood", {})
+    cache_dir = lik_cfg.get("cache_dir", "cache/embeddings")
+    model_family = str(lik_cfg.get("model", "unknown"))
+    if model_family == "sbert":
+        variant = lik_cfg.get("sbert_name", lik_cfg.get("embedding_model", "all-MiniLM-L6-v2"))
+    elif model_family == "openai":
+        variant = lik_cfg.get("openai_model", "text-embedding-3-small")
+    elif model_family == "t5":
+        variant = lik_cfg.get("t5_name", "t5-base")
+    elif model_family.startswith("t5"):
+        variant = model_family
+    else:
+        variant = model_family
+    safe_name = str(variant).replace("/", "_")
+    return PROJECT_ROOT / cache_dir / f"embedding_cache_{safe_name}.npz"
 
 
 def load_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None:

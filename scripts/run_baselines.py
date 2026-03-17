@@ -83,6 +83,10 @@ def parse_args() -> argparse.Namespace:
         help="Optional MC dataset JSON path (overrides config-derived path).",
     )
     parser.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Override output directory (default: artifacts/<split>).",
+    )
+    parser.add_argument(
         "overrides",
         nargs="*",
         help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
@@ -122,7 +126,8 @@ def main() -> None:
         config = merge_overrides(config, overrides)
 
     split = "smoke" if args.smoke else "main"
-    out_dir = ARTIFACT_DIR / split
+    out_dir = Path(args.output_dir) if args.output_dir else ARTIFACT_DIR / split
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine MC dataset path
     mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"

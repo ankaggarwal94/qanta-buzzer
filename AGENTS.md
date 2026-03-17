@@ -28,7 +28,7 @@ pip install -e '.[dspy]'      # DSPy LM-based scoring
 | Package | Purpose |
 |---------|---------|
 | `qb_data/` | Data loading, answer profiles, stratified splits, MC construction, DSPy profiles |
-| `qb_env/` | Gymnasium environment, text wrapper, opponent models, optional StopOnlyEnv wrapper, qb-rl shims |
+| `qb_env/` | Gymnasium environment, text wrapper, opponent models, StopOnlyEnv wrapper (with action_masks), qb-rl shims |
 | `models/` | Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy |
 | `agents/` | Threshold, softmax-profile, sequential Bayes, PPO wrapper |
 | `evaluation/` | S_q metric, Expected Wins, calibration, control experiments, plotting |
@@ -38,7 +38,7 @@ pip install -e '.[dspy]'      # DSPy LM-based scoring
 
 ## Testing
 
-342 tests across 24 test files (3 skipped when optional extras not installed).
+369 tests across 28 test files (4 skipped when optional extras not installed).
 
 ```bash
 pytest                    # full suite
