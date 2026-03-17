@@ -38,7 +38,7 @@ pip install -e '.[dspy]'      # DSPy LM-based scoring
 
 ## Testing
 
-369 tests across 28 test files (4 skipped when optional extras not installed).
+375 tests across 30 test files (4 skipped when optional extras not installed).
 
 ```bash
 pytest                    # full suite
@@ -56,6 +56,13 @@ python scripts/run_baselines.py --smoke
 python scripts/train_ppo.py --smoke
 python scripts/evaluate_all.py --smoke
 ```
+
+`build_mc_dataset.py` writes `train_dataset.json`, `val_dataset.json`, and
+`test_dataset.json` as the canonical downstream inputs. `mc_dataset.json`
+remains as a combined legacy/debug artifact. By default, `run_baselines.py`
+selects thresholds on validation, `train_ppo.py` trains on train and writes
+validation metrics to `ppo_summary.json`, and `evaluate_all.py` writes the
+canonical final test report on the test split (`evaluation_report.json`).
 
 Or run all four stages via the wrapper script:
 

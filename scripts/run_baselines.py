@@ -47,10 +47,12 @@ from qb_data.config import merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
+    dataset_path_for_split,
     load_config,
     load_embedding_cache,
     load_mc_questions,
     parse_overrides,
+    resolve_default_dataset_path,
     save_embedding_cache,
     save_json,
 )
@@ -130,17 +132,29 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine MC dataset path
-    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
-
-    # Fallback: check data/processed/ if artifacts path doesn't exist
-    if not mc_path.exists():
-        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
-        if fallback.exists():
-            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
-            mc_path = fallback
+    if args.mc_path:
+        mc_path = Path(args.mc_path)
+        dataset_split = "explicit"
+    else:
+        mc_path, dataset_split, warning = resolve_default_dataset_path(
+            out_dir,
+            preferred_split="val",
+        )
+        if warning:
+            print(warning)
 
     print(f"Loading MC questions from: {mc_path}")
     mc_questions = load_mc_questions(mc_path)
+    if not mc_questions and not args.mc_path:
+        fallback = dataset_path_for_split(mc_path.parent, "combined")
+        if fallback.exists() and fallback != mc_path:
+            print(
+                f"Warning: {mc_path} contained 0 questions; "
+                f"falling back to {fallback}"
+            )
+            mc_path = fallback
+            dataset_split = "combined"
+            mc_questions = load_mc_questions(mc_path)
     print(f"Loaded {len(mc_questions)} MC questions")
 
     # Build likelihood model
@@ -237,6 +251,8 @@ def main() -> None:
         "softmax_profile": softmax_summary,
         "sequential_bayes": sequential_summary,
         "always_final": floor_summary,
+        "dataset_split": dataset_split,
+        "selection_metric": "mean_sq",
     }
     save_json(out_dir / "baseline_summary.json", summary)
 

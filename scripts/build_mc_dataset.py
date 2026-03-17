@@ -4,9 +4,9 @@ Build multiple-choice dataset from QANTA quiz bowl questions.
 
 This script orchestrates the complete data pipeline:
 1. Load questions from CSV or HuggingFace
-2. Build answer profiles from training data
-3. Generate MC questions with anti-artifact guards
-4. Create stratified train/val/test splits
+2. Create stratified raw train/val/test splits
+3. Build answer profiles from the raw training split only
+4. Generate MC questions for train/val/test using train-only reference data
 5. Save processed datasets as JSON
 
 Usage:
@@ -20,6 +20,7 @@ import argparse
 import json
 import sys
 import time
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -96,18 +97,72 @@ def save_json(path: Path, data: List[Any]) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Convert dataclasses to dictionaries
-    if data and hasattr(data[0], '__dataclass_fields__'):
-        # It's a dataclass, use asdict
-        from dataclasses import asdict
-        json_data = [asdict(item) for item in data]
-    else:
-        json_data = data
+    def to_serializable(item: Any) -> Any:
+        if is_dataclass(item):
+            return asdict(item)
+        if isinstance(item, list):
+            return [to_serializable(v) for v in item]
+        if isinstance(item, dict):
+            return {k: to_serializable(v) for k, v in item.items()}
+        return item
+
+    json_data = to_serializable(data)
 
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(json_data, f, indent=2, ensure_ascii=False)
 
-    print(f"Saved {len(data)} items to {path}")
+    item_count = len(data) if isinstance(data, list) else 1
+    print(f"Saved {item_count} items to {path}")
+
+
+def make_profile_builder(config: dict[str, Any]) -> AnswerProfileBuilder:
+    """Create the canonical answer profile builder from config."""
+    return AnswerProfileBuilder(
+        max_tokens_per_profile=config['answer_profiles']['max_tokens_per_profile'],
+        min_questions_per_answer=config['answer_profiles']['min_questions_per_answer'],
+    )
+
+
+def make_mc_builder(config: dict[str, Any]) -> MCBuilder:
+    """Create the canonical MC builder from config."""
+    data_cfg = config['data']
+    return MCBuilder(
+        K=data_cfg['K'],
+        strategy=data_cfg['distractor_strategy'],
+        embedding_model=config['likelihood'].get(
+            'sbert_name',
+            config['likelihood'].get('embedding_model', 'all-MiniLM-L6-v2'),
+        ),
+        openai_model=config['likelihood'].get('openai_model', 'text-embedding-3-small'),
+        variable_K=bool(data_cfg.get('variable_K', False)),
+        min_K=int(data_cfg.get('min_K', 2)),
+        max_K=int(data_cfg['max_K']) if data_cfg.get('max_K') is not None else None,
+        **config['mc_guards'],
+    )
+
+
+def build_metadata_entry(raw_questions: List[TossupQuestion], mc_questions: List[MCQuestion], stats: dict[str, Any]) -> dict[str, Any]:
+    """Build split metadata for ``build_metadata.json``."""
+    retained = len(mc_questions)
+    raw_count = len(raw_questions)
+    return {
+        "raw_count": raw_count,
+        "retained_count": retained,
+        "dropped_count": max(0, raw_count - retained),
+        "retention_rate": retained / raw_count if raw_count else 0.0,
+        "reference_answer_count": int(stats.get("reference_answer_count", 0)),
+        "drop_reasons": dict(stats.get("drop_reasons", {})),
+    }
+
+
+def warn_on_low_retention(split_name: str, metadata: dict[str, Any], threshold: float) -> None:
+    """Warn when retained questions for a split drop below the threshold."""
+    retention = float(metadata.get("retention_rate", 0.0))
+    if retention < threshold:
+        print(
+            f"Warning: {split_name} retention {retention:.1%} is below the "
+            f"configured threshold of {threshold:.0%}"
+        )
 
 
 def print_statistics(
@@ -236,50 +291,65 @@ def main(argv: Optional[list[str]] = None):
         print(f"Limiting dataset to {int(max_questions)} questions")
         questions = questions[: int(max_questions)]
 
-    # Build answer profiles
-    print("\nBuilding answer profiles...")
-    profile_builder = AnswerProfileBuilder(
-        max_tokens_per_profile=config['answer_profiles']['max_tokens_per_profile'],
-        min_questions_per_answer=config['answer_profiles']['min_questions_per_answer']
-    )
-    profile_builder.fit(questions)
-    print(f"Built {len(profile_builder._grouped)} answer profiles")
-
-    # Construct MC questions with guards
-    print("\nConstructing MC questions...")
+    # Create raw stratified splits before any answer-profile fitting.
+    print("\nCreating raw stratified splits...")
     data_cfg = config['data']
-    mc_builder = MCBuilder(
-        K=data_cfg['K'],
-        strategy=data_cfg['distractor_strategy'],
-        embedding_model=config['likelihood'].get(
-            'sbert_name',
-            config['likelihood'].get('embedding_model', 'all-MiniLM-L6-v2'),
-        ),
-        openai_model=config['likelihood'].get('openai_model', 'text-embedding-3-small'),
-        variable_K=bool(data_cfg.get('variable_K', False)),
-        min_K=int(data_cfg.get('min_K', 2)),
-        max_K=int(data_cfg['max_K']) if data_cfg.get('max_K') is not None else None,
-        **config['mc_guards']
+    ratios = [
+        data_cfg['train_ratio'],
+        data_cfg['val_ratio'],
+        data_cfg['test_ratio'],
+    ]
+    split_seed = int(data_cfg.get('shuffle_seed', 42))
+    raw_train, raw_val, raw_test = create_stratified_splits(
+        questions,
+        ratios=ratios,
+        seed=split_seed,
     )
 
-    # Track guard statistics
-    mc_builder.guard_stats = {}
+    # Build answer profiles from raw train only.
+    print("\nBuilding answer profiles from raw train split only...")
+    profile_builder = make_profile_builder(config)
+    profile_builder.fit(raw_train)
+    print(f"Built {len(profile_builder._grouped)} train-only answer profiles")
 
-    mc_questions = mc_builder.build(questions, profile_builder)
-    print(f"Generated {len(mc_questions)} MC questions")
+    # Construct MC questions for each split against the train reference corpus.
+    print("\nConstructing split-safe MC questions...")
+    split_targets = {
+        "train": raw_train,
+        "val": raw_val,
+        "test": raw_test,
+    }
+    built_splits: dict[str, list[MCQuestion]] = {}
+    build_stats: dict[str, dict[str, Any]] = {}
+    builders: dict[str, MCBuilder] = {}
+    for split_name, target_questions in split_targets.items():
+        builder = make_mc_builder(config)
+        builder.guard_stats = {}
+        built = builder.build(
+            target_questions,
+            profile_builder,
+            reference_questions=raw_train,
+        )
+        built_splits[split_name] = built
+        build_stats[split_name] = builder.last_build_stats
+        builders[split_name] = builder
+        print(
+            f"  {split_name}: kept {len(built)}/{len(target_questions)} "
+            f"({builder.last_build_stats.get('retention_rate', 0.0):.1%})"
+        )
 
-    if len(mc_questions) < len(questions):
-        print(f"Note: {len(questions) - len(mc_questions)} questions filtered by guards")
+    train = built_splits["train"]
+    val = built_splits["val"]
+    test = built_splits["test"]
+    mc_questions = train + val + test
 
-    # Create stratified splits
-    print("\nCreating stratified splits...")
-    ratios = [
-        config['data']['train_ratio'],
-        config['data']['val_ratio'],
-        config['data']['test_ratio']
-    ]
-
-    train, val, test = create_stratified_splits(mc_questions, ratios=ratios)
+    smoke_threshold = 0.50
+    full_threshold = 0.80
+    retention_threshold = smoke_threshold if args.smoke else full_threshold
+    val_metadata = build_metadata_entry(raw_val, val, build_stats["val"])
+    test_metadata = build_metadata_entry(raw_test, test, build_stats["test"])
+    warn_on_low_retention("val", val_metadata, retention_threshold)
+    warn_on_low_retention("test", test_metadata, retention_threshold)
 
     # Save datasets
     print("\nSaving datasets...")
@@ -287,6 +357,21 @@ def main(argv: Optional[list[str]] = None):
     save_json(output_dir / "train_dataset.json", train)
     save_json(output_dir / "val_dataset.json", val)
     save_json(output_dir / "test_dataset.json", test)
+
+    build_metadata = {
+        "split_reference": "train_dataset.json is the canonical reference corpus for all splits",
+        "retention_thresholds": {
+            "smoke": smoke_threshold,
+            "full": full_threshold,
+        },
+        "splits": {
+            "train": build_metadata_entry(raw_train, train, build_stats["train"]),
+            "val": val_metadata,
+            "test": test_metadata,
+        },
+        "combined_mc_dataset_count": len(mc_questions),
+    }
+    save_json(output_dir / "build_metadata.json", build_metadata)
 
     # Save answer profiles for debugging
     if profile_builder._grouped:
@@ -302,7 +387,7 @@ def main(argv: Optional[list[str]] = None):
         print(f"Saved answer profiles to {output_dir / 'answer_profiles.json'}")
 
     # Print statistics
-    print_statistics(train, val, test, profile_builder, mc_builder)
+    print_statistics(train, val, test, profile_builder, builders["train"])
 
     # Print timing
     elapsed = time.time() - start_time
