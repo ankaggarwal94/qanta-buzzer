@@ -231,13 +231,12 @@ class SupervisedTrainer:
         total_loss = 0.0
         total_correct = 0
         total_samples = 0
-        num_batches = max(1, len(shuffled) // self.batch_size)
+        num_batches = max(1, (len(shuffled) + self.batch_size - 1) // self.batch_size)
 
         # Zero gradients at start
         self.optimizer.zero_grad()
 
         for batch_idx in range(num_batches):
-            # Get batch
             start = batch_idx * self.batch_size
             end = min(start + self.batch_size, len(shuffled))
             batch_questions = shuffled[start:end]
@@ -303,7 +302,7 @@ class SupervisedTrainer:
         total_loss = 0.0
         total_correct = 0
         total_samples = 0
-        num_batches = max(1, len(self.val_questions) // self.batch_size)
+        num_batches = max(1, (len(self.val_questions) + self.batch_size - 1) // self.batch_size)
 
         with torch.no_grad():
             for batch_idx in range(num_batches):
@@ -576,7 +575,7 @@ def _evaluate_on_questions(
     total_correct = 0
     total_samples = 0
     batch_size = trainer.batch_size
-    num_batches = max(1, len(questions) // batch_size)
+    num_batches = max(1, (len(questions) + batch_size - 1) // batch_size)
     criterion = nn.CrossEntropyLoss()
 
     with torch.no_grad():
