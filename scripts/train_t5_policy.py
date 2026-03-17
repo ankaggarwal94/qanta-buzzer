@@ -348,11 +348,12 @@ def load_question_splits_with_metadata(
             f"{base_dir}: {len(train_questions)} train, "
             f"{len(val_questions)} val, {len(test_questions)} test"
         )
+        combined_path = dataset_path_for_split(base_dir, "combined")
         manifest = _build_split_manifest(
             source="persisted_artifacts",
             mc_path=(
-                str(dataset_path_for_split(base_dir, "combined"))
-                if dataset_path_for_split(base_dir, "combined").exists()
+                str(combined_path)
+                if combined_path.exists()
                 else (str(args.mc_path) if args.mc_path else None)
             ),
             train_questions=train_questions,
