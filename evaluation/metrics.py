@@ -228,7 +228,7 @@ def summarize_buzz_metrics(results: list[Any]) -> dict[str, float]:
     -------
     dict[str, float]
         Summary metrics: n, buzz_accuracy, mean_buzz_step, mean_sq,
-        mean_reward_like.
+        mean_reward_like, and forced/policy-buzz diagnostics.
     """
     rows = [_to_dict(r) for r in results]
     if not rows:
@@ -238,14 +238,35 @@ def summarize_buzz_metrics(results: list[Any]) -> dict[str, float]:
             "mean_buzz_step": 0.0,
             "mean_sq": 0.0,
             "mean_reward_like": 0.0,
+            "policy_buzz_rate": 0.0,
+            "n_policy_buzzes": 0.0,
+            "forced_commit_rate": 0.0,
+            "n_forced_commits": 0.0,
+            "forced_correct_rate": 0.0,
+            "overall_outcome_accuracy": 0.0,
         }
 
     correct = np.array(
         [1 if bool(r.get("correct", False)) else 0 for r in rows],
         dtype=np.float64,
     )
+    forced_commit = np.array(
+        [1 if bool(r.get("forced_commit", False)) else 0 for r in rows],
+        dtype=np.float64,
+    )
+    forced_correct = np.array(
+        [1 if bool(r.get("forced_correct", False)) else 0 for r in rows],
+        dtype=np.float64,
+    )
     buzz_steps = np.array(
-        [int(r.get("buzz_step", 0)) for r in rows], dtype=np.float64
+        [int(r.get("buzz_step", -1)) for r in rows], dtype=np.float64
+    )
+    policy_buzz_mask = np.array(
+        [
+            int(int(r.get("buzz_step", -1)) >= 0 and not bool(r.get("forced_commit", False)))
+            for r in rows
+        ],
+        dtype=np.float64,
     )
     sq_scores = np.array(
         [
@@ -264,13 +285,27 @@ def summarize_buzz_metrics(results: list[Any]) -> dict[str, float]:
         ],
         dtype=np.float64,
     )
+    n_rows = float(len(rows))
+    n_policy_buzzes = float(policy_buzz_mask.sum())
+    mean_buzz_step = (
+        float(buzz_steps[policy_buzz_mask.astype(bool)].mean())
+        if n_policy_buzzes > 0
+        else 0.0
+    )
+    overall_outcome = np.maximum(correct, forced_correct)
 
     return {
-        "n": float(len(rows)),
+        "n": n_rows,
         "buzz_accuracy": float(correct.mean()),
-        "mean_buzz_step": float(buzz_steps.mean()),
+        "mean_buzz_step": mean_buzz_step,
         "mean_sq": float(sq_scores.mean()),
         "mean_reward_like": float(reward_like.mean()),
+        "policy_buzz_rate": n_policy_buzzes / max(1.0, n_rows),
+        "n_policy_buzzes": n_policy_buzzes,
+        "forced_commit_rate": float(forced_commit.mean()),
+        "n_forced_commits": float(forced_commit.sum()),
+        "forced_correct_rate": float(forced_correct.mean()),
+        "overall_outcome_accuracy": float(overall_outcome.mean()),
     }
 
 
@@ -361,8 +396,10 @@ def calibration_pairs_at_buzz(
     """Extract (confidence, outcome) pairs at the buzz step.
 
     Canonical helper for all calibration consumers. Episodes with
-    ``buzz_step < 0`` (no-buzz) are skipped. Uses ``top_p_trace`` when
-    available, falling back to ``c_trace``.
+    ``buzz_step < 0`` (no-buzz) or ``forced_commit=True`` are skipped.
+    Uses ``top_p_trace`` when available, falling back to ``c_trace``.
+    When ``buzz_trace_idx`` is present it is preferred over ``buzz_step``
+    so calibration can index the exact decision-time trace entry.
 
     Parameters
     ----------
@@ -378,15 +415,23 @@ def calibration_pairs_at_buzz(
     confidences: list[float] = []
     outcomes: list[int] = []
     for row in rows:
+        if bool(row.get("forced_commit", False)):
+            continue
         top_p_trace = list(row.get("top_p_trace", []))
         c_trace = list(row.get("c_trace", []))
         conf_trace = top_p_trace if top_p_trace else c_trace
         if not conf_trace:
             continue
-        buzz_step = int(row.get("buzz_step", max(0, len(conf_trace) - 1)))
-        if buzz_step < 0:
+        buzz_trace_idx = int(row.get("buzz_trace_idx", -1))
+        if buzz_trace_idx >= 0:
+            idx = min(buzz_trace_idx, len(conf_trace) - 1)
+        else:
+            buzz_step = int(row.get("buzz_step", max(0, len(conf_trace) - 1)))
+            if buzz_step < 0:
+                continue
+            idx = min(buzz_step, len(conf_trace) - 1)
+        if idx < 0:
             continue
-        idx = min(buzz_step, len(conf_trace) - 1)
         confidences.append(float(conf_trace[idx]))
         outcomes.append(1 if bool(row.get("correct", False)) else 0)
     return confidences, outcomes

@@ -155,6 +155,23 @@ class TestEpisodeFlow:
         assert env.terminated is False, "terminated should be False"
         assert env.truncated is False, "truncated should be False"
 
+    def test_reset_seed_does_not_perturb_global_numpy_rng(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Environment reset should not reseed numpy's global RNG."""
+        env = _make_env(sample_mc_question)
+
+        np.random.seed(123)
+        _first = np.random.rand()
+        env.reset(seed=999)
+        after_reset = np.random.rand()
+
+        np.random.seed(123)
+        _control_first = np.random.rand()
+        control_after = np.random.rand()
+
+        assert after_reset == pytest.approx(control_after)
+
     def test_wait_action_advances_step(self, sample_mc_question: MCQuestion) -> None:
         """WAIT (action 0) increments step_idx and returns not terminated."""
         env = _make_env(sample_mc_question)

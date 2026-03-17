@@ -19,6 +19,7 @@ import path adaptations for the unified qanta-buzzer codebase.
 from __future__ import annotations
 
 import argparse
+import copy
 from dataclasses import asdict
 from pathlib import Path
 import sys
@@ -183,6 +184,22 @@ def main() -> None:
         eval_questions = train_questions
     print(f"Loaded {len(eval_questions)} evaluation questions")
 
+    ppo_cfg = config["ppo"]
+    train_seed = int(args.seed if args.seed is not None else ppo_cfg.get("seed", 13))
+    total_timesteps = int(
+        args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
+    )
+
+    # Persist the resolved runtime config, including CLI overrides that bypass
+    # merge_overrides(), before it is used to construct the environment.
+    config = copy.deepcopy(config)
+    config.setdefault("ppo", {})
+    config.setdefault("environment", {})
+    config["ppo"]["seed"] = train_seed
+    config["environment"]["seed"] = train_seed
+    config["ppo"]["total_timesteps"] = total_timesteps
+    ppo_cfg = config["ppo"]
+
     print(f"Building likelihood model: {config['likelihood']['model']}")
     likelihood_model = build_likelihood_model(config, train_questions)
     load_embedding_cache(likelihood_model, config)
@@ -211,12 +228,6 @@ def main() -> None:
         print("Wrapping environment with StopOnlyEnv (WAIT/BUZZ only)...")
         env = StopOnlyEnv(env)
 
-    ppo_cfg = config["ppo"]
-    train_seed = int(args.seed if args.seed is not None else ppo_cfg.get("seed", 13))
-    total_timesteps = int(
-        args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
-    )
-
     use_maskable = bool(ppo_cfg.get("use_maskable_ppo", False))
     if use_maskable:
         print("Using MaskablePPO for variable-K action masking")
@@ -240,8 +251,6 @@ def main() -> None:
     save_json(out_dir / "config_used.json", config)
     run_metadata = {
         "policy_mode": args.policy_mode,
-        "seed": train_seed,
-        "total_timesteps": total_timesteps,
         "evaluation_mode": (
             "stochastic" if args.stochastic_eval else "deterministic"
         ),
