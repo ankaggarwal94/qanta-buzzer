@@ -596,12 +596,17 @@ class PPOTrainer:
         """Validate on validation set by running deterministic episodes.
 
         Runs one episode per validation question with deterministic action
-        selection (argmax) and computes accuracy and average reward.
+        selection (argmax). ``accuracy`` counts only episodes where the
+        policy explicitly buzzed correctly; episodes where the environment
+        force-committed at truncation (using the TF-IDF belief argmax)
+        are tracked separately as ``forced_correct_rate``.
 
         Returns
         -------
         dict[str, float]
-            Validation metrics: accuracy, average_reward, avg_episode_length.
+            Validation metrics: accuracy (policy-buzz-only),
+            forced_correct_rate (env force-commit at truncation),
+            average_reward, avg_episode_length.
         """
         from qb_env.text_wrapper import TextObservationWrapper
         from qb_env.tossup_env import TossupMCEnv
