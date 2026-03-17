@@ -291,19 +291,20 @@ def _build_split_manifest(
         "val_qids": [qid(q) for q in val_questions],
         "test_qids": [qid(q) for q in test_questions],
     }
+    total = len(train_questions) + len(val_questions) + len(test_questions)
+    manifest.update(
+        {
+            "train_count": len(train_questions),
+            "val_count": len(val_questions),
+            "test_count": len(test_questions),
+            "effective_train_ratio": len(train_questions) / max(1, total),
+            "effective_val_ratio": len(val_questions) / max(1, total),
+            "effective_test_ratio": len(test_questions) / max(1, total),
+        }
+    )
     if source == "random_split_fallback":
         data = (config or {}).get("data", {})
-        train_size = float(data.get("train_size", data.get("train_ratio", 0.7)))
-        val_size = float(data.get("val_size", data.get("val_ratio", 0.15)))
-        test_size = float(data.get("test_size", data.get("test_ratio", 1.0 - train_size - val_size)))
-        manifest.update(
-            {
-                "split_seed": int(data.get("seed", data.get("shuffle_seed", 42))),
-                "train_size": train_size,
-                "val_size": val_size,
-                "test_size": test_size,
-            }
-        )
+        manifest["split_seed"] = int(data.get("seed", data.get("shuffle_seed", 42)))
     return manifest
 
 

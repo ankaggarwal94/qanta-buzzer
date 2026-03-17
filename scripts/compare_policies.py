@@ -102,39 +102,50 @@ def _resolve_manifest_questions(
     checkpoint_path: str | Path,
     split_name: str,
 ) -> list | None:
-    """Load manifest-backed split questions in the recorded qid order."""
+    """Load manifest-backed split questions in the recorded qid order.
+
+    Returns None (with a printed warning) for any error — missing file,
+    corrupt JSON, incomplete fields, or missing split data on disk.
+    Callers should fall back to sibling dataset files or random splitting.
+    """
     manifest, manifest_path, manifest_error = load_checkpoint_sidecar(
         checkpoint_path, "split_manifest.json"
     )
     if manifest_error:
-        raise ValueError(
-            f"split_manifest.json next to {checkpoint_path} could not be read: "
-            f"{manifest_error}"
+        print(
+            f"Warning: split_manifest.json next to {checkpoint_path} could not "
+            f"be read ({manifest_error}); falling back to other resolution."
         )
+        return None
     if not isinstance(manifest, dict):
         return None
 
     split_path = manifest.get(f"{split_name}_path")
     qids = manifest.get(f"{split_name}_qids")
     if not split_path or not isinstance(qids, list):
-        raise ValueError(
-            f"split_manifest.json is missing {split_name}_path or {split_name}_qids"
+        print(
+            f"Warning: split_manifest.json is missing {split_name}_path or "
+            f"{split_name}_qids; falling back to other resolution."
         )
+        return None
 
     path = Path(split_path)
     if not path.exists():
-        raise ValueError(
-            f"Manifest-backed {split_name} split does not exist at {path}"
+        print(
+            f"Warning: manifest-backed {split_name} split does not exist at "
+            f"{path}; falling back to other resolution."
         )
+        return None
 
     questions = load_mc_questions(path)
     qid_to_question = {q.qid: q for q in questions}
     missing_qids = [qid for qid in qids if qid not in qid_to_question]
     if missing_qids:
-        raise ValueError(
-            f"Manifest-backed {split_name} split at {path} is missing "
-            f"{len(missing_qids)} recorded qids"
+        print(
+            f"Warning: manifest-backed {split_name} split at {path} is "
+            f"missing {len(missing_qids)} recorded qids; falling back."
         )
+        return None
     return [qid_to_question[qid] for qid in qids]
 
 
