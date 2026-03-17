@@ -54,11 +54,13 @@ python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device
 |----------|-----------|----------------|
 | TF-IDF baselines + PPO (MLP policy) | < 1 GB | Yes |
 | t5-base supervised + PPO-T5 | ~4–6 GB | Yes |
-| t5-large (optional upgrade) | ~12–16 GB | Yes |
+| t5-large supervised + PPO-T5 | ~12–16 GB | Yes (recommended) |
+| t5-3b supervised + PPO-T5 | ~24+ GB | Tight — not recommended |
 
-With 24 GB VRAM, t5-base runs comfortably with room to spare. The 128 GB
-system RAM eliminates the memory pressure that the macOS/MPS variant warns
-about (~41 GB unified memory for t5-base).
+With 24 GB VRAM, **t5-large is the recommended default** for this machine.
+It provides substantially better semantic representations than t5-base while
+fitting comfortably in VRAM. The macOS/MPS variant uses t5-base due to
+unified memory pressure (~41 GB); that constraint does not apply here.
 
 ## Setup
 
@@ -87,7 +89,7 @@ mkdir -p artifacts/main results
 ### Step 1: Core pipeline via wrapper (Phases 1–6, 11, 13–17)
 
 ```bash
-bash scripts/run_full_pipeline.sh --t5-model t5-base 2>&1 | tee results/wrapper_stdout.log
+bash scripts/run_full_pipeline.sh --t5-model t5-large 2>&1 | tee results/wrapper_stdout.log
 ```
 
 The wrapper runs a 4-wave DAG:
@@ -96,7 +98,7 @@ The wrapper runs a 4-wave DAG:
 - **Wave 3 (sequential):** Phase 14 (reward modes), Phase 16 (stop-only), Phase 17 (no-buzz)
 - **Wave 4 (sequential):** Phase 13 (K-sensitivity: K=2,3,5,6)
 
-All belief-feature phases use `likelihood.model=tfidf`. Phase 5 uses t5-base on CUDA.
+All belief-feature phases use `likelihood.model=tfidf`. Phase 5 uses t5-large on CUDA.
 Logs for Waves 1/2/4 are in `results/phase_*.log` (unbuffered via `PYTHONUNBUFFERED=1`).
 Wave 3 prints to stdout.
 
@@ -107,7 +109,7 @@ ps aux | grep train_t5_policy     # verify process is running
 nvidia-smi                        # monitor GPU utilization and VRAM
 ```
 
-**Estimated time:** ~1–2 hours (RTX 5090 CUDA is significantly faster than M3 Max MPS for T5 training).
+**Estimated time:** ~1.5–2.5 hours (RTX 5090 CUDA is significantly faster than M3 Max MPS; t5-large is ~2.5x the parameters of t5-base but the GPU throughput more than compensates).
 
 ### Step 2: Phase 7 — Multi-seed PPO
 
@@ -306,7 +308,7 @@ bash -n scripts/run_full_pipeline.sh
 - If a command fails: diagnose, fix if obvious, document, continue
 - If a phase takes longer than estimated: note actual time, don't kill unless hung (no output 10+ min)
 - If CUDA causes issues: set `CUDA_LAUNCH_BLOCKING=1` for synchronous error reporting, document the error
-- If CUDA OOM on T5: reduce batch size via `training.batch_size=4` override, or switch to `--t5-model t5-small`
+- If CUDA OOM on t5-large: reduce batch size via `training.batch_size=4` override, or fall back to `--t5-model t5-base`
 - If `artifacts/main/` is clobbered: restore from `results/` archives
 - Phase ordering: Wave 1 is parallel; everything else is sequential
 - Correctness fixes in this codebase: opponent models wired in EW PPO via `make_env_from_config`, variable-K belief shapes use question-local K, embedding cache keyed by model variant (not family), no-buzz calibration skips `buzz_step<0`, padded actions rejected in `step()`, MaskablePPO fully wired through train/load/eval, TF-IDF cache load is a no-op
@@ -330,7 +332,7 @@ bash -n scripts/run_full_pipeline.sh
 
 ## Estimated Total Time
 
-~2–3 hours (wrapper ~1–2 hrs with RTX 5090 CUDA, manual extensions ~30 min).
-The RTX 5090 provides roughly 2–3x speedup over M3 Max MPS for T5 training
-and evaluation phases; CPU-bound phases (TF-IDF, PPO MLP) see modest improvement
-from the higher core count.
+~2.5–3.5 hours (wrapper ~1.5–2.5 hrs with RTX 5090 CUDA + t5-large, manual extensions ~30 min).
+The RTX 5090 provides roughly 2–3x speedup over M3 Max MPS for T5 training,
+which more than offsets the increase from t5-base to t5-large. CPU-bound phases
+(TF-IDF, PPO MLP) see modest improvement from the higher core count.
