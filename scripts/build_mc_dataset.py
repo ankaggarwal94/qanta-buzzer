@@ -84,16 +84,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def save_json(path: Path, data: List[Any]) -> None:
+def save_json(path: Path, data: Any) -> None:
     """
-    Save dataclass objects to JSON file.
+    Save data to JSON file (lists of dataclasses or plain dicts).
 
     Parameters
     ----------
     path : Path
         Output file path
-    data : List[Any]
-        List of dataclass objects (TossupQuestion or MCQuestion)
+    data : Any
+        Data to serialize (list of dataclass objects, dict, etc.)
     """
     path.parent.mkdir(parents=True, exist_ok=True)
 

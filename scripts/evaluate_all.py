@@ -63,6 +63,7 @@ from evaluation.plotting import (
 from qb_data.config import merge_overrides
 from qb_env.stop_only_env import StopOnlyEnv
 from qb_env.tossup_env import make_env_from_config
+from qb_env.tossup_env import precompute_beliefs as env_precompute_beliefs
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
@@ -330,16 +331,17 @@ def main() -> None:
             print("  Warning: train_dataset.json not found; building PPO likelihood from eval split")
         ppo_likelihood_model = build_likelihood_model(ppo_eval_config, ppo_ref_questions)
         load_embedding_cache(ppo_likelihood_model, ppo_eval_config)
-        ppo_precomputed = precompute_beliefs(
+        ppo_belief_cache = env_precompute_beliefs(
             mc_questions,
             ppo_likelihood_model,
-            float(ppo_eval_config["likelihood"].get("beta", 5.0)),
+            belief_mode=str(ppo_eval_config["environment"].get("belief_mode", "from_scratch")),
+            beta=float(ppo_eval_config["likelihood"].get("beta", 5.0)),
         )
         ppo_env = make_env_from_config(
             mc_questions=mc_questions,
             likelihood_model=ppo_likelihood_model,
             config=ppo_eval_config,
-            precomputed_beliefs=ppo_precomputed,
+            precomputed_beliefs=ppo_belief_cache,
         )
         if policy_mode == "stop_only":
             ppo_env = StopOnlyEnv(ppo_env)
