@@ -44,6 +44,37 @@ def _belief_stats(belief: np.ndarray) -> tuple[int, float, float]:
     return top_idx, top_p, entropy
 
 
+def reward_from_buzz_step(
+    *,
+    correct: bool,
+    buzz_step: int,
+    total_steps: int,
+    reward_mode: str,
+    wait_penalty: float,
+    buzz_correct: float,
+    buzz_incorrect: float,
+    early_buzz_penalty: float,
+) -> float:
+    """Replay canonical env reward from an offline buzz outcome.
+
+    The offline baseline contract stores ``buzz_step`` as the last seen
+    clue index. Reward replay uses that same index for buzz shaping and
+    charges one wait penalty per prior clue index.
+    """
+    if reward_mode == "simple":
+        return 1.0 if correct else -1.0
+
+    if reward_mode != "time_penalty":
+        return 0.0
+
+    reward = buzz_correct if correct else buzz_incorrect
+    if early_buzz_penalty > 0 and total_steps > 1:
+        progress = np.clip((buzz_step + 1) / total_steps, 0.0, 1.0)
+        reward -= float(early_buzz_penalty) * (1.0 - progress)
+    reward -= float(wait_penalty) * max(0, buzz_step)
+    return float(reward)
+
+
 @dataclass
 class _PrecomputedQuestion:
     """Pre-computed belief distributions for every clue step of one question."""
@@ -90,11 +121,21 @@ class ThresholdBuzzer:
         threshold: float = 0.8,
         beta: float = 5.0,
         alpha: float = 10.0,
+        reward_mode: str = "time_penalty",
+        wait_penalty: float = 0.0,
+        buzz_correct: float = 1.0,
+        buzz_incorrect: float = -0.5,
+        early_buzz_penalty: float = 0.0,
     ):
         self.likelihood_model = likelihood_model
         self.threshold = threshold
         self.beta = beta
         self.alpha = alpha
+        self.reward_mode = reward_mode
+        self.wait_penalty = wait_penalty
+        self.buzz_correct = buzz_correct
+        self.buzz_incorrect = buzz_incorrect
+        self.early_buzz_penalty = early_buzz_penalty
         self.belief: np.ndarray | None = None
 
     def _belief_from_prefix(self, prefix: str, option_profiles: list[str]) -> np.ndarray:
@@ -132,7 +173,16 @@ class ThresholdBuzzer:
                 break
 
         correct = chosen_idx == question.gold_index
-        reward_like = 1.0 if correct else -0.5
+        reward_like = reward_from_buzz_step(
+            correct=correct,
+            buzz_step=chosen_step,
+            total_steps=len(question.cumulative_prefixes),
+            reward_mode=self.reward_mode,
+            wait_penalty=self.wait_penalty,
+            buzz_correct=self.buzz_correct,
+            buzz_incorrect=self.buzz_incorrect,
+            early_buzz_penalty=self.early_buzz_penalty,
+        )
         return EpisodeResult(
             qid=question.qid,
             buzz_step=chosen_step,
@@ -148,9 +198,23 @@ class ThresholdBuzzer:
 
 
 class AlwaysBuzzFinalBuzzer:
-    def __init__(self, likelihood_model: LikelihoodModel, beta: float = 5.0):
+    def __init__(
+        self,
+        likelihood_model: LikelihoodModel,
+        beta: float = 5.0,
+        reward_mode: str = "time_penalty",
+        wait_penalty: float = 0.0,
+        buzz_correct: float = 1.0,
+        buzz_incorrect: float = -0.5,
+        early_buzz_penalty: float = 0.0,
+    ):
         self.likelihood_model = likelihood_model
         self.beta = beta
+        self.reward_mode = reward_mode
+        self.wait_penalty = wait_penalty
+        self.buzz_correct = buzz_correct
+        self.buzz_incorrect = buzz_incorrect
+        self.early_buzz_penalty = early_buzz_penalty
 
     def run_episode(self, question: MCQuestion) -> EpisodeResult:
         c_trace: list[float] = []
@@ -173,7 +237,16 @@ class AlwaysBuzzFinalBuzzer:
         c_trace[-1] = 1.0
         buzz_idx = int(np.argmax(final_belief))
         correct = buzz_idx == question.gold_index
-        reward_like = 1.0 if correct else -0.5
+        reward_like = reward_from_buzz_step(
+            correct=correct,
+            buzz_step=final_step,
+            total_steps=len(question.cumulative_prefixes),
+            reward_mode=self.reward_mode,
+            wait_penalty=self.wait_penalty,
+            buzz_correct=self.buzz_correct,
+            buzz_incorrect=self.buzz_incorrect,
+            early_buzz_penalty=self.early_buzz_penalty,
+        )
         return EpisodeResult(
             qid=question.qid,
             buzz_step=final_step,
@@ -192,6 +265,11 @@ def _softmax_episode_from_precomputed(
     pq: _PrecomputedQuestion,
     threshold: float,
     alpha: float,
+    reward_mode: str = "time_penalty",
+    wait_penalty: float = 0.0,
+    buzz_correct: float = 1.0,
+    buzz_incorrect: float = -0.5,
+    early_buzz_penalty: float = 0.0,
 ) -> "SoftmaxEpisodeResult":
     """Build a SoftmaxEpisodeResult from pre-computed beliefs (pure numpy).
 
@@ -232,6 +310,16 @@ def _softmax_episode_from_precomputed(
         buzz_index=chosen_idx,
         gold_index=pq.gold_index,
         correct=correct,
+        reward_like=reward_from_buzz_step(
+            correct=correct,
+            buzz_step=chosen_step,
+            total_steps=len(pq.beliefs),
+            reward_mode=reward_mode,
+            wait_penalty=wait_penalty,
+            buzz_correct=buzz_correct,
+            buzz_incorrect=buzz_incorrect,
+            early_buzz_penalty=early_buzz_penalty,
+        ),
         c_trace=c_trace,
         g_trace=g_trace,
         top_p_trace=top_p_trace,
@@ -239,7 +327,14 @@ def _softmax_episode_from_precomputed(
     )
 
 
-def _always_final_from_precomputed(pq: _PrecomputedQuestion) -> EpisodeResult:
+def _always_final_from_precomputed(
+    pq: _PrecomputedQuestion,
+    reward_mode: str = "time_penalty",
+    wait_penalty: float = 0.0,
+    buzz_correct: float = 1.0,
+    buzz_incorrect: float = -0.5,
+    early_buzz_penalty: float = 0.0,
+) -> EpisodeResult:
     """Build an EpisodeResult for AlwaysBuzzFinal from pre-computed beliefs.
 
     Iterates all beliefs (no early stopping), buzzes at the last step
@@ -267,7 +362,16 @@ def _always_final_from_precomputed(pq: _PrecomputedQuestion) -> EpisodeResult:
         buzz_index=buzz_idx,
         gold_index=pq.gold_index,
         correct=correct,
-        reward_like=1.0 if correct else -0.5,
+        reward_like=reward_from_buzz_step(
+            correct=correct,
+            buzz_step=len(pq.beliefs) - 1,
+            total_steps=len(pq.beliefs),
+            reward_mode=reward_mode,
+            wait_penalty=wait_penalty,
+            buzz_correct=buzz_correct,
+            buzz_incorrect=buzz_incorrect,
+            early_buzz_penalty=early_buzz_penalty,
+        ),
         c_trace=c_trace,
         g_trace=g_trace,
         top_p_trace=top_p_trace,
@@ -279,6 +383,11 @@ def _episode_from_precomputed(
     pq: _PrecomputedQuestion,
     threshold: float,
     alpha: float,
+    reward_mode: str = "time_penalty",
+    wait_penalty: float = 0.0,
+    buzz_correct: float = 1.0,
+    buzz_incorrect: float = -0.5,
+    early_buzz_penalty: float = 0.0,
 ) -> EpisodeResult:
     """Build an EpisodeResult from pre-computed beliefs (pure numpy)."""
     c_trace: list[float] = []
@@ -312,7 +421,16 @@ def _episode_from_precomputed(
         buzz_index=chosen_idx,
         gold_index=pq.gold_index,
         correct=correct,
-        reward_like=1.0 if correct else -0.5,
+        reward_like=reward_from_buzz_step(
+            correct=correct,
+            buzz_step=chosen_step,
+            total_steps=len(pq.beliefs),
+            reward_mode=reward_mode,
+            wait_penalty=wait_penalty,
+            buzz_correct=buzz_correct,
+            buzz_incorrect=buzz_incorrect,
+            early_buzz_penalty=early_buzz_penalty,
+        ),
         c_trace=c_trace,
         g_trace=g_trace,
         top_p_trace=top_p_trace,
@@ -326,6 +444,11 @@ def sweep_thresholds(
     thresholds: list[float],
     beta: float = 5.0,
     alpha: float = 10.0,
+    reward_mode: str = "time_penalty",
+    wait_penalty: float = 0.0,
+    buzz_correct: float = 1.0,
+    buzz_incorrect: float = -0.5,
+    early_buzz_penalty: float = 0.0,
     precomputed: list[_PrecomputedQuestion] | None = None,
 ) -> dict[float, list[EpisodeResult]]:
     """Sweep multiple thresholds with a single belief-computation pass.
@@ -340,7 +463,16 @@ def sweep_thresholds(
     out: dict[float, list[EpisodeResult]] = {}
     for threshold in thresholds:
         out[float(threshold)] = [
-            _episode_from_precomputed(pq, threshold, alpha)
+            _episode_from_precomputed(
+                pq,
+                threshold,
+                alpha,
+                reward_mode=reward_mode,
+                wait_penalty=wait_penalty,
+                buzz_correct=buzz_correct,
+                buzz_incorrect=buzz_incorrect,
+                early_buzz_penalty=early_buzz_penalty,
+            )
             for pq in precomputed
         ]
     return out

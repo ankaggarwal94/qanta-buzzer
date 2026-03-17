@@ -535,6 +535,7 @@ class TestEpisodeResultSchema:
             buzz_index=0,
             gold_index=0,
             correct=True,
+            reward_like=0.8,
             c_trace=[0.1, 0.5, 0.9],
             g_trace=[1.0, 1.0, 1.0],
             top_p_trace=[0.4, 0.6, 0.9],
@@ -543,6 +544,7 @@ class TestEpisodeResultSchema:
         assert result.qid == "test_q"
         assert result.buzz_step == 2
         assert result.correct is True
+        assert result.reward_like == 0.8
 
     def test_traces_same_length(
         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
@@ -794,10 +796,54 @@ class TestPrecomputedEquivalence:
         assert pre.buzz_step == live.buzz_step
         assert pre.buzz_index == live.buzz_index
         assert pre.correct == live.correct
+        assert pre.reward_like == live.reward_like
         np.testing.assert_array_almost_equal(pre.c_trace, live.c_trace)
         np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
         np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
         np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
+
+
+class TestBaselineRewardParity:
+    """Tests for config-aware baseline reward replay."""
+
+    def test_threshold_reward_like_matches_configured_time_penalty(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        likelihood = _make_likelihood(sample_corpus)
+        agent = ThresholdBuzzer(
+            likelihood_model=likelihood,
+            threshold=0.0,
+            reward_mode="time_penalty",
+            wait_penalty=0.1,
+            buzz_correct=2.0,
+            buzz_incorrect=-1.0,
+            early_buzz_penalty=0.3,
+        )
+
+        result = agent.run_episode(sample_mc_question)
+        progress = (result.buzz_step + 1) / len(sample_mc_question.cumulative_prefixes)
+        expected = (2.0 if result.correct else -1.0) - 0.1 * result.buzz_step
+        expected -= 0.3 * (1.0 - progress)
+        assert result.reward_like == pytest.approx(expected)
+
+    def test_step_zero_buzz_has_no_wait_penalty(
+        self, sample_mc_question: MCQuestion, sample_corpus: list[str]
+    ) -> None:
+        likelihood = _make_likelihood(sample_corpus)
+        agent = ThresholdBuzzer(
+            likelihood_model=likelihood,
+            threshold=0.0,
+            reward_mode="time_penalty",
+            wait_penalty=0.5,
+            buzz_correct=1.0,
+            buzz_incorrect=-1.0,
+            early_buzz_penalty=0.0,
+        )
+
+        result = agent.run_episode(sample_mc_question)
+        assert result.buzz_step == 0
+        expected = 1.0 if result.correct else -1.0
+        assert result.reward_like == pytest.approx(expected)
 
     def test_sweep_sequential_matches_per_threshold(
         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
