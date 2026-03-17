@@ -741,6 +741,7 @@ class TestPrecomputedEquivalence:
         np.testing.assert_array_almost_equal(pre.g_trace, live.g_trace)
         np.testing.assert_array_almost_equal(pre.top_p_trace, live.top_p_trace)
         np.testing.assert_array_almost_equal(pre.entropy_trace, live.entropy_trace)
+        assert pre.reward_like == live.reward_like
 
     def test_always_final_precomputed_matches_live(
         self, sample_mc_question: MCQuestion, sample_corpus: list[str]

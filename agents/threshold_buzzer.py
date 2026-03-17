@@ -67,6 +67,12 @@ def reward_from_buzz_step(
         return 1.0 if correct else -1.0
 
     if reward_mode != "time_penalty":
+        import warnings
+        warnings.warn(
+            f"reward_from_buzz_step: reward_mode={reward_mode!r} is not supported; "
+            "returning 0.0. Only 'simple' and 'time_penalty' are implemented.",
+            stacklevel=2,
+        )
         return 0.0
 
     reward = buzz_correct if correct else buzz_incorrect
