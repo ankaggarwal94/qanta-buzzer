@@ -1,6 +1,6 @@
 # Codex: Full Clean Pipeline Run — Windows/WSL2 + CUDA Variant
 
-**Generated:** 2026-03-17 | **Repo commit:** `f52f749` (review-fixes branch)
+**Generated:** 2026-03-17 | **Repo branch:** `review-fixes` (verify with `git rev-parse --short HEAD`)
 **Base prompt:** `docs/codex-full-clean-run-prompt.md` (macOS/MPS variant)
 
 ## Critical: Use the Main Repo
@@ -45,7 +45,7 @@ sudo apt update && sudo apt install -y build-essential
 # Install CUDA toolkit for WSL — see https://developer.nvidia.com/cuda-downloads
 # Select: Linux > x86_64 > WSL-Ubuntu > deb (network)
 nvidia-smi          # should show RTX 5090, driver version, CUDA version
-python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+python3 -c "import torch; avail = torch.cuda.is_available(); print(f'CUDA: {avail}' + (f', Device: {torch.cuda.get_device_name(0)}' if avail else ' — check driver/toolkit'))"
 ```
 
 ### VRAM budget
@@ -69,10 +69,13 @@ cd <repo-root>
 git checkout review-fixes
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
-python3 -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, Device: {torch.cuda.get_device_name(0)}')"
+pip install -e '.[dev]'        # or: pip install -e . && pip install pytest
+python3 -c "import torch; avail = torch.cuda.is_available(); print(f'CUDA: {avail}' + (f', Device: {torch.cuda.get_device_name(0)}' if avail else ' — check driver/toolkit'))"
 pytest tests/ -q --tb=short    # expect: 361 passed, 3 skipped
 ```
+
+Note: if the project does not define a `[dev]` extra, install pytest explicitly:
+`pip install pytest`.
 
 ## Phase 0: Clean state
 
