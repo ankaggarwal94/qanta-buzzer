@@ -69,13 +69,10 @@ cd <repo-root>
 git checkout review-fixes
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev]'        # or: pip install -e . && pip install pytest
+pip install -e '.[dev]'
 python3 -c "import torch; avail = torch.cuda.is_available(); print(f'CUDA: {avail}' + (f', Device: {torch.cuda.get_device_name(0)}' if avail else ' — check driver/toolkit'))"
 pytest tests/ -q --tb=short    # expect: 361 passed, 3 skipped
 ```
-
-Note: if the project does not define a `[dev]` extra, install pytest explicitly:
-`pip install pytest`.
 
 ## Phase 0: Clean state
 
