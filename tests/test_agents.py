@@ -822,13 +822,14 @@ class TestBaselineRewardParity:
 
         result = agent.run_episode(sample_mc_question)
         progress = (result.buzz_step + 1) / len(sample_mc_question.cumulative_prefixes)
-        expected = (2.0 if result.correct else -1.0) - 0.1 * result.buzz_step
+        expected = (2.0 if result.correct else -1.0) - 0.1 * (result.buzz_step + 1)
         expected -= 0.3 * (1.0 - progress)
         assert result.reward_like == pytest.approx(expected)
 
-    def test_step_zero_buzz_has_no_wait_penalty(
+    def test_step_zero_buzz_includes_one_wait_penalty(
         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
     ) -> None:
+        """Buzzing at step 0 means seeing 1 clue = 1 WAIT in the env."""
         likelihood = _make_likelihood(sample_corpus)
         agent = ThresholdBuzzer(
             likelihood_model=likelihood,
@@ -842,7 +843,7 @@ class TestBaselineRewardParity:
 
         result = agent.run_episode(sample_mc_question)
         assert result.buzz_step == 0
-        expected = 1.0 if result.correct else -1.0
+        expected = (1.0 if result.correct else -1.0) - 0.5
         assert result.reward_like == pytest.approx(expected)
 
     def test_sweep_sequential_matches_per_threshold(
