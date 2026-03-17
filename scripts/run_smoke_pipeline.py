@@ -7,7 +7,8 @@ Stages:
 3) train_ppo
 4) evaluate_all
 
-Writes a summary JSON to artifacts/smoke/smoke_pipeline_summary.json.
+Writes a summary JSON to smoke_pipeline_summary.json in the output directory
+(default: artifacts/smoke/, overridable via --output-dir).
 """
 
 from __future__ import annotations

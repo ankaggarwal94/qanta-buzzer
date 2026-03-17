@@ -11,6 +11,7 @@ Marked with ``@pytest.mark.slow`` and ``@pytest.mark.pipeline``.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -117,8 +118,17 @@ def test_evaluate_all_smoke(tmp_path, smoke_mc_dataset):
 
 @pytest.mark.slow
 @pytest.mark.pipeline
+@pytest.mark.skipif(
+    not os.environ.get("RUN_PIPELINE_E2E"),
+    reason="set RUN_PIPELINE_E2E=1 to run full 4-stage pipeline test",
+)
 def test_run_smoke_pipeline(tmp_path):
-    """run_smoke_pipeline.py --output-dir runs all 4 stages in a temp dir."""
+    """run_smoke_pipeline.py --output-dir runs all 4 stages in a temp dir.
+
+    Skipped by default because it re-runs the full 4-stage pipeline (~18s),
+    which the individual stage tests already cover. Run explicitly with:
+        RUN_PIPELINE_E2E=1 pytest tests/test_pipeline_smoke.py -k run_smoke_pipeline
+    """
     result = _run([
         "scripts/run_smoke_pipeline.py",
         "--output-dir", str(tmp_path),
