@@ -21,6 +21,12 @@ from qb_data.config import load_config as load_yaml_config
 from qb_data.mc_builder import MCQuestion
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATASET_FILENAMES = {
+    "combined": "mc_dataset.json",
+    "train": "train_dataset.json",
+    "val": "val_dataset.json",
+    "test": "test_dataset.json",
+}
 
 
 def _parse_value(value: str) -> Any:
@@ -73,6 +79,7 @@ def parse_overrides(args: argparse.Namespace) -> dict[str, Any]:
     return overrides
 DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "default.yaml"
 ARTIFACT_DIR = PROJECT_ROOT / "artifacts"
+PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 
 
 def load_config(config_path: str | None = None, smoke: bool = False) -> dict[str, Any]:
@@ -120,6 +127,71 @@ def ensure_dir(path: str | Path) -> Path:
     p = Path(path)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def dataset_path_for_split(base_dir: str | Path, split: str) -> Path:
+    """Return the canonical dataset path for a split name.
+
+    Parameters
+    ----------
+    base_dir : str or Path
+        Directory containing dataset artifacts.
+    split : str
+        One of ``combined``, ``train``, ``val``, or ``test``.
+
+    Returns
+    -------
+    Path
+        Path to the split dataset JSON file.
+    """
+    if split not in DATASET_FILENAMES:
+        raise ValueError(f"Unknown split '{split}'")
+    return Path(base_dir) / DATASET_FILENAMES[split]
+
+
+def resolve_persisted_split_paths(base_dir: str | Path) -> dict[str, Path] | None:
+    """Return persisted train/val/test paths when all three exist."""
+    base = Path(base_dir)
+    paths = {
+        split: dataset_path_for_split(base, split)
+        for split in ("train", "val", "test")
+    }
+    if all(path.exists() for path in paths.values()):
+        return paths
+    return None
+
+
+def resolve_default_dataset_path(
+    out_dir: str | Path,
+    preferred_split: str,
+    fallback_split: str = "combined",
+) -> tuple[Path, str, str | None]:
+    """Resolve the default dataset path for a pipeline stage.
+
+    Searches the stage output directory first, then ``data/processed``.
+    Returns the preferred split when available, otherwise a fallback split
+    plus a warning string.
+    """
+    candidate_dirs = [Path(out_dir), PROCESSED_DIR]
+    preferred_name = DATASET_FILENAMES[preferred_split]
+
+    for base_dir in candidate_dirs:
+        preferred_path = dataset_path_for_split(base_dir, preferred_split)
+        if preferred_path.exists():
+            return preferred_path, preferred_split, None
+
+    for base_dir in candidate_dirs:
+        fallback_path = dataset_path_for_split(base_dir, fallback_split)
+        if fallback_path.exists():
+            warning = None
+            if fallback_split != preferred_split:
+                warning = (
+                    f"Warning: {preferred_name} not found; using {fallback_path.name} "
+                    f"at {fallback_path}. Results use legacy/in-sample data."
+                )
+            return fallback_path, fallback_split, warning
+
+    return dataset_path_for_split(Path(out_dir), fallback_split), fallback_split, None
 
 
 def to_serializable(item: Any) -> Any:
@@ -184,6 +256,39 @@ def load_json(path: str | Path) -> Any:
     """
     with Path(path).open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_checkpoint_sidecar(
+    checkpoint_path: str | Path,
+    filename: str,
+) -> tuple[Any | None, Path | None, str | None]:
+    """Load a JSON sidecar from a checkpoint path or its parent directory.
+
+    Parameters
+    ----------
+    checkpoint_path : str or Path
+        Checkpoint file or directory path.
+    filename : str
+        Sidecar filename to load.
+
+    Returns
+    -------
+    tuple[Any or None, Path or None, str or None]
+        Parsed JSON payload, matched path, and an error string when the file
+        exists but could not be decoded/read.
+    """
+    cp = Path(checkpoint_path).resolve()
+    candidates = [cp / filename] if cp.is_dir() else []
+    candidates.append(cp.parent / filename)
+
+    for sidecar in candidates:
+        if not sidecar.exists():
+            continue
+        try:
+            return load_json(sidecar), sidecar, None
+        except (json.JSONDecodeError, OSError) as exc:
+            return None, sidecar, str(exc)
+    return None, None, None
 
 
 def mc_question_from_dict(row: dict[str, Any]) -> MCQuestion:

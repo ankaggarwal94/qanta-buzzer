@@ -43,6 +43,15 @@ python scripts/evaluate_all.py --smoke
 
 `--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`. Drop `--smoke` for full runs (uses `configs/default.yaml`, writes to `artifacts/main/`).
 
+`build_mc_dataset.py` now writes `train_dataset.json`, `val_dataset.json`, and
+`test_dataset.json` as the canonical downstream artifacts. `mc_dataset.json`
+is kept as a combined legacy/debug convenience file. By default,
+`run_baselines.py` selects thresholds on the validation split, `train_ppo.py`
+trains on the training split and writes validation metrics to
+`ppo_summary.json`, and `evaluate_all.py` evaluates softmax controls plus PPO
+checkpoint replay on the test split. `evaluation_report.json` is the canonical
+final test report.
+
 The smoke config uses tuned reward settings (`wait_penalty=0.05`, `early_buzz_penalty=0.2`, `ppo.seed=13`, `ppo.total_timesteps=3000`).
 
 `train_ppo.py` also accepts `--seed` to override the PPO/environment seed, and `--stochastic-eval` / `--deterministic-eval` to control post-training evaluation mode.
@@ -56,7 +65,7 @@ python scripts/train_t5_policy.py --config configs/t5_policy.yaml
 python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke  # quick test with t5-small
 ```
 
-The T5 pipeline uses its own config (`configs/t5_policy.yaml`) which defines `model`, `supervised`, `ppo`, and `data` sections. It does not inherit `environment` or `likelihood` settings from the belief-feature configs -- the T5 PPO trainer uses default reward settings (`wait_penalty=0.1`).
+The T5 pipeline uses its own config (`configs/t5_policy.yaml`) which defines `model`, `supervised`, `ppo`, and `data` sections. It does not inherit `environment` or `likelihood` settings from the belief-feature configs -- the T5 PPO trainer uses default reward settings (`wait_penalty=0.1`). When persisted `train_dataset.json` / `val_dataset.json` / `test_dataset.json` artifacts exist alongside `--mc-path` or in the standard artifact directories, `train_t5_policy.py` prefers those split files over re-splitting `mc_dataset.json`.
 
 The T5 policy uses factorized action semantics: the wait head models `P(WAIT)` vs `P(BUZZ)`, the answer head models `P(answer | BUZZ)`, and the flat action distribution is `P(WAIT)` plus `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`.
 
@@ -111,7 +120,7 @@ For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy 
 
 ## Testing
 
-369 tests across 28 test files (4 skipped when optional extras not installed):
+375 tests across 30 test files (4 skipped when optional extras not installed):
 
 ```bash
 pytest                    # full suite

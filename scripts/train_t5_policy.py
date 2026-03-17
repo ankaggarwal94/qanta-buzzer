@@ -35,7 +35,13 @@ if str(PROJECT_ROOT) not in sys.path:
 import yaml
 
 from qb_data.config import merge_overrides
-from scripts._common import ARTIFACT_DIR, load_mc_questions, parse_overrides
+from scripts._common import (
+    ARTIFACT_DIR,
+    PROCESSED_DIR,
+    load_mc_questions,
+    parse_overrides,
+    resolve_persisted_split_paths,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -209,7 +215,7 @@ def flatten_config(config: dict) -> dict:
 
 
 def load_questions(args: argparse.Namespace, config: dict) -> list:
-    """Load MC questions from file or fallback paths.
+    """Load a combined MC dataset when persisted splits are unavailable.
 
     Parameters
     ----------
@@ -226,18 +232,12 @@ def load_questions(args: argparse.Namespace, config: dict) -> list:
     if args.mc_path:
         mc_path = Path(args.mc_path)
     else:
-        # Try standard locations
-        candidates = [
-            ARTIFACT_DIR / "main" / "mc_dataset.json",
-            ARTIFACT_DIR / "smoke" / "mc_dataset.json",
-            PROJECT_ROOT / "data" / "processed" / "mc_dataset.json",
-        ]
-        mc_path = None
-        for candidate in candidates:
-            if candidate.exists():
-                mc_path = candidate
-                break
-
+        candidates = (
+            [ARTIFACT_DIR / "smoke" / "mc_dataset.json", ARTIFACT_DIR / "main" / "mc_dataset.json"]
+            if args.smoke
+            else [ARTIFACT_DIR / "main" / "mc_dataset.json", ARTIFACT_DIR / "smoke" / "mc_dataset.json"]
+        ) + [PROCESSED_DIR / "mc_dataset.json"]
+        mc_path = next((candidate for candidate in candidates if candidate.exists()), None)
         if mc_path is None:
             print("ERROR: No MC dataset found. Run build_mc_dataset.py first.")
             print("Searched locations:")
@@ -249,13 +249,68 @@ def load_questions(args: argparse.Namespace, config: dict) -> list:
     questions = load_mc_questions(mc_path)
     print(f"Loaded {len(questions)} questions")
 
-    # Apply max_questions limit (smoke mode)
+    # Apply max_questions limit when falling back to a combined dataset.
     max_questions = config.get("data", {}).get("max_questions", None)
     if max_questions and len(questions) > max_questions:
         questions = questions[:max_questions]
         print(f"Limited to {max_questions} questions (smoke mode)")
 
     return questions
+
+
+def load_question_splits(args: argparse.Namespace, config: dict) -> tuple[list, list, list]:
+    """Load persisted train/val/test artifacts when available.
+
+    Resolution order:
+    1. If ``--mc-path`` is given, inspect its parent directory for sibling
+       ``train_dataset.json``, ``val_dataset.json``, and ``test_dataset.json``.
+    2. Otherwise search the standard artifact directories, preferring the
+       smoke directory in smoke mode and the main directory otherwise.
+    3. Fall back to loading a combined ``mc_dataset.json`` and performing the
+       legacy in-memory random split.
+    """
+    if args.mc_path:
+        candidate_dirs = [Path(args.mc_path).parent]
+    elif args.smoke:
+        candidate_dirs = [
+            ARTIFACT_DIR / "smoke",
+            ARTIFACT_DIR / "main",
+            PROCESSED_DIR,
+        ]
+    else:
+        candidate_dirs = [
+            ARTIFACT_DIR / "main",
+            ARTIFACT_DIR / "smoke",
+            PROCESSED_DIR,
+        ]
+
+    for base_dir in candidate_dirs:
+        split_paths = resolve_persisted_split_paths(base_dir)
+        if split_paths is None:
+            continue
+        train_questions = load_mc_questions(split_paths["train"])
+        val_questions = load_mc_questions(split_paths["val"])
+        test_questions = load_mc_questions(split_paths["test"])
+        print(
+            "Using persisted dataset splits from "
+            f"{base_dir}: {len(train_questions)} train, "
+            f"{len(val_questions)} val, {len(test_questions)} test"
+        )
+        return train_questions, val_questions, test_questions
+
+    if args.mc_path:
+        print(
+            "Warning: persisted train/val/test artifacts were not found "
+            f"alongside {args.mc_path}; falling back to an internal random split."
+        )
+    else:
+        print(
+            "Warning: persisted train/val/test artifacts were not found in "
+            "standard locations; falling back to an internal random split."
+        )
+
+    questions = load_questions(args, config)
+    return split_questions(questions, config)
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -321,9 +376,11 @@ def main() -> None:
         config = merge_overrides(config, overrides)
     flat_config = flatten_config(config)
 
-    # Load and split dataset
-    questions = load_questions(args, config)
-    train_questions, val_questions, test_questions = split_questions(questions, config)
+    # Load canonical split artifacts when they exist, otherwise fall back to
+    # the legacy combined-dataset random split.
+    train_questions, val_questions, test_questions = load_question_splits(
+        args, config
+    )
 
     # Import training modules (lazy to avoid loading transformers until needed)
     from training.train_supervised_t5 import run_supervised_training

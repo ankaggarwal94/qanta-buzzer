@@ -208,7 +208,7 @@ If you are an AI coding agent executing this runbook:
 
 3. **Do not run phases 2/3/5 sequentially** if the parallel script is available — they are independent and running them in parallel saves 2–3x wall time. Phase 11 must run after Phase 4 and before Phase 15 (it reads `baseline_summary.json` which Phase 15 overwrites). Phases 9/13/15 each overwrite `baseline_summary.json` and must run sequentially after Phase 11.
 
-4. **Do not modify `artifacts/main/mc_dataset.json`** after Phase 1 — every subsequent phase reads it.
+4. **Do not modify the Phase 1 dataset artifacts** after they are built. The canonical downstream inputs are `train_dataset.json`, `val_dataset.json`, and `test_dataset.json`; `mc_dataset.json` is only the combined legacy/debug artifact.
 
 5. **Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19** are not in the automated script. Run them manually if needed.
 
@@ -238,7 +238,7 @@ mkdir -p artifacts/main results
 **Config:** `configs/default.yaml`
 **Distractor strategy:** `sbert_profile` (SBERT-based semantic ranking)
 **K:** 4 fixed answer choices
-**Expected output:** `artifacts/main/mc_dataset.json`, split files, answer profiles
+**Expected output:** `artifacts/main/train_dataset.json`, `artifacts/main/val_dataset.json`, `artifacts/main/test_dataset.json`, `artifacts/main/mc_dataset.json`, `artifacts/main/build_metadata.json`, `artifacts/main/answer_profiles.json`
 
 ```bash
 python scripts/build_mc_dataset.py \
@@ -249,17 +249,19 @@ python scripts/build_mc_dataset.py \
 **Expected behavior:**
 - Loads ~20,407 questions from `questions.csv`
 - Downloads `all-MiniLM-L6-v2` SBERT model (~90 MB) on first run
-- Builds answer profiles with leave-one-out
+- Splits raw tossups before any profile fitting
+- Builds answer profiles from the raw training split only
 - Ranks distractors by SBERT profile similarity (top-M argpartition)
 - Applies 4 anti-artifact guards
-- Creates stratified train/val/test splits (70/15/15)
-- Writes `mc_dataset.json`, `train_dataset.json`, `val_dataset.json`, `test_dataset.json`, `answer_profiles.json`
+- Writes `train_dataset.json`, `val_dataset.json`, `test_dataset.json` as the canonical split-safe artifacts
+- Writes `mc_dataset.json` as the combined legacy/debug convenience artifact
+- Writes `build_metadata.json` with split retention and drop reasons
 
 **Estimated time:** 5–15 minutes (SBERT encoding is the bottleneck)
 
-**Checkpoint:** Verify `artifacts/main/mc_dataset.json` exists and has >10,000 entries:
+**Checkpoint:** Verify the split artifacts exist and the combined file has >10,000 entries:
 ```bash
-python -c "import json; d=json.load(open('artifacts/main/mc_dataset.json')); print(f'{len(d)} MC questions')"
+python -c "import json; d=json.load(open('artifacts/main/mc_dataset.json')); print(f'{len(d)} combined MC questions')"
 ```
 
 ---
@@ -276,7 +278,6 @@ For a **fast first pass** using TF-IDF (minutes, not hours):
 ```bash
 python scripts/run_baselines.py \
     --config configs/default.yaml \
-    --mc-path artifacts/main/mc_dataset.json \
     likelihood.model=tfidf
 ```
 
@@ -285,7 +286,6 @@ For **T5-base baseline** (balanced quality/speed, ~45–90 min):
 ```bash
 python scripts/run_baselines.py \
     --config configs/default.yaml \
-    --mc-path artifacts/main/mc_dataset.json \
     likelihood.model=t5-base
 ```
 
@@ -293,11 +293,12 @@ For **T5-large baseline** (requires CUDA or 64+ GB RAM on MPS, hours of compute)
 
 ```bash
 python scripts/run_baselines.py \
-    --config configs/default.yaml \
-    --mc-path artifacts/main/mc_dataset.json
+    --config configs/default.yaml
 ```
 
 **Expected output:** `artifacts/main/baseline_summary.json`, per-agent run files
+
+`baseline_summary.json` is the validation artifact used to select the best softmax threshold. By default, Phase 2 reads `val_dataset.json`; only explicit `--mc-path` overrides force a different dataset.
 
 **Checkpoint:**
 ```bash
@@ -339,7 +340,6 @@ cp artifacts/main/baseline_summary.json results/baselines_tfidf.json
 ```bash
 python scripts/train_ppo.py \
     --config configs/default.yaml \
-    --mc-path artifacts/main/mc_dataset.json \
     --seed 13 \
     --deterministic-eval \
     likelihood.model=tfidf
@@ -348,8 +348,9 @@ python scripts/train_ppo.py \
 **Expected behavior:**
 - Precomputes belief trajectories for all questions (one-time, ~minutes)
 - Trains SB3 PPO for 100k timesteps
-- Evaluates with deterministic policy
+- Evaluates with deterministic policy on the validation split
 - Saves model to `artifacts/main/ppo_model.zip`
+- Writes `ppo_summary.json` as the validation artifact and `run_metadata.json` for checkpoint reconstruction
 
 **Estimated time:** 30–90 minutes (CPU-bound: env stepping, not GPU)
 
@@ -378,17 +379,22 @@ does not generate it)
 ```bash
 python scripts/evaluate_all.py \
     --config configs/default.yaml \
-    --mc-path artifacts/main/mc_dataset.json \
     likelihood.model=tfidf
 ```
 
 > **Selective re-run note:** `evaluate_all.py` reads
-> `artifacts/main/baseline_summary.json` for the softmax threshold. If later
-> phases (13, 15) have overwritten it, restore the TF-IDF archive first
-> (this command uses `likelihood.model=tfidf`, so the baseline must match):
+> `artifacts/main/baseline_summary.json` for the validation-selected softmax
+> threshold. If later phases (13, 15) have overwritten it, restore the TF-IDF
+> archive first (this command uses `likelihood.model=tfidf`, so the baseline
+> must match):
 > `cp results/baselines_tfidf.json artifacts/main/baseline_summary.json`
 
 **Expected output:** `artifacts/main/evaluation_report.json`, `artifacts/main/plots/`
+
+By default, Phase 4 evaluates softmax controls on `test_dataset.json`, reloads
+the PPO checkpoint for test replay, and records the split roles explicitly in
+`evaluation_report.json`. `ppo_summary.json` remains the validation summary
+from Phase 3; the canonical final test report is `evaluation_report.json`.
 
 **Checkpoint:**
 ```bash
