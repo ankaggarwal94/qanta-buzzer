@@ -125,7 +125,7 @@ Focus on the extension test files:
 
 Verify these specific factual claims against the code:
 
-1. README says "360 tests across 27 test files" — count the actual `test_*.py` files in the tests/ directory listing and test count in the attached code
+1. README says "364 tests across 27 test files" — count the actual `test_*.py` files in the tests/ directory listing and test count in the attached code
 2. README says "Four reward modes: time_penalty, simple, human_grounded, expected_wins" — verify `_buzz_reward()` in `tossup_env.py` dispatches all four
 3. AGENTS.md says `evaluation/` contains "Expected Wins" — verify `expected_wins_score` exists in `evaluation/metrics.py`
 4. The `dspy` config section in `default.yaml` — verify every key is read by some code path

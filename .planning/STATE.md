@@ -164,7 +164,7 @@ None identified yet
 - calibration_at_buzz skips no-buzz episodes instead of clamping to step 0
 - step() rejects padded buzz actions in variable-K mode
 - MaskablePPO wired through train_ppo.py via ppo.use_maskable_ppo config
-- 360 tests across 27 test files (3 skipped for optional extras)
+- 364 tests across 27 test files (3 skipped for optional extras)
 
 ### Next Session Priority
 1. CS234 writeup finalization using results from full-scale run

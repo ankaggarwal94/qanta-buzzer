@@ -35,7 +35,7 @@ git checkout review-fixes
 source .venv/bin/activate
 pip install -e .
 python3 -c "import torch; print(f'MPS: {torch.backends.mps.is_available()}')"
-pytest tests/ -q --tb=short    # expect: 357 passed, 3 skipped
+pytest tests/ -q --tb=short    # expect: 361 passed, 3 skipped
 ```
 
 ## Phase 0: Clean state

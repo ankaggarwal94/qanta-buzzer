@@ -169,7 +169,7 @@ Produce a unified architecture diagram showing the current system and where each
 
 ## Constraints
 
-- All designs must be backward-compatible: existing smoke pipeline, 357 passing tests (360 total, 3 skipped), and T5 smoke must continue to work unchanged when extensions are not activated.
+- All designs must be backward-compatible: existing smoke pipeline, 361 passing tests (364 total, 3 skipped), and T5 smoke must continue to work unchanged when extensions are not activated.
 - New dependencies must be optional (extras in pyproject.toml) unless they're already in the dependency tree.
 - Every new code path must have at least one test.
 - Config additions must have sensible defaults that preserve current behavior.

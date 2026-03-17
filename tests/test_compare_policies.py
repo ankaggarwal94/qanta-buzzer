@@ -79,6 +79,7 @@ def test_evaluate_mlp_policy_uses_builder_and_question_idx(monkeypatch):
             return {"buzz_step": 0, "correct": True, "top_p_trace": [0.9]}
 
     monkeypatch.setattr(cp, "build_likelihood_model", fake_builder)
+    monkeypatch.setattr(cp, "load_embedding_cache", lambda model, config: None)
     monkeypatch.setattr(te, "make_env_from_config", fake_make_env_from_config)
     monkeypatch.setattr(
         PPOBuzzer,

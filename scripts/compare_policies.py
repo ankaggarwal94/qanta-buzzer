@@ -68,6 +68,7 @@ from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
     load_config,
+    load_embedding_cache,
     load_mc_questions,
     save_json,
 )
@@ -130,6 +131,7 @@ def evaluate_mlp_policy(
 
     resolved_config = resolve_mlp_eval_config(checkpoint_path, config)
     likelihood_model = build_likelihood_model(resolved_config, test_questions)
+    load_embedding_cache(likelihood_model, resolved_config)
 
     env = make_env_from_config(
         mc_questions=test_questions,

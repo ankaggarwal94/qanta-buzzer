@@ -79,7 +79,7 @@ QANTA quiz bowl questions with `|||`-separated clue tokens.
 ### Verify baseline
 
 ```bash
-pytest tests/ -q --tb=short    # expect: 357 passed, 3 skipped
+pytest tests/ -q --tb=short    # expect: 361 passed, 3 skipped
 bash scripts/manual-smoke.sh   # expect: 4/4 stages complete
 ```
 

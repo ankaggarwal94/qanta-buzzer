@@ -45,7 +45,7 @@ source .venv/bin/activate && pytest -q 2>&1
 ........................................................................ [ 66%]
 ............................................s........................... [ 89%]
 ...................................                                      [100%]
-357 passed, 3 skipped on the current review-fixes branch
+361 passed, 3 skipped on the current review-fixes branch
 ```
 
 ## Four-stage belief-feature smoke pipeline

@@ -216,7 +216,7 @@ These were verified across every commit and review round:
 
 ## Test Plan
 
-- [x] `pytest tests/` — **357 passed, 3 skipped** (current branch)
+- [x] `pytest tests/` — **361 passed, 3 skipped** (current branch)
 - [x] `bash scripts/manual-smoke.sh` — 4/4 stages complete (10.6s)
 - [x] `python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke` — supervised 75% val acc → PPO 5 iters → test acc 62.5% (23.9s)
 - [x] Reduced-scale default.yaml preflight — default reward settings, [64,64] MLP, 500 PPO timesteps

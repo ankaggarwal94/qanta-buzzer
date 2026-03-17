@@ -102,7 +102,7 @@ The `repomix-smoke.md` file contains the actual JSON/CSV outputs from the most r
 ### Task 6: Documentation Truthfulness
 
 Cross-check every factual claim in `README.md` and `AGENTS.md` against the actual code:
-- Test counts (claimed: 360 tests across 27 files)
+- Test counts (claimed: 364 tests across 27 files)
 - Config table (claimed defaults vs actual YAML values)
 - Architecture diagram (claimed packages vs actual directory contents)
 - Extension descriptions (claimed behavior vs actual implementation)

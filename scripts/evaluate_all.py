@@ -7,7 +7,7 @@ then executes control experiments (choices-only, shuffle, alias substitution)
 and generates comparison plots and tables for the CS234 writeup.
 
 Consumes outputs from:
-- build_mc_dataset.py (mc_dataset.json, alias_lookup.json)
+- build_mc_dataset.py (mc_dataset.json)
 - run_baselines.py (baseline_summary.json)
 - train_ppo.py (ppo_summary.json)
 
