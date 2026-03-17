@@ -434,6 +434,7 @@ class TestMaskablePPO:
         assert probs.tolist() == pytest.approx([0.8, 0.2])
         assert seen["masks"] is not None
         assert seen["masks"].shape == (1, 2)
+        assert seen["masks"].device == th.device("cpu")
 
     def test_maskable_checkpoint_load_path(self, sample_tfidf_env, tmp_path, monkeypatch) -> None:
         """PPOBuzzer.load(..., use_maskable_ppo=True) should use MaskablePPO.load."""
