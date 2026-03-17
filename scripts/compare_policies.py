@@ -108,7 +108,7 @@ def _resolve_manifest_questions(
     corrupt JSON, incomplete fields, or missing split data on disk.
     Callers should fall back to sibling dataset files or random splitting.
     """
-    manifest, manifest_path, manifest_error = load_checkpoint_sidecar(
+    manifest, _, manifest_error = load_checkpoint_sidecar(
         checkpoint_path, "split_manifest.json"
     )
     if manifest_error:

@@ -602,7 +602,7 @@ class PPOTrainer:
         self,
         questions: List[MCQuestion],
         split_name: str,
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         """Evaluate deterministic episodes on a named split.
 
         Runs one episode per question with deterministic action
@@ -690,7 +690,7 @@ class PPOTrainer:
             "evaluation_split": split_name,
         }
 
-    def validate(self) -> Dict[str, float]:
+    def validate(self) -> Dict[str, Any]:
         """Validate on the full validation split."""
         return self.evaluate_questions(self.val_questions, "val")
 
