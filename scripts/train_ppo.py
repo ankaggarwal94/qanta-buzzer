@@ -113,6 +113,7 @@ def main() -> None:
 
     split = "smoke" if args.smoke else "main"
     out_dir = Path(args.output_dir) if args.output_dir else ARTIFACT_DIR / split
+    out_dir.mkdir(parents=True, exist_ok=True)
     mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
 
     # Fallback: check data/processed/ if artifacts path doesn't exist

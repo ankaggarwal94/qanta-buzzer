@@ -200,7 +200,9 @@ class PPOBuzzer:
         PPOBuzzer
             A PPOBuzzer with the loaded model weights.
         """
-        agent = cls(env=env, use_maskable_ppo=use_maskable_ppo)
+        agent = cls.__new__(cls)
+        agent.env = env
+        agent._use_maskable = use_maskable_ppo
         if use_maskable_ppo:
             try:
                 from sb3_contrib import MaskablePPO
