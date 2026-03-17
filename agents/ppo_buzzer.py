@@ -202,7 +202,13 @@ class PPOBuzzer:
         """
         agent = cls(env=env, use_maskable_ppo=use_maskable_ppo)
         if use_maskable_ppo:
-            from sb3_contrib import MaskablePPO
+            try:
+                from sb3_contrib import MaskablePPO
+            except ImportError as exc:
+                raise ImportError(
+                    "MaskablePPO requires sb3-contrib. "
+                    "Install with: pip install -e '.[maskable]'"
+                ) from exc
             agent.model = MaskablePPO.load(str(path), env=env)
         else:
             agent.model = PPO.load(str(path), env=env)

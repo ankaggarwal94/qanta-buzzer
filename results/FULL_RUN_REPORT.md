@@ -9,7 +9,7 @@
 - Python: `3.13.5` in `.venv`
 - Preflight:
   - `python3 -c "import torch; print(f'MPS: {torch.backends.mps.is_available()}')"` -> `MPS: True`
-  - `pytest tests/ -q --tb=short` -> `342 passed, 3 skipped`
+  - `pytest tests/ -q --tb=short` -> `342 passed, 3 skipped` (at initial run commit; current HEAD is 359+ passed)
 - Live run windows:
   - Initial run: approximately `13:49` to `16:34` Pacific
   - Remaining-phase completion pass: approximately `19:01` to `19:06` Pacific

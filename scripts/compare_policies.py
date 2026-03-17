@@ -84,11 +84,17 @@ def resolve_mlp_eval_config(
     """
     import json
 
-    checkpoint_dir = Path(checkpoint_path).resolve().parent
-    sidecar = checkpoint_dir / "config_used.json"
-    if sidecar.exists():
-        with open(sidecar) as f:
-            return json.load(f)
+    cp = Path(checkpoint_path).resolve()
+    candidates = [cp / "config_used.json"] if cp.is_dir() else []
+    candidates.append(cp.parent / "config_used.json")
+
+    for sidecar in candidates:
+        if sidecar.exists():
+            try:
+                with open(sidecar, encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
     return fallback_config
 
 

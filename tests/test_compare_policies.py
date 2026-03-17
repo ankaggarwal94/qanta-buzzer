@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-
-import pytest
 
 from scripts.compare_policies import resolve_mlp_eval_config
 
@@ -26,6 +23,29 @@ def test_resolve_mlp_eval_config_prefers_checkpoint_sidecar(tmp_path):
 
 
 def test_resolve_mlp_eval_config_uses_fallback_when_no_sidecar(tmp_path):
+    fake_checkpoint = tmp_path / "ppo_model.zip"
+    fake_checkpoint.touch()
+
+    fallback = {"likelihood": {"model": "tfidf"}}
+    resolved = resolve_mlp_eval_config(str(fake_checkpoint), fallback)
+    assert resolved is fallback
+
+
+def test_resolve_mlp_eval_config_handles_directory_checkpoint(tmp_path):
+    """When checkpoint_path is a directory, look for sidecar inside it."""
+    ckpt_dir = tmp_path / "best_model"
+    ckpt_dir.mkdir()
+    sidecar_config = {"likelihood": {"model": "sbert"}, "ppo": {"seed": 7}}
+    (ckpt_dir / "config_used.json").write_text(json.dumps(sidecar_config))
+
+    fallback = {"likelihood": {"model": "tfidf"}}
+    resolved = resolve_mlp_eval_config(str(ckpt_dir), fallback)
+    assert resolved["likelihood"]["model"] == "sbert"
+
+
+def test_resolve_mlp_eval_config_survives_corrupt_json(tmp_path):
+    """Corrupt sidecar JSON should fall back gracefully, not crash."""
+    (tmp_path / "config_used.json").write_text("{bad json")
     fake_checkpoint = tmp_path / "ppo_model.zip"
     fake_checkpoint.touch()
 

@@ -449,7 +449,9 @@ class TestMaskablePPO:
                 calls["env"] = env
                 return object()
 
-        monkeypatch.setitem(sys.modules, "sb3_contrib", types.SimpleNamespace(MaskablePPO=FakeMaskablePPO))
+        fake_module = types.ModuleType("sb3_contrib")
+        fake_module.MaskablePPO = FakeMaskablePPO
+        monkeypatch.setitem(sys.modules, "sb3_contrib", fake_module)
         loaded = PPOBuzzer.load(tmp_path / "ppo_test", env=sample_tfidf_env, use_maskable_ppo=True)
         assert calls["path"].endswith("ppo_test")
         assert calls["env"] is sample_tfidf_env
