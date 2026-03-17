@@ -231,9 +231,34 @@ class TestRunEpisode:
 
         cal = calibration_at_buzz([asdict(trace)])
         assert cal["n_calibration"] == 1.0
-        # Confidence should be top_p_trace[buzz_step], not c_trace[buzz_step]
-        idx = min(max(0, trace.buzz_step), len(trace.top_p_trace) - 1)
+        # Confidence should be read from the explicit buzz-trace index.
+        idx = min(max(0, trace.buzz_trace_idx), len(trace.top_p_trace) - 1)
         expected_conf = trace.top_p_trace[idx]
+        expected_brier = (expected_conf - (1.0 if trace.correct else 0.0)) ** 2
+        assert abs(cal["brier"] - expected_brier) < 1e-9
+
+    def test_run_episode_records_buzz_trace_idx_after_wait_then_buzz(
+        self, sample_tfidf_env: TossupMCEnv
+    ) -> None:
+        """A voluntary buzz after one wait records the decision-time trace index."""
+        from evaluation.metrics import calibration_at_buzz
+
+        buzzer = PPOBuzzer(env=sample_tfidf_env)
+        calls = {"n": 0}
+
+        def scripted_probs(_obs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return np.array([1.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+            return np.array([0.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+        buzzer.action_probabilities = scripted_probs
+        trace = buzzer.run_episode(deterministic=True, seed=42)
+
+        assert trace.buzz_step == 0
+        assert trace.buzz_trace_idx == 1
+        cal = calibration_at_buzz([asdict(trace)])
+        expected_conf = trace.top_p_trace[trace.buzz_trace_idx]
         expected_brier = (expected_conf - (1.0 if trace.correct else 0.0)) ** 2
         assert abs(cal["brier"] - expected_brier) < 1e-9
 
@@ -332,8 +357,38 @@ class TestRunEpisode:
         trace = buzzer.run_episode(deterministic=True, seed=42)
 
         assert trace.buzz_step == -1
+        assert trace.buzz_trace_idx == -1
         assert trace.buzz_index == -1
         assert trace.correct is False
+
+    def test_run_episode_force_commit_stays_distinct_from_policy_buzz(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """force_commit truncation should not be reported as a voluntary buzz."""
+        from models.likelihoods import TfIdfLikelihood
+
+        model = TfIdfLikelihood(corpus_texts=sample_mc_question.option_profiles[:])
+        env = TossupMCEnv(
+            questions=[sample_mc_question],
+            likelihood_model=model,
+            K=4,
+            reward_mode="simple",
+            end_mode="force_commit",
+        )
+        buzzer = PPOBuzzer(env=env)
+        buzzer.action_probabilities = lambda _obs: np.array(
+            [1.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32
+        )
+
+        trace = buzzer.run_episode(deterministic=True, seed=42)
+
+        assert trace.buzz_step == -1
+        assert trace.buzz_trace_idx == -1
+        assert trace.buzz_index == -1
+        assert trace.correct is False
+        assert trace.forced_commit is True
+        assert trace.forced_step >= 0
+        assert trace.forced_choice >= 0
 
 
 # ------------------------------------------------------------------ #

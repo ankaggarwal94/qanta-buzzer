@@ -128,6 +128,8 @@ def test_summarize_buzz_metrics_empty():
     result = summarize_buzz_metrics([])
     assert result["n"] == 0.0
     assert result["buzz_accuracy"] == 0.0
+    assert result["forced_commit_rate"] == 0.0
+    assert result["overall_outcome_accuracy"] == 0.0
 
 
 def test_summarize_buzz_metrics_basic():
@@ -154,6 +156,51 @@ def test_summarize_buzz_metrics_basic():
     assert summary["n"] == 2.0
     assert abs(summary["buzz_accuracy"] - 0.5) < 1e-9
     assert abs(summary["mean_buzz_step"] - 1.5) < 1e-9
+    assert summary["policy_buzz_rate"] == 1.0
+    assert summary["forced_commit_rate"] == 0.0
+
+
+def test_summarize_buzz_metrics_separates_forced_commit_outcomes():
+    """Forced commits should not count as voluntary buzzes."""
+    results = [
+        {
+            "qid": "policy_correct",
+            "correct": True,
+            "buzz_step": 2,
+            "buzz_trace_idx": 2,
+            "c_trace": [0.0, 0.0, 1.0],
+            "g_trace": [0.0, 0.0, 1.0],
+            "reward_like": 1.0,
+        },
+        {
+            "qid": "forced_correct",
+            "correct": False,
+            "buzz_step": -1,
+            "buzz_trace_idx": -1,
+            "forced_commit": True,
+            "forced_correct": True,
+            "c_trace": [0.0, 0.0, 0.0],
+            "g_trace": [0.0, 0.0, 0.0],
+            "reward_like": 0.5,
+        },
+        {
+            "qid": "no_buzz",
+            "correct": False,
+            "buzz_step": -1,
+            "buzz_trace_idx": -1,
+            "c_trace": [0.0],
+            "g_trace": [0.0],
+            "reward_like": 0.0,
+        },
+    ]
+
+    summary = summarize_buzz_metrics(results)
+    assert summary["buzz_accuracy"] == pytest.approx(1.0 / 3.0)
+    assert summary["mean_buzz_step"] == 2.0
+    assert summary["policy_buzz_rate"] == pytest.approx(1.0 / 3.0)
+    assert summary["forced_commit_rate"] == pytest.approx(1.0 / 3.0)
+    assert summary["forced_correct_rate"] == pytest.approx(1.0 / 3.0)
+    assert summary["overall_outcome_accuracy"] == pytest.approx(2.0 / 3.0)
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +358,22 @@ def test_calibration_at_buzz_falls_back_to_c_trace():
     assert abs(cal["brier"] - (0.7 - 1.0) ** 2) < 1e-9
 
 
+def test_calibration_at_buzz_prefers_buzz_trace_idx_when_present():
+    """Calibration should index the explicit decision-time trace entry."""
+    results = [
+        {
+            "qid": "q1",
+            "correct": True,
+            "buzz_step": 0,
+            "buzz_trace_idx": 1,
+            "top_p_trace": [0.25, 0.8],
+        },
+    ]
+    cal = calibration_at_buzz(results)
+    assert cal["n_calibration"] == 1.0
+    assert abs(cal["brier"] - (0.8 - 1.0) ** 2) < 1e-9
+
+
 def test_calibration_at_buzz_empty():
     """calibration_at_buzz should return zeros for empty input."""
     cal = calibration_at_buzz([])
@@ -407,6 +470,28 @@ def test_calibration_pairs_skip_no_buzz():
     assert outs[0] == 0
     assert confs[1] == pytest.approx(0.8)
     assert outs[1] == 1
+
+
+def test_calibration_pairs_skip_forced_commits():
+    """Forced commits should not contribute to policy-only calibration."""
+    results = [
+        {
+            "buzz_step": -1,
+            "buzz_trace_idx": -1,
+            "forced_commit": True,
+            "forced_correct": True,
+            "top_p_trace": [0.95],
+        },
+        {
+            "buzz_step": 0,
+            "buzz_trace_idx": 0,
+            "correct": False,
+            "top_p_trace": [0.6],
+        },
+    ]
+    confs, outs = calibration_pairs_at_buzz(results)
+    assert confs == [pytest.approx(0.6)]
+    assert outs == [0]
 
 
 def test_calibration_at_buzz_consistent_with_pairs():

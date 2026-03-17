@@ -551,8 +551,8 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         Parameters
         ----------
         seed : int or None
-            If provided, reseeds both the internal RNG and numpy's global
-            RNG for reproducibility.
+            If provided, reseeds the environment's internal RNG for
+            reproducibility.
         options : dict or None
             Unused. Included for Gymnasium API compatibility.
 
@@ -566,7 +566,6 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         """
         if seed is not None:
             self.rng.seed(seed)
-            np.random.seed(seed)
 
         if options and "question_idx" in options:
             q_idx = int(options["question_idx"])

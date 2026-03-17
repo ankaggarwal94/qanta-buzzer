@@ -62,6 +62,7 @@ def smoke_pipeline_dir(smoke_artifact_dir: Path) -> Path:
         "scripts/train_ppo.py",
         "--smoke",
         "--output-dir", str(smoke_artifact_dir),
+        "--seed", "123",
         "--timesteps", "100",
         "likelihood.model=tfidf",
     ])
@@ -125,6 +126,7 @@ def test_train_ppo_smoke(smoke_pipeline_dir: Path):
     assert (smoke_pipeline_dir / "run_metadata.json").exists()
 
     summary = json.loads((smoke_pipeline_dir / "ppo_summary.json").read_text())
+    config_used = json.loads((smoke_pipeline_dir / "config_used.json").read_text())
     run_metadata = json.loads((smoke_pipeline_dir / "run_metadata.json").read_text())
     metadata = _smoke_build_metadata(smoke_pipeline_dir)
     expected_eval_split = (
@@ -132,6 +134,9 @@ def test_train_ppo_smoke(smoke_pipeline_dir: Path):
     )
     assert summary["train_split"] == "train"
     assert summary["eval_split"] == expected_eval_split
+    assert config_used["ppo"]["seed"] == 123
+    assert config_used["environment"]["seed"] == 123
+    assert config_used["ppo"]["total_timesteps"] == 100
     assert run_metadata["policy_mode"] == "flat_kplus1"
 
 
