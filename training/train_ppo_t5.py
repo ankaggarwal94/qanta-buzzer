@@ -596,12 +596,17 @@ class PPOTrainer:
         """Validate on validation set by running deterministic episodes.
 
         Runs one episode per validation question with deterministic action
-        selection (argmax) and computes accuracy and average reward.
+        selection (argmax). ``accuracy`` counts only episodes where the
+        policy explicitly buzzed correctly; episodes where the environment
+        force-committed at truncation (using the TF-IDF belief argmax)
+        are tracked separately as ``forced_correct_rate``.
 
         Returns
         -------
         dict[str, float]
-            Validation metrics: accuracy, average_reward, avg_episode_length.
+            Validation metrics: accuracy (policy-buzz-only),
+            forced_correct_rate (env force-commit at truncation),
+            average_reward, avg_episode_length.
         """
         from qb_env.text_wrapper import TextObservationWrapper
         from qb_env.tossup_env import TossupMCEnv
@@ -615,6 +620,7 @@ class PPOTrainer:
         likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
 
         correct = 0
+        forced_correct = 0
         total = 0
         total_reward = 0.0
         total_length = 0
@@ -666,14 +672,14 @@ class PPOTrainer:
                 total_length += episode_length
                 total += 1
 
-                # Check if answer was correct
-                if step_info.get("correct", False) or step_info.get(
-                    "forced_correct", False
-                ):
+                if step_info.get("correct", False):
                     correct += 1
+                elif step_info.get("forced_correct", False):
+                    forced_correct += 1
 
         return {
             "accuracy": correct / max(1, total),
+            "forced_correct_rate": forced_correct / max(1, total),
             "average_reward": total_reward / max(1, total),
             "avg_episode_length": total_length / max(1, total),
         }
