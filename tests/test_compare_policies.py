@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-from scripts.compare_policies import resolve_mlp_eval_config
+from scripts.compare_policies import (
+    resolve_mlp_eval_config,
+    resolve_t5_reference_questions,
+    resolve_t5_test_questions,
+)
 
 
 def test_resolve_mlp_eval_config_prefers_checkpoint_sidecar(tmp_path):
@@ -100,3 +105,73 @@ def test_evaluate_mlp_policy_uses_builder_and_question_idx(monkeypatch):
     assert calls["builder_count"] == 1
     assert calls["question_idx"] == [0, 1, 2]
     assert out["accuracy"] == 1.0
+
+
+def test_resolve_t5_test_questions_prefers_split_manifest(tmp_path, monkeypatch):
+    import scripts.compare_policies as cp
+
+    train_path = tmp_path / "train_dataset.json"
+    test_path = tmp_path / "test_dataset.json"
+    train_path.write_text("[]")
+    test_path.write_text("[]")
+    manifest = {
+        "source": "persisted_artifacts",
+        "train_path": str(train_path),
+        "test_path": str(test_path),
+        "train_qids": ["train_qid"],
+        "test_qids": ["test_qid_b", "test_qid_a"],
+    }
+    (tmp_path / "split_manifest.json").write_text(json.dumps(manifest))
+    checkpoint_dir = tmp_path / "best_model"
+    checkpoint_dir.mkdir()
+
+    def fake_load_mc_questions(path: str | Path):
+        name = Path(path).name
+        if name == "test_dataset.json":
+            return [
+                type("Q", (), {"qid": "test_qid_a"})(),
+                type("Q", (), {"qid": "test_qid_b"})(),
+            ]
+        return [type("Q", (), {"qid": "train_qid"})()]
+
+    monkeypatch.setattr(cp, "load_mc_questions", fake_load_mc_questions)
+
+    questions, source = resolve_t5_test_questions(
+        checkpoint_dir,
+        all_questions=[],
+        mc_path=tmp_path / "mc_dataset.json",
+    )
+    assert source == "split_manifest"
+    assert [q.qid for q in questions] == ["test_qid_b", "test_qid_a"]
+
+
+def test_resolve_t5_reference_questions_prefers_split_manifest(tmp_path, monkeypatch):
+    import scripts.compare_policies as cp
+
+    train_path = tmp_path / "train_dataset.json"
+    train_path.write_text("[]")
+    manifest = {
+        "source": "persisted_artifacts",
+        "train_path": str(train_path),
+        "train_qids": ["train_qid_b", "train_qid_a"],
+    }
+    (tmp_path / "split_manifest.json").write_text(json.dumps(manifest))
+    checkpoint_dir = tmp_path / "best_model"
+    checkpoint_dir.mkdir()
+
+    monkeypatch.setattr(
+        cp,
+        "load_mc_questions",
+        lambda _path: [
+            type("Q", (), {"qid": "train_qid_a"})(),
+            type("Q", (), {"qid": "train_qid_b"})(),
+        ],
+    )
+
+    questions, source = resolve_t5_reference_questions(
+        checkpoint_dir,
+        all_questions=[],
+        mc_path=tmp_path / "mc_dataset.json",
+    )
+    assert source == "split_manifest"
+    assert [q.qid for q in questions] == ["train_qid_b", "train_qid_a"]

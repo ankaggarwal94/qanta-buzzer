@@ -14,9 +14,8 @@ The two evaluation paths are *not* fully apples-to-apples:
 - The T5 path uses its own hardcoded reward settings (wait_penalty=0.1,
   matching the T5 pipeline's default).
 - The MLP path builds TF-IDF from test questions + all option profiles.
-  The T5 path builds TF-IDF from profiles of the first 100 questions
-  only (lightweight env reward computation — the T5 policy does not
-  consume TF-IDF likelihoods).
+  The T5 path uses a lightweight TF-IDF helper built from the recorded
+  training reference split when available.
 - S_q semantics differ: for MLP, c_trace is a sigmoid confidence proxy
   over belief max; for T5, c_trace is the wait-head buzz probability.
 
@@ -47,6 +46,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -68,6 +68,7 @@ from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
     load_config,
+    load_checkpoint_sidecar,
     load_embedding_cache,
     load_mc_questions,
     save_json,
@@ -83,8 +84,6 @@ def resolve_mlp_eval_config(
     If a ``config_used.json`` sidecar exists next to the checkpoint,
     load and return it. Otherwise return ``fallback_config`` unchanged.
     """
-    import json
-
     cp = Path(checkpoint_path).resolve()
     candidates = [cp / "config_used.json"] if cp.is_dir() else []
     candidates.append(cp.parent / "config_used.json")
@@ -97,6 +96,86 @@ def resolve_mlp_eval_config(
             except (json.JSONDecodeError, OSError):
                 pass
     return fallback_config
+
+
+def _resolve_manifest_questions(
+    checkpoint_path: str | Path,
+    split_name: str,
+) -> list | None:
+    """Load manifest-backed split questions in the recorded qid order."""
+    manifest, manifest_path, manifest_error = load_checkpoint_sidecar(
+        checkpoint_path, "split_manifest.json"
+    )
+    if manifest_error:
+        raise ValueError(
+            f"split_manifest.json next to {checkpoint_path} could not be read: "
+            f"{manifest_error}"
+        )
+    if not isinstance(manifest, dict):
+        return None
+
+    split_path = manifest.get(f"{split_name}_path")
+    qids = manifest.get(f"{split_name}_qids")
+    if not split_path or not isinstance(qids, list):
+        raise ValueError(
+            f"split_manifest.json is missing {split_name}_path or {split_name}_qids"
+        )
+
+    path = Path(split_path)
+    if not path.exists():
+        raise ValueError(
+            f"Manifest-backed {split_name} split does not exist at {path}"
+        )
+
+    questions = load_mc_questions(path)
+    qid_to_question = {q.qid: q for q in questions}
+    missing_qids = [qid for qid in qids if qid not in qid_to_question]
+    if missing_qids:
+        raise ValueError(
+            f"Manifest-backed {split_name} split at {path} is missing "
+            f"{len(missing_qids)} recorded qids"
+        )
+    return [qid_to_question[qid] for qid in qids]
+
+
+def resolve_t5_test_questions(
+    checkpoint_path: str | Path,
+    all_questions: list,
+    mc_path: Path,
+) -> tuple[list, str]:
+    """Resolve the T5-held-out test set, preferring checkpoint provenance."""
+    manifest_questions = _resolve_manifest_questions(checkpoint_path, "test")
+    if manifest_questions is not None:
+        return manifest_questions, "split_manifest"
+
+    test_split_path = mc_path.parent / "test_dataset.json"
+    if test_split_path.exists():
+        return load_mc_questions(test_split_path), "sibling_test_dataset"
+
+    import random
+
+    rng = random.Random(42)
+    shuffled = all_questions[:]
+    rng.shuffle(shuffled)
+    test_start = int(len(shuffled) * 0.85)
+    return shuffled[test_start:], "random_split_fallback"
+
+
+def resolve_t5_reference_questions(
+    checkpoint_path: str | Path,
+    all_questions: list,
+    mc_path: Path,
+) -> tuple[list, str]:
+    """Resolve the train-side reference set for T5 env reward helpers."""
+    manifest_questions = _resolve_manifest_questions(checkpoint_path, "train")
+    if manifest_questions is not None:
+        return manifest_questions, "split_manifest"
+
+    train_split_path = mc_path.parent / "train_dataset.json"
+    if train_split_path.exists():
+        return load_mc_questions(train_split_path), "sibling_train_dataset"
+
+    return all_questions, "combined_dataset_fallback"
 
 
 def evaluate_mlp_policy(
@@ -161,6 +240,10 @@ def evaluate_mlp_policy(
         "brier": brier,
         "avg_buzz_pos": buzz_metrics.get("mean_buzz_step", 0.0),
         "mean_reward": buzz_metrics["mean_reward_like"],
+        "forced_correct_rate": buzz_metrics.get("forced_correct_rate", 0.0),
+        "overall_outcome_accuracy": buzz_metrics.get(
+            "overall_outcome_accuracy", buzz_metrics["buzz_accuracy"]
+        ),
         "n_questions": len(test_questions),
     }
 
@@ -168,6 +251,8 @@ def evaluate_mlp_policy(
 def evaluate_t5_policy(
     checkpoint_path: str,
     test_questions: list,
+    reference_questions: list,
+    test_set_source: str,
     config: dict,
 ) -> dict[str, Any]:
     """Evaluate Phase 6 T5 end-to-end policy on text observations.
@@ -188,8 +273,8 @@ def evaluate_t5_policy(
     Returns
     -------
     dict[str, Any]
-        Evaluation results: accuracy, mean_sq, ece, brier, avg_buzz_pos,
-        n_questions.
+        Evaluation results including policy-only accuracy, forced outcome
+        diagnostics, and test-set provenance.
     """
     import torch
     from models.t5_policy import T5PolicyModel
@@ -203,16 +288,18 @@ def evaluate_t5_policy(
 
     # Build lightweight likelihood for environment reward computation
     corpus = []
-    for q in test_questions[:100]:
+    for q in reference_questions:
         corpus.extend(q.option_profiles)
     likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
 
     correct_count = 0
+    forced_correct_count = 0
     total_count = 0
     sq_scores = []
     confidences = []
     outcomes = []
     buzz_positions = []
+    total_reward = 0.0
 
     with torch.no_grad():
         for question in test_questions:
@@ -264,20 +351,22 @@ def evaluate_t5_policy(
 
             sq = system_score(c_trace, g_trace)
             sq_scores.append(sq)
+            total_reward += episode_reward
 
-            is_correct = step_info.get("correct", False) or step_info.get(
-                "forced_correct", False
-            )
-            if is_correct:
+            policy_correct = bool(step_info.get("correct", False))
+            forced_correct = bool(step_info.get("forced_correct", False))
+            if policy_correct:
                 correct_count += 1
+            if forced_correct:
+                forced_correct_count += 1
             total_count += 1
 
             # Calibration: use top_p (max answer prob) for consistency
             # with belief-feature agents
-            if top_p_trace:
+            if terminated and top_p_trace:
                 buzz_step = step_count - 1
                 confidences.append(top_p_trace[-1])
-                outcomes.append(1 if is_correct else 0)
+                outcomes.append(1 if policy_correct else 0)
                 buzz_positions.append(buzz_step)
 
     accuracy = correct_count / max(1, total_count)
@@ -292,7 +381,11 @@ def evaluate_t5_policy(
         "ece": ece,
         "brier": brier_val,
         "avg_buzz_pos": avg_buzz_pos,
-        "mean_reward": 0.0,  # Not tracked per-episode for T5 policy eval
+        "mean_reward": total_reward / max(1, total_count),
+        "forced_correct_rate": forced_correct_count / max(1, total_count),
+        "overall_outcome_accuracy": (correct_count + forced_correct_count) / max(1, total_count),
+        "test_set_source": test_set_source,
+        "n_questions_evaluated": total_count,
         "n_questions": total_count,
     }
 
@@ -437,19 +530,23 @@ def main() -> None:
     all_questions = load_mc_questions(mc_path)
     print(f"Loaded {len(all_questions)} questions")
 
-    # Prefer the persisted test split if it exists alongside mc_dataset.json
-    test_split_path = mc_path.parent / "test_dataset.json"
-    if test_split_path.exists():
-        test_questions = load_mc_questions(test_split_path)
-        print(f"Using persisted test split: {len(test_questions)} questions")
-    else:
-        import random
-        rng = random.Random(42)
-        shuffled = all_questions[:]
-        rng.shuffle(shuffled)
-        test_start = int(len(shuffled) * 0.85)
-        test_questions = shuffled[test_start:]
-        print(f"No test_dataset.json found; using random 15% split: {len(test_questions)} questions")
+    test_questions, test_set_source = resolve_t5_test_questions(
+        args.t5_checkpoint,
+        all_questions,
+        mc_path,
+    )
+    reference_questions, reference_source = resolve_t5_reference_questions(
+        args.t5_checkpoint,
+        all_questions,
+        mc_path,
+    )
+    print(
+        f"Using T5 test set source {test_set_source}: {len(test_questions)} questions"
+    )
+    print(
+        f"Using T5 reward reference source {reference_source}: "
+        f"{len(reference_questions)} questions"
+    )
 
     if args.smoke:
         test_questions = test_questions[:50]
@@ -473,7 +570,11 @@ def main() -> None:
     print("Evaluating T5 policy (end-to-end)...")
     print("-" * 40)
     t5_results = evaluate_t5_policy(
-        args.t5_checkpoint, test_questions, config
+        args.t5_checkpoint,
+        test_questions,
+        reference_questions,
+        test_set_source,
+        config,
     )
     print(f"  Accuracy: {t5_results['accuracy']:.4f}")
     print(f"  Mean S_q: {t5_results['mean_sq']:.4f}")

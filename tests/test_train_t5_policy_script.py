@@ -52,6 +52,32 @@ def test_load_question_splits_prefers_sibling_persisted_splits(
     assert test_questions == ["test_dataset"]
 
 
+def test_load_question_splits_with_metadata_records_persisted_paths(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Persisted split resolution should return a manifest with exact paths/qids."""
+    for filename in ("train_dataset.json", "val_dataset.json", "test_dataset.json"):
+        (tmp_path / filename).write_text("[]", encoding="utf-8")
+
+    def fake_load_mc_questions(path: str | Path):
+        stem = Path(path).stem
+        return [type("Q", (), {"qid": f"{stem}_qid"})()]
+
+    monkeypatch.setattr(train_t5_policy, "load_mc_questions", fake_load_mc_questions)
+
+    args = Namespace(mc_path=str(tmp_path / "mc_dataset.json"), smoke=False)
+    train_qs, val_qs, test_qs, manifest = (
+        train_t5_policy.load_question_splits_with_metadata(args, {"data": {}})
+    )
+
+    assert manifest["source"] == "persisted_artifacts"
+    assert manifest["train_path"].endswith("train_dataset.json")
+    assert manifest["train_qids"] == ["train_dataset_qid"]
+    assert manifest["test_qids"] == ["test_dataset_qid"]
+    assert train_qs[0].qid == "train_dataset_qid"
+
+
 def test_load_question_splits_falls_back_to_random_split(monkeypatch) -> None:
     """Missing persisted splits should reuse the legacy combined-dataset path."""
     args = Namespace(
@@ -62,7 +88,11 @@ def test_load_question_splits_falls_back_to_random_split(monkeypatch) -> None:
     monkeypatch.setattr(
         train_t5_policy,
         "load_questions",
-        lambda _args, _config: ["combined"],
+        lambda _args, _config, return_path=False: (
+            (["combined"], Path("/tmp/nonexistent/mc_dataset.json"))
+            if return_path
+            else ["combined"]
+        ),
     )
     monkeypatch.setattr(
         train_t5_policy,
@@ -81,3 +111,58 @@ def test_load_question_splits_falls_back_to_random_split(monkeypatch) -> None:
     assert train_questions == ["combined", "train"]
     assert val_questions == ["val"]
     assert test_questions == ["test"]
+
+
+def test_main_writes_t5_config_and_split_manifest(
+    tmp_path, monkeypatch
+) -> None:
+    """train_t5_policy main should persist checkpoint-sidecar provenance."""
+    import sys
+    import training.train_ppo_t5 as ppo_t5_mod
+
+    fake_question = type("Q", (), {"qid": "q1"})()
+    fake_manifest = {
+        "source": "persisted_artifacts",
+        "mc_path": None,
+        "train_path": "/tmp/train_dataset.json",
+        "val_path": "/tmp/val_dataset.json",
+        "test_path": "/tmp/test_dataset.json",
+        "train_qids": ["q1"],
+        "val_qids": ["q1"],
+        "test_qids": ["q1"],
+    }
+
+    checkpoint_dir = tmp_path / "ppo_t5"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeTrainer:
+        def __init__(self, checkpoint_dir):
+            self.checkpoint_dir = checkpoint_dir
+
+    monkeypatch.setattr(
+        train_t5_policy,
+        "load_question_splits_with_metadata",
+        lambda _args, _config: ([fake_question], [fake_question], [fake_question], fake_manifest),
+    )
+    monkeypatch.setattr(
+        ppo_t5_mod,
+        "run_ppo_training",
+        lambda **_kwargs: (object(), FakeTrainer(checkpoint_dir)),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train_t5_policy.py",
+            "--config",
+            str(train_t5_policy.PROJECT_ROOT / "configs" / "t5_policy.yaml"),
+            "--skip-supervised",
+            "--model-path",
+            str(tmp_path / "pretrained"),
+        ],
+    )
+
+    train_t5_policy.main()
+
+    assert (checkpoint_dir / "config_used.json").exists()
+    assert (checkpoint_dir / "split_manifest.json").exists()
