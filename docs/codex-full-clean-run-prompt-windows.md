@@ -20,7 +20,18 @@ includes all runtime correctness fixes from PR #13: opponent model wiring,
 variable-K belief shapes, model-variant-specific embedding cache, no-buzz
 calibration, padded action guards, and full MaskablePPO train/load/eval wiring.
 
-Produce `results/FULL_RUN_REPORT.md` as the canonical handoff artifact.
+Use one of two execution modes:
+
+- **Mode A — Safe current repo:** runnable today. Uses the built-in wrapper
+  parallelism plus limited extra concurrency where artifact paths do not clash.
+  This is the default mode for this prompt.
+- **Mode B — Max throughput with lane-local output dirs:** now technically
+  available because the stage scripts support lane-local `--output-dir`
+  usage. It should still be treated as the advanced path until it has been
+  validated on a real full run on this machine.
+
+Produce `results/FULL_RUN_REPORT.md` as the canonical handoff artifact, and
+state which mode was used.
 
 ## Machine
 
@@ -71,7 +82,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
 python3 -c "import torch; avail = torch.cuda.is_available(); print(f'CUDA: {avail}' + (f', Device: {torch.cuda.get_device_name(0)}' if avail else ' — check driver/toolkit'))"
-pytest tests/ -q --tb=short    # expect: 361 passed, 3 skipped
+pytest tests/ -q --tb=short    # expect: 365 passed, 4 skipped
 ```
 
 ## Phase 0: Clean state
@@ -84,7 +95,59 @@ rm -rf results/
 mkdir -p artifacts/main results
 ```
 
-## Execution Plan
+## Concurrency Model
+
+### Mode A — Safe current repo (use this now)
+
+This repo already has one safe concurrency point: the wrapper overlaps the
+default baseline, default PPO, and T5 policy tracks. After that, many manual
+phases still reuse `artifacts/main/`, so they remain intentionally serial.
+
+This means Mode A is **artifact-safe concurrency**, not full machine
+saturation. On this machine, that is still the right default for correctness.
+
+One extra lane is safe today:
+
+- `scripts/sweep_reward_shaping.py` writes to `artifacts/smoke/`, not
+  `artifacts/main/`, so it can be run in parallel with the main wrapper if CPU
+  headroom remains.
+
+### Mode B — Max throughput with lane-local output dirs
+
+The stage scripts now support lane-local `--output-dir`, so this machine can be
+used with one GPU lane and multiple CPU lanes. Treat this as an advanced path
+until the first real full run has been timed and validated end to end:
+
+- **GPU lane:** one T5 job at a time. Do not run multiple `t5-large` jobs on
+  the RTX 5090 simultaneously.
+- **CPU lane A:** default baselines/evals using lane-local artifact dirs.
+- **CPU lane B:** PPO family jobs (default PPO, multi-seed PPO, EW PPO,
+  stop-only, no-buzz), each with its own output dir.
+- **CPU lane C:** distractor and K-sensitivity dataset builds/baselines in
+  separate output dirs.
+- **Optional CPU lane D:** reward sweep on `artifacts/smoke` or another
+  isolated smoke output tree.
+
+Mode B should archive results directly from lane-local output directories rather
+than copying back through `artifacts/main/`.
+
+### Thread caps for multi-process CPU work
+
+When you run multiple CPU-heavy Python jobs concurrently, cap BLAS/OpenMP
+threads per process to avoid oversubscription:
+
+```bash
+export OMP_NUM_THREADS=8
+export MKL_NUM_THREADS=8
+export OPENBLAS_NUM_THREADS=8
+export NUMEXPR_NUM_THREADS=8
+```
+
+Use these caps for optional extra lanes in Mode A and as the default starting
+point for Mode B. Re-measure if the machine shows idle cores or heavy context
+switching.
+
+## Execution Plan (Mode A — runnable today)
 
 ### Step 1: Core pipeline via wrapper (Phases 1–6, 11, 13–17)
 
@@ -111,7 +174,27 @@ nvidia-smi                        # monitor GPU utilization and VRAM
 
 **Estimated time:** ~1.5–2.5 hours (RTX 5090 CUDA is significantly faster than M3 Max MPS; t5-large is ~2.5x the parameters of t5-base but the GPU throughput more than compensates).
 
+### Step 1b (optional): Run reward sweep in a separate shell while Step 1 runs
+
+Only do this if the machine still has comfortable CPU headroom during the
+wrapper run. This is safe because the sweep uses `artifacts/smoke/`, not
+`artifacts/main/`.
+
+Before launching it, apply the thread caps from the previous section in the new
+shell.
+
+```bash
+python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000 \
+    | tee results/phase_8_sweep.txt
+```
+
+If you launch Step 1b here, skip Step 3 later.
+
 ### Step 2: Phase 7 — Multi-seed PPO
+
+Current repo note: keep this loop serial. These runs all reuse
+`artifacts/main/`, so backgrounding them against each other is not safe until
+output-dir isolation is implemented.
 
 ```bash
 for SEED in 1 2 3; do
@@ -137,11 +220,18 @@ python scripts/sweep_reward_shaping.py --seeds 13,42,123 --timesteps 3000 \
 ```
 
 Note: this script uses `configs/smoke.yaml` and `artifacts/smoke/` — it does
-not run on the full dataset. It also writes `artifacts/smoke/reward_sweep_results.json`.
+not run on the full dataset. It also writes
+`artifacts/smoke/reward_sweep_results.json`. If Step 1b already ran this in a
+second shell, do not rerun it here.
 
 **Estimated time:** ~3–8 minutes.
 
 ### Step 4: Phase 9 — Distractor comparison
+
+Current repo note: the two alternate dataset builds could be parallelized on a
+machine like this, but the subsequent baseline runs still reuse
+`artifacts/main/`, so treat this whole step as serial until output isolation is
+available.
 
 ```bash
 mkdir -p artifacts/distractor_comparison
@@ -177,6 +267,9 @@ done
 
 ### Step 5: Phase 10 — Variable-K baselines
 
+Current repo note: this is short enough that there is little reason to overlap
+it with another `artifacts/main/` writer in the current codebase.
+
 ```bash
 mkdir -p artifacts/variable_k
 python scripts/build_mc_dataset.py \
@@ -195,6 +288,9 @@ cp artifacts/main/baseline_summary.json results/baselines_variable_k.json
 **Estimated time:** ~1–2 minutes.
 
 ### Step 6: Phase 11 extended — EW-trained PPO + empirical eval
+
+Current repo note: keep these two commands serial because they intentionally
+reuse `artifacts/main/` and restore `baseline_summary.json`.
 
 ```bash
 # Restore baseline_summary.json (clobbered by Phase 13/15)
@@ -226,6 +322,9 @@ cp artifacts/main/evaluation_report.json results/eval_expected_wins_empirical.js
 
 ### Step 7: Phase 13 supplement — explicit K=4
 
+Current repo note: this is another natural candidate for CPU fan-out after
+output-dir isolation, but not before.
+
 ```bash
 python scripts/build_mc_dataset.py \
     --config configs/default.yaml \
@@ -239,6 +338,58 @@ cp artifacts/main/baseline_summary.json "results/baselines_k4.json"
 ```
 
 **Estimated time:** ~1 minute.
+
+## Mode B Template — Max Throughput with Lane-Local Output Dirs
+
+This mode is now mechanically available because the stage scripts support
+lane-local `--output-dir` values end to end. Switch from the serial manual tail
+above to a lane-based layout like this only when you are intentionally doing an
+advanced throughput-focused run and are prepared to record the first full-run
+measurements carefully:
+
+1. Build the shared MC dataset once.
+2. Start exactly one T5 GPU lane.
+3. Fan out CPU-only baseline/PPO/dataset jobs into separate output dirs.
+4. Archive results from those lane-local dirs directly.
+
+Illustrative lane plan:
+
+```bash
+# GPU lane (one at a time)
+python scripts/train_t5_policy.py --config configs/t5_policy.yaml \
+    model.model_name=t5-large
+
+# CPU lane A: default eval family
+python scripts/run_baselines.py --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    --output-dir artifacts/default_baselines \
+    likelihood.model=tfidf
+
+# CPU lane B: PPO family (example seed fan-out)
+python scripts/train_ppo.py --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    --output-dir artifacts/seed1 --seed 1 --deterministic-eval \
+    likelihood.model=tfidf
+
+python scripts/train_ppo.py --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    --output-dir artifacts/seed2 --seed 2 --deterministic-eval \
+    likelihood.model=tfidf
+
+python scripts/train_ppo.py --config configs/default.yaml \
+    --mc-path artifacts/main/mc_dataset.json \
+    --output-dir artifacts/seed3 --seed 3 --deterministic-eval \
+    likelihood.model=tfidf
+```
+
+Mode B priorities:
+
+- Keep the GPU busy with one T5 job, not several.
+- Use CPU fan-out for PPO seeds, distractor comparisons, K-sensitivity, and
+  reward sweep.
+- Never route independent jobs back through `artifacts/main/`.
+- Re-measure thread caps and wall time on the first real run; do not assume a
+  final SLA until the isolated-output version has been timed.
 
 ## Phases Skipped (require API keys)
 
@@ -308,9 +459,15 @@ bash -n scripts/run_full_pipeline.sh
 - If a command fails: diagnose, fix if obvious, document, continue
 - If a phase takes longer than estimated: note actual time, don't kill unless hung (no output 10+ min)
 - If CUDA causes issues: set `CUDA_LAUNCH_BLOCKING=1` for synchronous error reporting, document the error
-- If CUDA OOM on t5-large: reduce batch size via `training.batch_size=4` override, or fall back to `--t5-model t5-base`
+- If CUDA OOM on t5-large: first fall back to `--t5-model t5-base`. For
+  standalone T5 runs, reduce `supervised.batch_size`,
+  `supervised.grad_accum_steps`, or `ppo.batch_size` instead of using a
+  non-existent `training.batch_size` key
 - If `artifacts/main/` is clobbered: restore from `results/` archives
-- Phase ordering: Wave 1 is parallel; everything else is sequential
+- In Mode A, Wave 1 is parallel and the rest is mostly serial because of shared
+  `artifacts/main/`
+- In Mode B, parallelize only across lane-local output dirs and keep exactly one
+  CUDA-heavy T5 job active at a time
 - Correctness fixes in this codebase: opponent models wired in EW PPO via `make_env_from_config`, variable-K belief shapes use question-local K, embedding cache keyed by model variant (not family), no-buzz calibration skips `buzz_step<0`, padded actions rejected in `step()`, MaskablePPO fully wired through train/load/eval, TF-IDF cache load is a no-op
 
 ## WSL2-Specific Notes
@@ -325,14 +482,25 @@ bash -n scripts/run_full_pipeline.sh
 
 1. All core phases (1–6) complete with valid outputs
 2. All extension phases (7–11, 13–17) complete
-3. `results/FULL_RUN_REPORT.md` exists with per-phase metrics and comparison tables
+3. `results/FULL_RUN_REPORT.md` exists with per-phase metrics, comparison tables, and the declared execution mode (`Mode A` or `Mode B`)
 4. No mixed likelihood regimes
 5. No silent shape mismatches in variable-K phases
 6. `pytest tests/ -q --tb=short` passes after the run
+7. If Mode B is used, all concurrent jobs write to lane-local
+   output dirs rather than `artifacts/main/`
+8. If extra CPU lanes are used, the report notes the thread caps and any
+   observed contention or idle hardware
 
 ## Estimated Total Time
 
-~2.5–3.5 hours (wrapper ~1.5–2.5 hrs with RTX 5090 CUDA + t5-large, manual extensions ~30 min).
+- **Mode A (current repo):** ~2.5–3.5 hours (wrapper ~1.5–2.5 hrs with RTX 5090
+  CUDA + t5-large, manual extensions ~30 min, reward sweep optionally overlapped)
+- **Mode B (advanced high-throughput path):** expected to reduce the manual
+  extension tail materially by parallelizing PPO seeds, distractor runs,
+  K-sensitivity, and reward sweep, but it must be re-measured on the first real
+  lane-local-output run before treating it as a stable estimate
+
 The RTX 5090 provides roughly 2–3x speedup over M3 Max MPS for T5 training,
 which more than offsets the increase from t5-base to t5-large. CPU-bound phases
-(TF-IDF, PPO MLP) see modest improvement from the higher core count.
+benefit from the larger machine most when they can be split into lane-local
+jobs without fighting over `artifacts/main/`.

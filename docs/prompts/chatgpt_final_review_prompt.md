@@ -38,7 +38,7 @@ Two prior review rounds found and fixed **12 issues total**:
 
 ## Current state
 
-- 361 tests pass, 3 skipped (optional extras not installed)
+- 365 tests pass, 4 skipped (3 optional extras + 1 E2E pipeline)
 - Smoke pipeline and T5 smoke both green
 - Three opt-in extensions: Expected Wins, Variable-K, DSPy (all disabled by default)
 - Optional extras: `[openai]`, `[maskable]`, `[dspy]`
@@ -125,7 +125,7 @@ Focus on the extension test files:
 
 Verify these specific factual claims against the code:
 
-1. README says "364 tests across 27 test files" — count the actual `test_*.py` files in the tests/ directory listing and test count in the attached code
+1. README says "369 tests across 28 test files" — count the actual `test_*.py` files in the tests/ directory listing and test count in the attached code
 2. README says "Four reward modes: time_penalty, simple, human_grounded, expected_wins" — verify `_buzz_reward()` in `tossup_env.py` dispatches all four
 3. AGENTS.md says `evaluation/` contains "Expected Wins" — verify `expected_wins_score` exists in `evaluation/metrics.py`
 4. The `dspy` config section in `default.yaml` — verify every key is read by some code path

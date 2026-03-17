@@ -9,7 +9,7 @@
 - Python: `3.13.5` in `.venv`
 - Preflight:
   - `python3 -c "import torch; print(f'MPS: {torch.backends.mps.is_available()}')"` -> `MPS: True`
-  - `pytest tests/ -q --tb=short` -> `342 passed, 3 skipped` (at initial run commit; current HEAD is 361 passed, 3 skipped)
+  - `pytest tests/ -q --tb=short` -> `342 passed, 3 skipped` (at initial run commit; current HEAD is 365 passed, 4 skipped)
 - Live run windows:
   - Initial run: approximately `13:49` to `16:34` Pacific
   - Remaining-phase completion pass: approximately `19:01` to `19:06` Pacific
@@ -512,7 +512,7 @@ total 96
 
 ## Post-run validation
 
-- `pytest tests/ -q --tb=short` -> `342 passed, 3 skipped` (at time of run; current HEAD is 361 passed, 3 skipped)
+- `pytest tests/ -q --tb=short` -> `342 passed, 3 skipped` (at time of run; current HEAD is 365 passed, 4 skipped)
 - Targeted tests after the two live fixes -> `44 passed, 1 skipped`
 - Remaining-phase summary snippet run after completion and new artifacts verified in `results/`
 - No mixed likelihood regime was used in the executed comparisons:

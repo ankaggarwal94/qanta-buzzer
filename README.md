@@ -111,7 +111,7 @@ For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy 
 
 ## Testing
 
-364 tests across 27 test files (3 skipped when optional extras not installed):
+369 tests across 28 test files (4 skipped when optional extras not installed):
 
 ```bash
 pytest                    # full suite

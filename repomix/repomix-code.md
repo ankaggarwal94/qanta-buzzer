@@ -114,6 +114,7 @@ tests/
   test_mc_builder_variable_k.py
   test_metrics.py
   test_opponent_models.py
+  test_pipeline_smoke.py
   test_ppo_buzzer.py
   test_ppo_t5.py
   test_qb_rl_bridge.py
@@ -5049,113 +5050,6 @@ for f in sorted(glob.glob('results/*.json')):
 "
 ```
 
-## File: scripts/run_smoke_pipeline.py
-```python
-#!/usr/bin/env python3
-"""Run the full canonical smoke pipeline end-to-end.
-
-Stages:
-1) build_mc_dataset
-2) run_baselines
-3) train_ppo
-4) evaluate_all
-
-Writes a summary JSON to artifacts/smoke/smoke_pipeline_summary.json.
-"""
-
-from __future__ import annotations
-
-import argparse
-import json
-import subprocess
-import sys
-import time
-from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT_DIR = PROJECT_ROOT / "artifacts" / "smoke"
-
-
-STAGES = [
-    ["scripts/build_mc_dataset.py", "--smoke"],
-    ["scripts/run_baselines.py", "--smoke"],
-    ["scripts/train_ppo.py", "--smoke"],
-    ["scripts/evaluate_all.py", "--smoke"],
-]
-
-
-def run_stage(python_exe: str, args: list[str]) -> tuple[int, float]:
-    """Run one stage command and return (exit_code, seconds)."""
-    cmd = [python_exe, *args]
-    start = time.time()
-    proc = subprocess.run(cmd, cwd=PROJECT_ROOT)
-    elapsed = time.time() - start
-    return proc.returncode, elapsed
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Run full smoke pipeline")
-    parser.add_argument(
-        "--python",
-        default=sys.executable,
-        help="Python interpreter to use (default: current interpreter)",
-    )
-    ns = parser.parse_args()
-
-    print("=" * 60)
-    print("Smoke Pipeline Runner")
-    print("=" * 60)
-    print(f"Python: {ns.python}")
-    print()
-
-    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-
-    summary: dict[str, object] = {
-        "python": ns.python,
-        "started_at_unix": time.time(),
-        "stages": [],
-    }
-
-    pipeline_start = time.time()
-    for stage_args in STAGES:
-        stage_name = stage_args[0]
-        print(f"Running: {stage_name} {' '.join(stage_args[1:])}")
-        code, seconds = run_stage(ns.python, stage_args)
-        summary["stages"].append(
-            {
-                "stage": stage_name,
-                "args": stage_args[1:],
-                "exit_code": code,
-                "seconds": round(seconds, 3),
-            }
-        )
-        if code != 0:
-            summary["status"] = "failed"
-            summary["failed_stage"] = stage_name
-            summary["total_seconds"] = round(time.time() - pipeline_start, 3)
-            out_path = ARTIFACT_DIR / "smoke_pipeline_summary.json"
-            out_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-            print(f"\nFAILED at {stage_name} (exit={code})")
-            print(f"Summary written: {out_path}")
-            return code
-        print(f"✓ {stage_name} completed in {seconds:.1f}s\n")
-
-    summary["status"] = "ok"
-    summary["total_seconds"] = round(time.time() - pipeline_start, 3)
-    out_path = ARTIFACT_DIR / "smoke_pipeline_summary.json"
-    out_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-
-    print("=" * 60)
-    print("Smoke pipeline completed successfully")
-    print(f"Summary written: {out_path}")
-    print("=" * 60)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-```
-
 ## File: scripts/sweep_reward_shaping.py
 ```python
 #!/usr/bin/env python3
@@ -9610,6 +9504,154 @@ class TestCacheMemory:
         assert model.cache_memory_bytes == 0
 ```
 
+## File: tests/test_pipeline_smoke.py
+```python
+"""Subprocess-based smoke tests for pipeline entry points.
+
+Each test runs a pipeline script as a subprocess with ``--output-dir``
+pointing at a pytest ``tmp_path``, so no artifacts leak to ``artifacts/``.
+These tests verify that each script's CLI wiring and end-to-end path
+work without errors; they do not validate result quality.
+
+Marked with ``@pytest.mark.slow`` and ``@pytest.mark.pipeline``.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _run(args: list[str], timeout: int = 300) -> subprocess.CompletedProcess:
+    """Run a Python command as a subprocess from the project root."""
+    cmd = [sys.executable, *args]
+    return subprocess.run(
+        cmd,
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+@pytest.fixture(scope="module")
+def smoke_mc_dataset(tmp_path_factory) -> Path:
+    """Build a smoke MC dataset once per module for reuse by downstream tests."""
+    out = tmp_path_factory.mktemp("mc_data")
+    result = _run([
+        "scripts/build_mc_dataset.py",
+        "--smoke",
+        "--output-dir", str(out),
+    ])
+    assert result.returncode == 0, f"build_mc_dataset failed:\n{result.stderr}"
+    mc_path = out / "mc_dataset.json"
+    assert mc_path.exists(), f"mc_dataset.json not created in {out}"
+    return mc_path
+
+
+@pytest.mark.slow
+@pytest.mark.pipeline
+def test_build_mc_dataset_smoke(tmp_path):
+    """build_mc_dataset.py --smoke --output-dir writes expected outputs."""
+    result = _run([
+        "scripts/build_mc_dataset.py",
+        "--smoke",
+        "--output-dir", str(tmp_path),
+    ])
+    assert result.returncode == 0, f"build_mc_dataset failed:\n{result.stderr}"
+    assert (tmp_path / "mc_dataset.json").exists()
+    assert (tmp_path / "train_dataset.json").exists()
+    assert (tmp_path / "val_dataset.json").exists()
+    assert (tmp_path / "test_dataset.json").exists()
+
+
+@pytest.mark.slow
+@pytest.mark.pipeline
+def test_run_baselines_smoke(tmp_path, smoke_mc_dataset):
+    """run_baselines.py --smoke --output-dir writes baseline_summary.json."""
+    result = _run([
+        "scripts/run_baselines.py",
+        "--smoke",
+        "--output-dir", str(tmp_path),
+        "--mc-path", str(smoke_mc_dataset),
+        "likelihood.model=tfidf",
+    ])
+    assert result.returncode == 0, f"run_baselines failed:\n{result.stderr}"
+    summary = tmp_path / "baseline_summary.json"
+    assert summary.exists(), f"baseline_summary.json not created in {tmp_path}"
+    data = json.loads(summary.read_text())
+    assert "softmax_profile" in data or "threshold" in data
+
+
+@pytest.mark.slow
+@pytest.mark.pipeline
+def test_train_ppo_smoke(tmp_path, smoke_mc_dataset):
+    """train_ppo.py --smoke --output-dir --timesteps 100 produces a model."""
+    result = _run([
+        "scripts/train_ppo.py",
+        "--smoke",
+        "--output-dir", str(tmp_path),
+        "--mc-path", str(smoke_mc_dataset),
+        "--timesteps", "100",
+        "likelihood.model=tfidf",
+    ])
+    assert result.returncode == 0, f"train_ppo failed:\n{result.stderr}"
+    assert (tmp_path / "ppo_model.zip").exists()
+    assert (tmp_path / "ppo_summary.json").exists()
+    assert (tmp_path / "config_used.json").exists()
+
+
+@pytest.mark.slow
+@pytest.mark.pipeline
+def test_evaluate_all_smoke(tmp_path, smoke_mc_dataset):
+    """evaluate_all.py --smoke --output-dir writes evaluation_report.json."""
+    result = _run([
+        "scripts/evaluate_all.py",
+        "--smoke",
+        "--output-dir", str(tmp_path),
+        "--mc-path", str(smoke_mc_dataset),
+        "likelihood.model=tfidf",
+    ])
+    assert result.returncode == 0, f"evaluate_all failed:\n{result.stderr}"
+    report = tmp_path / "evaluation_report.json"
+    assert report.exists(), f"evaluation_report.json not created in {tmp_path}"
+
+
+@pytest.mark.slow
+@pytest.mark.pipeline
+@pytest.mark.skipif(
+    not os.environ.get("RUN_PIPELINE_E2E"),
+    reason="set RUN_PIPELINE_E2E=1 to run full 4-stage pipeline test",
+)
+def test_run_smoke_pipeline(tmp_path):
+    """run_smoke_pipeline.py --output-dir runs all 4 stages in a temp dir.
+
+    Skipped by default because it re-runs the full 4-stage pipeline (~18s),
+    which the individual stage tests already cover. Run explicitly with:
+        RUN_PIPELINE_E2E=1 pytest tests/test_pipeline_smoke.py -k run_smoke_pipeline
+    """
+    result = _run([
+        "scripts/run_smoke_pipeline.py",
+        "--output-dir", str(tmp_path),
+    ], timeout=600)
+    assert result.returncode == 0, (
+        f"run_smoke_pipeline failed:\n{result.stdout}\n{result.stderr}"
+    )
+    summary_path = tmp_path / "smoke_pipeline_summary.json"
+    assert summary_path.exists()
+    summary = json.loads(summary_path.read_text())
+    assert summary["status"] == "ok"
+    assert len(summary["stages"]) == 4
+    assert all(s["exit_code"] == 0 for s in summary["stages"])
+```
+
 ## File: tests/test_ppo_t5.py
 ```python
 """Unit tests for custom PPO trainer for T5PolicyModel.
@@ -13543,6 +13585,128 @@ class StopOnlyEnv(gym.Wrapper):
         ):
             mask[1] = True
         return mask
+```
+
+## File: scripts/run_smoke_pipeline.py
+```python
+#!/usr/bin/env python3
+"""Run the full canonical smoke pipeline end-to-end.
+
+Stages:
+1) build_mc_dataset
+2) run_baselines
+3) train_ppo
+4) evaluate_all
+
+Writes a summary JSON to smoke_pipeline_summary.json in the output directory
+(default: artifacts/smoke/, overridable via --output-dir).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ARTIFACT_DIR = PROJECT_ROOT / "artifacts" / "smoke"
+
+
+def _build_stages(output_dir: str | None) -> list[list[str]]:
+    """Build stage command lists, propagating --output-dir when provided."""
+    base = [
+        ["scripts/build_mc_dataset.py", "--smoke"],
+        ["scripts/run_baselines.py", "--smoke"],
+        ["scripts/train_ppo.py", "--smoke"],
+        ["scripts/evaluate_all.py", "--smoke"],
+    ]
+    if output_dir is not None:
+        return [cmd + ["--output-dir", output_dir] for cmd in base]
+    return base
+
+
+def run_stage(python_exe: str, args: list[str]) -> tuple[int, float]:
+    """Run one stage command and return (exit_code, seconds)."""
+    cmd = [python_exe, *args]
+    start = time.time()
+    proc = subprocess.run(cmd, cwd=PROJECT_ROOT)
+    elapsed = time.time() - start
+    return proc.returncode, elapsed
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run full smoke pipeline")
+    parser.add_argument(
+        "--python",
+        default=sys.executable,
+        help="Python interpreter to use (default: current interpreter)",
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Override output directory for all stages (default: artifacts/smoke).",
+    )
+    ns = parser.parse_args()
+
+    artifact_dir = Path(ns.output_dir) if ns.output_dir else DEFAULT_ARTIFACT_DIR
+    stages = _build_stages(ns.output_dir)
+
+    print("=" * 60)
+    print("Smoke Pipeline Runner")
+    print("=" * 60)
+    print(f"Python: {ns.python}")
+    print(f"Output: {artifact_dir}")
+    print()
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    summary: dict[str, object] = {
+        "python": ns.python,
+        "output_dir": str(artifact_dir),
+        "started_at_unix": time.time(),
+        "stages": [],
+    }
+
+    pipeline_start = time.time()
+    for stage_args in stages:
+        stage_name = stage_args[0]
+        print(f"Running: {stage_name} {' '.join(stage_args[1:])}")
+        code, seconds = run_stage(ns.python, stage_args)
+        summary["stages"].append(
+            {
+                "stage": stage_name,
+                "args": stage_args[1:],
+                "exit_code": code,
+                "seconds": round(seconds, 3),
+            }
+        )
+        if code != 0:
+            summary["status"] = "failed"
+            summary["failed_stage"] = stage_name
+            summary["total_seconds"] = round(time.time() - pipeline_start, 3)
+            out_path = artifact_dir / "smoke_pipeline_summary.json"
+            out_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            print(f"\nFAILED at {stage_name} (exit={code})")
+            print(f"Summary written: {out_path}")
+            return code
+        print(f"✓ {stage_name} completed in {seconds:.1f}s\n")
+
+    summary["status"] = "ok"
+    summary["total_seconds"] = round(time.time() - pipeline_start, 3)
+    out_path = artifact_dir / "smoke_pipeline_summary.json"
+    out_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+    print("=" * 60)
+    print("Smoke pipeline completed successfully")
+    print(f"Summary written: {out_path}")
+    print("=" * 60)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 ```
 
 ## File: scripts/train_t5_policy.py
@@ -20353,268 +20517,6 @@ if __name__ == '__main__':
     sys.exit(main())
 ```
 
-## File: scripts/run_baselines.py
-```python
-#!/usr/bin/env python3
-"""
-Run non-RL baseline agents and save episode traces + summary artifacts.
-
-Executes four baseline agent types across a threshold sweep:
-1. ThresholdBuzzer -- buzzes when top belief exceeds threshold
-2. SoftmaxProfileBuzzer -- softmax belief from scratch at each step
-3. SequentialBayesBuzzer -- Bayesian belief update with sequential fragments
-4. AlwaysBuzzFinalBuzzer -- always waits until last clue, then buzzes
-
-Results are saved to artifacts/{smoke,main}/ as JSON files with per-episode
-traces and aggregated summary metrics (accuracy, S_q, ECE, Brier score).
-
-Usage:
-    python scripts/run_baselines.py              # Full run (default config)
-    python scripts/run_baselines.py --smoke      # Quick smoke test (~50 questions)
-    python scripts/run_baselines.py --config configs/custom.yaml
-    python scripts/run_baselines.py --mc-path artifacts/main/mc_dataset.json
-
-Ported from qb-rl reference implementation (scripts/run_baselines.py).
-"""
-
-from __future__ import annotations
-
-import argparse
-import sys
-import time
-from dataclasses import asdict
-from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from agents.bayesian_buzzer import (
-    precompute_sequential_beliefs,
-    sweep_sequential_thresholds,
-)
-from agents.threshold_buzzer import (
-    _always_final_from_precomputed,
-    _softmax_episode_from_precomputed,
-    precompute_beliefs,
-    sweep_thresholds,
-)
-from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
-from qb_data.config import merge_overrides
-from scripts._common import (
-    ARTIFACT_DIR,
-    build_likelihood_model,
-    load_config,
-    load_embedding_cache,
-    load_mc_questions,
-    parse_overrides,
-    save_embedding_cache,
-    save_json,
-)
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments.
-
-    Returns
-    -------
-    argparse.Namespace
-        Parsed arguments with config, smoke, and mc_path fields.
-    """
-    parser = argparse.ArgumentParser(description="Run non-RL baseline agents.")
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Path to YAML config file (default: configs/default.yaml).",
-    )
-    parser.add_argument(
-        "--smoke",
-        action="store_true",
-        help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
-    )
-    parser.add_argument(
-        "--mc-path",
-        type=str,
-        default=None,
-        help="Optional MC dataset JSON path (overrides config-derived path).",
-    )
-    parser.add_argument(
-        "overrides",
-        nargs="*",
-        help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
-    )
-    return parser.parse_args()
-
-
-def summarize(results: list[dict]) -> dict:
-    """Combine buzz metrics and calibration into a single summary dict.
-
-    Parameters
-    ----------
-    results : list[dict]
-        List of episode trace dicts (from asdict(EpisodeResult)).
-
-    Returns
-    -------
-    dict
-        Merged summary with accuracy, S_q, ECE, Brier, etc.
-    """
-    return {
-        **summarize_buzz_metrics(results),
-        **calibration_at_buzz(results),
-    }
-
-
-def main() -> None:
-    """Run all baseline agents and save artifacts."""
-    start_time = time.time()
-
-    args = parse_args()
-
-    config = load_config(args.config, smoke=args.smoke)
-    overrides = parse_overrides(args)
-    if overrides:
-        print(f"Applying overrides: {overrides}")
-        config = merge_overrides(config, overrides)
-
-    split = "smoke" if args.smoke else "main"
-    out_dir = ARTIFACT_DIR / split
-
-    # Determine MC dataset path
-    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
-
-    # Fallback: check data/processed/ if artifacts path doesn't exist
-    if not mc_path.exists():
-        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
-        if fallback.exists():
-            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
-            mc_path = fallback
-
-    print(f"Loading MC questions from: {mc_path}")
-    mc_questions = load_mc_questions(mc_path)
-    print(f"Loaded {len(mc_questions)} MC questions")
-
-    # Build likelihood model
-    print(f"Building likelihood model: {config['likelihood']['model']}")
-    likelihood_model = build_likelihood_model(config, mc_questions)
-    load_embedding_cache(likelihood_model, config)
-
-    # Extract hyperparameters
-    beta = float(config["likelihood"].get("beta", 5.0))
-    alpha = float(config["bayesian"].get("alpha", 10.0))
-    thresholds = [float(x) for x in config["bayesian"]["threshold_sweep"]]
-
-    print(f"Beta: {beta}, Alpha: {alpha}")
-    print(f"Thresholds: {thresholds}")
-
-    # --- Pre-compute all embeddings once (batched) ---
-    all_texts: list[str] = []
-    for q in mc_questions:
-        all_texts.extend(q.cumulative_prefixes)
-        all_texts.extend(q.option_profiles)
-        for step_idx in range(len(q.run_indices)):
-            prev_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
-            all_texts.append(" ".join(q.tokens[prev_idx + 1 : q.run_indices[step_idx] + 1]))
-    print(f"\nPre-computing embeddings for {len(set(all_texts)):,} unique texts...")
-    likelihood_model.precompute_embeddings(all_texts, batch_size=64)
-    save_embedding_cache(likelihood_model, config)
-
-    # --- Pre-compute beliefs (one model pass, all steps) ---
-    precomputed = precompute_beliefs(mc_questions, likelihood_model, beta)
-
-    # --- Threshold sweep (pure numpy, instant) ---
-    print("\nRunning ThresholdBuzzer sweep...")
-    threshold_runs = sweep_thresholds(
-        questions=mc_questions,
-        likelihood_model=likelihood_model,
-        thresholds=thresholds,
-        beta=beta,
-        alpha=alpha,
-        precomputed=precomputed,
-    )
-
-    threshold_payload: dict[str, list[dict]] = {}
-    threshold_summary: dict[str, dict] = {}
-    for threshold, runs in threshold_runs.items():
-        rows = [asdict(r) for r in runs]
-        threshold_payload[str(threshold)] = rows
-        threshold_summary[str(threshold)] = summarize(rows)
-
-    # --- Softmax profile sweep (reuse from_scratch precomputed beliefs) ---
-    print("\nRunning SoftmaxProfile sweep (precomputed)...")
-    softmax_payload: dict[str, list[dict]] = {}
-    softmax_summary: dict[str, dict] = {}
-    for threshold in thresholds:
-        results = [
-            asdict(_softmax_episode_from_precomputed(pq, threshold, alpha))
-            for pq in precomputed
-        ]
-        softmax_payload[str(threshold)] = results
-        softmax_summary[str(threshold)] = summarize(results)
-
-    # --- Sequential Bayes sweep (one belief pass, pure numpy threshold sweep) ---
-    print("Pre-computing sequential Bayes beliefs...")
-    seq_precomputed = precompute_sequential_beliefs(mc_questions, likelihood_model, beta)
-    print("Running SequentialBayes sweep (precomputed)...")
-    seq_results = sweep_sequential_thresholds(
-        questions=mc_questions,
-        likelihood_model=likelihood_model,
-        thresholds=thresholds,
-        beta=beta,
-        alpha=alpha,
-        precomputed=seq_precomputed,
-    )
-    sequential_payload: dict[str, list[dict]] = {}
-    sequential_summary: dict[str, dict] = {}
-    for threshold, runs in seq_results.items():
-        rows = [asdict(r) for r in runs]
-        sequential_payload[str(threshold)] = rows
-        sequential_summary[str(threshold)] = summarize(rows)
-
-    # --- AlwaysBuzzFinal (reuse from_scratch precomputed beliefs) ---
-    print("Running AlwaysBuzzFinal baseline (precomputed)...")
-    floor_runs = [asdict(_always_final_from_precomputed(pq)) for pq in precomputed]
-    floor_summary = summarize(floor_runs)
-
-    # --- Save artifacts ---
-    print(f"\nSaving artifacts to: {out_dir}")
-    save_json(out_dir / "baseline_threshold_runs.json", threshold_payload)
-    save_json(out_dir / "baseline_softmax_profile_runs.json", softmax_payload)
-    save_json(out_dir / "baseline_sequential_bayes_runs.json", sequential_payload)
-    save_json(out_dir / "baseline_floor_runs.json", floor_runs)
-
-    summary = {
-        "threshold": threshold_summary,
-        "softmax_profile": softmax_summary,
-        "sequential_bayes": sequential_summary,
-        "always_final": floor_summary,
-    }
-    save_json(out_dir / "baseline_summary.json", summary)
-
-    elapsed = time.time() - start_time
-    print(f"\nWrote baseline outputs to: {out_dir}")
-    print(f"Total time: {elapsed:.1f} seconds")
-
-    # Print summary highlights
-    print("\n--- Summary ---")
-    for agent_name, agent_summary in summary.items():
-        if isinstance(agent_summary, dict) and "buzz_accuracy" in agent_summary:
-            # Single-threshold agent (always_final)
-            print(f"  {agent_name}: accuracy={agent_summary['buzz_accuracy']:.3f}, "
-                  f"mean_sq={agent_summary.get('mean_sq', 0):.3f}")
-        elif isinstance(agent_summary, dict):
-            # Multi-threshold agent
-            for thr, metrics in agent_summary.items():
-                if isinstance(metrics, dict) and "buzz_accuracy" in metrics:
-                    print(f"  {agent_name}[{thr}]: accuracy={metrics['buzz_accuracy']:.3f}, "
-                          f"mean_sq={metrics.get('mean_sq', 0):.3f}")
-
-
-if __name__ == "__main__":
-    main()
-```
-
 ## File: tests/test_metrics.py
 ```python
 """Unit tests for evaluation metrics.
@@ -21037,48 +20939,6 @@ def test_calibration_at_buzz_consistent_with_pairs():
     cal = calibration_at_buzz(results)
     confs, outs = calibration_pairs_at_buzz(results)
     assert cal["n_calibration"] == len(confs)
-```
-
-## File: pyproject.toml
-```toml
-[build-system]
-requires = ["setuptools>=69.0"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "qanta-buzzer"
-version = "1.0.0"
-description = "Unified quiz bowl RL buzzer system for Stanford CS234"
-readme = "README.md"
-requires-python = ">=3.11"
-dependencies = [
-  "datasets>=2.14.0",
-  "gymnasium>=1.1.0",
-  "jsonlines>=3.1.0",
-  "matplotlib>=3.7.0",
-  "numpy>=1.24.0",
-  "pandas>=2.0.0",
-  "PyYAML>=6.0.0",
-  "scikit-learn>=1.3.0",
-  "seaborn>=0.12.0",
-  "sentence-transformers>=2.2.0",
-  "stable-baselines3>=2.6.0",
-  "torch>=2.0.0",
-  "tqdm>=4.65.0",
-  "transformers>=4.30.0",
-]
-
-[project.optional-dependencies]
-dev = ["pytest>=7.0.0"]
-openai = ["openai>=1.0.0"]
-maskable = ["sb3-contrib>=2.6.0"]
-dspy = ["dspy>=2.5.0"]
-
-[tool.setuptools.packages.find]
-include = ["agents", "evaluation", "models", "qb_data", "qb_env", "training"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
 ```
 
 ## File: evaluation/metrics.py
@@ -23992,6 +23852,319 @@ print(f"Saved contact sheet to: {CONTACT_OUT}")
 print(f"Saved frames to: {FRAMES_DIR}")
 ```
 
+## File: pyproject.toml
+```toml
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qanta-buzzer"
+version = "1.0.0"
+description = "Unified quiz bowl RL buzzer system for Stanford CS234"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "datasets>=2.14.0",
+  "gymnasium>=1.1.0",
+  "jsonlines>=3.1.0",
+  "matplotlib>=3.7.0",
+  "numpy>=1.24.0",
+  "pandas>=2.0.0",
+  "PyYAML>=6.0.0",
+  "scikit-learn>=1.3.0",
+  "seaborn>=0.12.0",
+  "sentence-transformers>=2.2.0",
+  "stable-baselines3>=2.6.0",
+  "torch>=2.0.0",
+  "tqdm>=4.65.0",
+  "transformers>=4.30.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0"]
+openai = ["openai>=1.0.0"]
+maskable = ["sb3-contrib>=2.6.0"]
+dspy = ["dspy>=2.5.0"]
+
+[tool.setuptools.packages.find]
+include = ["agents", "evaluation", "models", "qb_data", "qb_env", "training"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "pipeline: subprocess-based pipeline entrypoint smoke tests",
+]
+```
+
+## File: scripts/run_baselines.py
+```python
+#!/usr/bin/env python3
+"""
+Run non-RL baseline agents and save episode traces + summary artifacts.
+
+Executes four baseline agent types across a threshold sweep:
+1. ThresholdBuzzer -- buzzes when top belief exceeds threshold
+2. SoftmaxProfileBuzzer -- softmax belief from scratch at each step
+3. SequentialBayesBuzzer -- Bayesian belief update with sequential fragments
+4. AlwaysBuzzFinalBuzzer -- always waits until last clue, then buzzes
+
+Results are saved to artifacts/{smoke,main}/ as JSON files with per-episode
+traces and aggregated summary metrics (accuracy, S_q, ECE, Brier score).
+
+Usage:
+    python scripts/run_baselines.py              # Full run (default config)
+    python scripts/run_baselines.py --smoke      # Quick smoke test (~50 questions)
+    python scripts/run_baselines.py --config configs/custom.yaml
+    python scripts/run_baselines.py --mc-path artifacts/main/mc_dataset.json
+
+Ported from qb-rl reference implementation (scripts/run_baselines.py).
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from dataclasses import asdict
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agents.bayesian_buzzer import (
+    precompute_sequential_beliefs,
+    sweep_sequential_thresholds,
+)
+from agents.threshold_buzzer import (
+    _always_final_from_precomputed,
+    _softmax_episode_from_precomputed,
+    precompute_beliefs,
+    sweep_thresholds,
+)
+from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+from qb_data.config import merge_overrides
+from scripts._common import (
+    ARTIFACT_DIR,
+    build_likelihood_model,
+    load_config,
+    load_embedding_cache,
+    load_mc_questions,
+    parse_overrides,
+    save_embedding_cache,
+    save_json,
+)
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns
+    -------
+    argparse.Namespace
+        Parsed arguments with config, smoke, and mc_path fields.
+    """
+    parser = argparse.ArgumentParser(description="Run non-RL baseline agents.")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to YAML config file (default: configs/default.yaml).",
+    )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
+    )
+    parser.add_argument(
+        "--mc-path",
+        type=str,
+        default=None,
+        help="Optional MC dataset JSON path (overrides config-derived path).",
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Override output directory (default: artifacts/<split>).",
+    )
+    parser.add_argument(
+        "overrides",
+        nargs="*",
+        help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
+    )
+    return parser.parse_args()
+
+
+def summarize(results: list[dict]) -> dict:
+    """Combine buzz metrics and calibration into a single summary dict.
+
+    Parameters
+    ----------
+    results : list[dict]
+        List of episode trace dicts (from asdict(EpisodeResult)).
+
+    Returns
+    -------
+    dict
+        Merged summary with accuracy, S_q, ECE, Brier, etc.
+    """
+    return {
+        **summarize_buzz_metrics(results),
+        **calibration_at_buzz(results),
+    }
+
+
+def main() -> None:
+    """Run all baseline agents and save artifacts."""
+    start_time = time.time()
+
+    args = parse_args()
+
+    config = load_config(args.config, smoke=args.smoke)
+    overrides = parse_overrides(args)
+    if overrides:
+        print(f"Applying overrides: {overrides}")
+        config = merge_overrides(config, overrides)
+
+    split = "smoke" if args.smoke else "main"
+    out_dir = Path(args.output_dir) if args.output_dir else ARTIFACT_DIR / split
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine MC dataset path
+    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
+
+    # Fallback: check data/processed/ if artifacts path doesn't exist
+    if not mc_path.exists():
+        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
+        if fallback.exists():
+            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
+            mc_path = fallback
+
+    print(f"Loading MC questions from: {mc_path}")
+    mc_questions = load_mc_questions(mc_path)
+    print(f"Loaded {len(mc_questions)} MC questions")
+
+    # Build likelihood model
+    print(f"Building likelihood model: {config['likelihood']['model']}")
+    likelihood_model = build_likelihood_model(config, mc_questions)
+    load_embedding_cache(likelihood_model, config)
+
+    # Extract hyperparameters
+    beta = float(config["likelihood"].get("beta", 5.0))
+    alpha = float(config["bayesian"].get("alpha", 10.0))
+    thresholds = [float(x) for x in config["bayesian"]["threshold_sweep"]]
+
+    print(f"Beta: {beta}, Alpha: {alpha}")
+    print(f"Thresholds: {thresholds}")
+
+    # --- Pre-compute all embeddings once (batched) ---
+    all_texts: list[str] = []
+    for q in mc_questions:
+        all_texts.extend(q.cumulative_prefixes)
+        all_texts.extend(q.option_profiles)
+        for step_idx in range(len(q.run_indices)):
+            prev_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
+            all_texts.append(" ".join(q.tokens[prev_idx + 1 : q.run_indices[step_idx] + 1]))
+    print(f"\nPre-computing embeddings for {len(set(all_texts)):,} unique texts...")
+    likelihood_model.precompute_embeddings(all_texts, batch_size=64)
+    save_embedding_cache(likelihood_model, config)
+
+    # --- Pre-compute beliefs (one model pass, all steps) ---
+    precomputed = precompute_beliefs(mc_questions, likelihood_model, beta)
+
+    # --- Threshold sweep (pure numpy, instant) ---
+    print("\nRunning ThresholdBuzzer sweep...")
+    threshold_runs = sweep_thresholds(
+        questions=mc_questions,
+        likelihood_model=likelihood_model,
+        thresholds=thresholds,
+        beta=beta,
+        alpha=alpha,
+        precomputed=precomputed,
+    )
+
+    threshold_payload: dict[str, list[dict]] = {}
+    threshold_summary: dict[str, dict] = {}
+    for threshold, runs in threshold_runs.items():
+        rows = [asdict(r) for r in runs]
+        threshold_payload[str(threshold)] = rows
+        threshold_summary[str(threshold)] = summarize(rows)
+
+    # --- Softmax profile sweep (reuse from_scratch precomputed beliefs) ---
+    print("\nRunning SoftmaxProfile sweep (precomputed)...")
+    softmax_payload: dict[str, list[dict]] = {}
+    softmax_summary: dict[str, dict] = {}
+    for threshold in thresholds:
+        results = [
+            asdict(_softmax_episode_from_precomputed(pq, threshold, alpha))
+            for pq in precomputed
+        ]
+        softmax_payload[str(threshold)] = results
+        softmax_summary[str(threshold)] = summarize(results)
+
+    # --- Sequential Bayes sweep (one belief pass, pure numpy threshold sweep) ---
+    print("Pre-computing sequential Bayes beliefs...")
+    seq_precomputed = precompute_sequential_beliefs(mc_questions, likelihood_model, beta)
+    print("Running SequentialBayes sweep (precomputed)...")
+    seq_results = sweep_sequential_thresholds(
+        questions=mc_questions,
+        likelihood_model=likelihood_model,
+        thresholds=thresholds,
+        beta=beta,
+        alpha=alpha,
+        precomputed=seq_precomputed,
+    )
+    sequential_payload: dict[str, list[dict]] = {}
+    sequential_summary: dict[str, dict] = {}
+    for threshold, runs in seq_results.items():
+        rows = [asdict(r) for r in runs]
+        sequential_payload[str(threshold)] = rows
+        sequential_summary[str(threshold)] = summarize(rows)
+
+    # --- AlwaysBuzzFinal (reuse from_scratch precomputed beliefs) ---
+    print("Running AlwaysBuzzFinal baseline (precomputed)...")
+    floor_runs = [asdict(_always_final_from_precomputed(pq)) for pq in precomputed]
+    floor_summary = summarize(floor_runs)
+
+    # --- Save artifacts ---
+    print(f"\nSaving artifacts to: {out_dir}")
+    save_json(out_dir / "baseline_threshold_runs.json", threshold_payload)
+    save_json(out_dir / "baseline_softmax_profile_runs.json", softmax_payload)
+    save_json(out_dir / "baseline_sequential_bayes_runs.json", sequential_payload)
+    save_json(out_dir / "baseline_floor_runs.json", floor_runs)
+
+    summary = {
+        "threshold": threshold_summary,
+        "softmax_profile": softmax_summary,
+        "sequential_bayes": sequential_summary,
+        "always_final": floor_summary,
+    }
+    save_json(out_dir / "baseline_summary.json", summary)
+
+    elapsed = time.time() - start_time
+    print(f"\nWrote baseline outputs to: {out_dir}")
+    print(f"Total time: {elapsed:.1f} seconds")
+
+    # Print summary highlights
+    print("\n--- Summary ---")
+    for agent_name, agent_summary in summary.items():
+        if isinstance(agent_summary, dict) and "buzz_accuracy" in agent_summary:
+            # Single-threshold agent (always_final)
+            print(f"  {agent_name}: accuracy={agent_summary['buzz_accuracy']:.3f}, "
+                  f"mean_sq={agent_summary.get('mean_sq', 0):.3f}")
+        elif isinstance(agent_summary, dict):
+            # Multi-threshold agent
+            for thr, metrics in agent_summary.items():
+                if isinstance(metrics, dict) and "buzz_accuracy" in metrics:
+                    print(f"  {agent_name}[{thr}]: accuracy={metrics['buzz_accuracy']:.3f}, "
+                          f"mean_sq={metrics.get('mean_sq', 0):.3f}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
 ## File: qb_env/tossup_env.py
 ```python
 """
@@ -25537,1019 +25710,6 @@ def save_embedding_cache(model: LikelihoodModel, config: dict[str, Any]) -> None
         print(f"Saved {n} embeddings to {path}")
 ```
 
-## File: scripts/train_ppo.py
-```python
-#!/usr/bin/env python3
-"""
-Train PPO buzzer agent on belief-feature observations.
-
-Loads MC questions, builds a likelihood model, creates a Gymnasium environment,
-trains an MLP policy with SB3 PPO, then evaluates with episode traces and
-summary metrics (accuracy, S_q, ECE, Brier score).
-
-Usage:
-    python scripts/train_ppo.py --smoke              # Quick smoke test
-    python scripts/train_ppo.py --smoke --deterministic-eval
-    python scripts/train_ppo.py --config configs/custom.yaml
-    python scripts/train_ppo.py --timesteps 50000    # Override timesteps
-
-Ported from qb-rl reference implementation (scripts/train_ppo.py) with
-import path adaptations for the unified qanta-buzzer codebase.
-"""
-
-from __future__ import annotations
-
-import argparse
-from dataclasses import asdict
-from pathlib import Path
-import sys
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from agents.ppo_buzzer import PPOBuzzer
-from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
-from qb_env.stop_only_env import StopOnlyEnv
-from qb_env.tossup_env import make_env_from_config, precompute_beliefs
-from qb_data.config import merge_overrides
-from scripts._common import (
-    ARTIFACT_DIR,
-    build_likelihood_model,
-    load_config,
-    load_embedding_cache,
-    load_mc_questions,
-    parse_overrides,
-    save_embedding_cache,
-    save_json,
-)
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments.
-
-    Returns
-    -------
-    argparse.Namespace
-        Parsed arguments with config, smoke, mc_path, timesteps, and
-        deterministic_eval fields.
-    """
-    parser = argparse.ArgumentParser(description="Train PPO buzzer.")
-    parser.add_argument(
-        "--config", type=str, default=None,
-        help="Path to YAML config file (default: configs/default.yaml).",
-    )
-    parser.add_argument(
-        "--smoke", action="store_true",
-        help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
-    )
-    parser.add_argument(
-        "--mc-path", type=str, default=None,
-        help="Optional MC dataset JSON path (overrides config-derived path).",
-    )
-    parser.add_argument(
-        "--timesteps", type=int, default=None,
-        help="Override total_timesteps from config.",
-    )
-    parser.add_argument(
-        "--seed", type=int, default=None,
-        help="Override PPO/environment seed from config.",
-    )
-    parser.add_argument(
-        "--deterministic-eval", action="store_true",
-        help="Use deterministic policy for post-training episode evaluation.",
-    )
-    parser.add_argument(
-        "--stochastic-eval", action="store_true",
-        help="Force stochastic policy sampling for post-training evaluation.",
-    )
-    parser.add_argument(
-        "--policy-mode",
-        type=str,
-        choices=["flat_kplus1", "stop_only"],
-        default="flat_kplus1",
-        help="Policy action space: flat K+1 actions (default) or binary stop_only.",
-    )
-    parser.add_argument(
-        "overrides",
-        nargs="*",
-        help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    """Train PPO agent and save model + evaluation artifacts."""
-    args = parse_args()
-
-    config = load_config(args.config, smoke=args.smoke)
-    overrides = parse_overrides(args)
-    if overrides:
-        print(f"Applying overrides: {overrides}")
-        config = merge_overrides(config, overrides)
-
-    split = "smoke" if args.smoke else "main"
-    out_dir = ARTIFACT_DIR / split
-    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
-
-    # Fallback: check data/processed/ if artifacts path doesn't exist
-    if not mc_path.exists():
-        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
-        if fallback.exists():
-            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
-            mc_path = fallback
-
-    print(f"Loading MC questions from: {mc_path}")
-    mc_questions = load_mc_questions(mc_path)
-    print(f"Loaded {len(mc_questions)} MC questions")
-
-    print(f"Building likelihood model: {config['likelihood']['model']}")
-    likelihood_model = build_likelihood_model(config, mc_questions)
-    load_embedding_cache(likelihood_model, config)
-
-    env_cfg = config["environment"]
-    lik_cfg = config["likelihood"]
-
-    print(f"Precomputing belief trajectories for {len(mc_questions)} questions...")
-    belief_cache = precompute_beliefs(
-        questions=mc_questions,
-        likelihood_model=likelihood_model,
-        belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
-        beta=float(lik_cfg.get("beta", 5.0)),
-        K=int(config["data"].get("K", 4)),
-    )
-    print(f"Cached {len(belief_cache)} belief vectors")
-    save_embedding_cache(likelihood_model, config)
-
-    env = make_env_from_config(
-        mc_questions=mc_questions,
-        likelihood_model=likelihood_model,
-        config=config,
-        precomputed_beliefs=belief_cache,
-    )
-    if args.policy_mode == "stop_only":
-        print("Wrapping environment with StopOnlyEnv (WAIT/BUZZ only)...")
-        env = StopOnlyEnv(env)
-
-    ppo_cfg = config["ppo"]
-    train_seed = int(args.seed if args.seed is not None else ppo_cfg.get("seed", 13))
-    total_timesteps = int(
-        args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
-    )
-
-    use_maskable = bool(ppo_cfg.get("use_maskable_ppo", False))
-    if use_maskable:
-        print("Using MaskablePPO for variable-K action masking")
-    print(f"Training PPO for {total_timesteps} timesteps...")
-    agent = PPOBuzzer(
-        env=env,
-        learning_rate=float(ppo_cfg["learning_rate"]),
-        n_steps=int(ppo_cfg["n_steps"]),
-        batch_size=int(ppo_cfg["batch_size"]),
-        n_epochs=int(ppo_cfg["n_epochs"]),
-        gamma=float(ppo_cfg["gamma"]),
-        seed=train_seed,
-        policy_kwargs=ppo_cfg.get("policy_kwargs", {"net_arch": [64, 64]}),
-        verbose=1,
-        use_maskable_ppo=use_maskable,
-    )
-
-    agent.train(total_timesteps=total_timesteps)
-    model_path = out_dir / "ppo_model"
-    agent.save(model_path)
-    save_json(out_dir / "config_used.json", config)
-
-    eval_deterministic = True
-    if args.stochastic_eval:
-        eval_deterministic = False
-    elif args.deterministic_eval:
-        eval_deterministic = True
-
-    print(
-        f"Evaluating PPO agent on {len(mc_questions)} questions "
-        f"(deterministic={eval_deterministic})..."
-    )
-    traces = [
-        asdict(
-            agent.run_episode(
-                deterministic=eval_deterministic,
-                question_idx=i,
-            )
-        )
-        for i in range(len(mc_questions))
-    ]
-    summary = {**summarize_buzz_metrics(traces), **calibration_at_buzz(traces)}
-
-    save_json(out_dir / "ppo_runs.json", traces)
-    save_json(out_dir / "ppo_summary.json", summary)
-    print(f"Saved PPO model to: {model_path}.zip")
-    print(f"Saved PPO summaries to: {out_dir}")
-
-
-if __name__ == "__main__":
-    main()
-```
-
-## File: scripts/evaluate_all.py
-```python
-#!/usr/bin/env python3
-"""
-Comprehensive evaluation with control experiments and visualization.
-
-Runs the SoftmaxProfileBuzzer at the best threshold (from baseline sweep),
-then executes control experiments (choices-only, shuffle, alias substitution)
-and generates comparison plots and tables for the CS234 writeup.
-
-Consumes outputs from:
-- build_mc_dataset.py (mc_dataset.json)
-- run_baselines.py (baseline_summary.json)
-- train_ppo.py (ppo_summary.json)
-
-Produces:
-- evaluation_report.json (full eval + controls + baseline + PPO summaries)
-- plots/entropy_vs_clue.png
-- plots/calibration.png
-- plots/comparison.csv
-
-Usage:
-    python scripts/evaluate_all.py --smoke
-    python scripts/evaluate_all.py --config configs/custom.yaml
-    python scripts/evaluate_all.py --mc-path artifacts/main/mc_dataset.json
-
-Ported from qb-rl reference implementation (scripts/evaluate_all.py) with
-import path adaptations for the unified qanta-buzzer codebase.
-"""
-
-from __future__ import annotations
-
-import argparse
-from dataclasses import asdict
-from pathlib import Path
-import sys
-
-import numpy as np
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from agents.bayesian_buzzer import SoftmaxProfileBuzzer
-from agents.threshold_buzzer import (
-    _softmax_episode_from_precomputed,
-    precompute_beliefs,
-)
-from evaluation.controls import (
-    run_alias_substitution_control,
-    run_choices_only_control,
-    run_shuffle_control_precomputed,
-)
-from evaluation.metrics import (
-    calibration_at_buzz,
-    per_category_accuracy,
-    summarize_buzz_metrics,
-)
-from evaluation.plotting import (
-    plot_calibration_curve,
-    plot_entropy_vs_clue_index,
-    save_comparison_table,
-)
-from qb_data.config import merge_overrides
-from scripts._common import (
-    ARTIFACT_DIR,
-    build_likelihood_model,
-    load_config,
-    load_embedding_cache,
-    load_json,
-    load_mc_questions,
-    parse_overrides,
-    save_json,
-)
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments.
-
-    Returns
-    -------
-    argparse.Namespace
-        Parsed arguments with config, smoke, and mc_path fields.
-    """
-    parser = argparse.ArgumentParser(
-        description="Evaluate all agents and controls."
-    )
-    parser.add_argument(
-        "--config", type=str, default=None,
-        help="Path to YAML config file (default: configs/default.yaml).",
-    )
-    parser.add_argument(
-        "--smoke", action="store_true",
-        help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
-    )
-    parser.add_argument(
-        "--mc-path", type=str, default=None,
-        help="Optional MC dataset JSON path (overrides config-derived path).",
-    )
-    parser.add_argument(
-        "overrides",
-        nargs="*",
-        help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
-    )
-    return parser.parse_args()
-
-
-def pick_best_softmax_threshold(
-    out_dir: Path, default_threshold: float
-) -> float:
-    """Select the best softmax threshold from baseline sweep results.
-
-    Loads baseline_summary.json and extracts the threshold with the
-    highest mean S_q score from the softmax_profile results.
-
-    Parameters
-    ----------
-    out_dir : Path
-        Directory containing baseline_summary.json.
-    default_threshold : float
-        Fallback threshold if baseline summary is unavailable.
-
-    Returns
-    -------
-    float
-        Best threshold by S_q score, or default_threshold if unavailable.
-    """
-    summary_path = out_dir / "baseline_summary.json"
-    if not summary_path.exists():
-        return default_threshold
-    summary = load_json(summary_path)
-    softmax = summary.get("softmax_profile", {})
-    if not softmax:
-        return default_threshold
-    best_t = default_threshold
-    best_sq = float("-inf")
-    for t_str, metrics in softmax.items():
-        sq = float(metrics.get("mean_sq", float("-inf")))
-        if sq > best_sq:
-            best_sq = sq
-            best_t = float(t_str)
-    return best_t
-
-
-def main() -> None:
-    """Run comprehensive evaluation with controls and visualizations."""
-    args = parse_args()
-
-    config = load_config(args.config, smoke=args.smoke)
-    overrides = parse_overrides(args)
-    if overrides:
-        print(f"Applying overrides: {overrides}")
-        config = merge_overrides(config, overrides)
-
-    split = "smoke" if args.smoke else "main"
-    out_dir = ARTIFACT_DIR / split
-    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
-
-    # Fallback: check data/processed/ if artifacts path doesn't exist
-    if not mc_path.exists():
-        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
-        if fallback.exists():
-            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
-            mc_path = fallback
-
-    print(f"Loading MC questions from: {mc_path}")
-    mc_questions = load_mc_questions(mc_path)
-    print(f"Loaded {len(mc_questions)} MC questions")
-
-    # Load alias lookup (generated by build_mc_dataset.py)
-    alias_path = out_dir / "alias_lookup.json"
-    if alias_path.exists():
-        alias_lookup = load_json(alias_path)
-    else:
-        print(f"Warning: alias_lookup.json not found at {alias_path}, using empty lookup")
-        alias_lookup = {}
-
-    # Build likelihood model
-    print(f"Building likelihood model: {config['likelihood']['model']}")
-    likelihood_model = build_likelihood_model(config, mc_questions)
-    load_embedding_cache(likelihood_model, config)
-    beta = float(config["likelihood"].get("beta", 5.0))
-    alpha = float(config["bayesian"].get("alpha", 10.0))
-    default_threshold = float(config["bayesian"]["threshold_sweep"][0])
-    threshold = pick_best_softmax_threshold(out_dir, default_threshold=default_threshold)
-    print(f"Using best softmax threshold: {threshold}")
-
-    # Precompute beliefs once (single pass of likelihood_model.score())
-    print("Precomputing beliefs...")
-    precomputed = precompute_beliefs(mc_questions, likelihood_model, beta)
-
-    # Precomputed evaluation (zero extra score() calls)
-    def evaluate_questions_precomputed(pqs):
-        runs = [asdict(_softmax_episode_from_precomputed(pq, threshold, alpha)) for pq in pqs]
-        summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
-        summary["runs"] = runs
-        return summary
-
-    # Live evaluator for controls that genuinely change option text (alias)
-    def evaluate_questions_live(qset):
-        agent = SoftmaxProfileBuzzer(
-            likelihood_model=likelihood_model,
-            threshold=threshold,
-            beta=beta,
-            alpha=alpha,
-        )
-        runs = [asdict(agent.run_episode(q)) for q in qset]
-        summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
-        summary["runs"] = runs
-        return summary
-
-    # --- Run evaluations ---
-    print("Running full evaluation...")
-    full_eval = evaluate_questions_precomputed(precomputed)
-
-    # Compute per-category breakdown
-    print("\nComputing per-category breakdown...")
-    per_category_results = per_category_accuracy(full_eval["runs"], mc_questions)
-
-    # Sort by category name for readability
-    per_category_sorted = dict(sorted(per_category_results.items()))
-
-    print("\nPer-category accuracy:")
-    for category, metrics in per_category_sorted.items():
-        print(
-            f"  {category:20s} (n={metrics['n']:3.0f}): "
-            f"acc={metrics['buzz_accuracy']:.3f}, "
-            f"S_q={metrics['mean_sq']:.3f}"
-        )
-    print()
-
-    print("Running shuffle control...")
-    shuffle_eval = run_shuffle_control_precomputed(precomputed, threshold, alpha)
-
-    if alias_lookup:
-        print("Running alias substitution control...")
-        alias_eval = run_alias_substitution_control(
-            mc_questions,
-            alias_lookup=alias_lookup,
-            evaluator=lambda qset: evaluate_questions_live(qset),
-        )
-        alias_control_report = {k: v for k, v in alias_eval.items() if k != "runs"}
-    else:
-        print(
-            "Skipping alias substitution control: alias_lookup.json missing or empty"
-        )
-        alias_control_report = {
-            "skipped": True,
-            "reason": "alias_lookup.json missing or empty",
-        }
-
-    print("Running choices-only control...")
-    choices_only = run_choices_only_control(mc_questions)
-
-    # --- Load existing artifacts ---
-    ppo_summary_path = out_dir / "ppo_summary.json"
-    ppo_summary = load_json(ppo_summary_path) if ppo_summary_path.exists() else {}
-    baseline_summary_path = out_dir / "baseline_summary.json"
-    baseline_summary = (
-        load_json(baseline_summary_path) if baseline_summary_path.exists() else {}
-    )
-
-    # --- Build evaluation report ---
-    report = {
-        "softmax_profile_best_threshold": threshold,
-        "full_eval": {k: v for k, v in full_eval.items() if k != "runs"},
-        "controls": {
-            "choices_only": choices_only,
-            "shuffle": {k: v for k, v in shuffle_eval.items() if k != "runs"},
-            "alias_substitution": alias_control_report,
-        },
-        "per_category": per_category_sorted,
-        "baseline_summary": baseline_summary,
-        "ppo_summary": ppo_summary,
-    }
-
-    # Add Expected Wins summary only when that reward mode is active
-    if config.get("environment", {}).get("reward_mode") == "expected_wins":
-        from evaluation.metrics import expected_wins_score
-        from qb_env.opponent_models import build_opponent_model_from_config
-
-        opp_model = build_opponent_model_from_config(mc_questions, config)
-        qid_to_q = {q.qid: q for q in mc_questions}
-        if opp_model is not None:
-            ew_scores = []
-            for run in full_eval["runs"]:
-                q = qid_to_q.get(run.get("qid", ""), mc_questions[0])
-                opp_surv = [
-                    opp_model.prob_survive_to_step(q, t)
-                    for t in range(len(run.get("c_trace", [])))
-                ]
-                ew = expected_wins_score(
-                    run.get("c_trace", []),
-                    run.get("g_trace", []),
-                    opp_surv,
-                )
-                ew_scores.append(ew)
-            report["expected_wins"] = {
-                "mean_ew": float(np.mean(ew_scores)) if ew_scores else 0.0,
-                "n": len(ew_scores),
-            }
-
-    save_json(out_dir / "evaluation_report.json", report)
-
-    # --- Generate visualizations ---
-    print("Generating plots...")
-
-    # Entropy vs clue index
-    entropy_traces = [
-        list(r["entropy_trace"])
-        for r in full_eval["runs"]
-        if r.get("entropy_trace")
-    ]
-    max_len = max((len(t) for t in entropy_traces), default=0)
-    padded = np.full((len(entropy_traces), max_len), np.nan, dtype=np.float32)
-    for i, trace in enumerate(entropy_traces):
-        padded[i, : len(trace)] = np.array(trace, dtype=np.float32)
-    entropy_trace = (
-        np.nanmean(padded, axis=0).tolist() if max_len > 0 else []
-    )
-    plot_entropy_vs_clue_index(
-        {"softmax_profile": entropy_trace},
-        out_dir / "plots" / "entropy_vs_clue.png",
-    )
-
-    # Calibration curve — use canonical helper for consistency
-    from evaluation.metrics import calibration_pairs_at_buzz
-    confidences, outcomes = calibration_pairs_at_buzz(full_eval["runs"])
-    plot_calibration_curve(
-        confidences, outcomes, out_dir / "plots" / "calibration.png"
-    )
-
-    # Comparison table: include baseline sweep, controls, and PPO
-    table_rows = []
-
-    # Add baseline sweep results (threshold at multiple values)
-    if "threshold" in baseline_summary:
-        for threshold_str, metrics in baseline_summary["threshold"].items():
-            table_rows.append({
-                "agent": f"threshold_{threshold_str}",
-                **{k: v for k, v in metrics.items() if k != "runs"},
-            })
-
-    # Add softmax_profile sweep results
-    if "softmax_profile" in baseline_summary:
-        for threshold_str, metrics in baseline_summary["softmax_profile"].items():
-            table_rows.append({
-                "agent": f"softmax_{threshold_str}",
-                **{k: v for k, v in metrics.items() if k != "runs"},
-            })
-
-    # Add full softmax eval (best threshold) and control experiments
-    table_rows.append({
-        "agent": "full_softmax",
-        **{k: v for k, v in full_eval.items() if k != "runs"},
-    })
-    table_rows.append({
-        "agent": "shuffle_control",
-        **{k: v for k, v in shuffle_eval.items() if k != "runs"},
-    })
-    if not alias_control_report.get("skipped"):
-        table_rows.append({
-            "agent": "alias_control",
-            **{k: v for k, v in alias_control_report.items() if k != "runs"},
-        })
-
-    # Add PPO if available
-    if ppo_summary:
-        table_rows.append({"agent": "ppo", **ppo_summary})
-
-    save_comparison_table(table_rows, out_dir / "plots" / "comparison.csv")
-
-    print(f"Wrote evaluation report to: {out_dir / 'evaluation_report.json'}")
-
-
-if __name__ == "__main__":
-    main()
-```
-
-## File: agents/ppo_buzzer.py
-```python
-"""PPO Buzzer agent wrapping Stable-Baselines3's PPO.
-
-Provides the PPOBuzzer class for training an MLP policy on belief-feature
-observations from TossupMCEnv, and PPOEpisodeTrace for recording per-step
-action probabilities needed to compute the S_q scoring metric.
-
-The key design rationale: SB3's ``learn()`` does not expose per-step action
-distributions, so ``run_episode()`` implements custom episode execution that
-records c_trace (buzz probability) and g_trace (correctness probability)
-at each step for downstream S_q computation.
-
-Ported from qb-rl reference implementation (agents/ppo_buzzer.py) with
-import path adaptations for the unified qanta-buzzer codebase.
-"""
-
-from __future__ import annotations
-
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
-
-import numpy as np
-import torch as th
-from stable_baselines3 import PPO
-
-from qb_env.tossup_env import TossupMCEnv
-
-
-@dataclass
-class PPOEpisodeTrace:
-    """Record of a single episode with per-step action probability traces.
-
-    Used to compute the S_q scoring metric: S_q = sum(c_t * g_t) over steps,
-    and calibration metrics (ECE, Brier) via ``top_p_trace``.
-
-    Attributes
-    ----------
-    qid : str
-        Question identifier.
-    buzz_step : int
-        Step at which the agent buzzed (-1 if never buzzed voluntarily).
-    buzz_index : int
-        Index of the chosen answer option (0-based, -1 if forced).
-    gold_index : int
-        Index of the correct answer option (0-based).
-    correct : bool
-        Whether the agent selected the correct answer.
-    episode_reward : float
-        Total accumulated reward over the episode.
-    c_trace : list[float]
-        Per-step buzz probability: 1 - P(wait) at each timestep.
-    g_trace : list[float]
-        Per-step correctness probability: P(gold_option) / P(buzz).
-    top_p_trace : list[float]
-        Per-step max belief probability: max(env.belief). Used as the
-        confidence proxy for calibration metrics, consistent with
-        baseline agents.
-    entropy_trace : list[float]
-        Per-step policy entropy over the full action distribution.
-    """
-
-    qid: str
-    buzz_step: int
-    buzz_index: int
-    gold_index: int
-    correct: bool
-    episode_reward: float
-    c_trace: list[float]
-    g_trace: list[float]
-    top_p_trace: list[float]
-    entropy_trace: list[float]
-
-
-class PPOBuzzer:
-    """PPO-trained buzzer agent wrapping Stable-Baselines3's PPO.
-
-    Trains an MLP policy on belief-feature observations (Box(K+6,)) from
-    TossupMCEnv. The policy maps observation vectors to a Discrete(K+1)
-    action space: WAIT (0) or BUZZ with option i (1..K).
-
-    Parameters
-    ----------
-    env : TossupMCEnv
-        Gymnasium environment with belief-feature observations.
-    learning_rate : float
-        Learning rate for the Adam optimizer.
-    n_steps : int
-        Number of steps per rollout buffer collection.
-    batch_size : int
-        Minibatch size for PPO updates.
-    n_epochs : int
-        Number of optimization epochs per rollout.
-    gamma : float
-        Discount factor for return computation.
-    policy_kwargs : dict or None
-        Additional keyword arguments for the MLP policy. Defaults to
-        ``{"net_arch": [64, 64]}`` (two hidden layers of 64 units).
-    verbose : int
-        SB3 verbosity level (0=silent, 1=info, 2=debug).
-    """
-
-    def __init__(
-        self,
-        env: TossupMCEnv,
-        learning_rate: float = 3e-4,
-        n_steps: int = 128,
-        batch_size: int = 32,
-        n_epochs: int = 10,
-        gamma: float = 0.99,
-        seed: int | None = None,
-        policy_kwargs: dict[str, Any] | None = None,
-        verbose: int = 0,
-        use_maskable_ppo: bool = False,
-    ):
-        if policy_kwargs is None:
-            policy_kwargs = {"net_arch": [64, 64]}
-
-        self.env = env
-        self._use_maskable = use_maskable_ppo
-
-        if use_maskable_ppo:
-            try:
-                from sb3_contrib import MaskablePPO
-            except ImportError as exc:
-                raise ImportError(
-                    "MaskablePPO requires sb3-contrib. "
-                    "Install with: pip install -e '.[maskable]'"
-                ) from exc
-            self.model = MaskablePPO(
-                "MlpPolicy",
-                env,
-                verbose=verbose,
-                seed=seed,
-                learning_rate=learning_rate,
-                n_steps=n_steps,
-                batch_size=batch_size,
-                n_epochs=n_epochs,
-                gamma=gamma,
-                policy_kwargs=policy_kwargs,
-            )
-        else:
-            self.model = PPO(
-                "MlpPolicy",
-                env,
-                verbose=verbose,
-                seed=seed,
-                learning_rate=learning_rate,
-                n_steps=n_steps,
-                batch_size=batch_size,
-                n_epochs=n_epochs,
-                gamma=gamma,
-                policy_kwargs=policy_kwargs,
-            )
-
-    def train(self, total_timesteps: int = 100_000) -> None:
-        """Train the PPO policy for the specified number of timesteps.
-
-        Parameters
-        ----------
-        total_timesteps : int
-            Total environment steps to collect during training.
-        """
-        self.model.learn(total_timesteps=total_timesteps)
-
-    def save(self, path: str | Path) -> None:
-        """Save the trained PPO model to disk.
-
-        The checkpoint does not record whether it was trained with PPO or
-        MaskablePPO. Callers must pass ``use_maskable_ppo`` to ``load()``
-        matching the training configuration.
-
-        Parameters
-        ----------
-        path : str or Path
-            File path for the saved model (SB3 appends .zip if needed).
-        """
-        self.model.save(str(path))
-
-    @classmethod
-    def load(
-        cls,
-        path: str | Path,
-        env: TossupMCEnv,
-        use_maskable_ppo: bool = False,
-    ) -> "PPOBuzzer":
-        """Load a previously saved PPO model.
-
-        Parameters
-        ----------
-        path : str or Path
-            Path to the saved model file.
-        env : TossupMCEnv
-            Environment to attach to the loaded model.
-        use_maskable_ppo : bool
-            If True, load with ``MaskablePPO`` from sb3-contrib instead
-            of plain SB3 ``PPO``.
-
-        Returns
-        -------
-        PPOBuzzer
-            A PPOBuzzer with the loaded model weights.
-        """
-        agent = cls(env=env, use_maskable_ppo=use_maskable_ppo)
-        if use_maskable_ppo:
-            try:
-                from sb3_contrib import MaskablePPO
-            except ImportError as exc:
-                raise ImportError(
-                    "MaskablePPO requires sb3-contrib. "
-                    "Install with: pip install -e '.[maskable]'"
-                ) from exc
-            agent.model = MaskablePPO.load(str(path), env=env)
-        else:
-            agent.model = PPO.load(str(path), env=env)
-        return agent
-
-    def _current_action_masks(self) -> np.ndarray | None:
-        """Return action masks from the env, or None if not maskable."""
-        if not self._use_maskable:
-            return None
-        env_for_mask = self.env if hasattr(self.env, "action_masks") else self._base_env()
-        if not hasattr(env_for_mask, "action_masks"):
-            return None
-        return np.asarray(env_for_mask.action_masks(), dtype=bool)
-
-    def action_probabilities(self, obs: np.ndarray) -> np.ndarray:
-        """Extract action probabilities from the policy for a given observation.
-
-        When ``use_maskable_ppo=True``, passes ``action_masks`` to the
-        policy distribution so that probabilities for invalid actions are
-        zeroed out before action selection.
-
-        Parameters
-        ----------
-        obs : np.ndarray
-            Observation vector of shape (K + 6,).
-
-        Returns
-        -------
-        np.ndarray
-            Action probability vector of shape (K + 1,), dtype float32.
-            Index 0 = P(wait), indices 1..K = P(buzz with option i).
-        """
-        obs_tensor = th.as_tensor(
-            obs, dtype=th.float32, device=self.model.device
-        ).unsqueeze(0)
-
-        masks = self._current_action_masks()
-        dist = self.model.policy.get_distribution(obs_tensor)
-        if masks is not None:
-            masks_tensor = th.as_tensor(
-                masks, dtype=th.bool, device=self.model.device
-            ).unsqueeze(0)
-            dist.apply_masking(masks_tensor)
-
-        probs = dist.distribution.probs[0].detach().cpu().numpy()
-        return probs.astype(np.float32)
-
-    def _base_env(self) -> TossupMCEnv:
-        """Return the underlying TossupMCEnv, unwrapping if needed."""
-        return getattr(self.env, "unwrapped", self.env)
-
-    def c_t(self, obs: np.ndarray) -> float:
-        """Compute buzz probability at the current step.
-
-        Parameters
-        ----------
-        obs : np.ndarray
-            Observation vector of shape (K + 6,).
-
-        Returns
-        -------
-        float
-            Probability of buzzing: 1 - P(wait). Range [0, 1].
-        """
-        probs = self.action_probabilities(obs)
-        return float(1.0 - probs[0])
-
-    def g_t(self, obs: np.ndarray, gold_index: int) -> float:
-        """Compute correctness probability at the current step.
-
-        Given that the agent buzzes, what is the probability it selects
-        the correct answer? Formally: P(gold_action) / P(buzz).
-
-        Parameters
-        ----------
-        obs : np.ndarray
-            Observation vector of shape (K + 6,).
-        gold_index : int
-            Index of the correct answer option (0-based).
-
-        Returns
-        -------
-        float
-            Conditional correctness probability. Returns 0.0 if buzz
-            probability is near zero (< 1e-12).
-        """
-        probs = self.action_probabilities(obs)
-        base_env = self._base_env()
-        c_t = float(1.0 - probs[0])
-        if c_t <= 1e-12:
-            return 0.0
-        if len(probs) == 2:
-            if gold_index < 0 or base_env.belief is None:
-                return 0.0
-            return float(base_env.belief[gold_index])
-        return float(probs[gold_index + 1] / c_t)
-
-    def run_episode(
-        self,
-        deterministic: bool = False,
-        seed: int | None = None,
-        question_idx: int | None = None,
-    ) -> PPOEpisodeTrace:
-        """Run a full episode and record per-step action probability traces.
-
-        Executes the policy in the environment, computing c_trace (buzz
-        probability), g_trace (correctness probability), and entropy_trace
-        at each step. These traces are needed to compute the S_q metric.
-
-        Parameters
-        ----------
-        deterministic : bool
-            If True, select actions by argmax instead of sampling.
-        seed : int or None
-            If provided, seeds the environment reset for reproducibility.
-
-        Returns
-        -------
-        PPOEpisodeTrace
-            Complete episode record with action traces and outcome.
-        """
-        reset_options = None
-        if question_idx is not None:
-            reset_options = {"question_idx": int(question_idx)}
-
-        obs, info = self.env.reset(seed=seed, options=reset_options)
-        terminated = False
-        truncated = False
-        total_reward = 0.0
-        c_trace: list[float] = []
-        g_trace: list[float] = []
-        top_p_trace: list[float] = []
-        entropy_trace: list[float] = []
-
-        base_env = self._base_env()
-        buzz_step = -1
-        buzz_index = -1
-        gold_index = (
-            base_env.question.gold_index
-            if getattr(base_env, "question", None) is not None
-            else -1
-        )
-
-        while not (terminated or truncated):
-            probs = self.action_probabilities(obs)
-            c_val = float(probs[1] if len(probs) == 2 else 1.0 - probs[0])
-            if len(probs) == 2:
-                g_val = (
-                    float(base_env.belief[gold_index])
-                    if gold_index >= 0 and base_env.belief is not None
-                    else 0.0
-                )
-            else:
-                g_val = (
-                    float(probs[gold_index + 1] / c_val) if c_val > 1e-12 else 0.0
-                )
-            entropy = float(
-                -(np.clip(probs, 1e-12, 1.0) * np.log(np.clip(probs, 1e-12, 1.0))).sum()
-            )
-
-            top_p_val = float(np.max(base_env.belief)) if base_env.belief is not None else c_val
-            c_trace.append(c_val)
-            g_trace.append(g_val)
-            top_p_trace.append(top_p_val)
-            entropy_trace.append(entropy)
-
-            if deterministic:
-                action = int(np.argmax(probs))
-            else:
-                action = int(np.random.choice(len(probs), p=probs))
-
-            obs, reward, terminated, truncated, step_info = self.env.step(action)
-            total_reward += reward
-
-            if action != 0 and buzz_step < 0:
-                buzz_step = int(step_info.get("step_idx", 0))
-                if len(probs) == 2:
-                    buzz_index = int(
-                        step_info.get(
-                            "chosen_idx",
-                            step_info.get("forced_choice", np.argmax(base_env.belief)),
-                        )
-                    )
-                else:
-                    buzz_index = action - 1
-            if truncated and buzz_step < 0 and not step_info.get("no_buzz", False):
-                buzz_step = int(
-                    step_info.get("step_idx", len(c_trace) - 1)
-                )
-                buzz_index = int(
-                    step_info.get("forced_choice", np.argmax(base_env.belief))
-                )
-
-        correct = buzz_index == gold_index
-        return PPOEpisodeTrace(
-            qid=info.get("qid", ""),
-            buzz_step=buzz_step,
-            buzz_index=buzz_index,
-            gold_index=gold_index,
-            correct=correct,
-            episode_reward=total_reward,
-            c_trace=c_trace,
-            g_trace=g_trace,
-            top_p_trace=top_p_trace,
-            entropy_trace=entropy_trace,
-        )
-```
-
 ## File: scripts/compare_policies.py
 ```python
 #!/usr/bin/env python3
@@ -27040,6 +26200,1032 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     save_json(output_path, comparison)
     print(f"\nResults saved to {output_path}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+## File: scripts/train_ppo.py
+```python
+#!/usr/bin/env python3
+"""
+Train PPO buzzer agent on belief-feature observations.
+
+Loads MC questions, builds a likelihood model, creates a Gymnasium environment,
+trains an MLP policy with SB3 PPO, then evaluates with episode traces and
+summary metrics (accuracy, S_q, ECE, Brier score).
+
+Usage:
+    python scripts/train_ppo.py --smoke              # Quick smoke test
+    python scripts/train_ppo.py --smoke --deterministic-eval
+    python scripts/train_ppo.py --config configs/custom.yaml
+    python scripts/train_ppo.py --timesteps 50000    # Override timesteps
+
+Ported from qb-rl reference implementation (scripts/train_ppo.py) with
+import path adaptations for the unified qanta-buzzer codebase.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agents.ppo_buzzer import PPOBuzzer
+from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
+from qb_env.stop_only_env import StopOnlyEnv
+from qb_env.tossup_env import make_env_from_config, precompute_beliefs
+from qb_data.config import merge_overrides
+from scripts._common import (
+    ARTIFACT_DIR,
+    build_likelihood_model,
+    load_config,
+    load_embedding_cache,
+    load_mc_questions,
+    parse_overrides,
+    save_embedding_cache,
+    save_json,
+)
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns
+    -------
+    argparse.Namespace
+        Parsed arguments with config, smoke, mc_path, timesteps, and
+        deterministic_eval fields.
+    """
+    parser = argparse.ArgumentParser(description="Train PPO buzzer.")
+    parser.add_argument(
+        "--config", type=str, default=None,
+        help="Path to YAML config file (default: configs/default.yaml).",
+    )
+    parser.add_argument(
+        "--smoke", action="store_true",
+        help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
+    )
+    parser.add_argument(
+        "--mc-path", type=str, default=None,
+        help="Optional MC dataset JSON path (overrides config-derived path).",
+    )
+    parser.add_argument(
+        "--timesteps", type=int, default=None,
+        help="Override total_timesteps from config.",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Override PPO/environment seed from config.",
+    )
+    parser.add_argument(
+        "--deterministic-eval", action="store_true",
+        help="Use deterministic policy for post-training episode evaluation.",
+    )
+    parser.add_argument(
+        "--stochastic-eval", action="store_true",
+        help="Force stochastic policy sampling for post-training evaluation.",
+    )
+    parser.add_argument(
+        "--policy-mode",
+        type=str,
+        choices=["flat_kplus1", "stop_only"],
+        default="flat_kplus1",
+        help="Policy action space: flat K+1 actions (default) or binary stop_only.",
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Override output directory (default: artifacts/<split>).",
+    )
+    parser.add_argument(
+        "overrides",
+        nargs="*",
+        help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    """Train PPO agent and save model + evaluation artifacts."""
+    args = parse_args()
+
+    config = load_config(args.config, smoke=args.smoke)
+    overrides = parse_overrides(args)
+    if overrides:
+        print(f"Applying overrides: {overrides}")
+        config = merge_overrides(config, overrides)
+
+    split = "smoke" if args.smoke else "main"
+    out_dir = Path(args.output_dir) if args.output_dir else ARTIFACT_DIR / split
+    out_dir.mkdir(parents=True, exist_ok=True)
+    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
+
+    # Fallback: check data/processed/ if artifacts path doesn't exist
+    if not mc_path.exists():
+        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
+        if fallback.exists():
+            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
+            mc_path = fallback
+
+    print(f"Loading MC questions from: {mc_path}")
+    mc_questions = load_mc_questions(mc_path)
+    print(f"Loaded {len(mc_questions)} MC questions")
+
+    print(f"Building likelihood model: {config['likelihood']['model']}")
+    likelihood_model = build_likelihood_model(config, mc_questions)
+    load_embedding_cache(likelihood_model, config)
+
+    env_cfg = config["environment"]
+    lik_cfg = config["likelihood"]
+
+    print(f"Precomputing belief trajectories for {len(mc_questions)} questions...")
+    belief_cache = precompute_beliefs(
+        questions=mc_questions,
+        likelihood_model=likelihood_model,
+        belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
+        beta=float(lik_cfg.get("beta", 5.0)),
+        K=int(config["data"].get("K", 4)),
+    )
+    print(f"Cached {len(belief_cache)} belief vectors")
+    save_embedding_cache(likelihood_model, config)
+
+    env = make_env_from_config(
+        mc_questions=mc_questions,
+        likelihood_model=likelihood_model,
+        config=config,
+        precomputed_beliefs=belief_cache,
+    )
+    if args.policy_mode == "stop_only":
+        print("Wrapping environment with StopOnlyEnv (WAIT/BUZZ only)...")
+        env = StopOnlyEnv(env)
+
+    ppo_cfg = config["ppo"]
+    train_seed = int(args.seed if args.seed is not None else ppo_cfg.get("seed", 13))
+    total_timesteps = int(
+        args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
+    )
+
+    use_maskable = bool(ppo_cfg.get("use_maskable_ppo", False))
+    if use_maskable:
+        print("Using MaskablePPO for variable-K action masking")
+    print(f"Training PPO for {total_timesteps} timesteps...")
+    agent = PPOBuzzer(
+        env=env,
+        learning_rate=float(ppo_cfg["learning_rate"]),
+        n_steps=int(ppo_cfg["n_steps"]),
+        batch_size=int(ppo_cfg["batch_size"]),
+        n_epochs=int(ppo_cfg["n_epochs"]),
+        gamma=float(ppo_cfg["gamma"]),
+        seed=train_seed,
+        policy_kwargs=ppo_cfg.get("policy_kwargs", {"net_arch": [64, 64]}),
+        verbose=1,
+        use_maskable_ppo=use_maskable,
+    )
+
+    agent.train(total_timesteps=total_timesteps)
+    model_path = out_dir / "ppo_model"
+    agent.save(model_path)
+    save_json(out_dir / "config_used.json", config)
+
+    eval_deterministic = True
+    if args.stochastic_eval:
+        eval_deterministic = False
+    elif args.deterministic_eval:
+        eval_deterministic = True
+
+    print(
+        f"Evaluating PPO agent on {len(mc_questions)} questions "
+        f"(deterministic={eval_deterministic})..."
+    )
+    traces = [
+        asdict(
+            agent.run_episode(
+                deterministic=eval_deterministic,
+                question_idx=i,
+            )
+        )
+        for i in range(len(mc_questions))
+    ]
+    summary = {**summarize_buzz_metrics(traces), **calibration_at_buzz(traces)}
+
+    save_json(out_dir / "ppo_runs.json", traces)
+    save_json(out_dir / "ppo_summary.json", summary)
+    print(f"Saved PPO model to: {model_path}.zip")
+    print(f"Saved PPO summaries to: {out_dir}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+## File: agents/ppo_buzzer.py
+```python
+"""PPO Buzzer agent wrapping Stable-Baselines3's PPO.
+
+Provides the PPOBuzzer class for training an MLP policy on belief-feature
+observations from TossupMCEnv, and PPOEpisodeTrace for recording per-step
+action probabilities needed to compute the S_q scoring metric.
+
+The key design rationale: SB3's ``learn()`` does not expose per-step action
+distributions, so ``run_episode()`` implements custom episode execution that
+records c_trace (buzz probability) and g_trace (correctness probability)
+at each step for downstream S_q computation.
+
+Ported from qb-rl reference implementation (agents/ppo_buzzer.py) with
+import path adaptations for the unified qanta-buzzer codebase.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch as th
+from stable_baselines3 import PPO
+
+from qb_env.tossup_env import TossupMCEnv
+
+
+@dataclass
+class PPOEpisodeTrace:
+    """Record of a single episode with per-step action probability traces.
+
+    Used to compute the S_q scoring metric: S_q = sum(c_t * g_t) over steps,
+    and calibration metrics (ECE, Brier) via ``top_p_trace``.
+
+    Attributes
+    ----------
+    qid : str
+        Question identifier.
+    buzz_step : int
+        Step at which the agent buzzed (-1 if never buzzed voluntarily).
+    buzz_index : int
+        Index of the chosen answer option (0-based, -1 if forced).
+    gold_index : int
+        Index of the correct answer option (0-based).
+    correct : bool
+        Whether the agent selected the correct answer.
+    episode_reward : float
+        Total accumulated reward over the episode.
+    c_trace : list[float]
+        Per-step buzz probability: 1 - P(wait) at each timestep.
+    g_trace : list[float]
+        Per-step correctness probability: P(gold_option) / P(buzz).
+    top_p_trace : list[float]
+        Per-step max belief probability: max(env.belief). Used as the
+        confidence proxy for calibration metrics, consistent with
+        baseline agents.
+    entropy_trace : list[float]
+        Per-step policy entropy over the full action distribution.
+    """
+
+    qid: str
+    buzz_step: int
+    buzz_index: int
+    gold_index: int
+    correct: bool
+    episode_reward: float
+    c_trace: list[float]
+    g_trace: list[float]
+    top_p_trace: list[float]
+    entropy_trace: list[float]
+
+
+class PPOBuzzer:
+    """PPO-trained buzzer agent wrapping Stable-Baselines3's PPO.
+
+    Trains an MLP policy on belief-feature observations (Box(K+6,)) from
+    TossupMCEnv. The policy maps observation vectors to a Discrete(K+1)
+    action space: WAIT (0) or BUZZ with option i (1..K).
+
+    Parameters
+    ----------
+    env : TossupMCEnv
+        Gymnasium environment with belief-feature observations.
+    learning_rate : float
+        Learning rate for the Adam optimizer.
+    n_steps : int
+        Number of steps per rollout buffer collection.
+    batch_size : int
+        Minibatch size for PPO updates.
+    n_epochs : int
+        Number of optimization epochs per rollout.
+    gamma : float
+        Discount factor for return computation.
+    policy_kwargs : dict or None
+        Additional keyword arguments for the MLP policy. Defaults to
+        ``{"net_arch": [64, 64]}`` (two hidden layers of 64 units).
+    verbose : int
+        SB3 verbosity level (0=silent, 1=info, 2=debug).
+    """
+
+    def __init__(
+        self,
+        env: TossupMCEnv,
+        learning_rate: float = 3e-4,
+        n_steps: int = 128,
+        batch_size: int = 32,
+        n_epochs: int = 10,
+        gamma: float = 0.99,
+        seed: int | None = None,
+        policy_kwargs: dict[str, Any] | None = None,
+        verbose: int = 0,
+        use_maskable_ppo: bool = False,
+    ):
+        if policy_kwargs is None:
+            policy_kwargs = {"net_arch": [64, 64]}
+
+        self.env = env
+        self._use_maskable = use_maskable_ppo
+
+        if use_maskable_ppo:
+            try:
+                from sb3_contrib import MaskablePPO
+            except ImportError as exc:
+                raise ImportError(
+                    "MaskablePPO requires sb3-contrib. "
+                    "Install with: pip install -e '.[maskable]'"
+                ) from exc
+            self.model = MaskablePPO(
+                "MlpPolicy",
+                env,
+                verbose=verbose,
+                seed=seed,
+                learning_rate=learning_rate,
+                n_steps=n_steps,
+                batch_size=batch_size,
+                n_epochs=n_epochs,
+                gamma=gamma,
+                policy_kwargs=policy_kwargs,
+            )
+        else:
+            self.model = PPO(
+                "MlpPolicy",
+                env,
+                verbose=verbose,
+                seed=seed,
+                learning_rate=learning_rate,
+                n_steps=n_steps,
+                batch_size=batch_size,
+                n_epochs=n_epochs,
+                gamma=gamma,
+                policy_kwargs=policy_kwargs,
+            )
+
+    def train(self, total_timesteps: int = 100_000) -> None:
+        """Train the PPO policy for the specified number of timesteps.
+
+        Parameters
+        ----------
+        total_timesteps : int
+            Total environment steps to collect during training.
+        """
+        self.model.learn(total_timesteps=total_timesteps)
+
+    def save(self, path: str | Path) -> None:
+        """Save the trained PPO model to disk.
+
+        The checkpoint does not record whether it was trained with PPO or
+        MaskablePPO. Callers must pass ``use_maskable_ppo`` to ``load()``
+        matching the training configuration.
+
+        Parameters
+        ----------
+        path : str or Path
+            File path for the saved model (SB3 appends .zip if needed).
+        """
+        self.model.save(str(path))
+
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        env: TossupMCEnv,
+        use_maskable_ppo: bool = False,
+    ) -> "PPOBuzzer":
+        """Load a previously saved PPO model.
+
+        Parameters
+        ----------
+        path : str or Path
+            Path to the saved model file.
+        env : TossupMCEnv
+            Environment to attach to the loaded model.
+        use_maskable_ppo : bool
+            If True, load with ``MaskablePPO`` from sb3-contrib instead
+            of plain SB3 ``PPO``.
+
+        Returns
+        -------
+        PPOBuzzer
+            A PPOBuzzer with the loaded model weights.
+        """
+        agent = cls.__new__(cls)
+        agent.env = env
+        agent._use_maskable = use_maskable_ppo
+        if use_maskable_ppo:
+            try:
+                from sb3_contrib import MaskablePPO
+            except ImportError as exc:
+                raise ImportError(
+                    "MaskablePPO requires sb3-contrib. "
+                    "Install with: pip install -e '.[maskable]'"
+                ) from exc
+            agent.model = MaskablePPO.load(str(path), env=env)
+        else:
+            agent.model = PPO.load(str(path), env=env)
+        return agent
+
+    def _current_action_masks(self) -> np.ndarray | None:
+        """Return action masks from the env, or None if not maskable."""
+        if not self._use_maskable:
+            return None
+        env_for_mask = self.env if hasattr(self.env, "action_masks") else self._base_env()
+        if not hasattr(env_for_mask, "action_masks"):
+            return None
+        return np.asarray(env_for_mask.action_masks(), dtype=bool)
+
+    def action_probabilities(self, obs: np.ndarray) -> np.ndarray:
+        """Extract action probabilities from the policy for a given observation.
+
+        When ``use_maskable_ppo=True``, passes ``action_masks`` to the
+        policy distribution so that probabilities for invalid actions are
+        zeroed out before action selection.
+
+        Parameters
+        ----------
+        obs : np.ndarray
+            Observation vector of shape (K + 6,).
+
+        Returns
+        -------
+        np.ndarray
+            Action probability vector of shape (K + 1,), dtype float32.
+            Index 0 = P(wait), indices 1..K = P(buzz with option i).
+        """
+        obs_tensor = th.as_tensor(
+            obs, dtype=th.float32, device=self.model.device
+        ).unsqueeze(0)
+
+        masks = self._current_action_masks()
+        dist = self.model.policy.get_distribution(obs_tensor)
+        if masks is not None:
+            masks_tensor = th.as_tensor(
+                masks, dtype=th.bool, device=self.model.device
+            ).unsqueeze(0)
+            dist.apply_masking(masks_tensor)
+
+        probs = dist.distribution.probs[0].detach().cpu().numpy()
+        return probs.astype(np.float32)
+
+    def _base_env(self) -> TossupMCEnv:
+        """Return the underlying TossupMCEnv, unwrapping if needed."""
+        return getattr(self.env, "unwrapped", self.env)
+
+    def c_t(self, obs: np.ndarray) -> float:
+        """Compute buzz probability at the current step.
+
+        Parameters
+        ----------
+        obs : np.ndarray
+            Observation vector of shape (K + 6,).
+
+        Returns
+        -------
+        float
+            Probability of buzzing: 1 - P(wait). Range [0, 1].
+        """
+        probs = self.action_probabilities(obs)
+        return float(1.0 - probs[0])
+
+    def g_t(self, obs: np.ndarray, gold_index: int) -> float:
+        """Compute correctness probability at the current step.
+
+        Given that the agent buzzes, what is the probability it selects
+        the correct answer? Formally: P(gold_action) / P(buzz).
+
+        Parameters
+        ----------
+        obs : np.ndarray
+            Observation vector of shape (K + 6,).
+        gold_index : int
+            Index of the correct answer option (0-based).
+
+        Returns
+        -------
+        float
+            Conditional correctness probability. Returns 0.0 if buzz
+            probability is near zero (< 1e-12).
+        """
+        probs = self.action_probabilities(obs)
+        base_env = self._base_env()
+        c_t = float(1.0 - probs[0])
+        if c_t <= 1e-12:
+            return 0.0
+        if len(probs) == 2:
+            if gold_index < 0 or base_env.belief is None:
+                return 0.0
+            return float(base_env.belief[gold_index])
+        return float(probs[gold_index + 1] / c_t)
+
+    def run_episode(
+        self,
+        deterministic: bool = False,
+        seed: int | None = None,
+        question_idx: int | None = None,
+    ) -> PPOEpisodeTrace:
+        """Run a full episode and record per-step action probability traces.
+
+        Executes the policy in the environment, computing c_trace (buzz
+        probability), g_trace (correctness probability), and entropy_trace
+        at each step. These traces are needed to compute the S_q metric.
+
+        Parameters
+        ----------
+        deterministic : bool
+            If True, select actions by argmax instead of sampling.
+        seed : int or None
+            If provided, seeds the environment reset for reproducibility.
+
+        Returns
+        -------
+        PPOEpisodeTrace
+            Complete episode record with action traces and outcome.
+        """
+        reset_options = None
+        if question_idx is not None:
+            reset_options = {"question_idx": int(question_idx)}
+
+        obs, info = self.env.reset(seed=seed, options=reset_options)
+        terminated = False
+        truncated = False
+        total_reward = 0.0
+        c_trace: list[float] = []
+        g_trace: list[float] = []
+        top_p_trace: list[float] = []
+        entropy_trace: list[float] = []
+
+        base_env = self._base_env()
+        buzz_step = -1
+        buzz_index = -1
+        gold_index = (
+            base_env.question.gold_index
+            if getattr(base_env, "question", None) is not None
+            else -1
+        )
+
+        while not (terminated or truncated):
+            probs = self.action_probabilities(obs)
+            c_val = float(probs[1] if len(probs) == 2 else 1.0 - probs[0])
+            if len(probs) == 2:
+                g_val = (
+                    float(base_env.belief[gold_index])
+                    if gold_index >= 0 and base_env.belief is not None
+                    else 0.0
+                )
+            else:
+                g_val = (
+                    float(probs[gold_index + 1] / c_val) if c_val > 1e-12 else 0.0
+                )
+            entropy = float(
+                -(np.clip(probs, 1e-12, 1.0) * np.log(np.clip(probs, 1e-12, 1.0))).sum()
+            )
+
+            top_p_val = float(np.max(base_env.belief)) if base_env.belief is not None else c_val
+            c_trace.append(c_val)
+            g_trace.append(g_val)
+            top_p_trace.append(top_p_val)
+            entropy_trace.append(entropy)
+
+            if deterministic:
+                action = int(np.argmax(probs))
+            else:
+                action = int(np.random.choice(len(probs), p=probs))
+
+            obs, reward, terminated, truncated, step_info = self.env.step(action)
+            total_reward += reward
+
+            if action != 0 and buzz_step < 0:
+                buzz_step = int(step_info.get("step_idx", 0))
+                if len(probs) == 2:
+                    buzz_index = int(
+                        step_info.get(
+                            "chosen_idx",
+                            step_info.get("forced_choice", np.argmax(base_env.belief)),
+                        )
+                    )
+                else:
+                    buzz_index = action - 1
+            if truncated and buzz_step < 0 and not step_info.get("no_buzz", False):
+                buzz_step = int(
+                    step_info.get("step_idx", len(c_trace) - 1)
+                )
+                buzz_index = int(
+                    step_info.get("forced_choice", np.argmax(base_env.belief))
+                )
+
+        correct = buzz_index == gold_index
+        return PPOEpisodeTrace(
+            qid=info.get("qid", ""),
+            buzz_step=buzz_step,
+            buzz_index=buzz_index,
+            gold_index=gold_index,
+            correct=correct,
+            episode_reward=total_reward,
+            c_trace=c_trace,
+            g_trace=g_trace,
+            top_p_trace=top_p_trace,
+            entropy_trace=entropy_trace,
+        )
+```
+
+## File: scripts/evaluate_all.py
+```python
+#!/usr/bin/env python3
+"""
+Comprehensive evaluation with control experiments and visualization.
+
+Runs the SoftmaxProfileBuzzer at the best threshold (from baseline sweep),
+then executes control experiments (choices-only, shuffle, alias substitution)
+and generates comparison plots and tables for the CS234 writeup.
+
+Consumes outputs from:
+- build_mc_dataset.py (mc_dataset.json)
+- run_baselines.py (baseline_summary.json)
+- train_ppo.py (ppo_summary.json)
+
+Produces:
+- evaluation_report.json (full eval + controls + baseline + PPO summaries)
+- plots/entropy_vs_clue.png
+- plots/calibration.png
+- plots/comparison.csv
+
+Usage:
+    python scripts/evaluate_all.py --smoke
+    python scripts/evaluate_all.py --config configs/custom.yaml
+    python scripts/evaluate_all.py --mc-path artifacts/main/mc_dataset.json
+
+Ported from qb-rl reference implementation (scripts/evaluate_all.py) with
+import path adaptations for the unified qanta-buzzer codebase.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict
+from pathlib import Path
+import sys
+
+import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from agents.bayesian_buzzer import SoftmaxProfileBuzzer
+from agents.threshold_buzzer import (
+    _softmax_episode_from_precomputed,
+    precompute_beliefs,
+)
+from evaluation.controls import (
+    run_alias_substitution_control,
+    run_choices_only_control,
+    run_shuffle_control_precomputed,
+)
+from evaluation.metrics import (
+    calibration_at_buzz,
+    per_category_accuracy,
+    summarize_buzz_metrics,
+)
+from evaluation.plotting import (
+    plot_calibration_curve,
+    plot_entropy_vs_clue_index,
+    save_comparison_table,
+)
+from qb_data.config import merge_overrides
+from scripts._common import (
+    ARTIFACT_DIR,
+    build_likelihood_model,
+    load_config,
+    load_embedding_cache,
+    load_json,
+    load_mc_questions,
+    parse_overrides,
+    save_json,
+)
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns
+    -------
+    argparse.Namespace
+        Parsed arguments with config, smoke, and mc_path fields.
+    """
+    parser = argparse.ArgumentParser(
+        description="Evaluate all agents and controls."
+    )
+    parser.add_argument(
+        "--config", type=str, default=None,
+        help="Path to YAML config file (default: configs/default.yaml).",
+    )
+    parser.add_argument(
+        "--smoke", action="store_true",
+        help="Use smoke mode: loads configs/smoke.yaml, outputs to artifacts/smoke/.",
+    )
+    parser.add_argument(
+        "--mc-path", type=str, default=None,
+        help="Optional MC dataset JSON path (overrides config-derived path).",
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Override output directory (default: artifacts/<split>).",
+    )
+    parser.add_argument(
+        "overrides",
+        nargs="*",
+        help="Config overrides: key=value (e.g. likelihood.model=tfidf)",
+    )
+    return parser.parse_args()
+
+
+def pick_best_softmax_threshold(
+    out_dir: Path, default_threshold: float
+) -> float:
+    """Select the best softmax threshold from baseline sweep results.
+
+    Loads baseline_summary.json and extracts the threshold with the
+    highest mean S_q score from the softmax_profile results.
+
+    Parameters
+    ----------
+    out_dir : Path
+        Directory containing baseline_summary.json.
+    default_threshold : float
+        Fallback threshold if baseline summary is unavailable.
+
+    Returns
+    -------
+    float
+        Best threshold by S_q score, or default_threshold if unavailable.
+    """
+    summary_path = out_dir / "baseline_summary.json"
+    if not summary_path.exists():
+        return default_threshold
+    summary = load_json(summary_path)
+    softmax = summary.get("softmax_profile", {})
+    if not softmax:
+        return default_threshold
+    best_t = default_threshold
+    best_sq = float("-inf")
+    for t_str, metrics in softmax.items():
+        sq = float(metrics.get("mean_sq", float("-inf")))
+        if sq > best_sq:
+            best_sq = sq
+            best_t = float(t_str)
+    return best_t
+
+
+def main() -> None:
+    """Run comprehensive evaluation with controls and visualizations."""
+    args = parse_args()
+
+    config = load_config(args.config, smoke=args.smoke)
+    overrides = parse_overrides(args)
+    if overrides:
+        print(f"Applying overrides: {overrides}")
+        config = merge_overrides(config, overrides)
+
+    split = "smoke" if args.smoke else "main"
+    out_dir = Path(args.output_dir) if args.output_dir else ARTIFACT_DIR / split
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "plots").mkdir(parents=True, exist_ok=True)
+    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
+
+    # Fallback: check data/processed/ if artifacts path doesn't exist
+    if not mc_path.exists():
+        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
+        if fallback.exists():
+            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
+            mc_path = fallback
+
+    print(f"Loading MC questions from: {mc_path}")
+    mc_questions = load_mc_questions(mc_path)
+    print(f"Loaded {len(mc_questions)} MC questions")
+
+    # Load alias lookup (generated by build_mc_dataset.py)
+    alias_path = out_dir / "alias_lookup.json"
+    if alias_path.exists():
+        alias_lookup = load_json(alias_path)
+    else:
+        print(f"Warning: alias_lookup.json not found at {alias_path}, using empty lookup")
+        alias_lookup = {}
+
+    # Build likelihood model
+    print(f"Building likelihood model: {config['likelihood']['model']}")
+    likelihood_model = build_likelihood_model(config, mc_questions)
+    load_embedding_cache(likelihood_model, config)
+    beta = float(config["likelihood"].get("beta", 5.0))
+    alpha = float(config["bayesian"].get("alpha", 10.0))
+    default_threshold = float(config["bayesian"]["threshold_sweep"][0])
+    threshold = pick_best_softmax_threshold(out_dir, default_threshold=default_threshold)
+    print(f"Using best softmax threshold: {threshold}")
+
+    # Precompute beliefs once (single pass of likelihood_model.score())
+    print("Precomputing beliefs...")
+    precomputed = precompute_beliefs(mc_questions, likelihood_model, beta)
+
+    # Precomputed evaluation (zero extra score() calls)
+    def evaluate_questions_precomputed(pqs):
+        runs = [asdict(_softmax_episode_from_precomputed(pq, threshold, alpha)) for pq in pqs]
+        summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
+        summary["runs"] = runs
+        return summary
+
+    # Live evaluator for controls that genuinely change option text (alias)
+    def evaluate_questions_live(qset):
+        agent = SoftmaxProfileBuzzer(
+            likelihood_model=likelihood_model,
+            threshold=threshold,
+            beta=beta,
+            alpha=alpha,
+        )
+        runs = [asdict(agent.run_episode(q)) for q in qset]
+        summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
+        summary["runs"] = runs
+        return summary
+
+    # --- Run evaluations ---
+    print("Running full evaluation...")
+    full_eval = evaluate_questions_precomputed(precomputed)
+
+    # Compute per-category breakdown
+    print("\nComputing per-category breakdown...")
+    per_category_results = per_category_accuracy(full_eval["runs"], mc_questions)
+
+    # Sort by category name for readability
+    per_category_sorted = dict(sorted(per_category_results.items()))
+
+    print("\nPer-category accuracy:")
+    for category, metrics in per_category_sorted.items():
+        print(
+            f"  {category:20s} (n={metrics['n']:3.0f}): "
+            f"acc={metrics['buzz_accuracy']:.3f}, "
+            f"S_q={metrics['mean_sq']:.3f}"
+        )
+    print()
+
+    print("Running shuffle control...")
+    shuffle_eval = run_shuffle_control_precomputed(precomputed, threshold, alpha)
+
+    if alias_lookup:
+        print("Running alias substitution control...")
+        alias_eval = run_alias_substitution_control(
+            mc_questions,
+            alias_lookup=alias_lookup,
+            evaluator=lambda qset: evaluate_questions_live(qset),
+        )
+        alias_control_report = {k: v for k, v in alias_eval.items() if k != "runs"}
+    else:
+        print(
+            "Skipping alias substitution control: alias_lookup.json missing or empty"
+        )
+        alias_control_report = {
+            "skipped": True,
+            "reason": "alias_lookup.json missing or empty",
+        }
+
+    print("Running choices-only control...")
+    choices_only = run_choices_only_control(mc_questions)
+
+    # --- Load existing artifacts ---
+    ppo_summary_path = out_dir / "ppo_summary.json"
+    ppo_summary = load_json(ppo_summary_path) if ppo_summary_path.exists() else {}
+    baseline_summary_path = out_dir / "baseline_summary.json"
+    baseline_summary = (
+        load_json(baseline_summary_path) if baseline_summary_path.exists() else {}
+    )
+
+    # --- Build evaluation report ---
+    report = {
+        "softmax_profile_best_threshold": threshold,
+        "full_eval": {k: v for k, v in full_eval.items() if k != "runs"},
+        "controls": {
+            "choices_only": choices_only,
+            "shuffle": {k: v for k, v in shuffle_eval.items() if k != "runs"},
+            "alias_substitution": alias_control_report,
+        },
+        "per_category": per_category_sorted,
+        "baseline_summary": baseline_summary,
+        "ppo_summary": ppo_summary,
+    }
+
+    # Add Expected Wins summary only when that reward mode is active
+    if config.get("environment", {}).get("reward_mode") == "expected_wins":
+        from evaluation.metrics import expected_wins_score
+        from qb_env.opponent_models import build_opponent_model_from_config
+
+        opp_model = build_opponent_model_from_config(mc_questions, config)
+        qid_to_q = {q.qid: q for q in mc_questions}
+        if opp_model is not None:
+            ew_scores = []
+            for run in full_eval["runs"]:
+                q = qid_to_q.get(run.get("qid", ""), mc_questions[0])
+                opp_surv = [
+                    opp_model.prob_survive_to_step(q, t)
+                    for t in range(len(run.get("c_trace", [])))
+                ]
+                ew = expected_wins_score(
+                    run.get("c_trace", []),
+                    run.get("g_trace", []),
+                    opp_surv,
+                )
+                ew_scores.append(ew)
+            report["expected_wins"] = {
+                "mean_ew": float(np.mean(ew_scores)) if ew_scores else 0.0,
+                "n": len(ew_scores),
+            }
+
+    save_json(out_dir / "evaluation_report.json", report)
+
+    # --- Generate visualizations ---
+    print("Generating plots...")
+
+    # Entropy vs clue index
+    entropy_traces = [
+        list(r["entropy_trace"])
+        for r in full_eval["runs"]
+        if r.get("entropy_trace")
+    ]
+    max_len = max((len(t) for t in entropy_traces), default=0)
+    padded = np.full((len(entropy_traces), max_len), np.nan, dtype=np.float32)
+    for i, trace in enumerate(entropy_traces):
+        padded[i, : len(trace)] = np.array(trace, dtype=np.float32)
+    entropy_trace = (
+        np.nanmean(padded, axis=0).tolist() if max_len > 0 else []
+    )
+    plot_entropy_vs_clue_index(
+        {"softmax_profile": entropy_trace},
+        out_dir / "plots" / "entropy_vs_clue.png",
+    )
+
+    # Calibration curve — use canonical helper for consistency
+    from evaluation.metrics import calibration_pairs_at_buzz
+    confidences, outcomes = calibration_pairs_at_buzz(full_eval["runs"])
+    plot_calibration_curve(
+        confidences, outcomes, out_dir / "plots" / "calibration.png"
+    )
+
+    # Comparison table: include baseline sweep, controls, and PPO
+    table_rows = []
+
+    # Add baseline sweep results (threshold at multiple values)
+    if "threshold" in baseline_summary:
+        for threshold_str, metrics in baseline_summary["threshold"].items():
+            table_rows.append({
+                "agent": f"threshold_{threshold_str}",
+                **{k: v for k, v in metrics.items() if k != "runs"},
+            })
+
+    # Add softmax_profile sweep results
+    if "softmax_profile" in baseline_summary:
+        for threshold_str, metrics in baseline_summary["softmax_profile"].items():
+            table_rows.append({
+                "agent": f"softmax_{threshold_str}",
+                **{k: v for k, v in metrics.items() if k != "runs"},
+            })
+
+    # Add full softmax eval (best threshold) and control experiments
+    table_rows.append({
+        "agent": "full_softmax",
+        **{k: v for k, v in full_eval.items() if k != "runs"},
+    })
+    table_rows.append({
+        "agent": "shuffle_control",
+        **{k: v for k, v in shuffle_eval.items() if k != "runs"},
+    })
+    if not alias_control_report.get("skipped"):
+        table_rows.append({
+            "agent": "alias_control",
+            **{k: v for k, v in alias_control_report.items() if k != "runs"},
+        })
+
+    # Add PPO if available
+    if ppo_summary:
+        table_rows.append({"agent": "ppo", **ppo_summary})
+
+    save_comparison_table(table_rows, out_dir / "plots" / "comparison.csv")
+
+    print(f"Wrote evaluation report to: {out_dir / 'evaluation_report.json'}")
 
 
 if __name__ == "__main__":
