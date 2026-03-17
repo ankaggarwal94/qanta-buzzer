@@ -9,8 +9,11 @@ venv/
 .specstory/
 .cursorindexingignore
 
-# Large training artifacts (synced via Dropbox, not git)
-artifacts/main/
-artifacts/k[0-9]*/
-artifacts/distractor_*/
+# Large dataset JSONs (reproducible via build_mc_dataset.py, synced via Dropbox)
+artifacts/*/mc_dataset.json
+artifacts/*/train_dataset.json
+artifacts/*/val_dataset.json
+artifacts/*/test_dataset.json
+
+# Model checkpoints and training state (synced via Dropbox, not git)
 checkpoints/
