@@ -488,3 +488,98 @@ class TestRolloutCollection:
             # Non-terminal steps should not be done
             for step in rollout[:-1]:
                 assert not step.done, "Non-terminal step should not be done"
+
+
+class _TinyPolicyModel(torch.nn.Module):
+    """Minimal stand-in model for split-evaluation tests."""
+
+    def __init__(self):
+        super().__init__()
+        self.device = torch.device("cpu")
+        self._param = torch.nn.Parameter(torch.zeros(1))
+
+        class _Tokenizer:
+            class _Batch(dict):
+                def to(self, _device):
+                    return self
+
+            def __call__(self, *_args, **_kwargs):
+                return self._Batch({
+                    "input_ids": torch.ones((1, 4), dtype=torch.long),
+                    "attention_mask": torch.ones((1, 4), dtype=torch.long),
+                })
+
+        self.tokenizer = _Tokenizer()
+
+    def forward(self, *args, **kwargs):  # pragma: no cover - unused
+        raise NotImplementedError
+
+    def select_action(self, input_ids, attention_mask, deterministic=True):
+        return torch.tensor([1]), {"values": torch.tensor([[0.0]]), "log_probs": torch.tensor([0.0])}
+
+
+class TestEvaluationSemantics:
+    """Tests for full-holdout evaluation behavior."""
+
+    def test_evaluate_questions_uses_full_split(self, sample_mc_question, monkeypatch):
+        import qb_env.text_wrapper as tw
+        import qb_env.tossup_env as te
+
+        model = _TinyPolicyModel()
+        trainer = PPOTrainer(
+            model=model,
+            train_questions=[sample_mc_question],
+            val_questions=[sample_mc_question] * 55,
+            config={
+                "checkpoint_dir": "/tmp/test_ppo_t5_eval",
+                "reward_time_penalty": 0.01,
+            },
+        )
+
+        class FakeEnv:
+            def __init__(self, *args, **kwargs):
+                self.question = kwargs["questions"][0]
+
+            def reset(self):
+                return "obs", {"qid": self.question.qid}
+
+            def step(self, action):
+                return "obs", 1.0, True, False, {"correct": True}
+
+        class FakeWrapper:
+            def __init__(self, env):
+                self.env = env
+
+            def reset(self):
+                return self.env.reset()
+
+            def step(self, action):
+                return self.env.step(action)
+
+        monkeypatch.setattr(te, "TossupMCEnv", FakeEnv)
+        monkeypatch.setattr(tw, "TextObservationWrapper", FakeWrapper)
+        monkeypatch.setattr(trainer, "_build_reward_likelihood", lambda: object())
+
+        summary = trainer.evaluate_questions([sample_mc_question] * 55, "val")
+        assert summary["n_questions_evaluated"] == 55
+        assert summary["evaluation_split"] == "val"
+
+    def test_build_reward_likelihood_uses_full_train_reference(self, sample_mc_question, monkeypatch):
+        import models.likelihoods as likelihoods
+
+        captured = {}
+
+        class FakeTfIdfLikelihood:
+            def __init__(self, corpus_texts):
+                captured["corpus"] = list(corpus_texts)
+
+        monkeypatch.setattr(likelihoods, "TfIdfLikelihood", FakeTfIdfLikelihood)
+        trainer = PPOTrainer(
+            model=_TinyPolicyModel(),
+            train_questions=[sample_mc_question, sample_mc_question],
+            val_questions=[sample_mc_question],
+            config={"checkpoint_dir": "/tmp/test_ppo_t5_eval"},
+        )
+
+        trainer._build_reward_likelihood()
+        assert len(captured["corpus"]) == 2 * len(sample_mc_question.option_profiles)

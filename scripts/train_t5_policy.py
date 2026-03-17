@@ -38,9 +38,11 @@ from qb_data.config import merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
     PROCESSED_DIR,
+    dataset_path_for_split,
     load_mc_questions,
     parse_overrides,
     resolve_persisted_split_paths,
+    save_json,
 )
 
 
@@ -214,7 +216,12 @@ def flatten_config(config: dict) -> dict:
     return flat
 
 
-def load_questions(args: argparse.Namespace, config: dict) -> list:
+def load_questions(
+    args: argparse.Namespace,
+    config: dict,
+    *,
+    return_path: bool = False,
+) -> list | tuple[list, Path]:
     """Load a combined MC dataset when persisted splits are unavailable.
 
     Parameters
@@ -226,8 +233,8 @@ def load_questions(args: argparse.Namespace, config: dict) -> list:
 
     Returns
     -------
-    list
-        List of MCQuestion instances.
+    list or tuple[list, Path]
+        Loaded MCQuestion instances, and optionally the resolved path.
     """
     if args.mc_path:
         mc_path = Path(args.mc_path)
@@ -255,10 +262,54 @@ def load_questions(args: argparse.Namespace, config: dict) -> list:
         questions = questions[:max_questions]
         print(f"Limited to {max_questions} questions (smoke mode)")
 
+    if return_path:
+        return questions, Path(mc_path)
     return questions
 
 
-def load_question_splits(args: argparse.Namespace, config: dict) -> tuple[list, list, list]:
+def _build_split_manifest(
+    *,
+    source: str,
+    mc_path: str | None,
+    train_questions: list,
+    val_questions: list,
+    test_questions: list,
+    train_path: str | None = None,
+    val_path: str | None = None,
+    test_path: str | None = None,
+    config: dict | None = None,
+) -> dict:
+    """Build a split-manifest payload for persisted provenance."""
+    qid = lambda q: getattr(q, "qid", str(q))
+    manifest = {
+        "source": source,
+        "mc_path": mc_path,
+        "train_path": train_path,
+        "val_path": val_path,
+        "test_path": test_path,
+        "train_qids": [qid(q) for q in train_questions],
+        "val_qids": [qid(q) for q in val_questions],
+        "test_qids": [qid(q) for q in test_questions],
+    }
+    if source == "random_split_fallback":
+        data = (config or {}).get("data", {})
+        train_size = float(data.get("train_size", data.get("train_ratio", 0.7)))
+        val_size = float(data.get("val_size", data.get("val_ratio", 0.15)))
+        test_size = float(data.get("test_size", data.get("test_ratio", 1.0 - train_size - val_size)))
+        manifest.update(
+            {
+                "split_seed": int(data.get("seed", data.get("shuffle_seed", 42))),
+                "train_size": train_size,
+                "val_size": val_size,
+                "test_size": test_size,
+            }
+        )
+    return manifest
+
+
+def load_question_splits_with_metadata(
+    args: argparse.Namespace, config: dict
+) -> tuple[list, list, list, dict]:
     """Load persisted train/val/test artifacts when available.
 
     Resolution order:
@@ -296,7 +347,21 @@ def load_question_splits(args: argparse.Namespace, config: dict) -> tuple[list, 
             f"{base_dir}: {len(train_questions)} train, "
             f"{len(val_questions)} val, {len(test_questions)} test"
         )
-        return train_questions, val_questions, test_questions
+        manifest = _build_split_manifest(
+            source="persisted_artifacts",
+            mc_path=(
+                str(dataset_path_for_split(base_dir, "combined"))
+                if dataset_path_for_split(base_dir, "combined").exists()
+                else (str(args.mc_path) if args.mc_path else None)
+            ),
+            train_questions=train_questions,
+            val_questions=val_questions,
+            test_questions=test_questions,
+            train_path=str(split_paths["train"]),
+            val_path=str(split_paths["val"]),
+            test_path=str(split_paths["test"]),
+        )
+        return train_questions, val_questions, test_questions, manifest
 
     if args.mc_path:
         print(
@@ -309,8 +374,25 @@ def load_question_splits(args: argparse.Namespace, config: dict) -> tuple[list, 
             "standard locations; falling back to an internal random split."
         )
 
-    questions = load_questions(args, config)
-    return split_questions(questions, config)
+    questions, combined_path = load_questions(args, config, return_path=True)
+    train_questions, val_questions, test_questions = split_questions(questions, config)
+    manifest = _build_split_manifest(
+        source="random_split_fallback",
+        mc_path=str(combined_path),
+        train_questions=train_questions,
+        val_questions=val_questions,
+        test_questions=test_questions,
+        config=config,
+    )
+    return train_questions, val_questions, test_questions, manifest
+
+
+def load_question_splits(args: argparse.Namespace, config: dict) -> tuple[list, list, list]:
+    """Backward-compatible wrapper returning only the split question lists."""
+    train_questions, val_questions, test_questions, _manifest = (
+        load_question_splits_with_metadata(args, config)
+    )
+    return train_questions, val_questions, test_questions
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -344,9 +426,9 @@ def split_questions(questions: list, config: dict) -> tuple:
     import random
 
     data = config.get("data", {})
-    seed = data.get("seed", 42)
-    train_size = data.get("train_size", 0.7)
-    val_size = data.get("val_size", 0.15)
+    seed = data.get("seed", data.get("shuffle_seed", 42))
+    train_size = data.get("train_size", data.get("train_ratio", 0.7))
+    val_size = data.get("val_size", data.get("val_ratio", 0.15))
 
     rng = random.Random(seed)
     shuffled = questions[:]
@@ -378,8 +460,10 @@ def main() -> None:
 
     # Load canonical split artifacts when they exist, otherwise fall back to
     # the legacy combined-dataset random split.
-    train_questions, val_questions, test_questions = load_question_splits(
+    train_questions, val_questions, test_questions, split_manifest = (
+        load_question_splits_with_metadata(
         args, config
+        )
     )
 
     # Import training modules (lazy to avoid loading transformers until needed)
@@ -418,6 +502,13 @@ def main() -> None:
         test_questions=test_questions,
         pretrained_model_path=supervised_model_path,
     )
+
+    resolved_config = yaml.safe_load(yaml.safe_dump(config))
+    resolved_config.setdefault("model", {})
+    resolved_config["model"]["device"] = flat_config["device"]
+    resolved_config["model"]["num_choices"] = flat_config["num_choices"]
+    save_json(trainer.checkpoint_dir / "config_used.json", resolved_config)
+    save_json(trainer.checkpoint_dir / "split_manifest.json", split_manifest)
 
     print("\n" + "=" * 60)
     print("TRAINING COMPLETE")
