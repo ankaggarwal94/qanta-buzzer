@@ -86,7 +86,7 @@ Ledger created. Here is my summary of the current repo state:
 
 2. **Extension campaign is complete (18 patches)** — Expected Wins (EW-01..04), Variable-K (VK-01..07), DSPy (DSPY-01..05), plus final docs and two ChatGPT review rounds. All tracked in `.planning/quick/extensions-master-run.md`.
 
-3. **360 tests across 27 files (3 skipped)** — CI via `scripts/ci.sh` runs `pytest tests/`. Skips are for optional extras (MaskablePPO, DSPy).
+3. **364 tests across 27 files (3 skipped)** — CI via `scripts/ci.sh` runs `pytest tests/`. Skips are for optional extras (MaskablePPO, DSPy).
 
 4. **Smoke pipeline is green** — `scripts/manual-smoke.sh` runs four stages (build_mc_dataset, run_baselines, train_ppo, evaluate_all) with `--smoke` flag, outputs to `artifacts/smoke/`.
 
@@ -396,7 +396,7 @@ Verification summary for WP-4 (Durable Docs — PR #1 Absorption Statement):
 | 1. Docs reflect current local reality | Verified — README, AGENTS, CLAUDE all describe modular pipeline, correct test counts, local architecture; no stale upstream references |
 | 2. Modular scripts pipeline presented as canonical | Verified — README "The canonical four-stage smoke pipeline"; AGENTS "Smoke Pipeline" section with `scripts/` commands |
 | 3. Three extensions documented as opt-in | Verified — README "All are disabled by default — the smoke pipeline and T5 smoke path work unchanged"; AGENTS "Three opt-in extensions" |
-| 4. Validation status truthful | Verified — current docs should state 360 tests across 27 test files (3 skipped) |
+| 4. Validation status truthful | Verified — current docs should state 364 tests across 27 test files (3 skipped) |
 | 5. PR #1 framed as consolidation/reconciliation | Verified — no PR #1 mention in public docs; STATE.md and extensions ledger now cross-reference the reconciliation ledger |
 
 - **Files changed:** `.planning/STATE.md`, `.planning/quick/extensions-master-run.md`
@@ -451,7 +451,7 @@ Now I have everything. Let me write the final reconciliation report.
 | Command | Result |
 |---------|--------|
 | DSPy + factory targeted tests | **31 passed, 2 skipped** (0.06s) |
-| Full test suite | **357 passed, 3 skipped** (current branch) |
+| Full test suite | **361 passed, 3 skipped** (current branch) |
 | Manual smoke pipeline | **4/4 stages complete** (10.6s) |
 | T5 smoke (supervised + PPO) | **62.5% test accuracy** (23.9s) |
 

@@ -1,6 +1,6 @@
 # Codex: Full Clean Pipeline Run (All Non-API Phases)
 
-**Generated:** 2026-03-16 | **Repo commit:** `692c276` (review-fixes branch)
+**Generated:** 2026-03-17 | **Repo branch:** `review-fixes` (verify with `git rev-parse --short HEAD`)
 
 ## Critical: Use the Main Repo
 

@@ -18,7 +18,7 @@ You are receiving the complete source code, documentation, planning history, cur
 1. **Belief-feature MLP pipeline:** TF-IDF/SBERT/T5 likelihood → softmax belief → Gymnasium env (Box(K+6) obs, Discrete(K+1) actions) → PPO (Stable-Baselines3) → evaluation (S_q, ECE, Brier, per-category)
 2. **T5 end-to-end text policy:** T5EncoderModel → PolicyHead → supervised warm-start → custom PPO → TextObservationWrapper
 
-The codebase has just been through a full optimization campaign (7 ranked items: precomputed beliefs, embedding cache persistence, baseline sweep collapse, profile memoization, top-M argpartition, TF-IDF cache unification, shuffle control precomputation) followed by an evidence-verified audit remediation pass. 357 tests pass, the smoke pipeline and T5 smoke are green, calibration metrics correctly use `top_p_trace` (not binary `g_trace`), dataset splits are deterministic via `hashlib.md5`, and legacy prototype files remain at the repo root but are non-canonical.
+The codebase has just been through a full optimization campaign (7 ranked items: precomputed beliefs, embedding cache persistence, baseline sweep collapse, profile memoization, top-M argpartition, TF-IDF cache unification, shuffle control precomputation) followed by an evidence-verified audit remediation pass. 361 tests pass, the smoke pipeline and T5 smoke are green, calibration metrics correctly use `top_p_trace` (not binary `g_trace`), dataset splits are deterministic via `hashlib.md5`, and legacy prototype files remain at the repo root but are non-canonical.
 
 ## Attached Files
 
@@ -42,7 +42,7 @@ After the Claude Code optimization campaign, a separate Cursor session performed
 
 **Compare policies honesty (P0-3):** The MLP path uses config-driven env settings; the T5 path hardcodes `wait_penalty=0.1`. S_q semantics differ (belief-sigmoid vs wait-head probability). The docstring and README now state these caveats honestly instead of claiming "identical metrics."
 
-**CI robustness (P0-4):** `scripts/ci.sh` auto-activates `.venv/` if present. `pyproject.toml` has `testpaths = ["tests"]`. 357 tests pass (3 skipped optional extras).
+**CI robustness (P0-4):** `scripts/ci.sh` auto-activates `.venv/` if present. `pyproject.toml` has `testpaths = ["tests"]`. 361 tests pass (3 skipped optional extras).
 
 **Memory measurements:** TF-IDF embedding cache: 1.87 MB for 44 questions, projected ~42 MB for 1000 questions. Precomputed beliefs: 3.5 KB for 44 questions. `cache_memory_bytes` property added to `LikelihoodModel`.
 

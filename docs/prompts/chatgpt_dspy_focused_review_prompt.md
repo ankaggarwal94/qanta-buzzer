@@ -40,7 +40,7 @@ These rules are non-negotiable. Violating any of them invalidates the entire rev
 
 - Quiz bowl RL buzzer with belief-feature MLP and T5 end-to-end policy tracks
 - Three opt-in extensions just added: Expected Wins, Variable-K, DSPy
-- 357 tests pass, 3 skipped (optional extras not installed)
+- 361 tests pass, 3 skipped (optional extras not installed)
 - Smoke pipeline and T5 smoke both green
 - Previous review already fixed: DSPyLikelihood inheritance, score shape validation, unused config key, stale config comment, misleading docstring, two weak tests
 

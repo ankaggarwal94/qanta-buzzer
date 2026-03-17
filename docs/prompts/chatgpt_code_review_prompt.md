@@ -42,7 +42,7 @@ This is a quiz bowl RL buzzer with:
   - **Variable-K** answer choices with padded observations and action masks
   - **DSPy** integration for LM-based scoring with offline compilation
 
-Current state: 357 tests pass, 3 skipped (optional extras not installed). Smoke pipeline green. T5 smoke green.
+Current state: 361 tests pass, 3 skipped (optional extras not installed). Smoke pipeline green. T5 smoke green.
 
 ## Review tasks
 

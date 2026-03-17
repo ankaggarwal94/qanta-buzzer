@@ -38,7 +38,7 @@ Two prior review rounds found and fixed **12 issues total**:
 
 ## Current state
 
-- 357 tests pass, 3 skipped (optional extras not installed)
+- 361 tests pass, 3 skipped (optional extras not installed)
 - Smoke pipeline and T5 smoke both green
 - Three opt-in extensions: Expected Wins, Variable-K, DSPy (all disabled by default)
 - Optional extras: `[openai]`, `[maskable]`, `[dspy]`

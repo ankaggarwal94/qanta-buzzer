@@ -177,7 +177,7 @@ Unified quiz bowl RL buzzer with two tracks plus three opt-in extensions (Expect
 - Working directory: qanta-buzzer repo
 - Python environment: `.venv/` with Python 3.13.5, `pip install -e .` done
 - MPS available (Apple M3 Max, 64 GB)
-- 357 tests passing (3 skipped), CI green
+- 361 tests passing (3 skipped), CI green
 
 ---
 *State file initialized: 2026-02-25*

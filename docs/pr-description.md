@@ -3,7 +3,7 @@
 **Branch:** `pr/final-sync-and-extensions` → `main`
 **Squashed from:** 83 local commits
 **422 files changed, +380,006 / -5,997 lines**
-**357 tests pass, 3 skipped (optional extras not installed)**
+**361 tests pass, 3 skipped (optional extras not installed)**
 
 ---
 
