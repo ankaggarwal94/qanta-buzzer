@@ -321,7 +321,14 @@ def main() -> None:
             )
 
         print("Replaying PPO checkpoint on evaluation split...")
-        ppo_likelihood_model = build_likelihood_model(ppo_eval_config, mc_questions)
+        train_path = mc_path.parent / "train_dataset.json"
+        if train_path.exists():
+            ppo_ref_questions = load_mc_questions(train_path)
+            print(f"  PPO likelihood built from train split ({len(ppo_ref_questions)} questions)")
+        else:
+            ppo_ref_questions = mc_questions
+            print("  Warning: train_dataset.json not found; building PPO likelihood from eval split")
+        ppo_likelihood_model = build_likelihood_model(ppo_eval_config, ppo_ref_questions)
         load_embedding_cache(ppo_likelihood_model, ppo_eval_config)
         ppo_precomputed = precompute_beliefs(
             mc_questions,
