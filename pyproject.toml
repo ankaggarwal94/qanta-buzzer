@@ -36,3 +36,7 @@ include = ["agents", "evaluation", "models", "qb_data", "qb_env", "training"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "pipeline: subprocess-based pipeline entrypoint smoke tests",
+]
