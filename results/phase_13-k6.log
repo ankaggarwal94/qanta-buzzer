@@ -1,0 +1,59 @@
+Loading configuration...
+Applying overrides: {'data.K': 6, 'data.distractor_strategy': 'category_random'}
+
+Loading questions...
+Loading from CSV: questions.csv
+Loaded 20407 questions from CSV
+
+Building answer profiles...
+Built 2370 answer profiles
+
+Constructing MC questions...
+Generated 12968 MC questions
+Note: 7439 questions filtered by guards
+
+Creating stratified splits...
+Dataset split complete:
+  Train: 9061 questions (69.9%)
+  Val:   1927 questions (14.9%)
+  Test:  1980 questions (15.3%)
+
+Category distribution (44 categories):
+  Fine_Arts: 1110/238/239 (orig: 1587)
+  Fine_Arts:Audiovisual: 26/5/7 (orig: 38)
+  Fine_Arts:Auditory: 2/0/1 (orig: 3)
+  Fine_Arts:Music: 61/13/14 (orig: 88)
+  Fine_Arts:Other: 2/0/2 (orig: 4)
+  ... and 39 more categories
+
+Saving datasets...
+Saved 12968 items to artifacts/k6/mc_dataset.json
+Saved 9061 items to artifacts/k6/train_dataset.json
+Saved 1927 items to artifacts/k6/val_dataset.json
+Saved 1980 items to artifacts/k6/test_dataset.json
+Saved answer profiles to artifacts/k6/answer_profiles.json
+
+============================================================
+Dataset Construction Complete
+============================================================
+
+Total MC questions: 12968
+  Train: 9061 (69.9%)
+  Val:   1927 (14.9%)
+  Test:  1980 (15.3%)
+
+Categories: 44
+Sample categories: Fine_Arts, Fine_Arts:Audiovisual, Fine_Arts:Auditory, Fine_Arts:Music, Fine_Arts:Other
+
+Answer profiles: 2370
+Average questions per answer: 8.6
+
+Sample MC question:
+  Question: The first commanding officer at this battle was Captain Richard Knox, and it was set in motion after...
+  Correct answer: Battle of Plassey
+  Options: Winfield Scott, Battle of Plassey, Franco-Prussian War...
+  Category: History
+
+Total time: 11.0 seconds
+
+Dataset construction complete!

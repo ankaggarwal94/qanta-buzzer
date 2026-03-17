@@ -1,0 +1,59 @@
+Loading configuration...
+Applying overrides: {'data.K': 2, 'data.distractor_strategy': 'category_random'}
+
+Loading questions...
+Loading from CSV: questions.csv
+Loaded 20407 questions from CSV
+
+Building answer profiles...
+Built 2370 answer profiles
+
+Constructing MC questions...
+Generated 19335 MC questions
+Note: 1072 questions filtered by guards
+
+Creating stratified splits...
+Dataset split complete:
+  Train: 13518 questions (69.9%)
+  Val:   2880 questions (14.9%)
+  Test:  2937 questions (15.2%)
+
+Category distribution (46 categories):
+  Fine_Arts: 1719/368/369 (orig: 2456)
+  Fine_Arts:Audiovisual: 35/7/8 (orig: 50)
+  Fine_Arts:Auditory: 2/0/1 (orig: 3)
+  Fine_Arts:Music: 77/16/17 (orig: 110)
+  Fine_Arts:Norse: 1/0/0 (orig: 1)
+  ... and 41 more categories
+
+Saving datasets...
+Saved 19335 items to artifacts/k2/mc_dataset.json
+Saved 13518 items to artifacts/k2/train_dataset.json
+Saved 2880 items to artifacts/k2/val_dataset.json
+Saved 2937 items to artifacts/k2/test_dataset.json
+Saved answer profiles to artifacts/k2/answer_profiles.json
+
+============================================================
+Dataset Construction Complete
+============================================================
+
+Total MC questions: 19335
+  Train: 13518 (69.9%)
+  Val:   2880 (14.9%)
+  Test:  2937 (15.2%)
+
+Categories: 46
+Sample categories: Fine_Arts, Fine_Arts:Audiovisual, Fine_Arts:Auditory, Fine_Arts:Music, Fine_Arts:Norse
+
+Answer profiles: 2370
+Average questions per answer: 8.6
+
+Sample MC question:
+  Question: Some participants in a raid on this country joined up with Swallow Team and escaped this country on ...
+  Correct answer: Norway
+  Options: Yuan Dynasty, Norway...
+  Category: History:Europe
+
+Total time: 8.2 seconds
+
+Dataset construction complete!

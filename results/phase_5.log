@@ -1,0 +1,1060 @@
+Loading MC questions from: /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/artifacts/main/mc_dataset.json
+Loaded 14961 questions
+Split: 10472 train, 2244 val, 2245 test
+
+============================================================
+PHASE 1: SUPERVISED WARM-START
+============================================================
+============================================================
+SUPERVISED TRAINING PHASE
+============================================================
+Loading T5 encoder: t5-base
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 6374.03it/s]
+Model Architecture:
+  T5 encoder parameters: 109,628,544
+  Policy head parameters: 790,279
+  Total parameters: 110,418,823
+  Device: mps
+Starting supervised training for 10 epochs
+  Training samples: 10472
+  Validation samples: 2244
+  Batch size: 8
+  Gradient accumulation: 4 (effective batch = 32)
+  Learning rate: 0.0003
+  Device: mps
+
+Epoch 1/10 - Train Loss: 1.3873, Train Acc: 0.2528 - Val Loss: 1.3864, Val Acc: 0.2487
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  2.25it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  2.25it/s]
+Model saved to checkpoints/supervised/best_model
+  -> New best validation accuracy: 0.2487
+Epoch 2/10 - Train Loss: 1.3869, Train Acc: 0.2540 - Val Loss: 1.3865, Val Acc: 0.2487
+Epoch 3/10 - Train Loss: 1.3864, Train Acc: 0.2489 - Val Loss: 1.3863, Val Acc: 0.2429
+Epoch 4/10 - Train Loss: 1.3861, Train Acc: 0.2561 - Val Loss: 1.3875, Val Acc: 0.2554
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  1.85it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  1.85it/s]
+Model saved to checkpoints/supervised/best_model
+  -> New best validation accuracy: 0.2554
+Epoch 5/10 - Train Loss: 1.3869, Train Acc: 0.2496 - Val Loss: 1.3862, Val Acc: 0.2554
+Epoch 6/10 - Train Loss: 1.3864, Train Acc: 0.2515 - Val Loss: 1.3860, Val Acc: 0.2554
+Epoch 7/10 - Train Loss: 1.3864, Train Acc: 0.2501 - Val Loss: 1.3862, Val Acc: 0.2554
+Epoch 8/10 - Train Loss: 1.3864, Train Acc: 0.2500 - Val Loss: 1.3862, Val Acc: 0.2554
+Epoch 9/10 - Train Loss: 1.3864, Train Acc: 0.2482 - Val Loss: 1.3862, Val Acc: 0.2554
+Epoch 10/10 - Train Loss: 1.3864, Train Acc: 0.2488 - Val Loss: 1.3861, Val Acc: 0.2554
+
+Supervised training completed!
+  Best validation accuracy: 0.2554
+Training history saved to checkpoints/supervised/history.json
+Supervised model saved to: checkpoints/supervised/best_model
+
+============================================================
+PHASE 2: PPO FINE-TUNING (T5 Policy)
+============================================================
+============================================================
+PPO TRAINING PHASE (T5 Policy)
+============================================================
+Loading pretrained model from checkpoints/supervised/best_model
+Loading T5 encoder: checkpoints/supervised/best_model
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 6033.57it/s]
+Model Architecture:
+  T5 encoder parameters: 109,628,544
+  Policy head parameters: 790,279
+  Total parameters: 110,418,823
+  Device: mps
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 26975.64it/s]
+Model loaded from checkpoints/supervised/best_model
+Starting PPO training for 100 iterations
+  Training questions: 10472
+  Validation questions: 2244
+  Batch size: 8
+  Episodes per iteration: 16
+  Device: mps
+
+
+Iteration 1/100
+  Collecting rollouts...
+  Avg episode reward: -0.1125
+  Avg episode length: 1.75
+  Updating policy...
+  Policy loss: -0.0162
+  Value loss: 0.4726
+  Entropy: 1.3957
+
+Iteration 2/100
+  Collecting rollouts...
+  Avg episode reward: 0.1063
+  Avg episode length: 1.50
+  Updating policy...
+  Policy loss: -0.0020
+  Value loss: 0.5220
+  Entropy: 1.3938
+
+Iteration 3/100
+  Collecting rollouts...
+  Avg episode reward: -0.0625
+  Avg episode length: 2.19
+  Updating policy...
+  Policy loss: 0.0028
+  Value loss: 0.4749
+  Entropy: 1.3954
+
+Iteration 4/100
+  Collecting rollouts...
+  Avg episode reward: -0.1875
+  Avg episode length: 2.44
+  Updating policy...
+  Policy loss: 0.0031
+  Value loss: 0.4211
+  Entropy: 1.3943
+
+Iteration 5/100
+  Collecting rollouts...
+  Avg episode reward: -0.1062
+  Avg episode length: 1.75
+  Updating policy...
+  Policy loss: 0.0540
+  Value loss: 0.4335
+  Entropy: 1.3918
+
+Iteration 6/100
+  Collecting rollouts...
+  Avg episode reward: 0.0125
+  Avg episode length: 2.25
+  Updating policy...
+  Policy loss: 0.0248
+  Value loss: 0.4656
+  Entropy: 1.3927
+
+Iteration 7/100
+  Collecting rollouts...
+  Avg episode reward: -0.1625
+  Avg episode length: 1.38
+  Updating policy...
+  Policy loss: 0.0033
+  Value loss: 0.4298
+  Entropy: 1.3915
+
+Iteration 8/100
+  Collecting rollouts...
+  Avg episode reward: -0.0812
+  Avg episode length: 1.50
+  Updating policy...
+  Policy loss: 0.0015
+  Value loss: 0.4581
+  Entropy: 1.3928
+
+Iteration 9/100
+  Collecting rollouts...
+  Avg episode reward: -0.2500
+  Avg episode length: 1.31
+  Updating policy...
+  Policy loss: -0.0328
+  Value loss: 0.4145
+  Entropy: 1.3934
+
+Iteration 10/100
+  Collecting rollouts...
+  Avg episode reward: -0.1688
+  Avg episode length: 1.44
+  Updating policy...
+  Policy loss: 0.0031
+  Value loss: 0.4436
+  Entropy: 1.3932
+
+  Validating...
+  Val Accuracy: 0.9800
+  Val Reward: 0.4660
+  Val Avg Length: 5.04
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  1.90it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  1.90it/s]
+Model saved to checkpoints/ppo_t5/best_model
+  Checkpoint saved to checkpoints/ppo_t5/best_model
+  -> New best validation reward: 0.4660
+
+Iteration 11/100
+  Collecting rollouts...
+  Avg episode reward: -0.2938
+  Avg episode length: 1.75
+  Updating policy...
+  Policy loss: 0.0058
+  Value loss: 0.3979
+  Entropy: 1.3904
+
+Iteration 12/100
+  Collecting rollouts...
+  Avg episode reward: -0.1125
+  Avg episode length: 1.75
+  Updating policy...
+  Policy loss: -0.0014
+  Value loss: 0.4628
+  Entropy: 1.3903
+
+Iteration 13/100
+  Collecting rollouts...
+  Avg episode reward: -0.2750
+  Avg episode length: 1.56
+  Updating policy...
+  Policy loss: -0.0668
+  Value loss: 0.3820
+  Entropy: 1.3879
+
+Iteration 14/100
+  Collecting rollouts...
+  Avg episode reward: -0.1937
+  Avg episode length: 1.69
+  Updating policy...
+  Policy loss: -0.0039
+  Value loss: 0.4216
+  Entropy: 1.3884
+
+Iteration 15/100
+  Collecting rollouts...
+  Avg episode reward: -0.2000
+  Avg episode length: 1.69
+  Updating policy...
+  Policy loss: -0.0226
+  Value loss: 0.4403
+  Entropy: 1.3903
+
+Iteration 16/100
+  Collecting rollouts...
+  Avg episode reward: 0.1187
+  Avg episode length: 2.12
+  Updating policy...
+  Policy loss: 0.0513
+  Value loss: 0.5221
+  Entropy: 1.3939
+
+Iteration 17/100
+  Collecting rollouts...
+  Avg episode reward: -0.3500
+  Avg episode length: 1.38
+  Updating policy...
+  Policy loss: -0.0095
+  Value loss: 0.3047
+  Entropy: 1.3927
+
+Iteration 18/100
+  Collecting rollouts...
+  Avg episode reward: 0.2562
+  Avg episode length: 1.81
+  Updating policy...
+  Policy loss: 0.0361
+  Value loss: 0.5803
+  Entropy: 1.3940
+
+Iteration 19/100
+  Collecting rollouts...
+  Avg episode reward: -0.1437
+  Avg episode length: 2.00
+  Updating policy...
+  Policy loss: -0.0001
+  Value loss: 0.4323
+  Entropy: 1.3937
+
+Iteration 20/100
+  Collecting rollouts...
+  Avg episode reward: 0.0750
+  Avg episode length: 1.75
+  Updating policy...
+  Policy loss: -0.0413
+  Value loss: 0.5573
+  Entropy: 1.3916
+
+  Validating...
+  Val Accuracy: 0.9800
+  Val Reward: 0.4660
+  Val Avg Length: 5.04
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  1.93it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  1.93it/s]
+Model saved to checkpoints/ppo_t5/iter_20
+  Checkpoint saved to checkpoints/ppo_t5/iter_20
+
+Iteration 21/100
+  Collecting rollouts...
+  Avg episode reward: -0.1125
+  Avg episode length: 1.81
+  Updating policy...
+  Policy loss: -0.0003
+  Value loss: 0.4595
+  Entropy: 1.3919
+
+Iteration 22/100
+  Collecting rollouts...
+  Avg episode reward: -0.2750
+  Avg episode length: 1.56
+  Updating policy...
+  Policy loss: 0.0923
+  Value loss: 0.3380
+  Entropy: 1.3944
+
+Iteration 23/100
+  Collecting rollouts...
+  Avg episode reward: -0.6500
+  Avg episode length: 2.50
+  Updating policy...
+  Policy loss: -0.0037
+  Value loss: 0.2820
+  Entropy: 1.3970
+
+Iteration 24/100
+  Collecting rollouts...
+  Avg episode reward: -0.3000
+  Avg episode length: 1.81
+  Updating policy...
+  Policy loss: -0.0235
+  Value loss: 0.3674
+  Entropy: 1.4031
+
+Iteration 25/100
+  Collecting rollouts...
+  Avg episode reward: -0.0688
+  Avg episode length: 1.38
+  Updating policy...
+  Policy loss: -0.0045
+  Value loss: 0.4250
+  Entropy: 1.4066
+
+Iteration 26/100
+  Collecting rollouts...
+  Avg episode reward: -0.0000
+  Avg episode length: 1.62
+  Updating policy...
+  Policy loss: -0.0948
+  Value loss: 0.5258
+  Entropy: 1.4112
+
+Iteration 27/100
+  Collecting rollouts...
+  Avg episode reward: -0.3250
+  Avg episode length: 2.06
+  Updating policy...
+  Policy loss: 0.0189
+  Value loss: 0.3606
+  Entropy: 1.4155
+
+Iteration 28/100
+  Collecting rollouts...
+  Avg episode reward: -0.1688
+  Avg episode length: 1.44
+  Updating policy...
+  Policy loss: 0.0012
+  Value loss: 0.4499
+  Entropy: 1.4174
+
+Iteration 29/100
+  Collecting rollouts...
+  Avg episode reward: 0.0250
+  Avg episode length: 2.12
+  Updating policy...
+  Policy loss: 0.0072
+  Value loss: 0.5171
+  Entropy: 1.4154
+
+Iteration 30/100
+  Collecting rollouts...
+  Avg episode reward: -0.1375
+  Avg episode length: 2.00
+  Updating policy...
+  Policy loss: -0.0002
+  Value loss: 0.4407
+  Entropy: 1.4133
+
+  Validating...
+  Val Accuracy: 0.9800
+  Val Reward: 0.4660
+  Val Avg Length: 5.04
+
+Iteration 31/100
+  Collecting rollouts...
+  Avg episode reward: -0.0312
+  Avg episode length: 1.94
+  Updating policy...
+  Policy loss: -0.0029
+  Value loss: 0.5063
+  Entropy: 1.4126
+
+Iteration 32/100
+  Collecting rollouts...
+  Avg episode reward: -0.1500
+  Avg episode length: 2.12
+  Updating policy...
+  Policy loss: 0.0031
+  Value loss: 0.4015
+  Entropy: 1.4142
+
+Iteration 33/100
+  Collecting rollouts...
+  Avg episode reward: -0.3812
+  Avg episode length: 1.62
+  Updating policy...
+  Policy loss: -0.0203
+  Value loss: 0.2985
+  Entropy: 1.4150
+
+Iteration 34/100
+  Collecting rollouts...
+  Avg episode reward: -0.5125
+  Avg episode length: 2.06
+  Updating policy...
+  Policy loss: 0.0219
+  Value loss: 0.2403
+  Entropy: 1.4136
+
+Iteration 35/100
+  Collecting rollouts...
+  Avg episode reward: -0.1000
+  Avg episode length: 1.62
+  Updating policy...
+  Policy loss: -0.0091
+  Value loss: 0.4600
+  Entropy: 1.4153
+
+Iteration 36/100
+  Collecting rollouts...
+  Avg episode reward: 0.0937
+  Avg episode length: 1.62
+  Updating policy...
+  Policy loss: -0.0480
+  Value loss: 0.5848
+  Entropy: 1.4155
+
+Iteration 37/100
+  Collecting rollouts...
+  Avg episode reward: -0.2437
+  Avg episode length: 2.06
+  Updating policy...
+  Policy loss: -0.0545
+  Value loss: 0.4022
+  Entropy: 1.4142
+
+Iteration 38/100
+  Collecting rollouts...
+  Avg episode reward: -0.2687
+  Avg episode length: 2.31
+  Updating policy...
+  Policy loss: 0.0101
+  Value loss: 0.3986
+  Entropy: 1.4101
+
+Iteration 39/100
+  Collecting rollouts...
+  Avg episode reward: -0.0063
+  Avg episode length: 1.69
+  Updating policy...
+  Policy loss: -0.0142
+  Value loss: 0.5279
+  Entropy: 1.4069
+
+Iteration 40/100
+  Collecting rollouts...
+  Avg episode reward: -0.2875
+  Avg episode length: 1.62
+  Updating policy...
+  Policy loss: 0.0119
+  Value loss: 0.3435
+  Entropy: 1.4059
+
+  Validating...
+  Val Accuracy: 0.9800
+  Val Reward: 0.4660
+  Val Avg Length: 5.04
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  2.04it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  2.04it/s]
+Model saved to checkpoints/ppo_t5/iter_40
+  Checkpoint saved to checkpoints/ppo_t5/iter_40
+
+Iteration 41/100
+  Collecting rollouts...
+  Avg episode reward: -0.2063
+  Avg episode length: 1.81
+  Updating policy...
+  Policy loss: 0.0070
+  Value loss: 0.4349
+  Entropy: 1.4033
+
+Iteration 42/100
+  Collecting rollouts...
+  Avg episode reward: -0.0250
+  Avg episode length: 1.81
+  Updating policy...
+  Policy loss: 0.0095
+  Value loss: 0.5034
+  Entropy: 1.4023
+
+Iteration 43/100
+  Collecting rollouts...
+  Avg episode reward: 0.0562
+  Avg episode length: 1.88
+  Updating policy...
+  Policy loss: 0.0196
+  Value loss: 0.5258
+  Entropy: 1.3995
+
+Iteration 44/100
+  Collecting rollouts...
+  Avg episode reward: -0.3000
+  Avg episode length: 1.75
+  Updating policy...
+  Policy loss: -0.0085
+  Value loss: 0.3981
+  Entropy: 1.3974
+
+Iteration 45/100
+  Collecting rollouts...
+  Avg episode reward: -0.1250
+  Avg episode length: 1.94
+  Updating policy...
+  Policy loss: 0.0038
+  Value loss: 0.4557
+  Entropy: 1.3982
+
+Iteration 46/100
+  Collecting rollouts...
+  Avg episode reward: -0.1062
+  Avg episode length: 2.56
+  Updating policy...
+  Policy loss: -0.0414
+  Value loss: 0.4693
+  Entropy: 1.4001
+
+Iteration 47/100
+  Collecting rollouts...
+  Avg episode reward: 0.0125
+  Avg episode length: 1.50
+  Updating policy...
+  Policy loss: -0.0025
+  Value loss: 0.5256
+  Entropy: 1.4004
+
+Iteration 48/100
+  Collecting rollouts...
+  Avg episode reward: -0.1000
+  Avg episode length: 1.69
+  Updating policy...
+  Policy loss: -0.0103
+  Value loss: 0.4521
+  Entropy: 1.4004
+
+Iteration 49/100
+  Collecting rollouts...
+  Avg episode reward: -0.0250
+  Avg episode length: 1.81
+  Updating policy...
+  Policy loss: -0.0019
+  Value loss: 0.4652
+  Entropy: 1.4014
+
+Iteration 50/100
+  Collecting rollouts...
+  Avg episode reward: -0.2000
+  Avg episode length: 1.69
+  Updating policy...
+  Policy loss: -0.0124
+  Value loss: 0.4265
+  Entropy: 1.4025
+
+  Validating...
+  Val Accuracy: 0.9800
+  Val Reward: 0.4660
+  Val Avg Length: 5.04
+
+Iteration 51/100
+  Collecting rollouts...
+  Avg episode reward: -0.2687
+  Avg episode length: 2.31
+  Updating policy...
+  Policy loss: 0.0190
+  Value loss: 0.3677
+  Entropy: 1.3971
+
+Iteration 52/100
+  Collecting rollouts...
+  Avg episode reward: -0.2500
+  Avg episode length: 2.25
+  Updating policy...
+  Policy loss: 0.0457
+  Value loss: 0.3845
+  Entropy: 1.3925
+
+Iteration 53/100
+  Collecting rollouts...
+  Avg episode reward: -0.3000
+  Avg episode length: 1.75
+  Updating policy...
+  Policy loss: 0.0143
+  Value loss: 0.3573
+  Entropy: 1.3943
+
+Iteration 54/100
+  Collecting rollouts...
+  Avg episode reward: -0.1750
+  Avg episode length: 2.38
+  Updating policy...
+  Policy loss: -0.0073
+  Value loss: 0.4223
+  Entropy: 1.3937
+
+Iteration 55/100
+  Collecting rollouts...
+  Avg episode reward: -0.1063
+  Avg episode length: 1.69
+  Updating policy...
+  Policy loss: 0.0795
+  Value loss: 0.4617
+  Entropy: 1.3925
+
+Iteration 56/100
+  Collecting rollouts...
+  Avg episode reward: -0.3312
+  Avg episode length: 2.12
+  Updating policy...
+  Policy loss: 0.0626
+  Value loss: 0.3291
+  Entropy: 1.3901
+
+Iteration 57/100
+  Collecting rollouts...
+  Avg episode reward: 0.1313
+  Avg episode length: 2.06
+  Updating policy...
+  Policy loss: -0.0657
+  Value loss: 0.6167
+  Entropy: 1.3915
+
+Iteration 58/100
+  Collecting rollouts...
+  Avg episode reward: -0.4125
+  Avg episode length: 1.94
+  Updating policy...
+  Policy loss: -0.0039
+  Value loss: 0.3062
+  Entropy: 1.3914
+
+Iteration 59/100
+  Collecting rollouts...
+  Avg episode reward: 0.0000
+  Avg episode length: 1.62
+  Updating policy...
+  Policy loss: 0.0775
+  Value loss: 0.5230
+  Entropy: 1.3896
+
+Iteration 60/100
+  Collecting rollouts...
+  Avg episode reward: -0.1250
+  Avg episode length: 1.88
+  Updating policy...
+  Policy loss: -0.0170
+  Value loss: 0.3977
+  Entropy: 1.3885
+
+  Validating...
+  Val Accuracy: 0.9800
+  Val Reward: 0.4660
+  Val Avg Length: 5.04
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  1.89it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  1.89it/s]
+Model saved to checkpoints/ppo_t5/iter_60
+  Checkpoint saved to checkpoints/ppo_t5/iter_60
+
+Iteration 61/100
+  Collecting rollouts...
+  Avg episode reward: -0.0562
+  Avg episode length: 2.06
+  Updating policy...
+  Policy loss: 0.0952
+  Value loss: 0.4617
+  Entropy: 1.3894
+
+Iteration 62/100
+  Collecting rollouts...
+  Avg episode reward: -0.2063
+  Avg episode length: 2.50
+  Updating policy...
+  Policy loss: -0.0011
+  Value loss: 0.4008
+  Entropy: 1.3852
+
+Iteration 63/100
+  Collecting rollouts...
+  Avg episode reward: -0.1813
+  Avg episode length: 1.56
+  Updating policy...
+  Policy loss: -0.1665
+  Value loss: 0.4479
+  Entropy: 1.3828
+
+Iteration 64/100
+  Collecting rollouts...
+  Avg episode reward: -0.3250
+  Avg episode length: 2.00
+  Updating policy...
+  Policy loss: 0.0009
+  Value loss: 0.3315
+  Entropy: 1.3835
+
+Iteration 65/100
+  Collecting rollouts...
+  Avg episode reward: -0.1375
+  Avg episode length: 2.00
+  Updating policy...
+  Policy loss: -0.0004
+  Value loss: 0.4580
+  Entropy: 1.3836
+
+Iteration 66/100
+  Collecting rollouts...
+  Avg episode reward: -0.4688
+  Avg episode length: 2.44
+  Updating policy...
+  Policy loss: -0.0030
+  Value loss: 0.2864
+  Entropy: 1.3800
+
+Iteration 67/100
+  Collecting rollouts...
+  Avg episode reward: -0.2938
+  Avg episode length: 2.62
+  Updating policy...
+  Policy loss: -0.0076
+  Value loss: 0.4240
+  Entropy: 1.3728
+
+Iteration 68/100
+  Collecting rollouts...
+  Avg episode reward: -0.0875
+  Avg episode length: 2.38
+  Updating policy...
+  Policy loss: -0.0001
+  Value loss: 0.4925
+  Entropy: 1.3681
+
+Iteration 69/100
+  Collecting rollouts...
+  Avg episode reward: -0.1625
+  Avg episode length: 1.38
+  Updating policy...
+  Policy loss: -0.0345
+  Value loss: 0.3814
+  Entropy: 1.3660
+
+Iteration 70/100
+  Collecting rollouts...
+  Avg episode reward: -0.3500
+  Avg episode length: 2.25
+  Updating policy...
+  Policy loss: -0.0344
+  Value loss: 0.3244
+  Entropy: 1.3680
+
+  Validating...
+  Val Accuracy: 0.9800
+  Val Reward: 0.4660
+  Val Avg Length: 5.04
+
+Iteration 71/100
+  Collecting rollouts...
+  Avg episode reward: -0.3125
+  Avg episode length: 1.81
+  Updating policy...
+  Policy loss: -0.0438
+  Value loss: 0.3755
+  Entropy: 1.3684
+
+Iteration 72/100
+  Collecting rollouts...
+  Avg episode reward: -0.2188
+  Avg episode length: 1.88
+  Updating policy...
+  Policy loss: 0.0002
+  Value loss: 0.3994
+  Entropy: 1.3646
+
+Iteration 73/100
+  Collecting rollouts...
+  Avg episode reward: 0.0438
+  Avg episode length: 2.00
+  Updating policy...
+  Policy loss: -0.0020
+  Value loss: 0.5536
+  Entropy: 1.3627
+
+Iteration 74/100
+  Collecting rollouts...
+  Avg episode reward: -0.3750
+  Avg episode length: 1.62
+  Updating policy...
+  Policy loss: 0.0314
+  Value loss: 0.2932
+  Entropy: 1.3608
+
+Iteration 75/100
+  Collecting rollouts...
+  Avg episode reward: 0.0063
+  Avg episode length: 2.31
+  Updating policy...
+  Policy loss: -0.0072
+  Value loss: 0.5258
+  Entropy: 1.3596
+
+Iteration 76/100
+  Collecting rollouts...
+  Avg episode reward: -0.1125
+  Avg episode length: 1.75
+  Updating policy...
+  Policy loss: -0.0179
+  Value loss: 0.5065
+  Entropy: 1.3570
+
+Iteration 77/100
+  Collecting rollouts...
+  Avg episode reward: -0.0438
+  Avg episode length: 2.00
+  Updating policy...
+  Policy loss: 0.0002
+  Value loss: 0.4906
+  Entropy: 1.3542
+
+Iteration 78/100
+  Collecting rollouts...
+  Avg episode reward: -0.2250
+  Avg episode length: 2.00
+  Updating policy...
+  Policy loss: -0.0013
+  Value loss: 0.3777
+  Entropy: 1.3550
+
+Iteration 79/100
+  Collecting rollouts...
+  Avg episode reward: -0.2125
+  Avg episode length: 1.88
+  Updating policy...
+  Policy loss: -0.0027
+  Value loss: 0.3988
+  Entropy: 1.3590
+
+Iteration 80/100
+  Collecting rollouts...
+  Avg episode reward: -0.0437
+  Avg episode length: 2.06
+  Updating policy...
+  Policy loss: 0.1122
+  Value loss: 0.4304
+  Entropy: 1.3627
+
+  Validating...
+  Val Accuracy: 0.9800
+  Val Reward: 0.4660
+  Val Avg Length: 5.04
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  2.12it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  2.12it/s]
+Model saved to checkpoints/ppo_t5/iter_80
+  Checkpoint saved to checkpoints/ppo_t5/iter_80
+
+Iteration 81/100
+  Collecting rollouts...
+  Avg episode reward: -0.1062
+  Avg episode length: 1.75
+  Updating policy...
+  Policy loss: 0.0187
+  Value loss: 0.5000
+  Entropy: 1.3687
+
+Iteration 82/100
+  Collecting rollouts...
+  Avg episode reward: -0.0563
+  Avg episode length: 1.25
+  Updating policy...
+  Policy loss: -0.0211
+  Value loss: 0.4459
+  Entropy: 1.3689
+
+Iteration 83/100
+  Collecting rollouts...
+  Avg episode reward: -0.0938
+  Avg episode length: 1.56
+  Updating policy...
+  Policy loss: 0.0285
+  Value loss: 0.4339
+  Entropy: 1.3699
+
+Iteration 84/100
+  Collecting rollouts...
+  Avg episode reward: -0.3937
+  Avg episode length: 1.81
+  Updating policy...
+  Policy loss: -0.0318
+  Value loss: 0.2684
+  Entropy: 1.3721
+
+Iteration 85/100
+  Collecting rollouts...
+  Avg episode reward: -0.2062
+  Avg episode length: 1.81
+  Updating policy...
+  Policy loss: -0.0324
+  Value loss: 0.4163
+  Entropy: 1.3755
+
+Iteration 86/100
+  Collecting rollouts...
+  Avg episode reward: 0.0313
+  Avg episode length: 2.12
+  Updating policy...
+  Policy loss: -0.0212
+  Value loss: 0.5529
+  Entropy: 1.3769
+
+Iteration 87/100
+  Collecting rollouts...
+  Avg episode reward: 0.0750
+  Avg episode length: 1.75
+  Updating policy...
+  Policy loss: 0.0357
+  Value loss: 0.5403
+  Entropy: 1.3757
+
+Iteration 88/100
+  Collecting rollouts...
+  Avg episode reward: -0.2000
+  Avg episode length: 1.75
+  Updating policy...
+  Policy loss: 0.0460
+  Value loss: 0.3240
+  Entropy: 1.3755
+
+Iteration 89/100
+  Collecting rollouts...
+  Avg episode reward: -0.1125
+  Avg episode length: 2.56
+  Updating policy...
+  Policy loss: 0.0410
+  Value loss: 0.4206
+  Entropy: 1.3786
+
+Iteration 90/100
+  Collecting rollouts...
+  Avg episode reward: -0.1313
+  Avg episode length: 2.00
+  Updating policy...
+  Policy loss: 0.0004
+  Value loss: 0.4200
+  Entropy: 1.3776
+
+  Validating...
+  Val Accuracy: 0.9800
+  Val Reward: 0.4660
+  Val Avg Length: 5.04
+
+Iteration 91/100
+  Collecting rollouts...
+  Avg episode reward: -0.0125
+  Avg episode length: 1.69
+  Updating policy...
+  Policy loss: -0.0939
+  Value loss: 0.5644
+  Entropy: 1.3798
+
+Iteration 92/100
+  Collecting rollouts...
+  Avg episode reward: 0.1188
+  Avg episode length: 2.25
+  Updating policy...
+  Policy loss: 0.0048
+  Value loss: 0.5755
+  Entropy: 1.3800
+
+Iteration 93/100
+  Collecting rollouts...
+  Avg episode reward: -0.1937
+  Avg episode length: 1.69
+  Updating policy...
+  Policy loss: -0.0909
+  Value loss: 0.4604
+  Entropy: 1.3801
+
+Iteration 94/100
+  Collecting rollouts...
+  Avg episode reward: 0.2125
+  Avg episode length: 1.38
+  Updating policy...
+  Policy loss: -0.0016
+  Value loss: 0.6332
+  Entropy: 1.3816
+
+Iteration 95/100
+  Collecting rollouts...
+  Avg episode reward: -0.1562
+  Avg episode length: 2.19
+  Updating policy...
+  Policy loss: 0.0191
+  Value loss: 0.3931
+  Entropy: 1.3828
+
+Iteration 96/100
+  Collecting rollouts...
+  Avg episode reward: -0.1875
+  Avg episode length: 1.62
+  Updating policy...
+  Policy loss: 0.0183
+  Value loss: 0.4486
+  Entropy: 1.3850
+
+Iteration 97/100
+  Collecting rollouts...
+  Avg episode reward: -0.2250
+  Avg episode length: 1.94
+  Updating policy...
+  Policy loss: 0.0015
+  Value loss: 0.3841
+  Entropy: 1.3843
+
+Iteration 98/100
+  Collecting rollouts...
+  Avg episode reward: -0.2188
+  Avg episode length: 1.94
+  Updating policy...
+  Policy loss: -0.0012
+  Value loss: 0.4320
+  Entropy: 1.3834
+
+Iteration 99/100
+  Collecting rollouts...
+  Avg episode reward: -0.2125
+  Avg episode length: 1.88
+  Updating policy...
+  Policy loss: 0.0094
+  Value loss: 0.3983
+  Entropy: 1.3822
+
+Iteration 100/100
+  Collecting rollouts...
+  Avg episode reward: 0.2625
+  Avg episode length: 1.81
+  Updating policy...
+  Policy loss: 0.0203
+  Value loss: 0.6741
+  Entropy: 1.3825
+
+  Validating...
+  Val Accuracy: 0.9800
+  Val Reward: 0.4660
+  Val Avg Length: 5.04
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  2.09it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  2.09it/s]
+Model saved to checkpoints/ppo_t5/iter_100
+  Checkpoint saved to checkpoints/ppo_t5/iter_100
+
+============================================================
+PPO training completed!
+Best validation reward: 0.4660
+============================================================
+
+============================================================
+FINAL EVALUATION ON TEST SET
+============================================================
+Loading best model from checkpoints/ppo_t5/best_model
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 4691.99it/s]
+Model loaded from checkpoints/ppo_t5/best_model
+Test Accuracy: 0.9400
+Test Avg Reward: 0.4160
+Test results saved to checkpoints/ppo_t5/test_results.json
+
+============================================================
+TRAINING COMPLETE
+============================================================
+Best PPO model saved to: checkpoints/ppo_t5/best_model
+Training history: checkpoints/ppo_t5/history.json

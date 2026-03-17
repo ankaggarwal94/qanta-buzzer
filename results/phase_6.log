@@ -1,0 +1,42 @@
+Loading questions from: artifacts/main/mc_dataset.json
+Loaded 14961 questions
+Using persisted test split: 2282 questions
+Test set: 2282 questions
+
+----------------------------------------
+Evaluating MLP policy (T5-as-likelihood)...
+----------------------------------------
+Wrapping the env with a `Monitor` wrapper
+Wrapping the env in a DummyVecEnv.
+  Accuracy: 0.2546
+  Mean S_q: 0.2546
+
+----------------------------------------
+Evaluating T5 policy (end-to-end)...
+----------------------------------------
+Loading T5 encoder: checkpoints/ppo_t5/best_model
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 5508.94it/s]
+Model Architecture:
+  T5 encoder parameters: 109,628,544
+  Policy head parameters: 790,279
+  Total parameters: 110,418,823
+  Device: mps
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 25647.69it/s]
+Model loaded from checkpoints/ppo_t5/best_model
+  Accuracy: 0.9334
+  Mean S_q: 0.2393
+
+======================================================================
+COMPARISON RESULTS: T5-as-Likelihood vs T5-as-Policy
+======================================================================
+Test set size: 2282
+
+Metric                MLP (T5-likelihood)      T5 (end-to-end)      Difference
+---------------------------------------------------------------------------
+accuracy                           0.2546               0.9334         +0.6788
+mean_sq                            0.2546               0.2393         -0.0153
+ece                                0.0046               0.6531         +0.6485
+brier                              0.1898               0.4887         +0.2989
+avg_buzz_pos                       0.0000               3.8966         +3.8966
+
+Results saved to /Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/results/t5_comparison.json
