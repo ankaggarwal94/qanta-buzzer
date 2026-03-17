@@ -57,9 +57,11 @@ def reward_from_buzz_step(
 ) -> float:
     """Replay canonical env reward from an offline buzz outcome.
 
-    The offline baseline contract stores ``buzz_step`` as the last seen
-    clue index. Reward replay uses that same index for buzz shaping and
-    charges one wait penalty per prior clue index.
+    The offline baseline stores ``buzz_step`` as the last-seen clue
+    index. Seeing clue ``buzz_step`` requires ``buzz_step + 1`` WAIT
+    actions in the env (clues 0 through buzz_step), each charged
+    ``wait_penalty``. Early-buzz shaping uses the same ``buzz_step``
+    progress formula as ``TossupMCEnv._buzz_reward``.
     """
     if reward_mode == "simple":
         return 1.0 if correct else -1.0
@@ -71,7 +73,7 @@ def reward_from_buzz_step(
     if early_buzz_penalty > 0 and total_steps > 1:
         progress = np.clip((buzz_step + 1) / total_steps, 0.0, 1.0)
         reward -= float(early_buzz_penalty) * (1.0 - progress)
-    reward -= float(wait_penalty) * max(0, buzz_step)
+    reward -= float(wait_penalty) * (buzz_step + 1)
     return float(reward)
 
 
