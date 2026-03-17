@@ -324,7 +324,6 @@ def main(argv: Optional[list[str]] = None):
     builders: dict[str, MCBuilder] = {}
     for split_name, target_questions in split_targets.items():
         builder = make_mc_builder(config)
-        builder.guard_stats = {}
         built = builder.build(
             target_questions,
             profile_builder,
