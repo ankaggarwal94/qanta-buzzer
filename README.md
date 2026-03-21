@@ -20,6 +20,10 @@ pip install -U pip
 pip install -e .
 ```
 
+The wrapper scripts in `scripts/` intentionally use the repo-local `.venv`
+directly and do not fall back to ambient `python3` or `pytest`, which helps
+avoid global package skew such as broken `torch`/`torchvision` combinations.
+
 Optional extras:
 
 ```bash
@@ -39,6 +43,7 @@ python scripts/build_mc_dataset.py --smoke
 python scripts/run_baselines.py --smoke
 python scripts/train_ppo.py --smoke
 python scripts/evaluate_all.py --smoke
+bash scripts/manual-smoke.sh
 ```
 
 `--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`. Drop `--smoke` for full runs (uses `configs/default.yaml`, writes to `artifacts/main/`).
@@ -125,6 +130,7 @@ For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy 
 ```bash
 pytest                    # full suite
 pytest tests/test_agents.py tests/test_environment.py tests/test_ppo_buzzer.py  # quick iteration
+bash scripts/ci.sh        # full suite via repo-local .venv
 ```
 
 The test suite covers:
