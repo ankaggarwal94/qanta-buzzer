@@ -35,6 +35,7 @@ from qb_env.tossup_env import make_env_from_config, precompute_beliefs
 from qb_data.config import merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
+    DATASET_FILENAMES,
     build_likelihood_model,
     dataset_path_for_split,
     load_config,
@@ -144,14 +145,20 @@ def main() -> None:
     print(f"Loaded {len(train_questions)} training questions")
 
     if args.mc_path:
+        _FILENAME_TO_SPLIT = {v: k for k, v in DATASET_FILENAMES.items()}
+        explicit_split = _FILENAME_TO_SPLIT.get(train_path.name)
         eval_candidate = dataset_path_for_split(train_path.parent, "val")
-        if eval_candidate.exists() and eval_candidate != train_path:
+        if explicit_split == "val":
+            eval_path = train_path
+            eval_split = "val"
+            eval_warning = None
+        elif eval_candidate.exists() and eval_candidate != train_path:
             eval_path = eval_candidate
             eval_split = "val"
             eval_warning = None
         else:
             eval_path = train_path
-            eval_split = train_split
+            eval_split = explicit_split or train_split
             eval_warning = (
                 "Warning: val_dataset.json not found alongside explicit --mc-path; "
                 "post-training evaluation will reuse the training dataset."

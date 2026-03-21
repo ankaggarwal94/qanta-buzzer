@@ -521,7 +521,7 @@ class _TinyPolicyModel(torch.nn.Module):
 class TestEvaluationSemantics:
     """Tests for full-holdout evaluation behavior."""
 
-    def test_evaluate_questions_uses_full_split(self, sample_mc_question, monkeypatch):
+    def test_evaluate_questions_uses_full_split(self, sample_mc_question, monkeypatch, tmp_path):
         import qb_env.text_wrapper as tw
         import qb_env.tossup_env as te
 
@@ -531,7 +531,7 @@ class TestEvaluationSemantics:
             train_questions=[sample_mc_question],
             val_questions=[sample_mc_question] * 55,
             config={
-                "checkpoint_dir": "/tmp/test_ppo_t5_eval",
+                "checkpoint_dir": str(tmp_path / "ppo_t5_eval"),
                 "reward_time_penalty": 0.01,
             },
         )
@@ -564,7 +564,7 @@ class TestEvaluationSemantics:
         assert summary["n_questions_evaluated"] == 55
         assert summary["evaluation_split"] == "val"
 
-    def test_build_reward_likelihood_uses_full_train_reference(self, sample_mc_question, monkeypatch):
+    def test_build_reward_likelihood_uses_full_train_reference(self, sample_mc_question, monkeypatch, tmp_path):
         import models.likelihoods as likelihoods
 
         captured = {}
@@ -578,7 +578,7 @@ class TestEvaluationSemantics:
             model=_TinyPolicyModel(),
             train_questions=[sample_mc_question, sample_mc_question],
             val_questions=[sample_mc_question],
-            config={"checkpoint_dir": "/tmp/test_ppo_t5_eval"},
+            config={"checkpoint_dir": str(tmp_path / "ppo_t5_eval")},
         )
 
         trainer._build_reward_likelihood()

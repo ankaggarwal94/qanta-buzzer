@@ -260,7 +260,7 @@ def load_questions(
     max_questions = config.get("data", {}).get("max_questions", None)
     if max_questions and len(questions) > max_questions:
         questions = questions[:max_questions]
-        print(f"Limited to {max_questions} questions (smoke mode)")
+        print(f"Limited to {max_questions} questions (data.max_questions)")
 
     if return_path:
         return questions, Path(mc_path)
@@ -463,9 +463,7 @@ def main() -> None:
     # Load canonical split artifacts when they exist, otherwise fall back to
     # the legacy combined-dataset random split.
     train_questions, val_questions, test_questions, split_manifest = (
-        load_question_splits_with_metadata(
-        args, config
-        )
+        load_question_splits_with_metadata(args, config)
     )
 
     # Import training modules (lazy to avoid loading transformers until needed)

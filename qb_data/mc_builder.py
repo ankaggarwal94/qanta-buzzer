@@ -371,14 +371,11 @@ class MCBuilder:
 
         ref_questions = questions if reference_questions is None else list(reference_questions)
 
-        # Legacy behavior: when no separate reference corpus is supplied,
-        # fit on the target questions for convenience. When callers supply an
-        # explicit reference corpus, always refit so stale cached groupings
-        # cannot leak the wrong answer universe into ranking/profile building.
-        if reference_questions is None:
-            profile_builder.fit(ref_questions)
-        else:
-            profile_builder.fit(ref_questions)
+        # ref_questions defaults to the target questions for convenience.
+        # When callers supply an explicit reference corpus, we still refit so
+        # stale cached groupings cannot leak the wrong answer universe into
+        # ranking/profile building.
+        profile_builder.fit(ref_questions)
 
         answer_profiles = profile_builder.build_profiles(ref_questions)
 

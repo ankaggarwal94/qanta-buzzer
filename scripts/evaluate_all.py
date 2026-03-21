@@ -201,17 +201,18 @@ def main() -> None:
     train_path = mc_path.parent / "train_dataset.json"
     if train_path.exists():
         likelihood_questions = load_mc_questions(train_path)
-        print(
-            "Building likelihood model: "
-            f"{config['likelihood']['model']} "
-            f"(fit on train split with {len(likelihood_questions)} questions)"
-        )
-    else:
+    if not train_path.exists() or not likelihood_questions:
         likelihood_questions = mc_questions
         print(
             "Building likelihood model: "
             f"{config['likelihood']['model']} "
-            "(train_dataset.json not found; using eval split)"
+            "(train split missing or empty; using eval split)"
+        )
+    else:
+        print(
+            "Building likelihood model: "
+            f"{config['likelihood']['model']} "
+            f"(fit on train split with {len(likelihood_questions)} questions)"
         )
     likelihood_model = build_likelihood_model(config, likelihood_questions)
     load_embedding_cache(likelihood_model, config)
@@ -337,12 +338,14 @@ def main() -> None:
 
         print("Replaying PPO checkpoint on evaluation split...")
         train_path = mc_path.parent / "train_dataset.json"
+        ppo_ref_questions = None
         if train_path.exists():
             ppo_ref_questions = load_mc_questions(train_path)
-            print(f"  PPO likelihood built from train split ({len(ppo_ref_questions)} questions)")
-        else:
+        if not ppo_ref_questions:
             ppo_ref_questions = mc_questions
-            print("  Warning: train_dataset.json not found; building PPO likelihood from eval split")
+            print("  Warning: train split missing or empty; building PPO likelihood from eval split")
+        else:
+            print(f"  PPO likelihood built from train split ({len(ppo_ref_questions)} questions)")
         ppo_likelihood_model = build_likelihood_model(ppo_eval_config, ppo_ref_questions)
         load_embedding_cache(ppo_likelihood_model, ppo_eval_config)
         ppo_belief_cache = env_precompute_beliefs(

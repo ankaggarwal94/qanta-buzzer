@@ -306,11 +306,10 @@ def main(argv: Optional[list[str]] = None):
         seed=split_seed,
     )
 
-    # Build answer profiles from raw train only.
-    print("\nBuilding answer profiles from raw train split only...")
+    # Initialize answer profile builder; fitting will be done inside MCBuilder
+    # using the raw train split as the reference corpus.
+    print("\nInitializing answer profile builder (will be fit on raw train during MC construction)...")
     profile_builder = make_profile_builder(config)
-    profile_builder.fit(raw_train)
-    print(f"Built {len(profile_builder._grouped)} train-only answer profiles")
 
     # Construct MC questions for each split against the train reference corpus.
     print("\nConstructing split-safe MC questions...")

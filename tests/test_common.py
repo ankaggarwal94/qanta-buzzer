@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import scripts._common as common
 from scripts._common import embedding_cache_path, resolve_default_dataset_path
 
@@ -53,3 +55,14 @@ def test_resolve_default_dataset_path_warns_on_combined_fallback(
     assert path == tmp_path / "mc_dataset.json"
     assert split == "combined"
     assert warning is not None
+
+
+def test_resolve_default_dataset_path_raises_when_no_datasets_exist(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """When no dataset files exist at all, a clear FileNotFoundError is raised."""
+    monkeypatch.setattr(common, "PROCESSED_DIR", tmp_path / "missing_processed")
+
+    with pytest.raises(FileNotFoundError, match="build_mc_dataset"):
+        resolve_default_dataset_path(tmp_path, preferred_split="test")

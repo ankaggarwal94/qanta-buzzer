@@ -161,17 +161,18 @@ def main() -> None:
     train_path = mc_path.parent / "train_dataset.json"
     if train_path.exists():
         likelihood_questions = load_mc_questions(train_path)
-        print(
-            "Building likelihood model: "
-            f"{config['likelihood']['model']} "
-            f"(fit on train split with {len(likelihood_questions)} questions)"
-        )
-    else:
+    if not train_path.exists() or not likelihood_questions:
         likelihood_questions = mc_questions
         print(
             "Building likelihood model: "
             f"{config['likelihood']['model']} "
-            "(train_dataset.json not found; using selected eval split)"
+            "(train split missing or empty; using selected eval split)"
+        )
+    else:
+        print(
+            "Building likelihood model: "
+            f"{config['likelihood']['model']} "
+            f"(fit on train split with {len(likelihood_questions)} questions)"
         )
     likelihood_model = build_likelihood_model(config, likelihood_questions)
     load_embedding_cache(likelihood_model, config)

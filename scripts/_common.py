@@ -191,7 +191,13 @@ def resolve_default_dataset_path(
                 )
             return fallback_path, fallback_split, warning
 
-    return dataset_path_for_split(Path(out_dir), fallback_split), fallback_split, None
+    fallback_name = DATASET_FILENAMES[fallback_split]
+    search_locations = ", ".join(str(d) for d in candidate_dirs)
+    raise FileNotFoundError(
+        f"Could not find dataset files '{preferred_name}' or '{fallback_name}' "
+        f"in any of: {search_locations}. "
+        "Have you run scripts/build_mc_dataset.py to generate the MC dataset?"
+    )
 
 
 def to_serializable(item: Any) -> Any:

@@ -78,6 +78,7 @@ def test_train_ppo_seed_override_updates_env_and_saved_config(
                 entropy_trace=[0.0],
             )
 
+    (tmp_path / "train_dataset.json").write_text("[]", encoding="utf-8")
     monkeypatch.setattr(train_ppo, "load_config", fake_load_config)
     monkeypatch.setattr(train_ppo, "load_mc_questions", lambda _path: [sample_mc_question])
     monkeypatch.setattr(train_ppo, "build_likelihood_model", lambda config, qs: object())
