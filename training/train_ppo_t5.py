@@ -350,7 +350,7 @@ class PPOTrainer:
                 )
                 wrapped_env = TextObservationWrapper(env)
 
-                obs, info = wrapped_env.reset()
+                obs, _ = wrapped_env.reset()
                 done = False
                 rollout: List[RolloutStep] = []
 
@@ -376,7 +376,7 @@ class PPOTrainer:
                     log_prob = act_info["log_probs"].item()
 
                     # Take environment step
-                    next_obs, reward, terminated, truncated, step_info = (
+                    next_obs, reward, terminated, truncated, _ = (
                         wrapped_env.step(action)
                     )
                     done = terminated or truncated
@@ -514,7 +514,7 @@ class PPOTrainer:
         num_updates = 0
 
         # PPO epochs
-        for epoch in range(self.epochs_per_iter):
+        for _ in range(self.epochs_per_iter):
             # Shuffle step indices
             indices = np.random.permutation(len(all_steps))
 
@@ -643,7 +643,7 @@ class PPOTrainer:
                 )
                 wrapped_env = TextObservationWrapper(env)
 
-                obs, info = wrapped_env.reset()
+                obs, _ = wrapped_env.reset()
                 done = False
                 episode_reward = 0.0
                 episode_length = 0
@@ -657,7 +657,7 @@ class PPOTrainer:
                         max_length=self.max_input_length,
                     ).to(self.device)
 
-                    actions, act_info = self.model.select_action(
+                    actions, _ = self.model.select_action(
                         inputs["input_ids"],
                         inputs["attention_mask"],
                         deterministic=True,
@@ -837,7 +837,7 @@ class PPOTrainer:
             Path to the saved history file.
         """
         history_path = self.checkpoint_dir / "history.json"
-        with open(history_path, "w") as f:
+        with open(history_path, "w", encoding="utf-8") as f:
             json.dump(self.history, f, indent=2, default=float)
         return history_path
 
@@ -938,7 +938,7 @@ def run_ppo_training(
             "training_summary": summary,
         }
         results_path = trainer.checkpoint_dir / "test_results.json"
-        with open(results_path, "w") as f:
+        with open(results_path, "w", encoding="utf-8") as f:
             json.dump(test_results, f, indent=2, default=float)
         print(f"Test results saved to {results_path}")
 

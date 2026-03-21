@@ -273,7 +273,7 @@ def main() -> None:
         alias_eval = run_alias_substitution_control(
             mc_questions,
             alias_lookup=alias_lookup,
-            evaluator=lambda qset: evaluate_questions_live(qset),
+            evaluator=evaluate_questions_live,
         )
         alias_control_report = {k: v for k, v in alias_eval.items() if k != "runs"}
     else:
