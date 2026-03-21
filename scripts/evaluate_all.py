@@ -197,9 +197,23 @@ def main() -> None:
         print(f"Warning: alias_lookup.json not found at {alias_path}, using empty lookup")
         alias_lookup = {}
 
-    # Build likelihood model
-    print(f"Building likelihood model: {config['likelihood']['model']}")
-    likelihood_model = build_likelihood_model(config, mc_questions)
+    # Build TF-IDF from train split even when evaluating on held-out data.
+    train_path = mc_path.parent / "train_dataset.json"
+    if train_path.exists():
+        likelihood_questions = load_mc_questions(train_path)
+        print(
+            "Building likelihood model: "
+            f"{config['likelihood']['model']} "
+            f"(fit on train split with {len(likelihood_questions)} questions)"
+        )
+    else:
+        likelihood_questions = mc_questions
+        print(
+            "Building likelihood model: "
+            f"{config['likelihood']['model']} "
+            "(train_dataset.json not found; using eval split)"
+        )
+    likelihood_model = build_likelihood_model(config, likelihood_questions)
     load_embedding_cache(likelihood_model, config)
     beta = float(config["likelihood"].get("beta", 5.0))
     alpha = float(config["bayesian"].get("alpha", 10.0))

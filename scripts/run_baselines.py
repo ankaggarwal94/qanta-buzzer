@@ -157,9 +157,23 @@ def main() -> None:
             mc_questions = load_mc_questions(mc_path)
     print(f"Loaded {len(mc_questions)} MC questions")
 
-    # Build likelihood model
-    print(f"Building likelihood model: {config['likelihood']['model']}")
-    likelihood_model = build_likelihood_model(config, mc_questions)
+    # Build TF-IDF from train split even when selecting thresholds on val/test.
+    train_path = mc_path.parent / "train_dataset.json"
+    if train_path.exists():
+        likelihood_questions = load_mc_questions(train_path)
+        print(
+            "Building likelihood model: "
+            f"{config['likelihood']['model']} "
+            f"(fit on train split with {len(likelihood_questions)} questions)"
+        )
+    else:
+        likelihood_questions = mc_questions
+        print(
+            "Building likelihood model: "
+            f"{config['likelihood']['model']} "
+            "(train_dataset.json not found; using selected eval split)"
+        )
+    likelihood_model = build_likelihood_model(config, likelihood_questions)
     load_embedding_cache(likelihood_model, config)
 
     # Extract hyperparameters

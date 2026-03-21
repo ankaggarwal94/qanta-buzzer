@@ -88,3 +88,40 @@ def test_category_random_uses_train_only_answer_universe() -> None:
     assert mc_questions == []
     assert builder.last_build_stats["dropped_questions"] == 1
     assert builder.last_build_stats["drop_reasons"]["unseen_gold_answer"] == 1
+
+
+def test_explicit_reference_questions_refit_stale_profile_builder() -> None:
+    """Providing a new reference corpus should refit even if the builder is warm."""
+
+    stale_reference = [
+        _make_question("s1", "Mercury", "stale planet clue"),
+        _make_question("s2", "Venus", "stale second planet clue"),
+        _make_question("s3", "Earth", "stale third planet clue"),
+        _make_question("s4", "Mars", "stale fourth planet clue"),
+    ]
+    raw_train = [
+        _make_question("q1", "Hydrogen", "light gas on periodic table"),
+        _make_question("q2", "Helium", "noble gas used in balloons"),
+        _make_question("q3", "Lithium", "soft metal used in batteries"),
+        _make_question("q4", "Carbon", "element central to organic chemistry"),
+    ]
+    heldout = _make_question(
+        "q5",
+        "Hydrogen",
+        "fresh heldout clue about the lightest element",
+    )
+
+    profile_builder = AnswerProfileBuilder(min_questions_per_answer=1).fit(
+        stale_reference
+    )
+    builder = MCBuilder(K=4, strategy="tfidf_profile", random_seed=13)
+
+    mc_questions = builder.build(
+        [heldout],
+        profile_builder,
+        reference_questions=raw_train,
+    )
+
+    assert len(mc_questions) == 1
+    assert builder.last_build_stats["reference_questions"] == len(raw_train)
+    assert "Hydrogen" in mc_questions[0].option_answer_primary
