@@ -308,6 +308,58 @@ def _build_split_manifest(
     return manifest
 
 
+def _apply_max_questions(
+    train: list, val: list, test: list,
+    max_q: int, scope: str,
+) -> tuple[list, list, list]:
+    """Apply max_questions cap to split question lists.
+
+    Parameters
+    ----------
+    scope : str
+        ``"global"`` distributes the cap proportionally across splits,
+        guaranteeing at least one item per non-empty split.
+        ``"per_split"`` truncates each split independently (legacy).
+    """
+    if scope == "per_split":
+        return train[:max_q], val[:max_q], test[:max_q]
+    total = len(train) + len(val) + len(test)
+    if total <= max_q:
+        return train, val, test
+    splits = [("train", train), ("val", val), ("test", test)]
+    non_empty = [(name, s) for name, s in splits if s]
+    if max_q < len(non_empty):
+        result = {"train": [], "val": [], "test": []}
+        for i, (name, s) in enumerate(non_empty):
+            result[name] = s[:1] if i < max_q else []
+        return result["train"], result["val"], result["test"]
+    budget = max_q
+    allocated = {name: 1 for name, _ in non_empty}
+    budget -= len(non_empty)
+    remainder_total = sum(len(s) - 1 for _, s in non_empty)
+    if remainder_total > 0:
+        fracs = {name: (len(s) - 1) / remainder_total for name, s in non_empty}
+        raw = {name: fracs[name] * budget for name in fracs}
+        floors = {name: int(raw[name]) for name in raw}
+        remainders = sorted(raw.keys(), key=lambda n: raw[n] - floors[n], reverse=True)
+        used = sum(floors.values())
+        for name in remainders:
+            if used >= budget:
+                break
+            floors[name] += 1
+            used += 1
+        for name in floors:
+            allocated[name] += floors[name]
+    result_map = {name: s[:allocated.get(name, 0)] for name, s in splits}
+    print(
+        f"  max_questions={max_q} (scope={scope}): "
+        f"{len(result_map['train'])} train, "
+        f"{len(result_map['val'])} val, "
+        f"{len(result_map['test'])} test"
+    )
+    return result_map["train"], result_map["val"], result_map["test"]
+
+
 def load_question_splits_with_metadata(
     args: argparse.Namespace, config: dict
 ) -> tuple[list, list, list, dict]:
@@ -336,19 +388,28 @@ def load_question_splits_with_metadata(
             PROCESSED_DIR,
         ]
 
-    max_questions = (config or {}).get("data", {}).get("max_questions", None)
+    data_cfg = (config or {}).get("data", {})
+    max_questions = data_cfg.get("max_questions", None)
+    max_questions_scope = str(data_cfg.get("max_questions_scope", "global"))
 
     for base_dir in candidate_dirs:
         split_paths = resolve_persisted_split_paths(base_dir)
         if split_paths is None:
             continue
         train_questions = load_mc_questions(split_paths["train"])
+        if not train_questions:
+            print(
+                f"Warning: persisted train split at {split_paths['train']} "
+                "is empty; skipping this candidate and trying next."
+            )
+            continue
         val_questions = load_mc_questions(split_paths["val"])
         test_questions = load_mc_questions(split_paths["test"])
         if max_questions:
-            train_questions = train_questions[:max_questions]
-            val_questions = val_questions[:max_questions]
-            test_questions = test_questions[:max_questions]
+            train_questions, val_questions, test_questions = _apply_max_questions(
+                train_questions, val_questions, test_questions,
+                max_questions, max_questions_scope,
+            )
         print(
             "Using persisted dataset splits from "
             f"{base_dir}: {len(train_questions)} train, "

@@ -301,9 +301,21 @@ def evaluate_t5_policy(
     model = T5PolicyModel.load_pretrained(checkpoint_path)
     model.eval()
 
-    # Build lightweight likelihood for environment reward computation
+    # Build lightweight likelihood for environment reward computation.
+    # Fall back to test questions if reference split is empty.
+    ref = reference_questions if reference_questions else test_questions
+    if not ref:
+        raise ValueError(
+            "Cannot build T5 reward likelihood: both reference_questions "
+            "and test_questions are empty."
+        )
+    if ref is not reference_questions:
+        print(
+            "Warning: reference split is empty; building T5 reward "
+            f"likelihood from {len(ref)} test questions instead."
+        )
     corpus = []
-    for q in reference_questions:
+    for q in ref:
         corpus.extend(q.option_profiles)
     likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
 

@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 import subprocess
 
+import pytest
+
+_BASH = shutil.which("bash")
+pytestmark = pytest.mark.skipif(_BASH is None, reason="bash not available")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,7 +45,7 @@ def _run_wrapper(
     env["CALLS_LOG"] = str(calls_log)
     env["PATH"] = f"{external_bin}:{env['PATH']}"
     return subprocess.run(
-        ["bash", str(script_path)],
+        [_BASH, str(script_path)],
         cwd=script_path.parent.parent,
         env=env,
         capture_output=True,

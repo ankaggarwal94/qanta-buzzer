@@ -338,15 +338,32 @@ def main() -> None:
             )
 
         print("Replaying PPO checkpoint on evaluation split...")
-        train_path = mc_path.parent / "train_dataset.json"
+        # Honor the likelihood corpus provenance recorded during training.
         ppo_ref_questions = None
-        if train_path.exists():
-            ppo_ref_questions = load_mc_questions(train_path)
+        recorded_ref_path = None
+        if isinstance(run_metadata, dict):
+            recorded_ref_path = run_metadata.get("likelihood_reference_path")
+        if recorded_ref_path:
+            ref_path = Path(recorded_ref_path)
+            if not ref_path.is_absolute():
+                ref_path = ppo_checkpoint_path.parent / ref_path
+            if ref_path.exists():
+                ppo_ref_questions = load_mc_questions(ref_path)
+                if ppo_ref_questions:
+                    ref_split = run_metadata.get("likelihood_reference_split", "recorded")
+                    print(
+                        f"  PPO likelihood built from recorded {ref_split} "
+                        f"corpus ({len(ppo_ref_questions)} questions)"
+                    )
         if not ppo_ref_questions:
-            ppo_ref_questions = mc_questions
-            print("  Warning: train split missing or empty; building PPO likelihood from eval split")
-        else:
-            print(f"  PPO likelihood built from train split ({len(ppo_ref_questions)} questions)")
+            train_path = mc_path.parent / "train_dataset.json"
+            if train_path.exists():
+                ppo_ref_questions = load_mc_questions(train_path)
+            if ppo_ref_questions:
+                print(f"  PPO likelihood built from sibling train split ({len(ppo_ref_questions)} questions)")
+            else:
+                ppo_ref_questions = mc_questions
+                print("  Warning: train split missing or empty; building PPO likelihood from eval split")
         ppo_likelihood_model = build_likelihood_model(ppo_eval_config, ppo_ref_questions)
         load_embedding_cache(ppo_likelihood_model, ppo_eval_config)
         ppo_belief_cache = env_precompute_beliefs(

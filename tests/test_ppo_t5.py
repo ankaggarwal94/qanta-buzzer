@@ -22,7 +22,7 @@ from training.train_ppo_t5 import RolloutStep, RolloutBuffer, PPOTrainer
 
 
 @pytest.fixture(scope="module")
-def t5_ppo_config() -> dict:
+def t5_ppo_config(tmp_path_factory) -> dict:
     """Minimal PPO config for testing."""
     return {
         "model_name": "t5-small",
@@ -42,7 +42,7 @@ def t5_ppo_config() -> dict:
         "ppo_episodes_per_iter": 2,
         "eval_interval": 1,
         "save_interval": 100,
-        "checkpoint_dir": "/tmp/test_ppo_t5_checkpoints",
+        "checkpoint_dir": str(tmp_path_factory.mktemp("ppo_t5_ckpt")),
         "reward_time_penalty": 0.01,
     }
 

@@ -261,6 +261,9 @@ def main() -> None:
             "stochastic" if args.stochastic_eval else "deterministic"
         ),
         "smoke": bool(args.smoke),
+        "likelihood_reference_split": train_split,
+        "likelihood_reference_path": str(train_path),
+        "likelihood_reference_n_questions": len(train_questions),
     }
     save_json(out_dir / "run_metadata.json", run_metadata)
 
