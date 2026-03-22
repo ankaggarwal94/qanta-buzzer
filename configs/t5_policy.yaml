@@ -54,3 +54,4 @@ smoke:
     epochs_per_iter: 2
   data:
     max_questions: 50
+    max_questions_scope: global  # "global" = total cap across splits; "per_split" = legacy independent cap

@@ -70,7 +70,7 @@ python scripts/train_t5_policy.py --config configs/t5_policy.yaml
 python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke  # quick test with t5-small
 ```
 
-The T5 pipeline uses its own config (`configs/t5_policy.yaml`) which defines `model`, `supervised`, `ppo`, and `data` sections. It does not inherit `environment` or `likelihood` settings from the belief-feature configs -- the T5 PPO trainer uses default reward settings (`wait_penalty=0.1`). When persisted `train_dataset.json` / `val_dataset.json` / `test_dataset.json` artifacts exist alongside `--mc-path` or in the standard artifact directories, `train_t5_policy.py` prefers those split files over re-splitting `mc_dataset.json`.
+The T5 pipeline uses its own config (`configs/t5_policy.yaml`) which defines `model`, `supervised`, `ppo`, and `data` sections. It does not inherit `environment` or `likelihood` settings from the belief-feature configs -- the T5 PPO trainer uses default reward settings (`wait_penalty=0.1`). When persisted `train_dataset.json` / `val_dataset.json` / `test_dataset.json` artifacts exist alongside `--mc-path` or in the standard artifact directories, `train_t5_policy.py` prefers those split files over re-splitting `mc_dataset.json`. Set `data.max_questions_scope` to `global` (default) to distribute the `data.max_questions` cap proportionally across splits, or `per_split` to truncate each split independently (legacy behavior).
 
 The T5 policy uses factorized action semantics: the wait head models `P(WAIT)` vs `P(BUZZ)`, the answer head models `P(answer | BUZZ)`, and the flat action distribution is `P(WAIT)` plus `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`.
 
@@ -125,7 +125,7 @@ For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy 
 
 ## Testing
 
-375 tests across 30 test files (4 skipped when optional extras not installed):
+398 tests across 33 test files (4 skipped when optional extras not installed):
 
 ```bash
 pytest                    # full suite
