@@ -426,9 +426,9 @@ def load_question_splits_with_metadata(
             train_questions=train_questions,
             val_questions=val_questions,
             test_questions=test_questions,
-            train_path=str(split_paths["train"]),
-            val_path=str(split_paths["val"]),
-            test_path=str(split_paths["test"]),
+            train_path=str(split_paths["train"].resolve()),
+            val_path=str(split_paths["val"].resolve()),
+            test_path=str(split_paths["test"].resolve()),
         )
         return train_questions, val_questions, test_questions, manifest
 

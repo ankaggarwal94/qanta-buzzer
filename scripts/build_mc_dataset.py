@@ -195,6 +195,9 @@ def print_statistics(
     # Split statistics
     total = len(train) + len(val) + len(test)
     print(f"\nTotal MC questions: {total}")
+    if total == 0:
+        print("  Warning: all splits are empty after guard filtering.")
+        return
     print(f"  Train: {len(train)} ({100*len(train)/total:.1f}%)")
     print(f"  Val:   {len(val)} ({100*len(val)/total:.1f}%)")
     print(f"  Test:  {len(test)} ({100*len(test)/total:.1f}%)")

@@ -223,13 +223,27 @@ def main() -> None:
     threshold = pick_best_softmax_threshold(out_dir, default_threshold=default_threshold)
     print(f"Using best softmax threshold: {threshold}")
 
+    env_cfg = config.get("environment", {})
+    reward_mode = str(env_cfg.get("reward_mode", "time_penalty"))
+    wait_penalty = float(env_cfg.get("wait_penalty", 0.0))
+    buzz_correct = float(env_cfg.get("buzz_correct", 1.0))
+    buzz_incorrect = float(env_cfg.get("buzz_incorrect", -0.5))
+    early_buzz_penalty = float(env_cfg.get("early_buzz_penalty", 0.0))
+
     # Precompute beliefs once (single pass of likelihood_model.score())
     print("Precomputing beliefs...")
     precomputed = precompute_beliefs(mc_questions, likelihood_model, beta)
 
     # Precomputed evaluation (zero extra score() calls)
     def evaluate_questions_precomputed(pqs):
-        runs = [asdict(_softmax_episode_from_precomputed(pq, threshold, alpha)) for pq in pqs]
+        runs = [asdict(_softmax_episode_from_precomputed(
+            pq, threshold, alpha,
+            reward_mode=reward_mode,
+            wait_penalty=wait_penalty,
+            buzz_correct=buzz_correct,
+            buzz_incorrect=buzz_incorrect,
+            early_buzz_penalty=early_buzz_penalty,
+        )) for pq in pqs]
         summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
         summary["runs"] = runs
         return summary
@@ -241,6 +255,11 @@ def main() -> None:
             threshold=threshold,
             beta=beta,
             alpha=alpha,
+            reward_mode=reward_mode,
+            wait_penalty=wait_penalty,
+            buzz_correct=buzz_correct,
+            buzz_incorrect=buzz_incorrect,
+            early_buzz_penalty=early_buzz_penalty,
         )
         runs = [asdict(agent.run_episode(q)) for q in qset]
         summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
