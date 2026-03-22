@@ -60,7 +60,7 @@ def _config() -> dict[str, object]:
     return {
         "likelihood": {"model": "tfidf", "beta": 5.0},
         "bayesian": {"alpha": 10.0, "threshold_sweep": [0.5]},
-        "environment": {"reward_mode": "standard"},
+        "environment": {"reward_mode": "time_penalty"},
         "ppo": {},
     }
 
