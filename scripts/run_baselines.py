@@ -55,6 +55,7 @@ from scripts._common import (
     resolve_default_dataset_path,
     save_embedding_cache,
     save_json,
+    split_name_from_path,
 )
 
 
@@ -134,7 +135,7 @@ def main() -> None:
     # Determine MC dataset path
     if args.mc_path:
         mc_path = Path(args.mc_path)
-        dataset_split = "explicit"
+        dataset_split = split_name_from_path(mc_path)
     else:
         mc_path, dataset_split, warning = resolve_default_dataset_path(
             out_dir,

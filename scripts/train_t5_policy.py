@@ -336,6 +336,8 @@ def load_question_splits_with_metadata(
             PROCESSED_DIR,
         ]
 
+    max_questions = (config or {}).get("data", {}).get("max_questions", None)
+
     for base_dir in candidate_dirs:
         split_paths = resolve_persisted_split_paths(base_dir)
         if split_paths is None:
@@ -343,6 +345,10 @@ def load_question_splits_with_metadata(
         train_questions = load_mc_questions(split_paths["train"])
         val_questions = load_mc_questions(split_paths["val"])
         test_questions = load_mc_questions(split_paths["test"])
+        if max_questions:
+            train_questions = train_questions[:max_questions]
+            val_questions = val_questions[:max_questions]
+            test_questions = test_questions[:max_questions]
         print(
             "Using persisted dataset splits from "
             f"{base_dir}: {len(train_questions)} train, "

@@ -27,6 +27,16 @@ DATASET_FILENAMES = {
     "val": "val_dataset.json",
     "test": "test_dataset.json",
 }
+_FILENAME_TO_SPLIT = {v: k for k, v in DATASET_FILENAMES.items()}
+
+
+def split_name_from_path(path: str | Path) -> str:
+    """Infer the canonical split name from a dataset filename.
+
+    Returns the split name (``train``, ``val``, ``test``, ``combined``)
+    when the filename matches a known artifact, otherwise ``"explicit"``.
+    """
+    return _FILENAME_TO_SPLIT.get(Path(path).name, "explicit")
 
 
 def _parse_value(value: str) -> Any:

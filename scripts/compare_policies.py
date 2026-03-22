@@ -130,6 +130,10 @@ def _resolve_manifest_questions(
         return None
 
     path = Path(split_path)
+    if not path.is_absolute():
+        cp = Path(checkpoint_path).resolve()
+        manifest_dir = cp if cp.is_dir() else cp.parent
+        path = manifest_dir / path
     if not path.exists():
         print(
             f"Warning: manifest-backed {split_name} split does not exist at "

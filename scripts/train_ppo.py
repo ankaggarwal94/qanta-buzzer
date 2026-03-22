@@ -35,7 +35,6 @@ from qb_env.tossup_env import make_env_from_config, precompute_beliefs
 from qb_data.config import merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
-    DATASET_FILENAMES,
     build_likelihood_model,
     dataset_path_for_split,
     load_config,
@@ -45,6 +44,7 @@ from scripts._common import (
     resolve_default_dataset_path,
     save_embedding_cache,
     save_json,
+    split_name_from_path,
 )
 
 
@@ -120,7 +120,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     if args.mc_path:
         train_path = Path(args.mc_path)
-        train_split = "explicit"
+        train_split = split_name_from_path(train_path)
         train_warning = None
     else:
         train_path, train_split, train_warning = resolve_default_dataset_path(
@@ -145,8 +145,7 @@ def main() -> None:
     print(f"Loaded {len(train_questions)} training questions")
 
     if args.mc_path:
-        _FILENAME_TO_SPLIT = {v: k for k, v in DATASET_FILENAMES.items()}
-        explicit_split = _FILENAME_TO_SPLIT.get(train_path.name)
+        explicit_split = split_name_from_path(train_path)
         eval_candidate = dataset_path_for_split(train_path.parent, "val")
         if explicit_split == "val":
             eval_path = train_path
@@ -158,7 +157,7 @@ def main() -> None:
             eval_warning = None
         else:
             eval_path = train_path
-            eval_split = explicit_split or train_split
+            eval_split = explicit_split if explicit_split != "explicit" else train_split
             eval_warning = (
                 "Warning: val_dataset.json not found alongside explicit --mc-path; "
                 "post-training evaluation will reuse the training dataset."
