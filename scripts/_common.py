@@ -39,6 +39,34 @@ def split_name_from_path(path: str | Path) -> str:
     return _FILENAME_TO_SPLIT.get(Path(path).name, "explicit")
 
 
+def redirect_combined_to_split(
+    mc_path: Path,
+    preferred_split: str,
+) -> tuple[Path, str, str | None]:
+    """Redirect a combined dataset path to the preferred sibling split.
+
+    When ``mc_path`` points to ``mc_dataset.json`` and a sibling split
+    artifact exists, returns the split path instead to maintain the
+    split-safe contract. Returns the original path unchanged for
+    non-combined or non-redirectable inputs.
+
+    Returns
+    -------
+    tuple[Path, str, str or None]
+        (resolved_path, split_name, warning_or_None)
+    """
+    if split_name_from_path(mc_path) != "combined":
+        return mc_path, split_name_from_path(mc_path), None
+    sibling = dataset_path_for_split(mc_path.parent, preferred_split)
+    if sibling.exists():
+        warning = (
+            f"Warning: --mc-path points to combined artifact {mc_path.name}; "
+            f"redirecting to sibling {sibling.name} for split-safe {preferred_split} usage."
+        )
+        return sibling, preferred_split, warning
+    return mc_path, "combined", None
+
+
 def _parse_value(value: str) -> Any:
     """Parse a CLI override value string into a typed Python value.
 

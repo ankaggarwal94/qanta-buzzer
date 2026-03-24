@@ -52,6 +52,7 @@ from scripts._common import (
     load_embedding_cache,
     load_mc_questions,
     parse_overrides,
+    redirect_combined_to_split,
     resolve_default_dataset_path,
     save_embedding_cache,
     save_json,
@@ -134,8 +135,11 @@ def main() -> None:
 
     # Determine MC dataset path
     if args.mc_path:
-        mc_path = Path(args.mc_path)
-        dataset_split = split_name_from_path(mc_path)
+        mc_path, dataset_split, mc_warning = redirect_combined_to_split(
+            Path(args.mc_path), preferred_split="val",
+        )
+        if mc_warning:
+            print(mc_warning)
     else:
         mc_path, dataset_split, warning = resolve_default_dataset_path(
             out_dir,

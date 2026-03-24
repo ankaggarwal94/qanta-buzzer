@@ -41,6 +41,7 @@ from scripts._common import (
     load_embedding_cache,
     load_mc_questions,
     parse_overrides,
+    redirect_combined_to_split,
     resolve_default_dataset_path,
     save_embedding_cache,
     save_json,
@@ -119,9 +120,9 @@ def main() -> None:
     out_dir = Path(args.output_dir) if args.output_dir else ARTIFACT_DIR / split
     out_dir.mkdir(parents=True, exist_ok=True)
     if args.mc_path:
-        train_path = Path(args.mc_path)
-        train_split = split_name_from_path(train_path)
-        train_warning = None
+        train_path, train_split, train_warning = redirect_combined_to_split(
+            Path(args.mc_path), preferred_split="train",
+        )
     else:
         train_path, train_split, train_warning = resolve_default_dataset_path(
             out_dir,

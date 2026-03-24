@@ -73,6 +73,7 @@ from scripts._common import (
     load_json,
     load_mc_questions,
     parse_overrides,
+    redirect_combined_to_split,
     resolve_default_dataset_path,
     save_json,
     split_name_from_path,
@@ -166,8 +167,11 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "plots").mkdir(parents=True, exist_ok=True)
     if args.mc_path:
-        mc_path = Path(args.mc_path)
-        eval_split = split_name_from_path(mc_path)
+        mc_path, eval_split, mc_warning = redirect_combined_to_split(
+            Path(args.mc_path), preferred_split="test",
+        )
+        if mc_warning:
+            print(mc_warning)
     else:
         mc_path, eval_split, warning = resolve_default_dataset_path(
             out_dir,
