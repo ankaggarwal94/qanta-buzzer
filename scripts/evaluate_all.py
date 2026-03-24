@@ -287,7 +287,14 @@ def main() -> None:
     print()
 
     print("Running shuffle control...")
-    shuffle_eval = run_shuffle_control_precomputed(precomputed, threshold, alpha)
+    shuffle_eval = run_shuffle_control_precomputed(
+        precomputed, threshold, alpha,
+        reward_mode=reward_mode,
+        wait_penalty=wait_penalty,
+        buzz_correct=buzz_correct,
+        buzz_incorrect=buzz_incorrect,
+        early_buzz_penalty=early_buzz_penalty,
+    )
 
     if alias_lookup:
         print("Running alias substitution control...")
