@@ -227,8 +227,9 @@ def summarize_buzz_metrics(results: list[Any]) -> dict[str, float]:
     Returns
     -------
     dict[str, float]
-        Summary metrics: n, buzz_accuracy, mean_buzz_step, mean_sq,
-        mean_reward_like, and forced/policy-buzz diagnostics.
+        Summary metrics: n, buzz_accuracy, mean_buzz_step (policy
+        buzzes only, excluding forced commits and no-buzz episodes),
+        mean_sq, mean_reward_like, and forced/policy-buzz diagnostics.
     """
     rows = [_to_dict(r) for r in results]
     if not rows:

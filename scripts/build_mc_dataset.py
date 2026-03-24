@@ -220,13 +220,13 @@ def print_statistics(
         avg_questions = sum(len(items) for items in profile_builder._grouped.values()) / len(profile_builder._grouped)
         print(f"Average questions per answer: {avg_questions:.1f}")
 
-    # Guard rejection statistics
-    if mc_builder and hasattr(mc_builder, 'guard_stats'):
-        stats = mc_builder.guard_stats
-        if stats:
+    # Guard rejection statistics (from last_build_stats)
+    if mc_builder and hasattr(mc_builder, 'last_build_stats'):
+        drop_reasons = mc_builder.last_build_stats.get("drop_reasons", {})
+        if drop_reasons:
             print("\nGuard rejection statistics:")
-            for guard_name, count in stats.items():
-                print(f"  {guard_name}: {count} rejections")
+            for reason, count in drop_reasons.items():
+                print(f"  {reason}: {count} rejections")
 
     # Sample MC question
     if train:
