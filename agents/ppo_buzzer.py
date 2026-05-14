@@ -15,7 +15,7 @@ import path adaptations for the unified qanta-buzzer codebase.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -71,21 +71,26 @@ class PPOEpisodeTrace:
         Per-step policy entropy over the full action distribution.
     """
 
+    # Required core fields (legacy shape).
     qid: str
     buzz_step: int
-    buzz_trace_idx: int
     buzz_index: int
     gold_index: int
     correct: bool
-    forced_commit: bool
-    forced_step: int
-    forced_choice: int
-    forced_correct: bool
     episode_reward: float
-    c_trace: list[float]
-    g_trace: list[float]
-    top_p_trace: list[float]
-    entropy_trace: list[float]
+    c_trace: list[float] = field(default_factory=list)
+    g_trace: list[float] = field(default_factory=list)
+    top_p_trace: list[float] = field(default_factory=list)
+    entropy_trace: list[float] = field(default_factory=list)
+    # Forced-commit / trace-index extensions (added 2026-05). Defaults
+    # keep old positional/kwarg constructors working; legacy artifacts
+    # that lack these fields are read with the same sentinels via
+    # ``dict.get(..., default)`` in metrics.py.
+    buzz_trace_idx: int = -1
+    forced_commit: bool = False
+    forced_step: int = -1
+    forced_choice: int = -1
+    forced_correct: bool = False
 
 
 class PPOBuzzer:
@@ -375,7 +380,12 @@ class PPOBuzzer:
         forced_step = -1
         forced_choice = -1
         forced_correct = False
-        sample_rng = np.random.default_rng(seed) if seed is not None else None
+        # Always use a Generator. When ``seed is None`` we still construct
+        # a fresh, independent Generator instead of falling back to the
+        # legacy global ``np.random.choice`` — this keeps stochastic
+        # rollouts deterministic per process and avoids the documented
+        # mixed-RNG-API trap.
+        sample_rng = np.random.default_rng(seed)
 
         while not (terminated or truncated):
             probs = self.action_probabilities(obs)
@@ -403,10 +413,7 @@ class PPOBuzzer:
             if deterministic:
                 action = int(np.argmax(probs))
             else:
-                if sample_rng is not None:
-                    action = int(sample_rng.choice(len(probs), p=probs))
-                else:
-                    action = int(np.random.choice(len(probs), p=probs))
+                action = int(sample_rng.choice(len(probs), p=probs))
 
             obs, reward, terminated, truncated, step_info = self.env.step(action)
             total_reward += reward

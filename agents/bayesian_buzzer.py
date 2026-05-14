@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -17,16 +17,20 @@ if TYPE_CHECKING:
 
 @dataclass
 class SoftmaxEpisodeResult:
+    # Required core fields (legacy shape).
     qid: str
     buzz_step: int
     buzz_index: int
     gold_index: int
     correct: bool
-    reward_like: float
-    c_trace: list[float]
-    g_trace: list[float]
-    top_p_trace: list[float]
-    entropy_trace: list[float]
+    c_trace: list[float] = field(default_factory=list)
+    g_trace: list[float] = field(default_factory=list)
+    top_p_trace: list[float] = field(default_factory=list)
+    entropy_trace: list[float] = field(default_factory=list)
+    # Reward-replay parity extension (added 2026-05). Default 0.0 keeps
+    # legacy positional callers working; downstream metrics read this
+    # via dict.get('reward_like', 0.0).
+    reward_like: float = 0.0
 
 
 class SoftmaxProfileBuzzer:

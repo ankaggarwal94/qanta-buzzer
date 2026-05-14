@@ -360,6 +360,13 @@ class TestRunEpisode:
         assert trace.buzz_trace_idx == -1
         assert trace.buzz_index == -1
         assert trace.correct is False
+        # ``forced_*`` sentinels must stay at their defaults on no_buzz
+        # truncation; otherwise ``forced_commit_rate`` and
+        # ``overall_outcome_accuracy`` shift silently.
+        assert trace.forced_commit is False
+        assert trace.forced_step == -1
+        assert trace.forced_choice == -1
+        assert trace.forced_correct is False
 
     def test_run_episode_force_commit_stays_distinct_from_policy_buzz(
         self, sample_mc_question: MCQuestion
@@ -389,6 +396,36 @@ class TestRunEpisode:
         assert trace.forced_commit is True
         assert trace.forced_step >= 0
         assert trace.forced_choice >= 0
+        # ``forced_correct`` is sourced from env step_info and must
+        # follow the env's gold/forced-choice equality, not be hand-rolled.
+        assert trace.forced_correct == (
+            trace.forced_choice == sample_mc_question.gold_index
+        )
+
+    def test_ppo_episode_trace_legacy_construction_still_works(
+        self,
+    ) -> None:
+        """Legacy callers that build PPOEpisodeTrace without the new
+        forced_* / buzz_trace_idx fields must continue to work; the new
+        fields carry safe defaults so positional/kwarg callers from
+        before 2026-05 do not break."""
+        trace = PPOEpisodeTrace(
+            qid="legacy_q",
+            buzz_step=0,
+            buzz_index=2,
+            gold_index=2,
+            correct=True,
+            episode_reward=1.0,
+            c_trace=[0.1],
+            g_trace=[0.5],
+            top_p_trace=[0.9],
+            entropy_trace=[0.2],
+        )
+        assert trace.buzz_trace_idx == -1
+        assert trace.forced_commit is False
+        assert trace.forced_step == -1
+        assert trace.forced_choice == -1
+        assert trace.forced_correct is False
 
 
 # ------------------------------------------------------------------ #
