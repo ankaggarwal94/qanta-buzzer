@@ -167,12 +167,14 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "plots").mkdir(parents=True, exist_ok=True)
     if args.mc_path:
+        requested_mc_path = Path(args.mc_path)
         mc_path, eval_split, mc_warning = redirect_combined_to_split(
-            Path(args.mc_path), preferred_split="test",
+            requested_mc_path, preferred_split="test",
         )
         if mc_warning:
             print(mc_warning)
     else:
+        requested_mc_path = None
         mc_path, eval_split, warning = resolve_default_dataset_path(
             out_dir,
             preferred_split="test",
@@ -203,10 +205,13 @@ def main() -> None:
         alias_lookup = {}
 
     # Build TF-IDF from train split even when evaluating on held-out data.
+    # Initialize likelihood_questions explicitly so the fallback branch
+    # never depends on Python's short-circuit ``or`` evaluation order.
     train_path = mc_path.parent / "train_dataset.json"
+    likelihood_questions: list = []
     if train_path.exists():
         likelihood_questions = load_mc_questions(train_path)
-    if not train_path.exists() or not likelihood_questions:
+    if not likelihood_questions:
         likelihood_questions = mc_questions
         print(
             "Building likelihood model: "
@@ -227,12 +232,33 @@ def main() -> None:
     threshold = pick_best_softmax_threshold(out_dir, default_threshold=default_threshold)
     print(f"Using best softmax threshold: {threshold}")
 
+    # Honor the documented ``environment.reward`` alias for ``reward_mode``.
+    # ``make_env_from_config`` reads both keys; offline reward replay must
+    # match or baselines/eval will diverge from the env on CLI overrides.
     env_cfg = config.get("environment", {})
-    reward_mode = str(env_cfg.get("reward_mode", "time_penalty"))
+    reward_mode = str(env_cfg.get("reward", env_cfg.get("reward_mode", "time_penalty")))
     wait_penalty = float(env_cfg.get("wait_penalty", 0.0))
     buzz_correct = float(env_cfg.get("buzz_correct", 1.0))
     buzz_incorrect = float(env_cfg.get("buzz_incorrect", -0.5))
     early_buzz_penalty = float(env_cfg.get("early_buzz_penalty", 0.0))
+
+    # Batch-encode every text the env will ever score before computing
+    # beliefs (mirrors run_baselines.py). For SBERT / T5 likelihoods
+    # this turns ~N×~10 single-shot encoder calls into batches of 64.
+    # TF-IDF ``precompute_embeddings`` is a no-op.
+    _all_eval_texts: list[str] = []
+    for q in mc_questions:
+        _all_eval_texts.extend(q.cumulative_prefixes)
+        _all_eval_texts.extend(q.option_profiles)
+        for step_idx in range(len(q.run_indices)):
+            prev_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
+            _all_eval_texts.append(
+                " ".join(q.tokens[prev_idx + 1 : q.run_indices[step_idx] + 1])
+            )
+    print(
+        f"Pre-computing embeddings for {len(set(_all_eval_texts)):,} unique texts..."
+    )
+    likelihood_model.precompute_embeddings(_all_eval_texts, batch_size=64)
 
     # Precompute beliefs once (single pass of likelihood_model.score())
     print("Precomputing beliefs...")
@@ -429,8 +455,24 @@ def main() -> None:
         }
 
     # --- Build evaluation report ---
-    ppo_summary_for_report = ppo_test_summary or ppo_validation_summary
+    # Disambiguate which summary the legacy ``ppo_summary`` key carries so
+    # downstream consumers (poster/presentation generators) can branch
+    # safely instead of inferring split semantics from ``eval_split``.
+    if ppo_test_summary:
+        ppo_summary_for_report = ppo_test_summary
+        ppo_summary_source = "test"
+    elif ppo_validation_summary:
+        ppo_summary_for_report = ppo_validation_summary
+        ppo_summary_source = "validation"
+    else:
+        ppo_summary_for_report = {}
+        ppo_summary_source = "missing"
     report = {
+        # ``schema_version`` 2 indicates policy-buzz-only buzz_accuracy and
+        # mean_buzz_step semantics in ``summarize_buzz_metrics``; consumers
+        # that need pre-2026-05 semantics can read ``overall_outcome_accuracy``
+        # or the raw ``runs`` traces.
+        "schema_version": 2,
         "softmax_profile_best_threshold": threshold,
         "full_eval": {k: v for k, v in full_eval.items() if k != "runs"},
         "controls": {
@@ -451,15 +493,20 @@ def main() -> None:
                 "eval_split", "legacy/unknown"
             ),
             "ppo_test_split": ppo_test_summary.get("eval_split"),
+            "requested_mc_path": (
+                str(requested_mc_path) if requested_mc_path is not None else None
+            ),
+            "resolved_mc_path": str(mc_path),
         },
         "baseline_summary": baseline_summary,
         "ppo_validation_summary": ppo_validation_summary,
         "ppo_test_summary": ppo_test_summary,
         "ppo_summary": ppo_summary_for_report,
+        "ppo_summary_source": ppo_summary_source,
     }
 
     # Add Expected Wins summary only when that reward mode is active
-    if config.get("environment", {}).get("reward_mode") == "expected_wins":
+    if reward_mode == "expected_wins":
         from evaluation.metrics import expected_wins_score
         from qb_env.opponent_models import build_opponent_model_from_config
 

@@ -135,12 +135,14 @@ def main() -> None:
 
     # Determine MC dataset path
     if args.mc_path:
+        requested_mc_path = Path(args.mc_path)
         mc_path, dataset_split, mc_warning = redirect_combined_to_split(
-            Path(args.mc_path), preferred_split="val",
+            requested_mc_path, preferred_split="val",
         )
         if mc_warning:
             print(mc_warning)
     else:
+        requested_mc_path = None
         mc_path, dataset_split, warning = resolve_default_dataset_path(
             out_dir,
             preferred_split="val",
@@ -163,10 +165,13 @@ def main() -> None:
     print(f"Loaded {len(mc_questions)} MC questions")
 
     # Build TF-IDF from train split even when selecting thresholds on val/test.
+    # Initialize likelihood_questions explicitly so the fallback branch
+    # never depends on Python's short-circuit ``or`` evaluation order.
     train_path = mc_path.parent / "train_dataset.json"
+    likelihood_questions: list = []
     if train_path.exists():
         likelihood_questions = load_mc_questions(train_path)
-    if not train_path.exists() or not likelihood_questions:
+    if not likelihood_questions:
         likelihood_questions = mc_questions
         print(
             "Building likelihood model: "
@@ -186,8 +191,9 @@ def main() -> None:
     beta = float(config["likelihood"].get("beta", 5.0))
     alpha = float(config["bayesian"].get("alpha", 10.0))
     thresholds = [float(x) for x in config["bayesian"]["threshold_sweep"]]
+    # Honor the documented ``environment.reward`` alias for ``reward_mode``.
     env_cfg = config.get("environment", {})
-    reward_mode = str(env_cfg.get("reward_mode", "time_penalty"))
+    reward_mode = str(env_cfg.get("reward", env_cfg.get("reward_mode", "time_penalty")))
     wait_penalty = float(env_cfg.get("wait_penalty", 0.0))
     buzz_correct = float(env_cfg.get("buzz_correct", 1.0))
     buzz_incorrect = float(env_cfg.get("buzz_incorrect", -0.5))
@@ -313,13 +319,24 @@ def main() -> None:
     save_json(out_dir / "baseline_floor_runs.json", floor_runs)
 
     summary = {
+        # ``schema_version`` 2 indicates policy-buzz-only buzz_accuracy and
+        # mean_buzz_step semantics from ``summarize_buzz_metrics``.
+        "schema_version": 2,
         "threshold": threshold_summary,
         "softmax_profile": softmax_summary,
         "sequential_bayes": sequential_summary,
         "always_final": floor_summary,
         "dataset_split": dataset_split,
         "selection_metric": "mean_sq",
+        "reward_mode": reward_mode,
         "reward_supported": reward_mode in {"time_penalty", "simple"},
+        # Persist what the user invoked vs. what was actually loaded so
+        # comparisons across runs can detect silent mc_path redirects.
+        "requested_mc_path": (
+            str(requested_mc_path) if requested_mc_path is not None else None
+        ),
+        "resolved_mc_path": str(mc_path),
+        "likelihood_model": str(config.get("likelihood", {}).get("model", "")),
     }
     save_json(out_dir / "baseline_summary.json", summary)
 

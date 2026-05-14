@@ -64,7 +64,16 @@ def redirect_combined_to_split(
             f"redirecting to sibling {sibling.name} for split-safe {preferred_split} usage."
         )
         return sibling, preferred_split, warning
-    return mc_path, "combined", None
+    # Sibling is missing — fall through to the combined artifact, but warn
+    # loudly. Callers print this string; silent fallback was the upstream
+    # of multiple split-leakage findings in the 2026-05 review.
+    warning = (
+        f"Warning: --mc-path points to combined artifact {mc_path.name} and "
+        f"no sibling {sibling.name} was found; using combined corpus. "
+        f"Split-safety is NOT guaranteed for {preferred_split} usage; "
+        "build the sibling split next to mc_dataset.json for a clean run."
+    )
+    return mc_path, "combined", warning
 
 
 def _parse_value(value: str) -> Any:
