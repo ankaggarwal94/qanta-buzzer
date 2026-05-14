@@ -15,7 +15,7 @@ import path adaptations for the unified qanta-buzzer codebase.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -71,7 +71,8 @@ class PPOEpisodeTrace:
         Per-step policy entropy over the full action distribution.
     """
 
-    # Required core fields (legacy shape).
+    # Required core fields (legacy shape; positional construction
+    # preserved for callers that match the pre-2026-05 signature).
     qid: str
     buzz_step: int
     buzz_index: int
@@ -82,10 +83,14 @@ class PPOEpisodeTrace:
     g_trace: list[float] = field(default_factory=list)
     top_p_trace: list[float] = field(default_factory=list)
     entropy_trace: list[float] = field(default_factory=list)
-    # Forced-commit / trace-index extensions (added 2026-05). Defaults
-    # keep old positional/kwarg constructors working; legacy artifacts
-    # that lack these fields are read with the same sentinels via
-    # ``dict.get(..., default)`` in metrics.py.
+    # Forced-commit / trace-index extensions (added 2026-05) are
+    # keyword-only so positional callers that match the legacy field
+    # order continue to work and callers that matched any intermediate
+    # ordering get a ``TypeError`` instead of silently mis-binding
+    # into ``buzz_index``. Legacy artifacts that lack these fields
+    # are read with the same sentinels via ``dict.get(..., default)``
+    # in metrics.py.
+    _: KW_ONLY
     buzz_trace_idx: int = -1
     forced_commit: bool = False
     forced_step: int = -1
@@ -380,11 +385,12 @@ class PPOBuzzer:
         forced_step = -1
         forced_choice = -1
         forced_correct = False
-        # Always use a Generator. When ``seed is None`` we still construct
-        # a fresh, independent Generator instead of falling back to the
-        # legacy global ``np.random.choice`` — this keeps stochastic
-        # rollouts deterministic per process and avoids the documented
-        # mixed-RNG-API trap.
+        # Always use a Generator. When ``seed is None``,
+        # ``np.random.default_rng`` draws fresh OS entropy, so the
+        # Generator is independent per call but NOT deterministic;
+        # the win is that we avoid mutating the global ``np.random``
+        # state (the documented mixed-RNG-API trap). Pass an explicit
+        # ``seed`` for reproducibility.
         sample_rng = np.random.default_rng(seed)
 
         while not (terminated or truncated):

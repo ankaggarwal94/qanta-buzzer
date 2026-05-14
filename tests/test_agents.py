@@ -551,7 +551,7 @@ class TestEpisodeResultSchema:
 
         Regression for the dataclass-defaults migration (2026-05): the
         new ``reward_like`` field must have a default so old code
-        (positional or kwargs) keeps working.
+        keeps working with kwargs.
         """
         result = SoftmaxEpisodeResult(
             qid="legacy_q",
@@ -565,6 +565,40 @@ class TestEpisodeResultSchema:
             entropy_trace=[0.4],
         )
         assert result.reward_like == 0.0
+
+    def test_softmax_episode_result_legacy_positional_construction_still_works(
+        self,
+    ) -> None:
+        """Positional construction matching the pre-2026-05 field order
+        must bind correctly. ``reward_like`` is keyword-only so it
+        cannot silently capture a positional arg intended for
+        ``c_trace`` if a caller targeted any intermediate ordering."""
+        result = SoftmaxEpisodeResult(
+            "legacy_q",      # qid
+            1,               # buzz_step
+            0,               # buzz_index
+            0,               # gold_index
+            True,            # correct
+            [0.5],           # c_trace
+            [1.0],           # g_trace
+            [0.8],           # top_p_trace
+            [0.4],           # entropy_trace
+        )
+        assert result.qid == "legacy_q"
+        assert result.c_trace == [0.5]
+        assert result.entropy_trace == [0.4]
+        assert result.reward_like == 0.0  # default
+
+    def test_softmax_episode_result_rejects_positional_reward_like(self) -> None:
+        """Building SoftmaxEpisodeResult positionally with a 10th arg
+        intended for ``reward_like`` must raise rather than silently
+        mis-bind (KW_ONLY guard)."""
+        with pytest.raises(TypeError):
+            SoftmaxEpisodeResult(
+                "q", 1, 0, 0, True,
+                [0.5], [1.0], [0.8], [0.4],
+                0.7,  # would have silently become reward_like in some intermediate orderings
+            )
 
     def test_traces_same_length(
         self, sample_mc_question: MCQuestion, sample_corpus: list[str]

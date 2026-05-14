@@ -407,8 +407,8 @@ class TestRunEpisode:
     ) -> None:
         """Legacy callers that build PPOEpisodeTrace without the new
         forced_* / buzz_trace_idx fields must continue to work; the new
-        fields carry safe defaults so positional/kwarg callers from
-        before 2026-05 do not break."""
+        fields carry safe defaults so kwarg callers from before 2026-05
+        do not break."""
         trace = PPOEpisodeTrace(
             qid="legacy_q",
             buzz_step=0,
@@ -426,6 +426,50 @@ class TestRunEpisode:
         assert trace.forced_step == -1
         assert trace.forced_choice == -1
         assert trace.forced_correct is False
+
+    def test_ppo_episode_trace_legacy_positional_construction_still_works(
+        self,
+    ) -> None:
+        """Positional callers that match the pre-2026-05 field order
+        must continue to bind correctly. The new ``forced_*`` /
+        ``buzz_trace_idx`` fields are keyword-only (via ``KW_ONLY``)
+        so they cannot silently capture a positional arg intended for
+        ``buzz_index``.
+        """
+        trace = PPOEpisodeTrace(
+            "legacy_q",          # qid
+            0,                   # buzz_step
+            2,                   # buzz_index
+            2,                   # gold_index
+            True,                # correct
+            1.0,                 # episode_reward
+            [0.1],               # c_trace
+            [0.5],               # g_trace
+            [0.9],               # top_p_trace
+            [0.2],               # entropy_trace
+        )
+        assert trace.qid == "legacy_q"
+        assert trace.buzz_index == 2
+        assert trace.episode_reward == 1.0
+        assert trace.c_trace == [0.1]
+        assert trace.entropy_trace == [0.2]
+        # Forced-commit fields default to sentinels.
+        assert trace.buzz_trace_idx == -1
+        assert trace.forced_commit is False
+
+    def test_ppo_episode_trace_rejects_positional_forced_fields(
+        self,
+    ) -> None:
+        """Building PPOEpisodeTrace positionally with the 11th+ args
+        intended for the new forced_* fields must raise rather than
+        silently mis-bind."""
+        import pytest as _pytest
+        with _pytest.raises(TypeError):
+            PPOEpisodeTrace(
+                "q", 0, 2, 2, True, 1.0,
+                [0.1], [0.5], [0.9], [0.2],
+                7,  # would have silently become buzz_trace_idx
+            )
 
 
 # ------------------------------------------------------------------ #
