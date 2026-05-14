@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import json
+import random
 import sys
 import time
 from dataclasses import asdict, is_dataclass
@@ -170,7 +171,8 @@ def print_statistics(
     val: List[MCQuestion],
     test: List[MCQuestion],
     profile_builder: Optional[AnswerProfileBuilder] = None,
-    mc_builder: Optional[MCBuilder] = None
+    mc_builder: Optional[MCBuilder] = None,
+    build_stats: Optional[dict[str, dict[str, Any]]] = None,
 ) -> None:
     """
     Print dataset statistics.
@@ -186,7 +188,14 @@ def print_statistics(
     profile_builder : Optional[AnswerProfileBuilder]
         Answer profile builder for profile stats
     mc_builder : Optional[MCBuilder]
-        MC builder for guard rejection stats
+        Legacy MC builder for guard rejection stats. When ``build_stats``
+        is provided, ``build_stats`` is preferred and ``mc_builder`` is
+        ignored to avoid the stale-shared-reference bug that can occur
+        when the same MCBuilder is reused across splits.
+    build_stats : Optional[dict[str, dict[str, Any]]]
+        Per-split snapshots of ``MCBuilder.last_build_stats``, keyed by
+        split name. When provided, drop-reason rows are printed per
+        split so val/test rejections are no longer hidden.
     """
     print("\n" + "="*60)
     print("Dataset Construction Complete")
@@ -220,8 +229,23 @@ def print_statistics(
         avg_questions = sum(len(items) for items in profile_builder._grouped.values()) / len(profile_builder._grouped)
         print(f"Average questions per answer: {avg_questions:.1f}")
 
-    # Guard rejection statistics (from last_build_stats)
-    if mc_builder and hasattr(mc_builder, 'last_build_stats'):
+    # Guard rejection statistics. ``build_stats`` (per-split snapshots)
+    # is the canonical source; ``mc_builder`` is only used when no
+    # snapshot is supplied (legacy single-builder callers).
+    if build_stats:
+        any_drops = any(
+            stats.get("drop_reasons", {}) for stats in build_stats.values()
+        )
+        if any_drops:
+            print("\nGuard rejection statistics:")
+            for split_name, stats in build_stats.items():
+                drop_reasons = stats.get("drop_reasons", {})
+                if not drop_reasons:
+                    continue
+                print(f"  {split_name}:")
+                for reason, count in drop_reasons.items():
+                    print(f"    {reason}: {count} rejections")
+    elif mc_builder and hasattr(mc_builder, 'last_build_stats'):
         drop_reasons = mc_builder.last_build_stats.get("drop_reasons", {})
         if drop_reasons:
             print("\nGuard rejection statistics:")
@@ -323,20 +347,29 @@ def main(argv: Optional[list[str]] = None):
     }
     built_splits: dict[str, list[MCQuestion]] = {}
     build_stats: dict[str, dict[str, Any]] = {}
-    builders: dict[str, MCBuilder] = {}
+    # Share a single MCBuilder across splits so the per-reference-corpus
+    # ranking cache (added 2026-05) is reused for val/test — the SBERT /
+    # TF-IDF encoder pass over ~20k answer profiles otherwise runs three
+    # times against the identical ``raw_train`` reference corpus. Reset
+    # the shared rng between splits so each split's distractor-fallback
+    # randomness matches the legacy "fresh-MCBuilder-per-split" behaviour.
+    # ``last_build_stats`` mutates between iterations; snapshot it with
+    # ``dict(...)`` into ``build_stats`` so per-split drop_reasons survive
+    # subsequent ``build()`` calls.
+    shared_builder = make_mc_builder(config)
+    legacy_seed = 13
     for split_name, target_questions in split_targets.items():
-        builder = make_mc_builder(config)
-        built = builder.build(
+        shared_builder.rng = random.Random(legacy_seed)
+        built = shared_builder.build(
             target_questions,
             profile_builder,
             reference_questions=raw_train,
         )
         built_splits[split_name] = built
-        build_stats[split_name] = builder.last_build_stats
-        builders[split_name] = builder
+        build_stats[split_name] = dict(shared_builder.last_build_stats)
         print(
             f"  {split_name}: kept {len(built)}/{len(target_questions)} "
-            f"({builder.last_build_stats.get('retention_rate', 0.0):.1%})"
+            f"({shared_builder.last_build_stats.get('retention_rate', 0.0):.1%})"
         )
 
     train = built_splits["train"]
@@ -387,8 +420,17 @@ def main(argv: Optional[list[str]] = None):
             json.dump(profiles_dict, f, indent=2)
         print(f"Saved answer profiles to {output_dir / 'answer_profiles.json'}")
 
-    # Print statistics
-    print_statistics(train, val, test, profile_builder, builders["train"])
+    # Print statistics. Pass ``build_stats`` (snapshots taken right after
+    # each split was built) rather than ``builders["train"]``, which now
+    # aliases the shared MCBuilder whose ``last_build_stats`` reflects
+    # whichever split was built last.
+    print_statistics(
+        train,
+        val,
+        test,
+        profile_builder=profile_builder,
+        build_stats=build_stats,
+    )
 
     # Print timing
     elapsed = time.time() - start_time

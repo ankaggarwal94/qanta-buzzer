@@ -116,6 +116,19 @@ class MCBuilder:
         self.embedding_model = embedding_model
         self.openai_model = openai_model
         self.last_build_stats: Dict[str, Any] = {}
+        # Cache of (answer_to_aliases, answer_to_category, answers,
+        # answer_profiles, rankings) keyed by the frozenset of reference
+        # qids. The expensive ``_compute_rankings`` call (TF-IDF / SBERT /
+        # OpenAI encoding over ~20k answer profiles) is shared across
+        # split invocations of ``build()`` when ``reference_questions``
+        # is identical. Only profile-based strategies are cached because
+        # the ``category_random`` branch of ``_compute_rankings`` consumes
+        # ``self.rng`` (one ``shuffle`` per answer); skipping it on cache
+        # hits would put the rng into a different state than fresh-per-
+        # split callers expect, silently changing per-question option
+        # ordering on val/test.
+        self._ref_cache_key: frozenset = frozenset()
+        self._ref_cache: Optional[Dict[str, Any]] = None
 
     def _prepare_lookup(
         self, questions: List[TossupQuestion]
@@ -372,18 +385,54 @@ class MCBuilder:
         ref_questions = questions if reference_questions is None else list(reference_questions)
 
         # ref_questions defaults to the target questions for convenience.
-        # When callers supply an explicit reference corpus, we still refit so
-        # stale cached groupings cannot leak the wrong answer universe into
-        # ranking/profile building.
+        # ``AnswerProfileBuilder.fit`` is a no-op when ``qid_set`` already
+        # matches the cached fit, so we can call it on every build to keep
+        # the builder's invariant local and the cache check explicit.
         profile_builder.fit(ref_questions)
 
-        answer_profiles = profile_builder.build_profiles(ref_questions)
-
-        # Prepare lookup structures
-        answer_to_aliases, answer_to_category, _answer_to_norm, answers = self._prepare_lookup(ref_questions)
-
-        # Compute distractor rankings
-        rankings = self._compute_rankings(answers, answer_profiles, answer_to_category)
+        # Cache the per-reference-corpus heavy work so back-to-back
+        # ``build()`` calls with identical ``reference_questions`` (the
+        # common case in ``scripts/build_mc_dataset.py`` which iterates
+        # train/val/test against the same raw_train) do not redo the
+        # SBERT / TF-IDF encoder pass.
+        #
+        # ``category_random`` is excluded from the cache because its
+        # ``_compute_rankings`` branch calls ``self.rng.shuffle`` once
+        # per answer. Reusing a cached ``rankings`` dict would skip
+        # those draws and leave ``self.rng`` in a different state than
+        # fresh-per-split callers (the legacy behaviour) — silently
+        # changing val/test option ordering and the distractor-fallback
+        # path. Encoder-bound strategies are deterministic w.r.t. rng,
+        # so caching them is safe and gives the full perf win.
+        ref_key = frozenset(q.qid for q in ref_questions)
+        cacheable = self.strategy != "category_random"
+        if (
+            not cacheable
+            or self._ref_cache is None
+            or self._ref_cache_key != ref_key
+        ):
+            answer_profiles = profile_builder.build_profiles(ref_questions)
+            answer_to_aliases, answer_to_category, _answer_to_norm, answers = (
+                self._prepare_lookup(ref_questions)
+            )
+            rankings = self._compute_rankings(
+                answers, answer_profiles, answer_to_category
+            )
+            if cacheable:
+                self._ref_cache = {
+                    "answer_to_aliases": answer_to_aliases,
+                    "answer_to_category": answer_to_category,
+                    "answers": answers,
+                    "answer_profiles": answer_profiles,
+                    "rankings": rankings,
+                }
+                self._ref_cache_key = ref_key
+        else:
+            answer_to_aliases = self._ref_cache["answer_to_aliases"]
+            answer_to_category = self._ref_cache["answer_to_category"]
+            answers = self._ref_cache["answers"]
+            answer_profiles = self._ref_cache["answer_profiles"]
+            rankings = self._ref_cache["rankings"]
 
         mc_questions: List[MCQuestion] = []
         drop_reasons: Dict[str, int] = defaultdict(int)
