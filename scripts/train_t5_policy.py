@@ -35,7 +35,15 @@ if str(PROJECT_ROOT) not in sys.path:
 import yaml
 
 from qb_data.config import merge_overrides
-from scripts._common import ARTIFACT_DIR, load_mc_questions, parse_overrides
+from scripts._common import (
+    ARTIFACT_DIR,
+    PROCESSED_DIR,
+    dataset_path_for_split,
+    load_mc_questions,
+    parse_overrides,
+    resolve_persisted_split_paths,
+    save_json,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -208,8 +216,13 @@ def flatten_config(config: dict) -> dict:
     return flat
 
 
-def load_questions(args: argparse.Namespace, config: dict) -> list:
-    """Load MC questions from file or fallback paths.
+def load_questions(
+    args: argparse.Namespace,
+    config: dict,
+    *,
+    return_path: bool = False,
+) -> list | tuple[list, Path]:
+    """Load a combined MC dataset when persisted splits are unavailable.
 
     Parameters
     ----------
@@ -220,24 +233,18 @@ def load_questions(args: argparse.Namespace, config: dict) -> list:
 
     Returns
     -------
-    list
-        List of MCQuestion instances.
+    list or tuple[list, Path]
+        Loaded MCQuestion instances, and optionally the resolved path.
     """
     if args.mc_path:
         mc_path = Path(args.mc_path)
     else:
-        # Try standard locations
-        candidates = [
-            ARTIFACT_DIR / "main" / "mc_dataset.json",
-            ARTIFACT_DIR / "smoke" / "mc_dataset.json",
-            PROJECT_ROOT / "data" / "processed" / "mc_dataset.json",
-        ]
-        mc_path = None
-        for candidate in candidates:
-            if candidate.exists():
-                mc_path = candidate
-                break
-
+        candidates = (
+            [ARTIFACT_DIR / "smoke" / "mc_dataset.json", ARTIFACT_DIR / "main" / "mc_dataset.json"]
+            if args.smoke
+            else [ARTIFACT_DIR / "main" / "mc_dataset.json", ARTIFACT_DIR / "smoke" / "mc_dataset.json"]
+        ) + [PROCESSED_DIR / "mc_dataset.json"]
+        mc_path = next((candidate for candidate in candidates if candidate.exists()), None)
         if mc_path is None:
             print("ERROR: No MC dataset found. Run build_mc_dataset.py first.")
             print("Searched locations:")
@@ -249,13 +256,212 @@ def load_questions(args: argparse.Namespace, config: dict) -> list:
     questions = load_mc_questions(mc_path)
     print(f"Loaded {len(questions)} questions")
 
-    # Apply max_questions limit (smoke mode)
+    # Apply max_questions limit when falling back to a combined dataset.
     max_questions = config.get("data", {}).get("max_questions", None)
     if max_questions and len(questions) > max_questions:
         questions = questions[:max_questions]
-        print(f"Limited to {max_questions} questions (smoke mode)")
+        print(f"Limited to {max_questions} questions (data.max_questions)")
 
+    if return_path:
+        return questions, Path(mc_path)
     return questions
+
+
+def _build_split_manifest(
+    *,
+    source: str,
+    mc_path: str | None,
+    train_questions: list,
+    val_questions: list,
+    test_questions: list,
+    train_path: str | None = None,
+    val_path: str | None = None,
+    test_path: str | None = None,
+    config: dict | None = None,
+) -> dict:
+    """Build a split-manifest payload for persisted provenance."""
+    qid = lambda q: getattr(q, "qid", str(q))
+    manifest = {
+        "source": source,
+        "mc_path": mc_path,
+        "train_path": train_path,
+        "val_path": val_path,
+        "test_path": test_path,
+        "train_qids": [qid(q) for q in train_questions],
+        "val_qids": [qid(q) for q in val_questions],
+        "test_qids": [qid(q) for q in test_questions],
+    }
+    total = len(train_questions) + len(val_questions) + len(test_questions)
+    manifest.update(
+        {
+            "train_count": len(train_questions),
+            "val_count": len(val_questions),
+            "test_count": len(test_questions),
+            "effective_train_ratio": len(train_questions) / max(1, total),
+            "effective_val_ratio": len(val_questions) / max(1, total),
+            "effective_test_ratio": len(test_questions) / max(1, total),
+        }
+    )
+    if source == "random_split_fallback":
+        data = (config or {}).get("data", {})
+        manifest["split_seed"] = int(data.get("seed", data.get("shuffle_seed", 42)))
+    return manifest
+
+
+def _apply_max_questions(
+    train: list, val: list, test: list,
+    max_q: int, scope: str,
+) -> tuple[list, list, list]:
+    """Apply max_questions cap to split question lists.
+
+    Parameters
+    ----------
+    scope : str
+        ``"global"`` distributes the cap proportionally across splits,
+        guaranteeing at least one item per non-empty split.
+        ``"per_split"`` truncates each split independently (legacy).
+    """
+    if scope == "per_split":
+        return train[:max_q], val[:max_q], test[:max_q]
+    total = len(train) + len(val) + len(test)
+    if total <= max_q:
+        return train, val, test
+    splits = [("train", train), ("val", val), ("test", test)]
+    non_empty = [(name, s) for name, s in splits if s]
+    if max_q < len(non_empty):
+        result = {"train": [], "val": [], "test": []}
+        for i, (name, s) in enumerate(non_empty):
+            result[name] = s[:1] if i < max_q else []
+        return result["train"], result["val"], result["test"]
+    budget = max_q
+    allocated = {name: 1 for name, _ in non_empty}
+    budget -= len(non_empty)
+    remainder_total = sum(len(s) - 1 for _, s in non_empty)
+    if remainder_total > 0:
+        fracs = {name: (len(s) - 1) / remainder_total for name, s in non_empty}
+        raw = {name: fracs[name] * budget for name in fracs}
+        floors = {name: int(raw[name]) for name in raw}
+        remainders = sorted(raw.keys(), key=lambda n: raw[n] - floors[n], reverse=True)
+        used = sum(floors.values())
+        for name in remainders:
+            if used >= budget:
+                break
+            floors[name] += 1
+            used += 1
+        for name in floors:
+            allocated[name] += floors[name]
+    result_map = {name: s[:allocated.get(name, 0)] for name, s in splits}
+    print(
+        f"  max_questions={max_q} (scope={scope}): "
+        f"{len(result_map['train'])} train, "
+        f"{len(result_map['val'])} val, "
+        f"{len(result_map['test'])} test"
+    )
+    return result_map["train"], result_map["val"], result_map["test"]
+
+
+def load_question_splits_with_metadata(
+    args: argparse.Namespace, config: dict
+) -> tuple[list, list, list, dict]:
+    """Load persisted train/val/test artifacts when available.
+
+    Resolution order:
+    1. If ``--mc-path`` is given, inspect its parent directory for sibling
+       ``train_dataset.json``, ``val_dataset.json``, and ``test_dataset.json``.
+    2. Otherwise search the standard artifact directories, preferring the
+       smoke directory in smoke mode and the main directory otherwise.
+    3. Fall back to loading a combined ``mc_dataset.json`` and performing the
+       legacy in-memory random split.
+    """
+    if args.mc_path:
+        candidate_dirs = [Path(args.mc_path).parent]
+    elif args.smoke:
+        candidate_dirs = [
+            ARTIFACT_DIR / "smoke",
+            ARTIFACT_DIR / "main",
+            PROCESSED_DIR,
+        ]
+    else:
+        candidate_dirs = [
+            ARTIFACT_DIR / "main",
+            ARTIFACT_DIR / "smoke",
+            PROCESSED_DIR,
+        ]
+
+    data_cfg = (config or {}).get("data", {})
+    max_questions = data_cfg.get("max_questions", None)
+    max_questions_scope = str(data_cfg.get("max_questions_scope", "global"))
+
+    for base_dir in candidate_dirs:
+        split_paths = resolve_persisted_split_paths(base_dir)
+        if split_paths is None:
+            continue
+        train_questions = load_mc_questions(split_paths["train"])
+        if not train_questions:
+            print(
+                f"Warning: persisted train split at {split_paths['train']} "
+                "is empty; skipping this candidate and trying next."
+            )
+            continue
+        val_questions = load_mc_questions(split_paths["val"])
+        test_questions = load_mc_questions(split_paths["test"])
+        if max_questions:
+            train_questions, val_questions, test_questions = _apply_max_questions(
+                train_questions, val_questions, test_questions,
+                max_questions, max_questions_scope,
+            )
+        print(
+            "Using persisted dataset splits from "
+            f"{base_dir}: {len(train_questions)} train, "
+            f"{len(val_questions)} val, {len(test_questions)} test"
+        )
+        combined_path = dataset_path_for_split(base_dir, "combined")
+        manifest = _build_split_manifest(
+            source="persisted_artifacts",
+            mc_path=(
+                str(combined_path)
+                if combined_path.exists()
+                else (str(args.mc_path) if args.mc_path else None)
+            ),
+            train_questions=train_questions,
+            val_questions=val_questions,
+            test_questions=test_questions,
+            train_path=str(split_paths["train"].resolve()),
+            val_path=str(split_paths["val"].resolve()),
+            test_path=str(split_paths["test"].resolve()),
+        )
+        return train_questions, val_questions, test_questions, manifest
+
+    if args.mc_path:
+        print(
+            "Warning: persisted train/val/test artifacts were not found "
+            f"alongside {args.mc_path}; falling back to an internal random split."
+        )
+    else:
+        print(
+            "Warning: persisted train/val/test artifacts were not found in "
+            "standard locations; falling back to an internal random split."
+        )
+
+    questions, combined_path = load_questions(args, config, return_path=True)
+    train_questions, val_questions, test_questions = split_questions(questions, config)
+    manifest = _build_split_manifest(
+        source="random_split_fallback",
+        mc_path=str(combined_path),
+        train_questions=train_questions,
+        val_questions=val_questions,
+        test_questions=test_questions,
+        config=config,
+    )
+    return train_questions, val_questions, test_questions, manifest
+
+
+def load_question_splits(args: argparse.Namespace, config: dict) -> tuple[list, list, list]:
+    """Backward-compatible wrapper returning only the split question lists."""
+    train_questions, val_questions, test_questions, _manifest = (
+        load_question_splits_with_metadata(args, config)
+    )
+    return train_questions, val_questions, test_questions
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -289,9 +495,9 @@ def split_questions(questions: list, config: dict) -> tuple:
     import random
 
     data = config.get("data", {})
-    seed = data.get("seed", 42)
-    train_size = data.get("train_size", 0.7)
-    val_size = data.get("val_size", 0.15)
+    seed = data.get("seed", data.get("shuffle_seed", 42))
+    train_size = data.get("train_size", data.get("train_ratio", 0.7))
+    val_size = data.get("val_size", data.get("val_ratio", 0.15))
 
     rng = random.Random(seed)
     shuffled = questions[:]
@@ -321,9 +527,11 @@ def main() -> None:
         config = merge_overrides(config, overrides)
     flat_config = flatten_config(config)
 
-    # Load and split dataset
-    questions = load_questions(args, config)
-    train_questions, val_questions, test_questions = split_questions(questions, config)
+    # Load canonical split artifacts when they exist, otherwise fall back to
+    # the legacy combined-dataset random split.
+    train_questions, val_questions, test_questions, split_manifest = (
+        load_question_splits_with_metadata(args, config)
+    )
 
     # Import training modules (lazy to avoid loading transformers until needed)
     from training.train_supervised_t5 import run_supervised_training
@@ -361,6 +569,13 @@ def main() -> None:
         test_questions=test_questions,
         pretrained_model_path=supervised_model_path,
     )
+
+    resolved_config = yaml.safe_load(yaml.safe_dump(config))
+    resolved_config.setdefault("model", {})
+    resolved_config["model"]["device"] = flat_config["device"]
+    resolved_config["model"]["num_choices"] = flat_config["num_choices"]
+    save_json(trainer.checkpoint_dir / "config_used.json", resolved_config)
+    save_json(trainer.checkpoint_dir / "split_manifest.json", split_manifest)
 
     print("\n" + "=" * 60)
     print("TRAINING COMPLETE")

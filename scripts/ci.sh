@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI entry point -- runs the full pytest suite from the project venv.
+# CI entry point -- runs the full pytest suite from the repo-local venv.
 # Exit nonzero on any failure so CI gates catch regressions.
 #
 # Usage:
@@ -8,14 +8,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PYTEST="$REPO_ROOT/.venv/bin/pytest"
 
-if [ -f "$REPO_ROOT/.venv/bin/activate" ]; then
-    # shellcheck disable=SC1091
-    source "$REPO_ROOT/.venv/bin/activate"
-elif ! command -v pytest &>/dev/null; then
-    echo "ERROR: No .venv found and pytest not on PATH." >&2
-    echo "Run: python3 -m venv .venv && source .venv/bin/activate && pip install -e ." >&2
+if [ ! -x "$PYTEST" ]; then
+    echo "ERROR: Expected repo-local pytest at $PYTEST." >&2
+    echo "Run: python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip install -e \".[dev]\"" >&2
     exit 1
 fi
 
-pytest tests/ "$@"
+"$PYTEST" tests/ "$@"

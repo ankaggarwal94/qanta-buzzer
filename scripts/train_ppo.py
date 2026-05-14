@@ -19,6 +19,7 @@ import path adaptations for the unified qanta-buzzer codebase.
 from __future__ import annotations
 
 import argparse
+import copy
 from dataclasses import asdict
 from pathlib import Path
 import sys
@@ -35,12 +36,16 @@ from qb_data.config import merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
+    dataset_path_for_split,
     load_config,
     load_embedding_cache,
     load_mc_questions,
     parse_overrides,
+    redirect_combined_to_split,
+    resolve_default_dataset_path,
     save_embedding_cache,
     save_json,
+    split_name_from_path,
 )
 
 
@@ -114,29 +119,104 @@ def main() -> None:
     split = "smoke" if args.smoke else "main"
     out_dir = Path(args.output_dir) if args.output_dir else ARTIFACT_DIR / split
     out_dir.mkdir(parents=True, exist_ok=True)
-    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
+    if args.mc_path:
+        train_path, train_split, train_warning = redirect_combined_to_split(
+            Path(args.mc_path), preferred_split="train",
+        )
+    else:
+        train_path, train_split, train_warning = resolve_default_dataset_path(
+            out_dir,
+            preferred_split="train",
+        )
+    if train_warning:
+        print(train_warning)
 
-    # Fallback: check data/processed/ if artifacts path doesn't exist
-    if not mc_path.exists():
-        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
-        if fallback.exists():
-            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
-            mc_path = fallback
+    print(f"Loading training MC questions from: {train_path}")
+    train_questions = load_mc_questions(train_path)
+    if not train_questions:
+        fallback_path = dataset_path_for_split(train_path.parent, "combined")
+        if train_path != fallback_path and fallback_path.exists():
+            print(
+                f"Warning: {train_path} contained 0 questions; "
+                f"falling back to {fallback_path}"
+            )
+            train_path = fallback_path
+            train_split = "combined"
+            train_questions = load_mc_questions(train_path)
+    print(f"Loaded {len(train_questions)} training questions")
 
-    print(f"Loading MC questions from: {mc_path}")
-    mc_questions = load_mc_questions(mc_path)
-    print(f"Loaded {len(mc_questions)} MC questions")
+    if args.mc_path:
+        explicit_split = split_name_from_path(train_path)
+        eval_candidate = dataset_path_for_split(train_path.parent, "val")
+        if explicit_split == "val":
+            eval_path = train_path
+            eval_split = "val"
+            eval_warning = None
+        elif eval_candidate.exists() and eval_candidate != train_path:
+            eval_path = eval_candidate
+            eval_split = "val"
+            eval_warning = None
+        else:
+            eval_path = train_path
+            eval_split = explicit_split if explicit_split != "explicit" else train_split
+            eval_warning = (
+                "Warning: val_dataset.json not found alongside explicit --mc-path; "
+                "post-training evaluation will reuse the training dataset."
+            )
+    else:
+        eval_candidate = dataset_path_for_split(train_path.parent, "val")
+        if train_split == "train" and eval_candidate.exists():
+            eval_path = eval_candidate
+            eval_split = "val"
+            eval_warning = None
+        else:
+            eval_path = train_path
+            eval_split = train_split
+            eval_warning = (
+                "Warning: validation split not found; post-training evaluation "
+                "will reuse the training dataset."
+            )
+    if eval_warning:
+        print(eval_warning)
+
+    print(f"Loading evaluation MC questions from: {eval_path}")
+    eval_questions = load_mc_questions(eval_path)
+    if not eval_questions:
+        print(
+            f"Warning: {eval_path} contained 0 questions; "
+            "falling back to the training dataset for evaluation."
+        )
+        eval_path = train_path
+        eval_split = train_split
+        eval_questions = train_questions
+    print(f"Loaded {len(eval_questions)} evaluation questions")
+
+    ppo_cfg = config["ppo"]
+    train_seed = int(args.seed if args.seed is not None else ppo_cfg.get("seed", 13))
+    total_timesteps = int(
+        args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
+    )
+
+    # Persist the resolved runtime config, including CLI overrides that bypass
+    # merge_overrides(), before it is used to construct the environment.
+    config = copy.deepcopy(config)
+    config.setdefault("ppo", {})
+    config.setdefault("environment", {})
+    config["ppo"]["seed"] = train_seed
+    config["environment"]["seed"] = train_seed
+    config["ppo"]["total_timesteps"] = total_timesteps
+    ppo_cfg = config["ppo"]
 
     print(f"Building likelihood model: {config['likelihood']['model']}")
-    likelihood_model = build_likelihood_model(config, mc_questions)
+    likelihood_model = build_likelihood_model(config, train_questions)
     load_embedding_cache(likelihood_model, config)
 
     env_cfg = config["environment"]
     lik_cfg = config["likelihood"]
 
-    print(f"Precomputing belief trajectories for {len(mc_questions)} questions...")
+    print(f"Precomputing train belief trajectories for {len(train_questions)} questions...")
     belief_cache = precompute_beliefs(
-        questions=mc_questions,
+        questions=train_questions,
         likelihood_model=likelihood_model,
         belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
         beta=float(lik_cfg.get("beta", 5.0)),
@@ -146,7 +226,7 @@ def main() -> None:
     save_embedding_cache(likelihood_model, config)
 
     env = make_env_from_config(
-        mc_questions=mc_questions,
+        mc_questions=train_questions,
         likelihood_model=likelihood_model,
         config=config,
         precomputed_beliefs=belief_cache,
@@ -154,12 +234,6 @@ def main() -> None:
     if args.policy_mode == "stop_only":
         print("Wrapping environment with StopOnlyEnv (WAIT/BUZZ only)...")
         env = StopOnlyEnv(env)
-
-    ppo_cfg = config["ppo"]
-    train_seed = int(args.seed if args.seed is not None else ppo_cfg.get("seed", 13))
-    total_timesteps = int(
-        args.timesteps if args.timesteps is not None else ppo_cfg["total_timesteps"]
-    )
 
     use_maskable = bool(ppo_cfg.get("use_maskable_ppo", False))
     if use_maskable:
@@ -182,6 +256,17 @@ def main() -> None:
     model_path = out_dir / "ppo_model"
     agent.save(model_path)
     save_json(out_dir / "config_used.json", config)
+    run_metadata = {
+        "policy_mode": args.policy_mode,
+        "evaluation_mode": (
+            "stochastic" if args.stochastic_eval else "deterministic"
+        ),
+        "smoke": bool(args.smoke),
+        "likelihood_reference_split": train_split,
+        "likelihood_reference_path": str(train_path.resolve()),
+        "likelihood_reference_n_questions": len(train_questions),
+    }
+    save_json(out_dir / "run_metadata.json", run_metadata)
 
     eval_deterministic = True
     if args.stochastic_eval:
@@ -190,19 +275,44 @@ def main() -> None:
         eval_deterministic = True
 
     print(
-        f"Evaluating PPO agent on {len(mc_questions)} questions "
+        f"Evaluating PPO agent on {len(eval_questions)} questions "
         f"(deterministic={eval_deterministic})..."
+    )
+    eval_belief_cache = precompute_beliefs(
+        questions=eval_questions,
+        likelihood_model=likelihood_model,
+        belief_mode=str(env_cfg.get("belief_mode", "from_scratch")),
+        beta=float(lik_cfg.get("beta", 5.0)),
+        K=int(config["data"].get("K", 4)),
+    )
+    eval_env = make_env_from_config(
+        mc_questions=eval_questions,
+        likelihood_model=likelihood_model,
+        config=config,
+        precomputed_beliefs=eval_belief_cache,
+    )
+    if args.policy_mode == "stop_only":
+        eval_env = StopOnlyEnv(eval_env)
+    eval_agent = PPOBuzzer.load(
+        model_path,
+        env=eval_env,
+        use_maskable_ppo=use_maskable,
     )
     traces = [
         asdict(
-            agent.run_episode(
+            eval_agent.run_episode(
                 deterministic=eval_deterministic,
                 question_idx=i,
             )
         )
-        for i in range(len(mc_questions))
+        for i in range(len(eval_questions))
     ]
-    summary = {**summarize_buzz_metrics(traces), **calibration_at_buzz(traces)}
+    summary = {
+        **summarize_buzz_metrics(traces),
+        **calibration_at_buzz(traces),
+        "train_split": "train" if train_split == "train" else train_split,
+        "eval_split": "val" if eval_split == "val" else eval_split,
+    }
 
     save_json(out_dir / "ppo_runs.json", traces)
     save_json(out_dir / "ppo_summary.json", summary)

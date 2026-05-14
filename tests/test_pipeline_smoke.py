@@ -34,8 +34,8 @@ def _run(args: list[str], timeout: int = 300) -> subprocess.CompletedProcess:
 
 
 @pytest.fixture(scope="module")
-def smoke_mc_dataset(tmp_path_factory) -> Path:
-    """Build a smoke MC dataset once per module for reuse by downstream tests."""
+def smoke_artifact_dir(tmp_path_factory) -> Path:
+    """Build the smoke dataset once and return its artifact directory."""
     out = tmp_path_factory.mktemp("mc_data")
     result = _run([
         "scripts/build_mc_dataset.py",
@@ -43,9 +43,36 @@ def smoke_mc_dataset(tmp_path_factory) -> Path:
         "--output-dir", str(out),
     ])
     assert result.returncode == 0, f"build_mc_dataset failed:\n{result.stderr}"
-    mc_path = out / "mc_dataset.json"
-    assert mc_path.exists(), f"mc_dataset.json not created in {out}"
-    return mc_path
+    assert (out / "mc_dataset.json").exists(), f"mc_dataset.json not created in {out}"
+    return out
+
+
+@pytest.fixture(scope="module")
+def smoke_pipeline_dir(smoke_artifact_dir: Path) -> Path:
+    """Run baseline selection and PPO training once on split-aware defaults."""
+    baseline = _run([
+        "scripts/run_baselines.py",
+        "--smoke",
+        "--output-dir", str(smoke_artifact_dir),
+        "likelihood.model=tfidf",
+    ])
+    assert baseline.returncode == 0, f"run_baselines failed:\n{baseline.stderr}"
+
+    ppo = _run([
+        "scripts/train_ppo.py",
+        "--smoke",
+        "--output-dir", str(smoke_artifact_dir),
+        "--seed", "123",
+        "--timesteps", "100",
+        "likelihood.model=tfidf",
+    ])
+    assert ppo.returncode == 0, f"train_ppo failed:\n{ppo.stderr}"
+    return smoke_artifact_dir
+
+
+def _smoke_build_metadata(artifact_dir: Path) -> dict:
+    """Load build metadata emitted by the smoke dataset builder."""
+    return json.loads((artifact_dir / "build_metadata.json").read_text())
 
 
 @pytest.mark.slow
@@ -58,62 +85,92 @@ def test_build_mc_dataset_smoke(tmp_path):
         "--output-dir", str(tmp_path),
     ])
     assert result.returncode == 0, f"build_mc_dataset failed:\n{result.stderr}"
-    assert (tmp_path / "mc_dataset.json").exists()
-    assert (tmp_path / "train_dataset.json").exists()
-    assert (tmp_path / "val_dataset.json").exists()
-    assert (tmp_path / "test_dataset.json").exists()
+    combined = json.loads((tmp_path / "mc_dataset.json").read_text())
+    train = json.loads((tmp_path / "train_dataset.json").read_text())
+    val = json.loads((tmp_path / "val_dataset.json").read_text())
+    test = json.loads((tmp_path / "test_dataset.json").read_text())
+    metadata = json.loads((tmp_path / "build_metadata.json").read_text())
+
+    assert combined == train + val + test
+    assert metadata["combined_mc_dataset_count"] == len(combined)
+    assert metadata["splits"]["train"]["retained_count"] == len(train)
+    assert metadata["splits"]["val"]["retained_count"] == len(val)
+    assert metadata["splits"]["test"]["retained_count"] == len(test)
+    assert "drop_reasons" in metadata["splits"]["val"]
+    assert "drop_reasons" in metadata["splits"]["test"]
 
 
 @pytest.mark.slow
 @pytest.mark.pipeline
-def test_run_baselines_smoke(tmp_path, smoke_mc_dataset):
-    """run_baselines.py --smoke --output-dir writes baseline_summary.json."""
-    result = _run([
-        "scripts/run_baselines.py",
-        "--smoke",
-        "--output-dir", str(tmp_path),
-        "--mc-path", str(smoke_mc_dataset),
-        "likelihood.model=tfidf",
-    ])
-    assert result.returncode == 0, f"run_baselines failed:\n{result.stderr}"
-    summary = tmp_path / "baseline_summary.json"
-    assert summary.exists(), f"baseline_summary.json not created in {tmp_path}"
+def test_run_baselines_smoke(smoke_pipeline_dir: Path):
+    """run_baselines.py defaults to the validation split when present."""
+    summary = smoke_pipeline_dir / "baseline_summary.json"
+    assert summary.exists(), f"baseline_summary.json not created in {smoke_pipeline_dir}"
     data = json.loads(summary.read_text())
+    metadata = _smoke_build_metadata(smoke_pipeline_dir)
+    expected_split = (
+        "val" if metadata["splits"]["val"]["retained_count"] > 0 else "combined"
+    )
     assert "softmax_profile" in data or "threshold" in data
+    assert data["dataset_split"] == expected_split
+    assert data["selection_metric"] == "mean_sq"
 
 
 @pytest.mark.slow
 @pytest.mark.pipeline
-def test_train_ppo_smoke(tmp_path, smoke_mc_dataset):
-    """train_ppo.py --smoke --output-dir --timesteps 100 produces a model."""
-    result = _run([
-        "scripts/train_ppo.py",
-        "--smoke",
-        "--output-dir", str(tmp_path),
-        "--mc-path", str(smoke_mc_dataset),
-        "--timesteps", "100",
-        "likelihood.model=tfidf",
-    ])
-    assert result.returncode == 0, f"train_ppo failed:\n{result.stderr}"
-    assert (tmp_path / "ppo_model.zip").exists()
-    assert (tmp_path / "ppo_summary.json").exists()
-    assert (tmp_path / "config_used.json").exists()
+def test_train_ppo_smoke(smoke_pipeline_dir: Path):
+    """train_ppo.py defaults to train/val split semantics and writes metadata."""
+    assert (smoke_pipeline_dir / "ppo_model.zip").exists()
+    assert (smoke_pipeline_dir / "ppo_summary.json").exists()
+    assert (smoke_pipeline_dir / "config_used.json").exists()
+    assert (smoke_pipeline_dir / "run_metadata.json").exists()
+
+    summary = json.loads((smoke_pipeline_dir / "ppo_summary.json").read_text())
+    config_used = json.loads((smoke_pipeline_dir / "config_used.json").read_text())
+    run_metadata = json.loads((smoke_pipeline_dir / "run_metadata.json").read_text())
+    metadata = _smoke_build_metadata(smoke_pipeline_dir)
+    expected_eval_split = (
+        "val" if metadata["splits"]["val"]["retained_count"] > 0 else "train"
+    )
+    assert summary["train_split"] == "train"
+    assert summary["eval_split"] == expected_eval_split
+    assert config_used["ppo"]["seed"] == 123
+    assert config_used["environment"]["seed"] == 123
+    assert config_used["ppo"]["total_timesteps"] == 100
+    assert run_metadata["policy_mode"] == "flat_kplus1"
 
 
 @pytest.mark.slow
 @pytest.mark.pipeline
-def test_evaluate_all_smoke(tmp_path, smoke_mc_dataset):
-    """evaluate_all.py --smoke --output-dir writes evaluation_report.json."""
+def test_evaluate_all_smoke(smoke_pipeline_dir: Path):
+    """evaluate_all.py reports test-set evaluation with explicit split metadata."""
     result = _run([
         "scripts/evaluate_all.py",
         "--smoke",
-        "--output-dir", str(tmp_path),
-        "--mc-path", str(smoke_mc_dataset),
+        "--output-dir", str(smoke_pipeline_dir),
         "likelihood.model=tfidf",
     ])
     assert result.returncode == 0, f"evaluate_all failed:\n{result.stderr}"
-    report = tmp_path / "evaluation_report.json"
-    assert report.exists(), f"evaluation_report.json not created in {tmp_path}"
+    report = smoke_pipeline_dir / "evaluation_report.json"
+    assert report.exists(), f"evaluation_report.json not created in {smoke_pipeline_dir}"
+    data = json.loads(report.read_text())
+    metadata = _smoke_build_metadata(smoke_pipeline_dir)
+    expected_baseline_split = (
+        "val" if metadata["splits"]["val"]["retained_count"] > 0 else "combined"
+    )
+    expected_ppo_validation_split = (
+        "val" if metadata["splits"]["val"]["retained_count"] > 0 else "train"
+    )
+    expected_test_split = (
+        "test" if metadata["splits"]["test"]["retained_count"] > 0 else "combined"
+    )
+    assert data["split_contract"]["baseline_selection_split"] == expected_baseline_split
+    assert data["split_contract"]["softmax_eval_split"] == expected_test_split
+    assert data["split_contract"]["ppo_validation_split"] == expected_ppo_validation_split
+    assert data["split_contract"]["ppo_test_split"] == expected_test_split
+    assert data["ppo_validation_summary"]["eval_split"] == expected_ppo_validation_split
+    assert data["ppo_test_summary"]["eval_split"] == expected_test_split
+    assert data["ppo_summary"]["eval_split"] == expected_test_split
 
 
 @pytest.mark.slow

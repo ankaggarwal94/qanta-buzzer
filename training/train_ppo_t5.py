@@ -295,6 +295,18 @@ class PPOTrainer:
             Path(config.get("checkpoint_dir", "checkpoints")) / "ppo_t5"
         )
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self._reward_likelihood_model = None
+
+    def _build_reward_likelihood(self):
+        """Build and cache the auxiliary TF-IDF model used by the env."""
+        from models.likelihoods import TfIdfLikelihood
+
+        if self._reward_likelihood_model is None:
+            corpus = []
+            for q in self.train_questions:
+                corpus.extend(q.option_profiles)
+            self._reward_likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
+        return self._reward_likelihood_model
 
     def collect_rollouts(self, num_episodes: int) -> RolloutBuffer:
         """Collect rollouts by running episodes with the current policy.
@@ -316,21 +328,15 @@ class PPOTrainer:
         """
         from qb_env.text_wrapper import TextObservationWrapper
         from qb_env.tossup_env import TossupMCEnv
-        from models.likelihoods import TfIdfLikelihood
-
         self.model.eval()
         buffer = RolloutBuffer()
 
         # Sample questions for this iteration
         questions = random.choices(self.train_questions, k=num_episodes)
 
-        # Build a simple TF-IDF likelihood for environment scoring
-        # (The T5 policy reads text directly; likelihood is only used for
-        # environment reward computation via belief updates)
-        corpus = []
-        for q in self.train_questions[:100]:  # Use subset for speed
-            corpus.extend(q.option_profiles)
-        likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
+        # The T5 policy reads text directly; the TF-IDF helper is only used
+        # for env-side belief updates and reward computation.
+        likelihood_model = self._build_reward_likelihood()
 
         with torch.no_grad():
             for question in questions:
@@ -344,7 +350,7 @@ class PPOTrainer:
                 )
                 wrapped_env = TextObservationWrapper(env)
 
-                obs, info = wrapped_env.reset()
+                obs, _ = wrapped_env.reset()
                 done = False
                 rollout: List[RolloutStep] = []
 
@@ -370,7 +376,7 @@ class PPOTrainer:
                     log_prob = act_info["log_probs"].item()
 
                     # Take environment step
-                    next_obs, reward, terminated, truncated, step_info = (
+                    next_obs, reward, terminated, truncated, _ = (
                         wrapped_env.step(action)
                     )
                     done = terminated or truncated
@@ -508,7 +514,7 @@ class PPOTrainer:
         num_updates = 0
 
         # PPO epochs
-        for epoch in range(self.epochs_per_iter):
+        for _ in range(self.epochs_per_iter):
             # Shuffle step indices
             indices = np.random.permutation(len(all_steps))
 
@@ -592,10 +598,14 @@ class PPOTrainer:
             "num_updates": num_updates,
         }
 
-    def validate(self) -> Dict[str, float]:
-        """Validate on validation set by running deterministic episodes.
+    def evaluate_questions(
+        self,
+        questions: List[MCQuestion],
+        split_name: str,
+    ) -> Dict[str, Any]:
+        """Evaluate deterministic episodes on a named split.
 
-        Runs one episode per validation question with deterministic action
+        Runs one episode per question with deterministic action
         selection (argmax). ``accuracy`` counts only episodes where the
         policy explicitly buzzed correctly; episodes where the environment
         force-committed at truncation (using the TF-IDF belief argmax)
@@ -604,20 +614,16 @@ class PPOTrainer:
         Returns
         -------
         dict[str, float]
-            Validation metrics: accuracy (policy-buzz-only),
+            Split metrics: accuracy (policy-buzz-only),
             forced_correct_rate (env force-commit at truncation),
-            average_reward, avg_episode_length.
+            overall_outcome_accuracy, average_reward, avg_episode_length,
+            n_questions_evaluated, evaluation_split.
         """
         from qb_env.text_wrapper import TextObservationWrapper
         from qb_env.tossup_env import TossupMCEnv
-        from models.likelihoods import TfIdfLikelihood
 
         self.model.eval()
-
-        corpus = []
-        for q in self.train_questions[:100]:
-            corpus.extend(q.option_profiles)
-        likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
+        likelihood_model = self._build_reward_likelihood()
 
         correct = 0
         forced_correct = 0
@@ -625,11 +631,8 @@ class PPOTrainer:
         total_reward = 0.0
         total_length = 0
 
-        # Limit validation size for speed
-        val_questions = self.val_questions[:50]
-
         with torch.no_grad():
-            for question in val_questions:
+            for question in questions:
                 env = TossupMCEnv(
                     questions=[question],
                     likelihood_model=likelihood_model,
@@ -640,7 +643,7 @@ class PPOTrainer:
                 )
                 wrapped_env = TextObservationWrapper(env)
 
-                obs, info = wrapped_env.reset()
+                obs, _ = wrapped_env.reset()
                 done = False
                 episode_reward = 0.0
                 episode_length = 0
@@ -654,7 +657,7 @@ class PPOTrainer:
                         max_length=self.max_input_length,
                     ).to(self.device)
 
-                    actions, act_info = self.model.select_action(
+                    actions, _ = self.model.select_action(
                         inputs["input_ids"],
                         inputs["attention_mask"],
                         deterministic=True,
@@ -680,9 +683,16 @@ class PPOTrainer:
         return {
             "accuracy": correct / max(1, total),
             "forced_correct_rate": forced_correct / max(1, total),
+            "overall_outcome_accuracy": (correct + forced_correct) / max(1, total),
             "average_reward": total_reward / max(1, total),
             "avg_episode_length": total_length / max(1, total),
+            "n_questions_evaluated": total,
+            "evaluation_split": split_name,
         }
+
+    def validate(self) -> Dict[str, Any]:
+        """Validate on the full validation split."""
+        return self.evaluate_questions(self.val_questions, "val")
 
     def train(self) -> Dict[str, Any]:
         """Run the full PPO training loop.
@@ -827,7 +837,7 @@ class PPOTrainer:
             Path to the saved history file.
         """
         history_path = self.checkpoint_dir / "history.json"
-        with open(history_path, "w") as f:
+        with open(history_path, "w", encoding="utf-8") as f:
             json.dump(self.history, f, indent=2, default=float)
         return history_path
 
@@ -916,12 +926,8 @@ def run_ppo_training(
             print(f"Loading best model from {best_model_path}")
             model.load(str(best_model_path))
 
-        # Run validation on test set
-        # Temporarily swap val questions with test questions
-        original_val = trainer.val_questions
-        trainer.val_questions = list(test_questions)
-        test_metrics = trainer.validate()
-        trainer.val_questions = original_val
+        # Run full test evaluation directly on the held-out split.
+        test_metrics = trainer.evaluate_questions(list(test_questions), "test")
 
         print(f"Test Accuracy: {test_metrics['accuracy']:.4f}")
         print(f"Test Avg Reward: {test_metrics['average_reward']:.4f}")
@@ -932,7 +938,7 @@ def run_ppo_training(
             "training_summary": summary,
         }
         results_path = trainer.checkpoint_dir / "test_results.json"
-        with open(results_path, "w") as f:
+        with open(results_path, "w", encoding="utf-8") as f:
             json.dump(test_results, f, indent=2, default=float)
         print(f"Test results saved to {results_path}")
 

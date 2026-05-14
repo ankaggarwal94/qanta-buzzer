@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 import random
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -114,6 +115,7 @@ class MCBuilder:
         self.rng = random.Random(random_seed)
         self.embedding_model = embedding_model
         self.openai_model = openai_model
+        self.last_build_stats: Dict[str, Any] = {}
 
     def _prepare_lookup(
         self, questions: List[TossupQuestion]
@@ -341,34 +343,57 @@ class MCBuilder:
         self,
         questions: List[TossupQuestion],
         profile_builder: AnswerProfileBuilder,
+        reference_questions: Optional[List[TossupQuestion]] = None,
     ) -> List[MCQuestion]:
         """Build multiple-choice questions with anti-artifact guards.
 
         Args:
             questions: List of tossup questions.
             profile_builder: Profile builder for answer representations.
+            reference_questions: Reference corpus used to build answer
+                profiles and distractor rankings. Defaults to ``questions``
+                to preserve legacy behavior.
 
         Returns:
             List of MCQuestion objects that passed all guards.
         """
         if not questions:
+            self.last_build_stats = {
+                "target_questions": 0,
+                "reference_questions": 0,
+                "reference_answer_count": 0,
+                "built_questions": 0,
+                "dropped_questions": 0,
+                "retention_rate": 0.0,
+                "drop_reasons": {},
+            }
             return []
 
-        # Build answer profiles
-        profile_builder.fit(questions)
-        answer_profiles = profile_builder.build_profiles(questions)
+        ref_questions = questions if reference_questions is None else list(reference_questions)
+
+        # ref_questions defaults to the target questions for convenience.
+        # When callers supply an explicit reference corpus, we still refit so
+        # stale cached groupings cannot leak the wrong answer universe into
+        # ranking/profile building.
+        profile_builder.fit(ref_questions)
+
+        answer_profiles = profile_builder.build_profiles(ref_questions)
 
         # Prepare lookup structures
-        answer_to_aliases, answer_to_category, _answer_to_norm, answers = self._prepare_lookup(questions)
+        answer_to_aliases, answer_to_category, _answer_to_norm, answers = self._prepare_lookup(ref_questions)
 
         # Compute distractor rankings
         rankings = self._compute_rankings(answers, answer_profiles, answer_to_category)
 
         mc_questions: List[MCQuestion] = []
+        drop_reasons: Dict[str, int] = defaultdict(int)
 
         for q in questions:
             target_k = self._target_k()
             gold = q.answer_primary
+            if gold not in answer_to_aliases:
+                drop_reasons["unseen_gold_answer"] += 1
+                continue
             gold_aliases = answer_to_aliases.get(gold, [gold])
             ranked = rankings.get(gold, [a for a in answers if a != gold])
             selected: List[str] = []
@@ -400,6 +425,7 @@ class MCBuilder:
 
             # Skip question if we can't find enough valid distractors
             if len(selected) < target_k - 1:
+                drop_reasons["insufficient_distractors"] += 1
                 continue
 
             # Create options and shuffle
@@ -410,10 +436,12 @@ class MCBuilder:
 
             # Apply guard 3: Check length ratio
             if self._violates_length_ratio_guard(options):
+                drop_reasons["length_ratio_guard"] += 1
                 continue
 
             # Apply guard 4: Check question overlap
             if self._violates_question_overlap_guard(q.question, options):
+                drop_reasons["question_overlap_guard"] += 1
                 continue
 
             # Build option profiles with leave-one-out for gold
@@ -444,6 +472,17 @@ class MCBuilder:
                 )
             )
 
+        self.last_build_stats = {
+            "target_questions": len(questions),
+            "reference_questions": len(ref_questions),
+            "reference_answer_count": len(answers),
+            "built_questions": len(mc_questions),
+            "dropped_questions": len(questions) - len(mc_questions),
+            "retention_rate": (
+                len(mc_questions) / len(questions) if questions else 0.0
+            ),
+            "drop_reasons": dict(drop_reasons),
+        }
         return mc_questions
 
 

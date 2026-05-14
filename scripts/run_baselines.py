@@ -47,12 +47,16 @@ from qb_data.config import merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
+    dataset_path_for_split,
     load_config,
     load_embedding_cache,
     load_mc_questions,
     parse_overrides,
+    redirect_combined_to_split,
+    resolve_default_dataset_path,
     save_embedding_cache,
     save_json,
+    split_name_from_path,
 )
 
 
@@ -130,28 +134,71 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine MC dataset path
-    mc_path = Path(args.mc_path) if args.mc_path else out_dir / "mc_dataset.json"
-
-    # Fallback: check data/processed/ if artifacts path doesn't exist
-    if not mc_path.exists():
-        fallback = PROJECT_ROOT / "data" / "processed" / "mc_dataset.json"
-        if fallback.exists():
-            print(f"MC dataset not found at {mc_path}, using fallback: {fallback}")
-            mc_path = fallback
+    if args.mc_path:
+        mc_path, dataset_split, mc_warning = redirect_combined_to_split(
+            Path(args.mc_path), preferred_split="val",
+        )
+        if mc_warning:
+            print(mc_warning)
+    else:
+        mc_path, dataset_split, warning = resolve_default_dataset_path(
+            out_dir,
+            preferred_split="val",
+        )
+        if warning:
+            print(warning)
 
     print(f"Loading MC questions from: {mc_path}")
     mc_questions = load_mc_questions(mc_path)
+    if not mc_questions and not args.mc_path:
+        fallback = dataset_path_for_split(mc_path.parent, "combined")
+        if fallback.exists() and fallback != mc_path:
+            print(
+                f"Warning: {mc_path} contained 0 questions; "
+                f"falling back to {fallback}"
+            )
+            mc_path = fallback
+            dataset_split = "combined"
+            mc_questions = load_mc_questions(mc_path)
     print(f"Loaded {len(mc_questions)} MC questions")
 
-    # Build likelihood model
-    print(f"Building likelihood model: {config['likelihood']['model']}")
-    likelihood_model = build_likelihood_model(config, mc_questions)
+    # Build TF-IDF from train split even when selecting thresholds on val/test.
+    train_path = mc_path.parent / "train_dataset.json"
+    if train_path.exists():
+        likelihood_questions = load_mc_questions(train_path)
+    if not train_path.exists() or not likelihood_questions:
+        likelihood_questions = mc_questions
+        print(
+            "Building likelihood model: "
+            f"{config['likelihood']['model']} "
+            "(train split missing or empty; using selected eval split)"
+        )
+    else:
+        print(
+            "Building likelihood model: "
+            f"{config['likelihood']['model']} "
+            f"(fit on train split with {len(likelihood_questions)} questions)"
+        )
+    likelihood_model = build_likelihood_model(config, likelihood_questions)
     load_embedding_cache(likelihood_model, config)
 
     # Extract hyperparameters
     beta = float(config["likelihood"].get("beta", 5.0))
     alpha = float(config["bayesian"].get("alpha", 10.0))
     thresholds = [float(x) for x in config["bayesian"]["threshold_sweep"]]
+    env_cfg = config.get("environment", {})
+    reward_mode = str(env_cfg.get("reward_mode", "time_penalty"))
+    wait_penalty = float(env_cfg.get("wait_penalty", 0.0))
+    buzz_correct = float(env_cfg.get("buzz_correct", 1.0))
+    buzz_incorrect = float(env_cfg.get("buzz_incorrect", -0.5))
+    early_buzz_penalty = float(env_cfg.get("early_buzz_penalty", 0.0))
+
+    if reward_mode not in {"time_penalty", "simple"}:
+        print(
+            "Warning: exact baseline reward parity is only supported for "
+            "time_penalty and simple reward modes. Reported mean_reward_like "
+            "will not be config-comparable in this run."
+        )
 
     print(f"Beta: {beta}, Alpha: {alpha}")
     print(f"Thresholds: {thresholds}")
@@ -179,6 +226,11 @@ def main() -> None:
         thresholds=thresholds,
         beta=beta,
         alpha=alpha,
+        reward_mode=reward_mode,
+        wait_penalty=wait_penalty,
+        buzz_correct=buzz_correct,
+        buzz_incorrect=buzz_incorrect,
+        early_buzz_penalty=early_buzz_penalty,
         precomputed=precomputed,
     )
 
@@ -195,7 +247,18 @@ def main() -> None:
     softmax_summary: dict[str, dict] = {}
     for threshold in thresholds:
         results = [
-            asdict(_softmax_episode_from_precomputed(pq, threshold, alpha))
+            asdict(
+                _softmax_episode_from_precomputed(
+                    pq,
+                    threshold,
+                    alpha,
+                    reward_mode=reward_mode,
+                    wait_penalty=wait_penalty,
+                    buzz_correct=buzz_correct,
+                    buzz_incorrect=buzz_incorrect,
+                    early_buzz_penalty=early_buzz_penalty,
+                )
+            )
             for pq in precomputed
         ]
         softmax_payload[str(threshold)] = results
@@ -211,6 +274,11 @@ def main() -> None:
         thresholds=thresholds,
         beta=beta,
         alpha=alpha,
+        reward_mode=reward_mode,
+        wait_penalty=wait_penalty,
+        buzz_correct=buzz_correct,
+        buzz_incorrect=buzz_incorrect,
+        early_buzz_penalty=early_buzz_penalty,
         precomputed=seq_precomputed,
     )
     sequential_payload: dict[str, list[dict]] = {}
@@ -222,7 +290,19 @@ def main() -> None:
 
     # --- AlwaysBuzzFinal (reuse from_scratch precomputed beliefs) ---
     print("Running AlwaysBuzzFinal baseline (precomputed)...")
-    floor_runs = [asdict(_always_final_from_precomputed(pq)) for pq in precomputed]
+    floor_runs = [
+        asdict(
+            _always_final_from_precomputed(
+                pq,
+                reward_mode=reward_mode,
+                wait_penalty=wait_penalty,
+                buzz_correct=buzz_correct,
+                buzz_incorrect=buzz_incorrect,
+                early_buzz_penalty=early_buzz_penalty,
+            )
+        )
+        for pq in precomputed
+    ]
     floor_summary = summarize(floor_runs)
 
     # --- Save artifacts ---
@@ -237,6 +317,9 @@ def main() -> None:
         "softmax_profile": softmax_summary,
         "sequential_bayes": sequential_summary,
         "always_final": floor_summary,
+        "dataset_split": dataset_split,
+        "selection_metric": "mean_sq",
+        "reward_supported": reward_mode in {"time_penalty", "simple"},
     }
     save_json(out_dir / "baseline_summary.json", summary)
 

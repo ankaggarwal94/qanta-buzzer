@@ -39,12 +39,24 @@ class PPOEpisodeTrace:
         Question identifier.
     buzz_step : int
         Step at which the agent buzzed (-1 if never buzzed voluntarily).
+    buzz_trace_idx : int
+        Index into ``c_trace``/``g_trace``/``top_p_trace`` for the
+        decision-time trace entry when the policy buzzed (-1 otherwise).
     buzz_index : int
-        Index of the chosen answer option (0-based, -1 if forced).
+        Index of the chosen answer option (0-based, -1 if the policy
+        never buzzed voluntarily).
     gold_index : int
         Index of the correct answer option (0-based).
     correct : bool
-        Whether the agent selected the correct answer.
+        Whether the policy buzzed and selected the correct answer.
+    forced_commit : bool
+        Whether the episode ended via environment force-commit at truncation.
+    forced_step : int
+        Clue index associated with the force-commit decision (-1 otherwise).
+    forced_choice : int
+        Answer index selected by the environment at truncation (-1 otherwise).
+    forced_correct : bool
+        Whether the environment's force-commit choice was correct.
     episode_reward : float
         Total accumulated reward over the episode.
     c_trace : list[float]
@@ -61,9 +73,14 @@ class PPOEpisodeTrace:
 
     qid: str
     buzz_step: int
+    buzz_trace_idx: int
     buzz_index: int
     gold_index: int
     correct: bool
+    forced_commit: bool
+    forced_step: int
+    forced_choice: int
+    forced_correct: bool
     episode_reward: float
     c_trace: list[float]
     g_trace: list[float]
@@ -353,6 +370,12 @@ class PPOBuzzer:
             if getattr(base_env, "question", None) is not None
             else -1
         )
+        buzz_trace_idx = -1
+        forced_commit = False
+        forced_step = -1
+        forced_choice = -1
+        forced_correct = False
+        sample_rng = np.random.default_rng(seed) if seed is not None else None
 
         while not (terminated or truncated):
             probs = self.action_probabilities(obs)
@@ -380,13 +403,17 @@ class PPOBuzzer:
             if deterministic:
                 action = int(np.argmax(probs))
             else:
-                action = int(np.random.choice(len(probs), p=probs))
+                if sample_rng is not None:
+                    action = int(sample_rng.choice(len(probs), p=probs))
+                else:
+                    action = int(np.random.choice(len(probs), p=probs))
 
             obs, reward, terminated, truncated, step_info = self.env.step(action)
             total_reward += reward
 
             if action != 0 and buzz_step < 0:
                 buzz_step = int(step_info.get("step_idx", 0))
+                buzz_trace_idx = len(c_trace) - 1
                 if len(probs) == 2:
                     buzz_index = int(
                         step_info.get(
@@ -397,20 +424,27 @@ class PPOBuzzer:
                 else:
                     buzz_index = action - 1
             if truncated and buzz_step < 0 and not step_info.get("no_buzz", False):
-                buzz_step = int(
+                forced_commit = True
+                forced_step = int(
                     step_info.get("step_idx", len(c_trace) - 1)
                 )
-                buzz_index = int(
+                forced_choice = int(
                     step_info.get("forced_choice", np.argmax(base_env.belief))
                 )
+                forced_correct = bool(step_info.get("forced_correct", False))
 
-        correct = buzz_index == gold_index
+        correct = buzz_index >= 0 and buzz_index == gold_index
         return PPOEpisodeTrace(
             qid=info.get("qid", ""),
             buzz_step=buzz_step,
+            buzz_trace_idx=buzz_trace_idx,
             buzz_index=buzz_index,
             gold_index=gold_index,
             correct=correct,
+            forced_commit=forced_commit,
+            forced_step=forced_step,
+            forced_choice=forced_choice,
+            forced_correct=forced_correct,
             episode_reward=total_reward,
             c_trace=c_trace,
             g_trace=g_trace,

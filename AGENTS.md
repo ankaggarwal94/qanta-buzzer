@@ -15,6 +15,10 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -U pip && pip install -e .
 ```
 
+Repo wrapper scripts intentionally use the repo-local `.venv` directly and do
+not fall back to ambient `python3` or `pytest`, which avoids global package
+skew during verification.
+
 Optional extras:
 
 ```bash
@@ -38,12 +42,12 @@ pip install -e '.[dspy]'      # DSPy LM-based scoring
 
 ## Testing
 
-369 tests across 28 test files (4 skipped when optional extras not installed).
+398 tests across 33 test files (4 skipped when optional extras not installed).
 
 ```bash
 pytest                    # full suite
 pytest tests/test_qb_rl_bridge.py tests/test_factories.py tests/test_ppo_buzzer.py  # focused bridge/runtime checks
-scripts/ci.sh             # CI entry point (runs pytest, exits nonzero on failure)
+bash scripts/ci.sh        # CI entry point via repo-local .venv
 ```
 
 ## Smoke Pipeline
@@ -55,12 +59,20 @@ python scripts/build_mc_dataset.py --smoke
 python scripts/run_baselines.py --smoke
 python scripts/train_ppo.py --smoke
 python scripts/evaluate_all.py --smoke
+bash scripts/manual-smoke.sh
 ```
+
+`build_mc_dataset.py` writes `train_dataset.json`, `val_dataset.json`, and
+`test_dataset.json` as the canonical downstream inputs. `mc_dataset.json`
+remains as a combined legacy/debug artifact. By default, `run_baselines.py`
+selects thresholds on validation, `train_ppo.py` trains on train and writes
+validation metrics to `ppo_summary.json`, and `evaluate_all.py` writes the
+canonical final test report on the test split (`evaluation_report.json`).
 
 Or run all four stages via the wrapper script:
 
 ```bash
-scripts/manual-smoke.sh
+bash scripts/manual-smoke.sh
 ```
 
 ## Full Pipeline

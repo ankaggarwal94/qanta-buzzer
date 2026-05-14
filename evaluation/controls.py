@@ -321,6 +321,11 @@ def run_shuffle_control_precomputed(
     threshold: float,
     alpha: float,
     random_seed: int = 13,
+    reward_mode: str = "time_penalty",
+    wait_penalty: float = 0.0,
+    buzz_correct: float = 1.0,
+    buzz_incorrect: float = -0.5,
+    early_buzz_penalty: float = 0.0,
 ) -> dict[str, Any]:
     """Run shuffle control by permuting precomputed belief vectors.
 
@@ -368,7 +373,14 @@ def run_shuffle_control_precomputed(
             num_options=pq.num_options,
             beliefs=shuffled_beliefs,
         )
-        result = _softmax_episode_from_precomputed(shuffled_pq, threshold, alpha)
+        result = _softmax_episode_from_precomputed(
+            shuffled_pq, threshold, alpha,
+            reward_mode=reward_mode,
+            wait_penalty=wait_penalty,
+            buzz_correct=buzz_correct,
+            buzz_incorrect=buzz_incorrect,
+            early_buzz_penalty=early_buzz_penalty,
+        )
         runs.append(asdict(result))
     summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
     summary["runs"] = runs

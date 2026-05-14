@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from agents._math import sigmoid
+from agents.threshold_buzzer import reward_from_buzz_step
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
 
@@ -21,6 +22,7 @@ class SoftmaxEpisodeResult:
     buzz_index: int
     gold_index: int
     correct: bool
+    reward_like: float
     c_trace: list[float]
     g_trace: list[float]
     top_p_trace: list[float]
@@ -34,11 +36,21 @@ class SoftmaxProfileBuzzer:
         threshold: float = 0.8,
         beta: float = 5.0,
         alpha: float = 10.0,
+        reward_mode: str = "time_penalty",
+        wait_penalty: float = 0.0,
+        buzz_correct: float = 1.0,
+        buzz_incorrect: float = -0.5,
+        early_buzz_penalty: float = 0.0,
     ):
         self.likelihood_model = likelihood_model
         self.threshold = threshold
         self.beta = beta
         self.alpha = alpha
+        self.reward_mode = reward_mode
+        self.wait_penalty = wait_penalty
+        self.buzz_correct = buzz_correct
+        self.buzz_incorrect = buzz_incorrect
+        self.early_buzz_penalty = early_buzz_penalty
         self.belief: np.ndarray | None = None
 
     def _belief_from_scratch(self, cumulative_prefix: str, option_profiles: list[str]) -> np.ndarray:
@@ -86,6 +98,16 @@ class SoftmaxProfileBuzzer:
             buzz_index=chosen_idx,
             gold_index=question.gold_index,
             correct=(chosen_idx == question.gold_index),
+            reward_like=reward_from_buzz_step(
+                correct=(chosen_idx == question.gold_index),
+                buzz_step=chosen_step,
+                total_steps=len(question.cumulative_prefixes),
+                reward_mode=self.reward_mode,
+                wait_penalty=self.wait_penalty,
+                buzz_correct=self.buzz_correct,
+                buzz_incorrect=self.buzz_incorrect,
+                early_buzz_penalty=self.early_buzz_penalty,
+            ),
             c_trace=c_trace,
             g_trace=g_trace,
             top_p_trace=top_p_trace,
@@ -100,11 +122,21 @@ class SequentialBayesBuzzer:
         threshold: float = 0.8,
         beta: float = 5.0,
         alpha: float = 10.0,
+        reward_mode: str = "time_penalty",
+        wait_penalty: float = 0.0,
+        buzz_correct: float = 1.0,
+        buzz_incorrect: float = -0.5,
+        early_buzz_penalty: float = 0.0,
     ):
         self.likelihood_model = likelihood_model
         self.threshold = threshold
         self.beta = beta
         self.alpha = alpha
+        self.reward_mode = reward_mode
+        self.wait_penalty = wait_penalty
+        self.buzz_correct = buzz_correct
+        self.buzz_incorrect = buzz_incorrect
+        self.early_buzz_penalty = early_buzz_penalty
 
     def _step_update(self, prior: np.ndarray, fragment: str, option_profiles: list[str]) -> np.ndarray:
         scores = self.likelihood_model.score(fragment, option_profiles)
@@ -154,6 +186,16 @@ class SequentialBayesBuzzer:
             buzz_index=chosen_idx,
             gold_index=question.gold_index,
             correct=(chosen_idx == question.gold_index),
+            reward_like=reward_from_buzz_step(
+                correct=(chosen_idx == question.gold_index),
+                buzz_step=chosen_step,
+                total_steps=len(question.cumulative_prefixes),
+                reward_mode=self.reward_mode,
+                wait_penalty=self.wait_penalty,
+                buzz_correct=self.buzz_correct,
+                buzz_incorrect=self.buzz_incorrect,
+                early_buzz_penalty=self.early_buzz_penalty,
+            ),
             c_trace=c_trace,
             g_trace=g_trace,
             top_p_trace=top_p_trace,
@@ -209,6 +251,11 @@ def _sequential_episode_from_precomputed(
     pq: "_PrecomputedQuestion",
     threshold: float,
     alpha: float,
+    reward_mode: str = "time_penalty",
+    wait_penalty: float = 0.0,
+    buzz_correct: float = 1.0,
+    buzz_incorrect: float = -0.5,
+    early_buzz_penalty: float = 0.0,
 ) -> SoftmaxEpisodeResult:
     """Build a SoftmaxEpisodeResult from pre-computed sequential beliefs.
 
@@ -249,6 +296,16 @@ def _sequential_episode_from_precomputed(
         buzz_index=chosen_idx,
         gold_index=pq.gold_index,
         correct=correct,
+        reward_like=reward_from_buzz_step(
+            correct=correct,
+            buzz_step=chosen_step,
+            total_steps=len(pq.beliefs),
+            reward_mode=reward_mode,
+            wait_penalty=wait_penalty,
+            buzz_correct=buzz_correct,
+            buzz_incorrect=buzz_incorrect,
+            early_buzz_penalty=early_buzz_penalty,
+        ),
         c_trace=c_trace,
         g_trace=g_trace,
         top_p_trace=top_p_trace,
@@ -262,6 +319,11 @@ def sweep_sequential_thresholds(
     thresholds: list[float],
     beta: float = 5.0,
     alpha: float = 10.0,
+    reward_mode: str = "time_penalty",
+    wait_penalty: float = 0.0,
+    buzz_correct: float = 1.0,
+    buzz_incorrect: float = -0.5,
+    early_buzz_penalty: float = 0.0,
     precomputed: list["_PrecomputedQuestion"] | None = None,
 ) -> dict[float, list[SoftmaxEpisodeResult]]:
     """Sweep multiple thresholds with a single sequential belief pass.
@@ -276,7 +338,16 @@ def sweep_sequential_thresholds(
     out: dict[float, list[SoftmaxEpisodeResult]] = {}
     for threshold in thresholds:
         out[float(threshold)] = [
-            _sequential_episode_from_precomputed(pq, threshold, alpha)
+            _sequential_episode_from_precomputed(
+                pq,
+                threshold,
+                alpha,
+                reward_mode=reward_mode,
+                wait_penalty=wait_penalty,
+                buzz_correct=buzz_correct,
+                buzz_incorrect=buzz_incorrect,
+                early_buzz_penalty=early_buzz_penalty,
+            )
             for pq in precomputed
         ]
     return out
