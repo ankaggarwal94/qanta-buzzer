@@ -166,3 +166,76 @@ def test_main_writes_t5_config_and_split_manifest(
 
     assert (checkpoint_dir / "config_used.json").exists()
     assert (checkpoint_dir / "split_manifest.json").exists()
+
+
+def test_apply_max_questions_global_raises_when_max_q_below_num_splits():
+    """Global mode must refuse to silently empty held-out splits.
+
+    Regression for the unresolved P2 review thread on ``_apply_max_questions``.
+    """
+    import pytest as _pytest
+
+    train = ["a", "b", "c"]
+    val = ["d", "e"]
+    test = ["f"]
+    with _pytest.raises(ValueError, match="non-empty splits"):
+        train_t5_policy._apply_max_questions(
+            train, val, test, max_q=2, scope="global"
+        )
+
+
+def test_apply_max_questions_per_split_legacy_still_truncates():
+    """``per_split`` keeps the legacy independent-truncation semantics."""
+    out = train_t5_policy._apply_max_questions(
+        ["a", "b"], ["c", "d"], ["e", "f"], max_q=1, scope="per_split"
+    )
+    assert out == (["a"], ["c"], ["e"])
+
+
+def test_apply_max_questions_global_distributes_proportionally():
+    """When max_q can cover at least one item per non-empty split, the
+    function distributes the rest proportionally."""
+    out = train_t5_policy._apply_max_questions(
+        ["a"] * 10, ["b"] * 4, ["c"] * 4, max_q=6, scope="global"
+    )
+    counts = tuple(len(x) for x in out)
+    # Each split keeps at least one item; total respects cap.
+    assert all(c >= 1 for c in counts)
+    assert sum(counts) == 6
+
+
+def test_load_question_splits_raises_when_global_cap_empties_held_out(
+    tmp_path, monkeypatch
+):
+    """Even when ``_apply_max_questions`` succeeds, the loader should
+    refuse to return a manifest with empty val or test under
+    ``scope='global'``."""
+    import pytest as _pytest
+
+    for filename in (
+        "mc_dataset.json",
+        "train_dataset.json",
+        "val_dataset.json",
+        "test_dataset.json",
+    ):
+        (tmp_path / filename).write_text("[]", encoding="utf-8")
+
+    def fake_load_mc_questions(path: str | Path):
+        name = Path(path).name
+        if name == "train_dataset.json":
+            return ["a", "b", "c"]
+        if name == "val_dataset.json":
+            return []  # val empty after some upstream filter
+        return ["e", "f"]
+
+    monkeypatch.setattr(train_t5_policy, "load_mc_questions", fake_load_mc_questions)
+    monkeypatch.setattr(
+        train_t5_policy,
+        "load_questions",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not fall through")),
+    )
+
+    args = Namespace(mc_path=str(tmp_path / "mc_dataset.json"), smoke=False)
+    config = {"data": {"max_questions": 0, "max_questions_scope": "global"}}
+    with _pytest.raises(ValueError, match="empty val or test"):
+        train_t5_policy.load_question_splits_with_metadata(args, config)

@@ -25,8 +25,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import sys
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -280,7 +282,10 @@ def _build_split_manifest(
     config: dict | None = None,
 ) -> dict:
     """Build a split-manifest payload for persisted provenance."""
-    qid = lambda q: getattr(q, "qid", str(q))
+
+    def qid(q: Any) -> str:
+        return getattr(q, "qid", str(q))
+
     manifest = {
         "source": source,
         "mc_path": mc_path,
@@ -329,10 +334,20 @@ def _apply_max_questions(
     splits = [("train", train), ("val", val), ("test", test)]
     non_empty = [(name, s) for name, s in splits if s]
     if max_q < len(non_empty):
-        result = {"train": [], "val": [], "test": []}
-        for i, (name, s) in enumerate(non_empty):
-            result[name] = s[:1] if i < max_q else []
-        return result["train"], result["val"], result["test"]
+        # Refuse to silently empty val/test in global mode. The legacy
+        # behaviour assigned ``[]`` to one or more splits, producing a
+        # split-aware-looking run with zero held-out coverage; downstream
+        # evaluation then reports zero-everything metrics indistinguishable
+        # from a legitimate 0% test score (or, in smoke mode with
+        # ``iterations < eval_interval``, no PPO checkpoint at all).
+        non_empty_names = [name for name, _ in non_empty]
+        raise ValueError(
+            f"max_questions={max_q} with scope='global' is smaller than the "
+            f"number of non-empty splits ({len(non_empty)}: "
+            f"{non_empty_names}); this would silently empty held-out "
+            "splits. Either raise data.max_questions to at least "
+            f"{len(non_empty)} or set data.max_questions_scope='per_split'."
+        )
     budget = max_q
     allocated = {name: 1 for name, _ in non_empty}
     budget -= len(non_empty)
@@ -409,6 +424,12 @@ def load_question_splits_with_metadata(
             train_questions, val_questions, test_questions = _apply_max_questions(
                 train_questions, val_questions, test_questions,
                 max_questions, max_questions_scope,
+            )
+        if max_questions_scope == "global" and (not val_questions or not test_questions):
+            raise ValueError(
+                "Global max_questions cap produced an empty val or test "
+                "split; refusing to proceed. Raise data.max_questions or "
+                "switch data.max_questions_scope to 'per_split'."
             )
         print(
             "Using persisted dataset splits from "
@@ -570,7 +591,10 @@ def main() -> None:
         pretrained_model_path=supervised_model_path,
     )
 
-    resolved_config = yaml.safe_load(yaml.safe_dump(config))
+    # ``copy.deepcopy`` preserves tuples and other types that
+    # ``yaml.safe_load(yaml.safe_dump(...))`` would coerce to lists; the
+    # snapshot is solely to freeze a config object before mutating it.
+    resolved_config = copy.deepcopy(config)
     resolved_config.setdefault("model", {})
     resolved_config["model"]["device"] = flat_config["device"]
     resolved_config["model"]["num_choices"] = flat_config["num_choices"]
