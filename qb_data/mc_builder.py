@@ -112,6 +112,7 @@ class MCBuilder:
         self.alias_edit_distance_threshold = alias_edit_distance_threshold
         self.duplicate_token_overlap_threshold = duplicate_token_overlap_threshold
         self.max_length_ratio = max_length_ratio
+        self._random_seed = random_seed
         self.rng = random.Random(random_seed)
         self.embedding_model = embedding_model
         self.openai_model = openai_model
@@ -127,8 +128,26 @@ class MCBuilder:
         # hits would put the rng into a different state than fresh-per-
         # split callers expect, silently changing per-question option
         # ordering on val/test.
-        self._ref_cache_key: frozenset = frozenset()
+        self._ref_cache_key: frozenset[tuple[str, str, str, int]] = frozenset()
         self._ref_cache: Optional[Dict[str, Any]] = None
+
+    def reset_rng(self, seed: int | None = None) -> None:
+        """Reset the per-builder RNG to the constructor seed (or override).
+
+        Used by ``scripts/build_mc_dataset.py`` to keep a single
+        ``MCBuilder`` instance across train/val/test builds (so the
+        ``_ref_cache`` survives) while still drawing each split from a
+        fresh RNG state — matching the legacy fresh-per-split MCBuilder
+        contract for byte-equivalent option ordering.
+
+        Parameters
+        ----------
+        seed : int | None
+            Override the constructor's ``random_seed``. ``None`` resets
+            to the value passed to ``__init__`` (the documented default
+            for callers that just want a deterministic reset).
+        """
+        self.rng = random.Random(self._random_seed if seed is None else seed)
 
     def _prepare_lookup(
         self, questions: List[TossupQuestion]
@@ -404,7 +423,16 @@ class MCBuilder:
         # changing val/test option ordering and the distractor-fallback
         # path. Encoder-bound strategies are deterministic w.r.t. rng,
         # so caching them is safe and gives the full perf win.
-        ref_key = frozenset(q.qid for q in ref_questions)
+        # Cache key includes content fingerprints so an in-place mutation
+        # of ``q.question`` / ``q.answer_primary`` / ``q.category`` between
+        # builds invalidates the cache. Two distinct corpora with the same
+        # qid set but different content (e.g. tournament-duplicate qids
+        # with edited answer text) also miss the cache, defending the
+        # invariant "same key ⇒ same answer_profiles ⇒ same rankings".
+        ref_key = frozenset(
+            (q.qid, q.answer_primary, q.category, hash(q.question))
+            for q in ref_questions
+        )
         cacheable = self.strategy != "category_random"
         if (
             not cacheable

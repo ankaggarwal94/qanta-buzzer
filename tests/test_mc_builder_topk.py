@@ -256,3 +256,63 @@ class TestRefCacheRngParity:
             "category_random must not populate _ref_cache; doing so would "
             "skip rng-consuming shuffles on subsequent build() calls."
         )
+
+    def test_content_mutation_invalidates_ref_cache(self) -> None:
+        """Mutating ``q.question`` between build() calls must miss the
+        cache. Pre-fix the cache was keyed on qid only, so rewriting
+        the question text (or answer_primary / category) silently
+        returned stale rankings/profiles from the prior corpus."""
+        from qb_data.answer_profiles import AnswerProfileBuilder
+        from qb_data.mc_builder import MCBuilder
+        from qb_data.data_loader import TossupQuestion
+
+        qs = [
+            TossupQuestion(
+                qid=str(i),
+                question=f"original clue {i} text",
+                tokens=["original", "clue", str(i), "text"],
+                answer_primary=f"answer_{i % 3}",
+                clean_answers=[f"answer_{i % 3}"],
+                run_indices=[0, 1, 2, 3],
+                human_buzz_positions=None,
+                category="History",
+                cumulative_prefixes=[
+                    "original",
+                    "original clue",
+                    f"original clue {i}",
+                    f"original clue {i} text",
+                ],
+            )
+            for i in range(8)
+        ]
+        pb = AnswerProfileBuilder()
+        pb.fit(qs)
+        b = MCBuilder(K=4, strategy="tfidf_profile", random_seed=13)
+        b.build(qs, pb, reference_questions=qs)
+        assert b._ref_cache is not None
+        first_rankings_id = id(b._ref_cache["rankings"])
+        first_key = b._ref_cache_key
+
+        # Mutate one question's content in place; the qid set is
+        # unchanged so a qid-only cache key would silently re-use the
+        # stale rankings derived from "original ..." text.
+        qs[0] = TossupQuestion(
+            qid=qs[0].qid,
+            question="completely different content for question zero",
+            tokens=["completely", "different", "content"],
+            answer_primary=qs[0].answer_primary,
+            clean_answers=qs[0].clean_answers,
+            run_indices=qs[0].run_indices,
+            human_buzz_positions=qs[0].human_buzz_positions,
+            category=qs[0].category,
+            cumulative_prefixes=qs[0].cumulative_prefixes,
+        )
+        pb2 = AnswerProfileBuilder()
+        pb2.fit(qs)
+        b.build(qs, pb2, reference_questions=qs)
+        assert id(b._ref_cache["rankings"]) != first_rankings_id, (
+            "content-aware cache key must invalidate when q.question "
+            "changes; otherwise mutated reference content silently "
+            "returns stale rankings."
+        )
+        assert b._ref_cache_key != first_key

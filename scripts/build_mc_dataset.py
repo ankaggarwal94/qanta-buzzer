@@ -18,7 +18,6 @@ Usage:
 
 import argparse
 import json
-import random
 import sys
 import time
 from dataclasses import asdict, is_dataclass
@@ -188,15 +187,26 @@ def print_statistics(
     profile_builder : Optional[AnswerProfileBuilder]
         Answer profile builder for profile stats
     mc_builder : Optional[MCBuilder]
-        Legacy MC builder for guard rejection stats. When ``build_stats``
-        is provided, ``build_stats`` is preferred and ``mc_builder`` is
-        ignored to avoid the stale-shared-reference bug that can occur
-        when the same MCBuilder is reused across splits.
+        Deprecated. Legacy MC builder for guard rejection stats. When
+        ``build_stats`` is provided, ``build_stats`` is preferred and
+        ``mc_builder`` is silently ignored to avoid the stale-shared-
+        reference bug that can occur when the same MCBuilder is reused
+        across splits. New callers should pass ``build_stats`` only.
     build_stats : Optional[dict[str, dict[str, Any]]]
         Per-split snapshots of ``MCBuilder.last_build_stats``, keyed by
         split name. When provided, drop-reason rows are printed per
         split so val/test rejections are no longer hidden.
     """
+    if mc_builder is not None and build_stats is not None:
+        import warnings
+
+        warnings.warn(
+            "print_statistics received both `build_stats` and `mc_builder`; "
+            "`mc_builder` will be ignored. Pass only `build_stats` for "
+            "split-aware stats; the `mc_builder` parameter is deprecated.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     print("\n" + "="*60)
     print("Dataset Construction Complete")
     print("="*60)
@@ -350,16 +360,15 @@ def main(argv: Optional[list[str]] = None):
     # Share a single MCBuilder across splits so the per-reference-corpus
     # ranking cache (added 2026-05) is reused for val/test — the SBERT /
     # TF-IDF encoder pass over ~20k answer profiles otherwise runs three
-    # times against the identical ``raw_train`` reference corpus. Reset
-    # the shared rng between splits so each split's distractor-fallback
-    # randomness matches the legacy "fresh-MCBuilder-per-split" behaviour.
-    # ``last_build_stats`` mutates between iterations; snapshot it with
-    # ``dict(...)`` into ``build_stats`` so per-split drop_reasons survive
-    # subsequent ``build()`` calls.
+    # times against the identical ``raw_train`` reference corpus.
+    # ``MCBuilder.reset_rng()`` puts the per-builder RNG back to its
+    # constructor seed between splits so distractor-fallback randomness
+    # matches the legacy "fresh-MCBuilder-per-split" behaviour. We
+    # snapshot ``last_build_stats`` with ``dict(...)`` so per-split
+    # drop_reasons survive subsequent ``build()`` calls.
     shared_builder = make_mc_builder(config)
-    legacy_seed = 13
     for split_name, target_questions in split_targets.items():
-        shared_builder.rng = random.Random(legacy_seed)
+        shared_builder.reset_rng()
         built = shared_builder.build(
             target_questions,
             profile_builder,
