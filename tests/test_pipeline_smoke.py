@@ -175,6 +175,56 @@ def test_evaluate_all_smoke(smoke_pipeline_dir: Path):
 
 @pytest.mark.slow
 @pytest.mark.pipeline
+def test_evaluate_all_discards_stale_validation_summary_when_training_incomplete(
+    smoke_pipeline_dir: Path, tmp_path
+):
+    """Regression for the Codex P1 finding on PR #12.
+
+    When ``run_metadata.json`` reports ``training_completed=False``, the
+    co-written ``ppo_summary.json`` is also from the failed prior run
+    and must not seep into ``evaluation_report.json`` via the
+    "validation" fallback. Expected behavior: ``ppo_summary_source``
+    falls through to ``"missing"`` and ``ppo_validation_summary`` is
+    empty in the saved report.
+    """
+    import shutil
+
+    work = tmp_path / "stale_metadata_run"
+    shutil.copytree(smoke_pipeline_dir, work)
+    run_metadata_path = work / "run_metadata.json"
+    run_metadata = json.loads(run_metadata_path.read_text())
+    run_metadata["training_completed"] = False
+    run_metadata_path.write_text(json.dumps(run_metadata, indent=2))
+
+    result = _run([
+        "scripts/evaluate_all.py",
+        "--smoke",
+        "--output-dir", str(work),
+        "likelihood.model=tfidf",
+    ])
+    assert result.returncode == 0, f"evaluate_all failed:\n{result.stderr}"
+    assert "training_completed=False" in result.stdout, (
+        "evaluate_all should print a loud warning about the stale "
+        "checkpoint refusal."
+    )
+    report = json.loads((work / "evaluation_report.json").read_text())
+    assert report["ppo_summary_source"] == "missing", (
+        f"Expected ppo_summary_source='missing' but got "
+        f"{report['ppo_summary_source']!r}; the stale ppo_summary.json "
+        "from a prior run leaked into the report."
+    )
+    assert report["ppo_validation_summary"] == {}, (
+        "ppo_validation_summary should be empty when training_completed=False; "
+        "any non-empty value means stale prior-run metrics were preserved "
+        "verbatim in the report."
+    )
+    assert report["ppo_test_summary"] == {}, (
+        "ppo_test_summary should also be empty since replay is skipped."
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.pipeline
 @pytest.mark.skipif(
     not os.environ.get("RUN_PIPELINE_E2E"),
     reason="set RUN_PIPELINE_E2E=1 to run full 4-stage pipeline test",

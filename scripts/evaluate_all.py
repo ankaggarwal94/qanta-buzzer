@@ -428,8 +428,20 @@ def main() -> None:
                 "WARNING: run_metadata.json reports training_completed=False; "
                 "the on-disk ppo_model.zip is from a prior run whose current "
                 "training attempt failed at agent.save(). Refusing to replay "
-                "stale checkpoint under fresh metadata. Re-run train_ppo.py."
+                "stale checkpoint under fresh metadata, and discarding the "
+                "stale ppo_summary.json that the same prior run produced so "
+                "ppo_summary_source falls through to 'missing' rather than "
+                "publishing stale validation metrics as current results. "
+                "Re-run train_ppo.py."
             )
+            # ppo_summary.json is co-written by train_ppo.py, so the same
+            # prior-run-residue argument that motivates the model-replay
+            # refusal applies to the validation summary. Clear it here so
+            # the report's ppo_summary fallback chain (test -> validation
+            # -> missing) skips straight to "missing" instead of silently
+            # publishing the prior run's metrics under the current run's
+            # provenance.
+            ppo_validation_summary = {}
 
     if ppo_checkpoint_path.exists() and locals().get("training_completed", True):
         print("Replaying PPO checkpoint on evaluation split...")
