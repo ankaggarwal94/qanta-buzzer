@@ -225,6 +225,54 @@ def test_evaluate_all_discards_stale_validation_summary_when_training_incomplete
 
 @pytest.mark.slow
 @pytest.mark.pipeline
+def test_evaluate_all_discards_stale_validation_summary_when_checkpoint_missing(
+    smoke_pipeline_dir: Path, tmp_path
+):
+    """Regression for the second Codex P1 finding on PR #12.
+
+    Symmetric to the ``training_completed=False`` case: when
+    ``ppo_model.zip`` is missing but training sidecars
+    (``run_metadata.json`` / ``config_used.json``) exist, the prior
+    failed training run also leaves ``ppo_summary.json`` behind.
+    evaluate_all.py must discard that stale summary so the report
+    falls through to ``ppo_summary_source="missing"`` rather than
+    silently republishing the prior run's validation metrics.
+    """
+    import shutil
+
+    work = tmp_path / "missing_checkpoint_run"
+    shutil.copytree(smoke_pipeline_dir, work)
+    # Simulate a failed agent.save() by removing the model while
+    # leaving sidecars and ppo_summary.json from the prior run intact.
+    (work / "ppo_model.zip").unlink()
+    assert (work / "run_metadata.json").exists()
+    assert (work / "ppo_summary.json").exists()
+
+    result = _run([
+        "scripts/evaluate_all.py",
+        "--smoke",
+        "--output-dir", str(work),
+        "likelihood.model=tfidf",
+    ])
+    assert result.returncode == 0, f"evaluate_all failed:\n{result.stderr}"
+    assert "ppo_model.zip is missing" in result.stdout, (
+        "evaluate_all should print a loud warning about the missing "
+        "checkpoint with stale sidecars."
+    )
+    report = json.loads((work / "evaluation_report.json").read_text())
+    assert report["ppo_summary_source"] == "missing", (
+        f"Expected ppo_summary_source='missing' but got "
+        f"{report['ppo_summary_source']!r}; the stale ppo_summary.json "
+        "from a prior run leaked into the report."
+    )
+    assert report["ppo_validation_summary"] == {}, (
+        "ppo_validation_summary should be empty when the checkpoint is "
+        "missing but sidecars exist (prior-run-residue scenario)."
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.pipeline
 @pytest.mark.skipif(
     not os.environ.get("RUN_PIPELINE_E2E"),
     reason="set RUN_PIPELINE_E2E=1 to run full 4-stage pipeline test",

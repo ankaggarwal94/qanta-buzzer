@@ -380,9 +380,15 @@ def main() -> None:
         print(
             f"WARNING: ppo_model.zip is missing under {out_dir} but training "
             "sidecars (run_metadata.json / config_used.json) exist; the "
-            "previous training run likely failed at agent.save(). Re-run "
-            "scripts/train_ppo.py before evaluating."
+            "previous training run likely failed at agent.save(). "
+            "Discarding any leftover ppo_summary.json so stale validation "
+            "metrics from the prior run are not republished as current "
+            "results. Re-run scripts/train_ppo.py before evaluating."
         )
+        # Same prior-run-residue argument as the training_completed=False
+        # branch: ppo_summary.json is co-written by the failed train_ppo
+        # invocation so any value here is from a stale earlier run.
+        ppo_validation_summary = {}
     if ppo_checkpoint_path.exists():
         ppo_eval_config, _, config_error = load_checkpoint_sidecar(
             ppo_checkpoint_path,
