@@ -88,13 +88,7 @@ def precompute_beliefs(
                 prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
                 frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
                 scores = likelihood_model.score(frag, question.option_profiles)
-                likelihood = _softmax(scores, beta)
-                posterior = belief * likelihood
-                denom = posterior.sum()
-                if denom <= 0:
-                    belief = np.ones(q_k, dtype=np.float32) / q_k
-                else:
-                    belief = (posterior / denom).astype(np.float32)
+                belief = bayesian_update(belief, scores, beta)
 
             else:
                 raise ValueError(f"Unknown belief_mode: {belief_mode}")

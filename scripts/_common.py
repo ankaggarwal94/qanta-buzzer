@@ -16,6 +16,8 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from models.likelihoods import LikelihoodModel, build_likelihood_from_config
 from qb_data.config import load_config as load_yaml_config
 from qb_data.mc_builder import MCQuestion
@@ -284,13 +286,21 @@ def resolve_default_dataset_path(
 
 
 def to_serializable(item: Any) -> Any:
-    """Recursively convert dataclasses to dicts for JSON serialization.
+    """Recursively convert dataclasses and numpy types to JSON-serializable forms.
+
+    Numpy scalar/array handling is deliberate: ``json.dump`` rejects
+    ``np.int64``/``np.float32``/``np.ndarray`` even though ``np.float64``
+    happens to inherit from ``float``. Without explicit conversion, any
+    metric path that produces a non-float64 numpy value (for example
+    ``np.argmax``, ``np.sum`` over int arrays, or anything pre-cast to
+    ``float32``) would silently raise mid-evaluation.
 
     Parameters
     ----------
     item : Any
         Object to convert. Dataclasses are converted via ``asdict()``,
-        dicts and lists are processed recursively.
+        numpy arrays via ``tolist()``, numpy scalars via ``.item()``,
+        and dicts/lists/tuples are processed recursively.
 
     Returns
     -------
@@ -298,10 +308,14 @@ def to_serializable(item: Any) -> Any:
         JSON-serializable version of the input.
     """
     if is_dataclass(item):
-        return asdict(item)
+        return to_serializable(asdict(item))
+    if isinstance(item, np.ndarray):
+        return item.tolist()
+    if isinstance(item, np.generic):
+        return item.item()
     if isinstance(item, dict):
         return {k: to_serializable(v) for k, v in item.items()}
-    if isinstance(item, list):
+    if isinstance(item, (list, tuple)):
         return [to_serializable(v) for v in item]
     return item
 

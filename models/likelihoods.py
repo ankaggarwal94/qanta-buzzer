@@ -9,15 +9,19 @@ The ``score()`` method returns **raw similarity scores**, not probabilities.
 The environment applies softmax with a configurable temperature (beta) to
 convert scores into a belief distribution.
 
-Embedding caching is built into the base class: texts are hashed via SHA-256
-and cached as float32 numpy arrays, so repeated calls with the same text
-skip recomputation.
+Embedding caching is built into the base class: texts are keyed by their
+SHA-256 hex digest and cached as float32 numpy arrays, so repeated calls
+with the same text skip recomputation. SHA-256 is deterministic across
+Python processes, which is required for ``save_cache``/``load_cache`` to
+round-trip correctly between pipeline scripts that run as separate
+interpreters (e.g., run_baselines.py -> train_ppo.py -> evaluate_all.py).
 
 Ported from qb-rl reference implementation (models/likelihoods.py lines 1-38).
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -29,11 +33,14 @@ if TYPE_CHECKING:
     import torch
 
 
-def _text_key(text: str) -> int:
-    """Compute a fast hash key for in-memory embedding cache lookups.
+def _text_key(text: str) -> str:
+    """Compute a deterministic content hash for embedding cache lookups.
 
-    Uses Python's built-in hash for speed (10-50x faster than SHA-256).
-    Collision-safe for in-memory dict use within a single session.
+    Uses SHA-256 hex digest because the cache is persisted to disk and
+    reloaded across separate Python processes (pipeline scripts run as
+    distinct interpreters). Process-salted hashes such as Python's built-in
+    ``hash()`` would produce different keys on every run, silently breaking
+    cross-process cache reuse.
 
     Parameters
     ----------
@@ -42,16 +49,18 @@ def _text_key(text: str) -> int:
 
     Returns
     -------
-    int
-        Python hash value.
+    str
+        64-character hexadecimal SHA-256 digest, stable across processes.
 
     Examples
     --------
     >>> key = _text_key("hello world")
+    >>> len(key)
+    64
     >>> _text_key("hello world") == _text_key("hello world")
     True
     """
-    return hash(text)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _best_torch_device() -> "torch.device":
@@ -81,12 +90,12 @@ class LikelihoodModel(ABC):
 
     Attributes
     ----------
-    embedding_cache : dict[int, np.ndarray]
-        Maps text hash keys to float32 embedding vectors.
+    embedding_cache : dict[str, np.ndarray]
+        Maps SHA-256 hex digests of input texts to float32 embedding vectors.
     """
 
     def __init__(self) -> None:
-        self.embedding_cache: dict[int, np.ndarray] = {}
+        self.embedding_cache: dict[str, np.ndarray] = {}
 
     @property
     def cache_memory_bytes(self) -> int:
@@ -117,7 +126,7 @@ class LikelihoodModel(ABC):
     def embed_and_cache(self, texts: list[str]) -> np.ndarray:
         """Embed texts, using cache for previously seen inputs.
 
-        Texts are identified by their SHA-256 hash. Only unseen texts
+        Texts are identified by their SHA-256 hex digest. Only unseen texts
         are passed to ``_embed_batch()`` for actual computation; cached
         results are reused.
 
@@ -175,7 +184,7 @@ class LikelihoodModel(ABC):
         """Persist embedding_cache to disk as compressed ``.npz``.
 
         Creates parent directories if needed. Keys are SHA-256 hex
-        strings (valid Python identifiers), values are float32 arrays.
+        strings (deterministic across processes), values are float32 arrays.
 
         Parameters
         ----------
@@ -189,8 +198,7 @@ class LikelihoodModel(ABC):
         """
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        str_cache = {str(k): v for k, v in self.embedding_cache.items()}
-        np.savez_compressed(p, **str_cache)
+        np.savez_compressed(p, **self.embedding_cache)
         return len(self.embedding_cache)
 
     def load_cache(self, path: str | Path) -> int:
@@ -216,9 +224,8 @@ class LikelihoodModel(ABC):
         with np.load(p) as data:
             loaded = 0
             for key in data.files:
-                int_key = int(key) if key.lstrip("-").isdigit() else hash(key)
-                if int_key not in self.embedding_cache:
-                    self.embedding_cache[int_key] = data[key].astype(np.float32)
+                if key not in self.embedding_cache:
+                    self.embedding_cache[key] = data[key].astype(np.float32)
                     loaded += 1
             return loaded
 
