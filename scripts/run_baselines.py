@@ -23,6 +23,7 @@ Ported from qb-rl reference implementation (scripts/run_baselines.py).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from dataclasses import asdict
@@ -47,6 +48,7 @@ from qb_data.config import merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
+    collect_env_texts,
     dataset_path_for_split,
     load_config,
     load_embedding_cache,
@@ -170,7 +172,15 @@ def main() -> None:
     train_path = mc_path.parent / "train_dataset.json"
     likelihood_questions: list = []
     if train_path.exists():
-        likelihood_questions = load_mc_questions(train_path)
+        try:
+            likelihood_questions = load_mc_questions(train_path)
+        except (json.JSONDecodeError, OSError, KeyError) as exc:
+            print(
+                f"WARNING: failed to load train split at {train_path} "
+                f"({type(exc).__name__}: {exc}); falling back to selected "
+                "eval split for likelihood corpus."
+            )
+            likelihood_questions = []
     if not likelihood_questions:
         likelihood_questions = mc_questions
         print(
@@ -210,13 +220,7 @@ def main() -> None:
     print(f"Thresholds: {thresholds}")
 
     # --- Pre-compute all embeddings once (batched) ---
-    all_texts: list[str] = []
-    for q in mc_questions:
-        all_texts.extend(q.cumulative_prefixes)
-        all_texts.extend(q.option_profiles)
-        for step_idx in range(len(q.run_indices)):
-            prev_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
-            all_texts.append(" ".join(q.tokens[prev_idx + 1 : q.run_indices[step_idx] + 1]))
+    all_texts = collect_env_texts(mc_questions)
     print(f"\nPre-computing embeddings for {len(set(all_texts)):,} unique texts...")
     likelihood_model.precompute_embeddings(all_texts, batch_size=64)
     save_embedding_cache(likelihood_model, config)
