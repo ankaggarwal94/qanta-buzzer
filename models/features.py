@@ -96,8 +96,10 @@ def extract_belief_features(
         raise ValueError("belief must be a 1D probability vector")
 
     top_p = float(np.max(belief))
-    sorted_probs = np.sort(belief)[::-1]
-    second = float(sorted_probs[1]) if len(sorted_probs) > 1 else 0.0
+    if len(belief) > 1:
+        second = float(np.partition(belief, -2)[-2])
+    else:
+        second = 0.0
     margin = top_p - second
     ent = entropy_of_distribution(belief)
     stability = float(np.abs(belief - prev_belief).sum()) if prev_belief is not None else 0.0
@@ -105,7 +107,7 @@ def extract_belief_features(
     clue_idx_norm = float(step_idx / max(1, total_steps - 1))
 
     extras = np.array([top_p, margin, ent, stability, progress, clue_idx_norm], dtype=np.float32)
-    return np.concatenate([belief, extras]).astype(np.float32)
+    return np.concatenate([belief, extras])
 
 
 def extract_padded_belief_features(
@@ -147,8 +149,10 @@ def extract_padded_belief_features(
     K_actual = len(belief)
 
     top_p = float(np.max(belief))
-    sorted_probs = np.sort(belief)[::-1]
-    second = float(sorted_probs[1]) if len(sorted_probs) > 1 else 0.0
+    if len(belief) > 1:
+        second = float(np.partition(belief, -2)[-2])
+    else:
+        second = 0.0
     margin = top_p - second
     ent = entropy_of_distribution(belief)
     stability = float(np.abs(belief - prev_belief).sum()) if prev_belief is not None else 0.0
@@ -158,4 +162,4 @@ def extract_padded_belief_features(
     padded = np.zeros(max_K, dtype=np.float32)
     padded[:K_actual] = belief[:max_K]
     extras = np.array([top_p, margin, ent, stability, progress, clue_idx_norm], dtype=np.float32)
-    return np.concatenate([padded, extras]).astype(np.float32)
+    return np.concatenate([padded, extras])

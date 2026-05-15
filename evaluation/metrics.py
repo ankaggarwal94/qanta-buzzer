@@ -76,11 +76,11 @@ def system_score(c_trace: list[float], g_trace: list[float]) -> float:
     g = np.array(g_trace, dtype=np.float64)
     if len(c) == 0:
         return 0.0
-    b = np.zeros_like(c)
-    survival = 1.0
-    for t in range(len(c)):
-        b[t] = c[t] * survival
-        survival *= (1.0 - c[t])
+    stay = 1.0 - c
+    survival = np.ones(len(c), dtype=np.float64)
+    if len(c) > 1:
+        survival[1:] = np.cumprod(stay[:-1])
+    b = c * survival
     return float(np.sum(b * g))
 
 

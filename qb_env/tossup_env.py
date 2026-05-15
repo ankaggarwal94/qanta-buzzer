@@ -25,32 +25,15 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from agents._math import bayesian_update, softmax_belief
 from models.features import extract_belief_features
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
 
 
 def _softmax(scores: np.ndarray, beta: float) -> np.ndarray:
-    """Temperature-scaled softmax with numerical stability.
-
-    Parameters
-    ----------
-    scores : np.ndarray
-        Raw similarity scores of shape (K,).
-    beta : float
-        Temperature parameter. Higher values produce sharper distributions.
-
-    Returns
-    -------
-    np.ndarray
-        Probability distribution of shape (K,), dtype float32.
-    """
-    stable = scores - np.max(scores)
-    probs = np.exp(beta * stable)
-    probs_sum = np.sum(probs)
-    if probs_sum <= 0:
-        return np.ones_like(scores, dtype=np.float32) / len(scores)
-    return (probs / probs_sum).astype(np.float32)
+    """Temperature-scaled softmax with numerical stability."""
+    return softmax_belief(scores, beta)
 
 
 def precompute_beliefs(

@@ -303,25 +303,30 @@ class MCBuilder:
 
         raise ValueError(f"Unknown distractor strategy: {self.strategy}")
 
-    def _aliases_collide(self, candidate: str, gold_aliases: List[str]) -> bool:
+    def _aliases_collide(
+        self,
+        candidate: str,
+        gold_aliases: List[str],
+        _gold_norms: set[str] | None = None,
+    ) -> bool:
         """Check if a candidate is too similar to any gold answer alias.
 
         Args:
             candidate: Candidate distractor.
             gold_aliases: List of aliases for the gold answer.
+            _gold_norms: Pre-computed normalized alias set (avoids recomputing per candidate).
 
         Returns:
             True if the candidate collides with a gold alias.
         """
         candidate_norm = str(normalize_answer(candidate))
-        gold_norms = [str(normalize_answer(alias)) for alias in gold_aliases]
+        if _gold_norms is None:
+            _gold_norms = {str(normalize_answer(alias)) for alias in gold_aliases}
 
-        # Check exact match
-        if candidate_norm in set(gold_norms):
+        if candidate_norm in _gold_norms:
             return True
 
-        # Check edit distance
-        for gold_norm in gold_norms:
+        for gold_norm in _gold_norms:
             if _normalized_edit_distance(candidate_norm, gold_norm) < self.alias_edit_distance_threshold:
                 return True
 
@@ -511,6 +516,7 @@ class MCBuilder:
                 drop_reasons["unseen_gold_answer"] += 1
                 continue
             gold_aliases = answer_to_aliases.get(gold, [gold])
+            gold_norms = {str(normalize_answer(alias)) for alias in gold_aliases}
             ranked = rankings.get(gold, [a for a in answers if a != gold])
             selected: List[str] = []
 
@@ -518,7 +524,7 @@ class MCBuilder:
             for candidate in ranked:
                 if candidate == gold:
                     continue
-                if self._aliases_collide(candidate, gold_aliases):
+                if self._aliases_collide(candidate, gold_aliases, _gold_norms=gold_norms):
                     continue
                 if self._violates_duplicate_guard(candidate, selected):
                     continue
@@ -531,7 +537,7 @@ class MCBuilder:
                 fallback = [a for a in answers if a not in selected and a != gold]
                 self.rng.shuffle(fallback)
                 for candidate in fallback:
-                    if self._aliases_collide(candidate, gold_aliases):
+                    if self._aliases_collide(candidate, gold_aliases, _gold_norms=gold_norms):
                         continue
                     if self._violates_duplicate_guard(candidate, selected):
                         continue

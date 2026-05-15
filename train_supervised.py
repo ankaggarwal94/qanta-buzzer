@@ -16,6 +16,7 @@ from dataset import QuizBowlDataset
 from environment import QuizBowlEnvironment
 from metrics import MetricsTracker, evaluate_model, evaluate_choices_only
 from config import Config
+from scripts._common import to_serializable
 
 
 class SupervisedTrainer:
@@ -245,26 +246,9 @@ class SupervisedTrainer:
     
     def save_history(self):
         """Save training history"""
-        import numpy as np
-        
-        def convert_to_native(obj):
-            """Convert numpy types to Python native types"""
-            if isinstance(obj, dict):
-                return {k: convert_to_native(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_to_native(v) for v in obj]
-            elif isinstance(obj, (np.integer, np.int64, np.int32)):
-                return int(obj)
-            elif isinstance(obj, (np.floating, np.float64, np.float32)):
-                return float(obj)
-            elif isinstance(obj, np.ndarray):
-                return convert_to_native(obj.tolist())
-            else:
-                return obj
-        
         history = {
-            'train': convert_to_native(self.train_history),
-            'val': convert_to_native(self.val_history)
+            'train': to_serializable(self.train_history),
+            'val': to_serializable(self.val_history)
         }
         
         history_path = self.checkpoint_dir / "history.json"
@@ -336,25 +320,7 @@ def run_supervised_training(config: Config,
             }
         }
         
-        # Convert numpy types to native Python types for JSON serialization
-        import numpy as np
-        
-        def convert_to_native(obj):
-            """Convert numpy types to Python native types"""
-            if isinstance(obj, dict):
-                return {k: convert_to_native(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_to_native(v) for v in obj]
-            elif isinstance(obj, (np.integer, np.int64, np.int32)):
-                return int(obj)
-            elif isinstance(obj, (np.floating, np.float64, np.float32)):
-                return float(obj)
-            elif isinstance(obj, np.ndarray):
-                return convert_to_native(obj.tolist())
-            else:
-                return obj
-        
-        test_results = convert_to_native(test_results)
+        test_results = to_serializable(test_results)
         
         results_path = trainer.checkpoint_dir / "test_results.json"
         with open(results_path, 'w') as f:

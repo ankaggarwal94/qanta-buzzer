@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from agents._math import sigmoid
+from agents._math import belief_stats, confidence_proxy, sigmoid, softmax_belief
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
 
@@ -29,19 +29,12 @@ class EpisodeResult:
 
 def _scores_to_belief(scores: np.ndarray, beta: float) -> np.ndarray:
     """Convert raw similarity scores to a belief distribution via softmax."""
-    shifted = scores - np.max(scores)
-    probs = np.exp(beta * shifted)
-    probs = probs / max(1e-12, probs.sum())
-    return probs.astype(np.float32)
+    return softmax_belief(scores, beta)
 
 
 def _belief_stats(belief: np.ndarray) -> tuple[int, float, float]:
     """Return (top_idx, top_p, entropy) from a belief distribution."""
-    top_idx = int(np.argmax(belief))
-    top_p = float(belief[top_idx])
-    clipped = np.clip(belief, 1e-12, 1.0)
-    entropy = float(-(clipped * np.log(clipped)).sum())
-    return top_idx, top_p, entropy
+    return belief_stats(belief)
 
 
 def reward_from_buzz_step(

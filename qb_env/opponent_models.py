@@ -116,6 +116,7 @@ class EmpiricalHistogramOpponentModel:
     ) -> None:
         self.fallback = fallback or LogisticOpponentModel()
         self._global_cdf: np.ndarray | None = None
+        self._per_question_cdf_cache: dict[str, np.ndarray] = {}
         if global_positions:
             self._global_cdf = self._build_cdf(global_positions)
 
@@ -154,7 +155,11 @@ class EmpiricalHistogramOpponentModel:
 
     def prob_buzzed_before_step(self, question: MCQuestion, step_idx: int) -> float:
         if question.human_buzz_positions:
-            cdf = self._build_cdf(question.human_buzz_positions)
+            if question.qid not in self._per_question_cdf_cache:
+                self._per_question_cdf_cache[question.qid] = self._build_cdf(
+                    question.human_buzz_positions
+                )
+            cdf = self._per_question_cdf_cache[question.qid]
             return self._cdf_at_step(cdf, question, step_idx)
         if self._global_cdf is not None and self._global_cdf.size > 0:
             return self._cdf_at_step(self._global_cdf, question, step_idx)
