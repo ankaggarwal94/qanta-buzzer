@@ -34,3 +34,13 @@ results/*.zip
 
 # Model checkpoints and training state (synced via Dropbox, not git)
 checkpoints/
+
+# One-off forensic artifact: actor-critic file-triage workspace from the
+# 2026-05-13 Dropbox-conflict cleanup. Preserved locally as an evidence
+# trail; not reusable tooling.
+.cleanup-assessment/
+
+# Large UTF-16 stdout dump from the 2026-03-17 Mode-A run. GitHub will not
+# render or diff it usefully; archived externally and referenced by SHA-256
+# in results/GENERATED_FILES_MANIFEST.md instead.
+results/phase_8_sweep.txt
