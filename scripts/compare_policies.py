@@ -226,7 +226,18 @@ def resolve_t5_reference_questions(
 
     train_split_path = mc_path.parent / "train_dataset.json"
     if train_split_path.exists():
-        return load_mc_questions(train_split_path), "sibling_train_dataset"
+        sibling_questions = load_mc_questions(train_split_path)
+        if sibling_questions:
+            return sibling_questions, "sibling_train_dataset"
+        # Empty sibling file silently fell through to the fallback
+        # branches before; surface the cause loudly so the caller can
+        # see why the next step (combined-fallback) is being entered.
+        print(
+            f"WARNING: sibling train_dataset.json at {train_split_path} is "
+            "empty (likely upstream guard rejection or low retention); "
+            "treating as unresolved and continuing to combined-dataset "
+            "fallback."
+        )
 
     if test_questions is None:
         # Legacy call shape; preserve historical behaviour for callers
@@ -243,20 +254,29 @@ def resolve_t5_reference_questions(
         return all_questions, "combined_dataset_fallback"
 
     test_qids = {q.qid for q in test_questions}
-    filtered = [q for q in all_questions if q.qid not in test_qids]
+    excluded_qids: set[str] = set(test_qids)
+    val_split_path = mc_path.parent / "val_dataset.json"
+    if val_split_path.exists():
+        val_questions = load_mc_questions(val_split_path)
+        if val_questions:
+            excluded_qids.update(q.qid for q in val_questions)
+    filtered = [q for q in all_questions if q.qid not in excluded_qids]
     if not filtered:
         raise ValueError(
             "Cannot resolve T5 reward reference: split_manifest.json and "
             f"sibling train_dataset.json are absent at {train_split_path}, "
-            "and the combined dataset is fully contained in test_questions. "
-            "Provide a checkpoint with split_manifest.json or build "
-            "train_dataset.json next to the combined artifact."
+            "and the combined dataset is fully contained in test+val "
+            "questions. Provide a checkpoint with split_manifest.json or "
+            "build train_dataset.json next to the combined artifact."
         )
     print(
         "WARNING: resolve_t5_reference_questions falling back to combined "
-        f"dataset minus test_qids; {len(all_questions) - len(filtered)} of "
-        f"{len(all_questions)} questions were excluded to prevent test "
-        "leakage into the env reward helper."
+        f"dataset minus held-out qids; "
+        f"{len(all_questions) - len(filtered)} of "
+        f"{len(all_questions)} questions were excluded "
+        f"(test={len(test_qids)}, "
+        f"val={len(excluded_qids) - len(test_qids)}) to prevent leakage "
+        "into the env reward helper."
     )
     return filtered, "combined_dataset_minus_test_fallback"
 
@@ -308,6 +328,18 @@ def evaluate_mlp_policy(
     from agents.ppo_buzzer import PPOBuzzer
     from qb_env.tossup_env import make_env_from_config
 
+    if not test_questions:
+        # An empty test set silently produced a zero-everything metrics
+        # dict (accuracy=0, mean_sq=0, ...) that was indistinguishable
+        # from a real 0% test score outside of ``n_questions: 0``.
+        # Fail loud instead so callers cannot ship degenerate runs.
+        raise ValueError(
+            "evaluate_mlp_policy: test_questions is empty; refusing to "
+            "produce a zero-metrics report. Check the test split source "
+            f"(test_set_source={test_set_source!r}) and rebuild it "
+            "before evaluating."
+        )
+
     resolved_config = resolve_mlp_eval_config(checkpoint_path, config)
     # Truthiness gate, not ``is None``: an empty ``reference_questions``
     # list (e.g. resolved from an empty ``train_dataset.json`` via
@@ -317,10 +349,11 @@ def evaluate_mlp_policy(
     # ``test_questions``.
     if not reference_questions:
         likelihood_corpus = test_questions
-        if reference_questions is None:
-            cause = "without reference_questions"
-        else:
-            cause = "with an empty reference_questions list"
+        cause = (
+            "without reference_questions"
+            if reference_questions is None
+            else "with an empty reference_questions list"
+        )
         print(
             f"WARNING: evaluate_mlp_policy called {cause}; "
             "fitting likelihood model on test_questions which leaks test text "
@@ -407,6 +440,14 @@ def evaluate_t5_policy(
     from models.likelihoods import TfIdfLikelihood
     from qb_env.text_wrapper import TextObservationWrapper
     from qb_env.tossup_env import TossupMCEnv
+
+    if not test_questions:
+        raise ValueError(
+            "evaluate_t5_policy: test_questions is empty; refusing to "
+            "produce a zero-metrics report. Check the test split source "
+            f"(test_set_source={test_set_source!r}) and rebuild it "
+            "before evaluating."
+        )
 
     # Load T5 policy model
     model = T5PolicyModel.load_pretrained(checkpoint_path)

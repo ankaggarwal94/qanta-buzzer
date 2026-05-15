@@ -231,7 +231,7 @@ def test_resolve_t5_reference_questions_legacy_no_test_questions_warns(tmp_path,
     assert source == "combined_dataset_fallback"
     assert ref is all_questions
     out = capsys.readouterr().out
-    assert "in-sample" in out.lower() or "WARNING" in out
+    assert "falling back to combined" in out and "in-sample" in out.lower()
 
 
 def test_resolve_manifest_questions_treats_empty_qids_as_unresolved(
