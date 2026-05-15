@@ -85,10 +85,24 @@ from scripts._common import (
 def _safe_load(path: Path, context: str) -> list:
     """Inline safe-loader so test monkey-patches of ``load_mc_questions``
     in ``scripts.evaluate_all`` keep applying. Returns ``[]`` on
-    JSONDecodeError / OSError / KeyError with a loud warning."""
+    JSONDecodeError / OSError / KeyError / TypeError / ValueError with
+    a loud warning.
+
+    ``TypeError`` and ``ValueError`` cover JSON that parses but has the
+    wrong shape (e.g. a top-level list of strings or numbers, where
+    ``mc_question_from_dict`` then subscripts a non-dict and raises
+    ``TypeError``, or per-field ``int(...)`` / ``list(...)`` coercions
+    raise ``ValueError``). Without these the partial-pipeline-fallback
+    contract is silently broken and the entire run aborts."""
     try:
         return load_mc_questions(path)
-    except (json.JSONDecodeError, OSError, KeyError) as exc:
+    except (
+        json.JSONDecodeError,
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
         print(
             f"WARNING: failed to load MC questions from {path} ({context}): "
             f"{type(exc).__name__}: {exc}; treating as empty and continuing."

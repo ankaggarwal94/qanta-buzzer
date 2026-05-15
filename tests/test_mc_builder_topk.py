@@ -7,11 +7,37 @@ gracefully when N is small, and leaves category_random strategy unchanged.
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
+import pytest
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from qb_data.mc_builder import MCBuilder
+
+
+@functools.lru_cache(maxsize=1)
+def _load_smoke_splits_cached() -> tuple | None:
+    """Memoised load of the in-tree ``questions.csv`` smoke fixture.
+
+    The CSV (~14MB, ~20k rows) is checked into the repo for the
+    category_random parity / cache-reuse regression tests. Without this
+    cache each test method that calls ``_smoke_questions()`` re-parses
+    the entire CSV, which is wasteful (the parse dominates each test
+    method's runtime) even though absolute time stays sub-second. Returns
+    ``None`` when the CSV is absent so the caller can pytest.skip cleanly.
+    """
+    from pathlib import Path
+
+    if not Path("questions.csv").exists():  # pragma: no cover - tied to local CSV
+        return None
+
+    from qb_data.data_loader import QANTADatasetLoader
+    from qb_data.dataset_splits import create_stratified_splits
+
+    qs = QANTADatasetLoader.load_from_csv("questions.csv")[:80]
+    return create_stratified_splits(qs, seed=42)
 
 
 # ---------------------------------------------------------------------------
@@ -146,16 +172,10 @@ class TestRefCacheRngParity:
     """
 
     def _smoke_questions(self):
-        from qb_data.data_loader import QANTADatasetLoader
-        from qb_data.dataset_splits import create_stratified_splits
-
-        path = "questions.csv"
-        from pathlib import Path
-        if not Path(path).exists():  # pragma: no cover - tied to local CSV
-            import pytest as _pytest
-            _pytest.skip("questions.csv not present in repo root")
-        qs = QANTADatasetLoader.load_from_csv(path)[:80]
-        return create_stratified_splits(qs, seed=42)
+        result = _load_smoke_splits_cached()
+        if result is None:  # pragma: no cover - tied to local CSV
+            pytest.skip("questions.csv not present in repo root")
+        return result
 
     def test_category_random_split_loop_matches_fresh_per_split(self) -> None:
         """A shared MCBuilder with rng-reset-per-split must produce the

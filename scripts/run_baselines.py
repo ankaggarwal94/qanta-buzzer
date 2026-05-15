@@ -174,7 +174,19 @@ def main() -> None:
     if train_path.exists():
         try:
             likelihood_questions = load_mc_questions(train_path)
-        except (json.JSONDecodeError, OSError, KeyError) as exc:
+        except (
+            json.JSONDecodeError,
+            OSError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            # ``TypeError`` and ``ValueError`` cover JSON that parses
+            # but has the wrong shape (e.g. a top-level list of strings,
+            # where ``mc_question_from_dict`` then subscripts a non-dict
+            # and raises ``TypeError``, or per-field coercions raise
+            # ``ValueError``). Without these the fallback contract
+            # silently breaks and the baseline run aborts.
             print(
                 f"WARNING: failed to load train split at {train_path} "
                 f"({type(exc).__name__}: {exc}); falling back to selected "

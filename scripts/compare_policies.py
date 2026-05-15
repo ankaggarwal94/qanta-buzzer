@@ -347,7 +347,8 @@ def evaluate_mlp_policy(
     # branch) must trigger the same leakage warning as the ``None``
     # case, otherwise the likelihood model is silently fit on
     # ``test_questions``.
-    if not reference_questions:
+    fell_back_to_test = not reference_questions
+    if fell_back_to_test:
         likelihood_corpus = test_questions
         cause = (
             "without reference_questions"
@@ -403,6 +404,19 @@ def evaluate_mlp_policy(
         out["reference_source"] = reference_source
     if test_set_source is not None:
         out["test_set_source"] = test_set_source
+    # ``reference_source`` records what the caller asked for;
+    # ``effective_reference_source`` records what was actually used to
+    # fit the likelihood model. They diverge on the leaky-fallback
+    # path (no/empty ``reference_questions`` -> fit on ``test_questions``),
+    # which must be auditable in saved JSON so contaminated runs can
+    # be detected downstream.
+    if fell_back_to_test:
+        out["effective_reference_source"] = (
+            "test_questions_fallback (LEAKED): "
+            f"test_set_source={test_set_source!r}"
+        )
+    else:
+        out["effective_reference_source"] = reference_source or "unspecified"
     return out
 
 
@@ -461,7 +475,8 @@ def evaluate_t5_policy(
             "Cannot build T5 reward likelihood: both reference_questions "
             "and test_questions are empty."
         )
-    if ref is not reference_questions:
+    fell_back_to_test = ref is not reference_questions
+    if fell_back_to_test:
         print(
             "Warning: reference split is empty; building T5 reward "
             f"likelihood from {len(ref)} test questions instead."
@@ -569,6 +584,16 @@ def evaluate_t5_policy(
     }
     if reference_source is not None:
         out["reference_source"] = reference_source
+    # Mirror evaluate_mlp_policy: record what was actually used for the
+    # T5 reward TF-IDF corpus so downstream consumers can detect a silent
+    # leaky-fallback when ``reference_questions`` was missing/empty.
+    if fell_back_to_test:
+        out["effective_reference_source"] = (
+            "test_questions_fallback (LEAKED): "
+            f"test_set_source={test_set_source!r}"
+        )
+    else:
+        out["effective_reference_source"] = reference_source or "unspecified"
     return out
 
 

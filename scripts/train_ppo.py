@@ -239,9 +239,10 @@ def main() -> None:
     train_eval_texts = collect_env_texts(train_questions) + collect_env_texts(
         eval_questions
     )
+    eval_label = "val" if eval_split == "val" else eval_split
     print(
         f"Pre-computing embeddings for {len(set(train_eval_texts)):,} unique texts "
-        "(train + val)..."
+        f"(train + {eval_label})..."
     )
     likelihood_model.precompute_embeddings(train_eval_texts, batch_size=64)
 
