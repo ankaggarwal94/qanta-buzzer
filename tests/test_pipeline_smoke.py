@@ -175,6 +175,167 @@ def test_evaluate_all_smoke(smoke_pipeline_dir: Path):
 
 @pytest.mark.slow
 @pytest.mark.pipeline
+def test_evaluate_all_discards_stale_validation_summary_when_training_incomplete(
+    smoke_pipeline_dir: Path, tmp_path
+):
+    """Regression for the Codex P1 finding on PR #12.
+
+    When ``run_metadata.json`` reports ``training_completed=False``, the
+    co-written ``ppo_summary.json`` is also from the failed prior run
+    and must not seep into ``evaluation_report.json`` via the
+    "validation" fallback. Expected behavior: ``ppo_summary_source``
+    falls through to ``"missing"`` and ``ppo_validation_summary`` is
+    empty in the saved report.
+    """
+    import shutil
+
+    work = tmp_path / "stale_metadata_run"
+    shutil.copytree(smoke_pipeline_dir, work)
+    run_metadata_path = work / "run_metadata.json"
+    run_metadata = json.loads(run_metadata_path.read_text())
+    run_metadata["training_completed"] = False
+    run_metadata_path.write_text(json.dumps(run_metadata, indent=2))
+
+    result = _run([
+        "scripts/evaluate_all.py",
+        "--smoke",
+        "--output-dir", str(work),
+        "likelihood.model=tfidf",
+    ])
+    assert result.returncode == 0, f"evaluate_all failed:\n{result.stderr}"
+    assert "training_completed=False" in result.stdout, (
+        "evaluate_all should print a loud warning about the stale "
+        "checkpoint refusal."
+    )
+    report = json.loads((work / "evaluation_report.json").read_text())
+    assert report["ppo_summary_source"] == "missing", (
+        f"Expected ppo_summary_source='missing' but got "
+        f"{report['ppo_summary_source']!r}; the stale ppo_summary.json "
+        "from a prior run leaked into the report."
+    )
+    assert report["ppo_validation_summary"] == {}, (
+        "ppo_validation_summary should be empty when training_completed=False; "
+        "any non-empty value means stale prior-run metrics were preserved "
+        "verbatim in the report."
+    )
+    assert report["ppo_test_summary"] == {}, (
+        "ppo_test_summary should also be empty since replay is skipped."
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.pipeline
+def test_evaluate_all_discards_stale_validation_summary_when_save_failed(
+    smoke_pipeline_dir: Path, tmp_path
+):
+    """Regression for the second Codex P1 finding on PR #12.
+
+    Symmetric to the ``training_completed=False`` case but on a freshly
+    failed save: when ``ppo_model.zip`` is missing AND the
+    ``run_metadata.json`` does NOT report ``training_completed=True``
+    (failed save scenario), the stale ``ppo_summary.json`` from the
+    failed run must not seep into the report.
+    """
+    import shutil
+
+    work = tmp_path / "failed_save_run"
+    shutil.copytree(smoke_pipeline_dir, work)
+    # Simulate a failed agent.save(): metadata was overwritten with the
+    # current run's values BEFORE the save failed, so training_completed
+    # is False; ppo_model.zip never got rewritten so it gets removed
+    # here to model the "fresh out_dir, save failed" subset.
+    (work / "ppo_model.zip").unlink()
+    rm_path = work / "run_metadata.json"
+    rm = json.loads(rm_path.read_text())
+    rm["training_completed"] = False
+    rm_path.write_text(json.dumps(rm, indent=2))
+    assert (work / "ppo_summary.json").exists()
+
+    result = _run([
+        "scripts/evaluate_all.py",
+        "--smoke",
+        "--output-dir", str(work),
+        "likelihood.model=tfidf",
+    ])
+    assert result.returncode == 0, f"evaluate_all failed:\n{result.stderr}"
+    assert "ppo_model.zip is missing" in result.stdout, (
+        "evaluate_all should print a loud warning about the missing "
+        "checkpoint with stale sidecars."
+    )
+    report = json.loads((work / "evaluation_report.json").read_text())
+    assert report["ppo_summary_source"] == "missing", (
+        f"Expected ppo_summary_source='missing' but got "
+        f"{report['ppo_summary_source']!r}; the stale ppo_summary.json "
+        "from a failed run leaked into the report."
+    )
+    assert report["ppo_validation_summary"] == {}, (
+        "ppo_validation_summary should be empty when training_completed "
+        "is False; any non-empty value means stale failed-run metrics "
+        "were preserved verbatim."
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.pipeline
+def test_evaluate_all_keeps_validation_summary_when_checkpoint_pruned(
+    smoke_pipeline_dir: Path, tmp_path
+):
+    """Regression for the Codex P2 finding on PR #12.
+
+    Distinguish "failed save" from "successful training, checkpoint
+    later pruned for storage cleanup". When ``ppo_model.zip`` is
+    missing but ``run_metadata.json`` reports
+    ``training_completed=True``, ``ppo_summary.json`` holds valid
+    validation metrics from the prior successful run -- evaluate_all.py
+    must preserve them (replay is impossible, but the validation
+    metrics are real). Pre-fix this branch was conflated with the
+    failed-save branch and silently discarded valid metrics.
+    """
+    import shutil
+
+    work = tmp_path / "pruned_checkpoint_run"
+    shutil.copytree(smoke_pipeline_dir, work)
+    # Smoke run was successful, so run_metadata already has
+    # training_completed=True. Just remove the checkpoint to model
+    # storage cleanup.
+    (work / "ppo_model.zip").unlink()
+    rm = json.loads((work / "run_metadata.json").read_text())
+    assert rm.get("training_completed") is True, (
+        "smoke fixture must report a completed training run for this "
+        "test to exercise the pruned-checkpoint branch."
+    )
+    assert (work / "ppo_summary.json").exists()
+
+    result = _run([
+        "scripts/evaluate_all.py",
+        "--smoke",
+        "--output-dir", str(work),
+        "likelihood.model=tfidf",
+    ])
+    assert result.returncode == 0, f"evaluate_all failed:\n{result.stderr}"
+    assert "checkpoint pruned" in result.stdout, (
+        "evaluate_all should print a NOTE explaining the pruned-checkpoint "
+        "interpretation."
+    )
+    report = json.loads((work / "evaluation_report.json").read_text())
+    assert report["ppo_summary_source"] == "validation", (
+        f"Expected ppo_summary_source='validation' (valid pre-pruned "
+        f"metrics) but got {report['ppo_summary_source']!r}; the "
+        "pruned-checkpoint branch should preserve the validation summary."
+    )
+    assert report["ppo_validation_summary"] != {}, (
+        "ppo_validation_summary must be preserved when training "
+        "previously completed successfully and the checkpoint was "
+        "pruned for storage cleanup."
+    )
+    assert report["ppo_test_summary"] == {}, (
+        "ppo_test_summary should still be empty since replay is "
+        "impossible without a checkpoint on disk."
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.pipeline
 @pytest.mark.skipif(
     not os.environ.get("RUN_PIPELINE_E2E"),
     reason="set RUN_PIPELINE_E2E=1 to run full 4-stage pipeline test",

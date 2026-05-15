@@ -105,3 +105,78 @@ class TestParseOverrides:
         assert result["data"]["K"] == 6
         assert result["data"]["csv_path"] == "q.csv"
         assert result["environment"]["reward_mode"] == "time_penalty"
+
+
+class TestPrintStatisticsPerSplitStats:
+    """Regression for the stale-shared-MCBuilder reference in print_statistics."""
+
+    def test_print_statistics_reports_per_split_drop_reasons(self, capsys) -> None:
+        """When ``build_stats`` is provided, drop reasons must be reported
+        for every split — not just whichever split happened to be built
+        last by the shared MCBuilder."""
+        from scripts.build_mc_dataset import print_statistics
+
+        class _Q:
+            def __init__(self, category: str = "X", question: str = "q", **_):
+                self.category = category
+                self.question = question
+                self.answer_primary = "a"
+                self.options = ["a", "b", "c", "d"]
+
+        train = [_Q()]
+        val = [_Q()]
+        test = [_Q()]
+        build_stats = {
+            "train": {"drop_reasons": {"unseen_gold_answer": 5}},
+            "val": {"drop_reasons": {"length_ratio_guard": 2}},
+            "test": {"drop_reasons": {"question_overlap_guard": 1}},
+        }
+        print_statistics(
+            train, val, test,
+            profile_builder=None,
+            build_stats=build_stats,
+        )
+        out = capsys.readouterr().out
+        # All three splits' drop reasons must be visible, not just the
+        # last builder's stats.
+        assert "train:" in out
+        assert "unseen_gold_answer: 5 rejections" in out
+        assert "val:" in out
+        assert "length_ratio_guard: 2 rejections" in out
+        assert "test:" in out
+        assert "question_overlap_guard: 1 rejections" in out
+
+    def test_print_statistics_build_stats_overrides_stale_mc_builder(self, capsys) -> None:
+        """If both ``mc_builder`` (stale shared reference) and
+        ``build_stats`` (per-split snapshots) are passed, the snapshots
+        win so the original bug is impossible to reproduce."""
+        from scripts.build_mc_dataset import print_statistics
+
+        class _Q:
+            def __init__(self, category: str = "X", question: str = "q", **_):
+                self.category = category
+                self.question = question
+                self.answer_primary = "a"
+                self.options = ["a", "b", "c", "d"]
+
+        class _SharedBuilder:
+            # Mirrors how MCBuilder's last_build_stats mutates between
+            # split builds — exposing only the LAST split's data.
+            last_build_stats = {"drop_reasons": {"unseen_gold_answer": 999}}
+
+        build_stats = {
+            "train": {"drop_reasons": {"unseen_gold_answer": 5}},
+            "val": {"drop_reasons": {}},
+            "test": {"drop_reasons": {}},
+        }
+        print_statistics(
+            [_Q()], [_Q()], [_Q()],
+            profile_builder=None,
+            mc_builder=_SharedBuilder(),
+            build_stats=build_stats,
+        )
+        out = capsys.readouterr().out
+        # Stale shared-builder value (999) must NOT appear; per-split
+        # snapshot (5) must.
+        assert "unseen_gold_answer: 999 rejections" not in out
+        assert "unseen_gold_answer: 5 rejections" in out

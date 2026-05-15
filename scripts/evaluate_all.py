@@ -29,6 +29,7 @@ import path adaptations for the unified qanta-buzzer codebase.
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import asdict
 from pathlib import Path
 import sys
@@ -67,6 +68,7 @@ from qb_env.tossup_env import precompute_beliefs as env_precompute_beliefs
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
+    collect_env_texts,
     load_config,
     load_checkpoint_sidecar,
     load_embedding_cache,
@@ -78,6 +80,34 @@ from scripts._common import (
     save_json,
     split_name_from_path,
 )
+
+
+def _safe_load(path: Path, context: str) -> list:
+    """Inline safe-loader so test monkey-patches of ``load_mc_questions``
+    in ``scripts.evaluate_all`` keep applying. Returns ``[]`` on
+    JSONDecodeError / OSError / KeyError / TypeError / ValueError with
+    a loud warning.
+
+    ``TypeError`` and ``ValueError`` cover JSON that parses but has the
+    wrong shape (e.g. a top-level list of strings or numbers, where
+    ``mc_question_from_dict`` then subscripts a non-dict and raises
+    ``TypeError``, or per-field ``int(...)`` / ``list(...)`` coercions
+    raise ``ValueError``). Without these the partial-pipeline-fallback
+    contract is silently broken and the entire run aborts."""
+    try:
+        return load_mc_questions(path)
+    except (
+        json.JSONDecodeError,
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        print(
+            f"WARNING: failed to load MC questions from {path} ({context}): "
+            f"{type(exc).__name__}: {exc}; treating as empty and continuing."
+        )
+        return []
 
 
 def parse_args() -> argparse.Namespace:
@@ -167,12 +197,14 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "plots").mkdir(parents=True, exist_ok=True)
     if args.mc_path:
+        requested_mc_path = Path(args.mc_path)
         mc_path, eval_split, mc_warning = redirect_combined_to_split(
-            Path(args.mc_path), preferred_split="test",
+            requested_mc_path, preferred_split="test",
         )
         if mc_warning:
             print(mc_warning)
     else:
+        requested_mc_path = None
         mc_path, eval_split, warning = resolve_default_dataset_path(
             out_dir,
             preferred_split="test",
@@ -203,10 +235,15 @@ def main() -> None:
         alias_lookup = {}
 
     # Build TF-IDF from train split even when evaluating on held-out data.
+    # Initialize likelihood_questions explicitly so the fallback branch
+    # never depends on Python's short-circuit ``or`` evaluation order.
     train_path = mc_path.parent / "train_dataset.json"
+    likelihood_questions: list = []
     if train_path.exists():
-        likelihood_questions = load_mc_questions(train_path)
-    if not train_path.exists() or not likelihood_questions:
+        likelihood_questions = _safe_load(
+            train_path, context="evaluate_all softmax likelihood"
+        )
+    if not likelihood_questions:
         likelihood_questions = mc_questions
         print(
             "Building likelihood model: "
@@ -227,12 +264,25 @@ def main() -> None:
     threshold = pick_best_softmax_threshold(out_dir, default_threshold=default_threshold)
     print(f"Using best softmax threshold: {threshold}")
 
+    # Honor the documented ``environment.reward`` alias for ``reward_mode``.
+    # ``make_env_from_config`` reads both keys; offline reward replay must
+    # match or baselines/eval will diverge from the env on CLI overrides.
     env_cfg = config.get("environment", {})
-    reward_mode = str(env_cfg.get("reward_mode", "time_penalty"))
+    reward_mode = str(env_cfg.get("reward", env_cfg.get("reward_mode", "time_penalty")))
     wait_penalty = float(env_cfg.get("wait_penalty", 0.0))
     buzz_correct = float(env_cfg.get("buzz_correct", 1.0))
     buzz_incorrect = float(env_cfg.get("buzz_incorrect", -0.5))
     early_buzz_penalty = float(env_cfg.get("early_buzz_penalty", 0.0))
+
+    # Batch-encode every text the env will ever score before computing
+    # beliefs (mirrors run_baselines.py / train_ppo.py). For SBERT / T5
+    # likelihoods this turns ~N×~10 single-shot encoder calls into
+    # batches of 64.
+    _all_eval_texts = collect_env_texts(mc_questions)
+    print(
+        f"Pre-computing embeddings for {len(set(_all_eval_texts)):,} unique texts..."
+    )
+    likelihood_model.precompute_embeddings(_all_eval_texts, batch_size=64)
 
     # Precompute beliefs once (single pass of likelihood_model.score())
     print("Precomputing beliefs...")
@@ -331,6 +381,60 @@ def main() -> None:
     )
     ppo_checkpoint_path = out_dir / "ppo_model.zip"
     ppo_test_summary: dict[str, object] = {}
+    # Distinguish two missing-checkpoint scenarios:
+    #
+    #   (a) Training failed at agent.save(). The trainer writes metadata
+    #       BEFORE the model and re-stamps ``training_completed=True``
+    #       only after a successful save. So a missing model paired with
+    #       ``training_completed=False`` (or with ``run_metadata.json``
+    #       absent on legacy artifacts where we cannot tell) means the
+    #       co-written ``ppo_summary.json`` is from the failed run and
+    #       must not seep into the report.
+    #
+    #   (b) Successful training where the checkpoint was later pruned
+    #       for storage cleanup. ``run_metadata.json`` reports
+    #       ``training_completed=True`` and ``ppo_summary.json`` holds
+    #       valid validation metrics from that successful run. Replay
+    #       is impossible (no model on disk) but the validation summary
+    #       must be preserved -- discarding it would lose real metrics.
+    #
+    # Branch (a) discards the validation summary; branch (b) keeps it.
+    if not ppo_checkpoint_path.exists() and (
+        (out_dir / "run_metadata.json").exists()
+        or (out_dir / "config_used.json").exists()
+    ):
+        rm_path = out_dir / "run_metadata.json"
+        prior_training_completed = False
+        if rm_path.exists():
+            try:
+                rm_data = load_json(rm_path)
+                prior_training_completed = (
+                    isinstance(rm_data, dict)
+                    and rm_data.get("training_completed") is True
+                )
+            except (json.JSONDecodeError, OSError):
+                prior_training_completed = False
+        if prior_training_completed:
+            print(
+                f"NOTE: ppo_model.zip is missing under {out_dir} but "
+                "run_metadata.json reports training_completed=True; "
+                "treating this as a post-training storage cleanup "
+                "(checkpoint pruned). Skipping PPO replay (no model on "
+                "disk) but preserving the existing ppo_summary.json "
+                "validation metrics in the report."
+            )
+        else:
+            print(
+                f"WARNING: ppo_model.zip is missing under {out_dir} but "
+                "training sidecars (run_metadata.json / config_used.json) "
+                "exist with no training_completed=True marker; the "
+                "previous training run likely failed at agent.save(). "
+                "Discarding any leftover ppo_summary.json so stale "
+                "validation metrics from the prior run are not "
+                "republished as current results. Re-run "
+                "scripts/train_ppo.py before evaluating."
+            )
+            ppo_validation_summary = {}
     if ppo_checkpoint_path.exists():
         ppo_eval_config, _, config_error = load_checkpoint_sidecar(
             ppo_checkpoint_path,
@@ -350,6 +454,7 @@ def main() -> None:
             "run_metadata.json",
         )
         policy_mode = "flat_kplus1"
+        training_completed = True  # Default for legacy artifacts predating the flag.
         if run_metadata_error:
             print(
                 "Warning: run_metadata.json next to PPO checkpoint could not be "
@@ -362,11 +467,35 @@ def main() -> None:
             )
         elif isinstance(run_metadata, dict):
             policy_mode = str(run_metadata.get("policy_mode", "flat_kplus1"))
+            # When the field is absent we trust the checkpoint (legacy);
+            # when present the trainer guarantees True only after a
+            # successful agent.save(). False = stale model.
+            training_completed = bool(run_metadata.get("training_completed", True))
         if policy_mode not in {"flat_kplus1", "stop_only"}:
             raise ValueError(
                 f"Unsupported PPO policy_mode '{policy_mode}' in run_metadata.json"
             )
+        if not training_completed:
+            print(
+                "WARNING: run_metadata.json reports training_completed=False; "
+                "the on-disk ppo_model.zip is from a prior run whose current "
+                "training attempt failed at agent.save(). Refusing to replay "
+                "stale checkpoint under fresh metadata, and discarding the "
+                "stale ppo_summary.json that the same prior run produced so "
+                "ppo_summary_source falls through to 'missing' rather than "
+                "publishing stale validation metrics as current results. "
+                "Re-run train_ppo.py."
+            )
+            # ppo_summary.json is co-written by train_ppo.py, so the same
+            # prior-run-residue argument that motivates the model-replay
+            # refusal applies to the validation summary. Clear it here so
+            # the report's ppo_summary fallback chain (test -> validation
+            # -> missing) skips straight to "missing" instead of silently
+            # publishing the prior run's metrics under the current run's
+            # provenance.
+            ppo_validation_summary = {}
 
+    if ppo_checkpoint_path.exists() and locals().get("training_completed", True):
         print("Replaying PPO checkpoint on evaluation split...")
         # Honor the likelihood corpus provenance recorded during training.
         ppo_ref_questions = None
@@ -378,7 +507,9 @@ def main() -> None:
             if not ref_path.is_absolute():
                 ref_path = ppo_checkpoint_path.parent / ref_path
             if ref_path.exists():
-                ppo_ref_questions = load_mc_questions(ref_path)
+                ppo_ref_questions = _safe_load(
+                    ref_path, context="evaluate_all PPO replay (recorded ref)"
+                )
                 if ppo_ref_questions:
                     ref_split = run_metadata.get("likelihood_reference_split", "recorded")
                     print(
@@ -388,7 +519,9 @@ def main() -> None:
         if not ppo_ref_questions:
             train_path = mc_path.parent / "train_dataset.json"
             if train_path.exists():
-                ppo_ref_questions = load_mc_questions(train_path)
+                ppo_ref_questions = _safe_load(
+                    train_path, context="evaluate_all PPO replay (sibling train)"
+                )
             if ppo_ref_questions:
                 print(f"  PPO likelihood built from sibling train split ({len(ppo_ref_questions)} questions)")
             else:
@@ -396,6 +529,19 @@ def main() -> None:
                 print("  Warning: train split missing or empty; building PPO likelihood from eval split")
         ppo_likelihood_model = build_likelihood_model(ppo_eval_config, ppo_ref_questions)
         load_embedding_cache(ppo_likelihood_model, ppo_eval_config)
+        # Mirror the train_ppo.py / softmax-eval pattern: pre-warm the
+        # ppo_likelihood_model embedding cache with one batched encoder
+        # pass over every text the replay env will score, instead of
+        # letting precompute_beliefs() issue thousands of single-text
+        # / per-K-options encoder calls. Test-split texts are not in the
+        # train-side embedding cache loaded above, so SBERT/T5 hot loops
+        # benefit ~10-60×; TF-IDF cost is unchanged.
+        _ppo_replay_texts = collect_env_texts(mc_questions)
+        print(
+            f"Pre-computing PPO replay embeddings for "
+            f"{len(set(_ppo_replay_texts)):,} unique texts..."
+        )
+        ppo_likelihood_model.precompute_embeddings(_ppo_replay_texts, batch_size=64)
         ppo_belief_cache = env_precompute_beliefs(
             mc_questions,
             ppo_likelihood_model,
@@ -429,8 +575,24 @@ def main() -> None:
         }
 
     # --- Build evaluation report ---
-    ppo_summary_for_report = ppo_test_summary or ppo_validation_summary
+    # Disambiguate which summary the legacy ``ppo_summary`` key carries so
+    # downstream consumers (poster/presentation generators) can branch
+    # safely instead of inferring split semantics from ``eval_split``.
+    if ppo_test_summary:
+        ppo_summary_for_report = ppo_test_summary
+        ppo_summary_source = "test"
+    elif ppo_validation_summary:
+        ppo_summary_for_report = ppo_validation_summary
+        ppo_summary_source = "validation"
+    else:
+        ppo_summary_for_report = {}
+        ppo_summary_source = "missing"
     report = {
+        # ``schema_version`` 2 indicates policy-buzz-only buzz_accuracy and
+        # mean_buzz_step semantics in ``summarize_buzz_metrics``; consumers
+        # that need pre-2026-05 semantics can read ``overall_outcome_accuracy``
+        # or the raw ``runs`` traces.
+        "schema_version": 2,
         "softmax_profile_best_threshold": threshold,
         "full_eval": {k: v for k, v in full_eval.items() if k != "runs"},
         "controls": {
@@ -451,15 +613,20 @@ def main() -> None:
                 "eval_split", "legacy/unknown"
             ),
             "ppo_test_split": ppo_test_summary.get("eval_split"),
+            "requested_mc_path": (
+                str(requested_mc_path) if requested_mc_path is not None else None
+            ),
+            "resolved_mc_path": str(mc_path),
         },
         "baseline_summary": baseline_summary,
         "ppo_validation_summary": ppo_validation_summary,
         "ppo_test_summary": ppo_test_summary,
         "ppo_summary": ppo_summary_for_report,
+        "ppo_summary_source": ppo_summary_source,
     }
 
     # Add Expected Wins summary only when that reward mode is active
-    if config.get("environment", {}).get("reward_mode") == "expected_wins":
+    if reward_mode == "expected_wins":
         from evaluation.metrics import expected_wins_score
         from qb_env.opponent_models import build_opponent_model_from_config
 

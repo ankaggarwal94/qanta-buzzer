@@ -546,6 +546,60 @@ class TestEpisodeResultSchema:
         assert result.correct is True
         assert result.reward_like == 0.8
 
+    def test_softmax_episode_result_legacy_kwargs_omitting_reward_like(self) -> None:
+        """Legacy callers that omit ``reward_like`` still construct cleanly.
+
+        Regression for the dataclass-defaults migration (2026-05): the
+        new ``reward_like`` field must have a default so old code
+        keeps working with kwargs.
+        """
+        result = SoftmaxEpisodeResult(
+            qid="legacy_q",
+            buzz_step=1,
+            buzz_index=0,
+            gold_index=0,
+            correct=True,
+            c_trace=[0.5],
+            g_trace=[1.0],
+            top_p_trace=[0.8],
+            entropy_trace=[0.4],
+        )
+        assert result.reward_like == 0.0
+
+    def test_softmax_episode_result_legacy_positional_construction_still_works(
+        self,
+    ) -> None:
+        """Positional construction matching the pre-2026-05 field order
+        must bind correctly. ``reward_like`` is keyword-only so it
+        cannot silently capture a positional arg intended for
+        ``c_trace`` if a caller targeted any intermediate ordering."""
+        result = SoftmaxEpisodeResult(
+            "legacy_q",      # qid
+            1,               # buzz_step
+            0,               # buzz_index
+            0,               # gold_index
+            True,            # correct
+            [0.5],           # c_trace
+            [1.0],           # g_trace
+            [0.8],           # top_p_trace
+            [0.4],           # entropy_trace
+        )
+        assert result.qid == "legacy_q"
+        assert result.c_trace == [0.5]
+        assert result.entropy_trace == [0.4]
+        assert result.reward_like == 0.0  # default
+
+    def test_softmax_episode_result_rejects_positional_reward_like(self) -> None:
+        """Building SoftmaxEpisodeResult positionally with a 10th arg
+        intended for ``reward_like`` must raise rather than silently
+        mis-bind (KW_ONLY guard)."""
+        with pytest.raises(TypeError, match=r"positional argument"):
+            SoftmaxEpisodeResult(
+                "q", 1, 0, 0, True,
+                [0.5], [1.0], [0.8], [0.4],
+                0.7,  # would have silently become reward_like in some intermediate orderings
+            )
+
     def test_traces_same_length(
         self, sample_mc_question: MCQuestion, sample_corpus: list[str]
     ) -> None:
@@ -846,6 +900,68 @@ class TestBaselineRewardParity:
         assert result.buzz_step == 0
         expected = (1.0 if result.correct else -1.0) - 0.5
         assert result.reward_like == pytest.approx(expected)
+
+    def test_reward_from_buzz_step_simple_mode_ignores_wait_and_early(self) -> None:
+        """``simple`` mode returns ±1.0 regardless of step or shaping."""
+        from agents.threshold_buzzer import reward_from_buzz_step
+
+        assert reward_from_buzz_step(
+            correct=True,
+            buzz_step=7,
+            total_steps=10,
+            reward_mode="simple",
+            wait_penalty=0.5,
+            buzz_correct=999.0,
+            buzz_incorrect=-999.0,
+            early_buzz_penalty=1.0,
+        ) == 1.0
+        assert reward_from_buzz_step(
+            correct=False,
+            buzz_step=0,
+            total_steps=10,
+            reward_mode="simple",
+            wait_penalty=0.5,
+            buzz_correct=999.0,
+            buzz_incorrect=-999.0,
+            early_buzz_penalty=1.0,
+        ) == -1.0
+
+    def test_reward_from_buzz_step_unsupported_mode_warns_and_returns_zero(self) -> None:
+        """Unsupported reward modes must warn loudly and not silently zero out."""
+        from agents.threshold_buzzer import reward_from_buzz_step
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            r = reward_from_buzz_step(
+                correct=True,
+                buzz_step=3,
+                total_steps=10,
+                reward_mode="expected_wins",
+                wait_penalty=0.0,
+                buzz_correct=1.0,
+                buzz_incorrect=-0.5,
+                early_buzz_penalty=0.0,
+            )
+        assert r == 0.0
+        assert any("not supported" in str(w.message) for w in caught)
+
+    def test_reward_from_buzz_step_total_steps_one_skips_early_buzz_term(self) -> None:
+        """``total_steps == 1`` must skip the early-buzz progress term so
+        the division-by-zero / always-zero edge case is well-defined."""
+        from agents.threshold_buzzer import reward_from_buzz_step
+
+        r = reward_from_buzz_step(
+            correct=True,
+            buzz_step=0,
+            total_steps=1,
+            reward_mode="time_penalty",
+            wait_penalty=0.1,
+            buzz_correct=1.0,
+            buzz_incorrect=-1.0,
+            early_buzz_penalty=2.0,
+        )
+        # buzz_correct (1.0) minus 1 * wait_penalty, no early-buzz term.
+        assert r == pytest.approx(1.0 - 0.1)
 
     def test_sweep_sequential_matches_per_threshold(
         self, sample_mc_question: MCQuestion, sample_corpus: list[str]

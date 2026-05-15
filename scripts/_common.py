@@ -64,7 +64,16 @@ def redirect_combined_to_split(
             f"redirecting to sibling {sibling.name} for split-safe {preferred_split} usage."
         )
         return sibling, preferred_split, warning
-    return mc_path, "combined", None
+    # Sibling is missing — fall through to the combined artifact, but warn
+    # loudly. Callers print this string; silent fallback was the upstream
+    # of multiple split-leakage findings in the 2026-05 review.
+    warning = (
+        f"Warning: --mc-path points to combined artifact {mc_path.name} and "
+        f"no sibling {sibling.name} was found; using combined corpus. "
+        f"Split-safety is NOT guaranteed for {preferred_split} usage; "
+        "build the sibling split next to mc_dataset.json for a clean run."
+    )
+    return mc_path, "combined", warning
 
 
 def _parse_value(value: str) -> Any:
@@ -147,6 +156,42 @@ def build_likelihood_model(config: dict[str, Any], mc_questions: list[MCQuestion
             for profile in question.option_profiles
         ]
     return build_likelihood_from_config(config, corpus_texts=corpus)
+
+
+def collect_env_texts(questions: list[MCQuestion]) -> list[str]:
+    """Collect all texts the env will ever score for ``questions``.
+
+    Used to pre-warm a likelihood model's embedding cache via a single
+    batched encoder pass before ``precompute_beliefs`` would otherwise
+    issue thousands of single-text or per-K-options encoder calls. Lifted
+    from a triplicate inline loop in ``train_ppo.py`` /
+    ``evaluate_all.py`` / ``run_baselines.py`` to keep the per-step
+    token-slice arithmetic in one place.
+
+    Parameters
+    ----------
+    questions : list[MCQuestion]
+        MC questions whose cumulative_prefixes, option_profiles, and
+        per-step token slices will be reachable through env reward
+        shaping or sequential-Bayes belief updates.
+
+    Returns
+    -------
+    list[str]
+        All texts the env may pass to ``likelihood_model.score(...)``
+        across episodes for ``questions`` (duplicates included; the
+        likelihood ``precompute_embeddings`` call dedups internally).
+    """
+    texts: list[str] = []
+    for q in questions:
+        texts.extend(q.cumulative_prefixes)
+        texts.extend(q.option_profiles)
+        for step_idx in range(len(q.run_indices)):
+            prev_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
+            texts.append(
+                " ".join(q.tokens[prev_idx + 1 : q.run_indices[step_idx] + 1])
+            )
+    return texts
 
 
 def ensure_dir(path: str | Path) -> Path:

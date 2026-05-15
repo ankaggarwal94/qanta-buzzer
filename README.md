@@ -43,6 +43,11 @@ python scripts/build_mc_dataset.py --smoke
 python scripts/run_baselines.py --smoke
 python scripts/train_ppo.py --smoke
 python scripts/evaluate_all.py --smoke
+```
+
+Or run all four stages via the wrapper script:
+
+```bash
 bash scripts/manual-smoke.sh
 ```
 
@@ -125,7 +130,7 @@ For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy 
 
 ## Testing
 
-398 tests across 33 test files (4 skipped when optional extras not installed):
+429 tests across 33 test files (4 skipped when optional extras not installed):
 
 ```bash
 pytest                    # full suite

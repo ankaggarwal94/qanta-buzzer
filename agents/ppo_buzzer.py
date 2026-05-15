@@ -15,7 +15,7 @@ import path adaptations for the unified qanta-buzzer codebase.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -71,21 +71,31 @@ class PPOEpisodeTrace:
         Per-step policy entropy over the full action distribution.
     """
 
+    # Required core fields (legacy shape; positional construction
+    # preserved for callers that match the pre-2026-05 signature).
     qid: str
     buzz_step: int
-    buzz_trace_idx: int
     buzz_index: int
     gold_index: int
     correct: bool
-    forced_commit: bool
-    forced_step: int
-    forced_choice: int
-    forced_correct: bool
     episode_reward: float
-    c_trace: list[float]
-    g_trace: list[float]
-    top_p_trace: list[float]
-    entropy_trace: list[float]
+    c_trace: list[float] = field(default_factory=list)
+    g_trace: list[float] = field(default_factory=list)
+    top_p_trace: list[float] = field(default_factory=list)
+    entropy_trace: list[float] = field(default_factory=list)
+    # Forced-commit / trace-index extensions (added 2026-05) are
+    # keyword-only so positional callers that match the legacy field
+    # order continue to work and callers that matched any intermediate
+    # ordering get a ``TypeError`` instead of silently mis-binding
+    # into ``buzz_index``. Legacy artifacts that lack these fields
+    # are read with the same sentinels via ``dict.get(..., default)``
+    # in metrics.py.
+    _: KW_ONLY
+    buzz_trace_idx: int = -1
+    forced_commit: bool = False
+    forced_step: int = -1
+    forced_choice: int = -1
+    forced_correct: bool = False
 
 
 class PPOBuzzer:
@@ -375,7 +385,13 @@ class PPOBuzzer:
         forced_step = -1
         forced_choice = -1
         forced_correct = False
-        sample_rng = np.random.default_rng(seed) if seed is not None else None
+        # Always use a Generator. When ``seed is None``,
+        # ``np.random.default_rng`` draws fresh OS entropy, so the
+        # Generator is independent per call but NOT deterministic;
+        # the win is that we avoid mutating the global ``np.random``
+        # state (the documented mixed-RNG-API trap). Pass an explicit
+        # ``seed`` for reproducibility.
+        sample_rng = np.random.default_rng(seed)
 
         while not (terminated or truncated):
             probs = self.action_probabilities(obs)
@@ -403,10 +419,7 @@ class PPOBuzzer:
             if deterministic:
                 action = int(np.argmax(probs))
             else:
-                if sample_rng is not None:
-                    action = int(sample_rng.choice(len(probs), p=probs))
-                else:
-                    action = int(np.random.choice(len(probs), p=probs))
+                action = int(sample_rng.choice(len(probs), p=probs))
 
             obs, reward, terminated, truncated, step_info = self.env.step(action)
             total_reward += reward

@@ -23,6 +23,7 @@ Ported from qb-rl reference implementation (scripts/run_baselines.py).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from dataclasses import asdict
@@ -47,6 +48,7 @@ from qb_data.config import merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
+    collect_env_texts,
     dataset_path_for_split,
     load_config,
     load_embedding_cache,
@@ -135,12 +137,14 @@ def main() -> None:
 
     # Determine MC dataset path
     if args.mc_path:
+        requested_mc_path = Path(args.mc_path)
         mc_path, dataset_split, mc_warning = redirect_combined_to_split(
-            Path(args.mc_path), preferred_split="val",
+            requested_mc_path, preferred_split="val",
         )
         if mc_warning:
             print(mc_warning)
     else:
+        requested_mc_path = None
         mc_path, dataset_split, warning = resolve_default_dataset_path(
             out_dir,
             preferred_split="val",
@@ -163,10 +167,33 @@ def main() -> None:
     print(f"Loaded {len(mc_questions)} MC questions")
 
     # Build TF-IDF from train split even when selecting thresholds on val/test.
+    # Initialize likelihood_questions explicitly so the fallback branch
+    # never depends on Python's short-circuit ``or`` evaluation order.
     train_path = mc_path.parent / "train_dataset.json"
+    likelihood_questions: list = []
     if train_path.exists():
-        likelihood_questions = load_mc_questions(train_path)
-    if not train_path.exists() or not likelihood_questions:
+        try:
+            likelihood_questions = load_mc_questions(train_path)
+        except (
+            json.JSONDecodeError,
+            OSError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            # ``TypeError`` and ``ValueError`` cover JSON that parses
+            # but has the wrong shape (e.g. a top-level list of strings,
+            # where ``mc_question_from_dict`` then subscripts a non-dict
+            # and raises ``TypeError``, or per-field coercions raise
+            # ``ValueError``). Without these the fallback contract
+            # silently breaks and the baseline run aborts.
+            print(
+                f"WARNING: failed to load train split at {train_path} "
+                f"({type(exc).__name__}: {exc}); falling back to selected "
+                "eval split for likelihood corpus."
+            )
+            likelihood_questions = []
+    if not likelihood_questions:
         likelihood_questions = mc_questions
         print(
             "Building likelihood model: "
@@ -186,8 +213,9 @@ def main() -> None:
     beta = float(config["likelihood"].get("beta", 5.0))
     alpha = float(config["bayesian"].get("alpha", 10.0))
     thresholds = [float(x) for x in config["bayesian"]["threshold_sweep"]]
+    # Honor the documented ``environment.reward`` alias for ``reward_mode``.
     env_cfg = config.get("environment", {})
-    reward_mode = str(env_cfg.get("reward_mode", "time_penalty"))
+    reward_mode = str(env_cfg.get("reward", env_cfg.get("reward_mode", "time_penalty")))
     wait_penalty = float(env_cfg.get("wait_penalty", 0.0))
     buzz_correct = float(env_cfg.get("buzz_correct", 1.0))
     buzz_incorrect = float(env_cfg.get("buzz_incorrect", -0.5))
@@ -204,13 +232,7 @@ def main() -> None:
     print(f"Thresholds: {thresholds}")
 
     # --- Pre-compute all embeddings once (batched) ---
-    all_texts: list[str] = []
-    for q in mc_questions:
-        all_texts.extend(q.cumulative_prefixes)
-        all_texts.extend(q.option_profiles)
-        for step_idx in range(len(q.run_indices)):
-            prev_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
-            all_texts.append(" ".join(q.tokens[prev_idx + 1 : q.run_indices[step_idx] + 1]))
+    all_texts = collect_env_texts(mc_questions)
     print(f"\nPre-computing embeddings for {len(set(all_texts)):,} unique texts...")
     likelihood_model.precompute_embeddings(all_texts, batch_size=64)
     save_embedding_cache(likelihood_model, config)
@@ -313,13 +335,24 @@ def main() -> None:
     save_json(out_dir / "baseline_floor_runs.json", floor_runs)
 
     summary = {
+        # ``schema_version`` 2 indicates policy-buzz-only buzz_accuracy and
+        # mean_buzz_step semantics from ``summarize_buzz_metrics``.
+        "schema_version": 2,
         "threshold": threshold_summary,
         "softmax_profile": softmax_summary,
         "sequential_bayes": sequential_summary,
         "always_final": floor_summary,
         "dataset_split": dataset_split,
         "selection_metric": "mean_sq",
+        "reward_mode": reward_mode,
         "reward_supported": reward_mode in {"time_penalty", "simple"},
+        # Persist what the user invoked vs. what was actually loaded so
+        # comparisons across runs can detect silent mc_path redirects.
+        "requested_mc_path": (
+            str(requested_mc_path) if requested_mc_path is not None else None
+        ),
+        "resolved_mc_path": str(mc_path),
+        "likelihood_model": str(config.get("likelihood", {}).get("model", "")),
     }
     save_json(out_dir / "baseline_summary.json", summary)
 

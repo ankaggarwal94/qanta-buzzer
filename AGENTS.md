@@ -42,7 +42,7 @@ pip install -e '.[dspy]'      # DSPy LM-based scoring
 
 ## Testing
 
-398 tests across 33 test files (4 skipped when optional extras not installed).
+429 tests across 33 test files (4 skipped when optional extras not installed).
 
 ```bash
 pytest                    # full suite
@@ -59,7 +59,6 @@ python scripts/build_mc_dataset.py --smoke
 python scripts/run_baselines.py --smoke
 python scripts/train_ppo.py --smoke
 python scripts/evaluate_all.py --smoke
-bash scripts/manual-smoke.sh
 ```
 
 `build_mc_dataset.py` writes `train_dataset.json`, `val_dataset.json`, and

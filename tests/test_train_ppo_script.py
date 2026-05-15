@@ -79,9 +79,14 @@ def test_train_ppo_seed_override_updates_env_and_saved_config(
             )
 
     (tmp_path / "train_dataset.json").write_text("[]", encoding="utf-8")
+
+    class _FakeLikelihood:
+        def precompute_embeddings(self, texts, batch_size=64):
+            return None
+
     monkeypatch.setattr(train_ppo, "load_config", fake_load_config)
     monkeypatch.setattr(train_ppo, "load_mc_questions", lambda _path: [sample_mc_question])
-    monkeypatch.setattr(train_ppo, "build_likelihood_model", lambda config, qs: object())
+    monkeypatch.setattr(train_ppo, "build_likelihood_model", lambda config, qs: _FakeLikelihood())
     monkeypatch.setattr(train_ppo, "load_embedding_cache", lambda model, config: None)
     monkeypatch.setattr(train_ppo, "save_embedding_cache", lambda model, config: None)
     monkeypatch.setattr(train_ppo, "precompute_beliefs", lambda *args, **kwargs: {})

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -17,16 +17,24 @@ if TYPE_CHECKING:
 
 @dataclass
 class SoftmaxEpisodeResult:
+    # Required core fields (legacy shape; positional construction
+    # preserved for callers that match the pre-2026-05 signature).
     qid: str
     buzz_step: int
     buzz_index: int
     gold_index: int
     correct: bool
-    reward_like: float
-    c_trace: list[float]
-    g_trace: list[float]
-    top_p_trace: list[float]
-    entropy_trace: list[float]
+    c_trace: list[float] = field(default_factory=list)
+    g_trace: list[float] = field(default_factory=list)
+    top_p_trace: list[float] = field(default_factory=list)
+    entropy_trace: list[float] = field(default_factory=list)
+    # ``reward_like`` is keyword-only so positional callers that match
+    # the legacy field order continue to work and callers that matched
+    # any intermediate ordering get a ``TypeError`` instead of silently
+    # mis-binding into ``c_trace``. Downstream metrics read this via
+    # ``dict.get('reward_like', 0.0)`` on the asdict() form.
+    _: KW_ONLY
+    reward_like: float = 0.0
 
 
 class SoftmaxProfileBuzzer:

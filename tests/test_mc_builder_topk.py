@@ -7,11 +7,37 @@ gracefully when N is small, and leaves category_random strategy unchanged.
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
+import pytest
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from qb_data.mc_builder import MCBuilder
+
+
+@functools.lru_cache(maxsize=1)
+def _load_smoke_splits_cached() -> tuple | None:
+    """Memoised load of the in-tree ``questions.csv`` smoke fixture.
+
+    The CSV (~14MB, ~20k rows) is checked into the repo for the
+    category_random parity / cache-reuse regression tests. Without this
+    cache each test method that calls ``_smoke_questions()`` re-parses
+    the entire CSV, which is wasteful (the parse dominates each test
+    method's runtime) even though absolute time stays sub-second. Returns
+    ``None`` when the CSV is absent so the caller can pytest.skip cleanly.
+    """
+    from pathlib import Path
+
+    if not Path("questions.csv").exists():  # pragma: no cover - tied to local CSV
+        return None
+
+    from qb_data.data_loader import QANTADatasetLoader
+    from qb_data.dataset_splits import create_stratified_splits
+
+    qs = QANTADatasetLoader.load_from_csv("questions.csv")[:80]
+    return create_stratified_splits(qs, seed=42)
 
 
 # ---------------------------------------------------------------------------
@@ -134,3 +160,281 @@ class TestTopMRanking:
             assert set(ranked) == set(a for a in answers if a != answer), (
                 f"Answer '{answer}': category_random should include all peers"
             )
+
+
+class TestRefCacheRngParity:
+    """The per-reference-corpus ranking cache must not change rng-dependent
+    output. For ``category_random`` the cache is intentionally disabled
+    because ``_compute_rankings`` consumes ``self.rng.shuffle`` once per
+    answer; cache hits would skip those draws and leave the per-question
+    option-shuffle loop in a different rng state than the legacy
+    fresh-MCBuilder-per-split flow.
+    """
+
+    def _smoke_questions(self):
+        result = _load_smoke_splits_cached()
+        if result is None:  # pragma: no cover - tied to local CSV
+            pytest.skip("questions.csv not present in repo root")
+        return result
+
+    def test_category_random_split_loop_matches_fresh_per_split(self) -> None:
+        """A shared MCBuilder with rng-reset-per-split must produce the
+        same per-question options as building a fresh MCBuilder per split.
+        Regression for the cache-hit / rng-skip divergence on val/test."""
+        import random
+        from qb_data.answer_profiles import AnswerProfileBuilder
+        from qb_data.mc_builder import MCBuilder
+
+        raw_train, raw_val, raw_test = self._smoke_questions()
+
+        # Path A: legacy — fresh MCBuilder(random_seed=13) per split.
+        pb_a = AnswerProfileBuilder()
+        pb_a.fit(raw_train)
+        legacy: dict[str, list] = {}
+        for name, target in (
+            ("train", raw_train),
+            ("val", raw_val),
+            ("test", raw_test),
+        ):
+            b = MCBuilder(K=4, strategy="category_random", random_seed=13)
+            legacy[name] = b.build(target, pb_a, reference_questions=raw_train)
+
+        # Path B: shared MCBuilder with rng reset between splits (the
+        # current ``build_mc_dataset.py`` flow).
+        pb_b = AnswerProfileBuilder()
+        pb_b.fit(raw_train)
+        shared = MCBuilder(K=4, strategy="category_random", random_seed=13)
+        replayed: dict[str, list] = {}
+        for name, target in (
+            ("train", raw_train),
+            ("val", raw_val),
+            ("test", raw_test),
+        ):
+            shared.rng = random.Random(13)
+            replayed[name] = shared.build(target, pb_b, reference_questions=raw_train)
+
+        # For category_random the shared builder must NOT populate
+        # ``_ref_cache``; otherwise val/test would diverge.
+        assert shared._ref_cache is None
+
+        for split in ("train", "val", "test"):
+            legacy_opts = [(q.qid, tuple(q.options)) for q in legacy[split]]
+            replayed_opts = [(q.qid, tuple(q.options)) for q in replayed[split]]
+            assert legacy_opts == replayed_opts, (
+                f"{split} differs between fresh-per-split and shared-rng-reset; "
+                f"the ranking cache silently skipped rng draws."
+            )
+
+    def test_profile_strategy_cache_is_populated_and_reused(self) -> None:
+        """Profile-based strategies are rng-deterministic in
+        ``_compute_rankings``, so the cache stays enabled and gives the
+        full perf win for SBERT / TF-IDF / OpenAI."""
+        from qb_data.answer_profiles import AnswerProfileBuilder
+        from qb_data.mc_builder import MCBuilder
+
+        raw_train, raw_val, raw_test = self._smoke_questions()
+        pb = AnswerProfileBuilder()
+        pb.fit(raw_train)
+
+        b = MCBuilder(K=4, strategy="tfidf_profile", random_seed=13)
+        assert b._ref_cache is None
+        b.build(raw_train, pb, reference_questions=raw_train)
+        assert b._ref_cache is not None
+        rankings_id = id(b._ref_cache["rankings"])
+        b.build(raw_val, pb, reference_questions=raw_train)
+        assert id(b._ref_cache["rankings"]) == rankings_id, (
+            "tfidf_profile cache should be reused across splits"
+        )
+        b.build(raw_test, pb, reference_questions=raw_train)
+        assert id(b._ref_cache["rankings"]) == rankings_id
+
+    def test_category_random_never_populates_cache(self) -> None:
+        """Direct micro-check independent of the smoke CSV."""
+        from qb_data.answer_profiles import AnswerProfileBuilder
+        from qb_data.mc_builder import MCBuilder
+        from qb_data.data_loader import TossupQuestion
+
+        qs = [
+            TossupQuestion(
+                qid=str(i),
+                question=f"clue {i} text",
+                tokens=["clue", str(i), "text"],
+                answer_primary=f"answer_{i % 5}",
+                clean_answers=[f"answer_{i % 5}"],
+                run_indices=[0, 1, 2],
+                human_buzz_positions=None,
+                category="History",
+                cumulative_prefixes=["clue", f"clue {i}", f"clue {i} text"],
+            )
+            for i in range(10)
+        ]
+        pb = AnswerProfileBuilder()
+        pb.fit(qs)
+        b = MCBuilder(K=4, strategy="category_random", random_seed=13)
+        b.build(qs, pb, reference_questions=qs)
+        assert b._ref_cache is None, (
+            "category_random must not populate _ref_cache; doing so would "
+            "skip rng-consuming shuffles on subsequent build() calls."
+        )
+
+    def test_content_mutation_invalidates_ref_cache(self) -> None:
+        """Mutating ``q.question`` between build() calls must miss the
+        cache. Pre-fix the cache was keyed on qid only, so rewriting
+        the question text (or answer_primary / category) silently
+        returned stale rankings/profiles from the prior corpus."""
+        from qb_data.answer_profiles import AnswerProfileBuilder
+        from qb_data.mc_builder import MCBuilder
+        from qb_data.data_loader import TossupQuestion
+
+        qs = [
+            TossupQuestion(
+                qid=str(i),
+                question=f"original clue {i} text",
+                tokens=["original", "clue", str(i), "text"],
+                answer_primary=f"answer_{i % 3}",
+                clean_answers=[f"answer_{i % 3}"],
+                run_indices=[0, 1, 2, 3],
+                human_buzz_positions=None,
+                category="History",
+                cumulative_prefixes=[
+                    "original",
+                    "original clue",
+                    f"original clue {i}",
+                    f"original clue {i} text",
+                ],
+            )
+            for i in range(8)
+        ]
+        pb = AnswerProfileBuilder()
+        pb.fit(qs)
+        b = MCBuilder(K=4, strategy="tfidf_profile", random_seed=13)
+        b.build(qs, pb, reference_questions=qs)
+        assert b._ref_cache is not None
+        first_rankings_id = id(b._ref_cache["rankings"])
+        first_key = b._ref_cache_key
+
+        # Mutate one question's content in place; the qid set is
+        # unchanged so a qid-only cache key would silently re-use the
+        # stale rankings derived from "original ..." text.
+        qs[0] = TossupQuestion(
+            qid=qs[0].qid,
+            question="completely different content for question zero",
+            tokens=["completely", "different", "content"],
+            answer_primary=qs[0].answer_primary,
+            clean_answers=qs[0].clean_answers,
+            run_indices=qs[0].run_indices,
+            human_buzz_positions=qs[0].human_buzz_positions,
+            category=qs[0].category,
+            cumulative_prefixes=qs[0].cumulative_prefixes,
+        )
+        pb2 = AnswerProfileBuilder()
+        pb2.fit(qs)
+        b.build(qs, pb2, reference_questions=qs)
+        assert id(b._ref_cache["rankings"]) != first_rankings_id, (
+            "content-aware cache key must invalidate when q.question "
+            "changes; otherwise mutated reference content silently "
+            "returns stale rankings."
+        )
+        assert b._ref_cache_key != first_key
+
+    def test_alias_mutation_invalidates_ref_cache(self) -> None:
+        """Mutating ``q.clean_answers`` between build() calls must also
+        miss the cache. Pre-fix the cache key omitted aliases, so an
+        alias-normalisation refresh that rewrote ``clean_answers``
+        while leaving question text / answer_primary / category
+        unchanged silently reused stale ``answer_to_aliases``."""
+        from qb_data.answer_profiles import AnswerProfileBuilder
+        from qb_data.mc_builder import MCBuilder
+        from qb_data.data_loader import TossupQuestion
+
+        qs = [
+            TossupQuestion(
+                qid=str(i),
+                question=f"clue {i} text",
+                tokens=["clue", str(i), "text"],
+                answer_primary=f"answer_{i % 3}",
+                clean_answers=[f"answer_{i % 3}"],
+                run_indices=[0, 1, 2],
+                human_buzz_positions=None,
+                category="History",
+                cumulative_prefixes=["clue", f"clue {i}", f"clue {i} text"],
+            )
+            for i in range(6)
+        ]
+        pb = AnswerProfileBuilder()
+        pb.fit(qs)
+        b = MCBuilder(K=4, strategy="tfidf_profile", random_seed=13)
+        b.build(qs, pb, reference_questions=qs)
+        assert b._ref_cache is not None
+        first_key = b._ref_cache_key
+
+        # Refresh aliases on one question; everything else is identical.
+        qs[0] = TossupQuestion(
+            qid=qs[0].qid,
+            question=qs[0].question,
+            tokens=qs[0].tokens,
+            answer_primary=qs[0].answer_primary,
+            clean_answers=[qs[0].answer_primary, "added alias"],
+            run_indices=qs[0].run_indices,
+            human_buzz_positions=qs[0].human_buzz_positions,
+            category=qs[0].category,
+            cumulative_prefixes=qs[0].cumulative_prefixes,
+        )
+        pb2 = AnswerProfileBuilder()
+        pb2.fit(qs)
+        b.build(qs, pb2, reference_questions=qs)
+        assert b._ref_cache_key != first_key, (
+            "alias-aware cache key must invalidate when q.clean_answers "
+            "changes; otherwise an alias-normalisation refresh silently "
+            "reuses stale answer_to_aliases for downstream guard checks."
+        )
+
+    def test_profile_builder_config_change_invalidates_ref_cache(self) -> None:
+        """Reusing an MCBuilder with a different AnswerProfileBuilder
+        config (``max_tokens_per_profile`` / ``min_questions_per_answer``)
+        must miss the cache. Pre-fix the key only fingerprinted reference
+        questions, so the second build silently returned distractors
+        derived from the first profile_builder's settings."""
+        from qb_data.answer_profiles import AnswerProfileBuilder
+        from qb_data.mc_builder import MCBuilder
+        from qb_data.data_loader import TossupQuestion
+
+        qs = [
+            TossupQuestion(
+                qid=str(i),
+                question=f"clue {i} text body content",
+                tokens=["clue", str(i), "text", "body", "content"],
+                answer_primary=f"answer_{i % 3}",
+                clean_answers=[f"answer_{i % 3}"],
+                run_indices=[0, 1, 2, 3, 4],
+                human_buzz_positions=None,
+                category="History",
+                cumulative_prefixes=[
+                    "clue",
+                    f"clue {i}",
+                    f"clue {i} text",
+                    f"clue {i} text body",
+                    f"clue {i} text body content",
+                ],
+            )
+            for i in range(6)
+        ]
+        pb_wide = AnswerProfileBuilder(max_tokens_per_profile=2000)
+        pb_wide.fit(qs)
+        b = MCBuilder(K=4, strategy="tfidf_profile", random_seed=13)
+        b.build(qs, pb_wide, reference_questions=qs)
+        assert b._ref_cache is not None
+        first_key = b._ref_cache_key
+
+        # Same questions, but a different profile_builder config -- the
+        # cache should miss because the cached ``answer_profiles`` were
+        # produced under the old config.
+        pb_narrow = AnswerProfileBuilder(max_tokens_per_profile=10)
+        pb_narrow.fit(qs)
+        b.build(qs, pb_narrow, reference_questions=qs)
+        assert b._ref_cache_key != first_key, (
+            "config-aware cache key must invalidate when the caller "
+            "passes a profile_builder with different settings; otherwise "
+            "comparing profile-builder variants in one process silently "
+            "reuses stale answer_profiles."
+        )

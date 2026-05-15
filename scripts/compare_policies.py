@@ -141,6 +141,14 @@ def _resolve_manifest_questions(
         )
         return None
 
+    if len(qids) == 0:
+        print(
+            f"Warning: split_manifest.json declares an empty {split_name}_qids "
+            "list; falling back to other resolution (do not treat empty manifest "
+            "splits as resolved)."
+        )
+        return None
+
     questions = load_mc_questions(path)
     qid_to_question = {q.qid: q for q in questions}
     missing_qids = [qid for qid in qids if qid not in qid_to_question]
@@ -180,30 +188,114 @@ def resolve_t5_reference_questions(
     checkpoint_path: str | Path,
     all_questions: list,
     mc_path: Path,
+    test_questions: list | None = None,
 ) -> tuple[list, str]:
-    """Resolve the train-side reference set for T5 env reward helpers."""
+    """Resolve the train-side reference set for T5 env reward helpers.
+
+    When falling back to the combined dataset, any qids overlapping
+    ``test_questions`` are subtracted so the env reward likelihood is
+    not built from evaluation profiles. If the filter would leave the
+    reference set empty, a ``ValueError`` is raised so contaminated
+    metrics cannot be silently emitted.
+
+    Parameters
+    ----------
+    checkpoint_path : str | Path
+        T5 checkpoint location (file or directory).
+    all_questions : list
+        Combined MC question pool (typically loaded from
+        ``mc_dataset.json``).
+    mc_path : Path
+        Path to the combined dataset; used to locate sibling splits.
+    test_questions : list | None
+        Held-out questions for this run. When provided, the
+        ``combined_dataset_fallback`` branch subtracts their qids.
+
+    Returns
+    -------
+    tuple[list, str]
+        ``(reference_questions, source)`` where ``source`` is one of
+        ``"split_manifest"``, ``"sibling_train_dataset"``,
+        ``"combined_dataset_minus_test_fallback"``, or
+        ``"combined_dataset_fallback"`` (only when ``test_questions``
+        was not provided).
+    """
     manifest_questions = _resolve_manifest_questions(checkpoint_path, "train")
     if manifest_questions is not None:
         return manifest_questions, "split_manifest"
 
     train_split_path = mc_path.parent / "train_dataset.json"
     if train_split_path.exists():
-        return load_mc_questions(train_split_path), "sibling_train_dataset"
+        sibling_questions = load_mc_questions(train_split_path)
+        if sibling_questions:
+            return sibling_questions, "sibling_train_dataset"
+        # Empty sibling file silently fell through to the fallback
+        # branches before; surface the cause loudly so the caller can
+        # see why the next step (combined-fallback) is being entered.
+        print(
+            f"WARNING: sibling train_dataset.json at {train_split_path} is "
+            "empty (likely upstream guard rejection or low retention); "
+            "treating as unresolved and continuing to combined-dataset "
+            "fallback."
+        )
 
-    return all_questions, "combined_dataset_fallback"
+    if test_questions is None:
+        # Legacy call shape; preserve historical behaviour for callers
+        # that do not yet pass ``test_questions``. Emit a loud warning
+        # because this corpus may contain the very questions being
+        # evaluated, contaminating the env reward helper.
+        print(
+            "WARNING: resolve_t5_reference_questions falling back to combined "
+            "dataset with no test_questions filter; the resulting TF-IDF "
+            "reward helper may include evaluation questions and "
+            "mean_reward / forced_correct_rate / overall_outcome_accuracy "
+            "should be treated as in-sample (not held out)."
+        )
+        return all_questions, "combined_dataset_fallback"
+
+    test_qids = {q.qid for q in test_questions}
+    excluded_qids: set[str] = set(test_qids)
+    val_split_path = mc_path.parent / "val_dataset.json"
+    if val_split_path.exists():
+        val_questions = load_mc_questions(val_split_path)
+        if val_questions:
+            excluded_qids.update(q.qid for q in val_questions)
+    filtered = [q for q in all_questions if q.qid not in excluded_qids]
+    if not filtered:
+        raise ValueError(
+            "Cannot resolve T5 reward reference: split_manifest.json and "
+            f"sibling train_dataset.json are absent at {train_split_path}, "
+            "and the combined dataset is fully contained in test+val "
+            "questions. Provide a checkpoint with split_manifest.json or "
+            "build train_dataset.json next to the combined artifact."
+        )
+    print(
+        "WARNING: resolve_t5_reference_questions falling back to combined "
+        f"dataset minus held-out qids; "
+        f"{len(all_questions) - len(filtered)} of "
+        f"{len(all_questions)} questions were excluded "
+        f"(test={len(test_qids)}, "
+        f"val={len(excluded_qids) - len(test_qids)}) to prevent leakage "
+        "into the env reward helper."
+    )
+    return filtered, "combined_dataset_minus_test_fallback"
 
 
 def evaluate_mlp_policy(
     checkpoint_path: str,
     test_questions: list,
     config: dict,
+    reference_questions: list | None = None,
+    reference_source: str | None = None,
+    test_set_source: str | None = None,
 ) -> dict[str, Any]:
     """Evaluate Phase 4 MLP policy on belief features.
 
     Uses the likelihood model specified by the checkpoint's sidecar
     config (``config_used.json``) when available, otherwise falls back
-    to the provided config. If the resolved config selects TF-IDF, the
-    corpus is fit on the evaluation set's question/option text.
+    to the provided config. The TF-IDF / embedding corpus is built from
+    ``reference_questions`` (typically a train split) to avoid leaking
+    test text into the belief features and force-commit choice.
 
     Parameters
     ----------
@@ -213,18 +305,65 @@ def evaluate_mlp_policy(
         List of MCQuestion instances to evaluate on.
     config : dict
         YAML config dict (fallback if no checkpoint sidecar exists).
+    reference_questions : list | None
+        Corpus used to fit the likelihood model. When ``None``, falls
+        back to ``test_questions`` with a loud warning (legacy
+        compatibility shim; new callers should always pass a
+        train/reference split).
+    reference_source : str | None
+        Provenance label for ``reference_questions``; recorded in the
+        returned dict so contaminated runs are auditable.
+    test_set_source : str | None
+        Provenance label for ``test_questions``; mirrors
+        ``evaluate_t5_policy``.
 
     Returns
     -------
     dict[str, Any]
         Evaluation results: accuracy, mean_sq, ece, brier, avg_buzz_pos,
-        n_questions.
+        mean_reward, forced_correct_rate, overall_outcome_accuracy,
+        n_questions, plus optional ``reference_source`` /
+        ``test_set_source`` provenance fields.
     """
     from agents.ppo_buzzer import PPOBuzzer
     from qb_env.tossup_env import make_env_from_config
 
+    if not test_questions:
+        # An empty test set silently produced a zero-everything metrics
+        # dict (accuracy=0, mean_sq=0, ...) that was indistinguishable
+        # from a real 0% test score outside of ``n_questions: 0``.
+        # Fail loud instead so callers cannot ship degenerate runs.
+        raise ValueError(
+            "evaluate_mlp_policy: test_questions is empty; refusing to "
+            "produce a zero-metrics report. Check the test split source "
+            f"(test_set_source={test_set_source!r}) and rebuild it "
+            "before evaluating."
+        )
+
     resolved_config = resolve_mlp_eval_config(checkpoint_path, config)
-    likelihood_model = build_likelihood_model(resolved_config, test_questions)
+    # Truthiness gate, not ``is None``: an empty ``reference_questions``
+    # list (e.g. resolved from an empty ``train_dataset.json`` via
+    # ``resolve_t5_reference_questions``'s ``sibling_train_dataset``
+    # branch) must trigger the same leakage warning as the ``None``
+    # case, otherwise the likelihood model is silently fit on
+    # ``test_questions``.
+    fell_back_to_test = not reference_questions
+    if fell_back_to_test:
+        likelihood_corpus = test_questions
+        cause = (
+            "without reference_questions"
+            if reference_questions is None
+            else "with an empty reference_questions list"
+        )
+        print(
+            f"WARNING: evaluate_mlp_policy called {cause}; "
+            "fitting likelihood model on test_questions which leaks test text "
+            "into belief features. Pass a non-empty train/reference split "
+            "for split-safe MLP evaluation."
+        )
+    else:
+        likelihood_corpus = reference_questions
+    likelihood_model = build_likelihood_model(resolved_config, likelihood_corpus)
     load_embedding_cache(likelihood_model, resolved_config)
 
     env = make_env_from_config(
@@ -248,7 +387,7 @@ def evaluate_mlp_policy(
     ece = expected_calibration_error(confidences, outcomes)
     brier = brier_score(confidences, outcomes)
 
-    return {
+    out: dict[str, Any] = {
         "accuracy": buzz_metrics["buzz_accuracy"],
         "mean_sq": buzz_metrics["mean_sq"],
         "ece": ece,
@@ -261,6 +400,24 @@ def evaluate_mlp_policy(
         ),
         "n_questions": len(test_questions),
     }
+    if reference_source is not None:
+        out["reference_source"] = reference_source
+    if test_set_source is not None:
+        out["test_set_source"] = test_set_source
+    # ``reference_source`` records what the caller asked for;
+    # ``effective_reference_source`` records what was actually used to
+    # fit the likelihood model. They diverge on the leaky-fallback
+    # path (no/empty ``reference_questions`` -> fit on ``test_questions``),
+    # which must be auditable in saved JSON so contaminated runs can
+    # be detected downstream.
+    if fell_back_to_test:
+        out["effective_reference_source"] = (
+            "test_questions_fallback (LEAKED): "
+            f"test_set_source={test_set_source!r}"
+        )
+    else:
+        out["effective_reference_source"] = reference_source or "unspecified"
+    return out
 
 
 def evaluate_t5_policy(
@@ -269,6 +426,7 @@ def evaluate_t5_policy(
     reference_questions: list,
     test_set_source: str,
     config: dict,
+    reference_source: str | None = None,
 ) -> dict[str, Any]:
     """Evaluate Phase 6 T5 end-to-end policy on text observations.
 
@@ -297,6 +455,14 @@ def evaluate_t5_policy(
     from qb_env.text_wrapper import TextObservationWrapper
     from qb_env.tossup_env import TossupMCEnv
 
+    if not test_questions:
+        raise ValueError(
+            "evaluate_t5_policy: test_questions is empty; refusing to "
+            "produce a zero-metrics report. Check the test split source "
+            f"(test_set_source={test_set_source!r}) and rebuild it "
+            "before evaluating."
+        )
+
     # Load T5 policy model
     model = T5PolicyModel.load_pretrained(checkpoint_path)
     model.eval()
@@ -309,7 +475,8 @@ def evaluate_t5_policy(
             "Cannot build T5 reward likelihood: both reference_questions "
             "and test_questions are empty."
         )
-    if ref is not reference_questions:
+    fell_back_to_test = ref is not reference_questions
+    if fell_back_to_test:
         print(
             "Warning: reference split is empty; building T5 reward "
             f"likelihood from {len(ref)} test questions instead."
@@ -402,7 +569,7 @@ def evaluate_t5_policy(
     brier_val = brier_score(confidences, outcomes)
     avg_buzz_pos = float(np.mean(buzz_positions)) if buzz_positions else 0.0
 
-    return {
+    out: dict[str, Any] = {
         "accuracy": accuracy,
         "mean_sq": mean_sq,
         "ece": ece,
@@ -415,6 +582,19 @@ def evaluate_t5_policy(
         "n_questions_evaluated": total_count,
         "n_questions": total_count,
     }
+    if reference_source is not None:
+        out["reference_source"] = reference_source
+    # Mirror evaluate_mlp_policy: record what was actually used for the
+    # T5 reward TF-IDF corpus so downstream consumers can detect a silent
+    # leaky-fallback when ``reference_questions`` was missing/empty.
+    if fell_back_to_test:
+        out["effective_reference_source"] = (
+            "test_questions_fallback (LEAKED): "
+            f"test_set_source={test_set_source!r}"
+        )
+    else:
+        out["effective_reference_source"] = reference_source or "unspecified"
+    return out
 
 
 def print_comparison(
@@ -566,6 +746,7 @@ def main() -> None:
         args.t5_checkpoint,
         all_questions,
         mc_path,
+        test_questions=test_questions,
     )
     print(
         f"Using T5 test set source {test_set_source}: {len(test_questions)} questions"
@@ -587,7 +768,12 @@ def main() -> None:
         print("Evaluating MLP policy (T5-as-likelihood)...")
         print("-" * 40)
         mlp_results = evaluate_mlp_policy(
-            args.mlp_checkpoint, test_questions, config
+            args.mlp_checkpoint,
+            test_questions,
+            config,
+            reference_questions=reference_questions,
+            reference_source=reference_source,
+            test_set_source=test_set_source,
         )
         print(f"  Accuracy: {mlp_results['accuracy']:.4f}")
         print(f"  Mean S_q: {mlp_results['mean_sq']:.4f}")
@@ -602,6 +788,7 @@ def main() -> None:
         reference_questions,
         test_set_source,
         config,
+        reference_source=reference_source,
     )
     print(f"  Accuracy: {t5_results['accuracy']:.4f}")
     print(f"  Mean S_q: {t5_results['mean_sq']:.4f}")

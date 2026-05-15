@@ -36,6 +36,7 @@ from qb_data.config import merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
+    collect_env_texts,
     dataset_path_for_split,
     load_config,
     load_embedding_cache,
@@ -152,6 +153,21 @@ def main() -> None:
             eval_path = train_path
             eval_split = "val"
             eval_warning = None
+        elif train_split == "combined":
+            # ``--mc-path`` pointed to a combined artifact and no sibling
+            # train_dataset.json was found, so training is on the combined
+            # corpus (which contains val). Refuse to evaluate on the val
+            # sibling: that would let the model "validate" on data it just
+            # trained on.
+            eval_path = train_path
+            eval_split = "combined"
+            eval_warning = (
+                "Warning: --mc-path resolved to the combined dataset (no "
+                "sibling train_dataset.json found); reusing it for "
+                "evaluation to avoid leaking val/test into a 'validation' "
+                "summary. Build train_dataset.json next to mc_dataset.json "
+                "for split-safe validation."
+            )
         elif eval_candidate.exists() and eval_candidate != train_path:
             eval_path = eval_candidate
             eval_split = "val"
@@ -214,6 +230,22 @@ def main() -> None:
     env_cfg = config["environment"]
     lik_cfg = config["likelihood"]
 
+    # Batch-encode every text the env will ever score before computing
+    # beliefs. For SBERT / T5 likelihoods this turns ~N×~10 single-shot
+    # encoder forward passes into ceil(unique_texts / 64) batches.
+    # TF-IDF batches into a single sparse-to-dense transform; cost is
+    # O(unique_texts × vocab_size) but matches the cache state that
+    # ``score()`` would produce anyway.
+    train_eval_texts = collect_env_texts(train_questions) + collect_env_texts(
+        eval_questions
+    )
+    eval_label = "val" if eval_split == "val" else eval_split
+    print(
+        f"Pre-computing embeddings for {len(set(train_eval_texts)):,} unique texts "
+        f"(train + {eval_label})..."
+    )
+    likelihood_model.precompute_embeddings(train_eval_texts, batch_size=64)
+
     print(f"Precomputing train belief trajectories for {len(train_questions)} questions...")
     belief_cache = precompute_beliefs(
         questions=train_questions,
@@ -254,9 +286,26 @@ def main() -> None:
 
     agent.train(total_timesteps=total_timesteps)
     model_path = out_dir / "ppo_model"
-    agent.save(model_path)
+    # Write metadata BEFORE the model so a failed metadata write does
+    # not leave an orphaned checkpoint that downstream evaluators
+    # silently mis-resolve. ``config_used.json`` is also written before
+    # the model for the same reason.
+    #
+    # ``training_completed=False`` is written first so the symmetric
+    # failure mode -- agent.save() raising AFTER the metadata writes
+    # have overwritten a prior run's files -- is detectable by
+    # evaluate_all.py: the stale ``ppo_model.zip`` from the prior run
+    # is now paired with run_metadata.json that reads False, and
+    # evaluate_all.py refuses to replay that combination instead of
+    # silently evaluating the stale model under fresh metadata.
+    import uuid
+
+    run_id = uuid.uuid4().hex
     save_json(out_dir / "config_used.json", config)
     run_metadata = {
+        "schema_version": 2,
+        "run_id": run_id,
+        "training_completed": False,
         "policy_mode": args.policy_mode,
         "evaluation_mode": (
             "stochastic" if args.stochastic_eval else "deterministic"
@@ -266,6 +315,12 @@ def main() -> None:
         "likelihood_reference_path": str(train_path.resolve()),
         "likelihood_reference_n_questions": len(train_questions),
     }
+    save_json(out_dir / "run_metadata.json", run_metadata)
+    agent.save(model_path)
+    # Re-stamp run_metadata so successful runs flip the flag. Anything
+    # downstream that sees training_completed=False knows the on-disk
+    # ppo_model.zip is either stale or absent.
+    run_metadata["training_completed"] = True
     save_json(out_dir / "run_metadata.json", run_metadata)
 
     eval_deterministic = True
@@ -307,11 +362,17 @@ def main() -> None:
         )
         for i in range(len(eval_questions))
     ]
+    # ``schema_version`` discriminates pre/post forced-commit semantics for
+    # downstream consumers. ``buzz_accuracy`` and ``mean_buzz_step`` count
+    # policy-buzz outcomes only on v2; forced-commit credit is reported via
+    # ``overall_outcome_accuracy`` / ``forced_correct_rate``. See
+    # docs/full-pipeline-runbook.md for the migration guide.
     summary = {
+        "schema_version": 2,
         **summarize_buzz_metrics(traces),
         **calibration_at_buzz(traces),
-        "train_split": "train" if train_split == "train" else train_split,
-        "eval_split": "val" if eval_split == "val" else eval_split,
+        "train_split": train_split,
+        "eval_split": eval_split,
     }
 
     save_json(out_dir / "ppo_runs.json", traces)
