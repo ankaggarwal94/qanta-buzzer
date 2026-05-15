@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from agents._math import bayesian_update, belief_stats, sigmoid, softmax_belief
+from agents._math import bayesian_update, belief_stats, softmax_belief
 from agents._math import confidence_proxy as _confidence_proxy
 from agents.threshold_buzzer import reward_from_buzz_step
 from models.likelihoods import LikelihoodModel
