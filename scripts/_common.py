@@ -131,6 +131,32 @@ ARTIFACT_DIR = PROJECT_ROOT / "artifacts"
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 
 
+def project_relative(path: str | Path) -> str:
+    """Return a path string relative to ``PROJECT_ROOT`` when possible.
+
+    Used by artifact-provenance fields (e.g., ``resolved_mc_path``) so
+    that committed JSONs stay machine-portable instead of leaking the
+    author's absolute home directory. Falls back to the absolute path
+    string when the file lives outside the repository.
+
+    Parameters
+    ----------
+    path : str or Path
+        Path to convert.
+
+    Returns
+    -------
+    str
+        Repo-relative path (forward-slash) when ``path`` is inside
+        ``PROJECT_ROOT``; otherwise the resolved absolute path.
+    """
+    p = Path(path).resolve()
+    try:
+        return p.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return str(p)
+
+
 def load_config(config_path: str | None = None, smoke: bool = False) -> dict[str, Any]:
     """Load YAML configuration from a file path.
 

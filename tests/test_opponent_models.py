@@ -90,6 +90,45 @@ class TestEmpiricalHistogramOpponentModel:
         p = model.prob_buzzed_before_step(q, 2)
         assert p > 0.0
 
+    def test_cache_key_includes_buzz_positions(self) -> None:
+        """Two questions with the same qid but different human_buzz_positions
+        must NOT collide in the per-question CDF cache. Keying by qid alone
+        would silently return the first question's CDF for the second."""
+        model = EmpiricalHistogramOpponentModel()
+
+        q1 = _make_question(
+            human_buzz_positions=[(2, 100)],  # all buzzes early
+            num_steps=6,
+        )
+        q1_p_late = model.prob_buzzed_before_step(q1, 5)
+        assert q1_p_late >= 0.99  # CDF should be saturated by step 5
+
+        q2 = _make_question(
+            human_buzz_positions=[(10, 100)],  # all buzzes late
+            num_steps=6,
+        )
+        # q2 shares qid="q_test" with q1 by construction; buzz histogram
+        # differs. Without the fingerprint in the cache key, we'd reuse q1's
+        # CDF here and report ~1.0 (wrong).
+        q2_p_step_2 = model.prob_buzzed_before_step(q2, 2)
+        assert q2_p_step_2 < q1_p_late, (
+            "CDF cache returned q1's saturated value for q2 with different "
+            "human_buzz_positions; cache key must include a positions "
+            "fingerprint, not just qid."
+        )
+
+    def test_cache_hit_on_repeat_call(self) -> None:
+        """Repeat calls on the same question reuse the cached CDF."""
+        model = EmpiricalHistogramOpponentModel()
+        q = _make_question(human_buzz_positions=[(2, 5), (4, 5)], num_steps=6)
+
+        # First call populates the cache.
+        model.prob_buzzed_before_step(q, 1)
+        assert len(model._per_question_cdf_cache) == 1
+        # Second call must reuse it (cache size unchanged).
+        model.prob_buzzed_before_step(q, 4)
+        assert len(model._per_question_cdf_cache) == 1
+
 
 class TestBuildOpponentModelFromConfig:
     def test_none_when_disabled(self) -> None:

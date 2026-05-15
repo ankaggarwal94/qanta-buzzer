@@ -171,6 +171,6 @@
   "reward_mode": "time_penalty",
   "reward_supported": true,
   "requested_mc_path": null,
-  "resolved_mc_path": "/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/artifacts/smoke/mc_dataset.json",
+  "resolved_mc_path": "artifacts/smoke/mc_dataset.json",
   "likelihood_model": "tfidf"
 }
