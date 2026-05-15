@@ -368,3 +368,53 @@ class TestRefCacheRngParity:
             "changes; otherwise an alias-normalisation refresh silently "
             "reuses stale answer_to_aliases for downstream guard checks."
         )
+
+    def test_profile_builder_config_change_invalidates_ref_cache(self) -> None:
+        """Reusing an MCBuilder with a different AnswerProfileBuilder
+        config (``max_tokens_per_profile`` / ``min_questions_per_answer``)
+        must miss the cache. Pre-fix the key only fingerprinted reference
+        questions, so the second build silently returned distractors
+        derived from the first profile_builder's settings."""
+        from qb_data.answer_profiles import AnswerProfileBuilder
+        from qb_data.mc_builder import MCBuilder
+        from qb_data.data_loader import TossupQuestion
+
+        qs = [
+            TossupQuestion(
+                qid=str(i),
+                question=f"clue {i} text body content",
+                tokens=["clue", str(i), "text", "body", "content"],
+                answer_primary=f"answer_{i % 3}",
+                clean_answers=[f"answer_{i % 3}"],
+                run_indices=[0, 1, 2, 3, 4],
+                human_buzz_positions=None,
+                category="History",
+                cumulative_prefixes=[
+                    "clue",
+                    f"clue {i}",
+                    f"clue {i} text",
+                    f"clue {i} text body",
+                    f"clue {i} text body content",
+                ],
+            )
+            for i in range(6)
+        ]
+        pb_wide = AnswerProfileBuilder(max_tokens_per_profile=2000)
+        pb_wide.fit(qs)
+        b = MCBuilder(K=4, strategy="tfidf_profile", random_seed=13)
+        b.build(qs, pb_wide, reference_questions=qs)
+        assert b._ref_cache is not None
+        first_key = b._ref_cache_key
+
+        # Same questions, but a different profile_builder config -- the
+        # cache should miss because the cached ``answer_profiles`` were
+        # produced under the old config.
+        pb_narrow = AnswerProfileBuilder(max_tokens_per_profile=10)
+        pb_narrow.fit(qs)
+        b.build(qs, pb_narrow, reference_questions=qs)
+        assert b._ref_cache_key != first_key, (
+            "config-aware cache key must invalidate when the caller "
+            "passes a profile_builder with different settings; otherwise "
+            "comparing profile-builder variants in one process silently "
+            "reuses stale answer_profiles."
+        )

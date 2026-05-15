@@ -128,7 +128,17 @@ class MCBuilder:
         # hits would put the rng into a different state than fresh-per-
         # split callers expect, silently changing per-question option
         # ordering on val/test.
-        self._ref_cache_key: frozenset[tuple[str, str, str, int]] = frozenset()
+        # Cache key shape:
+        #   ((max_tokens_per_profile, min_questions_per_answer),
+        #    frozenset[(qid, answer_primary, category,
+        #               hash(question), hash(sorted clean_answers))])
+        # Sentinel ``None`` means "no cache populated yet"; the type is
+        # tuple-or-None so equality checks against a real cache miss for
+        # the first build() call without spuriously matching an empty
+        # frozenset.
+        self._ref_cache_key: Optional[
+            tuple[tuple[Any, Any], frozenset[tuple[str, str, str, int, int]]]
+        ] = None
         self._ref_cache: Optional[Dict[str, Any]] = None
 
     def reset_rng(self, seed: int | None = None) -> None:
@@ -435,15 +445,32 @@ class MCBuilder:
         # so reusing the cache after an alias refresh would otherwise
         # leak stale aliases into downstream guard checks and distractor
         # filtering.
-        ref_key = frozenset(
-            (
-                q.qid,
-                q.answer_primary,
-                q.category,
-                hash(q.question),
-                hash(tuple(sorted(q.clean_answers))),
-            )
-            for q in ref_questions
+        #
+        # We also fold the ``profile_builder`` config knobs into the key
+        # (``max_tokens_per_profile`` / ``min_questions_per_answer``)
+        # because the cache stores ``answer_profiles`` -- the output of
+        # ``profile_builder.build_profiles(ref_questions)``. Reusing an
+        # ``MCBuilder`` across calls that pass differently-configured
+        # ``AnswerProfileBuilder`` instances would otherwise silently
+        # return distractors derived from the first call's profile
+        # settings, corrupting any in-process comparison of profile
+        # variants.
+        profile_cfg = (
+            getattr(profile_builder, "max_tokens_per_profile", None),
+            getattr(profile_builder, "min_questions_per_answer", None),
+        )
+        ref_key = (
+            profile_cfg,
+            frozenset(
+                (
+                    q.qid,
+                    q.answer_primary,
+                    q.category,
+                    hash(q.question),
+                    hash(tuple(sorted(q.clean_answers))),
+                )
+                for q in ref_questions
+            ),
         )
         cacheable = self.strategy != "category_random"
         if (
