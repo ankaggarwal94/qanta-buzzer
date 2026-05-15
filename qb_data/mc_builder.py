@@ -424,13 +424,25 @@ class MCBuilder:
         # path. Encoder-bound strategies are deterministic w.r.t. rng,
         # so caching them is safe and gives the full perf win.
         # Cache key includes content fingerprints so an in-place mutation
-        # of ``q.question`` / ``q.answer_primary`` / ``q.category`` between
-        # builds invalidates the cache. Two distinct corpora with the same
-        # qid set but different content (e.g. tournament-duplicate qids
-        # with edited answer text) also miss the cache, defending the
-        # invariant "same key ⇒ same answer_profiles ⇒ same rankings".
+        # of ``q.question`` / ``q.answer_primary`` / ``q.category`` /
+        # ``q.clean_answers`` between builds invalidates the cache. Two
+        # distinct corpora with the same qid set but different content
+        # (e.g. tournament-duplicate qids with edited answer text, or an
+        # alias-normalisation refresh that rewrites ``clean_answers``)
+        # also miss the cache, defending the invariant "same key ⇒ same
+        # answer_profiles + answer_to_aliases ⇒ same rankings". Aliases
+        # specifically feed ``_prepare_lookup``'s ``answer_to_aliases``,
+        # so reusing the cache after an alias refresh would otherwise
+        # leak stale aliases into downstream guard checks and distractor
+        # filtering.
         ref_key = frozenset(
-            (q.qid, q.answer_primary, q.category, hash(q.question))
+            (
+                q.qid,
+                q.answer_primary,
+                q.category,
+                hash(q.question),
+                hash(tuple(sorted(q.clean_answers))),
+            )
             for q in ref_questions
         )
         cacheable = self.strategy != "category_random"

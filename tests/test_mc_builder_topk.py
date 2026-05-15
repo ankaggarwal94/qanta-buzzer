@@ -316,3 +316,55 @@ class TestRefCacheRngParity:
             "returns stale rankings."
         )
         assert b._ref_cache_key != first_key
+
+    def test_alias_mutation_invalidates_ref_cache(self) -> None:
+        """Mutating ``q.clean_answers`` between build() calls must also
+        miss the cache. Pre-fix the cache key omitted aliases, so an
+        alias-normalisation refresh that rewrote ``clean_answers``
+        while leaving question text / answer_primary / category
+        unchanged silently reused stale ``answer_to_aliases``."""
+        from qb_data.answer_profiles import AnswerProfileBuilder
+        from qb_data.mc_builder import MCBuilder
+        from qb_data.data_loader import TossupQuestion
+
+        qs = [
+            TossupQuestion(
+                qid=str(i),
+                question=f"clue {i} text",
+                tokens=["clue", str(i), "text"],
+                answer_primary=f"answer_{i % 3}",
+                clean_answers=[f"answer_{i % 3}"],
+                run_indices=[0, 1, 2],
+                human_buzz_positions=None,
+                category="History",
+                cumulative_prefixes=["clue", f"clue {i}", f"clue {i} text"],
+            )
+            for i in range(6)
+        ]
+        pb = AnswerProfileBuilder()
+        pb.fit(qs)
+        b = MCBuilder(K=4, strategy="tfidf_profile", random_seed=13)
+        b.build(qs, pb, reference_questions=qs)
+        assert b._ref_cache is not None
+        first_key = b._ref_cache_key
+
+        # Refresh aliases on one question; everything else is identical.
+        qs[0] = TossupQuestion(
+            qid=qs[0].qid,
+            question=qs[0].question,
+            tokens=qs[0].tokens,
+            answer_primary=qs[0].answer_primary,
+            clean_answers=[qs[0].answer_primary, "added alias"],
+            run_indices=qs[0].run_indices,
+            human_buzz_positions=qs[0].human_buzz_positions,
+            category=qs[0].category,
+            cumulative_prefixes=qs[0].cumulative_prefixes,
+        )
+        pb2 = AnswerProfileBuilder()
+        pb2.fit(qs)
+        b.build(qs, pb2, reference_questions=qs)
+        assert b._ref_cache_key != first_key, (
+            "alias-aware cache key must invalidate when q.clean_answers "
+            "changes; otherwise an alias-normalisation refresh silently "
+            "reuses stale answer_to_aliases for downstream guard checks."
+        )
