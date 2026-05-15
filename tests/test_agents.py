@@ -593,7 +593,7 @@ class TestEpisodeResultSchema:
         """Building SoftmaxEpisodeResult positionally with a 10th arg
         intended for ``reward_like`` must raise rather than silently
         mis-bind (KW_ONLY guard)."""
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match=r"positional argument"):
             SoftmaxEpisodeResult(
                 "q", 1, 0, 0, True,
                 [0.5], [1.0], [0.8], [0.4],

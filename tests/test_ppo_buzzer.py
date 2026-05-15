@@ -463,8 +463,7 @@ class TestRunEpisode:
         """Building PPOEpisodeTrace positionally with the 11th+ args
         intended for the new forced_* fields must raise rather than
         silently mis-bind."""
-        import pytest as _pytest
-        with _pytest.raises(TypeError):
+        with pytest.raises(TypeError, match=r"positional argument"):
             PPOEpisodeTrace(
                 "q", 0, 2, 2, True, 1.0,
                 [0.1], [0.5], [0.9], [0.2],

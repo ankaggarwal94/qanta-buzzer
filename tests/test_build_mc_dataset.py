@@ -178,5 +178,5 @@ class TestPrintStatisticsPerSplitStats:
         out = capsys.readouterr().out
         # Stale shared-builder value (999) must NOT appear; per-split
         # snapshot (5) must.
-        assert "999" not in out
+        assert "unseen_gold_answer: 999 rejections" not in out
         assert "unseen_gold_answer: 5 rejections" in out
