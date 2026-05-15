@@ -367,28 +367,60 @@ def main() -> None:
     )
     ppo_checkpoint_path = out_dir / "ppo_model.zip"
     ppo_test_summary: dict[str, object] = {}
-    # Detect interrupted training: run_metadata.json or config_used.json
-    # exist but ppo_model.zip is missing. The training script writes
-    # metadata before the model and re-stamps ``training_completed=True``
-    # only after agent.save() succeeds, so any orphaned metadata file
-    # without a checkpoint flags a failed training run rather than a
-    # never-trained run.
+    # Distinguish two missing-checkpoint scenarios:
+    #
+    #   (a) Training failed at agent.save(). The trainer writes metadata
+    #       BEFORE the model and re-stamps ``training_completed=True``
+    #       only after a successful save. So a missing model paired with
+    #       ``training_completed=False`` (or with ``run_metadata.json``
+    #       absent on legacy artifacts where we cannot tell) means the
+    #       co-written ``ppo_summary.json`` is from the failed run and
+    #       must not seep into the report.
+    #
+    #   (b) Successful training where the checkpoint was later pruned
+    #       for storage cleanup. ``run_metadata.json`` reports
+    #       ``training_completed=True`` and ``ppo_summary.json`` holds
+    #       valid validation metrics from that successful run. Replay
+    #       is impossible (no model on disk) but the validation summary
+    #       must be preserved -- discarding it would lose real metrics.
+    #
+    # Branch (a) discards the validation summary; branch (b) keeps it.
     if not ppo_checkpoint_path.exists() and (
         (out_dir / "run_metadata.json").exists()
         or (out_dir / "config_used.json").exists()
     ):
-        print(
-            f"WARNING: ppo_model.zip is missing under {out_dir} but training "
-            "sidecars (run_metadata.json / config_used.json) exist; the "
-            "previous training run likely failed at agent.save(). "
-            "Discarding any leftover ppo_summary.json so stale validation "
-            "metrics from the prior run are not republished as current "
-            "results. Re-run scripts/train_ppo.py before evaluating."
-        )
-        # Same prior-run-residue argument as the training_completed=False
-        # branch: ppo_summary.json is co-written by the failed train_ppo
-        # invocation so any value here is from a stale earlier run.
-        ppo_validation_summary = {}
+        rm_path = out_dir / "run_metadata.json"
+        prior_training_completed = False
+        if rm_path.exists():
+            try:
+                rm_data = load_json(rm_path)
+                prior_training_completed = (
+                    isinstance(rm_data, dict)
+                    and rm_data.get("training_completed") is True
+                )
+            except (json.JSONDecodeError, OSError):
+                prior_training_completed = False
+        if prior_training_completed:
+            print(
+                f"NOTE: ppo_model.zip is missing under {out_dir} but "
+                "run_metadata.json reports training_completed=True; "
+                "treating this as a post-training storage cleanup "
+                "(checkpoint pruned). Skipping PPO replay (no model on "
+                "disk) but preserving the existing ppo_summary.json "
+                "validation metrics in the report."
+            )
+        else:
+            print(
+                f"WARNING: ppo_model.zip is missing under {out_dir} but "
+                "training sidecars (run_metadata.json / config_used.json) "
+                "exist with no training_completed=True marker; the "
+                "previous training run likely failed at agent.save(). "
+                "Discarding any leftover ppo_summary.json so stale "
+                "validation metrics from the prior run are not "
+                "republished as current results. Re-run "
+                "scripts/train_ppo.py before evaluating."
+            )
+            ppo_validation_summary = {}
     if ppo_checkpoint_path.exists():
         ppo_eval_config, _, config_error = load_checkpoint_sidecar(
             ppo_checkpoint_path,
