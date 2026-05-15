@@ -29,6 +29,7 @@ import path adaptations for the unified qanta-buzzer codebase.
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import asdict
 from pathlib import Path
 import sys
@@ -67,6 +68,7 @@ from qb_env.tossup_env import precompute_beliefs as env_precompute_beliefs
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
+    collect_env_texts,
     load_config,
     load_checkpoint_sidecar,
     load_embedding_cache,
@@ -78,6 +80,20 @@ from scripts._common import (
     save_json,
     split_name_from_path,
 )
+
+
+def _safe_load(path: Path, context: str) -> list:
+    """Inline safe-loader so test monkey-patches of ``load_mc_questions``
+    in ``scripts.evaluate_all`` keep applying. Returns ``[]`` on
+    JSONDecodeError / OSError / KeyError with a loud warning."""
+    try:
+        return load_mc_questions(path)
+    except (json.JSONDecodeError, OSError, KeyError) as exc:
+        print(
+            f"WARNING: failed to load MC questions from {path} ({context}): "
+            f"{type(exc).__name__}: {exc}; treating as empty and continuing."
+        )
+        return []
 
 
 def parse_args() -> argparse.Namespace:
@@ -210,7 +226,9 @@ def main() -> None:
     train_path = mc_path.parent / "train_dataset.json"
     likelihood_questions: list = []
     if train_path.exists():
-        likelihood_questions = load_mc_questions(train_path)
+        likelihood_questions = _safe_load(
+            train_path, context="evaluate_all softmax likelihood"
+        )
     if not likelihood_questions:
         likelihood_questions = mc_questions
         print(
@@ -243,18 +261,10 @@ def main() -> None:
     early_buzz_penalty = float(env_cfg.get("early_buzz_penalty", 0.0))
 
     # Batch-encode every text the env will ever score before computing
-    # beliefs (mirrors run_baselines.py). For SBERT / T5 likelihoods
-    # this turns ~N×~10 single-shot encoder calls into batches of 64.
-    # TF-IDF ``precompute_embeddings`` is a no-op.
-    _all_eval_texts: list[str] = []
-    for q in mc_questions:
-        _all_eval_texts.extend(q.cumulative_prefixes)
-        _all_eval_texts.extend(q.option_profiles)
-        for step_idx in range(len(q.run_indices)):
-            prev_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
-            _all_eval_texts.append(
-                " ".join(q.tokens[prev_idx + 1 : q.run_indices[step_idx] + 1])
-            )
+    # beliefs (mirrors run_baselines.py / train_ppo.py). For SBERT / T5
+    # likelihoods this turns ~N×~10 single-shot encoder calls into
+    # batches of 64.
+    _all_eval_texts = collect_env_texts(mc_questions)
     print(
         f"Pre-computing embeddings for {len(set(_all_eval_texts)):,} unique texts..."
     )
@@ -357,6 +367,22 @@ def main() -> None:
     )
     ppo_checkpoint_path = out_dir / "ppo_model.zip"
     ppo_test_summary: dict[str, object] = {}
+    # Detect interrupted training: run_metadata.json or config_used.json
+    # exist but ppo_model.zip is missing. The training script writes
+    # metadata before the model and re-stamps ``training_completed=True``
+    # only after agent.save() succeeds, so any orphaned metadata file
+    # without a checkpoint flags a failed training run rather than a
+    # never-trained run.
+    if not ppo_checkpoint_path.exists() and (
+        (out_dir / "run_metadata.json").exists()
+        or (out_dir / "config_used.json").exists()
+    ):
+        print(
+            f"WARNING: ppo_model.zip is missing under {out_dir} but training "
+            "sidecars (run_metadata.json / config_used.json) exist; the "
+            "previous training run likely failed at agent.save(). Re-run "
+            "scripts/train_ppo.py before evaluating."
+        )
     if ppo_checkpoint_path.exists():
         ppo_eval_config, _, config_error = load_checkpoint_sidecar(
             ppo_checkpoint_path,
@@ -376,6 +402,7 @@ def main() -> None:
             "run_metadata.json",
         )
         policy_mode = "flat_kplus1"
+        training_completed = True  # Default for legacy artifacts predating the flag.
         if run_metadata_error:
             print(
                 "Warning: run_metadata.json next to PPO checkpoint could not be "
@@ -388,11 +415,23 @@ def main() -> None:
             )
         elif isinstance(run_metadata, dict):
             policy_mode = str(run_metadata.get("policy_mode", "flat_kplus1"))
+            # When the field is absent we trust the checkpoint (legacy);
+            # when present the trainer guarantees True only after a
+            # successful agent.save(). False = stale model.
+            training_completed = bool(run_metadata.get("training_completed", True))
         if policy_mode not in {"flat_kplus1", "stop_only"}:
             raise ValueError(
                 f"Unsupported PPO policy_mode '{policy_mode}' in run_metadata.json"
             )
+        if not training_completed:
+            print(
+                "WARNING: run_metadata.json reports training_completed=False; "
+                "the on-disk ppo_model.zip is from a prior run whose current "
+                "training attempt failed at agent.save(). Refusing to replay "
+                "stale checkpoint under fresh metadata. Re-run train_ppo.py."
+            )
 
+    if ppo_checkpoint_path.exists() and locals().get("training_completed", True):
         print("Replaying PPO checkpoint on evaluation split...")
         # Honor the likelihood corpus provenance recorded during training.
         ppo_ref_questions = None
@@ -404,7 +443,9 @@ def main() -> None:
             if not ref_path.is_absolute():
                 ref_path = ppo_checkpoint_path.parent / ref_path
             if ref_path.exists():
-                ppo_ref_questions = load_mc_questions(ref_path)
+                ppo_ref_questions = _safe_load(
+                    ref_path, context="evaluate_all PPO replay (recorded ref)"
+                )
                 if ppo_ref_questions:
                     ref_split = run_metadata.get("likelihood_reference_split", "recorded")
                     print(
@@ -414,7 +455,9 @@ def main() -> None:
         if not ppo_ref_questions:
             train_path = mc_path.parent / "train_dataset.json"
             if train_path.exists():
-                ppo_ref_questions = load_mc_questions(train_path)
+                ppo_ref_questions = _safe_load(
+                    train_path, context="evaluate_all PPO replay (sibling train)"
+                )
             if ppo_ref_questions:
                 print(f"  PPO likelihood built from sibling train split ({len(ppo_ref_questions)} questions)")
             else:
@@ -422,6 +465,19 @@ def main() -> None:
                 print("  Warning: train split missing or empty; building PPO likelihood from eval split")
         ppo_likelihood_model = build_likelihood_model(ppo_eval_config, ppo_ref_questions)
         load_embedding_cache(ppo_likelihood_model, ppo_eval_config)
+        # Mirror the train_ppo.py / softmax-eval pattern: pre-warm the
+        # ppo_likelihood_model embedding cache with one batched encoder
+        # pass over every text the replay env will score, instead of
+        # letting precompute_beliefs() issue thousands of single-text
+        # / per-K-options encoder calls. Test-split texts are not in the
+        # train-side embedding cache loaded above, so SBERT/T5 hot loops
+        # benefit ~10-60×; TF-IDF cost is unchanged.
+        _ppo_replay_texts = collect_env_texts(mc_questions)
+        print(
+            f"Pre-computing PPO replay embeddings for "
+            f"{len(set(_ppo_replay_texts)):,} unique texts..."
+        )
+        ppo_likelihood_model.precompute_embeddings(_ppo_replay_texts, batch_size=64)
         ppo_belief_cache = env_precompute_beliefs(
             mc_questions,
             ppo_likelihood_model,

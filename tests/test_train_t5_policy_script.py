@@ -5,6 +5,8 @@ from __future__ import annotations
 from argparse import Namespace
 from pathlib import Path
 
+import pytest
+
 import scripts.train_t5_policy as train_t5_policy
 
 
@@ -173,12 +175,10 @@ def test_apply_max_questions_global_raises_when_max_q_below_num_splits():
 
     Regression for the unresolved P2 review thread on ``_apply_max_questions``.
     """
-    import pytest as _pytest
-
     train = ["a", "b", "c"]
     val = ["d", "e"]
     test = ["f"]
-    with _pytest.raises(ValueError, match="non-empty splits"):
+    with pytest.raises(ValueError, match="non-empty splits"):
         train_t5_policy._apply_max_questions(
             train, val, test, max_q=2, scope="global"
         )
@@ -199,19 +199,21 @@ def test_apply_max_questions_global_distributes_proportionally():
         ["a"] * 10, ["b"] * 4, ["c"] * 4, max_q=6, scope="global"
     )
     counts = tuple(len(x) for x in out)
-    # Each split keeps at least one item; total respects cap.
+    # Each split keeps at least one item; total respects cap; train (the
+    # largest source at 10/18 ≈ 56%) keeps at least as many as val or test
+    # (each 4/18 ≈ 22%) so the distribution is actually proportional, not
+    # just a uniform 2/2/2 split that would also satisfy sum==6.
     assert all(c >= 1 for c in counts)
     assert sum(counts) == 6
+    assert counts[0] >= counts[1] and counts[0] >= counts[2]
 
 
 def test_load_question_splits_raises_when_global_cap_empties_held_out(
     tmp_path, monkeypatch
 ):
-    """Even when ``_apply_max_questions`` succeeds, the loader should
-    refuse to return a manifest with empty val or test under
-    ``scope='global'``."""
-    import pytest as _pytest
-
+    """Even when no cap is applied, the loader should refuse to return
+    a manifest with empty val or test under ``scope='global'`` and the
+    error message must distinguish 'upstream empty' from 'cap emptied'."""
     for filename in (
         "mc_dataset.json",
         "train_dataset.json",
@@ -237,5 +239,18 @@ def test_load_question_splits_raises_when_global_cap_empties_held_out(
 
     args = Namespace(mc_path=str(tmp_path / "mc_dataset.json"), smoke=False)
     config = {"data": {"max_questions": 0, "max_questions_scope": "global"}}
-    with _pytest.raises(ValueError, match="empty val or test"):
+    with pytest.raises(ValueError, match="empty upstream"):
+        train_t5_policy.load_question_splits_with_metadata(args, config)
+
+
+def test_load_question_splits_rejects_typo_in_max_questions_scope(
+    tmp_path, monkeypatch
+):
+    """A typo in ``data.max_questions_scope`` (e.g. ``'globall'``) must
+    raise immediately rather than silently falling through to
+    ``_apply_max_questions``'s global branch and then bypassing the
+    post-cap empty-split guard via strict-equality check."""
+    args = Namespace(mc_path=None, smoke=False)
+    config = {"data": {"max_questions": 5, "max_questions_scope": "globall"}}
+    with pytest.raises(ValueError, match="max_questions_scope"):
         train_t5_policy.load_question_splits_with_metadata(args, config)

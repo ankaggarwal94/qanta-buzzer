@@ -36,6 +36,7 @@ from qb_data.config import merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
+    collect_env_texts,
     dataset_path_for_split,
     load_config,
     load_embedding_cache,
@@ -231,22 +232,13 @@ def main() -> None:
 
     # Batch-encode every text the env will ever score before computing
     # beliefs. For SBERT / T5 likelihoods this turns ~N×~10 single-shot
-    # encoder forward passes into ceil(unique_texts / 64) batches, which
-    # is the same pattern ``run_baselines.py`` uses. TF-IDF
-    # ``precompute_embeddings`` is a no-op.
-    def _all_texts_for(question_set):
-        texts: list[str] = []
-        for q in question_set:
-            texts.extend(q.cumulative_prefixes)
-            texts.extend(q.option_profiles)
-            for step_idx in range(len(q.run_indices)):
-                prev_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
-                texts.append(
-                    " ".join(q.tokens[prev_idx + 1 : q.run_indices[step_idx] + 1])
-                )
-        return texts
-
-    train_eval_texts = _all_texts_for(train_questions) + _all_texts_for(eval_questions)
+    # encoder forward passes into ceil(unique_texts / 64) batches.
+    # TF-IDF batches into a single sparse-to-dense transform; cost is
+    # O(unique_texts × vocab_size) but matches the cache state that
+    # ``score()`` would produce anyway.
+    train_eval_texts = collect_env_texts(train_questions) + collect_env_texts(
+        eval_questions
+    )
     print(
         f"Pre-computing embeddings for {len(set(train_eval_texts)):,} unique texts "
         "(train + val)..."
@@ -297,9 +289,22 @@ def main() -> None:
     # not leave an orphaned checkpoint that downstream evaluators
     # silently mis-resolve. ``config_used.json`` is also written before
     # the model for the same reason.
+    #
+    # ``training_completed=False`` is written first so the symmetric
+    # failure mode -- agent.save() raising AFTER the metadata writes
+    # have overwritten a prior run's files -- is detectable by
+    # evaluate_all.py: the stale ``ppo_model.zip`` from the prior run
+    # is now paired with run_metadata.json that reads False, and
+    # evaluate_all.py refuses to replay that combination instead of
+    # silently evaluating the stale model under fresh metadata.
+    import uuid
+
+    run_id = uuid.uuid4().hex
     save_json(out_dir / "config_used.json", config)
     run_metadata = {
         "schema_version": 2,
+        "run_id": run_id,
+        "training_completed": False,
         "policy_mode": args.policy_mode,
         "evaluation_mode": (
             "stochastic" if args.stochastic_eval else "deterministic"
@@ -311,6 +316,11 @@ def main() -> None:
     }
     save_json(out_dir / "run_metadata.json", run_metadata)
     agent.save(model_path)
+    # Re-stamp run_metadata so successful runs flip the flag. Anything
+    # downstream that sees training_completed=False knows the on-disk
+    # ppo_model.zip is either stale or absent.
+    run_metadata["training_completed"] = True
+    save_json(out_dir / "run_metadata.json", run_metadata)
 
     eval_deterministic = True
     if args.stochastic_eval:

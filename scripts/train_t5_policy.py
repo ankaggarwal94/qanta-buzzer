@@ -406,6 +406,14 @@ def load_question_splits_with_metadata(
     data_cfg = (config or {}).get("data", {})
     max_questions = data_cfg.get("max_questions", None)
     max_questions_scope = str(data_cfg.get("max_questions_scope", "global"))
+    if max_questions_scope not in {"global", "per_split"}:
+        # Reject typos like "globall" or "Global" before they silently
+        # bypass the post-cap empty-split guard below (strict equality
+        # check on "global" used to fall through for any other string).
+        raise ValueError(
+            f"data.max_questions_scope={max_questions_scope!r} is invalid; "
+            "must be 'global' (proportional) or 'per_split' (truncate each)."
+        )
 
     for base_dir in candidate_dirs:
         split_paths = resolve_persisted_split_paths(base_dir)
@@ -420,16 +428,25 @@ def load_question_splits_with_metadata(
             continue
         val_questions = load_mc_questions(split_paths["val"])
         test_questions = load_mc_questions(split_paths["test"])
-        if max_questions:
+        cap_was_applied = bool(max_questions)
+        if cap_was_applied:
             train_questions, val_questions, test_questions = _apply_max_questions(
                 train_questions, val_questions, test_questions,
                 max_questions, max_questions_scope,
             )
         if max_questions_scope == "global" and (not val_questions or not test_questions):
+            cause = (
+                f"data.max_questions={max_questions} cap left empty val/test "
+                "splits"
+                if cap_was_applied
+                else "persisted val/test splits are already empty upstream"
+            )
             raise ValueError(
-                "Global max_questions cap produced an empty val or test "
-                "split; refusing to proceed. Raise data.max_questions or "
-                "switch data.max_questions_scope to 'per_split'."
+                f"Held-out splits are empty under data.max_questions_scope="
+                f"'global' ({cause}); refusing to proceed. Either rebuild the "
+                "splits with non-empty val/test, raise data.max_questions, "
+                "or set data.max_questions_scope='per_split' to bypass this "
+                "guard."
             )
         print(
             "Using persisted dataset splits from "
