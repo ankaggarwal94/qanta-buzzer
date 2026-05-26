@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""
+Fresh train/val/test split for CS321M v10 section 0.3 protocol.
+
+Preserves old artifacts, creates a fresh split with a new random seed
+(NOT 42, NOT 13), and writes provenance documentation to
+PROJECT_WIKI/SPLIT_PROVENANCE.md.
+
+Usage:
+    python scripts/fresh_split.py            # Execute fresh split
+    python scripts/fresh_split.py --dry-run  # Preview actions without modifying filesystem
+    python scripts/fresh_split.py --seed 9973  # Override seed (must not be 42 or 13)
+    python scripts/fresh_split.py --help
+
+Inputs:
+    - questions.csv (or HuggingFace fallback)
+    - artifacts/ directory (if exists, will be preserved)
+    - data/processed/ directory (if exists, will be preserved)
+
+Outputs:
+    - artifacts.pre_v10_freshsplit_{UTC_TIMESTAMP}/ (preserved old artifacts)
+    - data/processed.pre_v10_freshsplit_{UTC_TIMESTAMP}/ (preserved old processed data)
+    - data/processed/train_dataset.json (fresh train split)
+    - data/processed/val_dataset.json (fresh val split)
+    - data/processed/test_dataset.json (fresh test split)
+    - PROJECT_WIKI/SPLIT_PROVENANCE.md (provenance documentation)
+
+Exit codes:
+    0 - Success
+    1 - Error (missing data source, invalid seed, etc.)
+"""
+
+from __future__ import annotations
+
+import argparse
+import random
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+# Project path setup per convention
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import numpy as np
+
+from qb_data.data_loader import QANTADatasetLoader
+from qb_data.dataset_splits import create_stratified_splits, save_splits
+
+
+# Forbidden seeds per v10 section 0.3
+FORBIDDEN_SEEDS = {42, 13}
+
+# Split ratios matching configs/default.yaml
+SPLIT_RATIOS = [0.7, 0.15, 0.15]
+
+
+def generate_seed() -> int:
+    """Generate a deterministic seed that is NOT 42 and NOT 13.
+
+    Uses int(time.time()) % 1000000 + 7919 (prime offset to avoid
+    collisions with clock-based seeds).
+
+    Returns
+    -------
+    int
+        A seed value guaranteed not in FORBIDDEN_SEEDS.
+    """
+    seed = int(time.time()) % 1000000 + 7919
+    # Safety check: if by astronomical coincidence we hit a forbidden seed
+    while seed in FORBIDDEN_SEEDS:
+        seed += 1
+    return seed
+
+
+def get_git_commit_sha() -> str:
+    """Get current git HEAD commit SHA.
+
+    Returns
+    -------
+    str
+        Short commit SHA, or 'unknown' if git is unavailable.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return "unknown"
+
+
+def set_all_seeds(seed: int) -> None:
+    """Set random seeds for reproducibility across all libraries.
+
+    Parameters
+    ----------
+    seed : int
+        Seed value to set for random, numpy, and torch (if importable).
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    try:
+        import torch
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+    except ImportError:
+        pass  # torch not required for splitting
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Parameters
+    ----------
+    argv : list[str] or None
+        Argument list. None uses sys.argv.
+
+    Returns
+    -------
+    argparse.Namespace
+        Parsed arguments.
+    """
+    parser = argparse.ArgumentParser(
+        description="Fresh train/val/test split per v10 section 0.3 protocol",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Override seed value (must NOT be 42 or 13). If not provided, "
+             "generates deterministically from time.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print all actions without modifying the filesystem.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Execute the fresh-split protocol.
+
+    Parameters
+    ----------
+    argv : list[str] or None
+        CLI arguments. None uses sys.argv.
+
+    Returns
+    -------
+    int
+        Exit code (0 = success, 1 = error).
+    """
+    args = parse_args(argv)
+
+    project_root = Path(__file__).parent.parent
+    utc_now = datetime.now(timezone.utc)
+    utc_timestamp = utc_now.strftime("%Y%m%dT%H%M%SZ")
+
+    # Determine seed
+    if args.seed is not None:
+        seed = args.seed
+    else:
+        seed = generate_seed()
+
+    # Validate seed
+    if seed in FORBIDDEN_SEEDS:
+        print(f"ERROR: Seed {seed} is forbidden (must not be 42 or 13).", file=sys.stderr)
+        return 1
+
+    print(f"{'[DRY-RUN] ' if args.dry_run else ''}Fresh Split Protocol v10 section 0.3")
+    print(f"  FRESH_SPLIT_SEED={seed}")
+    print(f"  UTC_TIMESTAMP={utc_timestamp}")
+    print(f"  Split ratios: {SPLIT_RATIOS}")
+    print()
+
+    # --- Step 1: Preserve old artifacts ---
+    artifacts_dir = project_root / "artifacts"
+    artifacts_archive = project_root / f"artifacts.pre_v10_freshsplit_{utc_timestamp}"
+
+    if artifacts_dir.exists():
+        print(f"Step 1a: Preserving artifacts/ -> {artifacts_archive.name}")
+        if not args.dry_run:
+            shutil.move(str(artifacts_dir), str(artifacts_archive))
+            print(f"  Moved: {artifacts_dir} -> {artifacts_archive}")
+        else:
+            print(f"  [DRY-RUN] Would move: {artifacts_dir} -> {artifacts_archive}")
+    else:
+        print("Step 1a: SKIP - artifacts/ directory does not exist")
+        artifacts_archive = None
+
+    # --- Step 2: Preserve old data/processed ---
+    processed_dir = project_root / "data" / "processed"
+    processed_archive = project_root / "data" / f"processed.pre_v10_freshsplit_{utc_timestamp}"
+
+    if processed_dir.exists():
+        print(f"Step 1b: Preserving data/processed/ -> data/{processed_archive.name}")
+        if not args.dry_run:
+            shutil.copytree(str(processed_dir), str(processed_archive))
+            print(f"  Copied: {processed_dir} -> {processed_archive}")
+        else:
+            print(f"  [DRY-RUN] Would copy: {processed_dir} -> {processed_archive}")
+    else:
+        print("Step 1b: SKIP - data/processed/ directory does not exist")
+        processed_archive = None
+
+    # --- Step 3: Set seeds ---
+    print(f"\nStep 2: Setting all random seeds to {seed}")
+    if not args.dry_run:
+        set_all_seeds(seed)
+    else:
+        print(f"  [DRY-RUN] Would set random/numpy/torch seeds to {seed}")
+
+    # --- Step 4: Load questions ---
+    print("\nStep 3: Loading questions...")
+    csv_path = project_root / "questions.csv"
+
+    if args.dry_run:
+        print(f"  [DRY-RUN] Would load from: {csv_path}")
+        if csv_path.exists():
+            print(f"  [DRY-RUN] CSV file exists at {csv_path}")
+        else:
+            print(f"  [DRY-RUN] CSV not found; would try HuggingFace fallback")
+        # For dry-run, report provenance template and exit
+        print("\nStep 4: [DRY-RUN] Would create stratified splits with ratios", SPLIT_RATIOS)
+        print("\nStep 5: [DRY-RUN] Would save splits to data/processed/")
+        print("\nStep 6: [DRY-RUN] Would write PROJECT_WIKI/SPLIT_PROVENANCE.md:")
+        print(f"  FRESH_SPLIT_SEED={seed}")
+        print(f"  FRESH_SPLIT_CREATED_AT={utc_now.isoformat()}")
+        print(f"  FRESH_SPLIT_COMMIT_SHA={get_git_commit_sha()}")
+        old_path = str(artifacts_archive) if artifacts_archive else "N/A (no artifacts/ existed)"
+        print(f"  OLD_SPLIT_PRESERVED_AT={old_path}")
+        print(f"  THRESHOLDS_FROZEN_AFTER_FRESH_SPLIT=false")
+        print(f"  TEST_SPLIT_INSPECTED_POST_FRESH_SPLIT=false")
+        print("\n[DRY-RUN] Complete. No filesystem changes made.")
+        return 0
+
+    # Load questions from CSV (primary) or HuggingFace (fallback)
+    questions = None
+    if csv_path.exists():
+        print(f"  Loading from CSV: {csv_path}")
+        loader = QANTADatasetLoader()
+        questions = loader.load_from_csv(str(csv_path))
+        print(f"  Loaded {len(questions)} questions from CSV")
+    else:
+        print(f"  CSV not found at {csv_path}, trying HuggingFace fallback...")
+        try:
+            from qb_data.huggingface_loader import load_from_huggingface
+            questions = load_from_huggingface("qanta-challenge/acf-co24-tossups", split="eval")
+            print(f"  Loaded {len(questions)} questions from HuggingFace")
+        except Exception as e:
+            print(f"ERROR: Could not load questions. CSV missing and HuggingFace failed: {e}",
+                  file=sys.stderr)
+            return 1
+
+    if not questions:
+        print("ERROR: No questions loaded.", file=sys.stderr)
+        return 1
+
+    # --- Step 5: Create fresh splits ---
+    print(f"\nStep 4: Creating stratified splits (seed={seed}, ratios={SPLIT_RATIOS})")
+    train, val, test = create_stratified_splits(
+        questions,
+        ratios=SPLIT_RATIOS,
+        seed=seed,
+    )
+
+    # --- Step 6: Save splits ---
+    output_dir = project_root / "data" / "processed"
+    print(f"\nStep 5: Saving splits to {output_dir}/")
+    save_splits(train, val, test, output_dir=str(output_dir))
+
+    # --- Step 7: Write provenance documentation ---
+    wiki_dir = project_root / "PROJECT_WIKI"
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+    provenance_path = wiki_dir / "SPLIT_PROVENANCE.md"
+
+    commit_sha = get_git_commit_sha()
+    old_artifacts_path = str(artifacts_archive.relative_to(project_root)) if artifacts_archive else "N/A (no artifacts/ existed)"
+    old_processed_path = str(processed_archive.relative_to(project_root)) if processed_archive else "N/A (no data/processed/ existed)"
+
+    total = len(train) + len(val) + len(test)
+    provenance_content = f"""# Split Provenance
+
+## Fresh Split Gate Fields (v10 section 0.3)
+
+```
+FRESH_SPLIT_SEED={seed}
+FRESH_SPLIT_CREATED_AT={utc_now.isoformat()}
+FRESH_SPLIT_COMMIT_SHA={commit_sha}
+OLD_SPLIT_PRESERVED_AT={old_artifacts_path}
+THRESHOLDS_FROZEN_AFTER_FRESH_SPLIT=false
+TEST_SPLIT_INSPECTED_POST_FRESH_SPLIT=false
+```
+
+## Split Statistics
+
+| Split | Count | Percentage |
+|-------|-------|------------|
+| Train | {len(train)} | {len(train)/total:.1%} |
+| Val   | {len(val)} | {len(val)/total:.1%} |
+| Test  | {len(test)} | {len(test)/total:.1%} |
+| **Total** | **{total}** | **100.0%** |
+
+## Preservation Log
+
+- Old artifacts preserved at: `{old_artifacts_path}`
+- Old processed data preserved at: `{old_processed_path}`
+- Fresh split output: `data/processed/`
+
+## Ratios
+
+- Train ratio: {SPLIT_RATIOS[0]}
+- Val ratio: {SPLIT_RATIOS[1]}
+- Test ratio: {SPLIT_RATIOS[2]}
+
+## Integrity Notes
+
+- Seed {seed} is NOT 42 (configs/default.yaml data.shuffle_seed) and NOT 13 (configs/default.yaml environment.seed)
+- All random generators (random, numpy, torch) seeded before split
+- Stratified by category to preserve distribution across splits
+- No test-set content inspected or printed during this operation
+"""
+
+    print(f"\nStep 6: Writing provenance to {provenance_path}")
+    with open(provenance_path, "w", encoding="utf-8") as f:
+        f.write(provenance_content)
+    print(f"  Written: {provenance_path}")
+
+    print("\nFresh split protocol complete.")
+    print(f"  Seed: {seed}")
+    print(f"  Train: {len(train)} | Val: {len(val)} | Test: {len(test)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
