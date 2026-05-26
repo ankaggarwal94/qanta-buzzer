@@ -37,7 +37,7 @@ def _setup_modal():
         modal.Image.debian_slim(python_version="3.11")
         .pip_install_from_pyproject("pyproject.toml")
         .pip_install("modal")
-        .copy_local_dir(".", "/app")
+        .add_local_dir(".", "/app")
     )
     return app, image
 
