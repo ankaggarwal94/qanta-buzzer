@@ -295,6 +295,28 @@ def main(argv: list[str] | None = None) -> int:
     if processed_dir.exists():
         print(f"Step 1b: Preserving data/processed/ -> data/{processed_archive.name}")
         if not args.dry_run:
+            # Iter1 IN-05: COPYTREE (not MOVE) is intentional, in
+            # contrast to Step 1a above which uses shutil.move(...) on
+            # the artifacts/ tree. The asymmetry is load-bearing:
+            #   - data/processed/ must remain in place after this
+            #     step because Step 5 (below) writes the new
+            #     train/val/test splits INTO it. Moving the directory
+            #     out from under Step 5 would either re-create it
+            #     empty (losing every sibling file the operator left
+            #     in data/processed/) or fail on the missing parent.
+            #   - data/processed/mc_dataset.json was built by an
+            #     earlier scripts/build_mc_dataset.py run. It is
+            #     consumed downstream by scripts/compute_csli.py
+            #     after fresh_split. A shutil.move here would orphan
+            #     mc_dataset.json, breaking Phase 4 CSLI (and
+            #     contradicting the WR-07 documented limitation that
+            #     compute_csli.py reads mc_dataset.json from this
+            #     directory).
+            # A future maintainer "fixing" the inconsistency by
+            # switching this call to shutil.move would silently break
+            # the pipeline. Keep COPYTREE here; the artifacts/ tree
+            # gets MOVED above because nothing downstream re-reads it
+            # in place.
             shutil.copytree(str(processed_dir), str(processed_archive))
             print(f"  Copied: {processed_dir} -> {processed_archive}")
         else:
