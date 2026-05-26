@@ -126,6 +126,22 @@ _SBERT_MODEL = None
 _T5_MODEL = None
 _T5_TOKENIZER = None
 
+# Iter1 IN-01 ANSWER-PRIOR CACHES.
+#
+# The choices-only scoring for TF-IDF and SBERT now scores each option
+# against a "generic answer prior" assembled from training-split
+# answer_primary texts (replacement for the prior folklore heuristic
+# "most dissimilar = most specific" -- see docstrings on
+# _score_tfidf_choices_only and _score_sbert_choices_only). The prior
+# is stable across the test split, so we lazy-load and cache it. The
+# train split path is injected from main() via
+# _set_answer_prior_train_path so the --data-dir override flows
+# through (the prior must follow the same data partition the rest of
+# the script is using).
+_ANSWER_PRIOR_TRAIN_PATH: Optional[Path] = None
+_TFIDF_ANSWER_PRIOR = None  # (vectorizer, centroid_vector)
+_SBERT_ANSWER_PRIOR = None  # centroid embedding (np.ndarray)
+
 
 def bootstrap_ci(
     values: np.ndarray,
@@ -211,8 +227,194 @@ def _get_t5_model():
     return _T5_MODEL, _T5_TOKENIZER
 
 
+# ============================================================================
+# ANSWER-PRIOR LOADING (Iter1 IN-01 -- folklore-heuristic replacement)
+# ============================================================================
+
+
+def _set_answer_prior_train_path(path: Path) -> None:
+    """Inject the train split path for the answer-prior loaders.
+
+    Called from ``main()`` so the prior is loaded from the same data
+    partition that the rest of the script is operating against
+    (respects the ``--data-dir`` override). Invalidates any cached
+    prior so a subsequent in-process run with a different path
+    rebuilds the prior cleanly.
+
+    Parameters
+    ----------
+    path : Path
+        Path to ``train_dataset.json`` (wrapped or plain-list form;
+        ``_load_answer_prior_texts`` routes through the shared
+        ``iter_split_questions`` helper).
+    """
+    global _ANSWER_PRIOR_TRAIN_PATH, _TFIDF_ANSWER_PRIOR, _SBERT_ANSWER_PRIOR
+    _ANSWER_PRIOR_TRAIN_PATH = path
+    _TFIDF_ANSWER_PRIOR = None
+    _SBERT_ANSWER_PRIOR = None
+
+
+def _load_answer_prior_texts() -> list[str]:
+    """Load the answer-prior corpus from the train split.
+
+    Reads ``train_dataset.json`` (whichever shape is on disk -- both
+    are accepted via the shared ``iter_split_questions`` helper) and
+    returns the list of ``answer_primary`` strings, filtered to
+    non-empty values. This corpus serves as the empirical "what does
+    an answer look like in this domain" prior the IN-01 replacement
+    heuristic scores options against.
+
+    Returns
+    -------
+    list[str]
+        Non-empty ``answer_primary`` strings from the train split.
+
+    Raises
+    ------
+    RuntimeError
+        If ``_set_answer_prior_train_path`` has not been called
+        (i.e., the scorer was invoked from a context that did not set
+        up the prior path); if the train split file does not exist;
+        if no usable answer_primary strings survive filtering.
+    """
+    if _ANSWER_PRIOR_TRAIN_PATH is None:
+        raise RuntimeError(
+            "Iter1 IN-01: answer-prior path not initialized. Call "
+            "_set_answer_prior_train_path(<train_dataset.json>) from "
+            "main() before scoring."
+        )
+    if not _ANSWER_PRIOR_TRAIN_PATH.exists():
+        raise RuntimeError(
+            f"Iter1 IN-01: answer-prior train split not found: "
+            f"{_ANSWER_PRIOR_TRAIN_PATH}. Run scripts/fresh_split.py "
+            "to produce train_dataset.json (the choices-only TF-IDF "
+            "and SBERT scorers now score options against this "
+            "training-split answer prior instead of relying on the "
+            "prior folklore heuristic; see docstrings on "
+            "_score_tfidf_choices_only and _score_sbert_choices_only)."
+        )
+
+    from scripts._common import iter_split_questions
+
+    with open(_ANSWER_PRIOR_TRAIN_PATH, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    questions = iter_split_questions(
+        payload, source_path=_ANSWER_PRIOR_TRAIN_PATH
+    )
+    texts = [
+        str(q["answer_primary"]).strip()
+        for q in questions
+        if isinstance(q.get("answer_primary"), str) and q["answer_primary"].strip()
+    ]
+    if not texts:
+        raise RuntimeError(
+            f"Iter1 IN-01: train split at {_ANSWER_PRIOR_TRAIN_PATH} "
+            "contains no usable answer_primary strings. The answer "
+            "prior cannot be built; CSLI choices-only scoring would "
+            "be ill-defined."
+        )
+    return texts
+
+
+def _get_tfidf_answer_prior():
+    """Lazy-load the TF-IDF answer-prior (vectorizer + centroid vector).
+
+    Builds a TF-IDF vectorizer over the training-split answer corpus
+    and returns ``(vectorizer, centroid_vector)``. The centroid is the
+    mean of the TF-IDF representations of the prior corpus and serves
+    as the per-corpus "typical answer" representation that options are
+    scored against in the IN-01 replacement heuristic.
+
+    Returns
+    -------
+    tuple[TfidfVectorizer, np.ndarray]
+        Fitted vectorizer (so options can be transformed in the same
+        TF-IDF space) and a dense centroid vector of shape (1, n_features).
+    """
+    global _TFIDF_ANSWER_PRIOR
+    if _TFIDF_ANSWER_PRIOR is None:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+
+        texts = _load_answer_prior_texts()
+        print(
+            f"[CSLI] Building TF-IDF answer prior from "
+            f"{len(texts)} train-split answers (Iter1 IN-01)...",
+            flush=True,
+        )
+        vectorizer = TfidfVectorizer()
+        prior_matrix = vectorizer.fit_transform(texts)
+        # Centroid is the mean TF-IDF vector. np.asarray is needed
+        # because csr_matrix.mean(axis=0) returns a np.matrix subclass
+        # which is deprecated and produces warnings; np.asarray casts
+        # to a plain ndarray of shape (1, n_features) -- exactly what
+        # cosine_similarity expects as a row vector.
+        centroid = np.asarray(prior_matrix.mean(axis=0))
+        _TFIDF_ANSWER_PRIOR = (vectorizer, centroid)
+    return _TFIDF_ANSWER_PRIOR
+
+
+def _get_sbert_answer_prior() -> np.ndarray:
+    """Lazy-load the SBERT answer-prior (centroid embedding).
+
+    Encodes the training-split answer corpus with SBERT and returns
+    the mean embedding as a 2-D ndarray of shape (1, embed_dim). This
+    is the per-corpus "typical answer" embedding that options are
+    scored against in the IN-01 replacement heuristic.
+
+    Returns
+    -------
+    np.ndarray
+        Centroid embedding of shape (1, embed_dim), suitable for
+        passing as the first argument of
+        ``sklearn.metrics.pairwise.cosine_similarity``.
+    """
+    global _SBERT_ANSWER_PRIOR
+    if _SBERT_ANSWER_PRIOR is None:
+        texts = _load_answer_prior_texts()
+        model = _get_sbert_model()
+        print(
+            f"[CSLI] Building SBERT answer prior from "
+            f"{len(texts)} train-split answers (Iter1 IN-01)...",
+            flush=True,
+        )
+        embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
+        centroid = embeddings.mean(axis=0, keepdims=True)
+        _SBERT_ANSWER_PRIOR = centroid
+    return _SBERT_ANSWER_PRIOR
+
+
 def _score_tfidf_choices_only(options: list[str]) -> int:
-    """TF-IDF choices-only: select option most dissimilar from others.
+    """TF-IDF choices-only: select option most similar to the answer prior.
+
+    Iter1 IN-01 REPLACEMENT (NOT additive). The old heuristic picked the
+    option with the LOWEST mean similarity to the OTHER options, on the
+    folklore assumption "most dissimilar = most specific = correct".
+    That assumption inverse-picks on well-constructed MC datasets,
+    because the WHOLE POINT of a good distractor is to be similar to
+    the correct answer (similar surface form, similar specificity,
+    similar domain). On distractors crafted that way, "most dissimilar"
+    systematically picks the WORST distractor (the one that least
+    resembles a real answer for this question's domain) rather than the
+    gold answer.
+
+    The replacement scores each option's TF-IDF cosine similarity to a
+    "generic answer prior" assembled from all ``answer_primary`` strings
+    in the training split. The prior is a centroid TF-IDF vector
+    representing "what answers look like in this corpus" (proper nouns,
+    named works, year/place strings, etc.). The option with the
+    HIGHEST similarity to that prior is predicted as the answer.
+
+    Defensible-choice caveat: this is ONE defensible choice among many
+    for the choices-only condition. Alternatives that the manuscript
+    Limitations section should mention: (a) cosine to nearest prior
+    neighbor instead of centroid, (b) length-only baseline, (c) GPT-2
+    perplexity prior, (d) keep the old heuristic as a contrast.
+    The centroid TF-IDF choice is principled (prior over an explicit
+    training corpus that is observed before any test inspection) and
+    avoids the inverse-pick failure mode of the old heuristic.
+
+    The prior is cached lazily and rebuilt only if
+    ``_set_answer_prior_train_path`` is re-called with a new path.
 
     Parameters
     ----------
@@ -222,28 +424,21 @@ def _score_tfidf_choices_only(options: list[str]) -> int:
     Returns
     -------
     int
-        Predicted answer index (0-3).
+        Predicted answer index (0..K-1).
     """
-    from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics.pairwise import cosine_similarity
 
-    vectorizer = TfidfVectorizer()
+    vectorizer, prior_centroid = _get_tfidf_answer_prior()
     try:
-        tfidf_matrix = vectorizer.fit_transform(options)
+        option_matrix = vectorizer.transform(options)
     except ValueError:
-        # All options are empty or identical -- fall back to 0
+        # All options empty -- fall back to 0 (matches the old behavior
+        # for this degenerate edge case, which is rare in practice).
         return 0
 
-    sim_matrix = cosine_similarity(tfidf_matrix)
-    # For each option, compute mean similarity to OTHER options
-    n = len(options)
-    mean_sims = np.zeros(n)
-    for i in range(n):
-        others = [sim_matrix[i, j] for j in range(n) if j != i]
-        mean_sims[i] = np.mean(others) if others else 0.0
-
-    # Select option with LOWEST mean similarity (most dissimilar = most specific)
-    return int(np.argmin(mean_sims))
+    # cosine_similarity returns shape (n_options, 1); flatten to 1-D
+    sims = cosine_similarity(option_matrix, prior_centroid).reshape(-1)
+    return int(np.argmax(sims))
 
 
 def _score_tfidf_full(question: str, options: list[str]) -> int:
@@ -280,7 +475,25 @@ def _score_tfidf_full(question: str, options: list[str]) -> int:
 
 
 def _score_sbert_choices_only(options: list[str]) -> int:
-    """SBERT choices-only: select option most dissimilar from others.
+    """SBERT choices-only: select option most similar to the answer prior.
+
+    Iter1 IN-01 REPLACEMENT (NOT additive). See the matching docstring
+    on ``_score_tfidf_choices_only`` for the full rationale: the old
+    heuristic ("most dissimilar from other options = most specific =
+    correct") inverse-picks on well-constructed distractors because
+    distractors are intentionally crafted to be similar to the correct
+    answer.
+
+    The replacement scores each option's SBERT cosine similarity to a
+    "generic answer prior" -- the mean SBERT embedding of all
+    ``answer_primary`` strings in the training split. The option with
+    the HIGHEST cosine similarity to that centroid is predicted as the
+    answer.
+
+    Same defensible-choice caveat as the TF-IDF version: this is one
+    defensible choice among many. The centroid-based prior is
+    principled (training-split only, observed before any test
+    inspection) and replaces an indefensible folklore heuristic.
 
     Parameters
     ----------
@@ -290,21 +503,17 @@ def _score_sbert_choices_only(options: list[str]) -> int:
     Returns
     -------
     int
-        Predicted answer index (0-3).
+        Predicted answer index (0..K-1).
     """
     from sklearn.metrics.pairwise import cosine_similarity
 
+    prior_centroid = _get_sbert_answer_prior()
     model = _get_sbert_model()
-    embeddings = model.encode(options, convert_to_numpy=True)
-    sim_matrix = cosine_similarity(embeddings)
+    embeddings = model.encode(options, convert_to_numpy=True, show_progress_bar=False)
 
-    n = len(options)
-    mean_sims = np.zeros(n)
-    for i in range(n):
-        others = [sim_matrix[i, j] for j in range(n) if j != i]
-        mean_sims[i] = np.mean(others) if others else 0.0
-
-    return int(np.argmin(mean_sims))
+    # cosine_similarity returns shape (n_options, 1); flatten to 1-D
+    sims = cosine_similarity(embeddings, prior_centroid).reshape(-1)
+    return int(np.argmax(sims))
 
 
 def _score_sbert_full(question: str, options: list[str]) -> int:
@@ -722,6 +931,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[CSLI] Dry run -- data_dir={data_dir}, models={model_list}")
         print(f"[CSLI] Output would be written to: {output_path}")
         return 0
+
+    # Iter1 IN-01: register the train split path for the answer-prior
+    # loaders. The TF-IDF and SBERT choices-only scorers now score
+    # options against a centroid of training-split answer_primary
+    # texts (replacing the prior folklore "most dissimilar = most
+    # specific" heuristic). The path follows --data-dir so the prior
+    # is loaded from the same partition as the test split being scored.
+    _set_answer_prior_train_path(data_dir / "train_dataset.json")
 
     # Load MC dataset (has options and gold_index)
     mc_path = data_dir / "mc_dataset.json"
