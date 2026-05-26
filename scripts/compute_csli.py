@@ -104,7 +104,7 @@ def bootstrap_ci(
     values: np.ndarray,
     n_resamples: int = 1000,
     confidence: float = 0.95,
-    seed: int = 42,
+    seed: int = 789685,
 ) -> tuple[float, float, float]:
     """Compute bootstrap confidence interval for the mean.
 
@@ -124,7 +124,13 @@ def bootstrap_ci(
     confidence : float
         Confidence level (default 0.95 for 95% CI).
     seed : int
-        Random seed for reproducibility.
+        Random seed for reproducibility. Defaults to 789685 (the
+        FRESH_SPLIT_SEED in PROJECT_WIKI/SPLIT_PROVENANCE.md). MUST NOT
+        be in fresh_split.FORBIDDEN_SEEDS ({42, 13}); see WR-03 in the
+        Phase 02 review for the rationale -- the prior default (42)
+        contradicted the project seed-hygiene policy at the API surface
+        even though the production call site (compute_panel_csli) always
+        passed seed=789685 explicitly.
 
     Returns
     -------
