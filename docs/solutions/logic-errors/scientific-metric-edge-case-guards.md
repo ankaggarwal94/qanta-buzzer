@@ -1,6 +1,7 @@
 ---
 title: Scientific Metric Edge-Case Guards
 date: 2026-05-26
+last_updated: 2026-05-26
 category: logic-errors
 module: qanta-buzzer scientific metrics
 problem_type: logic_error
@@ -23,6 +24,8 @@ tags:
   - prefix-calibration
   - stopdff
   - pr-review
+related:
+  - logic-errors/producer-emitted-flags-without-consumer-propagation.md
 ---
 
 # Scientific Metric Edge-Case Guards
@@ -92,7 +95,7 @@ class ConstantCalibrationModel:
 
 `_fit_bucket_calibrator()` now returns a constant model for empty validation buckets and single-class buckets. `_calibrate_bucket_scores()` returns an empty array for empty test buckets before calling `predict_proba`.
 
-The output JSON records `platt_model_type`, `platt_fallback_reason`, and `platt_constant_probability` per bucket, so a future manuscript or audit card can distinguish true logistic calibration from fallback behavior. Downstream StopDFF loading converts constant fallback buckets into an equivalent zero-slope Platt form, preventing the metric consumer from crashing on `null` coefficients.
+The output JSON records `platt_model_type`, `platt_fallback_reason`, and `platt_constant_probability` per bucket, so a future manuscript or audit card can distinguish true logistic calibration from fallback behavior. One downstream consumer was wired during this fix: StopDFF loading converts constant fallback buckets into an equivalent zero-slope Platt form, preventing the metric consumer from crashing on `null` coefficients. The audit-card consumer was NOT wired during this fix, and that omission shipped — see [`producer-emitted-flags-without-consumer-propagation.md`](./producer-emitted-flags-without-consumer-propagation.md) for the consumer-side recurrence and the load-bearing decision quote that caused the gap.
 
 ### Evaluate StopDFF Reachability Over the Full Domain
 
@@ -129,6 +132,7 @@ The fixes also made the contract testable. `tests/test_pr14_review_regressions.p
 - Regenerate manuscript-facing artifacts from committed code after metric-script changes.
 - Re-query both GitHub review surfaces before marking a PR done: inline review threads and top-level review bodies.
 - Treat package artifacts as part of the reproducibility surface; path portability and checklist accuracy matter for submission packages.
+- **Every downstream consumer that aggregates per-bucket producer flags into a verdict must read the fallback flag, not just the headline metric** — otherwise the verdict silently PASSes even when the underlying calibration was degenerate. This is the sibling consumer-side rule that this doc's original Prevention list missed; the omission shipped a silent-PASS audit-card verdict that the PR-14 follow-up review caught (commits `41e15b7`, `eb8e337`, blockers B2 and B4). When adding a new metadata field to a producer JSON, grep every downstream consumer for the field name (`rg 'platt_model_type' scripts/ tests/`) and add a consumer-side regression test that asserts the verdict *change*, not just schema presence. See [`producer-emitted-flags-without-consumer-propagation.md`](./producer-emitted-flags-without-consumer-propagation.md) for the full consumer-side post-mortem and the prevention checklist.
 
 ## Related Issues
 
@@ -137,4 +141,8 @@ The fixes also made the contract testable. `tests/test_pr14_review_regressions.p
   - `75c2483` — harden metric edge-case guards
   - `748d3df` — regenerate metric artifacts after guard fixes
   - `5c6efd3` — clean remaining checklist artifacts
+  - `41e15b7` — apply six ChatGPT-5.5 Pro review blockers (B1-B6), including the audit-card consumer-side propagation that this doc's original Prevention list missed
+  - `6d33c8e` — 33 regression tests for B1-B6 propagation
+  - `eb8e337` — regenerate metric artifacts with gate metadata + audit card
 - Regression coverage: `tests/test_pr14_review_regressions.py`
+- Consumer-side sibling: [`producer-emitted-flags-without-consumer-propagation.md`](./producer-emitted-flags-without-consumer-propagation.md)
