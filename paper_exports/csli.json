@@ -1,0 +1,41 @@
+{
+  "panel_csli": {
+    "mean": 0.10615233333333333,
+    "ci_lower": 0.0921396591565569,
+    "ci_upper": 0.11973570190641249
+  },
+  "per_model": {
+    "tfidf": {
+      "acc_full": 0.25,
+      "acc_choices_only": 0.230503,
+      "csli": 0.019497,
+      "leakage_flag": false
+    },
+    "sbert": {
+      "acc_full": 0.483102,
+      "acc_choices_only": 0.191508,
+      "csli": 0.291594,
+      "leakage_flag": false
+    },
+    "t5-small": {
+      "acc_full": 0.241334,
+      "acc_choices_only": 0.233969,
+      "csli": 0.007366,
+      "leakage_flag": false
+    }
+  },
+  "metadata": {
+    "n_questions": 2308,
+    "n_models": 3,
+    "K": 4,
+    "threshold": 0.3,
+    "bootstrap_resamples": 1000,
+    "seed": 789685,
+    "test_split_seed": 789685,
+    "models": [
+      "tfidf",
+      "sbert",
+      "t5-small"
+    ]
+  }
+}
