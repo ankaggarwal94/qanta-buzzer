@@ -1,8 +1,9 @@
 {
   "panel_csli": {
-    "mean": 0.10615233333333333,
-    "ci_lower": 0.0921396591565569,
-    "ci_upper": 0.11973570190641249
+    "mean": 0.12117273252455227,
+    "ci_lower": 0.10629693818601964,
+    "ci_upper": 0.13533001155401503,
+    "mean_from_per_model_avg": 0.12117233333333333
   },
   "per_model": {
     "tfidf": {
@@ -18,9 +19,9 @@
       "leakage_flag": false
     },
     "t5-small": {
-      "acc_full": 0.241334,
-      "acc_choices_only": 0.233969,
-      "csli": 0.007366,
+      "acc_full": 0.271231,
+      "acc_choices_only": 0.218804,
+      "csli": 0.052426,
       "leakage_flag": false
     }
   },
@@ -30,6 +31,8 @@
     "K": 4,
     "threshold": 0.3,
     "bootstrap_resamples": 1000,
+    "bootstrap_method": "percentile",
+    "bootstrap_note": "Percentile-method bootstrap (not BCa). CI captures sampling variability over questions but not model selection uncertainty.",
     "seed": 789685,
     "test_split_seed": 789685,
     "models": [

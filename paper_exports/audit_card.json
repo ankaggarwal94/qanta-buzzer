@@ -2,13 +2,13 @@
   "metrics": [
     {
       "name": "CSLI (Choice-Set Leakage Index)",
-      "value": 0.10615233333333333,
-      "value_display": "0.1062",
-      "ci_lower": 0.0921396591565569,
-      "ci_upper": 0.11973570190641249,
+      "value": 0.12117273252455227,
+      "value_display": "0.1212",
+      "ci_lower": 0.10629693818601964,
+      "ci_upper": 0.13533001155401503,
       "threshold": 0.3,
       "threshold_criterion": "max(acc_choices_only) <= threshold",
-      "observed_criterion_value": 0.233969,
+      "observed_criterion_value": 0.230503,
       "direction": "warn_if_above",
       "verdict": "pass",
       "details": {
@@ -16,7 +16,7 @@
         "per_model_acc_choices_only": {
           "tfidf": 0.230503,
           "sbert": 0.191508,
-          "t5-small": 0.233969
+          "t5-small": 0.218804
         },
         "leakage_flags": {
           "tfidf": false,
@@ -67,7 +67,7 @@
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-26T09:30:03.211689+00:00",
+    "timestamp": "2026-05-26T18:07:46.585714+00:00",
     "threshold_source": "threshold_manifest.json"
   }
 }
