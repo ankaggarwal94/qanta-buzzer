@@ -272,6 +272,74 @@ def resolve_persisted_split_paths(base_dir: str | Path) -> dict[str, Path] | Non
     return None
 
 
+def iter_split_questions(
+    split_data: Any,
+    *,
+    source_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """Yield MC question dicts from a train/val/test split payload.
+
+    The on-disk shape of ``{train,val,test}_dataset.json`` depends on
+    which upstream producer ran last:
+
+    - ``qb_data.dataset_splits.save_splits`` (called by
+      ``scripts/fresh_split.py``) writes the wrapped form
+      ``{"metadata": {...}, "questions": [...]}``.
+    - ``scripts/build_mc_dataset.py`` writes the plain-list form via
+      ``save_json``.
+
+    Both shapes are valid producer outputs in this repo, so every
+    downstream consumer (``compute_csli.py``, ``compute_stopdff.py``,
+    ``compute_prefix_calibration.py``) must accept both. Before this
+    helper existed, ``compute_csli.py`` had an inline dual-shape check
+    (WR-05 fix) but the other two siblings still indexed
+    ``data["questions"]`` and would crash with
+    ``TypeError: list indices must be integers or slices, not str``
+    on the plain-list shape -- the cross-consumer gap Phase 02 IN-01
+    flagged.
+
+    Parameters
+    ----------
+    split_data : Any
+        Parsed JSON payload from a split dataset file. Either a
+        ``dict`` with a ``"questions"`` key (wrapped form) or a
+        ``list`` of MC question dicts (plain-list form).
+    source_path : str or Path or None
+        Path the payload was loaded from. Used only to make the
+        error message more actionable when the shape is unrecognized;
+        ``None`` is accepted for in-memory test payloads.
+
+    Returns
+    -------
+    list[dict]
+        The list of MC question dicts (with at minimum a ``"qid"``
+        field). Returned as a list (not a generator) so callers can
+        consume it multiple times -- ``set(...)`` immediately
+        followed by ``len(...)``, for example.
+
+    Raises
+    ------
+    RuntimeError
+        If ``split_data`` is neither a dict-with-questions nor a
+        plain list. Failing closed is preferred over silently
+        coercing an unknown shape (e.g., a dict that happens to
+        iterate over its keys would yield strings, not question
+        dicts).
+    """
+    if isinstance(split_data, dict) and "questions" in split_data:
+        return list(split_data["questions"])
+    if isinstance(split_data, list):
+        return list(split_data)
+    path_str = str(source_path) if source_path is not None else "<in-memory payload>"
+    raise RuntimeError(
+        f"Unrecognized shape for {path_str}: expected list "
+        f"or {{'questions': [...]}}; got {type(split_data).__name__}. "
+        "Producer mismatch: qb_data.dataset_splits.save_splits writes "
+        "the wrapped form; scripts/build_mc_dataset.py writes the "
+        "plain-list form. Both are accepted, but this payload is neither."
+    )
+
+
 def resolve_default_dataset_path(
     out_dir: str | Path,
     preferred_split: str,

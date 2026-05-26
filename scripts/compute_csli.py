@@ -773,26 +773,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     with open(test_path, "r") as f:
         test_data = json.load(f)
 
-    # WR-05: handle both producers' on-disk shapes for test_dataset.json:
-    #   - qb_data.dataset_splits.save_splits (called by fresh_split.py)
-    #     writes {"metadata": {...}, "questions": [...]}.
-    #   - scripts/build_mc_dataset.py writes a plain list of dicts.
-    # Re-running build_mc_dataset.py after fresh_split.py is the
-    # methodologically correct fix for WR-07's distractor contamination,
-    # but the prior consumer here only handled the wrapped shape and
-    # would have crashed with `TypeError: list indices must be integers`
-    # on the plain-list form. Both producers are accepted; an
-    # unrecognized shape raises rather than silently passing.
-    if isinstance(test_data, dict) and "questions" in test_data:
-        test_questions_iter = test_data["questions"]
-    elif isinstance(test_data, list):
-        test_questions_iter = test_data
-    else:
-        print(
-            f"ERROR: Unrecognized shape for {test_path}: expected list "
-            f"or {{'questions': [...]}}; got {type(test_data).__name__}",
-            file=sys.stderr,
+    # WR-05 / Iter2 IN-01: accept both on-disk shapes for
+    # test_dataset.json via the shared helper. See
+    # scripts/_common.iter_split_questions for the rationale; this
+    # call site was the original WR-05 fix and now uses the same
+    # helper that compute_stopdff.py and compute_prefix_calibration.py
+    # use, closing the cross-consumer gap.
+    from scripts._common import iter_split_questions
+
+    try:
+        test_questions_iter = iter_split_questions(
+            test_data, source_path=test_path
         )
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     # Extract test split qids

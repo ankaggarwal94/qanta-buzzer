@@ -477,8 +477,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     with open(test_path, "r") as f:
         test_data = json.load(f)
 
+    # Iter2 IN-01: accept both on-disk shapes for test_dataset.json.
+    # See scripts/_common.iter_split_questions for the rationale; the
+    # producer last-write determines whether the file is wrapped or
+    # a plain list and this consumer must handle both, matching the
+    # WR-05 fix already applied in compute_csli.py.
+    from scripts._common import iter_split_questions
+
+    try:
+        test_questions_iter = iter_split_questions(
+            test_data, source_path=test_path
+        )
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
     # Extract test qid set
-    test_qids = set(str(q["qid"]) for q in test_data["questions"])
+    test_qids = set(str(q["qid"]) for q in test_questions_iter)
 
     # Filter MC questions to test split
     mc_test = [q for q in mc_questions if str(q["qid"]) in test_qids]

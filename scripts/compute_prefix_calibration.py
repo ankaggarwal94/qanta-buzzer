@@ -421,9 +421,25 @@ def main(argv: Optional[list[str]] = None) -> int:
     with open(test_path, "r") as f:
         test_data = json.load(f)
 
+    # Iter2 IN-01: accept both on-disk shapes for val/test_dataset.json.
+    # See scripts/_common.iter_split_questions for the rationale; this
+    # closes the cross-consumer gap with compute_csli.py / compute_stopdff.py.
+    from scripts._common import iter_split_questions
+
+    try:
+        val_questions_iter = iter_split_questions(
+            val_data, source_path=val_path
+        )
+        test_questions_iter = iter_split_questions(
+            test_data, source_path=test_path
+        )
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
     # Extract qid sets
-    val_qids = set(str(q["qid"]) for q in val_data["questions"])
-    test_qids = set(str(q["qid"]) for q in test_data["questions"])
+    val_qids = set(str(q["qid"]) for q in val_questions_iter)
+    test_qids = set(str(q["qid"]) for q in test_questions_iter)
 
     # Filter MC questions by split
     mc_val = [q for q in mc_questions if str(q["qid"]) in val_qids]
