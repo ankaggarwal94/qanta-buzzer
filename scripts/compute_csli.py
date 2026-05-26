@@ -69,6 +69,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -121,10 +122,33 @@ DEFAULT_OUTPUT = PROJECT_ROOT / "paper_exports" / "csli.json"
 DEFAULT_MODELS = "tfidf,sbert,t5-small"
 THRESHOLD_MANIFEST = PROJECT_ROOT / "threshold_manifest.json"
 
-# Lazy-loaded model caches
+# Lazy-loaded model caches.
+#
+# Iter1 IN-03: each cache is protected by a dedicated threading.Lock
+# so concurrent callers (downstream Phase 4/5/6 orchestrators that
+# import these helpers from multiple worker threads) do not race the
+# non-atomic test-and-set on the global. The double-checked locking
+# pattern (fast-path None check without lock + re-check inside the
+# lock) keeps the hot path lock-free once the cache is warm.
+#
+# Each model/cache gets its own lock so that loading T5 does not block
+# a concurrent thread loading SBERT (the locks would serialize all
+# model loads pointlessly if there were a single lock). The prior
+# loaders intentionally acquire only their own lock and then call
+# _get_sbert_model() -- the nested order is always prior_lock then
+# model_lock and never reversed, so there is no deadlock potential.
+#
+# Prefers threading.Lock over functools.lru_cache because (a) the
+# cached objects are heavy (SBERT model, T5 model, ~14k-row TF-IDF
+# matrix) and the explicit lock makes the protected region obvious
+# to readers, and (b) lru_cache does not provide an in-process
+# "invalidate" hook -- which the prior loaders need when
+# _set_answer_prior_train_path is re-called with a new path.
 _SBERT_MODEL = None
 _T5_MODEL = None
 _T5_TOKENIZER = None
+_SBERT_LOCK = threading.Lock()
+_T5_LOCK = threading.Lock()  # protects BOTH _T5_MODEL and _T5_TOKENIZER together
 
 # Iter1 IN-01 ANSWER-PRIOR CACHES.
 #
@@ -141,6 +165,8 @@ _T5_TOKENIZER = None
 _ANSWER_PRIOR_TRAIN_PATH: Optional[Path] = None
 _TFIDF_ANSWER_PRIOR = None  # (vectorizer, centroid_vector)
 _SBERT_ANSWER_PRIOR = None  # centroid embedding (np.ndarray)
+_TFIDF_PRIOR_LOCK = threading.Lock()
+_SBERT_PRIOR_LOCK = threading.Lock()
 
 
 def bootstrap_ci(
@@ -243,25 +269,47 @@ def bootstrap_ci(
 
 
 def _get_sbert_model():
-    """Lazy-load SBERT model (all-MiniLM-L6-v2)."""
+    """Lazy-load SBERT model (all-MiniLM-L6-v2). Thread-safe (Iter1 IN-03).
+
+    Uses double-checked locking: the fast-path None check stays
+    lock-free once the cache is warm; the slow path acquires
+    _SBERT_LOCK and re-checks before constructing.
+    """
     global _SBERT_MODEL
     if _SBERT_MODEL is None:
-        from sentence_transformers import SentenceTransformer
-        print("[CSLI] Loading SBERT model (all-MiniLM-L6-v2)...", flush=True)
-        _SBERT_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+        with _SBERT_LOCK:
+            if _SBERT_MODEL is None:
+                from sentence_transformers import SentenceTransformer
+                print(
+                    "[CSLI] Loading SBERT model (all-MiniLM-L6-v2)...",
+                    flush=True,
+                )
+                _SBERT_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
     return _SBERT_MODEL
 
 
 def _get_t5_model():
-    """Lazy-load T5-small model and tokenizer."""
+    """Lazy-load T5-small model and tokenizer. Thread-safe (Iter1 IN-03).
+
+    Loads _T5_MODEL and _T5_TOKENIZER atomically together under a
+    single _T5_LOCK -- a partial state with model set but tokenizer
+    not yet assigned would crash a concurrent reader.
+    """
     global _T5_MODEL, _T5_TOKENIZER
     if _T5_MODEL is None:
-        import torch
-        from transformers import T5ForConditionalGeneration, T5Tokenizer
-        print("[CSLI] Loading T5-small model...", flush=True)
-        _T5_TOKENIZER = T5Tokenizer.from_pretrained("t5-small")
-        _T5_MODEL = T5ForConditionalGeneration.from_pretrained("t5-small")
-        _T5_MODEL.eval()
+        with _T5_LOCK:
+            if _T5_MODEL is None:
+                from transformers import T5ForConditionalGeneration, T5Tokenizer
+                print("[CSLI] Loading T5-small model...", flush=True)
+                tokenizer = T5Tokenizer.from_pretrained("t5-small")
+                model = T5ForConditionalGeneration.from_pretrained("t5-small")
+                model.eval()
+                # Assign tokenizer first, then model. The
+                # ``_T5_MODEL is None`` check above is the gate, so
+                # model must be the last write -- otherwise a reader
+                # could observe model set + tokenizer still None.
+                _T5_TOKENIZER = tokenizer
+                _T5_MODEL = model
     return _T5_MODEL, _T5_TOKENIZER
 
 
@@ -279,6 +327,13 @@ def _set_answer_prior_train_path(path: Path) -> None:
     prior so a subsequent in-process run with a different path
     rebuilds the prior cleanly.
 
+    Thread-safe (Iter1 IN-03): acquires both prior locks so the
+    invalidation is atomic with respect to concurrent readers. The
+    locks are acquired in a consistent order (TFIDF then SBERT) to
+    match the no-cross-lock convention enforced elsewhere in this
+    module (the only locks that may be held simultaneously are
+    prior_lock followed by the corresponding model_lock).
+
     Parameters
     ----------
     path : Path
@@ -287,9 +342,10 @@ def _set_answer_prior_train_path(path: Path) -> None:
         ``iter_split_questions`` helper).
     """
     global _ANSWER_PRIOR_TRAIN_PATH, _TFIDF_ANSWER_PRIOR, _SBERT_ANSWER_PRIOR
-    _ANSWER_PRIOR_TRAIN_PATH = path
-    _TFIDF_ANSWER_PRIOR = None
-    _SBERT_ANSWER_PRIOR = None
+    with _TFIDF_PRIOR_LOCK, _SBERT_PRIOR_LOCK:
+        _ANSWER_PRIOR_TRAIN_PATH = path
+        _TFIDF_ANSWER_PRIOR = None
+        _SBERT_ANSWER_PRIOR = None
 
 
 def _load_answer_prior_texts() -> list[str]:
@@ -357,6 +413,11 @@ def _load_answer_prior_texts() -> list[str]:
 def _get_tfidf_answer_prior():
     """Lazy-load the TF-IDF answer-prior (vectorizer + centroid vector).
 
+    Thread-safe (Iter1 IN-03): double-checked locking on
+    _TFIDF_PRIOR_LOCK. The fitted vectorizer and centroid are
+    assigned together as a single tuple, so a reader either sees
+    None or sees a fully-formed (vectorizer, centroid) pair.
+
     Builds a TF-IDF vectorizer over the training-split answer corpus
     and returns ``(vectorizer, centroid_vector)``. The centroid is the
     mean of the TF-IDF representations of the prior corpus and serves
@@ -371,28 +432,35 @@ def _get_tfidf_answer_prior():
     """
     global _TFIDF_ANSWER_PRIOR
     if _TFIDF_ANSWER_PRIOR is None:
-        from sklearn.feature_extraction.text import TfidfVectorizer
+        with _TFIDF_PRIOR_LOCK:
+            if _TFIDF_ANSWER_PRIOR is None:
+                from sklearn.feature_extraction.text import TfidfVectorizer
 
-        texts = _load_answer_prior_texts()
-        print(
-            f"[CSLI] Building TF-IDF answer prior from "
-            f"{len(texts)} train-split answers (Iter1 IN-01)...",
-            flush=True,
-        )
-        vectorizer = TfidfVectorizer()
-        prior_matrix = vectorizer.fit_transform(texts)
-        # Centroid is the mean TF-IDF vector. np.asarray is needed
-        # because csr_matrix.mean(axis=0) returns a np.matrix subclass
-        # which is deprecated and produces warnings; np.asarray casts
-        # to a plain ndarray of shape (1, n_features) -- exactly what
-        # cosine_similarity expects as a row vector.
-        centroid = np.asarray(prior_matrix.mean(axis=0))
-        _TFIDF_ANSWER_PRIOR = (vectorizer, centroid)
+                texts = _load_answer_prior_texts()
+                print(
+                    f"[CSLI] Building TF-IDF answer prior from "
+                    f"{len(texts)} train-split answers (Iter1 IN-01)...",
+                    flush=True,
+                )
+                vectorizer = TfidfVectorizer()
+                prior_matrix = vectorizer.fit_transform(texts)
+                # Centroid is the mean TF-IDF vector. np.asarray is needed
+                # because csr_matrix.mean(axis=0) returns a np.matrix subclass
+                # which is deprecated and produces warnings; np.asarray casts
+                # to a plain ndarray of shape (1, n_features) -- exactly what
+                # cosine_similarity expects as a row vector.
+                centroid = np.asarray(prior_matrix.mean(axis=0))
+                _TFIDF_ANSWER_PRIOR = (vectorizer, centroid)
     return _TFIDF_ANSWER_PRIOR
 
 
 def _get_sbert_answer_prior() -> np.ndarray:
     """Lazy-load the SBERT answer-prior (centroid embedding).
+
+    Thread-safe (Iter1 IN-03): double-checked locking on
+    _SBERT_PRIOR_LOCK. Internally calls _get_sbert_model() (which
+    acquires _SBERT_LOCK); the lock-nesting order is always
+    prior_lock -> model_lock and never reversed, so no deadlock.
 
     Encodes the training-split answer corpus with SBERT and returns
     the mean embedding as a 2-D ndarray of shape (1, embed_dim). This
@@ -408,16 +476,20 @@ def _get_sbert_answer_prior() -> np.ndarray:
     """
     global _SBERT_ANSWER_PRIOR
     if _SBERT_ANSWER_PRIOR is None:
-        texts = _load_answer_prior_texts()
-        model = _get_sbert_model()
-        print(
-            f"[CSLI] Building SBERT answer prior from "
-            f"{len(texts)} train-split answers (Iter1 IN-01)...",
-            flush=True,
-        )
-        embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
-        centroid = embeddings.mean(axis=0, keepdims=True)
-        _SBERT_ANSWER_PRIOR = centroid
+        with _SBERT_PRIOR_LOCK:
+            if _SBERT_ANSWER_PRIOR is None:
+                texts = _load_answer_prior_texts()
+                model = _get_sbert_model()
+                print(
+                    f"[CSLI] Building SBERT answer prior from "
+                    f"{len(texts)} train-split answers (Iter1 IN-01)...",
+                    flush=True,
+                )
+                embeddings = model.encode(
+                    texts, convert_to_numpy=True, show_progress_bar=False
+                )
+                centroid = embeddings.mean(axis=0, keepdims=True)
+                _SBERT_ANSWER_PRIOR = centroid
     return _SBERT_ANSWER_PRIOR
 
 
