@@ -554,9 +554,16 @@ def compute_panel_csli(
     dict
         Panel CSLI summary with per-model and aggregate statistics.
     """
-    # Compute panel mean CSLI
+    # Compute panel mean CSLI.
+    # WR-09: the displayed `mean` is the unrounded per-question mean
+    # returned by bootstrap_ci (the population the CI is sampling
+    # from). The per-model average (panel_mean_from_models) is
+    # rounded at 6 dp upstream and is exposed only as a diagnostic
+    # cross-check, so the auditor can verify
+    # `mean` ≈ `mean_from_per_model_avg` up to rounding without two
+    # competing definitions of the "panel mean".
     csli_values = [results[m]["csli"] for m in model_list]
-    panel_mean = float(np.mean(csli_values))
+    panel_mean_from_models = float(np.mean(csli_values))
 
     # Bootstrap CI on per-question CSLI array
     mean_ci, ci_lower, ci_upper = bootstrap_ci(
@@ -581,9 +588,10 @@ def compute_panel_csli(
 
     return {
         "panel_csli": {
-            "mean": panel_mean,
+            "mean": mean_ci,
             "ci_lower": ci_lower,
             "ci_upper": ci_upper,
+            "mean_from_per_model_avg": panel_mean_from_models,
         },
         "per_model": results,
         "metadata": {
