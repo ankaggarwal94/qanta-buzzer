@@ -22,6 +22,24 @@ guards do not interfere with normal usage.
 
 from __future__ import annotations
 
+import sys
+
+# DATA-05 guard interaction (see WR-01):
+# scripts.compute_csli's module-level _assert_no_controls_import()
+# fires whenever ``evaluation.controls`` is already in
+# ``sys.modules`` at our import time. Other test files transitively
+# load evaluation.controls via ``scripts/evaluate_all.py`` (line 49)
+# during pytest collection -- ``tests/test_pipeline_split_contracts.py``
+# is the specific path in the focused-test suite. Pytest collects
+# test files in CLI / alphabetical order, so the contamination
+# depends on what was collected before us. Drop the offending
+# module (it will be re-imported lazily on next use by anything
+# that needs it) and any stale ``scripts.compute_csli`` cache so
+# the next import sees a clean state. Local to this test file;
+# does not modify shared conftest.py.
+sys.modules.pop("evaluation.controls", None)
+sys.modules.pop("scripts.compute_csli", None)
+
 import numpy as np
 import pytest
 

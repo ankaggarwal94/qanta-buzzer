@@ -25,6 +25,20 @@ the return code is 2 for several empty-equivalent inputs.
 
 from __future__ import annotations
 
+import sys
+
+# DATA-05 guard interaction (see WR-01):
+# scripts.compute_csli's module-level _assert_no_controls_import()
+# fires whenever ``evaluation.controls`` is already in
+# ``sys.modules`` at our import time. Other test files transitively
+# load evaluation.controls via ``scripts/evaluate_all.py`` (line 49)
+# during pytest collection. Drop the offending module so the next
+# import sees a clean state. Local to this test file; does not
+# modify shared conftest.py. See test_bootstrap_ci_validation.py
+# for the same pattern with a longer note.
+sys.modules.pop("evaluation.controls", None)
+sys.modules.pop("scripts.compute_csli", None)
+
 import pytest
 
 from scripts.compute_csli import main as compute_csli_main
