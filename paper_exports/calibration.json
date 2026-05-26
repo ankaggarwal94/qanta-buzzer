@@ -31,6 +31,63 @@
   "max_ece": 0.026117,
   "threshold": 0.1,
   "gate_verdict": "pass",
+  "mc_coverage": {
+    "val": {
+      "test_dataset_qids": 2142,
+      "mc_questions_total": 14437,
+      "matched_test_mc_questions": 2142,
+      "matched_test_mc_qids": 2142,
+      "missing_test_qids": 0,
+      "coverage_rate": 1.0,
+      "threshold": 0.98,
+      "passed": true,
+      "overridden": false,
+      "override_flag": "--allow-incomplete-mc-coverage"
+    },
+    "test": {
+      "test_dataset_qids": 2258,
+      "mc_questions_total": 14437,
+      "matched_test_mc_questions": 2258,
+      "matched_test_mc_qids": 2258,
+      "missing_test_qids": 0,
+      "coverage_rate": 1.0,
+      "threshold": 0.98,
+      "passed": true,
+      "overridden": false,
+      "override_flag": "--allow-incomplete-mc-coverage"
+    }
+  },
+  "mc_retention_gate": {
+    "val": {
+      "applies": true,
+      "split": "val",
+      "threshold": 0.8,
+      "retention_rate": 0.7048371174728529,
+      "raw_count": 3039,
+      "retained_count": 2142,
+      "dropped_count": 897,
+      "passed": false,
+      "overridden": true,
+      "override_flag": "--allow-low-mc-retention"
+    },
+    "test": {
+      "applies": true,
+      "split": "test",
+      "threshold": 0.8,
+      "retention_rate": 0.7274484536082474,
+      "raw_count": 3104,
+      "retained_count": 2258,
+      "dropped_count": 846,
+      "passed": false,
+      "overridden": true,
+      "override_flag": "--allow-low-mc-retention"
+    }
+  },
+  "mc_build_metadata": {
+    "status": "loaded",
+    "source_path": "/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/data/processed/build_metadata.json",
+    "source_sha256": "70871984390f252c0a06a5a2c9a2d3b4337f10ad48c87583ebec215d5c0c9c6e"
+  },
   "metadata": {
     "seed": 789685,
     "n_val": 2142,
@@ -43,6 +100,6 @@
       "mid": "[0.33, 0.66)",
       "late": "[0.66, 1.0]"
     },
-    "timestamp": "2026-05-26T22:34:22.452870+00:00"
+    "timestamp": "2026-05-26T23:12:20.575950+00:00"
   }
 }
