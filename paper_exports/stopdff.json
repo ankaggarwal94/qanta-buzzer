@@ -15,16 +15,28 @@
   "ceiling_effect_detected": true,
   "reachability": {
     "early": {
+      "max_calibrated_probability": 0.510149,
+      "max_calibrated_raw_score": 1.0,
+      "calibrated_at_sim_1": 0.510149,
+      "calibrated_at_sim_neg_1": 0.106708,
       "max_calibrated_at_sim_1": 0.510149,
       "threshold_reachable": false,
       "required_raw_score": 1.745073
     },
     "mid": {
+      "max_calibrated_probability": 0.410575,
+      "max_calibrated_raw_score": 1.0,
+      "calibrated_at_sim_1": 0.410575,
+      "calibrated_at_sim_neg_1": 0.267807,
       "max_calibrated_at_sim_1": 0.410575,
       "threshold_reachable": false,
       "required_raw_score": 4.753208
     },
     "late": {
+      "max_calibrated_probability": 0.818839,
+      "max_calibrated_raw_score": 1.0,
+      "calibrated_at_sim_1": 0.818839,
+      "calibrated_at_sim_neg_1": 0.019206,
       "max_calibrated_at_sim_1": 0.818839,
       "threshold_reachable": true,
       "required_raw_score": 0.756985
@@ -39,6 +51,6 @@
     "stop_threshold": 0.7,
     "metric_type": "diagnostic_only",
     "stopping_policy": "myopic_threshold",
-    "timestamp": "2026-05-26T19:00:53.825442+00:00"
+    "timestamp": "2026-05-26T22:13:30.825170+00:00"
   }
 }

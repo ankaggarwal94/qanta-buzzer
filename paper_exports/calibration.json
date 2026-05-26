@@ -4,19 +4,25 @@
       "ece": 0.025933,
       "n_samples": 2553,
       "platt_coef": 1.08271,
-      "platt_intercept": -1.04211
+      "platt_intercept": -1.04211,
+      "platt_model_type": "logistic",
+      "platt_fallback_reason": null
     },
     "mid": {
       "ece": 0.005491,
       "n_samples": 3316,
       "platt_coef": 0.322094,
-      "platt_intercept": -0.683682
+      "platt_intercept": -0.683682,
+      "platt_model_type": "logistic",
+      "platt_fallback_reason": null
     },
     "late": {
       "ece": 0.026117,
       "n_samples": 5255,
       "platt_coef": 2.720828,
-      "platt_intercept": -1.212329
+      "platt_intercept": -1.212329,
+      "platt_model_type": "logistic",
+      "platt_fallback_reason": null
     }
   },
   "max_ece": 0.026117,
@@ -34,6 +40,6 @@
       "mid": "[0.33, 0.66)",
       "late": "[0.66, 1.0]"
     },
-    "timestamp": "2026-05-26T18:56:01.443329+00:00"
+    "timestamp": "2026-05-26T22:05:02.706890+00:00"
   }
 }
