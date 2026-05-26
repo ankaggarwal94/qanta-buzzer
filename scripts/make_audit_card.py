@@ -67,7 +67,7 @@ def _load_json(path: Path) -> dict:
     """
     if not path.exists():
         raise FileNotFoundError(f"Required file not found: {path}")
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -458,7 +458,7 @@ def _write_audit_card_json(
     if data_provenance is not None:
         card["data_provenance"] = data_provenance
     out_path = _PAPER_EXPORTS / "audit_card.json"
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump(card, f, indent=2)
     return out_path
 
@@ -515,7 +515,7 @@ def _write_audit_card_md(
         "",
     ])
     out_path = _PAPER_EXPORTS / "audit_card.md"
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     return out_path
 

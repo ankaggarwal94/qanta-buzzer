@@ -139,18 +139,32 @@ def project_relative(path: str | Path) -> str:
     author's absolute home directory. Falls back to the absolute path
     string when the file lives outside the repository.
 
+    Non-absolute inputs are anchored to ``PROJECT_ROOT`` BEFORE
+    resolution so that repo-relative arguments like
+    ``"data/processed/mc_dataset.json"`` stay repo-relative regardless
+    of the caller's CWD (common in automation that invokes scripts from
+    outside the repo). Without this anchoring, ``Path(path).resolve()``
+    would resolve the relative path against CWD, producing a
+    machine-specific absolute path that would fail the
+    ``relative_to(PROJECT_ROOT)`` check and leak through the
+    provenance fallback.
+
     Parameters
     ----------
     path : str or Path
-        Path to convert.
+        Path to convert. Absolute paths are resolved as-is; relative
+        paths are anchored to ``PROJECT_ROOT`` first.
 
     Returns
     -------
     str
-        Repo-relative path (forward-slash) when ``path`` is inside
-        ``PROJECT_ROOT``; otherwise the resolved absolute path.
+        Repo-relative path (forward-slash) when the resolved path is
+        inside ``PROJECT_ROOT``; otherwise the resolved absolute path.
     """
-    p = Path(path).resolve()
+    raw = Path(path)
+    if not raw.is_absolute():
+        raw = PROJECT_ROOT / raw
+    p = raw.resolve()
     try:
         return p.relative_to(PROJECT_ROOT).as_posix()
     except ValueError:

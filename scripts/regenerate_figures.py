@@ -69,6 +69,22 @@ def _generate_audit_table(
     """Generate a LaTeX booktabs table with the three audit metrics.
 
     Reads verdicts dynamically from audit_card.json rather than hardcoding.
+
+    CSLI is rendered as TWO rows to avoid mixing different quantities:
+
+    * "Max choices-only accuracy" -- the gate criterion (``observed_criterion_value``
+      in audit_card.json) compared against ``csli_threshold``. This is the
+      quantity the CSLI gate actually evaluates: ``max(acc_choices_only) <= 0.30``
+      (= 1/K + 0.05), per ``compute_csli.py`` metadata and
+      ``threshold_manifest.json``. The verdict in this row is the CSLI gate verdict.
+    * "Panel CSLI (mean gap)" -- the descriptive panel summary
+      (``panel_csli.mean`` = mean of per-model ``acc_full - acc_choices_only``)
+      with bootstrap CI. The threshold column is rendered as ``--`` because the
+      frozen gate is NOT on this gap value (see ``threshold_deprecated_note``
+      in ``csli.json``). Splitting the row prevents the LaTeX output from
+      presenting a threshold comparison between unrelated quantities, which
+      could misstate audit conclusions (e.g., a WARN verdict with a small
+      panel mean appearing to sit comfortably "below threshold").
     """
     # Extract values
     csli_mean = csli_data["panel_csli"]["mean"]
@@ -89,6 +105,21 @@ def _generate_audit_table(
     cal_threshold = float(cal_metric.get("threshold", cal_data["threshold"]))
     stop_threshold = float(stop_metric.get("threshold", stopdff_data["threshold"]))
 
+    # The CSLI gate's observed criterion value is max(acc_choices_only),
+    # which is what ``csli_threshold`` actually compares against. The
+    # audit card exposes this as ``observed_criterion_value``; fall back
+    # to recomputing from per-model data on older audit cards.
+    observed_csli_criterion = csli_metric.get("observed_criterion_value")
+    if observed_csli_criterion is None:
+        per_model = csli_data.get("per_model", {})
+        if per_model:
+            observed_csli_criterion = max(
+                m["acc_choices_only"] for m in per_model.values()
+            )
+        else:
+            observed_csli_criterion = float("nan")
+    observed_csli_criterion = float(observed_csli_criterion)
+
     # Build LaTeX
     lines = [
         r"% Requires booktabs package: \usepackage{booktabs}",
@@ -96,7 +127,12 @@ def _generate_audit_table(
         r"\toprule",
         r"Metric & Value (95\% CI) & Threshold & Verdict \\",
         r"\midrule",
-        f"CSLI (panel mean) & {csli_mean:.4f} [{csli_ci_lo:.4f}, {csli_ci_hi:.4f}] & {csli_threshold:.2f} & \\textsc{{{csli_verdict}}} \\\\",
+        # CSLI gate row: the quantity the threshold actually applies to.
+        f"Max choices-only accuracy & {observed_csli_criterion:.4f} & {csli_threshold:.2f} & \\textsc{{{csli_verdict}}} \\\\",
+        # CSLI descriptive row: panel gap with CI, no threshold comparison
+        # (``--`` in Threshold and Verdict columns) because the frozen gate
+        # is NOT on this quantity.
+        f"Panel CSLI (mean gap) & {csli_mean:.4f} [{csli_ci_lo:.4f}, {csli_ci_hi:.4f}] & -- & -- \\\\",
         f"Calibration ECE (max bucket) & {max_ece:.4f} & {cal_threshold:.2f} & \\textsc{{{cal_verdict}}} \\\\",
         f"StopDFF (median abs shift) & {median_shift:.1f} & {stop_threshold:.1f} & \\textsc{{{stop_verdict}}} \\\\",
         r"\bottomrule",
@@ -111,15 +147,41 @@ def _generate_audit_table(
 
 
 def _generate_csli_panel(csli_data: dict) -> Path:
-    """Generate a bar chart showing per-model CSLI values with threshold line."""
+    """Generate a bar chart showing per-model CSLI gap values with panel mean.
+
+    Does NOT draw the choices-only leakage gate (``csli.json`` metadata
+    ``threshold``) as a horizontal line on this chart, because that gate is
+    a threshold on ``max(acc_choices_only)`` (per ``compute_csli.py``
+    metadata: ``threshold_metric == "choices_only_accuracy"``,
+    ``threshold_criterion == "acc_choices_only > choices_only_accuracy_threshold"``),
+    NOT a threshold on per-model CSLI gap values
+    (``acc_full - acc_choices_only``) or ``panel_csli.mean``. Reusing it
+    as a reference line in a CSLI gap bar chart would visually imply
+    pass/fail against the wrong metric. A zero reference line is shown
+    instead -- gap > 0 means a model uses question content beyond the
+    choices alone; gap < 0 means choices-only beats the full-question
+    condition.
+
+    Uses explicit numeric x positions for both bars and the panel-mean
+    marker so the two share a single coordinate system (mixing
+    categorical ``ax.bar(strings, ...)`` with numeric tick positions
+    can misalign bars/labels across Matplotlib versions).
+
+    Y-axis limits are derived from both min and max plotted values
+    (including CI bounds) with margin, NOT clamped to zero. Per-model
+    CSLI gap values can legitimately be negative (e.g., TF-IDF in
+    ``paper_exports/csli.json`` where ``acc_choices_only > acc_full``);
+    a hard ``ylim=(0, ...)`` would silently clip those bars and flip
+    the visual sign of the metric.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import numpy as np
 
     per_model = csli_data["per_model"]
     models = list(per_model.keys())
     csli_values = [per_model[m]["csli"] for m in models]
-    threshold = csli_data["metadata"]["threshold"]
     panel_mean = csli_data["panel_csli"]["mean"]
     ci_lower = csli_data["panel_csli"]["ci_lower"]
     ci_upper = csli_data["panel_csli"]["ci_upper"]
@@ -127,16 +189,23 @@ def _generate_csli_panel(csli_data: dict) -> Path:
     # Clean academic style
     fig, ax = plt.subplots(figsize=(5, 3.5))
 
-    # Bar chart
+    # Explicit numeric x positions so bars and the panel-mean marker
+    # share one coordinate system (avoids Matplotlib's categorical vs.
+    # numeric axis quirks).
+    x = np.arange(len(models))
+    mean_x = float(len(models))  # Position to the right of bars
+
+    # Bar chart with dynamic-length color palette (handles 1+ models)
     palette = ["#4878A8", "#6AAE6A", "#D97B3F"]
     bar_colors = [palette[i % len(palette)] for i in range(len(models))]
-    ax.bar(models, csli_values, color=bar_colors, width=0.6, edgecolor="black", linewidth=0.5)
+    ax.bar(x, csli_values, color=bar_colors, width=0.6, edgecolor="black", linewidth=0.5)
 
-    # Threshold line
-    ax.axhline(y=threshold, color="red", linestyle="--", linewidth=1.2, label=f"Threshold ({threshold})")
+    # Zero reference line: clarifies the sign of the CSLI gap.
+    # (Deliberately NOT plotting csli.json metadata.threshold -- that is
+    # the choices-only leakage gate, not a threshold on the gap.)
+    ax.axhline(y=0.0, color="gray", linestyle=":", linewidth=1.0, label="Zero (gap = 0)")
 
     # Panel mean with CI error bar
-    mean_x = len(models)  # Position to the right of bars
     ax.errorbar(
         mean_x, panel_mean,
         yerr=[[panel_mean - ci_lower], [ci_upper - panel_mean]],
@@ -145,11 +214,19 @@ def _generate_csli_panel(csli_data: dict) -> Path:
     )
 
     # Formatting
-    ax.set_xticks(list(range(len(models))) + [mean_x])
+    ax.set_xticks(list(x) + [mean_x])
     ax.set_xticklabels(models + ["Panel\nmean"], fontsize=9)
-    ax.set_ylabel("CSLI", fontsize=10)
+    ax.set_ylabel("CSLI gap (acc_full - acc_choices_only)", fontsize=10)
     ax.set_title("Choice-Set Leakage Index by Model", fontsize=11)
-    ax.set_ylim(0, max(threshold + 0.05, max(csli_values) + 0.05))
+    # Y-limits cover both negative and positive values plus CI bounds,
+    # with a small margin. Never hard-clamp at zero (would clip negative
+    # per-model CSLI gaps and misreport model behavior).
+    plotted_values = list(csli_values) + [ci_lower, ci_upper, 0.0]
+    y_min = min(plotted_values)
+    y_max = max(plotted_values)
+    y_span = y_max - y_min if y_max > y_min else 1.0
+    margin = 0.05 * y_span if y_span > 0 else 0.05
+    ax.set_ylim(y_min - margin, y_max + margin)
     ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -189,10 +266,16 @@ def main() -> int:
     print()
 
     if args.dry_run:
+        # Must enumerate every input the non-dry-run path loads (see
+        # ``_load_json`` calls in ``main()`` below). Omitting any of these
+        # makes the dry-run plan misleading -- e.g., earlier versions left
+        # off audit_card.json and operators could not tell from --dry-run
+        # that it was a hard dependency.
         print("[DRY-RUN] Would load:")
         print(f"  - {_PAPER_EXPORTS / 'csli.json'}")
         print(f"  - {_PAPER_EXPORTS / 'calibration.json'}")
         print(f"  - {_PAPER_EXPORTS / 'stopdff.json'}")
+        print(f"  - {_PAPER_EXPORTS / 'audit_card.json'}")
         print()
         print("[DRY-RUN] Would generate:")
         print(f"  - {_PAPER_EXPORTS / 'audit_table.tex'}")
