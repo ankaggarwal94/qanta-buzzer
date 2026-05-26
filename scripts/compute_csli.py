@@ -309,10 +309,23 @@ def _score_sbert_full(question: str, options: list[str]) -> int:
 
 
 def _score_t5_choices_only(options: list[str]) -> int:
-    """T5-small choices-only: select option with highest generation likelihood.
+    """T5-small choices-only: pick the option with highest generation likelihood.
 
-    Constructs input without question text and scores each option by
-    cross-entropy loss (lower loss = higher likelihood = predicted answer).
+    Standard MC scoring with T5: input is a neutral prompt (no question
+    text and no other options visible in the input), target is just the
+    option text. Lower mean per-token cross-entropy = higher likelihood
+    = predicted answer.
+
+    WR-06 rewrite: the prior implementation put ALL options into the
+    input AND repeated the option with a fixed "A: "/"B: " prefix in
+    the target. That collapsed the discriminative signal -- the model
+    was being asked to score how well it could reproduce a substring
+    already present in its input, and the noise-free label prefix
+    diluted the option-specific loss proportional to (prefix tokens /
+    total target tokens). Net effect: T5's choices-only accuracy sat
+    near chance not because the options were leakage-free, but because
+    the scorer was too noisy to detect leakage, dampening T5's panel
+    contribution.
 
     Parameters
     ----------
@@ -327,31 +340,33 @@ def _score_t5_choices_only(options: list[str]) -> int:
     import torch
 
     model, tokenizer = _get_t5_model()
-    labels = ["A", "B", "C", "D"]
-    input_text = "question: Which is most likely correct? " + " ".join(
-        f"{labels[i]}: {opt}" for i, opt in enumerate(options)
-    )
-
     input_ids = tokenizer(
-        input_text, return_tensors="pt", max_length=512, truncation=True
+        "Which of the following is most likely correct?",
+        return_tensors="pt",
+        max_length=64,
+        truncation=True,
     ).input_ids
 
     losses = []
     with torch.no_grad():
-        for i, opt in enumerate(options):
-            target_text = f"{labels[i]}: {opt}"
+        for opt in options:
             target_ids = tokenizer(
-                target_text, return_tensors="pt", max_length=128, truncation=True
+                opt, return_tensors="pt", max_length=128, truncation=True
             ).input_ids
             outputs = model(input_ids=input_ids, labels=target_ids)
             losses.append(outputs.loss.item())
 
-    # Lowest loss = highest likelihood
     return int(np.argmin(losses))
 
 
 def _score_t5_full(question: str, options: list[str]) -> int:
-    """T5-small full: select option with highest generation likelihood given question.
+    """T5-small full: pick the option with highest generation likelihood given question.
+
+    Standard MC scoring with T5: input is "question: <question>" (no
+    option labels in the input), target is just the option text. Lower
+    mean per-token cross-entropy = higher likelihood = predicted answer.
+
+    WR-06 rewrite: see _score_t5_choices_only for the same rationale.
 
     Parameters
     ----------
@@ -368,21 +383,18 @@ def _score_t5_full(question: str, options: list[str]) -> int:
     import torch
 
     model, tokenizer = _get_t5_model()
-    labels = ["A", "B", "C", "D"]
-    input_text = "question: " + question + " " + " ".join(
-        f"{labels[i]}: {opt}" for i, opt in enumerate(options)
-    )
-
     input_ids = tokenizer(
-        input_text, return_tensors="pt", max_length=512, truncation=True
+        f"question: {question}",
+        return_tensors="pt",
+        max_length=512,
+        truncation=True,
     ).input_ids
 
     losses = []
     with torch.no_grad():
-        for i, opt in enumerate(options):
-            target_text = f"{labels[i]}: {opt}"
+        for opt in options:
             target_ids = tokenizer(
-                target_text, return_tensors="pt", max_length=128, truncation=True
+                opt, return_tensors="pt", max_length=128, truncation=True
             ).input_ids
             outputs = model(input_ids=input_ids, labels=target_ids)
             losses.append(outputs.loss.item())
