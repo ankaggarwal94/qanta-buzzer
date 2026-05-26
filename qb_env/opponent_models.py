@@ -47,14 +47,14 @@ class OpponentBuzzModel(Protocol):
         float
             P(opponent buzzed before step_idx), in [0, 1].
         """
-        ...
+        raise NotImplementedError
 
     def prob_survive_to_step(self, question: MCQuestion, step_idx: int) -> float:
         """Probability that the opponent has NOT buzzed by *step_idx*.
 
         Complement of :meth:`prob_buzzed_before_step`.
         """
-        ...
+        raise NotImplementedError
 
 
 class LogisticOpponentModel:
@@ -116,13 +116,14 @@ class EmpiricalHistogramOpponentModel:
     ) -> None:
         self.fallback = fallback or LogisticOpponentModel()
         self._global_cdf: np.ndarray | None = None
-        # Keyed by (qid, fingerprint of human_buzz_positions). Including the
-        # fingerprint defends against two MCQuestion instances that share a
+        # Keyed by (qid, normalized human_buzz_positions). Including the
+        # full tuple defends against two MCQuestion instances that share a
         # qid but carry different buzz histograms (e.g., refreshed datasets,
         # tournament-duplicate qids with edited metadata, or in-place
-        # mutation of the field) — without it, the second instance would
-        # silently reuse the first instance's stale CDF.
-        self._per_question_cdf_cache: dict[tuple[str, int], np.ndarray] = {}
+        # mutation of the field). Do not store hash(positions) here:
+        # distinct histograms can collide to the same hash int, whereas the
+        # tuple key preserves equality disambiguation.
+        self._per_question_cdf_cache: dict[tuple[str, tuple[tuple[int, int], ...]], np.ndarray] = {}
         if global_positions:
             self._global_cdf = self._build_cdf(global_positions)
 
@@ -161,9 +162,10 @@ class EmpiricalHistogramOpponentModel:
 
     def prob_buzzed_before_step(self, question: MCQuestion, step_idx: int) -> float:
         if question.human_buzz_positions:
+            positions_key = tuple(tuple(p) for p in question.human_buzz_positions)
             cache_key = (
                 question.qid,
-                hash(tuple(tuple(p) for p in question.human_buzz_positions)),
+                positions_key,
             )
             if cache_key not in self._per_question_cdf_cache:
                 self._per_question_cdf_cache[cache_key] = self._build_cdf(

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from qb_data.mc_builder import MCQuestion
 from qb_env.opponent_models import (
     EmpiricalHistogramOpponentModel,
@@ -124,10 +122,22 @@ class TestEmpiricalHistogramOpponentModel:
 
         # First call populates the cache.
         model.prob_buzzed_before_step(q, 1)
-        assert len(model._per_question_cdf_cache) == 1
+        cache = getattr(model, "_per_question_cdf_cache")
+        assert len(cache) == 1
         # Second call must reuse it (cache size unchanged).
         model.prob_buzzed_before_step(q, 4)
-        assert len(model._per_question_cdf_cache) == 1
+        assert len(cache) == 1
+
+    def test_cache_key_stores_positions_tuple_not_hash(self) -> None:
+        """Cache key should preserve histogram equality, not only a hash int."""
+        model = EmpiricalHistogramOpponentModel()
+        q = _make_question(human_buzz_positions=[(2, 5), (4, 5)], num_steps=6)
+
+        model.prob_buzzed_before_step(q, 1)
+
+        cache = getattr(model, "_per_question_cdf_cache")
+        cache_key = next(iter(cache))
+        assert cache_key == ("q_test", ((2, 5), (4, 5)))
 
 
 class TestBuildOpponentModelFromConfig:

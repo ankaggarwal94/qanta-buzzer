@@ -59,7 +59,7 @@ def _load_json(path: Path) -> dict:
     if not path.exists():
         print(f"ERROR: Required file not found: {path}", file=sys.stderr)
         sys.exit(1)
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -78,10 +78,16 @@ def _generate_audit_table(
     median_shift = stopdff_data["median_abs_prefix_shift"]
 
     # Extract verdicts from audit card (CR-02 fix: dynamic, not hardcoded)
-    verdicts = {m["name"]: m["verdict"].lower() for m in audit_card["metrics"]}
-    csli_verdict = verdicts.get("CSLI (Choice-Set Leakage Index)", "unknown")
-    cal_verdict = verdicts.get("Prefix-wise Calibration (ECE)", "unknown")
-    stop_verdict = verdicts.get("Diagnostic StopDFF (Median Abs Prefix Shift)", "unknown")
+    metrics = {m["name"]: m for m in audit_card["metrics"]}
+    csli_metric = metrics.get("CSLI (Choice-Set Leakage Index)", {})
+    cal_metric = metrics.get("Prefix-wise Calibration (ECE)", {})
+    stop_metric = metrics.get("Diagnostic StopDFF (Median Abs Prefix Shift)", {})
+    csli_verdict = csli_metric.get("verdict", "unknown").lower()
+    cal_verdict = cal_metric.get("verdict", "unknown").lower()
+    stop_verdict = stop_metric.get("verdict", "unknown").lower()
+    csli_threshold = float(csli_metric.get("threshold", csli_data["metadata"]["threshold"]))
+    cal_threshold = float(cal_metric.get("threshold", cal_data["threshold"]))
+    stop_threshold = float(stop_metric.get("threshold", stopdff_data["threshold"]))
 
     # Build LaTeX
     lines = [
@@ -90,15 +96,15 @@ def _generate_audit_table(
         r"\toprule",
         r"Metric & Value (95\% CI) & Threshold & Verdict \\",
         r"\midrule",
-        f"CSLI (panel mean) & {csli_mean:.4f} [{csli_ci_lo:.4f}, {csli_ci_hi:.4f}] & 0.30 & \\textsc{{{csli_verdict}}} \\\\",
-        f"Calibration ECE (max bucket) & {max_ece:.4f} & 0.10 & \\textsc{{{cal_verdict}}} \\\\",
-        f"StopDFF (median abs shift) & {median_shift:.1f} & 1.0 & \\textsc{{{stop_verdict}}} \\\\",
+        f"CSLI (panel mean) & {csli_mean:.4f} [{csli_ci_lo:.4f}, {csli_ci_hi:.4f}] & {csli_threshold:.2f} & \\textsc{{{csli_verdict}}} \\\\",
+        f"Calibration ECE (max bucket) & {max_ece:.4f} & {cal_threshold:.2f} & \\textsc{{{cal_verdict}}} \\\\",
+        f"StopDFF (median abs shift) & {median_shift:.1f} & {stop_threshold:.1f} & \\textsc{{{stop_verdict}}} \\\\",
         r"\bottomrule",
         r"\end{tabular}",
     ]
 
     out_path = _PAPER_EXPORTS / "audit_table.tex"
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
         f.write("\n")
     return out_path
@@ -122,8 +128,9 @@ def _generate_csli_panel(csli_data: dict) -> Path:
     fig, ax = plt.subplots(figsize=(5, 3.5))
 
     # Bar chart
-    bar_colors = ["#4878A8", "#6AAE6A", "#D97B3F"]
-    bars = ax.bar(models, csli_values, color=bar_colors, width=0.6, edgecolor="black", linewidth=0.5)
+    palette = ["#4878A8", "#6AAE6A", "#D97B3F"]
+    bar_colors = [palette[i % len(palette)] for i in range(len(models))]
+    ax.bar(models, csli_values, color=bar_colors, width=0.6, edgecolor="black", linewidth=0.5)
 
     # Threshold line
     ax.axhline(y=threshold, color="red", linestyle="--", linewidth=1.2, label=f"Threshold ({threshold})")
