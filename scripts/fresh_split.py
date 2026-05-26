@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -58,10 +59,20 @@ SPLIT_RATIOS = [0.7, 0.15, 0.15]
 
 
 def generate_seed() -> int:
-    """Generate a deterministic seed that is NOT 42 and NOT 13.
+    """Generate a one-time freeze seed that is guaranteed not in FORBIDDEN_SEEDS.
 
-    Uses int(time.time()) % 1000000 + 7919 (prime offset to avoid
+    Uses ``int(time.time()) % 1000000 + 7919`` (prime offset to avoid
     collisions with clock-based seeds).
+
+    NOTE: This seed varies per invocation because ``time.time()``
+    advances. The DERIVATION RULE is reproducible (you can compute the
+    formula's output), but the RESULT is not deterministic across runs.
+    Once you have used this script for the canonical freeze, record the
+    seed in ``PROJECT_WIKI/SPLIT_PROVENANCE.md`` and pass
+    ``--seed <recorded_value>`` for all subsequent re-runs to reproduce
+    the same partition. The re-freeze guard in ``main()`` enforces this
+    by refusing to call ``generate_seed()`` once a recorded
+    ``FRESH_SPLIT_SEED`` line exists in ``SPLIT_PROVENANCE.md``.
 
     Returns
     -------
@@ -73,6 +84,39 @@ def generate_seed() -> int:
     while seed in FORBIDDEN_SEEDS:
         seed += 1
     return seed
+
+
+_PROVENANCE_SEED_RE = re.compile(r"^FRESH_SPLIT_SEED=(\d+)", re.MULTILINE)
+
+
+def recorded_fresh_split_seed(project_root: Path) -> int | None:
+    """Return the recorded FRESH_SPLIT_SEED from SPLIT_PROVENANCE.md, if any.
+
+    Reads ``PROJECT_WIKI/SPLIT_PROVENANCE.md`` and returns the integer
+    seed declared on a ``FRESH_SPLIT_SEED=<int>`` line. Returns None
+    when the file is missing or the line is absent. This is the
+    one-shot lookup used by the re-freeze guard (WR-08).
+
+    Parameters
+    ----------
+    project_root : Path
+        Path to the repository root.
+
+    Returns
+    -------
+    int or None
+        Recorded seed, or None if not present.
+    """
+    provenance = project_root / "PROJECT_WIKI" / "SPLIT_PROVENANCE.md"
+    if not provenance.exists():
+        return None
+    match = _PROVENANCE_SEED_RE.search(provenance.read_text(encoding="utf-8"))
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except (ValueError, IndexError):
+        return None
 
 
 def get_git_commit_sha() -> str:
@@ -138,13 +182,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--seed",
         type=int,
         default=None,
-        help="Override seed value (must NOT be 42 or 13). If not provided, "
-             "generates deterministically from time.",
+        help=(
+            "Override seed value (must NOT be 42 or 13). When omitted "
+            "AND PROJECT_WIKI/SPLIT_PROVENANCE.md does not record a prior "
+            "FRESH_SPLIT_SEED, a one-time seed is generated via "
+            "`int(time.time()) %% 1000000 + 7919`. When the provenance "
+            "file already records a FRESH_SPLIT_SEED, --seed must be "
+            "passed (use the recorded value to reproduce the freeze, "
+            "or a new value with --allow-reseed to intentionally "
+            "re-freeze)."
+        ),
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print all actions without modifying the filesystem.",
+    )
+    parser.add_argument(
+        "--allow-reseed",
+        action="store_true",
+        help=(
+            "Override the re-freeze guard. By default, when "
+            "PROJECT_WIKI/SPLIT_PROVENANCE.md already records a "
+            "FRESH_SPLIT_SEED, this script refuses to invent a new seed "
+            "via generate_seed() because doing so would silently "
+            "produce a different partition than the recorded freeze. "
+            "Pass --seed <recorded_value> to reproduce the existing "
+            "split, or pass --allow-reseed to intentionally start over "
+            "with a new freeze (also use --seed to make that new freeze "
+            "reproducible)."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -167,6 +234,27 @@ def main(argv: list[str] | None = None) -> int:
     project_root = Path(__file__).parent.parent
     utc_now = datetime.now(timezone.utc)
     utc_timestamp = utc_now.strftime("%Y%m%dT%H%M%SZ")
+
+    # WR-08: re-freeze guard. If SPLIT_PROVENANCE.md already records a
+    # FRESH_SPLIT_SEED, refuse to invent a new one via generate_seed().
+    # The recorded freeze is load-bearing on the audit card
+    # (THRESHOLDS_FROZEN_AFTER_FRESH_SPLIT, audit-table citations); a
+    # silent re-freeze with a different seed produces a different
+    # partition while every downstream artifact keeps pointing at the
+    # old seed. The operator must either pass --seed <recorded_value>
+    # (reproduce) or --allow-reseed (intentional re-freeze).
+    recorded_seed = recorded_fresh_split_seed(project_root)
+    if args.seed is None and recorded_seed is not None and not args.allow_reseed:
+        print(
+            f"ERROR: PROJECT_WIKI/SPLIT_PROVENANCE.md already records "
+            f"FRESH_SPLIT_SEED={recorded_seed}. Re-running without "
+            f"--seed would invent a new seed and silently produce a "
+            f"different partition than the recorded freeze.\n"
+            f"  Reproduce the freeze: --seed {recorded_seed}\n"
+            f"  Intentionally re-freeze: --allow-reseed --seed <new_value>",
+            file=sys.stderr,
+        )
+        return 1
 
     # Determine seed
     if args.seed is not None:
