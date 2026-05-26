@@ -1,206 +1,156 @@
-# Quiz Bowl RL Buzzer (Unified)
+# Does the Proxy Preserve the Decision? -- Code Package
 
-Unified CS234 final project codebase for quiz bowl buzzing under incremental clues.
+CS321M (AI Measurement Science) final project code repository. This project audits whether multiple-choice reformulations of incremental AI benchmarks (quizbowl tossups) preserve decision-relevant psychometric properties. The audit uses three metrics:
 
-This repo keeps `qanta-buzzer` as the canonical implementation while preserving a qb-rl compatibility bridge:
+1. **CSLI** (Choice-Set Leakage Index) -- quantifies information leakage from answer choices
+2. **Prefix-wise calibration** -- Platt-scaled ECE across early/mid/late question prefixes
+3. **Diagnostic StopDFF** (Stopping-Decision Fairness) -- tests whether MC vs open-ended format changes optimal stopping behavior
 
-- Modular belief-feature pipeline: `qb_data/` -> `models/` -> `qb_env/` -> `agents/` -> `evaluation/` -> `scripts/`
-- T5 policy pipeline: supervised warm-start and PPO for end-to-end text-based buzzing
-- qb-rl-compatible import/config shims for older notebooks and scripts
-- Optional OpenAI embedding support (`likelihood.model: openai`, `data.distractor_strategy: openai_profile`)
+Built on the `qanta-buzzer` infrastructure developed for CS234 (Reinforcement Learning).
 
-## Setup
+## Environment Setup
 
-Requires Python >= 3.11.
+**Requirements:** Python 3.11+
 
 ```bash
-python3 -m venv .venv
+# Clone and enter the repository
+git clone <repo-url>
+cd qanta-buzzer
+
+# Create and activate virtual environment
+python3.11 -m venv .venv
 source .venv/bin/activate
+
+# Install dependencies
 pip install -U pip
 pip install -e .
+# OR for exact reproducibility:
+pip install -r requirements.txt && pip install -e . --no-deps
 ```
 
-The wrapper scripts in `scripts/` intentionally use the repo-local `.venv`
-directly and do not fall back to ambient `python3` or `pytest`, which helps
-avoid global package skew such as broken `torch`/`torchvision` combinations.
+## Quickstart
 
-Optional extras:
-
-```bash
-pip install -e '.[openai]'    # OpenAI embedding support (requires OPENAI_API_KEY)
-pip install -e '.[maskable]'  # MaskablePPO for variable-K (sb3-contrib)
-pip install -e '.[dspy]'      # DSPy LM-based scoring
-```
-
-## Main Workflows
-
-### Belief-feature / PPO pipeline
-
-The canonical four-stage smoke pipeline:
-
-```bash
-python scripts/build_mc_dataset.py --smoke
-python scripts/run_baselines.py --smoke
-python scripts/train_ppo.py --smoke
-python scripts/evaluate_all.py --smoke
-```
-
-Or run all four stages via the wrapper script:
+Run the four-stage smoke pipeline (builds MC dataset, runs baselines, trains PPO, evaluates):
 
 ```bash
 bash scripts/manual-smoke.sh
 ```
 
-`--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`. Drop `--smoke` for full runs (uses `configs/default.yaml`, writes to `artifacts/main/`).
+**Expected output:** Artifacts written to `artifacts/smoke/` including `mc_dataset.json`, `train_dataset.json`, `val_dataset.json`, `test_dataset.json`, `evaluation_report.json`, and PPO checkpoints.
 
-`build_mc_dataset.py` now writes `train_dataset.json`, `val_dataset.json`, and
-`test_dataset.json` as the canonical downstream artifacts. `mc_dataset.json`
-is kept as a combined legacy/debug convenience file. By default,
-`run_baselines.py` selects thresholds on the validation split, `train_ppo.py`
-trains on the training split and writes validation metrics to
-`ppo_summary.json`, and `evaluate_all.py` evaluates softmax controls plus PPO
-checkpoint replay on the test split. `evaluation_report.json` is the canonical
-final test report.
+**Runtime:** ~2-5 minutes on laptop CPU.
 
-The smoke config uses tuned reward settings (`wait_penalty=0.05`, `early_buzz_penalty=0.2`, `ppo.seed=13`, `ppo.total_timesteps=3000`).
+## CS321M Audit Scripts
 
-`train_ppo.py` also accepts `--seed` to override the PPO/environment seed, and `--stochastic-eval` / `--deterministic-eval` to control post-training evaluation mode.
+These are the novel scripts implementing the three-metric audit framework:
 
-### T5 policy pipeline
+| Script | Purpose | Output |
+|--------|---------|--------|
+| `scripts/fresh_split.py` | Execute the v10 fresh-split protocol (seed 789685) | `train_dataset.json`, `val_dataset.json`, `test_dataset.json` |
+| `scripts/compute_csli.py` | Compute Choice-Set Leakage Index panel (TF-IDF, SBERT, T5-small) | `paper_exports/csli.json` |
+| `scripts/compute_prefix_calibration.py` | Platt-scaled prefix-wise calibration (ECE per prefix bucket) | `paper_exports/calibration.json` |
+| `scripts/compute_stopdff.py` | Myopic-threshold StopDFF diagnostic | `paper_exports/stopdff.json` |
+| `scripts/make_audit_card.py` | Aggregate all metrics into Pilot Benchmark Translation Card | `paper_exports/audit_card.json` |
+| `scripts/regenerate_figures.py` | Regenerate LaTeX tables and figures from cached JSONs | `paper_exports/audit_table.tex`, `paper_exports/csli_panel.png`, `paper_exports/reliability_*.png` |
 
-Trains a T5-based policy with supervised warm-start followed by PPO fine-tuning:
+## Pre-computed Artifacts
 
-```bash
-python scripts/train_t5_policy.py --config configs/t5_policy.yaml
-python scripts/train_t5_policy.py --config configs/t5_policy.yaml --smoke  # quick test with t5-small
+The `paper_exports/` directory contains all pre-computed results referenced in the manuscript:
+
+| File | Description |
+|------|-------------|
+| `audit_card.json` | Pilot Benchmark Translation Card (overall verdict + per-metric summaries) |
+| `audit_card.md` | Human-readable markdown rendering of the audit card |
+| `csli.json` | Panel CSLI results: per-model leakage estimates with confidence intervals |
+| `calibration.json` | Prefix-wise calibration results: ECE by prefix bucket (early/mid/late) |
+| `stopdff.json` | StopDFF diagnostic results: median absolute prefix shift |
+| `audit_table.tex` | LaTeX 8-column audit table for manuscript inclusion |
+| `csli_panel.png` | CSLI bar chart (panel across 3 models) |
+| `reliability_early.png` | Reliability diagram -- early prefixes |
+| `reliability_mid.png` | Reliability diagram -- mid prefixes |
+| `reliability_late.png` | Reliability diagram -- late prefixes |
+
+Additionally at repo root:
+
+| File | Description |
+|------|-------------|
+| `threshold_manifest.json` | Frozen threshold parameters (pre-registered before test inspection) |
+| `threshold_manifest.sha256` | SHA-256 integrity sidecar for manifest |
+| `stopdff_report.json` | StopDFF attestation report with timestamp and verdict |
+
+## Repository Structure
+
+```
+qanta-buzzer/
++-- scripts/              Pipeline entrypoints and CS321M audit scripts
+|   +-- build_mc_dataset.py       [CS234] MC dataset construction
+|   +-- run_baselines.py          [CS234] Baseline agent evaluation
+|   +-- train_ppo.py              [CS234] PPO training loop
+|   +-- evaluate_all.py           [CS234] Final evaluation report
+|   +-- manual-smoke.sh           [CS234] Four-stage smoke wrapper
+|   +-- compute_csli.py           [CS321M] CSLI panel computation
+|   +-- compute_prefix_calibration.py  [CS321M] Prefix calibration
+|   +-- compute_stopdff.py        [CS321M] StopDFF diagnostic
+|   +-- make_audit_card.py        [CS321M] Audit card aggregation
+|   +-- regenerate_figures.py     [CS321M] Figure/table regeneration
+|   +-- fresh_split.py            [CS321M] Fresh split protocol
++-- qb_data/              [CS234] Data loading, MC construction, stratified splits
++-- qb_env/               [CS234] Gymnasium environment, opponent models
++-- models/               [CS234] Likelihood models (TF-IDF, SBERT, T5)
++-- agents/               [CS234] Threshold, softmax-profile, PPO buzzer agents
++-- evaluation/           [CS234] S_q metric, calibration, plotting utilities
++-- training/             [CS234] T5 policy trainers (supervised + PPO)
++-- configs/              [CS234] YAML configuration files
++-- tests/                [CS234] 429 tests across 33 files
++-- paper_exports/        [CS321M] Pre-computed audit results and figures
++-- artifacts/            Generated pipeline outputs (smoke/ and main/)
++-- docs/                 Pipeline runbook and architecture docs
 ```
 
-The T5 pipeline uses its own config (`configs/t5_policy.yaml`) which defines `model`, `supervised`, `ppo`, and `data` sections. It does not inherit `environment` or `likelihood` settings from the belief-feature configs -- the T5 PPO trainer uses default reward settings (`wait_penalty=0.1`). When persisted `train_dataset.json` / `val_dataset.json` / `test_dataset.json` artifacts exist alongside `--mc-path` or in the standard artifact directories, `train_t5_policy.py` prefers those split files over re-splitting `mc_dataset.json`. Set `data.max_questions_scope` to `global` (default) to distribute the `data.max_questions` cap proportionally across splits, or `per_split` to truncate each split independently (legacy behavior).
+## Attribution
 
-The T5 policy uses factorized action semantics: the wait head models `P(WAIT)` vs `P(BUZZ)`, the answer head models `P(answer | BUZZ)`, and the flat action distribution is `P(WAIT)` plus `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`.
+### Contributors
 
-The CLI also reserves `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for an experimental hazard-style warm-start bridge. Those flags are parsed, but `--hazard-pretrain` currently raises `NotImplementedError` until the training loop is wired.
+| Contributor | Role | Scope |
+|-------------|------|-------|
+| Imran Hassan | Original developer | qanta-buzzer core architecture: qb_data/, qb_env/, models/, agents/, evaluation/, training/, main pipeline scripts (build_mc_dataset.py, run_baselines.py, train_ppo.py, evaluate_all.py) |
+| Kathleenkk23 | Collaborator | CS234 team contributions (T5 policy extensions, testing) |
+| GitHub Copilot | AI assistant | Code suggestions during CS234 development phase |
+| Ankit Aggarwal | Current owner, CS321M extensions | All CS321M audit scripts (compute_csli.py, compute_prefix_calibration.py, compute_stopdff.py, make_audit_card.py, regenerate_figures.py, fresh_split.py, modal_cs321m.py), paper_exports/, threshold_manifest, stopdff_report, this README |
 
-### Policy comparison
+### Novel vs Reused Modules
 
-```bash
-python scripts/compare_policies.py --t5-checkpoint checkpoints/ppo_t5/best_model
-```
+**Novel (CS321M, Ankit Aggarwal):**
+- `scripts/compute_csli.py` -- Choice-Set Leakage Index panel computation
+- `scripts/compute_prefix_calibration.py` -- Platt scaling + per-bucket ECE
+- `scripts/compute_stopdff.py` -- Myopic-threshold StopDFF diagnostic
+- `scripts/make_audit_card.py` -- Pilot Benchmark Translation Card aggregation
+- `scripts/regenerate_figures.py` -- Figure/table regeneration from cached data
+- `scripts/fresh_split.py` -- v10 section 0.3 fresh split protocol
+- `modal_cs321m.py` -- Modal A100 compute orchestration wrapper
 
-Compares the MLP belief-feature policy against the T5 end-to-end policy on the same test set. Accuracy and buzz-position metrics are directly comparable. ECE and Brier are computed identically (top-answer probability at buzz time). S_q and reward comparisons are qualitative because the two architectures use different confidence semantics (belief-sigmoid vs wait-head probability) and different reward settings (config-driven vs T5-pipeline defaults).
+**Reused (CS234 team, attributed to original contributors):**
+- `qb_data/` -- Data loading, MC construction, stratified splits
+- `qb_env/` -- Gymnasium environment, opponent models
+- `models/` -- Likelihood models (TF-IDF, SBERT, T5)
+- `agents/` -- Threshold, softmax-profile, PPO buzzer agents
+- `evaluation/` -- S_q metric, calibration, plotting utilities
+- `scripts/build_mc_dataset.py`, `run_baselines.py`, `train_ppo.py`, `evaluate_all.py` -- Pipeline entrypoints
 
-### Full pipeline (parallel execution)
+### AI Tool Disclosure
 
-For the core pipeline and scripted extensions at full scale with automatic parallelism:
-
-```bash
-bash scripts/run_full_pipeline.sh --t5-model t5-base   # ~3-4 hrs on M3 Max
-```
-
-The script forces `likelihood.model=tfidf` for all belief-feature phases. Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19 require manual execution. See `docs/full-pipeline-runbook.md` for the full 19-phase runbook.
-
-### Additional scripts
-
-- `scripts/run_full_pipeline.sh` -- full 19-phase parallel pipeline with 4-wave DAG (forces tfidf)
-- `scripts/run_smoke_pipeline.py` -- runs all four smoke stages sequentially
-- `scripts/sweep_reward_shaping.py` -- grid sweep over `wait_penalty` and `early_buzz_penalty` with multi-seed evaluation
-- `scripts/train_ppo.py --policy-mode flat_kplus1|stop_only` -- optional stop-only PPO surface; default remains `flat_kplus1`
-- `generate_presentation.py` -- generates the Marp presentation slides
-
-All pipeline scripts accept positional config overrides:
-
-```bash
-python scripts/run_baselines.py --smoke likelihood.model=tfidf
-python scripts/train_ppo.py --seed 13 environment.reward_mode=simple
-```
-
-## Configuration
-
-Two primary YAML configs:
-
-| Config | Purpose | Key reward settings |
-|--------|---------|-------------------|
-| `configs/default.yaml` | Full runs | `wait_penalty=0.05`, `early_buzz_penalty=0.2`, `buzz_incorrect=-0.5` |
-| `configs/smoke.yaml` | Quick tests (50 questions) | Same as default except `buzz_incorrect=-1.0`, `total_timesteps=3000` |
-| `configs/t5_policy.yaml` | T5 pipeline | Own `model`/`supervised`/`ppo`/`data` sections; no `environment` |
-
-qb-rl config aliases are also supported: `data.dataset`, `data.dataset_config`, `likelihood.sbert_name`, `environment.reward` as an alias for `reward_mode`, etc.
-
-For horizon behavior, `environment.end_mode` defaults to `force_commit` (legacy behavior). Set `environment.end_mode: no_buzz` with `environment.no_buzz_reward` to end the episode without forcing a terminal answer.
+Claude Code (Anthropic) assisted with CS321M extension development. GitHub Copilot assisted during the CS234 development phase. See manuscript AI Disclosures for full details.
 
 ## Testing
 
-429 tests across 33 test files (4 skipped when optional extras not installed):
+429 tests across 33 test files:
 
 ```bash
 pytest                    # full suite
-pytest tests/test_agents.py tests/test_environment.py tests/test_ppo_buzzer.py  # quick iteration
+pytest tests/ -x -q       # quick with stop-on-first-failure
 bash scripts/ci.sh        # full suite via repo-local .venv
 ```
 
-The test suite covers:
+## License
 
-- Baseline agents (threshold, softmax-profile, sequential Bayes) and PPO wrapper
-- Gymnasium environment behavior, reward modes (including Expected Wins), and belief computation
-- Likelihood model factories (TF-IDF, SBERT, DSPy with offline-safe stubs)
-- T5 policy model, supervised trainer, and PPO trainer
-- Evaluation metrics (S_q, Expected Wins, ECE, Brier score, calibration pairs extraction, per-category accuracy)
-- Dataset split reproducibility (cross-process determinism)
-- Variable-K dataset construction and mixed-K integration
-- Opponent buzz models (logistic, empirical)
-- qb-rl compatibility bridge
-- Text observation wrapper
-
-## Architecture
-
-```
-qb_data/        Data loading, answer profiles, stratified splits, MC construction, DSPy profiles
-qb_env/         Gymnasium environment, text wrapper, opponent models, StopOnlyEnv wrapper (with action_masks), qb-rl shims
-models/         Likelihood models (TF-IDF, SBERT, T5, OpenAI, DSPy), belief features, T5 policy
-agents/         Threshold, softmax-profile, sequential Bayes, PPO buzzer
-evaluation/     S_q metric, Expected Wins, calibration, control experiments, plotting
-scripts/        Pipeline entrypoints, DSPy compile, shared helpers
-training/       T5 policy supervised + PPO trainers, hazard bridge utilities
-configs/        YAML configuration files
-artifacts/      Generated pipeline outputs (smoke/ and main/)
-root *.py files Pre-modularization prototypes (not installed; still live at repo root)
-```
-
-## Compatibility Bridge
-
-These old qb-rl import paths resolve in this repo:
-
-- `qb_env.data_loader`, `qb_env.mc_builder`, `qb_env.text_utils`
-- `models.answer_profiles`
-- `agents.softmax_profile_buzzer`
-
-The bridge is additive. `qb_data/` remains the canonical home for data loading and MC construction. OpenAI support is opt-in only -- default local workflows stay offline-friendly.
-
-## Documentation
-
-- `docs/full-pipeline-runbook.md` -- deterministic 19-phase runbook with wall-time estimates and parallel execution
-- `AGENTS.md` -- canonical repo contract for all coding agents (setup, architecture, testing, configuration)
-- `CLAUDE.md` -- thin shim pointing to AGENTS.md with Claude-specific notes
-- `walkthrough.md` -- end-to-end walkthrough exercising both pipelines (pre-remediation snapshot)
-- `PRESENTATION.md` -- Marp presentation slides for the CS234 final project
-- `.planning/` -- canonical project state, roadmap, architectural decisions, and remediation log
-
-## Extensions (opt-in)
-
-Three opt-in extensions are available. All are disabled by default — the smoke pipeline and T5 smoke path work unchanged.
-
-### Expected Wins reward mode
-
-Set `environment.reward_mode: expected_wins` and configure `environment.opponent_buzz_model` in YAML. Supports logistic and empirical (from `human_buzz_positions`) opponent models. Offline `expected_wins_score()` in `evaluation/metrics.py` uses the continuous formula: `V_self = g * R_correct + (1-g) * R_incorrect`.
-
-### Variable-K answer choices
-
-Set `data.variable_K: true` and `data.min_K` / `data.max_K` in YAML. `MCBuilder` samples K per question. The env uses padded observations and `action_masks()`, and rejects padded buzz actions with a clear error. Set `ppo.use_maskable_ppo: true` in config to enable `MaskablePPO` (requires `pip install -e '.[maskable]'`).
-
-### DSPy integration (experimental)
-
-Set `likelihood.model: dspy` and configure the `dspy` section in YAML. Requires `pip install -e '.[dspy]'`. Offline compile via `python scripts/optimize_dspy.py`. Does NOT integrate prompt optimization into PPO rollouts.
-
-## Legacy Prototype
-
-The pre-modularization prototype (`main.py`, `environment.py`, `model.py`, `dataset.py`, `config.py`, etc.) still lives at the repo root. These files are not part of the installed package and are preserved only for reference / backward compatibility. The modular `scripts/` pipeline above is the canonical workflow.
+This is a student project submission for Stanford CS321M (AI Measurement Science). Not licensed for redistribution.
