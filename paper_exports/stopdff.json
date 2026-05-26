@@ -1,0 +1,26 @@
+{
+  "median_abs_prefix_shift": 0.0,
+  "mean_abs_prefix_shift": 0.0,
+  "per_question_distribution_summary": {
+    "p25": 0.0,
+    "p50": 0.0,
+    "p75": 0.0,
+    "max": 0.0
+  },
+  "direction_breakdown": {
+    "mc_stops_earlier": 0,
+    "nonmc_stops_earlier": 0,
+    "same_step": 2308
+  },
+  "gate_verdict": "pass",
+  "threshold": 1,
+  "metadata": {
+    "seed": 789685,
+    "n_test": 2308,
+    "model": "all-MiniLM-L6-v2",
+    "stop_threshold": 0.7,
+    "metric_type": "diagnostic_only",
+    "stopping_policy": "myopic_threshold",
+    "timestamp": "2026-05-26T09:18:09.346768+00:00"
+  }
+}
