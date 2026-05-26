@@ -77,7 +77,15 @@ _SBERT_MODEL = None
 # Reproducibility seed
 SEED = 789685
 
-# Myopic stop threshold (calibrated probability)
+# Myopic stop threshold (calibrated probability).
+# NOTE (CR-01 limitation): The 0.7 threshold is pre-registered and frozen. Given the
+# fitted Platt coefficients from calibration.json, this threshold is mathematically
+# unreachable for "early" and "mid" buckets because cosine similarity is bounded in
+# [-1, 1] and the calibrated probability cannot exceed ~0.5 for those buckets with
+# typical raw scores. This means the StopDFF metric is degenerate (ceiling effect):
+# both MC and non-MC conditions always time out to the last prefix step, yielding
+# zero shift for all questions. The metric is reported as "diagnostic_only" in the
+# manuscript. A reachability check is computed at runtime and recorded in the output.
 STOP_THRESHOLD = 0.7
 
 # Provenance constants from SPLIT_PROVENANCE.md (hardcoded per T-06-03 mitigation)
@@ -172,6 +180,58 @@ def assign_bucket(frac: float) -> str:
         return "mid"
     else:
         return "late"
+
+
+def check_threshold_reachability(
+    platt_params: dict[str, tuple[float, float]],
+    threshold: float = STOP_THRESHOLD,
+) -> dict[str, dict]:
+    """Check whether the stop threshold is reachable for each bucket.
+
+    Given that cosine similarity is bounded in [-1, 1], compute the maximum
+    calibrated probability achievable for each bucket and determine whether
+    the stop threshold can ever be exceeded.
+
+    Parameters
+    ----------
+    platt_params : dict[str, tuple[float, float]]
+        Per-bucket (coef, intercept) tuples from calibration.json.
+    threshold : float
+        The stop threshold to check reachability against.
+
+    Returns
+    -------
+    dict[str, dict]
+        Mapping of bucket_name -> {
+            "max_calibrated_at_sim_1": float,  # max calibrated prob at cosine=1.0
+            "threshold_reachable": bool,       # whether threshold can be exceeded
+            "required_raw_score": float | None, # raw score needed to reach threshold
+        }
+    """
+    reachability = {}
+    for bucket_name, (coef, intercept) in platt_params.items():
+        # Max achievable calibrated probability (cosine sim = 1.0)
+        max_cal = calibrate_score(1.0, coef, intercept)
+
+        # Compute required raw score to reach threshold:
+        # threshold = 1 / (1 + exp(-(coef * x + intercept)))
+        # => coef * x + intercept = -log(1/threshold - 1)
+        # => x = (-log(1/threshold - 1) - intercept) / coef
+        if threshold >= 1.0 or threshold <= 0.0:
+            required_raw = None
+        elif coef == 0.0:
+            required_raw = None
+        else:
+            logit = -math.log(1.0 / threshold - 1.0)
+            required_raw = (logit - intercept) / coef
+
+        reachability[bucket_name] = {
+            "max_calibrated_at_sim_1": round(max_cal, 6),
+            "threshold_reachable": max_cal > threshold,
+            "required_raw_score": round(required_raw, 6) if required_raw is not None else None,
+        }
+
+    return reachability
 
 
 def compute_stop_step_mc(
@@ -425,6 +485,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     print(f"[STOP] MC total: {len(mc_questions)}, MC test: {len(mc_test)}", flush=True)
 
+    if len(mc_test) == 0:
+        print("ERROR: No test-split MC questions found after filtering. "
+              "Check that mc_dataset.json and test_dataset.json have overlapping qids.",
+              file=sys.stderr)
+        return 1
+
     if args.smoke:
         mc_test = mc_test[:20]
         print(f"[STOP] Smoke mode: trimmed to {len(mc_test)} test questions", flush=True)
@@ -441,6 +507,25 @@ def main(argv: Optional[list[str]] = None) -> int:
     platt_params = load_platt_coefficients(CALIBRATION_JSON)
     for bucket_name, (coef, intercept) in platt_params.items():
         print(f"[STOP]   {bucket_name}: coef={coef:.6f}, intercept={intercept:.6f}", flush=True)
+
+    # ========================================================================
+    # Reachability check (CR-01): report which buckets can reach the threshold
+    # ========================================================================
+    reachability = check_threshold_reachability(platt_params, STOP_THRESHOLD)
+    reachable_buckets = [b for b, r in reachability.items() if r["threshold_reachable"]]
+    unreachable_buckets = [b for b, r in reachability.items() if not r["threshold_reachable"]]
+
+    if unreachable_buckets:
+        print(f"[STOP] WARNING: Stop threshold {STOP_THRESHOLD} is UNREACHABLE for buckets: "
+              f"{unreachable_buckets}", flush=True)
+        for b in unreachable_buckets:
+            r = reachability[b]
+            print(f"[STOP]   {b}: max calibrated prob at cosine=1.0 is {r['max_calibrated_at_sim_1']:.4f} "
+                  f"(< {STOP_THRESHOLD}), requires raw_score={r['required_raw_score']}", flush=True)
+        print("[STOP]   This is a known limitation (pre-registered threshold). "
+              "The metric may show ceiling effects.", flush=True)
+    else:
+        print(f"[STOP] Threshold {STOP_THRESHOLD} is reachable for all buckets.", flush=True)
 
     # ========================================================================
     # Compute stop steps for MC and non-MC conditions
@@ -511,6 +596,25 @@ def main(argv: Optional[list[str]] = None) -> int:
           f"(median={median_abs_prefix_shift:.4f} vs threshold={threshold})", flush=True)
 
     # ========================================================================
+    # Detect ceiling effect (CR-01): all questions timed out to last prefix
+    # ========================================================================
+    # Ceiling effect = no question in either condition stopped before the last step
+    all_mc_maxed = all(
+        mc_step == len(q["cumulative_prefixes"]) - 1
+        for mc_step, q in zip(mc_stop_steps, mc_test)
+    )
+    all_nonmc_maxed = all(
+        ns == len(q["cumulative_prefixes"]) - 1
+        for ns, q in zip(nonmc_stop_steps, mc_test)
+    )
+    ceiling_effect_detected = all_mc_maxed and all_nonmc_maxed
+
+    if ceiling_effect_detected:
+        print("[STOP] CEILING EFFECT DETECTED: No question in either condition stopped "
+              "before the final prefix step. The metric is degenerate at this threshold.",
+              flush=True)
+
+    # ========================================================================
     # Write paper_exports/stopdff.json
     # ========================================================================
     output_data = {
@@ -527,6 +631,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             "nonmc_stops_earlier": nonmc_earlier,
             "same_step": same_step,
         },
+        "ceiling_effect_detected": ceiling_effect_detected,
+        "reachability": reachability,
         "gate_verdict": gate_verdict,
         "threshold": threshold,
         "metadata": {
