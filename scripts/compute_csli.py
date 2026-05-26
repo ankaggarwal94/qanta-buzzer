@@ -65,6 +65,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "processed"
 DEFAULT_OUTPUT = PROJECT_ROOT / "paper_exports" / "csli.json"
 DEFAULT_MODELS = "tfidf,sbert,t5-small"
+THRESHOLD_MANIFEST = PROJECT_ROOT / "threshold_manifest.json"
 
 # Lazy-loaded model caches
 _SBERT_MODEL = None
@@ -79,6 +80,13 @@ def bootstrap_ci(
     seed: int = 42,
 ) -> tuple[float, float, float]:
     """Compute bootstrap confidence interval for the mean.
+
+    Uses the **percentile method** (not BCa or studentized bootstrap).
+    The percentile method is simpler but may undercover for skewed
+    distributions. For the CSLI per-question indicators (discrete values
+    in {-1, -2/3, ..., 2/3, 1}), this provides a CI that captures
+    sampling variability (which questions are in the test set) but does
+    NOT account for model selection uncertainty or between-model variance.
 
     Parameters
     ----------
@@ -483,8 +491,15 @@ def compute_panel_csli(
         per_question_csli, n_resamples=1000, seed=789685
     )
 
-    # Apply leakage flags
-    threshold = 0.30  # 1/K + 0.05, K=4
+    # Apply leakage flags (WR-04: load threshold from manifest for consistency)
+    threshold = 0.30  # default: 1/K + 0.05, K=4
+    if THRESHOLD_MANIFEST.exists():
+        with open(THRESHOLD_MANIFEST) as f:
+            manifest = json.load(f)
+        for t in manifest.get("thresholds", []):
+            if t["metric"] == "choices_only_accuracy":
+                threshold = float(t.get("numeric_value_K4", 0.30))
+                break
     for m in model_list:
         results[m]["leakage_flag"] = results[m]["acc_choices_only"] > threshold
 
@@ -501,6 +516,12 @@ def compute_panel_csli(
             "K": 4,
             "threshold": threshold,
             "bootstrap_resamples": 1000,
+            "bootstrap_method": "percentile",
+            "bootstrap_note": (
+                "Percentile-method bootstrap (not BCa). CI captures "
+                "sampling variability over questions but not model "
+                "selection uncertainty."
+            ),
             "seed": 789685,
             "test_split_seed": 789685,
             "models": model_list,
