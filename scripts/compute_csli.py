@@ -1026,7 +1026,26 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     data_dir = Path(args.data_dir)
     output_path = Path(args.output)
-    model_list = [m.strip() for m in args.models.split(",")]
+
+    # Iter1 IN-06: validate --models is non-empty BEFORE smoke
+    # truncation. `args.models.split(",")` produces `[""]` for an
+    # empty string and `[]` for a comma-only string; both filter to
+    # the empty list once whitespace-stripped. Previously, an empty
+    # model_list survived the `if args.smoke: model_list[:1]` slice
+    # as `[]`, the loop over `model_list` ran zero times, and then
+    # `per_question_csli /= len(model_list)` raised
+    # `ZeroDivisionError` on a numpy array -- failing far enough
+    # downstream that the operator could not tell `--models ""` was
+    # the typo. Per the script docstring exit codes, argument errors
+    # use exit 2.
+    model_list = [m.strip() for m in args.models.split(",") if m.strip()]
+    if not model_list:
+        print(
+            "ERROR: --models must specify at least one model "
+            "(comma-separated). Available: tfidf, sbert, t5-small.",
+            file=sys.stderr,
+        )
+        return 2
 
     if args.smoke:
         model_list = model_list[:1]
