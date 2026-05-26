@@ -1,0 +1,73 @@
+{
+  "metrics": [
+    {
+      "name": "CSLI (Choice-Set Leakage Index)",
+      "value": 0.10615233333333333,
+      "value_display": "0.1062",
+      "ci_lower": 0.0921396591565569,
+      "ci_upper": 0.11973570190641249,
+      "threshold": 0.3,
+      "threshold_criterion": "max(acc_choices_only) <= threshold",
+      "observed_criterion_value": 0.233969,
+      "direction": "warn_if_above",
+      "verdict": "pass",
+      "details": {
+        "n_models": 3,
+        "per_model_acc_choices_only": {
+          "tfidf": 0.230503,
+          "sbert": 0.191508,
+          "t5-small": 0.233969
+        },
+        "leakage_flags": {
+          "tfidf": false,
+          "sbert": false,
+          "t5-small": false
+        }
+      }
+    },
+    {
+      "name": "Prefix-wise Calibration (ECE)",
+      "value": 0.030502,
+      "value_display": "0.0305",
+      "threshold": 0.1,
+      "threshold_criterion": "max(bucket_ECE) <= threshold",
+      "observed_criterion_value": 0.030502,
+      "direction": "warn_if_above",
+      "verdict": "pass",
+      "details": {
+        "per_bucket_ece": {
+          "early": 0.023895,
+          "mid": 0.030502,
+          "late": 0.02376
+        },
+        "stored_gate_verdict": "pass"
+      }
+    },
+    {
+      "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+      "value": 0.0,
+      "value_display": "0.0",
+      "threshold": 1.0,
+      "threshold_criterion": "median_abs_prefix_shift <= threshold",
+      "observed_criterion_value": 0.0,
+      "direction": "warn_if_above",
+      "verdict": "pass",
+      "details": {
+        "direction_breakdown": {
+          "mc_stops_earlier": 0,
+          "nonmc_stops_earlier": 0,
+          "same_step": 2308
+        },
+        "stored_gate_verdict": "pass",
+        "metric_type": "diagnostic_only"
+      }
+    }
+  ],
+  "overall_verdict": "PASS",
+  "metadata": {
+    "generated_by": "scripts/make_audit_card.py",
+    "script_version": "1.0.0",
+    "timestamp": "2026-05-26T09:30:03.211689+00:00",
+    "threshold_source": "threshold_manifest.json"
+  }
+}
