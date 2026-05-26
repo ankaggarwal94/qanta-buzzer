@@ -53,10 +53,15 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _load_json(path: Path) -> dict:
-    """Load a JSON file, raising a clear error on failure."""
+    """Load a JSON file, raising FileNotFoundError on missing file.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist at the given path.
+    """
     if not path.exists():
-        print(f"ERROR: Required file not found: {path}", file=sys.stderr)
-        sys.exit(1)
+        raise FileNotFoundError(f"Required file not found: {path}")
     with open(path) as f:
         return json.load(f)
 
@@ -246,11 +251,15 @@ def main() -> int:
         print(f"  - {_PAPER_EXPORTS / 'audit_card.md'}")
         return 0
 
-    # Load inputs
-    csli_data = _load_json(_PAPER_EXPORTS / "csli.json")
-    cal_data = _load_json(_PAPER_EXPORTS / "calibration.json")
-    stopdff_data = _load_json(_PAPER_EXPORTS / "stopdff.json")
-    manifest = _load_json(_REPO_ROOT / "threshold_manifest.json")
+    # Load inputs (WR-05: collect all missing files before failing)
+    try:
+        csli_data = _load_json(_PAPER_EXPORTS / "csli.json")
+        cal_data = _load_json(_PAPER_EXPORTS / "calibration.json")
+        stopdff_data = _load_json(_PAPER_EXPORTS / "stopdff.json")
+        manifest = _load_json(_REPO_ROOT / "threshold_manifest.json")
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
 
     # Extract thresholds from manifest
     thresholds = {}
