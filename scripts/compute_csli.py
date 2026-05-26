@@ -1,31 +1,32 @@
 #!/usr/bin/env python3
 """
-Compute CSLI (Choice-Set Leakage Index) via LLM-prompt panel.
+Compute CSLI (Choice-Set Leakage Index) via local model panel.
 
 CSLI = acc_full - acc_choices_only
 
-This metric measures whether an LLM can identify the correct answer from
+This metric measures whether a model can identify the correct answer from
 the multiple-choice options alone (without seeing the question text).
-High CSLI indicates the answer choices leak information about the correct
-answer through construction artifacts (e.g., length, specificity, plausibility
-patterns).
+High choices-only accuracy (above 1/K + 0.05 = 0.30 for K=4) indicates
+the answer choices leak information about the correct answer through
+construction artifacts (e.g., length, specificity, plausibility patterns).
 
-IMPORTANT — DATA-05 SYMBOL COLLISION GUARD:
+IMPORTANT -- DATA-05 SYMBOL COLLISION GUARD:
     DO NOT import evaluation.controls.run_choices_only_control -- that function
     uses surface-feature logistic regression (char n-gram TF-IDF sklearn), which
     is a DIFFERENT experiment measuring surface-feature artifacts. This script
-    implements the LLM-prompt approach: present ONLY the K answer choices to an
-    LLM and ask it to select the most likely correct answer. The two approaches
-    measure fundamentally different constructs.
+    implements a local-model panel approach: TF-IDF similarity, SBERT embeddings,
+    and T5-small log-likelihood scoring. The two approaches measure fundamentally
+    different constructs.
 
 Usage:
     python scripts/compute_csli.py --help
     python scripts/compute_csli.py --smoke           # 1 model, 10 questions
     python scripts/compute_csli.py --dry-run         # Parse args, no compute
-    python scripts/compute_csli.py --models gemini-1.5-flash,gpt-4o-mini
+    python scripts/compute_csli.py --models tfidf,sbert,t5-small
 
 Inputs:
-    data/processed/test_dataset.json  (MC questions with options)
+    data/processed/mc_dataset.json   (MC questions with options, gold_index)
+    data/processed/test_dataset.json (test split for qid filtering)
 
 Outputs:
     paper_exports/csli.json  (panel CSLI results with bootstrap CIs)
@@ -53,7 +54,7 @@ import numpy as np
 # DO NOT import from evaluation.controls or from evaluation import controls
 #
 # That function uses surface-feature logistic regression (char-trigram TF-IDF),
-# which is a different experiment from the LLM-prompt approach implemented here.
+# which is a different experiment from the local-model panel approach here.
 # See DATA-05 in MASTER_PLAN_v10 for the symbol collision prohibition.
 # ============================================================================
 
@@ -63,7 +64,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "processed"
 DEFAULT_OUTPUT = PROJECT_ROOT / "paper_exports" / "csli.json"
-DEFAULT_MODELS = "gemini-1.5-flash,gpt-4o-mini,claude-3-haiku-20240307"
+DEFAULT_MODELS = "tfidf,sbert,t5-small"
+
+# Lazy-loaded model caches
+_SBERT_MODEL = None
+_T5_MODEL = None
+_T5_TOKENIZER = None
 
 
 def bootstrap_ci(
@@ -109,98 +115,397 @@ def bootstrap_ci(
     return (mean, ci_lower, ci_upper)
 
 
+# ============================================================================
+# MODEL IMPLEMENTATIONS
+# ============================================================================
+
+
+def _get_sbert_model():
+    """Lazy-load SBERT model (all-MiniLM-L6-v2)."""
+    global _SBERT_MODEL
+    if _SBERT_MODEL is None:
+        from sentence_transformers import SentenceTransformer
+        print("[CSLI] Loading SBERT model (all-MiniLM-L6-v2)...", flush=True)
+        _SBERT_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+    return _SBERT_MODEL
+
+
+def _get_t5_model():
+    """Lazy-load T5-small model and tokenizer."""
+    global _T5_MODEL, _T5_TOKENIZER
+    if _T5_MODEL is None:
+        import torch
+        from transformers import T5ForConditionalGeneration, T5Tokenizer
+        print("[CSLI] Loading T5-small model...", flush=True)
+        _T5_TOKENIZER = T5Tokenizer.from_pretrained("t5-small")
+        _T5_MODEL = T5ForConditionalGeneration.from_pretrained("t5-small")
+        _T5_MODEL.eval()
+    return _T5_MODEL, _T5_TOKENIZER
+
+
+def _score_tfidf_choices_only(options: list[str]) -> int:
+    """TF-IDF choices-only: select option most dissimilar from others.
+
+    Parameters
+    ----------
+    options : list[str]
+        The K=4 answer options.
+
+    Returns
+    -------
+    int
+        Predicted answer index (0-3).
+    """
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    vectorizer = TfidfVectorizer()
+    try:
+        tfidf_matrix = vectorizer.fit_transform(options)
+    except ValueError:
+        # All options are empty or identical -- fall back to 0
+        return 0
+
+    sim_matrix = cosine_similarity(tfidf_matrix)
+    # For each option, compute mean similarity to OTHER options
+    n = len(options)
+    mean_sims = np.zeros(n)
+    for i in range(n):
+        others = [sim_matrix[i, j] for j in range(n) if j != i]
+        mean_sims[i] = np.mean(others) if others else 0.0
+
+    # Select option with LOWEST mean similarity (most dissimilar = most specific)
+    return int(np.argmin(mean_sims))
+
+
+def _score_tfidf_full(question: str, options: list[str]) -> int:
+    """TF-IDF full: select option most similar to question text.
+
+    Parameters
+    ----------
+    question : str
+        The full question text.
+    options : list[str]
+        The K=4 answer options.
+
+    Returns
+    -------
+    int
+        Predicted answer index (0-3).
+    """
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    documents = [question] + options
+    vectorizer = TfidfVectorizer()
+    try:
+        tfidf_matrix = vectorizer.fit_transform(documents)
+    except ValueError:
+        return 0
+
+    # Similarity between question (index 0) and each option (indices 1..K)
+    question_vec = tfidf_matrix[0:1]
+    option_vecs = tfidf_matrix[1:]
+    sims = cosine_similarity(question_vec, option_vecs)[0]
+
+    return int(np.argmax(sims))
+
+
+def _score_sbert_choices_only(options: list[str]) -> int:
+    """SBERT choices-only: select option most dissimilar from others.
+
+    Parameters
+    ----------
+    options : list[str]
+        The K=4 answer options.
+
+    Returns
+    -------
+    int
+        Predicted answer index (0-3).
+    """
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    model = _get_sbert_model()
+    embeddings = model.encode(options, convert_to_numpy=True)
+    sim_matrix = cosine_similarity(embeddings)
+
+    n = len(options)
+    mean_sims = np.zeros(n)
+    for i in range(n):
+        others = [sim_matrix[i, j] for j in range(n) if j != i]
+        mean_sims[i] = np.mean(others) if others else 0.0
+
+    return int(np.argmin(mean_sims))
+
+
+def _score_sbert_full(question: str, options: list[str]) -> int:
+    """SBERT full: select option most similar to question embedding.
+
+    Parameters
+    ----------
+    question : str
+        The full question text.
+    options : list[str]
+        The K=4 answer options.
+
+    Returns
+    -------
+    int
+        Predicted answer index (0-3).
+    """
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    model = _get_sbert_model()
+    all_texts = [question] + options
+    embeddings = model.encode(all_texts, convert_to_numpy=True)
+
+    question_emb = embeddings[0:1]
+    option_embs = embeddings[1:]
+    sims = cosine_similarity(question_emb, option_embs)[0]
+
+    return int(np.argmax(sims))
+
+
+def _score_t5_choices_only(options: list[str]) -> int:
+    """T5-small choices-only: select option with highest generation likelihood.
+
+    Constructs input without question text and scores each option by
+    cross-entropy loss (lower loss = higher likelihood = predicted answer).
+
+    Parameters
+    ----------
+    options : list[str]
+        The K=4 answer options.
+
+    Returns
+    -------
+    int
+        Predicted answer index (0-3).
+    """
+    import torch
+
+    model, tokenizer = _get_t5_model()
+    labels = ["A", "B", "C", "D"]
+    input_text = "question: Which is most likely correct? " + " ".join(
+        f"{labels[i]}: {opt}" for i, opt in enumerate(options)
+    )
+
+    input_ids = tokenizer(
+        input_text, return_tensors="pt", max_length=512, truncation=True
+    ).input_ids
+
+    losses = []
+    with torch.no_grad():
+        for i, opt in enumerate(options):
+            target_text = f"{labels[i]}: {opt}"
+            target_ids = tokenizer(
+                target_text, return_tensors="pt", max_length=128, truncation=True
+            ).input_ids
+            outputs = model(input_ids=input_ids, labels=target_ids)
+            losses.append(outputs.loss.item())
+
+    # Lowest loss = highest likelihood
+    return int(np.argmin(losses))
+
+
+def _score_t5_full(question: str, options: list[str]) -> int:
+    """T5-small full: select option with highest generation likelihood given question.
+
+    Parameters
+    ----------
+    question : str
+        The full question text.
+    options : list[str]
+        The K=4 answer options.
+
+    Returns
+    -------
+    int
+        Predicted answer index (0-3).
+    """
+    import torch
+
+    model, tokenizer = _get_t5_model()
+    labels = ["A", "B", "C", "D"]
+    input_text = "question: " + question + " " + " ".join(
+        f"{labels[i]}: {opt}" for i, opt in enumerate(options)
+    )
+
+    input_ids = tokenizer(
+        input_text, return_tensors="pt", max_length=512, truncation=True
+    ).input_ids
+
+    losses = []
+    with torch.no_grad():
+        for i, opt in enumerate(options):
+            target_text = f"{labels[i]}: {opt}"
+            target_ids = tokenizer(
+                target_text, return_tensors="pt", max_length=128, truncation=True
+            ).input_ids
+            outputs = model(input_ids=input_ids, labels=target_ids)
+            losses.append(outputs.loss.item())
+
+    return int(np.argmin(losses))
+
+
+# ============================================================================
+# EXPERIMENT RUNNERS
+# ============================================================================
+
+
 def run_choices_only_prompt(
     questions: list[dict],
     model_name: str,
-) -> float:
-    """Run choices-only LLM prompt experiment.
+) -> tuple[float, np.ndarray]:
+    """Run choices-only experiment for a given model.
 
-    Presents ONLY the answer choices (no question text) to an LLM and asks
-    it to select the most likely correct answer. Returns accuracy (fraction
-    of questions where the LLM selects the correct option).
+    Presents ONLY the answer choices (no question text) to the model and
+    determines which option it selects. Returns accuracy and per-question
+    correctness array.
 
     Parameters
     ----------
     questions : list[dict]
-        List of MC question dicts with 'options' and 'correct_idx' fields.
+        List of MC question dicts with 'options' and 'gold_index' fields.
     model_name : str
-        LLM model identifier (e.g., 'gemini-1.5-flash').
+        Model identifier: 'tfidf', 'sbert', or 't5-small'.
 
     Returns
     -------
-    float
-        Accuracy of the LLM on choices-only prompts (0.0 to 1.0).
-
-    Raises
-    ------
-    NotImplementedError
-        Phase 4 implementation pending -- LLM API calls not yet wired.
+    tuple[float, np.ndarray]
+        (accuracy, per_question_correct) where per_question_correct is a
+        binary array of shape (n_questions,).
     """
-    raise NotImplementedError(
-        "Phase 4 implementation pending: LLM choices-only prompt experiment. "
-        "This stub establishes the correct architecture (LLM prompt, NOT "
-        "surface-feature logistic regression)."
-    )
+    n = len(questions)
+    correct = np.zeros(n, dtype=np.int32)
+
+    for i, q in enumerate(questions):
+        options = q["options"]
+        gold_idx = q["gold_index"]
+
+        if model_name == "tfidf":
+            pred = _score_tfidf_choices_only(options)
+        elif model_name == "sbert":
+            pred = _score_sbert_choices_only(options)
+        elif model_name == "t5-small":
+            pred = _score_t5_choices_only(options)
+        else:
+            raise ValueError(f"Unknown model: {model_name}")
+
+        correct[i] = int(pred == gold_idx)
+
+        if (i + 1) % 500 == 0:
+            print(f"[CSLI] {model_name} choices-only: {i+1}/{n}", flush=True)
+
+    accuracy = float(np.mean(correct))
+    return (accuracy, correct)
 
 
 def run_full_prompt(
     questions: list[dict],
     model_name: str,
-) -> float:
-    """Run full-question LLM prompt experiment (question text + choices).
+) -> tuple[float, np.ndarray]:
+    """Run full-question experiment (question text + choices) for a given model.
 
-    Presents the full question text along with answer choices to an LLM.
-    Returns accuracy (fraction of questions answered correctly).
+    Presents the full question text along with answer choices. Returns accuracy
+    and per-question correctness array.
 
     Parameters
     ----------
     questions : list[dict]
-        List of MC question dicts with 'question', 'options', 'correct_idx'.
+        List of MC question dicts with 'question', 'options', 'gold_index'.
     model_name : str
-        LLM model identifier (e.g., 'gemini-1.5-flash').
+        Model identifier: 'tfidf', 'sbert', or 't5-small'.
 
     Returns
     -------
-    float
-        Accuracy of the LLM on full prompts (0.0 to 1.0).
-
-    Raises
-    ------
-    NotImplementedError
-        Phase 4 implementation pending -- LLM API calls not yet wired.
+    tuple[float, np.ndarray]
+        (accuracy, per_question_correct) where per_question_correct is a
+        binary array of shape (n_questions,).
     """
-    raise NotImplementedError(
-        "Phase 4 implementation pending: LLM full-question prompt experiment. "
-        "This stub establishes the correct architecture."
-    )
+    n = len(questions)
+    correct = np.zeros(n, dtype=np.int32)
+
+    for i, q in enumerate(questions):
+        question_text = q["question"]
+        options = q["options"]
+        gold_idx = q["gold_index"]
+
+        if model_name == "tfidf":
+            pred = _score_tfidf_full(question_text, options)
+        elif model_name == "sbert":
+            pred = _score_sbert_full(question_text, options)
+        elif model_name == "t5-small":
+            pred = _score_t5_full(question_text, options)
+        else:
+            raise ValueError(f"Unknown model: {model_name}")
+
+        correct[i] = int(pred == gold_idx)
+
+        if (i + 1) % 500 == 0:
+            print(f"[CSLI] {model_name} full: {i+1}/{n}", flush=True)
+
+    accuracy = float(np.mean(correct))
+    return (accuracy, correct)
 
 
-def compute_panel_csli(results: dict[str, dict[str, float]]) -> dict:
-    """Compute panel-level CSLI from per-model full and choices-only accuracies.
-
-    CSLI_model = acc_full(model) - acc_choices_only(model)
-    Panel CSLI = median(CSLI across models)
+def compute_panel_csli(
+    results: dict[str, dict],
+    per_question_csli: np.ndarray,
+    n_questions: int,
+    model_list: list[str],
+) -> dict:
+    """Compute panel-level CSLI from per-model results with bootstrap CI.
 
     Parameters
     ----------
-    results : dict[str, dict[str, float]]
-        Mapping from model_name -> {'acc_full': float, 'acc_choices_only': float}.
+    results : dict[str, dict]
+        Mapping from model_name -> {'acc_full', 'acc_choices_only', 'csli', 'leakage_flag'}.
+    per_question_csli : np.ndarray
+        Per-question CSLI values averaged across models (for bootstrap CI).
+    n_questions : int
+        Number of questions evaluated.
+    model_list : list[str]
+        Ordered list of model names.
 
     Returns
     -------
     dict
         Panel CSLI summary with per-model and aggregate statistics.
-
-    Raises
-    ------
-    NotImplementedError
-        Phase 4 implementation pending -- requires run_full_prompt and
-        run_choices_only_prompt results.
     """
-    raise NotImplementedError(
-        "Phase 4 implementation pending: requires per-model accuracy results "
-        "from run_choices_only_prompt and run_full_prompt."
+    # Compute panel mean CSLI
+    csli_values = [results[m]["csli"] for m in model_list]
+    panel_mean = float(np.mean(csli_values))
+
+    # Bootstrap CI on per-question CSLI array
+    mean_ci, ci_lower, ci_upper = bootstrap_ci(
+        per_question_csli, n_resamples=1000, seed=789685
     )
+
+    # Apply leakage flags
+    threshold = 0.30  # 1/K + 0.05, K=4
+    for m in model_list:
+        results[m]["leakage_flag"] = results[m]["acc_choices_only"] > threshold
+
+    return {
+        "panel_csli": {
+            "mean": panel_mean,
+            "ci_lower": ci_lower,
+            "ci_upper": ci_upper,
+        },
+        "per_model": results,
+        "metadata": {
+            "n_questions": n_questions,
+            "n_models": len(model_list),
+            "K": 4,
+            "threshold": threshold,
+            "bootstrap_resamples": 1000,
+            "seed": 789685,
+            "test_split_seed": 789685,
+            "models": model_list,
+        },
+    }
 
 
 def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -217,7 +522,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         Parsed arguments.
     """
     parser = argparse.ArgumentParser(
-        description="Compute CSLI via LLM-prompt panel (NOT surface-feature logistic regression)",
+        description="Compute CSLI via local model panel (TF-IDF, SBERT, T5-small)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -238,7 +543,10 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--models",
         type=str,
         default=DEFAULT_MODELS,
-        help="Comma-separated list of LLM model names for the panel",
+        help=(
+            "Comma-separated list of model names for the panel. "
+            "Available: tfidf, sbert, t5-small (default: tfidf,sbert,t5-small)"
+        ),
     )
     parser.add_argument(
         "--smoke",
@@ -287,43 +595,97 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[CSLI] Output would be written to: {output_path}")
         return 0
 
-    # Load test dataset
+    # Load MC dataset (has options and gold_index)
+    mc_path = data_dir / "mc_dataset.json"
+    if not mc_path.exists():
+        print(f"ERROR: MC dataset not found: {mc_path}", file=sys.stderr)
+        return 1
+
+    with open(mc_path, "r") as f:
+        mc_questions = json.load(f)
+
+    # Load test split (for qid filtering)
     test_path = data_dir / "test_dataset.json"
     if not test_path.exists():
         print(f"ERROR: Test dataset not found: {test_path}", file=sys.stderr)
         return 1
 
     with open(test_path, "r") as f:
-        questions = json.load(f)
+        test_data = json.load(f)
+
+    # Extract test split qids
+    test_qids = set(str(q["qid"]) for q in test_data["questions"])
+
+    # Filter MC questions to only those in test split
+    questions = [q for q in mc_questions if str(q["qid"]) in test_qids]
+    print(f"[CSLI] Loaded {len(questions)} test-split MC questions "
+          f"(from {len(mc_questions)} MC total, {len(test_qids)} test qids)")
 
     if args.smoke:
         questions = questions[:10]
+        print(f"[CSLI] Smoke mode: trimmed to {len(questions)} questions")
 
-    print(f"[CSLI] Loaded {len(questions)} questions from {test_path}")
     print(f"[CSLI] Panel models: {model_list}")
 
-    # Phase 4: Run LLM experiments per model
-    # Each model gets choices-only and full prompts
-    results: dict[str, dict[str, float]] = {}
-    for model_name in model_list:
-        print(f"[CSLI] Running model: {model_name}")
-        acc_choices = run_choices_only_prompt(questions, model_name)
-        acc_full = run_full_prompt(questions, model_name)
-        results[model_name] = {
-            "acc_full": acc_full,
-            "acc_choices_only": acc_choices,
-            "csli": acc_full - acc_choices,
-        }
+    # Run experiments per model
+    results: dict[str, dict] = {}
+    per_model_choices_correct: dict[str, np.ndarray] = {}
+    per_model_full_correct: dict[str, np.ndarray] = {}
 
-    # Compute panel-level CSLI
-    panel = compute_panel_csli(results)
+    for model_name in model_list:
+        print(f"\n[CSLI] === Running model: {model_name} ===", flush=True)
+
+        print(f"[CSLI] {model_name}: choices-only condition...", flush=True)
+        acc_choices, choices_correct = run_choices_only_prompt(questions, model_name)
+
+        print(f"[CSLI] {model_name}: full condition...", flush=True)
+        acc_full, full_correct = run_full_prompt(questions, model_name)
+
+        csli = acc_full - acc_choices
+        results[model_name] = {
+            "acc_full": round(acc_full, 6),
+            "acc_choices_only": round(acc_choices, 6),
+            "csli": round(csli, 6),
+        }
+        per_model_choices_correct[model_name] = choices_correct
+        per_model_full_correct[model_name] = full_correct
+
+        print(f"[CSLI] {model_name}: full={acc_full:.4f}, "
+              f"choices_only={acc_choices:.4f}, CSLI={csli:.4f}", flush=True)
+
+    # Compute per-question CSLI averaged across models for bootstrap
+    n_questions = len(questions)
+    per_question_csli = np.zeros(n_questions)
+    for m in model_list:
+        # per-question CSLI = correct_full - correct_choices_only
+        per_question_csli += (
+            per_model_full_correct[m].astype(float)
+            - per_model_choices_correct[m].astype(float)
+        )
+    per_question_csli /= len(model_list)
+
+    # Compute panel-level CSLI with bootstrap CI
+    panel = compute_panel_csli(results, per_question_csli, n_questions, model_list)
+
+    # Print summary
+    print("\n" + "=" * 60)
+    print("[CSLI] RESULTS SUMMARY")
+    print("=" * 60)
+    p = panel["panel_csli"]
+    print(f"Panel CSLI: {p['mean']:.4f} [{p['ci_lower']:.4f}, {p['ci_upper']:.4f}]")
+    for m, v in panel["per_model"].items():
+        flag = " ** LEAKAGE WARNING **" if v["leakage_flag"] else ""
+        print(f"  {m}: full={v['acc_full']:.4f}, choices_only={v['acc_choices_only']:.4f}, "
+              f"csli={v['csli']:.4f}{flag}")
+    print(f"Threshold: acc_choices_only > {panel['metadata']['threshold']:.2f} triggers flag")
+    print("=" * 60)
 
     # Write output
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
         json.dump(panel, f, indent=2)
 
-    print(f"[CSLI] Results written to: {output_path}")
+    print(f"\n[CSLI] Results written to: {output_path}")
     return 0
 
 
