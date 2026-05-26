@@ -56,10 +56,37 @@ import numpy as np
 # That function uses surface-feature logistic regression (char-trigram TF-IDF),
 # which is a different experiment from the local-model panel approach here.
 # See DATA-05 in MASTER_PLAN_v10 for the symbol collision prohibition.
+#
+# The runtime guard below makes DATA-05 enforced (not comment-only). The
+# pytest in tests/test_data05_symbol_collision.py adds a static AST check
+# so a violating edit fails CI before it can ship.
 # ============================================================================
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+_DATA05_DISALLOWED = ("evaluation.controls",)
+
+
+def _assert_no_controls_import() -> None:
+    """Fail loud if ``evaluation.controls`` (or its members) leaked into
+    ``sys.modules`` via a future edit.
+
+    DATA-05 (MASTER_PLAN_v10) symbol-collision guard. This script's
+    panel must NOT call ``evaluation.controls.run_choices_only_control``
+    -- that is a different experiment (surface-feature logistic
+    regression on char n-grams) measuring a different construct.
+    """
+    for name in _DATA05_DISALLOWED:
+        if name in sys.modules:
+            raise ImportError(
+                f"DATA-05 violation: {name} is imported in compute_csli.py. "
+                "Use the local-model panel only -- not evaluation.controls. "
+                "See MASTER_PLAN_v10 DATA-05 and Phase 02 review WR-01."
+            )
+
+
+_assert_no_controls_import()
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "processed"
