@@ -18,6 +18,31 @@ IMPORTANT -- DATA-05 SYMBOL COLLISION GUARD:
     and T5-small log-likelihood scoring. The two approaches measure fundamentally
     different constructs.
 
+LIMITATION -- WR-07 PRE-FRESH-SPLIT DISTRACTOR PROVENANCE:
+    mc_dataset.json carries MC options whose distractors were chosen
+    by scripts/build_mc_dataset.py using the OLD train_dataset.json as
+    the reference_questions pool. If scripts/fresh_split.py was then
+    run with a new seed, the test_dataset.json on disk reflects the
+    NEW partition but the distractors in mc_dataset.json were assembled
+    against the OLD partition. CSLI here is therefore computed on
+    options whose construction predates the freeze, which means the
+    "fresh split" integrity claim does NOT extend to MC construction.
+
+    Remediations, in preference order:
+      (a) Re-run scripts/build_mc_dataset.py AFTER scripts/fresh_split.py
+          so distractor selection respects the new train pool. This is
+          the methodologically correct fix. WR-05 already made this
+          script accept both on-disk shapes for test_dataset.json so
+          the rebuild is unblocked.
+      (b) Quantify the realistic effect size (audit how many NEW test
+          items had their gold option used as a distractor for another
+          NEW test item) and document the residual bias in the
+          manuscript Limitations section.
+
+    At runtime, this script prints whether a pre-freshsplit data
+    archive exists; that is the signal an operator should see before
+    interpreting any CSLI value here as a clean fresh-split metric.
+
 Usage:
     python scripts/compute_csli.py --help
     python scripts/compute_csli.py --smoke           # 1 model, 10 questions
@@ -27,6 +52,8 @@ Usage:
 Inputs:
     data/processed/mc_dataset.json   (MC questions with options, gold_index)
     data/processed/test_dataset.json (test split for qid filtering)
+    data/processed.pre_v10_freshsplit_*/  (optional, used only for the
+                                          WR-07 distractor-provenance warning)
 
 Outputs:
     paper_exports/csli.json  (panel CSLI results with bootstrap CIs)
@@ -696,6 +723,38 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     with open(mc_path, "r") as f:
         mc_questions = json.load(f)
+
+    # WR-07: warn loudly if a pre-freshsplit archive of data/processed/
+    # exists. Its presence means fresh_split.py ran AFTER
+    # build_mc_dataset.py and the MC distractors here were assembled
+    # against the pre-freshsplit train pool. The warning is informational
+    # -- it does not gate (the WR-04 coverage check is the gate). Tells
+    # the operator the same thing the docstring's LIMITATION section
+    # documents, but loud, at runtime, where it cannot be missed.
+    archive_dir = data_dir.parent  # typically PROJECT_ROOT/data
+    pre_freshsplit_archives = sorted(
+        archive_dir.glob("processed.pre_v10_freshsplit_*")
+    ) if archive_dir.exists() else []
+    if pre_freshsplit_archives:
+        print(
+            f"[CSLI] WR-07 PROVENANCE WARNING: pre-freshsplit data "
+            f"archive(s) detected: "
+            f"{', '.join(p.name for p in pre_freshsplit_archives)}.",
+            flush=True,
+        )
+        print(
+            "[CSLI]   mc_dataset.json distractors were assembled against "
+            "the OLD train pool. The fresh-split integrity claim does "
+            "NOT extend to MC construction.",
+            flush=True,
+        )
+        print(
+            "[CSLI]   Preferred remediation: re-run "
+            "scripts/build_mc_dataset.py AFTER scripts/fresh_split.py "
+            "(this is now safe -- WR-05 made compute_csli.py accept "
+            "both test_dataset.json shapes).",
+            flush=True,
+        )
 
     # Load test split (for qid filtering)
     test_path = data_dir / "test_dataset.json"
