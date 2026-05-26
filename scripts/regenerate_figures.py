@@ -63,14 +63,25 @@ def _load_json(path: Path) -> dict:
         return json.load(f)
 
 
-def _generate_audit_table(csli_data: dict, cal_data: dict, stopdff_data: dict) -> Path:
-    """Generate a LaTeX booktabs table with the three audit metrics."""
+def _generate_audit_table(
+    csli_data: dict, cal_data: dict, stopdff_data: dict, audit_card: dict
+) -> Path:
+    """Generate a LaTeX booktabs table with the three audit metrics.
+
+    Reads verdicts dynamically from audit_card.json rather than hardcoding.
+    """
     # Extract values
     csli_mean = csli_data["panel_csli"]["mean"]
     csli_ci_lo = csli_data["panel_csli"]["ci_lower"]
     csli_ci_hi = csli_data["panel_csli"]["ci_upper"]
     max_ece = cal_data["max_ece"]
     median_shift = stopdff_data["median_abs_prefix_shift"]
+
+    # Extract verdicts from audit card (CR-02 fix: dynamic, not hardcoded)
+    verdicts = {m["name"]: m["verdict"].lower() for m in audit_card["metrics"]}
+    csli_verdict = verdicts.get("CSLI (Choice-Set Leakage Index)", "unknown")
+    cal_verdict = verdicts.get("Prefix-wise Calibration (ECE)", "unknown")
+    stop_verdict = verdicts.get("Diagnostic StopDFF (Median Abs Prefix Shift)", "unknown")
 
     # Build LaTeX
     lines = [
@@ -79,9 +90,9 @@ def _generate_audit_table(csli_data: dict, cal_data: dict, stopdff_data: dict) -
         r"\toprule",
         r"Metric & Value (95\% CI) & Threshold & Verdict \\",
         r"\midrule",
-        f"CSLI (panel mean) & {csli_mean:.4f} [{csli_ci_lo:.4f}, {csli_ci_hi:.4f}] & 0.30 & \\textsc{{pass}} \\\\",
-        f"Calibration ECE (max bucket) & {max_ece:.4f} & 0.10 & \\textsc{{pass}} \\\\",
-        f"StopDFF (median abs shift) & {median_shift:.1f} & 1.0 & \\textsc{{pass}} \\\\",
+        f"CSLI (panel mean) & {csli_mean:.4f} [{csli_ci_lo:.4f}, {csli_ci_hi:.4f}] & 0.30 & \\textsc{{{csli_verdict}}} \\\\",
+        f"Calibration ECE (max bucket) & {max_ece:.4f} & 0.10 & \\textsc{{{cal_verdict}}} \\\\",
+        f"StopDFF (median abs shift) & {median_shift:.1f} & 1.0 & \\textsc{{{stop_verdict}}} \\\\",
         r"\bottomrule",
         r"\end{tabular}",
     ]
@@ -144,8 +155,14 @@ def _generate_csli_panel(csli_data: dict) -> Path:
     return out_path
 
 
-def _check_reliability_diagrams() -> list[str]:
-    """Check whether reliability diagrams exist (produced by compute_prefix_calibration.py)."""
+def _check_reliability_diagrams() -> tuple[list[str], list[str]]:
+    """Check whether reliability diagrams exist (produced by compute_prefix_calibration.py).
+
+    Returns
+    -------
+    tuple[list[str], list[str]]
+        (present, missing) where each is a list of filenames.
+    """
     expected = ["reliability_early.png", "reliability_mid.png", "reliability_late.png"]
     present = []
     missing = []
@@ -184,9 +201,10 @@ def main() -> int:
     csli_data = _load_json(_PAPER_EXPORTS / "csli.json")
     cal_data = _load_json(_PAPER_EXPORTS / "calibration.json")
     stopdff_data = _load_json(_PAPER_EXPORTS / "stopdff.json")
+    audit_card = _load_json(_PAPER_EXPORTS / "audit_card.json")
 
-    # Generate audit table (LaTeX)
-    tex_path = _generate_audit_table(csli_data, cal_data, stopdff_data)
+    # Generate audit table (LaTeX) with dynamic verdicts from audit_card.json
+    tex_path = _generate_audit_table(csli_data, cal_data, stopdff_data, audit_card)
     print(f"Generated: {tex_path}")
 
     # Generate CSLI panel bar chart
