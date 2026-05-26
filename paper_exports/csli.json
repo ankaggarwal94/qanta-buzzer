@@ -45,6 +45,29 @@
       "sbert",
       "t5-small"
     ],
+    "generation": {
+      "schema_version": 1,
+      "generated_at_utc": "2026-05-26T21:50:54.608801+00:00",
+      "command": [
+        "python",
+        "scripts/compute_csli.py",
+        "--models",
+        "tfidf,sbert,t5-small",
+        "--allow-low-mc-retention"
+      ],
+      "argv": [
+        "--models",
+        "tfidf,sbert,t5-small",
+        "--allow-low-mc-retention"
+      ],
+      "cwd": ".",
+      "output_path": "paper_exports/csli.json",
+      "script_path": "scripts/compute_csli.py",
+      "script_sha256": "9faab5e874de3608544c6cfd5a1833d4a5573a540173d269ade47b171d457a1a",
+      "git_commit": "edbcf3be870d5ba61de0d6a6d4cf8d6182519f63",
+      "git_dirty": false,
+      "git_status_relevant_paths": ""
+    },
     "mc_coverage": {
       "test_dataset_qids": 2258,
       "mc_questions_total": 14437,
