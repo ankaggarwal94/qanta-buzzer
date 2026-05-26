@@ -1,0 +1,27 @@
+{
+  "frozen_timestamp_utc": "2026-05-26T07:53:23Z",
+  "frozen_by": "Ankit",
+  "frozen_before_test_inspection": true,
+  "fresh_split_seed_at_freeze": "789685",
+  "thresholds": [
+    {
+      "metric": "choices_only_accuracy",
+      "threshold": "1/K + 0.05",
+      "numeric_value_K4": 0.30,
+      "direction": "warn_if_above",
+      "provenance": "heuristic/pilot-independent"
+    },
+    {
+      "metric": "prefix_ece",
+      "threshold": 0.10,
+      "direction": "warn_if_above",
+      "provenance": "calibration engineering default"
+    },
+    {
+      "metric": "stopdff_median_abs_prefix",
+      "threshold": 1,
+      "direction": "warn_if_above",
+      "provenance": "heuristic frozen before inference"
+    }
+  ]
+}
