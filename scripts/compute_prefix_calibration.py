@@ -476,6 +476,20 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"[CALI] WARNING: Bucket '{bucket_name}' has only {len(scores)} val samples, "
                   "Platt fit may be unreliable", flush=True)
 
+        # WR-01: Check class balance before fitting Platt scaling
+        if len(np.unique(labels)) < 2:
+            print(f"[CALI] WARNING: Bucket '{bucket_name}' has only one class "
+                  f"(all {'correct' if labels[0] == 1 else 'incorrect'}), "
+                  "Platt scaling will be degenerate", flush=True)
+        else:
+            n_pos = int(labels.sum())
+            n_total = len(labels)
+            class_ratio = n_pos / n_total
+            if class_ratio < 0.1 or class_ratio > 0.9:
+                print(f"[CALI] WARNING: Bucket '{bucket_name}' has imbalanced classes "
+                      f"(positive rate={class_ratio:.3f}, {n_pos}/{n_total}), "
+                      "Platt scaling may produce extreme coefficients", flush=True)
+
         platt_models[bucket_name] = fit_platt(scores, labels)
         coef = float(platt_models[bucket_name].coef_[0][0])
         intercept = float(platt_models[bucket_name].intercept_[0])
