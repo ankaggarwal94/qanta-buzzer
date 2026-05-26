@@ -121,3 +121,16 @@ def test_compute_csli_accepts_multiple_models(
     )
     assert rc == 0
     capsys.readouterr()
+
+
+def test_compute_csli_rejects_unknown_model_before_data_loading(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Unsupported model names fail as CLI argument errors, not tracebacks."""
+    rc = compute_csli_main(
+        ["--models", "tfidf,not-a-model", "--data-dir", "/definitely/missing"]
+    )
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "unsupported --models entries: not-a-model" in captured.err
+    assert "Available: sbert, t5-small, tfidf" in captured.err

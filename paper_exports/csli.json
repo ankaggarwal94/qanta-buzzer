@@ -29,16 +29,73 @@
     "n_questions": 2258,
     "n_models": 3,
     "K": 4,
+    "choices_only_accuracy_threshold": 0.3,
+    "threshold_metric": "choices_only_accuracy",
+    "threshold_criterion": "acc_choices_only > choices_only_accuracy_threshold",
+    "threshold_direction": "warn_if_above",
+    "threshold_source": "threshold_manifest.json",
     "threshold": 0.3,
+    "threshold_deprecated_note": "Deprecated alias for choices_only_accuracy_threshold; applies to per-model acc_choices_only, not to panel_csli.mean or per-model csli.",
     "bootstrap_resamples": 1000,
     "bootstrap_method": "percentile",
+    "bootstrap_seed": 789685,
     "bootstrap_note": "Percentile-method bootstrap (not BCa). CI captures sampling variability over questions but not model selection uncertainty.",
-    "seed": 789685,
-    "test_split_seed": 789685,
     "models": [
       "tfidf",
       "sbert",
       "t5-small"
-    ]
+    ],
+    "mc_coverage": {
+      "test_dataset_qids": 2258,
+      "mc_questions_total": 14437,
+      "matched_test_mc_questions": 2258,
+      "missing_test_qids": 0,
+      "coverage_rate": 1.0,
+      "threshold": 0.98,
+      "passed": true,
+      "overridden": false,
+      "override_flag": "--allow-incomplete-mc-coverage"
+    },
+    "mc_build_metadata": {
+      "status": "loaded",
+      "source_path": "data/processed/build_metadata.json",
+      "source_sha256": "70871984390f252c0a06a5a2c9a2d3b4337f10ad48c87583ebec215d5c0c9c6e",
+      "test": {
+        "raw_count": 3104,
+        "retained_count": 2258,
+        "dropped_count": 846,
+        "retention_rate": 0.7274484536082474,
+        "drop_reasons": {
+          "length_ratio_guard": 291,
+          "question_overlap_guard": 553,
+          "unseen_gold_answer": 2
+        }
+      }
+    },
+    "mc_retention_gate": {
+      "applies": true,
+      "threshold": 0.8,
+      "passed": false,
+      "overridden": true,
+      "override_flag": "--allow-low-mc-retention"
+    },
+    "test_split_provenance_status": "verified",
+    "test_split_provenance_path": "PROJECT_WIKI/SPLIT_PROVENANCE.md",
+    "test_split_provenance_sha256": "7ef1ca96a4d1917779375a353217d35b4719b35654b7500f011327450339ca53",
+    "fresh_split_seed": 789685,
+    "fresh_split_created_at": "2026-05-26T07:49:26.645424+00:00",
+    "fresh_split_commit_sha": "a43be19733509c52e0820c44e322044b4304dc18",
+    "threshold_manifest_sha256": "6f8702acf885eea013645fc3225872a348055d315bdbcd5c481a037eccff3752",
+    "test_split_seed": 789685,
+    "test_split_provenance_note": "verified against PROJECT_WIKI/SPLIT_PROVENANCE.md and threshold_manifest.json",
+    "raw_test_questions": 3104,
+    "retained_mc_test_questions": 2258,
+    "dropped_test_questions": 846,
+    "mc_test_retention_rate": 0.7274484536082474,
+    "mc_test_drop_reasons": {
+      "length_ratio_guard": 291,
+      "question_overlap_guard": 553,
+      "unseen_gold_answer": 2
+    }
   }
 }

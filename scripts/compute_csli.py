@@ -52,6 +52,8 @@ Usage:
 Inputs:
     data/processed/mc_dataset.json   (MC questions with options, gold_index)
     data/processed/test_dataset.json (test split for qid filtering)
+    data/processed/build_metadata.json (optional MC raw/retained/drop counts)
+    PROJECT_WIKI/SPLIT_PROVENANCE.md (optional fresh-split provenance)
     data/processed.pre_v10_freshsplit_*/  (optional, used only for the
                                           WR-07 distractor-provenance warning)
 
@@ -67,11 +69,13 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import sys
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -121,6 +125,9 @@ DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "processed"
 DEFAULT_OUTPUT = PROJECT_ROOT / "paper_exports" / "csli.json"
 DEFAULT_MODELS = "tfidf,sbert,t5-small"
 THRESHOLD_MANIFEST = PROJECT_ROOT / "threshold_manifest.json"
+SPLIT_PROVENANCE = PROJECT_ROOT / "PROJECT_WIKI" / "SPLIT_PROVENANCE.md"
+SUPPORTED_MODELS = frozenset({"tfidf", "sbert", "t5-small"})
+BOOTSTRAP_SEED = 789685
 
 # Lazy-loaded model caches.
 #
@@ -169,11 +176,175 @@ _TFIDF_PRIOR_LOCK = threading.Lock()
 _SBERT_PRIOR_LOCK = threading.Lock()
 
 
+def _sha256_file(path: Path) -> str:
+    """Return the SHA-256 digest for a local artifact."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _display_path(path: Path) -> str:
+    """Return a stable project-relative path when possible."""
+    try:
+        return str(path.resolve().relative_to(PROJECT_ROOT.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def _parse_split_provenance(path: Path) -> dict[str, str]:
+    """Parse ``KEY=VALUE`` provenance fields from SPLIT_PROVENANCE.md."""
+    fields: dict[str, str] = {}
+    pattern = re.compile(r"^([A-Z0-9_]+)=(.+)$")
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        match = pattern.match(raw_line.strip())
+        if match:
+            fields[match.group(1)] = match.group(2).strip()
+    return fields
+
+
+def _load_split_provenance(data_dir: Path) -> dict[str, Any]:
+    """Load durable fresh-split provenance when the default data dir is used."""
+    provenance: dict[str, Any] = {
+        "test_split_provenance_status": "unverified",
+        "test_split_provenance_path": _display_path(SPLIT_PROVENANCE),
+        "test_split_provenance_sha256": None,
+        "fresh_split_seed": None,
+        "fresh_split_created_at": None,
+        "fresh_split_commit_sha": None,
+        "threshold_manifest_sha256": None,
+        "test_split_seed": None,
+        "test_split_provenance_note": None,
+    }
+
+    try:
+        is_default_data_dir = data_dir.resolve() == DEFAULT_DATA_DIR.resolve()
+    except OSError:
+        is_default_data_dir = False
+
+    if not is_default_data_dir:
+        provenance["test_split_provenance_note"] = (
+            "unverified because --data-dir does not match the frozen default "
+            f"data directory ({DEFAULT_DATA_DIR})"
+        )
+        return provenance
+
+    if not SPLIT_PROVENANCE.exists():
+        provenance["test_split_provenance_note"] = (
+            "unverified because PROJECT_WIKI/SPLIT_PROVENANCE.md is missing"
+        )
+        return provenance
+
+    fields = _parse_split_provenance(SPLIT_PROVENANCE)
+    provenance["test_split_provenance_sha256"] = _sha256_file(SPLIT_PROVENANCE)
+    provenance["fresh_split_seed"] = _maybe_int(fields.get("FRESH_SPLIT_SEED"))
+    provenance["fresh_split_created_at"] = fields.get("FRESH_SPLIT_CREATED_AT")
+    provenance["fresh_split_commit_sha"] = fields.get("FRESH_SPLIT_COMMIT_SHA")
+    provenance["threshold_manifest_sha256"] = fields.get("THRESHOLD_MANIFEST_SHA256")
+
+    manifest_hash_ok = False
+    if THRESHOLD_MANIFEST.exists() and provenance["threshold_manifest_sha256"]:
+        manifest_hash_ok = (
+            _sha256_file(THRESHOLD_MANIFEST)
+            == provenance["threshold_manifest_sha256"]
+        )
+
+    manifest_seed_ok = False
+    if THRESHOLD_MANIFEST.exists() and provenance["fresh_split_seed"] is not None:
+        with open(THRESHOLD_MANIFEST, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        manifest_seed_ok = str(manifest.get("fresh_split_seed_at_freeze")) == str(
+            provenance["fresh_split_seed"]
+        )
+
+    if manifest_hash_ok and manifest_seed_ok:
+        provenance["test_split_provenance_status"] = "verified"
+        provenance["test_split_seed"] = provenance["fresh_split_seed"]
+        provenance["test_split_provenance_note"] = (
+            "verified against PROJECT_WIKI/SPLIT_PROVENANCE.md and "
+            "threshold_manifest.json"
+        )
+    else:
+        missing_or_mismatch = []
+        if not manifest_hash_ok:
+            missing_or_mismatch.append("threshold manifest hash mismatch")
+        if not manifest_seed_ok:
+            missing_or_mismatch.append("fresh split seed mismatch")
+        provenance["test_split_provenance_note"] = (
+            "unverified: " + "; ".join(missing_or_mismatch)
+        )
+
+    return provenance
+
+
+def _maybe_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_mc_build_metadata(data_dir: Path) -> dict[str, Any]:
+    """Load MC-construction retention metadata when present."""
+    path = data_dir / "build_metadata.json"
+    summary: dict[str, Any] = {
+        "status": "missing",
+        "source_path": _display_path(path),
+        "source_sha256": None,
+        "test": None,
+        "retention_thresholds": None,
+    }
+    if not path.exists():
+        return summary
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+        test = metadata["splits"]["test"]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Invalid MC build metadata at {path}: {exc}") from exc
+
+    summary["status"] = "loaded"
+    summary["source_sha256"] = _sha256_file(path)
+    summary["retention_thresholds"] = metadata.get("retention_thresholds")
+    summary["test"] = {
+        "raw_count": int(test["raw_count"]),
+        "retained_count": int(test["retained_count"]),
+        "dropped_count": int(test["dropped_count"]),
+        "retention_rate": float(test["retention_rate"]),
+        "drop_reasons": test.get("drop_reasons", {}),
+    }
+    return summary
+
+
+def _metadata_retention_threshold(
+    build_metadata: dict[str, Any],
+    *,
+    smoke: bool,
+    explicit_threshold: float | None,
+) -> float:
+    if explicit_threshold is not None:
+        return explicit_threshold
+
+    thresholds = build_metadata.get("retention_thresholds")
+    if isinstance(thresholds, dict):
+        key = "smoke" if smoke else "full"
+        try:
+            return float(thresholds[key])
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    return 0.98
+
+
 def bootstrap_ci(
     values: np.ndarray,
     n_resamples: int = 1000,
     confidence: float = 0.95,
-    seed: int = 789685,
+    seed: int = BOOTSTRAP_SEED,
 ) -> tuple[float, float, float]:
     """Compute bootstrap confidence interval for the mean.
 
@@ -854,6 +1025,7 @@ def compute_panel_csli(
     per_question_csli: np.ndarray,
     n_questions: int,
     model_list: list[str],
+    metadata_context: dict[str, Any] | None = None,
 ) -> dict:
     """Compute panel-level CSLI from per-model results with bootstrap CI.
 
@@ -886,7 +1058,7 @@ def compute_panel_csli(
 
     # Bootstrap CI on per-question CSLI array
     mean_ci, ci_lower, ci_upper = bootstrap_ci(
-        per_question_csli, n_resamples=1000, seed=789685
+        per_question_csli, n_resamples=1000, seed=BOOTSTRAP_SEED
     )
 
     from scripts.threshold_manifest import (
@@ -905,6 +1077,33 @@ def compute_panel_csli(
     for m in model_list:
         results[m]["leakage_flag"] = results[m]["acc_choices_only"] > threshold
 
+    metadata = {
+        "n_questions": n_questions,
+        "n_models": len(model_list),
+        "K": 4,
+        "choices_only_accuracy_threshold": threshold,
+        "threshold_metric": "choices_only_accuracy",
+        "threshold_criterion": "acc_choices_only > choices_only_accuracy_threshold",
+        "threshold_direction": "warn_if_above",
+        "threshold_source": _display_path(THRESHOLD_MANIFEST),
+        "threshold": threshold,
+        "threshold_deprecated_note": (
+            "Deprecated alias for choices_only_accuracy_threshold; applies to "
+            "per-model acc_choices_only, not to panel_csli.mean or per-model csli."
+        ),
+        "bootstrap_resamples": 1000,
+        "bootstrap_method": "percentile",
+        "bootstrap_seed": BOOTSTRAP_SEED,
+        "bootstrap_note": (
+            "Percentile-method bootstrap (not BCa). CI captures "
+            "sampling variability over questions but not model "
+            "selection uncertainty."
+        ),
+        "models": model_list,
+    }
+    if metadata_context is not None:
+        metadata.update(metadata_context)
+
     return {
         "panel_csli": {
             "mean": mean_ci,
@@ -913,22 +1112,7 @@ def compute_panel_csli(
             "mean_from_per_model_avg": panel_mean_from_models,
         },
         "per_model": results,
-        "metadata": {
-            "n_questions": n_questions,
-            "n_models": len(model_list),
-            "K": 4,
-            "threshold": threshold,
-            "bootstrap_resamples": 1000,
-            "bootstrap_method": "percentile",
-            "bootstrap_note": (
-                "Percentile-method bootstrap (not BCa). CI captures "
-                "sampling variability over questions but not model "
-                "selection uncertainty."
-            ),
-            "seed": 789685,
-            "test_split_seed": 789685,
-            "models": model_list,
-        },
+        "metadata": metadata,
     }
 
 
@@ -996,6 +1180,18 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--min-mc-retention",
+        type=float,
+        default=None,
+        help=(
+            "Minimum raw-test retention rate required by build_metadata.json. "
+            "Defaults to build_metadata.retention_thresholds.full (or .smoke "
+            "in --smoke mode) when present, otherwise 0.98. This gate is "
+            "separate from --min-mc-coverage, which only checks qid coverage "
+            "against the on-disk test_dataset.json."
+        ),
+    )
+    parser.add_argument(
         "--allow-incomplete-mc-coverage",
         action="store_true",
         help=(
@@ -1003,6 +1199,15 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "interpretation accounts for the non-random subset (e.g., when "
             "MC reconstruction against the new train pool is intentionally "
             "deferred)."
+        ),
+    )
+    parser.add_argument(
+        "--allow-low-mc-retention",
+        action="store_true",
+        help=(
+            "Override the build_metadata.json raw-test retention gate. Use "
+            "only when reporting CSLI explicitly as a retained-MC-test-subset "
+            "metric rather than a full raw fresh-test metric."
         ),
     )
 
@@ -1043,6 +1248,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(
             "ERROR: --models must specify at least one model "
             "(comma-separated). Available: tfidf, sbert, t5-small.",
+            file=sys.stderr,
+        )
+        return 2
+    unknown_models = sorted(set(model_list) - SUPPORTED_MODELS)
+    if unknown_models:
+        print(
+            f"ERROR: unsupported --models entries: {', '.join(unknown_models)}. "
+            f"Available: {', '.join(sorted(SUPPORTED_MODELS))}.",
             file=sys.stderr,
         )
         return 2
@@ -1140,6 +1353,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # Filter MC questions to only those in test split
     questions = [q for q in mc_questions if str(q["qid"]) in test_qids]
+    matched_test_mc_questions = len(questions)
     print(f"[CSLI] Loaded {len(questions)} test-split MC questions "
           f"(from {len(mc_questions)} MC total, {len(test_qids)} test qids)")
 
@@ -1153,7 +1367,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # unless the operator explicitly overrides.
     mc_qids = {str(q["qid"]) for q in mc_questions}
     missing_qids = test_qids - mc_qids
-    coverage = len(questions) / max(1, len(test_qids))
+    coverage = matched_test_mc_questions / max(1, len(test_qids))
     print(
         f"[CSLI] MC coverage of test split: {coverage:.1%} "
         f"({len(questions)}/{len(test_qids)}, {len(missing_qids)} missing)"
@@ -1170,6 +1384,83 @@ def main(argv: Optional[list[str]] = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    try:
+        build_metadata = _load_mc_build_metadata(data_dir)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    retention_gate: dict[str, Any] = {
+        "applies": build_metadata["status"] == "loaded",
+        "threshold": None,
+        "passed": None,
+        "overridden": False,
+        "override_flag": "--allow-low-mc-retention",
+    }
+    if build_metadata["status"] == "loaded":
+        test_retention = build_metadata["test"]
+        if not isinstance(test_retention, dict):
+            print(
+                "ERROR: Invalid MC build metadata: missing splits.test object.",
+                file=sys.stderr,
+            )
+            return 1
+        min_retention = _metadata_retention_threshold(
+            build_metadata,
+            smoke=args.smoke,
+            explicit_threshold=args.min_mc_retention,
+        )
+        retention_rate = float(test_retention["retention_rate"])
+        retention_passed = retention_rate >= min_retention
+        retention_overridden = (
+            not retention_passed and args.allow_low_mc_retention
+        )
+        retention_gate.update(
+            {
+                "threshold": min_retention,
+                "passed": retention_passed,
+                "overridden": retention_overridden,
+            }
+        )
+        print(
+            "[CSLI] MC raw-test retention from build_metadata.json: "
+            f"{retention_rate:.1%} "
+            f"({test_retention['retained_count']}/{test_retention['raw_count']}, "
+            f"{test_retention['dropped_count']} dropped; threshold "
+            f"{min_retention:.1%})"
+        )
+        if int(test_retention["retained_count"]) != len(test_qids):
+            print(
+                "[CSLI] WARNING: build_metadata.json retained_count does not "
+                f"match test_dataset.json qid count "
+                f"({test_retention['retained_count']} vs {len(test_qids)}).",
+                flush=True,
+            )
+        if not retention_passed and not args.allow_low_mc_retention:
+            print(
+                f"ERROR: CSLI raw-test MC retention is only "
+                f"{retention_rate:.1%} (threshold: {min_retention:.1%}). "
+                f"CSLI would be computed on the retained MC-test subset, not "
+                f"the full raw fresh-test split. Pass "
+                f"--allow-low-mc-retention only if the artifact/report "
+                f"explicitly qualifies the result as retained-subset CSLI.",
+                file=sys.stderr,
+            )
+            return 1
+        if retention_overridden:
+            print(
+                "[CSLI] LOW-RETENTION OVERRIDE: proceeding with retained-subset "
+                "CSLI because --allow-low-mc-retention was supplied.",
+                flush=True,
+            )
+    else:
+        print(
+            "[CSLI] build_metadata.json not found; raw-test MC retention "
+            "counts are unavailable. Reporting coverage against "
+            "test_dataset.json only.",
+            flush=True,
+        )
 
     if args.smoke:
         questions = questions[:10]
@@ -1215,7 +1506,55 @@ def main(argv: Optional[list[str]] = None) -> int:
     per_question_csli /= len(model_list)
 
     # Compute panel-level CSLI with bootstrap CI
-    panel = compute_panel_csli(results, per_question_csli, n_questions, model_list)
+    split_provenance = _load_split_provenance(data_dir)
+    metadata_context: dict[str, Any] = {
+        "mc_coverage": {
+            "test_dataset_qids": len(test_qids),
+            "mc_questions_total": len(mc_questions),
+            "matched_test_mc_questions": matched_test_mc_questions,
+            "missing_test_qids": len(missing_qids),
+            "coverage_rate": coverage,
+            "threshold": args.min_mc_coverage,
+            "passed": coverage >= args.min_mc_coverage,
+            "overridden": coverage < args.min_mc_coverage
+            and args.allow_incomplete_mc_coverage,
+            "override_flag": "--allow-incomplete-mc-coverage",
+        },
+        "mc_build_metadata": {
+            "status": build_metadata["status"],
+            "source_path": build_metadata["source_path"],
+            "source_sha256": build_metadata["source_sha256"],
+            "test": build_metadata["test"],
+        },
+        "mc_retention_gate": retention_gate,
+        **split_provenance,
+    }
+
+    if build_metadata["test"] is not None:
+        test_retention = build_metadata["test"]
+        if not isinstance(test_retention, dict):
+            print(
+                "ERROR: Invalid MC build metadata: missing splits.test object.",
+                file=sys.stderr,
+            )
+            return 1
+        metadata_context.update(
+            {
+                "raw_test_questions": test_retention["raw_count"],
+                "retained_mc_test_questions": test_retention["retained_count"],
+                "dropped_test_questions": test_retention["dropped_count"],
+                "mc_test_retention_rate": test_retention["retention_rate"],
+                "mc_test_drop_reasons": test_retention["drop_reasons"],
+            }
+        )
+
+    panel = compute_panel_csli(
+        results,
+        per_question_csli,
+        n_questions,
+        model_list,
+        metadata_context=metadata_context,
+    )
 
     # Print summary
     print("\n" + "=" * 60)
@@ -1227,7 +1566,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         flag = " ** LEAKAGE WARNING **" if v["leakage_flag"] else ""
         print(f"  {m}: full={v['acc_full']:.4f}, choices_only={v['acc_choices_only']:.4f}, "
               f"csli={v['csli']:.4f}{flag}")
-    print(f"Threshold: acc_choices_only > {panel['metadata']['threshold']:.2f} triggers flag")
+    print(
+        "Threshold: acc_choices_only > "
+        f"{panel['metadata']['choices_only_accuracy_threshold']:.2f} "
+        "triggers flag"
+    )
     print("=" * 60)
 
     # Write output
