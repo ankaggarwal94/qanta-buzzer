@@ -1,0 +1,41 @@
+{
+  "split_reference": "train_dataset.json is the canonical reference corpus for all splits",
+  "retention_thresholds": {
+    "smoke": 0.5,
+    "full": 0.8
+  },
+  "splits": {
+    "train": {
+      "raw_count": 33,
+      "retained_count": 23,
+      "dropped_count": 10,
+      "retention_rate": 0.696969696969697,
+      "reference_answer_count": 28,
+      "drop_reasons": {
+        "length_ratio_guard": 7,
+        "question_overlap_guard": 3
+      }
+    },
+    "val": {
+      "raw_count": 3,
+      "retained_count": 0,
+      "dropped_count": 3,
+      "retention_rate": 0.0,
+      "reference_answer_count": 28,
+      "drop_reasons": {
+        "unseen_gold_answer": 3
+      }
+    },
+    "test": {
+      "raw_count": 14,
+      "retained_count": 2,
+      "dropped_count": 12,
+      "retention_rate": 0.14285714285714285,
+      "reference_answer_count": 28,
+      "drop_reasons": {
+        "unseen_gold_answer": 12
+      }
+    }
+  },
+  "combined_mc_dataset_count": 25
+}

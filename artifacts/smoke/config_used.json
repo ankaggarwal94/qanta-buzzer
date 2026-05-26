@@ -1,0 +1,97 @@
+{
+  "data": {
+    "csv_path": "questions.csv",
+    "K": 4,
+    "distractor_strategy": "category_random",
+    "train_ratio": 0.7,
+    "val_ratio": 0.15,
+    "test_ratio": 0.15,
+    "max_questions": 50,
+    "shuffle_seed": 42
+  },
+  "answer_profiles": {
+    "max_tokens_per_profile": 500,
+    "min_questions_per_answer": 1,
+    "leave_one_out": false
+  },
+  "likelihood": {
+    "model": "tfidf",
+    "embedding_model": "all-MiniLM-L6-v2",
+    "beta": 5.0,
+    "cache_embeddings": true,
+    "cache_dir": "cache/embeddings",
+    "batch_size": 4,
+    "max_length": 256,
+    "sbert_name": "all-MiniLM-L6-v2"
+  },
+  "environment": {
+    "reward_mode": "time_penalty",
+    "seed": 13,
+    "wait_penalty": 0.05,
+    "early_buzz_penalty": 0.2,
+    "buzz_correct": 1.0,
+    "buzz_incorrect": -1.0,
+    "max_steps": 10,
+    "opponent_buzz_model": {
+      "type": "none"
+    },
+    "reward": "time_penalty"
+  },
+  "mc_guards": {
+    "alias_edit_distance_threshold": 0.2,
+    "duplicate_token_overlap_threshold": 0.8,
+    "max_length_ratio": 3.0
+  },
+  "bayesian": {
+    "threshold_sweep": [
+      0.5,
+      0.7,
+      0.9
+    ],
+    "alpha": 10.0
+  },
+  "ppo": {
+    "seed": 13,
+    "total_timesteps": 3000,
+    "learning_rate": "3e-4",
+    "n_steps": 32,
+    "batch_size": 8,
+    "n_epochs": 2,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_ratio": 0.2,
+    "value_coef": 0.5,
+    "entropy_coef": 0.01,
+    "max_grad_norm": 0.5,
+    "target_kl": 0.03,
+    "policy_kwargs": {
+      "net_arch": [
+        32,
+        32
+      ]
+    }
+  },
+  "evaluation": {
+    "metrics": [
+      "accuracy",
+      "reward"
+    ],
+    "compute_sq": false,
+    "run_choices_only": false,
+    "run_shuffle": false,
+    "bootstrap_ci_samples": 0,
+    "save_predictions": false,
+    "prediction_dir": "results/predictions"
+  },
+  "supervised": {
+    "epochs": 2,
+    "batch_size": 4,
+    "gradient_accumulation_steps": 1,
+    "learning_rate": "1e-4",
+    "warmup_steps": 10,
+    "eval_steps": 20,
+    "save_steps": 100,
+    "save_total_limit": 1,
+    "checkpoint_dir": "checkpoints/supervised_smoke"
+  }
+}

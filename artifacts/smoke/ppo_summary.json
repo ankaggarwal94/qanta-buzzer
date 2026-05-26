@@ -1,0 +1,19 @@
+{
+  "schema_version": 2,
+  "n": 23.0,
+  "buzz_accuracy": 0.43478260869565216,
+  "mean_buzz_step": 0.0,
+  "mean_sq": 0.4239789201156336,
+  "mean_reward_like": -0.28759834368530024,
+  "policy_buzz_rate": 1.0,
+  "n_policy_buzzes": 23.0,
+  "forced_commit_rate": 0.0,
+  "n_forced_commits": 0.0,
+  "forced_correct_rate": 0.0,
+  "overall_outcome_accuracy": 0.43478260869565216,
+  "ece": 0.18478260869565216,
+  "brier": 0.2798913043478261,
+  "n_calibration": 23.0,
+  "train_split": "train",
+  "eval_split": "train"
+}
