@@ -3,7 +3,7 @@
 Thin wrapper dispatching existing pipeline stages on managed GPU. Budget: $300 max.
 
 Usage:
-    modal run modal_cs321m.py -- --dry-run
+    python modal_cs321m.py --dry-run --config configs/cs321m_smoke.yaml
     modal run modal_cs321m.py -- --config configs/cs321m_smoke.yaml
     modal run modal_cs321m.py -- --config configs/cs321m_final.yaml
     modal run modal_cs321m.py -- --stages build_mc_dataset run_baselines
@@ -18,20 +18,35 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import modal
-
-app = modal.App("cs321m-qanta-buzzer")
-
-image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .pip_install_from_pyproject("pyproject.toml")
-    .pip_install("modal")
-    .copy_local_dir(".", "/app")
-)
+# Defer modal import so --dry-run works without modal installed.
+# When invoked via `modal run`, modal is guaranteed available.
+try:
+    import modal
+    _MODAL_AVAILABLE = True
+except ImportError:
+    _MODAL_AVAILABLE = False
 
 PIPELINE_STAGES = ["build_mc_dataset", "run_baselines", "train_ppo", "evaluate_all"]
 A100_RATE_PER_HOUR = 3.00  # Approximate Modal A100-80GB rate
 
+
+def _setup_modal():
+    """Create Modal app and image. Only called when modal is available."""
+    app = modal.App("cs321m-qanta-buzzer")
+    image = (
+        modal.Image.debian_slim(python_version="3.11")
+        .pip_install_from_pyproject("pyproject.toml")
+        .pip_install("modal")
+        .copy_local_dir(".", "/app")
+    )
+    return app, image
+
+
+if _MODAL_AVAILABLE:
+    app, image = _setup_modal()
+else:
+    app = None
+    image = None
 
 def spend_tracker(
     stage_name: str, duration_seconds: float, gpu_type: str = "A100-80GB"
@@ -50,7 +65,14 @@ def spend_tracker(
     print(f"[spend] {entry.strip()}")
 
 
-@app.function(gpu="A100", timeout=3600, image=image)
+def _modal_function_decorator(func):
+    """Apply @app.function decorator only when modal is available."""
+    if _MODAL_AVAILABLE and app is not None:
+        return app.function(gpu="A100", timeout=3600, image=image)(func)
+    return func
+
+
+@_modal_function_decorator
 def run_pipeline_stage(
     stage: str, config_path: str, extra_args: list[str] | None = None
 ) -> dict:
@@ -78,8 +100,7 @@ def run_pipeline_stage(
     }
 
 
-@app.local_entrypoint()
-def main():
+def _main_impl():
     """CLI entrypoint for Modal dispatch of CS321M pipeline stages."""
     parser = argparse.ArgumentParser(
         description="CS321M Modal A100 pipeline orchestrator"
@@ -111,9 +132,15 @@ def main():
         print(f"GPU:        A100-80GB")
         print(f"Output dir: {args.output_dir or '(default)'}")
         print(f"Budget:     $300 max")
+        print(f"Modal SDK:  {'available' if _MODAL_AVAILABLE else 'NOT INSTALLED'}")
         print("=" * 60)
         print("No Modal functions launched. Pass without --dry-run to execute.")
         return
+
+    if not _MODAL_AVAILABLE:
+        print("ERROR: modal package not installed. Install with: pip install modal",
+              file=sys.stderr)
+        sys.exit(1)
 
     print("=" * 60)
     print("CS321M Modal Pipeline -- EXECUTING")
@@ -142,3 +169,14 @@ def main():
     print(f"\n{'=' * 60}")
     print(f"Pipeline complete in {total_duration:.1f}s")
     print(f"Results: {json.dumps(results, indent=2)}")
+
+
+# When modal is available, register as local_entrypoint for `modal run`
+if _MODAL_AVAILABLE and app is not None:
+    main = app.local_entrypoint()(_main_impl)
+else:
+    main = _main_impl
+
+
+if __name__ == "__main__":
+    _main_impl()
