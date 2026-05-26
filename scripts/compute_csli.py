@@ -616,6 +616,29 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Parse arguments and validate data path, but do not run compute",
     )
+    parser.add_argument(
+        "--min-mc-coverage",
+        type=float,
+        default=0.98,
+        help=(
+            "Minimum fraction of test-split qids that must have a matching "
+            "MCQuestion in mc_dataset.json (default: 0.98). When coverage is "
+            "below this fraction the script refuses to run, because CSLI would "
+            "be computed on a non-random subset of the test split (WR-04). "
+            "Re-run scripts/build_mc_dataset.py against the new train split, "
+            "or pass --allow-incomplete-mc-coverage to override."
+        ),
+    )
+    parser.add_argument(
+        "--allow-incomplete-mc-coverage",
+        action="store_true",
+        help=(
+            "Override the --min-mc-coverage gate. Use only when downstream "
+            "interpretation accounts for the non-random subset (e.g., when "
+            "MC reconstruction against the new train pool is intentionally "
+            "deferred)."
+        ),
+    )
 
     return parser.parse_args(argv)
 
@@ -678,6 +701,34 @@ def main(argv: Optional[list[str]] = None) -> int:
     questions = [q for q in mc_questions if str(q["qid"]) in test_qids]
     print(f"[CSLI] Loaded {len(questions)} test-split MC questions "
           f"(from {len(mc_questions)} MC total, {len(test_qids)} test qids)")
+
+    # WR-04: refuse to compute CSLI on a non-random subset of the test
+    # split. fresh_split.py partitions raw TossupQuestions, but
+    # mc_dataset.json only contains questions that survived MC
+    # construction in build_mc_dataset.py. The intersection can be
+    # strictly smaller than len(test_qids), and the missing items are
+    # NOT missing at random (they're "hard to find distractors for"),
+    # which is itself a confounder of choices-only accuracy. Fail closed
+    # unless the operator explicitly overrides.
+    mc_qids = {str(q["qid"]) for q in mc_questions}
+    missing_qids = test_qids - mc_qids
+    coverage = len(questions) / max(1, len(test_qids))
+    print(
+        f"[CSLI] MC coverage of test split: {coverage:.1%} "
+        f"({len(questions)}/{len(test_qids)}, {len(missing_qids)} missing)"
+    )
+    if coverage < args.min_mc_coverage and not args.allow_incomplete_mc_coverage:
+        print(
+            f"ERROR: WR-04 / CSLI-01 violation: only {coverage:.1%} of "
+            f"new test qids have matching MCQuestions in mc_dataset.json "
+            f"(threshold: {args.min_mc_coverage:.1%}). CSLI would be "
+            f"computed on a non-random subset selected against 'hard to "
+            f"find distractors for'. Re-run scripts/build_mc_dataset.py "
+            f"against the new train split, or pass "
+            f"--allow-incomplete-mc-coverage to override.",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.smoke:
         questions = questions[:10]
