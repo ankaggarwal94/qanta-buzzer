@@ -2,13 +2,36 @@
 """
 Compute CSLI (Choice-Set Leakage Index) via local model panel.
 
-CSLI = acc_full - acc_choices_only
+This script emits two CSLI flavors so downstream consumers (audit
+card, manuscript, figures) can show either interpretation. The
+frozen gate is on choices-only accuracy and is independent of
+which flavor a consumer chooses to display.
 
-This metric measures whether a model can identify the correct answer from
-the multiple-choice options alone (without seeing the question text).
-High choices-only accuracy (above 1/K + 0.05 = 0.30 for K=4) indicates
-the answer choices leak information about the correct answer through
-construction artifacts (e.g., length, specificity, plausibility patterns).
+* ``csli`` (per-model) and ``panel_csli.mean`` -- "gap" flavor:
+  ``acc_full - acc_choices_only``. Matches the final manuscript's
+  $\\overline{\\mathrm{CSLI}}$ definition (final_project.tex L120-121).
+  Large gap = model uses the question (low leakage in the
+  manuscript's inverted-semantic reading). Can be negative when
+  choices-only accuracy exceeds full accuracy.
+
+* ``csli_choices_excess`` (per-model) and
+  ``panel_csli_choices_excess.mean_from_per_model_avg`` -- PAP-original
+  flavor: ``max(0, acc_choices_only - 1/K)``. Matches the PAP
+  definition (pap.tex eq. for $\\mathrm{CSLI}_{j}^{(f)}$). Larger
+  excess = more leakage from choices alone. Always >= 0.
+
+* The frozen leakage gate (threshold_manifest.json) is on
+  per-model choices-only accuracy:
+  ``max(acc_choices_only) > 1/K + 0.05 = 0.30`` for K=4 raises a
+  leakage flag. Both flavors are reported for transparency; the
+  gate verdict depends only on the per-model
+  ``acc_choices_only`` values, NOT on either flavor's panel value.
+
+PR #14 review (Blocker 1) raised the gap-vs-excess mismatch: the
+PAP defined CSLI as the choices-only excess, the final manuscript
+adopted the gap flavor without renaming, and the audit card
+displayed the gap value. The current code emits both flavors so
+each consumer can choose; the audit card surfaces both.
 
 IMPORTANT -- DATA-05 SYMBOL COLLISION GUARD:
     DO NOT import evaluation.controls.run_choices_only_control -- that function
@@ -1129,6 +1152,17 @@ def compute_panel_csli(
     csli_values = [results[m]["csli"] for m in model_list]
     panel_mean_from_models = float(np.mean(csli_values))
 
+    # PR #14 Blocker 1: also report the PAP-original "choices-only
+    # excess over chance" interpretation at panel level.
+    K = 4
+    chance = 1.0 / K
+    csli_choices_excess_per_model = [
+        max(0.0, results[m]["acc_choices_only"] - chance) for m in model_list
+    ]
+    panel_csli_choices_excess_from_models = float(
+        np.mean(csli_choices_excess_per_model)
+    )
+
     # Bootstrap CI on per-question CSLI array
     mean_ci, ci_lower, ci_upper = bootstrap_ci(
         per_question_csli, n_resamples=1000, seed=BOOTSTRAP_SEED
@@ -1183,6 +1217,25 @@ def compute_panel_csli(
             "ci_lower": ci_lower,
             "ci_upper": ci_upper,
             "mean_from_per_model_avg": panel_mean_from_models,
+        },
+        # PR #14 Blocker 1: PAP-original "choices-only excess over chance"
+        # interpretation, computed alongside the manuscript-aligned gap
+        # so downstream consumers and the audit card can show both.
+        # The mean_from_per_model_avg is the panel-level summary; we do
+        # not bootstrap the excess because the gate is on max(choices-only
+        # accuracy), not on the panel mean of either CSLI flavor.
+        "panel_csli_choices_excess": {
+            "mean_from_per_model_avg": panel_csli_choices_excess_from_models,
+            "definition": "max(0, acc_choices_only - 1/K) per model, then averaged across models",
+            "K": K,
+            "chance": chance,
+            "interpretation": (
+                "PAP-original CSLI flavor: how much above chance choices-only "
+                "accuracy is. Higher = more leakage from choices alone. The "
+                "frozen gate is still max(acc_choices_only) > 0.30 (= 1/K + 0.05) "
+                "from threshold_manifest.json; this panel summary is reported "
+                "for transparency."
+            ),
         },
         "per_model": results,
         "metadata": metadata,
@@ -1550,6 +1603,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     per_model_choices_correct: dict[str, np.ndarray] = {}
     per_model_full_correct: dict[str, np.ndarray] = {}
 
+    # PR #14 Blocker 1: emit BOTH the manuscript-aligned gap CSLI
+    # AND the PAP-original choices-only excess so downstream consumers
+    # and the audit card can show both interpretations. The frozen
+    # gate (manifest: max acc_choices_only > 0.30) is independent of
+    # which metric is displayed.
+    K = 4
+    chance = 1.0 / K
+
     for model_name in model_list:
         print(f"\n[CSLI] === Running model: {model_name} ===", flush=True)
 
@@ -1560,16 +1621,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         acc_full, full_correct = run_full_prompt(questions, model_name)
 
         csli = acc_full - acc_choices
+        csli_choices_excess = max(0.0, acc_choices - chance)
         results[model_name] = {
             "acc_full": round(acc_full, 6),
             "acc_choices_only": round(acc_choices, 6),
             "csli": round(csli, 6),
+            "csli_choices_excess": round(csli_choices_excess, 6),
         }
         per_model_choices_correct[model_name] = choices_correct
         per_model_full_correct[model_name] = full_correct
 
         print(f"[CSLI] {model_name}: full={acc_full:.4f}, "
-              f"choices_only={acc_choices:.4f}, CSLI={csli:.4f}", flush=True)
+              f"choices_only={acc_choices:.4f}, "
+              f"CSLI(gap)={csli:.4f}, "
+              f"CSLI(choices_excess)={csli_choices_excess:.4f}", flush=True)
 
     # Compute per-question CSLI averaged across models for bootstrap
     n_questions = len(questions)

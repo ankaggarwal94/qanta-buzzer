@@ -522,18 +522,67 @@ def mc_question_from_dict(row: dict[str, Any]) -> MCQuestion:
 def load_mc_questions(path: str | Path) -> list[MCQuestion]:
     """Load and deserialize a list of MCQuestions from a JSON file.
 
+    Accepts both producer shapes via ``iter_split_questions`` (PR #14
+    review Blocker 5): the plain-list shape written by
+    ``scripts/build_mc_dataset.py`` AND the wrapped
+    ``{"metadata": ..., "questions": [...]}`` shape written by
+    ``qb_data.dataset_splits.save_splits`` (called from
+    ``scripts/fresh_split.py``). The earlier Iter2 IN-01 fix wired
+    the helper into the three CSLI/calibration/StopDFF consumers but
+    left this convenience loader iterating ``for item in raw``,
+    which silently turned wrapped payloads into iteration over the
+    dict keys (``"metadata"``, ``"questions"``) and raised
+    ``TypeError: string indices must be integers`` on the first
+    ``mc_question_from_dict("metadata")`` call.
+
+    NOTE: ``save_splits`` writes TOSSUP-only rows (no ``options`` or
+    ``gold_index`` fields). When ``raw`` is the wrapped tossup-only
+    shape, this loader will pass the rows to
+    ``mc_question_from_dict`` and surface a ``KeyError: 'options'``
+    with a producer-mismatch hint rather than the original
+    ``TypeError``. Callers reading ``{train,val,test}_dataset.json``
+    must ensure ``scripts/build_mc_dataset.py`` has run after
+    ``scripts/fresh_split.py`` so the persisted rows carry the MC
+    schema this loader expects.
+
     Parameters
     ----------
     path : str or Path
-        Path to JSON file containing a list of serialized MCQuestion dicts.
+        Path to JSON file containing serialized MCQuestion dicts in
+        either the plain-list or wrapped form.
 
     Returns
     -------
     list[MCQuestion]
         List of reconstructed MCQuestion instances.
+
+    Raises
+    ------
+    RuntimeError
+        If the payload shape is neither the plain-list nor the
+        wrapped form (delegated to ``iter_split_questions``).
+    KeyError
+        If the payload is a TOSSUP-only wrapped split that lacks
+        the MC schema; re-raised with a producer-mismatch hint so
+        the operator knows to run ``build_mc_dataset.py``.
     """
     raw = load_json(path)
-    return [mc_question_from_dict(item) for item in raw]
+    rows = iter_split_questions(raw, source_path=path)
+    try:
+        return [mc_question_from_dict(item) for item in rows]
+    except KeyError as exc:
+        missing = str(exc)
+        if missing in {"'options'", "'gold_index'", "'option_profiles'"}:
+            raise KeyError(
+                f"load_mc_questions({path!r}) succeeded on the outer "
+                f"shape but the inner rows are missing MC field "
+                f"{missing}. Likely cause: the file was last written "
+                f"by qb_data.dataset_splits.save_splits (TOSSUP-only "
+                f"wrapped form) without a subsequent "
+                f"scripts/build_mc_dataset.py run to materialize MC "
+                f"fields. Run scripts/build_mc_dataset.py to fix."
+            ) from exc
+        raise
 
 
 # ------------------------------------------------------------------ #

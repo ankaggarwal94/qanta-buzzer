@@ -435,6 +435,45 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Parse arguments and validate paths, but do not run compute",
     )
+    parser.add_argument(
+        "--min-mc-coverage",
+        type=float,
+        default=0.98,
+        help=(
+            "Minimum fraction of test-split qids that must have a matching "
+            "MCQuestion in mc_dataset.json (default: 0.98). When coverage is "
+            "below this fraction the script refuses to run, because StopDFF "
+            "would be evaluated on a non-random subset (PR #14 Blocker 3). "
+            "Pass --allow-incomplete-mc-coverage to override."
+        ),
+    )
+    parser.add_argument(
+        "--min-mc-retention",
+        type=float,
+        default=None,
+        help=(
+            "Minimum raw-test retention rate required by build_metadata.json. "
+            "Defaults to build_metadata.retention_thresholds.full (or .smoke "
+            "in --smoke mode) when present, otherwise 0.98."
+        ),
+    )
+    parser.add_argument(
+        "--allow-incomplete-mc-coverage",
+        action="store_true",
+        help=(
+            "Override the --min-mc-coverage gate. Use only when downstream "
+            "interpretation accounts for the non-random subset."
+        ),
+    )
+    parser.add_argument(
+        "--allow-low-mc-retention",
+        action="store_true",
+        help=(
+            "Override the build_metadata.json raw-test retention gate. Use "
+            "only when reporting StopDFF explicitly as a retained-MC-test-"
+            "subset metric."
+        ),
+    )
 
     return parser.parse_args(argv)
 
@@ -524,15 +563,72 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Extract test qid set
     test_qids = set(str(q["qid"]) for q in test_questions_iter)
 
-    # Filter MC questions to test split
-    mc_test = [q for q in mc_questions if str(q["qid"]) in test_qids]
+    # PR #14 Blocker 3: shared coverage + retention gates, mirroring
+    # the CSLI script's defaults. StopDFF is evaluated only on the
+    # test split, so only the test qid set is gated.
+    from scripts._audit_gates import (
+        build_coverage_metadata,
+        build_retention_metadata,
+        filter_mc_questions_to_split,
+        load_mc_build_metadata,
+    )
 
-    print(f"[STOP] MC total: {len(mc_questions)}, MC test: {len(mc_test)}", flush=True)
+    mc_test, test_coverage = filter_mc_questions_to_split(mc_questions, test_qids)
+
+    print(
+        f"[STOP] MC total: {len(mc_questions)}, MC test: {len(mc_test)} "
+        f"({test_coverage['coverage_rate']:.1%} of test qids)",
+        flush=True,
+    )
 
     if len(mc_test) == 0:
         print("ERROR: No test-split MC questions found after filtering. "
               "Check that mc_dataset.json and test_dataset.json have overlapping qids.",
               file=sys.stderr)
+        return 1
+
+    if (
+        test_coverage["coverage_rate"] < args.min_mc_coverage
+        and not args.allow_incomplete_mc_coverage
+    ):
+        print(
+            f"ERROR: PR-14-B3 violation: MC test coverage is "
+            f"{test_coverage['coverage_rate']:.1%} "
+            f"(threshold: {args.min_mc_coverage:.1%}). StopDFF would be "
+            f"evaluated on a non-random subset selected against 'hard to "
+            f"find distractors for'. Pass --allow-incomplete-mc-coverage "
+            f"to override.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        build_metadata = load_mc_build_metadata(data_dir)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    test_retention_meta = build_retention_metadata(
+        build_metadata,
+        split="test",
+        smoke=args.smoke,
+        explicit_threshold=args.min_mc_retention,
+        override=args.allow_low_mc_retention,
+    )
+    if (
+        test_retention_meta["applies"]
+        and test_retention_meta["passed"] is False
+        and not args.allow_low_mc_retention
+    ):
+        print(
+            f"ERROR: PR-14-B3 violation: raw-test MC retention is "
+            f"{test_retention_meta['retention_rate']:.1%} (threshold: "
+            f"{test_retention_meta['threshold']:.1%}). StopDFF would be "
+            f"evaluated on the retained MC subset. Pass "
+            f"--allow-low-mc-retention only if the artifact/report "
+            f"explicitly qualifies the result as retained-subset StopDFF.",
+            file=sys.stderr,
+        )
         return 1
 
     if args.smoke:
@@ -665,6 +761,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     # ========================================================================
     # Write paper_exports/stopdff.json
     # ========================================================================
+    test_coverage_metadata = build_coverage_metadata(
+        test_coverage,
+        threshold=args.min_mc_coverage,
+        override=args.allow_incomplete_mc_coverage,
+    )
     output_data = {
         "median_abs_prefix_shift": round(median_abs_prefix_shift, 6),
         "mean_abs_prefix_shift": round(mean_abs_prefix_shift, 6),
@@ -683,6 +784,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         "reachability": reachability,
         "gate_verdict": gate_verdict,
         "threshold": threshold,
+        "mc_coverage": {"test": test_coverage_metadata},
+        "mc_retention_gate": {"test": test_retention_meta},
+        "mc_build_metadata": {
+            "status": build_metadata["status"],
+            "source_path": build_metadata["source_path"],
+            "source_sha256": build_metadata["source_sha256"],
+        },
         "metadata": {
             "seed": SEED,
             "n_test": len(mc_test),

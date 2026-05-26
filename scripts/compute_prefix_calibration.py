@@ -413,6 +413,47 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Parse arguments and validate data path, but do not run compute",
     )
+    parser.add_argument(
+        "--min-mc-coverage",
+        type=float,
+        default=0.98,
+        help=(
+            "Minimum fraction of test-split qids that must have a matching "
+            "MCQuestion in mc_dataset.json (default: 0.98). When coverage is "
+            "below this fraction the script refuses to run, because "
+            "calibration would be fit/evaluated on a non-random subset "
+            "(PR #14 Blocker 3). Pass --allow-incomplete-mc-coverage to "
+            "override."
+        ),
+    )
+    parser.add_argument(
+        "--min-mc-retention",
+        type=float,
+        default=None,
+        help=(
+            "Minimum raw-test retention rate required by build_metadata.json. "
+            "Defaults to build_metadata.retention_thresholds.full (or .smoke "
+            "in --smoke mode) when present, otherwise 0.98. This gate is "
+            "separate from --min-mc-coverage."
+        ),
+    )
+    parser.add_argument(
+        "--allow-incomplete-mc-coverage",
+        action="store_true",
+        help=(
+            "Override the --min-mc-coverage gate. Use only when downstream "
+            "interpretation accounts for the non-random subset."
+        ),
+    )
+    parser.add_argument(
+        "--allow-low-mc-retention",
+        action="store_true",
+        help=(
+            "Override the build_metadata.json raw-test retention gate. Use "
+            "only when reporting calibration explicitly as a retained-MC-"
+            "test-subset metric."
+        ),
+    )
 
     return parser.parse_args(argv)
 
@@ -503,11 +544,88 @@ def main(argv: Optional[list[str]] = None) -> int:
     val_qids = set(str(q["qid"]) for q in val_questions_iter)
     test_qids = set(str(q["qid"]) for q in test_questions_iter)
 
-    # Filter MC questions by split
-    mc_val = [q for q in mc_questions if str(q["qid"]) in val_qids]
-    mc_test = [q for q in mc_questions if str(q["qid"]) in test_qids]
+    # PR #14 Blocker 3: shared coverage + retention gates, mirroring
+    # the CSLI script's defaults. Calibration is dual-evaluated
+    # (Platt fit on val, ECE evaluated on test) so both qid sets are
+    # gated separately. The retention gate reads the same
+    # data/processed/build_metadata.json the CSLI script uses.
+    from scripts._audit_gates import (
+        build_coverage_metadata,
+        build_retention_metadata,
+        filter_mc_questions_to_split,
+        load_mc_build_metadata,
+    )
 
-    print(f"[CALI] MC total: {len(mc_questions)}, MC val: {len(mc_val)}, MC test: {len(mc_test)}", flush=True)
+    mc_val, val_coverage = filter_mc_questions_to_split(mc_questions, val_qids)
+    mc_test, test_coverage = filter_mc_questions_to_split(mc_questions, test_qids)
+
+    print(
+        f"[CALI] MC total: {len(mc_questions)}, MC val: {len(mc_val)} "
+        f"({val_coverage['coverage_rate']:.1%} of val qids), "
+        f"MC test: {len(mc_test)} "
+        f"({test_coverage['coverage_rate']:.1%} of test qids)",
+        flush=True,
+    )
+
+    val_coverage_passed = (
+        val_coverage["coverage_rate"] >= args.min_mc_coverage
+    )
+    test_coverage_passed = (
+        test_coverage["coverage_rate"] >= args.min_mc_coverage
+    )
+    if (
+        not (val_coverage_passed and test_coverage_passed)
+        and not args.allow_incomplete_mc_coverage
+    ):
+        print(
+            f"ERROR: PR-14-B3 violation: MC coverage below "
+            f"{args.min_mc_coverage:.1%} for at least one split "
+            f"(val={val_coverage['coverage_rate']:.1%}, "
+            f"test={test_coverage['coverage_rate']:.1%}). Calibration "
+            f"would be fit/evaluated on a non-random subset. Re-run "
+            f"scripts/build_mc_dataset.py against the new split, or pass "
+            f"--allow-incomplete-mc-coverage to override.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        build_metadata = load_mc_build_metadata(data_dir)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    val_retention_meta = build_retention_metadata(
+        build_metadata,
+        split="val",
+        smoke=args.smoke,
+        explicit_threshold=args.min_mc_retention,
+        override=args.allow_low_mc_retention,
+    )
+    test_retention_meta = build_retention_metadata(
+        build_metadata,
+        split="test",
+        smoke=args.smoke,
+        explicit_threshold=args.min_mc_retention,
+        override=args.allow_low_mc_retention,
+    )
+    for split_meta in (val_retention_meta, test_retention_meta):
+        if (
+            split_meta["applies"]
+            and split_meta["passed"] is False
+            and not args.allow_low_mc_retention
+        ):
+            print(
+                f"ERROR: PR-14-B3 violation: raw-{split_meta['split']} MC "
+                f"retention is {split_meta['retention_rate']:.1%} "
+                f"(threshold: {split_meta['threshold']:.1%}). Calibration "
+                f"would be fit/evaluated on the retained MC subset, not "
+                f"the full raw fresh split. Pass --allow-low-mc-retention "
+                f"only if the artifact/report explicitly qualifies the "
+                f"result as a retained-subset metric.",
+                file=sys.stderr,
+            )
+            return 1
 
     if args.smoke:
         mc_val = mc_val[:20]
@@ -676,11 +794,34 @@ def main(argv: Optional[list[str]] = None) -> int:
     # ========================================================================
     # Write output JSON
     # ========================================================================
+    val_coverage_metadata = build_coverage_metadata(
+        val_coverage,
+        threshold=args.min_mc_coverage,
+        override=args.allow_incomplete_mc_coverage,
+    )
+    test_coverage_metadata = build_coverage_metadata(
+        test_coverage,
+        threshold=args.min_mc_coverage,
+        override=args.allow_incomplete_mc_coverage,
+    )
     output_data = {
         "per_bucket": per_bucket_results,
         "max_ece": round(max_ece, 6),
         "threshold": threshold,
         "gate_verdict": gate_verdict,
+        "mc_coverage": {
+            "val": val_coverage_metadata,
+            "test": test_coverage_metadata,
+        },
+        "mc_retention_gate": {
+            "val": val_retention_meta,
+            "test": test_retention_meta,
+        },
+        "mc_build_metadata": {
+            "status": build_metadata["status"],
+            "source_path": build_metadata["source_path"],
+            "source_sha256": build_metadata["source_sha256"],
+        },
         "metadata": {
             "seed": SEED,
             "n_val": len(mc_val),
