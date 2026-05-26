@@ -1,32 +1,32 @@
 {
   "panel_csli": {
-    "mean": 0.12117273252455227,
-    "ci_lower": 0.10629693818601964,
-    "ci_upper": 0.13533001155401503,
-    "mean_from_per_model_avg": 0.12117233333333333
+    "mean": 0.11366991437850603,
+    "ci_lower": 0.0994943903159138,
+    "ci_upper": 0.12607026867434307,
+    "mean_from_per_model_avg": 0.11367000000000001
   },
   "per_model": {
     "tfidf": {
-      "acc_full": 0.25,
-      "acc_choices_only": 0.230503,
-      "csli": 0.019497,
+      "acc_full": 0.258636,
+      "acc_choices_only": 0.260407,
+      "csli": -0.001771,
       "leakage_flag": false
     },
     "sbert": {
-      "acc_full": 0.483102,
-      "acc_choices_only": 0.191508,
-      "csli": 0.291594,
+      "acc_full": 0.490257,
+      "acc_choices_only": 0.244464,
+      "csli": 0.245793,
       "leakage_flag": false
     },
     "t5-small": {
-      "acc_full": 0.271231,
-      "acc_choices_only": 0.218804,
-      "csli": 0.052426,
+      "acc_full": 0.310895,
+      "acc_choices_only": 0.213906,
+      "csli": 0.096988,
       "leakage_flag": false
     }
   },
   "metadata": {
-    "n_questions": 2308,
+    "n_questions": 2258,
     "n_models": 3,
     "K": 4,
     "threshold": 0.3,

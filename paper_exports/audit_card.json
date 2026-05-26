@@ -2,21 +2,21 @@
   "metrics": [
     {
       "name": "CSLI (Choice-Set Leakage Index)",
-      "value": 0.12117273252455227,
-      "value_display": "0.1212",
-      "ci_lower": 0.10629693818601964,
-      "ci_upper": 0.13533001155401503,
+      "value": 0.11366991437850603,
+      "value_display": "0.1137",
+      "ci_lower": 0.0994943903159138,
+      "ci_upper": 0.12607026867434307,
       "threshold": 0.3,
       "threshold_criterion": "max(acc_choices_only) <= threshold",
-      "observed_criterion_value": 0.230503,
+      "observed_criterion_value": 0.260407,
       "direction": "warn_if_above",
       "verdict": "pass",
       "details": {
         "n_models": 3,
         "per_model_acc_choices_only": {
-          "tfidf": 0.230503,
-          "sbert": 0.191508,
-          "t5-small": 0.218804
+          "tfidf": 0.260407,
+          "sbert": 0.244464,
+          "t5-small": 0.213906
         },
         "leakage_flags": {
           "tfidf": false,
@@ -27,18 +27,18 @@
     },
     {
       "name": "Prefix-wise Calibration (ECE)",
-      "value": 0.030502,
-      "value_display": "0.0305",
+      "value": 0.026117,
+      "value_display": "0.0261",
       "threshold": 0.1,
       "threshold_criterion": "max(bucket_ECE) <= threshold",
-      "observed_criterion_value": 0.030502,
+      "observed_criterion_value": 0.026117,
       "direction": "warn_if_above",
       "verdict": "pass",
       "details": {
         "per_bucket_ece": {
-          "early": 0.023895,
-          "mid": 0.030502,
-          "late": 0.02376
+          "early": 0.025933,
+          "mid": 0.005491,
+          "late": 0.026117
         },
         "stored_gate_verdict": "pass"
       }
@@ -56,7 +56,7 @@
         "direction_breakdown": {
           "mc_stops_earlier": 0,
           "nonmc_stops_earlier": 0,
-          "same_step": 2308
+          "same_step": 2258
         },
         "stored_gate_verdict": "pass",
         "metric_type": "diagnostic_only"
@@ -67,7 +67,7 @@
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-26T18:07:46.585714+00:00",
+    "timestamp": "2026-05-26T19:01:09.328591+00:00",
     "threshold_source": "threshold_manifest.json"
   }
 }

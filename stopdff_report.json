@@ -23,17 +23,35 @@
   "direction_breakdown": {
     "mc_stops_earlier": 0,
     "nonmc_stops_earlier": 0,
-    "same_step": 2308
+    "same_step": 2258
+  },
+  "ceiling_effect_detected": true,
+  "reachability": {
+    "early": {
+      "max_calibrated_at_sim_1": 0.510149,
+      "threshold_reachable": false,
+      "required_raw_score": 1.745073
+    },
+    "mid": {
+      "max_calibrated_at_sim_1": 0.410575,
+      "threshold_reachable": false,
+      "required_raw_score": 4.753208
+    },
+    "late": {
+      "max_calibrated_at_sim_1": 0.818839,
+      "threshold_reachable": true,
+      "required_raw_score": 0.756985
+    }
   },
   "gate_verdict": "pass",
   "threshold": 1,
   "metadata": {
     "seed": 789685,
-    "n_test": 2308,
+    "n_test": 2258,
     "model": "all-MiniLM-L6-v2",
     "stop_threshold": 0.7,
     "metric_type": "diagnostic_only",
     "stopping_policy": "myopic_threshold",
-    "timestamp": "2026-05-26T09:18:09.346768+00:00"
+    "timestamp": "2026-05-26T19:00:53.825442+00:00"
   }
 }
