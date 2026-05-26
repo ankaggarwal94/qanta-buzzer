@@ -6,6 +6,6 @@
   "evaluation_mode": "deterministic",
   "smoke": true,
   "likelihood_reference_split": "train",
-  "likelihood_reference_path": "/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/artifacts/smoke/train_dataset.json",
+  "likelihood_reference_path": "artifacts/smoke/train_dataset.json",
   "likelihood_reference_n_questions": 23
 }

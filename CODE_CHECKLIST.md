@@ -28,5 +28,5 @@ Verified: 2026-05-26
 | Threshold manifest sidecar | PRESENT | `threshold_manifest.json.sha256` | SHA-256 integrity verification (load-time enforced via `scripts/threshold_manifest.py`) |
 | StopDFF attestation report | PRESENT | `stopdff_report.json` | Timestamp + verdict + parameters |
 | Attribution in README | PRESENT | `README.md` (## Attribution) | 4 contributors named; Novel vs Reused separation |
-| Source-to-claim map | PENDING | -- | Phase 9 deliverable |
+| Source-to-claim map | PRESENT | `reproducibility/source_to_claim.md` | Phase 9 deliverable |
 | Test suite | PRESENT | `tests/` | 429 tests across 33 files (pytest) |
