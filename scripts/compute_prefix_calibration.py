@@ -557,15 +557,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     # ========================================================================
     max_ece = max(v["ece"] for v in per_bucket_results.values())
 
-    # Load frozen threshold
+    from scripts.threshold_manifest import load_frozen_threshold_manifest
+
+    manifest = load_frozen_threshold_manifest(THRESHOLD_MANIFEST, strict=True)
     threshold = 0.10  # default
-    if THRESHOLD_MANIFEST.exists():
-        with open(THRESHOLD_MANIFEST, "r") as f:
-            manifest = json.load(f)
-        for t in manifest.get("thresholds", []):
-            if t["metric"] == "prefix_ece":
-                threshold = float(t["threshold"])
-                break
+    for t in manifest.get("thresholds", []):
+        if t["metric"] == "prefix_ece":
+            threshold = float(t["threshold"])
+            break
 
     gate_verdict = "pass" if max_ece <= threshold else "warn"
     print(f"\n[CALI] Gate verdict: {gate_verdict} (max_ece={max_ece:.4f} vs threshold={threshold})",

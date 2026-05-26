@@ -39,6 +39,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _PAPER_EXPORTS = _REPO_ROOT / "paper_exports"
 _SCRIPT_VERSION = "1.0.0"
 
+# Project root on sys.path so `from scripts.threshold_manifest import ...`
+# resolves regardless of CWD (matches the convention used by every
+# other script in this directory).
+sys.path.insert(0, str(_REPO_ROOT))
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -251,12 +256,18 @@ def main() -> int:
         print(f"  - {_PAPER_EXPORTS / 'audit_card.md'}")
         return 0
 
-    # Load inputs (WR-05: collect all missing files before failing)
+    # Load inputs (WR-05: collect all missing files before failing).
+    # Threshold manifest goes through load_frozen_threshold_manifest so
+    # the sha256 sidecar is verified at load time (DATA-03 / CR-01).
+    from scripts.threshold_manifest import load_frozen_threshold_manifest
+
     try:
         csli_data = _load_json(_PAPER_EXPORTS / "csli.json")
         cal_data = _load_json(_PAPER_EXPORTS / "calibration.json")
         stopdff_data = _load_json(_PAPER_EXPORTS / "stopdff.json")
-        manifest = _load_json(_REPO_ROOT / "threshold_manifest.json")
+        manifest = load_frozen_threshold_manifest(
+            _REPO_ROOT / "threshold_manifest.json", strict=True
+        )
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1

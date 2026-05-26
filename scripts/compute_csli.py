@@ -491,15 +491,14 @@ def compute_panel_csli(
         per_question_csli, n_resamples=1000, seed=789685
     )
 
-    # Apply leakage flags (WR-04: load threshold from manifest for consistency)
+    from scripts.threshold_manifest import load_frozen_threshold_manifest
+
+    manifest = load_frozen_threshold_manifest(THRESHOLD_MANIFEST, strict=True)
     threshold = 0.30  # default: 1/K + 0.05, K=4
-    if THRESHOLD_MANIFEST.exists():
-        with open(THRESHOLD_MANIFEST) as f:
-            manifest = json.load(f)
-        for t in manifest.get("thresholds", []):
-            if t["metric"] == "choices_only_accuracy":
-                threshold = float(t.get("numeric_value_K4", 0.30))
-                break
+    for t in manifest.get("thresholds", []):
+        if t["metric"] == "choices_only_accuracy":
+            threshold = float(t.get("numeric_value_K4", 0.30))
+            break
     for m in model_list:
         results[m]["leakage_flag"] = results[m]["acc_choices_only"] > threshold
 

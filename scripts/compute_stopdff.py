@@ -582,14 +582,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     # ========================================================================
     # Gate verdict
     # ========================================================================
+    from scripts.threshold_manifest import load_frozen_threshold_manifest
+
+    manifest = load_frozen_threshold_manifest(THRESHOLD_MANIFEST, strict=True)
     threshold = 1  # default
-    if THRESHOLD_MANIFEST.exists():
-        with open(THRESHOLD_MANIFEST, "r") as f:
-            manifest = json.load(f)
-        for t in manifest.get("thresholds", []):
-            if t["metric"] == "stopdff_median_abs_prefix":
-                threshold = int(t["threshold"])
-                break
+    for t in manifest.get("thresholds", []):
+        if t["metric"] == "stopdff_median_abs_prefix":
+            threshold = int(t["threshold"])
+            break
 
     gate_verdict = "pass" if median_abs_prefix_shift <= threshold else "warn"
     print(f"\n[STOP] Gate verdict: {gate_verdict} "

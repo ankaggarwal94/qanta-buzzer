@@ -25,7 +25,7 @@ Verified: 2026-05-26
 | Reliability diagram (mid) | PRESENT | `paper_exports/reliability_mid.png` | Calibration plot for mid prefixes |
 | Reliability diagram (late) | PRESENT | `paper_exports/reliability_late.png` | Calibration plot for late prefixes |
 | Threshold manifest | PRESENT | `threshold_manifest.json` | Frozen before test-set inspection (DATA-03) |
-| Threshold manifest sidecar | PRESENT | `threshold_manifest.sha256` | SHA-256 integrity verification |
+| Threshold manifest sidecar | PRESENT | `threshold_manifest.json.sha256` | SHA-256 integrity verification (load-time enforced via `scripts/threshold_manifest.py`) |
 | StopDFF attestation report | PRESENT | `stopdff_report.json` | Timestamp + verdict + parameters |
 | Attribution in README | PRESENT | `README.md` (## Attribution) | 4 contributors named; Novel vs Reused separation |
 | Source-to-claim map | PENDING | -- | Phase 9 deliverable |

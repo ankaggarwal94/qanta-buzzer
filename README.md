@@ -75,7 +75,7 @@ Additionally at repo root:
 | File | Description |
 |------|-------------|
 | `threshold_manifest.json` | Frozen threshold parameters (pre-registered before test inspection) |
-| `threshold_manifest.sha256` | SHA-256 integrity sidecar for manifest |
+| `threshold_manifest.json.sha256` | SHA-256 integrity sidecar for manifest (verified at load time by `scripts/threshold_manifest.py`) |
 | `stopdff_report.json` | StopDFF attestation report with timestamp and verdict |
 
 ## Repository Structure
