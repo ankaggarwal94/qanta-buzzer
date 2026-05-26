@@ -518,14 +518,19 @@ def compute_panel_csli(
         per_question_csli, n_resamples=1000, seed=789685
     )
 
-    from scripts.threshold_manifest import load_frozen_threshold_manifest
+    from scripts.threshold_manifest import (
+        load_frozen_threshold_manifest,
+        threshold_value,
+    )
 
     manifest = load_frozen_threshold_manifest(THRESHOLD_MANIFEST, strict=True)
-    threshold = 0.30  # default: 1/K + 0.05, K=4
-    for t in manifest.get("thresholds", []):
-        if t["metric"] == "choices_only_accuracy":
-            threshold = float(t.get("numeric_value_K4", 0.30))
-            break
+    # threshold_value raises RuntimeError if the metric or field is
+    # missing -- WR-02 fix: no silent fallback to a hardcoded default,
+    # which would have decoupled the leakage flag from the frozen
+    # manifest provenance.
+    threshold = float(
+        threshold_value(manifest, "choices_only_accuracy", key="numeric_value_K4")
+    )
     for m in model_list:
         results[m]["leakage_flag"] = results[m]["acc_choices_only"] > threshold
 
