@@ -72,8 +72,10 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -191,6 +193,57 @@ def _display_path(path: Path) -> str:
         return str(path.resolve().relative_to(PROJECT_ROOT.resolve()))
     except ValueError:
         return str(path)
+
+
+def _git_output(args: list[str]) -> str | None:
+    """Return stdout for a read-only git command, or None when unavailable."""
+    try:
+        # SECURITY-REVIEW: subprocess is fixed-argv, shell=False, and scoped to
+        # local read-only git metadata; no user-controlled shell interpolation.
+        result = subprocess.run(
+            ["git", *args],
+            cwd=PROJECT_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _build_generation_provenance(
+    argv: list[str],
+    *,
+    output_path: Path,
+) -> dict[str, Any]:
+    """Build audit metadata tying a generated artifact to code and command."""
+    script_path = Path(__file__).resolve()
+    relevant_paths = [
+        _display_path(script_path),
+        _display_path(output_path),
+        _display_path(THRESHOLD_MANIFEST),
+        _display_path(DEFAULT_DATA_DIR / "build_metadata.json"),
+        _display_path(SPLIT_PROVENANCE),
+    ]
+    status_args = ["status", "--short", "--", *relevant_paths]
+    git_status = _git_output(status_args)
+
+    return {
+        "schema_version": 1,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "command": ["python", "scripts/compute_csli.py", *argv],
+        "argv": list(argv),
+        "cwd": _display_path(Path.cwd()),
+        "output_path": _display_path(output_path),
+        "script_path": _display_path(script_path),
+        "script_sha256": _sha256_file(script_path),
+        "git_commit": _git_output(["rev-parse", "HEAD"]),
+        "git_dirty": bool(git_status),
+        "git_status_relevant_paths": git_status or "",
+    }
 
 
 def _parse_split_provenance(path: Path) -> dict[str, str]:
@@ -1227,7 +1280,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     int
         Exit code (0 = success, 1 = error).
     """
-    args = _parse_args(argv)
+    effective_argv = list(sys.argv[1:] if argv is None else argv)
+    args = _parse_args(effective_argv)
 
     data_dir = Path(args.data_dir)
     output_path = Path(args.output)
@@ -1508,6 +1562,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Compute panel-level CSLI with bootstrap CI
     split_provenance = _load_split_provenance(data_dir)
     metadata_context: dict[str, Any] = {
+        "generation": _build_generation_provenance(
+            effective_argv,
+            output_path=output_path,
+        ),
         "mc_coverage": {
             "test_dataset_qids": len(test_qids),
             "mc_questions_total": len(mc_questions),

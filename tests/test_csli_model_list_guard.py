@@ -25,6 +25,7 @@ the return code is 2 for several empty-equivalent inputs.
 
 from __future__ import annotations
 
+from datetime import datetime
 import sys
 
 # DATA-05 guard interaction (see WR-01):
@@ -41,7 +42,12 @@ sys.modules.pop("scripts.compute_csli", None)
 
 import pytest
 
-from scripts.compute_csli import main as compute_csli_main
+from scripts.compute_csli import (
+    PROJECT_ROOT,
+    _build_generation_provenance,
+    _sha256_file,
+    main as compute_csli_main,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -134,3 +140,34 @@ def test_compute_csli_rejects_unknown_model_before_data_loading(
     captured = capsys.readouterr()
     assert "unsupported --models entries: not-a-model" in captured.err
     assert "Available: sbert, t5-small, tfidf" in captured.err
+
+
+def test_generation_provenance_records_script_command_and_git_context() -> None:
+    """Generated CSLI artifacts should be attributable to code and argv."""
+    script_path = PROJECT_ROOT / "scripts" / "compute_csli.py"
+
+    provenance = _build_generation_provenance(
+        ["--models", "tfidf,sbert,t5-small", "--allow-low-mc-retention"],
+        output_path=PROJECT_ROOT / "paper_exports" / "csli.json",
+    )
+
+    assert provenance["schema_version"] == 1
+    assert provenance["script_path"] == "scripts/compute_csli.py"
+    assert provenance["script_sha256"] == _sha256_file(script_path)
+    assert provenance["argv"] == [
+        "--models",
+        "tfidf,sbert,t5-small",
+        "--allow-low-mc-retention",
+    ]
+    assert provenance["command"] == [
+        "python",
+        "scripts/compute_csli.py",
+        "--models",
+        "tfidf,sbert,t5-small",
+        "--allow-low-mc-retention",
+    ]
+    assert provenance["output_path"] == "paper_exports/csli.json"
+    assert provenance["git_commit"]
+    assert isinstance(provenance["git_dirty"], bool)
+    assert isinstance(provenance["git_status_relevant_paths"], str)
+    datetime.fromisoformat(provenance["generated_at_utc"])
