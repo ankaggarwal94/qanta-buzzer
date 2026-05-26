@@ -634,11 +634,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             platt_intercept = round(float(lr.intercept_[0]), 6)
             model_type = "logistic"
             fallback_reason = None
+            constant_probability = None
         else:
             platt_coef = None
             platt_intercept = None
             model_type = "constant"
             fallback_reason = lr.reason
+            constant_probability = lr.probability
 
         per_bucket_results[bucket_name] = {
             "ece": round(ece, 6),
@@ -647,6 +649,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "platt_intercept": platt_intercept,
             "platt_model_type": model_type,
             "platt_fallback_reason": fallback_reason,
+            "platt_constant_probability": constant_probability,
         }
 
         print(f"[CALI]   {bucket_name}: ECE={ece:.4f}, n={len(raw_scores)}, "

@@ -6,7 +6,8 @@
       "platt_coef": 1.08271,
       "platt_intercept": -1.04211,
       "platt_model_type": "logistic",
-      "platt_fallback_reason": null
+      "platt_fallback_reason": null,
+      "platt_constant_probability": null
     },
     "mid": {
       "ece": 0.005491,
@@ -14,7 +15,8 @@
       "platt_coef": 0.322094,
       "platt_intercept": -0.683682,
       "platt_model_type": "logistic",
-      "platt_fallback_reason": null
+      "platt_fallback_reason": null,
+      "platt_constant_probability": null
     },
     "late": {
       "ece": 0.026117,
@@ -22,7 +24,8 @@
       "platt_coef": 2.720828,
       "platt_intercept": -1.212329,
       "platt_model_type": "logistic",
-      "platt_fallback_reason": null
+      "platt_fallback_reason": null,
+      "platt_constant_probability": null
     }
   },
   "max_ece": 0.026117,
@@ -40,6 +43,6 @@
       "mid": "[0.33, 0.66)",
       "late": "[0.66, 1.0]"
     },
-    "timestamp": "2026-05-26T22:05:02.706890+00:00"
+    "timestamp": "2026-05-26T22:34:22.452870+00:00"
   }
 }

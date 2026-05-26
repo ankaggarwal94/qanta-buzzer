@@ -130,6 +130,20 @@ def load_platt_coefficients(calibration_path: Path) -> dict[str, tuple[float, fl
     for bucket_name, bucket_data in data["per_bucket"].items():
         coef = bucket_data["platt_coef"]
         intercept = bucket_data["platt_intercept"]
+        if coef is None or intercept is None:
+            if bucket_data.get("platt_model_type") != "constant":
+                raise ValueError(
+                    f"Bucket '{bucket_name}' has null Platt parameters "
+                    "without platt_model_type='constant'."
+                )
+            probability = float(bucket_data.get("platt_constant_probability", 0.0))
+            coef = 0.0
+            if probability <= 0.0:
+                intercept = -500.0
+            elif probability >= 1.0:
+                intercept = 500.0
+            else:
+                intercept = math.log(probability / (1.0 - probability))
         platt_params[bucket_name] = (coef, intercept)
 
     return platt_params

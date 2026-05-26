@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -10,7 +11,10 @@ sys.modules.pop("evaluation.controls", None)
 sys.modules.pop("scripts.compute_csli", None)
 
 from scripts import compute_csli, compute_prefix_calibration
-from scripts.compute_stopdff import check_threshold_reachability
+from scripts.compute_stopdff import (
+    check_threshold_reachability,
+    load_platt_coefficients,
+)
 
 _filter_test_mc_questions = getattr(compute_csli, "_filter_test_mc_questions")
 _fit_bucket_calibrator = getattr(
@@ -96,3 +100,27 @@ def test_stopdff_reachability_uses_negative_raw_bound_for_negative_coef() -> Non
     assert early["max_calibrated_probability"] > 0.7
     assert early["threshold_reachable"] is True
     assert -1.0 <= early["required_raw_score"] <= 1.0
+
+
+def test_stopdff_loads_constant_calibration_bucket(tmp_path: Path) -> None:
+    """StopDFF should consume constant calibration fallback buckets safely."""
+    calibration_path = tmp_path / "calibration.json"
+    calibration_path.write_text(
+        """
+{
+  "per_bucket": {
+    "early": {
+      "platt_coef": null,
+      "platt_intercept": null,
+      "platt_model_type": "constant",
+      "platt_constant_probability": 1.0
+    }
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    params = load_platt_coefficients(calibration_path)
+
+    assert params["early"] == (0.0, 500.0)

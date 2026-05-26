@@ -50,6 +50,10 @@ pytest tests/test_qb_rl_bridge.py tests/test_factories.py tests/test_ppo_buzzer.
 bash scripts/ci.sh        # CI entry point via repo-local .venv
 ```
 
+## Documented Solutions
+
+`docs/solutions/` contains documented solutions to past problems, organized by category with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when implementing or debugging in documented areas.
+
 ## Smoke Pipeline
 
 Four-stage belief-feature smoke workflow. `--smoke` selects `configs/smoke.yaml` and writes outputs to `artifacts/smoke/`.
