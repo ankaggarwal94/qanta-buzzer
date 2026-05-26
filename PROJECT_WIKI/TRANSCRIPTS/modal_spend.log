@@ -1,13 +1,13 @@
 # Modal Spend Log -- CS321M Final Project (budget: $300)
-# Format: TIMESTAMP | stage | duration | gpu_type | estimated_cost: $X.XXXX
+# Format: TIMESTAMP | stage | duration | gpu_type | status: STATUS | estimated_cost: $X.XXXX
 # Rate assumption: $3.00/hr for A100-80GB
 #
 # NOTE: Modal CLI not yet installed/authenticated on Device 1 (macOS).
 # Actual GPU runs require: pip install modal && modal token set
 # before Phase 4 compute begins. Wrapper validated via dry-run only.
 #
-2026-05-26T08:13:06Z | dry_run_validated | 0.0s | none | estimated_cost: $0.0000
+2026-05-26T08:13:06Z | wrapper_command_plan_validated | 0.0s | none | status: success | estimated_cost: $0.0000
 #
 # Device 2 fallback: RTX 5090 probe script at scripts/device2_cuda_probe.py (run on Device 2 to verify)
-# Expected output: JSON with device_name, cuda_version, torch_version, memory_total_gb, status="ready"
+# Expected output: JSON with device_name, cuda_version, torch_version, memory_total_gib, kernel_check="passed", status="ready"
 # Fallback lane: Device 2 (Windows 11, Intel Core Ultra 9 275HX, NVIDIA RTX 5090 24GB GDDR7)

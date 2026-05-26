@@ -8,6 +8,16 @@ cs321m:
   compute_lane: "modal_a100"
   budget_limit_usd: 300
   spend_log_path: "PROJECT_WIKI/TRANSCRIPTS/modal_spend.log"
+  gpu: "A100-80GB"
+  smoke: true
+  stages:
+    - build_mc_dataset
+    - run_baselines
+    - train_ppo
+    - evaluate_all
+    - compute_csli
+    - compute_prefix_calibration
+    - compute_stopdff
 
 # Data settings for quick smoke validation
 data:

@@ -399,6 +399,12 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Output path for full report with attestation (default: stopdff_report.json)",
     )
     parser.add_argument(
+        "--calibration",
+        type=str,
+        default=str(CALIBRATION_JSON),
+        help="Path to calibration JSON from compute_prefix_calibration.py (default: paper_exports/calibration.json)",
+    )
+    parser.add_argument(
         "--smoke",
         action="store_true",
         help="Quick mode: 20 test questions (for pipeline testing)",
@@ -430,6 +436,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     data_dir = Path(args.data_dir)
     output_path = Path(args.output)
     report_output_path = Path(args.report_output)
+    calibration_path = Path(args.calibration)
 
     # Validate data directory exists
     if not data_dir.exists():
@@ -440,6 +447,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[STOP] Dry run -- data_dir={data_dir}")
         print(f"[STOP] Output would be written to: {output_path}")
         print(f"[STOP] Report would be written to: {report_output_path}")
+        print(f"[STOP] Calibration JSON: {calibration_path}")
         # Validate required data files exist
         required = ["mc_dataset.json", "test_dataset.json"]
         for fname in required:
@@ -448,8 +456,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"[STOP]   {fname}: {'FOUND' if exists else 'MISSING'}")
             if not exists:
                 return 1
-        print(f"[STOP] Calibration JSON: {'FOUND' if CALIBRATION_JSON.exists() else 'MISSING'}")
-        if not CALIBRATION_JSON.exists():
+        print(f"[STOP] Calibration JSON: {'FOUND' if calibration_path.exists() else 'MISSING'}")
+        if not calibration_path.exists():
             return 1
         print(f"[STOP] Threshold manifest: {'FOUND' if THRESHOLD_MANIFEST.exists() else 'MISSING'}")
         print(f"[STOP] STOP_THRESHOLD: {STOP_THRESHOLD}")
@@ -513,13 +521,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     # ========================================================================
     # Load Platt coefficients from Phase 5 calibration
     # ========================================================================
-    print("[STOP] Loading Platt coefficients from calibration.json...", flush=True)
+    print(f"[STOP] Loading Platt coefficients from {calibration_path}...", flush=True)
 
-    if not CALIBRATION_JSON.exists():
-        print(f"ERROR: Calibration JSON not found: {CALIBRATION_JSON}", file=sys.stderr)
+    if not calibration_path.exists():
+        print(f"ERROR: Calibration JSON not found: {calibration_path}", file=sys.stderr)
         return 1
 
-    platt_params = load_platt_coefficients(CALIBRATION_JSON)
+    platt_params = load_platt_coefficients(calibration_path)
     for bucket_name, (coef, intercept) in platt_params.items():
         print(f"[STOP]   {bucket_name}: coef={coef:.6f}, intercept={intercept:.6f}", flush=True)
 
@@ -527,7 +535,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Reachability check (CR-01): report which buckets can reach the threshold
     # ========================================================================
     reachability = check_threshold_reachability(platt_params, STOP_THRESHOLD)
-    reachable_buckets = [b for b, r in reachability.items() if r["threshold_reachable"]]
     unreachable_buckets = [b for b, r in reachability.items() if not r["threshold_reachable"]]
 
     if unreachable_buckets:
