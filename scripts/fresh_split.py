@@ -320,6 +320,51 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [DRY-RUN] CSV file exists at {csv_path}")
         else:
             print(f"  [DRY-RUN] CSV not found; would try HuggingFace fallback")
+
+        # Iter1 IN-04: data-quality validation during --dry-run.
+        # The prior --dry-run printed what WOULD happen but never
+        # touched the loader, so a corrupt CSV / wrong-schema HF
+        # dataset surfaced only on the real run -- AFTER artifacts/
+        # had been moved and data/processed/ had been copied (Step 1
+        # has already completed by this point). Validating up-front
+        # in --dry-run avoids that destructive failure mode.
+        #
+        # The validation is BEST-EFFORT: a failure here does NOT
+        # abort the dry-run (the user may be inspecting the seed +
+        # provenance template even when the data source is
+        # intentionally absent). It reports the error and continues
+        # so the rest of the --dry-run output still renders.
+        if csv_path.exists():
+            try:
+                loader = QANTADatasetLoader()
+                n = len(loader.load_from_csv(str(csv_path)))
+                print(f"  [DRY-RUN] CSV validates; would load {n} questions")
+            except Exception as exc:
+                print(
+                    f"  [DRY-RUN] CSV load would FAIL: {exc} "
+                    "(fix before the real run -- artifacts have NOT "
+                    "been touched in dry-run mode)",
+                    file=sys.stderr,
+                )
+        else:
+            try:
+                from qb_data.huggingface_loader import load_from_huggingface
+
+                hf_questions = load_from_huggingface(
+                    "qanta-challenge/acf-co24-tossups", split="eval"
+                )
+                print(
+                    f"  [DRY-RUN] HuggingFace fallback validates; "
+                    f"would load {len(hf_questions)} questions"
+                )
+            except Exception as exc:
+                print(
+                    f"  [DRY-RUN] HuggingFace fallback would FAIL: "
+                    f"{exc} (fix before the real run -- artifacts "
+                    "have NOT been touched in dry-run mode)",
+                    file=sys.stderr,
+                )
+
         # For dry-run, report provenance template and exit
         print("\nStep 4: [DRY-RUN] Would create stratified splits with ratios", SPLIT_RATIOS)
         print("\nStep 5: [DRY-RUN] Would save splits to data/processed/")
