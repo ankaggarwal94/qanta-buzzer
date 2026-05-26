@@ -123,7 +123,7 @@ def load_platt_coefficients(calibration_path: Path) -> dict[str, tuple[float, fl
     dict[str, tuple[float, float]]
         Mapping of bucket_name -> (coef, intercept) tuples.
     """
-    with open(calibration_path, "r") as f:
+    with open(calibration_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     platt_params = {}
@@ -202,16 +202,17 @@ def check_threshold_reachability(
     Returns
     -------
     dict[str, dict]
-        Mapping of bucket_name -> {
-            "max_calibrated_at_sim_1": float,  # max calibrated prob at cosine=1.0
-            "threshold_reachable": bool,       # whether threshold can be exceeded
-            "required_raw_score": float | None, # raw score needed to reach threshold
-        }
+        Mapping of bucket_name -> reachability diagnostics over cosine [-1, 1].
     """
     reachability = {}
     for bucket_name, (coef, intercept) in platt_params.items():
-        # Max achievable calibrated probability (cosine sim = 1.0)
-        max_cal = calibrate_score(1.0, coef, intercept)
+        # The logistic mapping is monotone in coef * x + intercept. For positive
+        # coefficients the max over cosine [-1, 1] is at x=1; for negative
+        # coefficients it is at x=-1.
+        max_raw_score = 1.0 if coef >= 0 else -1.0
+        max_cal = calibrate_score(max_raw_score, coef, intercept)
+        cal_at_sim_1 = calibrate_score(1.0, coef, intercept)
+        cal_at_sim_neg_1 = calibrate_score(-1.0, coef, intercept)
 
         # Compute required raw score to reach threshold:
         # threshold = 1 / (1 + exp(-(coef * x + intercept)))
@@ -226,7 +227,13 @@ def check_threshold_reachability(
             required_raw = (logit - intercept) / coef
 
         reachability[bucket_name] = {
-            "max_calibrated_at_sim_1": round(max_cal, 6),
+            "max_calibrated_probability": round(max_cal, 6),
+            "max_calibrated_raw_score": max_raw_score,
+            "calibrated_at_sim_1": round(cal_at_sim_1, 6),
+            "calibrated_at_sim_neg_1": round(cal_at_sim_neg_1, 6),
+            # Backward-compatible alias retained for older readers; no longer
+            # used as the max when coef < 0.
+            "max_calibrated_at_sim_1": round(cal_at_sim_1, 6),
             "threshold_reachable": max_cal > threshold,
             "required_raw_score": round(required_raw, 6) if required_raw is not None else None,
         }
@@ -474,7 +481,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"ERROR: MC dataset not found: {mc_path}", file=sys.stderr)
         return 1
 
-    with open(mc_path, "r") as f:
+    with open(mc_path, "r", encoding="utf-8") as f:
         mc_questions = json.load(f)
 
     test_path = data_dir / "test_dataset.json"
@@ -482,7 +489,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"ERROR: Test dataset not found: {test_path}", file=sys.stderr)
         return 1
 
-    with open(test_path, "r") as f:
+    with open(test_path, "r", encoding="utf-8") as f:
         test_data = json.load(f)
 
     # Iter2 IN-01: accept both on-disk shapes for test_dataset.json.
@@ -542,8 +549,13 @@ def main(argv: Optional[list[str]] = None) -> int:
               f"{unreachable_buckets}", flush=True)
         for b in unreachable_buckets:
             r = reachability[b]
-            print(f"[STOP]   {b}: max calibrated prob at cosine=1.0 is {r['max_calibrated_at_sim_1']:.4f} "
-                  f"(< {STOP_THRESHOLD}), requires raw_score={r['required_raw_score']}", flush=True)
+            print(
+                f"[STOP]   {b}: max calibrated prob over cosine [-1, 1] "
+                f"is {r['max_calibrated_probability']:.4f} at "
+                f"raw_score={r['max_calibrated_raw_score']} (< {STOP_THRESHOLD}), "
+                f"requires raw_score={r['required_raw_score']}",
+                flush=True,
+            )
         print("[STOP]   This is a known limitation (pre-registered threshold). "
               "The metric may show ceiling effects.", flush=True)
     else:
@@ -593,7 +605,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     nonmc_earlier = sum(1 for ms, ns in zip(mc_stop_steps, nonmc_stop_steps) if ns < ms)
     same_step = sum(1 for ms, ns in zip(mc_stop_steps, nonmc_stop_steps) if ms == ns)
 
-    print(f"\n[STOP] Panel statistics:", flush=True)
+    print("\n[STOP] Panel statistics:", flush=True)
     print(f"[STOP]   Median |shift|: {median_abs_prefix_shift:.4f}", flush=True)
     print(f"[STOP]   Mean |shift|: {mean_abs_prefix_shift:.4f}", flush=True)
     print(f"[STOP]   P25/P50/P75/Max: {p25:.1f}/{p50:.1f}/{p75:.1f}/{max_shift:.1f}", flush=True)
@@ -669,7 +681,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output_data, f, indent=2)
 
     print(f"[STOP] Results written to: {output_path}", flush=True)
@@ -696,7 +708,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         **output_data,
     }
 
-    with open(report_output_path, "w") as f:
+    with open(report_output_path, "w", encoding="utf-8") as f:
         json.dump(report_data, f, indent=2)
 
     print(f"[STOP] Report written to: {report_output_path}", flush=True)

@@ -186,6 +186,68 @@ def fit_platt(raw_scores: np.ndarray, labels: np.ndarray):
     return lr
 
 
+class ConstantCalibrationModel:
+    """Fallback calibrator for empty or single-class validation buckets."""
+
+    def __init__(self, probability: float, reason: str) -> None:
+        self.probability = float(probability)
+        self.reason = reason
+
+    def predict_proba(self, raw_scores: np.ndarray) -> np.ndarray:
+        n = len(raw_scores)
+        positive = np.full(n, self.probability, dtype=float)
+        negative = 1.0 - positive
+        return np.column_stack([negative, positive])
+
+
+def _fit_bucket_calibrator(
+    bucket_name: str,
+    scores: np.ndarray,
+    labels: np.ndarray,
+) -> tuple[object, dict[str, object]]:
+    """Fit Platt scaling or a safe constant fallback for one bucket."""
+    if len(labels) == 0:
+        print(
+            f"[CALI] WARNING: Bucket '{bucket_name}' is empty; using constant "
+            "0.0 calibration fallback",
+            flush=True,
+        )
+        return ConstantCalibrationModel(0.0, "empty_validation_bucket"), {
+            "platt_model_type": "constant",
+            "platt_fallback_reason": "empty_validation_bucket",
+        }
+
+    unique_labels = np.unique(labels)
+    if len(unique_labels) < 2:
+        probability = float(labels[0])
+        label_name = "correct" if probability == 1.0 else "incorrect"
+        print(
+            f"[CALI] WARNING: Bucket '{bucket_name}' has only one class "
+            f"(all {label_name}); using constant {probability:.1f} "
+            "calibration fallback",
+            flush=True,
+        )
+        return ConstantCalibrationModel(
+            probability,
+            "single_class_validation_bucket",
+        ), {
+            "platt_model_type": "constant",
+            "platt_fallback_reason": "single_class_validation_bucket",
+        }
+
+    return fit_platt(scores, labels), {
+        "platt_model_type": "logistic",
+        "platt_fallback_reason": None,
+    }
+
+
+def _calibrate_bucket_scores(model: object, raw_scores: np.ndarray) -> np.ndarray:
+    """Apply bucket calibrator, returning an empty vector for empty buckets."""
+    if len(raw_scores) == 0:
+        return np.array([], dtype=float)
+    return model.predict_proba(raw_scores.reshape(-1, 1))[:, 1]
+
+
 def compute_ece(
     calibrated_probs: np.ndarray,
     labels: np.ndarray,
@@ -402,7 +464,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"ERROR: MC dataset not found: {mc_path}", file=sys.stderr)
         return 1
 
-    with open(mc_path, "r") as f:
+    with open(mc_path, "r", encoding="utf-8") as f:
         mc_questions = json.load(f)
 
     val_path = data_dir / "val_dataset.json"
@@ -410,7 +472,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"ERROR: Val dataset not found: {val_path}", file=sys.stderr)
         return 1
 
-    with open(val_path, "r") as f:
+    with open(val_path, "r", encoding="utf-8") as f:
         val_data = json.load(f)
 
     test_path = data_dir / "test_dataset.json"
@@ -418,7 +480,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"ERROR: Test dataset not found: {test_path}", file=sys.stderr)
         return 1
 
-    with open(test_path, "r") as f:
+    with open(test_path, "r", encoding="utf-8") as f:
         test_data = json.load(f)
 
     # Iter2 IN-01: accept both on-disk shapes for val/test_dataset.json.
@@ -492,12 +554,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"[CALI] WARNING: Bucket '{bucket_name}' has only {len(scores)} val samples, "
                   "Platt fit may be unreliable", flush=True)
 
+        platt_models[bucket_name], model_metadata = _fit_bucket_calibrator(
+            bucket_name,
+            scores,
+            labels,
+        )
+
         # WR-01: Check class balance before fitting Platt scaling
-        if len(np.unique(labels)) < 2:
-            print(f"[CALI] WARNING: Bucket '{bucket_name}' has only one class "
-                  f"(all {'correct' if labels[0] == 1 else 'incorrect'}), "
-                  "Platt scaling will be degenerate", flush=True)
-        else:
+        if model_metadata["platt_model_type"] == "logistic":
             n_pos = int(labels.sum())
             n_total = len(labels)
             class_ratio = n_pos / n_total
@@ -506,11 +570,18 @@ def main(argv: Optional[list[str]] = None) -> int:
                       f"(positive rate={class_ratio:.3f}, {n_pos}/{n_total}), "
                       "Platt scaling may produce extreme coefficients", flush=True)
 
-        platt_models[bucket_name] = fit_platt(scores, labels)
-        coef = float(platt_models[bucket_name].coef_[0][0])
-        intercept = float(platt_models[bucket_name].intercept_[0])
-        print(f"[CALI]   {bucket_name}: coef={coef:.4f}, intercept={intercept:.4f} "
-              f"(n={len(scores)})", flush=True)
+        calibrator = platt_models[bucket_name]
+        if model_metadata["platt_model_type"] == "logistic":
+            coef = float(calibrator.coef_[0][0])
+            intercept = float(calibrator.intercept_[0])
+            print(f"[CALI]   {bucket_name}: coef={coef:.4f}, intercept={intercept:.4f} "
+                  f"(n={len(scores)})", flush=True)
+        else:
+            print(
+                f"[CALI]   {bucket_name}: constant={calibrator.probability:.1f} "
+                f"({calibrator.reason}, n={len(scores)})",
+                flush=True,
+            )
 
     # ========================================================================
     # Apply Platt to TEST set and compute ECE
@@ -547,8 +618,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         labels = np.array(test_buckets[bucket_name][1])
         lr = platt_models[bucket_name]
 
-        # Apply Platt calibration
-        calibrated = lr.predict_proba(raw_scores.reshape(-1, 1))[:, 1]
+        # Apply Platt calibration; empty buckets produce empty calibrated arrays.
+        calibrated = _calibrate_bucket_scores(lr, raw_scores)
 
         # Compute ECE
         ece = compute_ece(calibrated, labels, n_bins=10)
@@ -558,11 +629,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         plot_reliability_diagram(calibrated, labels, png_path, bucket_name, n_bins=10)
 
         # Store results
+        if hasattr(lr, "coef_"):
+            platt_coef = round(float(lr.coef_[0][0]), 6)
+            platt_intercept = round(float(lr.intercept_[0]), 6)
+            model_type = "logistic"
+            fallback_reason = None
+        else:
+            platt_coef = None
+            platt_intercept = None
+            model_type = "constant"
+            fallback_reason = lr.reason
+
         per_bucket_results[bucket_name] = {
             "ece": round(ece, 6),
             "n_samples": int(len(raw_scores)),
-            "platt_coef": round(float(lr.coef_[0][0]), 6),
-            "platt_intercept": round(float(lr.intercept_[0]), 6),
+            "platt_coef": platt_coef,
+            "platt_intercept": platt_intercept,
+            "platt_model_type": model_type,
+            "platt_fallback_reason": fallback_reason,
         }
 
         print(f"[CALI]   {bucket_name}: ECE={ece:.4f}, n={len(raw_scores)}, "
@@ -607,7 +691,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output_data, f, indent=2)
 
     print(f"[CALI] Results written to: {output_path}", flush=True)

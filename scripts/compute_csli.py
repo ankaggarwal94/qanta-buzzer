@@ -77,7 +77,7 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import numpy as np
 
@@ -391,6 +391,26 @@ def _metadata_retention_threshold(
             pass
 
     return 0.98
+
+
+def _filter_test_mc_questions(
+    mc_questions: list[dict],
+    test_qids: set[str],
+) -> tuple[list[dict], dict[str, Any]]:
+    """Filter MC rows to test qids and compute coverage by unique qid."""
+    questions = [q for q in mc_questions if str(q["qid"]) in test_qids]
+    matched_qids = {str(q["qid"]) for q in questions}
+    missing_qids = test_qids - matched_qids
+    coverage = len(matched_qids) / max(1, len(test_qids))
+    return questions, {
+        "test_dataset_qids": len(test_qids),
+        "mc_questions_total": len(mc_questions),
+        "matched_test_mc_questions": len(questions),
+        "matched_test_mc_qids": len(matched_qids),
+        "missing_test_qids": len(missing_qids),
+        "missing_qids": missing_qids,
+        "coverage_rate": coverage,
+    }
 
 
 def bootstrap_ci(
@@ -1405,9 +1425,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Extract test split qids
     test_qids = set(str(q["qid"]) for q in test_questions_iter)
 
-    # Filter MC questions to only those in test split
-    questions = [q for q in mc_questions if str(q["qid"]) in test_qids]
-    matched_test_mc_questions = len(questions)
+    # Filter MC questions to only those in test split. The coverage gate uses
+    # unique qids, not row count, so duplicate MC rows cannot mask missing qids.
+    questions, mc_coverage = _filter_test_mc_questions(mc_questions, test_qids)
+    matched_test_mc_questions = mc_coverage["matched_test_mc_questions"]
+    matched_test_mc_qids = mc_coverage["matched_test_mc_qids"]
+    missing_qids = mc_coverage["missing_qids"]
+    coverage = mc_coverage["coverage_rate"]
     print(f"[CSLI] Loaded {len(questions)} test-split MC questions "
           f"(from {len(mc_questions)} MC total, {len(test_qids)} test qids)")
 
@@ -1419,12 +1443,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     # NOT missing at random (they're "hard to find distractors for"),
     # which is itself a confounder of choices-only accuracy. Fail closed
     # unless the operator explicitly overrides.
-    mc_qids = {str(q["qid"]) for q in mc_questions}
-    missing_qids = test_qids - mc_qids
-    coverage = matched_test_mc_questions / max(1, len(test_qids))
     print(
         f"[CSLI] MC coverage of test split: {coverage:.1%} "
-        f"({len(questions)}/{len(test_qids)}, {len(missing_qids)} missing)"
+        f"({matched_test_mc_qids}/{len(test_qids)} unique qids, "
+        f"{len(questions)} rows, {len(missing_qids)} missing)"
     )
     if coverage < args.min_mc_coverage and not args.allow_incomplete_mc_coverage:
         print(
@@ -1453,13 +1475,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         "override_flag": "--allow-low-mc-retention",
     }
     if build_metadata["status"] == "loaded":
-        test_retention = build_metadata["test"]
-        if not isinstance(test_retention, dict):
+        test_retention_raw = build_metadata["test"]
+        if not isinstance(test_retention_raw, dict):
             print(
                 "ERROR: Invalid MC build metadata: missing splits.test object.",
                 file=sys.stderr,
             )
             return 1
+        test_retention = cast(dict[str, Any], test_retention_raw)
         min_retention = _metadata_retention_threshold(
             build_metadata,
             smoke=args.smoke,
@@ -1570,6 +1593,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "test_dataset_qids": len(test_qids),
             "mc_questions_total": len(mc_questions),
             "matched_test_mc_questions": matched_test_mc_questions,
+            "matched_test_mc_qids": matched_test_mc_qids,
             "missing_test_qids": len(missing_qids),
             "coverage_rate": coverage,
             "threshold": args.min_mc_coverage,
@@ -1589,13 +1613,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     }
 
     if build_metadata["test"] is not None:
-        test_retention = build_metadata["test"]
-        if not isinstance(test_retention, dict):
+        test_retention_raw = build_metadata["test"]
+        if not isinstance(test_retention_raw, dict):
             print(
                 "ERROR: Invalid MC build metadata: missing splits.test object.",
                 file=sys.stderr,
             )
             return 1
+        test_retention = cast(dict[str, Any], test_retention_raw)
         metadata_context.update(
             {
                 "raw_test_questions": test_retention["raw_count"],
