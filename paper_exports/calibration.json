@@ -1,0 +1,39 @@
+{
+  "per_bucket": {
+    "early": {
+      "ece": 0.023895,
+      "n_samples": 2629,
+      "platt_coef": 0.742793,
+      "platt_intercept": -1.007123
+    },
+    "mid": {
+      "ece": 0.030502,
+      "n_samples": 3388,
+      "platt_coef": 1.102537,
+      "platt_intercept": -1.032719
+    },
+    "late": {
+      "ece": 0.02376,
+      "n_samples": 5391,
+      "platt_coef": 2.757256,
+      "platt_intercept": -1.322339
+    }
+  },
+  "max_ece": 0.030502,
+  "threshold": 0.1,
+  "gate_verdict": "pass",
+  "metadata": {
+    "seed": 789685,
+    "n_val": 2178,
+    "n_test": 2308,
+    "model": "all-MiniLM-L6-v2",
+    "n_bins": 10,
+    "platt_C": 1.0,
+    "bucket_boundaries": {
+      "early": "[0.0, 0.33)",
+      "mid": "[0.33, 0.66)",
+      "late": "[0.66, 1.0]"
+    },
+    "timestamp": "2026-05-26T09:00:40.481807+00:00"
+  }
+}
