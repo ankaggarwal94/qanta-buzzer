@@ -180,7 +180,45 @@ def bootstrap_ci(
     tuple[float, float, float]
         (mean, ci_lower, ci_upper) where ci_lower and ci_upper are the
         percentile-based confidence interval bounds.
+
+    Raises
+    ------
+    ValueError
+        If ``values`` is not 1-D, ``n_resamples`` is not positive, or
+        ``confidence`` is not strictly between 0 and 1. Iter1 IN-02 added
+        these guards because the prior implementation silently produced
+        nan (via empty-resample arrays and 0/1 percentiles) on invalid
+        inputs, contaminating the audit JSON.
     """
+    # Iter1 IN-02: input validation. The prior implementation silently
+    # produced degenerate outputs on invalid inputs:
+    #   - values.ndim > 1 made `rng.choice(values, size=n)` resample
+    #     along axis 0 with implicit broadcasting, producing
+    #     unexpected per-row sub-statistics that np.mean averaged into
+    #     a number bearing no relation to the intended CI.
+    #   - n_resamples <= 0 produced an empty `means` array and
+    #     np.percentile returned nan with a "Mean of empty slice"
+    #     RuntimeWarning that consumers ignored.
+    #   - confidence outside (0, 1) produced out-of-range percentiles
+    #     (e.g., -2.5 or 102.5) which np.percentile clamps to extrema,
+    #     silently returning the min/max of `means` and not a CI at all.
+    # All three failure modes are user errors, so raising ValueError is
+    # the right contract (the audit JSON should not carry nan or
+    # silently-truncated CIs).
+    values = np.asarray(values)
+    if values.ndim != 1:
+        raise ValueError(
+            f"bootstrap_ci expects 1-D input, got shape {values.shape}"
+        )
+    if n_resamples <= 0:
+        raise ValueError(
+            f"bootstrap_ci n_resamples must be positive, got {n_resamples}"
+        )
+    if not 0 < confidence < 1:
+        raise ValueError(
+            f"bootstrap_ci confidence must be in (0, 1), got {confidence}"
+        )
+
     rng = np.random.default_rng(seed)
     n = len(values)
     if n == 0:
