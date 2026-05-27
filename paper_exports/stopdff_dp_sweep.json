@@ -1,7 +1,7 @@
 {
   "metadata": {
     "metric_type": "finite_horizon_dp_sweep",
-    "timestamp": "2026-05-27T23:07:13.754883+00:00",
+    "timestamp": "2026-05-27T23:16:32.038382+00:00",
     "argv": [
       "--identity-calibration",
       "--smoke",
@@ -51,7 +51,7 @@
       "format_condition": "MC-fixed",
       "prefix_bucketing": "early_mid_late",
       "subject_pooling": "pooled_subject",
-      "git_commit": "a25b11a05e29c014d429f56d758a3da4d04b5f08",
+      "git_commit": "6706abc37d00cfad47f55886c3a5aec6a4dc74dd",
       "git_dirty": false,
       "argv": [
         "--identity-calibration",
@@ -97,7 +97,7 @@
         "smoke": true,
         "seed": 1,
         "num_bootstrap": 8,
-        "script_sha256": "ee29d2430dd61ce81332a99eb466183c8bd2fd70155ca1930db24dda26afcf85",
+        "script_sha256": "601a45a17244c8ca19f7f91de27ec42c7d8ca7f3363cf17d615d9a473b947c20",
         "helper_sha256s": {
           "scripts/stopdff_dp/__init__.py": "9a5c797622bacf7771cc8f8c110a8e96a526012430665a9469681356f44d5075",
           "scripts/stopdff_dp/_provenance.py": "fdd3994ef3ff86bec61eb43c3b56ad4af9eaba637421f38b23983750c0d1c5dd",
@@ -107,14 +107,14 @@
           "scripts/stopdff_dp/dp_solver.py": "1342a41cd94fafc14c5a4092e2f0b3ec65c4b0e5bfdff0818f7a3384e533fb82",
           "scripts/stopdff_dp/rewards.py": "27563165df2effd67b9847480b62bdab5268d78a8581cbe8880b963a6a2453df",
           "scripts/stopdff_dp/types.py": "046d4a70cb8a10d03af194615214ba9ea11a7ba878aba1bf1929e3dc58461fa7",
-          "scripts/stopdff_dp/writers.py": "7ae04022fdc8b0ffe06288c72670497ebb202e4bf3e931792e7a0f31bc41cd1e",
+          "scripts/stopdff_dp/writers.py": "cf00ce6642e1cdc7a77a374e43e308de854aa1524ff1d680b92b6d7a9047cf37",
           "scripts/_audit_gates.py": "5b4b788949b06e700df5d37e291051a7c6ba448702b5f405f4e35504a07d6de0",
           "scripts/_common.py": "caf687af9da16bd952dc888aee3649d8db1e3cf06feae5d3f880b5ebc7691139"
         },
-        "git_commit": "a25b11a05e29c014d429f56d758a3da4d04b5f08",
+        "git_commit": "6706abc37d00cfad47f55886c3a5aec6a4dc74dd",
         "out_parent": "paper_exports"
       },
-      "started_at": "2026-05-27T23:07:13.573931+00:00",
+      "started_at": "2026-05-27T23:16:31.842958+00:00",
       "status": "completed",
       "calibration": {
         "method": "uncalibrated",
@@ -220,14 +220,14 @@
       "gate_verdict_reason": "ceiling_effect",
       "confirmatory_included": true,
       "confirmatory": true,
-      "wall_clock_seconds": 0.18027329444885254,
-      "completed_at": "2026-05-27T23:07:13.754203+00:00",
-      "cell_id": "4f7a18a5dc42e5a3_acf_flat_empirical_bucket_uncalibrated",
-      "cache_path": "paper_exports/stopdff_dp_sweep_cells/4f7a18a5dc42e5a3_acf_flat_empirical_bucket_uncalibrated.json"
+      "wall_clock_seconds": 0.19462084770202637,
+      "completed_at": "2026-05-27T23:16:32.037578+00:00",
+      "cell_id": "b0ea15ac2c6bdf16_acf_flat_empirical_bucket_uncalibrated",
+      "cache_path": "paper_exports/stopdff_dp_sweep_cells/b0ea15ac2c6bdf16_acf_flat_empirical_bucket_uncalibrated.json"
     }
   ],
   "confirmatory_cells": [
-    "4f7a18a5dc42e5a3_acf_flat_empirical_bucket_uncalibrated"
+    "b0ea15ac2c6bdf16_acf_flat_empirical_bucket_uncalibrated"
   ],
   "mc_coverage": {
     "test": {
