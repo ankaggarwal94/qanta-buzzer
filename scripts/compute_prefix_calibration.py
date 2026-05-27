@@ -618,6 +618,29 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         return 1
 
+    # PR #14 follow-up review (Codex #3308770805): even with
+    # ``--allow-incomplete-mc-coverage``, fail closed when zero MC questions
+    # remain in the TEST split after filtering. The override is intended for
+    # low-but-nonzero coverage; an empty test split would produce
+    # ``max_ece=0`` / ``n_test=0`` reliability diagrams against zero held-out
+    # labels, which is not a usable calibration evaluation. The VAL split
+    # being empty is intentionally still allowed -- the existing
+    # ConstantCalibrationModel fallback handles val=0 per
+    # tests/test_pr14_review_regressions.py::test_prefix_calibration_uses_constant_model_for_empty_val_bucket
+    # and the smoke fixture (val=0/3 retention) explicitly exercises this.
+    # Mirrors the ``compute_csli.py:1682-1692`` and StopDFF guards.
+    if len(mc_test) == 0:
+        print(
+            "ERROR: After filtering test split, zero MC questions remain. "
+            "The --allow-incomplete-mc-coverage override is for "
+            "low-but-nonzero coverage; an empty test split would produce "
+            "an empty calibration evaluation (max_ece=0, n_test=0, empty "
+            "reliability diagrams). Rebuild the MC dataset via "
+            "scripts/build_mc_dataset.py against the current split.",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
         build_metadata = load_mc_build_metadata(data_dir)
     except RuntimeError as exc:

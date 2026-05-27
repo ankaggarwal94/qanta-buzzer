@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import re
 import subprocess
 import sys
@@ -389,8 +390,25 @@ def run_pipeline(
     smoke: bool,
     budget_limit_usd: float,
     initial_spend_usd: float,
+    host_git_commit: str = "",
 ) -> dict:
-    """Run all requested stages sequentially inside one Modal container."""
+    """Run all requested stages sequentially inside one Modal container.
+
+    PR #14 follow-up validation (2026-05-27): ``host_git_commit`` is the
+    host's ``git rev-parse HEAD`` value computed at submit time. Modal's
+    ``debian_slim`` base image lacks the ``git`` binary, so live
+    ``git rev-parse HEAD`` inside the container raises
+    ``FileNotFoundError`` and the audit-producer provenance records
+    ``git_commit=None``. By injecting the host's SHA into the container's
+    process environment, every subprocess spawned by ``run_pipeline``
+    (the 7 stage scripts) inherits ``MODAL_HOST_GIT_COMMIT`` and the
+    shared ``build_generation_provenance`` helper prefers that over the
+    failing live query. Deterministic-build best practice: the provenance
+    records the SHA of the code Modal actually executed, not whatever
+    incidental container-side git state existed at write time.
+    """
+    if host_git_commit:
+        os.environ["MODAL_HOST_GIT_COMMIT"] = host_git_commit
     results = []
     cumulative_estimated_spend = initial_spend_usd
     for stage in stages:
@@ -666,6 +684,26 @@ def _main_impl():
 
     total_start = time.time()
 
+    # PR #14 follow-up validation (2026-05-27): compute the host's commit SHA
+    # at submit time and inject it into the container. The container lacks the
+    # ``git`` binary (debian_slim base), so a live ``git rev-parse HEAD`` in
+    # the audit producers returns None and ``git_commit`` records as empty.
+    # The host has full git access; passing the SHA here is the deterministic
+    # alternative.
+    host_git_commit = ""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(REPO_ROOT),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            host_git_commit = result.stdout.strip()
+    except OSError:
+        pass
+
     try:
         remote_result = run_pipeline.remote(
             stages,
@@ -674,6 +712,7 @@ def _main_impl():
             smoke,
             budget_limit,
             initial_spend,
+            host_git_commit=host_git_commit,
         )
     except Exception:
         duration = time.time() - total_start

@@ -632,10 +632,32 @@ def _generate_csli_panel(csli_data: dict) -> Path:
     # the choices-only leakage gate, not a threshold on the gap.)
     ax.axhline(y=0.0, color="gray", linestyle=":", linewidth=1.0, label="Zero (gap = 0)")
 
-    # Panel mean with CI error bar
+    # Panel mean with CI error bar.
+    # PR #14 follow-up review (Codex #3308770802): clamp the yerr deltas to
+    # non-negative. ``_validate_inputs`` warns (but does not block) when
+    # ``panel_mean`` falls outside ``[ci_lower, ci_upper]`` -- a "warned but
+    # allowed" data-bug signal. When that happens, one of these deltas goes
+    # negative and matplotlib raises
+    # ``ValueError: 'yerr' must not contain negative values`` AFTER
+    # ``audit_table.tex`` has already been rewritten, leaving paper_exports/
+    # in a half-built state. Clamping preserves the visualization (the diamond
+    # marker still appears outside the CI bar, making the data bug visible)
+    # while avoiding the late-failure-after-partial-write hazard.
+    yerr_lower_raw = float(panel_mean) - float(ci_lower)
+    yerr_upper_raw = float(ci_upper) - float(panel_mean)
+    yerr_lower = max(0.0, yerr_lower_raw)
+    yerr_upper = max(0.0, yerr_upper_raw)
+    if yerr_lower_raw < 0 or yerr_upper_raw < 0:
+        print(
+            f"WARNING: csli_panel: clamping negative yerr delta "
+            f"(panel_mean={panel_mean}, ci=[{ci_lower}, {ci_upper}], "
+            f"raw_lower={yerr_lower_raw}, raw_upper={yerr_upper_raw}); "
+            f"diamond marker outside CI is the visible data-bug signal.",
+            file=sys.stderr,
+        )
     ax.errorbar(
         mean_x, panel_mean,
-        yerr=[[panel_mean - ci_lower], [ci_upper - panel_mean]],
+        yerr=[[yerr_lower], [yerr_upper]],
         fmt="D", color="black", markersize=7, capsize=4, linewidth=1.5,
         label=f"Panel mean [{ci_lower:.3f}, {ci_upper:.3f}]",
     )

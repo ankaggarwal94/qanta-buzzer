@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
@@ -258,6 +259,17 @@ def build_generation_provenance(
     status_args = ["status", "--short", "--", *repo_relative_pathspec]
     git_status = _git_output(status_args)
 
+    # PR #14 follow-up validation (2026-05-27): Modal's debian_slim base
+    # image lacks the `git` binary, so `git rev-parse HEAD` inside the
+    # container raises FileNotFoundError and `git_commit` records as None.
+    # The orchestrator injects the host's commit SHA via the
+    # ``MODAL_HOST_GIT_COMMIT`` env var; prefer that when set, fall back to
+    # a live `git rev-parse HEAD` query otherwise. Deterministic-build
+    # best practice: provenance reflects the host commit, not whatever the
+    # container's incidental git binary state was.
+    host_commit_env = os.environ.get("MODAL_HOST_GIT_COMMIT")
+    git_commit = host_commit_env if host_commit_env else _git_output(["rev-parse", "HEAD"])
+
     return {
         "schema_version": 1,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -267,7 +279,7 @@ def build_generation_provenance(
         "output_path": project_relative(output_path),
         "script_path": project_relative(script_resolved),
         "script_sha256": sha256_file(script_resolved),
-        "git_commit": _git_output(["rev-parse", "HEAD"]),
+        "git_commit": git_commit,
         "git_dirty": bool(git_status),
         "git_status_relevant_paths": git_status or "",
     }

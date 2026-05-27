@@ -95,6 +95,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -272,6 +273,13 @@ def _build_generation_provenance(
     status_args = ["status", "--short", "--", *repo_relative_pathspec]
     git_status = _git_output(status_args)
 
+    # PR #14 follow-up validation (2026-05-27): prefer host-injected commit
+    # SHA via MODAL_HOST_GIT_COMMIT env var. See scripts/_common.py
+    # build_generation_provenance for full rationale (Modal debian_slim
+    # lacks the git binary so the live rev-parse query returns None).
+    host_commit_env = os.environ.get("MODAL_HOST_GIT_COMMIT")
+    git_commit = host_commit_env if host_commit_env else _git_output(["rev-parse", "HEAD"])
+
     return {
         "schema_version": 1,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -281,7 +289,7 @@ def _build_generation_provenance(
         "output_path": _display_path(output_path),
         "script_path": _display_path(script_path),
         "script_sha256": _sha256_file(script_path),
-        "git_commit": _git_output(["rev-parse", "HEAD"]),
+        "git_commit": git_commit,
         "git_dirty": bool(git_status),
         "git_status_relevant_paths": git_status or "",
     }

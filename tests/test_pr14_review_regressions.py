@@ -1920,3 +1920,187 @@ def test_modal_local_entrypoint_exposes_output_dir_and_smoke_flags() -> None:
     # Pin: the shim rebuilds sys.argv before delegating to _main_impl.
     assert 'sys.argv = ["modal_cs321m.py"]' in source
     assert '_main_impl()' in source
+
+
+def test_build_generation_provenance_prefers_host_git_commit_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #14 follow-up validation (2026-05-27): Modal's debian_slim base
+    lacks the ``git`` binary, so ``git rev-parse HEAD`` inside the
+    container raises FileNotFoundError and the audit-producer provenance
+    records ``git_commit=None``. The orchestrator (modal_cs321m._main_impl)
+    computes the host's commit SHA at submit time and injects it via the
+    ``MODAL_HOST_GIT_COMMIT`` env var; the provenance helper must prefer
+    that env var over the live (and failing) ``_git_output`` query.
+    """
+    from scripts._common import build_generation_provenance
+
+    sentinel_sha = "deadbeefcafe1234567890abcdef0123456789ab"
+    monkeypatch.setenv("MODAL_HOST_GIT_COMMIT", sentinel_sha)
+
+    # Use an output path inside repo to keep this test focused on the
+    # env-var preference, not the pathspec filter.
+    repo_root = Path(__file__).resolve().parents[1]
+    output_path = repo_root / "paper_exports" / "csli.json"
+
+    provenance = build_generation_provenance(
+        script_path=repo_root / "scripts" / "compute_csli.py",
+        argv=[],
+        output_path=output_path,
+        extra_paths=[],
+    )
+
+    # When the env var is set, it wins regardless of whether `git` is
+    # actually available locally.
+    assert provenance["git_commit"] == sentinel_sha, (
+        f"build_generation_provenance must prefer MODAL_HOST_GIT_COMMIT env "
+        f"var over live `git rev-parse HEAD`; got {provenance['git_commit']!r}"
+    )
+
+
+def test_build_generation_provenance_falls_back_to_live_git_when_no_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inverse contract: when ``MODAL_HOST_GIT_COMMIT`` is NOT set, the
+    helper falls back to the live ``git rev-parse HEAD`` query as before.
+    """
+    from scripts._common import build_generation_provenance
+
+    monkeypatch.delenv("MODAL_HOST_GIT_COMMIT", raising=False)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    output_path = repo_root / "paper_exports" / "csli.json"
+
+    provenance = build_generation_provenance(
+        script_path=repo_root / "scripts" / "compute_csli.py",
+        argv=[],
+        output_path=output_path,
+        extra_paths=[],
+    )
+
+    # On a developer machine with git available, this returns a 40-char SHA.
+    # In an environment without git (e.g., the Modal container) this would
+    # be None. Either way, it must NOT be the sentinel.
+    assert provenance["git_commit"] != "deadbeefcafe1234567890abcdef0123456789ab"
+    # On this test runner (developer machine), git IS available, so we
+    # expect a real SHA-shape string.
+    assert provenance["git_commit"] is not None
+    assert len(provenance["git_commit"]) == 40, (
+        f"Expected 40-char git SHA, got {provenance['git_commit']!r}"
+    )
+
+
+def test_compute_csli_build_generation_provenance_prefers_host_git_commit_env_var() -> None:
+    """Pin via source-text contract: ``compute_csli._build_generation_provenance``
+    must apply the same env-var preference as the shared helper.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "scripts" / "compute_csli.py").read_text(
+        encoding="utf-8"
+    )
+    for substr in (
+        'os.environ.get("MODAL_HOST_GIT_COMMIT")',
+        'host_commit_env if host_commit_env else _git_output',
+    ):
+        assert substr in source, (
+            f"compute_csli._build_generation_provenance must prefer "
+            f"MODAL_HOST_GIT_COMMIT env var over live git query; missing "
+            f"contract substring: {substr!r}"
+        )
+
+
+def test_modal_run_pipeline_propagates_host_git_commit_env_var() -> None:
+    """Pin via source-text contract: ``modal_cs321m.run_pipeline`` accepts
+    ``host_git_commit`` and sets ``os.environ["MODAL_HOST_GIT_COMMIT"]``
+    so subprocess audit stages inherit it. ``_main_impl`` computes the
+    host SHA at submit time and passes it to ``.remote()``.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "modal_cs321m.py").read_text(encoding="utf-8")
+    for substr in (
+        "host_git_commit: str = \"\"",
+        'os.environ["MODAL_HOST_GIT_COMMIT"] = host_git_commit',
+        "host_git_commit=host_git_commit",
+        '["git", "rev-parse", "HEAD"]',
+    ):
+        assert substr in source, (
+            f"modal_cs321m.py must wire host_git_commit through "
+            f"run_pipeline.remote() and into the container env; missing "
+            f"contract substring: {substr!r}"
+        )
+
+
+def test_regenerate_figures_clamps_negative_yerr_deltas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """PR #14 follow-up review (Codex #3308770802): when a regenerated
+    csli.json has the panel mean outside its CI (a warned-but-allowed
+    data-bug signal per ``_validate_inputs``), the panel-mean errorbar
+    plot would receive a negative ``yerr`` delta and matplotlib raises
+    ``ValueError: 'yerr' must not contain negative values`` AFTER
+    audit_table.tex has already been rewritten -- leaving paper_exports/
+    in a half-built state.
+
+    The fix clamps each yerr delta to non-negative at the plot site,
+    preserving the visualization (the diamond marker still falls outside
+    the CI bar, making the data bug visible) while avoiding the
+    late-failure-after-partial-write hazard.
+    """
+    import importlib
+    import sys as _sys
+    import matplotlib
+    matplotlib.use("Agg")
+    _sys.modules.pop("scripts.regenerate_figures", None)
+    rf = importlib.import_module("scripts.regenerate_figures")
+    _generate_csli_panel = getattr(rf, "_generate_csli_panel")
+    monkeypatch.setattr(rf, "_PAPER_EXPORTS", tmp_path)
+
+    # Stage a csli payload with panel mean ABOVE its CI upper -- this
+    # would trigger the negative-yerr bug under matplotlib.errorbar.
+    csli_data = {
+        "panel_csli": {"mean": 0.10, "ci_lower": 0.20, "ci_upper": 0.25},
+        "panel_question_use_gap": {"mean": 0.10, "ci_lower": 0.20, "ci_upper": 0.25},
+        "per_model": {
+            "tfidf": {"csli": 0.05, "question_use_gap": 0.05, "acc_choices_only": 0.26},
+            "sbert": {"csli": 0.08, "question_use_gap": 0.08, "acc_choices_only": 0.24},
+        },
+        "metadata": {"threshold": 0.30},
+    }
+    # Must not raise.
+    out_path = _generate_csli_panel(csli_data)
+    assert out_path.exists()
+    # And the WARNING about clamping should have fired.
+    captured = capsys.readouterr()
+    assert "clamping negative yerr delta" in captured.err.lower()
+
+
+def test_compute_prefix_calibration_rejects_empty_test_after_coverage_override() -> None:
+    """PR #14 follow-up review (Codex #3308770805): even with
+    ``--allow-incomplete-mc-coverage``, an empty test split after filtering
+    must fail closed. Otherwise calibration emits ``max_ece=0`` /
+    ``n_test=0`` reliability diagrams against zero held-out labels --
+    not a usable evaluation. Mirrors the CSLI and StopDFF guards.
+
+    The val split being empty is INTENTIONALLY still allowed (ConstantCalibrationModel
+    fallback handles it; smoke fixture exercises val=0/3 retention).
+    Pin via source-text contract.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "scripts" / "compute_prefix_calibration.py").read_text(
+        encoding="utf-8"
+    )
+    for substr in (
+        "if len(mc_test) == 0:",
+        "After filtering test split, zero MC questions remain",
+        "--allow-incomplete-mc-coverage override is for",
+        # The val=0 case must remain handled by ConstantCalibrationModel
+        # fallback, NOT by a hard error -- pin the smoke-fixture-compat.
+        # Comment text wraps across lines, so match a one-line subspan.
+        "intentionally still allowed",
+    ):
+        assert substr in source, (
+            f"compute_prefix_calibration.py must reject empty test split "
+            f"after override (mirror CSLI/StopDFF guards) WHILE preserving "
+            f"the val=0 fallback path; missing contract substring: "
+            f"{substr!r}"
+        )
