@@ -120,19 +120,28 @@ def _consumer_source(name: str) -> str:
 
 @pytest.mark.parametrize("consumer", _CONSUMERS)
 def test_consumer_imports_iter_split_questions(consumer: str) -> None:
-    """Each consumer must reference ``iter_split_questions``.
+    """Each consumer must CALL ``iter_split_questions``.
 
     The import can be top-level OR inside ``main()`` (the latter is
     the established pattern in this codebase because of sys.path
-    setup ordering). What matters is the symbol name appears
-    somewhere in the source.
+    setup ordering). What matters is that the consumer actually routes
+    split parsing through the helper.
     """
     src = _consumer_source(consumer)
-    assert "iter_split_questions" in src, (
-        f"{consumer} does not reference iter_split_questions. "
-        "The Iter2 IN-01 fix requires every test_dataset.json consumer "
-        "to route through scripts._common.iter_split_questions so the "
-        "wrapped + plain-list producer shapes are both accepted."
+    tree = ast.parse(src)
+    has_call = any(
+        isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "iter_split_questions")
+            or (isinstance(node.func, ast.Attribute) and node.func.attr == "iter_split_questions")
+        )
+        for node in ast.walk(tree)
+    )
+    assert has_call, (
+        f"{consumer} does not call iter_split_questions(). "
+        "The Iter2 IN-01 fix requires every {val,test}_dataset.json consumer "
+        "to route through scripts._common.iter_split_questions so the wrapped + "
+        "plain-list producer shapes are both accepted."
     )
 
 
