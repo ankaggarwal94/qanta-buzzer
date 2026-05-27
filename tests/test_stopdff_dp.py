@@ -1233,3 +1233,142 @@ def test_audit_card_non_confirmatory_dp_forces_warn(tmp_path, monkeypatch):
     assert dp_row["verdict"] == "warn"
     qualifier = dp_row.get("verdict_qualifier") or ""
     assert "non-confirmatory" in qualifier
+
+
+def test_audit_card_dp_stale_helper_hash_triggers_warn(tmp_path, monkeypatch):
+    """When a helper module's hash differs from what stopdff_dp.json
+    recorded, the audit card must downgrade to WARN with a helper-
+    mismatch qualifier — even if the producer script's own SHA matches."""
+    from scripts import make_audit_card
+    from scripts._common import sha256_file
+    paper = tmp_path / "paper_exports"
+    paper.mkdir()
+    import shutil
+    src = Path(__file__).resolve().parent.parent / "paper_exports"
+    for fname in ("csli.json", "calibration.json", "stopdff.json"):
+        shutil.copyfile(src / fname, paper / fname)
+    # Synthesize a DP artifact whose producer SHA matches the live
+    # compute_stopdff_dp.py but whose helper_sha256s has a deliberate
+    # mismatch for one helper module.
+    repo_root = Path(__file__).resolve().parent.parent
+    live_producer_sha = sha256_file(repo_root / "scripts" / "compute_stopdff_dp.py")
+    (paper / "stopdff_dp.json").write_text(json.dumps({
+        "stopdff_dp_signed_median": 0.0,
+        "stopdff_dp_signed_mean": 0.0,
+        "stopdff_dp_abs_median": 0.0,
+        "n_items": 10,
+        "direction_breakdown": {"mc_earlier": 0, "qa_earlier": 0, "same_step": 10},
+        "coverage": {"verdict": "pass", "fraction_exact": 1.0,
+                     "fraction_pooled": 0.0, "fraction_missing": 0.0,
+                     "n_cells": 60, "reason": "ok"},
+        "ceiling_flags": {"all_stop_at_first_prefix": False,
+                          "all_stop_at_final_prefix": False,
+                          "no_cross_format_stopping_variance": False,
+                          "n_items": 10, "n_stopped_cells": 50,
+                          "n_never_stopped_cells": 10, "empty": False},
+        "gate_verdict": "pass",
+        "gate_verdict_reason": "all_clean",
+        "confirmatory": True,
+        "metadata": {
+            "metric_type": "finite_horizon_dp",
+            "stopping_policy": "finite_horizon_dp",
+            "reward_schedule": "power_mark",
+            "continuation_estimator": "empirical_bucket",
+            "fit_split": "val",
+            "eval_split": "test",
+            "generation": {
+                "schema_version": 1,
+                "generated_at_utc": "2026-05-27T20:00:00+00:00",
+                "command": ["python", "scripts/compute_stopdff_dp.py"],
+                "argv": [],
+                "cwd": ".",
+                "output_path": "paper_exports/stopdff_dp.json",
+                "script_path": "scripts/compute_stopdff_dp.py",
+                "script_sha256": live_producer_sha,  # matches the live producer
+                "git_commit": "0" * 40,
+                "git_dirty": False,
+                "git_status_relevant_paths": "",
+                "helper_sha256s": {
+                    # Wrong hash for a real helper module.
+                    "scripts/stopdff_dp/rewards.py": "0" * 64,
+                    # Other helpers omitted; the dict is non-exhaustive
+                    # by design — the test only asserts the mismatch
+                    # branch fires.
+                },
+            },
+        },
+    }))
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", paper)
+    rc = make_audit_card.main_with_args(["--include-dp-stopdff"])
+    assert rc == 0
+    card = json.loads((paper / "audit_card.json").read_text())
+    dp_prov = card["artifact_provenance"]["stopdff_dp.json"]
+    assert dp_prov["sha_matches"] is False
+    assert dp_prov["helper_mismatches"] is not None
+    assert "scripts/stopdff_dp/rewards.py" in dp_prov["helper_mismatches"]
+    # Overall verdict qualifier mentions stale producer hash.
+    qualifier = card.get("overall_verdict_qualifier") or ""
+    assert "stale producer hash" in qualifier and "stopdff_dp.json" in qualifier
+
+
+def test_audit_card_dp_helper_hashes_all_match_keeps_pass(tmp_path, monkeypatch):
+    """When the DP artifact records helper hashes that all match the live
+    files, sha_matches stays True and helper_mismatches is None."""
+    from scripts import make_audit_card
+    from scripts._common import sha256_file
+    from scripts.stopdff_dp._provenance import helper_sha256s as live_helpers
+    paper = tmp_path / "paper_exports"
+    paper.mkdir()
+    import shutil
+    src = Path(__file__).resolve().parent.parent / "paper_exports"
+    for fname in ("csli.json", "calibration.json", "stopdff.json"):
+        shutil.copyfile(src / fname, paper / fname)
+    repo_root = Path(__file__).resolve().parent.parent
+    live_producer_sha = sha256_file(repo_root / "scripts" / "compute_stopdff_dp.py")
+    (paper / "stopdff_dp.json").write_text(json.dumps({
+        "stopdff_dp_signed_median": 0.0,
+        "stopdff_dp_signed_mean": 0.0,
+        "stopdff_dp_abs_median": 0.0,
+        "n_items": 10,
+        "direction_breakdown": {"mc_earlier": 0, "qa_earlier": 0, "same_step": 10},
+        "coverage": {"verdict": "pass", "fraction_exact": 1.0,
+                     "fraction_pooled": 0.0, "fraction_missing": 0.0,
+                     "n_cells": 60, "reason": "ok"},
+        "ceiling_flags": {"all_stop_at_first_prefix": False,
+                          "all_stop_at_final_prefix": False,
+                          "no_cross_format_stopping_variance": False,
+                          "n_items": 10, "n_stopped_cells": 50,
+                          "n_never_stopped_cells": 10, "empty": False},
+        "gate_verdict": "pass",
+        "gate_verdict_reason": "all_clean",
+        "confirmatory": True,
+        "metadata": {
+            "metric_type": "finite_horizon_dp",
+            "stopping_policy": "finite_horizon_dp",
+            "reward_schedule": "power_mark",
+            "continuation_estimator": "empirical_bucket",
+            "fit_split": "val",
+            "eval_split": "test",
+            "generation": {
+                "schema_version": 1,
+                "generated_at_utc": "2026-05-27T20:00:00+00:00",
+                "command": ["python", "scripts/compute_stopdff_dp.py"],
+                "argv": [],
+                "cwd": ".",
+                "output_path": "paper_exports/stopdff_dp.json",
+                "script_path": "scripts/compute_stopdff_dp.py",
+                "script_sha256": live_producer_sha,
+                "git_commit": "0" * 40,
+                "git_dirty": False,
+                "git_status_relevant_paths": "",
+                "helper_sha256s": live_helpers(),
+            },
+        },
+    }))
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", paper)
+    rc = make_audit_card.main_with_args(["--include-dp-stopdff"])
+    assert rc == 0
+    card = json.loads((paper / "audit_card.json").read_text())
+    dp_prov = card["artifact_provenance"]["stopdff_dp.json"]
+    assert dp_prov["sha_matches"] is True
+    assert dp_prov["helper_mismatches"] is None

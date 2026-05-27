@@ -397,11 +397,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Provenance.
     try:
         from scripts._common import build_generation_provenance
+        from scripts.stopdff_dp._provenance import helper_sha256s
         generation = build_generation_provenance(
             __file__, effective_argv,
             output_path=out_json,
             extra_paths=[calibration_path] if calibration_path else [],
         )
+        # PR #15 review (chatgpt-codex-connector 3314086941): the DP
+        # producer's behavior is mostly delegated to imported helpers
+        # under scripts/stopdff_dp/ + scripts/_audit_gates.py +
+        # scripts/_common.py. Embed those module SHAs so the audit-card
+        # consumer (make_audit_card._build_artifact_provenance) can
+        # cross-check them and force the WARN downgrade when any helper
+        # drifts after the JSON was committed.
+        generation["helper_sha256s"] = helper_sha256s()
     except Exception:  # noqa: BLE001 — provenance is best-effort
         generation = None
 

@@ -826,6 +826,37 @@ def _render_artifact_provenance_md(provenance: dict) -> list[str]:
             f"{match_cell} |"
         )
     lines.append("")
+
+    # PR #15 review (chatgpt-codex-connector 3314086941): when the
+    # producer recorded helper_sha256s and any helper drifted, surface
+    # the offending modules below the table so a reader debugging the
+    # WARN downgrade can see WHICH helper went stale, not just that the
+    # overall sha_matches flipped to False.
+    any_helper_mismatches = False
+    for _name, block in provenance.items():
+        if not isinstance(block, dict):
+            continue
+        hm = block.get("helper_mismatches")
+        if hm:
+            any_helper_mismatches = True
+            break
+    if any_helper_mismatches:
+        lines.append("**DP helper module mismatches** (force sha_matches=false):")
+        lines.append("")
+        for artifact_name, block in provenance.items():
+            if not isinstance(block, dict):
+                continue
+            hm = block.get("helper_mismatches")
+            if not hm:
+                continue
+            for rel_path, shas in sorted(hm.items()):
+                recorded = (shas.get("recorded") or "n/a")[:12]
+                current = (shas.get("current") or "n/a")[:12]
+                lines.append(
+                    f"- {artifact_name} -> {rel_path}: recorded={recorded}, "
+                    f"current={current}"
+                )
+        lines.append("")
     return lines
 
 
@@ -892,6 +923,41 @@ def _build_artifact_provenance(
             match = None
         else:
             match = recorded_sha == current_sha
+
+        # PR #15 review (chatgpt-codex-connector 3314086941): when the
+        # producer recorded helper_sha256s (DP path), cross-check each
+        # against the live file. The DP artifact's values are computed
+        # by imported helpers under scripts/stopdff_dp/ plus
+        # scripts/_audit_gates.py and scripts/_common.py. Editing a
+        # helper leaves the producer script SHA matching, so we need
+        # the helper-level check to surface drift. Any mismatch forces
+        # the overall sha_matches to False so the audit card surfaces
+        # the stale helper state in its WARN downgrade.
+        helper_mismatches: dict[str, dict[str, str | None]] = {}
+        recorded_helpers = (
+            gen_block.get("helper_sha256s") if isinstance(gen_block, dict) else None
+        )
+        if isinstance(recorded_helpers, dict):
+            for rel_path, recorded_helper_sha in recorded_helpers.items():
+                candidate = _REPO_ROOT / rel_path
+                try:
+                    live_helper_sha = (
+                        sha256_file(candidate) if candidate.exists() else None
+                    )
+                except OSError:
+                    live_helper_sha = None
+                if (
+                    recorded_helper_sha is not None
+                    and live_helper_sha is not None
+                    and recorded_helper_sha != live_helper_sha
+                ):
+                    helper_mismatches[rel_path] = {
+                        "recorded": recorded_helper_sha,
+                        "current": live_helper_sha,
+                    }
+            if helper_mismatches:
+                match = False
+
         out[name] = {
             "recorded_commit": recorded_commit,
             "recorded_sha256": recorded_sha,
@@ -900,6 +966,7 @@ def _build_artifact_provenance(
             if script_path.exists() and script_path.is_absolute()
             else None,
             "sha_matches": match,
+            "helper_mismatches": helper_mismatches or None,
         }
     return out
 
