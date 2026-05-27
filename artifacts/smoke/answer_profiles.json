@@ -1,32 +1,8 @@
 {
-  "Inca Empire": {
-    "question_count": 1,
-    "sample_qids": [
-      "3873"
-    ]
-  },
-  "Maria Theresa": {
-    "question_count": 1,
-    "sample_qids": [
-      "103395"
-    ]
-  },
-  "Seneca Falls Convention": {
-    "question_count": 1,
-    "sample_qids": [
-      "1704"
-    ]
-  },
   "Henry IV of France": {
     "question_count": 1,
     "sample_qids": [
       "3009"
-    ]
-  },
-  "Netherlands": {
-    "question_count": 1,
-    "sample_qids": [
-      "115349"
     ]
   },
   "Great Famine (Ireland)": {
@@ -35,18 +11,17 @@
       "200192"
     ]
   },
-  "Ester": {
+  "Mass spectrometry": {
     "question_count": 1,
     "sample_qids": [
-      "202398"
+      "205242"
     ]
   },
-  "Gibbs free energy": {
-    "question_count": 3,
+  "Ester": {
+    "question_count": 2,
     "sample_qids": [
-      "9312",
-      "107378",
-      "205213"
+      "202398",
+      "9319"
     ]
   },
   "Tyr": {
@@ -55,67 +30,55 @@
       "111634"
     ]
   },
-  "Jainism": {
+  "Johann Sebastian Bach": {
     "question_count": 1,
     "sample_qids": [
-      "102587"
+      "189284"
     ]
   },
-  "Sikhism": {
+  "Inca Empire": {
+    "question_count": 1,
+    "sample_qids": [
+      "3873"
+    ]
+  },
+  "Enthalpy": {
+    "question_count": 1,
+    "sample_qids": [
+      "192507"
+    ]
+  },
+  "Jesus": {
+    "question_count": 1,
+    "sample_qids": [
+      "13075"
+    ]
+  },
+  "Gibbs free energy": {
+    "question_count": 3,
+    "sample_qids": [
+      "107378",
+      "205213",
+      "9312"
+    ]
+  },
+  "Compton scattering": {
     "question_count": 2,
     "sample_qids": [
-      "13286",
-      "211302"
+      "103377",
+      "10620"
     ]
   },
-  "China": {
-    "question_count": 2,
-    "sample_qids": [
-      "111625",
-      "202429"
-    ]
-  },
-  "Shiva": {
+  "Charles Baudelaire": {
     "question_count": 1,
     "sample_qids": [
-      "12430"
+      "193526"
     ]
   },
-  "Francis Bacon": {
+  "Tax": {
     "question_count": 1,
     "sample_qids": [
-      "197503"
-    ]
-  },
-  "Enigma Variations": {
-    "question_count": 2,
-    "sample_qids": [
-      "871",
-      "201795"
-    ]
-  },
-  "Spain": {
-    "question_count": 1,
-    "sample_qids": [
-      "207933"
-    ]
-  },
-  "The Magic Flute": {
-    "question_count": 1,
-    "sample_qids": [
-      "109216"
-    ]
-  },
-  "Edward Elgar": {
-    "question_count": 1,
-    "sample_qids": [
-      "209120"
-    ]
-  },
-  "Water": {
-    "question_count": 1,
-    "sample_qids": [
-      "212078"
+      "196064"
     ]
   },
   "Phloem": {
@@ -124,10 +87,34 @@
       "190225"
     ]
   },
-  "Compton scattering": {
+  "Lajos Kossuth": {
     "question_count": 1,
     "sample_qids": [
-      "103377"
+      "3550"
+    ]
+  },
+  "The Magic Flute": {
+    "question_count": 1,
+    "sample_qids": [
+      "109216"
+    ]
+  },
+  "Francis Bacon": {
+    "question_count": 1,
+    "sample_qids": [
+      "197503"
+    ]
+  },
+  "Shiva": {
+    "question_count": 1,
+    "sample_qids": [
+      "12430"
+    ]
+  },
+  "Ireland": {
+    "question_count": 1,
+    "sample_qids": [
+      "203022"
     ]
   },
   "Surface tension": {
@@ -136,16 +123,17 @@
       "10643"
     ]
   },
-  "Stephen Crane": {
-    "question_count": 1,
-    "sample_qids": [
-      "191146"
-    ]
-  },
   "Candide": {
     "question_count": 1,
     "sample_qids": [
       "101328"
+    ]
+  },
+  "Enigma Variations": {
+    "question_count": 2,
+    "sample_qids": [
+      "201795",
+      "871"
     ]
   },
   "Allen Ginsberg": {
@@ -154,10 +142,79 @@
       "194229"
     ]
   },
-  "Jonathan Swift": {
+  "Sikhism": {
+    "question_count": 2,
+    "sample_qids": [
+      "211302",
+      "13286"
+    ]
+  },
+  "Moliere": {
     "question_count": 1,
     "sample_qids": [
-      "190849"
+      "202722"
+    ]
+  },
+  "Netherlands": {
+    "question_count": 1,
+    "sample_qids": [
+      "115349"
+    ]
+  },
+  "Charlemagne": {
+    "question_count": 1,
+    "sample_qids": [
+      "191316"
+    ]
+  },
+  "Edward Elgar": {
+    "question_count": 1,
+    "sample_qids": [
+      "209120"
+    ]
+  },
+  "Josephson effect": {
+    "question_count": 1,
+    "sample_qids": [
+      "10341"
+    ]
+  },
+  "Gustave Courbet": {
+    "question_count": 1,
+    "sample_qids": [
+      "360"
+    ]
+  },
+  "China": {
+    "question_count": 2,
+    "sample_qids": [
+      "202429",
+      "111625"
+    ]
+  },
+  "Odin": {
+    "question_count": 2,
+    "sample_qids": [
+      "13234",
+      "13255"
+    ]
+  },
+  "Maria Theresa": {
+    "question_count": 1,
+    "sample_qids": [
+      "103395"
+    ]
+  },
+  "Jainism": {
+    "question_count": 1,
+    "sample_qids": [
+      "102587"
+    ]
+  },
+  "Water": {
+    "question_count": 1,
+    "sample_qids": [
+      "212078"
     ]
   },
   "Johann Wolfgang von Goethe": {
@@ -166,10 +223,40 @@
       "204636"
     ]
   },
-  "Ireland": {
+  "Spain": {
     "question_count": 1,
     "sample_qids": [
-      "203022"
+      "207933"
+    ]
+  },
+  "Jonathan Swift": {
+    "question_count": 1,
+    "sample_qids": [
+      "190849"
+    ]
+  },
+  "George Frideric Handel": {
+    "question_count": 1,
+    "sample_qids": [
+      "211350"
+    ]
+  },
+  "Stephen Crane": {
+    "question_count": 1,
+    "sample_qids": [
+      "191146"
+    ]
+  },
+  "Jean Racine": {
+    "question_count": 1,
+    "sample_qids": [
+      "106934"
+    ]
+  },
+  "Seneca Falls Convention": {
+    "question_count": 1,
+    "sample_qids": [
+      "1704"
     ]
   }
 }
