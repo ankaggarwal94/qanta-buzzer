@@ -327,8 +327,18 @@ def _apply_uncalibrated(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _fit_temperature_by_phase(fit_df: pd.DataFrame) -> dict[str, float]:
+    """Pick the temperature in ``grid`` that minimises per-bucket log-loss.
+
+    Vectorized: for each phase bucket the loss surface
+    ``L(t) = log_loss(y, sigmoid(raw / t))`` is evaluated across the
+    entire temperature grid in one broadcast — ``z`` has shape
+    ``(n_rows, n_temps)``, sigmoid is one numpy call, log-loss reduces
+    along axis 0. Avoids the previous O(n_rows * n_temps) Python loop
+    that dominated runtime on large sweeps when
+    ``--calibrators temperature`` was in play.
+    """
     temps: dict[str, float] = {}
-    grid = np.array([0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0])
+    grid = np.array([0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0], dtype=float)
     mc = fit_df[fit_df["format"] == "MC"].copy()
     if mc.empty:
         return {"default": 1.0}
@@ -339,7 +349,19 @@ def _fit_temperature_by_phase(fit_df: pd.DataFrame) -> dict[str, float]:
         if len(np.unique(y)) < 2:
             temps[str(bucket)] = 1.0
             continue
-        losses = [_log_loss(y, np.array([_sigmoid(x / t) for x in raw])) for t in grid]
+        # Broadcast: z shape (n_rows, n_temps), clamped to match the
+        # per-element guard the prior _sigmoid had.
+        z = raw[:, None] / grid[None, :]
+        z = np.clip(z, -500.0, 500.0)
+        probs = 1.0 / (1.0 + np.exp(-z))
+        # Log-loss per temperature column. Clip mirrors the existing
+        # _log_loss helper exactly so values are bit-comparable.
+        clipped = np.clip(probs, 1e-6, 1.0 - 1e-6)
+        losses = -np.mean(
+            y[:, None] * np.log(clipped)
+            + (1.0 - y[:, None]) * np.log(1.0 - clipped),
+            axis=0,
+        )
         temps[str(bucket)] = float(grid[int(np.argmin(losses))])
     temps["default"] = float(np.median(list(temps.values()))) if temps else 1.0
     return temps

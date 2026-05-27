@@ -887,3 +887,51 @@ def test_sweep_latex_escapes_all_special_characters():
     ]
     for raw, expected in cases:
         assert _latex_escape(raw) == expected, (raw, expected, _latex_escape(raw))
+
+
+def test_fit_temperature_by_phase_vectorized_matches_per_row():
+    """Vectorized _fit_temperature_by_phase must produce identical output
+    to the prior nested-loop implementation across mixed-phase fixtures."""
+    import pandas as pd
+    import numpy as np
+    from scripts.sweep_stopdff_dp import (
+        _fit_temperature_by_phase, _phase, _sigmoid, _log_loss,
+    )
+
+    rng = np.random.default_rng(0)
+    n = 200
+    df = pd.DataFrame({
+        "format": ["MC"] * n,
+        "prefix_fraction": rng.uniform(0.0, 1.0, size=n),
+        "p_raw": rng.uniform(0.05, 0.95, size=n),
+        "correct": rng.integers(0, 2, size=n).astype(float),
+    })
+
+    actual = _fit_temperature_by_phase(df)
+
+    # Per-row reference: mirrors the prior nested-loop implementation
+    # exactly.
+    grid = np.array([0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0])
+    mc = df[df["format"] == "MC"].copy()
+    mc["phase"] = mc["prefix_fraction"].map(_phase)
+    expected: dict[str, float] = {}
+    for bucket, group in mc.groupby("phase"):
+        y = group["correct"].astype(float).to_numpy()
+        raw = group["p_raw"].astype(float).to_numpy()
+        if len(np.unique(y)) < 2:
+            expected[str(bucket)] = 1.0
+            continue
+        losses = [
+            _log_loss(y, np.array([_sigmoid(x / t) for x in raw])) for t in grid
+        ]
+        expected[str(bucket)] = float(grid[int(np.argmin(losses))])
+    expected["default"] = (
+        float(np.median(list(expected.values()))) if expected else 1.0
+    )
+
+    # argmin is deterministic so per-bucket temperatures must be identical.
+    assert set(actual.keys()) == set(expected.keys())
+    for key in actual:
+        assert actual[key] == expected[key], (
+            f"{key}: vectorized={actual[key]} expected={expected[key]}"
+        )
