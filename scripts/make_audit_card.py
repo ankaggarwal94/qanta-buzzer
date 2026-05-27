@@ -415,6 +415,17 @@ def _evaluate_stopdff_dp(dp_data: dict) -> dict:
     verdict = dp_data["gate_verdict"]
     confirmatory = dp_data.get("confirmatory", False)
     qualifier_parts = []
+    # PR #15 review (Copilot 3313506967): the producer's gate_verdict only
+    # reflects coverage/ceiling checks. Combine with the threshold check on
+    # |signed_median| so the displayed criterion and verdict are consistent.
+    threshold_verdict = "pass" if abs(signed_median) <= 1 else "warn"
+    # Take the stricter outcome (warn dominates pass).
+    if threshold_verdict == "warn" or verdict == "warn":
+        verdict = "warn"
+        if threshold_verdict == "warn":
+            qualifier_parts.append(
+                f"|signed_median|={abs(signed_median):.4f} > 1"
+            )
     if not confirmatory:
         qualifier_parts.append("non-confirmatory continuation estimator")
     if coverage.get("verdict") == "warn":

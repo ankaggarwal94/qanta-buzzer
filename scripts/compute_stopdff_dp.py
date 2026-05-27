@@ -187,7 +187,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         def _run(rows: pd.DataFrame, fmt: str):
             ps = rows["p_calibrated"].tolist()
             T = len(ps)
-            prefix_fractions = [(i + 1) / T for i in range(T)]
+            # PR #15 review (Copilot 3313507021/3313507055): read the
+            # adapter-provided prefix_fraction (len(prefix)/len(full_question))
+            # instead of rank/T even-spacing so the DP early/late split and
+            # bucket assignment agree with scripts/compute_prefix_calibration.py
+            # and scripts/compute_stopdff.py.
+            prefix_fractions = rows["prefix_fraction"].tolist()
 
             # Tag-capture pattern: solve_trajectory calls _continuation
             # once per backward step (t = T-2 .. 0). We record the

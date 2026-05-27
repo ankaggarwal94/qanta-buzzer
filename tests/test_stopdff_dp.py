@@ -189,7 +189,8 @@ def test_empirical_bucket_fitter_uses_only_fit_split_rows() -> None:
     dataframe whose split column contains the eval split raises.
     """
     rows = [
-        {"subject": "sbert:Lit", "item_id": "q1", "prefix_idx": 0, "format": "MC",
+        {"subject": "sbert:Lit", "item_id": "q1", "prefix_idx": 0,
+         "prefix_fraction": 0.5, "format": "MC",
          "split": "test", "p_raw": 0.1, "p_calibrated": 0.2, "correct": 0,
          "top_answer": "a", "gold": "a", "category": "Lit", "option_set_id": "s1"},
     ]
@@ -213,9 +214,12 @@ def test_empirical_bucket_estimator_returns_pooled_when_bucket_sparse() -> None:
     rows = []
     # Item 1: 4 prefixes, all p_calibrated values land in entropy_bin=2 (p>=0.5 -> entropy>=0.5).
     # The non-terminal row at prefix_idx=0 falls in the early prefix bucket.
+    # prefix_fraction = (prefix_idx + 1) / 4 -> [0.25, 0.5, 0.75, 1.0]
+    # puts prefix_idx=0 in "early" (0.25 < 0.33) for the bucket lookup.
     for prefix_idx in range(4):
         rows.append({
             "subject": "sbert:Lit", "item_id": "q_specific", "prefix_idx": prefix_idx,
+            "prefix_fraction": (prefix_idx + 1) / 4,
             "format": "MC", "split": "val",
             "p_raw": 0.55, "p_calibrated": 0.55, "correct": 0,
             "top_answer": "a", "gold": "b", "category": "Lit",
@@ -228,6 +232,7 @@ def test_empirical_bucket_estimator_returns_pooled_when_bucket_sparse() -> None:
         for prefix_idx in range(4):
             rows.append({
                 "subject": "sbert:Lit", "item_id": f"q_pool_{i}", "prefix_idx": prefix_idx,
+                "prefix_fraction": (prefix_idx + 1) / 4,
                 "format": "MC", "split": "val",
                 "p_raw": 0.7, "p_calibrated": 0.7, "correct": 0,
                 "top_answer": "a", "gold": "b", "category": "Lit",
@@ -292,11 +297,15 @@ def test_pooled_empirical_skips_most_specific_rungs() -> None:
     """
     rows = []
     # 10 items, 4 prefixes each, all in (early-able, MC, sbert:Lit, p_bin=2, ent_bin=2).
+    # prefix_fraction = (prefix_idx + 1) / 4 -> [0.25, 0.5, 0.75, 1.0]
+    # puts prefix_idx=0 in "early" (0.25 < 0.33) for the bucket lookup.
     for i in range(10):
         for prefix_idx in range(4):
             rows.append({
                 "subject": "sbert:Lit", "item_id": f"q{i}",
-                "prefix_idx": prefix_idx, "format": "MC", "split": "val",
+                "prefix_idx": prefix_idx,
+                "prefix_fraction": (prefix_idx + 1) / 4,
+                "format": "MC", "split": "val",
                 "p_raw": 0.55, "p_calibrated": 0.55, "correct": 0,
                 "top_answer": "a", "gold": "b", "category": "Lit",
                 "option_set_id": f"s{i}",

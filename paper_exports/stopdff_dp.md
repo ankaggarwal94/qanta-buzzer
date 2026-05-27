@@ -10,12 +10,12 @@
 | Eval split | test |
 | n_items | 30 |
 | StopDFF signed median | 0.0000 |
-| StopDFF signed mean | 0.5333 |
+| StopDFF signed mean | -0.1333 |
 | Gate verdict | warn |
 
 ## Coverage
 
-- exact=0.672, pooled=0.328, missing=0.000; verdict=warn (fraction_pooled=0.328 > 0.05)
+- exact=0.710, pooled=0.290, missing=0.000; verdict=warn (fraction_pooled=0.290 > 0.05)
 
 ## Ceiling diagnostics
 

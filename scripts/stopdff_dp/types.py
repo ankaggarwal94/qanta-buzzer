@@ -15,6 +15,7 @@ ADAPTER_COLUMNS: tuple[str, ...] = (
     "subject",
     "item_id",
     "prefix_idx",
+    "prefix_fraction",
     "format",
     "split",
     "p_raw",

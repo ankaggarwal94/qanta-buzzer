@@ -207,9 +207,14 @@ class EmpiricalBucketEstimator:
         # at function-call time but not at module-import time).
         from .dp_solver import solve_trajectory
 
-        # Sort and compute bucket keys once.
+        # Sort and compute bucket keys once. The adapter now writes
+        # prefix_fraction = len(prefix) / len(full_question) directly
+        # (PR #15 Copilot 3313507021/3313507055), matching the calibration
+        # convention. Fall back to rank/T even-spacing only when the
+        # column is absent (e.g. legacy test fixtures).
         df = fit_df.sort_values(["item_id", "format", "prefix_idx"]).copy()
-        df["prefix_fraction"] = _compute_prefix_fraction(df)
+        if "prefix_fraction" not in df.columns or df["prefix_fraction"].isna().all():
+            df["prefix_fraction"] = _compute_prefix_fraction(df)
         df["prefix_bucket"] = df["prefix_fraction"].map(_assign_prefix_bucket)
         df["subject_bucket"] = df["subject"]
         df["p_bin"] = df["p_calibrated"].map(_assign_p_bin)
