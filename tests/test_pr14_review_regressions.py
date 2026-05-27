@@ -816,6 +816,42 @@ def test_softmax_belief_returns_uniform_on_nan_input() -> None:
     assert np.all(np.isfinite(belief))
 
 
+def test_softmax_belief_preserves_finite_options_with_neg_inf() -> None:
+    """A mix of finite scores + -inf must keep finite options differentiated.
+
+    PR #14 follow-up review: the prior implementation collapsed any
+    non-finite input to uniform, erasing the signal from finite slots
+    when a scorer (e.g. DSPyLikelihood) marks one option impossible.
+    The expected semantics is softmax over the finite subset with
+    zero mass on the -inf slot.
+    """
+    belief = softmax_belief(np.array([1.0, 2.0, -np.inf]), beta=1.0)
+    assert np.all(np.isfinite(belief))
+    assert belief.sum() == pytest.approx(1.0, abs=1e-5)
+    # -inf slot must receive exactly zero mass.
+    assert belief[2] == pytest.approx(0.0, abs=1e-7)
+    # Finite slots must be differentiated (not uniform on the remaining mass).
+    assert belief[1] > belief[0]
+    # And specifically should follow the softmax of [1.0, 2.0]:
+    # p_0 = exp(1)/(exp(1)+exp(2)), p_1 = exp(2)/(exp(1)+exp(2)).
+    denom = np.exp(1.0) + np.exp(2.0)
+    np.testing.assert_allclose(
+        belief, np.array([np.exp(1.0) / denom, np.exp(2.0) / denom, 0.0], dtype=np.float32),
+        atol=1e-6,
+    )
+
+
+def test_softmax_belief_returns_uniform_on_pos_inf() -> None:
+    """+inf in scores is pathological for likelihoods; degrade to uniform.
+
+    Collapsing all mass to the +inf slot would silently amplify whatever
+    produced the spike. Uniform mirrors the NaN policy.
+    """
+    belief = softmax_belief(np.array([1.0, np.inf, 2.0]), beta=1.0)
+    np.testing.assert_allclose(belief, np.full(3, 1.0 / 3.0, dtype=np.float32))
+    assert np.all(np.isfinite(belief))
+
+
 def test_softmax_belief_handles_large_beta_without_nan() -> None:
     """Large beta on bounded cosine scores must not overflow into NaN."""
     belief = softmax_belief(np.array([0.5, 0.4, 0.3, 0.2]), beta=1000.0)
@@ -866,6 +902,24 @@ def test_bayesian_update_returns_uniform_on_nan_prior() -> None:
     posterior = bayesian_update(prior, np.array([0.5, 0.5, 0.5, 0.5]), beta=5.0)
     np.testing.assert_allclose(posterior, np.full(4, 0.25, dtype=np.float32))
     assert np.all(np.isfinite(posterior))
+
+
+def test_bayesian_update_preserves_finite_options_with_neg_inf() -> None:
+    """A -inf in scores must zero out that slot's posterior, not collapse to uniform.
+
+    Mirrors softmax_belief semantics: finite options remain weighted
+    by their relative likelihoods times the prior.
+    """
+    prior = np.array([0.25, 0.25, 0.25, 0.25])
+    posterior = bayesian_update(
+        prior, np.array([1.0, 2.0, -np.inf, 0.5]), beta=1.0
+    )
+    assert np.all(np.isfinite(posterior))
+    assert posterior.sum() == pytest.approx(1.0, abs=1e-5)
+    # -inf slot receives zero posterior mass.
+    assert posterior[2] == pytest.approx(0.0, abs=1e-7)
+    # Other slots remain differentiated; index 1 has the largest score.
+    assert int(np.argmax(posterior)) == 1
 
 
 def test_bayesian_update_normal_path_unchanged() -> None:

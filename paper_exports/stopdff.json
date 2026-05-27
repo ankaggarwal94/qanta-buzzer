@@ -74,7 +74,7 @@
   },
   "mc_build_metadata": {
     "status": "loaded",
-    "source_path": "/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/qanta-buzzer/data/processed/build_metadata.json",
+    "source_path": "data/processed/build_metadata.json",
     "source_sha256": "70871984390f252c0a06a5a2c9a2d3b4337f10ad48c87583ebec215d5c0c9c6e"
   },
   "metadata": {

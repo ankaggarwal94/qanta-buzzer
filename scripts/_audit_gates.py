@@ -39,6 +39,24 @@ import json
 from pathlib import Path
 from typing import Any
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _project_relative(path: Path) -> str:
+    """Return a stable repo-relative path string when possible.
+
+    Mirrors ``compute_csli._display_path`` and
+    ``_common.project_relative``: emits a forward-slash repo-relative
+    path when the resolved file is under ``PROJECT_ROOT``, otherwise
+    the absolute path string. Duplicated inline (rather than imported
+    from ``_common``) to keep this module free of cross-script imports
+    per the design intent at the top of this file.
+    """
+    try:
+        return path.resolve().relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return str(path.resolve())
+
 
 def _sha256_file(path: Path) -> str:
     """Return the SHA-256 digest for a local artifact.
@@ -125,7 +143,7 @@ def load_mc_build_metadata(data_dir: Path) -> dict[str, Any]:
     path = data_dir / "build_metadata.json"
     summary: dict[str, Any] = {
         "status": "missing",
-        "source_path": str(path),
+        "source_path": _project_relative(path),
         "source_sha256": None,
         "splits": None,
         "retention_thresholds": None,

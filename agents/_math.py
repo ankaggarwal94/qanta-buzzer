@@ -26,9 +26,21 @@ def softmax_belief(scores: np.ndarray, beta: float) -> np.ndarray:
     and PPO reward. The default pipeline (TF-IDF / SBERT / T5
     L2-normalized cosine) cannot trigger the failure, but DSPy
     plug-in scorers and large-beta configurations can. Empty arrays
-    raise rather than return a degenerate vector. All non-finite
-    inputs degrade to a uniform belief, matching the existing
-    underflow fallback.
+    raise rather than return a degenerate vector.
+
+    Non-finite handling semantics:
+
+    * ``NaN`` anywhere -> uniform (NaN has no canonical mass).
+    * ``+inf`` anywhere -> uniform (pathological for likelihoods;
+      collapsing all mass to the +inf slot would silently amplify
+      whatever produced the spike).
+    * Mix of finite + ``-inf`` (and no NaN / +inf) -> softmax over
+      the finite subset; ``-inf`` slots receive zero mass. This
+      preserves PR #14 follow-up review semantics: a scorer marking
+      an option impossible should keep finite options differentiated
+      rather than erase all signal. ``DSPyLikelihood.score`` returns
+      unfiltered float32, so this case is a supported configuration.
+    * All ``-inf`` -> uniform (degenerate; no signal to preserve).
     """
     scores = np.asarray(scores)
     if scores.ndim != 1 or scores.size == 0:
@@ -37,14 +49,29 @@ def softmax_belief(scores: np.ndarray, beta: float) -> np.ndarray:
             f"got shape={scores.shape}, size={scores.size}."
         )
 
-    if not np.all(np.isfinite(scores)):
-        return np.ones(scores.shape, dtype=np.float32) / scores.size
+    uniform = np.ones(scores.shape, dtype=np.float32) / scores.size
 
-    shifted = scores - np.max(scores)
+    # NaN or +inf cannot be salvaged into a meaningful distribution.
+    if np.any(np.isnan(scores)) or np.any(np.isposinf(scores)):
+        return uniform
+
+    finite_mask = np.isfinite(scores)
+    if not finite_mask.any():
+        # All entries are -inf; no signal to preserve.
+        return uniform
+
+    if finite_mask.all():
+        shifted = scores - np.max(scores)
+    else:
+        # Some -inf entries: subtract max over the finite subset so
+        # -inf slots stay -inf after the shift; exp(-inf) == 0 cleanly.
+        finite_max = scores[finite_mask].max()
+        shifted = np.where(finite_mask, scores - finite_max, -np.inf)
+
     probs = np.exp(beta * shifted)
     total = probs.sum()
     if not np.isfinite(total) or total <= 0:
-        return np.ones(scores.shape, dtype=np.float32) / scores.size
+        return uniform
     return (probs / total).astype(np.float32)
 
 
@@ -56,6 +83,14 @@ def bayesian_update(prior: np.ndarray, scores: np.ndarray, beta: float) -> np.nd
     persists across all later sequential updates (NaN * anything =
     NaN), so a single bad ``scores`` vector contaminates the entire
     trajectory if not guarded here.
+
+    ``scores`` follows the same non-finite policy as ``softmax_belief``:
+    a mix of finite + ``-inf`` is treated as a likelihood that masks
+    the ``-inf`` slots to zero mass while preserving the relative
+    weighting of finite options. NaN or +inf in scores degrades to
+    uniform. ``prior`` must be fully finite; any non-finite prior
+    degrades to uniform because a non-finite prior has no defensible
+    interpretation as a probability.
     """
     prior = np.asarray(prior)
     scores = np.asarray(scores)
@@ -70,15 +105,28 @@ def bayesian_update(prior: np.ndarray, scores: np.ndarray, beta: float) -> np.nd
             f"got prior={prior.shape}, scores={scores.shape}."
         )
 
-    if not np.all(np.isfinite(scores)) or not np.all(np.isfinite(prior)):
-        return np.ones(prior.shape, dtype=np.float32) / prior.size
+    uniform = np.ones(prior.shape, dtype=np.float32) / prior.size
 
-    shifted = scores - np.max(scores)
+    if not np.all(np.isfinite(prior)):
+        return uniform
+    if np.any(np.isnan(scores)) or np.any(np.isposinf(scores)):
+        return uniform
+
+    finite_mask = np.isfinite(scores)
+    if not finite_mask.any():
+        return uniform
+
+    if finite_mask.all():
+        shifted = scores - np.max(scores)
+    else:
+        finite_max = scores[finite_mask].max()
+        shifted = np.where(finite_mask, scores - finite_max, -np.inf)
+
     likelihood = np.exp(beta * shifted)
     posterior = prior * likelihood
     denom = posterior.sum()
     if not np.isfinite(denom) or denom <= 0:
-        return np.ones(prior.shape, dtype=np.float32) / prior.size
+        return uniform
     return (posterior / denom).astype(np.float32)
 
 
