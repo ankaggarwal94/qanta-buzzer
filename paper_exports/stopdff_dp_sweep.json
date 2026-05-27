@@ -1,7 +1,7 @@
 {
   "metadata": {
     "metric_type": "finite_horizon_dp_sweep",
-    "timestamp": "2026-05-27T23:38:56.187691+00:00",
+    "timestamp": "2026-05-27T23:45:47.420565+00:00",
     "argv": [
       "--identity-calibration",
       "--smoke",
@@ -51,8 +51,8 @@
       "format_condition": "MC-fixed",
       "prefix_bucketing": "early_mid_late",
       "subject_pooling": "pooled_subject",
-      "git_commit": "2889a513c0ec0a5bc4a1c0e800e8d22a1a0d6685",
-      "git_dirty": false,
+      "git_commit": "8b94371e04a7f803cb1b75800a125f37ceac27b7",
+      "git_dirty": true,
       "argv": [
         "--identity-calibration",
         "--smoke",
@@ -83,7 +83,7 @@
       "fit_split": "val",
       "eval_split": "test",
       "run_fingerprint": {
-        "schema_version": 4,
+        "schema_version": 5,
         "data_dir": "data/processed",
         "fit_split": "val",
         "eval_split": "test",
@@ -93,11 +93,13 @@
         "fit_dataset_sha256": "9b7a131b6c94c446e6b40b95559cb62aeee63f6e6f29ddd1d7ed3fb19cc72c65",
         "eval_dataset_sha256": "638a4df978b77a12655ea72d56daad7fa70851ae486ddb4365d9b060549e34f1",
         "build_metadata_sha256": "70871984390f252c0a06a5a2c9a2d3b4337f10ad48c87583ebec215d5c0c9c6e",
+        "myopic_artifact_path": "paper_exports/stopdff.json",
+        "myopic_artifact_sha256": "6e2f711ff9d8500528a55468c290e6f71f2b692bea80716258a9945473d2ac91",
         "identity_calibration": true,
         "smoke": true,
         "seed": 1,
         "num_bootstrap": 8,
-        "script_sha256": "68a8465a556f7352779f0aee2a641901f62613ccecd2bd34a3aa2aab2eb8d637",
+        "script_sha256": "faf9fc51c4c3634e62d69e1a3b2089662a86dffb6db2ee253afd2fe50ad6d250",
         "helper_sha256s": {
           "scripts/stopdff_dp/__init__.py": "9a5c797622bacf7771cc8f8c110a8e96a526012430665a9469681356f44d5075",
           "scripts/stopdff_dp/_provenance.py": "fdd3994ef3ff86bec61eb43c3b56ad4af9eaba637421f38b23983750c0d1c5dd",
@@ -111,10 +113,10 @@
           "scripts/_audit_gates.py": "5b4b788949b06e700df5d37e291051a7c6ba448702b5f405f4e35504a07d6de0",
           "scripts/_common.py": "caf687af9da16bd952dc888aee3649d8db1e3cf06feae5d3f880b5ebc7691139"
         },
-        "git_commit": "2889a513c0ec0a5bc4a1c0e800e8d22a1a0d6685",
+        "git_commit": "8b94371e04a7f803cb1b75800a125f37ceac27b7",
         "out_parent": "paper_exports"
       },
-      "started_at": "2026-05-27T23:38:56.003755+00:00",
+      "started_at": "2026-05-27T23:45:47.230136+00:00",
       "status": "completed",
       "calibration": {
         "method": "uncalibrated",
@@ -220,14 +222,14 @@
       "gate_verdict_reason": "ceiling_effect",
       "confirmatory_included": true,
       "confirmatory": true,
-      "wall_clock_seconds": 0.18311691284179688,
-      "completed_at": "2026-05-27T23:38:56.186871+00:00",
-      "cell_id": "ed818b8563bdf9ea_acf_flat_empirical_bucket_uncalibrated",
-      "cache_path": "paper_exports/stopdff_dp_sweep_cells/ed818b8563bdf9ea_acf_flat_empirical_bucket_uncalibrated.json"
+      "wall_clock_seconds": 0.18973374366760254,
+      "completed_at": "2026-05-27T23:45:47.419869+00:00",
+      "cell_id": "544a168abc052e1d_acf_flat_empirical_bucket_uncalibrated",
+      "cache_path": "paper_exports/stopdff_dp_sweep_cells/544a168abc052e1d_acf_flat_empirical_bucket_uncalibrated.json"
     }
   ],
   "confirmatory_cells": [
-    "ed818b8563bdf9ea_acf_flat_empirical_bucket_uncalibrated"
+    "544a168abc052e1d_acf_flat_empirical_bucket_uncalibrated"
   ],
   "mc_coverage": {
     "test": {
