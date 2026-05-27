@@ -26,20 +26,217 @@ Outputs:
     paper_exports/csli_panel.png        (bar chart of per-model CSLI values)
 
 Exit codes:
-    0 = success
-    1 = runtime error
+    0 = full success (or reliability missing with --allow-missing-reliability)
+    1 = runtime error or input validation failure
+    2 = success but reliability diagrams missing (CI signal)
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
+import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple, Optional
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _PAPER_EXPORTS = _REPO_ROOT / "paper_exports"
 _SCRIPT_VERSION = "1.0.0"
+
+
+def _get_git_sha() -> str:
+    """Return short git SHA of HEAD, or 'unknown' on any error."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "unknown"
+
+
+class MetricView(NamedTuple):
+    """Canonical view of one audit metric, fused from audit_card + JSON.
+
+    Attributes
+    ----------
+    value : float
+        Canonical observed value (prefers audit_card.observed_criterion_value;
+        falls back to the metric's JSON field).
+    threshold : float
+        Canonical threshold (prefers audit_card.threshold; falls back to the
+        metric's JSON field, preferring a canonical key over a deprecated alias).
+    verdict : str
+        ``pass`` / ``warn`` / ``fail`` / ``unknown``.
+    verdict_qualifier : Optional[str]
+        Free-text qualifier (e.g., "ceiling effect — diagnostic null; ...").
+    direction : str
+        ``warn_if_above`` (default) or ``warn_if_below``.
+    drift_warning : Optional[str]
+        Populated when audit_card and JSON carry value/threshold pairs that
+        disagree beyond a 1e-9 tolerance. Caller is expected to surface to stderr.
+    """
+
+    value: float
+    threshold: float
+    verdict: str
+    verdict_qualifier: Optional[str]
+    direction: str
+    drift_warning: Optional[str]
+
+
+def _extract_metric_view(
+    metric_name: str,
+    audit_card: dict,
+    json_data: dict,
+    json_value_key: str,
+    json_threshold_key: str,
+    json_threshold_canonical_key: Optional[str] = None,
+) -> MetricView:
+    """Build a canonical :class:`MetricView` for one of the three audit metrics.
+
+    Prefers ``audit_card['metrics'][metric_name]`` for value / threshold /
+    verdict; falls back to the metric's own JSON file when the audit-card
+    entry is missing or has an explicit ``None`` for a field.
+
+    If both audit_card and JSON carry a value and they disagree beyond a
+    ``1e-9`` tolerance, the resulting :class:`MetricView` ``drift_warning`` is
+    populated and the caller is expected to print to stderr.
+    """
+    metrics = {m["name"]: m for m in audit_card.get("metrics", [])}
+    entry = metrics.get(metric_name, {})
+    if not entry:
+        print(
+            f"WARNING: audit_card.json has no metric named {metric_name!r}; "
+            f"falling back to {json_value_key}/{json_threshold_key} from JSON. "
+            f"Verdict will render as 'unknown'.",
+            file=sys.stderr,
+        )
+
+    # Value: audit_card preferred; fall back to JSON.
+    ac_value = entry.get("observed_criterion_value")
+    json_value = json_data.get(json_value_key)
+    value = ac_value if ac_value is not None else json_value
+    drift_warning: Optional[str] = None
+    if ac_value is not None and json_value is not None:
+        if abs(float(ac_value) - float(json_value)) > 1e-9:
+            drift_warning = (
+                f"{metric_name}: audit_card observed_criterion_value={ac_value} "
+                f"disagrees with JSON {json_value_key}={json_value}"
+            )
+
+    # Threshold: audit_card first, then canonical JSON name, then deprecated
+    # alias. The canonical-vs-alias split lets CSLI prefer
+    # ``choices_only_accuracy_threshold`` over the deprecated ``threshold`` key
+    # without leaking that policy into every caller.
+    threshold = entry.get("threshold")
+    if threshold is None:
+        if json_threshold_canonical_key is not None:
+            threshold = json_data.get(json_threshold_canonical_key)
+        if threshold is None:
+            threshold = json_data.get(json_threshold_key)
+
+    if value is None or threshold is None:
+        raise ValueError(
+            f"Could not extract value or threshold for {metric_name}: "
+            f"value={value}, threshold={threshold}. "
+            f"Check audit_card.json and {json_value_key}/{json_threshold_key} "
+            f"in metric JSON."
+        )
+
+    return MetricView(
+        value=float(value),
+        threshold=float(threshold),
+        verdict=entry.get("verdict", "unknown"),
+        verdict_qualifier=entry.get("verdict_qualifier"),
+        direction=entry.get("direction", "warn_if_above"),
+        drift_warning=drift_warning,
+    )
+
+
+def _synthesize_calibration_qualifier(audit_card: dict) -> Optional[str]:
+    """Synthesize a ``verdict_qualifier`` for calibration force-WARN paths.
+
+    ``make_audit_card.py`` (lines 200-207) forces ``verdict='warn'`` when
+    ``fallback_buckets`` or ``empty_buckets`` is non-empty, regardless of
+    the threshold comparison. The producer does not emit a
+    ``verdict_qualifier`` for calibration, so this function reconstructs
+    one from the buckets exposed in the audit-card ``details`` so the
+    LaTeX row can surface the force-WARN reason analogously to the StopDFF
+    diagnostic-null qualifier.
+    """
+    metrics = {m["name"]: m for m in audit_card.get("metrics", [])}
+    entry = metrics.get("Prefix-wise Calibration (ECE)", {})
+    details = entry.get("details") or {}
+    fallback = details.get("fallback_buckets") or []
+    empty = details.get("empty_buckets") or []
+    if not fallback and not empty:
+        return None
+    parts = []
+    if fallback:
+        parts.append(f"fallback bucket(s): {', '.join(sorted(fallback))}")
+    if empty:
+        parts.append(f"empty bucket(s): {', '.join(sorted(empty))}")
+    return "force WARN: " + "; ".join(parts)
+
+
+_LATEX_ESCAPES = {
+    "%": r"\%",
+    "#": r"\#",
+    "&": r"\&",
+    "_": r"\_",
+    "$": r"\$",
+    "{": r"\{",
+    "}": r"\}",
+    "~": r"\textasciitilde{}",
+    "^": r"\^{}",
+    "\\": r"\textbackslash{}",
+}
+
+
+def _escape_latex(s: str) -> str:
+    """Escape LaTeX-special characters in a free-text string.
+
+    em-dash (``U+2014``) and en-dash (``U+2013``) pass through unchanged --
+    the manuscript preamble handles them via ``inputenc`` / ``utf8``.
+    """
+    if not s:
+        return s
+    out = []
+    for ch in s:
+        out.append(_LATEX_ESCAPES.get(ch, ch))
+    return "".join(out)
+
+
+_FOOTNOTE_SYMBOLS = ["\\dagger", "\\ddagger", "\\S", "\\P"]
+
+
+def _render_verdict_cell(verdict: str, footnote_index: Optional[int]) -> str:
+    """Render the LaTeX verdict cell.
+
+    If ``footnote_index`` is provided, append the corresponding footnote
+    symbol from :data:`_FOOTNOTE_SYMBOLS` as a superscript. Raises if the
+    index exceeds the number of available footnote symbols (currently 4:
+    dagger, double-dagger, section, pilcrow).
+    """
+    base = f"\\textsc{{{verdict}}}"
+    if footnote_index is None:
+        return base
+    if footnote_index >= len(_FOOTNOTE_SYMBOLS):
+        raise ValueError(
+            f"Too many qualifiers for footnote symbols (max {len(_FOOTNOTE_SYMBOLS)})"
+        )
+    sym = _FOOTNOTE_SYMBOLS[footnote_index]
+    return f"{base}\\textsuperscript{{${sym}$}}"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -50,6 +247,12 @@ def _parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Parse args and print what would happen without writing files",
+    )
+    parser.add_argument(
+        "--allow-missing-reliability",
+        action="store_true",
+        default=False,
+        help="Suppress non-zero exit code when reliability_*.png are MISSING",
     )
     return parser.parse_args()
 
@@ -86,58 +289,174 @@ def _generate_audit_table(
       could misstate audit conclusions (e.g., a WARN verdict with a small
       panel mean appearing to sit comfortably "below threshold").
     """
-    # Extract values
+    # Descriptive panel-mean fields stay sourced directly from csli.json --
+    # they are not gate quantities and the audit_card does not carry them.
     csli_mean = csli_data["panel_csli"]["mean"]
     csli_ci_lo = csli_data["panel_csli"]["ci_lower"]
     csli_ci_hi = csli_data["panel_csli"]["ci_upper"]
-    max_ece = cal_data["max_ece"]
-    median_shift = stopdff_data["median_abs_prefix_shift"]
 
-    # Extract verdicts from audit card (CR-02 fix: dynamic, not hardcoded)
-    metrics = {m["name"]: m for m in audit_card["metrics"]}
-    csli_metric = metrics.get("CSLI (Choice-Set Leakage Index)", {})
-    cal_metric = metrics.get("Prefix-wise Calibration (ECE)", {})
-    stop_metric = metrics.get("Diagnostic StopDFF (Median Abs Prefix Shift)", {})
-    csli_verdict = csli_metric.get("verdict", "unknown").lower()
-    cal_verdict = cal_metric.get("verdict", "unknown").lower()
-    stop_verdict = stop_metric.get("verdict", "unknown").lower()
-    csli_threshold = float(csli_metric.get("threshold", csli_data["metadata"]["threshold"]))
-    cal_threshold = float(cal_metric.get("threshold", cal_data["threshold"]))
-    stop_threshold = float(stop_metric.get("threshold", stopdff_data["threshold"]))
+    # Calibration view: synthesize a force-WARN qualifier from the
+    # audit-card details before extraction so the canonical view carries
+    # it the same way StopDFF carries its diagnostic-null qualifier.
+    cal_qualifier_synth = _synthesize_calibration_qualifier(audit_card)
 
-    # The CSLI gate's observed criterion value is max(acc_choices_only),
-    # which is what ``csli_threshold`` actually compares against. The
-    # audit card exposes this as ``observed_criterion_value``; fall back
-    # to recomputing from per-model data on older audit cards.
-    observed_csli_criterion = csli_metric.get("observed_criterion_value")
-    if observed_csli_criterion is None:
-        per_model = csli_data.get("per_model", {})
-        if per_model:
-            observed_csli_criterion = max(
-                m["acc_choices_only"] for m in per_model.values()
-            )
+    # CSLI threshold lookup is special: the metric JSON nests metadata one
+    # level deep (``csli_data["metadata"]["threshold"]`` or the canonical
+    # ``choices_only_accuracy_threshold``), but ``_extract_metric_view``
+    # expects a flat ``json_data[key]`` lookup. Build a flat view that
+    # exposes both the canonical and deprecated threshold keys AND a
+    # pre-computed value fallback (``max(acc_choices_only)``) for older
+    # audit cards that lack ``observed_criterion_value``.
+    csli_metadata = csli_data.get("metadata", {})
+    csli_per_model = csli_data.get("per_model", {})
+    csli_json_view = {
+        "choices_only_accuracy_threshold": csli_metadata.get(
+            "choices_only_accuracy_threshold"
+        ),
+        "threshold": csli_metadata.get("threshold"),
+    }
+    # Pre-compute the recompute-from-per_model fallback so the helper can
+    # find a value when the audit_card lacks ``observed_criterion_value``.
+    # The faux key is descriptive so any failure message reads correctly.
+    if csli_per_model:
+        csli_json_view["_recomputed_max_acc_choices_only"] = max(
+            m["acc_choices_only"] for m in csli_per_model.values()
+        )
+
+    csli_view = _extract_metric_view(
+        "CSLI (Choice-Set Leakage Index)",
+        audit_card,
+        csli_json_view,
+        json_value_key="_recomputed_max_acc_choices_only",
+        json_threshold_key="threshold",
+        json_threshold_canonical_key="choices_only_accuracy_threshold",
+    )
+
+    cal_view = _extract_metric_view(
+        "Prefix-wise Calibration (ECE)",
+        audit_card,
+        cal_data,
+        json_value_key="max_ece",
+        json_threshold_key="threshold",
+    )
+    # Inject the synthesized force-WARN qualifier if the producer did not
+    # emit one (it never does for calibration). A producer-supplied
+    # qualifier, if it ever appears, takes precedence.
+    if cal_view.verdict_qualifier is None and cal_qualifier_synth is not None:
+        cal_view = cal_view._replace(verdict_qualifier=cal_qualifier_synth)
+
+    stop_view = _extract_metric_view(
+        "Diagnostic StopDFF (Median Abs Prefix Shift)",
+        audit_card,
+        stopdff_data,
+        json_value_key="median_abs_prefix_shift",
+        json_threshold_key="threshold",
+    )
+
+    # Surface any drift between audit_card and JSON-side values to stderr;
+    # the LaTeX still renders, but the operator is alerted that one of the
+    # cached artifacts is stale relative to the audit card.
+    for view in (csli_view, cal_view, stop_view):
+        if view.drift_warning:
+            print(f"WARNING: {view.drift_warning}", file=sys.stderr)
+
+    # Collect qualifiers into footnote assignments. The map key is the
+    # short metric label used below for the verdict cell; only metrics
+    # with a qualifier get a footnote symbol.
+    footnote_assignments: list[tuple[int, str]] = []  # (symbol_index, escaped_text)
+    metric_to_footnote: dict[str, int] = {}
+    for name, view in [("CSLI", csli_view), ("CAL", cal_view), ("STOP", stop_view)]:
+        if view.verdict_qualifier:
+            idx = len(footnote_assignments)
+            metric_to_footnote[name] = idx
+            footnote_assignments.append((idx, _escape_latex(view.verdict_qualifier)))
+
+    csli_verdict = csli_view.verdict.lower()
+    cal_verdict = cal_view.verdict.lower()
+    stop_verdict = stop_view.verdict.lower()
+
+    csli_cell = _render_verdict_cell(csli_verdict, metric_to_footnote.get("CSLI"))
+    cal_cell = _render_verdict_cell(cal_verdict, metric_to_footnote.get("CAL"))
+    stop_cell = _render_verdict_cell(stop_verdict, metric_to_footnote.get("STOP"))
+
+    # PFN-2: Inspect direction across the three views; if homogeneous,
+    # surface it in the column header. If mixed, keep the generic
+    # ``Threshold`` header and emit a footnote line listing direction
+    # per metric (using the next available footnote symbol, or plain
+    # text when symbols are exhausted).
+    directions = [csli_view.direction, cal_view.direction, stop_view.direction]
+    if all(d == "warn_if_above" for d in directions):
+        threshold_header = r"Threshold (warn if above)"
+        direction_footnote: Optional[tuple[Optional[int], str]] = None
+    elif all(d == "warn_if_below" for d in directions):
+        threshold_header = r"Threshold (warn if below)"
+        direction_footnote = None
+    else:
+        threshold_header = r"Threshold"
+        # Build per-metric direction footnote text.
+        _DIRECTION_LABEL = {
+            "warn_if_above": "warn if above",
+            "warn_if_below": "warn if below",
+        }
+        direction_parts = [
+            f"CSLI: {_DIRECTION_LABEL.get(csli_view.direction, csli_view.direction)}",
+            f"Calibration: {_DIRECTION_LABEL.get(cal_view.direction, cal_view.direction)}",
+            f"StopDFF: {_DIRECTION_LABEL.get(stop_view.direction, stop_view.direction)}",
+        ]
+        direction_text = "; ".join(direction_parts)
+        # Use the next available footnote symbol after verdict-qualifier
+        # footnotes; fall back to plain text without a symbol if we'd
+        # overflow the 4-symbol palette.
+        next_idx = len(footnote_assignments)
+        if next_idx < len(_FOOTNOTE_SYMBOLS):
+            direction_footnote = (next_idx, direction_text)
         else:
-            observed_csli_criterion = float("nan")
-    observed_csli_criterion = float(observed_csli_criterion)
+            direction_footnote = (None, direction_text)
 
     # Build LaTeX
     lines = [
+        # PFN-1: stamp the script version + git SHA at the top of the
+        # generated artifact so the source of any rendered table is
+        # traceable from the file alone.
+        r"% Generated by regenerate_figures.py v" + _SCRIPT_VERSION + " from commit " + _get_git_sha(),
         r"% Requires booktabs package: \usepackage{booktabs}",
         r"\begin{tabular}{lccc}",
         r"\toprule",
-        r"Metric & Value (95\% CI) & Threshold & Verdict \\",
+        f"Metric & Value (95\\% CI) & {threshold_header} & Verdict \\\\",
         r"\midrule",
         # CSLI gate row: the quantity the threshold actually applies to.
-        f"Max choices-only accuracy & {observed_csli_criterion:.4f} & {csli_threshold:.2f} & \\textsc{{{csli_verdict}}} \\\\",
+        f"Max choices-only accuracy & {csli_view.value:.4f} & {csli_view.threshold:.2f} & {csli_cell} \\\\",
         # CSLI descriptive row: panel gap with CI, no threshold comparison
         # (``--`` in Threshold and Verdict columns) because the frozen gate
         # is NOT on this quantity.
         f"Panel CSLI (mean gap) & {csli_mean:.4f} [{csli_ci_lo:.4f}, {csli_ci_hi:.4f}] & -- & -- \\\\",
-        f"Calibration ECE (max bucket) & {max_ece:.4f} & {cal_threshold:.2f} & \\textsc{{{cal_verdict}}} \\\\",
-        f"StopDFF (median abs shift) & {median_shift:.1f} & {stop_threshold:.1f} & \\textsc{{{stop_verdict}}} \\\\",
+        f"Calibration ECE (max bucket) & {cal_view.value:.4f} & {cal_view.threshold:.2f} & {cal_cell} \\\\",
+        f"StopDFF (median abs shift) & {stop_view.value:.1f} & {stop_view.threshold:.1f} & {stop_cell} \\\\",
         r"\bottomrule",
-        r"\end{tabular}",
     ]
+    # Footnotes after \bottomrule (still inside tabular -- multicolumn rows
+    # render as separate lines below the rule). One row per qualifier; the
+    # footnote symbol matches the superscript on the verdict cell above.
+    for idx, text in footnote_assignments:
+        sym = _FOOTNOTE_SYMBOLS[idx]
+        lines.append(
+            f"\\multicolumn{{4}}{{l}}{{\\footnotesize{{${sym}$\\ {text}}}}} \\\\"
+        )
+    # PFN-2: append the direction footnote (mixed-direction case) right
+    # after \bottomrule and after any verdict-qualifier footnotes.
+    if direction_footnote is not None:
+        sym_idx, dir_text = direction_footnote
+        if sym_idx is not None:
+            sym = _FOOTNOTE_SYMBOLS[sym_idx]
+            lines.append(
+                f"\\multicolumn{{4}}{{l}}{{\\footnotesize{{${sym}$\\ {dir_text}}}}} \\\\"
+            )
+        else:
+            # Footnote-symbol palette exhausted; emit plain text only.
+            lines.append(
+                f"\\multicolumn{{4}}{{l}}{{\\footnotesize{{{dir_text}}}}} \\\\"
+            )
+    lines.append(r"\end{tabular}")
 
     out_path = _PAPER_EXPORTS / "audit_table.tex"
     with open(out_path, "w", encoding="utf-8") as f:
@@ -186,8 +505,10 @@ def _generate_csli_panel(csli_data: dict) -> Path:
     ci_lower = csli_data["panel_csli"]["ci_lower"]
     ci_upper = csli_data["panel_csli"]["ci_upper"]
 
-    # Clean academic style
-    fig, ax = plt.subplots(figsize=(5, 3.5))
+    # Clean academic style. Width scales with model count so >4 models
+    # don't crowd. Floor at 5.0 keeps the baseline 3-model layout intact.
+    width = max(5.0, 1.5 + 1.0 * len(models))
+    fig, ax = plt.subplots(figsize=(width, 3.5))
 
     # Explicit numeric x positions so bars and the panel-mean marker
     # share one coordinate system (avoids Matplotlib's categorical vs.
@@ -195,9 +516,20 @@ def _generate_csli_panel(csli_data: dict) -> Path:
     x = np.arange(len(models))
     mean_x = float(len(models))  # Position to the right of bars
 
-    # Bar chart with dynamic-length color palette (handles 1+ models)
-    palette = ["#4878A8", "#6AAE6A", "#D97B3F"]
-    bar_colors = [palette[i % len(palette)] for i in range(len(models))]
+    # PFN-3: bar chart with matplotlib's tab10 colormap (10 distinct
+    # colors; doesn't wrap unless models > 10). The prior 3-color list
+    # forced cyclic reuse as soon as the panel grew past 3 models, which
+    # made the chart visually misleading. Using ``plt.get_cmap`` (not
+    # ``cm.get_cmap``) for matplotlib >=3.9 forward-compatibility.
+    n = len(models)
+    tab10 = plt.get_cmap("tab10")
+    if n > 10:
+        print(
+            f"WARNING: panel has {n} models but tab10 colormap only has 10 "
+            "distinct colors; colors will repeat cyclically.",
+            file=sys.stderr,
+        )
+    bar_colors = [tab10(i % 10) for i in range(n)]
     ax.bar(x, csli_values, color=bar_colors, width=0.6, edgecolor="black", linewidth=0.5)
 
     # Zero reference line: clarifies the sign of the CSLI gap.
@@ -216,12 +548,17 @@ def _generate_csli_panel(csli_data: dict) -> Path:
     # Formatting
     ax.set_xticks(list(x) + [mean_x])
     ax.set_xticklabels(models + ["Panel\nmean"], fontsize=9)
+    # Rotate labels when >4 models to avoid overlap.
+    if len(models) > 4:
+        plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
     ax.set_ylabel("CSLI gap (acc_full - acc_choices_only)", fontsize=10)
     ax.set_title("Choice-Set Leakage Index by Model", fontsize=11)
     # Y-limits cover both negative and positive values plus CI bounds,
     # with a small margin. Never hard-clamp at zero (would clip negative
     # per-model CSLI gaps and misreport model behavior).
-    plotted_values = list(csli_values) + [ci_lower, ci_upper, 0.0]
+    # Include panel_mean so the diamond marker can't fall outside the
+    # derived y-range (matters when CI is tight but the mean drifts).
+    plotted_values = list(csli_values) + [ci_lower, ci_upper, panel_mean, 0.0]
     y_min = min(plotted_values)
     y_max = max(plotted_values)
     y_span = y_max - y_min if y_max > y_min else 1.0
@@ -237,6 +574,102 @@ def _generate_csli_panel(csli_data: dict) -> Path:
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return out_path
+
+
+def _validate_inputs(
+    csli_data: dict,
+    cal_data: dict,
+    stopdff_data: dict,
+) -> int:
+    """Validate the three metric JSONs before any output is written.
+
+    Closes the half-build hazard where an audit_table.tex was written
+    successfully and then the CSLI panel render failed on a NaN, leaving
+    paper_exports/ in a half-coherent state (table reflects a verdict
+    the panel cannot illustrate).
+
+    Returns
+    -------
+    int
+        ``0`` if all inputs pass validation, ``1`` on a fatal error.
+        A panel-mean-outside-CI condition emits a stderr WARNING but
+        does NOT block (return ``0``); it is a data-bug signal, not a
+        contract violation.
+    """
+    per_model = csli_data.get("per_model", {})
+    if not per_model:
+        print(
+            "ERROR: csli.json per_model is empty; cannot generate panel.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Per-model csli + acc_choices_only must be finite (the B-cluster
+    # fallback path reads acc_choices_only; the panel reads csli).
+    for model_name, entry in per_model.items():
+        csli_val = entry.get("csli")
+        if csli_val is not None and not math.isfinite(float(csli_val)):
+            print(
+                f"ERROR: csli.json per_model[{model_name!r}].csli is "
+                f"non-finite ({csli_val}); cannot generate panel.",
+                file=sys.stderr,
+            )
+            return 1
+        acc_co = entry.get("acc_choices_only")
+        if acc_co is not None and not math.isfinite(float(acc_co)):
+            print(
+                f"ERROR: csli.json per_model[{model_name!r}].acc_choices_only is "
+                f"non-finite ({acc_co}); cannot generate audit table.",
+                file=sys.stderr,
+            )
+            return 1
+
+    panel = csli_data.get("panel_csli", {})
+    panel_mean = panel.get("mean")
+    ci_lower = panel.get("ci_lower")
+    ci_upper = panel.get("ci_upper")
+    for field, val in (
+        ("panel_csli.mean", panel_mean),
+        ("panel_csli.ci_lower", ci_lower),
+        ("panel_csli.ci_upper", ci_upper),
+    ):
+        if val is None or not math.isfinite(float(val)):
+            print(
+                f"ERROR: csli.json {field} is non-finite ({val}); cannot "
+                f"generate panel.",
+                file=sys.stderr,
+            )
+            return 1
+
+    max_ece = cal_data.get("max_ece")
+    if max_ece is None or not math.isfinite(float(max_ece)):
+        print(
+            f"ERROR: calibration.json max_ece is non-finite ({max_ece}); "
+            f"cannot generate audit table.",
+            file=sys.stderr,
+        )
+        return 1
+
+    median_abs = stopdff_data.get("median_abs_prefix_shift")
+    if median_abs is None or not math.isfinite(float(median_abs)):
+        print(
+            f"ERROR: stopdff.json median_abs_prefix_shift is non-finite "
+            f"({median_abs}); cannot generate audit table.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Soft check: panel_mean outside [ci_lower, ci_upper] is a data-bug
+    # signal but not a contract violation -- still warn loudly.
+    if not (float(ci_lower) <= float(panel_mean) <= float(ci_upper)):
+        print(
+            f"WARNING: csli.json panel_csli.mean={panel_mean} is outside "
+            f"[ci_lower={ci_lower}, ci_upper={ci_upper}]; bootstrap CI "
+            f"computation may be stale relative to the panel mean.",
+            file=sys.stderr,
+        )
+
+    return 0
 
 
 def _check_reliability_diagrams() -> tuple[list[str], list[str]]:
@@ -293,6 +726,13 @@ def main() -> int:
     stopdff_data = _load_json(_PAPER_EXPORTS / "stopdff.json")
     audit_card = _load_json(_PAPER_EXPORTS / "audit_card.json")
 
+    # Cluster C: validate inputs before writing any files. Closes the
+    # half-build hazard where the LaTeX table was emitted before a NaN
+    # in panel_csli took down _generate_csli_panel.
+    validation_rc = _validate_inputs(csli_data, cal_data, stopdff_data)
+    if validation_rc != 0:
+        return validation_rc
+
     # Generate audit table (LaTeX) with dynamic verdicts from audit_card.json
     tex_path = _generate_audit_table(csli_data, cal_data, stopdff_data, audit_card)
     print(f"Generated: {tex_path}")
@@ -318,11 +758,24 @@ def main() -> int:
     all_outputs = [
         ("audit_table.tex", tex_path.exists()),
         ("csli_panel.png", png_path.exists()),
-    ] + [(f, f in [p for p in present]) for f in ["reliability_early.png", "reliability_mid.png", "reliability_late.png"]]
+    ] + [(f, f in present) for f in ["reliability_early.png", "reliability_mid.png", "reliability_late.png"]]
 
     for name, exists in all_outputs:
         status = "OK" if exists else "MISSING"
         print(f"  [{status}] paper_exports/{name}")
+
+    # Cluster D: exit code 2 signals "everything succeeded except the
+    # reliability diagrams are MISSING" -- a CI gate can act on this
+    # distinctly from a hard failure (rc=1) or full success (rc=0).
+    # ``--allow-missing-reliability`` collapses rc=2 to rc=0 for callers
+    # that intentionally exclude reliability artifacts.
+    if missing and not args.allow_missing_reliability:
+        print(
+            f"ERROR: {len(missing)} reliability diagram(s) missing; "
+            f"exit code 2. Use --allow-missing-reliability to bypass.",
+            file=sys.stderr,
+        )
+        return 2
 
     return 0
 
