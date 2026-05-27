@@ -183,8 +183,18 @@ def _synthesize_calibration_qualifier(audit_card: dict) -> Optional[str]:
         return None
     parts = []
     if fallback:
-        parts.append(f"fallback bucket(s): {', '.join(sorted(fallback))}")
+        # ``fallback_buckets`` is a list of dict records (see
+        # ``make_audit_card.py`` lines 186-198: each entry carries
+        # ``bucket``/``reason``/``constant_probability``/``n_samples``).
+        # Extract bucket names before joining; tolerate legacy string
+        # entries for forward compatibility.
+        fallback_names = sorted(
+            b.get("bucket", "?") if isinstance(b, dict) else str(b)
+            for b in fallback
+        )
+        parts.append(f"fallback bucket(s): {', '.join(fallback_names)}")
     if empty:
+        # ``empty_buckets`` is a list of bucket-name strings.
         parts.append(f"empty bucket(s): {', '.join(sorted(empty))}")
     return "force WARN: " + "; ".join(parts)
 

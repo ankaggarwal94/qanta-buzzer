@@ -491,7 +491,17 @@ def test_calibration_force_warn_synthesizes_qualifier(
                 # Producer never emits this; we synthesize it from details.
                 "verdict": "warn",
                 "details": {
-                    "fallback_buckets": ["early"],
+                    # Real producer schema (make_audit_card.py:186-198):
+                    # fallback_buckets is a list of dict records, NOT strings.
+                    "fallback_buckets": [
+                        {
+                            "bucket": "early",
+                            "reason": "single-class validation bucket",
+                            "constant_probability": 0.5,
+                            "n_samples": 17,
+                        }
+                    ],
+                    # empty_buckets remains a list of bucket-name strings.
                     "empty_buckets": ["mid"],
                 },
             },
@@ -513,6 +523,53 @@ def test_calibration_force_warn_synthesizes_qualifier(
     assert "force WARN" in rendered
     assert "fallback bucket(s): early" in rendered
     assert "empty bucket(s): mid" in rendered
+
+
+def test_synthesize_calibration_qualifier_handles_dict_records() -> None:
+    """Round-8 regression: ``fallback_buckets`` is a list of dict records
+    in the real producer schema (make_audit_card.py:186-198), not strings.
+    The synthesizer must extract bucket names from dicts before joining.
+    """
+    audit_card = {
+        "metrics": [
+            {
+                "name": "Prefix-wise Calibration (ECE)",
+                "verdict": "warn",
+                "details": {
+                    "fallback_buckets": [
+                        {"bucket": "late", "reason": "x", "n_samples": 0},
+                        {"bucket": "early", "reason": "y", "n_samples": 3},
+                    ],
+                    "empty_buckets": [],
+                },
+            }
+        ]
+    }
+    qualifier = regenerate_figures._synthesize_calibration_qualifier(audit_card)
+    assert qualifier is not None
+    assert "fallback bucket(s): early, late" in qualifier
+    assert "force WARN" in qualifier
+
+
+def test_synthesize_calibration_qualifier_tolerates_legacy_string_entries() -> None:
+    """Forward-compat: if a legacy/test fixture passes strings instead
+    of dict records, the synthesizer still works (no TypeError).
+    """
+    audit_card = {
+        "metrics": [
+            {
+                "name": "Prefix-wise Calibration (ECE)",
+                "verdict": "warn",
+                "details": {
+                    "fallback_buckets": ["early", "late"],
+                    "empty_buckets": [],
+                },
+            }
+        ]
+    }
+    qualifier = regenerate_figures._synthesize_calibration_qualifier(audit_card)
+    assert qualifier is not None
+    assert "fallback bucket(s): early, late" in qualifier
 
 
 def test_latex_escape_handles_special_chars() -> None:
