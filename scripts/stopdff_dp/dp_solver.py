@@ -101,7 +101,7 @@ def solve_trajectory(
         )
         continuation_values[t] = cont
         wait_value = -schedule.c_wait + cont
-        if answer_utilities[t] >= wait_value:
+        if answer_utilities[t] > wait_value:
             values[t] = answer_utilities[t]
             stop_now[t] = True
         else:

@@ -129,3 +129,38 @@ def test_dp_horizon_terminal_uses_max_of_answer_or_zero() -> None:
     # Both A_t < 0, so optimal action is to never stop; we encode that as
     # stop_step == len(p_trajectory) (i.e. one past the last index).
     assert trace.stop_step == len(p_trajectory)
+
+
+def test_dp_never_stops_on_exact_ties_at_zero() -> None:
+    """At A_t == wait_value (tie), the policy is to wait, not stop.
+
+    Locks the convention that intermediate and terminal steps both use
+    strict-greater-than for stopping, so trajectories that tie at every
+    prefix produce stop_step == T (never stop).
+    """
+    # acf_flat: r_correct=10, r_wrong=-5; pick p so A_t == 0:
+    # 10p - 5(1-p) = 0  =>  15p = 5  =>  p = 1/3.
+    schedule = REWARD_REGISTRY["acf_flat"]
+    p_trajectory = [1.0 / 3.0, 1.0 / 3.0]
+    prefix_fractions = [0.5, 1.0]
+    trace = dp_solver.solve_trajectory(
+        p_trajectory=p_trajectory,
+        prefix_fractions=prefix_fractions,
+        schedule=schedule,
+        continuation_fn=_zero_continuation,
+    )
+    # All A_t == 0, all wait_values == 0. Strict `>` means no stop ever.
+    assert trace.stop_step == len(p_trajectory)
+
+
+def test_dp_empty_trajectory_returns_empty_trace() -> None:
+    """T=0 edge case: solver returns an empty trace with stop_step=0."""
+    schedule = REWARD_REGISTRY["acf_flat"]
+    trace = dp_solver.solve_trajectory(
+        p_trajectory=[],
+        prefix_fractions=[],
+        schedule=schedule,
+        continuation_fn=_zero_continuation,
+    )
+    assert trace.stop_step == 0
+    assert len(trace.values) == 0
