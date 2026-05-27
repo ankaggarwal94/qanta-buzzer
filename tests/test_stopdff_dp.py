@@ -475,3 +475,47 @@ def test_adapter_fit_eval_split_separation_raises_on_overlap() -> None:
         adapter_module.validate_split_separation(
             fit_split="test", eval_split="test"
         )
+
+
+import json
+from scripts.stopdff_dp import writers as writers_module
+from scripts.stopdff_dp.types import DPTrace
+
+
+def test_writer_metric_type_is_finite_horizon_dp(tmp_path: Path) -> None:
+    out_json = tmp_path / "stopdff_dp.json"
+    out_md = tmp_path / "stopdff_dp.md"
+    out_tex = tmp_path / "stopdff_dp_table.tex"
+    mc_traces = [_trace(stop_step=1, T=3, tags=["exact", "exact", "exact"])]
+    qa_traces = [_trace(stop_step=2, T=3, tags=["exact", "exact", "exact"])]
+    payload = writers_module.assemble_payload(
+        mc_traces=mc_traces,
+        qa_traces=qa_traces,
+        reward_schedule_name="acf_flat",
+        continuation_estimator_name="empirical_bucket",
+        fit_split="val",
+        eval_split="test",
+        coverage_summary={
+            "n_cells": 6, "fraction_exact": 1.0, "fraction_pooled": 0.0,
+            "fraction_missing": 0.0, "verdict": "pass", "reason": "ok",
+        },
+        ceiling_flags={
+            "all_stop_at_first_prefix": False,
+            "all_stop_at_final_prefix": False,
+            "no_cross_format_stopping_variance": False,
+            "n_items": 1, "n_stopped_cells": 2, "n_never_stopped_cells": 0,
+            "empty": False,
+        },
+        per_item_stopdff=[("q1", -1)],
+        gate_verdict="pass",
+        gate_verdict_reason="all_clean",
+        confirmatory=True,
+    )
+    writers_module.write_json(out_json, payload)
+    writers_module.write_markdown(out_md, payload)
+    writers_module.write_latex(out_tex, payload)
+    assert out_json.exists() and out_md.exists() and out_tex.exists()
+    loaded = json.loads(out_json.read_text())
+    assert loaded["metadata"]["metric_type"] == "finite_horizon_dp"
+    assert loaded["metadata"]["stopping_policy"] == "finite_horizon_dp"
+    assert "myopic" not in loaded["metadata"]["metric_type"]
