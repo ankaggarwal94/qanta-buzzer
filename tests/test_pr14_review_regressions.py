@@ -2104,3 +2104,82 @@ def test_compute_prefix_calibration_rejects_empty_test_after_coverage_override()
             f"the val=0 fallback path; missing contract substring: "
             f"{substr!r}"
         )
+
+
+def test_modal_main_impl_normalizes_absolute_in_repo_output_dir_before_remote() -> None:
+    """PR #14 follow-up review (Codex #3308936329): when ``--output-dir`` is
+    an absolute path UNDER the host's REPO_ROOT (e.g.,
+    ``$(pwd)/artifacts/run42``), the container can't translate it
+    correctly (container's REPO_ROOT is ``/app`` and treats the host path
+    as outside). Symptom: ``collect_small_artifacts`` rglobs over a
+    nonexistent path, OR the container writes to a "host-look-alike" path
+    that doesn't translate back on return. AND host-side
+    ``_absolute_output_anchor`` returns None for the absolute-in-repo
+    path, so the writer falls back to REPO_ROOT and clobbers
+    ``paper_exports/*.json`` at the repo root.
+
+    Fix: ``_main_impl`` normalizes host-absolute-under-REPO_ROOT to a
+    REPO_ROOT-relative path BEFORE remote dispatch. The container then
+    routes naturally via its own /app; the host writer anchors at
+    REPO_ROOT and the relative artifact key lands at the operator's
+    intended absolute subdir.
+
+    Pin via source-text contract: ``_main_impl`` must compute
+    ``remote_output_dir`` from ``args.output_dir`` with the
+    relative_to(REPO_ROOT) normalization before passing to ``.remote()``.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "modal_cs321m.py").read_text(encoding="utf-8")
+    for substr in (
+        "remote_output_dir = args.output_dir",
+        "_out_path.is_absolute()",
+        "_out_path.resolve().relative_to(REPO_ROOT)",
+        "remote_output_dir = str(_rel)",
+        # The actual .remote() call must pass the normalized value, not
+        # the raw args.output_dir.
+        "remote_output_dir,",
+    ):
+        assert substr in source, (
+            f"modal_cs321m._main_impl must normalize absolute-under-REPO_ROOT "
+            f"--output-dir before run_pipeline.remote(); missing contract "
+            f"substring: {substr!r}"
+        )
+
+
+def test_fresh_split_archive_timestamps_have_microsecond_resolution() -> None:
+    """PR #14 follow-up review (Copilot #3308936234): two fresh_split.py
+    runs within the same second collide on
+    ``artifacts.pre_v10_freshsplit_<ts>`` / ``data/processed.pre_v10_freshsplit_<ts>``
+    because the timestamp is second-resolution (``%Y%m%dT%H%M%SZ``). The
+    second run hits ``FileExistsError`` from ``shutil.move`` or ``copytree``
+    after partial side effects. Fix uses microsecond resolution.
+
+    Pin via source-text contract: ``fresh_split.py`` must use a strftime
+    pattern that includes ``%f`` (microseconds).
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "scripts" / "fresh_split.py").read_text(
+        encoding="utf-8"
+    )
+    # Pin: timestamp format must include %f (microseconds).
+    assert '"%Y%m%dT%H%M%S_%fZ"' in source, (
+        f"fresh_split.py must use microsecond-resolution timestamps to avoid "
+        f"same-second archive directory collisions (Copilot #3308936234)"
+    )
+    # Negative: the old second-only format must NOT be present.
+    assert '"%Y%m%dT%H%M%SZ"' not in source, (
+        f"fresh_split.py still contains the old second-resolution format; "
+        f"the fix must replace it, not duplicate it"
+    )
+
+    # Also sanity-check: the format string actually produces a microsecond
+    # component when formatted.
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+    # Format should be: 8 digits date + T + 6 digits time + _ + 6 digits us + Z
+    # Total: 8 + 1 + 6 + 1 + 6 + 1 = 23 chars
+    assert len(ts) == 23, (
+        f"Microsecond timestamp format produced unexpected length: "
+        f"{ts!r} (len={len(ts)})"
+    )
+    assert "_" in ts and ts.endswith("Z")

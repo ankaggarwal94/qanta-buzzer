@@ -233,7 +233,14 @@ def main(argv: list[str] | None = None) -> int:
 
     project_root = Path(__file__).parent.parent
     utc_now = datetime.now(timezone.utc)
-    utc_timestamp = utc_now.strftime("%Y%m%dT%H%M%SZ")
+    # PR #14 follow-up review (Copilot #3308936234): include microsecond
+    # resolution in archive directory names so two runs within the same
+    # second do not collide on ``artifacts.pre_v10_freshsplit_<ts>`` /
+    # ``data/processed.pre_v10_freshsplit_<ts>`` with FileExistsError after
+    # partial side effects. The %f format produces 6 microsecond digits;
+    # collision requires two runs within ~1µs which is below clock
+    # resolution on any realistic host.
+    utc_timestamp = utc_now.strftime("%Y%m%dT%H%M%S_%fZ")
 
     # WR-08: re-freeze guard. If SPLIT_PROVENANCE.md already records a
     # FRESH_SPLIT_SEED, refuse to invent a new one via generate_seed().
