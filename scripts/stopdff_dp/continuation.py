@@ -19,12 +19,15 @@ All three guard against test-split leakage at fit time.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Sequence, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from .types import assert_columns
+
+if TYPE_CHECKING:
+    from .types import RewardSchedule
 
 # Pre-declared fallback ladder. Each rung is the set of conditioning
 # variables that must still match for a bucket to count. The ladder
@@ -94,10 +97,11 @@ def _compute_prefix_fraction(df: pd.DataFrame) -> pd.Series:
 class OracleTrajectoryEstimator:
     """Upper-bound diagnostic using realized next-step calibrated p.
 
-    NON-CONFIRMATORY. Reports each realized p_{t+1} on the held-out
-    trajectory as the continuation expectation E[V_{t+1} | h_t]. This
-    leaks the future to the present and is intended only as an upper
-    bound on the realisable DP value.
+    NON-CONFIRMATORY. Reports the exact V_{t+1} computed via backward
+    induction over the realized sub-trajectory under the supplied
+    ``schedule``. This leaks each item's realized future (p_{t+1}..p_T)
+    to the present and is intended only as an upper bound on the
+    realisable DP value.
     """
 
     confirmatory: bool = False
@@ -106,28 +110,48 @@ class OracleTrajectoryEstimator:
     def fit(
         cls,
         *,
-        fit_df: pd.DataFrame | None = None,
+        fit_df: "pd.DataFrame | None" = None,
+        schedule: "RewardSchedule | None" = None,
         fit_split_name: str = "val",
         min_bucket_size: int = 3,
     ) -> "OracleTrajectoryEstimator":
-        """Return a fresh oracle estimator. fit_df is unused (oracle needs no data fit).
-
-        The signature matches EmpiricalBucketEstimator.fit so Task 8's CLI dispatch
-        can construct any of the three estimators with the same call.
-        """
+        """Return a fresh oracle estimator. All parameters unused — kept
+        for signature symmetry with EmpiricalBucketEstimator.fit so the
+        CLI dispatch can construct any of the three estimators with the
+        same call."""
         return cls()
 
     def estimate(
         self,
         *,
         item_trajectory: Sequence[float],
+        item_prefix_fractions: Sequence[float],
         t: int,
+        schedule: "RewardSchedule",
         **_kwargs,
     ) -> float:
-        """Return p_{t+1} (or 0.0 at the terminal step)."""
+        """Return V_{t+1} via exact backward induction on the realized
+        sub-trajectory under ``schedule``.
+
+        NON-CONFIRMATORY: this leaks each item's realized future p_{t+1}..p_T
+        into the present and is intended only as an upper bound on the
+        realisable DP value. Fixed scale to match the DP solver's reward
+        units (P1 PR review fix 2026-05-27).
+        """
         if t + 1 >= len(item_trajectory):
             return 0.0
-        return float(item_trajectory[t + 1])
+        from .rewards import answer_utility
+        sub_p = list(item_trajectory[t + 1:])
+        sub_fractions = list(item_prefix_fractions[t + 1:])
+        T_sub = len(sub_p)
+        # V_T = max(A_T, 0)
+        v = max(answer_utility(sub_p[T_sub - 1], sub_fractions[T_sub - 1], schedule), 0.0)
+        # Backward recursion: V_i = max(A_i, -c_wait + V_{i+1})
+        for i in range(T_sub - 2, -1, -1):
+            A_i = answer_utility(sub_p[i], sub_fractions[i], schedule)
+            wait_value = -schedule.c_wait + v
+            v = max(A_i, wait_value)
+        return v
 
     def coverage_tag(self, *_args, **_kwargs) -> str:
         return "exact"
@@ -155,10 +179,21 @@ class EmpiricalBucketEstimator:
         cls,
         *,
         fit_df: pd.DataFrame,
+        schedule: "RewardSchedule",
         fit_split_name: str = "val",
         min_bucket_size: int = 3,
+        num_value_iterations: int = 3,
     ) -> "EmpiricalBucketEstimator":
-        """Fit per-bucket V_{t+1} means on the fit split only."""
+        """Fit per-bucket V_{t+1} means on the fit split via value iteration.
+
+        Bucket values are in REWARD UNITS (matching the DP solver's
+        answer_utility scale), not probabilities. We bootstrap the
+        continuation fixed point by running ``num_value_iterations``
+        passes of: (current bucket lookup -> DP -> aggregate V_{t+1}
+        traces back into buckets). With monotone Bellman recursion the
+        iteration converges quickly; the default 3 is sufficient on the
+        smoke datasets.
+        """
         assert_columns(fit_df.columns)
         other_splits = set(fit_df["split"]) - {fit_split_name}
         if other_splits:
@@ -168,43 +203,100 @@ class EmpiricalBucketEstimator:
                 f"Pass a dataframe filtered to split == {fit_split_name!r}."
             )
 
-        # Compute per-(item, format) "next step calibrated prob" as the
-        # supervised target for V_{t+1}. The fit dataframe already
-        # contains every prefix; we shift within (item_id, format).
+        # Local import to avoid module-load circular with dp_solver (which is fine
+        # at function-call time but not at module-import time).
+        from .dp_solver import solve_trajectory
+
+        # Sort and compute bucket keys once.
         df = fit_df.sort_values(["item_id", "format", "prefix_idx"]).copy()
-        df["v_next"] = (
-            df.groupby(["item_id", "format"])["p_calibrated"].shift(-1)
-        )
-        # Prefix fraction must be computed over the FULL trajectory (pre-drop)
-        # so prefix_idx=0 of a 4-prefix item lands at 0.25, not 0.33.
         df["prefix_fraction"] = _compute_prefix_fraction(df)
         df["prefix_bucket"] = df["prefix_fraction"].map(_assign_prefix_bucket)
         df["subject_bucket"] = df["subject"]
         df["p_bin"] = df["p_calibrated"].map(_assign_p_bin)
         df["entropy_bin"] = df["p_calibrated"].map(_assign_entropy_bin)
 
-        # Drop terminal rows -- at t=T-1 the DP solver enforces continuation=0
-        # directly (dp_solver.py), so empirical buckets only need non-terminal
-        # observations of E[p_{t+1}] as a proxy for E[V_{t+1}].
-        non_terminal = df.dropna(subset=["v_next"])
-
-        bucket_means: dict[tuple, float] = {}
-        bucket_counts: dict[tuple, int] = {}
-        for rung in FALLBACK_LADDER:
-            grouped = non_terminal.groupby(list(rung))["v_next"]
-            means = grouped.mean()
-            counts = grouped.count()
-            for raw_key, mean_value in means.items():
-                key = raw_key if isinstance(raw_key, tuple) else (raw_key,)
-                bucket_means[(rung, *key)] = float(mean_value)
-                bucket_counts[(rung, *key)] = int(counts.loc[raw_key])
-
-        return cls(
-            bucket_means=bucket_means,
-            bucket_counts=bucket_counts,
+        # Initialize estimator with empty buckets so the first iteration's
+        # continuation_fn returns 0 (matches the "no info" baseline).
+        estimator = cls(
+            bucket_means={},
+            bucket_counts={},
             fit_split_name=fit_split_name,
             min_bucket_size=min_bucket_size,
         )
+
+        # Group val trajectories once.
+        groups = list(df.groupby(["item_id", "format"], sort=False))
+
+        for _iteration in range(num_value_iterations):
+            # Per-rung accumulators for V_{t+1} samples observed in this pass.
+            pairs_per_rung: dict[tuple[str, ...], list[tuple[tuple, float]]] = {
+                rung: [] for rung in FALLBACK_LADDER
+            }
+
+            for (_item_id, fmt), group in groups:
+                p_traj = group["p_calibrated"].tolist()
+                prefix_fractions = group["prefix_fraction"].tolist()
+                subject = group["subject"].iloc[0]
+                T = len(p_traj)
+                if T < 2:
+                    # Single-prefix items contribute no V_{t+1} samples (the
+                    # terminal has continuation = 0 by DP convention).
+                    continue
+
+                # Closure reads estimator state lazily; updated between iterations.
+                def _cont(
+                    t: int,
+                    p: float,
+                    prefix_fraction: float,
+                    _fmt: str = fmt,
+                    _subj: str = subject,
+                ) -> float:
+                    return estimator.estimate(
+                        prefix_bucket=_assign_prefix_bucket(prefix_fraction),
+                        fmt=_fmt,
+                        subject_bucket=_subj,
+                        p_bin=_assign_p_bin(p),
+                        entropy_bin=_assign_entropy_bin(p),
+                    )
+
+                trace = solve_trajectory(
+                    p_trajectory=p_traj,
+                    prefix_fractions=prefix_fractions,
+                    schedule=schedule,
+                    continuation_fn=_cont,
+                )
+
+                # At time t we ask "what is E[V_{t+1} | h_t]?", so bucket the
+                # V_{t+1} value by the conditioning variables OBSERVED AT t.
+                for t in range(T - 1):
+                    lookups = {
+                        "prefix_bucket": group["prefix_bucket"].iloc[t],
+                        "format": fmt,
+                        "subject_bucket": subject,
+                        "p_bin": int(group["p_bin"].iloc[t]),
+                        "entropy_bin": int(group["entropy_bin"].iloc[t]),
+                    }
+                    v_next = float(trace.values[t + 1])
+                    for rung in FALLBACK_LADDER:
+                        key = (rung, *tuple(lookups[name] for name in rung))
+                        pairs_per_rung[rung].append((key, v_next))
+
+            # Aggregate into bucket_means / bucket_counts. Replace the entire
+            # state each iteration; the value-iteration fixed point converges
+            # quickly because the DP recursion is monotone.
+            new_means: dict[tuple, float] = {}
+            new_counts: dict[tuple, int] = {}
+            for rung, pairs in pairs_per_rung.items():
+                bucket_to_vs: dict[tuple, list[float]] = {}
+                for key, v in pairs:
+                    bucket_to_vs.setdefault(key, []).append(v)
+                for key, vs in bucket_to_vs.items():
+                    new_means[key] = float(sum(vs) / len(vs))
+                    new_counts[key] = len(vs)
+            estimator.bucket_means = new_means
+            estimator.bucket_counts = new_counts
+
+        return estimator
 
     def estimate(
         self,
@@ -295,12 +387,14 @@ class PooledEmpiricalEstimator:
         cls,
         *,
         fit_df: pd.DataFrame,
+        schedule: "RewardSchedule",
         fit_split_name: str = "val",
         min_bucket_size: int = 3,
     ) -> "PooledEmpiricalEstimator":
         return cls(
             inner=EmpiricalBucketEstimator.fit(
                 fit_df=fit_df,
+                schedule=schedule,
                 fit_split_name=fit_split_name,
                 min_bucket_size=min_bucket_size,
             )

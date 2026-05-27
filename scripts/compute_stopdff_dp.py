@@ -162,15 +162,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     # the same keyword arguments after Task 4's review fix unifying them.
     if args.continuation == "oracle_trajectory":
         estimator: object = OracleTrajectoryEstimator.fit(
-            fit_df=fit_df, fit_split_name=args.fit_split,
+            fit_df=fit_df, schedule=schedule, fit_split_name=args.fit_split,
         )
     elif args.continuation == "pooled_empirical":
         estimator = PooledEmpiricalEstimator.fit(
-            fit_df=fit_df, fit_split_name=args.fit_split,
+            fit_df=fit_df, schedule=schedule, fit_split_name=args.fit_split,
         )
     else:  # empirical_bucket
         estimator = EmpiricalBucketEstimator.fit(
-            fit_df=fit_df, fit_split_name=args.fit_split,
+            fit_df=fit_df, schedule=schedule, fit_split_name=args.fit_split,
         )
 
     # Run DP per (item, format) over the eval split.
@@ -198,10 +198,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             # for every step (the bug from the v1 draft of this plan).
             tags_per_step: dict[int, str] = {(T - 1): "exact"}
 
-            def _continuation(t, p, prefix_fraction, _fmt=fmt, _ps=ps):
+            def _continuation(t, p, prefix_fraction, _fmt=fmt, _ps=ps, _pfs=prefix_fractions):
                 if isinstance(estimator, OracleTrajectoryEstimator):
                     tags_per_step[t] = "exact"
-                    return estimator.estimate(item_trajectory=_ps, t=t)
+                    return estimator.estimate(
+                        item_trajectory=_ps,
+                        item_prefix_fractions=_pfs,
+                        t=t,
+                        schedule=schedule,
+                    )
                 v = estimator.estimate(
                     prefix_bucket=_assign_prefix_bucket(prefix_fraction),
                     fmt=_fmt,

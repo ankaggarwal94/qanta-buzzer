@@ -1,13 +1,13 @@
 {
   "stopdff_dp_signed_median": 0.0,
-  "stopdff_dp_signed_mean": -0.16666666666666666,
+  "stopdff_dp_signed_mean": 0.5333333333333333,
   "stopdff_dp_abs_median": 0.0,
-  "stopdff_dp_abs_mean": 0.16666666666666666,
+  "stopdff_dp_abs_mean": 0.6666666666666666,
   "n_items": 30,
   "direction_breakdown": {
     "mc_earlier": 2,
-    "qa_earlier": 0,
-    "same_step": 28
+    "qa_earlier": 7,
+    "same_step": 21
   },
   "coverage": {
     "n_cells": 314,
@@ -22,8 +22,8 @@
     "all_stop_at_final_prefix": false,
     "no_cross_format_stopping_variance": false,
     "n_items": 30,
-    "n_stopped_cells": 59,
-    "n_never_stopped_cells": 1,
+    "n_stopped_cells": 57,
+    "n_never_stopped_cells": 3,
     "empty": false
   },
   "gate_verdict": "warn",
@@ -36,10 +36,10 @@
     "continuation_estimator": "empirical_bucket",
     "fit_split": "val",
     "eval_split": "test",
-    "timestamp": "2026-05-27T10:42:01.450775+00:00",
+    "timestamp": "2026-05-27T20:05:41.492612+00:00",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T10:42:01.449941+00:00",
+      "generated_at_utc": "2026-05-27T20:05:41.491138+00:00",
       "command": [
         "python",
         "scripts/compute_stopdff_dp.py",
@@ -83,10 +83,10 @@
       "cwd": ".",
       "output_path": "paper_exports/stopdff_dp.json",
       "script_path": "scripts/compute_stopdff_dp.py",
-      "script_sha256": "92adb1e255194d90041d9525c2a396812dfae1193e0f012df09d6b9133fbf4fe",
-      "git_commit": "4177307b3bc5e660dd3e5146de40200b0e5c9c20",
-      "git_dirty": false,
-      "git_status_relevant_paths": ""
+      "script_sha256": "91a39b87a33e664cd31feaaf86dabe4bcf3bca94761a021649b786ff6d8f82b2",
+      "git_commit": "0a8d6b6ece3846ab0ee18fa5e5a0aa09fe25b020",
+      "git_dirty": true,
+      "git_status_relevant_paths": "M scripts/compute_stopdff_dp.py"
     }
   }
 }

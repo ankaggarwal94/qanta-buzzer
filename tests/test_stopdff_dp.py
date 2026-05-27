@@ -197,6 +197,7 @@ def test_empirical_bucket_fitter_uses_only_fit_split_rows() -> None:
     with pytest.raises(ValueError, match="leakage|fit on test"):
         cont_module.EmpiricalBucketEstimator.fit(
             fit_df=df_test,
+            schedule=REWARD_REGISTRY["acf_flat"],
             fit_split_name="val",
         )
 
@@ -236,6 +237,7 @@ def test_empirical_bucket_estimator_returns_pooled_when_bucket_sparse() -> None:
 
     estimator = cont_module.EmpiricalBucketEstimator.fit(
         fit_df=df_val,
+        schedule=REWARD_REGISTRY["acf_flat"],
         fit_split_name="val",
         min_bucket_size=3,
     )
@@ -302,7 +304,8 @@ def test_pooled_empirical_skips_most_specific_rungs() -> None:
     df_val = _make_df(rows)
 
     pooled = cont_module.PooledEmpiricalEstimator.fit(
-        fit_df=df_val, fit_split_name="val", min_bucket_size=3,
+        fit_df=df_val, schedule=REWARD_REGISTRY["acf_flat"],
+        fit_split_name="val", min_bucket_size=3,
     )
     tag = pooled.last_coverage_tag_for(
         prefix_bucket="early",
@@ -809,7 +812,8 @@ def test_fit_dataframe_never_contains_eval_split_rows(tmp_path) -> None:
     # And the EmpiricalBucketEstimator must refuse to fit on the eval frame.
     with pytest.raises(ValueError):
         cont_module.EmpiricalBucketEstimator.fit(
-            fit_df=eval_df, fit_split_name="val",
+            fit_df=eval_df, schedule=REWARD_REGISTRY["acf_flat"],
+            fit_split_name="val",
         )
 
 

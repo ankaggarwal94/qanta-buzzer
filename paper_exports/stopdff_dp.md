@@ -10,7 +10,7 @@
 | Eval split | test |
 | n_items | 30 |
 | StopDFF signed median | 0.0000 |
-| StopDFF signed mean | -0.1667 |
+| StopDFF signed mean | 0.5333 |
 | Gate verdict | warn |
 
 ## Coverage
@@ -23,6 +23,6 @@
 - all_stop_at_final_prefix: False
 - no_cross_format_stopping_variance: False
 - n_items: 30
-- n_stopped_cells: 59
-- n_never_stopped_cells: 1
+- n_stopped_cells: 57
+- n_never_stopped_cells: 3
 - empty: False
