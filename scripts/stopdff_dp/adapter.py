@@ -10,7 +10,13 @@ rows: one for the MC format (max cosine similarity over the K=4
 options, then Platt calibration per prefix bucket) and one for the QA
 format (cosine similarity to ``answer_primary``, then Platt
 calibration). Calibration coefficients are loaded from
-``paper_exports/calibration.json``.
+``paper_exports/calibration.json``. SBERT variant: ``all-MiniLM-L6-v2``
+(matches scripts/compute_stopdff.py for cross-metric consistency).
+
+The ``correct`` column for QA rows is ALWAYS 1 by construction — the
+QA condition simulates "the model knows the gold answer text", mirroring
+``compute_stopdff.compute_stop_step_nonmc``. Downstream consumers must
+not treat ``correct`` as a per-format accuracy signal for QA rows.
 
 The adapter never touches the test split when fitting calibrators or
 continuation buckets — those are caller responsibilities and the
@@ -21,12 +27,12 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
 
-from .types import ADAPTER_COLUMNS, FORMATS
+from .types import ADAPTER_COLUMNS
 
 _SBERT_MODEL = None
 
@@ -71,6 +77,11 @@ def _load_platt_params(calibration_path: Path) -> dict[str, tuple[float, float]]
         coef = bucket_data["platt_coef"]
         intercept = bucket_data["platt_intercept"]
         if coef is None or intercept is None:
+            if bucket_data.get("platt_model_type") != "constant":
+                raise ValueError(
+                    f"Bucket {bucket_name!r} has null Platt parameters "
+                    "without platt_model_type='constant'."
+                )
             probability = float(
                 bucket_data.get("platt_constant_probability", 0.0)
             )
@@ -107,8 +118,8 @@ def _score_question(
         # synthetic signal so unit tests do not need the model.
         for t, prefix in enumerate(prefixes):
             prefix_fraction = len(prefix) / full_len
-            p_mc = max(0.0, min(1.0, 0.3 + 0.2 * t))
-            p_qa = max(0.0, min(1.0, 0.2 + 0.15 * t))
+            p_mc = max(0.0, min(1.0, 0.3 + 0.5 * prefix_fraction))
+            p_qa = max(0.0, min(1.0, 0.2 + 0.5 * prefix_fraction))
             rows.append({
                 "subject": f"sbert:{category}",
                 "item_id": qid,
@@ -117,8 +128,8 @@ def _score_question(
                 "split": None,  # caller stamps split
                 "p_raw": p_mc,
                 "p_calibrated": p_mc,
-                "correct": 1,
-                "top_answer": gold_text,
+                "correct": int(t % 2 == 0),  # deterministic synthetic pattern
+                "top_answer": gold_text if t % 2 == 0 else "synthetic_distractor",
                 "gold": gold_text,
                 "category": category,
                 "option_set_id": option_set_id,
