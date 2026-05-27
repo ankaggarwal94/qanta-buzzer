@@ -1,7 +1,7 @@
 ---
 title: Scientific Metric Edge-Case Guards
 date: 2026-05-26
-last_updated: 2026-05-26
+last_updated: 2026-05-27
 category: logic-errors
 module: qanta-buzzer scientific metrics
 problem_type: logic_error
@@ -26,6 +26,7 @@ tags:
   - pr-review
 related:
   - logic-errors/producer-emitted-flags-without-consumer-propagation.md
+  - architecture-patterns/cryptographic-artifact-provenance-with-runtime-verification.md
   - CS321M/docs/solutions/workflow-issues/pre-submission-artifact-consistency-audit.md
 ---
 
@@ -115,6 +116,8 @@ The StopDFF artifact now records `max_calibrated_probability`, `max_calibrated_r
 
 Review package artifacts as part of metric-script fixes. In PR #14, `artifacts/smoke/run_metadata.json` was changed from an absolute local path to `artifacts/smoke/train_dataset.json`, and `CODE_CHECKLIST.md` was updated to mark `reproducibility/source_to_claim.md` as present.
 
+**Round-11 extension (commit `996718b`):** the previously-advisory "regenerate manuscript-facing artifacts from committed code after metric-script changes" rule is now machine-enforced. Every paper_exports JSON carries a `metadata.generation` block with `script_sha256`, `git_commit`, `git_dirty`, `argv`, and `generated_at_utc`. The audit-card aggregator (`make_audit_card._build_artifact_provenance`) recomputes each producer's live SHA-256 at render time and surfaces mismatches in a "Source Script SHA-256 Match" section of `audit_card.md`. A reviewer's "did this JSON come from the committed code" check is now one glance. See [`../architecture-patterns/cryptographic-artifact-provenance-with-runtime-verification.md`](../architecture-patterns/cryptographic-artifact-provenance-with-runtime-verification.md) for the full pattern.
+
 ## Why This Works
 
 Each fix replaces an incidental proxy with the invariant the audit actually depends on:
@@ -130,7 +133,7 @@ The fixes also made the contract testable. `tests/test_pr14_review_regressions.p
 
 - Add regression tests for reviewer-discovered scientific edge cases before patching the scripts.
 - Assert the measurement invariant directly: unique qids for coverage, defined calibrators for degenerate buckets, and bounded-domain extrema for reachability.
-- Regenerate manuscript-facing artifacts from committed code after metric-script changes.
+- Regenerate manuscript-facing artifacts from committed code after metric-script changes. The artifact-provenance pattern ([`../architecture-patterns/cryptographic-artifact-provenance-with-runtime-verification.md`](../architecture-patterns/cryptographic-artifact-provenance-with-runtime-verification.md)) makes this rule machine-enforced — the audit card now publishes a per-artifact `script_sha256` match table at render time.
 - Re-query both GitHub review surfaces before marking a PR done: inline review threads and top-level review bodies.
 - Treat package artifacts as part of the reproducibility surface; path portability and checklist accuracy matter for submission packages.
 - **Every downstream consumer that aggregates per-bucket producer flags into a verdict must read the fallback flag, not just the headline metric** — otherwise the verdict silently PASSes even when the underlying calibration was degenerate. This is the sibling consumer-side rule that this doc's original Prevention list missed; the omission shipped a silent-PASS audit-card verdict that the PR-14 follow-up review caught (commits `41e15b7`, `eb8e337`, blockers B2 and B4). When adding a new metadata field to a producer JSON, grep every downstream consumer for the field name (`rg 'platt_model_type' scripts/ tests/`) and add a consumer-side regression test that asserts the verdict *change*, not just schema presence. See [`producer-emitted-flags-without-consumer-propagation.md`](./producer-emitted-flags-without-consumer-propagation.md) for the full consumer-side post-mortem and the prevention checklist.

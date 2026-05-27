@@ -1,7 +1,7 @@
 ---
 title: Producer-Emitted Fallback Flags Without Consumer-Side Propagation
 date: 2026-05-26
-last_updated: 2026-05-26
+last_updated: 2026-05-27
 category: logic-errors
 module: qanta-buzzer audit pipeline
 problem_type: logic_error
@@ -28,6 +28,7 @@ tags:
   - pr-review
 related:
   - logic-errors/scientific-metric-edge-case-guards.md
+  - architecture-patterns/cryptographic-artifact-provenance-with-runtime-verification.md
   - CS321M/docs/solutions/workflow-issues/pre-submission-artifact-consistency-audit.md
 ---
 
@@ -82,7 +83,7 @@ The fix wires the consumer to BOTH the headline numeric AND the producer-emitted
 
 ### 1. Consumer reads producer-emitted flags (calibration)
 
-`_evaluate_calibration` scans per-bucket fallback metadata after computing the threshold-based verdict, and force-overrides to `warn` when any bucket is degenerate:
+`_evaluate_calibration` scans per-bucket fallback metadata and force-overrides to `warn` when any bucket is degenerate:
 
 ```203:207:scripts/make_audit_card.py
     if fallback_buckets or empty_buckets:
@@ -93,6 +94,8 @@ The fix wires the consumer to BOTH the headline numeric AND the producer-emitted
 ```
 
 The per-bucket scan reads `bucket.get("platt_model_type") == "constant"` and `bucket.get("n_samples") == 0` straight off the producer schema — the consumer now BRANCHES on the producer's contract.
+
+**Round-11 tightening (commits `996718b`, `3b53f4c`):** the calibration producer (`compute_prefix_calibration.py`) now itself downgrades `gate_verdict` to `"warn"` on degenerate buckets and records a `gate_verdict_reason` field. The consumer's force-override above is preserved as the legacy-artifact fallback — when `stored_reason is not None` the consumer defers to the producer's verdict instead. The same producer-as-primary-source pattern was applied to `compute_stopdff.py` (downgrades `gate_verdict` on `ceiling_effect_detected` or any unreachable bucket, with matching `gate_verdict_reason`). This collapses the producer/consumer asymmetry: a single source of truth for the scientific verdict, with the audit card as the surface that renders qualifiers and propagates overall verdict downgrades.
 
 ### 2. Consumer reads producer-emitted flags (StopDFF)
 
@@ -209,6 +212,7 @@ The test isolates the propagation contract from the upstream compute path: no re
 ## Related
 
 - Producer-side sibling (this doc's primary cross-link): [`scientific-metric-edge-case-guards.md`](./scientific-metric-edge-case-guards.md). That doc documents the producer-side hardening (Platt fallback, ceiling detection, reachability check); this doc documents the consumer-side that was previously omitted. Read both together.
+- Third-axis sibling (artifact-source integrity, not flag semantics): [`../architecture-patterns/cryptographic-artifact-provenance-with-runtime-verification.md`](../architecture-patterns/cryptographic-artifact-provenance-with-runtime-verification.md). This doc covers *semantic* propagation (the producer's flag must be read by the consumer); that doc covers *source* propagation (the consumer must verify the producer artifact came from the producer script currently on disk via embedded `script_sha256` + `git_commit`). The two together form the full producer/consumer trust contract for a multi-script scientific audit pipeline.
 - Design-pattern parent at the value level: `CS321M/docs/solutions/design-patterns/distinguishable-defensive-fallbacks-2026-05-18.md`. The audit-card recurrence is the "fifth shape" of that pattern (producer emits a structured flag, consumer must read it).
 - Producer-consumer round-trip verification precedent: `CS321M/docs/solutions/runtime-errors/silent-ncf-head-load-failure-via-full-module-pickle-2026-05-17.md`.
 - Audit-all-paths-not-just-except prevention precedent: `CS321M/docs/solutions/runtime-errors/labeling-py-nan-fallback-bomb-2026-05-17.md`.
