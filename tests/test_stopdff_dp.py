@@ -319,3 +319,49 @@ def test_pooled_empirical_skips_most_specific_rungs() -> None:
     assert pooled.inner._last_rung != FALLBACK_LADDER[0]
     # Also verify rung 1 was skipped (rung 1 conditions on p_bin, which our sentinel breaks).
     assert pooled.inner._last_rung != FALLBACK_LADDER[1]
+
+
+from scripts.stopdff_dp import diagnostics as diag_module
+from scripts.stopdff_dp.types import DPTrace
+
+
+def _trace(stop_step: int, T: int, tags: list[str] | None = None) -> DPTrace:
+    return DPTrace(
+        item_id="q",
+        fmt="MC",
+        stop_step=stop_step,
+        values=[0.0] * T,
+        answer_utilities=[0.0] * T,
+        continuation_values=[0.0] * T,
+        coverage_tags=tags or ["exact"] * T,
+    )
+
+
+def test_coverage_warn_when_more_than_5pct_pooled() -> None:
+    traces = [_trace(stop_step=2, T=3, tags=["pooled", "pooled", "pooled"])]
+    summary = diag_module.summarize_coverage(traces)
+    assert summary["fraction_pooled"] == 1.0
+    assert summary["verdict"] == "warn"
+
+
+def test_coverage_pass_when_fully_exact() -> None:
+    traces = [_trace(stop_step=2, T=3, tags=["exact", "exact", "exact"])]
+    summary = diag_module.summarize_coverage(traces)
+    assert summary["fraction_pooled"] == 0.0
+    assert summary["fraction_exact"] == 1.0
+    assert summary["verdict"] == "pass"
+
+
+def test_ceiling_all_stop_at_final_prefix() -> None:
+    mc_traces = [_trace(stop_step=2, T=3), _trace(stop_step=2, T=3)]
+    qa_traces = [_trace(stop_step=2, T=3), _trace(stop_step=2, T=3)]
+    flags = diag_module.detect_ceiling_effects(mc_traces, qa_traces)
+    assert flags["all_stop_at_final_prefix"] is True
+    assert flags["all_stop_at_first_prefix"] is False
+
+
+def test_ceiling_no_cross_format_variance() -> None:
+    mc_traces = [_trace(stop_step=1, T=3), _trace(stop_step=2, T=3)]
+    qa_traces = [_trace(stop_step=1, T=3), _trace(stop_step=2, T=3)]
+    flags = diag_module.detect_ceiling_effects(mc_traces, qa_traces)
+    assert flags["no_cross_format_stopping_variance"] is True
