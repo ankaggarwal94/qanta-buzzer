@@ -2183,3 +2183,64 @@ def test_fresh_split_archive_timestamps_have_microsecond_resolution() -> None:
         f"{ts!r} (len={len(ts)})"
     )
     assert "_" in ts and ts.endswith("Z")
+
+
+def test_fresh_split_validates_question_source_before_destructive_moves() -> None:
+    """PR #14 follow-up review (Codex #3309002349): the real (non-dry-run)
+    path of ``fresh_split.py`` previously moved ``artifacts/`` and copied
+    ``data/processed/`` BEFORE attempting to load questions. If
+    ``questions.csv`` was missing/corrupt and the HuggingFace fallback
+    also failed, the script exited with no new split while the existing
+    ``artifacts/`` directory had already been renamed out of place,
+    leaving the working checkout in a half-moved state that broke every
+    downstream command.
+
+    The fix: load + validate questions BEFORE the Step 1 destructive
+    moves. Dry-run keeps its own separate validation path (which was
+    already correct).
+
+    Pin via source-text contract: the real-run question load must appear
+    BEFORE the artifacts/ move call, and the in-loop load that came after
+    must be replaced with a comment pointing to the early load.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "scripts" / "fresh_split.py").read_text(
+        encoding="utf-8"
+    )
+
+    # Pin: the early-load block must exist with its rationale marker.
+    for substr in (
+        "Step 0: Loading + validating questions (before destructive moves)",
+        # Real-run path is conditioned on `not args.dry_run` and lives
+        # BEFORE Step 1.
+        "Real-run question loading is now done in Step 0",
+    ):
+        assert substr in source, (
+            f"fresh_split.py must front-load question validation before "
+            f"destructive moves (Codex #3309002349); missing contract "
+            f"substring: {substr!r}"
+        )
+
+    # Ordering pin: the early-load block must appear before the Step 1
+    # artifacts move (shutil.move(...) on artifacts_dir).
+    early_load_idx = source.find(
+        "Step 0: Loading + validating questions (before destructive moves)"
+    )
+    artifacts_move_idx = source.find("shutil.move(str(artifacts_dir)")
+    assert early_load_idx > 0 and artifacts_move_idx > 0, (
+        "Expected source markers not found"
+    )
+    assert early_load_idx < artifacts_move_idx, (
+        f"fresh_split.py question-load (idx {early_load_idx}) must appear "
+        f"BEFORE the artifacts/ shutil.move (idx {artifacts_move_idx}) -- "
+        f"otherwise a question-load failure leaves the checkout half-moved"
+    )
+
+    # Negative: the OLD inline load (after Step 1 + Step 2 + dry-run exit)
+    # must no longer exist in the real-run path. Look for the specific
+    # comment/code shape from the prior version.
+    assert "    # Load questions from CSV (primary) or HuggingFace (fallback)" not in source, (
+        "Old post-destructive-move load block still present; the fix must "
+        "REPLACE it with the early-load + a forwarding comment, not "
+        "duplicate it"
+    )

@@ -280,6 +280,45 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Split ratios: {SPLIT_RATIOS}")
     print()
 
+    # PR #14 follow-up review (Codex #3309002349): in the real (non-dry-run)
+    # path, load + validate the question source BEFORE the Step 1 destructive
+    # moves below. Previously the moves ran first and the question-load came
+    # after; if questions.csv was missing/corrupt or the HuggingFace fallback
+    # failed, the script would exit having already renamed ``artifacts/`` out
+    # of place -- leaving the checkout in a half-moved state that broke every
+    # downstream command. By front-loading the validation, the Step 1 moves
+    # only execute once we know we have a valid question set in memory.
+    # Dry-run keeps its own separate validation path further down.
+    questions = None
+    csv_path = project_root / "questions.csv"
+    if not args.dry_run:
+        print("Step 0: Loading + validating questions (before destructive moves)...")
+        if csv_path.exists():
+            print(f"  Loading from CSV: {csv_path}")
+            loader = QANTADatasetLoader()
+            questions = loader.load_from_csv(str(csv_path))
+            print(f"  Loaded {len(questions)} questions from CSV")
+        else:
+            print(f"  CSV not found at {csv_path}, trying HuggingFace fallback...")
+            try:
+                from qb_data.huggingface_loader import load_from_huggingface
+                questions = load_from_huggingface(
+                    "qanta-challenge/acf-co24-tossups", split="eval"
+                )
+                print(f"  Loaded {len(questions)} questions from HuggingFace")
+            except Exception as e:
+                print(
+                    f"ERROR: Could not load questions. CSV missing and "
+                    f"HuggingFace failed: {e}",
+                    file=sys.stderr,
+                )
+                return 1
+        if not questions:
+            print("ERROR: No questions loaded.", file=sys.stderr)
+            return 1
+        print(f"  Validated: {len(questions)} questions ready for splitting")
+        print()
+
     # --- Step 1: Preserve old artifacts ---
     artifacts_dir = project_root / "artifacts"
     artifacts_archive = project_root / f"artifacts.pre_v10_freshsplit_{utc_timestamp}"
@@ -408,27 +447,9 @@ def main(argv: list[str] | None = None) -> int:
         print("\n[DRY-RUN] Complete. No filesystem changes made.")
         return 0
 
-    # Load questions from CSV (primary) or HuggingFace (fallback)
-    questions = None
-    if csv_path.exists():
-        print(f"  Loading from CSV: {csv_path}")
-        loader = QANTADatasetLoader()
-        questions = loader.load_from_csv(str(csv_path))
-        print(f"  Loaded {len(questions)} questions from CSV")
-    else:
-        print(f"  CSV not found at {csv_path}, trying HuggingFace fallback...")
-        try:
-            from qb_data.huggingface_loader import load_from_huggingface
-            questions = load_from_huggingface("qanta-challenge/acf-co24-tossups", split="eval")
-            print(f"  Loaded {len(questions)} questions from HuggingFace")
-        except Exception as e:
-            print(f"ERROR: Could not load questions. CSV missing and HuggingFace failed: {e}",
-                  file=sys.stderr)
-            return 1
-
-    if not questions:
-        print("ERROR: No questions loaded.", file=sys.stderr)
-        return 1
+    # Real-run question loading is now done in Step 0 (before destructive
+    # moves) per Codex #3309002349; ``questions`` is already populated and
+    # validated by the time we reach this point.
 
     # --- Step 5: Create fresh splits ---
     print(f"\nStep 4: Creating stratified splits (seed={seed}, ratios={SPLIT_RATIOS})")
