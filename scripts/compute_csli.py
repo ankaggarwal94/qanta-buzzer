@@ -562,21 +562,53 @@ def _get_sbert_model():
     return _SBERT_MODEL
 
 
+def _get_t5_device():
+    """Pick the torch device for T5 scoring.
+
+    Honors ``CSLI_T5_DEVICE`` (e.g. ``cuda:0``, ``cpu``) when set,
+    otherwise auto-selects CUDA when available. The Modal stage for
+    full CSLI requests an A100 — without this, the T5 model and its
+    tokenized inputs would stay on CPU even when CUDA is present, and
+    the full split's T5 forwards would time out the GPU lane (Codex
+    PR-14 follow-up review 3308098595).
+    """
+    import os
+    import torch
+
+    explicit = os.environ.get("CSLI_T5_DEVICE")
+    if explicit:
+        return torch.device(explicit)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
 def _get_t5_model():
     """Lazy-load T5-small model and tokenizer. Thread-safe (Iter1 IN-03).
 
     Loads _T5_MODEL and _T5_TOKENIZER atomically together under a
     single _T5_LOCK -- a partial state with model set but tokenizer
     not yet assigned would crash a concurrent reader.
+
+    PR #14 follow-up review (Codex 3308098595): the model is moved
+    onto ``_get_t5_device()`` (CUDA when available; CPU otherwise) so
+    the Modal A100 lane is actually used for T5 scoring on the full
+    split. Per-call input/target tensors are moved to the same device
+    by the scorer functions.
     """
     global _T5_MODEL, _T5_TOKENIZER
     if _T5_MODEL is None:
         with _T5_LOCK:
             if _T5_MODEL is None:
                 from transformers import T5ForConditionalGeneration, T5Tokenizer
-                print("[CSLI] Loading T5-small model...", flush=True)
+                device = _get_t5_device()
+                print(
+                    f"[CSLI] Loading T5-small model on device={device}...",
+                    flush=True,
+                )
                 tokenizer = T5Tokenizer.from_pretrained("t5-small")
                 model = T5ForConditionalGeneration.from_pretrained("t5-small")
+                model.to(device)
                 model.eval()
                 # Assign tokenizer first, then model. The
                 # ``_T5_MODEL is None`` check above is the gate, so
@@ -960,19 +992,20 @@ def _score_t5_choices_only(options: list[str]) -> int:
     import torch
 
     model, tokenizer = _get_t5_model()
+    device = next(model.parameters()).device
     input_ids = tokenizer(
         "Which of the following is most likely correct?",
         return_tensors="pt",
         max_length=64,
         truncation=True,
-    ).input_ids
+    ).input_ids.to(device)
 
     losses = []
     with torch.no_grad():
         for opt in options:
             target_ids = tokenizer(
                 opt, return_tensors="pt", max_length=128, truncation=True
-            ).input_ids
+            ).input_ids.to(device)
             outputs = model(input_ids=input_ids, labels=target_ids)
             losses.append(outputs.loss.item())
 
@@ -1003,19 +1036,20 @@ def _score_t5_full(question: str, options: list[str]) -> int:
     import torch
 
     model, tokenizer = _get_t5_model()
+    device = next(model.parameters()).device
     input_ids = tokenizer(
         f"question: {question}",
         return_tensors="pt",
         max_length=512,
         truncation=True,
-    ).input_ids
+    ).input_ids.to(device)
 
     losses = []
     with torch.no_grad():
         for opt in options:
             target_ids = tokenizer(
                 opt, return_tensors="pt", max_length=128, truncation=True
-            ).input_ids
+            ).input_ids.to(device)
             outputs = model(input_ids=input_ids, labels=target_ids)
             losses.append(outputs.loss.item())
 

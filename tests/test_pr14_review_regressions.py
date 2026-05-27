@@ -1363,6 +1363,41 @@ def test_compute_csli_asserts_K4() -> None:
     assert bad_k == [("q2", 3)]
 
 
+def test_compute_csli_t5_scorers_route_through_device() -> None:
+    """PR #14 follow-up review (Codex 3308098595): T5 must use the requested GPU.
+
+    The Modal stage for full CSLI requests an A100, but the T5 loader
+    previously left the model on CPU and never moved input/target
+    tensors to CUDA, so the GPU lane sat idle while T5 forwards ran on
+    CPU and risked the Modal one-hour timeout. The fix:
+
+    1. `_get_t5_device()` picks ``cuda`` when available (honors
+       ``CSLI_T5_DEVICE`` env override).
+    2. `_get_t5_model()` moves the model to that device at load time.
+    3. Both scorers move tokenized ``input_ids`` and ``target_ids`` to
+       the model's device before the forward pass.
+
+    We pin the contract by source inspection: the device-picker exists,
+    the loader calls `.to(device)`, and both scorers call
+    `.to(device)` on their tokenized tensors.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "scripts" / "compute_csli.py").read_text(
+        encoding="utf-8"
+    )
+    # 1. Device picker exists.
+    assert "def _get_t5_device" in source
+    assert "torch.cuda.is_available" in source
+    assert "CSLI_T5_DEVICE" in source
+    # 2. Loader moves model to device.
+    assert "model.to(device)" in source
+    # 3. Both scorers move input/target tensors. Each .input_ids access
+    #    is immediately followed by .to(device); inspect by counting
+    #    occurrences -- there are exactly four (full + choices_only,
+    #    each emitting one input_ids and one target_ids per call).
+    assert source.count(".input_ids.to(device)") == 4
+
+
 def test_compute_csli_empty_after_coverage_override_message_is_actionable() -> None:
     """PR #14 follow-up review (Codex 3307859491): override + zero-match must fail closed.
 
@@ -1376,17 +1411,19 @@ def test_compute_csli_empty_after_coverage_override_message_is_actionable() -> N
     # The error string from compute_csli is asserted here to pin the
     # actionable message text (so a refactor that loses the override
     # reference fails CI). The full main() exercise is integration-
-    # level; for a unit, we pin the message contract.
+    # level; for a unit, we pin the message contract. Path is anchored
+    # to the repo root via this test file's location so the assertion
+    # passes on both local dev and CI runners.
     expected_substrings = [
         "zero MC questions remain",
         "--allow-incomplete-mc-coverage",
         "build_mc_dataset.py",
         "NaN",
     ]
-    source = Path(
-        "/Users/ankit.aggarwal/Dropbox/Stanford/CS234/final_project/"
-        "qanta-buzzer/scripts/compute_csli.py"
-    ).read_text(encoding="utf-8")
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "scripts" / "compute_csli.py").read_text(
+        encoding="utf-8"
+    )
     for substr in expected_substrings:
         assert substr in source, (
             f"compute_csli.py is missing the empty-questions guard "
