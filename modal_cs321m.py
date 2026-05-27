@@ -402,11 +402,39 @@ def run_pipeline(
     return {"results": results, "artifacts": collect_small_artifacts(output_dir, smoke)}
 
 
+def _absolute_output_anchor(output_dir: str | None) -> Path | None:
+    """Return the operator-supplied absolute ``--output-dir`` if it lies
+    outside ``REPO_ROOT``.
+
+    PR #14 follow-up review (Codex 3308546548): when the operator passes
+    an absolute ``--output-dir`` like ``/tmp/run42``, ``_path_for_container``
+    returns the path as-is and Modal writes outputs at that absolute path
+    inside the container. Those paths fall outside ``CONTAINER_ROOT`` so
+    they cannot be re-anchored against ``REPO_ROOT`` on either side of
+    the round trip. The operator's absolute path is the only valid anchor
+    in that case — return it so collectors and writers use a consistent
+    base. Returns ``None`` for the default case (output_dir None, or
+    relative, or absolute-but-under-REPO_ROOT) so existing REPO_ROOT
+    anchoring keeps working.
+    """
+    if output_dir is None:
+        return None
+    out_path = Path(output_dir)
+    if not out_path.is_absolute():
+        return None
+    try:
+        out_path.resolve().relative_to(REPO_ROOT)
+    except ValueError:
+        return out_path
+    return None
+
+
 def collect_small_artifacts(output_dir: str | None, smoke: bool) -> dict[str, dict[str, str]]:
     """Collect small JSON/text outputs so Modal returns them to the local process."""
     export_dir = Path(_path_for_container(export_dir_for_run(smoke, output_dir)) or "/app/paper_exports")
     default_artifact_dir = "/app/artifacts/smoke" if smoke else "/app/artifacts/main"
     artifact_root = Path(_path_for_container(output_dir) or default_artifact_dir)
+    absolute_anchor = _absolute_output_anchor(output_dir)
     candidates = []
     if export_dir.exists():
         candidates.extend(path for path in export_dir.rglob("*") if path.is_file())
@@ -429,7 +457,32 @@ def collect_small_artifacts(output_dir: str | None, smoke: bool) -> dict[str, di
             try:
                 rel = path.relative_to(CONTAINER_ROOT).as_posix()
             except ValueError:
-                rel = str(path)
+                # Path is outside /app -- happens when --output-dir is an
+                # absolute path outside REPO_ROOT (e.g., /tmp/run42). Anchor
+                # the key to that absolute output_dir so
+                # write_returned_artifacts(..., output_dir=...) can re-land
+                # the file at the operator's local absolute path. Previous
+                # behavior emitted absolute keys that write_returned_artifacts
+                # silently skipped, so absolute-output_dir Modal runs lost
+                # all artifacts on the round trip (Codex 3308546548).
+                if absolute_anchor is None:
+                    print(
+                        f"WARNING: collect_small_artifacts skipping {path} -- "
+                        f"path is outside CONTAINER_ROOT and no absolute "
+                        f"output_dir anchor available",
+                        file=sys.stderr,
+                    )
+                    continue
+                try:
+                    rel = path.relative_to(absolute_anchor).as_posix()
+                except ValueError:
+                    print(
+                        f"WARNING: collect_small_artifacts skipping {path} -- "
+                        f"path is outside both CONTAINER_ROOT and the operator "
+                        f"output_dir anchor {absolute_anchor}",
+                        file=sys.stderr,
+                    )
+                    continue
             data = path.read_bytes()
             try:
                 artifacts[rel] = {"encoding": "text", "content": data.decode("utf-8")}
@@ -441,18 +494,45 @@ def collect_small_artifacts(output_dir: str | None, smoke: bool) -> dict[str, di
     return artifacts
 
 
-def write_returned_artifacts(artifacts: dict[str, dict[str, str]]) -> None:
-    """Write small returned Modal artifacts into the local repository."""
+def write_returned_artifacts(
+    artifacts: dict[str, dict[str, str]],
+    output_dir: str | None = None,
+) -> None:
+    """Write small returned Modal artifacts into the local repository.
+
+    Artifact keys are anchored to ``REPO_ROOT`` by default. When the
+    operator passed an absolute ``--output-dir`` that resolves outside
+    ``REPO_ROOT`` (e.g., ``/tmp/run42``), keys produced by the matching
+    ``collect_small_artifacts`` call are relative to that operator path
+    instead; pass the same ``output_dir`` here so they land at the
+    intended local absolute location. Absolute keys are still rejected
+    as a defense against malformed/escaped artifacts.
+    """
+    base = _absolute_output_anchor(output_dir) or REPO_ROOT
     for rel_path, artifact in artifacts.items():
         if Path(rel_path).is_absolute():
+            print(
+                f"WARNING: write_returned_artifacts skipping absolute key "
+                f"{rel_path!r} -- collector should have anchored it under "
+                f"REPO_ROOT or the operator's --output-dir",
+                file=sys.stderr,
+            )
             continue
-        local_path = REPO_ROOT / rel_path
+        local_path = base / rel_path
         local_path.parent.mkdir(parents=True, exist_ok=True)
         if artifact.get("encoding") == "base64":
             local_path.write_bytes(base64.b64decode(artifact["content"]))
         else:
             local_path.write_text(artifact.get("content", ""), encoding="utf-8")
-        print(f"[artifact] wrote {local_path.relative_to(REPO_ROOT)}")
+        # Display path is repo-relative when possible (preserves the prior
+        # log shape for default REPO_ROOT writes); when the artifact lands
+        # outside the repo (absolute --output-dir case), show the absolute
+        # local path instead of crashing on relative_to.
+        try:
+            display = str(local_path.relative_to(REPO_ROOT))
+        except ValueError:
+            display = str(local_path)
+        print(f"[artifact] wrote {display}")
 
 
 def _main_impl():
@@ -584,7 +664,10 @@ def _main_impl():
             log_path=spend_log_path,
             status=str(result.get("status", "unknown")),
         )
-    write_returned_artifacts(remote_result.get("artifacts", {}))
+    write_returned_artifacts(
+        remote_result.get("artifacts", {}),
+        output_dir=args.output_dir,
+    )
 
     total_duration = time.time() - total_start
     print(f"\n{'=' * 60}")
