@@ -36,10 +36,10 @@
     "continuation_estimator": "empirical_bucket",
     "fit_split": "val",
     "eval_split": "test",
-    "timestamp": "2026-05-27T23:16:08.496409+00:00",
+    "timestamp": "2026-05-27T23:24:11.803943+00:00",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T23:16:08.492812+00:00",
+      "generated_at_utc": "2026-05-27T23:24:11.798312+00:00",
       "command": [
         "python",
         "scripts/compute_stopdff_dp.py",
@@ -83,8 +83,8 @@
       "cwd": ".",
       "output_path": "paper_exports/stopdff_dp.json",
       "script_path": "scripts/compute_stopdff_dp.py",
-      "script_sha256": "fbed9b33dbeeccf49a3a1e1c8438da8cc46d24810e37c96927aea55d713cbe98",
-      "git_commit": "6706abc37d00cfad47f55886c3a5aec6a4dc74dd",
+      "script_sha256": "cb6ef9b19f4d4190401b35ba68a7bbf9e6a32ab41d2a51471dd4962f3f7cf02f",
+      "git_commit": "0110b5ef5fc2c4adc354ebf224c63d6cd3a870fe",
       "git_dirty": false,
       "git_status_relevant_paths": "",
       "helper_sha256s": {

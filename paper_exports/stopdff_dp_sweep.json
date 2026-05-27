@@ -1,7 +1,7 @@
 {
   "metadata": {
     "metric_type": "finite_horizon_dp_sweep",
-    "timestamp": "2026-05-27T23:16:32.038382+00:00",
+    "timestamp": "2026-05-27T23:23:48.644030+00:00",
     "argv": [
       "--identity-calibration",
       "--smoke",
@@ -51,7 +51,7 @@
       "format_condition": "MC-fixed",
       "prefix_bucketing": "early_mid_late",
       "subject_pooling": "pooled_subject",
-      "git_commit": "6706abc37d00cfad47f55886c3a5aec6a4dc74dd",
+      "git_commit": "0110b5ef5fc2c4adc354ebf224c63d6cd3a870fe",
       "git_dirty": false,
       "argv": [
         "--identity-calibration",
@@ -97,7 +97,7 @@
         "smoke": true,
         "seed": 1,
         "num_bootstrap": 8,
-        "script_sha256": "601a45a17244c8ca19f7f91de27ec42c7d8ca7f3363cf17d615d9a473b947c20",
+        "script_sha256": "488e5ad1d7eb7424656a7baa9adf8a084d26dd998a4b984cc27043fdcdcc3c21",
         "helper_sha256s": {
           "scripts/stopdff_dp/__init__.py": "9a5c797622bacf7771cc8f8c110a8e96a526012430665a9469681356f44d5075",
           "scripts/stopdff_dp/_provenance.py": "fdd3994ef3ff86bec61eb43c3b56ad4af9eaba637421f38b23983750c0d1c5dd",
@@ -111,10 +111,10 @@
           "scripts/_audit_gates.py": "5b4b788949b06e700df5d37e291051a7c6ba448702b5f405f4e35504a07d6de0",
           "scripts/_common.py": "caf687af9da16bd952dc888aee3649d8db1e3cf06feae5d3f880b5ebc7691139"
         },
-        "git_commit": "6706abc37d00cfad47f55886c3a5aec6a4dc74dd",
+        "git_commit": "0110b5ef5fc2c4adc354ebf224c63d6cd3a870fe",
         "out_parent": "paper_exports"
       },
-      "started_at": "2026-05-27T23:16:31.842958+00:00",
+      "started_at": "2026-05-27T23:23:48.437416+00:00",
       "status": "completed",
       "calibration": {
         "method": "uncalibrated",
@@ -220,14 +220,14 @@
       "gate_verdict_reason": "ceiling_effect",
       "confirmatory_included": true,
       "confirmatory": true,
-      "wall_clock_seconds": 0.19462084770202637,
-      "completed_at": "2026-05-27T23:16:32.037578+00:00",
-      "cell_id": "b0ea15ac2c6bdf16_acf_flat_empirical_bucket_uncalibrated",
-      "cache_path": "paper_exports/stopdff_dp_sweep_cells/b0ea15ac2c6bdf16_acf_flat_empirical_bucket_uncalibrated.json"
+      "wall_clock_seconds": 0.20587778091430664,
+      "completed_at": "2026-05-27T23:23:48.643292+00:00",
+      "cell_id": "92d7e8cdd9422cbd_acf_flat_empirical_bucket_uncalibrated",
+      "cache_path": "paper_exports/stopdff_dp_sweep_cells/92d7e8cdd9422cbd_acf_flat_empirical_bucket_uncalibrated.json"
     }
   ],
   "confirmatory_cells": [
-    "b0ea15ac2c6bdf16_acf_flat_empirical_bucket_uncalibrated"
+    "92d7e8cdd9422cbd_acf_flat_empirical_bucket_uncalibrated"
   ],
   "mc_coverage": {
     "test": {
