@@ -141,7 +141,10 @@ import pytest
 
 from agents._math import bayesian_update, softmax_belief
 from scripts import make_audit_card
+from scripts import _audit_gates as audit_gates
 from scripts._audit_gates import (
+    PROJECT_ROOT as AUDIT_GATES_PROJECT_ROOT,
+    _project_relative,
     build_coverage_metadata,
     build_retention_metadata,
     coverage_gate_decision,
@@ -472,6 +475,85 @@ def test_audit_gates_build_retention_metadata_marks_not_applicable() -> None:
     assert block["applies"] is False
     assert block["passed"] is None
     assert block["retention_rate"] is None
+
+
+def test_audit_gates_project_relative_anchors_relative_inputs_to_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Relative paths must resolve against PROJECT_ROOT, not CWD.
+
+    Regression for the round-7 Copilot review finding: the inline
+    ``_project_relative`` helper in ``scripts/_audit_gates.py`` called
+    ``Path(path).resolve()`` directly, which resolves relative paths
+    against the current working directory. Automation that invokes
+    pipeline scripts from outside the repo would pass a repo-relative
+    argument like ``"data/processed"`` and the old behavior would emit
+    a machine-specific absolute path (leaking local filesystem details
+    into ``build_metadata.json`` provenance) or even point at the wrong
+    file. The fix mirrors ``_common.project_relative`` by anchoring
+    non-absolute inputs to ``PROJECT_ROOT`` before resolving.
+    """
+    # Simulate running from an unrelated CWD (the common automation case).
+    monkeypatch.chdir(tmp_path)
+
+    result = _project_relative("data/processed")
+
+    assert result == "data/processed"
+    # Sanity check: the offending old behavior would have produced an
+    # absolute path under tmp_path; ensure we did NOT regress to that.
+    assert not Path(result).is_absolute()
+    assert str(tmp_path) not in result
+
+
+def test_audit_gates_project_relative_preserves_repo_relative_for_absolute_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Absolute paths inside PROJECT_ROOT should still come back repo-relative."""
+    monkeypatch.chdir(tmp_path)
+    abs_inside = AUDIT_GATES_PROJECT_ROOT / "data" / "processed"
+
+    assert _project_relative(abs_inside) == "data/processed"
+
+
+def test_audit_gates_project_relative_falls_back_to_absolute_for_outside_repo(
+    tmp_path: Path,
+) -> None:
+    """Absolute paths outside the repo should fall back to the resolved absolute string."""
+    outside = (tmp_path / "elsewhere.json").resolve()
+
+    assert _project_relative(outside) == str(outside)
+
+
+def test_audit_gates_load_mc_build_metadata_records_repo_relative_source_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """build_metadata.json's source_path must stay repo-relative when the data
+    dir is supplied as a repo-relative path from an outside-repo CWD.
+
+    Pins the user-visible effect of the ``_project_relative`` bug fix:
+    even when ``load_mc_build_metadata`` is called with a repo-relative
+    ``data_dir`` (e.g. ``Path("data/processed")``) while CWD is outside
+    the repo, the returned ``source_path`` must be the repo-relative
+    ``data/processed/build_metadata.json`` and never an absolute path
+    rooted in the foreign CWD.
+    """
+    # Materialize a build_metadata.json inside PROJECT_ROOT so the
+    # ``path.exists()`` check returns False (we want the missing-file
+    # path that still records source_path); the source_path is set
+    # before the existence check.
+    monkeypatch.chdir(tmp_path)
+
+    summary = load_mc_build_metadata(Path("data/processed/nonexistent_subdir"))
+
+    assert summary["status"] == "missing"
+    assert summary["source_path"] == (
+        "data/processed/nonexistent_subdir/build_metadata.json"
+    )
+    assert not Path(summary["source_path"]).is_absolute()
+    assert str(tmp_path) not in summary["source_path"]
 
 
 def test_audit_card_data_provenance_pulls_from_each_metric_artifact() -> None:

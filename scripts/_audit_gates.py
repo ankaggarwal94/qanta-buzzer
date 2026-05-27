@@ -42,7 +42,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _project_relative(path: Path) -> str:
+def _project_relative(path: str | Path) -> str:
     """Return a stable repo-relative path string when possible.
 
     Mirrors ``compute_csli._display_path`` and
@@ -51,11 +51,24 @@ def _project_relative(path: Path) -> str:
     the absolute path string. Duplicated inline (rather than imported
     from ``_common``) to keep this module free of cross-script imports
     per the design intent at the top of this file.
+
+    Non-absolute inputs are anchored to ``PROJECT_ROOT`` BEFORE
+    resolution so that repo-relative arguments like
+    ``"data/processed"`` stay repo-relative regardless of the caller's
+    CWD (common in automation that invokes scripts from outside the
+    repo). Without this anchoring, ``Path(path).resolve()`` would
+    resolve the relative path against CWD, producing a machine-specific
+    absolute path that would fail the ``relative_to(PROJECT_ROOT)``
+    check and leak through the provenance fallback.
     """
+    raw = Path(path)
+    if not raw.is_absolute():
+        raw = PROJECT_ROOT / raw
+    resolved = raw.resolve()
     try:
-        return path.resolve().relative_to(PROJECT_ROOT).as_posix()
+        return resolved.relative_to(PROJECT_ROOT).as_posix()
     except ValueError:
-        return str(path.resolve())
+        return str(resolved)
 
 
 def _sha256_file(path: Path) -> str:
