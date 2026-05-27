@@ -104,10 +104,10 @@
     "stop_threshold": 0.7,
     "metric_type": "diagnostic_only",
     "stopping_policy": "myopic_threshold",
-    "timestamp": "2026-05-27T06:37:52.121182+00:00",
+    "timestamp": "2026-05-27T08:12:49.455499+00:00",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T06:37:52.120163+00:00",
+      "generated_at_utc": "2026-05-27T08:12:49.454441+00:00",
       "command": [
         "python",
         "scripts/compute_stopdff.py",
@@ -119,12 +119,12 @@
         "--allow-incomplete-mc-coverage"
       ],
       "cwd": ".",
-      "output_path": "paper_exports/stopdff.json",
+      "output_path": "stopdff_report.json",
       "script_path": "scripts/compute_stopdff.py",
-      "script_sha256": "1cb520f0197763df26d7e23897e172383d9278d1b486088436708157f2e25070",
-      "git_commit": "0f8da5d35c1c591430e03db4a6500cec6acd6755",
-      "git_dirty": true,
-      "git_status_relevant_paths": "M paper_exports/calibration.json"
+      "script_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
+      "git_commit": "222fa1eb1d214de85cd645b7ae00e5f983b5e0c1",
+      "git_dirty": false,
+      "git_status_relevant_paths": ""
     }
   }
 }

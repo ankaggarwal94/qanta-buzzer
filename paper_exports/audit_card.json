@@ -140,11 +140,11 @@
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-27T07:47:48.348431+00:00",
+    "timestamp": "2026-05-27T08:12:53.737774+00:00",
     "threshold_source": "threshold_manifest.json",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T07:47:48.346651+00:00",
+      "generated_at_utc": "2026-05-27T08:12:53.736931+00:00",
       "command": [
         "python",
         "scripts/make_audit_card.py"
@@ -153,12 +153,13 @@
       "cwd": ".",
       "output_path": "paper_exports/audit_card.json",
       "script_path": "scripts/make_audit_card.py",
-      "script_sha256": "2e642d1dfc3dac1eb005cdc47351f5fc13dc2b410efdce5c5662d2540a7eeae7",
-      "git_commit": "fbaafccb9d792e24adc5523e685ecef8d7cb7435",
+      "script_sha256": "d2bfd59a5bcbefce73e4f75c6b69fb7fb231b2d2ddf58344a9ab10ba2cbf0b33",
+      "git_commit": "222fa1eb1d214de85cd645b7ae00e5f983b5e0c1",
       "git_dirty": false,
       "git_status_relevant_paths": ""
     }
   },
+  "overall_verdict_qualifier": "stale producer hash for csli.json",
   "data_provenance": {
     "csli": {
       "coverage": {
@@ -247,9 +248,9 @@
       "sha_matches": true
     },
     "stopdff.json": {
-      "recorded_commit": "0f8da5d35c1c591430e03db4a6500cec6acd6755",
-      "recorded_sha256": "1cb520f0197763df26d7e23897e172383d9278d1b486088436708157f2e25070",
-      "current_sha256": "1cb520f0197763df26d7e23897e172383d9278d1b486088436708157f2e25070",
+      "recorded_commit": "222fa1eb1d214de85cd645b7ae00e5f983b5e0c1",
+      "recorded_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
+      "current_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
       "script_path": "scripts/compute_stopdff.py",
       "sha_matches": true
     }
