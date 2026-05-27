@@ -102,8 +102,20 @@ class OracleTrajectoryEstimator:
 
     confirmatory: bool = False
 
-    def fit(self, *_args, **_kwargs) -> "OracleTrajectoryEstimator":
-        return self
+    @classmethod
+    def fit(
+        cls,
+        *,
+        fit_df: pd.DataFrame | None = None,
+        fit_split_name: str = "val",
+        min_bucket_size: int = 3,
+    ) -> "OracleTrajectoryEstimator":
+        """Return a fresh oracle estimator. fit_df is unused (oracle needs no data fit).
+
+        The signature matches EmpiricalBucketEstimator.fit so Task 8's CLI dispatch
+        can construct any of the three estimators with the same call.
+        """
+        return cls()
 
     def estimate(
         self,
@@ -159,30 +171,27 @@ class EmpiricalBucketEstimator:
         # Compute per-(item, format) "next step calibrated prob" as the
         # supervised target for V_{t+1}. The fit dataframe already
         # contains every prefix; we shift within (item_id, format).
-        # Terminal-step rows have no next prefix; the finite-horizon DP
-        # convention is that the continuation value past T is 0, so we
-        # fill NaN with 0.0 rather than dropping. This keeps the
-        # bucket-count semantics aligned with "any row in this bucket
-        # is a valid sample", which is what the diagnostics layer
-        # consumes downstream.
         df = fit_df.sort_values(["item_id", "format", "prefix_idx"]).copy()
         df["v_next"] = (
-            df.groupby(["item_id", "format"])["p_calibrated"]
-            .shift(-1)
-            .fillna(0.0)
+            df.groupby(["item_id", "format"])["p_calibrated"].shift(-1)
         )
-        # Prefix bucket is computed from prefix fraction; recompute it
-        # here for fit-time symmetry with the lookup-time path.
+        # Prefix fraction must be computed over the FULL trajectory (pre-drop)
+        # so prefix_idx=0 of a 4-prefix item lands at 0.25, not 0.33.
         df["prefix_fraction"] = _compute_prefix_fraction(df)
         df["prefix_bucket"] = df["prefix_fraction"].map(_assign_prefix_bucket)
         df["subject_bucket"] = df["subject"]
         df["p_bin"] = df["p_calibrated"].map(_assign_p_bin)
         df["entropy_bin"] = df["p_calibrated"].map(_assign_entropy_bin)
 
+        # Drop terminal rows -- at t=T-1 the DP solver enforces continuation=0
+        # directly (dp_solver.py), so empirical buckets only need non-terminal
+        # observations of E[p_{t+1}] as a proxy for E[V_{t+1}].
+        non_terminal = df.dropna(subset=["v_next"])
+
         bucket_means: dict[tuple, float] = {}
         bucket_counts: dict[tuple, int] = {}
         for rung in FALLBACK_LADDER:
-            grouped = df.groupby(list(rung))["v_next"]
+            grouped = non_terminal.groupby(list(rung))["v_next"]
             means = grouped.mean()
             counts = grouped.count()
             for raw_key, mean_value in means.items():

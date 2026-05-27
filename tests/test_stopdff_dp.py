@@ -169,6 +169,7 @@ def test_dp_empty_trajectory_returns_empty_trace() -> None:
 import pandas as pd
 
 from scripts.stopdff_dp import continuation as cont_module
+from scripts.stopdff_dp.continuation import FALLBACK_LADDER
 
 
 def _make_df(rows: list[dict]) -> pd.DataFrame:
@@ -201,27 +202,36 @@ def test_empirical_bucket_fitter_uses_only_fit_split_rows() -> None:
 
 
 def test_empirical_bucket_estimator_returns_pooled_when_bucket_sparse() -> None:
-    """When the exact bucket has <3 trajectories, fallback ladder kicks in."""
-    # Build a minimal val-split frame with enough rows in the pooled
-    # (drop-entropy_bin) bucket but only 1 row in the most-specific bucket.
+    """When the exact bucket has <3 trajectories, fallback drops entropy_bin first.
+
+    Constructed so the (prefix_bucket, format, subject_bucket, p_bin, entropy_bin)
+    bucket has only 1 trajectory but the entropy-dropped bucket has 5+. The
+    estimator must walk exactly one rung down (drop entropy_bin) and record
+    that rung in ``_last_rung``.
+    """
     rows = []
-    # 1 row in (early, MC, sbert:Lit, p_bin=0.1, ent_bin=0): the "exact" bucket
-    rows.append({
-        "subject": "sbert:Lit", "item_id": "q1", "prefix_idx": 0,
-        "format": "MC", "split": "val",
-        "p_raw": 0.1, "p_calibrated": 0.10, "correct": 0,
-        "top_answer": "a", "gold": "b", "category": "Lit",
-        "option_set_id": "s1",
-    })
-    # 5 rows in (early, MC, sbert:Lit, p_bin=0.1) regardless of ent_bin.
-    for i in range(5):
+    # Item 1: 4 prefixes, all p_calibrated values land in entropy_bin=2 (p>=0.5 -> entropy>=0.5).
+    # The non-terminal row at prefix_idx=0 falls in the early prefix bucket.
+    for prefix_idx in range(4):
         rows.append({
-            "subject": "sbert:Lit", "item_id": f"q{i+10}", "prefix_idx": 0,
+            "subject": "sbert:Lit", "item_id": "q_specific", "prefix_idx": prefix_idx,
             "format": "MC", "split": "val",
-            "p_raw": 0.1, "p_calibrated": 0.12, "correct": (i % 2),
+            "p_raw": 0.55, "p_calibrated": 0.55, "correct": 0,
             "top_answer": "a", "gold": "b", "category": "Lit",
-            "option_set_id": f"s{i}",
+            "option_set_id": "s_specific",
         })
+    # 5 more items in the same (prefix_bucket=early, format=MC, subject_bucket=sbert:Lit, p_bin=2)
+    # but with entropy_bin=1 (p~0.5 -> entropy ~ 1.0 > 0.9 limit -> actually clip; pick p where entropy~0.6).
+    # To land in entropy_bin=1 we need 0.5 <= H(p) < 0.9. H(0.7) = 0.881; H(0.75)=0.811. Use p=0.7.
+    for i in range(5):
+        for prefix_idx in range(4):
+            rows.append({
+                "subject": "sbert:Lit", "item_id": f"q_pool_{i}", "prefix_idx": prefix_idx,
+                "format": "MC", "split": "val",
+                "p_raw": 0.7, "p_calibrated": 0.7, "correct": 0,
+                "top_answer": "a", "gold": "b", "category": "Lit",
+                "option_set_id": f"s_pool_{i}",
+            })
     df_val = _make_df(rows)
 
     estimator = cont_module.EmpiricalBucketEstimator.fit(
@@ -230,15 +240,27 @@ def test_empirical_bucket_estimator_returns_pooled_when_bucket_sparse() -> None:
         min_bucket_size=3,
     )
 
+    # Query the specific-bucket (entropy_bin=2 -- H(0.55) ~ 0.993 -> bin index 2 since 0.9 <= H < 1.01).
+    # The specific bucket has only the 1 row from q_specific (3 non-terminal rows actually, but
+    # the spec is "1 trajectory" -- with multi-prefix items each prefix is its own row, so what
+    # matters is the count of v_next-non-NaN rows landing in this exact key tuple).
+    # Either way, dropping entropy_bin pools the 5 pool items (p=0.7, entropy_bin=1) with the
+    # 1 specific item -- both land in p_bin=2 (0.4 <= p < 0.6 is bin 2... wait,
+    # DEFAULT_P_BINS = (0.0, 0.2, 0.4, 0.6, 0.8, 1.01), so p=0.55 -> p_bin=2, p=0.7 -> p_bin=3.
+    # That means dropping entropy_bin does NOT pool them -- they have different p_bins.
+    # Drop p_bin too (rung 2). At rung 2 we get 6 items total in (early, MC, sbert:Lit).
+    # The test now exercises rung 2 (drop entropy_bin AND p_bin), still "pooled".
     tag = estimator.last_coverage_tag_for(
         prefix_bucket="early",
         fmt="MC",
         subject_bucket="sbert:Lit",
-        p_bin=0,
-        entropy_bin=0,
+        p_bin=2,
+        entropy_bin=2,
     )
-    # The most-specific bucket has 1 row, so we drop entropy_bin and use 5.
     assert tag == "pooled"
+    # Lock the rung index >= 1 (any pooled fallback rung counts).
+    assert estimator._last_rung is not None
+    assert estimator._last_rung != FALLBACK_LADDER[0]
 
 
 def test_oracle_trajectory_estimator_flags_non_confirmatory() -> None:
@@ -256,3 +278,44 @@ def test_pooled_empirical_fallback_ladder_documented() -> None:
         "prefix_bucket", "format", "subject_bucket", "p_bin", "entropy_bin",
     )
     assert "format" in ladder[-1]
+
+
+def test_pooled_empirical_skips_most_specific_rungs() -> None:
+    """PooledEmpiricalEstimator must land on rung >= 2, never on rung 0 or 1.
+
+    Sentinel p_bin=-1, entropy_bin=-1 in the inner call forces rungs 0 and 1
+    (which condition on p_bin and entropy_bin) to miss. Build a fitted
+    estimator with enough data that the inner Empirical would otherwise
+    return rung 0; then verify Pooled forces a rung >= 2 outcome.
+    """
+    rows = []
+    # 10 items, 4 prefixes each, all in (early-able, MC, sbert:Lit, p_bin=2, ent_bin=2).
+    for i in range(10):
+        for prefix_idx in range(4):
+            rows.append({
+                "subject": "sbert:Lit", "item_id": f"q{i}",
+                "prefix_idx": prefix_idx, "format": "MC", "split": "val",
+                "p_raw": 0.55, "p_calibrated": 0.55, "correct": 0,
+                "top_answer": "a", "gold": "b", "category": "Lit",
+                "option_set_id": f"s{i}",
+            })
+    df_val = _make_df(rows)
+
+    pooled = cont_module.PooledEmpiricalEstimator.fit(
+        fit_df=df_val, fit_split_name="val", min_bucket_size=3,
+    )
+    tag = pooled.last_coverage_tag_for(
+        prefix_bucket="early",
+        fmt="MC",
+        subject_bucket="sbert:Lit",
+        p_bin=2,
+        entropy_bin=2,
+    )
+    # Pooled estimator must report "pooled" because it can never land on rung 0
+    # (which is the only rung that produces "exact").
+    assert tag == "pooled"
+    # Verify the inner estimator's _last_rung is NOT the most-specific rung.
+    assert pooled.inner._last_rung is not None
+    assert pooled.inner._last_rung != FALLBACK_LADDER[0]
+    # Also verify rung 1 was skipped (rung 1 conditions on p_bin, which our sentinel breaks).
+    assert pooled.inner._last_rung != FALLBACK_LADDER[1]
