@@ -1,0 +1,9 @@
+.gitattributes text eol=lf
+threshold_manifest.json text eol=lf
+threshold_manifest.json.sha256 text eol=lf
+scripts/device2_stopdff_run.sh text eol=lf
+scripts/device2_cuda_preflight.py text eol=lf
+docs/device2_stopdff_runbook.md text eol=lf
+docs/superpowers/plans/2026-05-27-device2-cross-platform-hardening.md text eol=lf
+docs/superpowers/plans/2026-05-27-device2-stopdff-run.md text eol=lf
+tests/test_device2_stopdff_run.py text eol=lf
