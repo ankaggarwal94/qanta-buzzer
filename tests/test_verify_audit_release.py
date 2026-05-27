@@ -378,3 +378,52 @@ def test_verify_audit_release_flags_generator_sha_drift(tmp_path: Path) -> None:
         )
         == 1
     )
+
+
+
+def test_verify_audit_release_flags_non_canonical_producer(tmp_path: Path) -> None:
+    exports = tmp_path / "paper_exports"
+    _populate_required_exports(exports)
+    _write_threshold_manifest(tmp_path)
+    provenance = _write_producer_scripts(tmp_path)
+    generation_block = _write_audit_generator(tmp_path)
+
+    # Plant a non-canonical helper script whose SHA matches a manipulated
+    # provenance entry, simulating a tampered audit card that redirects
+    # csli.json's script_path away from scripts/compute_csli.py.
+    helper_body = "# non-canonical helper that happens to match recorded sha\n"
+    helper_path = tmp_path / "scripts/helper.py"
+    helper_path.write_text(helper_body, encoding="utf-8")
+    provenance["csli.json"] = {
+        "recorded_sha256": _sha(helper_body),
+        "script_path": "scripts/helper.py",
+    }
+
+    (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    audit = {
+        "metrics": [
+            {
+                "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+                "verdict": "warn",
+                "details": {},
+            }
+        ],
+        "metadata": {"generation": generation_block},
+        "artifact_provenance": provenance,
+        "data_provenance": {},
+    }
+    (exports / "audit_card.json").write_text(
+        json.dumps(audit), encoding="utf-8"
+    )
+
+    assert (
+        main(
+            [
+                "--paper-exports",
+                str(exports),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )

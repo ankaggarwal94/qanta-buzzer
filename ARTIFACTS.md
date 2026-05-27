@@ -65,7 +65,11 @@ A release is not final evidence unless:
 - every entry in `paper_exports/audit_card.json.artifact_provenance`
   has a `recorded_sha256` that matches the live SHA of its `script_path`
   (recomputed at verification time, not trusted from the cached
-  `sha_matches` flag)
+  `sha_matches` flag), and `script_path` for each known artifact equals
+  its canonical producer (`csli.json` →
+  `scripts/compute_csli.py`, `calibration.json` →
+  `scripts/compute_prefix_calibration.py`, `stopdff.json` →
+  `scripts/compute_stopdff.py`)
 - the audit-card generator (`metadata.generation.script_path`) has a
   recorded `script_sha256` that matches its live SHA, so stale
   aggregation/Markdown logic cannot ship after a generator change

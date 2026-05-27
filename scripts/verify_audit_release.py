@@ -14,6 +14,15 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 PAPER_EXPORTS = ROOT / "paper_exports"
 
+# Canonical producer scripts for each source-metric artifact, per ARTIFACTS.md.
+# Pinning these prevents a tampered audit card from redirecting `script_path`
+# to an unchanged helper file and bypassing the producer-drift check.
+EXPECTED_PRODUCERS: dict[str, str] = {
+    "csli.json": "scripts/compute_csli.py",
+    "calibration.json": "scripts/compute_prefix_calibration.py",
+    "stopdff.json": "scripts/compute_stopdff.py",
+}
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -118,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     artifact_provenance = audit.get("artifact_provenance", {})
-    expected_provenance_keys = {"csli.json", "calibration.json", "stopdff.json"}
+    expected_provenance_keys = set(EXPECTED_PRODUCERS)
     missing_provenance = expected_provenance_keys - set(artifact_provenance)
     for missing in sorted(missing_provenance):
         errors.append(
@@ -147,6 +156,18 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(script_path_str, str) or not script_path_str:
             errors.append(
                 f"artifact_provenance[{artifact_name}] missing script_path"
+            )
+            continue
+
+        # Pin known artifacts to their canonical producer (per ARTIFACTS.md)
+        # so a tampered card cannot redirect script_path to an unchanged
+        # helper file and bypass the producer-drift check.
+        expected_producer = EXPECTED_PRODUCERS.get(artifact_name)
+        if expected_producer is not None and script_path_str != expected_producer:
+            errors.append(
+                f"artifact_provenance[{artifact_name}].script_path is "
+                f"{script_path_str!r}, expected canonical producer "
+                f"{expected_producer!r} (see ARTIFACTS.md)"
             )
             continue
 
