@@ -23,6 +23,9 @@ EXPECTED_PRODUCERS: dict[str, str] = {
     "stopdff.json": "scripts/compute_stopdff.py",
 }
 
+# Canonical generator for the audit card itself, per ARTIFACTS.md.
+EXPECTED_AUDIT_CARD_GENERATOR = "scripts/make_audit_card.py"
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -110,6 +113,12 @@ def main(argv: list[str] | None = None) -> int:
         errors.append(
             "audit_card.metadata.generation is missing script_sha256"
         )
+    elif generator_script_path != EXPECTED_AUDIT_CARD_GENERATOR:
+        errors.append(
+            f"audit_card.metadata.generation.script_path is "
+            f"{generator_script_path!r}, expected canonical generator "
+            f"{EXPECTED_AUDIT_CARD_GENERATOR!r} (see ARTIFACTS.md)"
+        )
     else:
         gen_script = repo_root / generator_script_path
         if not gen_script.exists():
@@ -185,6 +194,33 @@ def main(argv: list[str] | None = None) -> int:
             f"{artifact_name} producer script SHA drift: "
             f"recorded={recorded_sha}, live={live_sha} "
             f"(script_path={script_path_str})",
+            errors,
+        )
+
+        # Bind the audit card to the exact bytes of the source JSON it
+        # aggregated. Without this, csli.json/calibration.json/stopdff.json
+        # could be regenerated or hand-edited after make_audit_card.py ran,
+        # and the audit card's verdicts would be stale.
+        recorded_content_sha = block.get("content_sha256")
+        if not isinstance(recorded_content_sha, str) or not recorded_content_sha:
+            errors.append(
+                f"artifact_provenance[{artifact_name}] missing "
+                f"content_sha256; rerun make_audit_card.py to record it"
+            )
+            continue
+        source_path = paper_exports / artifact_name
+        # Existence was already required above, but guard anyway for
+        # robustness when this branch is reached via tests.
+        if not source_path.exists():
+            errors.append(f"missing source artifact {source_path}")
+            continue
+        live_content_sha = sha256_file(source_path)
+        require(
+            live_content_sha == recorded_content_sha,
+            f"{artifact_name} content SHA drift: "
+            f"recorded={recorded_content_sha}, live={live_content_sha} "
+            f"(audit_card.json was generated against an earlier revision; "
+            f"rerun make_audit_card.py)",
             errors,
         )
 

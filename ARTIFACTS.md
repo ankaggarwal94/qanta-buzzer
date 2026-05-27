@@ -70,9 +70,14 @@ A release is not final evidence unless:
   `scripts/compute_csli.py`, `calibration.json` →
   `scripts/compute_prefix_calibration.py`, `stopdff.json` →
   `scripts/compute_stopdff.py`)
-- the audit-card generator (`metadata.generation.script_path`) has a
-  recorded `script_sha256` that matches its live SHA, so stale
-  aggregation/Markdown logic cannot ship after a generator change
+- every entry's recorded `content_sha256` matches the live byte-level
+  SHA of the corresponding `paper_exports/<name>` source JSON, so a
+  source-metric file regenerated or hand-edited after `make_audit_card.py`
+  ran is detected as stale
+- the audit-card generator (`metadata.generation.script_path`) equals
+  the canonical `scripts/make_audit_card.py`, with a recorded
+  `script_sha256` that matches its live SHA, so stale aggregation/Markdown
+  logic cannot ship after a generator change
 - the audit-card Markdown reports retained-subset status when any retention
   gate was overridden
 - the StopDFF row remains WARN whenever a ceiling effect or unreachable

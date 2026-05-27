@@ -58,9 +58,13 @@ def _write_producer_scripts(repo_root: Path) -> dict[str, dict[str, str]]:
         body = f"# fake producer for {artifact_name}\n"
         script = scripts_dir / script_basename
         script.write_text(body, encoding="utf-8")
+        # Match the canonical content the test populator wrote in
+        # _populate_required_exports ("{}").
+        content_sha = _sha("{}")
         provenance[artifact_name] = {
             "recorded_sha256": _sha(body),
             "script_path": f"scripts/{script_basename}",
+            "content_sha256": content_sha,
         }
     return provenance
 
@@ -397,6 +401,98 @@ def test_verify_audit_release_flags_non_canonical_producer(tmp_path: Path) -> No
     provenance["csli.json"] = {
         "recorded_sha256": _sha(helper_body),
         "script_path": "scripts/helper.py",
+    }
+
+    (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    audit = {
+        "metrics": [
+            {
+                "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+                "verdict": "warn",
+                "details": {},
+            }
+        ],
+        "metadata": {"generation": generation_block},
+        "artifact_provenance": provenance,
+        "data_provenance": {},
+    }
+    (exports / "audit_card.json").write_text(
+        json.dumps(audit), encoding="utf-8"
+    )
+
+    assert (
+        main(
+            [
+                "--paper-exports",
+                str(exports),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+
+
+
+def test_verify_audit_release_flags_source_content_drift(tmp_path: Path) -> None:
+    exports = tmp_path / "paper_exports"
+    _populate_required_exports(exports)
+    _write_threshold_manifest(tmp_path)
+    provenance = _write_producer_scripts(tmp_path)
+    generation_block = _write_audit_generator(tmp_path)
+
+    # Edit csli.json after audit_card.json was generated. The producer
+    # script SHA still matches, but the source content has drifted.
+    (exports / "csli.json").write_text(
+        '{"tampered": true}', encoding="utf-8"
+    )
+
+    (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    audit = {
+        "metrics": [
+            {
+                "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+                "verdict": "warn",
+                "details": {},
+            }
+        ],
+        "metadata": {"generation": generation_block},
+        "artifact_provenance": provenance,
+        "data_provenance": {},
+    }
+    (exports / "audit_card.json").write_text(
+        json.dumps(audit), encoding="utf-8"
+    )
+
+    assert (
+        main(
+            [
+                "--paper-exports",
+                str(exports),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+
+
+def test_verify_audit_release_flags_non_canonical_generator(tmp_path: Path) -> None:
+    exports = tmp_path / "paper_exports"
+    _populate_required_exports(exports)
+    _write_threshold_manifest(tmp_path)
+    provenance = _write_producer_scripts(tmp_path)
+
+    # Generator script_path points to a non-canonical helper rather than
+    # scripts/make_audit_card.py.
+    helper_body = "# non-canonical generator helper\n"
+    helper = tmp_path / "scripts/audit_helper.py"
+    helper.parent.mkdir(parents=True, exist_ok=True)
+    helper.write_text(helper_body, encoding="utf-8")
+    generation_block = {
+        "git_dirty": False,
+        "script_path": "scripts/audit_helper.py",
+        "script_sha256": _sha(helper_body),
     }
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")

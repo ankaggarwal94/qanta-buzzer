@@ -793,10 +793,21 @@ def _build_artifact_provenance(
             match = None
         else:
             match = recorded_sha == current_sha
+        # Bind the audit card to the exact bytes of the source JSON it just
+        # aggregated, so a release verifier can detect cards that were
+        # generated against an earlier revision of csli/calibration/stopdff.
+        source_path = _PAPER_EXPORTS / name
+        try:
+            content_sha = (
+                sha256_file(source_path) if source_path.exists() else None
+            )
+        except OSError:
+            content_sha = None
         out[name] = {
             "recorded_commit": recorded_commit,
             "recorded_sha256": recorded_sha,
             "current_sha256": current_sha,
+            "content_sha256": content_sha,
             "script_path": str(script_path.relative_to(_REPO_ROOT))
             if script_path.exists() and script_path.is_absolute()
             else None,
