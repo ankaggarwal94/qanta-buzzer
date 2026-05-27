@@ -219,18 +219,22 @@ def _run_fingerprint(
     out: Path,
     git_commit: str | None,
 ) -> dict:
+    from scripts._common import project_relative
+
     data_dir = Path(args.data_dir).resolve()
-    calibration_path = None if args.identity_calibration else Path(args.calibration).resolve()
+    calibration_path = (
+        None if args.identity_calibration else Path(args.calibration).resolve()
+    )
     mc_path = data_dir / "mc_dataset.json"
     fit_split_path = data_dir / f"{args.fit_split}_dataset.json"
     eval_split_path = data_dir / f"{args.eval_split}_dataset.json"
     build_metadata_path = data_dir / "build_metadata.json"
     return {
         "schema_version": 3,
-        "data_dir": str(data_dir),
+        "data_dir": project_relative(data_dir),
         "fit_split": args.fit_split,
         "eval_split": args.eval_split,
-        "calibration_path": str(calibration_path) if calibration_path else None,
+        "calibration_path": project_relative(calibration_path) if calibration_path else None,
         "calibration_sha256": _file_sha256(calibration_path),
         "mc_dataset_sha256": _file_sha256(mc_path),
         "fit_dataset_sha256": _file_sha256(fit_split_path),
@@ -242,7 +246,7 @@ def _run_fingerprint(
         "num_bootstrap": int(args.num_bootstrap),
         "script_sha256": _file_sha256(Path(__file__).resolve()),
         "git_commit": git_commit,
-        "out_parent": str(out.parent.resolve()),
+        "out_parent": project_relative(out.parent),
     }
 
 
@@ -330,12 +334,23 @@ def _fit_temperature_by_phase(fit_df: pd.DataFrame) -> dict[str, float]:
 
 
 def _apply_temperature(df: pd.DataFrame, temps: dict[str, float]) -> pd.DataFrame:
+    """Apply per-phase temperature scaling to p_raw vector.
+
+    Vectorized: compute phase mapping once via Series.map, gather
+    per-row temperatures via Series.map on phase labels, then apply
+    sigmoid(p/T) to the entire p_raw array in one pass. Avoids the
+    iterrows() bottleneck that would dominate large sweeps.
+    """
     out = df.copy()
-    vals = []
-    for _, row in out.iterrows():
-        t = temps.get(_phase(float(row["prefix_fraction"])), temps.get("default", 1.0))
-        vals.append(_sigmoid(float(row["p_raw"]) / max(t, 1e-6)))
-    out["p_calibrated"] = vals
+    default_t = float(temps.get("default", 1.0))
+    phases = out["prefix_fraction"].astype(float).map(_phase)
+    t_values = phases.map(temps).fillna(default_t).astype(float)
+    # Avoid divide-by-near-zero; mirrors the per-row max(t, 1e-6).
+    t_values = t_values.clip(lower=1e-6)
+    z = out["p_raw"].astype(float).to_numpy() / t_values.to_numpy()
+    # Clamp before sigmoid (matches _sigmoid's per-element behavior).
+    z = np.clip(z, -500.0, 500.0)
+    out["p_calibrated"] = 1.0 / (1.0 + np.exp(-z))
     return out
 
 

@@ -620,3 +620,27 @@ def test_sweep_dirty_check_is_scoped_to_relevant_paths(tmp_path, monkeypatch):
         )
     finally:
         unrelated.unlink(missing_ok=True)
+
+
+def test_apply_temperature_vectorized_matches_per_row_logic():
+    """Vectorized _apply_temperature must produce identical output to the
+    prior iterrows-based implementation."""
+    import pandas as pd
+    import numpy as np
+    from scripts.sweep_stopdff_dp import _apply_temperature, _phase, _sigmoid
+
+    df = pd.DataFrame({
+        "prefix_fraction": [0.1, 0.4, 0.8, 0.5, 0.99, 0.05],
+        "p_raw": [0.2, 0.6, 0.9, 0.4, 0.05, 0.95],
+    })
+    temps = {"early": 0.5, "mid": 1.0, "late": 2.0, "default": 1.5}
+
+    result = _apply_temperature(df, temps)["p_calibrated"].tolist()
+
+    # Per-row reference: mirrors the prior iterrows logic exactly.
+    expected = []
+    for _, row in df.iterrows():
+        t = temps.get(_phase(float(row["prefix_fraction"])), temps.get("default", 1.0))
+        expected.append(_sigmoid(float(row["p_raw"]) / max(t, 1e-6)))
+
+    assert np.allclose(result, expected, atol=1e-12)
