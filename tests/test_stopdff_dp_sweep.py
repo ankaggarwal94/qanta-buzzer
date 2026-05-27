@@ -417,3 +417,141 @@ def test_sweep_records_coverage_metadata_in_payload(tmp_path):
     assert "mc_retention_gate" in payload
     # Build metadata absent (no build_metadata.json in synthetic data dir).
     assert "mc_build_metadata" in payload
+
+
+def test_sweep_fingerprint_includes_dataset_hashes(tmp_path):
+    """_run_fingerprint must include sha256 of mc/val/test/build_metadata
+    so cache hits are invalidated when the data is regenerated."""
+    import json as _json
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question_for_sweep(f"v{i}") for i in range(3)]
+    test_qs = [_fake_mc_question_for_sweep(f"t{i}") for i in range(3)]
+    (data_dir / "mc_dataset.json").write_text(_json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(_json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(_json.dumps(test_qs))
+
+    from scripts import sweep_stopdff_dp
+    args = sweep_stopdff_dp._parse_args([
+        "--data-dir", str(data_dir),
+        "--fit-split", "val",
+        "--eval-split", "test",
+        "--identity-calibration",
+        "--out", str(tmp_path / "out.json"),
+    ])
+    fp = sweep_stopdff_dp._run_fingerprint(
+        args, out=tmp_path / "out.json", git_commit=None,
+    )
+    assert fp["schema_version"] == 3
+    for key in (
+        "mc_dataset_sha256",
+        "fit_dataset_sha256",
+        "eval_dataset_sha256",
+    ):
+        assert key in fp
+        assert isinstance(fp[key], str) and len(fp[key]) == 64
+    # build_metadata is absent in the fixture; the helper returns None.
+    assert "build_metadata_sha256" in fp
+    assert fp["build_metadata_sha256"] is None
+
+
+def test_sweep_fingerprint_changes_when_dataset_regenerated(tmp_path):
+    """Rewriting mc_dataset.json must change the fingerprint."""
+    import json as _json
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question_for_sweep(f"v{i}") for i in range(3)]
+    test_qs = [_fake_mc_question_for_sweep(f"t{i}") for i in range(3)]
+    (data_dir / "mc_dataset.json").write_text(_json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(_json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(_json.dumps(test_qs))
+
+    from scripts import sweep_stopdff_dp
+    args = sweep_stopdff_dp._parse_args([
+        "--data-dir", str(data_dir),
+        "--fit-split", "val",
+        "--eval-split", "test",
+        "--identity-calibration",
+        "--out", str(tmp_path / "out.json"),
+    ])
+    fp_before = sweep_stopdff_dp._run_fingerprint(
+        args, out=tmp_path / "out.json", git_commit=None,
+    )
+    # Regenerate mc_dataset.json with extra items.
+    val_qs.append(_fake_mc_question_for_sweep("v_extra"))
+    (data_dir / "mc_dataset.json").write_text(_json.dumps(val_qs + test_qs))
+    fp_after = sweep_stopdff_dp._run_fingerprint(
+        args, out=tmp_path / "out.json", git_commit=None,
+    )
+    assert fp_before["mc_dataset_sha256"] != fp_after["mc_dataset_sha256"]
+
+
+def test_sweep_non_resume_excludes_stale_cached_cells(tmp_path):
+    """Non-resume narrow runs must not publish cells from prior wider sweeps.
+
+    Construct: prior wider cache directory has 2 cells; new narrow run
+    with --max-cells 1 executes 1 cell. The aggregate must contain only
+    the just-run cell, not the stale cell from the prior wider sweep.
+    """
+    import json as _json
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question_for_sweep(f"v{i}") for i in range(5)]
+    test_qs = [_fake_mc_question_for_sweep(f"t{i}") for i in range(5)]
+    (data_dir / "mc_dataset.json").write_text(_json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(_json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(_json.dumps(test_qs))
+
+    # First run: full grid for two reward schedules.
+    from scripts import sweep_stopdff_dp
+    out_json = tmp_path / "out.json"
+    rc1 = sweep_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--fit-split", "val",
+        "--eval-split", "test",
+        "--reward-schedules", "acf_flat,power_mark",
+        "--continuations", "empirical_bucket",
+        "--calibrators", "uncalibrated",
+        "--formats", "MC-fixed",
+        "--prefix-bucketing", "early_mid_late",
+        "--subject-pooling", "pooled_subject",
+        "--num-bootstrap", "5",
+        "--identity-calibration",
+        "--smoke",
+        "--out", str(out_json),
+    ])
+    assert rc1 == 0 or rc1 is None
+    first_payload = _json.loads(out_json.read_text())
+    first_completed_ids = sorted(
+        c["cell_id"] for c in first_payload["cells"]
+        if c.get("status") == "completed"
+    )
+    assert len(first_completed_ids) >= 2
+
+    # Second run: NARROW (only acf_flat) without --resume.
+    rc2 = sweep_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--fit-split", "val",
+        "--eval-split", "test",
+        "--reward-schedules", "acf_flat",
+        "--continuations", "empirical_bucket",
+        "--calibrators", "uncalibrated",
+        "--formats", "MC-fixed",
+        "--prefix-bucketing", "early_mid_late",
+        "--subject-pooling", "pooled_subject",
+        "--num-bootstrap", "5",
+        "--max-cells", "1",
+        "--identity-calibration",
+        "--smoke",
+        "--out", str(out_json),
+    ])
+    assert rc2 == 0 or rc2 is None
+    second_payload = _json.loads(out_json.read_text())
+    second_cells = second_payload["cells"]
+    # Non-resume narrow run must only include the just-executed cell.
+    assert len(second_cells) == 1
+    # And it must NOT be a cell from the prior wider sweep.
+    second_id = second_cells[0]["cell_id"]
+    assert "reward_schedule" in second_cells[0]
+    # All cells should have reward_schedule == acf_flat
+    assert second_cells[0]["reward_schedule"] == "acf_flat"

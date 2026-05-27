@@ -182,13 +182,21 @@ def _run_fingerprint(
 ) -> dict:
     data_dir = Path(args.data_dir).resolve()
     calibration_path = None if args.identity_calibration else Path(args.calibration).resolve()
+    mc_path = data_dir / "mc_dataset.json"
+    fit_split_path = data_dir / f"{args.fit_split}_dataset.json"
+    eval_split_path = data_dir / f"{args.eval_split}_dataset.json"
+    build_metadata_path = data_dir / "build_metadata.json"
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "data_dir": str(data_dir),
         "fit_split": args.fit_split,
         "eval_split": args.eval_split,
         "calibration_path": str(calibration_path) if calibration_path else None,
         "calibration_sha256": _file_sha256(calibration_path),
+        "mc_dataset_sha256": _file_sha256(mc_path),
+        "fit_dataset_sha256": _file_sha256(fit_split_path),
+        "eval_dataset_sha256": _file_sha256(eval_split_path),
+        "build_metadata_sha256": _file_sha256(build_metadata_path),
         "identity_calibration": bool(args.identity_calibration),
         "smoke": bool(args.smoke),
         "seed": int(args.seed),
@@ -1575,10 +1583,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             payload = _execute_one(item)
             existing_by_id[payload["cell_id"]] = payload
 
-    cached_cells = _load_cached_cells(cell_dir)
+    # PR #15 review (chatgpt-codex-connector 3313958597): non-resume runs
+    # must not publish cells from prior wider sweeps cached on disk. Build
+    # the aggregate from existing_by_id which contains exactly the cells
+    # either executed this invocation OR pre-loaded under --resume/--only-
+    # missing. Cached cells from older runs whose fingerprint coincidentally
+    # matches but whose cell_id is outside this invocation's executed set
+    # are NOT silently included.
     requested_ids = {_cell_id(c, run_fingerprint) for c in _iter_cells(args)}
     visible_cells = [
-        c for c in cached_cells
+        c for c in existing_by_id.values()
         if c.get("cell_id") in requested_ids
         and c.get("run_fingerprint") == run_fingerprint
     ]
