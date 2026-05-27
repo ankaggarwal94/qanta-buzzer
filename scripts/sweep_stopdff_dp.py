@@ -228,6 +228,7 @@ def _run_fingerprint(
     *,
     out: Path,
     git_commit: str | None,
+    myopic_artifact_path: Path | None = None,
 ) -> dict:
     from scripts._common import project_relative
     from scripts.stopdff_dp._provenance import helper_sha256s
@@ -241,7 +242,7 @@ def _run_fingerprint(
     eval_split_path = data_dir / f"{args.eval_split}_dataset.json"
     build_metadata_path = data_dir / "build_metadata.json"
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "data_dir": project_relative(data_dir),
         "fit_split": args.fit_split,
         "eval_split": args.eval_split,
@@ -251,6 +252,17 @@ def _run_fingerprint(
         "fit_dataset_sha256": _file_sha256(fit_split_path),
         "eval_dataset_sha256": _file_sha256(eval_split_path),
         "build_metadata_sha256": _file_sha256(build_metadata_path),
+        # PR #15 review (chatgpt-codex-connector 3314472776): each cell
+        # serializes myopic_artifact_comparison from stopdff.json. Hash
+        # that artifact so regenerating it in place invalidates the
+        # cache and prevents --resume/--only-missing from republishing
+        # stale comparison fields.
+        "myopic_artifact_path": (
+            project_relative(myopic_artifact_path)
+            if myopic_artifact_path is not None
+            else None
+        ),
+        "myopic_artifact_sha256": _file_sha256(myopic_artifact_path),
         "identity_calibration": bool(args.identity_calibration),
         "smoke": bool(args.smoke),
         "seed": int(args.seed),
@@ -1244,7 +1256,17 @@ def _load_cached_cells(cell_dir: Path) -> list[dict]:
     return cells
 
 
-def _load_myopic_artifact(args: argparse.Namespace, out: Path) -> dict | None:
+def _load_myopic_artifact(
+    args: argparse.Namespace, out: Path
+) -> tuple[dict | None, Path | None]:
+    """Load the diagnostic myopic StopDFF artifact, returning the payload + path.
+
+    Returns (None, None) when no candidate file can be parsed. The
+    resolved path is needed so the sweep can hash the file into the
+    cache fingerprint (PR #15 review 3314472776 — without the hash,
+    regenerating stopdff.json in place would leave fingerprints
+    matching and cached cells republishing stale comparison fields).
+    """
     candidates = []
     if args.artifact_dir:
         candidates.append(Path(args.artifact_dir) / "stopdff.json")
@@ -1262,10 +1284,11 @@ def _load_myopic_artifact(args: argparse.Namespace, out: Path) -> dict | None:
         if not path.exists():
             continue
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-    return None
+        return payload, resolved
+    return None, None
 
 
 def _paper_safe_interpretation(completed: list[dict]) -> dict:
@@ -1636,8 +1659,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     out = Path(args.out) if args.out else artifact_dir / "stopdff_dp_sweep.json"
     cell_dir = _cell_cache_dir(args, out)
     git_commit, git_dirty = _git_metadata(args, out=out)
-    run_fingerprint = _run_fingerprint(args, out=out, git_commit=git_commit)
-    myopic_artifact = _load_myopic_artifact(args, out)
+    myopic_artifact, myopic_artifact_path = _load_myopic_artifact(args, out)
+    run_fingerprint = _run_fingerprint(
+        args, out=out, git_commit=git_commit,
+        myopic_artifact_path=myopic_artifact_path,
+    )
     start = time.time()
     max_seconds = None if args.max_wall_hours is None else args.max_wall_hours * 3600.0
 
