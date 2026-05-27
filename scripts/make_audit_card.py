@@ -955,9 +955,18 @@ def main() -> int:
         list(sys.argv[1:]),
         output_path=_PAPER_EXPORTS / "audit_card.json",
         extra_paths=[
-            _PAPER_EXPORTS / "csli.json",
-            _PAPER_EXPORTS / "calibration.json",
-            _PAPER_EXPORTS / "stopdff.json",
+            # Only paths whose dirtiness would invalidate the audit go
+            # here. The three upstream pipeline JSONs (csli, calibration,
+            # stopdff) intentionally are NOT in this list: they get
+            # rewritten by their own producer scripts immediately before
+            # make_audit_card runs, so including them guarantees a
+            # self-inflicted ``git_dirty: true`` from any clean tree
+            # (the previous behavior produced misleading provenance, see
+            # bb41819 / 2654ad2 + the audit-card "git_dirty noise" thread
+            # in the stale ChatGPT 5.5 ultrareview). Freshness of those
+            # three source JSONs is already enforced separately by
+            # ``_build_artifact_provenance`` via per-file SHA cross-check
+            # against the live producer script.
             _REPO_ROOT / "threshold_manifest.json",
         ],
     )
