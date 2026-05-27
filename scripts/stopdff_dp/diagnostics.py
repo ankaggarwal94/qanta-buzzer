@@ -10,6 +10,11 @@ from typing import Iterable, Sequence
 
 from .types import DPTrace
 
+# DP-internal diagnostics, NOT frozen pre-test gate thresholds.
+# threshold_manifest.json holds the metric-gate thresholds (StopDFF
+# median, prefix ECE, choices-only accuracy). The constants below are
+# heuristics for the DP solver's bucket-coverage health and may evolve
+# without breaking the pre-registered audit contract.
 POOLED_WARN_THRESHOLD = 0.05
 MISSING_WARN_THRESHOLD = 0.01
 
@@ -67,11 +72,18 @@ def detect_ceiling_effects(
     qa_traces: Sequence[DPTrace],
 ) -> dict:
     """Return a dict of binary flags describing potential ceiling effects."""
+    if len(mc_traces) != len(qa_traces):
+        raise ValueError(
+            "detect_ceiling_effects requires equal-length mc/qa trace lists "
+            f"(got len(mc)={len(mc_traces)}, len(qa)={len(qa_traces)}). "
+            "Caller is expected to pair traces by item_id."
+        )
+
     def _all_stop_at(traces: Sequence[DPTrace], target: str) -> bool:
         if not traces:
             return False
         for t in traces:
-            T = len(t.values) if t.values else 0
+            T = len(t.values)
             if target == "first":
                 if t.stop_step != 0:
                     return False
@@ -82,7 +94,18 @@ def detect_ceiling_effects(
                 raise ValueError(target)
         return True
 
-    n_trajectories = max(len(mc_traces), len(qa_traces))
+    n_items = max(len(mc_traces), len(qa_traces))
+    if n_items == 0:
+        return {
+            "all_stop_at_first_prefix": False,
+            "all_stop_at_final_prefix": False,
+            "no_cross_format_stopping_variance": False,
+            "n_items": 0,
+            "n_stopped_cells": 0,
+            "n_never_stopped_cells": 0,
+            "empty": True,
+        }
+
     stopped = sum(
         1 for t in (*mc_traces, *qa_traces)
         if 0 <= t.stop_step < len(t.values)
@@ -105,9 +128,10 @@ def detect_ceiling_effects(
         "all_stop_at_final_prefix": _all_stop_at(mc_traces, "last")
             and _all_stop_at(qa_traces, "last"),
         "no_cross_format_stopping_variance": no_variance,
-        "n_trajectories": n_trajectories,
+        "n_items": n_items,
         "n_stopped_cells": stopped,
         "n_never_stopped_cells": never_stopped,
+        "empty": False,
     }
 
 

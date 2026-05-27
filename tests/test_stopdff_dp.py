@@ -365,3 +365,62 @@ def test_ceiling_no_cross_format_variance() -> None:
     qa_traces = [_trace(stop_step=1, T=3), _trace(stop_step=2, T=3)]
     flags = diag_module.detect_ceiling_effects(mc_traces, qa_traces)
     assert flags["no_cross_format_stopping_variance"] is True
+
+
+def test_continuation_model_collapsed_helper() -> None:
+    """continuation_model_collapsed returns True iff all cells are pooled."""
+    collapsed = {"fraction_exact": 0.0, "fraction_pooled": 1.0,
+                 "fraction_missing": 0.0}
+    assert diag_module.continuation_model_collapsed(collapsed) is True
+    healthy = {"fraction_exact": 1.0, "fraction_pooled": 0.0,
+               "fraction_missing": 0.0}
+    assert diag_module.continuation_model_collapsed(healthy) is False
+    # Empty / missing keys should not crash.
+    assert diag_module.continuation_model_collapsed({}) is False
+
+
+def test_coverage_pass_at_pooled_threshold_boundary() -> None:
+    """Strict > comparison: fraction_pooled == 0.05 should still pass."""
+    # 19 exact + 1 pooled = 5% pooled exactly.
+    tags = ["exact"] * 19 + ["pooled"]
+    traces = [_trace(stop_step=len(tags) - 1, T=len(tags), tags=tags)]
+    summary = diag_module.summarize_coverage(traces)
+    assert summary["fraction_pooled"] == 0.05
+    assert summary["verdict"] == "pass"
+
+
+def test_coverage_heterogeneous_tag_mix_sums_to_one() -> None:
+    """Mixed tags: fractions are populated and sum to 1.0."""
+    traces = [_trace(stop_step=2, T=3, tags=["exact", "pooled", "missing"])]
+    summary = diag_module.summarize_coverage(traces)
+    assert summary["fraction_exact"] + summary["fraction_pooled"] \
+        + summary["fraction_missing"] == pytest.approx(1.0)
+    # Missing > 0.01 forces warn even though pooled is fine.
+    assert summary["verdict"] == "warn"
+
+
+def test_ceiling_distinguishes_never_stopped_traces() -> None:
+    """stop_step == T encodes 'never stopped'; diagnostics surface it."""
+    # T=3 trajectories where stop_step == T (never stopped).
+    mc = [_trace(stop_step=3, T=3), _trace(stop_step=3, T=3)]
+    qa = [_trace(stop_step=3, T=3), _trace(stop_step=3, T=3)]
+    flags = diag_module.detect_ceiling_effects(mc, qa)
+    assert flags["n_stopped_cells"] == 0
+    assert flags["n_never_stopped_cells"] == 4
+    assert flags["all_stop_at_final_prefix"] is False  # T != T-1
+
+
+def test_ceiling_raises_when_trace_lists_unequal_length() -> None:
+    """Caller contract: mc and qa must be paired (equal length)."""
+    mc = [_trace(stop_step=1, T=3)]
+    qa = [_trace(stop_step=1, T=3), _trace(stop_step=2, T=3)]
+    with pytest.raises(ValueError, match="equal-length"):
+        diag_module.detect_ceiling_effects(mc, qa)
+
+
+def test_ceiling_empty_flag() -> None:
+    """Empty input is signaled with empty=True."""
+    flags = diag_module.detect_ceiling_effects([], [])
+    assert flags["empty"] is True
+    assert flags["n_items"] == 0
+    assert flags["no_cross_format_stopping_variance"] is False
