@@ -328,7 +328,7 @@ def _load_split_provenance(data_dir: Path) -> dict[str, Any]:
     if not is_default_data_dir:
         provenance["test_split_provenance_note"] = (
             "unverified because --data-dir does not match the frozen default "
-            f"data directory ({DEFAULT_DATA_DIR})"
+            f"data directory ({_display_path(DEFAULT_DATA_DIR)})"
         )
         return provenance
 
