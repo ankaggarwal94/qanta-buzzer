@@ -140,11 +140,11 @@
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-27T08:12:53.737774+00:00",
+    "timestamp": "2026-05-27T08:58:58.122735+00:00",
     "threshold_source": "threshold_manifest.json",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T08:12:53.736931+00:00",
+      "generated_at_utc": "2026-05-27T08:58:58.122230+00:00",
       "command": [
         "python",
         "scripts/make_audit_card.py"
@@ -154,12 +154,11 @@
       "output_path": "paper_exports/audit_card.json",
       "script_path": "scripts/make_audit_card.py",
       "script_sha256": "d2bfd59a5bcbefce73e4f75c6b69fb7fb231b2d2ddf58344a9ab10ba2cbf0b33",
-      "git_commit": "222fa1eb1d214de85cd645b7ae00e5f983b5e0c1",
+      "git_commit": "52d72e03ca413e1e802d024bf273ac521043ceff",
       "git_dirty": false,
       "git_status_relevant_paths": ""
     }
   },
-  "overall_verdict_qualifier": "stale producer hash for csli.json",
   "data_provenance": {
     "csli": {
       "coverage": {
@@ -234,11 +233,11 @@
   },
   "artifact_provenance": {
     "csli.json": {
-      "recorded_commit": "0f8da5d35c1c591430e03db4a6500cec6acd6755",
-      "recorded_sha256": "6b68703fadd379fbea7fd6cc3889928e18ac908ed606687f7dcf21673b0b9111",
-      "current_sha256": "aba9e1b0cd9c0c7ee67f466c12f05bbf1679636414f6db1c217de40f9adc4601",
+      "recorded_commit": "52d72e03ca413e1e802d024bf273ac521043ceff",
+      "recorded_sha256": "364d21aa07f74ee4facd8b5fc9cd795b006ea682b54128fad99e6eba46c7fcb7",
+      "current_sha256": "364d21aa07f74ee4facd8b5fc9cd795b006ea682b54128fad99e6eba46c7fcb7",
       "script_path": "scripts/compute_csli.py",
-      "sha_matches": false
+      "sha_matches": true
     },
     "calibration.json": {
       "recorded_commit": "0f8da5d35c1c591430e03db4a6500cec6acd6755",
