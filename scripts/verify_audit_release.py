@@ -36,10 +36,20 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--paper-exports", type=Path, default=PAPER_EXPORTS)
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help=(
+            "Repo root containing threshold_manifest.json. Defaults to the "
+            "real repo root; tests can override for isolation."
+        ),
+    )
     parser.add_argument("--allow-dirty", action="store_true")
     args = parser.parse_args(argv)
 
     paper_exports = args.paper_exports
+    repo_root = args.repo_root if args.repo_root is not None else ROOT
     errors: list[str] = []
 
     required = [
@@ -121,8 +131,8 @@ def main(argv: list[str] | None = None) -> int:
             errors,
         )
 
-    threshold_manifest = ROOT / "threshold_manifest.json"
-    threshold_sidecar = ROOT / "threshold_manifest.json.sha256"
+    threshold_manifest = repo_root / "threshold_manifest.json"
+    threshold_sidecar = repo_root / "threshold_manifest.json.sha256"
     if threshold_manifest.exists() and threshold_sidecar.exists():
         sidecar_text = threshold_sidecar.read_text(encoding="utf-8").strip()
         # Sidecar may follow the `sha256sum` format ("<hash>  <filename>") or
