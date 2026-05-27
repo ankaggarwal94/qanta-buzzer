@@ -250,6 +250,23 @@ def build_stage_command(
         return cmd
 
     cmd.extend(["--data-dir", str(data_arg), "--smoke"] if smoke else ["--data-dir", str(data_arg)])
+    if smoke:
+        # PR #14 follow-up (Codex 3308173797): the committed smoke
+        # build metadata (artifacts/smoke/build_metadata.json) has
+        # val=0.0 / test=0.1429 raw-MC retention vs the smoke
+        # threshold of 0.5, and coverage is incomplete for splits
+        # whose retained_count == 0. With the tiny smoke fixture
+        # (3 val rows, 14 test rows) this is intrinsic — the
+        # retention/coverage gates exist for the full corpus, not
+        # for a 14-row smoke shard. Propagate the explicit
+        # retained-subset overrides so `modal run ... --smoke`
+        # completes end-to-end instead of aborting at calibration.
+        # Full-mode runs DO NOT receive these flags; they must meet
+        # the gate naturally.
+        cmd.extend([
+            "--allow-low-mc-retention",
+            "--allow-incomplete-mc-coverage",
+        ])
     if stage == "compute_csli":
         cmd.extend(["--output", str(Path(export_arg) / "csli.json")])
     elif stage == "compute_prefix_calibration":
