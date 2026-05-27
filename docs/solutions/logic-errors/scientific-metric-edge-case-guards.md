@@ -26,6 +26,7 @@ tags:
   - pr-review
 related:
   - logic-errors/producer-emitted-flags-without-consumer-propagation.md
+  - CS321M/docs/solutions/workflow-issues/pre-submission-artifact-consistency-audit.md
 ---
 
 # Scientific Metric Edge-Case Guards
@@ -146,3 +147,4 @@ The fixes also made the contract testable. `tests/test_pr14_review_regressions.p
   - `eb8e337` — regenerate metric artifacts with gate metadata + audit card
 - Regression coverage: `tests/test_pr14_review_regressions.py`
 - Consumer-side sibling: [`producer-emitted-flags-without-consumer-propagation.md`](./producer-emitted-flags-without-consumer-propagation.md)
+- Package/submission claim-surface sibling: `CS321M/docs/solutions/workflow-issues/pre-submission-artifact-consistency-audit.md` — after producer guards and immediate JSON consumers are correct, source-to-claim maps, README/checklists, compliance matrices, LaTeX tables, and submission checklists still need freshness and qualifier-propagation checks.

@@ -1,6 +1,7 @@
 ---
 title: Producer-Emitted Fallback Flags Without Consumer-Side Propagation
 date: 2026-05-26
+last_updated: 2026-05-26
 category: logic-errors
 module: qanta-buzzer audit pipeline
 problem_type: logic_error
@@ -27,6 +28,7 @@ tags:
   - pr-review
 related:
   - logic-errors/scientific-metric-edge-case-guards.md
+  - CS321M/docs/solutions/workflow-issues/pre-submission-artifact-consistency-audit.md
 ---
 
 # Producer-Emitted Fallback Flags Without Consumer-Side Propagation
