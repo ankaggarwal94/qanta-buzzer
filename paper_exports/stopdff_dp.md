@@ -1,6 +1,6 @@
 # Finite-Horizon DP StopDFF
 
-**Metric type:** `finite_horizon_dp` — confirmatory: `True`
+**Metric type:** `finite_horizon_dp` - confirmatory: `True`
 
 | Field | Value |
 |-------|-------|

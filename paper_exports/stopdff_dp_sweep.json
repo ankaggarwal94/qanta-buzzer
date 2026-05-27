@@ -1,7 +1,7 @@
 {
   "metadata": {
     "metric_type": "finite_horizon_dp_sweep",
-    "timestamp": "2026-05-27T22:04:26.885598+00:00",
+    "timestamp": "2026-05-27T23:00:37.276680+00:00",
     "argv": [
       "--identity-calibration",
       "--smoke",
@@ -51,7 +51,7 @@
       "format_condition": "MC-fixed",
       "prefix_bucketing": "early_mid_late",
       "subject_pooling": "pooled_subject",
-      "git_commit": "94fbfd25adcb00ac45a9c2598bcb92852db4892e",
+      "git_commit": "cfcbeb9c14c260ecfc78faa442289db428a50553",
       "git_dirty": false,
       "argv": [
         "--identity-calibration",
@@ -97,9 +97,10 @@
         "smoke": true,
         "seed": 1,
         "num_bootstrap": 8,
-        "script_sha256": "1ff58bb1bc5b51e08d303cd3daf927fd92f779550ade1c42dfa78c5b128f8bba",
+        "script_sha256": "19104103ecb72693738196deb9d1b2c304369df1c59ebe4e59af803e41352769",
         "helper_sha256s": {
           "scripts/stopdff_dp/__init__.py": "9a5c797622bacf7771cc8f8c110a8e96a526012430665a9469681356f44d5075",
+          "scripts/stopdff_dp/_provenance.py": "4378c215ff3e7602a25fb4cba6683858ed1bf3f53ec0f7b050135539f63242fc",
           "scripts/stopdff_dp/adapter.py": "5d00baf7e1f38af12769a82bac0c274110dd0f5646a5f18bd88d2dccf115b330",
           "scripts/stopdff_dp/continuation.py": "299b89cd897c94ea1c0cee3554e21a85e4a202c6e93073b8d8ee563cecc38be1",
           "scripts/stopdff_dp/diagnostics.py": "b7d0b0f2fd342d981744e228175d785c414d4705e33b3a6e785092f0bd35880e",
@@ -110,10 +111,10 @@
           "scripts/_audit_gates.py": "5b4b788949b06e700df5d37e291051a7c6ba448702b5f405f4e35504a07d6de0",
           "scripts/_common.py": "caf687af9da16bd952dc888aee3649d8db1e3cf06feae5d3f880b5ebc7691139"
         },
-        "git_commit": "94fbfd25adcb00ac45a9c2598bcb92852db4892e",
+        "git_commit": "cfcbeb9c14c260ecfc78faa442289db428a50553",
         "out_parent": "paper_exports"
       },
-      "started_at": "2026-05-27T22:04:26.693794+00:00",
+      "started_at": "2026-05-27T23:00:37.083377+00:00",
       "status": "completed",
       "calibration": {
         "method": "uncalibrated",
@@ -219,14 +220,14 @@
       "gate_verdict_reason": "ceiling_effect",
       "confirmatory_included": true,
       "confirmatory": true,
-      "wall_clock_seconds": 0.19076895713806152,
-      "completed_at": "2026-05-27T22:04:26.884561+00:00",
-      "cell_id": "a5dfdd549aa9d10d_acf_flat_empirical_bucket_uncalibrated",
-      "cache_path": "paper_exports/stopdff_dp_sweep_cells/a5dfdd549aa9d10d_acf_flat_empirical_bucket_uncalibrated.json"
+      "wall_clock_seconds": 0.1925358772277832,
+      "completed_at": "2026-05-27T23:00:37.275912+00:00",
+      "cell_id": "77da3a5ffcd0c5ad_acf_flat_empirical_bucket_uncalibrated",
+      "cache_path": "paper_exports/stopdff_dp_sweep_cells/77da3a5ffcd0c5ad_acf_flat_empirical_bucket_uncalibrated.json"
     }
   ],
   "confirmatory_cells": [
-    "a5dfdd549aa9d10d_acf_flat_empirical_bucket_uncalibrated"
+    "77da3a5ffcd0c5ad_acf_flat_empirical_bucket_uncalibrated"
   ],
   "mc_coverage": {
     "test": {
