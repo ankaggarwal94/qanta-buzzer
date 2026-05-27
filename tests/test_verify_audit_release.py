@@ -65,6 +65,20 @@ def _write_producer_scripts(repo_root: Path) -> dict[str, dict[str, str]]:
     return provenance
 
 
+def _write_audit_generator(repo_root: Path) -> dict[str, str]:
+    """Write a fake make_audit_card.py under repo_root and return the
+    `metadata.generation` snippet matching its live SHA."""
+    scripts_dir = repo_root / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    body = "# fake audit-card generator\n"
+    (scripts_dir / "make_audit_card.py").write_text(body, encoding="utf-8")
+    return {
+        "git_dirty": False,
+        "script_path": "scripts/make_audit_card.py",
+        "script_sha256": _sha(body),
+    }
+
+
 def test_verify_audit_release_flags_stale_artifact(tmp_path: Path) -> None:
     exports = tmp_path / "paper_exports"
     _populate_required_exports(exports)
@@ -73,6 +87,7 @@ def test_verify_audit_release_flags_stale_artifact(tmp_path: Path) -> None:
     # Producer for csli was edited after audit_card.json was generated, so the
     # live SHA no longer matches the recorded SHA.
     provenance = _write_producer_scripts(tmp_path)
+    generation_block = _write_audit_generator(tmp_path)
     (tmp_path / "scripts/compute_csli.py").write_text(
         "# tampered after audit_card was generated\n", encoding="utf-8"
     )
@@ -88,7 +103,7 @@ def test_verify_audit_release_flags_stale_artifact(tmp_path: Path) -> None:
                 },
             }
         ],
-        "metadata": {"generation": {"git_dirty": False}},
+        "metadata": {"generation": generation_block},
         "artifact_provenance": provenance,
         "data_provenance": {},
     }
@@ -115,6 +130,7 @@ def test_verify_audit_release_accepts_clean_warn(tmp_path: Path) -> None:
     _populate_required_exports(exports)
     _write_threshold_manifest(tmp_path)
     provenance = _write_producer_scripts(tmp_path)
+    generation_block = _write_audit_generator(tmp_path)
 
     (exports / "audit_card.md").write_text(
         "Overall WARN\n\nretained MC subset\n", encoding="utf-8"
@@ -130,7 +146,7 @@ def test_verify_audit_release_accepts_clean_warn(tmp_path: Path) -> None:
                 },
             }
         ],
-        "metadata": {"generation": {"git_dirty": False}},
+        "metadata": {"generation": generation_block},
         "artifact_provenance": provenance,
         "data_provenance": {
             "csli": {
@@ -165,6 +181,7 @@ def test_verify_audit_release_flags_threshold_sha_mismatch(tmp_path: Path) -> No
     exports = tmp_path / "paper_exports"
     _populate_required_exports(exports)
     provenance = _write_producer_scripts(tmp_path)
+    generation_block = _write_audit_generator(tmp_path)
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
     audit = {
@@ -175,7 +192,7 @@ def test_verify_audit_release_flags_threshold_sha_mismatch(tmp_path: Path) -> No
                 "details": {},
             }
         ],
-        "metadata": {"generation": {"git_dirty": False}},
+        "metadata": {"generation": generation_block},
         "artifact_provenance": provenance,
         "data_provenance": {},
     }
@@ -207,6 +224,7 @@ def test_verify_audit_release_flags_missing_provenance_entry(tmp_path: Path) -> 
     _populate_required_exports(exports)
     _write_threshold_manifest(tmp_path)
     full_provenance = _write_producer_scripts(tmp_path)
+    generation_block = _write_audit_generator(tmp_path)
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
     audit = {
@@ -217,7 +235,7 @@ def test_verify_audit_release_flags_missing_provenance_entry(tmp_path: Path) -> 
                 "details": {},
             }
         ],
-        "metadata": {"generation": {"git_dirty": False}},
+        "metadata": {"generation": generation_block},
         # calibration.json + stopdff.json provenance entries are missing.
         "artifact_provenance": {"csli.json": full_provenance["csli.json"]},
         "data_provenance": {},
@@ -244,6 +262,7 @@ def test_verify_audit_release_flags_missing_figure(tmp_path: Path) -> None:
     _populate_required_exports(exports)
     _write_threshold_manifest(tmp_path)
     provenance = _write_producer_scripts(tmp_path)
+    generation_block = _write_audit_generator(tmp_path)
 
     # Remove a required figure to simulate a release that dropped a paper
     # asset declared canonical by ARTIFACTS.md.
@@ -258,7 +277,7 @@ def test_verify_audit_release_flags_missing_figure(tmp_path: Path) -> None:
                 "details": {},
             }
         ],
-        "metadata": {"generation": {"git_dirty": False}},
+        "metadata": {"generation": generation_block},
         "artifact_provenance": provenance,
         "data_provenance": {},
     }
@@ -286,6 +305,7 @@ def test_verify_audit_release_flags_missing_threshold_manifest(
     _populate_required_exports(exports)
     # Intentionally do NOT write threshold_manifest.json or its sidecar.
     provenance = _write_producer_scripts(tmp_path)
+    generation_block = _write_audit_generator(tmp_path)
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
     audit = {
@@ -296,7 +316,50 @@ def test_verify_audit_release_flags_missing_threshold_manifest(
                 "details": {},
             }
         ],
-        "metadata": {"generation": {"git_dirty": False}},
+        "metadata": {"generation": generation_block},
+        "artifact_provenance": provenance,
+        "data_provenance": {},
+    }
+    (exports / "audit_card.json").write_text(
+        json.dumps(audit), encoding="utf-8"
+    )
+
+    assert (
+        main(
+            [
+                "--paper-exports",
+                str(exports),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+
+
+
+def test_verify_audit_release_flags_generator_sha_drift(tmp_path: Path) -> None:
+    exports = tmp_path / "paper_exports"
+    _populate_required_exports(exports)
+    _write_threshold_manifest(tmp_path)
+    provenance = _write_producer_scripts(tmp_path)
+    generation_block = _write_audit_generator(tmp_path)
+
+    # Tamper with make_audit_card.py after audit_card.json was generated.
+    (tmp_path / "scripts/make_audit_card.py").write_text(
+        "# tampered audit-card generator\n", encoding="utf-8"
+    )
+
+    (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    audit = {
+        "metrics": [
+            {
+                "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+                "verdict": "warn",
+                "details": {},
+            }
+        ],
+        "metadata": {"generation": generation_block},
         "artifact_provenance": provenance,
         "data_provenance": {},
     }

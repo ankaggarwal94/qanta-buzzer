@@ -66,6 +66,9 @@ A release is not final evidence unless:
   has a `recorded_sha256` that matches the live SHA of its `script_path`
   (recomputed at verification time, not trusted from the cached
   `sha_matches` flag)
+- the audit-card generator (`metadata.generation.script_path`) has a
+  recorded `script_sha256` that matches its live SHA, so stale
+  aggregation/Markdown logic cannot ship after a generator change
 - the audit-card Markdown reports retained-subset status when any retention
   gate was overridden
 - the StopDFF row remains WARN whenever a ceiling effect or unreachable

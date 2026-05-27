@@ -86,6 +86,37 @@ def main(argv: list[str] | None = None) -> int:
             errors,
         )
 
+    # Recompute the audit-card generator's SHA against the live tree. The
+    # audit card and Markdown are themselves canonical generated artifacts;
+    # if make_audit_card.py is edited after the card was generated, stale
+    # aggregation/rendering logic could ship without any source-metric SHA
+    # mismatch.
+    generator_script_path = generation.get("script_path")
+    generator_recorded_sha = generation.get("script_sha256")
+    if not isinstance(generator_script_path, str) or not generator_script_path:
+        errors.append(
+            "audit_card.metadata.generation is missing script_path"
+        )
+    elif not isinstance(generator_recorded_sha, str) or not generator_recorded_sha:
+        errors.append(
+            "audit_card.metadata.generation is missing script_sha256"
+        )
+    else:
+        gen_script = repo_root / generator_script_path
+        if not gen_script.exists():
+            errors.append(
+                f"audit-card generator script not found at {gen_script}"
+            )
+        else:
+            live_gen_sha = sha256_file(gen_script)
+            require(
+                live_gen_sha == generator_recorded_sha,
+                f"audit-card generator SHA drift: "
+                f"recorded={generator_recorded_sha}, live={live_gen_sha} "
+                f"(script_path={generator_script_path})",
+                errors,
+            )
+
     artifact_provenance = audit.get("artifact_provenance", {})
     expected_provenance_keys = {"csli.json", "calibration.json", "stopdff.json"}
     missing_provenance = expected_provenance_keys - set(artifact_provenance)
