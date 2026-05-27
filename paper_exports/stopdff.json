@@ -1,0 +1,117 @@
+{
+  "median_abs_prefix_shift": 0.0,
+  "mean_abs_prefix_shift": 0.0,
+  "per_question_distribution_summary": {
+    "p25": 0.0,
+    "p50": 0.0,
+    "p75": 0.0,
+    "max": 0.0
+  },
+  "direction_breakdown": {
+    "mc_stops_earlier": 0,
+    "nonmc_stops_earlier": 0,
+    "same_step": 2258
+  },
+  "ceiling_effect_detected": true,
+  "unreachable_buckets": [
+    "early",
+    "mid"
+  ],
+  "reachability": {
+    "early": {
+      "max_calibrated_probability": 0.510149,
+      "max_calibrated_raw_score": 1.0,
+      "calibrated_at_sim_1": 0.510149,
+      "calibrated_at_sim_neg_1": 0.106708,
+      "max_calibrated_at_sim_1": 0.510149,
+      "threshold_reachable": false,
+      "required_raw_score": 1.745073
+    },
+    "mid": {
+      "max_calibrated_probability": 0.410575,
+      "max_calibrated_raw_score": 1.0,
+      "calibrated_at_sim_1": 0.410575,
+      "calibrated_at_sim_neg_1": 0.267807,
+      "max_calibrated_at_sim_1": 0.410575,
+      "threshold_reachable": false,
+      "required_raw_score": 4.753208
+    },
+    "late": {
+      "max_calibrated_probability": 0.818839,
+      "max_calibrated_raw_score": 1.0,
+      "calibrated_at_sim_1": 0.818839,
+      "calibrated_at_sim_neg_1": 0.019206,
+      "max_calibrated_at_sim_1": 0.818839,
+      "threshold_reachable": true,
+      "required_raw_score": 0.756985
+    }
+  },
+  "gate_verdict": "warn",
+  "gate_verdict_reason": "diagnostic_null: ceiling_effect, unreachable_buckets=['early', 'mid']",
+  "threshold_only_verdict": "pass",
+  "threshold": 1,
+  "mc_coverage": {
+    "test": {
+      "target_qids": 2258,
+      "mc_questions_total": 14437,
+      "matched_questions": 2258,
+      "matched_qids": 2258,
+      "missing_qids": 0,
+      "coverage_rate": 1.0,
+      "threshold": 0.98,
+      "passed": true,
+      "overridden": false,
+      "override_flag": "--allow-incomplete-mc-coverage",
+      "split": "test"
+    }
+  },
+  "mc_retention_gate": {
+    "test": {
+      "applies": true,
+      "split": "test",
+      "threshold": 0.8,
+      "retention_rate": 0.7274484536082474,
+      "raw_count": 3104,
+      "retained_count": 2258,
+      "dropped_count": 846,
+      "passed": false,
+      "overridden": true,
+      "override_flag": "--allow-low-mc-retention"
+    }
+  },
+  "mc_build_metadata": {
+    "status": "loaded",
+    "source_path": "data/processed/build_metadata.json",
+    "source_sha256": "70871984390f252c0a06a5a2c9a2d3b4337f10ad48c87583ebec215d5c0c9c6e"
+  },
+  "metadata": {
+    "seed": 789685,
+    "n_test": 2258,
+    "model": "all-MiniLM-L6-v2",
+    "stop_threshold": 0.7,
+    "metric_type": "diagnostic_only",
+    "stopping_policy": "myopic_threshold",
+    "timestamp": "2026-05-27T08:12:49.455499+00:00",
+    "generation": {
+      "schema_version": 1,
+      "generated_at_utc": "2026-05-27T08:12:49.297733+00:00",
+      "command": [
+        "python",
+        "scripts/compute_stopdff.py",
+        "--allow-low-mc-retention",
+        "--allow-incomplete-mc-coverage"
+      ],
+      "argv": [
+        "--allow-low-mc-retention",
+        "--allow-incomplete-mc-coverage"
+      ],
+      "cwd": ".",
+      "output_path": "paper_exports/stopdff.json",
+      "script_path": "scripts/compute_stopdff.py",
+      "script_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
+      "git_commit": "222fa1eb1d214de85cd645b7ae00e5f983b5e0c1",
+      "git_dirty": false,
+      "git_status_relevant_paths": ""
+    }
+  }
+}

@@ -75,6 +75,7 @@ from scripts._common import (
     load_json,
     load_mc_questions,
     parse_overrides,
+    project_relative,
     redirect_combined_to_split,
     resolve_default_dataset_path,
     save_json,
@@ -614,9 +615,9 @@ def main() -> None:
             ),
             "ppo_test_split": ppo_test_summary.get("eval_split"),
             "requested_mc_path": (
-                str(requested_mc_path) if requested_mc_path is not None else None
+                project_relative(requested_mc_path) if requested_mc_path is not None else None
             ),
-            "resolved_mc_path": str(mc_path),
+            "resolved_mc_path": project_relative(mc_path),
         },
         "baseline_summary": baseline_summary,
         "ppo_validation_summary": ppo_validation_summary,

@@ -44,3 +44,8 @@ checkpoints/
 # render or diff it usefully; archived externally and referenced by SHA-256
 # in results/GENERATED_FILES_MANIFEST.md instead.
 results/phase_8_sweep.txt
+
+# Archived artifact directories from fresh-split protocol (v10 section 0.3)
+# These are preserved on disk (Dropbox sync) but too large for git
+artifacts.pre_v10_freshsplit_*/
+data/processed.pre_v10_freshsplit_*/

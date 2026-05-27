@@ -25,32 +25,15 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from agents._math import bayesian_update, softmax_belief
 from models.features import extract_belief_features
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
 
 
 def _softmax(scores: np.ndarray, beta: float) -> np.ndarray:
-    """Temperature-scaled softmax with numerical stability.
-
-    Parameters
-    ----------
-    scores : np.ndarray
-        Raw similarity scores of shape (K,).
-    beta : float
-        Temperature parameter. Higher values produce sharper distributions.
-
-    Returns
-    -------
-    np.ndarray
-        Probability distribution of shape (K,), dtype float32.
-    """
-    stable = scores - np.max(scores)
-    probs = np.exp(beta * stable)
-    probs_sum = np.sum(probs)
-    if probs_sum <= 0:
-        return np.ones_like(scores, dtype=np.float32) / len(scores)
-    return (probs / probs_sum).astype(np.float32)
+    """Temperature-scaled softmax with numerical stability."""
+    return softmax_belief(scores, beta)
 
 
 def precompute_beliefs(
@@ -105,13 +88,7 @@ def precompute_beliefs(
                 prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
                 frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
                 scores = likelihood_model.score(frag, question.option_profiles)
-                likelihood = _softmax(scores, beta)
-                posterior = belief * likelihood
-                denom = posterior.sum()
-                if denom <= 0:
-                    belief = np.ones(q_k, dtype=np.float32) / q_k
-                else:
-                    belief = (posterior / denom).astype(np.float32)
+                belief = bayesian_update(belief, scores, beta)
 
             else:
                 raise ValueError(f"Unknown belief_mode: {belief_mode}")
@@ -389,15 +366,12 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
             prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
             frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
             scores = self.likelihood_model.score(frag, question.option_profiles)
-            likelihood = self._softmax_scores(scores)
-            posterior = self.belief * likelihood
-            denom = posterior.sum()
-            if denom <= 0:
-                n = len(self.belief)
-                posterior = np.ones(n, dtype=np.float32) / n
-            else:
-                posterior = posterior / denom
-            return posterior.astype(np.float32)
+            # Route through bayesian_update so the live-stepping path is bit-identical
+            # to precompute_beliefs() on non-finite scores (NaN/+inf -> uniform,
+            # finite + -inf -> softmax over finite subset). Previously the live path
+            # multiplied prior * uniform-likelihood and re-normalized to the prior,
+            # which silently diverged from the precomputed cache on the same input.
+            return bayesian_update(self.belief, scores, self.beta)
 
         raise ValueError(f"Unknown belief_mode: {self.belief_mode}")
 

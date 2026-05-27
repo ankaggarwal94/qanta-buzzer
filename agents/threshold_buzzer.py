@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from agents._math import sigmoid
+from agents._math import belief_stats, confidence_proxy, softmax_belief
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
 
@@ -29,19 +29,12 @@ class EpisodeResult:
 
 def _scores_to_belief(scores: np.ndarray, beta: float) -> np.ndarray:
     """Convert raw similarity scores to a belief distribution via softmax."""
-    shifted = scores - np.max(scores)
-    probs = np.exp(beta * shifted)
-    probs = probs / max(1e-12, probs.sum())
-    return probs.astype(np.float32)
+    return softmax_belief(scores, beta)
 
 
 def _belief_stats(belief: np.ndarray) -> tuple[int, float, float]:
     """Return (top_idx, top_p, entropy) from a belief distribution."""
-    top_idx = int(np.argmax(belief))
-    top_p = float(belief[top_idx])
-    clipped = np.clip(belief, 1e-12, 1.0)
-    entropy = float(-(clipped * np.log(clipped)).sum())
-    return top_idx, top_p, entropy
+    return belief_stats(belief)
 
 
 def reward_from_buzz_step(
@@ -151,7 +144,7 @@ class ThresholdBuzzer:
         return _scores_to_belief(scores, self.beta)
 
     def _confidence_proxy(self, top_p: float) -> float:
-        return sigmoid(self.alpha * (top_p - self.threshold))
+        return confidence_proxy(top_p, self.threshold, self.alpha)
 
     def run_episode(self, question: MCQuestion) -> EpisodeResult:
         c_trace: list[float] = []
@@ -297,7 +290,7 @@ def _softmax_episode_from_precomputed(
 
     for step_idx, belief in enumerate(pq.beliefs):
         top_idx, top_p, entropy = _belief_stats(belief)
-        c_t = sigmoid(alpha * (top_p - threshold))
+        c_t = confidence_proxy(top_p, threshold, alpha)
         g_t = 1.0 if top_idx == pq.gold_index else 0.0
 
         c_trace.append(c_t)
@@ -408,7 +401,7 @@ def _episode_from_precomputed(
 
     for step_idx, belief in enumerate(pq.beliefs):
         top_idx, top_p, entropy = _belief_stats(belief)
-        c_t = sigmoid(alpha * (top_p - threshold))
+        c_t = confidence_proxy(top_p, threshold, alpha)
         g_t = 1.0 if top_idx == pq.gold_index else 0.0
 
         c_trace.append(c_t)

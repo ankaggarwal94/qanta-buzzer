@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from agents._math import sigmoid
+from agents._math import bayesian_update, belief_stats, softmax_belief
+from agents._math import confidence_proxy as _confidence_proxy
 from agents.threshold_buzzer import reward_from_buzz_step
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
@@ -63,13 +64,10 @@ class SoftmaxProfileBuzzer:
 
     def _belief_from_scratch(self, cumulative_prefix: str, option_profiles: list[str]) -> np.ndarray:
         scores = self.likelihood_model.score(cumulative_prefix, option_profiles)
-        scores = scores - np.max(scores)
-        probs = np.exp(self.beta * scores)
-        probs = probs / max(1e-12, probs.sum())
-        return probs.astype(np.float32)
+        return softmax_belief(scores, self.beta)
 
     def confidence_proxy(self, top_p: float) -> float:
-        return sigmoid(self.alpha * (top_p - self.threshold))
+        return _confidence_proxy(top_p, self.threshold, self.alpha)
 
     def run_episode(self, question: MCQuestion) -> SoftmaxEpisodeResult:
         c_trace: list[float] = []
@@ -83,9 +81,7 @@ class SoftmaxProfileBuzzer:
         for step_idx, prefix in enumerate(question.cumulative_prefixes):
             belief = self._belief_from_scratch(prefix, question.option_profiles)
             self.belief = belief
-            top_idx = int(np.argmax(belief))
-            top_p = float(np.max(belief))
-            entropy = float(-(np.clip(belief, 1e-12, 1.0) * np.log(np.clip(belief, 1e-12, 1.0))).sum())
+            top_idx, top_p, entropy = belief_stats(belief)
             c_t = self.confidence_proxy(top_p)
             g_t = 1.0 if top_idx == question.gold_index else 0.0
 
@@ -148,13 +144,7 @@ class SequentialBayesBuzzer:
 
     def _step_update(self, prior: np.ndarray, fragment: str, option_profiles: list[str]) -> np.ndarray:
         scores = self.likelihood_model.score(fragment, option_profiles)
-        scores = scores - np.max(scores)
-        likelihood = np.exp(self.beta * scores)
-        posterior = prior * likelihood
-        denom = posterior.sum()
-        if denom <= 0:
-            return np.ones_like(prior) / len(prior)
-        return (posterior / denom).astype(np.float32)
+        return bayesian_update(prior, scores, self.beta)
 
     def run_episode(self, question: MCQuestion) -> SoftmaxEpisodeResult:
         c_trace: list[float] = []
@@ -171,10 +161,8 @@ class SequentialBayesBuzzer:
             prev_token_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
             fragment = " ".join(question.tokens[prev_token_idx + 1 : token_idx + 1])
             belief = self._step_update(belief, fragment, question.option_profiles)
-            top_idx = int(np.argmax(belief))
-            top_p = float(np.max(belief))
-            entropy = float(-(np.clip(belief, 1e-12, 1.0) * np.log(np.clip(belief, 1e-12, 1.0))).sum())
-            c_t = sigmoid(self.alpha * (top_p - self.threshold))
+            top_idx, top_p, entropy = belief_stats(belief)
+            c_t = _confidence_proxy(top_p, self.threshold, self.alpha)
             g_t = 1.0 if top_idx == question.gold_index else 0.0
 
             c_trace.append(c_t)
@@ -236,14 +224,7 @@ def precompute_sequential_beliefs(
             prev_token_idx = q.run_indices[step_idx - 1] if step_idx > 0 else -1
             fragment = " ".join(q.tokens[prev_token_idx + 1 : token_idx + 1])
             scores = likelihood_model.score(fragment, q.option_profiles)
-            scores = scores - np.max(scores)
-            likelihood = np.exp(beta * scores)
-            posterior = belief * likelihood
-            denom = posterior.sum()
-            if denom <= 0:
-                belief = np.ones_like(belief) / len(belief)
-            else:
-                belief = (posterior / denom).astype(np.float32)
+            belief = bayesian_update(belief, scores, beta)
             beliefs.append(belief.copy())
 
         out.append(_PrecomputedQuestion(
@@ -267,57 +248,18 @@ def _sequential_episode_from_precomputed(
 ) -> SoftmaxEpisodeResult:
     """Build a SoftmaxEpisodeResult from pre-computed sequential beliefs.
 
-    Identical buzzing logic to ``SequentialBayesBuzzer.run_episode`` but
-    reads beliefs from a ``_PrecomputedQuestion`` instead of calling the
-    likelihood model.
+    Delegates to ``_softmax_episode_from_precomputed`` since the buzzing
+    logic is identical regardless of how beliefs were computed.
     """
-    from agents.threshold_buzzer import _belief_stats
+    from agents.threshold_buzzer import _softmax_episode_from_precomputed
 
-    c_trace: list[float] = []
-    g_trace: list[float] = []
-    top_p_trace: list[float] = []
-    entropy_trace: list[float] = []
-
-    chosen_step = len(pq.beliefs) - 1
-    chosen_idx = 0
-
-    for step_idx, belief in enumerate(pq.beliefs):
-        top_idx, top_p, entropy = _belief_stats(belief)
-        c_t = sigmoid(alpha * (top_p - threshold))
-        g_t = 1.0 if top_idx == pq.gold_index else 0.0
-
-        c_trace.append(c_t)
-        g_trace.append(g_t)
-        top_p_trace.append(top_p)
-        entropy_trace.append(entropy)
-
-        is_last = step_idx == len(pq.beliefs) - 1
-        if top_p >= threshold or is_last:
-            chosen_step = step_idx
-            chosen_idx = top_idx
-            break
-
-    correct = chosen_idx == pq.gold_index
-    return SoftmaxEpisodeResult(
-        qid=pq.qid,
-        buzz_step=chosen_step,
-        buzz_index=chosen_idx,
-        gold_index=pq.gold_index,
-        correct=correct,
-        reward_like=reward_from_buzz_step(
-            correct=correct,
-            buzz_step=chosen_step,
-            total_steps=len(pq.beliefs),
-            reward_mode=reward_mode,
-            wait_penalty=wait_penalty,
-            buzz_correct=buzz_correct,
-            buzz_incorrect=buzz_incorrect,
-            early_buzz_penalty=early_buzz_penalty,
-        ),
-        c_trace=c_trace,
-        g_trace=g_trace,
-        top_p_trace=top_p_trace,
-        entropy_trace=entropy_trace,
+    return _softmax_episode_from_precomputed(
+        pq, threshold, alpha,
+        reward_mode=reward_mode,
+        wait_penalty=wait_penalty,
+        buzz_correct=buzz_correct,
+        buzz_incorrect=buzz_incorrect,
+        early_buzz_penalty=early_buzz_penalty,
     )
 
 

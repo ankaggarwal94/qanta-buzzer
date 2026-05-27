@@ -1,0 +1,93 @@
+# CS321M Final Project -- Modal smoke configuration
+# Quick validation run (under 2 minutes on A100)
+# Based on smoke.yaml with CS321M-specific settings
+
+# Project metadata
+cs321m:
+  project_name: "does-proxy-preserve-decision"
+  compute_lane: "modal_a100"
+  budget_limit_usd: 300
+  spend_log_path: "PROJECT_WIKI/TRANSCRIPTS/modal_spend.log"
+  gpu: "A100-80GB"
+  smoke: true
+  stages:
+    - build_mc_dataset
+    - run_baselines
+    - train_ppo
+    - evaluate_all
+    - compute_csli
+    - compute_prefix_calibration
+    - compute_stopdff
+
+# Data settings for quick smoke validation
+data:
+  csv_path: "questions.csv"
+  K: 4
+  distractor_strategy: "category_random"  # Faster than sbert_profile
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  max_questions: 50  # Small subset for quick validation
+  shuffle_seed: 789685  # Fresh split seed from Phase 2
+
+answer_profiles:
+  max_tokens_per_profile: 500  # Reduced for speed
+  min_questions_per_answer: 1
+  leave_one_out: false  # Skip for smoke test
+
+likelihood:
+  model: "tfidf"  # Fast, no GPU needed for smoke
+  embedding_model: "all-MiniLM-L6-v2"
+  beta: 5.0
+  cache_embeddings: true
+  cache_dir: "cache/embeddings"
+  batch_size: 4
+  max_length: 256
+
+environment:
+  reward_mode: "time_penalty"
+  seed: 13
+  wait_penalty: 0.05
+  early_buzz_penalty: 0.2
+  buzz_correct: 1.0
+  buzz_incorrect: -1.0
+  max_steps: 10
+  opponent_buzz_model:
+    type: "none"
+
+mc_guards:
+  alias_edit_distance_threshold: 0.2
+  duplicate_token_overlap_threshold: 0.8
+  max_length_ratio: 3.0
+
+bayesian:
+  threshold_sweep: [0.5, 0.7, 0.9]
+  alpha: 10.0
+
+ppo:
+  seed: 13
+  total_timesteps: 1000  # Minimal for speed
+  learning_rate: 3e-4
+  n_steps: 32
+  batch_size: 8
+  n_epochs: 2
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_ratio: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  max_grad_norm: 0.5
+  target_kl: 0.03
+  policy_kwargs:
+    net_arch: [32, 32]
+
+evaluation:
+  metrics:
+    - accuracy
+    - reward
+  compute_sq: false
+  run_choices_only: false
+  run_shuffle: false
+  bootstrap_ci_samples: 0  # Skip for smoke test
+  save_predictions: false
+  prediction_dir: "results/predictions"

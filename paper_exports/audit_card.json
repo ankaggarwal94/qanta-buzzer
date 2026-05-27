@@ -1,0 +1,257 @@
+{
+  "metrics": [
+    {
+      "name": "CSLI (Choice-Set Leakage Index, choices-only excess)",
+      "value": 0.003469,
+      "value_display": "0.0035",
+      "ci_lower": 0.0,
+      "ci_upper": 0.010778343666961914,
+      "threshold": 0.3,
+      "threshold_criterion": "max(acc_choices_only) <= threshold",
+      "observed_criterion_value": 0.260407,
+      "direction": "warn_if_above",
+      "verdict": "pass",
+      "details": {
+        "n_models": 3,
+        "per_model_acc_choices_only": {
+          "tfidf": 0.260407,
+          "sbert": 0.244464,
+          "t5-small": 0.213906
+        },
+        "leakage_flags": {
+          "tfidf": false,
+          "sbert": false,
+          "t5-small": false
+        },
+        "panel_csli_choices_excess": 0.003469,
+        "panel_csli_choices_excess_definition": "max(0, acc_choices_only - 1/K) per model, averaged (canonical CSLI; PAP-original definition)",
+        "panel_question_use_gap": 0.11367,
+        "panel_question_use_gap_ci": [
+          0.0994943903159138,
+          0.12607026867434307
+        ],
+        "panel_question_use_gap_definition": "acc_full - acc_choices_only (formerly published as CSLI in the in-flight manuscript; kept for transparency)",
+        "per_model_csli_choices_excess": {
+          "tfidf": 0.010407,
+          "sbert": 0.0,
+          "t5-small": 0.0
+        },
+        "per_model_question_use_gap": {
+          "tfidf": -0.001771,
+          "sbert": 0.245793,
+          "t5-small": 0.096988
+        },
+        "K": 4,
+        "chance": 0.25,
+        "artifact_format": "v2_choices_excess_canonical",
+        "definition_note": "Canonical CSLI = max(0, acc_choices_only - 1/K). The former gap interpretation is published as question_use_gap. The frozen gate is on max(acc_choices_only) > 0.30 (= 1/K + 0.05), independent of either summary."
+      }
+    },
+    {
+      "name": "Prefix-wise Calibration (ECE)",
+      "value": 0.026117,
+      "value_display": "0.0261",
+      "threshold": 0.1,
+      "threshold_criterion": "max(bucket_ECE) <= threshold",
+      "observed_criterion_value": 0.026117,
+      "direction": "warn_if_above",
+      "verdict": "pass",
+      "details": {
+        "per_bucket_ece": {
+          "early": 0.025933,
+          "mid": 0.005491,
+          "late": 0.026117
+        },
+        "per_bucket_n_samples": {
+          "early": 2553,
+          "mid": 3316,
+          "late": 5255
+        },
+        "per_bucket_platt_model_type": {
+          "early": "logistic",
+          "mid": "logistic",
+          "late": "logistic"
+        },
+        "fallback_buckets": [],
+        "empty_buckets": [],
+        "stored_gate_verdict": "pass",
+        "verdict_reason": "threshold_only",
+        "threshold_only_verdict": "pass"
+      }
+    },
+    {
+      "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+      "value": 0.0,
+      "value_display": "0.0",
+      "threshold": 1.0,
+      "threshold_criterion": "median_abs_prefix_shift <= threshold",
+      "observed_criterion_value": 0.0,
+      "direction": "warn_if_above",
+      "verdict": "warn",
+      "verdict_qualifier": "ceiling effect \u2014 diagnostic null; unreachable bucket(s): early, mid",
+      "details": {
+        "direction_breakdown": {
+          "mc_stops_earlier": 0,
+          "nonmc_stops_earlier": 0,
+          "same_step": 2258
+        },
+        "stored_gate_verdict": "warn",
+        "verdict_reason": "diagnostic_null: ceiling_effect, unreachable_buckets=['early', 'mid']",
+        "threshold_only_verdict": "pass",
+        "metric_type": "diagnostic_only",
+        "ceiling_effect_detected": true,
+        "unreachable_buckets": [
+          "early",
+          "mid"
+        ],
+        "reachability": {
+          "early": {
+            "max_calibrated_probability": 0.510149,
+            "max_calibrated_raw_score": 1.0,
+            "calibrated_at_sim_1": 0.510149,
+            "calibrated_at_sim_neg_1": 0.106708,
+            "max_calibrated_at_sim_1": 0.510149,
+            "threshold_reachable": false,
+            "required_raw_score": 1.745073
+          },
+          "mid": {
+            "max_calibrated_probability": 0.410575,
+            "max_calibrated_raw_score": 1.0,
+            "calibrated_at_sim_1": 0.410575,
+            "calibrated_at_sim_neg_1": 0.267807,
+            "max_calibrated_at_sim_1": 0.410575,
+            "threshold_reachable": false,
+            "required_raw_score": 4.753208
+          },
+          "late": {
+            "max_calibrated_probability": 0.818839,
+            "max_calibrated_raw_score": 1.0,
+            "calibrated_at_sim_1": 0.818839,
+            "calibrated_at_sim_neg_1": 0.019206,
+            "max_calibrated_at_sim_1": 0.818839,
+            "threshold_reachable": true,
+            "required_raw_score": 0.756985
+          }
+        }
+      }
+    }
+  ],
+  "overall_verdict": "WARN",
+  "metadata": {
+    "generated_by": "scripts/make_audit_card.py",
+    "script_version": "1.0.0",
+    "timestamp": "2026-05-27T08:58:58.122735+00:00",
+    "threshold_source": "threshold_manifest.json",
+    "generation": {
+      "schema_version": 1,
+      "generated_at_utc": "2026-05-27T08:58:58.122230+00:00",
+      "command": [
+        "python",
+        "scripts/make_audit_card.py"
+      ],
+      "argv": [],
+      "cwd": ".",
+      "output_path": "paper_exports/audit_card.json",
+      "script_path": "scripts/make_audit_card.py",
+      "script_sha256": "d2bfd59a5bcbefce73e4f75c6b69fb7fb231b2d2ddf58344a9ab10ba2cbf0b33",
+      "git_commit": "52d72e03ca413e1e802d024bf273ac521043ceff",
+      "git_dirty": false,
+      "git_status_relevant_paths": ""
+    }
+  },
+  "data_provenance": {
+    "csli": {
+      "coverage": {
+        "test": {
+          "rate": 1.0,
+          "threshold": 0.98,
+          "passed": true,
+          "overridden": false
+        }
+      },
+      "retention": {
+        "test": {
+          "rate": 0.7274484536082474,
+          "threshold": 0.8,
+          "passed": false,
+          "overridden": true,
+          "applies": true
+        }
+      }
+    },
+    "calibration": {
+      "coverage": {
+        "val": {
+          "rate": 1.0,
+          "threshold": 0.98,
+          "passed": true,
+          "overridden": false
+        },
+        "test": {
+          "rate": 1.0,
+          "threshold": 0.98,
+          "passed": true,
+          "overridden": false
+        }
+      },
+      "retention": {
+        "val": {
+          "rate": 0.7048371174728529,
+          "threshold": 0.8,
+          "passed": false,
+          "overridden": true,
+          "applies": true
+        },
+        "test": {
+          "rate": 0.7274484536082474,
+          "threshold": 0.8,
+          "passed": false,
+          "overridden": true,
+          "applies": true
+        }
+      }
+    },
+    "stopdff": {
+      "coverage": {
+        "test": {
+          "rate": 1.0,
+          "threshold": 0.98,
+          "passed": true,
+          "overridden": false
+        }
+      },
+      "retention": {
+        "test": {
+          "rate": 0.7274484536082474,
+          "threshold": 0.8,
+          "passed": false,
+          "overridden": true,
+          "applies": true
+        }
+      }
+    }
+  },
+  "artifact_provenance": {
+    "csli.json": {
+      "recorded_commit": "52d72e03ca413e1e802d024bf273ac521043ceff",
+      "recorded_sha256": "364d21aa07f74ee4facd8b5fc9cd795b006ea682b54128fad99e6eba46c7fcb7",
+      "current_sha256": "364d21aa07f74ee4facd8b5fc9cd795b006ea682b54128fad99e6eba46c7fcb7",
+      "script_path": "scripts/compute_csli.py",
+      "sha_matches": true
+    },
+    "calibration.json": {
+      "recorded_commit": "0f8da5d35c1c591430e03db4a6500cec6acd6755",
+      "recorded_sha256": "6f47ba73b97fe88f89db0e170db48aff0fb6271eaf012b45cba046b1a7b8f7aa",
+      "current_sha256": "6f47ba73b97fe88f89db0e170db48aff0fb6271eaf012b45cba046b1a7b8f7aa",
+      "script_path": "scripts/compute_prefix_calibration.py",
+      "sha_matches": true
+    },
+    "stopdff.json": {
+      "recorded_commit": "222fa1eb1d214de85cd645b7ae00e5f983b5e0c1",
+      "recorded_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
+      "current_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
+      "script_path": "scripts/compute_stopdff.py",
+      "sha_matches": true
+    }
+  }
+}

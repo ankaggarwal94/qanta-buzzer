@@ -9,9 +9,12 @@ The ``score()`` method returns **raw similarity scores**, not probabilities.
 The environment applies softmax with a configurable temperature (beta) to
 convert scores into a belief distribution.
 
-Embedding caching is built into the base class: texts are hashed via SHA-256
-and cached as float32 numpy arrays, so repeated calls with the same text
-skip recomputation.
+Embedding caching is built into the base class: texts are keyed by their
+SHA-256 hex digest and cached as float32 numpy arrays, so repeated calls
+with the same text skip recomputation. SHA-256 is deterministic across
+Python processes, which is required for ``save_cache``/``load_cache`` to
+round-trip correctly between pipeline scripts that run as separate
+interpreters (e.g., run_baselines.py -> train_ppo.py -> evaluate_all.py).
 
 Ported from qb-rl reference implementation (models/likelihoods.py lines 1-38).
 """
@@ -31,7 +34,13 @@ if TYPE_CHECKING:
 
 
 def _text_key(text: str) -> str:
-    """Compute a SHA-256 hash key for embedding cache lookups.
+    """Compute a deterministic content hash for embedding cache lookups.
+
+    Uses SHA-256 hex digest because the cache is persisted to disk and
+    reloaded across separate Python processes (pipeline scripts run as
+    distinct interpreters). Process-salted hashes such as Python's built-in
+    ``hash()`` would produce different keys on every run, silently breaking
+    cross-process cache reuse.
 
     Parameters
     ----------
@@ -41,7 +50,7 @@ def _text_key(text: str) -> str:
     Returns
     -------
     str
-        64-character hexadecimal SHA-256 digest.
+        64-character hexadecimal SHA-256 digest, stable across processes.
 
     Examples
     --------
@@ -82,7 +91,7 @@ class LikelihoodModel(ABC):
     Attributes
     ----------
     embedding_cache : dict[str, np.ndarray]
-        Maps SHA-256 text hashes to float32 embedding vectors.
+        Maps SHA-256 hex digests of input texts to float32 embedding vectors.
     """
 
     def __init__(self) -> None:
@@ -117,7 +126,7 @@ class LikelihoodModel(ABC):
     def embed_and_cache(self, texts: list[str]) -> np.ndarray:
         """Embed texts, using cache for previously seen inputs.
 
-        Texts are identified by their SHA-256 hash. Only unseen texts
+        Texts are identified by their SHA-256 hex digest. Only unseen texts
         are passed to ``_embed_batch()`` for actual computation; cached
         results are reused.
 
@@ -175,7 +184,7 @@ class LikelihoodModel(ABC):
         """Persist embedding_cache to disk as compressed ``.npz``.
 
         Creates parent directories if needed. Keys are SHA-256 hex
-        strings (valid Python identifiers), values are float32 arrays.
+        strings (deterministic across processes), values are float32 arrays.
 
         Parameters
         ----------

@@ -42,6 +42,7 @@ from scripts._common import (
     load_embedding_cache,
     load_mc_questions,
     parse_overrides,
+    project_relative,
     redirect_combined_to_split,
     resolve_default_dataset_path,
     save_embedding_cache,
@@ -312,7 +313,7 @@ def main() -> None:
         ),
         "smoke": bool(args.smoke),
         "likelihood_reference_split": train_split,
-        "likelihood_reference_path": str(train_path.resolve()),
+        "likelihood_reference_path": project_relative(train_path),
         "likelihood_reference_n_questions": len(train_questions),
     }
     save_json(out_dir / "run_metadata.json", run_metadata)
