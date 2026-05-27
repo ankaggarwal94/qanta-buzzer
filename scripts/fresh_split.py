@@ -445,6 +445,53 @@ def main(argv: list[str] | None = None) -> int:
     old_artifacts_path = str(artifacts_archive.relative_to(project_root)) if artifacts_archive else "N/A (no artifacts/ existed)"
     old_processed_path = str(processed_archive.relative_to(project_root)) if processed_archive else "N/A (no data/processed/ existed)"
 
+    # PR #14 follow-up review (Codex #3308590302): preserve frozen-threshold
+    # provenance on split reruns. When the user reruns fresh_split with
+    # --seed <recorded_value> to reproduce the canonical split AFTER thresholds
+    # were frozen (THRESHOLDS_FROZEN_AFTER_FRESH_SPLIT=true +
+    # THRESHOLD_MANIFEST_SHA256 + THRESHOLD_FREEZE_TIMESTAMP), this rewrite
+    # would clobber those fields back to "false" + omit the hash, breaking
+    # compute_csli._load_split_provenance which relies on the hash to verify
+    # the split/threshold freeze. Preserve the freeze fields unless the
+    # operator explicitly opted into a re-freeze via --allow-reseed.
+    existing_freeze_fields: dict[str, str] = {}
+    if provenance_path.exists() and not args.allow_reseed:
+        existing_text = provenance_path.read_text(encoding="utf-8")
+        for line in existing_text.splitlines():
+            stripped = line.strip()
+            for key in (
+                "THRESHOLDS_FROZEN_AFTER_FRESH_SPLIT",
+                "THRESHOLD_MANIFEST_SHA256",
+                "THRESHOLD_FREEZE_TIMESTAMP",
+                "TEST_SPLIT_INSPECTED_POST_FRESH_SPLIT",
+            ):
+                prefix = f"{key}="
+                if stripped.startswith(prefix):
+                    existing_freeze_fields[key] = stripped[len(prefix):]
+
+    if existing_freeze_fields.get("THRESHOLDS_FROZEN_AFTER_FRESH_SPLIT") == "true":
+        thresholds_frozen_line = "THRESHOLDS_FROZEN_AFTER_FRESH_SPLIT=true"
+        # Preserve the manifest hash + freeze timestamp verbatim if recorded.
+        manifest_sha_line = (
+            f"\nTHRESHOLD_MANIFEST_SHA256={existing_freeze_fields['THRESHOLD_MANIFEST_SHA256']}"
+            if "THRESHOLD_MANIFEST_SHA256" in existing_freeze_fields
+            else ""
+        )
+        freeze_timestamp_line = (
+            f"\nTHRESHOLD_FREEZE_TIMESTAMP={existing_freeze_fields['THRESHOLD_FREEZE_TIMESTAMP']}"
+            if "THRESHOLD_FREEZE_TIMESTAMP" in existing_freeze_fields
+            else ""
+        )
+    else:
+        thresholds_frozen_line = "THRESHOLDS_FROZEN_AFTER_FRESH_SPLIT=false"
+        manifest_sha_line = ""
+        freeze_timestamp_line = ""
+
+    test_inspected_line = (
+        f"TEST_SPLIT_INSPECTED_POST_FRESH_SPLIT="
+        f"{existing_freeze_fields.get('TEST_SPLIT_INSPECTED_POST_FRESH_SPLIT', 'false')}"
+    )
+
     total = len(train) + len(val) + len(test)
     provenance_content = f"""# Split Provenance
 
@@ -455,8 +502,8 @@ FRESH_SPLIT_SEED={seed}
 FRESH_SPLIT_CREATED_AT={utc_now.isoformat()}
 FRESH_SPLIT_COMMIT_SHA={commit_sha}
 OLD_SPLIT_PRESERVED_AT={old_artifacts_path}
-THRESHOLDS_FROZEN_AFTER_FRESH_SPLIT=false
-TEST_SPLIT_INSPECTED_POST_FRESH_SPLIT=false
+{thresholds_frozen_line}{manifest_sha_line}{freeze_timestamp_line}
+{test_inspected_line}
 ```
 
 ## Split Statistics

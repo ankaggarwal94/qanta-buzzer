@@ -236,14 +236,26 @@ def build_generation_provenance(
         A schema-versioned generation provenance dict.
     """
     script_resolved = Path(script_path).resolve()
-    relevant = [
+    # PR #14 follow-up review (Codex #3308590294): `git status -- <abs_path>`
+    # aborts with `fatal: ... is outside repository` when any pathspec arg is
+    # outside the repo. That happens whenever a caller passes an absolute
+    # ``--output``/``--output-dir`` outside REPO_ROOT (a case the absolute-
+    # output-dir round-trip from commit 41e19c4 explicitly supports). The
+    # abort would silently flip `git_dirty` to False and erase
+    # `git_status_relevant_paths`, defeating the provenance check exactly for
+    # the case it most matters. Render every path for the `output_path`
+    # display fields, but FILTER non-repo paths from the git pathspec so the
+    # dirty-status check still runs against the script + threshold-manifest
+    # + extras that ARE inside the repo.
+    display_paths = [
         project_relative(script_resolved),
         project_relative(output_path),
     ]
     for p in extra_paths or []:
-        relevant.append(project_relative(p))
+        display_paths.append(project_relative(p))
+    repo_relative_pathspec = [p for p in display_paths if not Path(p).is_absolute()]
 
-    status_args = ["status", "--short", "--", *relevant]
+    status_args = ["status", "--short", "--", *repo_relative_pathspec]
     git_status = _git_output(status_args)
 
     return {

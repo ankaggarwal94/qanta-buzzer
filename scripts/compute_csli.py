@@ -255,14 +255,21 @@ def _build_generation_provenance(
     when the smoke build metadata was dirty or stale.
     """
     script_path = Path(__file__).resolve()
-    relevant_paths = [
+    # PR #14 follow-up review (Codex #3308590294): filter out-of-repo paths
+    # from the git pathspec or `git status -- <abs_path>` aborts with
+    # `fatal: ... is outside repository`, silently flipping git_dirty to
+    # False and erasing git_status_relevant_paths exactly when an absolute
+    # --output is in use. The display path list retains everything so the
+    # output_path field is still accurate.
+    display_paths = [
         _display_path(script_path),
         _display_path(output_path),
         _display_path(THRESHOLD_MANIFEST),
         _display_path(data_dir / "build_metadata.json"),
         _display_path(SPLIT_PROVENANCE),
     ]
-    status_args = ["status", "--short", "--", *relevant_paths]
+    repo_relative_pathspec = [p for p in display_paths if not Path(p).is_absolute()]
+    status_args = ["status", "--short", "--", *repo_relative_pathspec]
     git_status = _git_output(status_args)
 
     return {

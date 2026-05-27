@@ -1777,3 +1777,146 @@ def test_artifact_provenance_renders_markdown_section() -> None:
     assert "calibration.json" in text
     # Both yes and no rows render.
     assert "yes" in text and "no" in text
+
+
+def test_build_generation_provenance_filters_out_of_repo_paths_from_git_pathspec(
+    tmp_path: Path,
+) -> None:
+    """PR #14 follow-up review (Codex #3308590294): when ``--output``/``--output-dir``
+    is an absolute path outside REPO_ROOT, the previous implementation passed
+    that absolute path to ``git status -- <abs_path>`` which aborts with
+    ``fatal: ... is outside repository``. ``_git_output`` returned None, so
+    ``git_dirty`` recorded as False and ``git_status_relevant_paths`` was
+    empty even when the script or threshold manifest was actually dirty —
+    defeating the provenance check exactly for the absolute-output case
+    commit 41e19c4 explicitly supports.
+
+    Pin the fix: out-of-repo paths are still recorded in the ``output_path``
+    field for display, but are FILTERED from the git pathspec so the
+    dirty-status check still runs against the script + extras inside the
+    repo.
+    """
+    from scripts._common import build_generation_provenance
+
+    # Stage an output path well outside REPO_ROOT.
+    outside_output = tmp_path / "paper_exports" / "csli.json"
+    outside_output.parent.mkdir(parents=True, exist_ok=True)
+    outside_output.write_text("{}", encoding="utf-8")
+
+    # The helper must succeed (no `fatal: outside repository` propagating up).
+    provenance = build_generation_provenance(
+        script_path=Path(__file__).resolve().parents[1] / "scripts" / "compute_csli.py",
+        argv=["--output", str(outside_output)],
+        output_path=outside_output,
+        extra_paths=[],
+    )
+
+    # Output path display field still records the absolute path verbatim --
+    # this is the operator-facing field, must be accurate.
+    assert provenance["output_path"] == str(outside_output.resolve()), (
+        f"output_path should display absolute path verbatim, got "
+        f"{provenance['output_path']!r}"
+    )
+
+    # git_dirty + git_status_relevant_paths must reflect the script's actual
+    # state, NOT silently fail back to False/"" because of an out-of-repo
+    # pathspec abort.
+    assert isinstance(provenance["git_dirty"], bool), (
+        "git_dirty must remain a real bool, not silently False due to "
+        "pathspec abort"
+    )
+    assert isinstance(provenance["git_status_relevant_paths"], str)
+    # The relevant_paths string can be empty (clean tree) or non-empty
+    # (dirty tree), but it must NOT contain the absolute out-of-repo path
+    # which would only appear if the pathspec hadn't been filtered.
+    assert str(outside_output) not in provenance["git_status_relevant_paths"], (
+        "Out-of-repo path leaked into git pathspec; filter is broken"
+    )
+
+
+def test_compute_csli_build_generation_provenance_filters_out_of_repo_paths(
+    tmp_path: Path,
+) -> None:
+    """PR #14 follow-up review (Codex #3308590294): same fix needed in
+    compute_csli's inline ``_build_generation_provenance`` (which mirrors
+    the shared helper but takes ``data_dir`` instead of ``extra_paths``).
+    Pin via source-text contract since the inline helper has the same
+    pathspec failure mode as the shared one.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "scripts" / "compute_csli.py").read_text(
+        encoding="utf-8"
+    )
+    # Pin: the helper must build a filtered ``repo_relative_pathspec`` and use
+    # that (not the raw display_paths list) in `git status --`.
+    assert "repo_relative_pathspec" in source, (
+        "compute_csli._build_generation_provenance must filter out-of-repo "
+        "paths from the git pathspec (Codex #3308590294)"
+    )
+    assert "not Path(p).is_absolute()" in source, (
+        "compute_csli._build_generation_provenance filter predicate must "
+        "exclude absolute paths from the git pathspec"
+    )
+
+
+def test_fresh_split_preserves_threshold_freeze_fields_on_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #14 follow-up review (Codex #3308590302): if fresh_split.py is
+    rerun with ``--seed <recorded_value>`` after thresholds were frozen,
+    the rewrite must preserve ``THRESHOLDS_FROZEN_AFTER_FRESH_SPLIT=true``,
+    ``THRESHOLD_MANIFEST_SHA256``, ``THRESHOLD_FREEZE_TIMESTAMP``, and
+    ``TEST_SPLIT_INSPECTED_POST_FRESH_SPLIT`` fields. Otherwise
+    ``compute_csli._load_split_provenance`` cannot verify the freeze and the
+    regenerated CSLI artifacts report an unverified split.
+
+    Pin via source-text contract: the writer must read the existing file,
+    parse the freeze fields, and conditionally include them based on the
+    recorded freeze state + the ``--allow-reseed`` flag.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "scripts" / "fresh_split.py").read_text(
+        encoding="utf-8"
+    )
+    # Pin: the writer reads existing provenance and parses freeze fields.
+    for substr in (
+        "existing_freeze_fields",
+        "THRESHOLD_MANIFEST_SHA256",
+        "THRESHOLD_FREEZE_TIMESTAMP",
+        "TEST_SPLIT_INSPECTED_POST_FRESH_SPLIT",
+        # The preservation gate hinges on --allow-reseed
+        "args.allow_reseed",
+        # The frozen branch must produce =true
+        "THRESHOLDS_FROZEN_AFTER_FRESH_SPLIT=true",
+    ):
+        assert substr in source, (
+            f"fresh_split.py must preserve freeze fields on rerun; missing "
+            f"contract substring: {substr!r}"
+        )
+
+
+def test_modal_local_entrypoint_exposes_output_dir_and_smoke_flags() -> None:
+    """PR #14 follow-up validation (2026-05-27): a no-param
+    ``local_entrypoint`` makes ``modal run modal_cs321m.py --output-dir X``
+    fail with "Got unexpected extra arguments" because Modal CLI binds
+    args to function parameters. The shim wraps ``_main_impl`` with a
+    typed-param ``local_entrypoint`` that rebuilds sys.argv so argparse
+    inside ``_main_impl`` sees the right flags.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "modal_cs321m.py").read_text(encoding="utf-8")
+    # Pin: the shim must accept the typed flags Modal CLI exposes.
+    for sig_token in (
+        "def main(",
+        "config: str",
+        "smoke: bool",
+        "output_dir: str",
+        "stages: str",
+        "dry_run: bool",
+    ):
+        assert sig_token in source, (
+            f"Modal local_entrypoint shim must accept {sig_token!r}"
+        )
+    # Pin: the shim rebuilds sys.argv before delegating to _main_impl.
+    assert 'sys.argv = ["modal_cs321m.py"]' in source
+    assert '_main_impl()' in source

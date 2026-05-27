@@ -61,11 +61,42 @@ LEGACY_STAGES = set(STAGE_SCRIPTS) - AUDIT_STAGES
 def _setup_modal():
     """Create Modal app and image. Only called when modal is available."""
     app = modal.App("cs321m-qanta-buzzer")
+    # PR #14 follow-up validation (2026-05-27): exclude transient build/test
+    # caches from the local-dir mount. Modal aborts the image build with
+    # ``ExecutionError: <path> was modified during build process`` if any
+    # file under the mount changes between snapshot and build. pytest's
+    # ``.pytest_cache`` is written on every test invocation; ``__pycache__``
+    # bytecode is touched on import; ``.venv`` is huge and not portable to
+    # the Linux container anyway. ``.git`` is INTENTIONALLY INCLUDED so the
+    # container can record ``git rev-parse HEAD`` in artifact-provenance
+    # blocks (``build_generation_provenance`` reads it at output-write time).
+    # If a background process mutates ``.git`` during a Modal build, the
+    # workaround is "don't run gh/git operations during modal run"; if that
+    # becomes a recurring problem, the next escalation is to inject the
+    # host's commit SHA into the container as an env var instead.
     image = (
         modal.Image.debian_slim(python_version="3.11")
         .pip_install_from_pyproject(str(REPO_ROOT / "pyproject.toml"))
         .pip_install("modal")
-        .add_local_dir(str(REPO_ROOT), "/app")
+        .add_local_dir(
+            str(REPO_ROOT),
+            "/app",
+            ignore=[
+                ".pytest_cache",
+                ".pytest_cache/**",
+                "__pycache__",
+                "**/__pycache__",
+                "**/__pycache__/**",
+                ".venv",
+                ".venv/**",
+                ".mypy_cache",
+                ".mypy_cache/**",
+                ".ruff_cache",
+                ".ruff_cache/**",
+                "*.pyc",
+                "*.pyo",
+            ],
+        )
     )
     return app, image
 
@@ -677,9 +708,44 @@ def _main_impl():
         sys.exit(4)
 
 
-# When modal is available, register as local_entrypoint for `modal run`
+# When modal is available, register as local_entrypoint for `modal run`.
+#
+# PR #14 follow-up validation (2026-05-27): a no-param ``local_entrypoint``
+# means ``modal run modal_cs321m.py`` accepts no CLI flags, so operator
+# overrides like ``--output-dir`` or ``--stages`` never reach ``_main_impl``'s
+# argparse. Modal CLI binds entrypoint params to flags; if the function takes
+# no params, no flags are recognized. The shim below exposes the same surface
+# argparse provides by rebuilding ``sys.argv`` from typed params, then calling
+# ``_main_impl`` which re-parses. The defaults match argparse defaults so
+# bare ``modal run modal_cs321m.py`` still behaves as before (config defaults
+# to ``cs321m_smoke.yaml``; ``resolve_smoke_mode`` infers smoke=True from the
+# filename). Explicit overrides like
+# ``modal run modal_cs321m.py --output-dir /tmp/run42 --smoke`` now work.
 if _MODAL_AVAILABLE and app is not None:
-    main = app.local_entrypoint()(_main_impl)
+    @app.local_entrypoint()
+    def main(
+        config: str = "configs/cs321m_smoke.yaml",
+        smoke: bool = False,
+        output_dir: str = "",
+        stages: str = "",
+        dry_run: bool = False,
+        metadata_only_dry_run: bool = False,
+    ):
+        """Modal CLI entrypoint -- rebuilds argparse-shaped sys.argv from typed flags."""
+        sys.argv = ["modal_cs321m.py"]
+        if config:
+            sys.argv.extend(["--config", config])
+        if smoke:
+            sys.argv.append("--smoke")
+        if output_dir:
+            sys.argv.extend(["--output-dir", output_dir])
+        if stages:
+            sys.argv.extend(["--stages", *stages.split(",")])
+        if dry_run:
+            sys.argv.append("--dry-run")
+        if metadata_only_dry_run:
+            sys.argv.append("--metadata-only-dry-run")
+        _main_impl()
 else:
     main = _main_impl
 
