@@ -108,10 +108,10 @@
       "mid": "[0.33, 0.66)",
       "late": "[0.66, 1.0]"
     },
-    "timestamp": "2026-05-27T03:55:35.612470+00:00",
+    "timestamp": "2026-05-27T06:33:49.776952+00:00",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T03:55:35.551561+00:00",
+      "generated_at_utc": "2026-05-27T06:33:49.773566+00:00",
       "command": [
         "python",
         "scripts/compute_prefix_calibration.py",
@@ -125,10 +125,10 @@
       "cwd": ".",
       "output_path": "paper_exports/calibration.json",
       "script_path": "scripts/compute_prefix_calibration.py",
-      "script_sha256": "e7a26f1b1ec673402e78c89ae937fc104ece8329315b06cc9bb7006f29f1c65c",
-      "git_commit": "828d4523b6b3cc57f15d5c382df2ae61409876a0",
-      "git_dirty": true,
-      "git_status_relevant_paths": "M scripts/compute_prefix_calibration.py"
+      "script_sha256": "6f47ba73b97fe88f89db0e170db48aff0fb6271eaf012b45cba046b1a7b8f7aa",
+      "git_commit": "0f8da5d35c1c591430e03db4a6500cec6acd6755",
+      "git_dirty": false,
+      "git_status_relevant_paths": ""
     }
   }
 }
