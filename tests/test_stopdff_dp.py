@@ -868,3 +868,98 @@ def test_audit_card_row_added_without_replacing_diagnostic(tmp_path, monkeypatch
     names = [m["name"] for m in card["metrics"]]
     assert any("Diagnostic StopDFF" in n for n in names)
     assert any("DP StopDFF" in n for n in names)
+
+
+def test_cli_rejects_incomplete_mc_coverage_without_override(tmp_path) -> None:
+    """If MC eval coverage < 98% and no override, exit nonzero."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    # 10 val + 10 test questions, but mc_dataset only has 5 of each split.
+    val_qs = [_fake_mc_question(f"v{i}") for i in range(10)]
+    test_qs = [_fake_mc_question(f"t{i}") for i in range(10)]
+    # mc_dataset is a strict subset (missing 5 of each).
+    mc_subset = val_qs[:5] + test_qs[:5]
+    (data_dir / "mc_dataset.json").write_text(json.dumps(mc_subset))
+    (data_dir / "val_dataset.json").write_text(json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(json.dumps(test_qs))
+
+    from scripts import compute_stopdff_dp
+    rc = compute_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--split", "test",
+        "--fit-split", "val",
+        "--reward-schedule", "acf_flat",
+        "--continuation", "empirical_bucket",
+        "--identity-calibration",
+        "--out", str(tmp_path / "out.json"),
+        "--out-md", str(tmp_path / "out.md"),
+        "--out-tex", str(tmp_path / "out.tex"),
+    ])
+    assert rc != 0
+
+
+def test_cli_accepts_incomplete_mc_coverage_with_override(tmp_path) -> None:
+    """With --allow-incomplete-mc-coverage, the script runs and records
+    the override in the artifact's mc_coverage block."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question(f"v{i}") for i in range(10)]
+    test_qs = [_fake_mc_question(f"t{i}") for i in range(10)]
+    mc_subset = val_qs[:5] + test_qs[:5]
+    (data_dir / "mc_dataset.json").write_text(json.dumps(mc_subset))
+    (data_dir / "val_dataset.json").write_text(json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(json.dumps(test_qs))
+
+    out_json = tmp_path / "out.json"
+    from scripts import compute_stopdff_dp
+    rc = compute_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--split", "test",
+        "--fit-split", "val",
+        "--reward-schedule", "acf_flat",
+        "--continuation", "empirical_bucket",
+        "--identity-calibration",
+        "--allow-incomplete-mc-coverage",
+        "--out", str(out_json),
+        "--out-md", str(tmp_path / "out.md"),
+        "--out-tex", str(tmp_path / "out.tex"),
+    ])
+    assert rc == 0
+    payload = json.loads(out_json.read_text())
+    assert "mc_coverage" in payload
+    # Coverage was below threshold but override flipped 'overridden' to true.
+    eval_block = payload["mc_coverage"]["test"]
+    assert eval_block["passed"] is False
+    assert eval_block["overridden"] is True
+    assert eval_block["coverage_rate"] == 0.5
+
+
+def test_cli_records_clean_coverage_when_complete(tmp_path) -> None:
+    """When MC coverage is complete (100%), the payload records passed=True."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question(f"v{i}") for i in range(5)]
+    test_qs = [_fake_mc_question(f"t{i}") for i in range(5)]
+    (data_dir / "mc_dataset.json").write_text(json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(json.dumps(test_qs))
+
+    out_json = tmp_path / "out.json"
+    from scripts import compute_stopdff_dp
+    rc = compute_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--split", "test",
+        "--fit-split", "val",
+        "--reward-schedule", "acf_flat",
+        "--continuation", "empirical_bucket",
+        "--identity-calibration",
+        "--out", str(out_json),
+        "--out-md", str(tmp_path / "out.md"),
+        "--out-tex", str(tmp_path / "out.tex"),
+    ])
+    assert rc == 0
+    payload = json.loads(out_json.read_text())
+    eval_block = payload["mc_coverage"]["test"]
+    assert eval_block["passed"] is True
+    assert eval_block["overridden"] is False
+    assert eval_block["coverage_rate"] == 1.0

@@ -66,16 +66,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     effective_argv = list(argv) if argv is not None else list(sys.argv[1:])
     args = _parse_args(argv)
 
-    if args.allow_incomplete_mc_coverage or args.allow_low_mc_retention:
-        print(
-            "WARNING: --allow-incomplete-mc-coverage and "
-            "--allow-low-mc-retention are accepted for CLI symmetry with "
-            "scripts/compute_stopdff.py but currently no-op in the DP "
-            "StopDFF script. Coverage and retention gates may be added in a "
-            "future revision; for now these flags do not affect any check.",
-            file=sys.stderr,
-        )
-
     data_dir = Path(args.data_dir)
     out_json = Path(args.out)
     out_md = Path(args.out_md)
@@ -139,6 +129,140 @@ def main(argv: Optional[list[str]] = None) -> int:
         mc_questions = [
             q for q in mc_questions if str(q["qid"]) in kept_qids
         ]
+
+    # PR #15 review (chatgpt-codex-connector P2 3313638262): the DP StopDFF
+    # row is audit-card eligible, so it must enforce the same MC coverage
+    # (>=98%) and retention gates that scripts/compute_stopdff.py enforces.
+    # Missing MC rows are not random (items where good distractors could not
+    # be built), so a partial subset would silently bias the DP metric.
+    from scripts._audit_gates import (
+        build_coverage_metadata,
+        build_retention_metadata,
+        filter_mc_questions_to_split,
+        load_mc_build_metadata,
+    )
+
+    # Filter MC pool to eval split and compute coverage.
+    _mc_eval_rows, eval_coverage = filter_mc_questions_to_split(
+        mc_questions, eval_qids
+    )
+    print(
+        f"[STOPDFF-DP] MC eval: matched {eval_coverage['matched_qids']} / "
+        f"{eval_coverage['target_qids']} qids "
+        f"({eval_coverage['coverage_rate']:.1%})",
+        file=sys.stderr,
+    )
+    MIN_MC_COVERAGE = 0.98
+    if (
+        eval_coverage["coverage_rate"] < MIN_MC_COVERAGE
+        and not args.allow_incomplete_mc_coverage
+    ):
+        print(
+            f"ERROR: MC eval coverage is {eval_coverage['coverage_rate']:.1%} "
+            f"(threshold: {MIN_MC_COVERAGE:.1%}). The DP StopDFF row is "
+            f"audit-card eligible; missing MC qids are not random (selected "
+            f"against 'hard to find distractors'). Pass "
+            f"--allow-incomplete-mc-coverage to override.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Same coverage check for the fit split -- empirical bucket fit needs
+    # representative val data.
+    _mc_fit_rows, fit_coverage = filter_mc_questions_to_split(
+        mc_questions, fit_qids
+    )
+    if (
+        fit_coverage["coverage_rate"] < MIN_MC_COVERAGE
+        and not args.allow_incomplete_mc_coverage
+    ):
+        print(
+            f"ERROR: MC fit coverage is {fit_coverage['coverage_rate']:.1%} "
+            f"(threshold: {MIN_MC_COVERAGE:.1%}). Pass "
+            f"--allow-incomplete-mc-coverage to override.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Retention gate from build_metadata.json. Mirrors compute_stopdff.py.
+    try:
+        build_metadata = load_mc_build_metadata(data_dir)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    eval_retention_meta = build_retention_metadata(
+        build_metadata,
+        split=args.split,
+        smoke=args.smoke,
+        explicit_threshold=None,
+        override=args.allow_low_mc_retention,
+    )
+    if (
+        eval_retention_meta["applies"]
+        and eval_retention_meta["passed"] is False
+        and not args.allow_low_mc_retention
+    ):
+        print(
+            f"ERROR: raw-{args.split} MC retention is "
+            f"{eval_retention_meta['retention_rate']:.1%} (threshold: "
+            f"{eval_retention_meta['threshold']:.1%}). Pass "
+            f"--allow-low-mc-retention only if you intend the DP StopDFF "
+            f"artifact to qualify as a retained-MC-subset metric.",
+            file=sys.stderr,
+        )
+        return 1
+
+    fit_retention_meta = build_retention_metadata(
+        build_metadata,
+        split=args.fit_split,
+        smoke=args.smoke,
+        explicit_threshold=None,
+        override=args.allow_low_mc_retention,
+    )
+    if (
+        fit_retention_meta["applies"]
+        and fit_retention_meta["passed"] is False
+        and not args.allow_low_mc_retention
+    ):
+        print(
+            f"ERROR: raw-{args.fit_split} MC retention is "
+            f"{fit_retention_meta['retention_rate']:.1%} (threshold: "
+            f"{fit_retention_meta['threshold']:.1%}). Pass "
+            f"--allow-low-mc-retention only if you intend the DP StopDFF "
+            f"artifact to qualify as a retained-MC-subset metric.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Build audit-card-ready metadata blocks for the writer.
+    eval_coverage_metadata = build_coverage_metadata(
+        eval_coverage,
+        threshold=MIN_MC_COVERAGE,
+        override=args.allow_incomplete_mc_coverage,
+    )
+    eval_coverage_metadata["split"] = args.split
+
+    fit_coverage_metadata = build_coverage_metadata(
+        fit_coverage,
+        threshold=MIN_MC_COVERAGE,
+        override=args.allow_incomplete_mc_coverage,
+    )
+    fit_coverage_metadata["split"] = args.fit_split
+
+    mc_coverage_block = {
+        args.split: eval_coverage_metadata,
+        args.fit_split: fit_coverage_metadata,
+    }
+    mc_retention_block = {
+        args.split: eval_retention_meta,
+        args.fit_split: fit_retention_meta,
+    }
+    mc_build_metadata_block = {
+        "status": build_metadata["status"],
+        "source_path": build_metadata["source_path"],
+        "source_sha256": build_metadata["source_sha256"],
+    }
 
     calibration_path = Path(args.calibration) if not args.identity_calibration else None
     fit_df = adapter_module.build_dataframe(
@@ -295,6 +419,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         gate_verdict_reason=gate_verdict_reason,
         confirmatory=confirmatory,
         generation=generation,
+        mc_coverage=mc_coverage_block,
+        mc_retention_gate=mc_retention_block,
+        mc_build_metadata=mc_build_metadata_block,
     )
 
     writers_module.write_json(out_json, payload)

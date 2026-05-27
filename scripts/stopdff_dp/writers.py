@@ -37,11 +37,21 @@ def assemble_payload(
     gate_verdict_reason: str,
     confirmatory: bool,
     generation: dict | None = None,
+    mc_coverage: dict | None = None,
+    mc_retention_gate: dict | None = None,
+    mc_build_metadata: dict | None = None,
 ) -> dict:
-    """Compose the JSON payload, matching the existing artifact style."""
+    """Compose the JSON payload, matching the existing artifact style.
+
+    The optional ``mc_coverage``, ``mc_retention_gate``, and
+    ``mc_build_metadata`` arguments carry audit-card-ready blocks produced
+    by ``scripts/_audit_gates.py``. When provided, they are surfaced as
+    top-level payload keys so the DP StopDFF artifact matches the
+    convention used by ``csli.json`` and ``stopdff.json``.
+    """
     signed = [shift for _, shift in per_item_stopdff]
     abs_shifts = [abs(s) for s in signed]
-    return {
+    payload = {
         "stopdff_dp_signed_median": float(median(signed)) if signed else 0.0,
         "stopdff_dp_signed_mean": float(mean(signed)) if signed else 0.0,
         "stopdff_dp_abs_median": float(median(abs_shifts)) if abs_shifts else 0.0,
@@ -68,6 +78,13 @@ def assemble_payload(
             "generation": generation,
         },
     }
+    if mc_coverage is not None:
+        payload["mc_coverage"] = mc_coverage
+    if mc_retention_gate is not None:
+        payload["mc_retention_gate"] = mc_retention_gate
+    if mc_build_metadata is not None:
+        payload["mc_build_metadata"] = mc_build_metadata
+    return payload
 
 
 def write_json(path: Path, payload: dict) -> Path:
