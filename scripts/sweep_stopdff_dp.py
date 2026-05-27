@@ -92,6 +92,22 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--n-jobs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--out", default=None)
+    parser.add_argument(
+        "--allow-incomplete-mc-coverage",
+        action="store_true",
+        help=(
+            "Override the MC coverage gate. Use only when downstream "
+            "interpretation accounts for the non-random subset."
+        ),
+    )
+    parser.add_argument(
+        "--allow-low-mc-retention",
+        action="store_true",
+        help=(
+            "Override the MC retention gate. Use only when reporting the "
+            "sweep artifact explicitly as a retained-MC-subset metric."
+        ),
+    )
     parser.add_argument("--identity-calibration", action="store_true")
     parser.add_argument("--smoke", action="store_true")
     return parser.parse_args(argv)
@@ -521,8 +537,26 @@ class SweepEstimator:
         return 0.0
 
 
-def _load_dataframes(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _load_dataframes(
+    args: argparse.Namespace,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict]:
+    """Load split dataframes after applying MC coverage + retention gates.
+
+    Returns ``(fit_df, eval_df, mc_coverage_block, mc_retention_block,
+    mc_build_metadata_block)`` so the gate metadata flows into the sweep
+    payload alongside the dataframes. Mirrors the gate enforcement in
+    ``scripts/compute_stopdff_dp.py`` (PR #15 074df51) so the sweep
+    artifact is treated as audit-card eligible.
+    """
     from scripts.stopdff_dp import adapter as adapter_module
+    from scripts._audit_gates import (
+        build_coverage_metadata,
+        build_retention_metadata,
+        filter_mc_questions_to_split,
+        load_mc_build_metadata,
+    )
+
+    MIN_MC_COVERAGE = 0.98
 
     adapter_module.validate_split_separation(
         fit_split=args.fit_split,
@@ -556,6 +590,103 @@ def _load_dataframes(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFra
         keep = fit_qids | eval_qids
         mc_questions = [q for q in mc_questions if str(q["qid"]) in keep]
 
+    # PR #15 review (chatgpt-codex-connector P2 3313920358): the sweep
+    # artifact is audit-card eligible, so it must enforce the same MC
+    # coverage (>=98%) and retention gates that
+    # scripts/compute_stopdff_dp.py enforces. Missing MC rows are not
+    # random (items where good distractors could not be built), so a
+    # partial subset would silently bias every cell's metrics.
+    _mc_eval_rows, eval_coverage = filter_mc_questions_to_split(
+        mc_questions, eval_qids
+    )
+    _mc_fit_rows, fit_coverage = filter_mc_questions_to_split(
+        mc_questions, fit_qids
+    )
+
+    for split_name, coverage in (
+        (args.eval_split, eval_coverage),
+        (args.fit_split, fit_coverage),
+    ):
+        if (
+            coverage["coverage_rate"] < MIN_MC_COVERAGE
+            and not args.allow_incomplete_mc_coverage
+        ):
+            raise SystemExit(
+                f"ERROR: MC {split_name} coverage is "
+                f"{coverage['coverage_rate']:.1%} "
+                f"(threshold: {MIN_MC_COVERAGE:.1%}). The sweep artifact "
+                f"is audit-card eligible; missing MC qids are not random "
+                f"(selected against 'hard to find distractors'). Pass "
+                f"--allow-incomplete-mc-coverage to override."
+            )
+
+    # Retention gate from build_metadata.json. Mirrors compute_stopdff_dp.py.
+    try:
+        build_metadata = load_mc_build_metadata(data_dir)
+    except RuntimeError as exc:
+        raise SystemExit(f"ERROR: {exc}") from exc
+
+    eval_retention = build_retention_metadata(
+        build_metadata,
+        split=args.eval_split,
+        smoke=args.smoke,
+        explicit_threshold=None,
+        override=args.allow_low_mc_retention,
+    )
+    fit_retention = build_retention_metadata(
+        build_metadata,
+        split=args.fit_split,
+        smoke=args.smoke,
+        explicit_threshold=None,
+        override=args.allow_low_mc_retention,
+    )
+
+    for split_name, ret in (
+        (args.eval_split, eval_retention),
+        (args.fit_split, fit_retention),
+    ):
+        if (
+            ret["applies"]
+            and ret["passed"] is False
+            and not args.allow_low_mc_retention
+        ):
+            raise SystemExit(
+                f"ERROR: raw-{split_name} MC retention is "
+                f"{ret['retention_rate']:.1%} (threshold: "
+                f"{ret['threshold']:.1%}). Pass --allow-low-mc-retention "
+                f"only if you intend the sweep artifact to qualify as a "
+                f"retained-MC-subset metric."
+            )
+
+    # Audit-card-ready metadata blocks.
+    eval_coverage_meta = build_coverage_metadata(
+        eval_coverage,
+        threshold=MIN_MC_COVERAGE,
+        override=args.allow_incomplete_mc_coverage,
+    )
+    eval_coverage_meta["split"] = args.eval_split
+
+    fit_coverage_meta = build_coverage_metadata(
+        fit_coverage,
+        threshold=MIN_MC_COVERAGE,
+        override=args.allow_incomplete_mc_coverage,
+    )
+    fit_coverage_meta["split"] = args.fit_split
+
+    mc_coverage_block = {
+        args.eval_split: eval_coverage_meta,
+        args.fit_split: fit_coverage_meta,
+    }
+    mc_retention_block = {
+        args.eval_split: eval_retention,
+        args.fit_split: fit_retention,
+    }
+    mc_build_metadata_block = {
+        "status": build_metadata["status"],
+        "source_path": build_metadata["source_path"],
+        "source_sha256": build_metadata["source_sha256"],
+    }
+
     calibration_path = None if args.identity_calibration else Path(args.calibration)
     fit_df = adapter_module.build_dataframe(
         mc_questions=mc_questions,
@@ -571,7 +702,13 @@ def _load_dataframes(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFra
         calibration_path=calibration_path,
         identity_calibration=args.identity_calibration,
     )
-    return fit_df, eval_df
+    return (
+        fit_df,
+        eval_df,
+        mc_coverage_block,
+        mc_retention_block,
+        mc_build_metadata_block,
+    )
 
 
 def _fit_estimator(
@@ -1362,7 +1499,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     max_seconds = None if args.max_wall_hours is None else args.max_wall_hours * 3600.0
 
     try:
-        fit_df_base, eval_df_base = _load_dataframes(args)
+        (
+            fit_df_base,
+            eval_df_base,
+            mc_coverage_block,
+            mc_retention_block,
+            mc_build_metadata_block,
+        ) = _load_dataframes(args)
+    except SystemExit:
+        # Gate violations (coverage/retention) deliberately raise SystemExit
+        # with a stderr message; let the operator see the original message
+        # rather than silently degrading to a payload write.
+        raise
     except Exception as exc:  # noqa: BLE001
         payload = {
             "metadata": {
@@ -1435,6 +1583,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         and c.get("run_fingerprint") == run_fingerprint
     ]
     aggregate = _aggregate(visible_cells, args, effective_argv)
+    aggregate["mc_coverage"] = mc_coverage_block
+    aggregate["mc_retention_gate"] = mc_retention_block
+    aggregate["mc_build_metadata"] = mc_build_metadata_block
     _write_aggregate_outputs(out, aggregate)
     print(
         f"[STOPDFF-DP-SWEEP] Wrote {out} "

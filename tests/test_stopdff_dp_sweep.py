@@ -323,3 +323,97 @@ def test_paper_safe_interpretation_warns_when_any_non_oracle_cell_is_weak() -> N
 
     assert result["verdict"] == "WARN"
     assert result["reason"] == "small_stopdff_but_coverage_or_ceiling_weak"
+
+
+def _fake_mc_question_for_sweep(qid: str) -> dict:
+    """Minimal MC question for sweep gate tests."""
+    return {
+        "qid": qid,
+        "question": "What is the question?",
+        "tokens": ["What", "is", "the", "question"],
+        "answer_primary": "answer",
+        "clean_answers": ["answer"],
+        "run_indices": [0, 3],
+        "human_buzz_positions": [],
+        "category": "History",
+        "cumulative_prefixes": ["What", "What is the question"],
+        "options": ["answer", "distractor1", "distractor2", "distractor3"],
+        "gold_index": 0,
+        "option_profiles": ["a", "b", "c", "d"],
+        "option_answer_primary": ["answer", "d1", "d2", "d3"],
+        "distractor_strategy": "test",
+    }
+
+
+def test_sweep_rejects_incomplete_mc_coverage_without_override(tmp_path):
+    """Sweep must exit nonzero when MC coverage < 98% and no override."""
+    import json as _json
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question_for_sweep(f"v{i}") for i in range(10)]
+    test_qs = [_fake_mc_question_for_sweep(f"t{i}") for i in range(10)]
+    # mc_dataset is a strict subset (missing 5 of each).
+    mc_subset = val_qs[:5] + test_qs[:5]
+    (data_dir / "mc_dataset.json").write_text(_json.dumps(mc_subset))
+    (data_dir / "val_dataset.json").write_text(_json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(_json.dumps(test_qs))
+
+    from scripts import sweep_stopdff_dp
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        sweep_stopdff_dp.main([
+            "--data-dir", str(data_dir),
+            "--fit-split", "val",
+            "--eval-split", "test",
+            "--reward-schedules", "acf_flat",
+            "--continuations", "empirical_bucket",
+            "--calibrators", "uncalibrated",
+            "--formats", "QA-prefix,MC-fixed",
+            "--prefix-bucketing", "early_mid_late",
+            "--subject-pooling", "per_subject",
+            "--num-bootstrap", "5",
+            "--identity-calibration",
+            "--smoke",
+            "--out", str(tmp_path / "out.json"),
+        ])
+
+
+def test_sweep_records_coverage_metadata_in_payload(tmp_path):
+    """When MC coverage is complete, the sweep payload records mc_coverage."""
+    import json as _json
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question_for_sweep(f"v{i}") for i in range(5)]
+    test_qs = [_fake_mc_question_for_sweep(f"t{i}") for i in range(5)]
+    (data_dir / "mc_dataset.json").write_text(_json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(_json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(_json.dumps(test_qs))
+
+    from scripts import sweep_stopdff_dp
+    out_json = tmp_path / "out.json"
+    rc = sweep_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--fit-split", "val",
+        "--eval-split", "test",
+        "--reward-schedules", "acf_flat",
+        "--continuations", "empirical_bucket",
+        "--calibrators", "uncalibrated",
+        "--formats", "QA-prefix,MC-fixed",
+        "--prefix-bucketing", "early_mid_late",
+        "--subject-pooling", "per_subject",
+        "--num-bootstrap", "5",
+        "--identity-calibration",
+        "--smoke",
+        "--out", str(out_json),
+    ])
+    assert rc == 0 or rc is None
+    payload = _json.loads(out_json.read_text())
+    assert "mc_coverage" in payload
+    eval_block = payload["mc_coverage"]["test"]
+    assert eval_block["passed"] is True
+    assert eval_block["overridden"] is False
+    assert eval_block["coverage_rate"] == 1.0
+    # Retention block also present.
+    assert "mc_retention_gate" in payload
+    # Build metadata absent (no build_metadata.json in synthetic data dir).
+    assert "mc_build_metadata" in payload
