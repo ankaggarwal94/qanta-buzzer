@@ -1,9 +1,13 @@
 """Normalize existing qanta-buzzer artifacts into the DP-StopDFF dataframe.
 
 Adapter columns (frozen by ``types.ADAPTER_COLUMNS``):
-    subject, item_id, prefix_idx, format, split,
+    subject, item_id, prefix_idx, prefix_fraction, format, split,
     p_raw, p_calibrated, correct, top_answer, gold,
     category, option_set_id
+
+``prefix_fraction`` = ``len(prefix) / len(full_question)`` — matches the
+existing calibration / myopic-StopDFF convention and is used directly by
+the empirical bucket fit and the CLI to assign early/mid/late buckets.
 
 For each MC question and each cumulative prefix, the adapter emits two
 rows: one for the MC format (max cosine similarity over the K=4
