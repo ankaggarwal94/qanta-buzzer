@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import struct
 import sys
 import time
@@ -1351,6 +1352,41 @@ def _write_markdown(path: Path, payload: dict) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _latex_escape(value: object) -> str:
+    """Escape LaTeX special characters in a string field.
+
+    Identifier-style labels like ``acf_flat``, ``empirical_bucket``,
+    ``QA-prefix`` will not compile as plain LaTeX text because ``_`` is
+    a subscript character; ``&``, ``%``, ``$``, ``#``, ``{``, ``}``,
+    ``~``, ``^`` and ``\\`` have their own catastrophic-or-silent issues.
+    Replaces each with its standard ``\\<char>`` equivalent (``\\textasciitilde{}``
+    / ``\\textasciicircum{}`` for the two diacritic-mark cases that don't
+    have a simple backslash form).
+
+    Implemented as a single-pass ``re.sub`` so that replacement strings
+    (e.g. ``\\textbackslash{}`` containing ``{}``) are not re-processed
+    by later rules.
+    """
+    text = str(value)
+    # Map of source char to its LaTeX-safe replacement. Single-pass via
+    # re.sub avoids double-escaping: each input character is matched at
+    # most once and its replacement is written verbatim into the output.
+    replacements = {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+        "~": r"\textasciitilde{}",
+        "^": r"\textasciicircum{}",
+    }
+    pattern = re.compile("|".join(re.escape(c) for c in replacements))
+    return pattern.sub(lambda m: replacements[m.group(0)], text)
+
+
 def _write_latex(path: Path, payload: dict) -> None:
     rows = [
         "\\begin{tabular}{llllr}",
@@ -1362,8 +1398,10 @@ def _write_latex(path: Path, payload: dict) -> None:
         if cell.get("status") != "completed":
             continue
         rows.append(
-            f"{cell['reward_schedule']} & {cell['continuation']} & "
-            f"{cell['calibrator']} & {cell['format_condition']} & "
+            f"{_latex_escape(cell['reward_schedule'])} & "
+            f"{_latex_escape(cell['continuation'])} & "
+            f"{_latex_escape(cell['calibrator'])} & "
+            f"{_latex_escape(cell['format_condition'])} & "
             f"{cell['metrics']['stopdff_dp_signed_mean']:.3f} \\\\"
         )
     rows.extend(["\\bottomrule", "\\end{tabular}"])

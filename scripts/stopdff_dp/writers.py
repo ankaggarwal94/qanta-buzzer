@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median, mean
@@ -20,6 +21,36 @@ def _fmt_float(value: object, spec: str = ".3f") -> str:
     if value is None:
         return "n/a"
     return format(value, spec)
+
+
+def _latex_escape(value: object) -> str:
+    """Escape LaTeX special characters in a string field.
+
+    Defensive even when current values are well-known constants like
+    ``pass`` / ``warn``: future schedule names or producer-augmented
+    string fields could include ``_``, ``&``, ``%``, ``$``, ``#``,
+    ``{``, ``}``, ``~``, ``^``, or ``\\``. Mirrors the sweep writer's
+    helper at scripts/sweep_stopdff_dp.py:_latex_escape.
+
+    Implemented as a single-pass ``re.sub`` so replacement strings (e.g.
+    ``\\textbackslash{}`` containing ``{}``) are not re-processed by
+    later rules.
+    """
+    text = str(value)
+    replacements = {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+        "~": r"\textasciitilde{}",
+        "^": r"\textasciicircum{}",
+    }
+    pattern = re.compile("|".join(re.escape(c) for c in replacements))
+    return pattern.sub(lambda m: replacements[m.group(0)], text)
 
 
 def assemble_payload(
@@ -170,7 +201,7 @@ def write_latex(path: Path, payload: dict) -> Path:
         f"$n_{{items}}$ & {payload['n_items']} \\\\",
         f"Coverage exact & {_fmt_float(payload['coverage']['fraction_exact'])} \\\\",
         f"Coverage pooled & {_fmt_float(payload['coverage']['fraction_pooled'])} \\\\",
-        f"Gate verdict & {payload['gate_verdict']} \\\\",
+        f"Gate verdict & {_latex_escape(payload['gate_verdict'])} \\\\",
         "\\bottomrule",
         "\\end{tabular}",
     ]

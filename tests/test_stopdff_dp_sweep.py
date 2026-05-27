@@ -835,3 +835,55 @@ def test_helper_paths_matches_helper_sha256s_keys():
         paths_set.add(rel)
     hashes_set = set(helper_sha256s().keys())
     assert paths_set == hashes_set
+
+
+def test_sweep_latex_escapes_label_underscores(tmp_path):
+    """Sweep _write_latex must escape underscores in labels like acf_flat.
+
+    Without the escape, the .tex file produces a 'Missing $ inserted'
+    LaTeX compile error because ``_`` is a subscript operator in text mode.
+    """
+    from scripts.sweep_stopdff_dp import _write_latex
+    payload = {
+        "cells": [
+            {
+                "status": "completed",
+                "reward_schedule": "acf_flat",
+                "continuation": "empirical_bucket",
+                "calibrator": "uncalibrated",
+                "format_condition": "MC-fixed",
+                "metrics": {"stopdff_dp_signed_mean": 0.123},
+            },
+        ],
+    }
+    out = tmp_path / "table.tex"
+    _write_latex(out, payload)
+    body = out.read_text()
+    # The label underscores must be escaped.
+    assert "acf\\_flat" in body
+    assert "empirical\\_bucket" in body
+    # And a bare underscore must NOT survive in the body (apart from any
+    # LaTeX-command tail like \\\\ which is already absent for these labels).
+    assert "acf_flat" not in body
+    assert "empirical_bucket" not in body
+
+
+def test_sweep_latex_escapes_all_special_characters():
+    """The _latex_escape helper must handle the 10 LaTeX specials."""
+    from scripts.sweep_stopdff_dp import _latex_escape
+    # Order of characters in the input string matters for the backslash-first
+    # rule. Verify a label with every special character is escaped correctly.
+    cases = [
+        ("simple", "simple"),
+        ("acf_flat", "acf\\_flat"),
+        ("foo&bar", "foo\\&bar"),
+        ("100%", "100\\%"),
+        ("$100", "\\$100"),
+        ("#1", "\\#1"),
+        ("a{b}c", "a\\{b\\}c"),
+        ("a~b", r"a\textasciitilde{}b"),
+        ("a^b", r"a\textasciicircum{}b"),
+        ("a\\b", r"a\textbackslash{}b"),
+    ]
+    for raw, expected in cases:
+        assert _latex_escape(raw) == expected, (raw, expected, _latex_escape(raw))

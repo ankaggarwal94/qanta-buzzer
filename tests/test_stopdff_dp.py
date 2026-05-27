@@ -1372,3 +1372,31 @@ def test_audit_card_dp_helper_hashes_all_match_keeps_pass(tmp_path, monkeypatch)
     dp_prov = card["artifact_provenance"]["stopdff_dp.json"]
     assert dp_prov["sha_matches"] is True
     assert dp_prov["helper_mismatches"] is None
+
+
+def test_writer_latex_escapes_gate_verdict_string(tmp_path):
+    """writers.write_latex must escape the gate_verdict field.
+
+    Defensive — current gate_verdict values are alphabetical, but future
+    string fields piped through this writer could include LaTeX specials.
+    """
+    from scripts.stopdff_dp.writers import write_latex
+    payload = {
+        "stopdff_dp_signed_median": 0.0,
+        "stopdff_dp_signed_mean": 0.0,
+        "stopdff_dp_abs_median": 0.0,
+        "n_items": 0,
+        "coverage": {
+            "fraction_exact": 0.5,
+            "fraction_pooled": 0.5,
+            "fraction_missing": 0.0,
+            "verdict": "pass", "reason": "ok",
+        },
+        "gate_verdict": "warn_special_$_chars",  # contains underscores + $
+    }
+    out = tmp_path / "table.tex"
+    write_latex(out, payload)
+    body = out.read_text()
+    assert "warn\\_special\\_\\$\\_chars" in body
+    # Bare underscore in the verdict string must not appear.
+    assert "warn_special_$_chars" not in body
