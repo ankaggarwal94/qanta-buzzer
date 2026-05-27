@@ -424,3 +424,54 @@ def test_ceiling_empty_flag() -> None:
     assert flags["empty"] is True
     assert flags["n_items"] == 0
     assert flags["no_cross_format_stopping_variance"] is False
+
+
+from scripts.stopdff_dp import adapter as adapter_module
+
+
+def _fake_mc_question(qid: str, gold_text: str = "George Washington") -> dict:
+    """Synthesize the minimum MC question dict the adapter expects."""
+    return {
+        "qid": qid,
+        "question": "Who was the first president of the United States?",
+        "tokens": ["Who", "was", "the", "first", "president"],
+        "answer_primary": gold_text,
+        "clean_answers": [gold_text],
+        "run_indices": [0, 4],
+        "human_buzz_positions": [],
+        "category": "History",
+        "cumulative_prefixes": ["Who", "Who was the first president"],
+        "options": [gold_text, "Thomas Jefferson", "John Adams", "Benjamin Franklin"],
+        "gold_index": 0,
+        "option_profiles": [
+            "president", "vice", "second", "diplomat",
+        ],
+        "option_answer_primary": [
+            gold_text, "Thomas Jefferson", "John Adams", "Benjamin Franklin",
+        ],
+        "distractor_strategy": "test",
+    }
+
+
+def test_adapter_produces_canonical_columns(monkeypatch) -> None:
+    """The adapter must yield a dataframe with the canonical column set."""
+    fake_questions = [_fake_mc_question("q1")]
+    df = adapter_module.build_dataframe(
+        mc_questions=fake_questions,
+        target_qids={"q1"},
+        split_name="val",
+        calibration_path=None,  # Use the identity-calibration test mode
+        identity_calibration=True,
+    )
+    from scripts.stopdff_dp.types import ADAPTER_COLUMNS
+    assert list(df.columns) == list(ADAPTER_COLUMNS)
+    # Two rows per (qid, prefix) per format -> 2 prefixes * 2 formats = 4.
+    assert len(df) == 4
+
+
+def test_adapter_fit_eval_split_separation_raises_on_overlap() -> None:
+    """Passing the same split for fit and eval should raise."""
+    with pytest.raises(ValueError, match="fit and eval split must differ"):
+        adapter_module.validate_split_separation(
+            fit_split="test", eval_split="test"
+        )
