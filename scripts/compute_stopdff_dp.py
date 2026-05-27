@@ -66,6 +66,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     effective_argv = list(argv) if argv is not None else list(sys.argv[1:])
     args = _parse_args(argv)
 
+    if args.allow_incomplete_mc_coverage or args.allow_low_mc_retention:
+        print(
+            "WARNING: --allow-incomplete-mc-coverage and "
+            "--allow-low-mc-retention are accepted for CLI symmetry with "
+            "scripts/compute_stopdff.py but currently no-op in the DP "
+            "StopDFF script. Coverage and retention gates may be added in a "
+            "future revision; for now these flags do not affect any check.",
+            file=sys.stderr,
+        )
+
     data_dir = Path(args.data_dir)
     out_json = Path(args.out)
     out_md = Path(args.out_md)
@@ -111,7 +121,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
 
     from scripts._common import load_json, iter_split_questions
-    mc_questions = load_json(mc_path)
+    mc_questions = iter_split_questions(load_json(mc_path), source_path=mc_path)
     fit_questions = iter_split_questions(load_json(fit_path), source_path=fit_path)
     eval_questions = iter_split_questions(load_json(eval_path), source_path=eval_path)
     fit_qids = {str(q["qid"]) for q in fit_questions}
@@ -119,8 +129,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.smoke:
         # Subsample mc_questions to first 30 qids of each split.
-        keep_fit = list(fit_qids)[:30]
-        keep_eval = list(eval_qids)[:30]
+        # sorted() ensures deterministic selection across PYTHONHASHSEED;
+        # list(set) iteration order is salt-dependent.
+        keep_fit = sorted(fit_qids)[:30]
+        keep_eval = sorted(eval_qids)[:30]
         fit_qids = set(keep_fit)
         eval_qids = set(keep_eval)
         kept_qids = fit_qids | eval_qids

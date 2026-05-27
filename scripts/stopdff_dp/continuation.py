@@ -276,6 +276,20 @@ class PooledEmpiricalEstimator:
     inner: EmpiricalBucketEstimator
     confirmatory: bool = True
 
+    @property
+    def _last_tag(self) -> str:
+        """Proxy to the inner estimator's last coverage tag.
+
+        Bug fix: orchestrator reads ``getattr(estimator, "_last_tag",
+        "exact")`` off the outer wrapper. Without this proxy, the default
+        "exact" is silently returned and coverage diagnostics are wrong.
+        """
+        return self.inner._last_tag
+
+    @property
+    def _last_rung(self) -> tuple[str, ...] | None:
+        return self.inner._last_rung
+
     @classmethod
     def fit(
         cls,

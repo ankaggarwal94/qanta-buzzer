@@ -689,3 +689,91 @@ def test_cli_rejects_same_split_for_fit_and_eval(tmp_path) -> None:
         "--out-tex", str(tmp_path / "out.tex"),
     ])
     assert rc != 0
+
+
+def test_cli_pooled_empirical_reports_pooled_coverage(tmp_path) -> None:
+    """Regression: PooledEmpiricalEstimator must surface pooled coverage,
+    not silently return 'exact' via the missing _last_tag proxy."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    # 10 items per split so the pool has enough rows for any rung.
+    val_qs = [_fake_mc_question(f"v{i}") for i in range(10)]
+    test_qs = [_fake_mc_question(f"t{i}") for i in range(10)]
+    (data_dir / "mc_dataset.json").write_text(json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(json.dumps(test_qs))
+
+    out_json = tmp_path / "out.json"
+    from scripts import compute_stopdff_dp
+    rc = compute_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--split", "test",
+        "--fit-split", "val",
+        "--reward-schedule", "acf_flat",
+        "--continuation", "pooled_empirical",
+        "--identity-calibration",
+        "--out", str(out_json),
+        "--out-md", str(tmp_path / "out.md"),
+        "--out-tex", str(tmp_path / "out.tex"),
+    ])
+    assert rc == 0
+    payload = json.loads(out_json.read_text())
+    # Pooled estimator skips the most-specific rungs, so coverage should
+    # report pooled > 0 (NOT 100% exact via the missing-property bug).
+    assert payload["coverage"]["fraction_pooled"] > 0.0
+
+
+def test_cli_oracle_trajectory_flags_non_confirmatory(tmp_path) -> None:
+    """Oracle continuation must emit confirmatory=False in the payload."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question(f"v{i}") for i in range(3)]
+    test_qs = [_fake_mc_question(f"t{i}") for i in range(3)]
+    (data_dir / "mc_dataset.json").write_text(json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(json.dumps(test_qs))
+    out_json = tmp_path / "out.json"
+    from scripts import compute_stopdff_dp
+    rc = compute_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--split", "test",
+        "--fit-split", "val",
+        "--reward-schedule", "acf_flat",
+        "--continuation", "oracle_trajectory",
+        "--identity-calibration",
+        "--out", str(out_json),
+        "--out-md", str(tmp_path / "out.md"),
+        "--out-tex", str(tmp_path / "out.tex"),
+    ])
+    assert rc == 0
+    payload = json.loads(out_json.read_text())
+    assert payload["confirmatory"] is False
+    assert payload["metadata"]["continuation_estimator"] == "oracle_trajectory"
+
+
+def test_cli_smoke_prunes_to_30_qids_per_split(tmp_path) -> None:
+    """--smoke caps eval to 30 qids; n_items in payload must be <= 30."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question(f"v{i}") for i in range(50)]
+    test_qs = [_fake_mc_question(f"t{i}") for i in range(50)]
+    (data_dir / "mc_dataset.json").write_text(json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(json.dumps(test_qs))
+    out_json = tmp_path / "out.json"
+    from scripts import compute_stopdff_dp
+    rc = compute_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--split", "test",
+        "--fit-split", "val",
+        "--reward-schedule", "acf_flat",
+        "--continuation", "empirical_bucket",
+        "--identity-calibration",
+        "--smoke",
+        "--out", str(out_json),
+        "--out-md", str(tmp_path / "out.md"),
+        "--out-tex", str(tmp_path / "out.tex"),
+    ])
+    assert rc == 0
+    payload = json.loads(out_json.read_text())
+    assert payload["n_items"] <= 30
