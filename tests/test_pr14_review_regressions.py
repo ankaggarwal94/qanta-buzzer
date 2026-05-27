@@ -2250,6 +2250,30 @@ def test_modal_main_impl_normalizes_absolute_in_repo_output_dir_before_remote() 
         )
 
 
+def test_modal_main_impl_normalizes_absolute_in_repo_config_before_remote() -> None:
+    """Absolute in-repo --config paths must be translated before Modal dispatch.
+
+    Local preflight can read a host-absolute config path, but the remote
+    container cannot. Normalize host-absolute-under-REPO_ROOT configs to
+    repo-relative paths before ``run_pipeline.remote`` so container-side
+    stage commands resolve them under ``/app``.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "modal_cs321m.py").read_text(encoding="utf-8")
+    for substr in (
+        "remote_config = args.config",
+        "_config_path.is_absolute()",
+        "_config_path.resolve().relative_to(REPO_ROOT)",
+        "remote_config = str(_rel_config)",
+        "remote_config,",
+    ):
+        assert substr in source, (
+            f"modal_cs321m._main_impl must normalize absolute-under-REPO_ROOT "
+            f"--config before run_pipeline.remote(); missing contract "
+            f"substring: {substr!r}"
+        )
+
+
 def test_fresh_split_archive_timestamps_have_microsecond_resolution() -> None:
     """PR #14 follow-up review (Copilot #3308936234): two fresh_split.py
     runs within the same second collide on

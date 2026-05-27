@@ -725,20 +725,25 @@ def _main_impl():
     except OSError:
         pass
 
-    # PR #14 follow-up review (Codex #3308936329): when --output-dir is an
-    # absolute path UNDER the host's REPO_ROOT (e.g.,
-    # ``$(pwd)/artifacts/run42``), the container can't translate it back
-    # because its own REPO_ROOT is /app — the host path looks "outside repo"
-    # to the container's helpers, so ``_path_for_container`` returns it as-is
-    # (a path that doesn't exist inside the container) and host-side
-    # ``_absolute_output_anchor`` returns None (because it IS under host
-    # REPO_ROOT), so artifacts get written to REPO_ROOT/paper_exports/...
-    # instead of the operator's requested subdir -- potentially clobbering
-    # the curated production paper_exports/. Normalize host-absolute-under-
-    # REPO_ROOT to a REPO_ROOT-relative path BEFORE remote dispatch; the
-    # container then routes naturally via its own /app, and the host writer
-    # anchors the relative artifact keys at REPO_ROOT, which combines to
-    # land files at the operator's intended absolute location.
+    # PR #14 follow-up review (Codex #3308936329 / #3309629211): when
+    # --output-dir or --config is an absolute path UNDER the host's REPO_ROOT
+    # (e.g., ``$(pwd)/artifacts/run42`` or
+    # ``$(pwd)/configs/cs321m_smoke.yaml``), the container can't translate it
+    # because its own REPO_ROOT is /app. The host path looks "outside repo" to
+    # container helpers, so ``_path_for_container`` returns it as-is (a path
+    # that doesn't exist inside the container). Normalize host-absolute-under-
+    # REPO_ROOT to REPO_ROOT-relative paths BEFORE remote dispatch; the
+    # container then routes naturally via its own /app, and the host artifact
+    # writer anchors returned relative keys at the host REPO_ROOT.
+    remote_config = args.config
+    _config_path = Path(remote_config)
+    if _config_path.is_absolute():
+        try:
+            _rel_config = _config_path.resolve().relative_to(REPO_ROOT)
+            remote_config = str(_rel_config)
+        except ValueError:
+            pass  # Outside REPO_ROOT -- truly external; keep absolute.
+
     remote_output_dir = args.output_dir
     if remote_output_dir is not None:
         _out_path = Path(remote_output_dir)
@@ -752,7 +757,7 @@ def _main_impl():
     try:
         remote_result = run_pipeline.remote(
             stages,
-            args.config,
+            remote_config,
             remote_output_dir,
             smoke,
             budget_limit,
