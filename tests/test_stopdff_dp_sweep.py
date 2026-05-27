@@ -555,3 +555,68 @@ def test_sweep_non_resume_excludes_stale_cached_cells(tmp_path):
     assert "reward_schedule" in second_cells[0]
     # All cells should have reward_schedule == acf_flat
     assert second_cells[0]["reward_schedule"] == "acf_flat"
+
+
+def test_sweep_dirty_check_is_scoped_to_relevant_paths(tmp_path, monkeypatch):
+    """_git_metadata's dirty flag should only consider script + inputs,
+    not unrelated repo state (e.g., other untracked files).
+
+    PR #15 review (chatgpt-codex-connector P2 3314002960): _git_metadata used
+    to run `git status --porcelain` with no pathspec, so any unrelated dirty
+    file in the repo (e.g., PROJECT_WIKI/TRANSCRIPTS/modal_spend.log left over
+    from a parallel session) flagged git_dirty: true in every cell's
+    provenance.
+    """
+    import json as _json
+    import subprocess as _subprocess
+    from pathlib import Path as _Path
+    from scripts import sweep_stopdff_dp
+
+    repo_root = _Path(__file__).resolve().parent.parent
+    # Skip if the live script is dirty (e.g., during local dev before commit).
+    proc = _subprocess.run(
+        ["git", "status", "--short", "--", "scripts/sweep_stopdff_dp.py"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0 or proc.stdout.strip():
+        import pytest as _pytest
+        _pytest.skip("scripts/sweep_stopdff_dp.py is dirty in the working tree")
+
+    # The repo is the live repo, but we synthesize args pointing at a
+    # tmp data dir so the scoped pathspec only checks files we control.
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question_for_sweep(f"v{i}") for i in range(3)]
+    test_qs = [_fake_mc_question_for_sweep(f"t{i}") for i in range(3)]
+    (data_dir / "mc_dataset.json").write_text(_json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(_json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(_json.dumps(test_qs))
+
+    args = sweep_stopdff_dp._parse_args([
+        "--data-dir", str(data_dir),
+        "--fit-split", "val",
+        "--eval-split", "test",
+        "--identity-calibration",
+        "--out", str(tmp_path / "out.json"),
+    ])
+
+    # Synthesize an "unrelated" dirty file inside the repo (not in args.data_dir).
+    # We use a temp file in PROJECT_ROOT outside the scoped paths.
+    unrelated = repo_root / "TEMP_UNRELATED_DIRTY_FILE_FOR_TEST.txt"
+    unrelated.write_text("scratch")
+    try:
+        # The new args.data_dir points to a tmp dir OUTSIDE the repo,
+        # so its files are not part of the scoped pathspec. Therefore
+        # the only repo-relative path in the spec is the live
+        # scripts/sweep_stopdff_dp.py, which should be clean.
+        commit, dirty = sweep_stopdff_dp._git_metadata(args, out=tmp_path / "out.json")
+        # commit may be None in shallow CI but should be a 40-char SHA locally.
+        # dirty should be False because the unrelated file is not in the pathspec.
+        assert dirty is False, (
+            f"dirty should ignore unrelated repo files; "
+            f"unrelated={unrelated}, commit={commit}"
+        )
+    finally:
+        unrelated.unlink(missing_ok=True)

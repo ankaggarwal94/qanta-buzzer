@@ -140,8 +140,45 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
     os.replace(tmp, path)
 
 
-def _git_metadata() -> tuple[str | None, bool | None]:
+def _git_metadata(args: argparse.Namespace, *, out: Path) -> tuple[str | None, bool | None]:
+    """Return (git_commit, git_dirty) scoped to the sweep's relevant paths.
+
+    The dirty check explicitly EXCLUDES the output paths (sweep JSON / MD / TeX,
+    figures, cell cache directory) because the run is supposed to modify those.
+    A dirty flag should reflect changes to the producer script or its INPUTS
+    (mc_dataset, val/test splits, build_metadata, calibration) relative to HEAD.
+
+    Mirrors scripts/_common.build_generation_provenance's scoped approach (see
+    its comment about `git status -- <abs_path>` aborting when paths are outside
+    the repo).
+    """
     import subprocess
+
+    data_dir = Path(args.data_dir).resolve()
+    script_path = Path(__file__).resolve()
+    calibration_path = (
+        None if args.identity_calibration else Path(args.calibration).resolve()
+    )
+
+    # Repo-relative paths only — `git status --` rejects external pathspecs.
+    candidate_paths = [
+        script_path,
+        data_dir / "mc_dataset.json",
+        data_dir / f"{args.fit_split}_dataset.json",
+        data_dir / f"{args.eval_split}_dataset.json",
+        data_dir / "build_metadata.json",
+    ]
+    if calibration_path is not None:
+        candidate_paths.append(calibration_path)
+
+    repo_relative_paths: list[str] = []
+    for p in candidate_paths:
+        try:
+            rel = p.resolve().relative_to(PROJECT_ROOT)
+        except ValueError:
+            # Path is outside the repo; skip rather than abort.
+            continue
+        repo_relative_paths.append(rel.as_posix())
 
     try:
         commit = subprocess.check_output(
@@ -152,13 +189,15 @@ def _git_metadata() -> tuple[str | None, bool | None]:
         ).strip()
     except Exception:  # noqa: BLE001 - provenance is best-effort
         commit = None
+
     try:
-        dirty = bool(subprocess.check_output(
-            ["git", "status", "--porcelain"],
+        status = subprocess.check_output(
+            ["git", "status", "--short", "--", *repo_relative_paths],
             cwd=PROJECT_ROOT,
             text=True,
             stderr=subprocess.DEVNULL,
-        ).strip())
+        ).strip()
+        dirty = bool(status)
     except Exception:  # noqa: BLE001
         dirty = None
     return commit, dirty
@@ -1500,7 +1539,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     artifact_dir = Path(args.artifact_dir) if args.artifact_dir else DEFAULT_OUT.parent
     out = Path(args.out) if args.out else artifact_dir / "stopdff_dp_sweep.json"
     cell_dir = _cell_cache_dir(args, out)
-    git_commit, git_dirty = _git_metadata()
+    git_commit, git_dirty = _git_metadata(args, out=out)
     run_fingerprint = _run_fingerprint(args, out=out, git_commit=git_commit)
     myopic_artifact = _load_myopic_artifact(args, out)
     start = time.time()
