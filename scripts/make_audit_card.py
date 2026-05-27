@@ -45,7 +45,7 @@ _SCRIPT_VERSION = "1.0.0"
 sys.path.insert(0, str(_REPO_ROOT))
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate Pilot Benchmark Translation Audit Card"
     )
@@ -54,7 +54,16 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Parse args and print what would happen without writing files",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--include-dp-stopdff",
+        action="store_true",
+        help=(
+            "Append a finite-horizon DP StopDFF row from paper_exports/"
+            "stopdff_dp.json to the audit card (in addition to, not replacing, "
+            "the existing diagnostic row)."
+        ),
+    )
+    return parser.parse_args(argv)
 
 
 def _load_json(path: Path) -> dict:
@@ -385,6 +394,52 @@ def _evaluate_stopdff(stopdff_data: dict, threshold: float) -> dict:
             "ceiling_effect_detected": ceiling_effect,
             "unreachable_buckets": unreachable_buckets,
             "reachability": reachability,
+        },
+    }
+
+
+def _evaluate_stopdff_dp(dp_data: dict) -> dict:
+    """Evaluate DP StopDFF (signed median) against +/-1 prefix tolerance.
+
+    Mirrors _evaluate_stopdff for the new finite-horizon DP artifact. Uses
+    the same hard threshold (|signed_median| <= 1 prefix) as the diagnostic.
+    Surfaces continuation estimator name + confirmatory flag in details.
+
+    NOT WIRED INTO _build_artifact_provenance for v1 -- script_sha256 cross-
+    checking the DP producer is deferred. The DP artifact does carry its own
+    `metadata.generation` block (see scripts.stopdff_dp.writers), so future
+    audit-card revisions can extend the provenance map.
+    """
+    signed_median = dp_data["stopdff_dp_signed_median"]
+    coverage = dp_data["coverage"]
+    verdict = dp_data["gate_verdict"]
+    confirmatory = dp_data.get("confirmatory", False)
+    qualifier_parts = []
+    if not confirmatory:
+        qualifier_parts.append("non-confirmatory continuation estimator")
+    if coverage.get("verdict") == "warn":
+        qualifier_parts.append(coverage.get("reason", "coverage warn"))
+    return {
+        "name": "DP StopDFF (Finite-Horizon Bellman, signed median)",
+        "value": signed_median,
+        "value_display": f"{signed_median:+.4f}",
+        "threshold": 1,
+        "threshold_criterion": "|signed_median_stopdff| <= 1",
+        "observed_criterion_value": abs(signed_median),
+        "direction": "warn_if_above",
+        "verdict": verdict,
+        "verdict_qualifier": "; ".join(qualifier_parts) if qualifier_parts else None,
+        "details": {
+            "reward_schedule": dp_data["metadata"]["reward_schedule"],
+            "continuation_estimator": dp_data["metadata"]["continuation_estimator"],
+            "fit_split": dp_data["metadata"]["fit_split"],
+            "eval_split": dp_data["metadata"]["eval_split"],
+            "coverage": coverage,
+            "ceiling_flags": dp_data["ceiling_flags"],
+            "n_items": dp_data["n_items"],
+            "direction_breakdown": dp_data["direction_breakdown"],
+            "confirmatory": confirmatory,
+            "metric_type": dp_data["metadata"]["metric_type"],
         },
     }
 
@@ -887,8 +942,8 @@ def _render_data_provenance_md(provenance: dict) -> list[str]:
     return lines
 
 
-def main() -> int:
-    args = _parse_args()
+def main_with_args(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
 
     print("=== Pilot Benchmark Translation Audit Card ===")
     print()
@@ -934,6 +989,21 @@ def main() -> int:
         _evaluate_calibration(cal_data, thresholds["prefix_ece"]),
         _evaluate_stopdff(stopdff_data, thresholds["stopdff_median_abs_prefix"]),
     ]
+    # Opt-in: append a finite-horizon DP StopDFF row alongside (not in place
+    # of) the existing diagnostic StopDFF row. The DP row contributes to the
+    # overall verdict ladder via _compute_overall_verdict below, so it must
+    # be appended BEFORE that call.
+    if args.include_dp_stopdff:
+        dp_path = _PAPER_EXPORTS / "stopdff_dp.json"
+        if not dp_path.exists():
+            print(
+                "WARNING: --include-dp-stopdff was passed but "
+                f"{dp_path} does not exist; the DP row was skipped.",
+                file=sys.stderr,
+            )
+        else:
+            dp_data = _load_json(dp_path)
+            metrics.append(_evaluate_stopdff_dp(dp_data))
 
     # PR #14 Blocker 3: extract per-metric coverage + retention
     # provenance so the audit card visibly records what counted as a
@@ -1037,6 +1107,11 @@ def main() -> int:
     print(f"Written: {md_path}")
 
     return 0
+
+
+def main() -> int:
+    """CLI entry point; argv comes from sys.argv via _parse_args."""
+    return main_with_args(None)
 
 
 if __name__ == "__main__":

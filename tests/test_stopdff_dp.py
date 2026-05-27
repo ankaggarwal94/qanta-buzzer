@@ -811,3 +811,47 @@ def test_fit_dataframe_never_contains_eval_split_rows(tmp_path) -> None:
         cont_module.EmpiricalBucketEstimator.fit(
             fit_df=eval_df, fit_split_name="val",
         )
+
+
+def test_audit_card_row_added_without_replacing_diagnostic(tmp_path, monkeypatch):
+    """The DP StopDFF row should appear after the existing diagnostic row."""
+    from scripts import make_audit_card
+    # Stub-load the three existing JSONs and one new DP JSON.
+    paper = tmp_path / "paper_exports"
+    paper.mkdir()
+    # Copy minimum-valid fixtures from the repo paper_exports directory.
+    import shutil
+    src = Path(__file__).resolve().parent.parent / "paper_exports"
+    for fname in ("csli.json", "calibration.json", "stopdff.json"):
+        shutil.copyfile(src / fname, paper / fname)
+    # Synthesize a minimal stopdff_dp.json.
+    (paper / "stopdff_dp.json").write_text(json.dumps({
+        "stopdff_dp_signed_median": -0.5,
+        "stopdff_dp_signed_mean": -0.4,
+        "stopdff_dp_abs_median": 0.5,
+        "n_items": 10,
+        "direction_breakdown": {"mc_earlier": 5, "qa_earlier": 3, "same_step": 2},
+        "coverage": {"verdict": "pass", "fraction_exact": 1.0,
+                     "fraction_pooled": 0.0, "fraction_missing": 0.0,
+                     "n_cells": 60, "reason": "ok"},
+        "ceiling_flags": {"all_stop_at_first_prefix": False,
+                          "all_stop_at_final_prefix": False,
+                          "no_cross_format_stopping_variance": False,
+                          "n_items": 10, "n_stopped_cells": 50,
+                          "n_never_stopped_cells": 10, "empty": False},
+        "gate_verdict": "pass",
+        "gate_verdict_reason": "all_clean",
+        "confirmatory": True,
+        "metadata": {"metric_type": "finite_horizon_dp",
+                     "stopping_policy": "finite_horizon_dp",
+                     "reward_schedule": "power_mark",
+                     "continuation_estimator": "empirical_bucket",
+                     "fit_split": "val", "eval_split": "test"},
+    }))
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", paper)
+    rc = make_audit_card.main_with_args(["--include-dp-stopdff"])
+    assert rc == 0
+    card = json.loads((paper / "audit_card.json").read_text())
+    names = [m["name"] for m in card["metrics"]]
+    assert any("Diagnostic StopDFF" in n for n in names)
+    assert any("DP StopDFF" in n for n in names)
