@@ -59,6 +59,10 @@ def main(argv: list[str] | None = None) -> int:
         "audit_card.json",
         "audit_card.md",
         "audit_table.tex",
+        "csli_panel.png",
+        "reliability_early.png",
+        "reliability_mid.png",
+        "reliability_late.png",
     ]
     for name in required:
         require(
@@ -90,10 +94,45 @@ def main(argv: list[str] | None = None) -> int:
             f"audit_card.artifact_provenance is missing required entry "
             f"for {missing}"
         )
+    # Recompute producer-script SHAs against the live tree rather than trust
+    # the cached `sha_matches` flag in audit_card.json. The cached flag goes
+    # stale if a producer script is edited after `make_audit_card.py` ran.
     for artifact_name, block in artifact_provenance.items():
+        if not isinstance(block, dict):
+            errors.append(
+                f"artifact_provenance[{artifact_name}] is not a dict: {block}"
+            )
+            continue
+
+        recorded_sha = block.get("recorded_sha256")
+        script_path_str = block.get("script_path")
+
+        if not isinstance(recorded_sha, str) or not recorded_sha:
+            errors.append(
+                f"artifact_provenance[{artifact_name}] missing "
+                f"recorded_sha256"
+            )
+            continue
+        if not isinstance(script_path_str, str) or not script_path_str:
+            errors.append(
+                f"artifact_provenance[{artifact_name}] missing script_path"
+            )
+            continue
+
+        script_path = repo_root / script_path_str
+        if not script_path.exists():
+            errors.append(
+                f"{artifact_name} producer script not found at "
+                f"{script_path}"
+            )
+            continue
+
+        live_sha = sha256_file(script_path)
         require(
-            block.get("sha_matches") is True,
-            f"{artifact_name} producer script SHA mismatch: {block}",
+            live_sha == recorded_sha,
+            f"{artifact_name} producer script SHA drift: "
+            f"recorded={recorded_sha}, live={live_sha} "
+            f"(script_path={script_path_str})",
             errors,
         )
 
@@ -140,6 +179,16 @@ def main(argv: list[str] | None = None) -> int:
 
     threshold_manifest = repo_root / "threshold_manifest.json"
     threshold_sidecar = repo_root / "threshold_manifest.json.sha256"
+    require(
+        threshold_manifest.exists(),
+        f"missing {threshold_manifest}",
+        errors,
+    )
+    require(
+        threshold_sidecar.exists(),
+        f"missing {threshold_sidecar}",
+        errors,
+    )
     if threshold_manifest.exists() and threshold_sidecar.exists():
         sidecar_text = threshold_sidecar.read_text(encoding="utf-8").strip()
         # Sidecar may follow the `sha256sum` format ("<hash>  <filename>") or

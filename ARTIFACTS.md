@@ -58,10 +58,17 @@ python scripts/regenerate_figures.py
 
 A release is not final evidence unless:
 
+- every required `paper_exports/*` file exists, including the canonical
+  figures (`csli_panel.png`, `reliability_early.png`, `reliability_mid.png`,
+  `reliability_late.png`)
 - `paper_exports/audit_card.json.metadata.generation.git_dirty == false`
-- every `paper_exports/audit_card.json.artifact_provenance.*.sha_matches == true`
+- every entry in `paper_exports/audit_card.json.artifact_provenance`
+  has a `recorded_sha256` that matches the live SHA of its `script_path`
+  (recomputed at verification time, not trusted from the cached
+  `sha_matches` flag)
 - the audit-card Markdown reports retained-subset status when any retention
   gate was overridden
-- the StopDFF row remains WARN whenever a ceiling effect or unreachable bucket
-  is detected
-- `threshold_manifest.json` validates against `threshold_manifest.json.sha256`
+- the StopDFF row remains WARN whenever a ceiling effect or unreachable
+  bucket is detected
+- both `threshold_manifest.json` and `threshold_manifest.json.sha256` are
+  present, and the manifest's live SHA matches the sidecar

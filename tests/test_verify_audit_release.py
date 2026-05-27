@@ -1,23 +1,81 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 from scripts.verify_audit_release import main
 
 
+REQUIRED_EXPORT_FILES = [
+    "csli.json",
+    "calibration.json",
+    "stopdff.json",
+    "audit_table.tex",
+    "csli_panel.png",
+    "reliability_early.png",
+    "reliability_mid.png",
+    "reliability_late.png",
+]
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _populate_required_exports(exports: Path) -> None:
+    """Create minimal placeholder files for every required export.
+
+    The verifier checks existence only, not content, so empty/JSON-stub
+    payloads are fine.
+    """
+    exports.mkdir(parents=True, exist_ok=True)
+    for name in REQUIRED_EXPORT_FILES:
+        (exports / name).write_text("{}", encoding="utf-8")
+
+
+def _write_threshold_manifest(repo_root: Path, payload: str = "payload") -> None:
+    manifest = repo_root / "threshold_manifest.json"
+    sidecar = repo_root / "threshold_manifest.json.sha256"
+    manifest.write_text(payload, encoding="utf-8")
+    sidecar.write_text(
+        f"{_sha(payload)}  threshold_manifest.json\n", encoding="utf-8"
+    )
+
+
+def _write_producer_scripts(repo_root: Path) -> dict[str, dict[str, str]]:
+    """Write the three producer scripts under repo_root and return the
+    `artifact_provenance` block that matches their live SHAs."""
+    scripts_dir = repo_root / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+
+    provenance: dict[str, dict[str, str]] = {}
+    for artifact_name, script_basename in (
+        ("csli.json", "compute_csli.py"),
+        ("calibration.json", "compute_prefix_calibration.py"),
+        ("stopdff.json", "compute_stopdff.py"),
+    ):
+        body = f"# fake producer for {artifact_name}\n"
+        script = scripts_dir / script_basename
+        script.write_text(body, encoding="utf-8")
+        provenance[artifact_name] = {
+            "recorded_sha256": _sha(body),
+            "script_path": f"scripts/{script_basename}",
+        }
+    return provenance
+
+
 def test_verify_audit_release_flags_stale_artifact(tmp_path: Path) -> None:
     exports = tmp_path / "paper_exports"
-    exports.mkdir()
+    _populate_required_exports(exports)
+    _write_threshold_manifest(tmp_path)
 
-    for name in [
-        "csli.json",
-        "calibration.json",
-        "stopdff.json",
-        "audit_card.md",
-        "audit_table.tex",
-    ]:
-        (exports / name).write_text("{}", encoding="utf-8")
+    # Producer for csli was edited after audit_card.json was generated, so the
+    # live SHA no longer matches the recorded SHA.
+    provenance = _write_producer_scripts(tmp_path)
+    (tmp_path / "scripts/compute_csli.py").write_text(
+        "# tampered after audit_card was generated\n", encoding="utf-8"
+    )
 
     audit = {
         "metrics": [
@@ -31,29 +89,32 @@ def test_verify_audit_release_flags_stale_artifact(tmp_path: Path) -> None:
             }
         ],
         "metadata": {"generation": {"git_dirty": False}},
-        "artifact_provenance": {
-            "csli.json": {"sha_matches": False},
-        },
+        "artifact_provenance": provenance,
         "data_provenance": {},
     }
+    (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
     (exports / "audit_card.json").write_text(
         json.dumps(audit), encoding="utf-8"
     )
 
-    assert main(["--paper-exports", str(exports), "--repo-root", str(tmp_path)]) == 1
+    assert (
+        main(
+            [
+                "--paper-exports",
+                str(exports),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
 
 
 def test_verify_audit_release_accepts_clean_warn(tmp_path: Path) -> None:
     exports = tmp_path / "paper_exports"
-    exports.mkdir()
-
-    for name in [
-        "csli.json",
-        "calibration.json",
-        "stopdff.json",
-        "audit_table.tex",
-    ]:
-        (exports / name).write_text("{}", encoding="utf-8")
+    _populate_required_exports(exports)
+    _write_threshold_manifest(tmp_path)
+    provenance = _write_producer_scripts(tmp_path)
 
     (exports / "audit_card.md").write_text(
         "Overall WARN\n\nretained MC subset\n", encoding="utf-8"
@@ -70,11 +131,7 @@ def test_verify_audit_release_accepts_clean_warn(tmp_path: Path) -> None:
             }
         ],
         "metadata": {"generation": {"git_dirty": False}},
-        "artifact_provenance": {
-            "csli.json": {"sha_matches": True},
-            "calibration.json": {"sha_matches": True},
-            "stopdff.json": {"sha_matches": True},
-        },
+        "artifact_provenance": provenance,
         "data_provenance": {
             "csli": {
                 "retention": {
@@ -91,21 +148,23 @@ def test_verify_audit_release_accepts_clean_warn(tmp_path: Path) -> None:
         json.dumps(audit), encoding="utf-8"
     )
 
-    assert main(["--paper-exports", str(exports), "--repo-root", str(tmp_path)]) == 0
-
+    assert (
+        main(
+            [
+                "--paper-exports",
+                str(exports),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
 
 
 def test_verify_audit_release_flags_threshold_sha_mismatch(tmp_path: Path) -> None:
     exports = tmp_path / "paper_exports"
-    exports.mkdir()
-
-    for name in [
-        "csli.json",
-        "calibration.json",
-        "stopdff.json",
-        "audit_table.tex",
-    ]:
-        (exports / name).write_text("{}", encoding="utf-8")
+    _populate_required_exports(exports)
+    provenance = _write_producer_scripts(tmp_path)
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
     audit = {
@@ -117,9 +176,7 @@ def test_verify_audit_release_flags_threshold_sha_mismatch(tmp_path: Path) -> No
             }
         ],
         "metadata": {"generation": {"git_dirty": False}},
-        "artifact_provenance": {
-            "csli.json": {"sha_matches": True},
-        },
+        "artifact_provenance": provenance,
         "data_provenance": {},
     }
     (exports / "audit_card.json").write_text(
@@ -145,18 +202,11 @@ def test_verify_audit_release_flags_threshold_sha_mismatch(tmp_path: Path) -> No
     )
 
 
-
 def test_verify_audit_release_flags_missing_provenance_entry(tmp_path: Path) -> None:
     exports = tmp_path / "paper_exports"
-    exports.mkdir()
-
-    for name in [
-        "csli.json",
-        "calibration.json",
-        "stopdff.json",
-        "audit_table.tex",
-    ]:
-        (exports / name).write_text("{}", encoding="utf-8")
+    _populate_required_exports(exports)
+    _write_threshold_manifest(tmp_path)
+    full_provenance = _write_producer_scripts(tmp_path)
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
     audit = {
@@ -169,9 +219,85 @@ def test_verify_audit_release_flags_missing_provenance_entry(tmp_path: Path) -> 
         ],
         "metadata": {"generation": {"git_dirty": False}},
         # calibration.json + stopdff.json provenance entries are missing.
-        "artifact_provenance": {
-            "csli.json": {"sha_matches": True},
-        },
+        "artifact_provenance": {"csli.json": full_provenance["csli.json"]},
+        "data_provenance": {},
+    }
+    (exports / "audit_card.json").write_text(
+        json.dumps(audit), encoding="utf-8"
+    )
+
+    assert (
+        main(
+            [
+                "--paper-exports",
+                str(exports),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+
+
+def test_verify_audit_release_flags_missing_figure(tmp_path: Path) -> None:
+    exports = tmp_path / "paper_exports"
+    _populate_required_exports(exports)
+    _write_threshold_manifest(tmp_path)
+    provenance = _write_producer_scripts(tmp_path)
+
+    # Remove a required figure to simulate a release that dropped a paper
+    # asset declared canonical by ARTIFACTS.md.
+    (exports / "csli_panel.png").unlink()
+
+    (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    audit = {
+        "metrics": [
+            {
+                "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+                "verdict": "warn",
+                "details": {},
+            }
+        ],
+        "metadata": {"generation": {"git_dirty": False}},
+        "artifact_provenance": provenance,
+        "data_provenance": {},
+    }
+    (exports / "audit_card.json").write_text(
+        json.dumps(audit), encoding="utf-8"
+    )
+
+    assert (
+        main(
+            [
+                "--paper-exports",
+                str(exports),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+
+
+def test_verify_audit_release_flags_missing_threshold_manifest(
+    tmp_path: Path,
+) -> None:
+    exports = tmp_path / "paper_exports"
+    _populate_required_exports(exports)
+    # Intentionally do NOT write threshold_manifest.json or its sidecar.
+    provenance = _write_producer_scripts(tmp_path)
+
+    (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    audit = {
+        "metrics": [
+            {
+                "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+                "verdict": "warn",
+                "details": {},
+            }
+        ],
+        "metadata": {"generation": {"git_dirty": False}},
+        "artifact_provenance": provenance,
         "data_provenance": {},
     }
     (exports / "audit_card.json").write_text(
