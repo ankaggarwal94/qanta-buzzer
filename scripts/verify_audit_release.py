@@ -83,6 +83,13 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     artifact_provenance = audit.get("artifact_provenance", {})
+    expected_provenance_keys = {"csli.json", "calibration.json", "stopdff.json"}
+    missing_provenance = expected_provenance_keys - set(artifact_provenance)
+    for missing in sorted(missing_provenance):
+        errors.append(
+            f"audit_card.artifact_provenance is missing required entry "
+            f"for {missing}"
+        )
     for artifact_name, block in artifact_provenance.items():
         require(
             block.get("sha_matches") is True,

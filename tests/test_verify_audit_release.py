@@ -143,3 +143,49 @@ def test_verify_audit_release_flags_threshold_sha_mismatch(tmp_path: Path) -> No
         )
         == 1
     )
+
+
+
+def test_verify_audit_release_flags_missing_provenance_entry(tmp_path: Path) -> None:
+    exports = tmp_path / "paper_exports"
+    exports.mkdir()
+
+    for name in [
+        "csli.json",
+        "calibration.json",
+        "stopdff.json",
+        "audit_table.tex",
+    ]:
+        (exports / name).write_text("{}", encoding="utf-8")
+
+    (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    audit = {
+        "metrics": [
+            {
+                "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+                "verdict": "warn",
+                "details": {},
+            }
+        ],
+        "metadata": {"generation": {"git_dirty": False}},
+        # calibration.json + stopdff.json provenance entries are missing.
+        "artifact_provenance": {
+            "csli.json": {"sha_matches": True},
+        },
+        "data_provenance": {},
+    }
+    (exports / "audit_card.json").write_text(
+        json.dumps(audit), encoding="utf-8"
+    )
+
+    assert (
+        main(
+            [
+                "--paper-exports",
+                str(exports),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )

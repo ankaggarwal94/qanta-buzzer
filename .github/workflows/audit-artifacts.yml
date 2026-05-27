@@ -22,10 +22,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install lightweight dependencies
+      - name: Install project (required for tests/conftest.py import chain)
         run: |
           python -m pip install --upgrade pip
-          pip install pytest numpy pandas pyyaml
+          pip install -e '.[dev]'
 
       - name: Verify committed audit artifacts
         run: |
