@@ -140,11 +140,11 @@
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-27T08:58:58.122735+00:00",
+    "timestamp": "2026-05-27T23:50:17.316139+00:00",
     "threshold_source": "threshold_manifest.json",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T08:58:58.122230+00:00",
+      "generated_at_utc": "2026-05-27T23:50:17.315597+00:00",
       "command": [
         "python",
         "scripts/make_audit_card.py"
@@ -153,8 +153,8 @@
       "cwd": ".",
       "output_path": "paper_exports/audit_card.json",
       "script_path": "scripts/make_audit_card.py",
-      "script_sha256": "d2bfd59a5bcbefce73e4f75c6b69fb7fb231b2d2ddf58344a9ab10ba2cbf0b33",
-      "git_commit": "52d72e03ca413e1e802d024bf273ac521043ceff",
+      "script_sha256": "3a12649afd74c62787bf59fd96d53d14f5c798634cd8e9d1e96e24c98c904c16",
+      "git_commit": "58afc46a505d85ffe2a97bcb69381711f4415897",
       "git_dirty": false,
       "git_status_relevant_paths": ""
     }
@@ -236,6 +236,7 @@
       "recorded_commit": "52d72e03ca413e1e802d024bf273ac521043ceff",
       "recorded_sha256": "364d21aa07f74ee4facd8b5fc9cd795b006ea682b54128fad99e6eba46c7fcb7",
       "current_sha256": "364d21aa07f74ee4facd8b5fc9cd795b006ea682b54128fad99e6eba46c7fcb7",
+      "content_sha256": "663a8ec218dd607fb74d1748049bfaa920aad642299abd3faec1383488ba7467",
       "script_path": "scripts/compute_csli.py",
       "sha_matches": true
     },
@@ -243,6 +244,7 @@
       "recorded_commit": "0f8da5d35c1c591430e03db4a6500cec6acd6755",
       "recorded_sha256": "6f47ba73b97fe88f89db0e170db48aff0fb6271eaf012b45cba046b1a7b8f7aa",
       "current_sha256": "6f47ba73b97fe88f89db0e170db48aff0fb6271eaf012b45cba046b1a7b8f7aa",
+      "content_sha256": "e3a763fe13410a0689a1d0ed81490d0f35256b67e3f73cd8fb66884b358ad746",
       "script_path": "scripts/compute_prefix_calibration.py",
       "sha_matches": true
     },
@@ -250,6 +252,7 @@
       "recorded_commit": "222fa1eb1d214de85cd645b7ae00e5f983b5e0c1",
       "recorded_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
       "current_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
+      "content_sha256": "6e2f711ff9d8500528a55468c290e6f71f2b692bea80716258a9945473d2ac91",
       "script_path": "scripts/compute_stopdff.py",
       "sha_matches": true
     }
