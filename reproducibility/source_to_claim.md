@@ -6,15 +6,28 @@ Maps every substantive claim in `final_project.tex` to its backing artifact and 
 **Manuscript:** `cs321m-paper/final_project.tex`
 **Artifact root:** `qanta-buzzer/paper_exports/`
 
+> **PR #14 follow-up review (Blocker 3) rename note (2026-05-26):**
+> The canonical CSLI in `csli.json` is now the PAP-original choices-only
+> excess over chance (`max(0, acc_choices_only - 1/K)`), surfaced at
+> `panel_csli.{mean, ci_lower, ci_upper}` with a percentile bootstrap CI.
+> The legacy in-flight-manuscript CSLI (the full-minus-choices gap) is
+> preserved at `panel_question_use_gap.{mean, ci_lower, ci_upper}`
+> (rows 5a-5b). Verification commands using `d['panel_csli']['mean']`
+> therefore now read the choices-excess; commands that need the gap
+> must use `d['panel_question_use_gap']['mean']`. Numeric claims in the
+> manuscript must be cross-checked against the regenerated artifacts.
+
 ## Quantitative Claims
 
 | # | Claim | Section | Artifact | Verification |
 |---|-------|---------|----------|--------------|
-| 1 | Panel CSLI = 0.1062 | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(round(d['panel_csli']['mean'],4))"` |
-| 2 | CSLI 95% CI [0.0921, 0.1197] | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(round(d['panel_csli']['ci_lower'],4), round(d['panel_csli']['ci_upper'],4))"` |
-| 3 | TF-IDF CSLI = 0.0195 | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(round(d['per_model']['tfidf']['csli'],4))"` |
-| 4 | SBERT CSLI = 0.2916 | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(round(d['per_model']['sbert']['csli'],4))"` |
-| 5 | T5-small CSLI = 0.0074 | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(round(d['per_model']['t5-small']['csli'],4))"` |
+| 1 | Panel CSLI (choices-only excess) | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(round(d['panel_csli']['mean'],4))"` |
+| 2 | CSLI 95% CI (choices-only excess) | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(round(d['panel_csli']['ci_lower'],4), round(d['panel_csli']['ci_upper'],4))"` |
+| 3 | TF-IDF CSLI = max(0, acc_choices_only - 1/K) | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(round(d['per_model']['tfidf']['csli'],4))"` |
+| 4 | SBERT CSLI = max(0, acc_choices_only - 1/K) | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(round(d['per_model']['sbert']['csli'],4))"` |
+| 5 | T5-small CSLI = max(0, acc_choices_only - 1/K) | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(round(d['per_model']['t5-small']['csli'],4))"` |
+| 5a | Panel question-use gap (former in-flight CSLI) | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(round(d['panel_question_use_gap']['mean'],4))"` |
+| 5b | Question-use gap 95% CI | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(round(d['panel_question_use_gap']['ci_lower'],4), round(d['panel_question_use_gap']['ci_upper'],4))"` |
 | 6 | No model exceeds 0.30 leakage threshold | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(all(not v['leakage_flag'] for v in d['per_model'].values()))"` |
 | 7 | 1000 bootstrap resamples | Results 4.1 | `paper_exports/csli.json` | `python3 -c "import json; d=json.load(open('paper_exports/csli.json')); print(d['metadata']['bootstrap_resamples'])"` |
 | 8 | ECE early = 0.0239 (n=2629) | Results 4.2 | `paper_exports/calibration.json` | `python3 -c "import json; d=json.load(open('paper_exports/calibration.json')); b=d['per_bucket']['early']; print(round(b['ece'],4), b['n_samples'])"` |

@@ -1,11 +1,11 @@
 {
   "metrics": [
     {
-      "name": "CSLI (Choice-Set Leakage Index)",
-      "value": 0.11366991437850603,
-      "value_display": "0.1137",
-      "ci_lower": 0.0994943903159138,
-      "ci_upper": 0.12607026867434307,
+      "name": "CSLI (Choice-Set Leakage Index, choices-only excess)",
+      "value": 0.003469,
+      "value_display": "0.0035",
+      "ci_lower": 0.0,
+      "ci_upper": 0.010778343666961914,
       "threshold": 0.3,
       "threshold_criterion": "max(acc_choices_only) <= threshold",
       "observed_criterion_value": 0.260407,
@@ -23,18 +23,28 @@
           "sbert": false,
           "t5-small": false
         },
-        "panel_csli_gap": 0.11366991437850603,
-        "panel_csli_gap_definition": "acc_full - acc_choices_only (final manuscript final_project.tex L120-121)",
         "panel_csli_choices_excess": 0.003469,
-        "panel_csli_choices_excess_definition": "max(0, acc_choices_only - 1/K) per model, averaged (PAP-original definition; pap.tex)",
+        "panel_csli_choices_excess_definition": "max(0, acc_choices_only - 1/K) per model, averaged (canonical CSLI; PAP-original definition)",
+        "panel_question_use_gap": 0.11367,
+        "panel_question_use_gap_ci": [
+          0.0994943903159138,
+          0.12607026867434307
+        ],
+        "panel_question_use_gap_definition": "acc_full - acc_choices_only (formerly published as CSLI in the in-flight manuscript; kept for transparency)",
         "per_model_csli_choices_excess": {
           "tfidf": 0.010407,
           "sbert": 0.0,
           "t5-small": 0.0
         },
+        "per_model_question_use_gap": {
+          "tfidf": -0.001771,
+          "sbert": 0.245793,
+          "t5-small": 0.096988
+        },
         "K": 4,
         "chance": 0.25,
-        "definition_note": "Two CSLI flavors are reported. The frozen gate is on max(acc_choices_only) > 0.30 (= 1/K + 0.05), independent of either flavor."
+        "artifact_format": "v2_choices_excess_canonical",
+        "definition_note": "Canonical CSLI = max(0, acc_choices_only - 1/K). The former gap interpretation is published as question_use_gap. The frozen gate is on max(acc_choices_only) > 0.30 (= 1/K + 0.05), independent of either summary."
       }
     },
     {
@@ -64,7 +74,9 @@
         },
         "fallback_buckets": [],
         "empty_buckets": [],
-        "stored_gate_verdict": "pass"
+        "stored_gate_verdict": "pass",
+        "verdict_reason": "threshold_only",
+        "threshold_only_verdict": "pass"
       }
     },
     {
@@ -75,7 +87,7 @@
       "threshold_criterion": "median_abs_prefix_shift <= threshold",
       "observed_criterion_value": 0.0,
       "direction": "warn_if_above",
-      "verdict": "pass",
+      "verdict": "warn",
       "verdict_qualifier": "ceiling effect \u2014 diagnostic null; unreachable bucket(s): early, mid",
       "details": {
         "direction_breakdown": {
@@ -83,7 +95,9 @@
           "nonmc_stops_earlier": 0,
           "same_step": 2258
         },
-        "stored_gate_verdict": "pass",
+        "stored_gate_verdict": "warn",
+        "verdict_reason": "diagnostic_null: ceiling_effect, unreachable_buckets=['early', 'mid']",
+        "threshold_only_verdict": "pass",
         "metric_type": "diagnostic_only",
         "ceiling_effect_detected": true,
         "unreachable_buckets": [
@@ -122,12 +136,28 @@
       }
     }
   ],
-  "overall_verdict": "PASS",
+  "overall_verdict": "WARN",
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-26T23:16:57.629954+00:00",
-    "threshold_source": "threshold_manifest.json"
+    "timestamp": "2026-05-27T02:20:26.214456+00:00",
+    "threshold_source": "threshold_manifest.json",
+    "generation": {
+      "schema_version": 1,
+      "generated_at_utc": "2026-05-27T02:20:26.193641+00:00",
+      "command": [
+        "python",
+        "scripts/make_audit_card.py"
+      ],
+      "argv": [],
+      "cwd": ".",
+      "output_path": "paper_exports/audit_card.json",
+      "script_path": "scripts/make_audit_card.py",
+      "script_sha256": "d1d99e36495d353e8259b9748539fa57b83eeff497e5d48b8912d73e43355286",
+      "git_commit": "f5600efeb744265879c3f2f2c86758cb3f736cec",
+      "git_dirty": true,
+      "git_status_relevant_paths": "M paper_exports/calibration.json\n M paper_exports/csli.json\n M paper_exports/stopdff.json\n M scripts/make_audit_card.py"
+    }
   },
   "data_provenance": {
     "csli": {
@@ -199,6 +229,29 @@
           "applies": true
         }
       }
+    }
+  },
+  "artifact_provenance": {
+    "csli.json": {
+      "recorded_commit": "f5600efeb744265879c3f2f2c86758cb3f736cec",
+      "recorded_sha256": "781621353c068d0533e17fcd1d51166ead4f19cbfef7623444c90701a1205a54",
+      "current_sha256": "781621353c068d0533e17fcd1d51166ead4f19cbfef7623444c90701a1205a54",
+      "script_path": "scripts/compute_csli.py",
+      "sha_matches": true
+    },
+    "calibration.json": {
+      "recorded_commit": "f5600efeb744265879c3f2f2c86758cb3f736cec",
+      "recorded_sha256": "101a2f20350b987123cb4051e6c34045a5ad06575b7f9d47c47120dc6ad8f9cd",
+      "current_sha256": "101a2f20350b987123cb4051e6c34045a5ad06575b7f9d47c47120dc6ad8f9cd",
+      "script_path": "scripts/compute_prefix_calibration.py",
+      "sha_matches": true
+    },
+    "stopdff.json": {
+      "recorded_commit": "f5600efeb744265879c3f2f2c86758cb3f736cec",
+      "recorded_sha256": "09709d1cca3ff980e9fc7b1fd46f09e5987b29397ce72f8b8081a7383c72d8a6",
+      "current_sha256": "09709d1cca3ff980e9fc7b1fd46f09e5987b29397ce72f8b8081a7383c72d8a6",
+      "script_path": "scripts/compute_stopdff.py",
+      "sha_matches": true
     }
   }
 }

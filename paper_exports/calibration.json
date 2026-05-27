@@ -31,30 +31,38 @@
   "max_ece": 0.026117,
   "threshold": 0.1,
   "gate_verdict": "pass",
+  "gate_verdict_reason": "threshold_only",
+  "threshold_only_verdict": "pass",
+  "degenerate_buckets": {
+    "fallback": [],
+    "empty": []
+  },
   "mc_coverage": {
     "val": {
-      "test_dataset_qids": 2142,
+      "target_qids": 2142,
       "mc_questions_total": 14437,
-      "matched_test_mc_questions": 2142,
-      "matched_test_mc_qids": 2142,
-      "missing_test_qids": 0,
+      "matched_questions": 2142,
+      "matched_qids": 2142,
+      "missing_qids": 0,
       "coverage_rate": 1.0,
       "threshold": 0.98,
       "passed": true,
       "overridden": false,
-      "override_flag": "--allow-incomplete-mc-coverage"
+      "override_flag": "--allow-incomplete-mc-coverage",
+      "split": "val"
     },
     "test": {
-      "test_dataset_qids": 2258,
+      "target_qids": 2258,
       "mc_questions_total": 14437,
-      "matched_test_mc_questions": 2258,
-      "matched_test_mc_qids": 2258,
-      "missing_test_qids": 0,
+      "matched_questions": 2258,
+      "matched_qids": 2258,
+      "missing_qids": 0,
       "coverage_rate": 1.0,
       "threshold": 0.98,
       "passed": true,
       "overridden": false,
-      "override_flag": "--allow-incomplete-mc-coverage"
+      "override_flag": "--allow-incomplete-mc-coverage",
+      "split": "test"
     }
   },
   "mc_retention_gate": {
@@ -100,6 +108,27 @@
       "mid": "[0.33, 0.66)",
       "late": "[0.66, 1.0]"
     },
-    "timestamp": "2026-05-26T23:12:20.575950+00:00"
+    "timestamp": "2026-05-27T02:15:40.584419+00:00",
+    "generation": {
+      "schema_version": 1,
+      "generated_at_utc": "2026-05-27T02:15:40.496442+00:00",
+      "command": [
+        "python",
+        "scripts/compute_prefix_calibration.py",
+        "--allow-low-mc-retention",
+        "--allow-incomplete-mc-coverage"
+      ],
+      "argv": [
+        "--allow-low-mc-retention",
+        "--allow-incomplete-mc-coverage"
+      ],
+      "cwd": ".",
+      "output_path": "paper_exports/calibration.json",
+      "script_path": "scripts/compute_prefix_calibration.py",
+      "script_sha256": "101a2f20350b987123cb4051e6c34045a5ad06575b7f9d47c47120dc6ad8f9cd",
+      "git_commit": "f5600efeb744265879c3f2f2c86758cb3f736cec",
+      "git_dirty": true,
+      "git_status_relevant_paths": "M scripts/compute_prefix_calibration.py"
+    }
   }
 }

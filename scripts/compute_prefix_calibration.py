@@ -471,6 +471,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     int
         Exit code (0 = success, 1 = error, 2 = argument error).
     """
+    # Capture argv BEFORE _parse_args mutates it so generation provenance
+    # records the exact effective invocation.
+    effective_argv = list(argv) if argv is not None else list(sys.argv[1:])
     args = _parse_args(argv)
 
     data_dir = Path(args.data_dir)
@@ -787,9 +790,42 @@ def main(argv: Optional[list[str]] = None) -> int:
     # WR-02: fail closed (no silent fallback to hardcoded 0.10).
     threshold = float(threshold_value(manifest, "prefix_ece"))
 
-    gate_verdict = "pass" if max_ece <= threshold else "warn"
-    print(f"\n[CALI] Gate verdict: {gate_verdict} (max_ece={max_ece:.4f} vs threshold={threshold})",
-          flush=True)
+    threshold_only_verdict = "pass" if max_ece <= threshold else "warn"
+
+    # PR #14 follow-up review (Issue C): the producer now emits the
+    # final scientific verdict, not just the threshold check. If any
+    # per-bucket calibrator fell back to ``ConstantCalibrationModel``
+    # (empty val bucket, single-class val bucket) the ECE for that
+    # bucket is 0.0 by construction and the threshold gate would
+    # falsely PASS. Downgrade to ``"warn"`` so any consumer that just
+    # reads ``gate_verdict`` sees the limitation without having to
+    # re-walk per-bucket fallback metadata.
+    fallback_buckets = [
+        name
+        for name, bucket in per_bucket_results.items()
+        if bucket.get("platt_model_type") == "constant"
+    ]
+    empty_buckets = [
+        name
+        for name, bucket in per_bucket_results.items()
+        if bucket.get("n_samples") == 0
+    ]
+    if fallback_buckets or empty_buckets:
+        gate_verdict = "warn"
+        gate_verdict_reason = (
+            "degenerate_calibrator_or_empty_bucket: "
+            f"fallback={fallback_buckets}, empty={empty_buckets}"
+        )
+    else:
+        gate_verdict = threshold_only_verdict
+        gate_verdict_reason = "threshold_only"
+
+    print(
+        f"\n[CALI] Gate verdict: {gate_verdict} "
+        f"(max_ece={max_ece:.4f} vs threshold={threshold}; "
+        f"reason={gate_verdict_reason})",
+        flush=True,
+    )
 
     # ========================================================================
     # Write output JSON
@@ -799,16 +835,34 @@ def main(argv: Optional[list[str]] = None) -> int:
         threshold=args.min_mc_coverage,
         override=args.allow_incomplete_mc_coverage,
     )
+    val_coverage_metadata["split"] = "val"
     test_coverage_metadata = build_coverage_metadata(
         test_coverage,
         threshold=args.min_mc_coverage,
         override=args.allow_incomplete_mc_coverage,
     )
+    test_coverage_metadata["split"] = "test"
+
+    from scripts._common import build_generation_provenance
+
+    generation = build_generation_provenance(
+        __file__,
+        effective_argv,
+        output_path=output_path,
+        extra_paths=[THRESHOLD_MANIFEST, data_dir / "build_metadata.json"],
+    )
+
     output_data = {
         "per_bucket": per_bucket_results,
         "max_ece": round(max_ece, 6),
         "threshold": threshold,
         "gate_verdict": gate_verdict,
+        "gate_verdict_reason": gate_verdict_reason,
+        "threshold_only_verdict": threshold_only_verdict,
+        "degenerate_buckets": {
+            "fallback": fallback_buckets,
+            "empty": empty_buckets,
+        },
         "mc_coverage": {
             "val": val_coverage_metadata,
             "test": test_coverage_metadata,
@@ -831,6 +885,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "platt_C": 1.0,
             "bucket_boundaries": {"early": "[0.0, 0.33)", "mid": "[0.33, 0.66)", "late": "[0.66, 1.0]"},
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "generation": generation,
         },
     }
 

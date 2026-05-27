@@ -95,7 +95,7 @@ class MetricView(NamedTuple):
 
 
 def _extract_metric_view(
-    metric_name: str,
+    metric_name: str | tuple[str, ...],
     audit_card: dict,
     json_data: dict,
     json_value_key: str,
@@ -108,19 +108,36 @@ def _extract_metric_view(
     verdict; falls back to the metric's own JSON file when the audit-card
     entry is missing or has an explicit ``None`` for a field.
 
+    ``metric_name`` may be a tuple of acceptable names (PR #14 follow-up
+    review: the audit_card CSLI metric was renamed to include the
+    choices-only-excess clarifier; passing a tuple lets the helper match
+    either the new or legacy name without burdening every caller).
+
     If both audit_card and JSON carry a value and they disagree beyond a
     ``1e-9`` tolerance, the resulting :class:`MetricView` ``drift_warning`` is
     populated and the caller is expected to print to stderr.
     """
     metrics = {m["name"]: m for m in audit_card.get("metrics", [])}
-    entry = metrics.get(metric_name, {})
+    name_candidates = (
+        (metric_name,) if isinstance(metric_name, str) else tuple(metric_name)
+    )
+    entry: dict = {}
+    matched_name: Optional[str] = None
+    for candidate in name_candidates:
+        candidate_entry = metrics.get(candidate)
+        if candidate_entry:
+            entry = candidate_entry
+            matched_name = candidate
+            break
     if not entry:
         print(
-            f"WARNING: audit_card.json has no metric named {metric_name!r}; "
-            f"falling back to {json_value_key}/{json_threshold_key} from JSON. "
+            f"WARNING: audit_card.json has no metric named any of "
+            f"{name_candidates!r}; falling back to "
+            f"{json_value_key}/{json_threshold_key} from JSON. "
             f"Verdict will render as 'unknown'.",
             file=sys.stderr,
         )
+    metric_name = matched_name or name_candidates[0]
 
     # Value: audit_card preferred; fall back to JSON.
     ac_value = entry.get("observed_criterion_value")
@@ -283,27 +300,34 @@ def _generate_audit_table(
 
     Reads verdicts dynamically from audit_card.json rather than hardcoding.
 
-    CSLI is rendered as TWO rows to avoid mixing different quantities:
+    CSLI is rendered as THREE rows to avoid mixing different quantities:
 
     * "Max choices-only accuracy" -- the gate criterion (``observed_criterion_value``
       in audit_card.json) compared against ``csli_threshold``. This is the
       quantity the CSLI gate actually evaluates: ``max(acc_choices_only) <= 0.30``
       (= 1/K + 0.05), per ``compute_csli.py`` metadata and
       ``threshold_manifest.json``. The verdict in this row is the CSLI gate verdict.
-    * "Panel CSLI (mean gap)" -- the descriptive panel summary
-      (``panel_csli.mean`` = mean of per-model ``acc_full - acc_choices_only``)
-      with bootstrap CI. The threshold column is rendered as ``--`` because the
-      frozen gate is NOT on this gap value (see ``threshold_deprecated_note``
-      in ``csli.json``). Splitting the row prevents the LaTeX output from
-      presenting a threshold comparison between unrelated quantities, which
-      could misstate audit conclusions (e.g., a WARN verdict with a small
-      panel mean appearing to sit comfortably "below threshold").
+    * "Panel CSLI (choices-only excess)" -- the canonical CSLI summary
+      (``panel_csli.mean`` = mean of per-model
+      ``max(0, acc_choices_only - 1/K)``) with bootstrap CI. The threshold
+      column is rendered as ``--`` because the frozen gate is on
+      ``max(acc_choices_only)``, not on the panel mean of either CSLI
+      flavor. PR #14 follow-up review (Blocker 3) renamed this from the
+      former "Panel CSLI (mean gap)".
+    * "Panel question-use gap" -- the legacy in-flight-manuscript CSLI
+      summary (``panel_question_use_gap.mean`` = mean of per-model
+      ``acc_full - acc_choices_only``) with bootstrap CI. Kept for
+      transparency; not the headline CSLI.
     """
-    # Descriptive panel-mean fields stay sourced directly from csli.json --
+    # Descriptive panel summaries stay sourced directly from csli.json --
     # they are not gate quantities and the audit_card does not carry them.
-    csli_mean = csli_data["panel_csli"]["mean"]
-    csli_ci_lo = csli_data["panel_csli"]["ci_lower"]
-    csli_ci_hi = csli_data["panel_csli"]["ci_upper"]
+    csli_excess_mean = csli_data["panel_csli"]["mean"]
+    csli_excess_ci_lo = csli_data["panel_csli"]["ci_lower"]
+    csli_excess_ci_hi = csli_data["panel_csli"]["ci_upper"]
+    gap_block = csli_data.get("panel_question_use_gap") or {}
+    gap_mean = gap_block.get("mean")
+    gap_ci_lo = gap_block.get("ci_lower")
+    gap_ci_hi = gap_block.get("ci_upper")
 
     # Calibration view: synthesize a force-WARN qualifier from the
     # audit-card details before extraction so the canonical view carries
@@ -334,7 +358,14 @@ def _generate_audit_table(
         )
 
     csli_view = _extract_metric_view(
-        "CSLI (Choice-Set Leakage Index)",
+        # PR #14 follow-up review (Blocker 3): audit_card metric name now
+        # includes the choices-only-excess clarifier. Pass a tuple of
+        # acceptable names so this helper finds the row in either the
+        # new audit card (choices-excess canonical) or a legacy one.
+        (
+            "CSLI (Choice-Set Leakage Index, choices-only excess)",
+            "CSLI (Choice-Set Leakage Index)",
+        ),
         audit_card,
         csli_json_view,
         json_value_key="_recomputed_max_acc_choices_only",
@@ -436,10 +467,14 @@ def _generate_audit_table(
         r"\midrule",
         # CSLI gate row: the quantity the threshold actually applies to.
         f"Max choices-only accuracy & {csli_view.value:.4f} & {csli_view.threshold:.2f} & {csli_cell} \\\\",
-        # CSLI descriptive row: panel gap with CI, no threshold comparison
-        # (``--`` in Threshold and Verdict columns) because the frozen gate
-        # is NOT on this quantity.
-        f"Panel CSLI (mean gap) & {csli_mean:.4f} [{csli_ci_lo:.4f}, {csli_ci_hi:.4f}] & -- & -- \\\\",
+        # Canonical CSLI row: panel choices-only excess (PAP-original)
+        # with bootstrap CI. The frozen gate is on max(acc_choices_only),
+        # not on this panel mean, so threshold/verdict cells are ``--``.
+        f"Panel CSLI (choices-only excess) & {csli_excess_mean:.4f} [{csli_excess_ci_lo:.4f}, {csli_excess_ci_hi:.4f}] & -- & -- \\\\",
+        # Transparency row: legacy gap (former in-flight-manuscript CSLI).
+        f"Panel question-use gap & {gap_mean:.4f} [{gap_ci_lo:.4f}, {gap_ci_hi:.4f}] & -- & -- \\\\"
+        if gap_mean is not None
+        else r"% Panel question-use gap row skipped (csli.json predates rename)",
         f"Calibration ECE (max bucket) & {cal_view.value:.4f} & {cal_view.threshold:.2f} & {cal_cell} \\\\",
         f"StopDFF (median abs shift) & {stop_view.value:.1f} & {stop_view.threshold:.1f} & {stop_cell} \\\\",
         r"\bottomrule",
@@ -476,32 +511,25 @@ def _generate_audit_table(
 
 
 def _generate_csli_panel(csli_data: dict) -> Path:
-    """Generate a bar chart showing per-model CSLI gap values with panel mean.
+    """Generate a bar chart showing per-model question-use gap values with panel mean.
+
+    PR #14 follow-up review (Blocker 3): the chart visualizes the
+    full-minus-choices gap per model (previously called CSLI in the
+    in-flight manuscript; now renamed to ``question_use_gap`` in
+    csli.json). The canonical CSLI is the choices-only excess and is
+    surfaced separately in the audit table.
 
     Does NOT draw the choices-only leakage gate (``csli.json`` metadata
-    ``threshold``) as a horizontal line on this chart, because that gate is
-    a threshold on ``max(acc_choices_only)`` (per ``compute_csli.py``
-    metadata: ``threshold_metric == "choices_only_accuracy"``,
-    ``threshold_criterion == "acc_choices_only > choices_only_accuracy_threshold"``),
-    NOT a threshold on per-model CSLI gap values
-    (``acc_full - acc_choices_only``) or ``panel_csli.mean``. Reusing it
-    as a reference line in a CSLI gap bar chart would visually imply
-    pass/fail against the wrong metric. A zero reference line is shown
-    instead -- gap > 0 means a model uses question content beyond the
-    choices alone; gap < 0 means choices-only beats the full-question
-    condition.
-
-    Uses explicit numeric x positions for both bars and the panel-mean
-    marker so the two share a single coordinate system (mixing
-    categorical ``ax.bar(strings, ...)`` with numeric tick positions
-    can misalign bars/labels across Matplotlib versions).
+    ``threshold``) as a horizontal line on this chart, because that gate
+    is a threshold on ``max(acc_choices_only)``, not on the gap. A zero
+    reference line is shown instead -- gap > 0 means a model uses
+    question content beyond the choices alone; gap < 0 means
+    choices-only beats the full-question condition.
 
     Y-axis limits are derived from both min and max plotted values
     (including CI bounds) with margin, NOT clamped to zero. Per-model
-    CSLI gap values can legitimately be negative (e.g., TF-IDF in
-    ``paper_exports/csli.json`` where ``acc_choices_only > acc_full``);
-    a hard ``ylim=(0, ...)`` would silently clip those bars and flip
-    the visual sign of the metric.
+    gap values can legitimately be negative; a hard ``ylim=(0, ...)``
+    would silently clip those bars and flip the visual sign.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -510,10 +538,20 @@ def _generate_csli_panel(csli_data: dict) -> Path:
 
     per_model = csli_data["per_model"]
     models = list(per_model.keys())
-    csli_values = [per_model[m]["csli"] for m in models]
-    panel_mean = csli_data["panel_csli"]["mean"]
-    ci_lower = csli_data["panel_csli"]["ci_lower"]
-    ci_upper = csli_data["panel_csli"]["ci_upper"]
+    gap_block = csli_data.get("panel_question_use_gap")
+    if isinstance(gap_block, dict) and gap_block.get("mean") is not None:
+        # New csli.json format: question_use_gap fields are canonical.
+        csli_values = [per_model[m]["question_use_gap"] for m in models]
+        panel_mean = gap_block["mean"]
+        ci_lower = gap_block["ci_lower"]
+        ci_upper = gap_block["ci_upper"]
+    else:
+        # Legacy csli.json: panel_csli held the gap; per-model ``csli``
+        # held the gap. Fall back so older committed artifacts still render.
+        csli_values = [per_model[m]["csli"] for m in models]
+        panel_mean = csli_data["panel_csli"]["mean"]
+        ci_lower = csli_data["panel_csli"]["ci_lower"]
+        ci_upper = csli_data["panel_csli"]["ci_upper"]
 
     # Clean academic style. Width scales with model count so >4 models
     # don't crowd. Floor at 5.0 keeps the baseline 3-model layout intact.
@@ -561,8 +599,8 @@ def _generate_csli_panel(csli_data: dict) -> Path:
     # Rotate labels when >4 models to avoid overlap.
     if len(models) > 4:
         plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
-    ax.set_ylabel("CSLI gap (acc_full - acc_choices_only)", fontsize=10)
-    ax.set_title("Choice-Set Leakage Index by Model", fontsize=11)
+    ax.set_ylabel("Question-use gap (acc_full - acc_choices_only)", fontsize=10)
+    ax.set_title("Per-model question-use gap (CSLI = choices-excess; not shown)", fontsize=11)
     # Y-limits cover both negative and positive values plus CI bounds,
     # with a small margin. Never hard-clamp at zero (would clip negative
     # per-model CSLI gaps and misreport model behavior).
@@ -614,14 +652,17 @@ def _validate_inputs(
         )
         return 1
 
-    # Per-model csli + acc_choices_only must be finite (the B-cluster
-    # fallback path reads acc_choices_only; the panel reads csli).
+    # Per-model gap + acc_choices_only must be finite. PR #14 follow-up
+    # review (Blocker 3): csli.json schema rename -- per-model 'csli' is
+    # now the choices-only excess and 'question_use_gap' carries the gap.
+    # Accept either schema so legacy artifacts still validate.
     for model_name, entry in per_model.items():
-        csli_val = entry.get("csli")
-        if csli_val is not None and not math.isfinite(float(csli_val)):
+        gap_val = entry.get("question_use_gap", entry.get("csli"))
+        if gap_val is not None and not math.isfinite(float(gap_val)):
             print(
-                f"ERROR: csli.json per_model[{model_name!r}].csli is "
-                f"non-finite ({csli_val}); cannot generate panel.",
+                f"ERROR: csli.json per_model[{model_name!r}].question_use_gap "
+                f"(or legacy 'csli') is non-finite ({gap_val}); cannot generate "
+                f"panel.",
                 file=sys.stderr,
             )
             return 1
@@ -634,14 +675,18 @@ def _validate_inputs(
             )
             return 1
 
-    panel = csli_data.get("panel_csli", {})
-    panel_mean = panel.get("mean")
-    ci_lower = panel.get("ci_lower")
-    ci_upper = panel.get("ci_upper")
+    # Validate whichever panel-mean block carries the gap (new schema
+    # publishes it as panel_question_use_gap; legacy under panel_csli).
+    gap_panel = csli_data.get("panel_question_use_gap") or csli_data.get(
+        "panel_csli", {}
+    )
+    panel_mean = gap_panel.get("mean")
+    ci_lower = gap_panel.get("ci_lower")
+    ci_upper = gap_panel.get("ci_upper")
     for field, val in (
-        ("panel_csli.mean", panel_mean),
-        ("panel_csli.ci_lower", ci_lower),
-        ("panel_csli.ci_upper", ci_upper),
+        ("panel_question_use_gap.mean (or legacy panel_csli.mean)", panel_mean),
+        ("panel_question_use_gap.ci_lower (or legacy)", ci_lower),
+        ("panel_question_use_gap.ci_upper (or legacy)", ci_upper),
     ):
         if val is None or not math.isfinite(float(val)):
             print(
@@ -673,8 +718,8 @@ def _validate_inputs(
     # signal but not a contract violation -- still warn loudly.
     if not (float(ci_lower) <= float(panel_mean) <= float(ci_upper)):
         print(
-            f"WARNING: csli.json panel_csli.mean={panel_mean} is outside "
-            f"[ci_lower={ci_lower}, ci_upper={ci_upper}]; bootstrap CI "
+            f"WARNING: csli.json question-use-gap panel mean={panel_mean} is "
+            f"outside [ci_lower={ci_lower}, ci_upper={ci_upper}]; bootstrap CI "
             f"computation may be stale relative to the panel mean.",
             file=sys.stderr,
         )

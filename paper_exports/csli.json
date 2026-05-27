@@ -1,27 +1,40 @@
 {
   "panel_csli": {
+    "mean": 0.003469,
+    "ci_lower": 0.0,
+    "ci_upper": 0.010778343666961914,
+    "mean_from_per_model_avg": 0.003469,
+    "definition": "max(0, acc_choices_only - 1/K) per model, averaged",
+    "K": 4,
+    "chance": 0.25
+  },
+  "panel_question_use_gap": {
     "mean": 0.11366991437850603,
     "ci_lower": 0.0994943903159138,
     "ci_upper": 0.12607026867434307,
-    "mean_from_per_model_avg": 0.11367000000000001
+    "mean_from_per_model_avg": 0.11367000000000001,
+    "definition": "acc_full - acc_choices_only per model, averaged"
   },
   "per_model": {
     "tfidf": {
       "acc_full": 0.258636,
       "acc_choices_only": 0.260407,
-      "csli": -0.001771,
+      "csli": 0.010407,
+      "question_use_gap": -0.001771,
       "leakage_flag": false
     },
     "sbert": {
       "acc_full": 0.490257,
       "acc_choices_only": 0.244464,
-      "csli": 0.245793,
+      "csli": 0.0,
+      "question_use_gap": 0.245793,
       "leakage_flag": false
     },
     "t5-small": {
       "acc_full": 0.310895,
       "acc_choices_only": 0.213906,
-      "csli": 0.096988,
+      "csli": 0.0,
+      "question_use_gap": 0.096988,
       "leakage_flag": false
     }
   },
@@ -29,6 +42,7 @@
     "n_questions": 2258,
     "n_models": 3,
     "K": 4,
+    "chance": 0.25,
     "choices_only_accuracy_threshold": 0.3,
     "threshold_metric": "choices_only_accuracy",
     "threshold_criterion": "acc_choices_only > choices_only_accuracy_threshold",
@@ -40,6 +54,7 @@
     "bootstrap_method": "percentile",
     "bootstrap_seed": 789685,
     "bootstrap_note": "Percentile-method bootstrap (not BCa). CI captures sampling variability over questions but not model selection uncertainty.",
+    "csli_definition": "Canonical CSLI = max(0, acc_choices_only - 1/K) (PAP-original choices-only excess over chance). question_use_gap = acc_full - acc_choices_only (in-flight manuscript's pre-rename CSLI). The frozen leakage gate is on per-model acc_choices_only > 1/K + 0.05 = 0.30 for K=4, independent of either flavor.",
     "models": [
       "tfidf",
       "sbert",
@@ -47,38 +62,41 @@
     ],
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-26T22:08:53.196699+00:00",
+      "generated_at_utc": "2026-05-27T02:10:36.197927+00:00",
       "command": [
         "python",
         "scripts/compute_csli.py",
         "--models",
         "tfidf,sbert,t5-small",
-        "--allow-low-mc-retention"
+        "--allow-low-mc-retention",
+        "--allow-incomplete-mc-coverage"
       ],
       "argv": [
         "--models",
         "tfidf,sbert,t5-small",
-        "--allow-low-mc-retention"
+        "--allow-low-mc-retention",
+        "--allow-incomplete-mc-coverage"
       ],
       "cwd": ".",
       "output_path": "paper_exports/csli.json",
       "script_path": "scripts/compute_csli.py",
-      "script_sha256": "e6e5111941d15031c46e6e1eb76ce8f0a00865ac1423a303d2c4fd1cc963ea3d",
-      "git_commit": "75c2483692d1aa1e367bcf2597a3ca6b16a036bc",
-      "git_dirty": false,
-      "git_status_relevant_paths": ""
+      "script_sha256": "781621353c068d0533e17fcd1d51166ead4f19cbfef7623444c90701a1205a54",
+      "git_commit": "f5600efeb744265879c3f2f2c86758cb3f736cec",
+      "git_dirty": true,
+      "git_status_relevant_paths": "M paper_exports/csli.json\n M scripts/compute_csli.py"
     },
     "mc_coverage": {
-      "test_dataset_qids": 2258,
+      "target_qids": 2258,
       "mc_questions_total": 14437,
-      "matched_test_mc_questions": 2258,
-      "matched_test_mc_qids": 2258,
-      "missing_test_qids": 0,
+      "matched_questions": 2258,
+      "matched_qids": 2258,
+      "missing_qids": 0,
       "coverage_rate": 1.0,
       "threshold": 0.98,
       "passed": true,
       "overridden": false,
-      "override_flag": "--allow-incomplete-mc-coverage"
+      "override_flag": "--allow-incomplete-mc-coverage",
+      "split": "test"
     },
     "mc_build_metadata": {
       "status": "loaded",

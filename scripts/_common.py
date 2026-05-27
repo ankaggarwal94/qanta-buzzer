@@ -11,8 +11,11 @@ for the unified qanta-buzzer codebase.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import subprocess
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -169,6 +172,93 @@ def project_relative(path: str | Path) -> str:
         return p.relative_to(PROJECT_ROOT).as_posix()
     except ValueError:
         return str(p)
+
+
+def sha256_file(path: str | Path) -> str:
+    """Return the SHA-256 digest of a local file."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_output(args: list[str]) -> str | None:
+    """Return stdout for a read-only git command, or None when unavailable."""
+    try:
+        # SECURITY-REVIEW: subprocess is fixed-argv, shell=False, and scoped to
+        # local read-only git metadata; no user-controlled shell interpolation.
+        result = subprocess.run(
+            ["git", *args],
+            cwd=PROJECT_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def build_generation_provenance(
+    script_path: str | Path,
+    argv: list[str],
+    *,
+    output_path: str | Path,
+    extra_paths: list[str | Path] | None = None,
+) -> dict[str, Any]:
+    """Build audit metadata tying a generated artifact to its source script.
+
+    PR #14 follow-up review (Blocker 4): every paper_exports artifact must
+    carry a ``generation`` block recording the script path, sha256, argv,
+    git commit, and dirty-status so the audit card can verify that the
+    committed JSONs were produced by the current code at the recorded
+    commit.
+
+    Parameters
+    ----------
+    script_path : str or Path
+        Path to the script producing the artifact (typically ``__file__``).
+    argv : list[str]
+        The effective ``sys.argv[1:]`` of the invocation.
+    output_path : str or Path
+        The artifact path being generated. Recorded as repo-relative.
+    extra_paths : list of str or Path, optional
+        Additional repo-relative paths whose git status to capture (e.g.,
+        the threshold manifest, split provenance file). The script and
+        output paths are always included automatically.
+
+    Returns
+    -------
+    dict[str, Any]
+        A schema-versioned generation provenance dict.
+    """
+    script_resolved = Path(script_path).resolve()
+    relevant = [
+        project_relative(script_resolved),
+        project_relative(output_path),
+    ]
+    for p in extra_paths or []:
+        relevant.append(project_relative(p))
+
+    status_args = ["status", "--short", "--", *relevant]
+    git_status = _git_output(status_args)
+
+    return {
+        "schema_version": 1,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "command": ["python", project_relative(script_resolved), *argv],
+        "argv": list(argv),
+        "cwd": project_relative(Path.cwd()),
+        "output_path": project_relative(output_path),
+        "script_path": project_relative(script_resolved),
+        "script_sha256": sha256_file(script_resolved),
+        "git_commit": _git_output(["rev-parse", "HEAD"]),
+        "git_dirty": bool(git_status),
+        "git_status_relevant_paths": git_status or "",
+    }
 
 
 def load_config(config_path: str | None = None, smoke: bool = False) -> dict[str, Any]:

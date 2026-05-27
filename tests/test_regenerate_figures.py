@@ -113,19 +113,45 @@ def test_audit_table_splits_csli_into_gate_and_descriptive_rows(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """CSLI row must show the gate's observed criterion (max acc_choices_only)
-    in the threshold-bearing row, and the panel mean gap as a descriptive
-    row with no threshold comparison (Threshold/Verdict = ``--``). This
-    prevents the LaTeX from comparing ``panel_csli.mean`` against the
-    choices-only leakage gate -- different quantities.
+    """CSLI rows: gate row + choices-excess row + question-use-gap row.
+
+    PR #14 follow-up review (Blocker 3): the audit table now publishes
+    the canonical CSLI (choices-only excess over chance) as the headline
+    descriptive row, with the legacy question-use gap rendered for
+    transparency. Both descriptive rows render with Threshold/Verdict =
+    ``--`` because the frozen gate is on max(acc_choices_only), not on
+    either panel mean.
     """
     monkeypatch.setattr(regenerate_figures, "_PAPER_EXPORTS", tmp_path)
     csli_data = {
-        "panel_csli": {"mean": 0.1137, "ci_lower": 0.0995, "ci_upper": 0.1261},
+        # Canonical CSLI = choices-only excess.
+        "panel_csli": {
+            "mean": 0.0335,
+            "ci_lower": 0.0250,
+            "ci_upper": 0.0420,
+            "definition": "max(0, acc_choices_only - 1/K) per model, averaged",
+        },
+        "panel_question_use_gap": {
+            "mean": 0.1137,
+            "ci_lower": 0.0995,
+            "ci_upper": 0.1261,
+        },
         "per_model": {
-            "tfidf": {"acc_choices_only": 0.260407},
-            "sbert": {"acc_choices_only": 0.244464},
-            "t5-small": {"acc_choices_only": 0.213906},
+            "tfidf": {
+                "acc_choices_only": 0.260407,
+                "csli": 0.010,
+                "question_use_gap": 0.15,
+            },
+            "sbert": {
+                "acc_choices_only": 0.244464,
+                "csli": 0.0,
+                "question_use_gap": 0.10,
+            },
+            "t5-small": {
+                "acc_choices_only": 0.213906,
+                "csli": 0.0,
+                "question_use_gap": 0.08,
+            },
         },
         "metadata": {"threshold": 0.30},
     }
@@ -155,18 +181,27 @@ def test_audit_table_splits_csli_into_gate_and_descriptive_rows(
     # threshold (0.30) with the CSLI gate verdict.
     assert "Max choices-only accuracy" in rendered
     assert "0.2604" in rendered  # observed_criterion_value
-    # Descriptive row: panel CSLI gap with CI, no threshold comparison.
-    assert "Panel CSLI (mean gap)" in rendered
-    assert "0.1137" in rendered  # panel_csli.mean
+    # Canonical CSLI row: choices-only excess with CI, no threshold comparison.
+    assert "Panel CSLI (choices-only excess)" in rendered
+    assert "0.0335" in rendered  # panel_csli.mean (choices-excess)
+    assert "[0.0250, 0.0420]" in rendered
+    # Transparency row: question-use gap with CI, no threshold comparison.
+    assert "Panel question-use gap" in rendered
+    assert "0.1137" in rendered  # panel_question_use_gap.mean
     assert "[0.0995, 0.1261]" in rendered
-    # The descriptive row's Threshold and Verdict columns must be ``--``,
-    # not the gate threshold or a verdict (avoids the metric mix-up).
-    panel_row = [
+    # Both descriptive rows render with -- in threshold/verdict columns.
+    excess_row = [
         line for line in rendered.splitlines()
-        if line.startswith("Panel CSLI (mean gap)")
+        if line.startswith("Panel CSLI (choices-only excess)")
     ]
-    assert len(panel_row) == 1
-    assert "& -- & --" in panel_row[0]
+    gap_row = [
+        line for line in rendered.splitlines()
+        if line.startswith("Panel question-use gap")
+    ]
+    assert len(excess_row) == 1
+    assert len(gap_row) == 1
+    assert "& -- & --" in excess_row[0]
+    assert "& -- & --" in gap_row[0]
 
 
 def test_audit_table_falls_back_when_observed_criterion_value_absent(

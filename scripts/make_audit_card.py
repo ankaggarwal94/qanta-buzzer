@@ -74,15 +74,18 @@ def _load_json(path: Path) -> dict:
 def _evaluate_csli(csli_data: dict, threshold: float) -> dict:
     """Evaluate CSLI metric against threshold.
 
-    The threshold applies to choices-only accuracy per model: if any model's
-    acc_choices_only exceeds the threshold, it indicates leakage.
+    The threshold applies to choices-only accuracy per model: if any
+    model's acc_choices_only exceeds the threshold, it indicates leakage.
 
-    PR #14 Blocker 1: surfaces BOTH the manuscript-aligned gap CSLI
-    (``panel_csli.mean``) and the PAP-original choices-only excess
-    (``panel_csli_choices_excess.mean_from_per_model_avg``) so a
-    reader can see both interpretations without consulting raw
-    csli.json. Falls back gracefully on older csli.json that lacks
-    the excess fields.
+    PR #14 follow-up review (Blocker 3): the canonical CSLI is the
+    PAP-original choices-only excess over chance, published at
+    ``panel_csli`` with a bootstrap CI. The full-minus-choices gap is
+    published at ``panel_question_use_gap``. Both are surfaced here so a
+    reader can see either. Falls back on older csli.json (where
+    ``panel_csli`` was the gap) by reading the per-model
+    ``acc_choices_only`` values and recomputing the excess; in that case
+    the displayed CSLI value carries an ``artifact_format`` flag so the
+    audit card reader knows the bootstrap CI was unavailable.
     """
     per_model = csli_data["per_model"]
     max_acc_choices_only = max(
@@ -95,30 +98,66 @@ def _evaluate_csli(csli_data: dict, threshold: float) -> dict:
     else:
         verdict = "pass"
 
-    # PR #14 Blocker 1: compute the PAP-original "choices-only excess
-    # over chance" if csli.json doesn't already carry it, so older
-    # artifacts still surface both interpretations in the card.
     K = 4
     chance = 1.0 / K
     per_model_excess = {
         k: round(max(0.0, v["acc_choices_only"] - chance), 6)
         for k, v in per_model.items()
     }
-    panel_excess_block = csli_data.get("panel_csli_choices_excess")
-    if panel_excess_block is not None:
-        panel_excess = panel_excess_block.get(
-            "mean_from_per_model_avg",
-            float(sum(per_model_excess.values()) / len(per_model_excess)),
-        )
+    per_model_gap = {
+        k: v.get("question_use_gap", v.get("csli"))
+        for k, v in per_model.items()
+    }
+
+    panel_csli_block = csli_data.get("panel_csli")
+    panel_gap_block = csli_data.get("panel_question_use_gap")
+
+    # New artifact format: panel_csli is the choices-excess CSLI with a
+    # bootstrap CI; panel_question_use_gap is the gap (also with a CI).
+    new_format = (
+        isinstance(panel_csli_block, dict)
+        and "definition" in panel_csli_block
+        and panel_csli_block["definition"].startswith("max(0,")
+    )
+
+    if new_format and isinstance(panel_gap_block, dict):
+        csli_value = panel_csli_block["mean"]
+        csli_ci_lower = panel_csli_block.get("ci_lower")
+        csli_ci_upper = panel_csli_block.get("ci_upper")
+        gap_value = panel_gap_block["mean"]
+        gap_ci_lower = panel_gap_block.get("ci_lower")
+        gap_ci_upper = panel_gap_block.get("ci_upper")
+        artifact_format = "v2_choices_excess_canonical"
     else:
-        panel_excess = float(sum(per_model_excess.values()) / len(per_model_excess))
+        # Legacy artifact: panel_csli was the gap. Reconstruct excess
+        # from per-model acc_choices_only so the audit card still
+        # publishes the canonical CSLI, and surface that the displayed
+        # value lacks a bootstrap CI from this artifact.
+        legacy_excess_block = csli_data.get("panel_csli_choices_excess")
+        if isinstance(legacy_excess_block, dict):
+            csli_value = legacy_excess_block.get(
+                "mean_from_per_model_avg",
+                float(sum(per_model_excess.values()) / len(per_model_excess)),
+            )
+        else:
+            csli_value = float(
+                sum(per_model_excess.values()) / len(per_model_excess)
+            )
+        csli_ci_lower = None
+        csli_ci_upper = None
+        gap_value = (panel_csli_block or {}).get("mean")
+        gap_ci_lower = (panel_csli_block or {}).get("ci_lower")
+        gap_ci_upper = (panel_csli_block or {}).get("ci_upper")
+        artifact_format = "v1_legacy_gap_under_panel_csli"
 
     return {
-        "name": "CSLI (Choice-Set Leakage Index)",
-        "value": csli_data["panel_csli"]["mean"],
-        "value_display": f"{csli_data['panel_csli']['mean']:.4f}",
-        "ci_lower": csli_data["panel_csli"]["ci_lower"],
-        "ci_upper": csli_data["panel_csli"]["ci_upper"],
+        "name": "CSLI (Choice-Set Leakage Index, choices-only excess)",
+        "value": csli_value,
+        "value_display": (
+            f"{csli_value:.4f}" if csli_value is not None else "n/a"
+        ),
+        "ci_lower": csli_ci_lower,
+        "ci_upper": csli_ci_upper,
         "threshold": threshold,
         "threshold_criterion": "max(acc_choices_only) <= threshold",
         "observed_criterion_value": max_acc_choices_only,
@@ -130,25 +169,38 @@ def _evaluate_csli(csli_data: dict, threshold: float) -> dict:
                 k: v["acc_choices_only"] for k, v in per_model.items()
             },
             "leakage_flags": {
-                k: v["leakage_flag"] for k, v in per_model.items()
+                k: v.get("leakage_flag") for k, v in per_model.items()
             },
-            "panel_csli_gap": csli_data["panel_csli"]["mean"],
-            "panel_csli_gap_definition": (
-                "acc_full - acc_choices_only (final manuscript "
-                "final_project.tex L120-121)"
+            "panel_csli_choices_excess": (
+                round(csli_value, 6) if csli_value is not None else None
             ),
-            "panel_csli_choices_excess": round(panel_excess, 6),
             "panel_csli_choices_excess_definition": (
                 "max(0, acc_choices_only - 1/K) per model, averaged "
-                "(PAP-original definition; pap.tex)"
+                "(canonical CSLI; PAP-original definition)"
+            ),
+            "panel_question_use_gap": (
+                round(gap_value, 6) if gap_value is not None else None
+            ),
+            "panel_question_use_gap_ci": (
+                [gap_ci_lower, gap_ci_upper]
+                if gap_ci_lower is not None and gap_ci_upper is not None
+                else None
+            ),
+            "panel_question_use_gap_definition": (
+                "acc_full - acc_choices_only (formerly published as CSLI "
+                "in the in-flight manuscript; kept for transparency)"
             ),
             "per_model_csli_choices_excess": per_model_excess,
+            "per_model_question_use_gap": per_model_gap,
             "K": K,
             "chance": chance,
+            "artifact_format": artifact_format,
             "definition_note": (
-                "Two CSLI flavors are reported. The frozen gate is on "
+                "Canonical CSLI = max(0, acc_choices_only - 1/K). The "
+                "former gap interpretation is published as "
+                "question_use_gap. The frozen gate is on "
                 "max(acc_choices_only) > 0.30 (= 1/K + 0.05), "
-                "independent of either flavor."
+                "independent of either summary."
             ),
         },
     }
@@ -157,31 +209,19 @@ def _evaluate_csli(csli_data: dict, threshold: float) -> dict:
 def _evaluate_calibration(cal_data: dict, threshold: float) -> dict:
     """Evaluate prefix-wise calibration ECE against threshold.
 
-    PR #14 Blocker 4: the producer correctly emits per-bucket
-    ``platt_model_type`` and ``n_samples`` so an empty or
-    single-class validation bucket falls back to a
-    ``ConstantCalibrationModel`` and is flagged in the artifact.
-    This consumer now reads those fields and downgrades the verdict
-    to ``warn`` when any bucket is degenerate, because
-    ``compute_ece`` returns 0.0 for empty buckets (so an empty
-    bucket would otherwise look perfectly calibrated).
+    PR #14 follow-up review (Issue C): the producer now emits the
+    final scientific verdict (downgrades to ``"warn"`` when any
+    per-bucket calibrator fell back to ``ConstantCalibrationModel``
+    or any test bucket was empty). This consumer prefers the
+    producer's ``gate_verdict`` and only recomputes when the
+    producer did not record the new ``gate_verdict_reason`` field
+    (i.e., the artifact pre-dates the producer-side downgrade fix).
     """
     max_ece = cal_data["max_ece"]
-    # Cross-verify with stored gate_verdict
-    computed_verdict = "pass" if max_ece <= threshold else "warn"
+    threshold_verdict = "pass" if max_ece <= threshold else "warn"
     stored_verdict = cal_data["gate_verdict"]
+    stored_reason = cal_data.get("gate_verdict_reason")
 
-    if computed_verdict != stored_verdict:
-        print(
-            f"WARNING: Calibration verdict mismatch: computed={computed_verdict}, "
-            f"stored={stored_verdict}",
-            file=sys.stderr,
-        )
-
-    # PR #14 Blocker 4: scan per-bucket fallback metadata for
-    # degeneracy. Older calibration.json without these fields
-    # degrades to no-warn (defensive default; matches the prior
-    # consumer behavior).
     per_bucket = cal_data["per_bucket"]
     fallback_buckets = []
     empty_buckets = []
@@ -200,11 +240,32 @@ def _evaluate_calibration(cal_data: dict, threshold: float) -> dict:
         if bucket.get("n_samples") == 0:
             empty_buckets.append(bucket_name)
 
-    if fallback_buckets or empty_buckets:
-        # Force WARN even if threshold-based ECE passes, because the
-        # ECE is computed against a degenerate calibrator and/or
-        # empty test bucket.
-        computed_verdict = "warn"
+    if stored_reason is not None:
+        # Producer already emitted the final scientific verdict; trust
+        # it. ``stored_reason`` lets the audit card explain the call.
+        final_verdict = stored_verdict
+        verdict_reason = stored_reason
+    else:
+        # Legacy artifact: producer recorded only the threshold-only
+        # verdict. Reproduce the downgrade-on-degeneracy decision here
+        # so older committed artifacts surface the same WARN.
+        if fallback_buckets or empty_buckets:
+            final_verdict = "warn"
+            verdict_reason = (
+                "degenerate_calibrator_or_empty_bucket: "
+                f"fallback={[b['bucket'] for b in fallback_buckets]}, "
+                f"empty={empty_buckets}"
+            )
+        else:
+            final_verdict = threshold_verdict
+            verdict_reason = "threshold_only"
+
+    if final_verdict != stored_verdict:
+        print(
+            f"WARNING: Calibration verdict mismatch: final={final_verdict}, "
+            f"stored={stored_verdict}",
+            file=sys.stderr,
+        )
 
     return {
         "name": "Prefix-wise Calibration (ECE)",
@@ -214,7 +275,7 @@ def _evaluate_calibration(cal_data: dict, threshold: float) -> dict:
         "threshold_criterion": "max(bucket_ECE) <= threshold",
         "observed_criterion_value": max_ece,
         "direction": "warn_if_above",
-        "verdict": computed_verdict,
+        "verdict": final_verdict,
         "details": {
             "per_bucket_ece": {
                 k: v["ece"] for k, v in per_bucket.items()
@@ -228,6 +289,8 @@ def _evaluate_calibration(cal_data: dict, threshold: float) -> dict:
             "fallback_buckets": fallback_buckets,
             "empty_buckets": empty_buckets,
             "stored_gate_verdict": stored_verdict,
+            "verdict_reason": verdict_reason,
+            "threshold_only_verdict": threshold_verdict,
         },
     }
 
@@ -235,39 +298,22 @@ def _evaluate_calibration(cal_data: dict, threshold: float) -> dict:
 def _evaluate_stopdff(stopdff_data: dict, threshold: float) -> dict:
     """Evaluate diagnostic StopDFF against threshold.
 
-    PR #14 Blocker 2: when ``ceiling_effect_detected`` is true (no
-    question in either condition stopped before the final prefix),
-    the median_abs_prefix_shift is mechanically 0 because every
-    pair lands at the same final step. The verdict-as-is would
-    falsely PASS with "no power" — the reviewer's "scientifically
-    misleading PASS" concern. This consumer now reads
-    ``ceiling_effect_detected`` and per-bucket ``threshold_reachable``
-    flags and renders a ``verdict_qualifier`` so the audit card
-    surfaces the limitation in the headline verdict column.
-
-    The current implementation keeps the verdict as ``"pass"`` (the
-    metric is documented as ``diagnostic_only`` / ``myopic_threshold``
-    in Phase 06; the PASS is "the diagnostic test passes its threshold,"
-    not "the policy is provably fair"). The qualifier surfaces the
-    ceiling effect / reachability in the headline rather than
-    inverting the verdict, which would invalidate the already-submitted
-    manuscript without changing the underlying metric semantics.
+    PR #14 follow-up review (Blocker 1): when ``ceiling_effect_detected``
+    is true (no question in either condition stopped before the final
+    prefix) or any per-bucket calibrated threshold is unreachable, the
+    metric has no power to detect prefix shifts and a threshold-only PASS
+    is scientifically misleading. The producer now emits the final
+    scientific verdict (``"warn"`` under either flag) and records
+    ``gate_verdict_reason``. This consumer prefers the producer's verdict
+    and only re-decides when the artifact pre-dates the producer-side
+    downgrade fix (legacy artifacts whose ``gate_verdict`` was
+    threshold-only).
     """
     median_shift = stopdff_data["median_abs_prefix_shift"]
-    computed_verdict = "pass" if median_shift <= threshold else "warn"
+    threshold_verdict = "pass" if median_shift <= threshold else "warn"
     stored_verdict = stopdff_data["gate_verdict"]
+    stored_reason = stopdff_data.get("gate_verdict_reason")
 
-    if computed_verdict != stored_verdict:
-        print(
-            f"WARNING: StopDFF verdict mismatch: computed={computed_verdict}, "
-            f"stored={stored_verdict}",
-            file=sys.stderr,
-        )
-
-    # PR #14 Blocker 2: extract ceiling-effect / reachability flags.
-    # Older stopdff.json without these fields degrades to "no
-    # qualifier" (defensive default; matches the prior consumer
-    # behavior).
     ceiling_effect = bool(stopdff_data.get("ceiling_effect_detected", False))
     reachability = stopdff_data.get("reachability") or {}
     unreachable_buckets = [
@@ -275,6 +321,41 @@ def _evaluate_stopdff(stopdff_data: dict, threshold: float) -> dict:
         for bucket, info in reachability.items()
         if isinstance(info, dict) and info.get("threshold_reachable") is False
     ]
+
+    if stored_reason is not None:
+        # Producer already emitted the final scientific verdict; trust
+        # it. The card still surfaces the qualifier text for the reader.
+        final_verdict = stored_verdict
+        verdict_reason = stored_reason
+    else:
+        # Legacy artifact: producer recorded only the threshold-only
+        # verdict. Reproduce the downgrade-on-ceiling/unreachable
+        # decision so older committed artifacts surface the same WARN.
+        if ceiling_effect or unreachable_buckets:
+            final_verdict = "warn"
+            verdict_reason = "diagnostic_null: " + ", ".join(
+                filter(
+                    None,
+                    [
+                        "ceiling_effect" if ceiling_effect else "",
+                        (
+                            f"unreachable_buckets={sorted(unreachable_buckets)}"
+                            if unreachable_buckets
+                            else ""
+                        ),
+                    ],
+                )
+            )
+        else:
+            final_verdict = threshold_verdict
+            verdict_reason = "threshold_only"
+
+    if final_verdict != stored_verdict:
+        print(
+            f"WARNING: StopDFF verdict mismatch: final={final_verdict}, "
+            f"stored={stored_verdict}",
+            file=sys.stderr,
+        )
 
     qualifier_parts = []
     if ceiling_effect:
@@ -293,11 +374,13 @@ def _evaluate_stopdff(stopdff_data: dict, threshold: float) -> dict:
         "threshold_criterion": "median_abs_prefix_shift <= threshold",
         "observed_criterion_value": median_shift,
         "direction": "warn_if_above",
-        "verdict": computed_verdict,
+        "verdict": final_verdict,
         "verdict_qualifier": verdict_qualifier,
         "details": {
             "direction_breakdown": stopdff_data["direction_breakdown"],
             "stored_gate_verdict": stored_verdict,
+            "verdict_reason": verdict_reason,
+            "threshold_only_verdict": threshold_verdict,
             "metric_type": stopdff_data["metadata"]["metric_type"],
             "ceiling_effect_detected": ceiling_effect,
             "unreachable_buckets": unreachable_buckets,
@@ -306,17 +389,62 @@ def _evaluate_stopdff(stopdff_data: dict, threshold: float) -> dict:
     }
 
 
-def _compute_overall_verdict(metrics: list[dict]) -> str:
+def _retention_or_coverage_override_qualifiers(
+    data_provenance: dict | None,
+) -> list[str]:
+    """Return formatted strings for any retention/coverage gates that were overridden.
+
+    PR #14 follow-up review (Blocker 2): an audit card whose retention
+    or coverage gate failed and was overridden is a "retained-subset"
+    result, not a clean PASS. Returns a list like
+    ``["calibration/val retention", "csli/test retention"]`` describing
+    every gate that triggered an override.
+    """
+    if not isinstance(data_provenance, dict):
+        return []
+    qualifiers: list[str] = []
+    for metric_name, block in data_provenance.items():
+        if not isinstance(block, dict):
+            continue
+        for gate_name in ("coverage", "retention"):
+            gate = block.get(gate_name)
+            if not isinstance(gate, dict):
+                continue
+            for split_name, split_block in gate.items():
+                if not isinstance(split_block, dict):
+                    continue
+                if split_block.get("overridden") is True:
+                    qualifiers.append(f"{metric_name}/{split_name} {gate_name}")
+    return qualifiers
+
+
+def _compute_overall_verdict(
+    metrics: list[dict],
+    data_provenance: dict | None = None,
+) -> tuple[str, str | None]:
     """Compute overall verdict from per-metric verdicts.
 
-    PASS if all pass, WARN if any warn, FAIL if any fail.
+    PR #14 follow-up review (Blocker 2): any retention or coverage gate
+    that failed and was overridden downgrades a clean PASS to WARN with
+    a ``retained-subset`` qualifier. Per-metric ``"warn"`` or ``"fail"``
+    still dominate the ladder (FAIL > WARN > PASS).
+
+    Returns
+    -------
+    tuple[str, str | None]
+        (overall_verdict, optional_qualifier). The qualifier describes
+        why a PASS was downgraded (e.g., listing each overridden gate).
     """
     verdicts = [m["verdict"] for m in metrics]
     if "fail" in verdicts:
-        return "FAIL"
+        return "FAIL", None
     if "warn" in verdicts:
-        return "WARN"
-    return "PASS"
+        return "WARN", None
+    overrides = _retention_or_coverage_override_qualifiers(data_provenance)
+    if overrides:
+        qualifier = "retained-subset (override on " + ", ".join(overrides) + ")"
+        return "WARN", qualifier
+    return "PASS", None
 
 
 def _extract_data_provenance(
@@ -443,6 +571,9 @@ def _write_audit_card_json(
     metrics: list[dict],
     overall_verdict: str,
     data_provenance: dict | None = None,
+    overall_verdict_qualifier: str | None = None,
+    artifact_provenance: dict | None = None,
+    generation: dict | None = None,
 ) -> Path:
     """Write the machine-readable audit card JSON."""
     card = {
@@ -455,8 +586,14 @@ def _write_audit_card_json(
             "threshold_source": "threshold_manifest.json",
         },
     }
+    if overall_verdict_qualifier is not None:
+        card["overall_verdict_qualifier"] = overall_verdict_qualifier
     if data_provenance is not None:
         card["data_provenance"] = data_provenance
+    if artifact_provenance is not None:
+        card["artifact_provenance"] = artifact_provenance
+    if generation is not None:
+        card["metadata"]["generation"] = generation
     out_path = _PAPER_EXPORTS / "audit_card.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(card, f, indent=2)
@@ -476,6 +613,8 @@ def _write_audit_card_md(
     metrics: list[dict],
     overall_verdict: str,
     data_provenance: dict | None = None,
+    overall_verdict_qualifier: str | None = None,
+    artifact_provenance: dict | None = None,
 ) -> Path:
     """Write the human-readable audit card Markdown."""
     lines = [
@@ -492,9 +631,12 @@ def _write_audit_card_md(
             f"| {m['name']} | {m['value_display']}{ci_str} | {m['threshold']} | "
             f"{_render_verdict_cell(m)} |"
         )
+    headline = f"**Overall Verdict: {overall_verdict}**"
+    if overall_verdict_qualifier:
+        headline += f" — {overall_verdict_qualifier}"
     lines.extend([
         "",
-        f"**Overall Verdict: {overall_verdict}**",
+        headline,
         "",
     ])
 
@@ -503,6 +645,9 @@ def _write_audit_card_md(
     # on what counted as a defensible retained-subset audit.
     if data_provenance:
         lines.extend(_render_data_provenance_md(data_provenance))
+
+    if artifact_provenance:
+        lines.extend(_render_artifact_provenance_md(artifact_provenance))
 
     lines.extend([
         "---",
@@ -518,6 +663,92 @@ def _write_audit_card_md(
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     return out_path
+
+
+def _render_artifact_provenance_md(provenance: dict) -> list[str]:
+    """Render the per-source-artifact script_sha256 provenance block."""
+    lines = [
+        "## Artifact Provenance — Source Script SHA-256 Match",
+        "",
+        "| Source Artifact | Recorded commit | Recorded sha256 | Current sha256 | Match |",
+        "|-----------------|-----------------|------------------|------------------|-------|",
+    ]
+    for artifact_name, block in provenance.items():
+        if not isinstance(block, dict):
+            continue
+        commit = block.get("recorded_commit") or "n/a"
+        recorded_sha = (block.get("recorded_sha256") or "n/a")[:12]
+        current_sha = (block.get("current_sha256") or "n/a")[:12]
+        match = block.get("sha_matches")
+        match_cell = "yes" if match is True else ("no" if match is False else "n/a")
+        lines.append(
+            f"| {artifact_name} | {commit[:12]} | {recorded_sha} | {current_sha} | "
+            f"{match_cell} |"
+        )
+    lines.append("")
+    return lines
+
+
+def _build_artifact_provenance(
+    csli_data: dict,
+    cal_data: dict,
+    stopdff_data: dict,
+) -> dict:
+    """Cross-check each source artifact's recorded script sha256 against the live script.
+
+    PR #14 follow-up review (Blocker 4): each producer (compute_csli,
+    compute_prefix_calibration, compute_stopdff) now embeds a
+    ``generation`` block recording the script's sha256 and the git
+    commit at generation time. Here we recompute the live script
+    sha256 and surface whether the committed source artifact was
+    produced by the current script. Mismatches mean the JSON is stale.
+    """
+    from scripts._common import sha256_file
+
+    sources = {
+        "csli.json": (csli_data, _REPO_ROOT / "scripts" / "compute_csli.py"),
+        "calibration.json": (
+            cal_data,
+            _REPO_ROOT / "scripts" / "compute_prefix_calibration.py",
+        ),
+        "stopdff.json": (
+            stopdff_data,
+            _REPO_ROOT / "scripts" / "compute_stopdff.py",
+        ),
+    }
+    out: dict[str, dict] = {}
+    for name, (data, script_path) in sources.items():
+        metadata = data.get("metadata") if isinstance(data, dict) else None
+        gen_block = None
+        if isinstance(metadata, dict):
+            gen_block = metadata.get("generation")
+        if not isinstance(gen_block, dict):
+            gen_block = data.get("generation") if isinstance(data, dict) else None
+
+        recorded_sha = (
+            gen_block.get("script_sha256") if isinstance(gen_block, dict) else None
+        )
+        recorded_commit = (
+            gen_block.get("git_commit") if isinstance(gen_block, dict) else None
+        )
+        try:
+            current_sha = sha256_file(script_path) if script_path.exists() else None
+        except OSError:
+            current_sha = None
+        if recorded_sha is None or current_sha is None:
+            match = None
+        else:
+            match = recorded_sha == current_sha
+        out[name] = {
+            "recorded_commit": recorded_commit,
+            "recorded_sha256": recorded_sha,
+            "current_sha256": current_sha,
+            "script_path": str(script_path.relative_to(_REPO_ROOT))
+            if script_path.exists() and script_path.is_absolute()
+            else None,
+            "sha_matches": match,
+        }
+    return out
 
 
 def _render_data_provenance_md(provenance: dict) -> list[str]:
@@ -650,9 +881,6 @@ def main() -> int:
         _evaluate_stopdff(stopdff_data, thresholds["stopdff_median_abs_prefix"]),
     ]
 
-    # Compute overall verdict
-    overall_verdict = _compute_overall_verdict(metrics)
-
     # PR #14 Blocker 3: extract per-metric coverage + retention
     # provenance so the audit card visibly records what counted as a
     # defensible retained-subset audit for each metric.
@@ -660,12 +888,63 @@ def main() -> int:
         csli_data, cal_data, stopdff_data
     )
 
+    # PR #14 follow-up review (Blocker 2): retention/coverage overrides
+    # downgrade a clean PASS to WARN with a 'retained-subset' qualifier.
+    overall_verdict, overall_verdict_qualifier = _compute_overall_verdict(
+        metrics, data_provenance
+    )
+
+    # PR #14 follow-up review (Blocker 4): cross-check each source
+    # artifact's recorded script sha256 against the live script and
+    # surface mismatches in the audit card.
+    artifact_provenance = _build_artifact_provenance(
+        csli_data, cal_data, stopdff_data
+    )
+    sha_mismatches = [
+        name
+        for name, block in artifact_provenance.items()
+        if block.get("sha_matches") is False
+    ]
+    if sha_mismatches:
+        print(
+            f"WARNING: source artifact(s) {sha_mismatches} report a "
+            f"script_sha256 that no longer matches the live producer "
+            f"script. The committed JSON is stale relative to the "
+            f"current code. Regenerate before treating it as final "
+            f"evidence.",
+            file=sys.stderr,
+        )
+
+    # PR #14 follow-up review (Blocker 4): emit own generation block.
+    from scripts._common import build_generation_provenance
+
+    generation = build_generation_provenance(
+        __file__,
+        list(sys.argv[1:]),
+        output_path=_PAPER_EXPORTS / "audit_card.json",
+        extra_paths=[
+            _PAPER_EXPORTS / "csli.json",
+            _PAPER_EXPORTS / "calibration.json",
+            _PAPER_EXPORTS / "stopdff.json",
+            _REPO_ROOT / "threshold_manifest.json",
+        ],
+    )
+
     # Write outputs
     json_path = _write_audit_card_json(
-        metrics, overall_verdict, data_provenance=data_provenance
+        metrics,
+        overall_verdict,
+        data_provenance=data_provenance,
+        overall_verdict_qualifier=overall_verdict_qualifier,
+        artifact_provenance=artifact_provenance,
+        generation=generation,
     )
     md_path = _write_audit_card_md(
-        metrics, overall_verdict, data_provenance=data_provenance
+        metrics,
+        overall_verdict,
+        data_provenance=data_provenance,
+        overall_verdict_qualifier=overall_verdict_qualifier,
+        artifact_provenance=artifact_provenance,
     )
 
     # Print summary
@@ -679,7 +958,10 @@ def main() -> int:
             f"{qualifier_str}"
         )
     print()
-    print(f"Overall Verdict: {overall_verdict}")
+    overall_str = f"Overall Verdict: {overall_verdict}"
+    if overall_verdict_qualifier:
+        overall_str += f" — {overall_verdict_qualifier}"
+    print(overall_str)
     print()
     print(f"Written: {json_path}")
     print(f"Written: {md_path}")

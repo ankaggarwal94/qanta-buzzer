@@ -273,9 +273,11 @@ def build_coverage_metadata(
 ) -> dict[str, Any]:
     """Return the ``mc_coverage`` metadata block consumers serialize.
 
-    Compatible with the existing CSLI ``metadata.mc_coverage``
-    schema so ``make_audit_card.py`` can read both old and new
-    artifacts.
+    PR #14 follow-up review (Issue B): fields use split-neutral names
+    (``target_qids``, ``matched_questions``, ``matched_qids``,
+    ``missing_qids``) so the same block can describe either a ``test``
+    or ``val`` split without the misleading ``test_*`` prefix that the
+    pre-renamed schema applied uniformly.
     """
     decision = coverage_gate_decision(
         coverage["coverage_rate"],
@@ -284,11 +286,11 @@ def build_coverage_metadata(
         override_flag=override_flag,
     )
     return {
-        "test_dataset_qids": coverage["target_qids"],
+        "target_qids": coverage["target_qids"],
         "mc_questions_total": coverage["mc_questions_total"],
-        "matched_test_mc_questions": coverage["matched_questions"],
-        "matched_test_mc_qids": coverage["matched_qids"],
-        "missing_test_qids": coverage["missing_qids"],
+        "matched_questions": coverage["matched_questions"],
+        "matched_qids": coverage["matched_qids"],
+        "missing_qids": coverage["missing_qids"],
         "coverage_rate": decision["coverage_rate"],
         "threshold": decision["threshold"],
         "passed": decision["passed"],

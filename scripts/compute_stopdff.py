@@ -491,6 +491,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     int
         Exit code (0 = success, 1 = error, 2 = argument error).
     """
+    # Capture argv BEFORE _parse_args mutates it so generation provenance
+    # records the exact effective invocation.
+    effective_argv = list(argv) if argv is not None else list(sys.argv[1:])
     args = _parse_args(argv)
 
     data_dir = Path(args.data_dir)
@@ -724,22 +727,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"[STOP]   Same stop step: {same_step} ({100*same_step/len(mc_test):.1f}%)", flush=True)
 
     # ========================================================================
-    # Gate verdict
-    # ========================================================================
-    from scripts.threshold_manifest import (
-        load_frozen_threshold_manifest,
-        threshold_value,
-    )
-
-    manifest = load_frozen_threshold_manifest(THRESHOLD_MANIFEST, strict=True)
-    # WR-02: fail closed (no silent fallback to hardcoded 1).
-    threshold = int(threshold_value(manifest, "stopdff_median_abs_prefix"))
-
-    gate_verdict = "pass" if median_abs_prefix_shift <= threshold else "warn"
-    print(f"\n[STOP] Gate verdict: {gate_verdict} "
-          f"(median={median_abs_prefix_shift:.4f} vs threshold={threshold})", flush=True)
-
-    # ========================================================================
     # Detect ceiling effect (CR-01): all questions timed out to last prefix
     # ========================================================================
     # Ceiling effect = no question in either condition stopped before the last step
@@ -758,6 +745,70 @@ def main(argv: Optional[list[str]] = None) -> int:
               "before the final prefix step. The metric is degenerate at this threshold.",
               flush=True)
 
+    # Identify any bucket whose calibrated stop threshold is unreachable
+    # (Platt-mapped probability over [-1, 1] cosine cannot cross STOP_THRESHOLD).
+    unreachable_buckets = sorted(
+        bucket
+        for bucket, info in reachability.items()
+        if isinstance(info, dict) and info.get("threshold_reachable") is False
+    )
+    if unreachable_buckets:
+        print(
+            f"[STOP] UNREACHABLE BUCKETS: {unreachable_buckets} -- calibrated "
+            "stop threshold cannot be crossed by any cosine in [-1, 1].",
+            flush=True,
+        )
+
+    # ========================================================================
+    # Gate verdict
+    # ========================================================================
+    from scripts.threshold_manifest import (
+        load_frozen_threshold_manifest,
+        threshold_value,
+    )
+
+    manifest = load_frozen_threshold_manifest(THRESHOLD_MANIFEST, strict=True)
+    # WR-02: fail closed (no silent fallback to hardcoded 1).
+    threshold = int(threshold_value(manifest, "stopdff_median_abs_prefix"))
+
+    threshold_only_verdict = (
+        "pass" if median_abs_prefix_shift <= threshold else "warn"
+    )
+
+    # PR #14 follow-up review (Blocker 1): the producer now emits the
+    # final scientific verdict, not just the threshold check. When the
+    # ceiling effect fires or any bucket's calibrated threshold is
+    # unreachable, the metric has no power to detect prefix shifts even
+    # in principle, so a threshold-only PASS is scientifically
+    # misleading. Downgrade to ``"warn"`` and record the reason; the
+    # downstream audit card surfaces the qualifier in the verdict cell
+    # and consequently the overall verdict.
+    if ceiling_effect_detected or unreachable_buckets:
+        gate_verdict = "warn"
+        gate_verdict_reason = "diagnostic_null: " + ", ".join(
+            filter(
+                None,
+                [
+                    "ceiling_effect" if ceiling_effect_detected else "",
+                    (
+                        f"unreachable_buckets={unreachable_buckets}"
+                        if unreachable_buckets
+                        else ""
+                    ),
+                ],
+            )
+        )
+    else:
+        gate_verdict = threshold_only_verdict
+        gate_verdict_reason = "threshold_only"
+
+    print(
+        f"\n[STOP] Gate verdict: {gate_verdict} "
+        f"(median={median_abs_prefix_shift:.4f} vs threshold={threshold}; "
+        f"reason={gate_verdict_reason})",
+        flush=True,
+    )
+
     # ========================================================================
     # Write paper_exports/stopdff.json
     # ========================================================================
@@ -766,6 +817,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         threshold=args.min_mc_coverage,
         override=args.allow_incomplete_mc_coverage,
     )
+    test_coverage_metadata["split"] = "test"
+
+    from scripts._common import build_generation_provenance
+
+    generation = build_generation_provenance(
+        __file__,
+        effective_argv,
+        output_path=output_path,
+        extra_paths=[
+            THRESHOLD_MANIFEST,
+            data_dir / "build_metadata.json",
+            calibration_path,
+        ],
+    )
+
     output_data = {
         "median_abs_prefix_shift": round(median_abs_prefix_shift, 6),
         "mean_abs_prefix_shift": round(mean_abs_prefix_shift, 6),
@@ -781,8 +847,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             "same_step": same_step,
         },
         "ceiling_effect_detected": ceiling_effect_detected,
+        "unreachable_buckets": unreachable_buckets,
         "reachability": reachability,
         "gate_verdict": gate_verdict,
+        "gate_verdict_reason": gate_verdict_reason,
+        "threshold_only_verdict": threshold_only_verdict,
         "threshold": threshold,
         "mc_coverage": {"test": test_coverage_metadata},
         "mc_retention_gate": {"test": test_retention_meta},
@@ -799,6 +868,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "metric_type": "diagnostic_only",
             "stopping_policy": "myopic_threshold",
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "generation": generation,
         },
     }
 

@@ -13,6 +13,10 @@
     "same_step": 2258
   },
   "ceiling_effect_detected": true,
+  "unreachable_buckets": [
+    "early",
+    "mid"
+  ],
   "reachability": {
     "early": {
       "max_calibrated_probability": 0.510149,
@@ -42,20 +46,23 @@
       "required_raw_score": 0.756985
     }
   },
-  "gate_verdict": "pass",
+  "gate_verdict": "warn",
+  "gate_verdict_reason": "diagnostic_null: ceiling_effect, unreachable_buckets=['early', 'mid']",
+  "threshold_only_verdict": "pass",
   "threshold": 1,
   "mc_coverage": {
     "test": {
-      "test_dataset_qids": 2258,
+      "target_qids": 2258,
       "mc_questions_total": 14437,
-      "matched_test_mc_questions": 2258,
-      "matched_test_mc_qids": 2258,
-      "missing_test_qids": 0,
+      "matched_questions": 2258,
+      "matched_qids": 2258,
+      "missing_qids": 0,
       "coverage_rate": 1.0,
       "threshold": 0.98,
       "passed": true,
       "overridden": false,
-      "override_flag": "--allow-incomplete-mc-coverage"
+      "override_flag": "--allow-incomplete-mc-coverage",
+      "split": "test"
     }
   },
   "mc_retention_gate": {
@@ -84,6 +91,27 @@
     "stop_threshold": 0.7,
     "metric_type": "diagnostic_only",
     "stopping_policy": "myopic_threshold",
-    "timestamp": "2026-05-26T23:16:47.909989+00:00"
+    "timestamp": "2026-05-27T02:20:19.055693+00:00",
+    "generation": {
+      "schema_version": 1,
+      "generated_at_utc": "2026-05-27T02:20:19.012096+00:00",
+      "command": [
+        "python",
+        "scripts/compute_stopdff.py",
+        "--allow-low-mc-retention",
+        "--allow-incomplete-mc-coverage"
+      ],
+      "argv": [
+        "--allow-low-mc-retention",
+        "--allow-incomplete-mc-coverage"
+      ],
+      "cwd": ".",
+      "output_path": "paper_exports/stopdff.json",
+      "script_path": "scripts/compute_stopdff.py",
+      "script_sha256": "09709d1cca3ff980e9fc7b1fd46f09e5987b29397ce72f8b8081a7383c72d8a6",
+      "git_commit": "f5600efeb744265879c3f2f2c86758cb3f736cec",
+      "git_dirty": true,
+      "git_status_relevant_paths": "M paper_exports/calibration.json\n M scripts/compute_stopdff.py"
+    }
   }
 }

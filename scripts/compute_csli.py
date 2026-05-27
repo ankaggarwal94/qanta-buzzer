@@ -2,36 +2,37 @@
 """
 Compute CSLI (Choice-Set Leakage Index) via local model panel.
 
-This script emits two CSLI flavors so downstream consumers (audit
-card, manuscript, figures) can show either interpretation. The
-frozen gate is on choices-only accuracy and is independent of
-which flavor a consumer chooses to display.
+This script emits two related quantities so downstream consumers (audit
+card, manuscript, figures) can show either interpretation. The frozen
+gate is on per-model choices-only accuracy and is independent of which
+quantity a consumer chooses to display.
 
-* ``csli`` (per-model) and ``panel_csli.mean`` -- "gap" flavor:
-  ``acc_full - acc_choices_only``. Matches the final manuscript's
-  $\\overline{\\mathrm{CSLI}}$ definition (final_project.tex L120-121).
-  Large gap = model uses the question (low leakage in the
-  manuscript's inverted-semantic reading). Can be negative when
-  choices-only accuracy exceeds full accuracy.
+* ``csli`` (per-model) and ``panel_csli`` -- CANONICAL CSLI:
+  ``max(0, acc_choices_only - 1/K)`` (PAP-original choices-only excess
+  over chance). Larger excess = more leakage from choices alone.
+  Always >= 0. The panel-level summary carries a percentile bootstrap
+  CI computed over the per-question choices-only-correct panel mean.
 
-* ``csli_choices_excess`` (per-model) and
-  ``panel_csli_choices_excess.mean_from_per_model_avg`` -- PAP-original
-  flavor: ``max(0, acc_choices_only - 1/K)``. Matches the PAP
-  definition (pap.tex eq. for $\\mathrm{CSLI}_{j}^{(f)}$). Larger
-  excess = more leakage from choices alone. Always >= 0.
+* ``question_use_gap`` (per-model) and ``panel_question_use_gap`` --
+  FORMER IN-FLIGHT-MANUSCRIPT CSLI: ``acc_full - acc_choices_only``.
+  Large gap = model uses the question (low leakage in the manuscript's
+  inverted-semantic reading). Can be negative when choices-only
+  accuracy exceeds full accuracy. Kept for transparency under the
+  ``panel_question_use_gap`` block; not the headline value.
 
 * The frozen leakage gate (threshold_manifest.json) is on
   per-model choices-only accuracy:
   ``max(acc_choices_only) > 1/K + 0.05 = 0.30`` for K=4 raises a
-  leakage flag. Both flavors are reported for transparency; the
-  gate verdict depends only on the per-model
-  ``acc_choices_only`` values, NOT on either flavor's panel value.
+  leakage flag. The gate verdict depends only on the per-model
+  ``acc_choices_only`` values, NOT on either summary's panel value.
 
-PR #14 review (Blocker 1) raised the gap-vs-excess mismatch: the
-PAP defined CSLI as the choices-only excess, the final manuscript
-adopted the gap flavor without renaming, and the audit card
-displayed the gap value. The current code emits both flavors so
-each consumer can choose; the audit card surfaces both.
+PR #14 follow-up review (Blocker 3) named CSLI=gap as a load-bearing
+naming bug: the PAP defined CSLI as the choices-only excess, while
+the in-flight manuscript adopted the gap without renaming. The audit
+card was publishing the gap under the ``CSLI`` headline. This script
+now publishes the canonical PAP definition under ``csli`` /
+``panel_csli`` and keeps the gap under ``question_use_gap`` /
+``panel_question_use_gap`` for transparency.
 
 IMPORTANT -- DATA-05 SYMBOL COLLISION GUARD:
     DO NOT import evaluation.controls.run_choices_only_control -- that function
@@ -420,18 +421,24 @@ def _filter_test_mc_questions(
     mc_questions: list[dict],
     test_qids: set[str],
 ) -> tuple[list[dict], dict[str, Any]]:
-    """Filter MC rows to test qids and compute coverage by unique qid."""
+    """Filter MC rows to test qids and compute coverage by unique qid.
+
+    PR #14 follow-up review (Issue B): coverage block uses split-neutral
+    field names (``target_qids``, ``matched_questions``, ``matched_qids``,
+    ``missing_qids``) so the same dict can describe a val or test split
+    without leaking the test-only naming convention.
+    """
     questions = [q for q in mc_questions if str(q["qid"]) in test_qids]
     matched_qids = {str(q["qid"]) for q in questions}
     missing_qids = test_qids - matched_qids
     coverage = len(matched_qids) / max(1, len(test_qids))
     return questions, {
-        "test_dataset_qids": len(test_qids),
+        "target_qids": len(test_qids),
         "mc_questions_total": len(mc_questions),
-        "matched_test_mc_questions": len(questions),
-        "matched_test_mc_qids": len(matched_qids),
-        "missing_test_qids": len(missing_qids),
-        "missing_qids": missing_qids,
+        "matched_questions": len(questions),
+        "matched_qids": len(matched_qids),
+        "missing_qids": len(missing_qids),
+        "missing_qids_set": missing_qids,
         "coverage_rate": coverage,
     }
 
@@ -1118,19 +1125,41 @@ def run_full_prompt(
 
 def compute_panel_csli(
     results: dict[str, dict],
-    per_question_csli: np.ndarray,
+    per_question_gap: np.ndarray,
+    per_model_choices_correct: dict[str, np.ndarray],
     n_questions: int,
     model_list: list[str],
     metadata_context: dict[str, Any] | None = None,
 ) -> dict:
     """Compute panel-level CSLI from per-model results with bootstrap CI.
 
+    PR #14 follow-up review (Blocker 3): per the frozen reviewer
+    request, the canonical CSLI is the PAP-original choices-only excess
+    over chance and is published under ``panel_csli`` with a percentile
+    bootstrap CI. The full-minus-choices gap (formerly named CSLI in the
+    in-flight manuscript) is published under ``panel_question_use_gap``
+    so a reader can still see it. The frozen gate (max acc_choices_only
+    > 0.30 = 1/K + 0.05) is independent of either flavor.
+
+    The bootstrap resamples questions (with replacement) and on each
+    resample recomputes per-model ``acc_choices_only`` and the PAP
+    per-model excess ``max(0, acc - 1/K)``, then averages those
+    per-model excesses. This is the PAP estimator's own sampling
+    distribution under question-resampling.
+
     Parameters
     ----------
     results : dict[str, dict]
-        Mapping from model_name -> {'acc_full', 'acc_choices_only', 'csli', 'leakage_flag'}.
-    per_question_csli : np.ndarray
-        Per-question CSLI values averaged across models (for bootstrap CI).
+        Mapping from model_name -> per-model record with ``acc_full``,
+        ``acc_choices_only``, ``csli`` (choices-excess), and
+        ``question_use_gap``.
+    per_question_gap : np.ndarray
+        Per-question full-minus-choices-correctness indicator,
+        averaged across models. Used for bootstrap CI of
+        ``panel_question_use_gap``.
+    per_model_choices_correct : dict[str, np.ndarray]
+        Per-model per-question 0/1 choices-only-correctness arrays.
+        Used to recompute the PAP estimator on each bootstrap resample.
     n_questions : int
         Number of questions evaluated.
     model_list : list[str]
@@ -1141,31 +1170,43 @@ def compute_panel_csli(
     dict
         Panel CSLI summary with per-model and aggregate statistics.
     """
-    # Compute panel mean CSLI.
-    # WR-09: the displayed `mean` is the unrounded per-question mean
-    # returned by bootstrap_ci (the population the CI is sampling
-    # from). The per-model average (panel_mean_from_models) is
-    # rounded at 6 dp upstream and is exposed only as a diagnostic
-    # cross-check, so the auditor can verify
-    # `mean` ≈ `mean_from_per_model_avg` up to rounding without two
-    # competing definitions of the "panel mean".
-    csli_values = [results[m]["csli"] for m in model_list]
-    panel_mean_from_models = float(np.mean(csli_values))
-
-    # PR #14 Blocker 1: also report the PAP-original "choices-only
-    # excess over chance" interpretation at panel level.
     K = 4
     chance = 1.0 / K
-    csli_choices_excess_per_model = [
+
+    # Canonical CSLI = PAP per-model excess average. Point estimate is
+    # exact; bootstrap CI is computed by resampling questions and
+    # recomputing per-model accuracies on each sample.
+    csli_excess_per_model = [
         max(0.0, results[m]["acc_choices_only"] - chance) for m in model_list
     ]
-    panel_csli_choices_excess_from_models = float(
-        np.mean(csli_choices_excess_per_model)
-    )
+    panel_csli_excess_from_models = float(np.mean(csli_excess_per_model))
 
-    # Bootstrap CI on per-question CSLI array
-    mean_ci, ci_lower, ci_upper = bootstrap_ci(
-        per_question_csli, n_resamples=1000, seed=BOOTSTRAP_SEED
+    per_model_choices_arrays = [
+        per_model_choices_correct[m].astype(float) for m in model_list
+    ]
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    n_boot = 1000
+    boot_panel_excess = np.empty(n_boot, dtype=np.float64)
+    for i in range(n_boot):
+        idx = rng.integers(0, n_questions, n_questions)
+        excesses = []
+        for arr in per_model_choices_arrays:
+            acc_m = float(arr[idx].mean())
+            excesses.append(max(0.0, acc_m - chance))
+        boot_panel_excess[i] = float(np.mean(excesses))
+    ci_lower = float(np.percentile(boot_panel_excess, 2.5))
+    ci_upper = float(np.percentile(boot_panel_excess, 97.5))
+    # Headline CSLI value is the PAP point estimate (not the bootstrap
+    # mean, which would be biased by half-rectification asymmetry).
+    mean_ci = panel_csli_excess_from_models
+
+    # question_use_gap = acc_full - acc_choices_only (in-flight manuscript
+    # CSLI). Kept for transparency. Per-question gap is the population
+    # the CI samples from; per-model average is the diagnostic cross-check.
+    gap_values = [results[m]["question_use_gap"] for m in model_list]
+    gap_mean_from_models = float(np.mean(gap_values))
+    gap_mean_ci, gap_ci_lower, gap_ci_upper = bootstrap_ci(
+        per_question_gap, n_resamples=1000, seed=BOOTSTRAP_SEED
     )
 
     from scripts.threshold_manifest import (
@@ -1187,7 +1228,8 @@ def compute_panel_csli(
     metadata = {
         "n_questions": n_questions,
         "n_models": len(model_list),
-        "K": 4,
+        "K": K,
+        "chance": chance,
         "choices_only_accuracy_threshold": threshold,
         "threshold_metric": "choices_only_accuracy",
         "threshold_criterion": "acc_choices_only > choices_only_accuracy_threshold",
@@ -1206,36 +1248,37 @@ def compute_panel_csli(
             "sampling variability over questions but not model "
             "selection uncertainty."
         ),
+        "csli_definition": (
+            "Canonical CSLI = max(0, acc_choices_only - 1/K) (PAP-original "
+            "choices-only excess over chance). question_use_gap = acc_full - "
+            "acc_choices_only (in-flight manuscript's pre-rename CSLI). The "
+            "frozen leakage gate is on per-model acc_choices_only > "
+            "1/K + 0.05 = 0.30 for K=4, independent of either flavor."
+        ),
         "models": model_list,
     }
     if metadata_context is not None:
         metadata.update(metadata_context)
 
     return {
+        # Canonical CSLI: choices-only excess over chance, with bootstrap CI.
         "panel_csli": {
             "mean": mean_ci,
             "ci_lower": ci_lower,
             "ci_upper": ci_upper,
-            "mean_from_per_model_avg": panel_mean_from_models,
-        },
-        # PR #14 Blocker 1: PAP-original "choices-only excess over chance"
-        # interpretation, computed alongside the manuscript-aligned gap
-        # so downstream consumers and the audit card can show both.
-        # The mean_from_per_model_avg is the panel-level summary; we do
-        # not bootstrap the excess because the gate is on max(choices-only
-        # accuracy), not on the panel mean of either CSLI flavor.
-        "panel_csli_choices_excess": {
-            "mean_from_per_model_avg": panel_csli_choices_excess_from_models,
-            "definition": "max(0, acc_choices_only - 1/K) per model, then averaged across models",
+            "mean_from_per_model_avg": panel_csli_excess_from_models,
+            "definition": "max(0, acc_choices_only - 1/K) per model, averaged",
             "K": K,
             "chance": chance,
-            "interpretation": (
-                "PAP-original CSLI flavor: how much above chance choices-only "
-                "accuracy is. Higher = more leakage from choices alone. The "
-                "frozen gate is still max(acc_choices_only) > 0.30 (= 1/K + 0.05) "
-                "from threshold_manifest.json; this panel summary is reported "
-                "for transparency."
-            ),
+        },
+        # Renamed from panel_csli: full-minus-choices gap (former
+        # in-flight-manuscript CSLI). Kept for transparency.
+        "panel_question_use_gap": {
+            "mean": gap_mean_ci,
+            "ci_lower": gap_ci_lower,
+            "ci_upper": gap_ci_upper,
+            "mean_from_per_model_avg": gap_mean_from_models,
+            "definition": "acc_full - acc_choices_only per model, averaged",
         },
         "per_model": results,
         "metadata": metadata,
@@ -1481,9 +1524,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Filter MC questions to only those in test split. The coverage gate uses
     # unique qids, not row count, so duplicate MC rows cannot mask missing qids.
     questions, mc_coverage = _filter_test_mc_questions(mc_questions, test_qids)
-    matched_test_mc_questions = mc_coverage["matched_test_mc_questions"]
-    matched_test_mc_qids = mc_coverage["matched_test_mc_qids"]
-    missing_qids = mc_coverage["missing_qids"]
+    matched_test_mc_questions = mc_coverage["matched_questions"]
+    matched_test_mc_qids = mc_coverage["matched_qids"]
+    missing_qids = mc_coverage["missing_qids_set"]
     coverage = mc_coverage["coverage_rate"]
     print(f"[CSLI] Loaded {len(questions)} test-split MC questions "
           f"(from {len(mc_questions)} MC total, {len(test_qids)} test qids)")
@@ -1596,20 +1639,63 @@ def main(argv: Optional[list[str]] = None) -> int:
         questions = questions[:10]
         print(f"[CSLI] Smoke mode: trimmed to {len(questions)} questions")
 
+    # PR #14 follow-up review (Codex 3307859491): fail closed when the
+    # coverage override left zero matching MC questions. Without this
+    # guard, ``run_choices_only_prompt``/``run_full_prompt`` take
+    # ``np.mean`` of empty correctness arrays, producing NaN accuracies
+    # and a degenerate csli.json that downstream consumers cannot
+    # interpret. The override is for low coverage, not zero coverage.
+    if not questions:
+        print(
+            "ERROR: zero MC questions remain after filtering to the test "
+            "split. The --allow-incomplete-mc-coverage override is for "
+            "low-but-nonzero coverage; with no matching qids, every "
+            "downstream accuracy is NaN. Re-run "
+            "scripts/build_mc_dataset.py so mc_dataset.json overlaps "
+            "with the current test_dataset.json.",
+            file=sys.stderr,
+        )
+        return 1
+
     print(f"[CSLI] Panel models: {model_list}")
+
+    # PR #14 follow-up review (Issue A): enforce K=4 at runtime. The
+    # frozen leakage gate (threshold_manifest.json) and the panel
+    # choices-only-excess CSLI both assume K=4 (chance = 1/K = 0.25).
+    # If any question has a different option count, the chance baseline
+    # and the gate threshold are silently wrong. Fail closed so a
+    # variable-K artifact cannot reach the audit card unflagged.
+    K = 4
+    chance = 1.0 / K
+    bad_k = [
+        (q.get("qid"), len(q.get("options") or []))
+        for q in questions
+        if len(q.get("options") or []) != K
+    ]
+    if bad_k:
+        first_qid, first_count = bad_k[0]
+        print(
+            f"ERROR: CSLI assumes K={K} options per MC question, but "
+            f"{len(bad_k)} questions have a different K (first: qid={first_qid}, "
+            f"K={first_count}). The choices-only-excess flavor and the frozen "
+            f"chance baseline (1/K = {chance}) would be inconsistent. Rebuild "
+            f"the MC dataset so every retained question has exactly K options.",
+            file=sys.stderr,
+        )
+        return 1
 
     # Run experiments per model
     results: dict[str, dict] = {}
     per_model_choices_correct: dict[str, np.ndarray] = {}
     per_model_full_correct: dict[str, np.ndarray] = {}
 
-    # PR #14 Blocker 1: emit BOTH the manuscript-aligned gap CSLI
-    # AND the PAP-original choices-only excess so downstream consumers
-    # and the audit card can show both interpretations. The frozen
-    # gate (manifest: max acc_choices_only > 0.30) is independent of
-    # which metric is displayed.
-    K = 4
-    chance = 1.0 / K
+    # PR #14 follow-up review (Blocker 3): per the frozen reviewer
+    # request, ``csli`` (the canonical CSLI) is now the PAP-original
+    # choices-only-excess flavor and ``question_use_gap`` carries the
+    # full-minus-choices gap that the in-flight manuscript used to call
+    # CSLI. Both are emitted so consumers can render either. The frozen
+    # gate (manifest: max acc_choices_only > 0.30 = 1/K + 0.05) is
+    # independent of which name is used for display.
 
     for model_name in model_list:
         print(f"\n[CSLI] === Running model: {model_name} ===", flush=True)
@@ -1620,32 +1706,37 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[CSLI] {model_name}: full condition...", flush=True)
         acc_full, full_correct = run_full_prompt(questions, model_name)
 
-        csli = acc_full - acc_choices
-        csli_choices_excess = max(0.0, acc_choices - chance)
+        question_use_gap = acc_full - acc_choices
+        csli = max(0.0, acc_choices - chance)
         results[model_name] = {
             "acc_full": round(acc_full, 6),
             "acc_choices_only": round(acc_choices, 6),
+            # Canonical CSLI: PAP-original choices-only excess over chance.
             "csli": round(csli, 6),
-            "csli_choices_excess": round(csli_choices_excess, 6),
+            # Renamed from "csli" -- the in-flight manuscript's full-minus-
+            # choices gap, kept for transparency but no longer the headline.
+            "question_use_gap": round(question_use_gap, 6),
         }
         per_model_choices_correct[model_name] = choices_correct
         per_model_full_correct[model_name] = full_correct
 
         print(f"[CSLI] {model_name}: full={acc_full:.4f}, "
               f"choices_only={acc_choices:.4f}, "
-              f"CSLI(gap)={csli:.4f}, "
-              f"CSLI(choices_excess)={csli_choices_excess:.4f}", flush=True)
+              f"CSLI(choices_excess)={csli:.4f}, "
+              f"question_use_gap={question_use_gap:.4f}", flush=True)
 
-    # Compute per-question CSLI averaged across models for bootstrap
+    # Compute per-question gap (acc_full - acc_choices) averaged across
+    # models. Feeds panel_question_use_gap's bootstrap CI. Per-model
+    # per-question choices-correct arrays are passed through to
+    # compute_panel_csli for the PAP-estimator question-bootstrap.
     n_questions = len(questions)
-    per_question_csli = np.zeros(n_questions)
+    per_question_gap = np.zeros(n_questions)
     for m in model_list:
-        # per-question CSLI = correct_full - correct_choices_only
-        per_question_csli += (
+        per_question_gap += (
             per_model_full_correct[m].astype(float)
             - per_model_choices_correct[m].astype(float)
         )
-    per_question_csli /= len(model_list)
+    per_question_gap /= len(model_list)
 
     # Compute panel-level CSLI with bootstrap CI
     split_provenance = _load_split_provenance(data_dir)
@@ -1655,17 +1746,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             output_path=output_path,
         ),
         "mc_coverage": {
-            "test_dataset_qids": len(test_qids),
+            "target_qids": len(test_qids),
             "mc_questions_total": len(mc_questions),
-            "matched_test_mc_questions": matched_test_mc_questions,
-            "matched_test_mc_qids": matched_test_mc_qids,
-            "missing_test_qids": len(missing_qids),
+            "matched_questions": matched_test_mc_questions,
+            "matched_qids": matched_test_mc_qids,
+            "missing_qids": len(missing_qids),
             "coverage_rate": coverage,
             "threshold": args.min_mc_coverage,
             "passed": coverage >= args.min_mc_coverage,
             "overridden": coverage < args.min_mc_coverage
             and args.allow_incomplete_mc_coverage,
             "override_flag": "--allow-incomplete-mc-coverage",
+            "split": "test",
         },
         "mc_build_metadata": {
             "status": build_metadata["status"],
@@ -1698,7 +1790,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     panel = compute_panel_csli(
         results,
-        per_question_csli,
+        per_question_gap,
+        per_model_choices_correct,
         n_questions,
         model_list,
         metadata_context=metadata_context,
@@ -1709,11 +1802,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("[CSLI] RESULTS SUMMARY")
     print("=" * 60)
     p = panel["panel_csli"]
-    print(f"Panel CSLI: {p['mean']:.4f} [{p['ci_lower']:.4f}, {p['ci_upper']:.4f}]")
+    g = panel["panel_question_use_gap"]
+    print(
+        f"Panel CSLI (choices-excess): {p['mean']:.4f} "
+        f"[{p['ci_lower']:.4f}, {p['ci_upper']:.4f}]"
+    )
+    print(
+        f"Panel question_use_gap:      {g['mean']:.4f} "
+        f"[{g['ci_lower']:.4f}, {g['ci_upper']:.4f}]"
+    )
     for m, v in panel["per_model"].items():
         flag = " ** LEAKAGE WARNING **" if v["leakage_flag"] else ""
-        print(f"  {m}: full={v['acc_full']:.4f}, choices_only={v['acc_choices_only']:.4f}, "
-              f"csli={v['csli']:.4f}{flag}")
+        print(
+            f"  {m}: full={v['acc_full']:.4f}, "
+            f"choices_only={v['acc_choices_only']:.4f}, "
+            f"csli={v['csli']:.4f}, "
+            f"question_use_gap={v['question_use_gap']:.4f}{flag}"
+        )
     print(
         "Threshold: acc_choices_only > "
         f"{panel['metadata']['choices_only_accuracy_threshold']:.2f} "
