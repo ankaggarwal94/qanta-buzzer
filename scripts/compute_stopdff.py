@@ -859,6 +859,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             calibration_path,
         ],
     )
+    report_generation = build_generation_provenance(
+        __file__,
+        effective_argv,
+        output_path=report_output_path,
+        extra_paths=[
+            THRESHOLD_MANIFEST,
+            data_dir / "build_metadata.json",
+            calibration_path,
+        ],
+    )
 
     output_data = {
         "median_abs_prefix_shift": round(median_abs_prefix_shift, 6),
@@ -926,6 +936,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     report_data = {
         "owner_attestation": owner_attestation,
         **output_data,
+    }
+    report_data["metadata"] = {
+        **report_data["metadata"],
+        "generation": report_generation,
     }
 
     with open(report_output_path, "w", encoding="utf-8") as f:

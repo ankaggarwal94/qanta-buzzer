@@ -260,6 +260,11 @@ def export_dir_for_run(smoke: bool, output_dir: str | None) -> str:
     return "artifacts/smoke/paper_exports" if smoke else "paper_exports"
 
 
+def _split_modal_stages(stages: str) -> list[str]:
+    """Parse Modal's single string flag into argparse-style stage tokens."""
+    return [token for token in re.split(r"[,\s]+", stages.strip()) if token]
+
+
 def build_stage_command(
     stage: str,
     config_path: str,
@@ -803,7 +808,7 @@ if _MODAL_AVAILABLE and app is not None:
         if output_dir:
             sys.argv.extend(["--output-dir", output_dir])
         if stages:
-            sys.argv.extend(["--stages", *stages.split(",")])
+            sys.argv.extend(["--stages", *_split_modal_stages(stages)])
         if dry_run:
             sys.argv.append("--dry-run")
         if metadata_only_dry_run:

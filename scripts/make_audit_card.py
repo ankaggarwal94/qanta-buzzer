@@ -447,6 +447,28 @@ def _compute_overall_verdict(
     return "PASS", None
 
 
+def _apply_artifact_provenance_to_overall(
+    overall_verdict: str,
+    overall_verdict_qualifier: str | None,
+    artifact_provenance: dict | None,
+) -> tuple[str, str | None]:
+    """Downgrade or qualify the headline when producer hashes are stale."""
+    stale_artifacts = [
+        artifact_name
+        for artifact_name, block in (artifact_provenance or {}).items()
+        if isinstance(block, dict) and block.get("sha_matches") is False
+    ]
+    if not stale_artifacts:
+        return overall_verdict, overall_verdict_qualifier
+
+    provenance_qualifier = "stale producer hash for " + ", ".join(stale_artifacts)
+    if overall_verdict == "PASS":
+        return "WARN", provenance_qualifier
+    if overall_verdict_qualifier:
+        return overall_verdict, f"{overall_verdict_qualifier}; {provenance_qualifier}"
+    return overall_verdict, provenance_qualifier
+
+
 def _extract_data_provenance(
     csli_data: dict,
     cal_data: dict,
@@ -946,6 +968,13 @@ def main() -> int:
             f"evidence.",
             file=sys.stderr,
         )
+    overall_verdict, overall_verdict_qualifier = (
+        _apply_artifact_provenance_to_overall(
+            overall_verdict,
+            overall_verdict_qualifier,
+            artifact_provenance,
+        )
+    )
 
     # PR #14 follow-up review (Blocker 4): emit own generation block.
     from scripts._common import build_generation_provenance
