@@ -396,6 +396,7 @@ def run_pipeline(
     budget_limit_usd: float,
     initial_spend_usd: float,
     host_git_commit: str = "",
+    host_git_status: str = "",
 ) -> dict:
     """Run all requested stages sequentially inside one Modal container.
 
@@ -414,6 +415,7 @@ def run_pipeline(
     """
     if host_git_commit:
         os.environ["MODAL_HOST_GIT_COMMIT"] = host_git_commit
+    os.environ["MODAL_HOST_GIT_STATUS"] = host_git_status
     results = []
     cumulative_estimated_spend = initial_spend_usd
     for stage in stages:
@@ -690,12 +692,14 @@ def _main_impl():
     total_start = time.time()
 
     # PR #14 follow-up validation (2026-05-27): compute the host's commit SHA
-    # at submit time and inject it into the container. The container lacks the
-    # ``git`` binary (debian_slim base), so a live ``git rev-parse HEAD`` in
-    # the audit producers returns None and ``git_commit`` records as empty.
-    # The host has full git access; passing the SHA here is the deterministic
-    # alternative.
+    # and dirty status at submit time and inject them into the container. The
+    # container lacks the ``git`` binary (debian_slim base), so live
+    # ``git rev-parse HEAD`` / ``git status --short`` in the audit producers
+    # returns None and provenance would otherwise certify the remote run as
+    # clean even when the mounted host checkout was dirty. The host has full
+    # git access; passing both fields here is the deterministic alternative.
     host_git_commit = ""
+    host_git_status = ""
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -706,6 +710,18 @@ def _main_impl():
         )
         if result.returncode == 0:
             host_git_commit = result.stdout.strip()
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=str(REPO_ROOT),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            host_git_status = result.stdout.strip()
     except OSError:
         pass
 
@@ -742,6 +758,7 @@ def _main_impl():
             budget_limit,
             initial_spend,
             host_git_commit=host_git_commit,
+            host_git_status=host_git_status,
         )
     except Exception:
         duration = time.time() - total_start

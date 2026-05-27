@@ -256,8 +256,12 @@ def build_generation_provenance(
         display_paths.append(project_relative(p))
     repo_relative_pathspec = [p for p in display_paths if not Path(p).is_absolute()]
 
-    status_args = ["status", "--short", "--", *repo_relative_pathspec]
-    git_status = _git_output(status_args)
+    host_status_env = os.environ.get("MODAL_HOST_GIT_STATUS")
+    if host_status_env is not None:
+        git_status = host_status_env
+    else:
+        status_args = ["status", "--short", "--", *repo_relative_pathspec]
+        git_status = _git_output(status_args)
 
     # PR #14 follow-up validation (2026-05-27): Modal's debian_slim base
     # image lacks the `git` binary, so `git rev-parse HEAD` inside the

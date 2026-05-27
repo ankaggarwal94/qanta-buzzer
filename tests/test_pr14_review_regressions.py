@@ -2064,6 +2064,29 @@ def test_build_generation_provenance_falls_back_to_live_git_when_no_env_var(
     )
 
 
+def test_build_generation_provenance_prefers_host_git_status_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Modal provenance must use host dirty state, not container git state."""
+    from scripts._common import build_generation_provenance
+
+    host_status = " M scripts/compute_csli.py\n?? scratch.txt"
+    monkeypatch.setenv("MODAL_HOST_GIT_STATUS", host_status)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    output_path = repo_root / "paper_exports" / "csli.json"
+
+    provenance = build_generation_provenance(
+        script_path=repo_root / "scripts" / "compute_csli.py",
+        argv=[],
+        output_path=output_path,
+        extra_paths=[],
+    )
+
+    assert provenance["git_dirty"] is True
+    assert provenance["git_status_relevant_paths"] == host_status
+
+
 def test_compute_csli_build_generation_provenance_prefers_host_git_commit_env_var() -> None:
     """Pin via source-text contract: ``compute_csli._build_generation_provenance``
     must apply the same env-var preference as the shared helper.
@@ -2075,30 +2098,37 @@ def test_compute_csli_build_generation_provenance_prefers_host_git_commit_env_va
     for substr in (
         'os.environ.get("MODAL_HOST_GIT_COMMIT")',
         'host_commit_env if host_commit_env else _git_output',
+        'os.environ.get("MODAL_HOST_GIT_STATUS")',
+        "host_status_env is not None",
     ):
         assert substr in source, (
-            f"compute_csli._build_generation_provenance must prefer "
-            f"MODAL_HOST_GIT_COMMIT env var over live git query; missing "
+            f"compute_csli._build_generation_provenance must prefer host "
+            f"Modal provenance env vars over live git queries; missing "
             f"contract substring: {substr!r}"
         )
 
 
-def test_modal_run_pipeline_propagates_host_git_commit_env_var() -> None:
-    """Pin via source-text contract: ``modal_cs321m.run_pipeline`` accepts
-    ``host_git_commit`` and sets ``os.environ["MODAL_HOST_GIT_COMMIT"]``
-    so subprocess audit stages inherit it. ``_main_impl`` computes the
-    host SHA at submit time and passes it to ``.remote()``.
+def test_modal_run_pipeline_propagates_host_git_commit_and_status_env_vars() -> None:
+    """Modal must propagate both host commit SHA and host dirty state.
+
+    Modal's base image may not have git, so producer scripts cannot rely
+    on container-side ``git rev-parse`` / ``git status`` to describe the
+    source tree that was actually mounted and executed.
     """
     repo_root = Path(__file__).resolve().parents[1]
     source = (repo_root / "modal_cs321m.py").read_text(encoding="utf-8")
     for substr in (
         "host_git_commit: str = \"\"",
+        "host_git_status: str = \"\"",
         'os.environ["MODAL_HOST_GIT_COMMIT"] = host_git_commit',
+        'os.environ["MODAL_HOST_GIT_STATUS"] = host_git_status',
         "host_git_commit=host_git_commit",
+        "host_git_status=host_git_status",
         '["git", "rev-parse", "HEAD"]',
+        '["git", "status", "--short"]',
     ):
         assert substr in source, (
-            f"modal_cs321m.py must wire host_git_commit through "
+            f"modal_cs321m.py must wire host git provenance through "
             f"run_pipeline.remote() and into the container env; missing "
             f"contract substring: {substr!r}"
         )

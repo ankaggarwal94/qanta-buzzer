@@ -270,8 +270,12 @@ def _build_generation_provenance(
         _display_path(SPLIT_PROVENANCE),
     ]
     repo_relative_pathspec = [p for p in display_paths if not Path(p).is_absolute()]
-    status_args = ["status", "--short", "--", *repo_relative_pathspec]
-    git_status = _git_output(status_args)
+    host_status_env = os.environ.get("MODAL_HOST_GIT_STATUS")
+    if host_status_env is not None:
+        git_status = host_status_env
+    else:
+        status_args = ["status", "--short", "--", *repo_relative_pathspec]
+        git_status = _git_output(status_args)
 
     # PR #14 follow-up validation (2026-05-27): prefer host-injected commit
     # SHA via MODAL_HOST_GIT_COMMIT env var. See scripts/_common.py
