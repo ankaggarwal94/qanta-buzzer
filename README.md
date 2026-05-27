@@ -28,6 +28,13 @@ pip install -e .
 pip install -r requirements.txt && pip install -e . --no-deps
 ```
 
+For paper reproduction, use `requirements.txt`.
+
+For library development, use `pip install -e .[dev]`.
+
+For minimum-supported CI, use `requirements-min.txt`; this is a compatibility
+gate, not a paper-reproduction lock.
+
 ## Quickstart
 
 Run the four-stage smoke pipeline (builds MC dataset, runs baselines, trains PPO, evaluates):
