@@ -10,6 +10,18 @@ from statistics import median, mean
 from .types import DPTrace
 
 
+def _fmt_float(value: object, spec: str = ".3f") -> str:
+    """Format a float with spec, or return 'n/a' for None.
+
+    diagnostics.summarize_coverage returns None for fraction_* keys when
+    no trace cells exist. The writers preserve that diagnostic signal
+    in the MD/TeX output rather than rendering it as a misleading 0.
+    """
+    if value is None:
+        return "n/a"
+    return format(value, spec)
+
+
 def assemble_payload(
     *,
     mc_traces: list[DPTrace],
@@ -59,10 +71,17 @@ def assemble_payload(
 
 
 def write_json(path: Path, payload: dict) -> Path:
+    """Write payload to JSON, normalising numpy types via to_serializable.
+
+    Project invariant (see scripts/_common.to_serializable): every artifact
+    must run through the canonical serializer to avoid silent TypeError on
+    numpy scalars from pandas/diagnostics counters.
+    """
+    from scripts._common import to_serializable  # local import: avoid circular at module load
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+        json.dump(to_serializable(payload), f, indent=2)
     return path
 
 
@@ -100,9 +119,9 @@ def write_markdown(path: Path, payload: dict) -> Path:
     md.append("")
     cov = payload["coverage"]
     md.append(
-        f"- exact={cov['fraction_exact']:.3f}, "
-        f"pooled={cov['fraction_pooled']:.3f}, "
-        f"missing={cov['fraction_missing']:.3f}; "
+        f"- exact={_fmt_float(cov['fraction_exact'])}, "
+        f"pooled={_fmt_float(cov['fraction_pooled'])}, "
+        f"missing={_fmt_float(cov['fraction_missing'])}; "
         f"verdict={cov['verdict']} ({cov['reason']})"
     )
     md.append("")
@@ -132,8 +151,8 @@ def write_latex(path: Path, payload: dict) -> Path:
         f"Signed mean StopDFF & {payload['stopdff_dp_signed_mean']:.4f} \\\\",
         f"Abs median StopDFF & {payload['stopdff_dp_abs_median']:.4f} \\\\",
         f"$n_{{items}}$ & {payload['n_items']} \\\\",
-        f"Coverage exact & {payload['coverage']['fraction_exact']:.3f} \\\\",
-        f"Coverage pooled & {payload['coverage']['fraction_pooled']:.3f} \\\\",
+        f"Coverage exact & {_fmt_float(payload['coverage']['fraction_exact'])} \\\\",
+        f"Coverage pooled & {_fmt_float(payload['coverage']['fraction_pooled'])} \\\\",
         f"Gate verdict & {payload['gate_verdict']} \\\\",
         "\\bottomrule",
         "\\end{tabular}",

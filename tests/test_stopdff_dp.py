@@ -519,3 +519,109 @@ def test_writer_metric_type_is_finite_horizon_dp(tmp_path: Path) -> None:
     assert loaded["metadata"]["metric_type"] == "finite_horizon_dp"
     assert loaded["metadata"]["stopping_policy"] == "finite_horizon_dp"
     assert "myopic" not in loaded["metadata"]["metric_type"]
+
+
+def test_writer_handles_none_coverage_fractions(tmp_path: Path) -> None:
+    """diagnostics.summarize_coverage returns None fractions on empty traces;
+    writers must not crash on that legitimate diagnostic state."""
+    payload = writers_module.assemble_payload(
+        mc_traces=[],
+        qa_traces=[],
+        reward_schedule_name="acf_flat",
+        continuation_estimator_name="empirical_bucket",
+        fit_split="val",
+        eval_split="test",
+        coverage_summary={
+            "n_cells": 0, "fraction_exact": None, "fraction_pooled": None,
+            "fraction_missing": None, "verdict": "warn", "reason": "no_cells",
+        },
+        ceiling_flags={
+            "all_stop_at_first_prefix": False,
+            "all_stop_at_final_prefix": False,
+            "no_cross_format_stopping_variance": False,
+            "n_items": 0, "n_stopped_cells": 0, "n_never_stopped_cells": 0,
+            "empty": True,
+        },
+        per_item_stopdff=[],
+        gate_verdict="warn",
+        gate_verdict_reason="no_data",
+        confirmatory=True,
+    )
+    out_json = tmp_path / "dp.json"
+    out_md = tmp_path / "dp.md"
+    out_tex = tmp_path / "dp.tex"
+    writers_module.write_json(out_json, payload)
+    writers_module.write_markdown(out_md, payload)
+    writers_module.write_latex(out_tex, payload)
+    md = out_md.read_text()
+    tex = out_tex.read_text()
+    assert "n/a" in md
+    assert "n/a" in tex
+
+
+def test_writer_non_confirmatory_emits_md_warning(tmp_path: Path) -> None:
+    """When confirmatory=False (e.g., oracle estimator), MD must warn."""
+    payload = writers_module.assemble_payload(
+        mc_traces=[],
+        qa_traces=[],
+        reward_schedule_name="acf_flat",
+        continuation_estimator_name="oracle_trajectory",
+        fit_split="val",
+        eval_split="test",
+        coverage_summary={
+            "n_cells": 3, "fraction_exact": 1.0, "fraction_pooled": 0.0,
+            "fraction_missing": 0.0, "verdict": "pass", "reason": "ok",
+        },
+        ceiling_flags={
+            "all_stop_at_first_prefix": False,
+            "all_stop_at_final_prefix": False,
+            "no_cross_format_stopping_variance": False,
+            "n_items": 1, "n_stopped_cells": 1, "n_never_stopped_cells": 0,
+            "empty": False,
+        },
+        per_item_stopdff=[("q1", 0)],
+        gate_verdict="pass",
+        gate_verdict_reason="ok",
+        confirmatory=False,
+    )
+    out_md = tmp_path / "dp.md"
+    writers_module.write_markdown(out_md, payload)
+    md = out_md.read_text()
+    assert "Non-confirmatory" in md
+    assert "upper-bound" in md.lower()
+
+
+def test_writer_to_serializable_handles_numpy_types(tmp_path: Path) -> None:
+    """to_serializable must convert numpy scalars in coverage/ceiling counters."""
+    import numpy as np
+    payload = writers_module.assemble_payload(
+        mc_traces=[],
+        qa_traces=[],
+        reward_schedule_name="acf_flat",
+        continuation_estimator_name="empirical_bucket",
+        fit_split="val",
+        eval_split="test",
+        coverage_summary={
+            "n_cells": np.int64(6), "fraction_exact": np.float64(1.0),
+            "fraction_pooled": np.float64(0.0), "fraction_missing": np.float64(0.0),
+            "verdict": "pass", "reason": "ok",
+        },
+        ceiling_flags={
+            "all_stop_at_first_prefix": np.bool_(False),
+            "all_stop_at_final_prefix": np.bool_(False),
+            "no_cross_format_stopping_variance": np.bool_(False),
+            "n_items": np.int64(1), "n_stopped_cells": np.int64(1),
+            "n_never_stopped_cells": np.int64(0), "empty": np.bool_(False),
+        },
+        per_item_stopdff=[("q1", np.int64(-1))],
+        gate_verdict="pass",
+        gate_verdict_reason="ok",
+        confirmatory=True,
+    )
+    out_json = tmp_path / "dp.json"
+    writers_module.write_json(out_json, payload)
+    loaded = json.loads(out_json.read_text())
+    # If to_serializable runs, the integer/bool/float types in JSON round-trip
+    # back to Python ints/bools/floats with no exception.
+    assert loaded["coverage"]["n_cells"] == 6
+    assert loaded["ceiling_flags"]["empty"] is False
