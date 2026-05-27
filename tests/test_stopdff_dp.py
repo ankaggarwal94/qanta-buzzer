@@ -1400,3 +1400,97 @@ def test_writer_latex_escapes_gate_verdict_string(tmp_path):
     assert "warn\\_special\\_\\$\\_chars" in body
     # Bare underscore in the verdict string must not appear.
     assert "warn_special_$_chars" not in body
+
+
+def test_producer_dirty_check_includes_helper_modules_and_inputs(tmp_path, monkeypatch):
+    """compute_stopdff_dp.py's provenance dirty check must flip git_dirty=true
+    when an imported helper OR an input dataset has uncommitted changes.
+
+    Without the extra_paths fix, helper edits would be hashed into
+    helper_sha256s but flagged as git_dirty=false, leaking a non-
+    reproducible commit pointer into the audit card.
+    """
+    import json as _json
+    import subprocess as _subprocess
+    from pathlib import Path as _Path
+    from scripts import compute_stopdff_dp as ctd
+    from scripts.stopdff_dp._provenance import helper_paths
+
+    repo_root = _Path(__file__).resolve().parent.parent
+    helper_for_test = repo_root / "scripts" / "stopdff_dp" / "rewards.py"
+    assert helper_for_test in helper_paths(), (
+        f"test premise: {helper_for_test} must be in helper_paths()"
+    )
+
+    # Skip if the helper is already dirty in the live tree (ambiguous state).
+    proc = _subprocess.run(
+        ["git", "status", "--short", "--",
+         "scripts/stopdff_dp/rewards.py"],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    if proc.stdout.strip():
+        import pytest as _pytest
+        _pytest.skip(
+            "scripts/stopdff_dp/rewards.py is already dirty in the live tree"
+        )
+
+    # Synthesize input fixtures so unrelated input paths are clean / off-tree.
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    from tests.test_stopdff_dp import _fake_mc_question  # already defined for adapter tests
+    val_qs = [_fake_mc_question(f"v{i}") for i in range(3)]
+    test_qs = [_fake_mc_question(f"t{i}") for i in range(3)]
+    (data_dir / "mc_dataset.json").write_text(_json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(_json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(_json.dumps(test_qs))
+
+    out_json = tmp_path / "out.json"
+    out_md = tmp_path / "out.md"
+    out_tex = tmp_path / "out.tex"
+
+    # Baseline: clean tree -> git_dirty False
+    rc_clean = ctd.main([
+        "--data-dir", str(data_dir),
+        "--split", "test", "--fit-split", "val",
+        "--reward-schedule", "acf_flat",
+        "--continuation", "empirical_bucket",
+        "--identity-calibration",
+        "--allow-incomplete-mc-coverage", "--allow-low-mc-retention",
+        "--out", str(out_json),
+        "--out-md", str(out_md),
+        "--out-tex", str(out_tex),
+    ])
+    assert rc_clean == 0
+    clean_payload = _json.loads(out_json.read_text())
+    assert clean_payload["metadata"]["generation"]["git_dirty"] is False, (
+        f"test premise: clean baseline must report git_dirty False, got "
+        f"{clean_payload['metadata']['generation']}"
+    )
+
+    # Perturb the helper; expect git_dirty True.
+    original_bytes = helper_for_test.read_bytes()
+    perturbed_bytes = original_bytes + b"\n# transient test perturbation\n"
+    try:
+        helper_for_test.write_bytes(perturbed_bytes)
+        rc_dirty = ctd.main([
+            "--data-dir", str(data_dir),
+            "--split", "test", "--fit-split", "val",
+            "--reward-schedule", "acf_flat",
+            "--continuation", "empirical_bucket",
+            "--identity-calibration",
+            "--allow-incomplete-mc-coverage", "--allow-low-mc-retention",
+            "--out", str(out_json),
+            "--out-md", str(out_md),
+            "--out-tex", str(out_tex),
+        ])
+        assert rc_dirty == 0
+        dirty_payload = _json.loads(out_json.read_text())
+        assert dirty_payload["metadata"]["generation"]["git_dirty"] is True, (
+            f"expected git_dirty=True after perturbing rewards.py, got "
+            f"{dirty_payload['metadata']['generation']}"
+        )
+        # Status text must mention the perturbed file.
+        status = dirty_payload["metadata"]["generation"]["git_status_relevant_paths"]
+        assert "scripts/stopdff_dp/rewards.py" in status
+    finally:
+        helper_for_test.write_bytes(original_bytes)

@@ -397,19 +397,34 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Provenance.
     try:
         from scripts._common import build_generation_provenance
-        from scripts.stopdff_dp._provenance import helper_sha256s
+        from scripts.stopdff_dp._provenance import helper_paths, helper_sha256s
+
+        # PR #15 review (chatgpt-codex-connector 3314429773): extra_paths must
+        # include everything whose dirty state could change the artifact's
+        # numbers — that's the calibration JSON, the input datasets + build
+        # metadata, AND every imported helper module. Without this, edits to
+        # scripts/stopdff_dp/* or scripts/_audit_gates.py / _common.py would
+        # be hashed into helper_sha256s but flagged as git_dirty=false,
+        # leaking a non-reproducible commit pointer into the audit card.
+        dataset_inputs = [
+            data_dir / "mc_dataset.json",
+            data_dir / f"{args.fit_split}_dataset.json",
+            data_dir / f"{args.split}_dataset.json",
+            data_dir / "build_metadata.json",
+        ]
+        extras: list[Path] = []
+        if calibration_path:
+            extras.append(calibration_path)
+        extras.extend(dataset_inputs)
+        extras.extend(helper_paths())
+
         generation = build_generation_provenance(
             __file__, effective_argv,
             output_path=out_json,
-            extra_paths=[calibration_path] if calibration_path else [],
+            extra_paths=extras,
         )
-        # PR #15 review (chatgpt-codex-connector 3314086941): the DP
-        # producer's behavior is mostly delegated to imported helpers
-        # under scripts/stopdff_dp/ + scripts/_audit_gates.py +
-        # scripts/_common.py. Embed those module SHAs so the audit-card
-        # consumer (make_audit_card._build_artifact_provenance) can
-        # cross-check them and force the WARN downgrade when any helper
-        # drifts after the JSON was committed.
+        # Embed the helper SHAs so the audit card can cross-check them.
+        # PR #15 review 3314086941 — pre-existing wiring; unchanged.
         generation["helper_sha256s"] = helper_sha256s()
     except Exception:  # noqa: BLE001 — provenance is best-effort
         generation = None
