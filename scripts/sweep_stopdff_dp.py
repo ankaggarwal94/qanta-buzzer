@@ -213,38 +213,6 @@ def _file_sha256(path: Path | None) -> str | None:
     return digest.hexdigest()
 
 
-def _helper_sha256s() -> dict[str, str]:
-    """Hash every .py file the sweep imports beyond its own producer script.
-
-    Includes:
-      - scripts/stopdff_dp/*.py (rewards, dp_solver, adapter, continuation,
-        diagnostics, types, writers, __init__)
-      - scripts/_audit_gates.py (MC coverage + retention gate helpers)
-      - scripts/_common.py (project_relative + provenance + serializer)
-
-    Returned as a dict keyed by repo-relative POSIX path so it serializes
-    deterministically into the fingerprint and folds into cell_id via
-    json.dumps(..., sort_keys=True).
-    """
-    helper_dir = PROJECT_ROOT / "scripts" / "stopdff_dp"
-    paths: list[Path] = sorted(helper_dir.glob("*.py"))
-    for shared in ("_audit_gates.py", "_common.py"):
-        candidate = PROJECT_ROOT / "scripts" / shared
-        if candidate.exists():
-            paths.append(candidate)
-    out: dict[str, str] = {}
-    for path in paths:
-        digest = _file_sha256(path)
-        if digest is None:
-            continue
-        try:
-            rel = path.resolve().relative_to(PROJECT_ROOT).as_posix()
-        except ValueError:
-            rel = str(path)
-        out[rel] = digest
-    return out
-
-
 def _run_fingerprint(
     args: argparse.Namespace,
     *,
@@ -252,6 +220,7 @@ def _run_fingerprint(
     git_commit: str | None,
 ) -> dict:
     from scripts._common import project_relative
+    from scripts.stopdff_dp._provenance import helper_sha256s
 
     data_dir = Path(args.data_dir).resolve()
     calibration_path = (
@@ -277,7 +246,7 @@ def _run_fingerprint(
         "seed": int(args.seed),
         "num_bootstrap": int(args.num_bootstrap),
         "script_sha256": _file_sha256(Path(__file__).resolve()),
-        "helper_sha256s": _helper_sha256s(),
+        "helper_sha256s": helper_sha256s(),
         "git_commit": git_commit,
         "out_parent": project_relative(out.parent),
     }

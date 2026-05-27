@@ -714,10 +714,14 @@ def test_sweep_fingerprint_changes_when_helper_module_edited(tmp_path, monkeypat
         args, out=tmp_path / "out.json", git_commit=None,
     )
 
-    # Simulate a helper edit by monkeypatching _file_sha256 to return a
-    # different hash for rewards.py. This keeps the test hermetic — we
-    # don't actually mutate the live file in the repo.
-    real_file_sha = sweep_stopdff_dp._file_sha256
+    # Simulate a helper edit by monkeypatching the shared _provenance
+    # module's _file_sha256 (where helper_sha256s now lives after the
+    # PR #15 review hoist) to return a different hash for rewards.py.
+    # This keeps the test hermetic — we don't actually mutate the live
+    # file in the repo.
+    from scripts.stopdff_dp import _provenance as provenance_module
+
+    real_file_sha = provenance_module._file_sha256
 
     def patched(p):
         digest = real_file_sha(p)
@@ -725,7 +729,7 @@ def test_sweep_fingerprint_changes_when_helper_module_edited(tmp_path, monkeypat
             return "0" * 64
         return digest
 
-    monkeypatch.setattr(sweep_stopdff_dp, "_file_sha256", patched)
+    monkeypatch.setattr(provenance_module, "_file_sha256", patched)
     fp_after = sweep_stopdff_dp._run_fingerprint(
         args, out=tmp_path / "out.json", git_commit=None,
     )
