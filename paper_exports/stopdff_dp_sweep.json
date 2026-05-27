@@ -1,7 +1,7 @@
 {
   "metadata": {
     "metric_type": "finite_horizon_dp_sweep",
-    "timestamp": "2026-05-27T21:37:36.048290+00:00",
+    "timestamp": "2026-05-27T21:43:07.012106+00:00",
     "argv": [
       "--identity-calibration",
       "--smoke",
@@ -51,7 +51,7 @@
       "format_condition": "MC-fixed",
       "prefix_bucketing": "early_mid_late",
       "subject_pooling": "pooled_subject",
-      "git_commit": "e49600d2f1fe70763c4cbbd4cca4a0dadfecda0d",
+      "git_commit": "f375d7fcf999ecb943d68a3e57ea6c0fce31c0c1",
       "git_dirty": true,
       "argv": [
         "--identity-calibration",
@@ -83,21 +83,25 @@
       "fit_split": "val",
       "eval_split": "test",
       "run_fingerprint": {
-        "schema_version": 2,
-        "data_dir": "/private/tmp/qanta-buzzer-sweep-fix/data/processed",
+        "schema_version": 3,
+        "data_dir": "/private/tmp/qanta-buzzer-cache-fix/data/processed",
         "fit_split": "val",
         "eval_split": "test",
         "calibration_path": null,
         "calibration_sha256": null,
+        "mc_dataset_sha256": "3dbebf8e4d690da41a15e3cf467e57fdbe69af420ed831d56b61160af8bf7946",
+        "fit_dataset_sha256": "9b7a131b6c94c446e6b40b95559cb62aeee63f6e6f29ddd1d7ed3fb19cc72c65",
+        "eval_dataset_sha256": "638a4df978b77a12655ea72d56daad7fa70851ae486ddb4365d9b060549e34f1",
+        "build_metadata_sha256": "70871984390f252c0a06a5a2c9a2d3b4337f10ad48c87583ebec215d5c0c9c6e",
         "identity_calibration": true,
         "smoke": true,
         "seed": 1,
         "num_bootstrap": 8,
-        "script_sha256": "539a90a8d906164447a0401df0459fa185b8e3e212b9b6d35633488b758706b8",
-        "git_commit": "e49600d2f1fe70763c4cbbd4cca4a0dadfecda0d",
-        "out_parent": "/private/tmp/qanta-buzzer-sweep-fix/paper_exports"
+        "script_sha256": "3c1fc2c985bba6e5c71f4642430c6c9049664280cdea9a8e1cc6163edec6b892",
+        "git_commit": "f375d7fcf999ecb943d68a3e57ea6c0fce31c0c1",
+        "out_parent": "/private/tmp/qanta-buzzer-cache-fix/paper_exports"
       },
-      "started_at": "2026-05-27T21:37:35.860286+00:00",
+      "started_at": "2026-05-27T21:43:06.812110+00:00",
       "status": "completed",
       "calibration": {
         "method": "uncalibrated",
@@ -203,14 +207,14 @@
       "gate_verdict_reason": "ceiling_effect",
       "confirmatory_included": true,
       "confirmatory": true,
-      "wall_clock_seconds": 0.18700385093688965,
-      "completed_at": "2026-05-27T21:37:36.047288+00:00",
-      "cell_id": "5f1199ef59342faf_acf_flat_empirical_bucket_uncalibrated",
-      "cache_path": "paper_exports/stopdff_dp_sweep_cells/5f1199ef59342faf_acf_flat_empirical_bucket_uncalibrated.json"
+      "wall_clock_seconds": 0.19921588897705078,
+      "completed_at": "2026-05-27T21:43:07.011324+00:00",
+      "cell_id": "b4f206f93ec51c5b_acf_flat_empirical_bucket_uncalibrated",
+      "cache_path": "paper_exports/stopdff_dp_sweep_cells/b4f206f93ec51c5b_acf_flat_empirical_bucket_uncalibrated.json"
     }
   ],
   "confirmatory_cells": [
-    "5f1199ef59342faf_acf_flat_empirical_bucket_uncalibrated"
+    "b4f206f93ec51c5b_acf_flat_empirical_bucket_uncalibrated"
   ],
   "mc_coverage": {
     "test": {

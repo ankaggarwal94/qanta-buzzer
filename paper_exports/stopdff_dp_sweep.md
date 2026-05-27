@@ -1,6 +1,6 @@
 # DP StopDFF Sweep
 
-Generated: `2026-05-27T21:37:36.048290+00:00`
+Generated: `2026-05-27T21:43:07.012106+00:00`
 
 ## paper-safe interpretation
 
@@ -23,4 +23,4 @@ Generated: `2026-05-27T21:37:36.048290+00:00`
 
 | Cell | Reward | Continuation | Calibrator | Format | Signed mean | Gate |
 |---|---|---|---|---|---:|---|
-| 5f1199ef59342faf_acf_flat_empirical_bucket_uncalibrated | acf_flat | empirical_bucket | uncalibrated | MC-fixed | 0.000 | warn |
+| b4f206f93ec51c5b_acf_flat_empirical_bucket_uncalibrated | acf_flat | empirical_bucket | uncalibrated | MC-fixed | 0.000 | warn |
