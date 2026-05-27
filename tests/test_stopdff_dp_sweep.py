@@ -442,7 +442,7 @@ def test_sweep_fingerprint_includes_dataset_hashes(tmp_path):
     fp = sweep_stopdff_dp._run_fingerprint(
         args, out=tmp_path / "out.json", git_commit=None,
     )
-    assert fp["schema_version"] == 3
+    assert fp["schema_version"] == 4
     for key in (
         "mc_dataset_sha256",
         "fit_dataset_sha256",
@@ -644,3 +644,92 @@ def test_apply_temperature_vectorized_matches_per_row_logic():
         expected.append(_sigmoid(float(row["p_raw"]) / max(t, 1e-6)))
 
     assert np.allclose(result, expected, atol=1e-12)
+
+
+def test_sweep_fingerprint_includes_helper_module_hashes(tmp_path):
+    """Sweep fingerprint must hash every imported scripts/stopdff_dp/*.py
+    plus scripts/_audit_gates.py and scripts/_common.py — editing any of
+    these must invalidate the cache."""
+    import json as _json
+    from scripts import sweep_stopdff_dp
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question_for_sweep(f"v{i}") for i in range(3)]
+    test_qs = [_fake_mc_question_for_sweep(f"t{i}") for i in range(3)]
+    (data_dir / "mc_dataset.json").write_text(_json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(_json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(_json.dumps(test_qs))
+    args = sweep_stopdff_dp._parse_args([
+        "--data-dir", str(data_dir),
+        "--fit-split", "val",
+        "--eval-split", "test",
+        "--identity-calibration",
+        "--out", str(tmp_path / "out.json"),
+    ])
+    fp = sweep_stopdff_dp._run_fingerprint(
+        args, out=tmp_path / "out.json", git_commit=None,
+    )
+    assert fp["schema_version"] == 4
+    helpers = fp["helper_sha256s"]
+    # Every expected stopdff_dp module must be present.
+    expected_modules = {
+        "scripts/stopdff_dp/__init__.py",
+        "scripts/stopdff_dp/adapter.py",
+        "scripts/stopdff_dp/continuation.py",
+        "scripts/stopdff_dp/diagnostics.py",
+        "scripts/stopdff_dp/dp_solver.py",
+        "scripts/stopdff_dp/rewards.py",
+        "scripts/stopdff_dp/types.py",
+        "scripts/stopdff_dp/writers.py",
+        "scripts/_audit_gates.py",
+        "scripts/_common.py",
+    }
+    assert expected_modules.issubset(helpers.keys())
+    # Every hash must be a 64-char hex string.
+    for module_path, digest in helpers.items():
+        assert isinstance(digest, str) and len(digest) == 64, module_path
+
+
+def test_sweep_fingerprint_changes_when_helper_module_edited(tmp_path, monkeypatch):
+    """A change to a helper module must produce a different fingerprint."""
+    from pathlib import Path as _Path
+    from scripts import sweep_stopdff_dp
+    import json as _json
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question_for_sweep(f"v{i}") for i in range(3)]
+    test_qs = [_fake_mc_question_for_sweep(f"t{i}") for i in range(3)]
+    (data_dir / "mc_dataset.json").write_text(_json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(_json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(_json.dumps(test_qs))
+    args = sweep_stopdff_dp._parse_args([
+        "--data-dir", str(data_dir),
+        "--fit-split", "val",
+        "--eval-split", "test",
+        "--identity-calibration",
+        "--out", str(tmp_path / "out.json"),
+    ])
+    fp_before = sweep_stopdff_dp._run_fingerprint(
+        args, out=tmp_path / "out.json", git_commit=None,
+    )
+
+    # Simulate a helper edit by monkeypatching _file_sha256 to return a
+    # different hash for rewards.py. This keeps the test hermetic — we
+    # don't actually mutate the live file in the repo.
+    real_file_sha = sweep_stopdff_dp._file_sha256
+
+    def patched(p):
+        digest = real_file_sha(p)
+        if p is not None and str(p).endswith("stopdff_dp/rewards.py"):
+            return "0" * 64
+        return digest
+
+    monkeypatch.setattr(sweep_stopdff_dp, "_file_sha256", patched)
+    fp_after = sweep_stopdff_dp._run_fingerprint(
+        args, out=tmp_path / "out.json", git_commit=None,
+    )
+    assert (
+        fp_before["helper_sha256s"]["scripts/stopdff_dp/rewards.py"]
+        != fp_after["helper_sha256s"]["scripts/stopdff_dp/rewards.py"]
+    )
