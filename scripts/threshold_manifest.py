@@ -130,8 +130,9 @@ def load_frozen_threshold_manifest(
                 f"  actual   ({manifest_path.name}):     {actual}\n"
                 "DATA-03 integrity contract violated. Refusing to load.\n"
                 "If the manifest was intentionally updated, regenerate "
-                "the sidecar with `shasum -a 256 threshold_manifest.json "
-                f"> {sidecar_path.name}` AND update "
+                "the sidecar with `sha256sum threshold_manifest.json "
+                f"> {sidecar_path.name}` (or `shasum -a 256 ...` on "
+                "macOS where sha256sum may be absent) AND update "
                 "PROJECT_WIKI/SPLIT_PROVENANCE.md "
                 "THRESHOLD_MANIFEST_SHA256."
             )

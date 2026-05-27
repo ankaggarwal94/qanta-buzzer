@@ -62,7 +62,7 @@
     ],
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T02:10:36.197927+00:00",
+      "generated_at_utc": "2026-05-27T03:13:57.724790+00:00",
       "command": [
         "python",
         "scripts/compute_csli.py",
@@ -80,10 +80,10 @@
       "cwd": ".",
       "output_path": "paper_exports/csli.json",
       "script_path": "scripts/compute_csli.py",
-      "script_sha256": "781621353c068d0533e17fcd1d51166ead4f19cbfef7623444c90701a1205a54",
-      "git_commit": "f5600efeb744265879c3f2f2c86758cb3f736cec",
-      "git_dirty": true,
-      "git_status_relevant_paths": "M paper_exports/csli.json\n M scripts/compute_csli.py"
+      "script_sha256": "f898bac305449fcf69815d7730ed38b5a9aa1122fa3d76b44d67035159885ee7",
+      "git_commit": "2654ad2376b3995a65022e566d0dd59845850546",
+      "git_dirty": false,
+      "git_status_relevant_paths": ""
     },
     "mc_coverage": {
       "target_qids": 2258,
