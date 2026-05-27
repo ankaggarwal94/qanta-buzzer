@@ -164,3 +164,95 @@ def test_dp_empty_trajectory_returns_empty_trace() -> None:
     )
     assert trace.stop_step == 0
     assert len(trace.values) == 0
+
+
+import pandas as pd
+
+from scripts.stopdff_dp import continuation as cont_module
+
+
+def _make_df(rows: list[dict]) -> pd.DataFrame:
+    """Tiny helper to build a normalised adapter dataframe in tests."""
+    from scripts.stopdff_dp.types import ADAPTER_COLUMNS
+    df = pd.DataFrame(rows)
+    for col in ADAPTER_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    return df[list(ADAPTER_COLUMNS)]
+
+
+def test_empirical_bucket_fitter_uses_only_fit_split_rows() -> None:
+    """Continuation buckets must not see test-split rows during fit.
+
+    The leakage check is enforced at the API boundary: passing a
+    dataframe whose split column contains the eval split raises.
+    """
+    rows = [
+        {"subject": "sbert:Lit", "item_id": "q1", "prefix_idx": 0, "format": "MC",
+         "split": "test", "p_raw": 0.1, "p_calibrated": 0.2, "correct": 0,
+         "top_answer": "a", "gold": "a", "category": "Lit", "option_set_id": "s1"},
+    ]
+    df_test = _make_df(rows)
+    with pytest.raises(ValueError, match="leakage|fit on test"):
+        cont_module.EmpiricalBucketEstimator.fit(
+            fit_df=df_test,
+            fit_split_name="val",
+        )
+
+
+def test_empirical_bucket_estimator_returns_pooled_when_bucket_sparse() -> None:
+    """When the exact bucket has <3 trajectories, fallback ladder kicks in."""
+    # Build a minimal val-split frame with enough rows in the pooled
+    # (drop-entropy_bin) bucket but only 1 row in the most-specific bucket.
+    rows = []
+    # 1 row in (early, MC, sbert:Lit, p_bin=0.1, ent_bin=0): the "exact" bucket
+    rows.append({
+        "subject": "sbert:Lit", "item_id": "q1", "prefix_idx": 0,
+        "format": "MC", "split": "val",
+        "p_raw": 0.1, "p_calibrated": 0.10, "correct": 0,
+        "top_answer": "a", "gold": "b", "category": "Lit",
+        "option_set_id": "s1",
+    })
+    # 5 rows in (early, MC, sbert:Lit, p_bin=0.1) regardless of ent_bin.
+    for i in range(5):
+        rows.append({
+            "subject": "sbert:Lit", "item_id": f"q{i+10}", "prefix_idx": 0,
+            "format": "MC", "split": "val",
+            "p_raw": 0.1, "p_calibrated": 0.12, "correct": (i % 2),
+            "top_answer": "a", "gold": "b", "category": "Lit",
+            "option_set_id": f"s{i}",
+        })
+    df_val = _make_df(rows)
+
+    estimator = cont_module.EmpiricalBucketEstimator.fit(
+        fit_df=df_val,
+        fit_split_name="val",
+        min_bucket_size=3,
+    )
+
+    tag = estimator.last_coverage_tag_for(
+        prefix_bucket="early",
+        fmt="MC",
+        subject_bucket="sbert:Lit",
+        p_bin=0,
+        entropy_bin=0,
+    )
+    # The most-specific bucket has 1 row, so we drop entropy_bin and use 5.
+    assert tag == "pooled"
+
+
+def test_oracle_trajectory_estimator_flags_non_confirmatory() -> None:
+    estimator = cont_module.OracleTrajectoryEstimator()
+    assert estimator.confirmatory is False
+
+
+def test_pooled_empirical_fallback_ladder_documented() -> None:
+    """The fallback ladder must be a fixed, declared sequence."""
+    ladder = cont_module.FALLBACK_LADDER
+    # Must be a tuple of tuples so it cannot be mutated at runtime.
+    assert isinstance(ladder, tuple)
+    # The first rung is the most-specific bucket; the last is the most-pooled.
+    assert ladder[0] == (
+        "prefix_bucket", "format", "subject_bucket", "p_bin", "entropy_bin",
+    )
+    assert "format" in ladder[-1]
