@@ -213,11 +213,19 @@ def data_dir_for_run(smoke: bool, output_dir: str | None) -> str:
     return "artifacts/smoke" if smoke else "data/processed"
 
 
-def export_dir_for_run(output_dir: str | None) -> str:
-    """Return the directory for CS321M metric JSON outputs."""
+def export_dir_for_run(smoke: bool, output_dir: str | None) -> str:
+    """Return the directory for CS321M metric JSON outputs.
+
+    Smoke runs without an explicit ``--output-dir`` are routed to
+    ``artifacts/smoke/paper_exports/`` so a smoke audit can never
+    silently overwrite the curated production ``paper_exports/*.json``
+    that ship as final paper evidence. Mirrors ``data_dir_for_run``'s
+    smoke routing. Full mode and any explicit ``--output-dir`` still
+    write under the operator-specified location.
+    """
     if output_dir:
         return str(Path(output_dir) / "paper_exports")
-    return "paper_exports"
+    return "artifacts/smoke/paper_exports" if smoke else "paper_exports"
 
 
 def build_stage_command(
@@ -236,7 +244,7 @@ def build_stage_command(
     script_path = str(CONTAINER_ROOT / script) if container else script
     config_arg = _path_for_container(config_path) if container else config_path
     data_dir = data_dir_for_run(smoke, output_dir)
-    export_dir = export_dir_for_run(output_dir)
+    export_dir = export_dir_for_run(smoke, output_dir)
     data_arg = _path_for_container(data_dir) if container else data_dir
     export_arg = _path_for_container(export_dir) if container else export_dir
 
@@ -396,7 +404,7 @@ def run_pipeline(
 
 def collect_small_artifacts(output_dir: str | None, smoke: bool) -> dict[str, dict[str, str]]:
     """Collect small JSON/text outputs so Modal returns them to the local process."""
-    export_dir = Path(_path_for_container(export_dir_for_run(output_dir)) or "/app/paper_exports")
+    export_dir = Path(_path_for_container(export_dir_for_run(smoke, output_dir)) or "/app/paper_exports")
     default_artifact_dir = "/app/artifacts/smoke" if smoke else "/app/artifacts/main"
     artifact_root = Path(_path_for_container(output_dir) or default_artifact_dir)
     candidates = []
@@ -514,7 +522,7 @@ def _main_impl():
         print(f"GPU:        {gpu_type}")
         print(f"Output dir: {args.output_dir or '(default)'}")
         print(f"Data dir:   {data_dir_for_run(smoke, args.output_dir)}")
-        print(f"Exports:    {export_dir_for_run(args.output_dir)}")
+        print(f"Exports:    {export_dir_for_run(smoke, args.output_dir)}")
         print(f"Spend log:  {spend_log_path.relative_to(REPO_ROOT) if spend_log_path.is_relative_to(REPO_ROOT) else spend_log_path}")
         print(f"Budget:     ${budget_limit:.2f} max")
         print(f"Validation: {validation_mode}")

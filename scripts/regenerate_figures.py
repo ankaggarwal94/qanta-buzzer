@@ -501,6 +501,53 @@ def _generate_audit_table(
             lines.append(
                 f"\\multicolumn{{4}}{{l}}{{\\footnotesize{{{dir_text}}}}} \\\\"
             )
+    # PR #14 follow-up review (Lane E FN-2 + FN-3): propagate the audit
+    # card's overall_verdict_qualifier and retained-subset status into the
+    # paper-facing TeX. Without this propagation, a future regeneration
+    # that produces all-PASS metrics + retention overrides would emit a
+    # TeX exhibit reading "WARN" with no indication that the audit ran on
+    # a retained MC subset under override (the .md surfaces this; the TeX
+    # previously did not). Two emission sources:
+    #   1. audit_card.overall_verdict_qualifier (set when overrides
+    #      promote a clean PASS to WARN; suppressed when a per-metric
+    #      WARN already dominates).
+    #   2. audit_card.data_provenance: any retention/coverage gate with
+    #      overridden=True is a retained-subset signal even when the
+    #      qualifier collapsed (mirrors the MD's reader-facing note).
+    overall_qualifier = audit_card.get("overall_verdict_qualifier")
+    if overall_qualifier:
+        lines.append(
+            r"\multicolumn{4}{l}{\footnotesize{"
+            f"Overall verdict qualifier: {_escape_latex(overall_qualifier)}"
+            r"}} \\"
+        )
+    data_provenance = audit_card.get("data_provenance") or {}
+    retained_overrides: list[str] = []
+    for metric_name, block in data_provenance.items():
+        if not isinstance(block, dict):
+            continue
+        for gate_name in ("coverage", "retention"):
+            gate = block.get(gate_name)
+            if not isinstance(gate, dict):
+                continue
+            for split_name, split_block in gate.items():
+                if (
+                    isinstance(split_block, dict)
+                    and split_block.get("overridden") is True
+                ):
+                    retained_overrides.append(
+                        f"{metric_name}/{split_name} {gate_name}"
+                    )
+    if retained_overrides and (
+        not overall_qualifier or "retained-subset" not in overall_qualifier
+    ):
+        lines.append(
+            r"\multicolumn{4}{l}{\footnotesize{"
+            "Retained MC subset (gate overridden for "
+            f"{_escape_latex(', '.join(retained_overrides))}"
+            ")"
+            r"}} \\"
+        )
     lines.append(r"\end{tabular}")
 
     out_path = _PAPER_EXPORTS / "audit_table.tex"

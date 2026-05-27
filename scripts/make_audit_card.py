@@ -627,8 +627,24 @@ def _write_audit_card_md(
         ci_str = ""
         if "ci_lower" in m and m["ci_lower"] is not None:
             ci_str = f" [{m['ci_lower']:.4f}, {m['ci_upper']:.4f}]"
+        # PR #14 follow-up review (NB-B): the bare ``value | threshold``
+        # cells can look unit-mismatched when the gate is on a different
+        # quantity than the headline value (e.g., CSLI headline = 0.0035
+        # choices-only excess; gate = max(acc_choices_only) ≤ 0.30).
+        # Append the ``threshold_criterion`` and ``observed_criterion_value``
+        # so the gate's measurement target is unambiguous in the rendered MD.
+        threshold_cell = str(m["threshold"])
+        criterion = m.get("threshold_criterion")
+        observed = m.get("observed_criterion_value")
+        if criterion:
+            threshold_cell = f"{m['threshold']} ({criterion})"
+            if observed is not None and observed != m.get("value"):
+                # Surface the actual gate-measurement value when it differs
+                # from the headline value (CSLI case; for ECE / StopDFF
+                # observed == value so we skip to avoid duplication).
+                threshold_cell += f"; observed {observed:.4f}"
         lines.append(
-            f"| {m['name']} | {m['value_display']}{ci_str} | {m['threshold']} | "
+            f"| {m['name']} | {m['value_display']}{ci_str} | {threshold_cell} | "
             f"{_render_verdict_cell(m)} |"
         )
     headline = f"**Overall Verdict: {overall_verdict}**"
@@ -637,8 +653,24 @@ def _write_audit_card_md(
     lines.extend([
         "",
         headline,
-        "",
     ])
+    # PR #14 follow-up review (R5 / Lane D): when any coverage/retention
+    # gate was overridden, the audit is a retained-MC-subset audit even
+    # if a per-metric ``warn`` collapsed the override qualifier in
+    # ``_compute_overall_verdict``. Surface that fact in the headline area
+    # so a reader of the MD doesn't need to scan the Data Provenance table
+    # to discover the retained-subset nature of the result.
+    retained_overrides = _retention_or_coverage_override_qualifiers(data_provenance)
+    if retained_overrides and (
+        overall_verdict_qualifier is None
+        or "retained-subset" not in overall_verdict_qualifier
+    ):
+        lines.append(
+            "*Note: this audit ran on a retained MC subset — coverage or "
+            "retention gate was overridden for "
+            f"{', '.join(retained_overrides)}. See Data Provenance table below.*"
+        )
+    lines.append("")
 
     # PR #14 Blocker 3: surface coverage / retention provenance per
     # metric so the card reader can verify all three metrics agreed

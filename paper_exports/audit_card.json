@@ -140,11 +140,11 @@
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-27T03:14:06.875656+00:00",
+    "timestamp": "2026-05-27T04:07:32.545006+00:00",
     "threshold_source": "threshold_manifest.json",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T03:14:06.856376+00:00",
+      "generated_at_utc": "2026-05-27T04:07:32.527972+00:00",
       "command": [
         "python",
         "scripts/make_audit_card.py"
@@ -153,10 +153,10 @@
       "cwd": ".",
       "output_path": "paper_exports/audit_card.json",
       "script_path": "scripts/make_audit_card.py",
-      "script_sha256": "d1d99e36495d353e8259b9748539fa57b83eeff497e5d48b8912d73e43355286",
-      "git_commit": "2654ad2376b3995a65022e566d0dd59845850546",
+      "script_sha256": "bf937513fa4d3ef6f2c07067b5aac53979ef33b4a5751e50c28b39be6640afba",
+      "git_commit": "828d4523b6b3cc57f15d5c382df2ae61409876a0",
       "git_dirty": true,
-      "git_status_relevant_paths": "M paper_exports/csli.json"
+      "git_status_relevant_paths": "M paper_exports/calibration.json\n M paper_exports/csli.json\n M paper_exports/stopdff.json\n M scripts/make_audit_card.py"
     }
   },
   "data_provenance": {
@@ -233,23 +233,23 @@
   },
   "artifact_provenance": {
     "csli.json": {
-      "recorded_commit": "2654ad2376b3995a65022e566d0dd59845850546",
+      "recorded_commit": "828d4523b6b3cc57f15d5c382df2ae61409876a0",
       "recorded_sha256": "f898bac305449fcf69815d7730ed38b5a9aa1122fa3d76b44d67035159885ee7",
       "current_sha256": "f898bac305449fcf69815d7730ed38b5a9aa1122fa3d76b44d67035159885ee7",
       "script_path": "scripts/compute_csli.py",
       "sha_matches": true
     },
     "calibration.json": {
-      "recorded_commit": "f5600efeb744265879c3f2f2c86758cb3f736cec",
-      "recorded_sha256": "101a2f20350b987123cb4051e6c34045a5ad06575b7f9d47c47120dc6ad8f9cd",
-      "current_sha256": "101a2f20350b987123cb4051e6c34045a5ad06575b7f9d47c47120dc6ad8f9cd",
+      "recorded_commit": "828d4523b6b3cc57f15d5c382df2ae61409876a0",
+      "recorded_sha256": "e7a26f1b1ec673402e78c89ae937fc104ece8329315b06cc9bb7006f29f1c65c",
+      "current_sha256": "e7a26f1b1ec673402e78c89ae937fc104ece8329315b06cc9bb7006f29f1c65c",
       "script_path": "scripts/compute_prefix_calibration.py",
       "sha_matches": true
     },
     "stopdff.json": {
-      "recorded_commit": "f5600efeb744265879c3f2f2c86758cb3f736cec",
-      "recorded_sha256": "09709d1cca3ff980e9fc7b1fd46f09e5987b29397ce72f8b8081a7383c72d8a6",
-      "current_sha256": "09709d1cca3ff980e9fc7b1fd46f09e5987b29397ce72f8b8081a7383c72d8a6",
+      "recorded_commit": "828d4523b6b3cc57f15d5c382df2ae61409876a0",
+      "recorded_sha256": "1cb520f0197763df26d7e23897e172383d9278d1b486088436708157f2e25070",
+      "current_sha256": "1cb520f0197763df26d7e23897e172383d9278d1b486088436708157f2e25070",
       "script_path": "scripts/compute_stopdff.py",
       "sha_matches": true
     }

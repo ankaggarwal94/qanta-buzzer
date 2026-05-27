@@ -638,6 +638,34 @@ def main(argv: Optional[list[str]] = None) -> int:
         mc_test = mc_test[:20]
         print(f"[STOP] Smoke mode: trimmed to {len(mc_test)} test questions", flush=True)
 
+    # PR #14 follow-up review (Issue C): enforce K=4 at runtime in stopdff.
+    # The MC condition (compute_stop_step_mc) takes max cosine similarity
+    # over K=4 option embeddings, and Platt calibration loaded below is fit
+    # on the K=4 raw-score distribution. If any question has a different K,
+    # the stop-step decisions are derived from a misaligned calibrator and
+    # the resulting median absolute prefix shift is scientifically invalid.
+    # The non-MC condition (compute_stop_step_nonmc) is K-independent, so the
+    # guard applies only to the MC iteration.
+    K = 4
+    bad_k = [
+        (q.get("qid"), len(q.get("options") or []))
+        for q in mc_test
+        if len(q.get("options") or []) != K
+    ]
+    if bad_k:
+        first_qid, first_count = bad_k[0]
+        print(
+            f"ERROR: StopDFF assumes K={K} options per MC question, but "
+            f"{len(bad_k)} test-split questions have a different K "
+            f"(first: qid={first_qid}, K={first_count}). The MC condition "
+            f"takes max similarity over {first_count} options against Platt "
+            f"coefficients fit on K={K}; the resulting stop steps would be "
+            f"misaligned. Rebuild the MC dataset so every retained question "
+            f"has exactly K options.",
+            file=sys.stderr,
+        )
+        return 1
+
     # ========================================================================
     # Load Platt coefficients from Phase 5 calibration
     # ========================================================================

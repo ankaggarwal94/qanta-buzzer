@@ -1213,3 +1213,162 @@ def test_csli_panel_warns_when_models_exceed_palette_capacity(
     assert "11" in captured.err
     assert "tab10" in captured.err
     assert "repeat" in captured.err.lower()
+
+
+def test_audit_table_propagates_overall_verdict_qualifier_to_tex(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """PR #14 follow-up review (Lane E FN-2): the paper-facing TeX must
+    surface ``audit_card.overall_verdict_qualifier`` when present.
+
+    Without this propagation a future regeneration that produces all-PASS
+    metrics + retention overrides emits a TeX exhibit reading "WARN" with
+    no indication that the audit ran under override. The audit_card.md
+    surfaces this; the TeX previously did not — peer reviewers reading
+    the paper-canonical exhibit would have no idea the gate was relaxed.
+    """
+    monkeypatch.setattr(regenerate_figures, "_PAPER_EXPORTS", tmp_path)
+    csli_data = {
+        "panel_csli": {"mean": 0.005, "ci_lower": 0.0, "ci_upper": 0.01},
+        "per_model": {
+            "tfidf": {"acc_choices_only": 0.26},
+            "sbert": {"acc_choices_only": 0.24},
+        },
+        "metadata": {"threshold": 0.30},
+    }
+    cal_data = {"max_ece": 0.03, "threshold": 0.10}
+    stop_data = {"median_abs_prefix_shift": 0.0, "threshold": 1.0}
+    audit_card = {
+        "metrics": [
+            {
+                "name": "CSLI (Choice-Set Leakage Index, choices-only excess)",
+                "threshold": 0.30,
+                "observed_criterion_value": 0.26,
+                "verdict": "pass",
+            },
+            {"name": "Prefix-wise Calibration (ECE)", "threshold": 0.10, "verdict": "pass"},
+            {
+                "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+                "threshold": 1.0,
+                "verdict": "pass",
+            },
+        ],
+        "overall_verdict": "WARN",
+        "overall_verdict_qualifier": (
+            "retained-subset (override on csli/test retention, "
+            "calibration/val retention, calibration/test retention)"
+        ),
+        "data_provenance": {},
+    }
+
+    out = _generate_audit_table(csli_data, cal_data, stop_data, audit_card)
+    rendered = out.read_text(encoding="utf-8")
+    assert "Overall verdict qualifier" in rendered, (
+        f"TeX missing overall_verdict_qualifier propagation: {rendered}"
+    )
+    assert "retained-subset" in rendered
+    assert "csli/test retention" in rendered
+
+
+def test_audit_table_surfaces_retained_subset_when_qualifier_collapsed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """PR #14 follow-up review (Lane E FN-3): when per-metric WARN
+    dominates and ``overall_verdict_qualifier`` is None, the TeX must
+    still surface retained-subset status from ``data_provenance``.
+
+    Mirrors the audit_card.md reader-facing note (R5 / Lane D).
+    """
+    monkeypatch.setattr(regenerate_figures, "_PAPER_EXPORTS", tmp_path)
+    csli_data = {
+        "panel_csli": {"mean": 0.005, "ci_lower": 0.0, "ci_upper": 0.01},
+        "per_model": {
+            "tfidf": {"acc_choices_only": 0.26},
+            "sbert": {"acc_choices_only": 0.24},
+        },
+        "metadata": {"threshold": 0.30},
+    }
+    cal_data = {"max_ece": 0.03, "threshold": 0.10}
+    stop_data = {"median_abs_prefix_shift": 0.0, "threshold": 1.0}
+    audit_card = {
+        "metrics": [
+            {
+                "name": "CSLI (Choice-Set Leakage Index, choices-only excess)",
+                "threshold": 0.30,
+                "observed_criterion_value": 0.26,
+                "verdict": "pass",
+            },
+            {"name": "Prefix-wise Calibration (ECE)", "threshold": 0.10, "verdict": "pass"},
+            {
+                "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+                "threshold": 1.0,
+                "verdict": "warn",
+                "verdict_qualifier": "ceiling effect",
+            },
+        ],
+        "overall_verdict": "WARN",
+        "overall_verdict_qualifier": None,  # collapsed by per-metric WARN
+        "data_provenance": {
+            "csli": {
+                "coverage": {"test": {"overridden": False}},
+                "retention": {"test": {"overridden": True, "passed": False, "applies": True}},
+            },
+            "stopdff": {
+                "coverage": {"test": {"overridden": False}},
+                "retention": {"test": {"overridden": True, "passed": False, "applies": True}},
+            },
+        },
+    }
+
+    out = _generate_audit_table(csli_data, cal_data, stop_data, audit_card)
+    rendered = out.read_text(encoding="utf-8")
+    assert "Retained MC subset" in rendered, (
+        f"TeX missing retained-subset note when qualifier collapsed: {rendered}"
+    )
+    assert "csli/test retention" in rendered
+    assert "stopdff/test retention" in rendered
+
+
+def test_audit_table_omits_retained_subset_when_no_overrides(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A clean run with no overrides must not leak a retained-subset
+    footer (avoid false-positive retained-subset claims in the TeX).
+    """
+    monkeypatch.setattr(regenerate_figures, "_PAPER_EXPORTS", tmp_path)
+    csli_data = {
+        "panel_csli": {"mean": 0.005, "ci_lower": 0.0, "ci_upper": 0.01},
+        "per_model": {
+            "tfidf": {"acc_choices_only": 0.26},
+            "sbert": {"acc_choices_only": 0.24},
+        },
+        "metadata": {"threshold": 0.30},
+    }
+    cal_data = {"max_ece": 0.03, "threshold": 0.10}
+    stop_data = {"median_abs_prefix_shift": 0.0, "threshold": 1.0}
+    audit_card = {
+        "metrics": [
+            {
+                "name": "CSLI (Choice-Set Leakage Index, choices-only excess)",
+                "threshold": 0.30,
+                "observed_criterion_value": 0.26,
+                "verdict": "pass",
+            },
+            {"name": "Prefix-wise Calibration (ECE)", "threshold": 0.10, "verdict": "pass"},
+            {
+                "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+                "threshold": 1.0,
+                "verdict": "pass",
+            },
+        ],
+        "overall_verdict": "PASS",
+        "data_provenance": {
+            "csli": {"retention": {"test": {"overridden": False}}},
+            "calibration": {"retention": {"val": {"overridden": False}}},
+        },
+    }
+
+    out = _generate_audit_table(csli_data, cal_data, stop_data, audit_card)
+    rendered = out.read_text(encoding="utf-8")
+    assert "Retained MC subset" not in rendered
+    assert "Overall verdict qualifier" not in rendered

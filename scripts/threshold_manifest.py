@@ -13,7 +13,9 @@ sha256 string -- documentation, not enforcement.
 
 The canonical sidecar filename is ``<manifest>.sha256`` (e.g.,
 ``threshold_manifest.json.sha256``), matching the output of
-``sha256sum threshold_manifest.json``. The legacy
+``sha256sum threshold_manifest.json`` (or
+``shasum -a 256 threshold_manifest.json`` on macOS where
+``sha256sum`` may be absent). The legacy
 ``threshold_manifest.sha256`` (no ``.json`` segment) was deleted in
 the same commit as this module to remove the dual-canonical
 ambiguity flagged by CR-01.
@@ -37,7 +39,9 @@ def _expected_sidecar(manifest_path: Path) -> Path:
 
     Uses ``<manifest>.sha256`` (e.g., ``threshold_manifest.json.sha256``)
     so the filename matches the default output of
-    ``sha256sum threshold_manifest.json``. Constructed via
+    ``sha256sum threshold_manifest.json`` (or
+    ``shasum -a 256 threshold_manifest.json`` on macOS where
+    ``sha256sum`` may be absent). Constructed via
     ``parent / (name + ".sha256")`` rather than ``with_suffix`` because
     ``with_suffix`` only replaces the LAST extension segment, which
     would map ``threshold_manifest.json`` to ``threshold_manifest.sha256``

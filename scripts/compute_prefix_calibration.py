@@ -562,6 +562,32 @@ def main(argv: Optional[list[str]] = None) -> int:
     mc_val, val_coverage = filter_mc_questions_to_split(mc_questions, val_qids)
     mc_test, test_coverage = filter_mc_questions_to_split(mc_questions, test_qids)
 
+    # PR #14 follow-up review (Issue C): enforce K=4 at runtime in calibration.
+    # Platt coefficients are fit on the per-bucket distribution of max cosine
+    # similarity across exactly K=4 option embeddings. If the underlying MC
+    # data carries a different K for any question, the calibrators are
+    # silently misaligned with the raw-score distribution they are applied to.
+    # Fail closed so a variable-K artifact cannot reach the audit card.
+    K = 4
+    for split_name, mc_split in (("val", mc_val), ("test", mc_test)):
+        bad_k = [
+            (q.get("qid"), len(q.get("options") or []))
+            for q in mc_split
+            if len(q.get("options") or []) != K
+        ]
+        if bad_k:
+            first_qid, first_count = bad_k[0]
+            print(
+                f"ERROR: Calibration assumes K={K} options per MC question, but "
+                f"{len(bad_k)} {split_name}-split questions have a different K "
+                f"(first: qid={first_qid}, K={first_count}). Platt scaling is fit "
+                f"on the K={K} raw-confidence distribution and would be misaligned. "
+                f"Rebuild the MC dataset so every retained question has exactly K "
+                f"options.",
+                file=sys.stderr,
+            )
+            return 1
+
     print(
         f"[CALI] MC total: {len(mc_questions)}, MC val: {len(mc_val)} "
         f"({val_coverage['coverage_rate']:.1%} of val qids), "

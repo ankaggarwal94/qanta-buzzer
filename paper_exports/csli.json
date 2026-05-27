@@ -62,7 +62,7 @@
     ],
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T03:13:57.724790+00:00",
+      "generated_at_utc": "2026-05-27T04:07:26.100683+00:00",
       "command": [
         "python",
         "scripts/compute_csli.py",
@@ -81,7 +81,7 @@
       "output_path": "paper_exports/csli.json",
       "script_path": "scripts/compute_csli.py",
       "script_sha256": "f898bac305449fcf69815d7730ed38b5a9aa1122fa3d76b44d67035159885ee7",
-      "git_commit": "2654ad2376b3995a65022e566d0dd59845850546",
+      "git_commit": "828d4523b6b3cc57f15d5c382df2ae61409876a0",
       "git_dirty": false,
       "git_status_relevant_paths": ""
     },

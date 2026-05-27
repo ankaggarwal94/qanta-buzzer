@@ -1292,6 +1292,163 @@ def test_overall_verdict_fail_dominates_retention_override() -> None:
     assert qualifier is None
 
 
+def test_audit_card_md_surfaces_retained_subset_note_when_overrides_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #14 follow-up review (R5 / Lane D): the MD must always surface
+    the retained-subset status of an audit, even when ``_compute_overall_verdict``
+    collapses the qualifier because a per-metric ``warn`` already dominates.
+
+    Without this note a reader of the MD sees "Overall Verdict: WARN" + a
+    Data Provenance table with retention overrides and must reason that
+    the audit ran on a retained MC subset. The qualifier collapse is an
+    intentional ladder-design choice (``test_overall_verdict_fail_dominates_retention_override``);
+    the headline note is the orthogonal reader-facing affordance.
+    """
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", tmp_path)
+    metrics = [
+        {
+            "name": "Diagnostic StopDFF",
+            "value": 0.0,
+            "value_display": "0.0",
+            "threshold": 1.0,
+            "verdict": "warn",
+            "verdict_qualifier": "ceiling effect",
+        },
+        {
+            "name": "Calibration",
+            "value": 0.03,
+            "value_display": "0.0300",
+            "threshold": 0.1,
+            "verdict": "pass",
+        },
+    ]
+    data_provenance = {
+        "csli": {
+            "coverage": {"test": {"overridden": False}},
+            "retention": {
+                "test": {"overridden": True, "passed": False, "applies": True},
+            },
+        },
+        "stopdff": {
+            "coverage": {"test": {"overridden": False}},
+            "retention": {
+                "test": {"overridden": True, "passed": False, "applies": True},
+            },
+        },
+    }
+    # qualifier is None because StopDFF WARN dominates the ladder
+    # (per test_overall_verdict_fail_dominates_retention_override).
+    out_path = make_audit_card._write_audit_card_md(
+        metrics, "WARN", data_provenance, overall_verdict_qualifier=None
+    )
+    md = out_path.read_text(encoding="utf-8")
+    # The retained-subset reader note must appear in the MD.
+    assert "retained MC subset" in md, (
+        f"Audit card MD does not surface retained-subset note: {md[:500]}"
+    )
+    # And it must name each overridden gate so a reader can trace it.
+    assert "csli/test retention" in md
+    assert "stopdff/test retention" in md
+
+
+def test_audit_card_md_does_not_duplicate_retained_subset_note_when_qualifier_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ``overall_verdict_qualifier`` already says 'retained-subset',
+    the headline note must not duplicate it (avoid double-surfacing).
+    """
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", tmp_path)
+    metrics = [
+        {
+            "name": "CSLI",
+            "value": 0.001,
+            "value_display": "0.0010",
+            "threshold": 0.3,
+            "verdict": "pass",
+        },
+    ]
+    data_provenance = {
+        "csli": {
+            "coverage": {"test": {"overridden": False}},
+            "retention": {
+                "test": {"overridden": True, "passed": False, "applies": True},
+            },
+        },
+    }
+    out_path = make_audit_card._write_audit_card_md(
+        metrics,
+        "WARN",
+        data_provenance,
+        overall_verdict_qualifier="retained-subset (override on csli/test retention)",
+    )
+    md = out_path.read_text(encoding="utf-8")
+    # The qualifier in the headline already says 'retained-subset'.
+    assert "retained-subset" in md
+    # The orthogonal note must NOT fire when the qualifier already covers it,
+    # to avoid duplicating the retained-subset message.
+    assert md.count("retained MC subset") == 0
+
+
+def test_audit_card_md_threshold_cell_renders_criterion_when_provided(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #14 follow-up review (NB-B / Lane D): a bare ``value | threshold``
+    cell creates a unit-mismatch impression when the gate measures a
+    different quantity than the headline value.
+
+    The CSLI case: headline value = 0.0035 (choices-only excess), but the
+    gate is on ``max(acc_choices_only) <= 0.30``. The threshold cell must
+    render the criterion so a reader cannot confuse "0.0035 vs 0.3" as
+    unit-mismatched. When ``observed_criterion_value != value``, the cell
+    must also surface the observed gate value (CSLI's 0.2604).
+    """
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", tmp_path)
+    metrics = [
+        {
+            "name": "CSLI (choices-only excess)",
+            "value": 0.003469,
+            "value_display": "0.0035",
+            "ci_lower": 0.0,
+            "ci_upper": 0.0108,
+            "threshold": 0.3,
+            "threshold_criterion": "max(acc_choices_only) <= threshold",
+            "observed_criterion_value": 0.260407,
+            "verdict": "pass",
+        },
+        {
+            "name": "Calibration (ECE)",
+            "value": 0.0261,
+            "value_display": "0.0261",
+            "threshold": 0.1,
+            "threshold_criterion": "max(bucket_ECE) <= threshold",
+            "observed_criterion_value": 0.0261,
+            "verdict": "pass",
+        },
+        {
+            "name": "Legacy metric (no criterion)",
+            "value": 5.0,
+            "value_display": "5.0",
+            "threshold": 10.0,
+            "verdict": "pass",
+        },
+    ]
+    out_path = make_audit_card._write_audit_card_md(metrics, "PASS", None)
+    md = out_path.read_text(encoding="utf-8")
+    # CSLI: criterion present AND observed surfaces (differs from value).
+    assert "max(acc_choices_only) <= threshold" in md, (
+        f"CSLI row missing threshold_criterion: {md}"
+    )
+    assert "observed 0.2604" in md, (
+        f"CSLI row missing observed gate value: {md}"
+    )
+    # Calibration: criterion present; observed suppressed (== value, would duplicate).
+    assert "max(bucket_ECE) <= threshold" in md
+    assert "observed 0.0261" not in md  # would be redundant — same as headline value
+    # Legacy metric without criterion renders the bare threshold (back-compat).
+    assert "| 10.0 |" in md, f"Legacy bare threshold not preserved: {md}"
+
+
 def test_overall_verdict_returns_tuple() -> None:
     """_compute_overall_verdict now returns (verdict, qualifier) tuple."""
     metrics = [{"verdict": "pass"}, {"verdict": "pass"}, {"verdict": "pass"}]
@@ -1361,6 +1518,80 @@ def test_compute_csli_asserts_K4() -> None:
     # The check itself is a pure list-comprehension; pin the shape so
     # any refactor that moves it stays consistent.
     assert bad_k == [("q2", 3)]
+
+
+def test_compute_prefix_calibration_asserts_K4() -> None:
+    """PR #14 follow-up review (Issue C): K=4 invariant must be enforced in calibration.
+
+    Platt coefficients are fit on the K=4 raw-confidence distribution.
+    If any val- or test-split question has a different K, the
+    calibrators are misaligned with the score distribution they are
+    applied to and the resulting ECE values are scientifically invalid.
+    The guard must fire on either split. Pin both the list-comprehension
+    shape and the source-text contract.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "scripts" / "compute_prefix_calibration.py").read_text(
+        encoding="utf-8"
+    )
+    # Source-text contract: the guard and its actionable message must
+    # name K, the affected split, and the rebuild-MC-dataset remediation.
+    for substr in (
+        "Issue C",
+        "Calibration assumes K=",
+        "Platt scaling is fit",
+        "Rebuild the MC dataset",
+    ):
+        assert substr in source, (
+            f"compute_prefix_calibration.py is missing K=4 guard substring: "
+            f"{substr!r}"
+        )
+    # Shape pin: mirrors the CSLI pattern but iterates both splits.
+    bad_questions = [
+        {"qid": "v1", "options": ["a", "b", "c", "d"]},
+        {"qid": "t1", "options": ["a", "b"]},  # K=2 -- not allowed
+    ]
+    bad_k = [
+        (q.get("qid"), len(q.get("options") or []))
+        for q in bad_questions
+        if len(q.get("options") or []) != 4
+    ]
+    assert bad_k == [("t1", 2)]
+
+
+def test_compute_stopdff_asserts_K4() -> None:
+    """PR #14 follow-up review (Issue C): K=4 invariant must be enforced in stopdff.
+
+    The MC condition takes max cosine similarity over K=4 options and
+    feeds the raw score through Platt calibration fit on K=4. If K
+    differs, the calibrated stop-step decisions are derived from a
+    misaligned calibrator. The non-MC condition is K-independent, so
+    the guard targets only mc_test. Pin both the source-text contract
+    and the shape.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "scripts" / "compute_stopdff.py").read_text(
+        encoding="utf-8"
+    )
+    for substr in (
+        "Issue C",
+        "StopDFF assumes K=",
+        "max similarity over",
+        "Rebuild the MC dataset",
+    ):
+        assert substr in source, (
+            f"compute_stopdff.py is missing K=4 guard substring: {substr!r}"
+        )
+    bad_questions = [
+        {"qid": "t1", "options": ["a", "b", "c", "d"]},
+        {"qid": "t2", "options": ["a", "b", "c", "d", "e"]},  # K=5 -- not allowed
+    ]
+    bad_k = [
+        (q.get("qid"), len(q.get("options") or []))
+        for q in bad_questions
+        if len(q.get("options") or []) != 4
+    ]
+    assert bad_k == [("t2", 5)]
 
 
 def test_compute_csli_t5_scorers_route_through_device() -> None:
