@@ -777,3 +777,37 @@ def test_cli_smoke_prunes_to_30_qids_per_split(tmp_path) -> None:
     assert rc == 0
     payload = json.loads(out_json.read_text())
     assert payload["n_items"] <= 30
+
+
+def test_fit_dataframe_never_contains_eval_split_rows(tmp_path) -> None:
+    """Confirm via direct inspection that the fit_df has only val rows."""
+    val_qs = [_fake_mc_question(f"v{i}") for i in range(3)]
+    test_qs = [_fake_mc_question(f"t{i}") for i in range(3)]
+    mc_pool = val_qs + test_qs
+    val_qids = {q["qid"] for q in val_qs}
+    test_qids = {q["qid"] for q in test_qs}
+
+    fit_df = adapter_module.build_dataframe(
+        mc_questions=mc_pool,
+        target_qids=val_qids,
+        split_name="val",
+        calibration_path=None,
+        identity_calibration=True,
+    )
+    eval_df = adapter_module.build_dataframe(
+        mc_questions=mc_pool,
+        target_qids=test_qids,
+        split_name="test",
+        calibration_path=None,
+        identity_calibration=True,
+    )
+
+    assert set(fit_df["split"]) == {"val"}
+    assert set(eval_df["split"]) == {"test"}
+    assert set(fit_df["item_id"]).isdisjoint(set(eval_df["item_id"]))
+
+    # And the EmpiricalBucketEstimator must refuse to fit on the eval frame.
+    with pytest.raises(ValueError):
+        cont_module.EmpiricalBucketEstimator.fit(
+            fit_df=eval_df, fit_split_name="val",
+        )
