@@ -625,3 +625,67 @@ def test_writer_to_serializable_handles_numpy_types(tmp_path: Path) -> None:
     # back to Python ints/bools/floats with no exception.
     assert loaded["coverage"]["n_cells"] == 6
     assert loaded["ceiling_flags"]["empty"] is False
+
+
+import sys
+
+
+def test_cli_smoke_run_writes_all_three_artifacts(tmp_path, monkeypatch) -> None:
+    """End-to-end identity-calibration smoke run writes JSON+MD+TeX."""
+    # Build a tiny mc/val/test dataset in-place.
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question(f"v{i}") for i in range(5)]
+    test_qs = [_fake_mc_question(f"t{i}") for i in range(5)]
+    all_qs = val_qs + test_qs
+    (data_dir / "mc_dataset.json").write_text(
+        json.dumps(all_qs)
+    )
+    (data_dir / "val_dataset.json").write_text(json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(json.dumps(test_qs))
+
+    out_json = tmp_path / "stopdff_dp.json"
+    out_md = tmp_path / "stopdff_dp.md"
+    out_tex = tmp_path / "stopdff_dp_table.tex"
+
+    from scripts import compute_stopdff_dp
+    rc = compute_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--split", "test",
+        "--fit-split", "val",
+        "--reward-schedule", "acf_flat",
+        "--continuation", "empirical_bucket",
+        "--identity-calibration",  # skip SBERT for the test
+        "--out", str(out_json),
+        "--out-md", str(out_md),
+        "--out-tex", str(out_tex),
+        "--allow-incomplete-mc-coverage",
+        "--allow-low-mc-retention",
+    ])
+    assert rc == 0
+    assert out_json.exists() and out_md.exists() and out_tex.exists()
+    payload = json.loads(out_json.read_text())
+    assert payload["metadata"]["metric_type"] == "finite_horizon_dp"
+    assert payload["metadata"]["fit_split"] == "val"
+    assert payload["metadata"]["eval_split"] == "test"
+
+
+def test_cli_rejects_same_split_for_fit_and_eval(tmp_path) -> None:
+    from scripts import compute_stopdff_dp
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "mc_dataset.json").write_text("[]")
+    (data_dir / "val_dataset.json").write_text("[]")
+    (data_dir / "test_dataset.json").write_text("[]")
+    rc = compute_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--split", "val",
+        "--fit-split", "val",
+        "--reward-schedule", "acf_flat",
+        "--continuation", "empirical_bucket",
+        "--identity-calibration",
+        "--out", str(tmp_path / "out.json"),
+        "--out-md", str(tmp_path / "out.md"),
+        "--out-tex", str(tmp_path / "out.tex"),
+    ])
+    assert rc != 0
