@@ -1457,6 +1457,50 @@ def test_overall_verdict_returns_tuple() -> None:
     assert len(out) == 2
 
 
+def test_compute_csli_generation_provenance_tracks_resolved_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #14 follow-up review (Codex 3308444266): the generation block must
+    record git status for the build_metadata in the resolved ``--data-dir``,
+    not the production ``data/processed/build_metadata.json``.
+
+    Without this, a Modal smoke invocation (``--data-dir artifacts/smoke``)
+    would mark its CSLI artifact as ``git_dirty: false`` even when the
+    smoke build metadata is dirty or stale, because the provenance check
+    was against the wrong file. Pin both the signature contract and the
+    `relevant_paths` content via source inspection — the helper isn't a
+    pure function (calls git), so we don't exercise it end-to-end.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "scripts" / "compute_csli.py").read_text(
+        encoding="utf-8"
+    )
+    # Signature contract: helper must take a `data_dir` kw-only arg.
+    assert "def _build_generation_provenance(" in source
+    assert "data_dir: Path," in source, (
+        "compute_csli._build_generation_provenance must accept `data_dir` "
+        "so non-default --data-dir invocations capture the correct "
+        "build_metadata.json git status."
+    )
+    # Body contract: the helper uses `data_dir / \"build_metadata.json\"`,
+    # not the hardcoded DEFAULT_DATA_DIR.
+    assert "data_dir / \"build_metadata.json\"" in source, (
+        "compute_csli._build_generation_provenance must derive the "
+        "build_metadata path from the resolved data_dir parameter."
+    )
+    assert "DEFAULT_DATA_DIR / \"build_metadata.json\"" not in source, (
+        "compute_csli._build_generation_provenance must not hardcode "
+        "DEFAULT_DATA_DIR when building provenance — that breaks the "
+        "Modal smoke path (artifacts/smoke) and any other --data-dir override."
+    )
+    # Caller contract: the single call site in main() must pass `data_dir=`.
+    assert "data_dir=data_dir," in source, (
+        "compute_csli main() must pass `data_dir=data_dir` to "
+        "_build_generation_provenance so the resolved CLI argument "
+        "reaches the provenance helper."
+    )
+
+
 def test_calibration_producer_downgrades_on_degenerate_buckets_in_card() -> None:
     """PR #14 follow-up review (Issue C): consumer trusts producer's final verdict.
 

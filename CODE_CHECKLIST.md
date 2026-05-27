@@ -7,7 +7,7 @@ Verified: 2026-05-26
 | Item | Status | Location | Notes |
 |------|--------|----------|-------|
 | README with setup instructions | PRESENT | `README.md` | CS321M-oriented with Environment Setup and Quickstart sections |
-| Pinned requirements.txt | PRESENT | `requirements.txt` | 14 dependencies pinned with == from working environment |
+| Pinned requirements.txt | PRESENT | `requirements.txt` | All dependencies pinned with `==` from working environment (count: see `grep -cvE '^(#\|$)' requirements.txt`) |
 | Quickstart smoke run | PRESENT | `scripts/manual-smoke.sh` | 4-stage pipeline; ~2-5 min on CPU |
 | Fresh split script | PRESENT | `scripts/fresh_split.py` | v10 section 0.3 protocol, seed 789685 |
 | CSLI computation | PRESENT | `scripts/compute_csli.py` | Panel across TF-IDF, SBERT, T5-small. Canonical CSLI = `max(0, acc_choices_only - 1/K)` (PAP-original); legacy gap published as `panel_question_use_gap`. K=4 invariant enforced at runtime. |
@@ -29,4 +29,4 @@ Verified: 2026-05-26
 | StopDFF attestation report | PRESENT | `stopdff_report.json` | Timestamp + verdict + parameters |
 | Attribution in README | PRESENT | `README.md` (## Attribution) | 4 contributors named; Novel vs Reused separation |
 | Source-to-claim map | PRESENT | `reproducibility/source_to_claim.md` | Phase 9 deliverable |
-| Test suite | PRESENT | `tests/` | 429 tests across 33 files (pytest) |
+| Test suite | PRESENT | `tests/` | pytest unit + regression suite (count: see `pytest tests/ --collect-only -q | tail -1`) |

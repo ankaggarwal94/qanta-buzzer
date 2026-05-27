@@ -140,11 +140,11 @@
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-27T04:07:32.545006+00:00",
+    "timestamp": "2026-05-27T04:48:10.821677+00:00",
     "threshold_source": "threshold_manifest.json",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T04:07:32.527972+00:00",
+      "generated_at_utc": "2026-05-27T04:48:10.801794+00:00",
       "command": [
         "python",
         "scripts/make_audit_card.py"
@@ -154,9 +154,9 @@
       "output_path": "paper_exports/audit_card.json",
       "script_path": "scripts/make_audit_card.py",
       "script_sha256": "bf937513fa4d3ef6f2c07067b5aac53979ef33b4a5751e50c28b39be6640afba",
-      "git_commit": "828d4523b6b3cc57f15d5c382df2ae61409876a0",
+      "git_commit": "03950df577b17114d930f54a52d15d5f923b4a5f",
       "git_dirty": true,
-      "git_status_relevant_paths": "M paper_exports/calibration.json\n M paper_exports/csli.json\n M paper_exports/stopdff.json\n M scripts/make_audit_card.py"
+      "git_status_relevant_paths": "M paper_exports/csli.json"
     }
   },
   "data_provenance": {
@@ -233,9 +233,9 @@
   },
   "artifact_provenance": {
     "csli.json": {
-      "recorded_commit": "828d4523b6b3cc57f15d5c382df2ae61409876a0",
-      "recorded_sha256": "f898bac305449fcf69815d7730ed38b5a9aa1122fa3d76b44d67035159885ee7",
-      "current_sha256": "f898bac305449fcf69815d7730ed38b5a9aa1122fa3d76b44d67035159885ee7",
+      "recorded_commit": "03950df577b17114d930f54a52d15d5f923b4a5f",
+      "recorded_sha256": "34498880c237c43dea75c5718a6e33165612d336416df857aea46edba638d8d6",
+      "current_sha256": "34498880c237c43dea75c5718a6e33165612d336416df857aea46edba638d8d6",
       "script_path": "scripts/compute_csli.py",
       "sha_matches": true
     },

@@ -101,7 +101,7 @@ qanta-buzzer/
 +-- evaluation/           [CS234] S_q metric, calibration, plotting utilities
 +-- training/             [CS234] T5 policy trainers (supervised + PPO)
 +-- configs/              [CS234] YAML configuration files
-+-- tests/                [CS234] 429 tests across 33 files
++-- tests/                [CS234] unit + regression test suite (run via `pytest`)
 +-- paper_exports/        [CS321M] Pre-computed audit results and figures
 +-- artifacts/            Generated pipeline outputs (smoke/ and main/)
 +-- docs/                 Pipeline runbook and architecture docs
@@ -143,10 +143,10 @@ Claude Code (Anthropic) assisted with CS321M extension development. GitHub Copil
 
 ## Testing
 
-429 tests across 33 test files:
+Run the full pytest suite via:
 
 ```bash
-pytest                    # full suite
+pytest                    # full suite (use `pytest tests/ --collect-only -q | tail -1` for the live test count)
 pytest tests/ -x -q       # quick with stop-on-first-failure
 bash scripts/ci.sh        # full suite via repo-local .venv
 ```

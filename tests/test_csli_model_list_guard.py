@@ -43,6 +43,7 @@ sys.modules.pop("scripts.compute_csli", None)
 import pytest
 
 from scripts.compute_csli import (
+    DEFAULT_DATA_DIR,
     PROJECT_ROOT,
     _build_generation_provenance,
     _sha256_file,
@@ -143,12 +144,20 @@ def test_compute_csli_rejects_unknown_model_before_data_loading(
 
 
 def test_generation_provenance_records_script_command_and_git_context() -> None:
-    """Generated CSLI artifacts should be attributable to code and argv."""
+    """Generated CSLI artifacts should be attributable to code and argv.
+
+    PR #14 follow-up review (Codex 3308444266): provenance helper now
+    requires the resolved ``data_dir`` so non-default invocations
+    (e.g., ``--data-dir artifacts/smoke``) capture the correct
+    build_metadata.json git status. Pass ``DEFAULT_DATA_DIR`` here to
+    exercise the production-path provenance contract.
+    """
     script_path = PROJECT_ROOT / "scripts" / "compute_csli.py"
 
     provenance = _build_generation_provenance(
         ["--models", "tfidf,sbert,t5-small", "--allow-low-mc-retention"],
         output_path=PROJECT_ROOT / "paper_exports" / "csli.json",
+        data_dir=DEFAULT_DATA_DIR,
     )
 
     assert provenance["schema_version"] == 1

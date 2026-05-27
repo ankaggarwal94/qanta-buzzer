@@ -242,14 +242,24 @@ def _build_generation_provenance(
     argv: list[str],
     *,
     output_path: Path,
+    data_dir: Path,
 ) -> dict[str, Any]:
-    """Build audit metadata tying a generated artifact to code and command."""
+    """Build audit metadata tying a generated artifact to code and command.
+
+    PR #14 follow-up review (Codex 3308444266): the build_metadata path is
+    derived from the resolved ``data_dir`` so non-default invocations
+    (e.g., ``--data-dir artifacts/smoke`` via the Modal smoke pipeline)
+    capture the git status of the build metadata that actually governed
+    the run, not the production ``data/processed/build_metadata.json``.
+    Without this, a smoke artifact could record ``git_dirty: false`` even
+    when the smoke build metadata was dirty or stale.
+    """
     script_path = Path(__file__).resolve()
     relevant_paths = [
         _display_path(script_path),
         _display_path(output_path),
         _display_path(THRESHOLD_MANIFEST),
-        _display_path(DEFAULT_DATA_DIR / "build_metadata.json"),
+        _display_path(data_dir / "build_metadata.json"),
         _display_path(SPLIT_PROVENANCE),
     ]
     status_args = ["status", "--short", "--", *relevant_paths]
@@ -1778,6 +1788,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "generation": _build_generation_provenance(
             effective_argv,
             output_path=output_path,
+            data_dir=data_dir,
         ),
         "mc_coverage": {
             "target_qids": len(test_qids),
