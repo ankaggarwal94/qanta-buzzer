@@ -116,13 +116,21 @@ class EmpiricalHistogramOpponentModel:
     ) -> None:
         self.fallback = fallback or LogisticOpponentModel()
         self._global_cdf: np.ndarray | None = None
-        # Keyed by (qid, normalized human_buzz_positions). Including the
+        # Keyed by (qid, frozen-order human_buzz_positions). Including the
         # full tuple defends against two MCQuestion instances that share a
         # qid but carry different buzz histograms (e.g., refreshed datasets,
         # tournament-duplicate qids with edited metadata, or in-place
-        # mutation of the field). Do not store hash(positions) here:
-        # distinct histograms can collide to the same hash int, whereas the
-        # tuple key preserves equality disambiguation.
+        # mutation of the field). The key preserves source list order rather
+        # than sorting because (a) ``_build_cdf`` is order-independent so a
+        # reordered duplicate is at worst a cache miss, not a correctness
+        # bug; (b) the project's only real source of ``human_buzz_positions``
+        # is JSON deserialization via ``data_loader._coerce_human_buzz_positions``,
+        # which is order-stable per source file; and (c) the order-preserving
+        # shape is pinned by ``test_cache_key_stores_positions_tuple_not_hash``
+        # so any future "normalize by sort" change must update that contract
+        # deliberately. Do not store ``hash(positions)`` here: distinct
+        # histograms can collide to the same hash int, whereas the tuple key
+        # preserves equality disambiguation.
         self._per_question_cdf_cache: dict[tuple[str, tuple[tuple[int, int], ...]], np.ndarray] = {}
         if global_positions:
             self._global_cdf = self._build_cdf(global_positions)
