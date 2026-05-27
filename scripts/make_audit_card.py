@@ -539,6 +539,7 @@ def _extract_data_provenance(
     csli_data: dict,
     cal_data: dict,
     stopdff_data: dict,
+    dp_data: dict | None = None,
 ) -> dict:
     """Pull MC coverage + retention metadata from each metric's JSON.
 
@@ -547,6 +548,14 @@ def _extract_data_provenance(
     agreed on what counted as a defensible retained-subset audit.
     Falls back to ``"not_reported"`` markers for metric JSONs that
     pre-date the gate wiring.
+
+    PR #15 review (chatgpt-codex-connector 3313709124): when the DP row is
+    included via --include-dp-stopdff and was produced with retention/
+    coverage overrides, include the dp's mc_coverage and mc_retention_gate
+    blocks so _retention_or_coverage_override_qualifiers downgrades the
+    overall verdict accordingly. ``dp_data`` is ``None`` when the flag is
+    off; the DP block is only added to the returned dict when ``dp_data``
+    was successfully loaded.
     """
     def _summarize(data: dict, *, supports_val: bool) -> dict:
         summary: dict[str, object] = {}
@@ -648,11 +657,14 @@ def _extract_data_provenance(
             }
         return summary
 
-    return {
+    result: dict[str, dict] = {
         "csli": _summarize(csli_data, supports_val=False),
         "calibration": _summarize(cal_data, supports_val=True),
         "stopdff": _summarize(stopdff_data, supports_val=False),
     }
+    if dp_data is not None:
+        result["stopdff_dp"] = _summarize(dp_data, supports_val=True)
+    return result
 
 
 def _write_audit_card_json(
@@ -898,7 +910,12 @@ def _render_data_provenance_md(provenance: dict) -> list[str]:
             f"{_fmt_bool(passed)} / {_fmt_bool(overridden)}"
         )
 
-    for metric_name in ("csli", "calibration", "stopdff"):
+    # PR #15 review (chatgpt-codex-connector 3313709124): include the
+    # stopdff_dp slot so an overridden DP row surfaces in the rendered MD
+    # provenance table. ``provenance.get`` returns ``None`` when the DP
+    # block wasn't emitted (flag off / DP not loaded), and the existing
+    # ``if not isinstance(block, dict): continue`` skips it gracefully.
+    for metric_name in ("csli", "calibration", "stopdff", "stopdff_dp"):
         block = provenance.get(metric_name)
         if not isinstance(block, dict):
             continue
@@ -1004,6 +1021,11 @@ def main_with_args(argv: list[str] | None = None) -> int:
     # of) the existing diagnostic StopDFF row. The DP row contributes to the
     # overall verdict ladder via _compute_overall_verdict below, so it must
     # be appended BEFORE that call.
+    # PR #15 review (chatgpt-codex-connector 3313709124): define dp_data
+    # unconditionally (None when the flag is off or the file is absent) so
+    # the data_provenance call site can pass it symmetrically and the DP's
+    # coverage/retention overrides flow into the overall verdict ladder.
+    dp_data: dict | None = None
     if args.include_dp_stopdff:
         dp_path = _PAPER_EXPORTS / "stopdff_dp.json"
         if not dp_path.exists():
@@ -1020,7 +1042,7 @@ def main_with_args(argv: list[str] | None = None) -> int:
     # provenance so the audit card visibly records what counted as a
     # defensible retained-subset audit for each metric.
     data_provenance = _extract_data_provenance(
-        csli_data, cal_data, stopdff_data
+        csli_data, cal_data, stopdff_data, dp_data=dp_data,
     )
 
     # PR #14 follow-up review (Blocker 2): retention/coverage overrides

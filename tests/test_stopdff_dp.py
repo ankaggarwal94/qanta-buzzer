@@ -963,3 +963,139 @@ def test_cli_records_clean_coverage_when_complete(tmp_path) -> None:
     assert eval_block["passed"] is True
     assert eval_block["overridden"] is False
     assert eval_block["coverage_rate"] == 1.0
+
+
+def test_audit_card_dp_retention_override_triggers_retained_subset(tmp_path, monkeypatch):
+    """When the DP artifact was produced with --allow-low-mc-retention, the
+    audit card must surface the retained-subset qualifier even if the DP
+    threshold + producer verdicts are PASS.
+
+    Uses real csli.json + calibration.json from paper_exports/ for valid
+    schema, but synthesizes a clean stopdff.json (no ceiling effect, no
+    unreachable buckets, gate_verdict=pass) so per-metric verdicts are all
+    PASS — that's the only ladder branch in ``_compute_overall_verdict``
+    that surfaces the retained-subset qualifier (a per-metric WARN
+    intentionally suppresses it; see test_overall_verdict_fail_dominates_retention_override
+    in tests/test_pr14_review_regressions.py).
+    """
+    from scripts import make_audit_card
+    paper = tmp_path / "paper_exports"
+    paper.mkdir()
+    import shutil
+    src = Path(__file__).resolve().parent.parent / "paper_exports"
+    for fname in ("csli.json", "calibration.json"):
+        shutil.copyfile(src / fname, paper / fname)
+    # Synthesize a clean stopdff.json — no ceiling effect, no unreachable
+    # buckets, gate_verdict=pass — so the diagnostic StopDFF row evaluates
+    # to PASS and doesn't collapse the override qualifier.
+    (paper / "stopdff.json").write_text(json.dumps({
+        "median_abs_prefix_shift": 0.05,
+        "mean_abs_prefix_shift": 0.05,
+        "per_question_distribution_summary": {
+            "min": 0.0, "p25": 0.02, "median": 0.05,
+            "p75": 0.08, "max": 0.2, "n": 10,
+        },
+        "direction_breakdown": {
+            "mc_stops_earlier": 0, "nonmc_stops_earlier": 0, "same_step": 10,
+        },
+        "ceiling_effect_detected": False,
+        "unreachable_buckets": [],
+        "reachability": {
+            "early": {"threshold_reachable": True,
+                      "calibrated_at_sim_1": 0.8,
+                      "calibrated_at_sim_neg_1": 0.1,
+                      "max_calibrated_at_sim_1": 0.8,
+                      "max_calibrated_probability": 0.8},
+            "mid": {"threshold_reachable": True,
+                    "calibrated_at_sim_1": 0.8,
+                    "calibrated_at_sim_neg_1": 0.1,
+                    "max_calibrated_at_sim_1": 0.8,
+                    "max_calibrated_probability": 0.8},
+            "late": {"threshold_reachable": True,
+                     "calibrated_at_sim_1": 0.8,
+                     "calibrated_at_sim_neg_1": 0.1,
+                     "max_calibrated_at_sim_1": 0.8,
+                     "max_calibrated_probability": 0.8},
+        },
+        "gate_verdict": "pass",
+        "gate_verdict_reason": "threshold_only",
+        "threshold_only_verdict": "pass",
+        "threshold": 1.0,
+        "metadata": {
+            "metric_type": "diagnostic_only",
+            "stopping_policy": "myopic_threshold",
+            "stop_threshold": 0.7,
+        },
+    }))
+    # Synthesize a clean DP JSON whose gate verdict is pass but
+    # mc_retention_gate.test is passed=False, overridden=True.
+    (paper / "stopdff_dp.json").write_text(json.dumps({
+        "stopdff_dp_signed_median": 0.0,
+        "stopdff_dp_signed_mean": 0.0,
+        "stopdff_dp_abs_median": 0.0,
+        "n_items": 10,
+        "direction_breakdown": {"mc_earlier": 0, "qa_earlier": 0, "same_step": 10},
+        "coverage": {"verdict": "pass", "fraction_exact": 1.0,
+                     "fraction_pooled": 0.0, "fraction_missing": 0.0,
+                     "n_cells": 60, "reason": "ok"},
+        "ceiling_flags": {"all_stop_at_first_prefix": False,
+                          "all_stop_at_final_prefix": False,
+                          "no_cross_format_stopping_variance": False,
+                          "n_items": 10, "n_stopped_cells": 50,
+                          "n_never_stopped_cells": 10, "empty": False},
+        "gate_verdict": "pass",
+        "gate_verdict_reason": "all_clean",
+        "confirmatory": True,
+        "mc_coverage": {
+            "test": {"target_qids": 100, "mc_questions_total": 50,
+                     "matched_questions": 50, "matched_qids": 50,
+                     "missing_qids": 0, "coverage_rate": 0.5,
+                     "threshold": 0.98, "passed": False,
+                     "overridden": True,
+                     "override_flag": "--allow-incomplete-mc-coverage",
+                     "split": "test"},
+            "val": {"target_qids": 100, "mc_questions_total": 50,
+                    "matched_questions": 50, "matched_qids": 50,
+                    "missing_qids": 0, "coverage_rate": 0.5,
+                    "threshold": 0.98, "passed": False,
+                    "overridden": True,
+                    "override_flag": "--allow-incomplete-mc-coverage",
+                    "split": "val"},
+        },
+        "mc_retention_gate": {
+            "test": {"applies": True, "split": "test",
+                     "threshold": 0.8, "retention_rate": 0.7,
+                     "raw_count": 100, "retained_count": 70,
+                     "dropped_count": 30, "passed": False,
+                     "overridden": True,
+                     "override_flag": "--allow-low-mc-retention"},
+            "val": {"applies": True, "split": "val",
+                    "threshold": 0.8, "retention_rate": 0.7,
+                    "raw_count": 100, "retained_count": 70,
+                    "dropped_count": 30, "passed": False,
+                    "overridden": True,
+                    "override_flag": "--allow-low-mc-retention"},
+        },
+        "mc_build_metadata": {"status": "loaded",
+                              "source_path": "data/processed/build_metadata.json",
+                              "source_sha256": "dummy"},
+        "metadata": {"metric_type": "finite_horizon_dp",
+                     "stopping_policy": "finite_horizon_dp",
+                     "reward_schedule": "power_mark",
+                     "continuation_estimator": "empirical_bucket",
+                     "fit_split": "val", "eval_split": "test"},
+    }))
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", paper)
+    rc = make_audit_card.main_with_args(["--include-dp-stopdff"])
+    assert rc == 0
+    card = json.loads((paper / "audit_card.json").read_text())
+    # data_provenance must surface stopdff_dp.
+    assert "stopdff_dp" in card["data_provenance"]
+    dp_prov = card["data_provenance"]["stopdff_dp"]
+    assert dp_prov["coverage"]["test"]["overridden"] is True
+    assert dp_prov["retention"]["test"]["overridden"] is True
+    # Overall verdict qualifier mentions the retained-subset.
+    assert (
+        card.get("overall_verdict_qualifier") is not None
+        and "retained-subset" in card["overall_verdict_qualifier"]
+    )
