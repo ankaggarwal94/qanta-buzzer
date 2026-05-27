@@ -33,7 +33,7 @@ DEFAULT_EVAL_SPLIT: str = "test"
 
 @dataclass(frozen=True)
 class RewardSchedule:
-    """Parameters for the answer-utility function A_t(p) = R*p - c_wrong*(1-p).
+    """Parameters for the answer-utility function A_t(p) = R(t)*p + R_wrong*(1-p).
 
     Attributes
     ----------

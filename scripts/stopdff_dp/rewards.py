@@ -1,6 +1,6 @@
 """Reward schedule registry for finite-horizon DP StopDFF.
 
-Each schedule defines answer utility A_t(p) = R(t)*p - c_wrong*(1-p)
+Each schedule defines answer utility A_t(p) = R(t)*p + R_wrong*(1-p)
 and a per-step continuation cost c_wait. The CLI's
 ``--reward-schedule`` flag selects one by name.
 """
