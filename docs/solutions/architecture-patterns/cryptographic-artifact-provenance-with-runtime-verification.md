@@ -1,7 +1,7 @@
 ---
 title: Cryptographic Artifact Provenance With Runtime Verification
 date: 2026-05-26
-last_updated: 2026-05-26
+last_updated: 2026-05-27
 category: architecture-patterns
 module: qanta-buzzer audit pipeline (scripts/_common, compute_csli, compute_prefix_calibration, compute_stopdff, make_audit_card)
 problem_type: architecture_pattern
@@ -60,10 +60,27 @@ def build_generation_provenance(
     extra_paths: list[str | Path] | None = None,
 ) -> dict[str, Any]:
     script_resolved = Path(script_path).resolve()
-    relevant = [project_relative(script_resolved), project_relative(output_path)]
+
+    # Render every path for the operator-facing `output_path` field, but
+    # FILTER non-repo paths from the git pathspec — `git status -- <abs_path>`
+    # aborts with `fatal: ... is outside repository` when any pathspec arg
+    # is outside the repo, which would silently flip `git_dirty` to False.
+    display_paths = [
+        project_relative(script_resolved),
+        project_relative(output_path),
+    ]
     for p in extra_paths or []:
-        relevant.append(project_relative(p))
-    git_status = _git_output(["status", "--short", "--", *relevant])
+        display_paths.append(project_relative(p))
+    repo_relative_pathspec = [p for p in display_paths if not Path(p).is_absolute()]
+
+    status_args = ["status", "--short", "--", *repo_relative_pathspec]
+    git_status = _git_output(status_args)
+
+    # Prefer host-injected SHA via env var (for tool-poor container
+    # runtimes that lack the `git` binary); fall back to live query.
+    host_commit_env = os.environ.get("MODAL_HOST_GIT_COMMIT")
+    git_commit = host_commit_env if host_commit_env else _git_output(["rev-parse", "HEAD"])
+
     return {
         "schema_version": 1,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -73,17 +90,18 @@ def build_generation_provenance(
         "output_path": project_relative(output_path),
         "script_path": project_relative(script_resolved),
         "script_sha256": sha256_file(script_resolved),
-        "git_commit": _git_output(["rev-parse", "HEAD"]),
+        "git_commit": git_commit,
         "git_dirty": bool(git_status),
         "git_status_relevant_paths": git_status or "",
     }
 ```
 
-Three design choices matter:
+Four design choices matter:
 
 - **`script_sha256` is a file-content hash, not a git blob hash.** That makes it meaningful even for uncommitted edits (paired with `git_dirty: true` to flag in-flight runs).
-- **`git status --short -- <relevant paths>`** scopes the dirty signal to files this artifact actually depends on (the script, threshold manifest, input data files), not the whole repo. A dirty-elsewhere flag is noise; a dirty-here flag is signal.
+- **`git status --short -- <repo-relative pathspec>`** scopes the dirty signal to files this artifact actually depends on AND filters out-of-repo absolute output paths so `git status` cannot abort with `fatal: outside repository` (a Codex #3308590294-class failure mode for the absolute `--output-dir` round-trip case). The filter retains every path in `output_path` display fields while skipping non-repo entries in the git pathspec.
 - **`extra_paths`** lets each producer declare its real input dependencies so the scoping is accurate.
+- **`MODAL_HOST_GIT_COMMIT` env-var preference** — when the producer runs inside a container that lacks the `git` binary (e.g., Modal `debian_slim`), the live `git rev-parse HEAD` query returns None and `git_commit` would record as empty. The orchestrator computes the host SHA at submit time and injects it via env var; the helper prefers the env var over the live query. This is a transport-layer concern handled by the sibling `host-injected-provenance-for-tool-poor-containers` pattern; the contract (filling the `git_commit` field) stays the same.
 
 ### Producer call site
 
@@ -225,6 +243,8 @@ A sibling test (`test_artifact_provenance_renders_markdown_section`) pins the re
 ## Related
 
 - PR #14 round 11 (commits `996718b`, `3b53f4c`) — original implementation
+- PR #14 follow-up (commits `3ee38d6`, `0f8da5d`, `bb41819`) — Codex #3308590294 git-pathspec filter for out-of-repo absolute output paths + `MODAL_HOST_GIT_COMMIT` env-var transport for tool-poor container runtimes + the artifact-SHA safety net firing one commit late on a producer-edit-without-regen sequence.
+- [`docs/solutions/architecture-patterns/host-injected-provenance-for-tool-poor-containers.md`](host-injected-provenance-for-tool-poor-containers.md) — **sibling transport-layer pattern.** This doc defines the `metadata.generation` contract (which fields belong, when they are validated); the sibling fixes the `git_commit` transport when the runtime container lacks the `git` binary (Modal `debian_slim`, distroless, etc.). The contract stays the same; the transport differs.
 - `docs/solutions/logic-errors/producer-emitted-flags-without-consumer-propagation.md` — the *semantic* counterpart of this pattern: when a producer emits a verdict qualifier, the aggregator must propagate it. Artifact provenance is the *trust* axis; verdict propagation is the *meaning* axis.
 - `docs/solutions/logic-errors/scientific-metric-edge-case-guards.md` — producer-side edge-case hardening (unique-qid coverage, Platt fallback, reachability) that this provenance layer binds to a specific source-script version.
 - `scripts/threshold_manifest.py` — the frozen-threshold infrastructure that makes long-lived JSONs (and therefore staleness risk) a first-class concern.
