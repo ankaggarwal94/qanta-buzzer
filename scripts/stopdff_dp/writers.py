@@ -109,7 +109,7 @@ def write_markdown(path: Path, payload: dict) -> Path:
     md.append("# Finite-Horizon DP StopDFF")
     md.append("")
     md.append(
-        f"**Metric type:** `{payload['metadata']['metric_type']}` — "
+        f"**Metric type:** `{payload['metadata']['metric_type']}` - "
         f"confirmatory: `{payload['confirmatory']}`"
     )
     md.append("")
@@ -149,10 +149,10 @@ def write_markdown(path: Path, payload: dict) -> Path:
     md.append("")
     if not payload["confirmatory"]:
         md.append(
-            "> ⚠️ Non-confirmatory estimator in use — interpret as an "
+            "> WARNING: Non-confirmatory estimator in use - interpret as an "
             "upper-bound diagnostic only."
         )
-    path.write_text("\n".join(md))
+    path.write_text("\n".join(md), encoding="utf-8")
     return path
 
 
@@ -174,5 +174,5 @@ def write_latex(path: Path, payload: dict) -> Path:
         "\\bottomrule",
         "\\end{tabular}",
     ]
-    path.write_text("\n".join(lines))
+    path.write_text("\n".join(lines), encoding="utf-8")
     return path

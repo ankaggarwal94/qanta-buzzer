@@ -33,6 +33,17 @@ REWARD_REGISTRY: dict[str, RewardSchedule] = {
             "late correct=10, wrong=-5, c_wait=0."
         ),
     ),
+    "low_wrong_cost": RewardSchedule(
+        name="low_wrong_cost",
+        r_correct_early=15.0,
+        r_correct_late=10.0,
+        r_wrong=-2.5,
+        power_split=0.5,
+        c_wait=0.0,
+        description=(
+            "Power-mark schedule with lower wrong penalty (R_wrong=-2.5)."
+        ),
+    ),
     "wait_cost_small": RewardSchedule(
         name="wait_cost_small",
         r_correct_early=15.0,
