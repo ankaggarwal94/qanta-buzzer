@@ -140,11 +140,11 @@
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-27T06:37:54.357519+00:00",
+    "timestamp": "2026-05-27T07:47:48.348431+00:00",
     "threshold_source": "threshold_manifest.json",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T06:37:54.357030+00:00",
+      "generated_at_utc": "2026-05-27T07:47:48.346651+00:00",
       "command": [
         "python",
         "scripts/make_audit_card.py"
@@ -153,10 +153,10 @@
       "cwd": ".",
       "output_path": "paper_exports/audit_card.json",
       "script_path": "scripts/make_audit_card.py",
-      "script_sha256": "bf937513fa4d3ef6f2c07067b5aac53979ef33b4a5751e50c28b39be6640afba",
-      "git_commit": "0f8da5d35c1c591430e03db4a6500cec6acd6755",
-      "git_dirty": true,
-      "git_status_relevant_paths": "M paper_exports/calibration.json\n M paper_exports/csli.json\n M paper_exports/stopdff.json"
+      "script_sha256": "2e642d1dfc3dac1eb005cdc47351f5fc13dc2b410efdce5c5662d2540a7eeae7",
+      "git_commit": "fbaafccb9d792e24adc5523e685ecef8d7cb7435",
+      "git_dirty": false,
+      "git_status_relevant_paths": ""
     }
   },
   "data_provenance": {
@@ -235,9 +235,9 @@
     "csli.json": {
       "recorded_commit": "0f8da5d35c1c591430e03db4a6500cec6acd6755",
       "recorded_sha256": "6b68703fadd379fbea7fd6cc3889928e18ac908ed606687f7dcf21673b0b9111",
-      "current_sha256": "6b68703fadd379fbea7fd6cc3889928e18ac908ed606687f7dcf21673b0b9111",
+      "current_sha256": "aba9e1b0cd9c0c7ee67f466c12f05bbf1679636414f6db1c217de40f9adc4601",
       "script_path": "scripts/compute_csli.py",
-      "sha_matches": true
+      "sha_matches": false
     },
     "calibration.json": {
       "recorded_commit": "0f8da5d35c1c591430e03db4a6500cec6acd6755",
