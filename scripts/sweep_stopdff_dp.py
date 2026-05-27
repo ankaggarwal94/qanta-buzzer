@@ -680,6 +680,16 @@ def _load_dataframes(
     fit_qids = {str(q["qid"]) for q in fit_questions}
     eval_qids = {str(q["qid"]) for q in eval_questions}
 
+    # PR #15 review (chatgpt-codex-connector 3314450592): mirror the
+    # producer's qid-overlap rejection so the sweep won't silently
+    # leak val/test qid sharing into its empirical_bucket cells.
+    adapter_module.validate_qid_separation(
+        fit_qids=fit_qids,
+        eval_qids=eval_qids,
+        fit_split=args.fit_split,
+        eval_split=args.eval_split,
+    )
+
     if args.smoke:
         fit_qids = set(sorted(fit_qids)[:30])
         eval_qids = set(sorted(eval_qids)[:30])

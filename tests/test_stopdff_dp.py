@@ -1494,3 +1494,70 @@ def test_producer_dirty_check_includes_helper_modules_and_inputs(tmp_path, monke
         assert "scripts/stopdff_dp/rewards.py" in status
     finally:
         helper_for_test.write_bytes(original_bytes)
+
+
+def test_adapter_validate_qid_separation_passes_on_disjoint_sets():
+    adapter_module.validate_qid_separation(
+        fit_qids={"v1", "v2", "v3"},
+        eval_qids={"t1", "t2", "t3"},
+    )  # Must not raise.
+
+
+def test_adapter_validate_qid_separation_raises_on_overlap():
+    with pytest.raises(ValueError, match="leakage"):
+        adapter_module.validate_qid_separation(
+            fit_qids={"v1", "shared", "v3"},
+            eval_qids={"t1", "shared", "t3"},
+        )
+
+
+def test_adapter_validate_qid_separation_reports_overlap_count_and_examples():
+    overlap_size = 12
+    fit = {f"shared_{i}" for i in range(overlap_size)} | {"fit_only"}
+    eval_ = {f"shared_{i}" for i in range(overlap_size)} | {"eval_only"}
+    try:
+        adapter_module.validate_qid_separation(
+            fit_qids=fit, eval_qids=eval_,
+            fit_split="val", eval_split="test",
+        )
+    except ValueError as exc:
+        message = str(exc)
+        assert f"{overlap_size} qid" in message
+        # Examples list capped at 10.
+        assert "shared_0" in message
+        assert "shared_9" in message
+        # Examples don't include the 11th/12th item.
+        assert "shared_10" not in message
+        assert "shared_11" not in message
+    else:
+        raise AssertionError("expected ValueError on overlap")
+
+
+def test_cli_rejects_overlapping_val_test_qids(tmp_path):
+    """End-to-end: when val_dataset.json and test_dataset.json share qids,
+    compute_stopdff_dp.main must exit nonzero with a leakage error."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question(f"v{i}") for i in range(3)]
+    # Test split intentionally reuses one val qid ("v1").
+    test_qs = (
+        [_fake_mc_question("v1")]  # overlapping qid
+        + [_fake_mc_question(f"t{i}") for i in range(2)]
+    )
+    (data_dir / "mc_dataset.json").write_text(json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(json.dumps(test_qs))
+
+    from scripts import compute_stopdff_dp
+    rc = compute_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--split", "test", "--fit-split", "val",
+        "--reward-schedule", "acf_flat",
+        "--continuation", "empirical_bucket",
+        "--identity-calibration",
+        "--allow-incomplete-mc-coverage", "--allow-low-mc-retention",
+        "--out", str(tmp_path / "out.json"),
+        "--out-md", str(tmp_path / "out.md"),
+        "--out-tex", str(tmp_path / "out.tex"),
+    ])
+    assert rc != 0

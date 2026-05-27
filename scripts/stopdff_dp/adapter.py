@@ -49,6 +49,59 @@ def validate_split_separation(*, fit_split: str, eval_split: str) -> None:
         )
 
 
+def validate_qid_separation(
+    *,
+    fit_qids: set[str] | frozenset[str],
+    eval_qids: set[str] | frozenset[str],
+    fit_split: str = "fit",
+    eval_split: str = "eval",
+) -> None:
+    """Reject overlapping qids between fit and eval splits.
+
+    ``validate_split_separation`` only checks the split NAMES. A
+    consumer that hand-edits or regenerates the split JSON files
+    could end up with two distinct split names whose qid sets
+    overlap, in which case the empirical_bucket DP path would fit
+    continuation buckets on items it later evaluates -- exactly
+    the leakage the contract aims to prevent.
+
+    Pass the actual qid sets here (after loading the two split
+    files) so the leakage check is data-grounded rather than
+    name-only.
+
+    Raises
+    ------
+    ValueError
+        If ``fit_qids & eval_qids`` is non-empty. The message
+        lists up to 10 example overlapping qids so the operator
+        can diagnose the bad split file.
+    """
+    overlap = set(fit_qids) & set(eval_qids)
+    if not overlap:
+        return
+
+    def _natural_key(qid: str) -> tuple:
+        # Natural-order key: split into runs of digits / non-digits so
+        # 'shared_9' sorts before 'shared_10', and operators see the
+        # numerically-lowest qids as the 10 examples rather than the
+        # lexicographically-first ones (which is misleading when qids
+        # follow a "<prefix>_<int>" convention).
+        import re
+        parts = re.split(r"(\d+)", qid)
+        return tuple(
+            (1, int(p)) if p.isdigit() else (0, p) for p in parts
+        )
+
+    sample = sorted(overlap, key=_natural_key)[:10]
+    raise ValueError(
+        f"fit split {fit_split!r} and eval split {eval_split!r} share "
+        f"{len(overlap)} qid(s) -- DP empirical_bucket leakage. Examples: "
+        f"{sample}. Rebuild the splits via scripts/fresh_split.py so the "
+        f"qid sets are disjoint, or check the split JSON files for a bad "
+        f"hand-edit."
+    )
+
+
 def _get_sbert_model():
     global _SBERT_MODEL
     if _SBERT_MODEL is None:

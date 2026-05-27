@@ -935,3 +935,46 @@ def test_fit_temperature_by_phase_vectorized_matches_per_row():
         assert actual[key] == expected[key], (
             f"{key}: vectorized={actual[key]} expected={expected[key]}"
         )
+
+
+def test_sweep_rejects_overlapping_val_test_qids(tmp_path):
+    """Sweep must reject overlapping val/test qids the same way the
+    producer does, per the PR #15 3314450592 leakage contract."""
+    import json as _json
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question_for_sweep(f"v{i}") for i in range(3)]
+    test_qs = (
+        [_fake_mc_question_for_sweep("v1")]  # overlap
+        + [_fake_mc_question_for_sweep(f"t{i}") for i in range(2)]
+    )
+    (data_dir / "mc_dataset.json").write_text(_json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(_json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(_json.dumps(test_qs))
+
+    from scripts import sweep_stopdff_dp
+    rc = sweep_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--fit-split", "val", "--eval-split", "test",
+        "--reward-schedules", "acf_flat",
+        "--continuations", "empirical_bucket",
+        "--calibrators", "uncalibrated",
+        "--formats", "MC-fixed",
+        "--prefix-bucketing", "early_mid_late",
+        "--subject-pooling", "pooled_subject",
+        "--num-bootstrap", "5",
+        "--max-cells", "1",
+        "--identity-calibration",
+        "--allow-incomplete-mc-coverage", "--allow-low-mc-retention",
+        "--smoke",
+        "--out", str(tmp_path / "out.json"),
+    ])
+    # Sweep's existing main() wraps _load_dataframes in try/except and
+    # writes a "failed" payload + returns 1 on ValueError. Either rc != 0
+    # OR the payload's metadata.status == "failed" is acceptable.
+    if rc == 0:
+        payload = _json.loads((tmp_path / "out.json").read_text())
+        assert payload["metadata"].get("status") == "failed"
+        assert "leakage" in (payload["metadata"].get("error") or "")
+    else:
+        assert rc != 0

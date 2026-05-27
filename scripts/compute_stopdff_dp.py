@@ -117,6 +117,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     fit_qids = {str(q["qid"]) for q in fit_questions}
     eval_qids = {str(q["qid"]) for q in eval_questions}
 
+    # PR #15 review (chatgpt-codex-connector 3314450592): split-name
+    # validation isn't enough -- two distinct split files could share
+    # qids (regen bug, hand-edit) and silently feed leakage into the
+    # empirical_bucket DP.
+    try:
+        adapter_module.validate_qid_separation(
+            fit_qids=fit_qids,
+            eval_qids=eval_qids,
+            fit_split=args.fit_split,
+            eval_split=args.split,
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
     if args.smoke:
         # Subsample mc_questions to first 30 qids of each split.
         # sorted() ensures deterministic selection across PYTHONHASHSEED;
