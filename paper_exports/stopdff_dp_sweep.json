@@ -1,0 +1,215 @@
+{
+  "metadata": {
+    "metric_type": "finite_horizon_dp_sweep",
+    "timestamp": "2026-05-27T21:01:20.706596+00:00",
+    "argv": [
+      "--identity-calibration",
+      "--smoke",
+      "--data-dir",
+      "C:\\Users\\ankag\\Dropbox\\Stanford\\CS234\\final_project\\qanta-buzzer\\data\\processed",
+      "--reward-schedules",
+      "acf_flat",
+      "--continuations",
+      "empirical_bucket",
+      "--calibrators",
+      "uncalibrated",
+      "--formats",
+      "MC-fixed",
+      "--prefix-bucketing",
+      "early_mid_late",
+      "--subject-pooling",
+      "pooled_subject",
+      "--num-bootstrap",
+      "8",
+      "--max-cells",
+      "1",
+      "--artifact-dir",
+      "C:\\Users\\ankag\\Dropbox\\Stanford\\CS234\\final_project\\qanta-buzzer\\paper_exports",
+      "--out",
+      "C:\\Users\\ankag\\Dropbox\\Stanford\\CS234\\final_project\\qanta-buzzer\\paper_exports\\stopdff_dp_sweep.json"
+    ],
+    "seed": 1,
+    "fit_split": "val",
+    "eval_split": "test",
+    "num_bootstrap": 8,
+    "n_jobs": 1,
+    "confirmatory_cell_count": 1,
+    "completed_cell_count": 1,
+    "failed_cell_count": 0,
+    "skipped_cell_count": 0
+  },
+  "paper_safe_interpretation": {
+    "verdict": "WARN",
+    "reason": "small_stopdff_but_coverage_or_ceiling_weak",
+    "n_weak_cells": 1
+  },
+  "cells": [
+    {
+      "reward_schedule": "acf_flat",
+      "continuation": "empirical_bucket",
+      "calibrator": "uncalibrated",
+      "format_condition": "MC-fixed",
+      "prefix_bucketing": "early_mid_late",
+      "subject_pooling": "pooled_subject",
+      "git_commit": "b512da839d47a21d1d16aace77a06a51e2883e09",
+      "git_dirty": false,
+      "argv": [
+        "--identity-calibration",
+        "--smoke",
+        "--data-dir",
+        "C:\\Users\\ankag\\Dropbox\\Stanford\\CS234\\final_project\\qanta-buzzer\\data\\processed",
+        "--reward-schedules",
+        "acf_flat",
+        "--continuations",
+        "empirical_bucket",
+        "--calibrators",
+        "uncalibrated",
+        "--formats",
+        "MC-fixed",
+        "--prefix-bucketing",
+        "early_mid_late",
+        "--subject-pooling",
+        "pooled_subject",
+        "--num-bootstrap",
+        "8",
+        "--max-cells",
+        "1",
+        "--artifact-dir",
+        "C:\\Users\\ankag\\Dropbox\\Stanford\\CS234\\final_project\\qanta-buzzer\\paper_exports",
+        "--out",
+        "C:\\Users\\ankag\\Dropbox\\Stanford\\CS234\\final_project\\qanta-buzzer\\paper_exports\\stopdff_dp_sweep.json"
+      ],
+      "seed": 1,
+      "fit_split": "val",
+      "eval_split": "test",
+      "run_fingerprint": {
+        "schema_version": 2,
+        "data_dir": "C:\\Users\\ankag\\Dropbox\\Stanford\\CS234\\final_project\\qanta-buzzer\\data\\processed",
+        "fit_split": "val",
+        "eval_split": "test",
+        "calibration_path": null,
+        "calibration_sha256": null,
+        "identity_calibration": true,
+        "smoke": true,
+        "seed": 1,
+        "num_bootstrap": 8,
+        "script_sha256": "056941a4331c97bb64fd0140559ac706e2a386bd9272cd23194e4b99c7677de7",
+        "git_commit": "b512da839d47a21d1d16aace77a06a51e2883e09",
+        "out_parent": "C:\\Users\\ankag\\Dropbox\\Stanford\\CS234\\final_project\\qanta-buzzer\\paper_exports"
+      },
+      "started_at": "2026-05-27T21:01:20.515846+00:00",
+      "status": "completed",
+      "calibration": {
+        "method": "uncalibrated",
+        "warning": "raw_scores_clipped_to_unit_interval"
+      },
+      "format_fallback": {
+        "requested": "MC-fixed",
+        "used_mc_format": "MC",
+        "used_qa_format": "QA",
+        "distinct_condition_available": true,
+        "reason": "current artifact supports paired QA-prefix and MC-fixed comparison"
+      },
+      "metrics": {
+        "stopdff_dp_signed_median": 0.0,
+        "stopdff_dp_signed_mean": 0.0,
+        "stopdff_dp_abs_median": 0.0,
+        "stopdff_dp_abs_mean": 0.0,
+        "n_items": 30,
+        "direction_breakdown": {
+          "mc_earlier": 0,
+          "qa_earlier": 0,
+          "same_step": 30
+        },
+        "direction_fractions": {
+          "mc_earlier": 0.0,
+          "qa_earlier": 0.0,
+          "same_step": 1.0
+        },
+        "bootstrap_ci": {
+          "signed_stopdff": {
+            "mean": [
+              0.0,
+              0.0
+            ],
+            "median": [
+              0.0,
+              0.0
+            ]
+          },
+          "absolute_stopdff": {
+            "mean": [
+              0.0,
+              0.0
+            ],
+            "median": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "myopic": {
+          "stopdff_dp_signed_median": -1.0,
+          "stopdff_dp_signed_mean": -0.9666666666666667,
+          "stopdff_dp_abs_median": 1.0,
+          "stopdff_dp_abs_mean": 0.9666666666666667,
+          "n_items": 30,
+          "direction_breakdown": {
+            "mc_earlier": 26,
+            "qa_earlier": 0,
+            "same_step": 4
+          },
+          "direction_fractions": {
+            "mc_earlier": 0.8666666666666667,
+            "qa_earlier": 0.0,
+            "same_step": 0.13333333333333333
+          }
+        },
+        "dp_minus_myopic_signed_mean": 0.9666666666666667,
+        "myopic_artifact_comparison": {
+          "available": true,
+          "median_abs_prefix_shift": 0.0,
+          "mean_abs_prefix_shift": 0.0,
+          "gate_verdict": "warn",
+          "ceiling_effect_detected": true,
+          "delta_abs_median_vs_myopic_artifact": 0.0
+        },
+        "decision_regret_proxy_mean": 8.903443613542212,
+        "decision_regret_mc_to_qa_mean": 0.0,
+        "decision_regret_qa_to_mc_mean": 0.0,
+        "no_stop_rate": 0.0,
+        "final_stop_rate": 1.0,
+        "stopped_rate": 1.0,
+        "fallback_rate": 0.0031847133757961785
+      },
+      "coverage": {
+        "n_cells": 314,
+        "fraction_exact": 0.9968152866242038,
+        "fraction_pooled": 0.0031847133757961785,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "ceiling_flags": {
+        "all_stop_at_first_prefix": false,
+        "all_stop_at_final_prefix": true,
+        "no_cross_format_stopping_variance": true,
+        "n_items": 30,
+        "n_stopped_cells": 60,
+        "n_never_stopped_cells": 0,
+        "empty": false
+      },
+      "gate_verdict": "warn",
+      "gate_verdict_reason": "ceiling_effect",
+      "confirmatory_included": true,
+      "confirmatory": true,
+      "wall_clock_seconds": 0.1841273307800293,
+      "completed_at": "2026-05-27T21:01:20.699974+00:00",
+      "cell_id": "d3b4c1108f5f5947_acf_flat_empirical_bucket_uncalibrated",
+      "cache_path": "C:\\Users\\ankag\\Dropbox\\Stanford\\CS234\\final_project\\qanta-buzzer\\paper_exports\\stopdff_dp_sweep_cells\\d3b4c1108f5f5947_acf_flat_empirical_bucket_uncalibrated.json"
+    }
+  ],
+  "confirmatory_cells": [
+    "d3b4c1108f5f5947_acf_flat_empirical_bucket_uncalibrated"
+  ]
+}

@@ -1,0 +1,26 @@
+# DP StopDFF Sweep
+
+Generated: `2026-05-27T21:01:20.706596+00:00`
+
+## paper-safe interpretation
+
+**Verdict:** WARN (small_stopdff_but_coverage_or_ceiling_weak)
+
+- PASS only if DP StopDFF is small and coverage/calibration gates pass.
+- WARN if DP StopDFF is small but coverage is weak or a ceiling effect persists.
+- FAIL if DP StopDFF is materially shifted under MC.
+- Oracle continuation cells are diagnostic upper bounds and are excluded from confirmatory interpretation.
+
+## Cell Status
+
+| Status | Count |
+|---|---:|
+| completed | 1 |
+| skipped | 0 |
+| failed | 0 |
+
+## Completed Cells
+
+| Cell | Reward | Continuation | Calibrator | Format | Signed mean | Gate |
+|---|---|---|---|---|---:|---|
+| d3b4c1108f5f5947_acf_flat_empirical_bucket_uncalibrated | acf_flat | empirical_bucket | uncalibrated | MC-fixed | 0.000 | warn |
