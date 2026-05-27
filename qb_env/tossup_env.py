@@ -366,15 +366,12 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
             prev_idx = question.run_indices[step_idx - 1] if step_idx > 0 else -1
             frag = " ".join(question.tokens[prev_idx + 1 : idx + 1])
             scores = self.likelihood_model.score(frag, question.option_profiles)
-            likelihood = self._softmax_scores(scores)
-            posterior = self.belief * likelihood
-            denom = posterior.sum()
-            if denom <= 0:
-                n = len(self.belief)
-                posterior = np.ones(n, dtype=np.float32) / n
-            else:
-                posterior = posterior / denom
-            return posterior.astype(np.float32)
+            # Route through bayesian_update so the live-stepping path is bit-identical
+            # to precompute_beliefs() on non-finite scores (NaN/+inf -> uniform,
+            # finite + -inf -> softmax over finite subset). Previously the live path
+            # multiplied prior * uniform-likelihood and re-normalized to the prior,
+            # which silently diverged from the precomputed cache on the same input.
+            return bayesian_update(self.belief, scores, self.beta)
 
         raise ValueError(f"Unknown belief_mode: {self.belief_mode}")
 

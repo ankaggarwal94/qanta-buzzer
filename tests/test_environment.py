@@ -705,6 +705,96 @@ class TestPrecomputedBeliefs:
             if pre_env.truncated:
                 break
 
+    def test_sequential_bayes_live_matches_precompute_on_nonfinite_scores(
+        self, sample_mc_question: MCQuestion
+    ) -> None:
+        """Live sequential_bayes stepping must match precompute_beliefs() on
+        scores that contain NaN or +inf at some step.
+
+        Regression for PR #14 review thread PRRT_kwDORiGbo86E93k_: the
+        previous live path computed ``posterior = self.belief * softmax(scores)``
+        and re-normalized, so a uniform likelihood (from NaN/+inf scores)
+        re-normalized back to the prior. ``precompute_beliefs()`` already
+        routed through ``bayesian_update``, which returns a uniform posterior
+        on NaN/+inf scores. The two paths therefore diverged on the same
+        input, breaking reproducibility between cached and live runs.
+        Both paths must now agree bit-for-bit (within float32 tolerance).
+        """
+        questions = [sample_mc_question]
+        K = len(sample_mc_question.options)
+        num_steps = len(sample_mc_question.run_indices)
+
+        # Deterministic score sequence: finite for early/late steps,
+        # NaN at step 1, +inf at step 3. Both pathological cases force
+        # bayesian_update to return uniform; the old live code would
+        # have re-normalized back to the prior at those steps instead.
+        score_sequence: list[np.ndarray] = []
+        for step in range(num_steps):
+            if step == 1:
+                score_sequence.append(np.array([0.9, np.nan, 0.4, 0.1], dtype=np.float32))
+            elif step == 3:
+                score_sequence.append(np.array([0.5, 0.2, np.inf, 0.1], dtype=np.float32))
+            else:
+                # Differentiated finite scores so the prior is non-uniform
+                # when the pathological step lands.
+                score_sequence.append(
+                    np.array([0.9 - 0.1 * step, 0.7, 0.4, 0.1], dtype=np.float32)
+                )
+
+        # Mock score() to return the same sequence whether called by live
+        # stepping or by precompute_beliefs (both iterate steps in order
+        # for a single question, so a shared iterator-state mock is safe).
+        def _make_mock_model() -> MagicMock:
+            mock = MagicMock(spec=["score"])
+            counter = {"i": 0}
+
+            def _score(_clue: str, profiles: list[str]) -> np.ndarray:
+                out = score_sequence[counter["i"] % num_steps]
+                counter["i"] += 1
+                return out.copy()
+
+            mock.score = MagicMock(side_effect=_score)
+            return mock
+
+        # Live path
+        live_model = _make_mock_model()
+        live_env = TossupMCEnv(
+            questions=questions, likelihood_model=live_model, K=K,
+            belief_mode="sequential_bayes", beta=5.0,
+        )
+        live_env.reset(seed=42, options={"question_idx": 0})
+        live_beliefs: list[np.ndarray] = []
+        for _ in range(live_env.total_steps):
+            live_env.step(0)
+            live_beliefs.append(live_env.belief.copy())
+            if live_env.truncated:
+                break
+
+        # Precompute path (fresh mock so the iterator restarts at step 0)
+        pre_model = _make_mock_model()
+        cache = precompute_beliefs(
+            questions=questions, likelihood_model=pre_model,
+            belief_mode="sequential_bayes", beta=5.0, K=K,
+        )
+
+        # Compare per-step
+        for step_idx in range(len(live_beliefs)):
+            key = (0, step_idx)
+            cached = cache[key]
+            np.testing.assert_allclose(
+                live_beliefs[step_idx], cached, atol=1e-9,
+                err_msg=(
+                    f"Live vs precomputed belief mismatch at step {step_idx} "
+                    f"with non-finite scores in the sequence."
+                ),
+            )
+
+        # Sanity: the pathological steps must collapse to uniform under
+        # both paths, not preserve the prior.
+        uniform = np.full(K, 1.0 / K, dtype=np.float32)
+        np.testing.assert_allclose(live_beliefs[1], uniform, atol=1e-7)
+        np.testing.assert_allclose(live_beliefs[3], uniform, atol=1e-7)
+
     def test_precomputed_skips_scoring(
         self, sample_mc_question: MCQuestion
     ) -> None:
