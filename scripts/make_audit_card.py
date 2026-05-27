@@ -405,10 +405,11 @@ def _evaluate_stopdff_dp(dp_data: dict) -> dict:
     the same hard threshold (|signed_median| <= 1 prefix) as the diagnostic.
     Surfaces continuation estimator name + confirmatory flag in details.
 
-    NOT WIRED INTO _build_artifact_provenance for v1 -- script_sha256 cross-
-    checking the DP producer is deferred. The DP artifact does carry its own
-    `metadata.generation` block (see scripts.stopdff_dp.writers), so future
-    audit-card revisions can extend the provenance map.
+    PR #15 review (chatgpt-codex-connector top-level on 1057-1059): the DP
+    producer's script_sha256 is now cross-checked via
+    ``_build_artifact_provenance`` when ``dp_data`` is loaded (i.e. the
+    ``--include-dp-stopdff`` flag is on), so stale ``stopdff_dp.json``
+    triggers the same WARN downgrade as the other source artifacts.
     """
     signed_median = dp_data["stopdff_dp_signed_median"]
     coverage = dp_data["coverage"]
@@ -428,6 +429,13 @@ def _evaluate_stopdff_dp(dp_data: dict) -> dict:
             )
     if not confirmatory:
         qualifier_parts.append("non-confirmatory continuation estimator")
+        # PR #15 review (chatgpt-codex-connector 3313779391): non-confirmatory
+        # DP artifacts (e.g. --continuation oracle_trajectory) leak future
+        # data and are upper-bound diagnostics only. They must not let the
+        # audit card report an overall PASS even when coverage + threshold
+        # both pass. Force WARN whenever confirmatory=False.
+        if verdict == "pass":
+            verdict = "warn"
     if coverage.get("verdict") == "warn":
         qualifier_parts.append(coverage.get("reason", "coverage warn"))
     return {
@@ -825,6 +833,7 @@ def _build_artifact_provenance(
     csli_data: dict,
     cal_data: dict,
     stopdff_data: dict,
+    dp_data: dict | None = None,
 ) -> dict:
     """Cross-check each source artifact's recorded script sha256 against the live script.
 
@@ -834,6 +843,13 @@ def _build_artifact_provenance(
     commit at generation time. Here we recompute the live script
     sha256 and surface whether the committed source artifact was
     produced by the current script. Mismatches mean the JSON is stale.
+
+    PR #15 review (chatgpt-codex-connector top-level on lines 1057-1059):
+    when ``dp_data`` is supplied (i.e., the ``--include-dp-stopdff`` flag
+    loaded ``stopdff_dp.json``), include the DP producer
+    (``scripts/compute_stopdff_dp.py``) in the cross-check so a stale
+    DP artifact also triggers the WARN downgrade via
+    ``_apply_artifact_provenance_to_overall``.
     """
     from scripts._common import sha256_file
 
@@ -848,6 +864,11 @@ def _build_artifact_provenance(
             _REPO_ROOT / "scripts" / "compute_stopdff.py",
         ),
     }
+    if dp_data is not None:
+        sources["stopdff_dp.json"] = (
+            dp_data,
+            _REPO_ROOT / "scripts" / "compute_stopdff_dp.py",
+        )
     out: dict[str, dict] = {}
     for name, (data, script_path) in sources.items():
         metadata = data.get("metadata") if isinstance(data, dict) else None
@@ -1055,7 +1076,7 @@ def main_with_args(argv: list[str] | None = None) -> int:
     # artifact's recorded script sha256 against the live script and
     # surface mismatches in the audit card.
     artifact_provenance = _build_artifact_provenance(
-        csli_data, cal_data, stopdff_data
+        csli_data, cal_data, stopdff_data, dp_data=dp_data,
     )
     sha_mismatches = [
         name

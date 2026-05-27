@@ -1099,3 +1099,137 @@ def test_audit_card_dp_retention_override_triggers_retained_subset(tmp_path, mon
         card.get("overall_verdict_qualifier") is not None
         and "retained-subset" in card["overall_verdict_qualifier"]
     )
+
+
+def test_audit_card_dp_stale_producer_sha_triggers_warn(tmp_path, monkeypatch):
+    """A DP artifact whose recorded script_sha256 doesn't match the live
+    compute_stopdff_dp.py must downgrade the overall verdict to WARN with
+    a stale-producer qualifier."""
+    from scripts import make_audit_card
+    paper = tmp_path / "paper_exports"
+    paper.mkdir()
+    import shutil
+    src = Path(__file__).resolve().parent.parent / "paper_exports"
+    for fname in ("csli.json", "calibration.json", "stopdff.json"):
+        shutil.copyfile(src / fname, paper / fname)
+    # Synthesize a clean DP JSON with a wrong script_sha256.
+    (paper / "stopdff_dp.json").write_text(json.dumps({
+        "stopdff_dp_signed_median": 0.0,
+        "stopdff_dp_signed_mean": 0.0,
+        "stopdff_dp_abs_median": 0.0,
+        "n_items": 10,
+        "direction_breakdown": {"mc_earlier": 0, "qa_earlier": 0, "same_step": 10},
+        "coverage": {"verdict": "pass", "fraction_exact": 1.0,
+                     "fraction_pooled": 0.0, "fraction_missing": 0.0,
+                     "n_cells": 60, "reason": "ok"},
+        "ceiling_flags": {"all_stop_at_first_prefix": False,
+                          "all_stop_at_final_prefix": False,
+                          "no_cross_format_stopping_variance": False,
+                          "n_items": 10, "n_stopped_cells": 50,
+                          "n_never_stopped_cells": 10, "empty": False},
+        "gate_verdict": "pass",
+        "gate_verdict_reason": "all_clean",
+        "confirmatory": True,
+        "metadata": {
+            "metric_type": "finite_horizon_dp",
+            "stopping_policy": "finite_horizon_dp",
+            "reward_schedule": "power_mark",
+            "continuation_estimator": "empirical_bucket",
+            "fit_split": "val",
+            "eval_split": "test",
+            "generation": {
+                "schema_version": 1,
+                "generated_at_utc": "2026-05-27T20:00:00+00:00",
+                "command": ["python", "scripts/compute_stopdff_dp.py"],
+                "argv": [],
+                "cwd": ".",
+                "output_path": "paper_exports/stopdff_dp.json",
+                "script_path": "scripts/compute_stopdff_dp.py",
+                "script_sha256": "0" * 64,  # deliberately stale
+                "git_commit": "0" * 40,
+                "git_dirty": False,
+                "git_status_relevant_paths": "",
+            },
+        },
+    }))
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", paper)
+    rc = make_audit_card.main_with_args(["--include-dp-stopdff"])
+    assert rc == 0
+    card = json.loads((paper / "audit_card.json").read_text())
+    # artifact_provenance must include stopdff_dp.json with sha_matches=False.
+    dp_prov = card["artifact_provenance"]["stopdff_dp.json"]
+    assert dp_prov["sha_matches"] is False
+    assert dp_prov["recorded_sha256"] == "0" * 64
+    # Overall verdict qualifier must mention the stale producer hash.
+    qualifier = card.get("overall_verdict_qualifier") or ""
+    assert "stale producer hash" in qualifier
+    assert "stopdff_dp.json" in qualifier
+
+
+def test_audit_card_non_confirmatory_dp_forces_warn(tmp_path, monkeypatch):
+    """A DP artifact with confirmatory=False (e.g., oracle_trajectory) must
+    yield verdict=warn even when coverage and signed_median are clean."""
+    from scripts import make_audit_card
+    paper = tmp_path / "paper_exports"
+    paper.mkdir()
+    import shutil
+    src = Path(__file__).resolve().parent.parent / "paper_exports"
+    for fname in ("csli.json", "calibration.json", "stopdff.json"):
+        shutil.copyfile(src / fname, paper / fname)
+    # Synthesize a non-confirmatory DP JSON that would otherwise PASS.
+    # Use the LIVE script_sha256 so artifact-provenance doesn't also warn.
+    from scripts._common import sha256_file
+    real_sha = sha256_file(
+        Path(__file__).resolve().parent.parent / "scripts" / "compute_stopdff_dp.py"
+    )
+    (paper / "stopdff_dp.json").write_text(json.dumps({
+        "stopdff_dp_signed_median": 0.0,
+        "stopdff_dp_signed_mean": 0.0,
+        "stopdff_dp_abs_median": 0.0,
+        "n_items": 10,
+        "direction_breakdown": {"mc_earlier": 0, "qa_earlier": 0, "same_step": 10},
+        "coverage": {"verdict": "pass", "fraction_exact": 1.0,
+                     "fraction_pooled": 0.0, "fraction_missing": 0.0,
+                     "n_cells": 60, "reason": "ok"},
+        "ceiling_flags": {"all_stop_at_first_prefix": False,
+                          "all_stop_at_final_prefix": False,
+                          "no_cross_format_stopping_variance": False,
+                          "n_items": 10, "n_stopped_cells": 50,
+                          "n_never_stopped_cells": 10, "empty": False},
+        "gate_verdict": "pass",
+        "gate_verdict_reason": "all_clean",
+        "confirmatory": False,  # the key field under test
+        "metadata": {
+            "metric_type": "finite_horizon_dp",
+            "stopping_policy": "finite_horizon_dp",
+            "reward_schedule": "power_mark",
+            "continuation_estimator": "oracle_trajectory",
+            "fit_split": "val",
+            "eval_split": "test",
+            "generation": {
+                "schema_version": 1,
+                "generated_at_utc": "2026-05-27T20:00:00+00:00",
+                "command": ["python", "scripts/compute_stopdff_dp.py"],
+                "argv": [],
+                "cwd": ".",
+                "output_path": "paper_exports/stopdff_dp.json",
+                "script_path": "scripts/compute_stopdff_dp.py",
+                "script_sha256": real_sha,
+                "git_commit": "0" * 40,
+                "git_dirty": False,
+                "git_status_relevant_paths": "",
+            },
+        },
+    }))
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", paper)
+    rc = make_audit_card.main_with_args(["--include-dp-stopdff"])
+    assert rc == 0
+    card = json.loads((paper / "audit_card.json").read_text())
+    # Find the DP row in metrics.
+    dp_row = next(
+        m for m in card["metrics"]
+        if "DP StopDFF" in m["name"]
+    )
+    assert dp_row["verdict"] == "warn"
+    qualifier = dp_row.get("verdict_qualifier") or ""
+    assert "non-confirmatory" in qualifier
