@@ -737,3 +737,101 @@ def test_sweep_fingerprint_changes_when_helper_module_edited(tmp_path, monkeypat
         fp_before["helper_sha256s"]["scripts/stopdff_dp/rewards.py"]
         != fp_after["helper_sha256s"]["scripts/stopdff_dp/rewards.py"]
     )
+
+
+def test_sweep_dirty_check_includes_helper_modules(tmp_path, monkeypatch):
+    """A dirty helper module (e.g., scripts/stopdff_dp/rewards.py) must
+    flip git_dirty to True even when the producer script + inputs are clean.
+
+    Without the fix in place, the helper was hashed into _run_fingerprint
+    but its dirty state was ignored, so cells recorded git_dirty=false
+    while their results depended on uncommitted helper edits.
+    """
+    import json as _json
+    import subprocess as _subprocess
+    from pathlib import Path as _Path
+    from scripts import sweep_stopdff_dp
+    from scripts.stopdff_dp._provenance import helper_paths
+
+    repo_root = _Path(__file__).resolve().parent.parent
+    helper_for_test = repo_root / "scripts" / "stopdff_dp" / "rewards.py"
+    assert helper_for_test in helper_paths(), (
+        f"test premise: {helper_for_test} must be in helper_paths()"
+    )
+
+    # Skip when the helper is already dirty before our edit — that means
+    # the test would be ambiguous (the dirty state has another cause).
+    proc = _subprocess.run(
+        ["git", "status", "--short", "--",
+         "scripts/stopdff_dp/rewards.py"],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    if proc.stdout.strip():
+        import pytest as _pytest
+        _pytest.skip(
+            "scripts/stopdff_dp/rewards.py is already dirty in the live tree"
+        )
+
+    # Synthesize input fixtures so the unrelated paths in the pathspec
+    # are all clean / outside the repo.
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question_for_sweep(f"v{i}") for i in range(3)]
+    test_qs = [_fake_mc_question_for_sweep(f"t{i}") for i in range(3)]
+    (data_dir / "mc_dataset.json").write_text(_json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(_json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(_json.dumps(test_qs))
+
+    args = sweep_stopdff_dp._parse_args([
+        "--data-dir", str(data_dir),
+        "--fit-split", "val",
+        "--eval-split", "test",
+        "--identity-calibration",
+        "--out", str(tmp_path / "out.json"),
+    ])
+
+    # Before perturbing the helper, the scoped check should report clean.
+    _commit_clean, dirty_clean = sweep_stopdff_dp._git_metadata(
+        args, out=tmp_path / "out.json"
+    )
+    assert dirty_clean is False, (
+        "test premise: live worktree must be clean for the relevant pathspec "
+        "before we perturb the helper"
+    )
+
+    # Append a no-op trailing comment to scripts/stopdff_dp/rewards.py
+    # so its on-disk content differs from HEAD. We restore the original
+    # bytes in a finally block so the live repo is unaffected by the test.
+    original_bytes = helper_for_test.read_bytes()
+    perturbed_bytes = original_bytes + b"\n# transient test perturbation\n"
+    try:
+        helper_for_test.write_bytes(perturbed_bytes)
+        _commit_dirty, dirty_after = sweep_stopdff_dp._git_metadata(
+            args, out=tmp_path / "out.json"
+        )
+        assert dirty_after is True, (
+            f"_git_metadata must report dirty=True when {helper_for_test} "
+            f"has uncommitted content; got dirty={dirty_after}"
+        )
+    finally:
+        helper_for_test.write_bytes(original_bytes)
+
+
+def test_helper_paths_matches_helper_sha256s_keys():
+    """helper_paths() and helper_sha256s() must agree on the file set.
+
+    helper_sha256s() returns repo-relative POSIX strings; helper_paths()
+    returns Path objects. They must be the same set after normalisation.
+    """
+    from pathlib import Path as _Path
+    from scripts.stopdff_dp._provenance import helper_paths, helper_sha256s, PROJECT_ROOT
+
+    paths_set = set()
+    for p in helper_paths():
+        try:
+            rel = p.resolve().relative_to(PROJECT_ROOT).as_posix()
+        except ValueError:
+            rel = str(p)
+        paths_set.add(rel)
+    hashes_set = set(helper_sha256s().keys())
+    assert paths_set == hashes_set

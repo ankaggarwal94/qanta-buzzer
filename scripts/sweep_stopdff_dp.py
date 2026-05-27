@@ -154,13 +154,21 @@ def _git_metadata(args: argparse.Namespace, *, out: Path) -> tuple[str | None, b
     """
     import subprocess
 
+    from scripts.stopdff_dp._provenance import helper_paths
+
     data_dir = Path(args.data_dir).resolve()
     script_path = Path(__file__).resolve()
     calibration_path = (
         None if args.identity_calibration else Path(args.calibration).resolve()
     )
 
-    # Repo-relative paths only — `git status --` rejects external pathspecs.
+    # Pathspec must include EVERY file whose contents could change the
+    # sweep's results — that's the producer script, the input datasets,
+    # the calibration JSON, AND every helper module hashed by
+    # helper_sha256s() (since they directly affect _cell_id via the
+    # fingerprint). Keeping the dirty check and the hash set in sync via
+    # helper_paths() prevents the bug where a dirty helper would be hashed
+    # into the fingerprint but not flagged in git_dirty.
     candidate_paths = [
         script_path,
         data_dir / "mc_dataset.json",
@@ -170,6 +178,7 @@ def _git_metadata(args: argparse.Namespace, *, out: Path) -> tuple[str | None, b
     ]
     if calibration_path is not None:
         candidate_paths.append(calibration_path)
+    candidate_paths.extend(helper_paths())
 
     repo_relative_paths: list[str] = []
     for p in candidate_paths:

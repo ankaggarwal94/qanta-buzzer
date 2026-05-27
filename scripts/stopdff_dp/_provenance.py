@@ -27,20 +27,16 @@ def _file_sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-def helper_sha256s() -> dict[str, str]:
-    """Hash every .py file the DP pipeline imports beyond its producer scripts.
+def helper_paths() -> list[Path]:
+    """Return the canonical list of helper module paths the DP pipeline imports.
 
-    Includes:
-      - scripts/stopdff_dp/*.py (rewards, dp_solver, adapter, continuation,
-        diagnostics, types, writers, __init__, this _provenance module)
-      - scripts/_audit_gates.py (MC coverage + retention gate helpers)
-      - scripts/_common.py (project_relative + serializer + provenance)
-
-    Returned as a dict keyed by repo-relative POSIX path so it serializes
-    deterministically into the fingerprint and folds into cell_id via
-    json.dumps(..., sort_keys=True). The same dict is embedded in the
-    DP producer's generation block so the audit card consumer can
-    cross-check it.
+    Order: ``scripts/stopdff_dp/*.py`` (sorted), then the shared
+    ``scripts/_audit_gates.py`` and ``scripts/_common.py``.
+    Used by:
+      - ``helper_sha256s`` (for the cache fingerprint + producer provenance)
+      - ``scripts/sweep_stopdff_dp.py:_git_metadata`` (for the dirty-status
+        pathspec — keeps the dirty flag consistent with what the fingerprint
+        actually hashes)
     """
     helper_dir = PROJECT_ROOT / "scripts" / "stopdff_dp"
     paths: list[Path] = sorted(helper_dir.glob("*.py"))
@@ -48,8 +44,20 @@ def helper_sha256s() -> dict[str, str]:
         candidate = PROJECT_ROOT / "scripts" / shared
         if candidate.exists():
             paths.append(candidate)
+    return paths
+
+
+def helper_sha256s() -> dict[str, str]:
+    """Hash every .py file the DP pipeline imports beyond its producer scripts.
+
+    See ``helper_paths`` for the file set. Returned as a dict keyed by
+    repo-relative POSIX path so it serializes deterministically into the
+    fingerprint and folds into cell_id via json.dumps(..., sort_keys=True).
+    The same dict is embedded in the DP producer's generation block so
+    the audit card consumer can cross-check it.
+    """
     out: dict[str, str] = {}
-    for path in paths:
+    for path in helper_paths():
         digest = _file_sha256(path)
         if digest is None:
             continue
