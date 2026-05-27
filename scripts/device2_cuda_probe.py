@@ -35,89 +35,94 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-args = _parse_args()
-device_index = args.device_index
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    device_index = args.device_index
 
-try:
-    import torch
-except ImportError:
-    print(
-        json.dumps({
-            "status": "error",
-            "error": "torch not installed",
-            "device_index": device_index,
-            "hint": "pip install torch --index-url https://download.pytorch.org/whl/cu124",
-        }),
-        file=sys.stderr,
-    )
-    sys.exit(1)
+    try:
+        import torch
+    except ImportError:
+        print(
+            json.dumps({
+                "status": "error",
+                "error": "torch not installed",
+                "device_index": device_index,
+                "hint": "pip install torch --index-url https://download.pytorch.org/whl/cu124",
+            }),
+            file=sys.stderr,
+        )
+        return 1
 
-if not torch.cuda.is_available():
-    print(
-        json.dumps({
-            "status": "no_cuda",
-            "torch_version": torch.__version__,
-            "cuda_built": torch.version.cuda or "none",
-            "device_index": device_index,
-            "hint": "CUDA not available. Ensure NVIDIA drivers and CUDA toolkit are installed.",
-        }),
-        file=sys.stderr,
-    )
-    sys.exit(1)
+    if not torch.cuda.is_available():
+        print(
+            json.dumps({
+                "status": "no_cuda",
+                "torch_version": torch.__version__,
+                "cuda_built": torch.version.cuda or "none",
+                "device_index": device_index,
+                "hint": "CUDA not available. Ensure NVIDIA drivers and CUDA toolkit are installed.",
+            }),
+            file=sys.stderr,
+        )
+        return 1
 
-device_count = torch.cuda.device_count()
-if device_index < 0 or device_index >= device_count:
-    print(
-        json.dumps({
-            "status": "invalid_device_index",
-            "torch_version": torch.__version__,
-            "cuda_built": torch.version.cuda or "none",
-            "device_index": device_index,
-            "device_count": device_count,
-            "hint": (
-                f"--device-index {device_index} is out of range; "
-                f"torch.cuda.device_count() reports {device_count}. "
-                "Pass a value in [0, device_count) or adjust CUDA_VISIBLE_DEVICES."
-            ),
-        }),
-        file=sys.stderr,
-    )
-    sys.exit(1)
+    device_count = torch.cuda.device_count()
+    if device_index < 0 or device_index >= device_count:
+        print(
+            json.dumps({
+                "status": "invalid_device_index",
+                "torch_version": torch.__version__,
+                "cuda_built": torch.version.cuda or "none",
+                "device_index": device_index,
+                "device_count": device_count,
+                "hint": (
+                    f"--device-index {device_index} is out of range; "
+                    f"torch.cuda.device_count() reports {device_count}. "
+                    "Pass a value in [0, device_count) or adjust CUDA_VISIBLE_DEVICES."
+                ),
+            }),
+            file=sys.stderr,
+        )
+        return 1
 
-try:
-    device = torch.device(f"cuda:{device_index}")
-    lhs = torch.ones((64, 64), device=device)
-    rhs = torch.eye(64, device=device)
-    result = lhs @ rhs
-    checksum = float(result.sum().item())
-    torch.cuda.synchronize(device)
-except RuntimeError as exc:
-    print(
-        json.dumps({
-            "status": "cuda_runtime_error",
-            "torch_version": torch.__version__,
-            "cuda_built": torch.version.cuda or "none",
-            "device_index": device_index,
-            "error": str(exc),
-            "hint": "CUDA enumerates but a tensor operation failed; check driver/runtime/PyTorch compatibility.",
-        }),
-        file=sys.stderr,
-    )
-    sys.exit(1)
+    try:
+        device = torch.device(f"cuda:{device_index}")
+        lhs = torch.ones((64, 64), device=device)
+        rhs = torch.eye(64, device=device)
+        result = lhs @ rhs
+        checksum = float(result.sum().item())
+        torch.cuda.synchronize(device)
+    except RuntimeError as exc:
+        print(
+            json.dumps({
+                "status": "cuda_runtime_error",
+                "torch_version": torch.__version__,
+                "cuda_built": torch.version.cuda or "none",
+                "device_index": device_index,
+                "error": str(exc),
+                "hint": "CUDA enumerates but a tensor operation failed; check driver/runtime/PyTorch compatibility.",
+            }),
+            file=sys.stderr,
+        )
+        return 1
 
-props = torch.cuda.get_device_properties(device_index)
-report = {
-    "device_index": device_index,
-    "device_count": device_count,
-    "device_name": torch.cuda.get_device_name(device_index),
-    "cuda_version": torch.version.cuda,
-    "torch_version": torch.__version__,
-    "memory_total_gib": round(props.total_memory / (1024 ** 3), 1),
-    "kernel_check": "passed",
-    "kernel_checksum": checksum,
-    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "status": "ready",
-}
+    props = torch.cuda.get_device_properties(device_index)
+    report = {
+        "device_index": device_index,
+        "device_count": device_count,
+        "device_name": torch.cuda.get_device_name(device_index),
+        "cuda_version": torch.version.cuda,
+        "torch_version": torch.__version__,
+        "memory_total_gib": round(props.total_memory / (1024 ** 3), 1),
+        "kernel_check": "passed",
+        "kernel_checksum": checksum,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "status": "ready",
+    }
 
-print(json.dumps(report, indent=2))
-sys.exit(0)
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
