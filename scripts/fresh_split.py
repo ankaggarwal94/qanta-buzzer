@@ -119,20 +119,39 @@ def recorded_fresh_split_seed(project_root: Path) -> int | None:
         return None
 
 
-def get_git_commit_sha() -> str:
+def get_git_commit_sha(project_root: Path | None = None) -> str:
     """Get current git HEAD commit SHA.
+
+    The subprocess is invoked with ``cwd=`` pinned to ``project_root``
+    (the qanta-buzzer repo root by default), so the recorded SHA always
+    reflects the repo the script lives in, not whatever directory the
+    operator happened to launch the script from. Without ``cwd=``, a
+    caller running ``python /abs/path/to/scripts/fresh_split.py`` from
+    an unrelated git checkout would silently record THAT checkout's HEAD
+    (or ``'unknown'`` if the launch CWD is not a git repo), corrupting
+    SPLIT_PROVENANCE.md (Codex PR #14 thread #3309098605).
+
+    Parameters
+    ----------
+    project_root : Path or None
+        Repository root to query. Defaults to two levels above this
+        script (``scripts/fresh_split.py`` -> ``qanta-buzzer/``).
 
     Returns
     -------
     str
-        Short commit SHA, or 'unknown' if git is unavailable.
+        Commit SHA, or 'unknown' if git is unavailable or the directory
+        is not a git working tree.
     """
+    if project_root is None:
+        project_root = Path(__file__).resolve().parent.parent
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             timeout=10,
+            cwd=str(project_root),
         )
         if result.returncode == 0:
             return result.stdout.strip()
