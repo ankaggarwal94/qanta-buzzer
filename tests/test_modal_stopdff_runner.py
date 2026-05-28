@@ -109,6 +109,93 @@ def test_experiments_tuple_lists_canonical_baseline() -> None:
             f"EXPERIMENTS missing baseline entry: {required!r}"
 
 
+def test_experiments_tuple_includes_learned_value_pair() -> None:
+    """Prompt 5 learned-value branches must be wired into EXPERIMENTS.
+
+    The dispatched scripts (train_stopdff_value_model.py /
+    compute_stopdff_learned_value.py) do NOT yet exist in this commit;
+    invoking them produces a fail-fast subprocess error, which is the
+    correct behavior. The runner must still know about them so future
+    work can land the scripts without touching the runner.
+    """
+    m = _load_module()
+    for required in ("learned_value_train", "learned_value_eval"):
+        assert required in m.EXPERIMENTS, \
+            f"EXPERIMENTS missing learned-value entry: {required!r}"
+
+
+def test_build_command_dispatches_learned_value_train_to_trainer_script() -> None:
+    """--experiment learned_value_train must invoke the trainer script."""
+    m = _load_module()
+    from pathlib import PurePosixPath
+    cmd = m._build_command(
+        experiment="learned_value_train",
+        artifact_subdir_abs=PurePosixPath("/artifacts/test_subdir"),
+        num_bootstrap=100,
+        max_wall_hours=1.0,
+        n_jobs=1,
+        resume=False,
+        smoke=False,
+    )
+    assert "scripts/train_stopdff_value_model.py" in cmd
+    assert "--train-split" in cmd and "--val-split" in cmd
+    assert "--device" in cmd and "cuda" in cmd
+
+
+def test_build_command_dispatches_learned_value_eval_to_eval_script() -> None:
+    """--experiment learned_value_eval must invoke the eval script."""
+    m = _load_module()
+    from pathlib import PurePosixPath
+    cmd = m._build_command(
+        experiment="learned_value_eval",
+        artifact_subdir_abs=PurePosixPath("/artifacts/test_subdir"),
+        num_bootstrap=100,
+        max_wall_hours=1.0,
+        n_jobs=1,
+        resume=False,
+        smoke=False,
+    )
+    assert "scripts/compute_stopdff_learned_value.py" in cmd
+    assert "--checkpoint-dir" in cmd
+    assert "--eval-split" in cmd and "test" in cmd
+
+
+def test_build_command_smoke_trims_learned_value_train_hyperparams() -> None:
+    """`smoke=True` must trim epochs/seeds/hidden for the trainer branch."""
+    m = _load_module()
+    from pathlib import PurePosixPath
+    cmd = m._build_command(
+        experiment="learned_value_train",
+        artifact_subdir_abs=PurePosixPath("/artifacts/test_subdir"),
+        num_bootstrap=100,
+        max_wall_hours=1.0,
+        n_jobs=1,
+        resume=False,
+        smoke=True,
+    )
+    assert "--epochs" in cmd and "2" in cmd
+    assert "--seeds" in cmd and "1" in cmd
+    assert "--hidden" in cmd and "32" in cmd
+
+
+def test_build_command_still_dispatches_baseline_dp_sweep() -> None:
+    """Backward compat: dp_sweep dispatch must be preserved unchanged."""
+    m = _load_module()
+    from pathlib import PurePosixPath
+    cmd = m._build_command(
+        experiment="dp_sweep",
+        artifact_subdir_abs=PurePosixPath("/artifacts/test_subdir"),
+        num_bootstrap=42,
+        max_wall_hours=2.0,
+        n_jobs=4,
+        resume=False,
+        smoke=False,
+    )
+    assert "scripts/sweep_stopdff_dp.py" in cmd
+    assert "--num-bootstrap" in cmd and "42" in cmd
+    assert "--n-jobs" in cmd and "4" in cmd
+
+
 def test_app_and_volume_names_match_runbook() -> None:
     """APP_NAME and VOLUME_NAME are the operator-facing identifiers."""
     m = _load_module()

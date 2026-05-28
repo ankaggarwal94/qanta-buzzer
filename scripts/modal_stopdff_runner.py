@@ -89,7 +89,18 @@ VOLUME_NAME = "cs321m-stopdff-artifacts"
 ARTIFACTS_ROOT = PurePosixPath("/artifacts")
 REPO_PATH = PurePosixPath("/root/qanta-buzzer")  # baked-in repo location
 
-EXPERIMENTS = ("smoke", "single", "dp_sweep")
+EXPERIMENTS = (
+    "smoke",
+    "single",
+    "dp_sweep",
+    # Prompt 5 deliverables -- scripts/train_stopdff_value_model.py and
+    # scripts/compute_stopdff_learned_value.py are not in this commit. The
+    # dispatcher is wired now so future Prompt 5 work can land without
+    # touching the runner; dispatching today will fail fast at subprocess
+    # spawn with FileNotFoundError, which is the correct behavior.
+    "learned_value_train",
+    "learned_value_eval",
+)
 GPU_NONE_SYNONYMS = {"none", "cpu", "", "null"}
 MODAL_MAX_TIMEOUT_SECONDS = 86400  # Modal's hard 24h ceiling on @app.function timeout
 TIMEOUT_BUFFER = 1.15  # 15% buffer over sweep's --max-wall-hours for setup/teardown
@@ -320,6 +331,57 @@ def _build_command(
             cmd.extend(["--max-wall-hours", f"{float(max_wall_hours):.6f}"])
         if resume:
             cmd.append("--resume")
+        if smoke:
+            cmd.append("--smoke")
+        return cmd
+
+    if experiment == "learned_value_train":
+        # Prompt 5 deliverable: trains a learned continuation-value model on
+        # the train split (with val for early stopping) so the DP solver can
+        # replace its empirical-bucket continuation estimator. The script
+        # itself will land later; this branch is the dispatch contract.
+        checkpoint_dir = artifact_subdir_abs / "value_model"
+        cmd = [
+            python,
+            "scripts/train_stopdff_value_model.py",
+            "--artifact-dir",
+            str(exports_dir),
+            "--train-split",
+            "train",
+            "--val-split",
+            "val",
+            "--device",
+            "cuda",
+            "--out",
+            str(checkpoint_dir),
+        ]
+        if smoke:
+            cmd.extend([
+                "--epochs", "2",
+                "--seeds", "1",
+                "--hidden", "32",
+            ])
+        return cmd
+
+    if experiment == "learned_value_eval":
+        # Prompt 5 deliverable: applies the trained learned-value model to
+        # the test split and writes paper_exports/stopdff_learned_value.json.
+        # See learned_value_train for the upstream checkpoint that this run
+        # consumes.
+        checkpoint_dir = artifact_subdir_abs / "value_model"
+        out_json = exports_dir / "stopdff_learned_value.json"
+        cmd = [
+            python,
+            "scripts/compute_stopdff_learned_value.py",
+            "--artifact-dir",
+            str(exports_dir),
+            "--checkpoint-dir",
+            str(checkpoint_dir),
+            "--eval-split",
+            "test",
+            "--out",
+            str(out_json),
+        ]
         if smoke:
             cmd.append("--smoke")
         return cmd
@@ -946,6 +1008,22 @@ def main(
         if not compute_script.is_file():
             raise SystemExit(
                 f"--experiment {experiment} requires {compute_script}, which is absent."
+            )
+    elif experiment == "learned_value_train":
+        target = LOCAL_REPO_ROOT / "scripts" / "train_stopdff_value_model.py"
+        if not target.is_file():
+            raise SystemExit(
+                f"--experiment learned_value_train requires {target}, which is "
+                f"absent.\nThis script is a Prompt 5 deliverable and has not "
+                f"landed yet; ship it before dispatching."
+            )
+    elif experiment == "learned_value_eval":
+        target = LOCAL_REPO_ROOT / "scripts" / "compute_stopdff_learned_value.py"
+        if not target.is_file():
+            raise SystemExit(
+                f"--experiment learned_value_eval requires {target}, which is "
+                f"absent.\nThis script is a Prompt 5 deliverable and has not "
+                f"landed yet; ship it before dispatching."
             )
 
     # --- Capture host git state (L11, FIX-3, FIX-9) --------------------

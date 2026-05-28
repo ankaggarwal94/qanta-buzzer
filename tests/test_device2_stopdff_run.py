@@ -679,6 +679,162 @@ def test_device2_stopdff_harness_rejects_unknown_experiment(tmp_path: Path) -> N
     assert not (repo / "run").exists()
 
 
+def test_device2_stopdff_harness_accepts_learned_value_experiments() -> None:
+    """Source-level check: the new experiment cases are wired in.
+
+    Avoids extending the bash stub harness (which would need to mock
+    Prompt 5's not-yet-landed scripts). The dispatch is exercised at
+    runtime by ``test_device2_stopdff_harness_dispatches_learned_value_train``
+    below using a focused stub extension.
+    """
+    source = (REPO_ROOT / "scripts" / "device2_stopdff_run.sh").read_text()
+    # Validator (rejects everything not in this list).
+    assert "dp_sweep|learned_value_train|learned_value_eval" in source
+    # Dispatch case statements (one per learned-value mode).
+    assert "learned_value_train)" in source
+    assert "learned_value_eval)" in source
+    # Each branch dispatches the canonical Prompt 5 script path.
+    assert "scripts/train_stopdff_value_model.py" in source
+    assert "scripts/compute_stopdff_learned_value.py" in source
+
+
+def _write_python_stub_with_learned_value(repo: Path) -> Path:
+    """Variant of ``_write_python_stub`` that also handles Prompt 5 scripts.
+
+    Returns 0 + tee'd args.log entries for
+    ``train_stopdff_value_model.py`` and
+    ``compute_stopdff_learned_value.py``. Used only by the
+    learned_value_* dispatch tests; the existing dp_sweep stub remains
+    untouched so unrelated tests are unaffected.
+    """
+    python_path = repo / ".venv" / "bin" / "python"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+LOG_DIR="${STUB_LOG_DIR:?}"
+mkdir -p "$LOG_DIR"
+cmd="${1:-}"
+printf '%s\n' "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-}" >> "$LOG_DIR/env.log"
+printf '%s\n' "$*" >> "$LOG_DIR/args.log"
+
+if [[ "$cmd" == "scripts/device2_cuda_preflight.py" ]]; then
+  out_json=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --output-json) out_json="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  mkdir -p "$(dirname "$out_json")"
+  printf '{"ok": true, "errors": []}\n' > "$out_json"
+  exit 0
+fi
+
+if [[ "$cmd" == "scripts/train_stopdff_value_model.py" ]]; then
+  printf 'learned_value_train stub stdout\n'
+  exit 0
+fi
+
+if [[ "$cmd" == "scripts/compute_stopdff_learned_value.py" ]]; then
+  printf 'learned_value_eval stub stdout\n'
+  exit 0
+fi
+
+printf 'unexpected python invocation: %s\n' "$*" >&2
+exit 99
+"""
+    )
+    python_path.chmod(0o755)
+    return python_path
+
+
+def test_device2_stopdff_harness_dispatches_learned_value_train(
+    tmp_path: Path,
+) -> None:
+    """--experiment learned_value_train must dispatch the trainer script."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_python_stub_with_learned_value(repo)
+    out_dir = repo / "run"
+
+    result = _run_harness(
+        repo,
+        "--experiment", "learned_value_train",
+        "--out-dir", str(out_dir),
+        "--data-dir", str(repo / "data"),
+        "--calibration", str(repo / "calibration.json"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    args_log = (repo / "stub_logs" / "args.log").read_text().splitlines()
+    trainer_args = next(
+        (line for line in args_log if "train_stopdff_value_model.py" in line),
+        None,
+    )
+    assert trainer_args is not None, \
+        f"trainer script not dispatched; args.log: {args_log}"
+    assert "--train-split val" not in trainer_args  # uses train, not val
+    assert "--train-split train" in trainer_args
+    assert "--val-split val" in trainer_args
+    assert "--device cuda" in trainer_args
+
+
+def test_device2_stopdff_harness_dispatches_learned_value_eval(
+    tmp_path: Path,
+) -> None:
+    """--experiment learned_value_eval must dispatch the eval script."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_python_stub_with_learned_value(repo)
+    out_dir = repo / "run"
+
+    result = _run_harness(
+        repo,
+        "--experiment", "learned_value_eval",
+        "--out-dir", str(out_dir),
+        "--data-dir", str(repo / "data"),
+        "--calibration", str(repo / "calibration.json"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    args_log = (repo / "stub_logs" / "args.log").read_text().splitlines()
+    eval_args = next(
+        (line for line in args_log if "compute_stopdff_learned_value.py" in line),
+        None,
+    )
+    assert eval_args is not None, \
+        f"eval script not dispatched; args.log: {args_log}"
+    assert "--checkpoint-dir" in eval_args
+    assert "--eval-split test" in eval_args
+
+
+def test_device2_stopdff_harness_default_experiment_remains_dp_sweep(
+    tmp_path: Path,
+) -> None:
+    """No --experiment flag → backward compat: dispatches dp_sweep."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_python_stub(repo)
+    out_dir = repo / "run"
+
+    result = _run_harness(
+        repo,
+        "--out-dir", str(out_dir),
+        "--data-dir", str(repo / "data"),
+        "--calibration", str(repo / "calibration.json"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    args_log = (repo / "stub_logs" / "args.log").read_text().splitlines()
+    sweep_args = next(
+        (line for line in args_log if "sweep_stopdff_dp.py" in line),
+        None,
+    )
+    assert sweep_args is not None, \
+        "default experiment must dispatch sweep_stopdff_dp.py"
+
+
 def test_device2_stopdff_harness_rejects_artifact_dir_escape(
     tmp_path: Path,
 ) -> None:
