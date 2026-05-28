@@ -1,0 +1,165 @@
+{
+  "stopdff_dp_signed_median": 0.0,
+  "stopdff_dp_signed_mean": -0.13333333333333333,
+  "stopdff_dp_abs_median": 0.0,
+  "stopdff_dp_abs_mean": 0.2,
+  "n_items": 30,
+  "direction_breakdown": {
+    "mc_earlier": 5,
+    "qa_earlier": 1,
+    "same_step": 24
+  },
+  "coverage": {
+    "n_cells": 314,
+    "fraction_exact": 0.7101910828025477,
+    "fraction_pooled": 0.2898089171974522,
+    "fraction_missing": 0.0,
+    "verdict": "warn",
+    "reason": "fraction_pooled=0.290 > 0.05"
+  },
+  "ceiling_flags": {
+    "all_stop_at_first_prefix": false,
+    "all_stop_at_final_prefix": false,
+    "no_cross_format_stopping_variance": false,
+    "n_items": 30,
+    "n_stopped_cells": 57,
+    "n_never_stopped_cells": 3,
+    "empty": false
+  },
+  "gate_verdict": "warn",
+  "gate_verdict_reason": "coverage:fraction_pooled=0.290 > 0.05",
+  "confirmatory": true,
+  "metadata": {
+    "metric_type": "finite_horizon_dp",
+    "stopping_policy": "finite_horizon_dp",
+    "reward_schedule": "power_mark",
+    "reward_schedule_description": "Power-mark schedule: early correct=15 (prefix_fraction<0.5), late correct=10, wrong=-5, c_wait=0.",
+    "continuation_estimator": "empirical_bucket",
+    "fit_split": "val",
+    "eval_split": "test",
+    "timestamp": "2026-05-28T02:33:00.993408+00:00",
+    "generation": {
+      "schema_version": 1,
+      "generated_at_utc": "2026-05-28T02:33:00.988408+00:00",
+      "command": [
+        "python",
+        "scripts/compute_stopdff_dp.py",
+        "--responses",
+        "paper_exports/responses.json",
+        "--calibration",
+        "paper_exports/calibration.json",
+        "--split",
+        "test",
+        "--fit-split",
+        "val",
+        "--reward-schedule",
+        "power_mark",
+        "--continuation",
+        "empirical_bucket",
+        "--smoke",
+        "--out",
+        "paper_exports/stopdff_dp.json",
+        "--allow-incomplete-mc-coverage",
+        "--allow-low-mc-retention"
+      ],
+      "argv": [
+        "--responses",
+        "paper_exports/responses.json",
+        "--calibration",
+        "paper_exports/calibration.json",
+        "--split",
+        "test",
+        "--fit-split",
+        "val",
+        "--reward-schedule",
+        "power_mark",
+        "--continuation",
+        "empirical_bucket",
+        "--smoke",
+        "--out",
+        "paper_exports/stopdff_dp.json",
+        "--allow-incomplete-mc-coverage",
+        "--allow-low-mc-retention"
+      ],
+      "cwd": ".",
+      "output_path": "paper_exports/stopdff_dp.json",
+      "script_path": "scripts/compute_stopdff_dp.py",
+      "script_sha256": "66037d0407bccab2c9f7174bc69a4ede5daecf927fade6d8ba059da5e572f81a",
+      "git_commit": "3887f4b216b845d4ea740f68b8a0cf62280c7ad0",
+      "git_dirty": false,
+      "git_status_relevant_paths": "",
+      "helper_sha256s": {
+        "scripts/stopdff_dp/__init__.py": "9a5c797622bacf7771cc8f8c110a8e96a526012430665a9469681356f44d5075",
+        "scripts/stopdff_dp/_provenance.py": "c7fa1691df43c170937b043ab99e33f86b713f90b5e186d717326c69e84f526e",
+        "scripts/stopdff_dp/adapter.py": "fe1c417f86d6df25ac6a7710c747d812e0a43cacfbbeaffe1407109fd839d320",
+        "scripts/stopdff_dp/continuation.py": "8c40612328f6c01332516eec6b08d763cda416a08ef685aa98b2b82c58d9e632",
+        "scripts/stopdff_dp/diagnostics.py": "58214f223901d4ff3337cff42c49be41e6a8394269f8ba1c5279c76d73470855",
+        "scripts/stopdff_dp/dp_solver.py": "1342a41cd94fafc14c5a4092e2f0b3ec65c4b0e5bfdff0818f7a3384e533fb82",
+        "scripts/stopdff_dp/rewards.py": "27563165df2effd67b9847480b62bdab5268d78a8581cbe8880b963a6a2453df",
+        "scripts/stopdff_dp/types.py": "44b96a178428fbc73d70a54d7eab49e2eff88ce8db647f5825f97a98b4284743",
+        "scripts/stopdff_dp/writers.py": "383a6f5b3d22e750cad3ee80764d2f3e0bdd5c762d919dabf705cfa61d606af8",
+        "scripts/_audit_gates.py": "09345374c786ec70ef16b380c4b59eaf0595b9d9553f2b0156a9a9bc76569174",
+        "scripts/_common.py": "4ef4a9cf8b993f9d08f1b4da0a81b4d5ccde533628fd23ba7322d78cd1ad6c2f"
+      }
+    }
+  },
+  "mc_coverage": {
+    "test": {
+      "target_qids": 30,
+      "mc_questions_total": 60,
+      "matched_questions": 30,
+      "matched_qids": 30,
+      "missing_qids": 0,
+      "coverage_rate": 1.0,
+      "threshold": 0.98,
+      "passed": true,
+      "overridden": false,
+      "override_flag": "--allow-incomplete-mc-coverage",
+      "split": "test"
+    },
+    "val": {
+      "target_qids": 30,
+      "mc_questions_total": 60,
+      "matched_questions": 30,
+      "matched_qids": 30,
+      "missing_qids": 0,
+      "coverage_rate": 1.0,
+      "threshold": 0.98,
+      "passed": true,
+      "overridden": false,
+      "override_flag": "--allow-incomplete-mc-coverage",
+      "split": "val"
+    }
+  },
+  "mc_retention_gate": {
+    "test": {
+      "applies": true,
+      "split": "test",
+      "threshold": 0.5,
+      "retention_rate": 0.7274484536082474,
+      "raw_count": 3104,
+      "retained_count": 2258,
+      "dropped_count": 846,
+      "passed": true,
+      "overridden": false,
+      "override_flag": "--allow-low-mc-retention"
+    },
+    "val": {
+      "applies": true,
+      "split": "val",
+      "threshold": 0.5,
+      "retention_rate": 0.7048371174728529,
+      "raw_count": 3039,
+      "retained_count": 2142,
+      "dropped_count": 897,
+      "passed": true,
+      "overridden": false,
+      "override_flag": "--allow-low-mc-retention"
+    }
+  },
+  "mc_build_metadata": {
+    "status": "loaded",
+    "source_path": "data/processed/build_metadata.json",
+    "source_sha256": "70871984390f252c0a06a5a2c9a2d3b4337f10ad48c87583ebec215d5c0c9c6e"
+  }
+}

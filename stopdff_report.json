@@ -38,7 +38,7 @@
       "calibrated_at_sim_neg_1": 0.106708,
       "max_calibrated_at_sim_1": 0.510149,
       "threshold_reachable": false,
-      "required_raw_score": 1.745073
+      "required_raw_score": 1.745071
     },
     "mid": {
       "max_calibrated_probability": 0.410575,
@@ -47,7 +47,7 @@
       "calibrated_at_sim_neg_1": 0.267807,
       "max_calibrated_at_sim_1": 0.410575,
       "threshold_reachable": false,
-      "required_raw_score": 4.753208
+      "required_raw_score": 4.753194
     },
     "late": {
       "max_calibrated_probability": 0.818839,
@@ -104,10 +104,10 @@
     "stop_threshold": 0.7,
     "metric_type": "diagnostic_only",
     "stopping_policy": "myopic_threshold",
-    "timestamp": "2026-05-27T08:12:49.455499+00:00",
+    "timestamp": "2026-05-28T02:32:44.070347+00:00",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T08:12:49.454441+00:00",
+      "generated_at_utc": "2026-05-28T02:32:44.069347+00:00",
       "command": [
         "python",
         "scripts/compute_stopdff.py",
@@ -122,7 +122,7 @@
       "output_path": "stopdff_report.json",
       "script_path": "scripts/compute_stopdff.py",
       "script_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
-      "git_commit": "222fa1eb1d214de85cd645b7ae00e5f983b5e0c1",
+      "git_commit": "3887f4b216b845d4ea740f68b8a0cf62280c7ad0",
       "git_dirty": false,
       "git_status_relevant_paths": ""
     }

@@ -58,7 +58,7 @@
       "verdict": "pass",
       "details": {
         "per_bucket_ece": {
-          "early": 0.025933,
+          "early": 0.025932,
           "mid": 0.005491,
           "late": 0.026117
         },
@@ -112,7 +112,7 @@
             "calibrated_at_sim_neg_1": 0.106708,
             "max_calibrated_at_sim_1": 0.510149,
             "threshold_reachable": false,
-            "required_raw_score": 1.745073
+            "required_raw_score": 1.745071
           },
           "mid": {
             "max_calibrated_probability": 0.410575,
@@ -121,7 +121,7 @@
             "calibrated_at_sim_neg_1": 0.267807,
             "max_calibrated_at_sim_1": 0.410575,
             "threshold_reachable": false,
-            "required_raw_score": 4.753208
+            "required_raw_score": 4.753194
           },
           "late": {
             "max_calibrated_probability": 0.818839,
@@ -134,31 +134,76 @@
           }
         }
       }
+    },
+    {
+      "name": "DP StopDFF (Finite-Horizon Bellman, signed median)",
+      "value": 0.0,
+      "value_display": "+0.0000",
+      "threshold": 1,
+      "threshold_criterion": "|signed_median_stopdff| <= 1",
+      "observed_criterion_value": 0.0,
+      "direction": "warn_if_above",
+      "verdict": "warn",
+      "verdict_qualifier": "fraction_pooled=0.290 > 0.05",
+      "details": {
+        "reward_schedule": "power_mark",
+        "continuation_estimator": "empirical_bucket",
+        "fit_split": "val",
+        "eval_split": "test",
+        "coverage": {
+          "n_cells": 314,
+          "fraction_exact": 0.7101910828025477,
+          "fraction_pooled": 0.2898089171974522,
+          "fraction_missing": 0.0,
+          "verdict": "warn",
+          "reason": "fraction_pooled=0.290 > 0.05"
+        },
+        "ceiling_flags": {
+          "all_stop_at_first_prefix": false,
+          "all_stop_at_final_prefix": false,
+          "no_cross_format_stopping_variance": false,
+          "n_items": 30,
+          "n_stopped_cells": 57,
+          "n_never_stopped_cells": 3,
+          "empty": false
+        },
+        "n_items": 30,
+        "direction_breakdown": {
+          "mc_earlier": 5,
+          "qa_earlier": 1,
+          "same_step": 24
+        },
+        "confirmatory": true,
+        "metric_type": "finite_horizon_dp"
+      }
     }
   ],
   "overall_verdict": "WARN",
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-28T00:11:41.540150+00:00",
+    "timestamp": "2026-05-28T02:35:15.785351+00:00",
     "threshold_source": "threshold_manifest.json",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-28T00:11:41.539045+00:00",
+      "generated_at_utc": "2026-05-28T02:35:15.783859+00:00",
       "command": [
         "python",
-        "scripts/make_audit_card.py"
+        "scripts/make_audit_card.py",
+        "--include-dp-stopdff"
       ],
-      "argv": [],
+      "argv": [
+        "--include-dp-stopdff"
+      ],
       "cwd": ".",
       "output_path": "paper_exports/audit_card.json",
       "script_path": "scripts/make_audit_card.py",
-      "script_sha256": "92c34d3569b642ea9955e6b240856b01b1ac1a99090393e876b690c421e0e2e8",
-      "git_commit": "b3ad7f39610b603ecde35a11d94c8765cea45109",
+      "script_sha256": "2b2fdcc2968e5b8834f935642ec7e56a3dd9c65f5eafd9b562e6896878edd55d",
+      "git_commit": "dd1b5e38a4291b139f862f101b6c9a963e7c952f",
       "git_dirty": false,
       "git_status_relevant_paths": "",
       "markdown_path": "paper_exports/audit_card.md",
-      "markdown_sha256": "2db3ed054e12388e23086213427610171db47cb8af5dcd0d7848c36a0a6154cd"
+      "markdown_sha256": "12126ae18b2b0c38fb3a41aa602e3c82f5856958f9d9124c759735e158227253"
     }
   },
   "data_provenance": {
@@ -231,32 +276,76 @@
           "applies": true
         }
       }
+    },
+    "stopdff_dp": {
+      "coverage": {
+        "test": {
+          "rate": 1.0,
+          "threshold": 0.98,
+          "passed": true,
+          "overridden": false
+        },
+        "val": {
+          "rate": 1.0,
+          "threshold": 0.98,
+          "passed": true,
+          "overridden": false
+        }
+      },
+      "retention": {
+        "test": {
+          "rate": 0.7274484536082474,
+          "threshold": 0.5,
+          "passed": true,
+          "overridden": false,
+          "applies": true
+        },
+        "val": {
+          "rate": 0.7048371174728529,
+          "threshold": 0.5,
+          "passed": true,
+          "overridden": false,
+          "applies": true
+        }
+      }
     }
   },
   "artifact_provenance": {
     "csli.json": {
-      "recorded_commit": "52d72e03ca413e1e802d024bf273ac521043ceff",
-      "recorded_sha256": "364d21aa07f74ee4facd8b5fc9cd795b006ea682b54128fad99e6eba46c7fcb7",
-      "current_sha256": "364d21aa07f74ee4facd8b5fc9cd795b006ea682b54128fad99e6eba46c7fcb7",
-      "content_sha256": "663a8ec218dd607fb74d1748049bfaa920aad642299abd3faec1383488ba7467",
+      "recorded_commit": "77743dbf5909fedf8ec3d716fd283e728aabc72f",
+      "recorded_sha256": "0011170fbe3ca9224d1bb142a4c22fff27514cfef4af19d5ca4c23ad70d1ea81",
+      "current_sha256": "0011170fbe3ca9224d1bb142a4c22fff27514cfef4af19d5ca4c23ad70d1ea81",
+      "content_sha256": "2317e4e0c0a94e187a83a57094011d0d9f32a51184aaccf5c26473450def4cf7",
       "script_path": "scripts/compute_csli.py",
-      "sha_matches": true
+      "sha_matches": true,
+      "helper_mismatches": null
     },
     "calibration.json": {
-      "recorded_commit": "0f8da5d35c1c591430e03db4a6500cec6acd6755",
+      "recorded_commit": "77743dbf5909fedf8ec3d716fd283e728aabc72f",
       "recorded_sha256": "6f47ba73b97fe88f89db0e170db48aff0fb6271eaf012b45cba046b1a7b8f7aa",
       "current_sha256": "6f47ba73b97fe88f89db0e170db48aff0fb6271eaf012b45cba046b1a7b8f7aa",
-      "content_sha256": "e3a763fe13410a0689a1d0ed81490d0f35256b67e3f73cd8fb66884b358ad746",
+      "content_sha256": "7c60358f6cdc33a652974e2dc577111e51a641fd538e10ed326c1f57659b0759",
       "script_path": "scripts/compute_prefix_calibration.py",
-      "sha_matches": true
+      "sha_matches": true,
+      "helper_mismatches": null
     },
     "stopdff.json": {
-      "recorded_commit": "222fa1eb1d214de85cd645b7ae00e5f983b5e0c1",
+      "recorded_commit": "3887f4b216b845d4ea740f68b8a0cf62280c7ad0",
       "recorded_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
       "current_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
-      "content_sha256": "6e2f711ff9d8500528a55468c290e6f71f2b692bea80716258a9945473d2ac91",
+      "content_sha256": "fd315812e11ac1af150709587f44073238b63e4b60f376312ace0af60c6dbee5",
       "script_path": "scripts/compute_stopdff.py",
-      "sha_matches": true
+      "sha_matches": true,
+      "helper_mismatches": null
+    },
+    "stopdff_dp.json": {
+      "recorded_commit": "3887f4b216b845d4ea740f68b8a0cf62280c7ad0",
+      "recorded_sha256": "66037d0407bccab2c9f7174bc69a4ede5daecf927fade6d8ba059da5e572f81a",
+      "current_sha256": "66037d0407bccab2c9f7174bc69a4ede5daecf927fade6d8ba059da5e572f81a",
+      "content_sha256": "15b12b0d287cc0fd3a1029597a5d65192da40b64b4c9fc0f57e38d70cb69c371",
+      "script_path": "scripts/compute_stopdff_dp.py",
+      "sha_matches": true,
+      "helper_mismatches": null
     }
   }
 }

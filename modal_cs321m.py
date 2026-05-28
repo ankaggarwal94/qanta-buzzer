@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 # Defer modal import so --dry-run works without modal installed.
@@ -256,8 +256,13 @@ def export_dir_for_run(smoke: bool, output_dir: str | None) -> str:
     write under the operator-specified location.
     """
     if output_dir:
-        return str(Path(output_dir) / "paper_exports")
+        return str(PurePosixPath(str(output_dir).replace("\\", "/")) / "paper_exports")
     return "artifacts/smoke/paper_exports" if smoke else "paper_exports"
+
+
+def _join_command_path(base: str | Path, filename: str) -> str:
+    """Join command paths with POSIX separators for Modal/Linux commands."""
+    return str(PurePosixPath(str(base).replace("\\", "/")) / filename)
 
 
 def _split_modal_stages(stages: str) -> list[str]:
@@ -313,17 +318,17 @@ def build_stage_command(
             "--allow-incomplete-mc-coverage",
         ])
     if stage == "compute_csli":
-        cmd.extend(["--output", str(Path(export_arg) / "csli.json")])
+        cmd.extend(["--output", _join_command_path(export_arg, "csli.json")])
     elif stage == "compute_prefix_calibration":
-        cmd.extend(["--output", str(Path(export_arg) / "calibration.json")])
+        cmd.extend(["--output", _join_command_path(export_arg, "calibration.json")])
     elif stage == "compute_stopdff":
         cmd.extend([
             "--output",
-            str(Path(export_arg) / "stopdff.json"),
+            _join_command_path(export_arg, "stopdff.json"),
             "--report-output",
-            str(Path(export_arg) / "stopdff_report.json"),
+            _join_command_path(export_arg, "stopdff_report.json"),
             "--calibration",
-            str(Path(export_arg) / "calibration.json"),
+            _join_command_path(export_arg, "calibration.json"),
         ])
     return cmd
 

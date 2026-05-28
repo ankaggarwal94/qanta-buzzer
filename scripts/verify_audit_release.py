@@ -13,6 +13,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 PAPER_EXPORTS = ROOT / "paper_exports"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 # Canonical producer scripts for each source-metric artifact, per ARTIFACTS.md.
 # Pinning these prevents a tampered audit card from redirecting `script_path`
@@ -21,18 +23,50 @@ EXPECTED_PRODUCERS: dict[str, str] = {
     "csli.json": "scripts/compute_csli.py",
     "calibration.json": "scripts/compute_prefix_calibration.py",
     "stopdff.json": "scripts/compute_stopdff.py",
+    "stopdff_dp.json": "scripts/compute_stopdff_dp.py",
 }
+REQUIRED_PROVENANCE_KEYS = frozenset(
+    {"csli.json", "calibration.json", "stopdff.json"}
+)
 
 # Canonical generator for the audit card itself, per ARTIFACTS.md.
 EXPECTED_AUDIT_CARD_GENERATOR = "scripts/make_audit_card.py"
 
+_TEXT_HASH_SUFFIXES = frozenset(
+    {
+        ".cfg",
+        ".csv",
+        ".gitattributes",
+        ".gitignore",
+        ".json",
+        ".md",
+        ".py",
+        ".rst",
+        ".sh",
+        ".sha256",
+        ".tex",
+        ".toml",
+        ".tsv",
+        ".txt",
+        ".yaml",
+        ".yml",
+    }
+)
+
+
+def _canonical_hash_bytes(path: Path, data: bytes) -> bytes:
+    if path.suffix.lower() not in _TEXT_HASH_SUFFIXES:
+        return data
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    payload = _canonical_hash_bytes(path, path.read_bytes())
+    return hashlib.sha256(payload).hexdigest()
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -157,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     artifact_provenance = audit.get("artifact_provenance", {})
-    expected_provenance_keys = set(EXPECTED_PRODUCERS)
+    expected_provenance_keys = set(REQUIRED_PROVENANCE_KEYS)
     missing_provenance = expected_provenance_keys - set(artifact_provenance)
     for missing in sorted(missing_provenance):
         errors.append(
@@ -244,6 +278,56 @@ def main(argv: list[str] | None = None) -> int:
             f"rerun make_audit_card.py)",
             errors,
         )
+        if artifact_name == "stopdff_dp.json":
+            try:
+                source_data = load_json(source_path)
+            except json.JSONDecodeError as exc:
+                errors.append(f"{artifact_name} is not valid JSON: {exc}")
+                continue
+            source_generation = (
+                source_data.get("metadata", {}).get("generation", {})
+                if isinstance(source_data, dict)
+                else {}
+            )
+            helper_sha256s = (
+                source_generation.get("helper_sha256s")
+                if isinstance(source_generation, dict)
+                else None
+            )
+            if not isinstance(helper_sha256s, dict) or not helper_sha256s:
+                errors.append(
+                    f"{artifact_name} metadata.generation is missing "
+                    "helper_sha256s; rerun compute_stopdff_dp.py"
+                )
+                continue
+            for helper_rel, recorded_helper_sha in sorted(helper_sha256s.items()):
+                helper_rel_path = Path(str(helper_rel))
+                if helper_rel_path.is_absolute():
+                    errors.append(
+                        f"{artifact_name} helper_sha256s contains absolute "
+                        f"path {helper_rel!r}; expected repo-relative path"
+                    )
+                    continue
+                if not isinstance(recorded_helper_sha, str) or not recorded_helper_sha:
+                    errors.append(
+                        f"{artifact_name} helper_sha256s[{helper_rel!r}] "
+                        "missing recorded SHA"
+                    )
+                    continue
+                helper_path = repo_root / helper_rel_path
+                if not helper_path.exists():
+                    errors.append(
+                        f"{artifact_name} helper not found at {helper_path}"
+                    )
+                    continue
+                live_helper_sha = sha256_file(helper_path)
+                require(
+                    live_helper_sha == recorded_helper_sha,
+                    f"{artifact_name} helper SHA drift: "
+                    f"recorded={recorded_helper_sha}, live={live_helper_sha} "
+                    f"(helper_path={helper_rel})",
+                    errors,
+                )
 
     metrics = {m.get("name", ""): m for m in audit.get("metrics", [])}
     stopdff = next((m for n, m in metrics.items() if "StopDFF" in n), None)

@@ -34,7 +34,6 @@ Design intent:
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -48,9 +47,8 @@ def _project_relative(path: str | Path) -> str:
     Mirrors ``compute_csli._display_path`` and
     ``_common.project_relative``: emits a forward-slash repo-relative
     path when the resolved file is under ``PROJECT_ROOT``, otherwise
-    the absolute path string. Duplicated inline (rather than imported
-    from ``_common``) to keep this module free of cross-script imports
-    per the design intent at the top of this file.
+    the absolute path string. Kept inline to avoid pulling the broader
+    pipeline helper module into every audit-gate path operation.
 
     Non-absolute inputs are anchored to ``PROJECT_ROOT`` BEFORE
     resolution so that repo-relative arguments like
@@ -72,17 +70,10 @@ def _project_relative(path: str | Path) -> str:
 
 
 def _sha256_file(path: Path) -> str:
-    """Return the SHA-256 digest for a local artifact.
+    """Return the portable SHA-256 digest for a local artifact."""
+    from scripts._common import sha256_file
 
-    Duplicated from ``compute_csli._sha256_file`` to keep this
-    module free of cross-script imports. The function is small
-    enough that the duplication is cheaper than the extra coupling.
-    """
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256_file(path)
 
 
 def filter_mc_questions_to_split(
