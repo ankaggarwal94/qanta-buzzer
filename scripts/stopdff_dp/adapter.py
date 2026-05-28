@@ -52,7 +52,7 @@ def validate_split_separation(*, fit_split: str, eval_split: str) -> None:
     if fit_name == "test":
         raise ValueError(
             "fit_split must not be test; test data is reserved for final "
-            f"evaluation only (got eval_split={eval_split!r})."
+            f"evaluation only (got fit_split={fit_split!r})."
         )
 
 

@@ -88,7 +88,7 @@ def detect_ceiling_effects(
                 if t.stop_step != 0:
                     return False
             elif target == "last":
-                if t.stop_step != T - 1:
+                if t.stop_step < T - 1:
                     return False
             else:
                 raise ValueError(target)

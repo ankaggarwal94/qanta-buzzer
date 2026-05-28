@@ -79,7 +79,8 @@ class DPTrace:
     item_id : str
     fmt : str
     stop_step : int
-        0-based index of the chosen stop prefix.
+        0-based index of the chosen stop prefix. The solver uses
+        stop_step == len(values) as the "never stopped" sentinel.
     values : list[float]
         V_t for each prefix t along the trajectory.
     answer_utilities : list[float]

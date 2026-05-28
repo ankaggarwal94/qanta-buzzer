@@ -419,7 +419,17 @@ def test_ceiling_distinguishes_never_stopped_traces() -> None:
     flags = diag_module.detect_ceiling_effects(mc, qa)
     assert flags["n_stopped_cells"] == 0
     assert flags["n_never_stopped_cells"] == 4
-    assert flags["all_stop_at_final_prefix"] is False  # T != T-1
+    assert flags["all_stop_at_final_prefix"] is True
+
+
+def test_ceiling_treats_never_stop_and_final_prefix_as_horizon_ceiling() -> None:
+    """No-stop and last-prefix stops are both horizon-ceiling artifacts."""
+    mc = [_trace(stop_step=3, T=3)]
+    qa = [_trace(stop_step=2, T=3)]
+    flags = diag_module.detect_ceiling_effects(mc, qa)
+    assert flags["all_stop_at_final_prefix"] is True
+    assert flags["n_never_stopped_cells"] == 1
+    assert flags["no_cross_format_stopping_variance"] is False
 
 
 def test_ceiling_raises_when_trace_lists_unequal_length() -> None:
@@ -491,7 +501,7 @@ def test_adapter_fit_eval_split_separation_raises_on_overlap() -> None:
 
 def test_adapter_split_separation_rejects_test_as_fit_split() -> None:
     """The confirmatory DP path must never fit continuation on test."""
-    with pytest.raises(ValueError, match="fit_split must not be test"):
+    with pytest.raises(ValueError, match="got fit_split='TEST'"):
         adapter_module.validate_split_separation(
             fit_split="TEST", eval_split="val"
         )
@@ -500,6 +510,11 @@ def test_adapter_split_separation_rejects_test_as_fit_split() -> None:
 import json
 from scripts.stopdff_dp import writers as writers_module
 from scripts.stopdff_dp.types import DPTrace
+
+
+def test_dptrace_documents_never_stop_sentinel() -> None:
+    assert DPTrace.__doc__ is not None
+    assert "stop_step == len(values)" in DPTrace.__doc__
 
 
 def test_writer_metric_type_is_finite_horizon_dp(tmp_path: Path) -> None:

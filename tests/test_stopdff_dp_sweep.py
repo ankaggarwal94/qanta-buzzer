@@ -97,9 +97,6 @@ def test_default_axes_cover_requested_sweep() -> None:
     assert set(sweep_stopdff_dp._csv(args.formats)) == {
         "QA-prefix",
         "MC-fixed",
-        "MC-dynamic",
-        "MC-full",
-        "choices-only",
     }
 
 

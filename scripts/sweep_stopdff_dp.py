@@ -81,7 +81,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--formats",
-        default="QA-prefix,MC-fixed,MC-dynamic,MC-full,choices-only",
+        default="QA-prefix,MC-fixed",
     )
     parser.add_argument("--prefix-bucketing", default="early_mid_late,exact_prefix")
     parser.add_argument("--subject-pooling", default="per_subject,pooled_subject")

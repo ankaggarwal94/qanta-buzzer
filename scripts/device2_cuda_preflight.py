@@ -230,7 +230,7 @@ def check_output_directory(
 
 
 def _qid_set(dataset_path: Path) -> set[str]:
-    payload = json.loads(dataset_path.read_text())
+    payload = json.loads(dataset_path.read_text(encoding="utf-8"))
     if isinstance(payload, list):
         rows = payload
     elif isinstance(payload, dict) and isinstance(payload.get("questions"), list):

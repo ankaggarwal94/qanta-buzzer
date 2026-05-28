@@ -219,6 +219,27 @@ def test_check_split_separation_accepts_wrapped_question_datasets(
     assert result["details"]["overlap_count"] == 0
 
 
+def test_preflight_qid_loader_reads_json_as_utf8(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from scripts import device2_cuda_preflight
+
+    dataset = tmp_path / "val_dataset.json"
+    dataset.write_text(json.dumps([{"qid": "q1"}]), encoding="utf-8")
+    calls: list[tuple[Path, dict]] = []
+    original_read_text = Path.read_text
+
+    def tracking_read_text(self: Path, *args, **kwargs) -> str:
+        calls.append((self, dict(kwargs)))
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", tracking_read_text)
+
+    assert device2_cuda_preflight._qid_set(dataset) == {"q1"}
+    assert calls == [(dataset, {"encoding": "utf-8"})]
+
+
 def test_main_writes_json_report_and_returns_1_when_artifact_missing(
     tmp_path: Path,
     capsys,
