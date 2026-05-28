@@ -222,6 +222,7 @@ def test_resume_only_missing_preserves_existing_cells(tmp_path: Path) -> None:
     assert rc1 == 0
     first_payload = json.loads(out.read_text())
     assert len(first_payload["cells"]) == 1
+    assert "\\" not in first_payload["cells"][0]["cache_path"]
     first_cell_path = Path(first_payload["cells"][0]["cache_path"])
     first_cell_before = first_cell_path.read_text()
 
@@ -461,7 +462,9 @@ def test_sweep_records_coverage_metadata_in_payload(tmp_path):
     assert eval_block["coverage_rate"] == 1.0
     # Retention block also present.
     assert "mc_retention_gate" in payload
-    # Build metadata absent (no build_metadata.json in synthetic data dir).
+    # The build_metadata.json file is absent, but the payload still records
+    # a metadata-status block so downstream consumers can distinguish a
+    # missing file from omitted provenance.
     assert "mc_build_metadata" in payload
 
 

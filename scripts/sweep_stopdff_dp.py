@@ -1258,7 +1258,7 @@ def _load_cached_cells(cell_dir: Path) -> list[dict]:
             cell = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             continue
-        cell["cache_path"] = str(path)
+        cell["cache_path"] = path.as_posix()
         cells.append(cell)
     return cells
 
@@ -1770,7 +1770,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             myopic_artifact=myopic_artifact,
         )
         payload["cell_id"] = cid
-        payload["cache_path"] = str(path)
+        payload["cache_path"] = path.as_posix()
         _write_json_atomic(path, payload)
         return payload
 
