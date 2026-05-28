@@ -278,6 +278,56 @@ def main(argv: list[str] | None = None) -> int:
             f"rerun make_audit_card.py)",
             errors,
         )
+        if artifact_name == "stopdff_dp.json":
+            try:
+                source_data = load_json(source_path)
+            except json.JSONDecodeError as exc:
+                errors.append(f"{artifact_name} is not valid JSON: {exc}")
+                continue
+            source_generation = (
+                source_data.get("metadata", {}).get("generation", {})
+                if isinstance(source_data, dict)
+                else {}
+            )
+            helper_sha256s = (
+                source_generation.get("helper_sha256s")
+                if isinstance(source_generation, dict)
+                else None
+            )
+            if not isinstance(helper_sha256s, dict) or not helper_sha256s:
+                errors.append(
+                    f"{artifact_name} metadata.generation is missing "
+                    "helper_sha256s; rerun compute_stopdff_dp.py"
+                )
+                continue
+            for helper_rel, recorded_helper_sha in sorted(helper_sha256s.items()):
+                helper_rel_path = Path(str(helper_rel))
+                if helper_rel_path.is_absolute():
+                    errors.append(
+                        f"{artifact_name} helper_sha256s contains absolute "
+                        f"path {helper_rel!r}; expected repo-relative path"
+                    )
+                    continue
+                if not isinstance(recorded_helper_sha, str) or not recorded_helper_sha:
+                    errors.append(
+                        f"{artifact_name} helper_sha256s[{helper_rel!r}] "
+                        "missing recorded SHA"
+                    )
+                    continue
+                helper_path = repo_root / helper_rel_path
+                if not helper_path.exists():
+                    errors.append(
+                        f"{artifact_name} helper not found at {helper_path}"
+                    )
+                    continue
+                live_helper_sha = sha256_file(helper_path)
+                require(
+                    live_helper_sha == recorded_helper_sha,
+                    f"{artifact_name} helper SHA drift: "
+                    f"recorded={recorded_helper_sha}, live={live_helper_sha} "
+                    f"(helper_path={helper_rel})",
+                    errors,
+                )
 
     metrics = {m.get("name", ""): m for m in audit.get("metrics", [])}
     stopdff = next((m for n, m in metrics.items() if "StopDFF" in n), None)

@@ -583,6 +583,74 @@ def test_verify_audit_release_flags_non_canonical_dp_producer(
     )
 
 
+def test_verify_audit_release_flags_dp_helper_sha_drift(tmp_path: Path) -> None:
+    exports = tmp_path / "paper_exports"
+    _populate_required_exports(exports)
+    _write_threshold_manifest(tmp_path)
+    provenance = _write_producer_scripts(tmp_path)
+    generation_block = _write_audit_generator(tmp_path)
+
+    scripts_dir = tmp_path / "scripts"
+    helper_dir = scripts_dir / "stopdff_dp"
+    helper_dir.mkdir(parents=True, exist_ok=True)
+    dp_script = scripts_dir / "compute_stopdff_dp.py"
+    dp_script.write_text("# fake DP producer\n", encoding="utf-8")
+    helper_path = helper_dir / "rewards.py"
+    helper_path.write_text("# original helper\n", encoding="utf-8")
+    original_helper_sha = _sha_file(helper_path)
+
+    dp_artifact = exports / "stopdff_dp.json"
+    dp_payload = {
+        "metadata": {
+            "generation": {
+                "helper_sha256s": {
+                    "scripts/stopdff_dp/rewards.py": original_helper_sha
+                }
+            }
+        }
+    }
+    dp_artifact.write_text(json.dumps(dp_payload), encoding="utf-8")
+    provenance["stopdff_dp.json"] = {
+        "recorded_sha256": _sha_file(dp_script),
+        "script_path": "scripts/compute_stopdff_dp.py",
+        "content_sha256": _sha_file(dp_artifact),
+    }
+
+    # The artifact and producer still match, but the helper changed after
+    # generation, so the release verifier must reject it.
+    helper_path.write_text("# edited helper\n", encoding="utf-8")
+
+    (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    _bind_markdown(generation_block, exports / "audit_card.md")
+    audit = {
+        "metrics": [
+            {
+                "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+                "verdict": "warn",
+                "details": {},
+            }
+        ],
+        "metadata": {"generation": generation_block},
+        "artifact_provenance": provenance,
+        "data_provenance": {},
+    }
+    (exports / "audit_card.json").write_text(
+        json.dumps(audit), encoding="utf-8"
+    )
+
+    assert (
+        main(
+            [
+                "--paper-exports",
+                str(exports),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+
+
 def test_verify_audit_release_flags_source_content_drift(tmp_path: Path) -> None:
     exports = tmp_path / "paper_exports"
     _populate_required_exports(exports)
