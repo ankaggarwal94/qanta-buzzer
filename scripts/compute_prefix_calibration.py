@@ -454,6 +454,20 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "test-subset metric."
         ),
     )
+    parser.add_argument(
+        "--fit-split",
+        choices=["val", "train"],
+        default="val",
+        help=(
+            "Split to fit Platt coefficients on. Default 'val' preserves "
+            "backward-compatible calibration.json provenance; 'train' "
+            "produces the train-fit calibration artifact a learned-value "
+            "StopDFF trainer (Prompt 5 prerequisite) requires. When "
+            "--fit-split=train, pass --output paper_exports/"
+            "calibration_train.json to avoid overwriting the val-fit "
+            "artifact backing the audit card."
+        ),
+    )
 
     return parser.parse_args(argv)
 
@@ -479,16 +493,34 @@ def main(argv: Optional[list[str]] = None) -> int:
     data_dir = Path(args.data_dir)
     output_path = Path(args.output)
 
+    # When the operator opts into a train-fit calibration AND leaves
+    # --output at the default, warn (do NOT auto-redirect): writing the
+    # train-fit artifact over paper_exports/calibration.json would
+    # invalidate the val-fit artifact that backs the audit card. The
+    # operator owns the path decision; we only surface the risk.
+    if args.fit_split == "train" and output_path.resolve() == DEFAULT_OUTPUT.resolve():
+        print(
+            "WARNING: --fit-split=train with default --output will overwrite "
+            "paper_exports/calibration.json (the val-fit artifact backing "
+            "the audit card). Consider --output "
+            "paper_exports/calibration_train.json.",
+            file=sys.stderr,
+            flush=True,
+        )
+
     # Validate data directory exists
     if not data_dir.exists():
         print(f"ERROR: Data directory not found: {data_dir}", file=sys.stderr)
         return 1
 
+    fit_split_filename = f"{args.fit_split}_dataset.json"
+
     if args.dry_run:
         print(f"[CALI] Dry run -- data_dir={data_dir}")
         print(f"[CALI] Output would be written to: {output_path}")
-        # Validate required data files exist
-        required = ["mc_dataset.json", "val_dataset.json", "test_dataset.json"]
+        print(f"[CALI] Fit split: {args.fit_split} (file: {fit_split_filename})")
+        # Validate required data files exist (only the selected fit split).
+        required = ["mc_dataset.json", fit_split_filename, "test_dataset.json"]
         for fname in required:
             fpath = data_dir / fname
             exists = fpath.exists()
@@ -511,9 +543,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     with open(mc_path, "r", encoding="utf-8") as f:
         mc_questions = json.load(f)
 
-    val_path = data_dir / "val_dataset.json"
+    # Load the configured fit split. Default --fit-split=val preserves
+    # backward-compatible behavior; --fit-split=train loads the train
+    # dataset so a learned-value StopDFF trainer can consume a
+    # leakage-free train-fit calibration artifact (Prompt 5).
+    val_path = data_dir / fit_split_filename
     if not val_path.exists():
-        print(f"ERROR: Val dataset not found: {val_path}", file=sys.stderr)
+        print(
+            f"ERROR: Fit-split dataset not found: {val_path} "
+            f"(--fit-split={args.fit_split})",
+            file=sys.stderr,
+        )
         return 1
 
     with open(val_path, "r", encoding="utf-8") as f:
@@ -649,7 +689,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     val_retention_meta = build_retention_metadata(
         build_metadata,
-        split="val",
+        split=args.fit_split,
         smoke=args.smoke,
         explicit_threshold=args.min_mc_retention,
         override=args.allow_low_mc_retention,
@@ -884,7 +924,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         threshold=args.min_mc_coverage,
         override=args.allow_incomplete_mc_coverage,
     )
-    val_coverage_metadata["split"] = "val"
+    val_coverage_metadata["split"] = args.fit_split
     test_coverage_metadata = build_coverage_metadata(
         test_coverage,
         threshold=args.min_mc_coverage,
@@ -913,11 +953,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             "empty": empty_buckets,
         },
         "mc_coverage": {
-            "val": val_coverage_metadata,
+            args.fit_split: val_coverage_metadata,
             "test": test_coverage_metadata,
         },
         "mc_retention_gate": {
-            "val": val_retention_meta,
+            args.fit_split: val_retention_meta,
             "test": test_retention_meta,
         },
         "mc_build_metadata": {
@@ -929,6 +969,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             "seed": SEED,
             "n_val": len(mc_val),
             "n_test": len(mc_test),
+            "n_fit": len(mc_val),
+            "fit_split": args.fit_split,
             "model": "all-MiniLM-L6-v2",
             "n_bins": 10,
             "platt_C": 1.0,
