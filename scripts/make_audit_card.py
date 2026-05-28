@@ -958,10 +958,22 @@ def _build_artifact_provenance(
             if helper_mismatches:
                 match = False
 
+        # Bind the audit card to the exact bytes of the source JSON it just
+        # aggregated, so a release verifier can detect cards that were
+        # generated against an earlier revision of the source artifacts.
+        source_path = _PAPER_EXPORTS / name
+        try:
+            content_sha = (
+                sha256_file(source_path) if source_path.exists() else None
+            )
+        except OSError:
+            content_sha = None
+
         out[name] = {
             "recorded_commit": recorded_commit,
             "recorded_sha256": recorded_sha,
             "current_sha256": current_sha,
+            "content_sha256": content_sha,
             "script_path": str(script_path.relative_to(_REPO_ROOT))
             if script_path.exists() and script_path.is_absolute()
             else None,
@@ -1191,7 +1203,23 @@ def main_with_args(argv: list[str] | None = None) -> int:
         ],
     )
 
-    # Write outputs
+    # Write outputs. Write Markdown first so we can record its content
+    # SHA into the JSON's generation block, binding the human-readable
+    # card to the same render. Otherwise audit_card.md could be left
+    # stale from an older run or hand-edited and the verifier would have
+    # no way to tell.
+    from scripts._common import sha256_file as _sha256_file
+
+    md_path = _write_audit_card_md(
+        metrics,
+        overall_verdict,
+        data_provenance=data_provenance,
+        overall_verdict_qualifier=overall_verdict_qualifier,
+        artifact_provenance=artifact_provenance,
+    )
+    generation["markdown_path"] = "paper_exports/audit_card.md"
+    generation["markdown_sha256"] = _sha256_file(md_path)
+
     json_path = _write_audit_card_json(
         metrics,
         overall_verdict,
@@ -1199,13 +1227,6 @@ def main_with_args(argv: list[str] | None = None) -> int:
         overall_verdict_qualifier=overall_verdict_qualifier,
         artifact_provenance=artifact_provenance,
         generation=generation,
-    )
-    md_path = _write_audit_card_md(
-        metrics,
-        overall_verdict,
-        data_provenance=data_provenance,
-        overall_verdict_qualifier=overall_verdict_qualifier,
-        artifact_provenance=artifact_provenance,
     )
 
     # Print summary
