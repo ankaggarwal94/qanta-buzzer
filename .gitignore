@@ -25,6 +25,7 @@ artifacts/*/answer_profiles.json
 # Exclude all non-smoke artifact directories entirely;
 # smoke/ is small enough to serve as CI reference output
 artifacts/main/
+artifacts/device2/
 artifacts/k[0-9]*/
 artifacts/distractor_*/
 
