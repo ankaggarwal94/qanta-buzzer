@@ -215,7 +215,7 @@ def _sha256_file(path: Path) -> str:
 def _display_path(path: Path) -> str:
     """Return a stable project-relative path when possible."""
     try:
-        return str(path.resolve().relative_to(PROJECT_ROOT.resolve()))
+        return path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
     except ValueError:
         return str(path)
 
