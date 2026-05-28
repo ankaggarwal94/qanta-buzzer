@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -22,16 +23,50 @@ EXPECTED_PRODUCERS: dict[str, str] = {
     "csli.json": "scripts/compute_csli.py",
     "calibration.json": "scripts/compute_prefix_calibration.py",
     "stopdff.json": "scripts/compute_stopdff.py",
+    "stopdff_dp.json": "scripts/compute_stopdff_dp.py",
 }
+REQUIRED_PROVENANCE_KEYS = frozenset(
+    {"csli.json", "calibration.json", "stopdff.json"}
+)
 
 # Canonical generator for the audit card itself, per ARTIFACTS.md.
 EXPECTED_AUDIT_CARD_GENERATOR = "scripts/make_audit_card.py"
 
+_TEXT_HASH_SUFFIXES = frozenset(
+    {
+        ".cfg",
+        ".csv",
+        ".gitattributes",
+        ".gitignore",
+        ".json",
+        ".md",
+        ".py",
+        ".rst",
+        ".sh",
+        ".sha256",
+        ".tex",
+        ".toml",
+        ".tsv",
+        ".txt",
+        ".yaml",
+        ".yml",
+    }
+)
+
+
+def _canonical_hash_bytes(path: Path, data: bytes) -> bytes:
+    if path.suffix.lower() not in _TEXT_HASH_SUFFIXES:
+        return data
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
 
 def sha256_file(path: Path) -> str:
-    from scripts._common import sha256_file as common_sha256_file
-
-    return common_sha256_file(path)
+    payload = _canonical_hash_bytes(path, path.read_bytes())
+    return hashlib.sha256(payload).hexdigest()
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -156,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     artifact_provenance = audit.get("artifact_provenance", {})
-    expected_provenance_keys = set(EXPECTED_PRODUCERS)
+    expected_provenance_keys = set(REQUIRED_PROVENANCE_KEYS)
     missing_provenance = expected_provenance_keys - set(artifact_provenance)
     for missing in sorted(missing_provenance):
         errors.append(

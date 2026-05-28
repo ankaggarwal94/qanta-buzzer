@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import hashlib
 import importlib
 import json
@@ -532,6 +533,55 @@ def test_verify_audit_release_flags_non_canonical_producer(tmp_path: Path) -> No
     )
 
 
+def test_verify_audit_release_flags_non_canonical_dp_producer(
+    tmp_path: Path,
+) -> None:
+    exports = tmp_path / "paper_exports"
+    _populate_required_exports(exports)
+    _write_threshold_manifest(tmp_path)
+    provenance = _write_producer_scripts(tmp_path)
+    generation_block = _write_audit_generator(tmp_path)
+
+    helper_body = "# non-canonical DP producer helper\n"
+    helper_path = tmp_path / "scripts/helper.py"
+    helper_path.write_text(helper_body, encoding="utf-8")
+    (exports / "stopdff_dp.json").write_text("{}", encoding="utf-8")
+    provenance["stopdff_dp.json"] = {
+        "recorded_sha256": _sha(helper_body),
+        "script_path": "scripts/helper.py",
+        "content_sha256": _sha("{}"),
+    }
+
+    (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    _bind_markdown(generation_block, exports / "audit_card.md")
+    audit = {
+        "metrics": [
+            {
+                "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+                "verdict": "warn",
+                "details": {},
+            }
+        ],
+        "metadata": {"generation": generation_block},
+        "artifact_provenance": provenance,
+        "data_provenance": {},
+    }
+    (exports / "audit_card.json").write_text(
+        json.dumps(audit), encoding="utf-8"
+    )
+
+    assert (
+        main(
+            [
+                "--paper-exports",
+                str(exports),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+
 
 def test_verify_audit_release_flags_source_content_drift(tmp_path: Path) -> None:
     exports = tmp_path / "paper_exports"
@@ -708,6 +758,31 @@ def test_provenance_hash_helpers_are_stable_across_text_line_endings(
     ]
     for helper in helpers:
         assert helper(lf_path) == helper(crlf_path)
+
+
+def test_verify_audit_release_hash_stays_independent_of_common_imports(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from scripts import verify_audit_release
+
+    sys.modules.pop("scripts._common", None)
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "scripts._common" or name.startswith("scripts._common."):
+            raise AssertionError("verify_audit_release imported scripts._common")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    lf_path = tmp_path / "producer_lf.py"
+    crlf_path = tmp_path / "producer_crlf.py"
+    lf_path.write_bytes(b"print('audit provenance')\n")
+    crlf_path.write_bytes(b"print('audit provenance')\r\n")
+
+    assert verify_audit_release.sha256_file(lf_path) == (
+        verify_audit_release.sha256_file(crlf_path)
+    )
 
 
 def test_provenance_hash_keeps_binary_line_ending_bytes_distinct(
