@@ -2,8 +2,8 @@
 
 Adapter columns (frozen by ``types.ADAPTER_COLUMNS``):
     subject, item_id, prefix_idx, prefix_fraction, format, split,
-    p_raw, p_calibrated, correct, top_answer, gold,
-    category, option_set_id
+    p_raw, p_calibrated, p_second_best, top2_margin, correct,
+    top_answer, gold, category, K, option_set_id, distractor_strategy
 
 ``prefix_fraction`` = ``len(prefix) / len(full_question)`` — matches the
 existing calibration / myopic-StopDFF convention and is used directly by
@@ -21,6 +21,17 @@ The ``correct`` column for QA rows is ALWAYS 1 by construction — the
 QA condition simulates "the model knows the gold answer text", mirroring
 ``compute_stopdff.compute_stop_step_nonmc``. Downstream consumers must
 not treat ``correct`` as a per-format accuracy signal for QA rows.
+
+``p_second_best`` and ``top2_margin`` are 0.0 by construction for QA
+rows — QA has no multi-option distribution so there is no meaningful
+second-best similarity. MC rows carry the actual second-highest
+cosine similarity and the (max - second) margin so the learned-value
+trainer can condition on top-2 ambiguity.
+
+``K`` mirrors ``len(options)`` and is item-level (applies to MC and QA
+rows alike). ``distractor_strategy`` is a pass-through string from the
+upstream MC question dict; defaults to ``"unknown"`` when absent so
+older fixtures stay loadable.
 
 The adapter never touches the test split when fitting calibrators or
 continuation buckets — those are caller responsibilities and the
@@ -177,13 +188,28 @@ def _score_question(
     option_set_id = f"{qid}:K{len(options)}"
     full_len = max(1, len(full_q))
 
+    distractor_strategy = str(question.get("distractor_strategy", "unknown"))
+    K = int(len(options))
+
     if identity_calibration:
         # Test-only branch: replace SBERT cosine with a deterministic
-        # synthetic signal so unit tests do not need the model.
+        # synthetic signal so unit tests do not need the model. The
+        # synthetic values for ``p_second_best`` / ``top2_margin``
+        # satisfy the column-shape contract but are not meant to be
+        # scientifically meaningful — they're chosen so the
+        # ``top2_margin == p_raw - p_second_best`` invariant still
+        # holds for MC rows under identity calibration.
+        #
+        # ``distractor_strategy`` and ``K`` are passed through from the
+        # upstream question dict (not synthesized) so callers can
+        # verify pass-through behavior end-to-end without needing the
+        # live SBERT branch.
         for t, prefix in enumerate(prefixes):
             prefix_fraction = len(prefix) / full_len
             p_mc = max(0.0, min(1.0, 0.3 + 0.5 * prefix_fraction))
             p_qa = max(0.0, min(1.0, 0.2 + 0.5 * prefix_fraction))
+            mc_second_best = max(0.0, p_mc - 0.1)
+            mc_top2_margin = p_mc - mc_second_best
             rows.append({
                 "subject": f"sbert:{category}",
                 "item_id": qid,
@@ -193,11 +219,15 @@ def _score_question(
                 "split": None,  # caller stamps split
                 "p_raw": p_mc,
                 "p_calibrated": p_mc,
+                "p_second_best": mc_second_best,
+                "top2_margin": mc_top2_margin,
                 "correct": int(t % 2 == 0),  # deterministic synthetic pattern
                 "top_answer": gold_text if t % 2 == 0 else "synthetic_distractor",
                 "gold": gold_text,
                 "category": category,
+                "K": K,
                 "option_set_id": option_set_id,
+                "distractor_strategy": distractor_strategy,
             })
             rows.append({
                 "subject": f"sbert:{category}",
@@ -208,11 +238,15 @@ def _score_question(
                 "split": None,
                 "p_raw": p_qa,
                 "p_calibrated": p_qa,
+                "p_second_best": 0.0,
+                "top2_margin": 0.0,
                 "correct": 1,
                 "top_answer": gold_text,
                 "gold": gold_text,
                 "category": category,
+                "K": K,
                 "option_set_id": option_set_id,
+                "distractor_strategy": distractor_strategy,
             })
         return rows
 
@@ -235,6 +269,14 @@ def _score_question(
         mc_sims = cosine_similarity(prefix_emb, option_embs)[0]
         max_sim = float(np.max(mc_sims))
         predicted_idx = int(np.argmax(mc_sims))
+        # Top-2 margin: O(K) via partial sort. Defensive single-option
+        # branch (shouldn't happen for the K=4 contract but stays sane
+        # if a downstream caller passes a degenerate question dict).
+        if len(mc_sims) >= 2:
+            second_best = float(np.partition(mc_sims, -2)[-2])
+        else:
+            second_best = 0.0
+        top2_margin = float(max_sim - second_best)
         rows.append({
             "subject": f"sbert:{category}",
             "item_id": qid,
@@ -244,14 +286,19 @@ def _score_question(
             "split": None,
             "p_raw": max_sim,
             "p_calibrated": _platt(max_sim, coef, intercept),
+            "p_second_best": second_best,
+            "top2_margin": top2_margin,
             "correct": int(predicted_idx == gold_index),
             "top_answer": options[predicted_idx],
             "gold": gold_text,
             "category": category,
+            "K": K,
             "option_set_id": option_set_id,
+            "distractor_strategy": distractor_strategy,
         })
 
-        # QA: similarity to answer_primary only.
+        # QA: similarity to answer_primary only. p_second_best /
+        # top2_margin are 0.0 by construction — see module docstring.
         qa_sim = float(cosine_similarity(prefix_emb, answer_emb)[0][0])
         rows.append({
             "subject": f"sbert:{category}",
@@ -262,11 +309,15 @@ def _score_question(
             "split": None,
             "p_raw": qa_sim,
             "p_calibrated": _platt(qa_sim, coef, intercept),
+            "p_second_best": 0.0,
+            "top2_margin": 0.0,
             "correct": 1,  # QA "top answer" is always the gold by construction
             "top_answer": question["answer_primary"],
             "gold": gold_text,
             "category": category,
+            "K": K,
             "option_set_id": option_set_id,
+            "distractor_strategy": distractor_strategy,
         })
 
     return rows

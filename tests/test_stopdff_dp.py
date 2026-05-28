@@ -505,7 +505,7 @@ def _fake_mc_question(qid: str, gold_text: str = "George Washington") -> dict:
 
 
 def test_adapter_produces_canonical_columns(monkeypatch) -> None:
-    """The adapter must yield a dataframe with the canonical column set."""
+    """The adapter must yield a dataframe with the canonical 17-column set."""
     fake_questions = [_fake_mc_question("q1")]
     df = adapter_module.build_dataframe(
         mc_questions=fake_questions,
@@ -516,8 +516,106 @@ def test_adapter_produces_canonical_columns(monkeypatch) -> None:
     )
     from scripts.stopdff_dp.types import ADAPTER_COLUMNS
     assert list(df.columns) == list(ADAPTER_COLUMNS)
+    assert len(ADAPTER_COLUMNS) == 17
     # Two rows per (qid, prefix) per format -> 2 prefixes * 2 formats = 4.
     assert len(df) == 4
+    # The five trainer-required additions must all be present.
+    for new_col in (
+        "prefix_fraction", "p_second_best", "top2_margin",
+        "K", "distractor_strategy",
+    ):
+        assert new_col in df.columns
+
+
+def test_adapter_top2_margin_is_p_raw_minus_p_second_best() -> None:
+    """For MC rows, the top-2 margin must equal p_raw - p_second_best.
+
+    Identity-calibration mode emits synthetic values for the new columns
+    but still respects the invariant — both the synthetic and the live
+    SBERT code path must hold ``top2_margin == p_raw - p_second_best``
+    for MC rows.
+    """
+    fake_questions = [_fake_mc_question("q1")]
+    df = adapter_module.build_dataframe(
+        mc_questions=fake_questions,
+        target_qids={"q1"},
+        split_name="val",
+        calibration_path=None,
+        identity_calibration=True,
+    )
+    mc_rows = df[df["format"] == "MC"]
+    assert len(mc_rows) >= 1
+    for _, row in mc_rows.iterrows():
+        assert row["top2_margin"] == pytest.approx(
+            row["p_raw"] - row["p_second_best"], abs=1e-9
+        )
+
+
+def test_adapter_K_column_matches_option_count() -> None:
+    """``K`` must equal ``len(options)`` for every row of a question."""
+    fake_questions = [_fake_mc_question("q1")]
+    # The fixture builds a K=4 question; pin both K=4 and the column.
+    assert len(fake_questions[0]["options"]) == 4
+    df = adapter_module.build_dataframe(
+        mc_questions=fake_questions,
+        target_qids={"q1"},
+        split_name="val",
+        calibration_path=None,
+        identity_calibration=True,
+    )
+    assert (df["K"] == 4).all()
+
+
+def test_adapter_distractor_strategy_flows_through() -> None:
+    """A custom distractor_strategy on the upstream question must pass through.
+
+    Both identity_calibration and the live SBERT branches read the
+    string from ``question.get("distractor_strategy", "unknown")``. The
+    identity branch was kept pass-through (not hard-coded ``synthetic``)
+    specifically so this contract can be exercised without the SBERT
+    model.
+    """
+    q = _fake_mc_question("q1")
+    q["distractor_strategy"] = "hard_negatives"
+    df = adapter_module.build_dataframe(
+        mc_questions=[q],
+        target_qids={"q1"},
+        split_name="val",
+        calibration_path=None,
+        identity_calibration=True,
+    )
+    assert (df["distractor_strategy"] == "hard_negatives").all()
+
+
+def test_adapter_distractor_strategy_defaults_to_unknown_when_absent() -> None:
+    """Missing distractor_strategy must default to ``"unknown"``, not raise."""
+    q = _fake_mc_question("q1")
+    q.pop("distractor_strategy", None)
+    df = adapter_module.build_dataframe(
+        mc_questions=[q],
+        target_qids={"q1"},
+        split_name="val",
+        calibration_path=None,
+        identity_calibration=True,
+    )
+    assert (df["distractor_strategy"] == "unknown").all()
+
+
+def test_adapter_prefix_fraction_column_matches_local_computation() -> None:
+    """prefix_fraction must equal len(prefix) / len(full_question) per row."""
+    q = _fake_mc_question("q1")
+    full_len = max(1, len(q["question"]))
+    df = adapter_module.build_dataframe(
+        mc_questions=[q],
+        target_qids={"q1"},
+        split_name="val",
+        calibration_path=None,
+        identity_calibration=True,
+    )
+    for _, row in df.iterrows():
+        prefix = q["cumulative_prefixes"][int(row["prefix_idx"])]
+        expected = len(prefix) / full_len
+        assert row["prefix_fraction"] == pytest.approx(expected, abs=1e-12)
 
 
 def test_adapter_fit_eval_split_separation_raises_on_overlap() -> None:
