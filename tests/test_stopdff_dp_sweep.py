@@ -100,6 +100,20 @@ def test_default_axes_cover_requested_sweep() -> None:
     }
 
 
+def test_cell_id_hashes_fingerprint_without_entrypoint_import_error() -> None:
+    from scripts import sweep_stopdff_dp
+
+    cell = {
+        "reward_schedule": "acf_flat",
+        "continuation": "empirical_bucket",
+        "calibrator": "uncalibrated",
+    }
+    cid = sweep_stopdff_dp._cell_id(cell, {"schema_version": 5})
+
+    assert cid.endswith("_acf_flat_empirical_bucket_uncalibrated")
+    assert len(cid.split("_", 1)[0]) == 16
+
+
 def test_tiny_sweep_writes_aggregate_files_and_figures(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     _write_tiny_data(data_dir)
