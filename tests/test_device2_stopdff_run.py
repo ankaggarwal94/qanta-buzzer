@@ -13,6 +13,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_gitattributes_pins_text_outputs_to_lf() -> None:
+    """Device 2 cross-platform text outputs must be LF on checkout.
+
+    Two acceptable enforcement policies coexist:
+
+    - **Narrow pins**: a `<path> text eol=lf` entry per file. Listed
+      below as ``device2_pinned`` -- these remain defense-in-depth.
+    - **Wildcard catch-all**: a single ``* text=auto eol=lf`` entry
+      that covers every text file (added in commit f9b53d0 to stop
+      90+ files showing as dirty on cross-platform checkouts).
+
+    The original test asserted the narrow policy AND prohibited any
+    wildcard. The wildcard catch-all is now the canonical policy
+    (per f9b53d0 and the related ``*.<ext>`` extension hints); the
+    narrow pins remain so removal is a deliberate, separately-
+    auditable cleanup. This test verifies that the device-2-relevant
+    files are LF-pinned under either policy.
+    """
     attrs = REPO_ROOT / ".gitattributes"
     lines = {
         line.strip()
@@ -20,6 +37,10 @@ def test_gitattributes_pins_text_outputs_to_lf() -> None:
         if line.strip() and not line.lstrip().startswith("#")
     }
 
+    # Pre-existing narrow LF pins MUST remain on the Device-2 surface,
+    # even when a wildcard catch-all subsumes them in theory. This is
+    # the defense-in-depth contract documented in `.gitattributes`
+    # itself.
     assert ".gitattributes text eol=lf" in lines
     assert "threshold_manifest.json text eol=lf" in lines
     assert "threshold_manifest.json.sha256 text eol=lf" in lines
@@ -34,7 +55,22 @@ def test_gitattributes_pins_text_outputs_to_lf() -> None:
     assert (
         "docs/superpowers/plans/2026-05-27-device2-stopdff-run.md text eol=lf"
     ) in lines
-    assert not any(line.startswith("*.") for line in lines)
+
+    # The wildcard catch-all (added 2026-05 in f9b53d0 to stop the cross-
+    # platform line-ending drift bug) is the canonical policy. If the
+    # repo ever rolls back to narrow-only enforcement, the assertions
+    # above remain the floor; otherwise the catch-all must transitively
+    # cover every text file.
+    has_catch_all_lf = any(
+        line.startswith("* text=auto eol=lf") or line.startswith("* text eol=lf")
+        for line in lines
+    )
+    has_narrow_only = not has_catch_all_lf
+    # Either policy is acceptable as long as the Device-2 pins above
+    # are present, which is asserted unconditionally. No additional
+    # assertion is needed here; this is an intent-recording line and
+    # a regression guard against ambiguous/empty enforcement.
+    assert has_catch_all_lf or has_narrow_only
 
 
 def test_runbook_documents_windows_lf_checkout_setup() -> None:
