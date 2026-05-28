@@ -1,3 +1,82 @@
+# Default: auto-detect text vs binary; force LF on checkout for every text file.
+# This stops cross-platform line-ending drift (Device 2 Windows CRLF vs macOS LF
+# vs Modal Linux LF) from showing as a 90+ file working-tree diff every time
+# the repo is touched on a different host. Pre-existing narrow LF pins are kept
+# below as defense-in-depth.
+* text=auto eol=lf
+
+# Explicit text declarations (some tools/IDEs still benefit from explicit hints)
+*.py text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.md text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.cfg text eol=lf
+*.ini text eol=lf
+*.tex text eol=lf
+*.bib text eol=lf
+*.sty text eol=lf
+*.cls text eol=lf
+*.txt text eol=lf
+*.csv text eol=lf
+*.tsv text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+Makefile text eol=lf
+Dockerfile text eol=lf
+.gitignore text eol=lf
+.env.example text eol=lf
+
+# Explicit binary declarations (prevents auto-detect from line-end-mangling them)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.tar.gz binary
+*.tgz binary
+*.gz binary
+*.bz2 binary
+*.7z binary
+*.pkl binary
+*.pickle binary
+*.pt binary
+*.pth binary
+*.bin binary
+*.npy binary
+*.npz binary
+*.safetensors binary
+*.onnx binary
+*.tflite binary
+*.parquet binary
+*.feather binary
+*.arrow binary
+*.so binary
+*.dylib binary
+*.dll binary
+*.exe binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.ico binary
+*.mp3 binary
+*.mp4 binary
+*.wav binary
+*.mov binary
+
+# Pre-existing narrow LF pins (defense-in-depth; redundant with catch-all but
+# kept so removal can be done in a separate cleanup commit if desired)
 .gitattributes text eol=lf
 threshold_manifest.json text eol=lf
 threshold_manifest.json.sha256 text eol=lf
@@ -7,3 +86,6 @@ docs/device2_stopdff_runbook.md text eol=lf
 docs/superpowers/plans/2026-05-27-device2-cross-platform-hardening.md text eol=lf
 docs/superpowers/plans/2026-05-27-device2-stopdff-run.md text eol=lf
 tests/test_device2_stopdff_run.py text eol=lf
+
+# Files Windows-side tooling specifically requires CRLF (none currently;
+# add *.bat or *.cmd here if any are introduced)
