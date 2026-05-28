@@ -1,7 +1,7 @@
 {
   "metadata": {
     "metric_type": "finite_horizon_dp_sweep",
-    "timestamp": "2026-05-28T00:58:34.424629+00:00",
+    "timestamp": "2026-05-28T01:03:25.800034+00:00",
     "argv": [
       "--identity-calibration",
       "--smoke",
@@ -51,7 +51,7 @@
       "format_condition": "MC-fixed",
       "prefix_bucketing": "early_mid_late",
       "subject_pooling": "pooled_subject",
-      "git_commit": "35e4430e12816b0940363b4763acf9801a1b30e0",
+      "git_commit": "cf73eb3cd331cf1f1fbda36fe47659a0f68c4d31",
       "git_dirty": false,
       "argv": [
         "--identity-calibration",
@@ -99,7 +99,7 @@
         "smoke": true,
         "seed": 1,
         "num_bootstrap": 8,
-        "script_sha256": "80886d2c4975fc4d8fc6a9851eb34909413799432bf33a75d5ac0a7e6f6d7dc9",
+        "script_sha256": "c8d89a07becbacd0094d563cb6338c4b5a9e6249a70457ab4467d89bab0bb6cb",
         "helper_sha256s": {
           "scripts/stopdff_dp/__init__.py": "24959f6b7a21d0a88bddfc7d35e76d99b1ac5b430f0b681e951c0c8d12e1e2e8",
           "scripts/stopdff_dp/_provenance.py": "25f88f967cde5ccb741d06a0126ed3514aa2f83761c668371045e763b4424caa",
@@ -113,10 +113,10 @@
           "scripts/_audit_gates.py": "fc5b6900024d02f44508eef8a78c482f78bcc3e5c5b8f998f4ab051e506007da",
           "scripts/_common.py": "c84789a3338174f7416509d1501116c86d69a0fe9f40039da8a8dede46c33f21"
         },
-        "git_commit": "35e4430e12816b0940363b4763acf9801a1b30e0",
+        "git_commit": "cf73eb3cd331cf1f1fbda36fe47659a0f68c4d31",
         "out_parent": "paper_exports"
       },
-      "started_at": "2026-05-28T00:58:34.201621+00:00",
+      "started_at": "2026-05-28T01:03:25.558409+00:00",
       "status": "completed",
       "calibration": {
         "method": "uncalibrated",
@@ -222,14 +222,14 @@
       "gate_verdict_reason": "ceiling_effect",
       "confirmatory_included": true,
       "confirmatory": true,
-      "wall_clock_seconds": 0.22110986709594727,
-      "completed_at": "2026-05-28T00:58:34.422731+00:00",
-      "cell_id": "d9a9ea2ea2fa08a1_acf_flat_empirical_bucket_uncalibrated",
-      "cache_path": "paper_exports/stopdff_dp_sweep_cells/d9a9ea2ea2fa08a1_acf_flat_empirical_bucket_uncalibrated.json"
+      "wall_clock_seconds": 0.23056364059448242,
+      "completed_at": "2026-05-28T01:03:25.788972+00:00",
+      "cell_id": "73bd62cb00b799da_acf_flat_empirical_bucket_uncalibrated",
+      "cache_path": "paper_exports/stopdff_dp_sweep_cells/73bd62cb00b799da_acf_flat_empirical_bucket_uncalibrated.json"
     }
   ],
   "confirmatory_cells": [
-    "d9a9ea2ea2fa08a1_acf_flat_empirical_bucket_uncalibrated"
+    "73bd62cb00b799da_acf_flat_empirical_bucket_uncalibrated"
   ],
   "mc_coverage": {
     "test": {
