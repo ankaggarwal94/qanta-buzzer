@@ -134,31 +134,76 @@
           }
         }
       }
+    },
+    {
+      "name": "DP StopDFF (Finite-Horizon Bellman, signed median)",
+      "value": 0.0,
+      "value_display": "+0.0000",
+      "threshold": 1,
+      "threshold_criterion": "|signed_median_stopdff| <= 1",
+      "observed_criterion_value": 0.0,
+      "direction": "warn_if_above",
+      "verdict": "warn",
+      "verdict_qualifier": "fraction_pooled=0.290 > 0.05",
+      "details": {
+        "reward_schedule": "power_mark",
+        "continuation_estimator": "empirical_bucket",
+        "fit_split": "val",
+        "eval_split": "test",
+        "coverage": {
+          "n_cells": 314,
+          "fraction_exact": 0.7101910828025477,
+          "fraction_pooled": 0.2898089171974522,
+          "fraction_missing": 0.0,
+          "verdict": "warn",
+          "reason": "fraction_pooled=0.290 > 0.05"
+        },
+        "ceiling_flags": {
+          "all_stop_at_first_prefix": false,
+          "all_stop_at_final_prefix": false,
+          "no_cross_format_stopping_variance": false,
+          "n_items": 30,
+          "n_stopped_cells": 57,
+          "n_never_stopped_cells": 3,
+          "empty": false
+        },
+        "n_items": 30,
+        "direction_breakdown": {
+          "mc_earlier": 5,
+          "qa_earlier": 1,
+          "same_step": 24
+        },
+        "confirmatory": true,
+        "metric_type": "finite_horizon_dp"
+      }
     }
   ],
   "overall_verdict": "WARN",
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-28T00:54:13.603855+00:00",
+    "timestamp": "2026-05-28T01:28:15.901162+00:00",
     "threshold_source": "threshold_manifest.json",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-28T00:54:13.601855+00:00",
+      "generated_at_utc": "2026-05-28T01:28:15.899161+00:00",
       "command": [
         "python",
-        "scripts/make_audit_card.py"
+        "scripts/make_audit_card.py",
+        "--include-dp-stopdff"
       ],
-      "argv": [],
+      "argv": [
+        "--include-dp-stopdff"
+      ],
       "cwd": ".",
       "output_path": "paper_exports/audit_card.json",
       "script_path": "scripts/make_audit_card.py",
-      "script_sha256": "b579dbcd11f928bd0f603754fe12dc63fb44532130346c1ff0b6f80c11fe5576",
-      "git_commit": "1cf22615c806f9ac5a128a6040cf839f4447f57d",
+      "script_sha256": "0ff013026020fd3edc15710f9520898d2bc990a986e0ae8880308b7393ab414d",
+      "git_commit": "6bc6c239761fc58166a812a7e2cf9b778de5c1aa",
       "git_dirty": false,
       "git_status_relevant_paths": "",
       "markdown_path": "paper_exports/audit_card.md",
-      "markdown_sha256": "2b8e71094f8a5c5979dcca937c51f981f3f44ad1b0230e1cd3f1d2df1a369b32"
+      "markdown_sha256": "9dcddbdcc1ca84d8e4e963a904a3c4d4fa7d43f9a6c5756b0e49643f866cdab5"
     }
   },
   "data_provenance": {
@@ -231,6 +276,38 @@
           "applies": true
         }
       }
+    },
+    "stopdff_dp": {
+      "coverage": {
+        "test": {
+          "rate": 1.0,
+          "threshold": 0.98,
+          "passed": true,
+          "overridden": false
+        },
+        "val": {
+          "rate": 1.0,
+          "threshold": 0.98,
+          "passed": true,
+          "overridden": false
+        }
+      },
+      "retention": {
+        "test": {
+          "rate": 0.7274484536082474,
+          "threshold": 0.5,
+          "passed": true,
+          "overridden": false,
+          "applies": true
+        },
+        "val": {
+          "rate": 0.7048371174728529,
+          "threshold": 0.5,
+          "passed": true,
+          "overridden": false,
+          "applies": true
+        }
+      }
     }
   },
   "artifact_provenance": {
@@ -258,6 +335,15 @@
       "current_sha256": "fc837e739fa32a493ef621c7137fd759bad08ff49966e6eb1e1aa433ae7f7251",
       "content_sha256": "86fd80d4bc994dabe37e450a027c98732d21d3c792724cbeec06be794baae0f8",
       "script_path": "scripts/compute_stopdff.py",
+      "sha_matches": true,
+      "helper_mismatches": null
+    },
+    "stopdff_dp.json": {
+      "recorded_commit": "eaabf83527b938df3c3c1bd4b2113e0e331032ce",
+      "recorded_sha256": "a9cbf6bfeb926facf91d79470139ef5a94b0de28c2448143c971b0c324217de0",
+      "current_sha256": "a9cbf6bfeb926facf91d79470139ef5a94b0de28c2448143c971b0c324217de0",
+      "content_sha256": "facb23ea60bb6ba90ab1bce344d664ec554872c454e44c0e4bec9c67f2531eae",
+      "script_path": "scripts/compute_stopdff_dp.py",
       "sha_matches": true,
       "helper_mismatches": null
     }
