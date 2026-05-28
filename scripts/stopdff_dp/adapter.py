@@ -42,10 +42,17 @@ _SBERT_MODEL = None
 
 
 def validate_split_separation(*, fit_split: str, eval_split: str) -> None:
-    if fit_split == eval_split:
+    fit_name = fit_split.strip().lower()
+    eval_name = eval_split.strip().lower()
+    if fit_name == eval_name:
         raise ValueError(
             "fit and eval split must differ to avoid leakage; "
             f"got fit_split={fit_split!r}, eval_split={eval_split!r}."
+        )
+    if fit_name == "test":
+        raise ValueError(
+            "fit_split must not be test; test data is reserved for final "
+            f"evaluation only (got eval_split={eval_split!r})."
         )
 
 

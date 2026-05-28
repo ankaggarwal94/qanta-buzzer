@@ -489,6 +489,14 @@ def test_adapter_fit_eval_split_separation_raises_on_overlap() -> None:
         )
 
 
+def test_adapter_split_separation_rejects_test_as_fit_split() -> None:
+    """The confirmatory DP path must never fit continuation on test."""
+    with pytest.raises(ValueError, match="fit_split must not be test"):
+        adapter_module.validate_split_separation(
+            fit_split="TEST", eval_split="val"
+        )
+
+
 import json
 from scripts.stopdff_dp import writers as writers_module
 from scripts.stopdff_dp.types import DPTrace
