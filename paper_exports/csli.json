@@ -1,33 +1,33 @@
 {
   "panel_csli": {
-    "mean": 0.003469,
-    "ci_lower": 0.0,
-    "ci_upper": 0.010778343666961914,
-    "mean_from_per_model_avg": 0.003469,
+    "mean": 0.013138333333333327,
+    "ci_lower": 0.007012105107764992,
+    "ci_upper": 0.021702465308532627,
+    "mean_from_per_model_avg": 0.013138333333333327,
     "definition": "max(0, acc_choices_only - 1/K) per model, averaged",
     "K": 4,
     "chance": 0.25
   },
   "panel_question_use_gap": {
-    "mean": 0.11366991437850603,
-    "ci_lower": 0.0994943903159138,
-    "ci_upper": 0.12607026867434307,
-    "mean_from_per_model_avg": 0.11367000000000001,
+    "mean": 0.1021552996752288,
+    "ci_lower": 0.088869205786832,
+    "ci_upper": 0.11544508414526126,
+    "mean_from_per_model_avg": 0.102155,
     "definition": "acc_full - acc_choices_only per model, averaged"
   },
   "per_model": {
     "tfidf": {
       "acc_full": 0.258636,
-      "acc_choices_only": 0.260407,
-      "csli": 0.010407,
-      "question_use_gap": -0.001771,
+      "acc_choices_only": 0.25155,
+      "csli": 0.00155,
+      "question_use_gap": 0.007086,
       "leakage_flag": false
     },
     "sbert": {
       "acc_full": 0.490257,
-      "acc_choices_only": 0.244464,
-      "csli": 0.0,
-      "question_use_gap": 0.245793,
+      "acc_choices_only": 0.287865,
+      "csli": 0.037865,
+      "question_use_gap": 0.202391,
       "leakage_flag": false
     },
     "t5-small": {
@@ -62,7 +62,7 @@
     ],
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T08:58:39.024331+00:00",
+      "generated_at_utc": "2026-05-28T00:53:57.152293+00:00",
       "command": [
         "python",
         "scripts/compute_csli.py",
@@ -80,8 +80,8 @@
       "cwd": ".",
       "output_path": "paper_exports/csli.json",
       "script_path": "scripts/compute_csli.py",
-      "script_sha256": "364d21aa07f74ee4facd8b5fc9cd795b006ea682b54128fad99e6eba46c7fcb7",
-      "git_commit": "52d72e03ca413e1e802d024bf273ac521043ceff",
+      "script_sha256": "6bcd80170ef2b7ce43557e037cf46bb6e8b5760ea5c383e37bb2d02f1c5bc20f",
+      "git_commit": "49bc757360028378a1d71ca6243250ea0df7bbc8",
       "git_dirty": false,
       "git_status_relevant_paths": ""
     },
@@ -123,7 +123,7 @@
     },
     "test_split_provenance_status": "verified",
     "test_split_provenance_path": "PROJECT_WIKI/SPLIT_PROVENANCE.md",
-    "test_split_provenance_sha256": "7ef1ca96a4d1917779375a353217d35b4719b35654b7500f011327450339ca53",
+    "test_split_provenance_sha256": "6817222841d2c06832b042c31dcaf92a592ccf966d2d68a79fe6dc385b6a59d0",
     "fresh_split_seed": 789685,
     "fresh_split_created_at": "2026-05-26T07:49:26.645424+00:00",
     "fresh_split_commit_sha": "a43be19733509c52e0820c44e322044b4304dc18",
