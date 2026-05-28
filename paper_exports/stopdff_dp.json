@@ -36,10 +36,10 @@
     "continuation_estimator": "empirical_bucket",
     "fit_split": "val",
     "eval_split": "test",
-    "timestamp": "2026-05-28T00:58:06.980728+00:00",
+    "timestamp": "2026-05-28T01:06:12.708209+00:00",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-28T00:58:06.971728+00:00",
+      "generated_at_utc": "2026-05-28T01:06:12.700212+00:00",
       "command": [
         "python",
         "scripts/compute_stopdff_dp.py",
@@ -84,13 +84,13 @@
       "output_path": "paper_exports/stopdff_dp.json",
       "script_path": "scripts/compute_stopdff_dp.py",
       "script_sha256": "a9cbf6bfeb926facf91d79470139ef5a94b0de28c2448143c971b0c324217de0",
-      "git_commit": "42d4c6cda67c5aaefbff2aceefbeb2659a509171",
+      "git_commit": "886a20f806cf208097bc149aa6a7b3abd3de86b3",
       "git_dirty": false,
       "git_status_relevant_paths": "",
       "helper_sha256s": {
         "scripts/stopdff_dp/__init__.py": "24959f6b7a21d0a88bddfc7d35e76d99b1ac5b430f0b681e951c0c8d12e1e2e8",
         "scripts/stopdff_dp/_provenance.py": "25f88f967cde5ccb741d06a0126ed3514aa2f83761c668371045e763b4424caa",
-        "scripts/stopdff_dp/adapter.py": "de2f017e442e68836633b3546b4248bfcf8acfd7970d4d3fe038643fbad88168",
+        "scripts/stopdff_dp/adapter.py": "669c60507640a57e63c4a81bc10a965f27f515401ee24cbdda2dcbdf10edb68d",
         "scripts/stopdff_dp/continuation.py": "bab68d5f21710e78bd2a799a0040d1a5115df45771dc711f4ea3d43a9b3e4718",
         "scripts/stopdff_dp/diagnostics.py": "7e130b5f99ffdbe7a998c0005e54b69b633cbdbcc309e772b16f8682cfa49f8c",
         "scripts/stopdff_dp/dp_solver.py": "ace28cab84b74da7491a619b2e936c83d968c975058d426223a2cedeffeef62c",
