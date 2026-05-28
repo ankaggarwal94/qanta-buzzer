@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import subprocess
 import sys
@@ -680,10 +681,17 @@ def test_provenance_hash_helpers_are_stable_across_text_line_endings(
     """Audit provenance hashes should not depend on checkout EOL style."""
     from scripts._audit_gates import _sha256_file as audit_gates_sha256_file
     from scripts._common import sha256_file as common_sha256_file
-    from scripts.compute_csli import _sha256_file as csli_sha256_file
     from scripts.stopdff_dp._provenance import _file_sha256 as dp_sha256_file
     from scripts.sweep_stopdff_dp import _file_sha256 as sweep_sha256_file
     from scripts.verify_audit_release import sha256_file as verify_sha256_file
+
+    controls_module = sys.modules.pop("evaluation.controls", None)
+    try:
+        csli_module = importlib.import_module("scripts.compute_csli")
+    finally:
+        if controls_module is not None:
+            sys.modules["evaluation.controls"] = controls_module
+    csli_sha256_file = csli_module._sha256_file
 
     lf_path = tmp_path / "producer_lf.py"
     crlf_path = tmp_path / "producer_crlf.py"
