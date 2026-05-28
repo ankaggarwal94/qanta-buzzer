@@ -1,9 +1,9 @@
 {
   "per_bucket": {
     "early": {
-      "ece": 0.025932,
+      "ece": 0.025933,
       "n_samples": 2553,
-      "platt_coef": 1.082711,
+      "platt_coef": 1.08271,
       "platt_intercept": -1.04211,
       "platt_model_type": "logistic",
       "platt_fallback_reason": null,
@@ -12,7 +12,7 @@
     "mid": {
       "ece": 0.005491,
       "n_samples": 3316,
-      "platt_coef": 0.322095,
+      "platt_coef": 0.322094,
       "platt_intercept": -0.683682,
       "platt_model_type": "logistic",
       "platt_fallback_reason": null,
@@ -21,8 +21,8 @@
     "late": {
       "ece": 0.026117,
       "n_samples": 5255,
-      "platt_coef": 2.720829,
-      "platt_intercept": -1.21233,
+      "platt_coef": 2.720828,
+      "platt_intercept": -1.212329,
       "platt_model_type": "logistic",
       "platt_fallback_reason": null,
       "platt_constant_probability": null
@@ -100,6 +100,8 @@
     "seed": 789685,
     "n_val": 2142,
     "n_test": 2258,
+    "n_fit": 2142,
+    "fit_split": "val",
     "model": "all-MiniLM-L6-v2",
     "n_bins": 10,
     "platt_C": 1.0,
@@ -108,10 +110,10 @@
       "mid": "[0.33, 0.66)",
       "late": "[0.66, 1.0]"
     },
-    "timestamp": "2026-05-28T02:28:58.468944+00:00",
+    "timestamp": "2026-05-28T04:48:44.347201+00:00",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-28T02:28:58.467943+00:00",
+      "generated_at_utc": "2026-05-28T04:48:44.346399+00:00",
       "command": [
         "python",
         "scripts/compute_prefix_calibration.py",
@@ -125,8 +127,8 @@
       "cwd": ".",
       "output_path": "paper_exports/calibration.json",
       "script_path": "scripts/compute_prefix_calibration.py",
-      "script_sha256": "6f47ba73b97fe88f89db0e170db48aff0fb6271eaf012b45cba046b1a7b8f7aa",
-      "git_commit": "77743dbf5909fedf8ec3d716fd283e728aabc72f",
+      "script_sha256": "2a83a6252e3b94973d80b9d8d7ee031acd6a9c6c5dbe2b4985294a5891774994",
+      "git_commit": "4541bbc36af47c79e92d588d1f6bf945da0205dc",
       "git_dirty": false,
       "git_status_relevant_paths": ""
     }
