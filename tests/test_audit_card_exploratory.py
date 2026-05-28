@@ -311,3 +311,82 @@ def test_learned_value_row_does_not_affect_overall_verdict(
     assert len(lv_rows) == 1
     assert lv_rows[0]["verdict"] == "fail"
     assert lv_rows[0]["exploratory"] is True
+
+
+# ---------------------------------------------------------------------------
+# PR #17 follow-up review (chatgpt-codex-connector #discussion_r3315393731):
+# enforce |signed_median| <= 1 threshold locally instead of copying the
+# producer's gate_verdict straight through.
+# ---------------------------------------------------------------------------
+
+
+def test_learned_value_row_warns_when_signed_median_exceeds_threshold_despite_artifact_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Producer gate_verdict=pass + |signed_median|>1 must still render warn.
+
+    Without the local threshold check, the row would show "PASS" because
+    `_evaluate_stopdff_learned_value` used to copy `gate_verdict` straight
+    through. Closes the P2 "Enforce the learned-value threshold locally"
+    review thread.
+    """
+    paper = tmp_path / "paper_exports"
+    paper.mkdir()
+    _seed_paper_exports_minimum(paper)
+    payload = _minimal_learned_value_payload(gate_verdict="pass")
+    payload["stopdff_signed_median"] = 3.0  # well above |x| <= 1
+    (paper / "stopdff_learned_value.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", paper)
+
+    rc = make_audit_card.main_with_args(["--include-learned-value-stopdff"])
+    assert rc == 0
+
+    card = json.loads((paper / "audit_card.json").read_text(encoding="utf-8"))
+    lv_rows = [
+        m for m in card["metrics"]
+        if m["name"] == "Learned-Value StopDFF (Exploratory)"
+    ]
+    assert len(lv_rows) == 1
+    row = lv_rows[0]
+    # Artifact said pass; |3.0| > 1, so the rendered verdict must be warn.
+    assert row["verdict"] == "warn"
+    # Qualifier must mention the threshold violation so a reader can attribute
+    # the downgrade to the local check rather than to the producer's gate.
+    assert row["verdict_qualifier"] is not None
+    assert "|signed_median|" in row["verdict_qualifier"]
+    assert "3.0000" in row["verdict_qualifier"]
+
+
+def test_learned_value_row_passes_when_signed_median_within_threshold_and_artifact_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Backward-compat guard: a clean artifact (pass + within threshold) still
+    renders pass. Prevents the threshold fix from inadvertently downgrading
+    legitimately-passing rows."""
+    paper = tmp_path / "paper_exports"
+    paper.mkdir()
+    _seed_paper_exports_minimum(paper)
+    payload = _minimal_learned_value_payload(gate_verdict="pass")
+    payload["stopdff_signed_median"] = 0.5  # within |x| <= 1
+    payload["gate_verdict_reason"] = None  # producer's "pass" path → no reason
+    (paper / "stopdff_learned_value.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", paper)
+
+    rc = make_audit_card.main_with_args(["--include-learned-value-stopdff"])
+    assert rc == 0
+
+    card = json.loads((paper / "audit_card.json").read_text(encoding="utf-8"))
+    lv_rows = [
+        m for m in card["metrics"]
+        if m["name"] == "Learned-Value StopDFF (Exploratory)"
+    ]
+    assert len(lv_rows) == 1
+    row = lv_rows[0]
+    assert row["verdict"] == "pass"
+    # No threshold violation → no auto-appended qualifier; producer gave no
+    # gate_verdict_reason → qualifier should be None entirely.
+    assert row["verdict_qualifier"] is None

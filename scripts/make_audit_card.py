@@ -500,8 +500,38 @@ def _evaluate_stopdff_learned_value(lv_data: dict) -> dict:
     ``metadata.{checkpoint_path, seeds, metric_type}`` shape as the DP
     artifact. The producer script (Prompt 5) will be authored against
     these names; if it diverges, this helper needs a field-name update.
+
+    PR #17 follow-up review
+    (chatgpt-codex-connector #discussion_r3315393731, P2 "Enforce the
+    learned-value threshold locally"): the producer's ``gate_verdict``
+    may only reflect coverage / model-quality checks, so we cannot copy
+    it through verbatim. Combine it with a local threshold check on
+    ``abs(signed_median) <= 1`` and take the stricter outcome — mirrors
+    ``_evaluate_stopdff_dp`` lines 441-448. ``fail`` from the producer
+    is preserved (DP's vocabulary is pass/warn-only, but learned-value
+    producers may emit fail; we never downgrade fail to warn).
     """
     signed_median = float(lv_data["stopdff_signed_median"])
+    gate_verdict = lv_data.get("gate_verdict", "warn")
+    threshold_verdict = "pass" if abs(signed_median) <= 1 else "warn"
+
+    # Stricter-outcome ladder: fail > warn > pass.
+    if gate_verdict == "fail":
+        verdict = "fail"
+    elif threshold_verdict == "warn" or gate_verdict == "warn":
+        verdict = "warn"
+    else:
+        verdict = "pass"
+
+    qualifier_parts: list[str] = []
+    existing_qualifier = lv_data.get("gate_verdict_reason")
+    if existing_qualifier:
+        qualifier_parts.append(str(existing_qualifier))
+    if threshold_verdict == "warn":
+        qualifier_parts.append(
+            f"|signed_median|={abs(signed_median):.4f} > 1"
+        )
+
     return {
         "name": "Learned-Value StopDFF (Exploratory)",
         "value": signed_median,
@@ -511,8 +541,8 @@ def _evaluate_stopdff_learned_value(lv_data: dict) -> dict:
         "threshold_provenance": "diagnostic_not_preregistered",
         "observed_criterion_value": abs(signed_median),
         "direction": "warn_if_above",
-        "verdict": lv_data.get("gate_verdict", "warn"),
-        "verdict_qualifier": lv_data.get("gate_verdict_reason"),
+        "verdict": verdict,
+        "verdict_qualifier": "; ".join(qualifier_parts) if qualifier_parts else None,
         "exploratory": True,
         "prior_warn_resolution": None,
         "prior_warn_resolution_notes": None,
