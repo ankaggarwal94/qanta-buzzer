@@ -63,6 +63,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "the existing diagnostic row)."
         ),
     )
+    parser.add_argument(
+        "--include-learned-value-stopdff",
+        action="store_true",
+        help=(
+            "Append a learned-continuation-value StopDFF row from "
+            "paper_exports/stopdff_learned_value.json (exploratory; never "
+            "feeds the overall verdict ladder). Gracefully skipped with a "
+            "stderr warning when the artifact is absent."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -471,6 +481,50 @@ def _evaluate_stopdff_dp(dp_data: dict) -> dict:
             "direction_breakdown": dp_data["direction_breakdown"],
             "confirmatory": confirmatory,
             "metric_type": dp_data["metadata"]["metric_type"],
+        },
+    }
+
+
+def _evaluate_stopdff_learned_value(lv_data: dict) -> dict:
+    """Evaluate a learned-continuation-value StopDFF row (exploratory).
+
+    Mirrors _evaluate_stopdff_dp's shape but always sets exploratory=True
+    so the row never feeds the overall verdict ladder. The threshold
+    (|signed_median| <= 1) is hard-coded with provenance
+    "diagnostic_not_preregistered" because this ceiling is NOT in
+    threshold_manifest.json's frozen pre-registration block — it was
+    selected post-test-inspection as a diagnostic ceiling.
+
+    Field names below assume the producer artifact uses
+    ``stopdff_signed_median`` for the headline value and the same
+    ``metadata.{checkpoint_path, seeds, metric_type}`` shape as the DP
+    artifact. The producer script (Prompt 5) will be authored against
+    these names; if it diverges, this helper needs a field-name update.
+    """
+    signed_median = float(lv_data["stopdff_signed_median"])
+    return {
+        "name": "Learned-Value StopDFF (Exploratory)",
+        "value": signed_median,
+        "value_display": f"{signed_median:+.4f}",
+        "threshold": 1,
+        "threshold_criterion": "|signed_median| <= 1",
+        "threshold_provenance": "diagnostic_not_preregistered",
+        "observed_criterion_value": abs(signed_median),
+        "direction": "warn_if_above",
+        "verdict": lv_data.get("gate_verdict", "warn"),
+        "verdict_qualifier": lv_data.get("gate_verdict_reason"),
+        "exploratory": True,
+        "prior_warn_resolution": None,
+        "prior_warn_resolution_notes": None,
+        "details": {
+            "model_checkpoint": lv_data.get("metadata", {}).get(
+                "checkpoint_path"
+            ),
+            "n_items": lv_data.get("n_items"),
+            "value_model_seeds": lv_data.get("metadata", {}).get("seeds"),
+            "metric_type": lv_data.get("metadata", {}).get(
+                "metric_type", "learned_value_dp"
+            ),
         },
     }
 
@@ -1200,6 +1254,21 @@ def main_with_args(argv: list[str] | None = None) -> int:
         else:
             dp_data = _load_json(dp_path)
             metrics.append(_evaluate_stopdff_dp(dp_data))
+
+    # Mirror the --include-dp-stopdff graceful-skip pattern for the
+    # exploratory learned-value row. Appended AFTER the DP row so the
+    # MD table ordering reads diagnostic -> confirmatory DP -> exploratory.
+    if args.include_learned_value_stopdff:
+        lv_path = _PAPER_EXPORTS / "stopdff_learned_value.json"
+        if not lv_path.exists():
+            print(
+                "WARNING: --include-learned-value-stopdff was passed but "
+                f"{lv_path} does not exist; the row was skipped.",
+                file=sys.stderr,
+            )
+        else:
+            lv_data = _load_json(lv_path)
+            metrics.append(_evaluate_stopdff_learned_value(lv_data))
 
     # PR #14 Blocker 3: extract per-metric coverage + retention
     # provenance so the audit card visibly records what counted as a

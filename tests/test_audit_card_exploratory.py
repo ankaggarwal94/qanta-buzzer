@@ -12,10 +12,16 @@ Pins:
 - A dedicated ``## Prior-WARN Resolution`` MD subsection renders when
   any metric carries ``prior_warn_resolution`` and is omitted entirely
   otherwise.
+- ``--include-learned-value-stopdff`` is a no-op-on-absent-artifact
+  flag (mirrors ``--include-dp-stopdff``); when the artifact exists,
+  the appended row carries ``exploratory=True`` and never affects the
+  overall verdict (integration test against Commit 1's filter).
 """
 
 from __future__ import annotations
 
+import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -188,3 +194,120 @@ def test_prior_warn_resolution_subsection_absent_when_no_metric_has_it(
     out_path = make_audit_card._write_audit_card_md(metrics, "PASS", None)
     md = out_path.read_text(encoding="utf-8")
     assert "## Prior-WARN Resolution" not in md
+
+
+# ---------------------------------------------------------------------------
+# Commit 2: --include-learned-value-stopdff flag integration tests
+# ---------------------------------------------------------------------------
+
+
+def _seed_paper_exports_minimum(paper_dir: Path) -> None:
+    """Copy the three existing artifacts so make_audit_card can load them."""
+    src = Path(__file__).resolve().parent.parent / "paper_exports"
+    for fname in ("csli.json", "calibration.json", "stopdff.json"):
+        shutil.copyfile(src / fname, paper_dir / fname)
+
+
+def _minimal_learned_value_payload(*, gate_verdict: str = "warn") -> dict:
+    """Synthesize a stopdff_learned_value.json payload for tests."""
+    return {
+        "stopdff_signed_median": 0.5,
+        "n_items": 50,
+        "gate_verdict": gate_verdict,
+        "gate_verdict_reason": (
+            "synthetic_test_payload"
+            if gate_verdict != "pass"
+            else None
+        ),
+        "metadata": {
+            "metric_type": "learned_value_dp",
+            "checkpoint_path": "artifacts/value_model/seed1/best.ckpt",
+            "seeds": [1, 2, 3],
+        },
+    }
+
+
+def test_learned_value_flag_skips_gracefully_when_artifact_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """Missing stopdff_learned_value.json must exit 0 with a stderr warning."""
+    paper = tmp_path / "paper_exports"
+    paper.mkdir()
+    _seed_paper_exports_minimum(paper)
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", paper)
+
+    rc = make_audit_card.main_with_args(["--include-learned-value-stopdff"])
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "--include-learned-value-stopdff" in captured.err
+    assert "stopdff_learned_value.json" in captured.err
+    assert "skipped" in captured.err.lower()
+
+
+def test_learned_value_flag_appends_exploratory_row_when_artifact_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real stopdff_learned_value.json must surface an exploratory row."""
+    paper = tmp_path / "paper_exports"
+    paper.mkdir()
+    _seed_paper_exports_minimum(paper)
+    (paper / "stopdff_learned_value.json").write_text(
+        json.dumps(_minimal_learned_value_payload(gate_verdict="pass")),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", paper)
+
+    rc = make_audit_card.main_with_args(["--include-learned-value-stopdff"])
+    assert rc == 0
+
+    card = json.loads((paper / "audit_card.json").read_text(encoding="utf-8"))
+    lv_rows = [
+        m for m in card["metrics"]
+        if m["name"] == "Learned-Value StopDFF (Exploratory)"
+    ]
+    assert len(lv_rows) == 1
+    assert lv_rows[0]["exploratory"] is True
+
+
+def test_learned_value_row_does_not_affect_overall_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Integration check: a learned-value FAIL must not flip the headline.
+
+    Depends on Commit 1's filter in _compute_overall_verdict — without
+    it, an exploratory FAIL would cascade into a headline WARN/FAIL.
+    """
+    paper = tmp_path / "paper_exports"
+    paper.mkdir()
+    _seed_paper_exports_minimum(paper)
+    (paper / "stopdff_learned_value.json").write_text(
+        json.dumps(_minimal_learned_value_payload(gate_verdict="fail")),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(make_audit_card, "_PAPER_EXPORTS", paper)
+
+    # Baseline (no flag): record what the headline verdict is on the
+    # repo's committed artifacts so we can compare against the flagged
+    # run on the same artifacts.
+    rc_base = make_audit_card.main_with_args([])
+    assert rc_base == 0
+    baseline = json.loads((paper / "audit_card.json").read_text(encoding="utf-8"))
+
+    # Flagged run on the same paper_exports dir.
+    rc_flag = make_audit_card.main_with_args(["--include-learned-value-stopdff"])
+    assert rc_flag == 0
+    flagged = json.loads((paper / "audit_card.json").read_text(encoding="utf-8"))
+
+    # Headline verdict must be identical despite the appended exploratory FAIL.
+    assert flagged["overall_verdict"] == baseline["overall_verdict"]
+    # And the exploratory row must still be present + carry verdict=fail
+    # (sanity-check that the assertion above isn't trivially satisfied by
+    # the row being missing).
+    lv_rows = [
+        m for m in flagged["metrics"]
+        if m["name"] == "Learned-Value StopDFF (Exploratory)"
+    ]
+    assert len(lv_rows) == 1
+    assert lv_rows[0]["verdict"] == "fail"
+    assert lv_rows[0]["exploratory"] is True
