@@ -194,11 +194,11 @@
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-28T04:50:55.797423+00:00",
+    "timestamp": "2026-05-28T05:23:17.680032+00:00",
     "threshold_source": "threshold_manifest.json",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-28T04:50:55.796450+00:00",
+      "generated_at_utc": "2026-05-28T05:23:17.678780+00:00",
       "command": [
         "python",
         "scripts/make_audit_card.py",
@@ -210,12 +210,12 @@
       "cwd": ".",
       "output_path": "paper_exports/audit_card.json",
       "script_path": "scripts/make_audit_card.py",
-      "script_sha256": "5da5d2e0dac936a8feaea17d05e18e259477e0027e035def3737627a50037604",
-      "git_commit": "4541bbc36af47c79e92d588d1f6bf945da0205dc",
-      "git_dirty": true,
-      "git_status_relevant_paths": "M paper_exports/audit_card.json",
+      "script_sha256": "7817b21a54fa5db95f2e6c5fb4231559af508a595d82eb1646a33f294cf91d9c",
+      "git_commit": "d1f625559732706d2973da3e00983475cd3a997e",
+      "git_dirty": false,
+      "git_status_relevant_paths": "",
       "markdown_path": "paper_exports/audit_card.md",
-      "markdown_sha256": "c54c8c4dcff1764097293050d49c16657f1233b0916797c45fa690f0abab2b69"
+      "markdown_sha256": "94d68e0fc54f226f62184045df58c48121222cb9f1a6da168964d3f5dbace5db"
     }
   },
   "data_provenance": {
