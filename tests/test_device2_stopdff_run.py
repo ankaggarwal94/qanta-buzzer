@@ -602,6 +602,40 @@ def test_device2_stopdff_harness_passes_resume_cuda_and_smoke_args(
     assert env_log == ["CUDA_VISIBLE_DEVICES=0", "CUDA_VISIBLE_DEVICES=0"]
 
 
+def test_device2_stopdff_harness_masks_requested_device_as_logical_zero(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_python_stub(repo)
+    out_dir = repo / "run"
+
+    result = _run_harness(
+        repo,
+        "--out-dir",
+        str(out_dir),
+        "--device-index",
+        "2",
+        "--data-dir",
+        str(repo / "data"),
+        "--calibration",
+        str(repo / "calibration.json"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    env_log = (repo / "stub_logs" / "env.log").read_text().splitlines()
+    assert env_log == ["CUDA_VISIBLE_DEVICES=2", "CUDA_VISIBLE_DEVICES=2"]
+
+    args_log = (repo / "stub_logs" / "args.log").read_text().splitlines()
+    preflight_args = next(line for line in args_log if "device2_cuda_preflight.py" in line)
+    preflight_tokens = preflight_args.split()
+    device_index_pos = preflight_tokens.index("--device-index")
+    assert preflight_tokens[device_index_pos + 1] == "0"
+
+    manifest = json.loads((out_dir / "command_manifest.json").read_text())
+    assert manifest["CUDA_VISIBLE_DEVICES"] == "2"
+
+
 def test_device2_stopdff_harness_rejects_unknown_experiment(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

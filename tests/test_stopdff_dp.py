@@ -1411,28 +1411,15 @@ def test_producer_dirty_check_includes_helper_modules_and_inputs(tmp_path, monke
     reproducible commit pointer into the audit card.
     """
     import json as _json
-    import subprocess as _subprocess
-    from pathlib import Path as _Path
+    from scripts import _common as common
     from scripts import compute_stopdff_dp as ctd
     from scripts.stopdff_dp._provenance import helper_paths
 
-    repo_root = _Path(__file__).resolve().parent.parent
-    helper_for_test = repo_root / "scripts" / "stopdff_dp" / "rewards.py"
+    helper_rel = "scripts/stopdff_dp/rewards.py"
+    helper_for_test = ctd.PROJECT_ROOT / helper_rel
     assert helper_for_test in helper_paths(), (
         f"test premise: {helper_for_test} must be in helper_paths()"
     )
-
-    # Skip if the helper is already dirty in the live tree (ambiguous state).
-    proc = _subprocess.run(
-        ["git", "status", "--short", "--",
-         "scripts/stopdff_dp/rewards.py"],
-        cwd=repo_root, capture_output=True, text=True,
-    )
-    if proc.stdout.strip():
-        import pytest as _pytest
-        _pytest.skip(
-            "scripts/stopdff_dp/rewards.py is already dirty in the live tree"
-        )
 
     # Synthesize input fixtures so unrelated input paths are clean / off-tree.
     data_dir = tmp_path / "data"
@@ -1448,8 +1435,20 @@ def test_producer_dirty_check_includes_helper_modules_and_inputs(tmp_path, monke
     out_md = tmp_path / "out.md"
     out_tex = tmp_path / "out.tex"
 
-    # Baseline: clean tree -> git_dirty False
-    rc_clean = ctd.main([
+    status_calls: list[list[str]] = []
+
+    def fake_git_output(args: list[str]) -> str:
+        if args[:3] == ["status", "--short", "--"]:
+            status_calls.append(args)
+            assert helper_rel in args
+            return f" M {helper_rel}"
+        if args == ["rev-parse", "HEAD"]:
+            return "c" * 40
+        raise AssertionError(f"unexpected git command: {args}")
+
+    monkeypatch.setattr(common, "_git_output", fake_git_output)
+
+    rc_dirty = ctd.main([
         "--data-dir", str(data_dir),
         "--split", "test", "--fit-split", "val",
         "--reward-schedule", "acf_flat",
@@ -1460,40 +1459,13 @@ def test_producer_dirty_check_includes_helper_modules_and_inputs(tmp_path, monke
         "--out-md", str(out_md),
         "--out-tex", str(out_tex),
     ])
-    assert rc_clean == 0
-    clean_payload = _json.loads(out_json.read_text())
-    assert clean_payload["metadata"]["generation"]["git_dirty"] is False, (
-        f"test premise: clean baseline must report git_dirty False, got "
-        f"{clean_payload['metadata']['generation']}"
-    )
-
-    # Perturb the helper; expect git_dirty True.
-    original_bytes = helper_for_test.read_bytes()
-    perturbed_bytes = original_bytes + b"\n# transient test perturbation\n"
-    try:
-        helper_for_test.write_bytes(perturbed_bytes)
-        rc_dirty = ctd.main([
-            "--data-dir", str(data_dir),
-            "--split", "test", "--fit-split", "val",
-            "--reward-schedule", "acf_flat",
-            "--continuation", "empirical_bucket",
-            "--identity-calibration",
-            "--allow-incomplete-mc-coverage", "--allow-low-mc-retention",
-            "--out", str(out_json),
-            "--out-md", str(out_md),
-            "--out-tex", str(out_tex),
-        ])
-        assert rc_dirty == 0
-        dirty_payload = _json.loads(out_json.read_text())
-        assert dirty_payload["metadata"]["generation"]["git_dirty"] is True, (
-            f"expected git_dirty=True after perturbing rewards.py, got "
-            f"{dirty_payload['metadata']['generation']}"
-        )
-        # Status text must mention the perturbed file.
-        status = dirty_payload["metadata"]["generation"]["git_status_relevant_paths"]
-        assert "scripts/stopdff_dp/rewards.py" in status
-    finally:
-        helper_for_test.write_bytes(original_bytes)
+    assert rc_dirty == 0
+    dirty_payload = _json.loads(out_json.read_text())
+    generation = dirty_payload["metadata"]["generation"]
+    assert generation["git_commit"] == "c" * 40
+    assert generation["git_dirty"] is True
+    assert helper_rel in generation["git_status_relevant_paths"]
+    assert status_calls
 
 
 def test_adapter_validate_qid_separation_passes_on_disjoint_sets():

@@ -107,6 +107,9 @@ SMOKE_MAX_CELLS=2 bash scripts/device2_stopdff_run.sh \
 
 This launch should require no interactive input after it starts. It verifies CUDA
 readiness, records `command_manifest.json`, and runs the requested sweep axes.
+By default the harness masks physical GPU 0. If you pass `--device-index N`,
+both preflight and the sweep run with `CUDA_VISIBLE_DEVICES=N`, and preflight
+checks torch logical device 0 inside that one-device mask.
 
 ```bash
 REPO="${REPO:-/mnt/c/Users/ankag/Dropbox/Stanford/CS234/final_project/qanta-buzzer}"

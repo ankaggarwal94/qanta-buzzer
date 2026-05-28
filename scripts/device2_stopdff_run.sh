@@ -99,10 +99,10 @@ write_manifest() {
     printf '    "reward_schedules": '; json_escape "$REWARD_SCHEDULES"; printf ',\n'
     printf '    "continuations": '; json_escape "$CONTINUATIONS"; printf '\n'
     printf '  },\n'
-    printf '  "CUDA_VISIBLE_DEVICES": "0",\n'
+    printf '  "CUDA_VISIBLE_DEVICES": '; json_escape "$CUDA_VISIBLE_DEVICES_VALUE"; printf ',\n'
     printf '  "preflight_path": '; json_escape "$PREFLIGHT_DISPLAY"; printf ',\n'
-    printf '  "preflight_command": '; json_array "CUDA_VISIBLE_DEVICES=0" "${PREFLIGHT_CMD[@]}"; printf ',\n'
-    printf '  "sweep_command": '; json_array "CUDA_VISIBLE_DEVICES=0" "${SWEEP_CMD[@]}"; printf '\n'
+    printf '  "preflight_command": '; json_array "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES_VALUE" "${PREFLIGHT_CMD[@]}"; printf ',\n'
+    printf '  "sweep_command": '; json_array "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES_VALUE" "${SWEEP_CMD[@]}"; printf '\n'
     printf '}\n'
   } > "$manifest_path"
 }
@@ -291,9 +291,16 @@ if [[ "$EXPERIMENT" != "dp_sweep" ]]; then
   die "unsupported experiment '$EXPERIMENT'; only 'dp_sweep' is supported"
 fi
 
+if [[ ! "$DEVICE_INDEX" =~ ^[0-9]+$ ]]; then
+  die "--device-index must be a non-negative integer"
+fi
+
 if [[ -z "$ARTIFACT_DIR" || "$ARTIFACT_DIR" == "." || "$ARTIFACT_DIR" == ".." || ! "$ARTIFACT_DIR" =~ ^[A-Za-z0-9._-]+$ ]]; then
   die "--artifact-dir must be a single safe directory name matching [A-Za-z0-9._-]+"
 fi
+
+CUDA_VISIBLE_DEVICES_VALUE="$DEVICE_INDEX"
+PREFLIGHT_DEVICE_INDEX="0"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
@@ -345,7 +352,7 @@ PREFLIGHT_CMD=(
   "--fit-split" "$FIT_SPLIT"
   "--eval-split" "$EVAL_SPLIT"
   "--output-json" "$PREFLIGHT_PATH"
-  "--device-index" "$DEVICE_INDEX"
+  "--device-index" "$PREFLIGHT_DEVICE_INDEX"
   "--min-free-gib" "$MIN_FREE_GIB"
 )
 if [[ "$RESUME" -eq 1 ]]; then
@@ -383,7 +390,7 @@ PREFLIGHT_STDERR="$(mktemp)"
 trap 'rm -f "$PREFLIGHT_STDOUT" "$PREFLIGHT_STDERR"' EXIT
 
 preflight_status=0
-CUDA_VISIBLE_DEVICES=0 "${PREFLIGHT_CMD[@]}" >"$PREFLIGHT_STDOUT" 2>"$PREFLIGHT_STDERR" || preflight_status=$?
+CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES_VALUE" "${PREFLIGHT_CMD[@]}" >"$PREFLIGHT_STDOUT" 2>"$PREFLIGHT_STDERR" || preflight_status=$?
 cat "$PREFLIGHT_STDOUT"
 cat "$PREFLIGHT_STDERR" >&2
 
@@ -409,4 +416,4 @@ printf '[device2_stopdff_run] run_dir=%s\n' "$RUN_DIR_DISPLAY"
 printf '[device2_stopdff_run] artifact_path=%s\n' "$ARTIFACT_DISPLAY"
 printf '[device2_stopdff_run] manifest=%s\n' "$MANIFEST_PATH"
 
-CUDA_VISIBLE_DEVICES=0 "${SWEEP_CMD[@]}"
+CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES_VALUE" "${SWEEP_CMD[@]}"
