@@ -2,20 +2,20 @@
   "metrics": [
     {
       "name": "CSLI (Choice-Set Leakage Index, choices-only excess)",
-      "value": 0.013138333333333327,
-      "value_display": "0.0131",
-      "ci_lower": 0.007012105107764992,
-      "ci_upper": 0.021702465308532627,
+      "value": 0.003469,
+      "value_display": "0.0035",
+      "ci_lower": 0.0,
+      "ci_upper": 0.010778343666961914,
       "threshold": 0.3,
       "threshold_criterion": "max(acc_choices_only) <= threshold",
-      "observed_criterion_value": 0.287865,
+      "observed_criterion_value": 0.260407,
       "direction": "warn_if_above",
       "verdict": "pass",
       "details": {
         "n_models": 3,
         "per_model_acc_choices_only": {
-          "tfidf": 0.25155,
-          "sbert": 0.287865,
+          "tfidf": 0.260407,
+          "sbert": 0.244464,
           "t5-small": 0.213906
         },
         "leakage_flags": {
@@ -23,22 +23,22 @@
           "sbert": false,
           "t5-small": false
         },
-        "panel_csli_choices_excess": 0.013138,
+        "panel_csli_choices_excess": 0.003469,
         "panel_csli_choices_excess_definition": "max(0, acc_choices_only - 1/K) per model, averaged (canonical CSLI; PAP-original definition)",
-        "panel_question_use_gap": 0.102155,
+        "panel_question_use_gap": 0.11367,
         "panel_question_use_gap_ci": [
-          0.088869205786832,
-          0.11544508414526126
+          0.0994943903159138,
+          0.12607026867434307
         ],
         "panel_question_use_gap_definition": "acc_full - acc_choices_only (formerly published as CSLI in the in-flight manuscript; kept for transparency)",
         "per_model_csli_choices_excess": {
-          "tfidf": 0.00155,
-          "sbert": 0.037865,
+          "tfidf": 0.010407,
+          "sbert": 0.0,
           "t5-small": 0.0
         },
         "per_model_question_use_gap": {
-          "tfidf": 0.007086,
-          "sbert": 0.202391,
+          "tfidf": -0.001771,
+          "sbert": 0.245793,
           "t5-small": 0.096988
         },
         "K": 4,
@@ -182,11 +182,11 @@
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-28T02:03:54.709078+00:00",
+    "timestamp": "2026-05-28T02:35:15.785351+00:00",
     "threshold_source": "threshold_manifest.json",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-28T02:03:54.706080+00:00",
+      "generated_at_utc": "2026-05-28T02:35:15.783859+00:00",
       "command": [
         "python",
         "scripts/make_audit_card.py",
@@ -198,12 +198,12 @@
       "cwd": ".",
       "output_path": "paper_exports/audit_card.json",
       "script_path": "scripts/make_audit_card.py",
-      "script_sha256": "0ff013026020fd3edc15710f9520898d2bc990a986e0ae8880308b7393ab414d",
-      "git_commit": "27c150b6585e12284961daa0745e7f6b47b442fb",
+      "script_sha256": "2b2fdcc2968e5b8834f935642ec7e56a3dd9c65f5eafd9b562e6896878edd55d",
+      "git_commit": "dd1b5e38a4291b139f862f101b6c9a963e7c952f",
       "git_dirty": false,
       "git_status_relevant_paths": "",
       "markdown_path": "paper_exports/audit_card.md",
-      "markdown_sha256": "37d94f6a09222bc7974f05fac15c8c542f5bb93b4bd69e5f3bffcf43dd34a28a"
+      "markdown_sha256": "12126ae18b2b0c38fb3a41aa602e3c82f5856958f9d9124c759735e158227253"
     }
   },
   "data_provenance": {
@@ -312,37 +312,37 @@
   },
   "artifact_provenance": {
     "csli.json": {
-      "recorded_commit": "49bc757360028378a1d71ca6243250ea0df7bbc8",
-      "recorded_sha256": "6bcd80170ef2b7ce43557e037cf46bb6e8b5760ea5c383e37bb2d02f1c5bc20f",
-      "current_sha256": "6bcd80170ef2b7ce43557e037cf46bb6e8b5760ea5c383e37bb2d02f1c5bc20f",
-      "content_sha256": "0fc5480455f856423e3cc6b433091c6480db1778c10c1ff0f196589d8067c68c",
+      "recorded_commit": "77743dbf5909fedf8ec3d716fd283e728aabc72f",
+      "recorded_sha256": "0011170fbe3ca9224d1bb142a4c22fff27514cfef4af19d5ca4c23ad70d1ea81",
+      "current_sha256": "0011170fbe3ca9224d1bb142a4c22fff27514cfef4af19d5ca4c23ad70d1ea81",
+      "content_sha256": "2317e4e0c0a94e187a83a57094011d0d9f32a51184aaccf5c26473450def4cf7",
       "script_path": "scripts/compute_csli.py",
       "sha_matches": true,
       "helper_mismatches": null
     },
     "calibration.json": {
-      "recorded_commit": "49ef969e45143c5a8aefb3f6177afd95e3ef56e5",
-      "recorded_sha256": "5de9ef6fcf67acf25993337bdd644ac3be3ef713cc7e4935a1ce74d35b73c583",
-      "current_sha256": "5de9ef6fcf67acf25993337bdd644ac3be3ef713cc7e4935a1ce74d35b73c583",
-      "content_sha256": "d0921dbb95ae13ccfa7bd07fd1f6a2417d8dbf1f0665c8b9654c42ca050998fb",
+      "recorded_commit": "77743dbf5909fedf8ec3d716fd283e728aabc72f",
+      "recorded_sha256": "6f47ba73b97fe88f89db0e170db48aff0fb6271eaf012b45cba046b1a7b8f7aa",
+      "current_sha256": "6f47ba73b97fe88f89db0e170db48aff0fb6271eaf012b45cba046b1a7b8f7aa",
+      "content_sha256": "7c60358f6cdc33a652974e2dc577111e51a641fd538e10ed326c1f57659b0759",
       "script_path": "scripts/compute_prefix_calibration.py",
       "sha_matches": true,
       "helper_mismatches": null
     },
     "stopdff.json": {
-      "recorded_commit": "7b257190f74680810923c058b9d1a26124b21924",
-      "recorded_sha256": "fc837e739fa32a493ef621c7137fd759bad08ff49966e6eb1e1aa433ae7f7251",
-      "current_sha256": "fc837e739fa32a493ef621c7137fd759bad08ff49966e6eb1e1aa433ae7f7251",
-      "content_sha256": "86fd80d4bc994dabe37e450a027c98732d21d3c792724cbeec06be794baae0f8",
+      "recorded_commit": "3887f4b216b845d4ea740f68b8a0cf62280c7ad0",
+      "recorded_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
+      "current_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
+      "content_sha256": "fd315812e11ac1af150709587f44073238b63e4b60f376312ace0af60c6dbee5",
       "script_path": "scripts/compute_stopdff.py",
       "sha_matches": true,
       "helper_mismatches": null
     },
     "stopdff_dp.json": {
-      "recorded_commit": "031884efba47eb4cfab98bd2f69d6de91d5cfcbd",
-      "recorded_sha256": "89397ef8a729e7f24c2222553dc7a56ed1acdaeaa86b367167fe915abe516090",
-      "current_sha256": "89397ef8a729e7f24c2222553dc7a56ed1acdaeaa86b367167fe915abe516090",
-      "content_sha256": "edcbdafbe542185a3ac16330bb8664c97282806b4d65e5db14f7f2ed65f8096a",
+      "recorded_commit": "3887f4b216b845d4ea740f68b8a0cf62280c7ad0",
+      "recorded_sha256": "66037d0407bccab2c9f7174bc69a4ede5daecf927fade6d8ba059da5e572f81a",
+      "current_sha256": "66037d0407bccab2c9f7174bc69a4ede5daecf927fade6d8ba059da5e572f81a",
+      "content_sha256": "15b12b0d287cc0fd3a1029597a5d65192da40b64b4c9fc0f57e38d70cb69c371",
       "script_path": "scripts/compute_stopdff_dp.py",
       "sha_matches": true,
       "helper_mismatches": null
