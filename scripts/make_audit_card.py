@@ -948,7 +948,6 @@ def _build_artifact_provenance(
                     live_helper_sha = None
                 if (
                     recorded_helper_sha is not None
-                    and live_helper_sha is not None
                     and recorded_helper_sha != live_helper_sha
                 ):
                     helper_mismatches[rel_path] = {

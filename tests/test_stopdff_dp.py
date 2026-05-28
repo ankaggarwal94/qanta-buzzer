@@ -1334,6 +1334,37 @@ def test_audit_card_dp_stale_helper_hash_triggers_warn(tmp_path, monkeypatch):
     assert "stale producer hash" in qualifier and "stopdff_dp.json" in qualifier
 
 
+def test_audit_card_dp_missing_recorded_helper_triggers_warn() -> None:
+    """A recorded DP helper path that no longer exists is stale provenance."""
+    from scripts import make_audit_card
+    from scripts._common import sha256_file
+
+    repo_root = Path(__file__).resolve().parent.parent
+    live_producer_sha = sha256_file(repo_root / "scripts" / "compute_stopdff_dp.py")
+    missing_helper = "scripts/stopdff_dp/deleted_helper.py"
+    provenance = make_audit_card._build_artifact_provenance(
+        csli_data={},
+        cal_data={},
+        stopdff_data={},
+        dp_data={
+            "metadata": {
+                "generation": {
+                    "script_sha256": live_producer_sha,
+                    "helper_sha256s": {
+                        missing_helper: "1" * 64,
+                    },
+                },
+            },
+        },
+    )
+
+    dp_prov = provenance["stopdff_dp.json"]
+    assert dp_prov["sha_matches"] is False
+    assert dp_prov["helper_mismatches"] == {
+        missing_helper: {"recorded": "1" * 64, "current": None}
+    }
+
+
 def test_audit_card_dp_helper_hashes_all_match_keeps_pass(tmp_path, monkeypatch):
     """When the DP artifact records helper hashes that all match the live
     files, sha_matches stays True and helper_mismatches is None."""
