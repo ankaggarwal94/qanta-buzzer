@@ -23,6 +23,10 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _sha_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _populate_required_exports(exports: Path) -> None:
     """Create minimal placeholder files for every required export.
 
@@ -62,7 +66,7 @@ def _write_producer_scripts(repo_root: Path) -> dict[str, dict[str, str]]:
         # _populate_required_exports ("{}").
         content_sha = _sha("{}")
         provenance[artifact_name] = {
-            "recorded_sha256": _sha(body),
+            "recorded_sha256": _sha_file(script),
             "script_path": f"scripts/{script_basename}",
             "content_sha256": content_sha,
         }
@@ -82,14 +86,15 @@ def _write_audit_generator(
     scripts_dir = repo_root / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     body = "# fake audit-card generator\n"
-    (scripts_dir / "make_audit_card.py").write_text(body, encoding="utf-8")
+    script = scripts_dir / "make_audit_card.py"
+    script.write_text(body, encoding="utf-8")
     block: dict[str, str] = {
         "git_dirty": False,
         "script_path": "scripts/make_audit_card.py",
-        "script_sha256": _sha(body),
+        "script_sha256": _sha_file(script),
     }
     if md_path is not None:
-        block["markdown_sha256"] = _sha(md_path.read_text(encoding="utf-8"))
+        block["markdown_sha256"] = _sha_file(md_path)
     return block
 
 
@@ -98,9 +103,7 @@ def _bind_markdown(generation_block: dict, md_path: Path) -> None:
     ``md_path`` as ``markdown_sha256``, mirroring what
     ``scripts/make_audit_card.py`` does after rendering audit_card.md.
     """
-    generation_block["markdown_sha256"] = _sha(
-        md_path.read_text(encoding="utf-8")
-    )
+    generation_block["markdown_sha256"] = _sha_file(md_path)
 
 
 def test_verify_audit_release_flags_stale_artifact(tmp_path: Path) -> None:
