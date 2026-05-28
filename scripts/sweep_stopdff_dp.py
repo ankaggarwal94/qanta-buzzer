@@ -1744,16 +1744,47 @@ def main(argv: Optional[list[str]] = None) -> int:
             ):
                 existing_by_id[cached["cell_id"]] = cached
 
+    def _truncated_cell_payload(
+        cell: dict, cid: str, path: Path, reason: str
+    ) -> dict:
+        return {
+            **cell,
+            "git_commit": git_commit,
+            "git_dirty": git_dirty,
+            "argv": effective_argv,
+            "seed": args.seed,
+            "fit_split": args.fit_split,
+            "eval_split": args.eval_split,
+            "run_fingerprint": run_fingerprint,
+            "status": "skipped",
+            "skip_reason": reason,
+            "confirmatory_included": False,
+            "cell_id": cid,
+            "cache_path": path.as_posix(),
+            "started_at": _now(),
+            "completed_at": _now(),
+            "wall_clock_seconds": 0.0,
+        }
+
+    requested_items: list[tuple[dict, str, Path]] = []
     cells_to_run: list[tuple[dict, str, Path]] = []
+    truncated_by_id: dict[str, dict] = {}
     for cell in _iter_cells(args):
         cid = _cell_id(cell, run_fingerprint)
         path = cell_dir / f"{cid}.json"
+        requested_items.append((cell, cid, path))
         if (args.resume or args.only_missing) and cid in existing_by_id:
             continue
         if args.max_cells is not None and len(cells_to_run) >= args.max_cells:
-            break
+            truncated_by_id[cid] = _truncated_cell_payload(
+                cell, cid, path, "max_cells_truncated"
+            )
+            continue
         if max_seconds is not None and time.time() - start >= max_seconds:
-            break
+            truncated_by_id[cid] = _truncated_cell_payload(
+                cell, cid, path, "max_wall_hours_truncated"
+            )
+            continue
         cells_to_run.append((cell, cid, path))
 
     def _execute_one(item: tuple[dict, str, Path]) -> dict:
@@ -1791,12 +1822,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     # missing. Cached cells from older runs whose fingerprint coincidentally
     # matches but whose cell_id is outside this invocation's executed set
     # are NOT silently included.
-    requested_ids = {_cell_id(c, run_fingerprint) for c in _iter_cells(args)}
-    visible_cells = [
-        c for c in existing_by_id.values()
-        if c.get("cell_id") in requested_ids
-        and c.get("run_fingerprint") == run_fingerprint
-    ]
+    visible_cells = []
+    for _, cid, _ in requested_items:
+        cached_or_executed = existing_by_id.get(cid)
+        if (
+            cached_or_executed is not None
+            and cached_or_executed.get("run_fingerprint") == run_fingerprint
+        ):
+            visible_cells.append(cached_or_executed)
+        elif cid in truncated_by_id:
+            visible_cells.append(truncated_by_id[cid])
     aggregate = _aggregate(visible_cells, args, effective_argv)
     aggregate["mc_coverage"] = mc_coverage_block
     aggregate["mc_retention_gate"] = mc_retention_block

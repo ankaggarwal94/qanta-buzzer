@@ -205,6 +205,35 @@ def test_paper_safe_interpretation_warns_when_requested_cells_are_incomplete() -
     assert interpretation["skipped_cell_count"] == 1
 
 
+def test_max_cells_truncation_marks_unattempted_cells_skipped(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    _write_tiny_data(data_dir)
+
+    rc, out = _run_sweep(tmp_path, [
+        "--data-dir", str(data_dir),
+        "--reward-schedules", "acf_flat,power_mark",
+        "--continuations", "empirical_bucket",
+        "--calibrators", "uncalibrated",
+        "--formats", "MC-fixed",
+        "--prefix-bucketing", "phase",
+        "--subject-pooling", "pooled_subject",
+        "--max-cells", "1",
+    ])
+
+    assert rc == 0
+    payload = json.loads(out.read_text())
+    assert [cell["status"] for cell in payload["cells"]].count("completed") == 1
+    truncated = [
+        cell for cell in payload["cells"]
+        if cell.get("skip_reason") == "max_cells_truncated"
+    ]
+    assert len(truncated) == 1
+    interpretation = payload["paper_safe_interpretation"]
+    assert interpretation["verdict"] == "WARN"
+    assert interpretation["reason"] == "incomplete_sweep_cells"
+    assert interpretation["skipped_cell_count"] == 1
+
+
 def test_resume_only_missing_preserves_existing_cells(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     _write_tiny_data(data_dir)
@@ -221,9 +250,17 @@ def test_resume_only_missing_preserves_existing_cells(tmp_path: Path) -> None:
     rc1, out = _run_sweep(tmp_path, [*base_args, "--max-cells", "1"])
     assert rc1 == 0
     first_payload = json.loads(out.read_text())
-    assert len(first_payload["cells"]) == 1
-    assert "\\" not in first_payload["cells"][0]["cache_path"]
-    first_cell_path = Path(first_payload["cells"][0]["cache_path"])
+    assert len(first_payload["cells"]) == 2
+    completed_first = [
+        cell for cell in first_payload["cells"] if cell["status"] == "completed"
+    ]
+    assert len(completed_first) == 1
+    assert any(
+        cell.get("skip_reason") == "max_cells_truncated"
+        for cell in first_payload["cells"]
+    )
+    assert "\\" not in completed_first[0]["cache_path"]
+    first_cell_path = Path(completed_first[0]["cache_path"])
     first_cell_before = first_cell_path.read_text()
 
     rc2, _ = _run_sweep(tmp_path, [
