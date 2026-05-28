@@ -1,9 +1,9 @@
 {
   "per_bucket": {
     "early": {
-      "ece": 0.025933,
+      "ece": 0.025932,
       "n_samples": 2553,
-      "platt_coef": 1.08271,
+      "platt_coef": 1.082711,
       "platt_intercept": -1.04211,
       "platt_model_type": "logistic",
       "platt_fallback_reason": null,
@@ -12,7 +12,7 @@
     "mid": {
       "ece": 0.005491,
       "n_samples": 3316,
-      "platt_coef": 0.322094,
+      "platt_coef": 0.322095,
       "platt_intercept": -0.683682,
       "platt_model_type": "logistic",
       "platt_fallback_reason": null,
@@ -21,8 +21,8 @@
     "late": {
       "ece": 0.026117,
       "n_samples": 5255,
-      "platt_coef": 2.720828,
-      "platt_intercept": -1.212329,
+      "platt_coef": 2.720829,
+      "platt_intercept": -1.21233,
       "platt_model_type": "logistic",
       "platt_fallback_reason": null,
       "platt_constant_probability": null
@@ -108,10 +108,10 @@
       "mid": "[0.33, 0.66)",
       "late": "[0.66, 1.0]"
     },
-    "timestamp": "2026-05-27T06:33:49.776952+00:00",
+    "timestamp": "2026-05-28T00:36:53.013792+00:00",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-27T06:33:49.773566+00:00",
+      "generated_at_utc": "2026-05-28T00:36:53.012793+00:00",
       "command": [
         "python",
         "scripts/compute_prefix_calibration.py",
@@ -125,8 +125,8 @@
       "cwd": ".",
       "output_path": "paper_exports/calibration.json",
       "script_path": "scripts/compute_prefix_calibration.py",
-      "script_sha256": "6f47ba73b97fe88f89db0e170db48aff0fb6271eaf012b45cba046b1a7b8f7aa",
-      "git_commit": "0f8da5d35c1c591430e03db4a6500cec6acd6755",
+      "script_sha256": "5de9ef6fcf67acf25993337bdd644ac3be3ef713cc7e4935a1ce74d35b73c583",
+      "git_commit": "49ef969e45143c5a8aefb3f6177afd95e3ef56e5",
       "git_dirty": false,
       "git_status_relevant_paths": ""
     }
