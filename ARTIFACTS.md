@@ -78,6 +78,10 @@ A release is not final evidence unless:
   the canonical `scripts/make_audit_card.py`, with a recorded
   `script_sha256` that matches its live SHA, so stale aggregation/Markdown
   logic cannot ship after a generator change
+- the audit-card Markdown is bound to the same generation as the JSON
+  (`metadata.generation.markdown_sha256` matches the live SHA of
+  `paper_exports/audit_card.md`), so a stale or hand-edited human-readable
+  card is detected
 - the audit-card Markdown reports retained-subset status when any retention
   gate was overridden
 - the StopDFF row remains WARN whenever a ceiling effect or unreachable
