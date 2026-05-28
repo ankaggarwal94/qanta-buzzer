@@ -1750,6 +1750,8 @@ def test_artifact_provenance_block_flags_stale_artifacts(tmp_path: Path) -> None
     for name in ("csli.json", "calibration.json", "stopdff.json"):
         block = provenance[name]
         assert block["recorded_sha256"] is not None
+        assert "/" in block["script_path"]
+        assert "\\" not in block["script_path"]
         if block["current_sha256"] is not None:
             assert block["sha_matches"] is False
 

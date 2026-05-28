@@ -974,7 +974,7 @@ def _build_artifact_provenance(
             "recorded_sha256": recorded_sha,
             "current_sha256": current_sha,
             "content_sha256": content_sha,
-            "script_path": str(script_path.relative_to(_REPO_ROOT))
+            "script_path": script_path.relative_to(_REPO_ROOT).as_posix()
             if script_path.exists() and script_path.is_absolute()
             else None,
             "sha_matches": match,
