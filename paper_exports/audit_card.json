@@ -182,11 +182,11 @@
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-28T01:28:15.901162+00:00",
+    "timestamp": "2026-05-28T01:42:28.880794+00:00",
     "threshold_source": "threshold_manifest.json",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-28T01:28:15.899161+00:00",
+      "generated_at_utc": "2026-05-28T01:42:28.878795+00:00",
       "command": [
         "python",
         "scripts/make_audit_card.py",
@@ -199,11 +199,11 @@
       "output_path": "paper_exports/audit_card.json",
       "script_path": "scripts/make_audit_card.py",
       "script_sha256": "0ff013026020fd3edc15710f9520898d2bc990a986e0ae8880308b7393ab414d",
-      "git_commit": "6bc6c239761fc58166a812a7e2cf9b778de5c1aa",
+      "git_commit": "bd570ddc4c80dc99269f5d498c877d975d5e4df2",
       "git_dirty": false,
       "git_status_relevant_paths": "",
       "markdown_path": "paper_exports/audit_card.md",
-      "markdown_sha256": "9dcddbdcc1ca84d8e4e963a904a3c4d4fa7d43f9a6c5756b0e49643f866cdab5"
+      "markdown_sha256": "45b74bd5ada0a1a4e9a9827da13e76bbd7dcd9c73c6d7ee5ebfe91d7a56b9e08"
     }
   },
   "data_provenance": {
@@ -339,10 +339,10 @@
       "helper_mismatches": null
     },
     "stopdff_dp.json": {
-      "recorded_commit": "eaabf83527b938df3c3c1bd4b2113e0e331032ce",
-      "recorded_sha256": "a9cbf6bfeb926facf91d79470139ef5a94b0de28c2448143c971b0c324217de0",
-      "current_sha256": "a9cbf6bfeb926facf91d79470139ef5a94b0de28c2448143c971b0c324217de0",
-      "content_sha256": "facb23ea60bb6ba90ab1bce344d664ec554872c454e44c0e4bec9c67f2531eae",
+      "recorded_commit": "031884efba47eb4cfab98bd2f69d6de91d5cfcbd",
+      "recorded_sha256": "89397ef8a729e7f24c2222553dc7a56ed1acdaeaa86b367167fe915abe516090",
+      "current_sha256": "89397ef8a729e7f24c2222553dc7a56ed1acdaeaa86b367167fe915abe516090",
+      "content_sha256": "edcbdafbe542185a3ac16330bb8664c97282806b4d65e5db14f7f2ed65f8096a",
       "script_path": "scripts/compute_stopdff_dp.py",
       "sha_matches": true,
       "helper_mismatches": null
