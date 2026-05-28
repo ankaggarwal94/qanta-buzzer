@@ -203,6 +203,35 @@ def test_empirical_bucket_fitter_uses_only_fit_split_rows() -> None:
         )
 
 
+def test_empirical_bucket_fit_allows_legacy_rows_without_prefix_fraction() -> None:
+    """Legacy fixtures without prefix_fraction still use the rank/T fallback."""
+    rows = []
+    for prefix_idx in range(3):
+        rows.append({
+            "subject": "sbert:Lit", "item_id": "q1", "prefix_idx": prefix_idx,
+            "format": "MC", "split": "val",
+            "p_raw": 0.55, "p_calibrated": 0.55, "correct": 0,
+            "top_answer": "a", "gold": "b", "category": "Lit",
+            "option_set_id": "s1",
+        })
+    df_legacy = _make_df(rows).drop(columns=["prefix_fraction"])
+
+    estimator = cont_module.EmpiricalBucketEstimator.fit(
+        fit_df=df_legacy,
+        schedule=REWARD_REGISTRY["acf_flat"],
+        fit_split_name="val",
+        min_bucket_size=1,
+    )
+
+    assert estimator.last_coverage_tag_for(
+        prefix_bucket="mid",
+        fmt="MC",
+        subject_bucket="sbert:Lit",
+        p_bin=2,
+        entropy_bin=2,
+    ) == "exact"
+
+
 def test_empirical_bucket_estimator_returns_pooled_when_bucket_sparse() -> None:
     """When the exact bucket has <3 trajectories, fallback drops entropy_bin first.
 
@@ -556,6 +585,38 @@ def test_writer_metric_type_is_finite_horizon_dp(tmp_path: Path) -> None:
     assert "myopic" not in loaded["metadata"]["metric_type"]
 
 
+def test_writer_records_reward_schedule_description() -> None:
+    """JSON metadata must carry the schedule semantics, not just its name."""
+    payload = writers_module.assemble_payload(
+        mc_traces=[],
+        qa_traces=[],
+        reward_schedule_name="power_mark",
+        reward_schedule_description="15/-5 before half; 10/-5 after half",
+        continuation_estimator_name="empirical_bucket",
+        fit_split="val",
+        eval_split="test",
+        coverage_summary={
+            "n_cells": 0, "fraction_exact": None, "fraction_pooled": None,
+            "fraction_missing": None, "verdict": "warn", "reason": "no_cells",
+        },
+        ceiling_flags={
+            "all_stop_at_first_prefix": False,
+            "all_stop_at_final_prefix": False,
+            "no_cross_format_stopping_variance": False,
+            "n_items": 0, "n_stopped_cells": 0, "n_never_stopped_cells": 0,
+            "empty": True,
+        },
+        per_item_stopdff=[],
+        gate_verdict="warn",
+        gate_verdict_reason="no_data",
+        confirmatory=True,
+    )
+    assert (
+        payload["metadata"]["reward_schedule_description"]
+        == "15/-5 before half; 10/-5 after half"
+    )
+
+
 def test_writer_handles_none_coverage_fractions(tmp_path: Path) -> None:
     """diagnostics.summarize_coverage returns None fractions on empty traces;
     writers must not crash on that legitimate diagnostic state."""
@@ -703,6 +764,43 @@ def test_cli_smoke_run_writes_all_three_artifacts(tmp_path, monkeypatch) -> None
     assert payload["metadata"]["metric_type"] == "finite_horizon_dp"
     assert payload["metadata"]["fit_split"] == "val"
     assert payload["metadata"]["eval_split"] == "test"
+
+
+def test_cli_warns_when_responses_flag_is_provenance_only(
+    tmp_path, capsys
+) -> None:
+    """--responses is currently recorded for provenance but not consumed."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    val_qs = [_fake_mc_question(f"v{i}") for i in range(3)]
+    test_qs = [_fake_mc_question(f"t{i}") for i in range(3)]
+    (data_dir / "mc_dataset.json").write_text(json.dumps(val_qs + test_qs))
+    (data_dir / "val_dataset.json").write_text(json.dumps(val_qs))
+    (data_dir / "test_dataset.json").write_text(json.dumps(test_qs))
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text("[]")
+
+    from scripts import compute_stopdff_dp
+    rc = compute_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--responses", str(responses_path),
+        "--split", "test",
+        "--fit-split", "val",
+        "--reward-schedule", "acf_flat",
+        "--continuation", "empirical_bucket",
+        "--identity-calibration",
+        "--allow-incomplete-mc-coverage",
+        "--allow-low-mc-retention",
+        "--out", str(tmp_path / "out.json"),
+        "--out-md", str(tmp_path / "out.md"),
+        "--out-tex", str(tmp_path / "out.tex"),
+    ])
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err
+    assert "--responses" in captured.err
+    assert "no-op" in captured.err
 
 
 def test_cli_rejects_same_split_for_fit_and_eval(tmp_path) -> None:

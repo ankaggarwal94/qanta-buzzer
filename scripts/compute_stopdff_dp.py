@@ -65,6 +65,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     effective_argv = list(argv) if argv is not None else list(sys.argv[1:])
     args = _parse_args(argv)
 
+    if args.responses is not None:
+        print(
+            "WARNING: --responses is currently a no-op reserved for future "
+            "response-level DP inputs; the value is recorded for provenance "
+            f"but is not consumed: {args.responses}",
+            file=sys.stderr,
+        )
+
     data_dir = Path(args.data_dir)
     out_json = Path(args.out)
     out_md = Path(args.out_md)
@@ -447,6 +455,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         mc_traces=mc_traces,
         qa_traces=qa_traces,
         reward_schedule_name=args.reward_schedule,
+        reward_schedule_description=schedule.description,
         continuation_estimator_name=args.continuation,
         fit_split=args.fit_split,
         eval_split=args.split,

@@ -194,7 +194,10 @@ class EmpiricalBucketEstimator:
         iteration converges quickly; the default 3 is sufficient on the
         smoke datasets.
         """
-        assert_columns(fit_df.columns)
+        validation_columns = fit_df.columns
+        if "prefix_fraction" not in fit_df.columns:
+            validation_columns = list(fit_df.columns) + ["prefix_fraction"]
+        assert_columns(validation_columns)
         other_splits = set(fit_df["split"]) - {fit_split_name}
         if other_splits:
             raise ValueError(
