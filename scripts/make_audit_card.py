@@ -1011,7 +1011,23 @@ def main() -> int:
         ],
     )
 
-    # Write outputs
+    # Write outputs. Write Markdown first so we can record its content
+    # SHA into the JSON's generation block, binding the human-readable
+    # card to the same render. Otherwise audit_card.md could be left
+    # stale from an older run or hand-edited and the verifier would have
+    # no way to tell.
+    from scripts._common import sha256_file as _sha256_file
+
+    md_path = _write_audit_card_md(
+        metrics,
+        overall_verdict,
+        data_provenance=data_provenance,
+        overall_verdict_qualifier=overall_verdict_qualifier,
+        artifact_provenance=artifact_provenance,
+    )
+    generation["markdown_path"] = "paper_exports/audit_card.md"
+    generation["markdown_sha256"] = _sha256_file(md_path)
+
     json_path = _write_audit_card_json(
         metrics,
         overall_verdict,
@@ -1019,13 +1035,6 @@ def main() -> int:
         overall_verdict_qualifier=overall_verdict_qualifier,
         artifact_provenance=artifact_provenance,
         generation=generation,
-    )
-    md_path = _write_audit_card_md(
-        metrics,
-        overall_verdict,
-        data_provenance=data_provenance,
-        overall_verdict_qualifier=overall_verdict_qualifier,
-        artifact_provenance=artifact_provenance,
     )
 
     # Print summary

@@ -69,18 +69,38 @@ def _write_producer_scripts(repo_root: Path) -> dict[str, dict[str, str]]:
     return provenance
 
 
-def _write_audit_generator(repo_root: Path) -> dict[str, str]:
+def _write_audit_generator(
+    repo_root: Path, md_path: Path | None = None
+) -> dict[str, str]:
     """Write a fake make_audit_card.py under repo_root and return the
-    `metadata.generation` snippet matching its live SHA."""
+    `metadata.generation` snippet matching its live SHA.
+
+    If ``md_path`` is provided, also record the live SHA of that file as
+    ``markdown_sha256`` so the generation block satisfies the verifier's
+    audit_card.md content-binding check.
+    """
     scripts_dir = repo_root / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     body = "# fake audit-card generator\n"
     (scripts_dir / "make_audit_card.py").write_text(body, encoding="utf-8")
-    return {
+    block: dict[str, str] = {
         "git_dirty": False,
         "script_path": "scripts/make_audit_card.py",
         "script_sha256": _sha(body),
     }
+    if md_path is not None:
+        block["markdown_sha256"] = _sha(md_path.read_text(encoding="utf-8"))
+    return block
+
+
+def _bind_markdown(generation_block: dict, md_path: Path) -> None:
+    """Update an existing generation block to record the live SHA of
+    ``md_path`` as ``markdown_sha256``, mirroring what
+    ``scripts/make_audit_card.py`` does after rendering audit_card.md.
+    """
+    generation_block["markdown_sha256"] = _sha(
+        md_path.read_text(encoding="utf-8")
+    )
 
 
 def test_verify_audit_release_flags_stale_artifact(tmp_path: Path) -> None:
@@ -112,6 +132,7 @@ def test_verify_audit_release_flags_stale_artifact(tmp_path: Path) -> None:
         "data_provenance": {},
     }
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    _bind_markdown(generation_block, exports / "audit_card.md")
     (exports / "audit_card.json").write_text(
         json.dumps(audit), encoding="utf-8"
     )
@@ -139,6 +160,7 @@ def test_verify_audit_release_accepts_clean_warn(tmp_path: Path) -> None:
     (exports / "audit_card.md").write_text(
         "Overall WARN\n\nretained MC subset\n", encoding="utf-8"
     )
+    _bind_markdown(generation_block, exports / "audit_card.md")
     audit = {
         "metrics": [
             {
@@ -188,6 +210,7 @@ def test_verify_audit_release_flags_threshold_sha_mismatch(tmp_path: Path) -> No
     generation_block = _write_audit_generator(tmp_path)
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    _bind_markdown(generation_block, exports / "audit_card.md")
     audit = {
         "metrics": [
             {
@@ -231,6 +254,7 @@ def test_verify_audit_release_flags_missing_provenance_entry(tmp_path: Path) -> 
     generation_block = _write_audit_generator(tmp_path)
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    _bind_markdown(generation_block, exports / "audit_card.md")
     audit = {
         "metrics": [
             {
@@ -273,6 +297,7 @@ def test_verify_audit_release_flags_missing_figure(tmp_path: Path) -> None:
     (exports / "csli_panel.png").unlink()
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    _bind_markdown(generation_block, exports / "audit_card.md")
     audit = {
         "metrics": [
             {
@@ -312,6 +337,7 @@ def test_verify_audit_release_flags_missing_threshold_manifest(
     generation_block = _write_audit_generator(tmp_path)
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    _bind_markdown(generation_block, exports / "audit_card.md")
     audit = {
         "metrics": [
             {
@@ -355,6 +381,7 @@ def test_verify_audit_release_flags_generator_sha_drift(tmp_path: Path) -> None:
     )
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    _bind_markdown(generation_block, exports / "audit_card.md")
     audit = {
         "metrics": [
             {
@@ -404,6 +431,7 @@ def test_verify_audit_release_flags_non_canonical_producer(tmp_path: Path) -> No
     }
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    _bind_markdown(generation_block, exports / "audit_card.md")
     audit = {
         "metrics": [
             {
@@ -448,6 +476,7 @@ def test_verify_audit_release_flags_source_content_drift(tmp_path: Path) -> None
     )
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    _bind_markdown(generation_block, exports / "audit_card.md")
     audit = {
         "metrics": [
             {
@@ -496,6 +525,56 @@ def test_verify_audit_release_flags_non_canonical_generator(tmp_path: Path) -> N
     }
 
     (exports / "audit_card.md").write_text("Overall WARN\n", encoding="utf-8")
+    _bind_markdown(generation_block, exports / "audit_card.md")
+    audit = {
+        "metrics": [
+            {
+                "name": "Diagnostic StopDFF (Median Abs Prefix Shift)",
+                "verdict": "warn",
+                "details": {},
+            }
+        ],
+        "metadata": {"generation": generation_block},
+        "artifact_provenance": provenance,
+        "data_provenance": {},
+    }
+    (exports / "audit_card.json").write_text(
+        json.dumps(audit), encoding="utf-8"
+    )
+
+    assert (
+        main(
+            [
+                "--paper-exports",
+                str(exports),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
+
+
+def test_verify_audit_release_flags_stale_audit_card_md(tmp_path: Path) -> None:
+    exports = tmp_path / "paper_exports"
+    _populate_required_exports(exports)
+    _write_threshold_manifest(tmp_path)
+    provenance = _write_producer_scripts(tmp_path)
+
+    # Generation block records the SHA of the original audit_card.md.
+    (exports / "audit_card.md").write_text(
+        "Overall WARN\n", encoding="utf-8"
+    )
+    generation_block = _write_audit_generator(
+        tmp_path, md_path=exports / "audit_card.md"
+    )
+
+    # Now hand-edit audit_card.md after the generation was recorded. This
+    # simulates a stale or hand-edited Markdown that should be rejected.
+    (exports / "audit_card.md").write_text(
+        "Overall PASS (tampered)\n", encoding="utf-8"
+    )
+
     audit = {
         "metrics": [
             {

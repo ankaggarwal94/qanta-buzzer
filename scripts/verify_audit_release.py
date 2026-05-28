@@ -135,6 +135,27 @@ def main(argv: list[str] | None = None) -> int:
                 errors,
             )
 
+    # Bind audit_card.md to the same generation as audit_card.json.
+    # Without this, the Markdown could be left from an older run or be
+    # hand-edited and the verifier would still pass because it only
+    # reads the Markdown to look for the retained-subset phrase.
+    recorded_md_sha = generation.get("markdown_sha256")
+    if not isinstance(recorded_md_sha, str) or not recorded_md_sha:
+        errors.append(
+            "audit_card.metadata.generation is missing markdown_sha256; "
+            "rerun make_audit_card.py to bind audit_card.md"
+        )
+    else:
+        live_md_sha = sha256_file(paper_exports / "audit_card.md")
+        require(
+            live_md_sha == recorded_md_sha,
+            f"audit_card.md content SHA drift: "
+            f"recorded={recorded_md_sha}, live={live_md_sha} "
+            f"(audit_card.md does not match the audit_card.json generation; "
+            f"rerun make_audit_card.py)",
+            errors,
+        )
+
     artifact_provenance = audit.get("artifact_provenance", {})
     expected_provenance_keys = set(EXPECTED_PRODUCERS)
     missing_provenance = expected_provenance_keys - set(artifact_provenance)
