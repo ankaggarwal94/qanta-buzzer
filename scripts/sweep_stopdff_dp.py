@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -223,11 +222,9 @@ def _git_metadata(
 def _file_sha256(path: Path | None) -> str | None:
     if path is None or not path.exists() or not path.is_file():
         return None
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    from scripts._common import sha256_file
+
+    return sha256_file(path)
 
 
 def _run_fingerprint(

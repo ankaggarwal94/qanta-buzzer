@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -13,6 +12,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 PAPER_EXPORTS = ROOT / "paper_exports"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 # Canonical producer scripts for each source-metric artifact, per ARTIFACTS.md.
 # Pinning these prevents a tampered audit card from redirecting `script_path`
@@ -28,11 +29,9 @@ EXPECTED_AUDIT_CARD_GENERATOR = "scripts/make_audit_card.py"
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    from scripts._common import sha256_file as common_sha256_file
+
+    return common_sha256_file(path)
 
 
 def load_json(path: Path) -> dict[str, Any]:

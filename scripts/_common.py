@@ -175,13 +175,55 @@ def project_relative(path: str | Path) -> str:
         return str(p)
 
 
+_TEXT_HASH_SUFFIXES = frozenset(
+    {
+        ".cfg",
+        ".csv",
+        ".gitattributes",
+        ".gitignore",
+        ".json",
+        ".md",
+        ".py",
+        ".rst",
+        ".sh",
+        ".sha256",
+        ".tex",
+        ".toml",
+        ".tsv",
+        ".txt",
+        ".yaml",
+        ".yml",
+    }
+)
+
+
+def _canonical_hash_bytes(path: Path, data: bytes) -> bytes:
+    """Return hash input bytes with portable text line endings.
+
+    Audit provenance is committed on Windows and verified on Linux CI.
+    Text files must therefore hash the Git blob's logical LF content, not
+    whichever CRLF/LF form happens to be in the working tree. Binary
+    artifacts remain byte-exact.
+    """
+    if path.suffix.lower() not in _TEXT_HASH_SUFFIXES:
+        return data
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
+
 def sha256_file(path: str | Path) -> str:
-    """Return the SHA-256 digest of a local file."""
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """Return a portable SHA-256 digest of a local file.
+
+    UTF-8 text files are normalized to LF before hashing so provenance is
+    stable across Windows and Linux checkouts. Non-text and non-UTF-8 files
+    are hashed as exact bytes.
+    """
+    resolved = Path(path)
+    payload = _canonical_hash_bytes(resolved, resolved.read_bytes())
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _git_output(args: list[str]) -> str | None:

@@ -93,7 +93,6 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -205,11 +204,9 @@ _SBERT_PRIOR_LOCK = threading.Lock()
 
 def _sha256_file(path: Path) -> str:
     """Return the SHA-256 digest for a local artifact."""
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    from scripts._common import sha256_file
+
+    return sha256_file(path)
 
 
 def _display_path(path: Path) -> str:

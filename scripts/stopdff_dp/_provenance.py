@@ -10,7 +10,6 @@ hashes so the audit-card consumer can cross-check them.
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -20,11 +19,9 @@ def _file_sha256(path: Path) -> str | None:
     """Return the SHA-256 digest of a local file, or None if missing."""
     if path is None or not path.exists() or not path.is_file():
         return None
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    from scripts._common import sha256_file
+
+    return sha256_file(path)
 
 
 def helper_paths() -> list[Path]:
