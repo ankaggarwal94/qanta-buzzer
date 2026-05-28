@@ -1,0 +1,183 @@
+{
+  "reward_schedule": "acf_flat",
+  "continuation": "empirical_bucket",
+  "calibrator": "uncalibrated",
+  "format_condition": "MC-fixed",
+  "prefix_bucketing": "early_mid_late",
+  "subject_pooling": "pooled_subject",
+  "git_commit": "3de1803482be16e244ce3ebd8b3ae4276ded3403",
+  "git_dirty": false,
+  "argv": [
+    "--identity-calibration",
+    "--smoke",
+    "--reward-schedules",
+    "acf_flat",
+    "--continuations",
+    "empirical_bucket",
+    "--calibrators",
+    "uncalibrated",
+    "--formats",
+    "MC-fixed",
+    "--prefix-bucketing",
+    "early_mid_late",
+    "--subject-pooling",
+    "pooled_subject",
+    "--num-bootstrap",
+    "8",
+    "--max-cells",
+    "1",
+    "--artifact-dir",
+    "paper_exports",
+    "--allow-incomplete-mc-coverage",
+    "--allow-low-mc-retention",
+    "--out",
+    "paper_exports/stopdff_dp_sweep.json"
+  ],
+  "seed": 1,
+  "fit_split": "val",
+  "eval_split": "test",
+  "run_fingerprint": {
+    "schema_version": 5,
+    "data_dir": "data/processed",
+    "fit_split": "val",
+    "eval_split": "test",
+    "calibration_path": null,
+    "calibration_sha256": null,
+    "mc_dataset_sha256": "3dbebf8e4d690da41a15e3cf467e57fdbe69af420ed831d56b61160af8bf7946",
+    "fit_dataset_sha256": "9b7a131b6c94c446e6b40b95559cb62aeee63f6e6f29ddd1d7ed3fb19cc72c65",
+    "eval_dataset_sha256": "638a4df978b77a12655ea72d56daad7fa70851ae486ddb4365d9b060549e34f1",
+    "build_metadata_sha256": "70871984390f252c0a06a5a2c9a2d3b4337f10ad48c87583ebec215d5c0c9c6e",
+    "myopic_artifact_path": "paper_exports/stopdff.json",
+    "myopic_artifact_sha256": "86fd80d4bc994dabe37e450a027c98732d21d3c792724cbeec06be794baae0f8",
+    "identity_calibration": true,
+    "smoke": true,
+    "seed": 1,
+    "num_bootstrap": 8,
+    "script_sha256": "c436c35b13b91b2bec70e1bd09aded6371994d015bd5f1b988b0bbbeb4b822cd",
+    "helper_sha256s": {
+      "scripts/stopdff_dp/__init__.py": "24959f6b7a21d0a88bddfc7d35e76d99b1ac5b430f0b681e951c0c8d12e1e2e8",
+      "scripts/stopdff_dp/_provenance.py": "25f88f967cde5ccb741d06a0126ed3514aa2f83761c668371045e763b4424caa",
+      "scripts/stopdff_dp/adapter.py": "4dd783ffbce0ad737e7fe8e80725c92b08616b7053bf39909743ee3a604e362a",
+      "scripts/stopdff_dp/continuation.py": "bab68d5f21710e78bd2a799a0040d1a5115df45771dc711f4ea3d43a9b3e4718",
+      "scripts/stopdff_dp/diagnostics.py": "29b7143475aba4510264167293e2a7b6f38fa39e93b40c6deb9aec8ce3c93c34",
+      "scripts/stopdff_dp/dp_solver.py": "ace28cab84b74da7491a619b2e936c83d968c975058d426223a2cedeffeef62c",
+      "scripts/stopdff_dp/rewards.py": "049bad7d6e942b9cd1e7e042fceea77edff1a5e258d16975692092b67be4ff56",
+      "scripts/stopdff_dp/types.py": "d96304d3a99dca3680f46cc5afa9b33f8ffc04a23b981f800cc786e0bb0e4e8a",
+      "scripts/stopdff_dp/writers.py": "7eb960a4bcfa51d5f946c4de066a7d8a0a926095aa31b9d3d633e1737d2ace78",
+      "scripts/_audit_gates.py": "fc5b6900024d02f44508eef8a78c482f78bcc3e5c5b8f998f4ab051e506007da",
+      "scripts/_common.py": "c84789a3338174f7416509d1501116c86d69a0fe9f40039da8a8dede46c33f21"
+    },
+    "git_commit": "3de1803482be16e244ce3ebd8b3ae4276ded3403",
+    "out_parent": "paper_exports"
+  },
+  "started_at": "2026-05-28T01:20:34.945097+00:00",
+  "status": "completed",
+  "calibration": {
+    "method": "uncalibrated",
+    "warning": "raw_scores_clipped_to_unit_interval"
+  },
+  "format_fallback": {
+    "requested": "MC-fixed",
+    "used_mc_format": "MC",
+    "used_qa_format": "QA",
+    "distinct_condition_available": true,
+    "reason": "current artifact supports paired QA-prefix and MC-fixed comparison"
+  },
+  "metrics": {
+    "stopdff_dp_signed_median": 0.0,
+    "stopdff_dp_signed_mean": 0.0,
+    "stopdff_dp_abs_median": 0.0,
+    "stopdff_dp_abs_mean": 0.0,
+    "n_items": 30,
+    "direction_breakdown": {
+      "mc_earlier": 0,
+      "qa_earlier": 0,
+      "same_step": 30
+    },
+    "direction_fractions": {
+      "mc_earlier": 0.0,
+      "qa_earlier": 0.0,
+      "same_step": 1.0
+    },
+    "bootstrap_ci": {
+      "signed_stopdff": {
+        "mean": [
+          0.0,
+          0.0
+        ],
+        "median": [
+          0.0,
+          0.0
+        ]
+      },
+      "absolute_stopdff": {
+        "mean": [
+          0.0,
+          0.0
+        ],
+        "median": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "myopic": {
+      "stopdff_dp_signed_median": -1.0,
+      "stopdff_dp_signed_mean": -0.9666666666666667,
+      "stopdff_dp_abs_median": 1.0,
+      "stopdff_dp_abs_mean": 0.9666666666666667,
+      "n_items": 30,
+      "direction_breakdown": {
+        "mc_earlier": 26,
+        "qa_earlier": 0,
+        "same_step": 4
+      },
+      "direction_fractions": {
+        "mc_earlier": 0.8666666666666667,
+        "qa_earlier": 0.0,
+        "same_step": 0.13333333333333333
+      }
+    },
+    "dp_minus_myopic_signed_mean": 0.9666666666666667,
+    "myopic_artifact_comparison": {
+      "available": true,
+      "median_abs_prefix_shift": 0.0,
+      "mean_abs_prefix_shift": 0.0,
+      "gate_verdict": "warn",
+      "ceiling_effect_detected": true,
+      "delta_abs_median_vs_myopic_artifact": 0.0
+    },
+    "decision_regret_proxy_mean": 8.903443613542212,
+    "decision_regret_mc_to_qa_mean": 0.0,
+    "decision_regret_qa_to_mc_mean": 0.0,
+    "no_stop_rate": 0.0,
+    "final_stop_rate": 1.0,
+    "stopped_rate": 1.0,
+    "fallback_rate": 0.0031847133757961785
+  },
+  "coverage": {
+    "n_cells": 314,
+    "fraction_exact": 0.9968152866242038,
+    "fraction_pooled": 0.0031847133757961785,
+    "fraction_missing": 0.0,
+    "verdict": "pass",
+    "reason": "thresholds_clean"
+  },
+  "ceiling_flags": {
+    "all_stop_at_first_prefix": false,
+    "all_stop_at_final_prefix": true,
+    "no_cross_format_stopping_variance": true,
+    "n_items": 30,
+    "n_stopped_cells": 60,
+    "n_never_stopped_cells": 0,
+    "empty": false
+  },
+  "gate_verdict": "warn",
+  "gate_verdict_reason": "ceiling_effect",
+  "confirmatory_included": true,
+  "confirmatory": true,
+  "wall_clock_seconds": 0.23857402801513672,
+  "completed_at": "2026-05-28T01:20:35.183671+00:00",
+  "cell_id": "d18618954d03dcde_acf_flat_empirical_bucket_uncalibrated",
+  "cache_path": "paper_exports/stopdff_dp_sweep_cells/d18618954d03dcde_acf_flat_empirical_bucket_uncalibrated.json"
+}
