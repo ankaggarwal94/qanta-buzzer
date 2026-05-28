@@ -91,10 +91,10 @@
     "stop_threshold": 0.7,
     "metric_type": "diagnostic_only",
     "stopping_policy": "myopic_threshold",
-    "timestamp": "2026-05-28T00:40:26.503912+00:00",
+    "timestamp": "2026-05-28T02:32:44.070347+00:00",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-28T00:40:26.431725+00:00",
+      "generated_at_utc": "2026-05-28T02:32:44.016345+00:00",
       "command": [
         "python",
         "scripts/compute_stopdff.py",
@@ -108,8 +108,8 @@
       "cwd": ".",
       "output_path": "paper_exports/stopdff.json",
       "script_path": "scripts/compute_stopdff.py",
-      "script_sha256": "fc837e739fa32a493ef621c7137fd759bad08ff49966e6eb1e1aa433ae7f7251",
-      "git_commit": "7b257190f74680810923c058b9d1a26124b21924",
+      "script_sha256": "c67fa855869888be10092c7faacb03b48dce078ee561ea5293fd754d10048778",
+      "git_commit": "3887f4b216b845d4ea740f68b8a0cf62280c7ad0",
       "git_dirty": false,
       "git_status_relevant_paths": ""
     }

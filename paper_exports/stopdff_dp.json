@@ -37,10 +37,10 @@
     "continuation_estimator": "empirical_bucket",
     "fit_split": "val",
     "eval_split": "test",
-    "timestamp": "2026-05-28T01:41:40.645972+00:00",
+    "timestamp": "2026-05-28T02:33:00.993408+00:00",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-28T01:41:40.636972+00:00",
+      "generated_at_utc": "2026-05-28T02:33:00.988408+00:00",
       "command": [
         "python",
         "scripts/compute_stopdff_dp.py",
@@ -84,22 +84,22 @@
       "cwd": ".",
       "output_path": "paper_exports/stopdff_dp.json",
       "script_path": "scripts/compute_stopdff_dp.py",
-      "script_sha256": "89397ef8a729e7f24c2222553dc7a56ed1acdaeaa86b367167fe915abe516090",
-      "git_commit": "031884efba47eb4cfab98bd2f69d6de91d5cfcbd",
+      "script_sha256": "66037d0407bccab2c9f7174bc69a4ede5daecf927fade6d8ba059da5e572f81a",
+      "git_commit": "3887f4b216b845d4ea740f68b8a0cf62280c7ad0",
       "git_dirty": false,
       "git_status_relevant_paths": "",
       "helper_sha256s": {
-        "scripts/stopdff_dp/__init__.py": "24959f6b7a21d0a88bddfc7d35e76d99b1ac5b430f0b681e951c0c8d12e1e2e8",
-        "scripts/stopdff_dp/_provenance.py": "25f88f967cde5ccb741d06a0126ed3514aa2f83761c668371045e763b4424caa",
-        "scripts/stopdff_dp/adapter.py": "4dd783ffbce0ad737e7fe8e80725c92b08616b7053bf39909743ee3a604e362a",
-        "scripts/stopdff_dp/continuation.py": "23cfc27864f7165347d690b62987ff1d28c7c04ac4b584b81c9d912ea2e1e2cc",
-        "scripts/stopdff_dp/diagnostics.py": "29b7143475aba4510264167293e2a7b6f38fa39e93b40c6deb9aec8ce3c93c34",
-        "scripts/stopdff_dp/dp_solver.py": "ace28cab84b74da7491a619b2e936c83d968c975058d426223a2cedeffeef62c",
-        "scripts/stopdff_dp/rewards.py": "049bad7d6e942b9cd1e7e042fceea77edff1a5e258d16975692092b67be4ff56",
-        "scripts/stopdff_dp/types.py": "d96304d3a99dca3680f46cc5afa9b33f8ffc04a23b981f800cc786e0bb0e4e8a",
-        "scripts/stopdff_dp/writers.py": "e4c3c8b3b875a5cc0b18027b918eb7f29304ed9991ef8dfb031e15f54a7a5e4c",
-        "scripts/_audit_gates.py": "fc5b6900024d02f44508eef8a78c482f78bcc3e5c5b8f998f4ab051e506007da",
-        "scripts/_common.py": "c84789a3338174f7416509d1501116c86d69a0fe9f40039da8a8dede46c33f21"
+        "scripts/stopdff_dp/__init__.py": "9a5c797622bacf7771cc8f8c110a8e96a526012430665a9469681356f44d5075",
+        "scripts/stopdff_dp/_provenance.py": "c7fa1691df43c170937b043ab99e33f86b713f90b5e186d717326c69e84f526e",
+        "scripts/stopdff_dp/adapter.py": "fe1c417f86d6df25ac6a7710c747d812e0a43cacfbbeaffe1407109fd839d320",
+        "scripts/stopdff_dp/continuation.py": "8c40612328f6c01332516eec6b08d763cda416a08ef685aa98b2b82c58d9e632",
+        "scripts/stopdff_dp/diagnostics.py": "58214f223901d4ff3337cff42c49be41e6a8394269f8ba1c5279c76d73470855",
+        "scripts/stopdff_dp/dp_solver.py": "1342a41cd94fafc14c5a4092e2f0b3ec65c4b0e5bfdff0818f7a3384e533fb82",
+        "scripts/stopdff_dp/rewards.py": "27563165df2effd67b9847480b62bdab5268d78a8581cbe8880b963a6a2453df",
+        "scripts/stopdff_dp/types.py": "44b96a178428fbc73d70a54d7eab49e2eff88ce8db647f5825f97a98b4284743",
+        "scripts/stopdff_dp/writers.py": "383a6f5b3d22e750cad3ee80764d2f3e0bdd5c762d919dabf705cfa61d606af8",
+        "scripts/_audit_gates.py": "09345374c786ec70ef16b380c4b59eaf0595b9d9553f2b0156a9a9bc76569174",
+        "scripts/_common.py": "4ef4a9cf8b993f9d08f1b4da0a81b4d5ccde533628fd23ba7322d78cd1ad6c2f"
       }
     }
   },
