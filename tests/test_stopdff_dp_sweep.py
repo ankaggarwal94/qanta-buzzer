@@ -231,6 +231,102 @@ def test_max_cells_truncation_marks_unattempted_cells_skipped(tmp_path: Path) ->
     assert interpretation["skipped_cell_count"] == 1
 
 
+def test_max_wall_hours_truncates_unstarted_cells_during_parallel_execution(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Wall-clock limits must be rechecked while cells execute, not just at queue build."""
+    from concurrent.futures import wait as real_wait
+    from threading import Event, Lock
+    from scripts import sweep_stopdff_dp
+
+    data_dir = tmp_path / "data"
+    _write_tiny_data(data_dir)
+    clock = {"now": 1_000.0}
+    release_cells = Event()
+    wait_timeouts = []
+    clock_lock = Lock()
+
+    def fake_time() -> float:
+        with clock_lock:
+            return clock["now"]
+
+    def fake_wait(futures, timeout=None, return_when=None):
+        wait_timeouts.append(timeout)
+        with clock_lock:
+            clock["now"] += 2.0
+        if len(wait_timeouts) == 1:
+            return set(), set(futures)
+        release_cells.set()
+        return real_wait(futures, timeout=timeout, return_when=return_when)
+
+    def fake_run_cell(**kwargs) -> dict:
+        if not release_cells.wait(timeout=5):
+            raise AssertionError("test cell was not released")
+        cell = kwargs["cell"]
+        return {
+            **cell,
+            "status": "completed",
+            "git_commit": kwargs["git_commit"],
+            "git_dirty": kwargs["git_dirty"],
+            "argv": kwargs["effective_argv"],
+            "seed": kwargs["args"].seed,
+            "fit_split": kwargs["args"].fit_split,
+            "eval_split": kwargs["args"].eval_split,
+            "run_fingerprint": kwargs["run_fingerprint"],
+            "started_at": "2026-05-28T00:00:00+00:00",
+            "completed_at": "2026-05-28T00:00:02+00:00",
+            "wall_clock_seconds": 2.0,
+            "confirmatory_included": True,
+            "confirmatory": True,
+            "gate_verdict": "pass",
+            "gate_verdict_reason": "all_clean",
+            "coverage": {"verdict": "pass", "fraction_exact": 1.0},
+            "ceiling_flags": {
+                "all_stop_at_first_prefix": False,
+                "all_stop_at_final_prefix": False,
+                "no_cross_format_stopping_variance": False,
+            },
+            "metrics": {
+                "stopdff_dp_abs_median": 0.0,
+                "stopdff_dp_signed_median": 0.0,
+                "stopdff_dp_signed_mean": 0.0,
+            },
+        }
+
+    monkeypatch.setattr(sweep_stopdff_dp.time, "time", fake_time)
+    monkeypatch.setattr(sweep_stopdff_dp, "wait", fake_wait)
+    monkeypatch.setattr(sweep_stopdff_dp, "_run_cell", fake_run_cell)
+
+    out = tmp_path / "paper_exports" / "stopdff_dp_sweep.json"
+    rc = sweep_stopdff_dp.main([
+        "--data-dir", str(data_dir),
+        "--out", str(out),
+        "--identity-calibration",
+        "--seed", "123",
+        "--num-bootstrap", "8",
+        "--reward-schedules", "acf_flat,power_mark,wait_cost_small",
+        "--continuations", "empirical_bucket",
+        "--calibrators", "uncalibrated",
+        "--formats", "MC-fixed",
+        "--prefix-bucketing", "phase",
+        "--subject-pooling", "pooled_subject",
+        "--n-jobs", "4",
+        "--max-wall-hours", "0.0002777777777777778",
+    ])
+
+    assert rc == 0
+    payload = json.loads(out.read_text())
+    completed = [cell for cell in payload["cells"] if cell["status"] == "completed"]
+    truncated = [
+        cell for cell in payload["cells"]
+        if cell.get("skip_reason") == "max_wall_hours_truncated"
+    ]
+    assert len(completed) == 2
+    assert len(truncated) == 1
+    assert wait_timeouts and wait_timeouts[0] is not None
+    assert payload["paper_safe_interpretation"]["reason"] == "incomplete_sweep_cells"
+
+
 def test_resume_only_missing_preserves_existing_cells(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     _write_tiny_data(data_dir)

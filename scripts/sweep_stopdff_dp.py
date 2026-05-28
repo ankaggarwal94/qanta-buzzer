@@ -14,7 +14,7 @@ import sys
 import time
 import traceback
 import zlib
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1805,15 +1805,91 @@ def main(argv: Optional[list[str]] = None) -> int:
         _write_json_atomic(path, payload)
         return payload
 
-    if args.n_jobs and args.n_jobs > 1 and len(cells_to_run) > 1:
+    def _wall_budget_exhausted() -> bool:
+        return max_seconds is not None and time.time() - start >= max_seconds
+
+    def _wall_budget_wait_timeout() -> float | None:
+        if max_seconds is None:
+            return None
+        remaining = max_seconds - (time.time() - start)
+        if remaining > 0:
+            return min(30.0, remaining)
+        return 30.0
+
+    def _mark_wall_truncated(items: list[tuple[dict, str, Path]]) -> None:
+        for cell, cid, path in items:
+            if cid not in existing_by_id and cid not in truncated_by_id:
+                truncated_by_id[cid] = _truncated_cell_payload(
+                    cell, cid, path, "max_wall_hours_truncated"
+                )
+
+    if (
+        max_seconds is None
+        and args.n_jobs
+        and args.n_jobs > 1
+        and len(cells_to_run) > 1
+    ):
         with ThreadPoolExecutor(max_workers=args.n_jobs) as executor:
             for future in as_completed(executor.submit(_execute_one, item) for item in cells_to_run):
                 payload = future.result()
                 existing_by_id[payload["cell_id"]] = payload
+    elif args.n_jobs and args.n_jobs > 1 and len(cells_to_run) > 1:
+        max_workers = max(1, int(args.n_jobs))
+        next_index = 0
+        futures: dict[object, tuple[dict, str, Path]] = {}
+
+        def _submit_next(executor: ThreadPoolExecutor) -> bool:
+            nonlocal next_index
+            if _wall_budget_exhausted() or next_index >= len(cells_to_run):
+                return False
+            item = cells_to_run[next_index]
+            next_index += 1
+            futures[executor.submit(_execute_one, item)] = item
+            return True
+
+        initial_submit_limit = min(max_workers, len(cells_to_run))
+        if initial_submit_limit == len(cells_to_run):
+            # Keep one cell unscheduled so a wall-clock budget can truncate
+            # future work after the first completion or budget checkpoint.
+            initial_submit_limit -= 1
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for _ in range(initial_submit_limit):
+                if not _submit_next(executor):
+                    break
+            while futures:
+                done, _pending = wait(
+                    futures,
+                    timeout=_wall_budget_wait_timeout(),
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    if _wall_budget_exhausted() and next_index < len(cells_to_run):
+                        _mark_wall_truncated(cells_to_run[next_index:])
+                        next_index = len(cells_to_run)
+                    continue
+                for future in done:
+                    futures.pop(future)
+                    payload = future.result()
+                    existing_by_id[payload["cell_id"]] = payload
+                    if _wall_budget_exhausted():
+                        if next_index < len(cells_to_run):
+                            _mark_wall_truncated(cells_to_run[next_index:])
+                            next_index = len(cells_to_run)
+                    else:
+                        _submit_next(executor)
+        if next_index < len(cells_to_run):
+            _mark_wall_truncated(cells_to_run[next_index:])
     else:
-        for item in cells_to_run:
+        for index, item in enumerate(cells_to_run):
+            if _wall_budget_exhausted():
+                _mark_wall_truncated(cells_to_run[index:])
+                break
             payload = _execute_one(item)
             existing_by_id[payload["cell_id"]] = payload
+            if _wall_budget_exhausted():
+                _mark_wall_truncated(cells_to_run[index + 1:])
+                break
 
     # PR #15 review (chatgpt-codex-connector 3313958597): non-resume runs
     # must not publish cells from prior wider sweeps cached on disk. Build
