@@ -141,7 +141,12 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
     os.replace(tmp, path)
 
 
-def _git_metadata(args: argparse.Namespace, *, out: Path) -> tuple[str | None, bool | None]:
+def _git_metadata(
+    args: argparse.Namespace,
+    *,
+    out: Path,
+    myopic_artifact_path: Path | None = None,
+) -> tuple[str | None, bool | None]:
     """Return (git_commit, git_dirty) scoped to the sweep's relevant paths.
 
     The dirty check explicitly EXCLUDES the output paths (sweep JSON / MD / TeX,
@@ -179,6 +184,8 @@ def _git_metadata(args: argparse.Namespace, *, out: Path) -> tuple[str | None, b
     ]
     if calibration_path is not None:
         candidate_paths.append(calibration_path)
+    if myopic_artifact_path is not None:
+        candidate_paths.append(myopic_artifact_path)
     candidate_paths.extend(helper_paths())
 
     repo_relative_paths: list[str] = []
@@ -1291,53 +1298,78 @@ def _load_myopic_artifact(
     return None, None
 
 
-def _paper_safe_interpretation(completed: list[dict]) -> dict:
+def _paper_safe_interpretation(
+    completed: list[dict],
+    *,
+    failed_cell_count: int = 0,
+    skipped_cell_count: int = 0,
+) -> dict:
     non_oracle = [
         c for c in completed
         if c.get("continuation") != "oracle_trajectory"
     ]
     included = [c for c in completed if c.get("confirmatory_included")]
     if not included:
-        return {
+        interpretation = {
             "verdict": "WARN",
             "reason": "no_confirmatory_cells",
         }
-    shifted = [
-        c for c in non_oracle
-        if abs(c.get("metrics", {}).get("stopdff_dp_abs_median", 0.0)) > 1.0
-        or abs(c.get("metrics", {}).get("stopdff_dp_signed_median", 0.0)) > 1.0
-    ]
-    if shifted:
-        return {
-            "verdict": "FAIL",
-            "reason": "material_mc_shift",
-            "n_shifted_cells": len(shifted),
-        }
-    weak = [
-        c for c in non_oracle
-        if c.get("gate_verdict") != "pass"
-        or c.get("coverage", {}).get("verdict") == "warn"
-        or any(c.get("ceiling_flags", {}).get(k) for k in (
-            "all_stop_at_first_prefix",
-            "all_stop_at_final_prefix",
-            "no_cross_format_stopping_variance",
-        ))
-    ]
-    if weak:
-        return {
-            "verdict": "WARN",
-            "reason": "small_stopdff_but_coverage_or_ceiling_weak",
-            "n_weak_cells": len(weak),
-        }
-    return {
-        "verdict": "PASS",
-        "reason": "small_stopdff_and_coverage_calibration_gates_pass",
-    }
+    else:
+        shifted = [
+            c for c in non_oracle
+            if abs(c.get("metrics", {}).get("stopdff_dp_abs_median", 0.0)) > 1.0
+            or abs(c.get("metrics", {}).get("stopdff_dp_signed_median", 0.0)) > 1.0
+        ]
+        if shifted:
+            interpretation = {
+                "verdict": "FAIL",
+                "reason": "material_mc_shift",
+                "n_shifted_cells": len(shifted),
+            }
+        else:
+            weak = [
+                c for c in non_oracle
+                if c.get("gate_verdict") != "pass"
+                or c.get("coverage", {}).get("verdict") == "warn"
+                or any(c.get("ceiling_flags", {}).get(k) for k in (
+                    "all_stop_at_first_prefix",
+                    "all_stop_at_final_prefix",
+                    "no_cross_format_stopping_variance",
+                ))
+            ]
+            if weak:
+                interpretation = {
+                    "verdict": "WARN",
+                    "reason": "small_stopdff_but_coverage_or_ceiling_weak",
+                    "n_weak_cells": len(weak),
+                }
+            else:
+                interpretation = {
+                    "verdict": "PASS",
+                    "reason": "small_stopdff_and_coverage_calibration_gates_pass",
+                }
+
+    if failed_cell_count or skipped_cell_count:
+        if interpretation["verdict"] != "FAIL":
+            interpretation = {
+                "verdict": "WARN",
+                "reason": "incomplete_sweep_cells",
+                "base_verdict": interpretation["verdict"],
+                "base_reason": interpretation["reason"],
+            }
+        interpretation.update({
+            "completed_cell_count": len(completed),
+            "failed_cell_count": failed_cell_count,
+            "skipped_cell_count": skipped_cell_count,
+        })
+    return interpretation
 
 
 def _aggregate(cells: list[dict], args: argparse.Namespace, effective_argv: list[str]) -> dict:
     completed = [c for c in cells if c.get("status") == "completed"]
     confirmatory = [c for c in completed if c.get("confirmatory_included")]
+    failed_cell_count = sum(1 for c in cells if c.get("status") == "failed")
+    skipped_cell_count = sum(1 for c in cells if c.get("status") == "skipped")
     return {
         "metadata": {
             "metric_type": "finite_horizon_dp_sweep",
@@ -1350,10 +1382,14 @@ def _aggregate(cells: list[dict], args: argparse.Namespace, effective_argv: list
             "n_jobs": args.n_jobs,
             "confirmatory_cell_count": len(confirmatory),
             "completed_cell_count": len(completed),
-            "failed_cell_count": sum(1 for c in cells if c.get("status") == "failed"),
-            "skipped_cell_count": sum(1 for c in cells if c.get("status") == "skipped"),
+            "failed_cell_count": failed_cell_count,
+            "skipped_cell_count": skipped_cell_count,
         },
-        "paper_safe_interpretation": _paper_safe_interpretation(completed),
+        "paper_safe_interpretation": _paper_safe_interpretation(
+            completed,
+            failed_cell_count=failed_cell_count,
+            skipped_cell_count=skipped_cell_count,
+        ),
         "cells": cells,
         "confirmatory_cells": [
             c.get("cell_id") for c in confirmatory
@@ -1658,8 +1694,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     artifact_dir = Path(args.artifact_dir) if args.artifact_dir else DEFAULT_OUT.parent
     out = Path(args.out) if args.out else artifact_dir / "stopdff_dp_sweep.json"
     cell_dir = _cell_cache_dir(args, out)
-    git_commit, git_dirty = _git_metadata(args, out=out)
     myopic_artifact, myopic_artifact_path = _load_myopic_artifact(args, out)
+    git_commit, git_dirty = _git_metadata(
+        args,
+        out=out,
+        myopic_artifact_path=myopic_artifact_path,
+    )
     run_fingerprint = _run_fingerprint(
         args, out=out, git_commit=git_commit,
         myopic_artifact_path=myopic_artifact_path,

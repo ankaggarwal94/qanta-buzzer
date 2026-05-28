@@ -157,6 +157,52 @@ def test_failed_and_skipped_cell_records_continue(tmp_path: Path) -> None:
     assert {"completed", "failed", "skipped"}.issubset(statuses)
     assert any("Unknown reward schedule" in cell.get("error", "") for cell in cells)
     assert any(cell.get("skip_reason") == "choices_only_unavailable" for cell in cells)
+    interpretation = json.loads(out.read_text())["paper_safe_interpretation"]
+    assert interpretation["verdict"] == "WARN"
+    assert interpretation["reason"] == "incomplete_sweep_cells"
+    assert interpretation["failed_cell_count"] >= 1
+    assert interpretation["skipped_cell_count"] >= 1
+
+
+def test_paper_safe_interpretation_warns_when_requested_cells_are_incomplete() -> None:
+    from scripts import sweep_stopdff_dp
+
+    clean_completed = {
+        "status": "completed",
+        "continuation": "empirical_bucket",
+        "confirmatory_included": True,
+        "gate_verdict": "pass",
+        "coverage": {"verdict": "pass"},
+        "ceiling_flags": {
+            "all_stop_at_first_prefix": False,
+            "all_stop_at_final_prefix": False,
+            "no_cross_format_stopping_variance": False,
+        },
+        "metrics": {
+            "stopdff_dp_abs_median": 0.0,
+            "stopdff_dp_signed_median": 0.0,
+        },
+    }
+    failed = {
+        "status": "failed",
+        "error": "synthetic failure",
+        "confirmatory_included": False,
+    }
+    skipped = {
+        "status": "skipped",
+        "skip_reason": "synthetic skip",
+        "confirmatory_included": False,
+    }
+    args = sweep_stopdff_dp._parse_args([])
+
+    payload = sweep_stopdff_dp._aggregate([clean_completed, failed, skipped], args, [])
+
+    interpretation = payload["paper_safe_interpretation"]
+    assert interpretation["verdict"] == "WARN"
+    assert interpretation["reason"] == "incomplete_sweep_cells"
+    assert interpretation["completed_cell_count"] == 1
+    assert interpretation["failed_cell_count"] == 1
+    assert interpretation["skipped_cell_count"] == 1
 
 
 def test_resume_only_missing_preserves_existing_cells(tmp_path: Path) -> None:
@@ -725,7 +771,7 @@ def test_sweep_fingerprint_changes_when_helper_module_edited(tmp_path, monkeypat
 
     def patched(p):
         digest = real_file_sha(p)
-        if p is not None and str(p).endswith("stopdff_dp/rewards.py"):
+        if p is not None and _Path(p).parent.name == "stopdff_dp" and _Path(p).name == "rewards.py":
             return "0" * 64
         return digest
 
@@ -815,6 +861,48 @@ def test_sweep_dirty_check_includes_helper_modules(tmp_path, monkeypatch):
         )
     finally:
         helper_for_test.write_bytes(original_bytes)
+
+
+def test_sweep_dirty_check_includes_myopic_artifact_path(tmp_path, monkeypatch):
+    """A dirty stopdff.json used for myopic comparison must flip git_dirty.
+
+    PR #15 review 3314521492: _run_fingerprint hashes the resolved myopic
+    artifact and completed cells serialize myopic_artifact_comparison from it,
+    so _git_metadata must include that path in its relevant dirty pathspec.
+    """
+    import subprocess as _subprocess
+    from scripts import sweep_stopdff_dp
+
+    myopic_path = sweep_stopdff_dp.PROJECT_ROOT / "paper_exports" / "stopdff.json"
+    args = sweep_stopdff_dp._parse_args([
+        "--data-dir", str(tmp_path / "data"),
+        "--fit-split", "val",
+        "--eval-split", "test",
+        "--identity-calibration",
+        "--out", str(tmp_path / "out.json"),
+    ])
+    status_commands: list[list[str]] = []
+
+    def fake_check_output(cmd, **_kwargs):
+        if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            return "a" * 40 + "\n"
+        if cmd[:3] == ["git", "status", "--short"]:
+            status_commands.append(cmd)
+            assert "paper_exports/stopdff.json" in cmd
+            return " M paper_exports/stopdff.json\n"
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(_subprocess, "check_output", fake_check_output)
+
+    commit, dirty = sweep_stopdff_dp._git_metadata(
+        args,
+        out=tmp_path / "out.json",
+        myopic_artifact_path=myopic_path,
+    )
+
+    assert commit == "a" * 40
+    assert dirty is True
+    assert status_commands
 
 
 def test_helper_paths_matches_helper_sha256s_keys():
