@@ -6,7 +6,7 @@ usage() {
 Usage: scripts/device2_stopdff_run.sh [options]
 
 Options:
-  --experiment dp_sweep
+  --experiment NAME         dp_sweep (default) | learned_value_train | learned_value_eval
   --artifact-dir NAME
   --out-dir DIR
   --max-wall-hours HOURS
@@ -24,6 +24,14 @@ Options:
   --eval-split NAME
   --device-index N
   --min-free-gib GiB
+
+Experiment modes:
+  dp_sweep              Dispatches scripts/sweep_stopdff_dp.py (default;
+                        preserves backward-compatible behavior).
+  learned_value_train   Dispatches scripts/train_stopdff_value_model.py
+                        (Prompt 5 deliverable; not yet landed).
+  learned_value_eval    Dispatches scripts/compute_stopdff_learned_value.py
+                        (Prompt 5 deliverable; not yet landed).
 EOF
 }
 
@@ -287,9 +295,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$EXPERIMENT" != "dp_sweep" ]]; then
-  die "unsupported experiment '$EXPERIMENT'; only 'dp_sweep' is supported"
-fi
+case "$EXPERIMENT" in
+  dp_sweep|learned_value_train|learned_value_eval)
+    ;;
+  *)
+    die "unsupported experiment '$EXPERIMENT'; expected one of: dp_sweep, learned_value_train, learned_value_eval"
+    ;;
+esac
 
 if [[ ! "$DEVICE_INDEX" =~ ^[0-9]+$ ]]; then
   die "--device-index must be a non-negative integer"
@@ -362,28 +374,75 @@ if [[ "$OVERWRITE" -eq 1 ]]; then
   PREFLIGHT_CMD+=("--overwrite")
 fi
 
-SWEEP_CMD=(
-  "$PYTHON"
-  "scripts/sweep_stopdff_dp.py"
-  "--artifact-dir" "$ARTIFACT_PATH"
-  "--out" "$SWEEP_OUT"
-  "--max-wall-hours" "$MAX_WALL_HOURS"
-  "--num-bootstrap" "$NUM_BOOTSTRAP"
-  "--n-jobs" "$N_JOBS"
-  "--calibrators" "$CALIBRATORS"
-  "--reward-schedules" "$REWARD_SCHEDULES"
-  "--continuations" "$CONTINUATIONS"
-  "--data-dir" "$DATA_DIR"
-  "--calibration" "$CALIBRATION"
-  "--fit-split" "$FIT_SPLIT"
-  "--eval-split" "$EVAL_SPLIT"
-)
-if [[ "$RESUME" -eq 1 ]]; then
-  SWEEP_CMD+=("--resume")
-fi
-if [[ "$SMOKE" -eq 1 ]]; then
-  SWEEP_CMD+=("--smoke" "--max-cells" "${SMOKE_MAX_CELLS:-2}")
-fi
+VALUE_CHECKPOINT_DIR="$RUN_DIR_PATH/value_model"
+LEARNED_VALUE_OUT="$ARTIFACT_PATH/stopdff_learned_value.json"
+
+case "$EXPERIMENT" in
+  dp_sweep)
+    SWEEP_CMD=(
+      "$PYTHON"
+      "scripts/sweep_stopdff_dp.py"
+      "--artifact-dir" "$ARTIFACT_PATH"
+      "--out" "$SWEEP_OUT"
+      "--max-wall-hours" "$MAX_WALL_HOURS"
+      "--num-bootstrap" "$NUM_BOOTSTRAP"
+      "--n-jobs" "$N_JOBS"
+      "--calibrators" "$CALIBRATORS"
+      "--reward-schedules" "$REWARD_SCHEDULES"
+      "--continuations" "$CONTINUATIONS"
+      "--data-dir" "$DATA_DIR"
+      "--calibration" "$CALIBRATION"
+      "--fit-split" "$FIT_SPLIT"
+      "--eval-split" "$EVAL_SPLIT"
+    )
+    if [[ "$RESUME" -eq 1 ]]; then
+      SWEEP_CMD+=("--resume")
+    fi
+    if [[ "$SMOKE" -eq 1 ]]; then
+      SWEEP_CMD+=("--smoke" "--max-cells" "${SMOKE_MAX_CELLS:-2}")
+    fi
+    ;;
+  learned_value_train)
+    # Prompt 5 deliverable: scripts/train_stopdff_value_model.py is not
+    # yet in the repo. The dispatch wiring is here so a future commit can
+    # land it without touching this script. Until it lands, this branch
+    # will fail fast with a "No such file" error from the Python
+    # interpreter -- the correct fail-fast behavior.
+    SWEEP_CMD=(
+      "$PYTHON"
+      "scripts/train_stopdff_value_model.py"
+      "--artifact-dir" "$ARTIFACT_PATH"
+      "--train-split" "train"
+      "--val-split" "val"
+      "--device" "cuda"
+      "--out" "$VALUE_CHECKPOINT_DIR"
+      "--data-dir" "$DATA_DIR"
+      "--calibration" "$CALIBRATION"
+    )
+    if [[ "$SMOKE" -eq 1 ]]; then
+      SWEEP_CMD+=("--epochs" "2" "--seeds" "1" "--hidden" "32")
+    fi
+    ;;
+  learned_value_eval)
+    # Prompt 5 deliverable: scripts/compute_stopdff_learned_value.py is not
+    # yet in the repo. See learned_value_train above for the same fail-fast
+    # rationale. The checkpoint dir defaults to whatever learned_value_train
+    # wrote inside the same RUN_DIR_PATH.
+    SWEEP_CMD=(
+      "$PYTHON"
+      "scripts/compute_stopdff_learned_value.py"
+      "--artifact-dir" "$ARTIFACT_PATH"
+      "--checkpoint-dir" "$VALUE_CHECKPOINT_DIR"
+      "--eval-split" "$EVAL_SPLIT"
+      "--out" "$LEARNED_VALUE_OUT"
+      "--data-dir" "$DATA_DIR"
+      "--calibration" "$CALIBRATION"
+    )
+    if [[ "$SMOKE" -eq 1 ]]; then
+      SWEEP_CMD+=("--smoke")
+    fi
+    ;;
+esac
 
 PREFLIGHT_STDOUT="$(mktemp)"
 PREFLIGHT_STDERR="$(mktemp)"

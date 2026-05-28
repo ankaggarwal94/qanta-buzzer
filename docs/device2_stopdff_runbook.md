@@ -262,3 +262,29 @@ git -C "$PAPER_REPO" status --short -- paper_exports
   in the sweep, dataset hashes in the cache fingerprint, and non-resume
   aggregation ignoring stale cells. This is a caution for evidentiary use, not a
   blocker for harness mechanics.
+
+## Experiment modes (added in feat/stopdff-glue)
+
+The `--experiment` flag selects the dispatched downstream script. The
+default `dp_sweep` preserves backward-compatible behavior; the two
+`learned_value_*` modes wire Prompt 5's learned-continuation-value
+StopDFF pipeline through the same Device 2 harness so future work can
+land without touching this script.
+
+| `--experiment`         | Dispatches                                                       |
+|------------------------|------------------------------------------------------------------|
+| `dp_sweep` (default)   | `scripts/sweep_stopdff_dp.py`                                    |
+| `learned_value_train`  | `scripts/train_stopdff_value_model.py` (Prompt 5; not yet landed)|
+| `learned_value_eval`   | `scripts/compute_stopdff_learned_value.py` (Prompt 5; same)      |
+
+For `learned_value_train` / `learned_value_eval`, the dispatched script
+files do NOT exist in this commit. Running them today fails fast at
+`python: can't open file …` with a non-zero exit code -- the correct
+behavior, since the trainer/eval scripts are tracked as a separate
+Prompt 5 deliverable. The dispatch wiring is in place now so a future
+commit can land the scripts without modifying `device2_stopdff_run.sh`.
+
+For smoke runs of either learned-value mode, add `--smoke` to trim the
+trainer's `--epochs`, `--seeds`, and `--hidden` hyperparameters (and to
+trim the eval similarly). See `docs/modal_stopdff_runner.md` for the
+equivalent Modal-side flow.

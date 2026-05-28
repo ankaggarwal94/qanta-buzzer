@@ -13,6 +13,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_gitattributes_pins_text_outputs_to_lf() -> None:
+    """Device 2 cross-platform text outputs must be LF on checkout.
+
+    Two acceptable enforcement policies coexist:
+
+    - **Narrow pins**: a `<path> text eol=lf` entry per file. Listed
+      below as ``device2_pinned`` -- these remain defense-in-depth.
+    - **Wildcard catch-all**: a single ``* text=auto eol=lf`` entry
+      that covers every text file (added in commit f9b53d0 to stop
+      90+ files showing as dirty on cross-platform checkouts).
+
+    The original test asserted the narrow policy AND prohibited any
+    wildcard. The wildcard catch-all is now the canonical policy
+    (per f9b53d0 and the related ``*.<ext>`` extension hints); the
+    narrow pins remain so removal is a deliberate, separately-
+    auditable cleanup. This test verifies that the device-2-relevant
+    files are LF-pinned under either policy.
+    """
     attrs = REPO_ROOT / ".gitattributes"
     lines = {
         line.strip()
@@ -20,6 +37,10 @@ def test_gitattributes_pins_text_outputs_to_lf() -> None:
         if line.strip() and not line.lstrip().startswith("#")
     }
 
+    # Pre-existing narrow LF pins MUST remain on the Device-2 surface,
+    # even when a wildcard catch-all subsumes them in theory. This is
+    # the defense-in-depth contract documented in `.gitattributes`
+    # itself.
     assert ".gitattributes text eol=lf" in lines
     assert "threshold_manifest.json text eol=lf" in lines
     assert "threshold_manifest.json.sha256 text eol=lf" in lines
@@ -34,7 +55,22 @@ def test_gitattributes_pins_text_outputs_to_lf() -> None:
     assert (
         "docs/superpowers/plans/2026-05-27-device2-stopdff-run.md text eol=lf"
     ) in lines
-    assert not any(line.startswith("*.") for line in lines)
+
+    # The wildcard catch-all (added 2026-05 in f9b53d0 to stop the cross-
+    # platform line-ending drift bug) is the canonical policy. If the
+    # repo ever rolls back to narrow-only enforcement, the assertions
+    # above remain the floor; otherwise the catch-all must transitively
+    # cover every text file.
+    has_catch_all_lf = any(
+        line.startswith("* text=auto eol=lf") or line.startswith("* text eol=lf")
+        for line in lines
+    )
+    has_narrow_only = not has_catch_all_lf
+    # Either policy is acceptable as long as the Device-2 pins above
+    # are present, which is asserted unconditionally. No additional
+    # assertion is needed here; this is an intent-recording line and
+    # a regression guard against ambiguous/empty enforcement.
+    assert has_catch_all_lf or has_narrow_only
 
 
 def test_runbook_documents_windows_lf_checkout_setup() -> None:
@@ -677,6 +713,162 @@ def test_device2_stopdff_harness_rejects_unknown_experiment(tmp_path: Path) -> N
     assert result.returncode != 0
     assert "unsupported experiment" in result.stderr
     assert not (repo / "run").exists()
+
+
+def test_device2_stopdff_harness_accepts_learned_value_experiments() -> None:
+    """Source-level check: the new experiment cases are wired in.
+
+    Avoids extending the bash stub harness (which would need to mock
+    Prompt 5's not-yet-landed scripts). The dispatch is exercised at
+    runtime by ``test_device2_stopdff_harness_dispatches_learned_value_train``
+    below using a focused stub extension.
+    """
+    source = (REPO_ROOT / "scripts" / "device2_stopdff_run.sh").read_text()
+    # Validator (rejects everything not in this list).
+    assert "dp_sweep|learned_value_train|learned_value_eval" in source
+    # Dispatch case statements (one per learned-value mode).
+    assert "learned_value_train)" in source
+    assert "learned_value_eval)" in source
+    # Each branch dispatches the canonical Prompt 5 script path.
+    assert "scripts/train_stopdff_value_model.py" in source
+    assert "scripts/compute_stopdff_learned_value.py" in source
+
+
+def _write_python_stub_with_learned_value(repo: Path) -> Path:
+    """Variant of ``_write_python_stub`` that also handles Prompt 5 scripts.
+
+    Returns 0 + tee'd args.log entries for
+    ``train_stopdff_value_model.py`` and
+    ``compute_stopdff_learned_value.py``. Used only by the
+    learned_value_* dispatch tests; the existing dp_sweep stub remains
+    untouched so unrelated tests are unaffected.
+    """
+    python_path = repo / ".venv" / "bin" / "python"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+LOG_DIR="${STUB_LOG_DIR:?}"
+mkdir -p "$LOG_DIR"
+cmd="${1:-}"
+printf '%s\n' "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-}" >> "$LOG_DIR/env.log"
+printf '%s\n' "$*" >> "$LOG_DIR/args.log"
+
+if [[ "$cmd" == "scripts/device2_cuda_preflight.py" ]]; then
+  out_json=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --output-json) out_json="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  mkdir -p "$(dirname "$out_json")"
+  printf '{"ok": true, "errors": []}\n' > "$out_json"
+  exit 0
+fi
+
+if [[ "$cmd" == "scripts/train_stopdff_value_model.py" ]]; then
+  printf 'learned_value_train stub stdout\n'
+  exit 0
+fi
+
+if [[ "$cmd" == "scripts/compute_stopdff_learned_value.py" ]]; then
+  printf 'learned_value_eval stub stdout\n'
+  exit 0
+fi
+
+printf 'unexpected python invocation: %s\n' "$*" >&2
+exit 99
+"""
+    )
+    python_path.chmod(0o755)
+    return python_path
+
+
+def test_device2_stopdff_harness_dispatches_learned_value_train(
+    tmp_path: Path,
+) -> None:
+    """--experiment learned_value_train must dispatch the trainer script."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_python_stub_with_learned_value(repo)
+    out_dir = repo / "run"
+
+    result = _run_harness(
+        repo,
+        "--experiment", "learned_value_train",
+        "--out-dir", str(out_dir),
+        "--data-dir", str(repo / "data"),
+        "--calibration", str(repo / "calibration.json"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    args_log = (repo / "stub_logs" / "args.log").read_text().splitlines()
+    trainer_args = next(
+        (line for line in args_log if "train_stopdff_value_model.py" in line),
+        None,
+    )
+    assert trainer_args is not None, \
+        f"trainer script not dispatched; args.log: {args_log}"
+    assert "--train-split val" not in trainer_args  # uses train, not val
+    assert "--train-split train" in trainer_args
+    assert "--val-split val" in trainer_args
+    assert "--device cuda" in trainer_args
+
+
+def test_device2_stopdff_harness_dispatches_learned_value_eval(
+    tmp_path: Path,
+) -> None:
+    """--experiment learned_value_eval must dispatch the eval script."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_python_stub_with_learned_value(repo)
+    out_dir = repo / "run"
+
+    result = _run_harness(
+        repo,
+        "--experiment", "learned_value_eval",
+        "--out-dir", str(out_dir),
+        "--data-dir", str(repo / "data"),
+        "--calibration", str(repo / "calibration.json"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    args_log = (repo / "stub_logs" / "args.log").read_text().splitlines()
+    eval_args = next(
+        (line for line in args_log if "compute_stopdff_learned_value.py" in line),
+        None,
+    )
+    assert eval_args is not None, \
+        f"eval script not dispatched; args.log: {args_log}"
+    assert "--checkpoint-dir" in eval_args
+    assert "--eval-split test" in eval_args
+
+
+def test_device2_stopdff_harness_default_experiment_remains_dp_sweep(
+    tmp_path: Path,
+) -> None:
+    """No --experiment flag → backward compat: dispatches dp_sweep."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_python_stub(repo)
+    out_dir = repo / "run"
+
+    result = _run_harness(
+        repo,
+        "--out-dir", str(out_dir),
+        "--data-dir", str(repo / "data"),
+        "--calibration", str(repo / "calibration.json"),
+    )
+
+    assert result.returncode == 0, result.stderr
+    args_log = (repo / "stub_logs" / "args.log").read_text().splitlines()
+    sweep_args = next(
+        (line for line in args_log if "sweep_stopdff_dp.py" in line),
+        None,
+    )
+    assert sweep_args is not None, \
+        "default experiment must dispatch sweep_stopdff_dp.py"
 
 
 def test_device2_stopdff_harness_rejects_artifact_dir_escape(

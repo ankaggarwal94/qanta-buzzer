@@ -63,6 +63,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "the existing diagnostic row)."
         ),
     )
+    parser.add_argument(
+        "--include-learned-value-stopdff",
+        action="store_true",
+        help=(
+            "Append a learned-continuation-value StopDFF row from "
+            "paper_exports/stopdff_learned_value.json (exploratory; never "
+            "feeds the overall verdict ladder). Gracefully skipped with a "
+            "stderr warning when the artifact is absent."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -172,6 +182,9 @@ def _evaluate_csli(csli_data: dict, threshold: float) -> dict:
         "observed_criterion_value": max_acc_choices_only,
         "direction": "warn_if_above",
         "verdict": verdict,
+        "exploratory": False,
+        "prior_warn_resolution": None,
+        "prior_warn_resolution_notes": None,
         "details": {
             "n_models": len(per_model),
             "per_model_acc_choices_only": {
@@ -285,6 +298,9 @@ def _evaluate_calibration(cal_data: dict, threshold: float) -> dict:
         "observed_criterion_value": max_ece,
         "direction": "warn_if_above",
         "verdict": final_verdict,
+        "exploratory": False,
+        "prior_warn_resolution": None,
+        "prior_warn_resolution_notes": None,
         "details": {
             "per_bucket_ece": {
                 k: v["ece"] for k, v in per_bucket.items()
@@ -385,6 +401,9 @@ def _evaluate_stopdff(stopdff_data: dict, threshold: float) -> dict:
         "direction": "warn_if_above",
         "verdict": final_verdict,
         "verdict_qualifier": verdict_qualifier,
+        "exploratory": False,
+        "prior_warn_resolution": None,
+        "prior_warn_resolution_notes": None,
         "details": {
             "direction_breakdown": stopdff_data["direction_breakdown"],
             "stored_gate_verdict": stored_verdict,
@@ -448,6 +467,9 @@ def _evaluate_stopdff_dp(dp_data: dict) -> dict:
         "direction": "warn_if_above",
         "verdict": verdict,
         "verdict_qualifier": "; ".join(qualifier_parts) if qualifier_parts else None,
+        "exploratory": False,
+        "prior_warn_resolution": None,
+        "prior_warn_resolution_notes": None,
         "details": {
             "reward_schedule": dp_data["metadata"]["reward_schedule"],
             "continuation_estimator": dp_data["metadata"]["continuation_estimator"],
@@ -459,6 +481,50 @@ def _evaluate_stopdff_dp(dp_data: dict) -> dict:
             "direction_breakdown": dp_data["direction_breakdown"],
             "confirmatory": confirmatory,
             "metric_type": dp_data["metadata"]["metric_type"],
+        },
+    }
+
+
+def _evaluate_stopdff_learned_value(lv_data: dict) -> dict:
+    """Evaluate a learned-continuation-value StopDFF row (exploratory).
+
+    Mirrors _evaluate_stopdff_dp's shape but always sets exploratory=True
+    so the row never feeds the overall verdict ladder. The threshold
+    (|signed_median| <= 1) is hard-coded with provenance
+    "diagnostic_not_preregistered" because this ceiling is NOT in
+    threshold_manifest.json's frozen pre-registration block — it was
+    selected post-test-inspection as a diagnostic ceiling.
+
+    Field names below assume the producer artifact uses
+    ``stopdff_signed_median`` for the headline value and the same
+    ``metadata.{checkpoint_path, seeds, metric_type}`` shape as the DP
+    artifact. The producer script (Prompt 5) will be authored against
+    these names; if it diverges, this helper needs a field-name update.
+    """
+    signed_median = float(lv_data["stopdff_signed_median"])
+    return {
+        "name": "Learned-Value StopDFF (Exploratory)",
+        "value": signed_median,
+        "value_display": f"{signed_median:+.4f}",
+        "threshold": 1,
+        "threshold_criterion": "|signed_median| <= 1",
+        "threshold_provenance": "diagnostic_not_preregistered",
+        "observed_criterion_value": abs(signed_median),
+        "direction": "warn_if_above",
+        "verdict": lv_data.get("gate_verdict", "warn"),
+        "verdict_qualifier": lv_data.get("gate_verdict_reason"),
+        "exploratory": True,
+        "prior_warn_resolution": None,
+        "prior_warn_resolution_notes": None,
+        "details": {
+            "model_checkpoint": lv_data.get("metadata", {}).get(
+                "checkpoint_path"
+            ),
+            "n_items": lv_data.get("n_items"),
+            "value_model_seeds": lv_data.get("metadata", {}).get("seeds"),
+            "metric_type": lv_data.get("metadata", {}).get(
+                "metric_type", "learned_value_dp"
+            ),
         },
     }
 
@@ -503,13 +569,23 @@ def _compute_overall_verdict(
     a ``retained-subset`` qualifier. Per-metric ``"warn"`` or ``"fail"``
     still dominate the ladder (FAIL > WARN > PASS).
 
+    Metric rows whose ``exploratory`` flag is True are filtered out
+    before the ladder so a future diagnostic row (e.g., learned-value
+    StopDFF) cannot WARN-promote the headline verdict. If every row is
+    exploratory the filter collapses; fall back to the full list so a
+    pure-exploratory card still computes a verdict instead of silently
+    returning PASS-by-vacuous-truth.
+
     Returns
     -------
     tuple[str, str | None]
         (overall_verdict, optional_qualifier). The qualifier describes
         why a PASS was downgraded (e.g., listing each overridden gate).
     """
-    verdicts = [m["verdict"] for m in metrics]
+    confirmatory_metrics = [m for m in metrics if not m.get("exploratory")]
+    if not confirmatory_metrics:
+        confirmatory_metrics = metrics
+    verdicts = [m["verdict"] for m in confirmatory_metrics]
     if "fail" in verdicts:
         return "FAIL", None
     if "warn" in verdicts:
@@ -709,12 +785,21 @@ def _write_audit_card_json(
 
 
 def _render_verdict_cell(m: dict) -> str:
-    """Render a metric's verdict cell, including any PR-14-B2 qualifier."""
+    """Render a metric's verdict cell, including any PR-14-B2 qualifier.
+
+    Exploratory rows get a trailing `[exploratory; not in overall verdict]`
+    so a reader can see at a glance that the row's verdict does NOT feed
+    the headline ladder (mirrors the filter in `_compute_overall_verdict`).
+    """
     base = m["verdict"].upper()
     qualifier = m.get("verdict_qualifier")
     if qualifier:
-        return f"{base} ({qualifier})"
-    return base
+        cell = f"{base} ({qualifier})"
+    else:
+        cell = base
+    if m.get("exploratory") is True:
+        cell += " [exploratory; not in overall verdict]"
+    return cell
 
 
 def _write_audit_card_md(
@@ -780,6 +865,14 @@ def _write_audit_card_md(
         )
     lines.append("")
 
+    # Surface qualitative claims about how each metric resolves a prior-
+    # round WARN. Keeps the structured signal out of free-text
+    # verdict_qualifier (which is reserved for ladder-level downgrades)
+    # and gives a reader a single place to look for resolution context.
+    prior_warn_lines = _render_prior_warn_resolution_md(metrics)
+    if prior_warn_lines:
+        lines.extend(prior_warn_lines)
+
     # PR #14 Blocker 3: surface coverage / retention provenance per
     # metric so the card reader can verify all three metrics agreed
     # on what counted as a defensible retained-subset audit.
@@ -803,6 +896,31 @@ def _write_audit_card_md(
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     return out_path
+
+
+def _render_prior_warn_resolution_md(metrics: list[dict]) -> list[str]:
+    """Render the ## Prior-WARN Resolution subsection.
+
+    Returns an empty list when no metric carries ``prior_warn_resolution``
+    so the caller can splat it unconditionally without producing an empty
+    heading on cards where the resolution claim does not apply.
+    """
+    resolved = [m for m in metrics if m.get("prior_warn_resolution") is not None]
+    if not resolved:
+        return []
+    lines = [
+        "## Prior-WARN Resolution",
+        "",
+    ]
+    for m in resolved:
+        resolution = m["prior_warn_resolution"]
+        notes = m.get("prior_warn_resolution_notes")
+        if notes:
+            lines.append(f"- **{m['name']}:** {resolution} — {notes}")
+        else:
+            lines.append(f"- **{m['name']}:** {resolution}")
+    lines.append("")
+    return lines
 
 
 def _render_artifact_provenance_md(provenance: dict) -> list[str]:
@@ -1136,6 +1254,21 @@ def main_with_args(argv: list[str] | None = None) -> int:
         else:
             dp_data = _load_json(dp_path)
             metrics.append(_evaluate_stopdff_dp(dp_data))
+
+    # Mirror the --include-dp-stopdff graceful-skip pattern for the
+    # exploratory learned-value row. Appended AFTER the DP row so the
+    # MD table ordering reads diagnostic -> confirmatory DP -> exploratory.
+    if args.include_learned_value_stopdff:
+        lv_path = _PAPER_EXPORTS / "stopdff_learned_value.json"
+        if not lv_path.exists():
+            print(
+                "WARNING: --include-learned-value-stopdff was passed but "
+                f"{lv_path} does not exist; the row was skipped.",
+                file=sys.stderr,
+            )
+        else:
+            lv_data = _load_json(lv_path)
+            metrics.append(_evaluate_stopdff_learned_value(lv_data))
 
     # PR #14 Blocker 3: extract per-metric coverage + retention
     # provenance so the audit card visibly records what counted as a

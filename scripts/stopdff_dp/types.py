@@ -2,6 +2,21 @@
 
 Centralising these here keeps the adapter, DP solver, and continuation
 estimators agreed on the same row schema without circular imports.
+
+Columns added 2026-05-27 to unblock a learned-continuation-value StopDFF
+trainer (see ``scripts/make_audit_card.py``'s
+``--include-learned-value-stopdff`` flag and the future Prompt 5 producer):
+
+- ``p_second_best`` — second-highest cosine similarity over MC options.
+  Always ``0.0`` for QA rows (QA has no multi-option distribution).
+- ``top2_margin`` — ``p_raw - p_second_best`` for MC; ``0.0`` for QA.
+  Cheap O(K) partial sort; preserves the existing argmax for
+  ``predicted_idx``.
+- ``K`` — numeric option count parsed from ``len(options)``; replaces
+  the need to string-parse ``option_set_id``.
+- ``distractor_strategy`` — pass-through string from the upstream MC
+  question dict (default ``"unknown"`` when absent). Enables learned-
+  value features conditioned on distractor difficulty.
 """
 
 from __future__ import annotations
@@ -20,11 +35,15 @@ ADAPTER_COLUMNS: tuple[str, ...] = (
     "split",
     "p_raw",
     "p_calibrated",
+    "p_second_best",
+    "top2_margin",
     "correct",
     "top_answer",
     "gold",
     "category",
+    "K",
     "option_set_id",
+    "distractor_strategy",
 )
 
 FORMATS: tuple[str, ...] = ("MC", "QA")
