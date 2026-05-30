@@ -188,34 +188,59 @@
         "confirmatory": true,
         "metric_type": "finite_horizon_dp"
       }
+    },
+    {
+      "name": "Learned-Value StopDFF (Exploratory)",
+      "value": 0.0,
+      "value_display": "+0.0000",
+      "threshold": 1,
+      "threshold_criterion": "|signed_median| <= 1",
+      "threshold_provenance": "diagnostic_not_preregistered",
+      "observed_criterion_value": 0.0,
+      "direction": "warn_if_above",
+      "verdict": "warn",
+      "verdict_qualifier": "low_mc_retention",
+      "exploratory": true,
+      "prior_warn_resolution": null,
+      "prior_warn_resolution_notes": null,
+      "details": {
+        "model_checkpoint": "artifacts/device2/learned_value_smoke/value_model/seed_1/best_model/best.ckpt",
+        "n_items": 2258,
+        "value_model_seeds": [
+          1
+        ],
+        "metric_type": "learned_value_dp"
+      }
     }
   ],
   "overall_verdict": "WARN",
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-28T05:23:17.680032+00:00",
+    "timestamp": "2026-05-30T19:04:48.586638+00:00",
     "threshold_source": "threshold_manifest.json",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-28T05:23:17.678780+00:00",
+      "generated_at_utc": "2026-05-30T19:04:48.584637+00:00",
       "command": [
         "python",
         "scripts/make_audit_card.py",
-        "--include-dp-stopdff"
+        "--include-dp-stopdff",
+        "--include-learned-value-stopdff"
       ],
       "argv": [
-        "--include-dp-stopdff"
+        "--include-dp-stopdff",
+        "--include-learned-value-stopdff"
       ],
       "cwd": ".",
       "output_path": "paper_exports/audit_card.json",
       "script_path": "scripts/make_audit_card.py",
       "script_sha256": "7817b21a54fa5db95f2e6c5fb4231559af508a595d82eb1646a33f294cf91d9c",
-      "git_commit": "d1f625559732706d2973da3e00983475cd3a997e",
+      "git_commit": "93359f6c752fafa51532ef994bed88995918335c",
       "git_dirty": false,
       "git_status_relevant_paths": "",
       "markdown_path": "paper_exports/audit_card.md",
-      "markdown_sha256": "94d68e0fc54f226f62184045df58c48121222cb9f1a6da168964d3f5dbace5db"
+      "markdown_sha256": "2fa846abefda5279bdd10653d149d4ddbb7c332916cffeaf3957d07242b76235"
     }
   },
   "data_provenance": {

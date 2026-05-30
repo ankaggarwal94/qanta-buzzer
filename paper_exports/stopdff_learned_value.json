@@ -1,0 +1,209 @@
+{
+  "stopdff_signed_median": 0.0,
+  "stopdff_signed_median_ci95": [
+    0.0,
+    0.0
+  ],
+  "stopdff_signed_mean": 0.35783879539415414,
+  "stopdff_abs_median": 0.0,
+  "stopdff_abs_mean": 0.5597874224977857,
+  "n_items": 2258,
+  "direction_breakdown": {
+    "mc_earlier": 129,
+    "qa_earlier": 579,
+    "same_step": 1550
+  },
+  "direction_fractions": {
+    "mc_earlier": 0.05713020372010629,
+    "qa_earlier": 0.25642161204605846,
+    "same_step": 0.6864481842338352
+  },
+  "decision_regret": {
+    "mc_to_qa": {
+      "mean": 0.11854028354305332,
+      "median": 0.0,
+      "max": 3.945328620082064
+    },
+    "qa_to_mc": {
+      "mean": 0.09120986059449272,
+      "median": 0.0,
+      "max": 2.5349777827418216
+    }
+  },
+  "coverage": {
+    "n_cells": 22248,
+    "n_features": 54,
+    "n_outside_train_bounds": 0,
+    "fraction_outside_train_bounds": 0.0,
+    "n_feature_entries_outside_train_bounds": 0,
+    "n_rows_with_unseen_categories": 0,
+    "unseen_category_row_counts": {
+      "format": 0,
+      "category": 0,
+      "distractor_strategy": 0
+    },
+    "unseen_category_level_counts": {
+      "format": 0,
+      "category": 0,
+      "distractor_strategy": 0
+    },
+    "unseen_category_levels": {
+      "format": [],
+      "category": [],
+      "distractor_strategy": []
+    },
+    "has_train_bounds": true
+  },
+  "ceiling_flags": {
+    "all_stop_at_first_prefix": false,
+    "all_stop_at_final_prefix": false,
+    "no_cross_format_stopping_variance": false,
+    "n_items": 2258,
+    "n_stopped_cells": 4484,
+    "n_never_stopped_cells": 32,
+    "empty": false
+  },
+  "continuation_diagnostics": {
+    "n_values": 17732,
+    "std": 0.9036523913712131,
+    "min": -0.8264949917793274,
+    "max": 5.765053749084473,
+    "collapsed": false
+  },
+  "comparison": {
+    "dp": {
+      "artifact": "paper_exports/stopdff_dp.json",
+      "available": true,
+      "delta_abs_median": 0.0,
+      "signed_mean_difference": 0.4911721287274875
+    },
+    "myopic": {
+      "artifact": "paper_exports/stopdff.json",
+      "available": true,
+      "delta_abs_median": 0.0,
+      "signed_mean_difference": 0.35783879539415414
+    }
+  },
+  "missing_comparison_artifacts": [],
+  "delta_abs_median_vs_dp": 0.0,
+  "signed_mean_difference": 0.4911721287274875,
+  "signed_mean_difference_vs_dp": 0.4911721287274875,
+  "delta_abs_median_vs_myopic": 0.0,
+  "signed_mean_difference_vs_myopic": 0.35783879539415414,
+  "gate_verdict": "warn",
+  "gate_verdict_reason": "low_mc_retention",
+  "metadata": {
+    "metric_type": "learned_value_dp",
+    "stopping_policy": "learned_value_finite_horizon_dp",
+    "checkpoint_path": "artifacts/device2/learned_value_smoke/value_model/seed_1/best_model/best.ckpt",
+    "checkpoint_paths": [
+      "artifacts/device2/learned_value_smoke/value_model/seed_1/best_model/best.ckpt"
+    ],
+    "n_checkpoints": 1,
+    "seeds": [
+      1
+    ],
+    "reward_schedule": "power_mark",
+    "reward_schedule_description": "Power-mark schedule: early correct=15 (prefix_fraction<0.5), late correct=10, wrong=-5, c_wait=0.",
+    "checkpoint_reward_schedules": [
+      "power_mark"
+    ],
+    "eval_split": "test",
+    "data_dir": "data/processed",
+    "artifact_dir": "paper_exports",
+    "identity_calibration": false,
+    "smoke": false,
+    "qualitative_resolution": "reduces",
+    "timestamp": "2026-05-30T19:04:21.376689+00:00",
+    "generation": {
+      "schema_version": 1,
+      "generated_at_utc": "2026-05-30T19:04:19.571723+00:00",
+      "command": [
+        "python",
+        "scripts/compute_stopdff_learned_value.py",
+        "--artifact-dir",
+        "paper_exports",
+        "--checkpoint-dir",
+        "artifacts/device2/learned_value_smoke/value_model",
+        "--data-dir",
+        "data/processed",
+        "--calibration",
+        "paper_exports/calibration_train.json",
+        "--eval-split",
+        "test",
+        "--out",
+        "paper_exports/stopdff_learned_value.json"
+      ],
+      "argv": [
+        "--artifact-dir",
+        "paper_exports",
+        "--checkpoint-dir",
+        "artifacts/device2/learned_value_smoke/value_model",
+        "--data-dir",
+        "data/processed",
+        "--calibration",
+        "paper_exports/calibration_train.json",
+        "--eval-split",
+        "test",
+        "--out",
+        "paper_exports/stopdff_learned_value.json"
+      ],
+      "cwd": ".",
+      "output_path": "paper_exports/stopdff_learned_value.json",
+      "script_path": "scripts/compute_stopdff_learned_value.py",
+      "script_sha256": "f0a3d96b666ab556e20d03fdcdb7c731c2e268fdaaae2f783d332034917f6c6d",
+      "git_commit": "93359f6c752fafa51532ef994bed88995918335c",
+      "git_dirty": false,
+      "git_status_relevant_paths": "",
+      "helper_sha256s": {
+        "scripts/stopdff_dp/__init__.py": "9a5c797622bacf7771cc8f8c110a8e96a526012430665a9469681356f44d5075",
+        "scripts/stopdff_dp/_provenance.py": "c7fa1691df43c170937b043ab99e33f86b713f90b5e186d717326c69e84f526e",
+        "scripts/stopdff_dp/adapter.py": "149ee265cebc17280c407bad0f431a23add3fbf716639a71d98cc61fe6d4f2fa",
+        "scripts/stopdff_dp/continuation.py": "8c40612328f6c01332516eec6b08d763cda416a08ef685aa98b2b82c58d9e632",
+        "scripts/stopdff_dp/diagnostics.py": "58214f223901d4ff3337cff42c49be41e6a8394269f8ba1c5279c76d73470855",
+        "scripts/stopdff_dp/dp_solver.py": "1342a41cd94fafc14c5a4092e2f0b3ec65c4b0e5bfdff0818f7a3384e533fb82",
+        "scripts/stopdff_dp/rewards.py": "27563165df2effd67b9847480b62bdab5268d78a8581cbe8880b963a6a2453df",
+        "scripts/stopdff_dp/types.py": "52d43a4459c5c1d4314d6d8870561412ddf4d963659b15506d75964e19fa7772",
+        "scripts/stopdff_dp/writers.py": "383a6f5b3d22e750cad3ee80764d2f3e0bdd5c762d919dabf705cfa61d606af8",
+        "scripts/_audit_gates.py": "09345374c786ec70ef16b380c4b59eaf0595b9d9553f2b0156a9a9bc76569174",
+        "scripts/_common.py": "4ef4a9cf8b993f9d08f1b4da0a81b4d5ccde533628fd23ba7322d78cd1ad6c2f",
+        "models/stopdff_value_model.py": "7592446c4abda4774d945c6fb1166c6464a8031df4df0f53c9d6024ca7672396",
+        "scripts/train_stopdff_value_model.py": "96fc1afc5640a85c0f02e00eb70b7dab5aa2e862a88e6c8453fa7a581a31ffad"
+      }
+    }
+  },
+  "mc_coverage": {
+    "test": {
+      "target_qids": 2258,
+      "mc_questions_total": 14437,
+      "matched_questions": 2258,
+      "matched_qids": 2258,
+      "missing_qids": 0,
+      "coverage_rate": 1.0,
+      "threshold": 0.98,
+      "passed": true,
+      "overridden": false,
+      "override_flag": "--allow-incomplete-mc-coverage",
+      "split": "test"
+    }
+  },
+  "mc_retention_gate": {
+    "test": {
+      "applies": true,
+      "split": "test",
+      "threshold": 0.8,
+      "retention_rate": 0.7274484536082474,
+      "raw_count": 3104,
+      "retained_count": 2258,
+      "dropped_count": 846,
+      "passed": false,
+      "overridden": false,
+      "override_flag": "--allow-low-mc-retention"
+    }
+  },
+  "mc_build_metadata": {
+    "status": "loaded",
+    "source_path": "data/processed/build_metadata.json",
+    "source_sha256": "70871984390f252c0a06a5a2c9a2d3b4337f10ad48c87583ebec215d5c0c9c6e"
+  }
+}
