@@ -1,0 +1,322 @@
+{
+  "canonical_artifact": "paper_exports/stopdff_learned_value.json",
+  "canonical_summary": {
+    "ceiling_flags": {
+      "all_stop_at_final_prefix": false,
+      "all_stop_at_first_prefix": false,
+      "empty": false,
+      "n_items": 2258,
+      "n_never_stopped_cells": 33,
+      "n_stopped_cells": 4483,
+      "no_cross_format_stopping_variance": false
+    },
+    "comparison": {
+      "dp": {
+        "delta_abs_median": 0.0,
+        "signed_mean_difference": 0.6049896663714202
+      },
+      "myopic": {
+        "delta_abs_median": 0.0,
+        "signed_mean_difference": 0.4716563330380868
+      }
+    },
+    "coverage": {
+      "fraction_outside_train_bounds": 0.0,
+      "has_train_bounds": true,
+      "n_cells": 22248,
+      "n_feature_entries_outside_train_bounds": 0,
+      "n_features": 54,
+      "n_outside_train_bounds": 0,
+      "n_rows_with_unseen_categories": 0,
+      "unseen_category_level_counts": {
+        "category": 0,
+        "distractor_strategy": 0,
+        "format": 0
+      },
+      "unseen_category_levels": {
+        "category": [],
+        "distractor_strategy": [],
+        "format": []
+      },
+      "unseen_category_row_counts": {
+        "category": 0,
+        "distractor_strategy": 0,
+        "format": 0
+      }
+    },
+    "decision_regret": {
+      "mc_to_qa": {
+        "max": 3.945328620082064,
+        "mean": 0.30799582763648686,
+        "median": 0.027314165789233846
+      },
+      "qa_to_mc": {
+        "max": 2.5349777827418216,
+        "mean": 0.2279673831819566,
+        "median": 0.08223318929266743
+      }
+    },
+    "direction_fractions": {
+      "mc_earlier": 0.05447298494242692,
+      "qa_earlier": 0.2759078830823738,
+      "same_step": 0.6696191319751993
+    },
+    "gate_verdict": "warn",
+    "gate_verdict_reason": "low_mc_retention",
+    "metadata": {
+      "checkpoint_paths": [
+        "artifacts/device2/learned_value_full/value_model/seed_1/best_model/best.ckpt",
+        "artifacts/device2/learned_value_full/value_model/seed_2/best_model/best.ckpt",
+        "artifacts/device2/learned_value_full/value_model/seed_3/best_model/best.ckpt"
+      ],
+      "eval_split": "test",
+      "identity_calibration": false,
+      "n_checkpoints": 3,
+      "qualitative_resolution": "reduces",
+      "seeds": [
+        1,
+        2,
+        3
+      ],
+      "smoke": false
+    },
+    "n_items": 2258,
+    "stopdff_abs_median": 0.0,
+    "stopdff_signed_mean": 0.4716563330380868,
+    "stopdff_signed_median": 0.0
+  },
+  "conclusion": {
+    "dp_delta_stable": true,
+    "headline_stable": true,
+    "median_stable": true,
+    "notes": [
+      "Signed median and DP delta_abs_median remain 0.0 for both robustness runs, so the learned-value StopDFF headline conclusion is robust.",
+      "Signed means shift across harder training runs, indicating tail sensitivity rather than a headline reversal because medians remain stable.",
+      "All learned-value reports retain the low-retention warning inherited from the evaluation split."
+    ]
+  },
+  "generated_at_utc": "2026-06-01T09:30:27.715156Z",
+  "git_commit": "c1b49eddb02f080251d7deeca45598e0323ee2a0",
+  "git_dirty": false,
+  "local_artifact_paths": {
+    "robust_same_capacity": "artifacts/device2/learned_value_robustness/robust_same_capacity/stopdff_learned_value.json",
+    "robust_wide": "artifacts/device2/learned_value_robustness/robust_wide/stopdff_learned_value.json"
+  },
+  "robustness_runs": {
+    "robust_same_capacity": {
+      "ceiling_flags": {
+        "all_stop_at_final_prefix": false,
+        "all_stop_at_first_prefix": false,
+        "empty": false,
+        "n_items": 2258,
+        "n_never_stopped_cells": 32,
+        "n_stopped_cells": 4484,
+        "no_cross_format_stopping_variance": false
+      },
+      "comparison": {
+        "dp": {
+          "delta_abs_median": 0.0,
+          "signed_mean_difference": 0.4659285503395335
+        },
+        "myopic": {
+          "delta_abs_median": 0.0,
+          "signed_mean_difference": 0.33259521700620015
+        }
+      },
+      "config": {
+        "epochs": 50,
+        "hidden": [
+          128,
+          128
+        ],
+        "patience": 10,
+        "seeds": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      "coverage": {
+        "fraction_outside_train_bounds": 0.0,
+        "has_train_bounds": true,
+        "n_cells": 22248,
+        "n_feature_entries_outside_train_bounds": 0,
+        "n_features": 54,
+        "n_outside_train_bounds": 0,
+        "n_rows_with_unseen_categories": 0,
+        "unseen_category_level_counts": {
+          "category": 0,
+          "distractor_strategy": 0,
+          "format": 0
+        },
+        "unseen_category_levels": {
+          "category": [],
+          "distractor_strategy": [],
+          "format": []
+        },
+        "unseen_category_row_counts": {
+          "category": 0,
+          "distractor_strategy": 0,
+          "format": 0
+        }
+      },
+      "decision_regret": {
+        "mc_to_qa": {
+          "max": 3.945328620082064,
+          "mean": 0.2880933154718341,
+          "median": 0.03241125322238969
+        },
+        "qa_to_mc": {
+          "max": 2.5349777827418216,
+          "mean": 0.19557652123907293,
+          "median": 0.03299074490323539
+        }
+      },
+      "direction_fractions": {
+        "mc_earlier": 0.07883082373782108,
+        "qa_earlier": 0.25066430469441986,
+        "same_step": 0.6705048715677591
+      },
+      "eval_wall_seconds": null,
+      "gate_verdict": "warn",
+      "gate_verdict_reason": "low_mc_retention",
+      "local_artifact_path": "artifacts/device2/learned_value_robustness/robust_same_capacity/stopdff_learned_value.json",
+      "metadata": {
+        "checkpoint_paths": [
+          "artifacts/device2/learned_value_robustness/robust_same_capacity/value_model/seed_1/best_model/best.ckpt",
+          "artifacts/device2/learned_value_robustness/robust_same_capacity/value_model/seed_2/best_model/best.ckpt",
+          "artifacts/device2/learned_value_robustness/robust_same_capacity/value_model/seed_3/best_model/best.ckpt",
+          "artifacts/device2/learned_value_robustness/robust_same_capacity/value_model/seed_4/best_model/best.ckpt",
+          "artifacts/device2/learned_value_robustness/robust_same_capacity/value_model/seed_5/best_model/best.ckpt"
+        ],
+        "eval_split": "test",
+        "identity_calibration": false,
+        "n_checkpoints": 5,
+        "qualitative_resolution": "reduces",
+        "seeds": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "smoke": false
+      },
+      "n_items": 2258,
+      "stopdff_abs_median": 0.0,
+      "stopdff_signed_mean": 0.33259521700620015,
+      "stopdff_signed_median": 0.0,
+      "train_wall_seconds": null
+    },
+    "robust_wide": {
+      "ceiling_flags": {
+        "all_stop_at_final_prefix": false,
+        "all_stop_at_first_prefix": false,
+        "empty": false,
+        "n_items": 2258,
+        "n_never_stopped_cells": 33,
+        "n_stopped_cells": 4483,
+        "no_cross_format_stopping_variance": false
+      },
+      "comparison": {
+        "dp": {
+          "delta_abs_median": 0.0,
+          "signed_mean_difference": 0.5049010924121642
+        },
+        "myopic": {
+          "delta_abs_median": 0.0,
+          "signed_mean_difference": 0.37156775907883083
+        }
+      },
+      "config": {
+        "epochs": 50,
+        "hidden": [
+          256,
+          256
+        ],
+        "patience": 10,
+        "seeds": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      "coverage": {
+        "fraction_outside_train_bounds": 0.0,
+        "has_train_bounds": true,
+        "n_cells": 22248,
+        "n_feature_entries_outside_train_bounds": 0,
+        "n_features": 54,
+        "n_outside_train_bounds": 0,
+        "n_rows_with_unseen_categories": 0,
+        "unseen_category_level_counts": {
+          "category": 0,
+          "distractor_strategy": 0,
+          "format": 0
+        },
+        "unseen_category_levels": {
+          "category": [],
+          "distractor_strategy": [],
+          "format": []
+        },
+        "unseen_category_row_counts": {
+          "category": 0,
+          "distractor_strategy": 0,
+          "format": 0
+        }
+      },
+      "decision_regret": {
+        "mc_to_qa": {
+          "max": 3.945328620082064,
+          "mean": 0.3040669706121472,
+          "median": 0.03364614702123625
+        },
+        "qa_to_mc": {
+          "max": 2.5349777827418216,
+          "mean": 0.21139870231221494,
+          "median": 0.052539583355207475
+        }
+      },
+      "direction_fractions": {
+        "mc_earlier": 0.07661647475642161,
+        "qa_earlier": 0.2555358724534987,
+        "same_step": 0.6678476527900797
+      },
+      "eval_wall_seconds": null,
+      "gate_verdict": "warn",
+      "gate_verdict_reason": "low_mc_retention",
+      "local_artifact_path": "artifacts/device2/learned_value_robustness/robust_wide/stopdff_learned_value.json",
+      "metadata": {
+        "checkpoint_paths": [
+          "artifacts/device2/learned_value_robustness/robust_wide/value_model/seed_1/best_model/best.ckpt",
+          "artifacts/device2/learned_value_robustness/robust_wide/value_model/seed_2/best_model/best.ckpt",
+          "artifacts/device2/learned_value_robustness/robust_wide/value_model/seed_3/best_model/best.ckpt",
+          "artifacts/device2/learned_value_robustness/robust_wide/value_model/seed_4/best_model/best.ckpt",
+          "artifacts/device2/learned_value_robustness/robust_wide/value_model/seed_5/best_model/best.ckpt"
+        ],
+        "eval_split": "test",
+        "identity_calibration": false,
+        "n_checkpoints": 5,
+        "qualitative_resolution": "reduces",
+        "seeds": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "smoke": false
+      },
+      "n_items": 2258,
+      "stopdff_abs_median": 0.0,
+      "stopdff_signed_mean": 0.37156775907883083,
+      "stopdff_signed_median": 0.0,
+      "train_wall_seconds": null
+    }
+  },
+  "schema_version": 1
+}
