@@ -6,10 +6,10 @@
 |-------|-------|
 | Eval split | test |
 | Reward schedule | power_mark |
-| Checkpoints | 1 |
+| Checkpoints | 3 |
 | n_items | 2258 |
 | Signed median | 0.0000 |
-| Signed mean | 0.3578 |
+| Signed mean | 0.4717 |
 | Abs median | 0.0000 |
 | Gate verdict | warn |
 

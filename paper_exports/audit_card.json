@@ -204,10 +204,12 @@
       "prior_warn_resolution": null,
       "prior_warn_resolution_notes": null,
       "details": {
-        "model_checkpoint": "artifacts/device2/learned_value_smoke/value_model/seed_1/best_model/best.ckpt",
+        "model_checkpoint": "artifacts/device2/learned_value_full/value_model/seed_1/best_model/best.ckpt",
         "n_items": 2258,
         "value_model_seeds": [
-          1
+          1,
+          2,
+          3
         ],
         "metric_type": "learned_value_dp"
       }
@@ -217,11 +219,11 @@
   "metadata": {
     "generated_by": "scripts/make_audit_card.py",
     "script_version": "1.0.0",
-    "timestamp": "2026-05-30T19:04:48.586638+00:00",
+    "timestamp": "2026-06-01T07:05:48.335732+00:00",
     "threshold_source": "threshold_manifest.json",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-30T19:04:48.584637+00:00",
+      "generated_at_utc": "2026-06-01T07:05:48.333735+00:00",
       "command": [
         "python",
         "scripts/make_audit_card.py",
@@ -236,11 +238,11 @@
       "output_path": "paper_exports/audit_card.json",
       "script_path": "scripts/make_audit_card.py",
       "script_sha256": "7817b21a54fa5db95f2e6c5fb4231559af508a595d82eb1646a33f294cf91d9c",
-      "git_commit": "93359f6c752fafa51532ef994bed88995918335c",
+      "git_commit": "bb4a87ced6605056d3fe0ac1dce6e5e6afa1d081",
       "git_dirty": false,
       "git_status_relevant_paths": "",
       "markdown_path": "paper_exports/audit_card.md",
-      "markdown_sha256": "2fa846abefda5279bdd10653d149d4ddbb7c332916cffeaf3957d07242b76235"
+      "markdown_sha256": "4c098613b6f35dc922bac16f09b971db4abc0cb4a4d9f1d3d33d6d174a71e37d"
     }
   },
   "data_provenance": {

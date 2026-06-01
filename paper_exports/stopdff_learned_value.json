@@ -4,29 +4,29 @@
     0.0,
     0.0
   ],
-  "stopdff_signed_mean": 0.35783879539415414,
+  "stopdff_signed_mean": 0.4716563330380868,
   "stopdff_abs_median": 0.0,
-  "stopdff_abs_mean": 0.5597874224977857,
+  "stopdff_abs_mean": 0.7143489813994686,
   "n_items": 2258,
   "direction_breakdown": {
-    "mc_earlier": 129,
-    "qa_earlier": 579,
-    "same_step": 1550
+    "mc_earlier": 123,
+    "qa_earlier": 623,
+    "same_step": 1512
   },
   "direction_fractions": {
-    "mc_earlier": 0.05713020372010629,
-    "qa_earlier": 0.25642161204605846,
-    "same_step": 0.6864481842338352
+    "mc_earlier": 0.05447298494242692,
+    "qa_earlier": 0.2759078830823738,
+    "same_step": 0.6696191319751993
   },
   "decision_regret": {
     "mc_to_qa": {
-      "mean": 0.11854028354305332,
-      "median": 0.0,
+      "mean": 0.30799582763648686,
+      "median": 0.027314165789233846,
       "max": 3.945328620082064
     },
     "qa_to_mc": {
-      "mean": 0.09120986059449272,
-      "median": 0.0,
+      "mean": 0.2279673831819566,
+      "median": 0.08223318929266743,
       "max": 2.5349777827418216
     }
   },
@@ -59,15 +59,15 @@
     "all_stop_at_final_prefix": false,
     "no_cross_format_stopping_variance": false,
     "n_items": 2258,
-    "n_stopped_cells": 4484,
-    "n_never_stopped_cells": 32,
+    "n_stopped_cells": 4483,
+    "n_never_stopped_cells": 33,
     "empty": false
   },
   "continuation_diagnostics": {
     "n_values": 17732,
-    "std": 0.9036523913712131,
-    "min": -0.8264949917793274,
-    "max": 5.765053749084473,
+    "std": 1.0552899462824352,
+    "min": -0.6456542809804281,
+    "max": 5.666663487752278,
     "collapsed": false
   },
   "comparison": {
@@ -75,33 +75,37 @@
       "artifact": "paper_exports/stopdff_dp.json",
       "available": true,
       "delta_abs_median": 0.0,
-      "signed_mean_difference": 0.4911721287274875
+      "signed_mean_difference": 0.6049896663714202
     },
     "myopic": {
       "artifact": "paper_exports/stopdff.json",
       "available": true,
       "delta_abs_median": 0.0,
-      "signed_mean_difference": 0.35783879539415414
+      "signed_mean_difference": 0.4716563330380868
     }
   },
   "missing_comparison_artifacts": [],
   "delta_abs_median_vs_dp": 0.0,
-  "signed_mean_difference": 0.4911721287274875,
-  "signed_mean_difference_vs_dp": 0.4911721287274875,
+  "signed_mean_difference": 0.6049896663714202,
+  "signed_mean_difference_vs_dp": 0.6049896663714202,
   "delta_abs_median_vs_myopic": 0.0,
-  "signed_mean_difference_vs_myopic": 0.35783879539415414,
+  "signed_mean_difference_vs_myopic": 0.4716563330380868,
   "gate_verdict": "warn",
   "gate_verdict_reason": "low_mc_retention",
   "metadata": {
     "metric_type": "learned_value_dp",
     "stopping_policy": "learned_value_finite_horizon_dp",
-    "checkpoint_path": "artifacts/device2/learned_value_smoke/value_model/seed_1/best_model/best.ckpt",
+    "checkpoint_path": "artifacts/device2/learned_value_full/value_model/seed_1/best_model/best.ckpt",
     "checkpoint_paths": [
-      "artifacts/device2/learned_value_smoke/value_model/seed_1/best_model/best.ckpt"
+      "artifacts/device2/learned_value_full/value_model/seed_1/best_model/best.ckpt",
+      "artifacts/device2/learned_value_full/value_model/seed_2/best_model/best.ckpt",
+      "artifacts/device2/learned_value_full/value_model/seed_3/best_model/best.ckpt"
     ],
-    "n_checkpoints": 1,
+    "n_checkpoints": 3,
     "seeds": [
-      1
+      1,
+      2,
+      3
     ],
     "reward_schedule": "power_mark",
     "reward_schedule_description": "Power-mark schedule: early correct=15 (prefix_fraction<0.5), late correct=10, wrong=-5, c_wait=0.",
@@ -114,23 +118,25 @@
     "identity_calibration": false,
     "smoke": false,
     "qualitative_resolution": "reduces",
-    "timestamp": "2026-05-30T19:04:21.376689+00:00",
+    "timestamp": "2026-06-01T07:05:11.843000+00:00",
     "generation": {
       "schema_version": 1,
-      "generated_at_utc": "2026-05-30T19:04:19.571723+00:00",
+      "generated_at_utc": "2026-06-01T07:04:59.368191+00:00",
       "command": [
         "python",
         "scripts/compute_stopdff_learned_value.py",
         "--artifact-dir",
         "paper_exports",
         "--checkpoint-dir",
-        "artifacts/device2/learned_value_smoke/value_model",
+        "artifacts/device2/learned_value_full/value_model",
         "--data-dir",
         "data/processed",
         "--calibration",
         "paper_exports/calibration_train.json",
         "--eval-split",
         "test",
+        "--device",
+        "cuda",
         "--out",
         "paper_exports/stopdff_learned_value.json"
       ],
@@ -138,13 +144,15 @@
         "--artifact-dir",
         "paper_exports",
         "--checkpoint-dir",
-        "artifacts/device2/learned_value_smoke/value_model",
+        "artifacts/device2/learned_value_full/value_model",
         "--data-dir",
         "data/processed",
         "--calibration",
         "paper_exports/calibration_train.json",
         "--eval-split",
         "test",
+        "--device",
+        "cuda",
         "--out",
         "paper_exports/stopdff_learned_value.json"
       ],
@@ -152,7 +160,7 @@
       "output_path": "paper_exports/stopdff_learned_value.json",
       "script_path": "scripts/compute_stopdff_learned_value.py",
       "script_sha256": "f0a3d96b666ab556e20d03fdcdb7c731c2e268fdaaae2f783d332034917f6c6d",
-      "git_commit": "93359f6c752fafa51532ef994bed88995918335c",
+      "git_commit": "bb4a87ced6605056d3fe0ac1dce6e5e6afa1d081",
       "git_dirty": false,
       "git_status_relevant_paths": "",
       "helper_sha256s": {
