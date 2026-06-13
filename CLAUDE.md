@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+@AGENTS.md
+
 See **AGENTS.md** for the full repo contract: setup, architecture, testing, smoke pipeline, and configuration.
 
 ## Claude-specific notes

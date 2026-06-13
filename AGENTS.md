@@ -130,3 +130,22 @@ OpenAI support is opt-in only. Default local workflows stay offline-friendly and
 - RL notation: `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
 - Prefer NumPy/PyTorch vectorized operations over loops in ML code
 - Explicit seeds for reproducibility (use 1, 2, 3 for multi-seed runs)
+
+## Cross-platform conventions (OS/path-agnostic) — every agent, every session
+
+Worked from Windows (Device 2) + macOS (Device 1), runs on Linux (Modal), synced via a shared
+git remote. All agents MUST:
+- Use repo-relative paths in code, docs, runbooks, manifests, commit messages (e.g.
+  `scripts/foo.py`). NEVER put machine-absolute paths in tracked files (`C:\Users\...`,
+  `/Users/<user>/...`, `/mnt/c/Users/...`).
+- Parameterize any unavoidable absolute path (`$REPO`, `${REPO:-<default>}`, `<REPO>/...`) and
+  resolve at runtime (see `docs/device2_stopdff_runbook.md`).
+- Write OS-neutral docs/commands; when OS-specific, give BOTH the Windows and POSIX
+  (macOS/WSL/Linux) form. Use forward slashes.
+- Keep LF via the committed `.gitattributes` (`* text=auto eol=lf`; binaries marked `binary`).
+  Local `core.autocrlf`/`core.eol` are per-machine and secondary — never rely on them.
+- Don't commit machine/user-specific files or generated artifacts unless intentional
+  deliverables; gitignore them otherwise.
+- The git REMOTE is the source of truth across machines — NOT a Dropbox-synced `.git`. Prefer a
+  per-machine clone synced via the remote. A Dropbox-shared worktree MUST use relative paths
+  (git >= 2.48 on every machine) and is still exposed to Dropbox `.git` corruption.
