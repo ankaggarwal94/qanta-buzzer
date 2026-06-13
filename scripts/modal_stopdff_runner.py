@@ -93,6 +93,7 @@ EXPERIMENTS = (
     "smoke",
     "single",
     "dp_sweep",
+    "fair_qa",
     # Prompt 5 deliverables -- scripts/train_stopdff_value_model.py and
     # scripts/compute_stopdff_learned_value.py are not in this commit. The
     # dispatcher is wired now so future Prompt 5 work can land without
@@ -262,6 +263,19 @@ def _build_command(
     n_jobs: int,
     resume: bool,
     smoke: bool,
+    *,
+    reward_schedules: str = "",
+    continuations: str = "",
+    calibrators: str = "",
+    formats: str = "",
+    prefix_bucketing: str = "",
+    subject_pooling: str = "",
+    calibration: str = "",
+    max_cells: int = 0,
+    fit_split: str = "",
+    eval_split: str = "",
+    allow_incomplete_mc_coverage: bool = False,
+    allow_low_mc_retention: bool = False,
 ) -> list[str]:
     """Construct the subprocess command for the selected experiment.
 
@@ -313,7 +327,10 @@ def _build_command(
         ]
 
     if experiment == "dp_sweep":
-        # sweep_stopdff_dp.py with the full grid.
+        # sweep_stopdff_dp.py. Defaults to the full grid; optional axis/gate
+        # overrides (forwarded from the entrypoint) let an operator pin a
+        # single matched cell with bootstrap CIs (e.g. a full-n power_mark /
+        # empirical_bucket / train-fit-Platt comparison against learned value).
         out_json = exports_dir / "stopdff_dp_sweep.json"
         cmd = [
             python,
@@ -327,6 +344,30 @@ def _build_command(
             "--out",
             str(out_json),
         ]
+        if calibration:
+            cmd.extend(["--calibration", str(calibration)])
+        if fit_split:
+            cmd.extend(["--fit-split", str(fit_split)])
+        if eval_split:
+            cmd.extend(["--eval-split", str(eval_split)])
+        if reward_schedules:
+            cmd.extend(["--reward-schedules", str(reward_schedules)])
+        if continuations:
+            cmd.extend(["--continuations", str(continuations)])
+        if calibrators:
+            cmd.extend(["--calibrators", str(calibrators)])
+        if formats:
+            cmd.extend(["--formats", str(formats)])
+        if prefix_bucketing:
+            cmd.extend(["--prefix-bucketing", str(prefix_bucketing)])
+        if subject_pooling:
+            cmd.extend(["--subject-pooling", str(subject_pooling)])
+        if max_cells and int(max_cells) > 0:
+            cmd.extend(["--max-cells", str(int(max_cells))])
+        if allow_incomplete_mc_coverage:
+            cmd.append("--allow-incomplete-mc-coverage")
+        if allow_low_mc_retention:
+            cmd.append("--allow-low-mc-retention")
         if max_wall_hours and max_wall_hours > 0:
             cmd.extend(["--max-wall-hours", f"{float(max_wall_hours):.6f}"])
         if resume:
@@ -384,6 +425,34 @@ def _build_command(
         ]
         if smoke:
             cmd.append("--smoke")
+        return cmd
+
+    if experiment == "fair_qa":
+        # Difficulty-matched fair-QA StopDFF retest with per-format calibration
+        # and item-bootstrap CIs (scripts/stopdff_fair_qa_retest.py). Reuses the
+        # real stopdff_dp solver; runs the full eval/fit splits by default. The
+        # --num-bootstrap value is forwarded; --smoke trims to 30/30 for a quick run.
+        out_json = exports_dir / "stopdff_fair_qa.json"
+        cmd = [
+            python,
+            "scripts/stopdff_fair_qa_retest.py",
+            "--num-bootstrap",
+            str(int(num_bootstrap)),
+            "--reward-schedule",
+            "power_mark",
+            "--fit-split",
+            "val",
+            "--eval-split",
+            "test",
+            "--qa-arms",
+            "idealized,krandom,khard",
+            "--calibrations",
+            "shared,performat",
+            "--out",
+            str(out_json),
+        ]
+        if smoke:
+            cmd.extend(["--n-test", "30", "--n-val", "30"])
         return cmd
 
     raise ValueError(f"Unknown experiment: {experiment!r} (expected one of {EXPERIMENTS})")
@@ -609,6 +678,18 @@ def run_stopdff(
     git_porcelain_local: Optional[str],
     git_present_local: bool,
     cli_invocation: list[str],
+    reward_schedules: str = "",
+    continuations: str = "",
+    calibrators: str = "",
+    formats: str = "",
+    prefix_bucketing: str = "",
+    subject_pooling: str = "",
+    calibration: str = "",
+    max_cells: int = 0,
+    fit_split: str = "",
+    eval_split: str = "",
+    allow_incomplete_mc_coverage: bool = False,
+    allow_low_mc_retention: bool = False,
 ) -> dict:
     """Execute the StopDFF DP run on a Modal container and persist artifacts.
 
@@ -797,6 +878,18 @@ def run_stopdff(
         n_jobs=n_jobs,
         resume=resume,
         smoke=smoke,
+        reward_schedules=reward_schedules,
+        continuations=continuations,
+        calibrators=calibrators,
+        formats=formats,
+        prefix_bucketing=prefix_bucketing,
+        subject_pooling=subject_pooling,
+        calibration=calibration,
+        max_cells=max_cells,
+        fit_split=fit_split,
+        eval_split=eval_split,
+        allow_incomplete_mc_coverage=allow_incomplete_mc_coverage,
+        allow_low_mc_retention=allow_low_mc_retention,
     )
     summary["command"] = cmd
 
@@ -868,6 +961,20 @@ def run_stopdff(
                 "n_jobs": int(n_jobs),
                 "resume": bool(resume),
                 "overwrite": bool(overwrite),
+                "dp_sweep_overrides": {
+                    "reward_schedules": reward_schedules or None,
+                    "continuations": continuations or None,
+                    "calibrators": calibrators or None,
+                    "formats": formats or None,
+                    "prefix_bucketing": prefix_bucketing or None,
+                    "subject_pooling": subject_pooling or None,
+                    "calibration": calibration or None,
+                    "max_cells": int(max_cells) if max_cells else None,
+                    "fit_split": fit_split or None,
+                    "eval_split": eval_split or None,
+                    "allow_incomplete_mc_coverage": bool(allow_incomplete_mc_coverage),
+                    "allow_low_mc_retention": bool(allow_low_mc_retention),
+                },
             },
             "environment": env_banner,
         }
@@ -977,6 +1084,18 @@ def main(
     allow_dirty: bool = False,
     overwrite: bool = False,
     with_openai_key: bool = False,
+    reward_schedules: str = "",
+    continuations: str = "",
+    calibrators: str = "",
+    formats: str = "",
+    prefix_bucketing: str = "",
+    subject_pooling: str = "",
+    calibration: str = "",
+    max_cells: int = 0,
+    fit_split: str = "",
+    eval_split: str = "",
+    allow_incomplete_mc_coverage: bool = False,
+    allow_low_mc_retention: bool = False,
 ) -> None:
     """Modal CLI entrypoint -- pre-flight host checks, then dispatch to the container.
 
@@ -1008,6 +1127,12 @@ def main(
         if not compute_script.is_file():
             raise SystemExit(
                 f"--experiment {experiment} requires {compute_script}, which is absent."
+            )
+    elif experiment == "fair_qa":
+        target = LOCAL_REPO_ROOT / "scripts" / "stopdff_fair_qa_retest.py"
+        if not target.is_file():
+            raise SystemExit(
+                f"--experiment fair_qa requires {target}, which is absent."
             )
     elif experiment == "learned_value_train":
         target = LOCAL_REPO_ROOT / "scripts" / "train_stopdff_value_model.py"
@@ -1155,6 +1280,18 @@ def main(
         git_porcelain_local=full_porcelain,
         git_present_local=git_present_local,
         cli_invocation=cli_invocation,
+        reward_schedules=reward_schedules,
+        continuations=continuations,
+        calibrators=calibrators,
+        formats=formats,
+        prefix_bucketing=prefix_bucketing,
+        subject_pooling=subject_pooling,
+        calibration=calibration,
+        max_cells=int(max_cells),
+        fit_split=fit_split,
+        eval_split=eval_split,
+        allow_incomplete_mc_coverage=bool(allow_incomplete_mc_coverage),
+        allow_low_mc_retention=bool(allow_low_mc_retention),
     )
 
     # --- Completion banner ---------------------------------------------

@@ -1,0 +1,499 @@
+{
+  "metadata": {
+    "metric_type": "stopdff_fair_qa_retest",
+    "timestamp": "2026-06-12T21:51:57.488941+00:00",
+    "reward_schedule": "power_mark",
+    "fit_split": "val",
+    "eval_split": "test",
+    "n_eval": 2258,
+    "n_fit": 2142,
+    "num_bootstrap": 1000,
+    "seed": 1,
+    "qa_arms": [
+      "idealized",
+      "krandom",
+      "khard",
+      "kdisjoint",
+      "klex"
+    ],
+    "calibrations": [
+      "shared",
+      "performat"
+    ],
+    "calibration_path": "paper_exports/calibration_train.json",
+    "git_commit": null,
+    "khard_circularity_caveat": "khard distractors are SBERT nearest-neighbours in the same space used to score, so they are adversarially close to gold; khard is a difficulty-matched proxy, not a clean open-ended measurement."
+  },
+  "mc_accuracy": {
+    "overall": 0.3924,
+    "by_bucket": {
+      "early": 0.3349,
+      "mid": 0.3625,
+      "late": 0.4392
+    }
+  },
+  "qa_accuracy": {
+    "idealized": {
+      "overall": 1.0,
+      "by_bucket": {
+        "early": 1.0,
+        "mid": 1.0,
+        "late": 1.0
+      }
+    },
+    "krandom": {
+      "overall": 0.7336,
+      "by_bucket": {
+        "early": 0.6518,
+        "mid": 0.7171,
+        "late": 0.7838
+      }
+    },
+    "khard": {
+      "overall": 0.3938,
+      "by_bucket": {
+        "early": 0.3337,
+        "mid": 0.3697,
+        "late": 0.4382
+      }
+    },
+    "kdisjoint": {
+      "overall": 0.3652,
+      "by_bucket": {
+        "early": 0.3036,
+        "mid": 0.3402,
+        "late": 0.411
+      }
+    },
+    "klex": {
+      "overall": 0.5561,
+      "by_bucket": {
+        "early": 0.4798,
+        "mid": 0.5362,
+        "late": 0.6057
+      }
+    }
+  },
+  "results": {
+    "idealized+shared": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.8528,
+        "signed_median": 0.0,
+        "abs_mean": 1.2005,
+        "abs_median": 1.0,
+        "mc_earlier": 194,
+        "qa_earlier": 953,
+        "same_step": 1102,
+        "mc_never_buzz": 0.0516,
+        "qa_never_buzz": 0.0587,
+        "signed_mean_ci": [
+          0.7759,
+          0.9315
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.0111,
+        "signed_median": 0.0,
+        "abs_mean": 0.0111,
+        "abs_median": 0.0,
+        "mc_earlier": 13,
+        "qa_earlier": 0,
+        "same_step": 2236,
+        "mc_never_buzz": 0.0018,
+        "qa_never_buzz": 0.0058,
+        "signed_mean_ci": [
+          -0.0182,
+          -0.0049
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "idealized+performat": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 1.6332,
+        "signed_median": 1.0,
+        "abs_mean": 1.6394,
+        "abs_median": 1.0,
+        "mc_earlier": 4,
+        "qa_earlier": 1915,
+        "same_step": 330,
+        "mc_never_buzz": 0.0209,
+        "qa_never_buzz": 0.0,
+        "signed_mean_ci": [
+          1.5785,
+          1.6914
+        ],
+        "signed_median_ci": [
+          1.0,
+          1.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": 0.0004,
+        "signed_median": 0.0,
+        "abs_mean": 0.0004,
+        "abs_median": 0.0,
+        "mc_earlier": 0,
+        "qa_earlier": 1,
+        "same_step": 2248,
+        "mc_never_buzz": 0.0,
+        "qa_never_buzz": 0.0,
+        "signed_mean_ci": [
+          0.0,
+          0.0013
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "krandom+shared": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.6856,
+        "signed_median": 0.0,
+        "abs_mean": 1.0476,
+        "abs_median": 0.0,
+        "mc_earlier": 212,
+        "qa_earlier": 818,
+        "same_step": 1219,
+        "mc_never_buzz": 0.0516,
+        "qa_never_buzz": 0.0685,
+        "signed_mean_ci": [
+          0.6105,
+          0.7572
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.004,
+        "signed_median": 0.0,
+        "abs_mean": 0.0111,
+        "abs_median": 0.0,
+        "mc_earlier": 10,
+        "qa_earlier": 3,
+        "same_step": 2236,
+        "mc_never_buzz": 0.0018,
+        "qa_never_buzz": 0.0036,
+        "signed_mean_ci": [
+          -0.0107,
+          0.0022
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "krandom+performat": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.2984,
+        "signed_median": 0.0,
+        "abs_mean": 0.735,
+        "abs_median": 0.0,
+        "mc_earlier": 219,
+        "qa_earlier": 624,
+        "same_step": 1406,
+        "mc_never_buzz": 0.0209,
+        "qa_never_buzz": 0.0009,
+        "signed_mean_ci": [
+          0.2392,
+          0.3566
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": 0.0004,
+        "signed_median": 0.0,
+        "abs_mean": 0.0004,
+        "abs_median": 0.0,
+        "mc_earlier": 0,
+        "qa_earlier": 1,
+        "same_step": 2248,
+        "mc_never_buzz": 0.0,
+        "qa_never_buzz": 0.0,
+        "signed_mean_ci": [
+          0.0,
+          0.0013
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "khard+shared": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.4193,
+        "signed_median": 0.0,
+        "abs_mean": 0.8862,
+        "abs_median": 0.0,
+        "mc_earlier": 244,
+        "qa_earlier": 641,
+        "same_step": 1364,
+        "mc_never_buzz": 0.0516,
+        "qa_never_buzz": 0.064,
+        "signed_mean_ci": [
+          0.3535,
+          0.4856
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.0062,
+        "signed_median": 0.0,
+        "abs_mean": 0.008,
+        "abs_median": 0.0,
+        "mc_earlier": 9,
+        "qa_earlier": 2,
+        "same_step": 2238,
+        "mc_never_buzz": 0.0018,
+        "qa_never_buzz": 0.0036,
+        "signed_mean_ci": [
+          -0.012,
+          -0.0013
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "khard+performat": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": -0.4277,
+        "signed_median": 0.0,
+        "abs_mean": 1.02,
+        "abs_median": 0.0,
+        "mc_earlier": 607,
+        "qa_earlier": 404,
+        "same_step": 1238,
+        "mc_never_buzz": 0.0209,
+        "qa_never_buzz": 0.0142,
+        "signed_mean_ci": [
+          -0.4971,
+          -0.3615
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.0036,
+        "signed_median": 0.0,
+        "abs_mean": 0.0044,
+        "abs_median": 0.0,
+        "mc_earlier": 7,
+        "qa_earlier": 1,
+        "same_step": 2241,
+        "mc_never_buzz": 0.0,
+        "qa_never_buzz": 0.0,
+        "signed_mean_ci": [
+          -0.0076,
+          -0.0004
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "kdisjoint+shared": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.1472,
+        "signed_median": 0.0,
+        "abs_mean": 0.7377,
+        "abs_median": 0.0,
+        "mc_earlier": 301,
+        "qa_earlier": 437,
+        "same_step": 1511,
+        "mc_never_buzz": 0.0516,
+        "qa_never_buzz": 0.0725,
+        "signed_mean_ci": [
+          0.088,
+          0.2094
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.004,
+        "signed_median": 0.0,
+        "abs_mean": 0.0102,
+        "abs_median": 0.0,
+        "mc_earlier": 9,
+        "qa_earlier": 6,
+        "same_step": 2234,
+        "mc_never_buzz": 0.0018,
+        "qa_never_buzz": 0.0031,
+        "signed_mean_ci": [
+          -0.0102,
+          0.0013
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "kdisjoint+performat": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": -0.5047,
+        "signed_median": 0.0,
+        "abs_mean": 0.9635,
+        "abs_median": 0.0,
+        "mc_earlier": 679,
+        "qa_earlier": 284,
+        "same_step": 1286,
+        "mc_never_buzz": 0.0209,
+        "qa_never_buzz": 0.0698,
+        "signed_mean_ci": [
+          -0.5683,
+          -0.4402
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.0196,
+        "signed_median": 0.0,
+        "abs_mean": 0.0196,
+        "abs_median": 0.0,
+        "mc_earlier": 23,
+        "qa_earlier": 0,
+        "same_step": 2226,
+        "mc_never_buzz": 0.0,
+        "qa_never_buzz": 0.004,
+        "signed_mean_ci": [
+          -0.0293,
+          -0.0111
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "klex+shared": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.514,
+        "signed_median": 0.0,
+        "abs_mean": 0.9631,
+        "abs_median": 0.0,
+        "mc_earlier": 228,
+        "qa_earlier": 696,
+        "same_step": 1325,
+        "mc_never_buzz": 0.0516,
+        "qa_never_buzz": 0.0618,
+        "signed_mean_ci": [
+          0.4384,
+          0.5896
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.0084,
+        "signed_median": 0.0,
+        "abs_mean": 0.0102,
+        "abs_median": 0.0,
+        "mc_earlier": 11,
+        "qa_earlier": 1,
+        "same_step": 2237,
+        "mc_never_buzz": 0.0018,
+        "qa_never_buzz": 0.0044,
+        "signed_mean_ci": [
+          -0.0151,
+          -0.0027
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "klex+performat": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.4406,
+        "signed_median": 0.0,
+        "abs_mean": 0.8177,
+        "abs_median": 0.0,
+        "mc_earlier": 183,
+        "qa_earlier": 792,
+        "same_step": 1274,
+        "mc_never_buzz": 0.0209,
+        "qa_never_buzz": 0.0,
+        "signed_mean_ci": [
+          0.3828,
+          0.4976
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": 0.0004,
+        "signed_median": 0.0,
+        "abs_mean": 0.0004,
+        "abs_median": 0.0,
+        "mc_earlier": 0,
+        "qa_earlier": 1,
+        "same_step": 2248,
+        "mc_never_buzz": 0.0,
+        "qa_never_buzz": 0.0,
+        "signed_mean_ci": [
+          0.0,
+          0.0013
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    }
+  }
+}
