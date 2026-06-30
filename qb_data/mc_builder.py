@@ -386,6 +386,156 @@ class MCBuilder:
             return self.K
         return self.rng.randint(self.min_K, self.max_K)
 
+    def _fallback_order_from_state(
+        self,
+        answers: List[str],
+        selected: List[str],
+        gold: str,
+        rng_state: object,
+    ) -> List[str]:
+        """Return the fallback order without advancing ``self.rng``."""
+        fallback_rng = random.Random()
+        fallback_rng.setstate(rng_state)
+        fallback = [a for a in answers if a not in selected and a != gold]
+        fallback_rng.shuffle(fallback)
+        return fallback
+
+    def _candidate_repair_order(
+        self,
+        ranked: List[str],
+        fallback_order: List[str],
+        gold: str,
+        gold_aliases: List[str],
+        gold_norms: set[str],
+    ) -> List[str]:
+        """Return ranked+fallback candidates after alias filtering."""
+        candidates: List[str] = []
+        seen: Set[str] = set()
+        for candidate in [*ranked, *fallback_order]:
+            if candidate == gold or candidate in seen:
+                continue
+            seen.add(candidate)
+            if self._aliases_collide(candidate, gold_aliases, _gold_norms=gold_norms):
+                continue
+            candidates.append(candidate)
+        return candidates
+
+    def _search_repaired_options(
+        self,
+        question: str,
+        gold: str,
+        candidates: List[str],
+        target_k: int,
+        permutation: List[int],
+    ) -> Optional[List[str]]:
+        """Find a guard-passing option set, preserving the original shuffle."""
+        q_norm = str(normalize_answer(question))
+
+        def overlaps_question(option: str) -> bool:
+            option_norm = str(normalize_answer(option))
+            return bool(option_norm and option_norm in q_norm)
+
+        if overlaps_question(gold):
+            return None
+
+        needed = target_k - 1
+        if needed <= 0:
+            return None
+
+        viable = [
+            candidate
+            for candidate in candidates
+            if not overlaps_question(candidate)
+        ]
+        if len(viable) < needed:
+            return None
+
+        chosen: List[str] = []
+
+        def backtrack(start: int) -> Optional[List[str]]:
+            remaining = needed - len(chosen)
+            if remaining == 0:
+                ordered = [gold] + chosen
+                if self._violates_length_ratio_guard(ordered):
+                    return None
+                return [ordered[i] for i in permutation]
+
+            last_start = len(viable) - remaining
+            for idx in range(start, last_start + 1):
+                candidate = viable[idx]
+                if self._violates_duplicate_guard(candidate, chosen):
+                    continue
+
+                partial = [gold] + chosen + [candidate]
+                if self._violates_length_ratio_guard(partial):
+                    continue
+
+                chosen.append(candidate)
+                repaired = backtrack(idx + 1)
+                if repaired is not None:
+                    return repaired
+                chosen.pop()
+            return None
+
+        return backtrack(0)
+
+    def _repair_options_after_guard_failure(
+        self,
+        question: str,
+        gold: str,
+        selected: List[str],
+        ranked: List[str],
+        answers: List[str],
+        gold_aliases: List[str],
+        gold_norms: set[str],
+        target_k: int,
+        shuffled_options: List[str],
+        fallback_rng_state: object,
+        fallback_selected: List[str],
+        fallback_order: Optional[List[str]],
+    ) -> Optional[List[str]]:
+        """Try later ranked/fallback distractors without weakening guards."""
+        ordered_options = [gold] + selected[: target_k - 1]
+        permutation = [ordered_options.index(option) for option in shuffled_options]
+        ranked_candidates = self._candidate_repair_order(
+            ranked,
+            [],
+            gold,
+            gold_aliases,
+            gold_norms,
+        )
+        repaired = self._search_repaired_options(
+            question,
+            gold,
+            ranked_candidates,
+            target_k,
+            permutation,
+        )
+        if repaired is not None:
+            return repaired
+
+        if fallback_order is None:
+            fallback_order = self._fallback_order_from_state(
+                answers,
+                fallback_selected,
+                gold,
+                fallback_rng_state,
+            )
+        candidates = self._candidate_repair_order(
+            ranked,
+            fallback_order,
+            gold,
+            gold_aliases,
+            gold_norms,
+        )
+        return self._search_repaired_options(
+            question,
+            gold,
+            candidates,
+            target_k,
+            permutation,
+        )
+
     def build(
         self,
         questions: List[TossupQuestion],
@@ -533,9 +683,13 @@ class MCBuilder:
                     break
 
             # If not enough distractors from ranking, try random fallback
+            selected_after_ranked = selected[:]
+            fallback_rng_state = self.rng.getstate()
+            fallback_order: Optional[List[str]] = None
             if len(selected) < target_k - 1:
                 fallback = [a for a in answers if a not in selected and a != gold]
                 self.rng.shuffle(fallback)
+                fallback_order = fallback[:]
                 for candidate in fallback:
                     if self._aliases_collide(candidate, gold_aliases, _gold_norms=gold_norms):
                         continue
@@ -558,13 +712,49 @@ class MCBuilder:
 
             # Apply guard 3: Check length ratio
             if self._violates_length_ratio_guard(options):
-                drop_reasons["length_ratio_guard"] += 1
-                continue
+                repaired = self._repair_options_after_guard_failure(
+                    q.question,
+                    gold,
+                    selected[: target_k - 1],
+                    ranked,
+                    answers,
+                    gold_aliases,
+                    gold_norms,
+                    target_k,
+                    option_answer_primary,
+                    fallback_rng_state,
+                    selected_after_ranked,
+                    fallback_order,
+                )
+                if repaired is None:
+                    drop_reasons["length_ratio_guard"] += 1
+                    continue
+                option_answer_primary = repaired
+                gold_index = option_answer_primary.index(gold)
+                options = option_answer_primary[:]
 
             # Apply guard 4: Check question overlap
             if self._violates_question_overlap_guard(q.question, options):
-                drop_reasons["question_overlap_guard"] += 1
-                continue
+                repaired = self._repair_options_after_guard_failure(
+                    q.question,
+                    gold,
+                    selected[: target_k - 1],
+                    ranked,
+                    answers,
+                    gold_aliases,
+                    gold_norms,
+                    target_k,
+                    option_answer_primary,
+                    fallback_rng_state,
+                    selected_after_ranked,
+                    fallback_order,
+                )
+                if repaired is None:
+                    drop_reasons["question_overlap_guard"] += 1
+                    continue
+                option_answer_primary = repaired
+                gold_index = option_answer_primary.index(gold)
+                options = option_answer_primary[:]
 
             # Build option profiles with leave-one-out for gold
             option_profiles: List[str] = []
