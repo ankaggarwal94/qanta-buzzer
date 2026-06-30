@@ -49,3 +49,4 @@ results/phase_8_sweep.txt
 # These are preserved on disk (Dropbox sync) but too large for git
 artifacts.pre_v10_freshsplit_*/
 data/processed.pre_v10_freshsplit_*/
+.claude/
