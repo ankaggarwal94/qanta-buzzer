@@ -1,0 +1,636 @@
+{
+  "metadata": {
+    "metric_type": "stopdff_fair_qa_retest",
+    "timestamp": "2026-06-24T02:01:15.860265+00:00",
+    "reward_schedule": "power_mark",
+    "fit_split": "val",
+    "eval_split": "test",
+    "n_eval": 2258,
+    "n_fit": 2142,
+    "num_bootstrap": 1000,
+    "seed": 1,
+    "qa_arms": [
+      "idealized",
+      "krandom",
+      "khard",
+      "kdisjoint",
+      "klex"
+    ],
+    "calibrations": [
+      "shared",
+      "performat"
+    ],
+    "calibration_path": "paper_exports/calibration_train.json",
+    "git_commit": "4bf5e02d5447202a1a39f2e86c948ecb9a1614b8",
+    "khard_circularity_caveat": "khard distractors are SBERT nearest-neighbours in the same space used to score, so they are adversarially close to gold; khard is a difficulty-matched proxy, not a clean open-ended measurement."
+  },
+  "mc_accuracy": {
+    "overall": 0.3924,
+    "by_bucket": {
+      "early": 0.3349,
+      "mid": 0.3625,
+      "late": 0.4392
+    }
+  },
+  "qa_accuracy": {
+    "idealized": {
+      "overall": 1.0,
+      "by_bucket": {
+        "early": 1.0,
+        "mid": 1.0,
+        "late": 1.0
+      }
+    },
+    "krandom": {
+      "overall": 0.7327,
+      "by_bucket": {
+        "early": 0.6651,
+        "mid": 0.7147,
+        "late": 0.777
+      }
+    },
+    "khard": {
+      "overall": 0.3938,
+      "by_bucket": {
+        "early": 0.3337,
+        "mid": 0.3697,
+        "late": 0.4382
+      }
+    },
+    "kdisjoint": {
+      "overall": 0.3652,
+      "by_bucket": {
+        "early": 0.3036,
+        "mid": 0.3402,
+        "late": 0.411
+      }
+    },
+    "klex": {
+      "overall": 0.5561,
+      "by_bucket": {
+        "early": 0.4798,
+        "mid": 0.5362,
+        "late": 0.6057
+      }
+    }
+  },
+  "results": {
+    "idealized+shared": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.8528,
+        "signed_median": 0.0,
+        "abs_mean": 1.2005,
+        "abs_median": 1.0,
+        "mc_earlier": 194,
+        "qa_earlier": 953,
+        "same_step": 1102,
+        "mc_never_buzz": 0.0516,
+        "qa_never_buzz": 0.0587,
+        "signed_mean_ci": [
+          0.7759,
+          0.9315
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.0111,
+        "signed_median": 0.0,
+        "abs_mean": 0.0111,
+        "abs_median": 0.0,
+        "mc_earlier": 13,
+        "qa_earlier": 0,
+        "same_step": 2236,
+        "mc_never_buzz": 0.0018,
+        "qa_never_buzz": 0.0058,
+        "signed_mean_ci": [
+          -0.0182,
+          -0.0049
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "idealized+performat": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 1.6332,
+        "signed_median": 1.0,
+        "abs_mean": 1.6394,
+        "abs_median": 1.0,
+        "mc_earlier": 4,
+        "qa_earlier": 1915,
+        "same_step": 330,
+        "mc_never_buzz": 0.0209,
+        "qa_never_buzz": 0.0,
+        "signed_mean_ci": [
+          1.5785,
+          1.6914
+        ],
+        "signed_median_ci": [
+          1.0,
+          1.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": 0.0004,
+        "signed_median": 0.0,
+        "abs_mean": 0.0004,
+        "abs_median": 0.0,
+        "mc_earlier": 0,
+        "qa_earlier": 1,
+        "same_step": 2248,
+        "mc_never_buzz": 0.0,
+        "qa_never_buzz": 0.0,
+        "signed_mean_ci": [
+          0.0,
+          0.0013
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "krandom+shared": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.7492,
+        "signed_median": 0.0,
+        "abs_mean": 1.0667,
+        "abs_median": 0.0,
+        "mc_earlier": 188,
+        "qa_earlier": 831,
+        "same_step": 1230,
+        "mc_never_buzz": 0.0516,
+        "qa_never_buzz": 0.0547,
+        "signed_mean_ci": [
+          0.683,
+          0.823
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.0058,
+        "signed_median": 0.0,
+        "abs_mean": 0.012,
+        "abs_median": 0.0,
+        "mc_earlier": 11,
+        "qa_earlier": 4,
+        "same_step": 2234,
+        "mc_never_buzz": 0.0018,
+        "qa_never_buzz": 0.004,
+        "signed_mean_ci": [
+          -0.0125,
+          0.0009
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "krandom+performat": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.4562,
+        "signed_median": 0.0,
+        "abs_mean": 0.8377,
+        "abs_median": 0.0,
+        "mc_earlier": 189,
+        "qa_earlier": 785,
+        "same_step": 1275,
+        "mc_never_buzz": 0.0209,
+        "qa_never_buzz": 0.0022,
+        "signed_mean_ci": [
+          0.3962,
+          0.5145
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": 0.0004,
+        "signed_median": 0.0,
+        "abs_mean": 0.0004,
+        "abs_median": 0.0,
+        "mc_earlier": 0,
+        "qa_earlier": 1,
+        "same_step": 2248,
+        "mc_never_buzz": 0.0,
+        "qa_never_buzz": 0.0,
+        "signed_mean_ci": [
+          0.0,
+          0.0013
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "khard+shared": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.4193,
+        "signed_median": 0.0,
+        "abs_mean": 0.8862,
+        "abs_median": 0.0,
+        "mc_earlier": 244,
+        "qa_earlier": 641,
+        "same_step": 1364,
+        "mc_never_buzz": 0.0516,
+        "qa_never_buzz": 0.064,
+        "signed_mean_ci": [
+          0.3535,
+          0.4856
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.0062,
+        "signed_median": 0.0,
+        "abs_mean": 0.008,
+        "abs_median": 0.0,
+        "mc_earlier": 9,
+        "qa_earlier": 2,
+        "same_step": 2238,
+        "mc_never_buzz": 0.0018,
+        "qa_never_buzz": 0.0036,
+        "signed_mean_ci": [
+          -0.012,
+          -0.0013
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "khard+performat": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": -0.4277,
+        "signed_median": 0.0,
+        "abs_mean": 1.02,
+        "abs_median": 0.0,
+        "mc_earlier": 607,
+        "qa_earlier": 404,
+        "same_step": 1238,
+        "mc_never_buzz": 0.0209,
+        "qa_never_buzz": 0.0142,
+        "signed_mean_ci": [
+          -0.4971,
+          -0.3615
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.0036,
+        "signed_median": 0.0,
+        "abs_mean": 0.0044,
+        "abs_median": 0.0,
+        "mc_earlier": 7,
+        "qa_earlier": 1,
+        "same_step": 2241,
+        "mc_never_buzz": 0.0,
+        "qa_never_buzz": 0.0,
+        "signed_mean_ci": [
+          -0.0076,
+          -0.0004
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "kdisjoint+shared": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.1472,
+        "signed_median": 0.0,
+        "abs_mean": 0.7377,
+        "abs_median": 0.0,
+        "mc_earlier": 301,
+        "qa_earlier": 437,
+        "same_step": 1511,
+        "mc_never_buzz": 0.0516,
+        "qa_never_buzz": 0.0725,
+        "signed_mean_ci": [
+          0.088,
+          0.2094
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.004,
+        "signed_median": 0.0,
+        "abs_mean": 0.0102,
+        "abs_median": 0.0,
+        "mc_earlier": 9,
+        "qa_earlier": 6,
+        "same_step": 2234,
+        "mc_never_buzz": 0.0018,
+        "qa_never_buzz": 0.0031,
+        "signed_mean_ci": [
+          -0.0102,
+          0.0013
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "kdisjoint+performat": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": -0.5047,
+        "signed_median": 0.0,
+        "abs_mean": 0.9635,
+        "abs_median": 0.0,
+        "mc_earlier": 679,
+        "qa_earlier": 284,
+        "same_step": 1286,
+        "mc_never_buzz": 0.0209,
+        "qa_never_buzz": 0.0698,
+        "signed_mean_ci": [
+          -0.5683,
+          -0.4402
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.0196,
+        "signed_median": 0.0,
+        "abs_mean": 0.0196,
+        "abs_median": 0.0,
+        "mc_earlier": 23,
+        "qa_earlier": 0,
+        "same_step": 2226,
+        "mc_never_buzz": 0.0,
+        "qa_never_buzz": 0.004,
+        "signed_mean_ci": [
+          -0.0293,
+          -0.0111
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "klex+shared": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.514,
+        "signed_median": 0.0,
+        "abs_mean": 0.9631,
+        "abs_median": 0.0,
+        "mc_earlier": 228,
+        "qa_earlier": 696,
+        "same_step": 1325,
+        "mc_never_buzz": 0.0516,
+        "qa_never_buzz": 0.0618,
+        "signed_mean_ci": [
+          0.4384,
+          0.5896
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": -0.0084,
+        "signed_median": 0.0,
+        "abs_mean": 0.0102,
+        "abs_median": 0.0,
+        "mc_earlier": 11,
+        "qa_earlier": 1,
+        "same_step": 2237,
+        "mc_never_buzz": 0.0018,
+        "qa_never_buzz": 0.0044,
+        "signed_mean_ci": [
+          -0.0151,
+          -0.0027
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "klex+performat": {
+      "dp": {
+        "n": 2249,
+        "signed_mean": 0.4406,
+        "signed_median": 0.0,
+        "abs_mean": 0.8177,
+        "abs_median": 0.0,
+        "mc_earlier": 183,
+        "qa_earlier": 792,
+        "same_step": 1274,
+        "mc_never_buzz": 0.0209,
+        "qa_never_buzz": 0.0,
+        "signed_mean_ci": [
+          0.3828,
+          0.4976
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "myopic": {
+        "n": 2249,
+        "signed_mean": 0.0004,
+        "signed_median": 0.0,
+        "abs_mean": 0.0004,
+        "abs_median": 0.0,
+        "mc_earlier": 0,
+        "qa_earlier": 1,
+        "same_step": 2248,
+        "mc_never_buzz": 0.0,
+        "qa_never_buzz": 0.0,
+        "signed_mean_ci": [
+          0.0,
+          0.0013
+        ],
+        "signed_median_ci": [
+          0.0,
+          0.0
+        ]
+      }
+    }
+  },
+  "continuation_coverage": {
+    "estimator": "empirical_bucket",
+    "scope": "dp_non_myopic",
+    "note": "Per-prefix continuation-lookup coverage for the DP (empirical-bucket, non-myopic) StopDFF arm, aggregated over MC+QA traces via scripts/stopdff_dp/diagnostics.summarize_coverage. Tags label the fallback-ladder rung used at each decision step: 'exact' = full-specificity bucket hit (also the terminal prefix, which has no continuation lookup by DP convention); 'pooled' = a coarser fallback rung; 'missing' = no bucket met min size. The myopic arm uses continuation==0 and is excluded. Emitted additively; does NOT alter any StopDFF value.",
+    "overall": {
+      "n_cells": 222300,
+      "fraction_exact": 0.9783310841205578,
+      "fraction_pooled": 0.021668915879442197,
+      "fraction_missing": 0.0,
+      "verdict": "pass",
+      "reason": "thresholds_clean"
+    },
+    "by_reference": {
+      "idealized": {
+        "n_cells": 44460,
+        "fraction_exact": 0.9812865497076023,
+        "fraction_pooled": 0.01871345029239766,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "krandom": {
+        "n_cells": 44460,
+        "fraction_exact": 0.9736392262708052,
+        "fraction_pooled": 0.02636077372919478,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "khard": {
+        "n_cells": 44460,
+        "fraction_exact": 0.9783175888439046,
+        "fraction_pooled": 0.021682411156095368,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "kdisjoint": {
+        "n_cells": 44460,
+        "fraction_exact": 0.978744939271255,
+        "fraction_pooled": 0.02125506072874494,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "klex": {
+        "n_cells": 44460,
+        "fraction_exact": 0.9796671165092218,
+        "fraction_pooled": 0.020332883490778227,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      }
+    },
+    "by_cell": {
+      "idealized+shared": {
+        "n_cells": 22230,
+        "fraction_exact": 0.9759334233018444,
+        "fraction_pooled": 0.024066576698155647,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "idealized+performat": {
+        "n_cells": 22230,
+        "fraction_exact": 0.9866396761133603,
+        "fraction_pooled": 0.013360323886639677,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "krandom+shared": {
+        "n_cells": 22230,
+        "fraction_exact": 0.9765632028789923,
+        "fraction_pooled": 0.023436797121007647,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "krandom+performat": {
+        "n_cells": 22230,
+        "fraction_exact": 0.9707152496626181,
+        "fraction_pooled": 0.029284750337381916,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "khard+shared": {
+        "n_cells": 22230,
+        "fraction_exact": 0.9766081871345029,
+        "fraction_pooled": 0.023391812865497075,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "khard+performat": {
+        "n_cells": 22230,
+        "fraction_exact": 0.9800269905533063,
+        "fraction_pooled": 0.019973009446693658,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "kdisjoint+shared": {
+        "n_cells": 22230,
+        "fraction_exact": 0.9766531713900135,
+        "fraction_pooled": 0.023346828609986506,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "kdisjoint+performat": {
+        "n_cells": 22230,
+        "fraction_exact": 0.9808367071524966,
+        "fraction_pooled": 0.019163292847503375,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "klex+shared": {
+        "n_cells": 22230,
+        "fraction_exact": 0.9767431399010347,
+        "fraction_pooled": 0.02325686009896536,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      },
+      "klex+performat": {
+        "n_cells": 22230,
+        "fraction_exact": 0.9825910931174089,
+        "fraction_pooled": 0.017408906882591092,
+        "fraction_missing": 0.0,
+        "verdict": "pass",
+        "reason": "thresholds_clean"
+      }
+    }
+  }
+}

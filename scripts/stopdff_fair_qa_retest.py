@@ -45,6 +45,7 @@ from scripts.stopdff_dp.adapter import (  # noqa: E402
 )
 from scripts.stopdff_dp.rewards import get_schedule  # noqa: E402
 from scripts.stopdff_dp.dp_solver import solve_trajectory, stopdff_for_item  # noqa: E402
+from scripts.stopdff_dp.diagnostics import summarize_coverage  # noqa: E402
 from scripts.stopdff_dp.continuation import (  # noqa: E402
     EmpiricalBucketEstimator, _assign_prefix_bucket, _assign_p_bin, _assign_entropy_bin,
 )
@@ -157,7 +158,7 @@ def apply_cal(df, cals=None, shared=None):
     return df
 
 
-def signed_per_item(test_df, estimator, schedule, myopic):
+def signed_per_item(test_df, estimator, schedule, myopic, collect_traces=None):
     signed = {}; never = {"mc": 0, "qa": 0}
     for _id, g in test_df.groupby("item_id"):
         traces = {}; horizon = {}
@@ -168,19 +169,36 @@ def signed_per_item(test_df, estimator, schedule, myopic):
             ps = rows["p_calibrated"].astype(float).clip(0, 1).tolist()
             fr = rows["prefix_fraction"].astype(float).tolist()
             subj = str(rows["subject"].iloc[0]); horizon[fmt] = len(ps)
+            # Coverage-tag capture (additive, numerically inert): record the
+            # estimator's per-step fallback tag during each backward
+            # continuation lookup, then replay it via coverage_tagger after
+            # the backward loop finishes. Mirrors scripts/compute_stopdff_dp.py.
+            # The terminal prefix has no continuation lookup -> "exact" by
+            # DP convention. The tagger only populates DPTrace.coverage_tags
+            # and never affects values/stop_step, so StopDFF is unchanged.
+            tags_per_step = {len(ps) - 1: "exact"}
             if myopic:
                 cont = lambda *a, **k: 0.0  # noqa: E731
+                tagger = None
             else:
-                def cont(t, p, prefix_fraction, _subj=subj, _fmt=fmt):
-                    return estimator.estimate(
+                def cont(t, p, prefix_fraction, _subj=subj, _fmt=fmt, _tags=tags_per_step):
+                    v = estimator.estimate(
                         prefix_bucket=_assign_prefix_bucket(prefix_fraction), fmt=_fmt,
                         subject_bucket=_subj, p_bin=_assign_p_bin(p), entropy_bin=_assign_entropy_bin(p))
+                    _tags[t] = getattr(estimator, "_last_tag", "exact")
+                    return v
+
+                def tagger(t, _tags=tags_per_step):
+                    return _tags.get(t, "exact")
             traces[fmt] = solve_trajectory(p_trajectory=ps, prefix_fractions=fr, schedule=schedule,
-                                           continuation_fn=cont, item_id=str(_id), fmt=fmt)
+                                           continuation_fn=cont, item_id=str(_id), fmt=fmt,
+                                           coverage_tagger=tagger)
         if len(traces) == 2:
             signed[str(_id)] = stopdff_for_item(mc_trace=traces["MC"], qa_trace=traces["QA"])
             never["mc"] += int(traces["MC"].stop_step >= horizon["MC"])
             never["qa"] += int(traces["QA"].stop_step >= horizon["QA"])
+            if collect_traces is not None:
+                collect_traces.extend((traces["MC"], traces["QA"]))
     return signed, never
 
 
@@ -306,9 +324,12 @@ def main():
     schedule = get_schedule(args.reward_schedule)
     shared = _load_platt_params(calib_path)
     results, qa_acc = {}, {}
+    coverage_by_cell, coverage_by_reference = {}, {}
+    all_dp_traces = []
     for name in arms_req:
         qa_test, qa_val = test_arms[name], val_arms[name]
         qa_acc[name] = qa_accuracy(qa_test)
+        ref_traces = []
         for calib in cals_req:
             val_df = pd.concat([mc_val_rows, qa_val], ignore_index=True)
             test_df = pd.concat([mc_test_rows, qa_test], ignore_index=True)
@@ -319,13 +340,37 @@ def main():
                 val_df = apply_cal(val_df, cals=cals); test_df = apply_cal(test_df, cals=cals)
             val_df["split"] = args.fit_split; test_df["split"] = args.eval_split
             est = EmpiricalBucketEstimator.fit(fit_df=val_df, schedule=schedule, fit_split_name=args.fit_split)
-            dp_signed, dp_never = signed_per_item(test_df, est, schedule, myopic=False)
+            cell_traces = []
+            dp_signed, dp_never = signed_per_item(test_df, est, schedule, myopic=False, collect_traces=cell_traces)
             myo_signed, myo_never = signed_per_item(test_df, est, schedule, myopic=True)
             results[f"{name}+{calib}"] = {
                 "dp": summarize(dp_signed, dp_never, args.num_bootstrap, args.seed),
                 "myopic": summarize(myo_signed, myo_never, args.num_bootstrap, args.seed + 1),
             }
+            coverage_by_cell[f"{name}+{calib}"] = summarize_coverage(cell_traces)
+            ref_traces.extend(cell_traces); all_dp_traces.extend(cell_traces)
             print(f"[result] {name}+{calib} DP: {results[f'{name}+{calib}']['dp']}", flush=True)
+            print(f"[coverage] {name}+{calib}: {coverage_by_cell[f'{name}+{calib}']}", flush=True)
+        coverage_by_reference[name] = summarize_coverage(ref_traces)
+
+    continuation_coverage = {
+        "estimator": "empirical_bucket",
+        "scope": "dp_non_myopic",
+        "note": (
+            "Per-prefix continuation-lookup coverage for the DP (empirical-bucket, "
+            "non-myopic) StopDFF arm, aggregated over MC+QA traces via "
+            "scripts/stopdff_dp/diagnostics.summarize_coverage. Tags label the "
+            "fallback-ladder rung used at each decision step: 'exact' = "
+            "full-specificity bucket hit (also the terminal prefix, which has no "
+            "continuation lookup by DP convention); 'pooled' = a coarser fallback "
+            "rung; 'missing' = no bucket met min size. The myopic arm uses "
+            "continuation==0 and is excluded. Emitted additively; does NOT alter "
+            "any StopDFF value."
+        ),
+        "overall": summarize_coverage(all_dp_traces),
+        "by_reference": coverage_by_reference,
+        "by_cell": coverage_by_cell,
+    }
 
     payload = {
         "metadata": {
@@ -346,6 +391,7 @@ def main():
         "mc_accuracy": qa_accuracy(mc_test_rows.assign(format="MC")),
         "qa_accuracy": qa_acc,
         "results": results,
+        "continuation_coverage": continuation_coverage,
     }
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
