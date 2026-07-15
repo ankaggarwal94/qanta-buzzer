@@ -5,7 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from qb_data.config import load_config as load_yaml_config, merge_overrides
-from scripts.build_mc_dataset import parse_args, parse_overrides, resolve_output_dir
+from scripts.build_mc_dataset import (
+    build_metadata_entry,
+    make_mc_builder,
+    parse_args,
+    parse_overrides,
+    resolve_output_dir,
+)
 
 
 class TestBuildMcDatasetArgs:
@@ -50,6 +56,48 @@ class TestBuildMcDatasetArgs:
 
         assert cfg["data"]["max_questions"] == 50
         assert cfg["ppo"]["total_timesteps"] == 3000
+        assert cfg["mc_guards"]["max_repair_attempts"] == 10_000
+
+    def test_default_repair_budget_is_forwarded_to_mc_builder(self) -> None:
+        cfg = load_yaml_config(None, smoke=False)
+
+        builder = make_mc_builder(cfg)
+
+        assert cfg["mc_guards"]["max_repair_attempts"] == 10_000
+        assert builder.max_repair_attempts == 10_000
+
+
+def test_build_metadata_preserves_repair_telemetry() -> None:
+    """Published split metadata must carry the stable repair schema."""
+    repair = {
+        "attempted_questions": 3,
+        "succeeded_questions": 1,
+        "ranked_successes": 1,
+        "fallback_successes": 0,
+        "budget_exhausted_questions": 1,
+        "candidate_attempts": 37,
+        "length_ratio_triggers": 2,
+        "question_overlap_triggers": 2,
+        "simultaneous_guard_triggers": 1,
+        "failed_questions": 2,
+        "exhaustive_no_solution_questions": 1,
+        "unrecoverable_gold_overlap_questions": 0,
+    }
+    stats = {
+        "reference_answer_count": 11,
+        "drop_reasons": {
+            "repair_budget_exhausted": 1,
+            "guard_repair_failed": 1,
+        },
+        "repair": repair,
+    }
+
+    metadata = build_metadata_entry([object(), object(), object()], [object()], stats)
+
+    assert metadata["raw_count"] == 3
+    assert metadata["retained_count"] == 1
+    assert metadata["repair"] == repair
+    assert metadata["repair"] is not repair
 
 
 class TestParseOverrides:
