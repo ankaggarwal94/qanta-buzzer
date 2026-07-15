@@ -152,6 +152,7 @@ def build_metadata_entry(raw_questions: List[TossupQuestion], mc_questions: List
         "retention_rate": retained / raw_count if raw_count else 0.0,
         "reference_answer_count": int(stats.get("reference_answer_count", 0)),
         "drop_reasons": dict(stats.get("drop_reasons", {})),
+        "repair": dict(stats.get("repair", {})),
     }
 
 
