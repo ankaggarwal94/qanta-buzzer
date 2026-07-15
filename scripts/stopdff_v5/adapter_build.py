@@ -23,7 +23,8 @@ ADAPTER_SCHEMA_COLUMNS = [
     "raw_similarity", "correct", "category", "K", "option_set_id",
     "distractor_strategy", "p_second_best", "top2_margin",
 ]
-_ROUND = 10  # decimals for similarity fields (stable bytes across identical builds)
+_ROUND = 6  # decimals for similarity fields; coarse enough to absorb GPU float jitter
+# (byte-identical rows across builds) while far finer than calibration/binning needs.
 
 
 def freeze_model_snapshot(out_dir: Path, *, model_id: str = MODEL_ID, revision: str | None = None) -> dict[str, Any]:

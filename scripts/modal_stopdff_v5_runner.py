@@ -92,7 +92,7 @@ def verify_volume_artifact(rel_dir: str, kind: str) -> dict:
     return {"ok": not mism, "id": manifest["id"], "mismatches": mism[:20], "n_files": len(ident[key])}
 
 
-@app.function(volumes={MNT: vol}, timeout=DAY, max_containers=1)
+@app.function(volumes={MNT: vol}, timeout=DAY, max_containers=1, memory=8192)
 def freeze_model() -> dict:
     import json
     from pathlib import Path
@@ -108,7 +108,7 @@ def freeze_model() -> dict:
     return {"model_id": man["id"], "revision": man["identity"]["model_revision"], "cached": False}
 
 
-@app.function(volumes={MNT: vol}, gpu="L40S", timeout=DAY, max_containers=1)
+@app.function(volumes={MNT: vol}, gpu="L40S", timeout=DAY, max_containers=1, memory=32768)
 def build_adapter(dest_subdir: str, source_id: str, raw_id: str, model_id: str) -> dict:
     import json
     from pathlib import Path
@@ -147,7 +147,7 @@ def promote_adapter(from_subdir: str, adapter_id: str) -> dict:
     return {"canonical_subdir": f"canonical_{adapter_id}"}
 
 
-@app.function(volumes={MNT: vol}, timeout=DAY, max_containers=1)
+@app.function(volumes={MNT: vol}, timeout=DAY, max_containers=1, memory=16384)
 def fvi_study(adapter_id: str) -> dict:
     import json
     from pathlib import Path
@@ -199,7 +199,7 @@ def bootstrap_plan(adapter_id: str, replicates: int) -> dict:
     return {"bootstrap_plan_id": pid, "replicates": int(replicates), "n_items": plan.n_items}
 
 
-@app.function(volumes={MNT: vol}, timeout=DAY, max_containers=1)
+@app.function(volumes={MNT: vol}, timeout=DAY, max_containers=1, memory=16384)
 def run_sweep(spec_json: str, adapter_id: str, bootstrap_plan_id: str, resume: bool) -> dict:
     import json
     from pathlib import Path
