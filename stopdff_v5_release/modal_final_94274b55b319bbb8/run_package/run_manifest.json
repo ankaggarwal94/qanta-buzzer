@@ -1,0 +1,21 @@
+{
+  "environment": {
+    "huggingface_hub": "1.23.0",
+    "numpy": "2.4.6",
+    "pandas": "3.0.3",
+    "python": "3.11.12",
+    "scipy": "1.17.1",
+    "sentence_transformers": "5.6.0",
+    "sklearn": "1.9.0",
+    "transformers": "5.13.1"
+  },
+  "id": "99cd7fbcfe5afd239376c70e241f47d9203b6ffd4aa2848869d8b5d3a7a556d5",
+  "identity": {
+    "backend": "modal",
+    "kind": "run_manifest",
+    "run_spec_id": "94274b55b319bbb8c236b242ec436fad5756e8a37da5cdd608fc7690b20fa887"
+  },
+  "resource_summary": {
+    "backend": "modal"
+  }
+}

@@ -1,0 +1,1185 @@
+{
+  "backend": "modal",
+  "bootstrap_plan_id": "076ac23359ad4c7dd0c9ba108c5a41a4bb43ebd9fff3629837991ba459a426b0",
+  "cells": {
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": false,
+      "status": "completed",
+      "verdict": "WARN"
+    },
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": false,
+      "status": "completed",
+      "verdict": "WARN"
+    },
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": false,
+      "status": "completed",
+      "verdict": "WARN"
+    },
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": false,
+      "status": "completed",
+      "verdict": "WARN"
+    },
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": true,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "WARN"
+    },
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        1.0,
+        1.0
+      ],
+      "abs_median_point": 1.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        1.0,
+        1.0
+      ],
+      "abs_median_point": 1.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": true,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "WARN"
+    },
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": false,
+      "status": "completed",
+      "verdict": "WARN"
+    },
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": false,
+      "status": "completed",
+      "verdict": "WARN"
+    },
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": true,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "WARN"
+    },
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": true,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "WARN"
+    },
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": false,
+      "status": "completed",
+      "verdict": "WARN"
+    },
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": false,
+      "status": "completed",
+      "verdict": "WARN"
+    },
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": true,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "WARN"
+    },
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": false,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "PASS"
+    },
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category": {
+      "abs_median_ci": [
+        0.0,
+        0.0
+      ],
+      "abs_median_point": 0.0,
+      "ceiling_any": true,
+      "coverage_clean": true,
+      "status": "completed",
+      "verdict": "WARN"
+    }
+  },
+  "completed": 96,
+  "expected_cell_keys": [
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+    "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category"
+  ],
+  "failed": 0,
+  "family": {
+    "M": 1.0,
+    "ci": [
+      1.0,
+      1.0
+    ],
+    "verdict": "WARN"
+  },
+  "fvi_selected": {
+    "max_iterations": 100,
+    "tolerance": "1e-6"
+  },
+  "gate_overrides": {
+    "allow_incomplete_mc_coverage": false,
+    "allow_low_mc_retention": false
+  },
+  "profile_name": "stopdff_bucketed_dp_paired_v2",
+  "profile_variant": "final",
+  "release_reasons": [],
+  "release_status": "VALID",
+  "requested": 96,
+  "run_spec_id": "94274b55b319bbb8c236b242ec436fad5756e8a37da5cdd608fc7690b20fa887",
+  "skipped": 0
+}

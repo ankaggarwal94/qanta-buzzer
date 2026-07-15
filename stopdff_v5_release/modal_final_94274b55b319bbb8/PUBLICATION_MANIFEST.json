@@ -1,0 +1,57 @@
+{
+  "backend": "modal",
+  "contains_secret_values": false,
+  "deviations": [
+    "Modal image uses pinned pip installs (env-contract records exact versions) rather than uv sync --frozen (no uv.lock committed).",
+    "run_package/external_artifacts.json is present but minimal; large omitted artifacts are indexed in this directory's retrieval_index.json."
+  ],
+  "identities": {
+    "adapter_bundle_id": "13559ea71e5573721da627434fb4cbf2e6ba499006a1b3f48300a59b89a1c355",
+    "adapter_eval_rows_sha256": "32ed1dd9cb884ed3a023cd5ae92f5d72038f589849ada86204a24f7d953294cc",
+    "adapter_fit_rows_sha256": "2cb7336b7f217ab45b0e3c032f581cbbf6672201d5cb8381631e20304e241ad6",
+    "execution_git_sha": "e3ca01830ed67ae81e3f9683db847249e3fbec14",
+    "final_bootstrap_plan_id": "076ac23359ad4c7dd0c9ba108c5a41a4bb43ebd9fff3629837991ba459a426b0",
+    "final_run_id": "final_94274b55b319bbb8",
+    "fvi_study_id": "bfc74931b72b264b37e8a09fb90e4e446433060a118e8a92f9ec2f9275c872fe",
+    "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "model_snapshot_id": "33b48dc6daf60b6e0a2190964bf3faafc249732269fed1f717f197940cd6f893",
+    "raw_input_bundle_id": "63ca235f7e359afe1e541a2637482eb7ed3c70d765c36e311b6b9ae0eb880224",
+    "smoke_bootstrap_plan_id": "c6b0ee316d5683cfd51f6834ffa2481529d39081cb8dcee4c5533ee0fcad7f41",
+    "source_manifest_id": "c80393ba2694a17e440c75a782af061efa138c35f9774e8ab12eb81c4fe93077"
+  },
+  "profile_name": "stopdff_bucketed_dp_paired_v2",
+  "protocol_version": "v5",
+  "result": {
+    "cell_verdicts": {
+      "PASS": 82,
+      "WARN": 14
+    },
+    "completed": 96,
+    "failed": 0,
+    "family": {
+      "M": 1.0,
+      "ci": [
+        1.0,
+        1.0
+      ],
+      "verdict": "WARN"
+    },
+    "fvi_selected": {
+      "max_iterations": 100,
+      "tolerance": "1e-6"
+    },
+    "gate_overrides": {
+      "allow_incomplete_mc_coverage": false,
+      "allow_low_mc_retention": false
+    },
+    "release_status": "VALID",
+    "requested": 96,
+    "skipped": 0
+  },
+  "validation": {
+    "backend_modal_checker": "PASS",
+    "local_integrity": "PASS",
+    "mutation_gate": "26 mutations rejected"
+  },
+  "workspace": "ankaggarwal94"
+}
