@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stopdff_run_spec.schema.json",
+  "title": "StopDFF v5 run spec (identity-bound)",
+  "type": "object",
+  "required": ["kind", "profile_name", "schema_version", "profile_variant", "scientific_profile",
+               "identity", "reward_schedules", "calibration", "continuation", "gate",
+               "format_condition", "splits", "fvi_selected", "bootstrap"],
+  "properties": {
+    "kind": {"const": "run_spec"},
+    "profile_name": {"const": "stopdff_bucketed_dp_paired_v2"},
+    "schema_version": {"const": 2},
+    "profile_variant": {"enum": ["final", "smoke"]},
+    "identity": {"type": "object",
+      "required": ["source_manifest_id", "raw_input_bundle_id", "model_snapshot_id",
+                   "adapter_bundle_id", "fvi_study_id", "bootstrap_plan_id", "environment_contract_id"],
+      "properties": {
+        "source_manifest_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "raw_input_bundle_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "model_snapshot_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "adapter_bundle_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "fvi_study_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bootstrap_plan_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "environment_contract_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }},
+    "fvi_selected": {"type": "object", "required": ["damping", "tolerance", "max_iterations"],
+      "properties": {"damping": {"const": "0.5"},
+                     "tolerance": {"enum": ["1e-6", "1e-8", "1e-10"]},
+                     "max_iterations": {"enum": [50, 100, 200]},
+                     "numeric_dtype": {"const": "float64"}}},
+    "bootstrap": {"type": "object", "required": ["seed", "replicate_count"],
+      "properties": {"seed": {"const": 1}, "replicate_count": {"enum": [100, 1000]}}}
+  }
+}

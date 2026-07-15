@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stopdff_scientific_profile.schema.json",
+  "title": "StopDFF bucketed-DP paired scientific profile (v5)",
+  "type": "object",
+  "required": ["schema_version", "profile_name", "splits", "format_condition", "axes",
+               "reward_schedules", "bellman", "calibration", "continuation", "bootstrap",
+               "gate", "expected_cells"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "profile_name": {"const": "stopdff_bucketed_dp_paired_v2"},
+    "splits": {"type": "object", "required": ["fit", "eval"],
+      "properties": {"fit": {"const": "val"}, "eval": {"const": "test"}}},
+    "format_condition": {"type": "array", "items": {"const": "paired_qa_prefix_vs_mc_fixed"}},
+    "axes": {"type": "object", "required": ["reward_schedule", "continuation", "calibrator",
+                                            "prefix_bucketing", "category_pooling"],
+      "properties": {
+        "reward_schedule": {"type": "array", "items": {"enum": ["acf_flat", "power_mark", "wait_cost_small", "strict_wrong"]}},
+        "continuation": {"type": "array", "items": {"enum": ["empirical_bucket", "pooled_empirical"]}},
+        "calibrator": {"type": "array", "items": {"enum": ["platt-logistic", "similarity-temperature", "isotonic"]}},
+        "prefix_bucketing": {"type": "array", "items": {"enum": ["early_mid_late", "exact_prefix"]}},
+        "category_pooling": {"type": "array", "items": {"enum": ["per_category", "pooled_category"]}}
+      }},
+    "bellman": {"$ref": "stopdff_gate_policy.schema.json#/$defs/bellman"},
+    "reward_schedules": {"type": "object"},
+    "calibration": {"$ref": "stopdff_calibrator.schema.json"},
+    "continuation": {"$ref": "stopdff_continuation.schema.json"},
+    "bootstrap": {"type": "object", "required": ["bit_generator", "seed", "resampling_unit"],
+      "properties": {"bit_generator": {"const": "PCG64"}, "seed": {"const": 1},
+                     "resampling_unit": {"const": "item"}}},
+    "gate": {"$ref": "stopdff_gate_policy.schema.json"},
+    "expected_cells": {"const": 96}
+  }
+}
