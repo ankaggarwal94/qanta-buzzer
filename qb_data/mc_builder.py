@@ -31,6 +31,51 @@ class MCQuestion(TossupQuestion):
     distractor_strategy: str
 
 
+@dataclass
+class _RepairSearchBudget:
+    """Deterministic work budget shared by all searches for one repair."""
+
+    limit: int
+    attempts: int = 0
+    exhausted: bool = False
+
+    def consume(self) -> bool:
+        """Consume one candidate-extension attempt, or mark exhaustion."""
+        if self.attempts >= self.limit:
+            self.exhausted = True
+            return False
+        self.attempts += 1
+        return True
+
+
+@dataclass
+class _RepairResult:
+    """Outcome and provenance for one guard-repair attempt."""
+
+    options: Optional[List[str]]
+    source: Optional[str]
+    candidate_attempts: int
+    budget_exhausted: bool
+
+
+def _new_repair_stats() -> Dict[str, int]:
+    """Return a stable zero-valued repair telemetry schema."""
+    return {
+        "attempted_questions": 0,
+        "succeeded_questions": 0,
+        "ranked_successes": 0,
+        "fallback_successes": 0,
+        "budget_exhausted_questions": 0,
+        "candidate_attempts": 0,
+        "length_ratio_triggers": 0,
+        "question_overlap_triggers": 0,
+        "simultaneous_guard_triggers": 0,
+        "failed_questions": 0,
+        "exhaustive_no_solution_questions": 0,
+        "unrecoverable_gold_overlap_questions": 0,
+    }
+
+
 def _normalized_edit_distance(a: str, b: str) -> float:
     """Compute normalized edit distance between two strings.
 
@@ -85,6 +130,7 @@ class MCBuilder:
         variable_K: bool = False,
         min_K: int = 2,
         max_K: int | None = None,
+        max_repair_attempts: int = 10_000,
     ):
         """Initialize the MC builder.
 
@@ -101,6 +147,8 @@ class MCBuilder:
                 ``[min_K, max_K or K]``.
             min_K: Minimum K when ``variable_K`` is True.
             max_K: Maximum K when ``variable_K`` is True.  Defaults to ``K``.
+            max_repair_attempts: Deterministic candidate-extension budget
+                shared by ranked and fallback repair searches for one item.
         """
         if K < 2:
             raise ValueError("K must be >= 2")
@@ -108,6 +156,15 @@ class MCBuilder:
         self.variable_K = variable_K
         self.min_K = max(2, min_K)
         self.max_K = max_K if max_K is not None else K
+        if self.variable_K and self.max_K < self.min_K:
+            raise ValueError("max_K must be >= min_K when variable_K is enabled")
+        if (
+            isinstance(max_repair_attempts, bool)
+            or not isinstance(max_repair_attempts, int)
+            or max_repair_attempts < 1
+        ):
+            raise ValueError("max_repair_attempts must be a positive integer")
+        self.max_repair_attempts = max_repair_attempts
         self.strategy = strategy
         self.alias_edit_distance_threshold = alias_edit_distance_threshold
         self.duplicate_token_overlap_threshold = duplicate_token_overlap_threshold
@@ -427,8 +484,9 @@ class MCBuilder:
         candidates: List[str],
         target_k: int,
         permutation: List[int],
+        budget: _RepairSearchBudget,
     ) -> Optional[List[str]]:
-        """Find a guard-passing option set, preserving the original shuffle."""
+        """Find a guard-passing option set within a deterministic work budget."""
         q_norm = str(normalize_answer(question))
 
         def overlaps_question(option: str) -> bool:
@@ -450,34 +508,43 @@ class MCBuilder:
         if len(viable) < needed:
             return None
 
+        # Preserve the recursive implementation's depth-first candidate order
+        # and monotone pruning without tying supported K to Python's recursion
+        # limit.
         chosen: List[str] = []
+        chosen_indices: List[int] = []
+        next_idx = 0
 
-        def backtrack(start: int) -> Optional[List[str]]:
+        while True:
             remaining = needed - len(chosen)
-            if remaining == 0:
-                ordered = [gold] + chosen
-                if self._violates_length_ratio_guard(ordered):
-                    return None
-                return [ordered[i] for i in permutation]
-
             last_start = len(viable) - remaining
-            for idx in range(start, last_start + 1):
-                candidate = viable[idx]
-                if self._violates_duplicate_guard(candidate, chosen):
-                    continue
 
-                partial = [gold] + chosen + [candidate]
-                if self._violates_length_ratio_guard(partial):
-                    continue
-
-                chosen.append(candidate)
-                repaired = backtrack(idx + 1)
-                if repaired is not None:
-                    return repaired
+            if next_idx > last_start:
+                if not chosen:
+                    return None
+                next_idx = chosen_indices.pop() + 1
                 chosen.pop()
-            return None
+                continue
 
-        return backtrack(0)
+            idx = next_idx
+            next_idx += 1
+            if not budget.consume():
+                return None
+
+            candidate = viable[idx]
+            if self._violates_duplicate_guard(candidate, chosen):
+                continue
+
+            partial = [gold] + chosen + [candidate]
+            if self._violates_length_ratio_guard(partial):
+                continue
+
+            chosen.append(candidate)
+            chosen_indices.append(idx)
+            if len(chosen) == needed:
+                ordered = [gold] + chosen
+                return [ordered[i] for i in permutation]
+            next_idx = idx + 1
 
     def _repair_options_after_guard_failure(
         self,
@@ -493,8 +560,9 @@ class MCBuilder:
         fallback_rng_state: object,
         fallback_selected: List[str],
         fallback_order: Optional[List[str]],
-    ) -> Optional[List[str]]:
+    ) -> _RepairResult:
         """Try later ranked/fallback distractors without weakening guards."""
+        budget = _RepairSearchBudget(self.max_repair_attempts)
         ordered_options = [gold] + selected[: target_k - 1]
         permutation = [ordered_options.index(option) for option in shuffled_options]
         ranked_candidates = self._candidate_repair_order(
@@ -510,9 +578,18 @@ class MCBuilder:
             ranked_candidates,
             target_k,
             permutation,
+            budget,
         )
         if repaired is not None:
-            return repaired
+            return _RepairResult(
+                repaired,
+                "ranked",
+                budget.attempts,
+                budget.exhausted,
+            )
+
+        if budget.exhausted:
+            return _RepairResult(None, None, budget.attempts, True)
 
         if fallback_order is None:
             fallback_order = self._fallback_order_from_state(
@@ -528,12 +605,22 @@ class MCBuilder:
             gold_aliases,
             gold_norms,
         )
-        return self._search_repaired_options(
+        if candidates == ranked_candidates:
+            return _RepairResult(None, None, budget.attempts, False)
+
+        repaired = self._search_repaired_options(
             question,
             gold,
             candidates,
             target_k,
             permutation,
+            budget,
+        )
+        return _RepairResult(
+            repaired,
+            "fallback" if repaired is not None else None,
+            budget.attempts,
+            budget.exhausted,
         )
 
     def build(
@@ -563,6 +650,7 @@ class MCBuilder:
                 "dropped_questions": 0,
                 "retention_rate": 0.0,
                 "drop_reasons": {},
+                "repair": _new_repair_stats(),
             }
             return []
 
@@ -658,6 +746,7 @@ class MCBuilder:
 
         mc_questions: List[MCQuestion] = []
         drop_reasons: Dict[str, int] = defaultdict(int)
+        repair_stats = _new_repair_stats()
 
         for q in questions:
             target_k = self._target_k()
@@ -710,49 +799,59 @@ class MCBuilder:
             gold_index = option_answer_primary.index(gold)
             options = option_answer_primary[:]
 
-            # Apply guard 3: Check length ratio
-            if self._violates_length_ratio_guard(options):
-                repaired = self._repair_options_after_guard_failure(
-                    q.question,
-                    gold,
-                    selected[: target_k - 1],
-                    ranked,
-                    answers,
-                    gold_aliases,
-                    gold_norms,
-                    target_k,
-                    option_answer_primary,
-                    fallback_rng_state,
-                    selected_after_ranked,
-                    fallback_order,
-                )
-                if repaired is None:
-                    drop_reasons["length_ratio_guard"] += 1
-                    continue
-                option_answer_primary = repaired
-                gold_index = option_answer_primary.index(gold)
-                options = option_answer_primary[:]
+            length_guard_failed = self._violates_length_ratio_guard(options)
+            question_guard_failed = self._violates_question_overlap_guard(
+                q.question,
+                options,
+            )
+            if length_guard_failed or question_guard_failed:
+                if length_guard_failed:
+                    repair_stats["length_ratio_triggers"] += 1
+                if question_guard_failed:
+                    repair_stats["question_overlap_triggers"] += 1
+                if length_guard_failed and question_guard_failed:
+                    repair_stats["simultaneous_guard_triggers"] += 1
 
-            # Apply guard 4: Check question overlap
-            if self._violates_question_overlap_guard(q.question, options):
-                repaired = self._repair_options_after_guard_failure(
-                    q.question,
-                    gold,
-                    selected[: target_k - 1],
-                    ranked,
-                    answers,
-                    gold_aliases,
-                    gold_norms,
-                    target_k,
-                    option_answer_primary,
-                    fallback_rng_state,
-                    selected_after_ranked,
-                    fallback_order,
-                )
-                if repaired is None:
+                repair_stats["attempted_questions"] += 1
+
+                # Replacing distractors cannot repair a leaked gold answer.
+                if self._violates_question_overlap_guard(q.question, [gold]):
+                    repair_stats["failed_questions"] += 1
+                    repair_stats["unrecoverable_gold_overlap_questions"] += 1
                     drop_reasons["question_overlap_guard"] += 1
                     continue
-                option_answer_primary = repaired
+
+                repair = self._repair_options_after_guard_failure(
+                    q.question,
+                    gold,
+                    selected[: target_k - 1],
+                    ranked,
+                    answers,
+                    gold_aliases,
+                    gold_norms,
+                    target_k,
+                    option_answer_primary,
+                    fallback_rng_state,
+                    selected_after_ranked,
+                    fallback_order,
+                )
+                repair_stats["candidate_attempts"] += repair.candidate_attempts
+                if repair.options is None:
+                    repair_stats["failed_questions"] += 1
+                    if repair.budget_exhausted:
+                        repair_stats["budget_exhausted_questions"] += 1
+                        drop_reasons["repair_budget_exhausted"] += 1
+                    else:
+                        repair_stats["exhaustive_no_solution_questions"] += 1
+                        drop_reasons["guard_repair_failed"] += 1
+                    continue
+
+                repair_stats["succeeded_questions"] += 1
+                if repair.source == "ranked":
+                    repair_stats["ranked_successes"] += 1
+                else:
+                    repair_stats["fallback_successes"] += 1
+                option_answer_primary = repair.options
                 gold_index = option_answer_primary.index(gold)
                 options = option_answer_primary[:]
 
@@ -794,6 +893,7 @@ class MCBuilder:
                 len(mc_questions) / len(questions) if questions else 0.0
             ),
             "drop_reasons": dict(drop_reasons),
+            "repair": repair_stats,
         }
         return mc_questions
 
@@ -826,6 +926,7 @@ def build_mc_questions(
         alias_edit_distance_threshold=float(guards.get("alias_edit_distance_threshold", 0.2)),
         duplicate_token_overlap_threshold=float(guards.get("duplicate_token_overlap_threshold", 0.8)),
         max_length_ratio=float(guards.get("max_length_ratio", 3.0)),
+        max_repair_attempts=guards.get("max_repair_attempts", 10_000),
         random_seed=random_seed,
     )
     return builder.build(questions=questions, profile_builder=profile_builder)
