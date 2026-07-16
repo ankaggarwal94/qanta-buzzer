@@ -11,6 +11,7 @@ import pytest
 from qb_data.answer_profiles import AnswerProfileBuilder
 from qb_data.data_loader import TossupQuestion
 from qb_data.mc_builder import MCBuilder, build_mc_questions
+from qb_data.text_utils import normalize_answer
 
 
 def _make_question(qid: str, answer: str, question: str | None = None) -> TossupQuestion:
@@ -56,6 +57,36 @@ def _build_with_rankings(
     )
     builder._compute_rankings = lambda _answers, _profiles, _categories: rankings
     return builder.build(target, profile_builder, reference_questions=reference), builder
+
+
+def _repair_directly(
+    builder: MCBuilder,
+    *,
+    gold: str,
+    selected: list[str],
+    ranked: list[str],
+    answers: list[str],
+    target_k: int,
+    question: str = "an unrelated clue",
+    fallback_selected: list[str] | None = None,
+    fallback_order: list[str] | None = None,
+):
+    """Call the private repair seam with a stable identity permutation."""
+    ordered_options = [gold] + selected[: target_k - 1]
+    return builder._repair_options_after_guard_failure(
+        question=question,
+        gold=gold,
+        selected=selected,
+        ranked=ranked,
+        answers=answers,
+        gold_aliases=[gold],
+        gold_norms={str(normalize_answer(gold))},
+        target_k=target_k,
+        shuffled_options=ordered_options,
+        fallback_rng_state=builder.rng.getstate(),
+        fallback_selected=fallback_selected or [],
+        fallback_order=fallback_order,
+    )
 
 
 def test_length_ratio_guard_searches_later_ranked_replacements() -> None:
@@ -283,6 +314,339 @@ def test_repair_handles_option_set_that_already_used_fallback() -> None:
     }
 
 
+def test_repair_caps_raw_preprocessing_before_expensive_candidate_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 20k ranking may trigger at most B alias/normalization scans."""
+    scan_limit = 7
+    gold = "Gold"
+    question = "blocked"
+    ranked = [f"candidate-{idx:05d}" for idx in range(20_000)]
+    builder = MCBuilder(K=2, max_repair_attempts=scan_limit)
+    real_alias_check = builder._aliases_collide
+    alias_checks: list[str] = []
+    candidate_normalizations: list[str] = []
+
+    def normalize_spy(value: str):
+        if value == question:
+            return "blocked"
+        if value == gold:
+            return "gold"
+        if value.startswith("candidate-"):
+            candidate_normalizations.append(value)
+            return "blocked"
+        return normalize_answer(value)
+
+    def alias_spy(candidate, gold_aliases, _gold_norms=None):
+        alias_checks.append(candidate)
+        return real_alias_check(candidate, gold_aliases, _gold_norms)
+
+    monkeypatch.setattr("qb_data.mc_builder.normalize_answer", normalize_spy)
+    monkeypatch.setattr(builder, "_aliases_collide", alias_spy)
+
+    result = _repair_directly(
+        builder,
+        gold=gold,
+        selected=[ranked[0]],
+        ranked=ranked,
+        answers=[gold, *ranked],
+        target_k=2,
+        question=question,
+        fallback_order=[],
+    )
+
+    assert result.options is None
+    assert result.candidate_scans == scan_limit
+    assert result.candidate_attempts == 0
+    assert result.budget_exhausted is True
+    assert alias_checks == ranked[:scan_limit]
+    # Once in the alias guard and once in the question-overlap filter.
+    assert len(candidate_normalizations) == 2 * scan_limit
+
+
+def test_hypothetical_fallback_is_bounded_deterministic_and_rng_neutral(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fallback samples only remaining capacity using a cloned RNG."""
+    scan_limit = 5
+    gold = "Gold"
+    universe = [f"candidate-{idx:05d}" for idx in range(20_000)]
+    answers = [gold, *universe]
+    ranked = [universe[0]]
+    builder = MCBuilder(K=2, random_seed=13, max_repair_attempts=scan_limit)
+    monkeypatch.setattr(builder, "_aliases_collide", lambda *_args, **_kwargs: True)
+    original_bounded_fallback = builder._bounded_fallback_order_from_state
+    fallback_calls: list[tuple[int, int, list[str], bool]] = []
+
+    def bounded_fallback_spy(
+        fallback_answers,
+        selected,
+        fallback_gold,
+        rng_state,
+        limit,
+    ):
+        sampled, exhausted = original_bounded_fallback(
+            fallback_answers,
+            selected,
+            fallback_gold,
+            rng_state,
+            limit,
+        )
+        fallback_calls.append(
+            (len(fallback_answers), limit, sampled[:], exhausted)
+        )
+        return sampled, exhausted
+
+    def forbidden_shuffle(*_args, **_kwargs):
+        raise AssertionError("repair fallback must not shuffle the full universe")
+
+    monkeypatch.setattr(
+        builder,
+        "_bounded_fallback_order_from_state",
+        bounded_fallback_spy,
+    )
+    monkeypatch.setattr(random.Random, "shuffle", forbidden_shuffle)
+    before = builder.rng.getstate()
+
+    first = _repair_directly(
+        builder,
+        gold=gold,
+        selected=ranked,
+        ranked=ranked,
+        answers=answers,
+        target_k=2,
+        fallback_selected=ranked,
+        fallback_order=None,
+    )
+    second = _repair_directly(
+        builder,
+        gold=gold,
+        selected=ranked,
+        ranked=ranked,
+        answers=answers,
+        target_k=2,
+        fallback_selected=ranked,
+        fallback_order=None,
+    )
+
+    assert builder.rng.getstate() == before
+    assert first == second
+    assert first.candidate_scans == scan_limit
+    assert first.candidate_attempts == 0
+    assert first.budget_exhausted is True
+    assert len(fallback_calls) == 2
+    assert all(call[:2] == (len(answers), scan_limit - 1) for call in fallback_calls)
+    assert all(len(call[2]) == scan_limit - 1 for call in fallback_calls)
+    assert all(call[3] is False for call in fallback_calls)
+    assert fallback_calls[0][2] == fallback_calls[1][2]
+
+
+def test_fallback_does_not_replay_ranked_work_at_budget_two() -> None:
+    """The second distinct K=2 candidate must fit in a budget of two."""
+    gold = "Rome"
+    too_long = "Very Long Distractor Name"
+    valid = "Athens"
+    answers = [gold, too_long, valid]
+    rankings = {gold: [too_long]}
+    target = [
+        _make_question(
+            "target-no-replay",
+            gold,
+            "This clue does not name an option.",
+        )
+    ]
+
+    built, builder = _build_with_rankings(
+        target,
+        answers,
+        rankings,
+        K=2,
+        max_repair_attempts=2,
+    )
+
+    assert len(built) == 1
+    assert set(built[0].options) == {gold, valid}
+    repair = builder.last_build_stats["repair"]
+    assert repair["candidate_scans"] == 2
+    assert repair["candidate_attempts"] == 2
+    assert repair["fallback_successes"] == 1
+    assert repair["budget_exhausted_questions"] == 0
+
+
+def test_bounded_fallback_excludes_every_ranked_candidate_already_scanned() -> None:
+    """Remaining scan capacity must be spent only on unseen fallback entries."""
+    gold = "Rome"
+    first = "Very Long Ranked Distractor One"
+    second = "Very Long Ranked Distractor Two"
+    valid = "Athens"
+    builder = MCBuilder(K=2, random_seed=13, max_repair_attempts=3)
+
+    result = _repair_directly(
+        builder,
+        gold=gold,
+        selected=[first],
+        ranked=[first, second],
+        answers=sorted([gold, first, second, valid]),
+        target_k=2,
+        fallback_selected=[first],
+        fallback_order=None,
+    )
+
+    assert result.options == [gold, valid]
+    assert result.source == "fallback"
+    assert result.candidate_scans == 3
+    assert result.candidate_attempts == 3
+    assert result.budget_exhausted is False
+
+
+def test_materialized_fallback_does_not_charge_seen_ranked_candidates() -> None:
+    """An existing fallback order must spend its scan slot on a new entry."""
+    gold = "Rome"
+    first = "Very Long Ranked Distractor One"
+    second = "Very Long Ranked Distractor Two"
+    valid = "Athens"
+    builder = MCBuilder(K=2, max_repair_attempts=3)
+
+    result = _repair_directly(
+        builder,
+        gold=gold,
+        selected=[first],
+        ranked=[first, second],
+        answers=sorted([gold, first, second, valid]),
+        target_k=2,
+        fallback_selected=[first],
+        fallback_order=[second, valid],
+    )
+
+    assert result.options == [gold, valid]
+    assert result.source == "fallback"
+    assert result.candidate_scans == 3
+    assert result.candidate_attempts == 3
+    assert result.budget_exhausted is False
+
+
+def test_transition_memo_is_prefix_sensitive() -> None:
+    """A candidate rejected under A may still be valid at the root."""
+    gold = "gold answer"
+    first = "alpha beta"
+    second = "alpha beta red"
+    fallback = "alpha beta blue"
+    builder = MCBuilder(K=3, max_repair_attempts=5)
+
+    result = _repair_directly(
+        builder,
+        gold=gold,
+        selected=[first, fallback],
+        ranked=[first, second],
+        answers=[gold, first, second, fallback],
+        target_k=3,
+        fallback_selected=[first],
+        fallback_order=[fallback],
+    )
+
+    assert result.options == [gold, second, fallback]
+    assert result.source == "fallback"
+    assert result.candidate_scans == 3
+    assert result.candidate_attempts == 5
+    assert result.budget_exhausted is False
+
+
+def test_ranked_only_solution_remains_preferred_to_earlier_mixed_solution() -> None:
+    """Avoiding replay must not change the ranked-first preference contract."""
+    gold = "gold answer"
+    first = "alpha beta"
+    second = "alpha beta red"
+    third = "alpha beta blue"
+    fallback = "charlie delta"
+    builder = MCBuilder(K=3, max_repair_attempts=10)
+
+    result = _repair_directly(
+        builder,
+        gold=gold,
+        selected=[first, fallback],
+        ranked=[first, second, third],
+        answers=[gold, first, second, third, fallback],
+        target_k=3,
+        fallback_selected=[first],
+        fallback_order=[fallback],
+    )
+
+    assert result.options == [gold, second, third]
+    assert result.source == "ranked"
+    assert result.candidate_scans == 3
+    assert result.candidate_attempts == 5
+
+
+def test_solution_on_final_candidate_scan_succeeds_even_if_source_is_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Candidate B may succeed; only needing candidate B+1 is truncation."""
+    scan_limit = 4
+    gold = "Rome"
+    blocked = [f"blocked-{idx}" for idx in range(scan_limit - 1)]
+    valid = "Athens"
+    ranked = [*blocked, valid, "unscanned-tail"]
+    builder = MCBuilder(K=2, max_repair_attempts=scan_limit)
+    monkeypatch.setattr(
+        builder,
+        "_aliases_collide",
+        lambda candidate, *_args, **_kwargs: candidate != valid,
+    )
+
+    result = _repair_directly(
+        builder,
+        gold=gold,
+        selected=[blocked[0]],
+        ranked=ranked,
+        answers=[gold, *ranked],
+        target_k=2,
+        fallback_order=[],
+    )
+
+    assert result.options == [gold, valid]
+    assert result.source == "ranked"
+    assert result.candidate_scans == scan_limit
+    assert result.candidate_attempts == 1
+    assert result.budget_exhausted is False
+
+
+@pytest.mark.parametrize(
+    ("has_unseen_fallback", "expected_exhausted"),
+    [(False, False), (True, True)],
+)
+def test_full_ranked_scan_distinguishes_exhaustive_from_truncated_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    has_unseen_fallback: bool,
+    expected_exhausted: bool,
+) -> None:
+    """At scan B, only an unexamined candidate universe is truncation."""
+    scan_limit = 4
+    gold = "Gold"
+    ranked = [f"ranked-{idx}" for idx in range(scan_limit)]
+    answers = sorted(
+        [gold, *ranked]
+        + (["unseen-fallback"] if has_unseen_fallback else [])
+    )
+    builder = MCBuilder(K=2, max_repair_attempts=scan_limit)
+    monkeypatch.setattr(builder, "_aliases_collide", lambda *_args, **_kwargs: True)
+
+    result = _repair_directly(
+        builder,
+        gold=gold,
+        selected=[ranked[0]],
+        ranked=ranked,
+        answers=answers,
+        target_k=2,
+        fallback_selected=[ranked[0]],
+        fallback_order=None,
+    )
+
+    assert result.options is None
+    assert result.candidate_scans == scan_limit
+    assert result.candidate_attempts == 0
+    assert result.budget_exhausted is expected_exhausted
+
+
 def test_repair_budget_is_shared_across_ranked_and_fallback_searches() -> None:
     """Fallback must not receive a fresh budget after ranked exhaustion.
 
@@ -329,6 +693,7 @@ def test_repair_budget_is_shared_across_ranked_and_fallback_searches() -> None:
         "fallback_successes": 0,
         "budget_exhausted_questions": 1,
         "candidate_attempts": 5,
+        "candidate_scans": 5,
         "length_ratio_triggers": 0,
         "question_overlap_triggers": 1,
         "simultaneous_guard_triggers": 0,
@@ -341,16 +706,15 @@ def test_repair_budget_is_shared_across_ranked_and_fallback_searches() -> None:
 def test_solution_on_final_budgeted_attempt_succeeds() -> None:
     """Attempt B is allowed; only a request for attempt B+1 exhausts B."""
     gold = "Rome"
-    poison = "Carthage"
     too_long = "Very Long Distractor Name"
     valid = "Athens"
-    answers = [gold, poison, too_long, valid]
-    rankings = {gold: [poison, too_long, valid]}
+    answers = [gold, too_long, valid]
+    rankings = {gold: [too_long, valid]}
     target = [
         _make_question(
             "target-exact-budget",
             gold,
-            "This clue explicitly names Carthage.",
+            "This clue does not name either option.",
         )
     ]
 
@@ -366,6 +730,7 @@ def test_solution_on_final_budgeted_attempt_succeeds() -> None:
     assert set(built[0].options) == {gold, valid}
     repair = builder.last_build_stats["repair"]
     assert repair["candidate_attempts"] == 2
+    assert repair["candidate_scans"] == 2
     assert repair["succeeded_questions"] == 1
     assert repair["budget_exhausted_questions"] == 0
 
@@ -441,7 +806,8 @@ def test_large_legal_k_fails_closed_without_recursion_error() -> None:
         "repair_budget_exhausted": 1
     }
     repair = builder.last_build_stats["repair"]
-    assert repair["candidate_attempts"] == 32
+    assert repair["candidate_attempts"] == 0
+    assert repair["candidate_scans"] == 0
     assert repair["budget_exhausted_questions"] == 1
 
 
@@ -471,6 +837,7 @@ def test_simultaneous_guard_failure_has_joint_diagnostics() -> None:
         "fallback_successes": 0,
         "budget_exhausted_questions": 0,
         "candidate_attempts": 0,
+        "candidate_scans": 1,
         "length_ratio_triggers": 1,
         "question_overlap_triggers": 1,
         "simultaneous_guard_triggers": 1,
@@ -543,6 +910,56 @@ def test_invalid_repair_and_variable_k_configuration_fails_early(
     """Invalid bounds should fail at construction, not during a build."""
     with pytest.raises(ValueError, match=message):
         MCBuilder(K=4, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("K", True, "K must be an integer"),
+        ("K", 4.0, "K must be an integer"),
+        ("K", float("inf"), "K must be an integer"),
+        ("K", float("nan"), "K must be an integer"),
+        ("min_K", True, "min_K must be an integer"),
+        ("min_K", 2.0, "min_K must be an integer"),
+        ("min_K", float("inf"), "min_K must be an integer"),
+        ("min_K", float("nan"), "min_K must be an integer"),
+        ("max_K", True, "max_K must be an integer or None"),
+        ("max_K", 4.0, "max_K must be an integer or None"),
+        ("max_K", float("inf"), "max_K must be an integer or None"),
+        ("max_K", float("nan"), "max_K must be an integer or None"),
+    ],
+)
+def test_choice_count_bounds_require_strict_integers(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    """Reject booleans and numeric lookalikes before any comparisons."""
+    kwargs = {field: value}
+    if field != "K":
+        kwargs["K"] = 4
+    with pytest.raises(ValueError, match=message):
+        MCBuilder(**kwargs)
+
+
+def test_choice_count_integer_compatibility_is_preserved() -> None:
+    """Keep min-K clamping, max-K defaulting, and fixed-K behavior."""
+    defaulted = MCBuilder(K=4, min_K=1, max_K=None)
+    assert defaulted.min_K == 2
+    assert defaulted.max_K == 4
+    assert defaulted._target_k() == 4
+
+    fixed = MCBuilder(K=4, variable_K=False, min_K=5, max_K=3)
+    assert fixed._target_k() == 4
+
+    variable = MCBuilder(
+        K=4,
+        variable_K=True,
+        min_K=2,
+        max_K=4,
+        random_seed=13,
+    )
+    assert 2 <= variable._target_k() <= 4
 
 
 def test_factory_does_not_coerce_an_invalid_repair_budget() -> None:
