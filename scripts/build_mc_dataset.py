@@ -135,8 +135,8 @@ def make_mc_builder(config: dict[str, Any]) -> MCBuilder:
         ),
         openai_model=config['likelihood'].get('openai_model', 'text-embedding-3-small'),
         variable_K=bool(data_cfg.get('variable_K', False)),
-        min_K=int(data_cfg.get('min_K', 2)),
-        max_K=int(data_cfg['max_K']) if data_cfg.get('max_K') is not None else None,
+        min_K=data_cfg.get('min_K', 2),
+        max_K=data_cfg.get('max_K'),
         **config['mc_guards'],
     )
 
