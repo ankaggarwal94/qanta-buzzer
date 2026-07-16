@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 import random
 from dataclasses import dataclass
@@ -174,6 +174,8 @@ class MCBuilder:
             isinstance(max_K, bool) or not isinstance(max_K, int)
         ):
             raise ValueError("max_K must be an integer or None")
+        if not isinstance(variable_K, bool):
+            raise ValueError("variable_K must be a boolean")
         self.K = K
         self.variable_K = variable_K
         self.min_K = max(2, min_K)
@@ -498,14 +500,20 @@ class MCBuilder:
         sample_size = min(limit, eligible_count)
         eligible_ranks = fallback_rng.sample(range(eligible_count), sample_size)
 
-        sampled: List[str] = []
-        for rank in eligible_ranks:
-            answer_idx = rank
-            for excluded_idx in excluded_indices:
-                if excluded_idx > answer_idx:
-                    break
-                answer_idx += 1
-            sampled.append(answers[answer_idx])
+        # Removing exclusion ``i`` shifts the ranks of later answers by one.
+        # Expressing each excluded index in the compressed eligible space lets
+        # us restore an eligible rank with one binary search instead of walking
+        # every preceding exclusion for every sampled answer.
+        excluded_eligible_ranks = [
+            excluded_idx - offset
+            for offset, excluded_idx in enumerate(excluded_indices)
+        ]
+        sampled = [
+            answers[
+                rank + bisect_right(excluded_eligible_ranks, rank)
+            ]
+            for rank in eligible_ranks
+        ]
         return (
             sampled,
             sample_size == eligible_count,

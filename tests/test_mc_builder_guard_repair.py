@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import sys
+from bisect import bisect_right
 from collections.abc import Iterable
 
 import pytest
@@ -439,6 +440,49 @@ def test_hypothetical_fallback_is_bounded_deterministic_and_rng_neutral(
     assert all(len(call[2]) == scan_limit - 1 for call in fallback_calls)
     assert all(call[3] is False for call in fallback_calls)
     assert fallback_calls[0][2] == fallback_calls[1][2]
+
+
+def test_bounded_fallback_binary_search_preserves_sample_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Many exclusions use one logarithmic rank lookup per sampled answer."""
+    exclusion_count = 1_000
+    answers = [f"answer-{idx:05d}" for idx in range(2 * exclusion_count)]
+    selected = answers[:exclusion_count]
+    eligible = answers[exclusion_count:]
+    builder = MCBuilder(K=2, random_seed=13)
+    rng_state = builder.rng.getstate()
+
+    expected_rng = random.Random()
+    expected_rng.setstate(rng_state)
+    expected_ranks = expected_rng.sample(range(len(eligible)), len(eligible))
+    expected = [eligible[rank] for rank in expected_ranks]
+
+    lookup_calls = 0
+
+    def counting_bisect_right(values, rank):
+        nonlocal lookup_calls
+        lookup_calls += 1
+        return bisect_right(values, rank)
+
+    monkeypatch.setattr(
+        "qb_data.mc_builder.bisect_right",
+        counting_bisect_right,
+    )
+    before = builder.rng.getstate()
+
+    sampled, exhaustive = builder._bounded_fallback_order_from_state(
+        answers,
+        selected,
+        selected[0],
+        rng_state,
+        len(eligible),
+    )
+
+    assert sampled == expected
+    assert exhaustive is True
+    assert builder.rng.getstate() == before
+    assert lookup_calls == len(eligible)
 
 
 def test_fallback_does_not_replay_ranked_work_at_budget_two() -> None:
@@ -960,6 +1004,13 @@ def test_choice_count_integer_compatibility_is_preserved() -> None:
         random_seed=13,
     )
     assert 2 <= variable._target_k() <= 4
+
+
+@pytest.mark.parametrize("value", ["false", "true", "yes", 0, 1, None])
+def test_variable_k_requires_a_boolean(value: object) -> None:
+    """Reject truthy and falsy lookalikes at the behavior-owning boundary."""
+    with pytest.raises(ValueError, match="variable_K must be a boolean"):
+        MCBuilder(K=4, variable_K=value)
 
 
 def test_factory_does_not_coerce_an_invalid_repair_budget() -> None:

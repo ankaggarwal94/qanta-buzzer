@@ -89,6 +89,34 @@ class TestBuildMcDatasetArgs:
         assert builder.min_K == 2
         assert builder.max_K == 5
 
+    def test_boolean_false_variable_k_override_remains_disabled(self) -> None:
+        """The documented unquoted CLI boolean must remain a real False."""
+        cfg = load_yaml_config(None, smoke=False)
+        args = parse_args(["data.variable_K=false"])
+        cfg = merge_overrides(cfg, parse_overrides(args))
+
+        builder = make_mc_builder(cfg)
+
+        assert builder.variable_K is False
+
+    def test_missing_variable_k_uses_disabled_default(self) -> None:
+        """Legacy configs without variable_K keep the documented default."""
+        cfg = load_yaml_config(None, smoke=False)
+        cfg["data"].pop("variable_K")
+
+        builder = make_mc_builder(cfg)
+
+        assert builder.variable_K is False
+
+    @pytest.mark.parametrize("value", ["false", "true", "yes", "0"])
+    def test_string_variable_k_config_is_rejected(self, value: str) -> None:
+        """Quoted YAML/CLI strings must not be coerced by Python truthiness."""
+        cfg = load_yaml_config(None, smoke=False)
+        cfg["data"]["variable_K"] = value
+
+        with pytest.raises(ValueError, match="variable_K must be a boolean"):
+            make_mc_builder(cfg)
+
     @pytest.mark.parametrize(
         ("override", "message"),
         [
