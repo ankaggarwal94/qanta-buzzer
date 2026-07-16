@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from qb_data.config import load_config as load_yaml_config, merge_overrides
 from scripts.build_mc_dataset import (
     build_metadata_entry,
@@ -12,6 +14,7 @@ from scripts.build_mc_dataset import (
     parse_overrides,
     resolve_output_dir,
 )
+from scripts.test_mc_builder import make_demo_mc_builder
 
 
 class TestBuildMcDatasetArgs:
@@ -66,6 +69,63 @@ class TestBuildMcDatasetArgs:
         assert cfg["mc_guards"]["max_repair_attempts"] == 10_000
         assert builder.max_repair_attempts == 10_000
 
+    def test_integer_variable_k_overrides_preserve_config_semantics(self) -> None:
+        """Documented CLI integers remain valid without factory coercion."""
+        cfg = load_yaml_config(None, smoke=False)
+        args = parse_args(
+            [
+                "data.K=5",
+                "data.variable_K=true",
+                "data.min_K=1",
+                "data.max_K=null",
+            ]
+        )
+        cfg = merge_overrides(cfg, parse_overrides(args))
+
+        builder = make_mc_builder(cfg)
+
+        assert builder.K == 5
+        assert builder.variable_K is True
+        assert builder.min_K == 2
+        assert builder.max_K == 5
+
+    @pytest.mark.parametrize(
+        ("override", "message"),
+        [
+            ("data.K=4.5", "K must be an integer"),
+            ("data.min_K=2.5", "min_K must be an integer"),
+            ("data.max_K=4.5", "max_K must be an integer"),
+        ],
+    )
+    def test_non_integer_k_override_fails_in_builder_configuration(
+        self,
+        override: str,
+        message: str,
+    ) -> None:
+        """The config factory must not truncate invalid K bounds."""
+        cfg = load_yaml_config(None, smoke=False)
+        args = parse_args(["data.variable_K=true", override])
+        cfg = merge_overrides(cfg, parse_overrides(args))
+
+        with pytest.raises(ValueError, match=message):
+            make_mc_builder(cfg)
+
+    def test_demo_builder_forwards_configured_repair_budget(self) -> None:
+        cfg = load_yaml_config(None, smoke=False)
+        cfg["mc_guards"]["max_repair_attempts"] = 7
+
+        builder = make_demo_mc_builder(cfg)
+
+        assert builder.max_repair_attempts == 7
+
+    def test_demo_builder_defaults_repair_budget_for_legacy_config(self) -> None:
+        cfg = load_yaml_config(None, smoke=False)
+        cfg["mc_guards"].pop("max_repair_attempts")
+
+        builder = make_demo_mc_builder(cfg)
+
+        assert builder.max_repair_attempts == 10_000
+
 
 def test_build_metadata_preserves_repair_telemetry() -> None:
     """Published split metadata must carry the stable repair schema."""
@@ -76,6 +136,7 @@ def test_build_metadata_preserves_repair_telemetry() -> None:
         "fallback_successes": 0,
         "budget_exhausted_questions": 1,
         "candidate_attempts": 37,
+        "candidate_scans": 41,
         "length_ratio_triggers": 2,
         "question_overlap_triggers": 2,
         "simultaneous_guard_triggers": 1,
