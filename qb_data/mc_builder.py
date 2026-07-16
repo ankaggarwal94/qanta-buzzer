@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import defaultdict
 import random
 from dataclasses import dataclass
@@ -33,11 +34,13 @@ class MCQuestion(TossupQuestion):
 
 @dataclass
 class _RepairSearchBudget:
-    """Deterministic work budget shared by all searches for one repair."""
+    """Deterministic scan/search ceilings shared by one repair."""
 
     limit: int
     attempts: int = 0
     exhausted: bool = False
+    candidate_scans: int = 0
+    candidate_scan_truncated: bool = False
 
     def consume(self) -> bool:
         """Consume one candidate-extension attempt, or mark exhaustion."""
@@ -45,6 +48,14 @@ class _RepairSearchBudget:
             self.exhausted = True
             return False
         self.attempts += 1
+        return True
+
+    def consume_candidate_scan(self) -> bool:
+        """Consume one raw-candidate scan, or mark the source truncated."""
+        if self.candidate_scans >= self.limit:
+            self.candidate_scan_truncated = True
+            return False
+        self.candidate_scans += 1
         return True
 
 
@@ -55,6 +66,7 @@ class _RepairResult:
     options: Optional[List[str]]
     source: Optional[str]
     candidate_attempts: int
+    candidate_scans: int
     budget_exhausted: bool
 
 
@@ -67,6 +79,7 @@ def _new_repair_stats() -> Dict[str, int]:
         "fallback_successes": 0,
         "budget_exhausted_questions": 0,
         "candidate_attempts": 0,
+        "candidate_scans": 0,
         "length_ratio_triggers": 0,
         "question_overlap_triggers": 0,
         "simultaneous_guard_triggers": 0,
@@ -147,11 +160,20 @@ class MCBuilder:
                 ``[min_K, max_K or K]``.
             min_K: Minimum K when ``variable_K`` is True.
             max_K: Maximum K when ``variable_K`` is True.  Defaults to ``K``.
-            max_repair_attempts: Deterministic candidate-extension budget
-                shared by ranked and fallback repair searches for one item.
+            max_repair_attempts: Deterministic per-repair ceiling applied
+                independently to raw candidate scans and unique search
+                extensions, shared by ranked and fallback phases.
         """
+        if isinstance(K, bool) or not isinstance(K, int):
+            raise ValueError("K must be an integer")
         if K < 2:
             raise ValueError("K must be >= 2")
+        if isinstance(min_K, bool) or not isinstance(min_K, int):
+            raise ValueError("min_K must be an integer")
+        if max_K is not None and (
+            isinstance(max_K, bool) or not isinstance(max_K, int)
+        ):
+            raise ValueError("max_K must be an integer or None")
         self.K = K
         self.variable_K = variable_K
         self.min_K = max(2, min_K)
@@ -443,69 +465,126 @@ class MCBuilder:
             return self.K
         return self.rng.randint(self.min_K, self.max_K)
 
-    def _fallback_order_from_state(
+    def _bounded_fallback_order_from_state(
         self,
         answers: List[str],
         selected: List[str],
         gold: str,
         rng_state: object,
-    ) -> List[str]:
-        """Return the fallback order without advancing ``self.rng``."""
+        limit: int,
+    ) -> Tuple[List[str], bool]:
+        """Return a bounded random fallback prefix without advancing ``self.rng``.
+
+        A prefix of a full ``random.shuffle`` cannot be reproduced without
+        processing the full input.  ``sample`` instead gives a deterministic
+        ordered sample of at most ``limit`` raw answers using a cloned RNG.
+
+        ``answers`` is the sorted unique universe produced by
+        ``_prepare_lookup``.  Known exclusions are located by binary search,
+        avoiding a scan merely to construct the eligible population.
+
+        Returns the sampled prefix and whether it covers the eligible source.
+        """
+        excluded_indices: List[int] = []
+        for answer in {*selected, gold}:
+            idx = bisect_left(answers, answer)
+            if idx < len(answers) and answers[idx] == answer:
+                excluded_indices.append(idx)
+        excluded_indices.sort()
+
+        eligible_count = len(answers) - len(excluded_indices)
         fallback_rng = random.Random()
         fallback_rng.setstate(rng_state)
-        fallback = [a for a in answers if a not in selected and a != gold]
-        fallback_rng.shuffle(fallback)
-        return fallback
+        sample_size = min(limit, eligible_count)
+        eligible_ranks = fallback_rng.sample(range(eligible_count), sample_size)
 
-    def _candidate_repair_order(
+        sampled: List[str] = []
+        for rank in eligible_ranks:
+            answer_idx = rank
+            for excluded_idx in excluded_indices:
+                if excluded_idx > answer_idx:
+                    break
+                answer_idx += 1
+            sampled.append(answers[answer_idx])
+        return (
+            sampled,
+            sample_size == eligible_count,
+        )
+
+    def _append_repair_candidates(
         self,
-        ranked: List[str],
-        fallback_order: List[str],
+        raw_candidates: List[str],
+        question_norm: str,
         gold: str,
         gold_aliases: List[str],
         gold_norms: set[str],
-    ) -> List[str]:
-        """Return ranked+fallback candidates after alias filtering."""
-        candidates: List[str] = []
-        seen: Set[str] = set()
-        for candidate in [*ranked, *fallback_order]:
-            if candidate == gold or candidate in seen:
+        candidates: List[str],
+        seen: Set[str],
+        budget: _RepairSearchBudget,
+        excluded: Optional[Set[str]] = None,
+    ) -> bool:
+        """Append bounded, fully filtered candidates in raw source order.
+
+        Every raw entry consumes the scan budget before alias normalization or
+        question-overlap work.  Returns True only when the source was fully
+        scanned.
+        """
+        excluded = excluded or set()
+        for idx in range(len(raw_candidates)):
+            if not budget.consume_candidate_scan():
+                return False
+            candidate = raw_candidates[idx]
+            if candidate == gold or candidate in excluded or candidate in seen:
                 continue
             seen.add(candidate)
             if self._aliases_collide(candidate, gold_aliases, _gold_norms=gold_norms):
                 continue
+            candidate_norm = str(normalize_answer(candidate))
+            if candidate_norm and candidate_norm in question_norm:
+                continue
             candidates.append(candidate)
-        return candidates
+        return True
+
+    @staticmethod
+    def _bounded_unseen_prefix(
+        raw_candidates: List[str],
+        excluded: Set[str],
+        limit: int,
+    ) -> Tuple[List[str], bool]:
+        """Return up to ``limit`` unseen entries from a unique ordered source.
+
+        Materialized fallback orders are unique.  Therefore at most
+        ``limit + len(excluded)`` membership checks can either reach the end
+        or prove that another unseen entry remains.  Skipped known entries do
+        not consume the expensive candidate scan/normalization budget.
+        """
+        prefix: List[str] = []
+        membership_limit = min(
+            len(raw_candidates),
+            limit + len(excluded),
+        )
+        for idx in range(membership_limit):
+            candidate = raw_candidates[idx]
+            if candidate in excluded:
+                continue
+            if len(prefix) >= limit:
+                return prefix, False
+            prefix.append(candidate)
+        return prefix, membership_limit == len(raw_candidates)
 
     def _search_repaired_options(
         self,
-        question: str,
         gold: str,
         candidates: List[str],
         target_k: int,
         permutation: List[int],
         budget: _RepairSearchBudget,
+        transition_memo: Dict[Tuple[int, str], int],
+        next_node_id: List[int],
     ) -> Optional[List[str]]:
         """Find a guard-passing option set within a deterministic work budget."""
-        q_norm = str(normalize_answer(question))
-
-        def overlaps_question(option: str) -> bool:
-            option_norm = str(normalize_answer(option))
-            return bool(option_norm and option_norm in q_norm)
-
-        if overlaps_question(gold):
-            return None
-
         needed = target_k - 1
-        if needed <= 0:
-            return None
-
-        viable = [
-            candidate
-            for candidate in candidates
-            if not overlaps_question(candidate)
-        ]
-        if len(viable) < needed:
+        if needed <= 0 or len(candidates) < needed:
             return None
 
         # Preserve the recursive implementation's depth-first candidate order
@@ -513,34 +592,46 @@ class MCBuilder:
         # limit.
         chosen: List[str] = []
         chosen_indices: List[int] = []
+        chosen_node_ids: List[int] = []
         next_idx = 0
 
         while True:
             remaining = needed - len(chosen)
-            last_start = len(viable) - remaining
+            last_start = len(candidates) - remaining
 
             if next_idx > last_start:
                 if not chosen:
                     return None
                 next_idx = chosen_indices.pop() + 1
                 chosen.pop()
+                chosen_node_ids.pop()
                 continue
 
             idx = next_idx
             next_idx += 1
-            if not budget.consume():
-                return None
-
-            candidate = viable[idx]
-            if self._violates_duplicate_guard(candidate, chosen):
-                continue
-
-            partial = [gold] + chosen + [candidate]
-            if self._violates_length_ratio_guard(partial):
+            candidate = candidates[idx]
+            parent_node_id = chosen_node_ids[-1] if chosen_node_ids else 0
+            transition_key = (parent_node_id, candidate)
+            child_node_id = transition_memo.get(transition_key)
+            if child_node_id is None:
+                if not budget.consume():
+                    return None
+                accepted = not self._violates_duplicate_guard(candidate, chosen)
+                if accepted:
+                    partial = [gold] + chosen + [candidate]
+                    accepted = not self._violates_length_ratio_guard(partial)
+                if accepted:
+                    child_node_id = next_node_id[0]
+                    next_node_id[0] += 1
+                else:
+                    child_node_id = -1
+                transition_memo[transition_key] = child_node_id
+            if child_node_id < 0:
                 continue
 
             chosen.append(candidate)
             chosen_indices.append(idx)
+            chosen_node_ids.append(child_node_id)
             if len(chosen) == needed:
                 ordered = [gold] + chosen
                 return [ordered[i] for i in permutation]
@@ -563,64 +654,137 @@ class MCBuilder:
     ) -> _RepairResult:
         """Try later ranked/fallback distractors without weakening guards."""
         budget = _RepairSearchBudget(self.max_repair_attempts)
+        needed = target_k - 1
+        question_norm = str(normalize_answer(question))
+        gold_norm = str(normalize_answer(gold))
+        if gold_norm and gold_norm in question_norm:
+            return _RepairResult(None, None, 0, 0, False)
+        if needed <= 0:
+            return _RepairResult(None, None, 0, 0, False)
+        if needed > budget.limit:
+            return _RepairResult(None, None, 0, 0, True)
+
         ordered_options = [gold] + selected[: target_k - 1]
         permutation = [ordered_options.index(option) for option in shuffled_options]
-        ranked_candidates = self._candidate_repair_order(
+        ranked_candidates: List[str] = []
+        seen: Set[str] = set()
+        ranked_exhausted = self._append_repair_candidates(
             ranked,
-            [],
+            question_norm,
             gold,
             gold_aliases,
             gold_norms,
+            ranked_candidates,
+            seen,
+            budget,
         )
+        transition_memo: Dict[Tuple[int, str], int] = {}
+        next_node_id = [1]
         repaired = self._search_repaired_options(
-            question,
             gold,
             ranked_candidates,
             target_k,
             permutation,
             budget,
+            transition_memo,
+            next_node_id,
         )
         if repaired is not None:
             return _RepairResult(
                 repaired,
                 "ranked",
                 budget.attempts,
-                budget.exhausted,
+                budget.candidate_scans,
+                False,
             )
 
-        if budget.exhausted:
-            return _RepairResult(None, None, budget.attempts, True)
+        if budget.exhausted or not ranked_exhausted:
+            return _RepairResult(
+                None,
+                None,
+                budget.attempts,
+                budget.candidate_scans,
+                True,
+            )
+
+        # A complete, unique N-1 ranking already covers every possible
+        # non-gold answer, so a fallback pass cannot add a candidate.
+        ranked_covers_answers = (
+            len(ranked) == max(0, len(answers) - 1)
+            and len(seen) == len(ranked)
+        )
+        if ranked_covers_answers:
+            return _RepairResult(
+                None,
+                None,
+                budget.attempts,
+                budget.candidate_scans,
+                False,
+            )
 
         if fallback_order is None:
-            fallback_order = self._fallback_order_from_state(
-                answers,
-                fallback_selected,
-                gold,
-                fallback_rng_state,
+            remaining_scans = budget.limit - budget.candidate_scans
+            fallback_order, fallback_source_exhausted = (
+                self._bounded_fallback_order_from_state(
+                    answers,
+                    sorted(seen | set(fallback_selected)),
+                    gold,
+                    fallback_rng_state,
+                    remaining_scans,
+                )
             )
-        candidates = self._candidate_repair_order(
-            ranked,
+        else:
+            remaining_scans = budget.limit - budget.candidate_scans
+            fallback_order, fallback_source_exhausted = (
+                self._bounded_unseen_prefix(
+                    fallback_order,
+                    seen | set(fallback_selected) | {gold},
+                    remaining_scans,
+                )
+            )
+
+        candidates = ranked_candidates[:]
+        fallback_exhausted = self._append_repair_candidates(
             fallback_order,
+            question_norm,
             gold,
             gold_aliases,
             gold_norms,
+            candidates,
+            seen,
+            budget,
+            excluded=set(fallback_selected),
         )
+        if not fallback_source_exhausted:
+            budget.candidate_scan_truncated = True
+        fallback_exhausted = fallback_exhausted and fallback_source_exhausted
+
         if candidates == ranked_candidates:
-            return _RepairResult(None, None, budget.attempts, False)
+            return _RepairResult(
+                None,
+                None,
+                budget.attempts,
+                budget.candidate_scans,
+                not fallback_exhausted,
+            )
 
         repaired = self._search_repaired_options(
-            question,
             gold,
             candidates,
             target_k,
             permutation,
             budget,
+            transition_memo,
+            next_node_id,
         )
         return _RepairResult(
             repaired,
             "fallback" if repaired is not None else None,
             budget.attempts,
-            budget.exhausted,
+            budget.candidate_scans,
+            False if repaired is not None else (
+                budget.exhausted or not fallback_exhausted
+            ),
         )
 
     def build(
@@ -836,6 +1000,7 @@ class MCBuilder:
                     fallback_order,
                 )
                 repair_stats["candidate_attempts"] += repair.candidate_attempts
+                repair_stats["candidate_scans"] += repair.candidate_scans
                 if repair.options is None:
                     repair_stats["failed_questions"] += 1
                     if repair.budget_exhausted:
