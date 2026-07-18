@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -187,6 +188,47 @@ def test_build_metadata_preserves_repair_telemetry() -> None:
     assert metadata["retained_count"] == 1
     assert metadata["repair"] == repair
     assert metadata["repair"] is not repair
+
+
+def test_empty_target_stats_preserve_reference_counts_without_fitting() -> None:
+    """An empty target split still reports its supplied reference corpus."""
+    cfg = load_yaml_config(None, smoke=False)
+    builder = make_mc_builder(cfg)
+    references = [
+        SimpleNamespace(answer_primary="Alpha"),
+        SimpleNamespace(answer_primary="Alpha"),
+        SimpleNamespace(answer_primary="Beta"),
+    ]
+
+    class ProfileBuilderThatMustNotFit:
+        def fit(self, _questions) -> None:
+            raise AssertionError("empty-target builds must not fit reference profiles")
+
+    built = builder.build(
+        [],
+        ProfileBuilderThatMustNotFit(),
+        reference_questions=references,
+    )
+
+    assert built == []
+    assert builder.last_build_stats["target_questions"] == 0
+    assert builder.last_build_stats["reference_questions"] == 3
+    assert builder.last_build_stats["reference_answer_count"] == 2
+    assert builder.last_build_stats["repair"] == {
+        "attempted_questions": 0,
+        "succeeded_questions": 0,
+        "ranked_successes": 0,
+        "fallback_successes": 0,
+        "budget_exhausted_questions": 0,
+        "candidate_attempts": 0,
+        "candidate_scans": 0,
+        "length_ratio_triggers": 0,
+        "question_overlap_triggers": 0,
+        "simultaneous_guard_triggers": 0,
+        "failed_questions": 0,
+        "exhaustive_no_solution_questions": 0,
+        "unrecoverable_gold_overlap_questions": 0,
+    }
 
 
 class TestParseOverrides:
