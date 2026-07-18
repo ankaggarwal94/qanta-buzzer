@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
+import hashlib
 import random
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -16,6 +17,22 @@ from sklearn.metrics.pairwise import cosine_similarity
 from qb_data.answer_profiles import AnswerProfileBuilder
 from qb_data.data_loader import TossupQuestion
 from qb_data.text_utils import normalize_answer
+
+
+_REPAIR_RNG_DOMAIN = b"qanta-buzzer.mc-builder.guard-repair.v1\0"
+
+
+def _new_repair_rng(main_rng_state: object) -> random.Random:
+    """Derive a deterministic repair stream without replaying the main RNG.
+
+    The freshly initialized main RNG state captures both deterministic seeds
+    and ``None``'s system-entropy semantics without advancing that stream.
+    SHA-256 provides stable domain separation before the digest seeds the
+    independent repair RNG.
+    """
+    state_bytes = repr(main_rng_state).encode("ascii")
+    digest = hashlib.sha256(_REPAIR_RNG_DOMAIN + state_bytes).digest()
+    return random.Random(int.from_bytes(digest, "big"))
 
 
 @dataclass
@@ -195,6 +212,7 @@ class MCBuilder:
         self.max_length_ratio = max_length_ratio
         self._random_seed = random_seed
         self.rng = random.Random(random_seed)
+        self._repair_rng = _new_repair_rng(self.rng.getstate())
         self.embedding_model = embedding_model
         self.openai_model = openai_model
         self.last_build_stats: Dict[str, Any] = {}
@@ -223,7 +241,7 @@ class MCBuilder:
         self._ref_cache: Optional[Dict[str, Any]] = None
 
     def reset_rng(self, seed: int | None = None) -> None:
-        """Reset the per-builder RNG to the constructor seed (or override).
+        """Reset both per-builder RNG streams to the seed (or override).
 
         Used by ``scripts/build_mc_dataset.py`` to keep a single
         ``MCBuilder`` instance across train/val/test builds (so the
@@ -238,7 +256,9 @@ class MCBuilder:
             to the value passed to ``__init__`` (the documented default
             for callers that just want a deterministic reset).
         """
-        self.rng = random.Random(self._random_seed if seed is None else seed)
+        effective_seed = self._random_seed if seed is None else seed
+        self.rng = random.Random(effective_seed)
+        self._repair_rng = _new_repair_rng(self.rng.getstate())
 
     def _prepare_lookup(
         self, questions: List[TossupQuestion]
@@ -467,19 +487,21 @@ class MCBuilder:
             return self.K
         return self.rng.randint(self.min_K, self.max_K)
 
-    def _bounded_fallback_order_from_state(
+    def _bounded_fallback_order_from_seed(
         self,
         answers: List[str],
         selected: List[str],
         gold: str,
-        rng_state: object,
+        rng_seed: int,
         limit: int,
     ) -> Tuple[List[str], bool]:
-        """Return a bounded random fallback prefix without advancing ``self.rng``.
+        """Return a bounded fallback prefix from a question-local RNG seed.
 
         A prefix of a full ``random.shuffle`` cannot be reproduced without
         processing the full input.  ``sample`` instead gives a deterministic
-        ordered sample of at most ``limit`` raw answers using a cloned RNG.
+        ordered sample of at most ``limit`` raw answers.  The seed comes from
+        the domain-separated repair stream, so this does not advance or replay
+        any part of ``self.rng``.
 
         ``answers`` is the sorted unique universe produced by
         ``_prepare_lookup``.  Known exclusions are located by binary search,
@@ -495,8 +517,7 @@ class MCBuilder:
         excluded_indices.sort()
 
         eligible_count = len(answers) - len(excluded_indices)
-        fallback_rng = random.Random()
-        fallback_rng.setstate(rng_state)
+        fallback_rng = random.Random(rng_seed)
         sample_size = min(limit, eligible_count)
         eligible_ranks = fallback_rng.sample(range(eligible_count), sample_size)
 
@@ -656,7 +677,7 @@ class MCBuilder:
         gold_norms: set[str],
         target_k: int,
         shuffled_options: List[str],
-        fallback_rng_state: object,
+        fallback_rng_seed: int,
         fallback_selected: List[str],
         fallback_order: Optional[List[str]],
     ) -> _RepairResult:
@@ -733,11 +754,11 @@ class MCBuilder:
         if fallback_order is None:
             remaining_scans = budget.limit - budget.candidate_scans
             fallback_order, fallback_source_exhausted = (
-                self._bounded_fallback_order_from_state(
+                self._bounded_fallback_order_from_seed(
                     answers,
                     sorted(seen | set(fallback_selected)),
                     gold,
-                    fallback_rng_state,
+                    fallback_rng_seed,
                     remaining_scans,
                 )
             )
@@ -813,11 +834,16 @@ class MCBuilder:
         Returns:
             List of MCQuestion objects that passed all guards.
         """
+        ref_questions = (
+            questions if reference_questions is None else list(reference_questions)
+        )
         if not questions:
             self.last_build_stats = {
                 "target_questions": 0,
-                "reference_questions": 0,
-                "reference_answer_count": 0,
+                "reference_questions": len(ref_questions),
+                "reference_answer_count": len(
+                    {q.answer_primary for q in ref_questions}
+                ),
                 "built_questions": 0,
                 "dropped_questions": 0,
                 "retention_rate": 0.0,
@@ -825,8 +851,6 @@ class MCBuilder:
                 "repair": _new_repair_stats(),
             }
             return []
-
-        ref_questions = questions if reference_questions is None else list(reference_questions)
 
         # ref_questions defaults to the target questions for convenience.
         # ``AnswerProfileBuilder.fit`` is a no-op when ``qid_set`` already
@@ -921,6 +945,11 @@ class MCBuilder:
         repair_stats = _new_repair_stats()
 
         for q in questions:
+            # Allocate one independent repair substream per input item even if
+            # the item is later skipped or never needs repair.  Consequently,
+            # a later item's repair candidates cannot depend on whether an
+            # earlier item happened to trigger the repair path.
+            fallback_rng_seed = self._repair_rng.getrandbits(256)
             target_k = self._target_k()
             gold = q.answer_primary
             if gold not in answer_to_aliases:
@@ -945,7 +974,6 @@ class MCBuilder:
 
             # If not enough distractors from ranking, try random fallback
             selected_after_ranked = selected[:]
-            fallback_rng_state = self.rng.getstate()
             fallback_order: Optional[List[str]] = None
             if len(selected) < target_k - 1:
                 fallback = [a for a in answers if a not in selected and a != gold]
@@ -1003,7 +1031,7 @@ class MCBuilder:
                     gold_norms,
                     target_k,
                     option_answer_primary,
-                    fallback_rng_state,
+                    fallback_rng_seed,
                     selected_after_ranked,
                     fallback_order,
                 )
