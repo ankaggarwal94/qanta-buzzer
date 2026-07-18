@@ -39,6 +39,62 @@ def _reference(answers: Iterable[str]) -> list[TossupQuestion]:
     ]
 
 
+def _clone_rng(source: random.Random) -> random.Random:
+    """Clone a Random instance without consuming it."""
+    cloned = random.Random()
+    cloned.setstate(source.getstate())
+    return cloned
+
+
+def _hypothetical_fallback_case(
+    K: int,
+) -> tuple[
+    str,
+    list[str],
+    list[str],
+    int,
+    list[TossupQuestion],
+    AnswerProfileBuilder,
+]:
+    """Build a public-API case whose only repair is random fallback."""
+    gold = "Gold"
+    fallbacks = [f"a{idx:03d}" for idx in range(64)]
+    if K == 2:
+        ranked_poison = ["ranked poison has five tokens"]
+        max_repair_attempts = 2
+    elif K == 4:
+        ranked_poison = [
+            "ranked poison alpha words",
+            "ranked toxin beta terms",
+            "ordered hazard gamma units",
+        ]
+        max_repair_attempts = 6
+    else:
+        raise ValueError(f"unsupported test K: {K}")
+
+    reference = _reference([gold, *ranked_poison, *fallbacks])
+    profile_builder = AnswerProfileBuilder(min_questions_per_answer=1).fit(
+        reference
+    )
+    return (
+        gold,
+        fallbacks,
+        ranked_poison,
+        max_repair_attempts,
+        reference,
+        profile_builder,
+    )
+
+
+def _bayes_accuracy(table: list[list[int]]) -> float:
+    """Return in-sample Bayes accuracy for feature columns and label rows."""
+    total = sum(sum(row) for row in table)
+    return sum(
+        max(row[column] for row in table)
+        for column in range(len(table[0]))
+    ) / total
+
+
 def _build_with_rankings(
     target: list[TossupQuestion],
     answers: list[str],
@@ -69,6 +125,7 @@ def _repair_directly(
     answers: list[str],
     target_k: int,
     question: str = "an unrelated clue",
+    fallback_rng_seed: int = 13,
     fallback_selected: list[str] | None = None,
     fallback_order: list[str] | None = None,
 ):
@@ -84,7 +141,7 @@ def _repair_directly(
         gold_norms={str(normalize_answer(gold))},
         target_k=target_k,
         shuffled_options=ordered_options,
-        fallback_rng_state=builder.rng.getstate(),
+        fallback_rng_seed=fallback_rng_seed,
         fallback_selected=fallback_selected or [],
         fallback_order=fallback_order,
     )
@@ -199,8 +256,8 @@ def test_gold_overlap_remains_unrecoverable() -> None:
     assert repair["candidate_attempts"] == 0
 
 
-def test_repair_uses_cloned_fallback_order_without_perturbing_rng() -> None:
-    """Would-be fallback search must not consume the live builder RNG."""
+def test_repair_uses_domain_separated_fallback_without_perturbing_main_rng() -> None:
+    """Would-be fallback search must not consume the main option RNG."""
     answers = [
         "Belgium",
         "Night of the Long Knives",
@@ -265,9 +322,255 @@ def test_repair_uses_cloned_fallback_order_without_perturbing_rng() -> None:
     assert builder.last_build_stats["drop_reasons"] == {}
     assert built[1].qid == "target-alpha"
     assert built[1].options == expected_second_options
+    assert builder.rng.getstate() == expected_rng.getstate()
     assert repair_rng_states
     assert all(before == after for before, after in repair_rng_states)
     assert builder.last_build_stats["repair"]["fallback_successes"] == 1
+
+
+@pytest.mark.parametrize("K", [2, 4])
+def test_public_fallback_repair_uses_question_local_domain_seed(K: int) -> None:
+    """Public repair must draw from its allocated seed, never the main stream."""
+    (
+        gold,
+        fallbacks,
+        ranked_poison,
+        max_repair_attempts,
+        reference,
+        profile_builder,
+    ) = _hypothetical_fallback_case(K)
+    builder = MCBuilder(
+        K=K,
+        strategy="tfidf_profile",
+        random_seed=13,
+        max_repair_attempts=max_repair_attempts,
+    )
+    builder._compute_rankings = (
+        lambda _answers, _profiles, _categories: {gold: ranked_poison}
+    )
+
+    expected_main = _clone_rng(builder.rng)
+    failed_options = [gold, *ranked_poison]
+    expected_main.shuffle(failed_options)
+    permutation = [
+        [gold, *ranked_poison].index(option)
+        for option in failed_options
+    ]
+
+    expected_repair_master = _clone_rng(builder._repair_rng)
+    question_seed = expected_repair_master.getrandbits(256)
+    expected_local = random.Random(question_seed)
+    expected_fallbacks = [
+        fallbacks[rank]
+        for rank in expected_local.sample(range(len(fallbacks)), K - 1)
+    ]
+    ordered_repair = [gold, *expected_fallbacks]
+    expected_options = [ordered_repair[index] for index in permutation]
+
+    built = builder.build(
+        [_make_question("target-domain", gold, "an unrelated clue")],
+        profile_builder,
+        reference_questions=reference,
+    )
+
+    assert len(built) == 1
+    assert built[0].option_answer_primary == expected_options
+    assert built[0].gold_index == expected_options.index(gold)
+    assert builder.rng.getstate() == expected_main.getstate()
+    assert builder._repair_rng.getstate() == expected_repair_master.getstate()
+    assert builder.last_build_stats["repair"]["fallback_successes"] == 1
+
+
+@pytest.mark.parametrize(
+    ("K", "accuracy_ceiling"),
+    [(2, 0.60), (4, 0.35)],
+)
+def test_public_fallback_content_does_not_reveal_current_or_next_gold_position(
+    K: int,
+    accuracy_ceiling: float,
+) -> None:
+    """Choice identities must not encode current or next-question labels."""
+    item_count = 1_024
+    (
+        gold,
+        fallbacks,
+        ranked_poison,
+        max_repair_attempts,
+        reference,
+        profile_builder,
+    ) = _hypothetical_fallback_case(K)
+    builder = MCBuilder(
+        K=K,
+        strategy="tfidf_profile",
+        random_seed=13,
+        max_repair_attempts=max_repair_attempts,
+    )
+    builder._compute_rankings = (
+        lambda _answers, _profiles, _categories: {gold: ranked_poison}
+    )
+    targets = [
+        _make_question(f"target-leakage-{idx}", gold, "an unrelated clue")
+        for idx in range(item_count)
+    ]
+
+    built = builder.build(
+        targets,
+        profile_builder,
+        reference_questions=reference,
+    )
+
+    assert len(built) == item_count
+    assert builder.last_build_stats["repair"]["fallback_successes"] == item_count
+    fallback_set = set(fallbacks)
+    current_table = [[0 for _ in range(K)] for _ in range(K)]
+    lagged_table = [[0 for _ in range(K)] for _ in range(K)]
+    features: list[int] = []
+    for item in built:
+        selected_fallbacks = sorted(
+            fallback_set.intersection(item.option_answer_primary)
+        )
+        assert len(selected_fallbacks) == K - 1
+        if K == 2:
+            feature = int(int(selected_fallbacks[0][1:]) >= 32)
+        else:
+            feature = sum(
+                int(answer[1:]) < 16
+                for answer in selected_fallbacks
+            )
+        features.append(feature)
+        current_table[item.gold_index][feature] += 1
+
+    for feature, following_item in zip(features, built[1:]):
+        lagged_table[following_item.gold_index][feature] += 1
+
+    current_accuracy = _bayes_accuracy(current_table)
+    lagged_accuracy = _bayes_accuracy(lagged_table)
+    assert current_accuracy < accuracy_ceiling, (
+        current_table,
+        current_accuracy,
+    )
+    assert lagged_accuracy < accuracy_ceiling, (
+        lagged_table,
+        lagged_accuracy,
+    )
+
+
+def test_repair_seed_stream_advances_once_per_input_item() -> None:
+    """Skipped and unrecoverable items must still reserve their own substream."""
+    (
+        gold,
+        _fallbacks,
+        ranked_poison,
+        max_repair_attempts,
+        reference,
+        profile_builder,
+    ) = _hypothetical_fallback_case(2)
+    builder = MCBuilder(
+        K=2,
+        strategy="tfidf_profile",
+        random_seed=13,
+        max_repair_attempts=max_repair_attempts,
+    )
+    builder._compute_rankings = (
+        lambda _answers, _profiles, _categories: {gold: ranked_poison}
+    )
+    targets = [
+        _make_question("target-unseen", "Unseen", "an unrelated clue"),
+        _make_question(
+            "target-gold-overlap",
+            gold,
+            "This clue explicitly contains Gold.",
+        ),
+        _make_question("target-repaired", gold, "an unrelated clue"),
+    ]
+    expected_repair_master = _clone_rng(builder._repair_rng)
+    for _ in targets:
+        expected_repair_master.getrandbits(256)
+
+    built = builder.build(
+        targets,
+        profile_builder,
+        reference_questions=reference,
+    )
+
+    assert [item.qid for item in built] == ["target-repaired"]
+    assert builder._repair_rng.getstate() == expected_repair_master.getstate()
+    assert builder.last_build_stats["drop_reasons"] == {
+        "unseen_gold_answer": 1,
+        "question_overlap_guard": 1,
+    }
+    assert builder.last_build_stats["repair"]["fallback_successes"] == 1
+
+
+@pytest.mark.parametrize(
+    ("override_seed", "fresh_seed"),
+    [(None, 13), (29, 29)],
+)
+def test_reset_rng_matches_fresh_main_and_repair_streams(
+    override_seed: int | None,
+    fresh_seed: int,
+) -> None:
+    """Default and override resets must reproduce a fresh builder exactly."""
+    (
+        gold,
+        _fallbacks,
+        ranked_poison,
+        max_repair_attempts,
+        reference,
+        profile_builder,
+    ) = _hypothetical_fallback_case(4)
+    rankings = {gold: ranked_poison}
+
+    reused = MCBuilder(
+        K=4,
+        strategy="tfidf_profile",
+        random_seed=13,
+        max_repair_attempts=max_repair_attempts,
+    )
+    reused._compute_rankings = (
+        lambda _answers, _profiles, _categories: rankings
+    )
+    reused.build(
+        [_make_question("target-dirty", gold, "an unrelated clue")],
+        profile_builder,
+        reference_questions=reference,
+    )
+    reused.reset_rng(override_seed)
+
+    fresh = MCBuilder(
+        K=4,
+        strategy="tfidf_profile",
+        random_seed=fresh_seed,
+        max_repair_attempts=max_repair_attempts,
+    )
+    fresh._compute_rankings = (
+        lambda _answers, _profiles, _categories: rankings
+    )
+    assert reused.rng.getstate() == fresh.rng.getstate()
+    assert reused._repair_rng.getstate() == fresh._repair_rng.getstate()
+
+    target = [_make_question("target-after-reset", gold, "an unrelated clue")]
+    reused_built = reused.build(
+        target,
+        profile_builder,
+        reference_questions=reference,
+    )
+    fresh_built = fresh.build(
+        target,
+        profile_builder,
+        reference_questions=reference,
+    )
+
+    assert reused_built == fresh_built
+    assert reused.last_build_stats == fresh.last_build_stats
+    assert reused.rng.getstate() == fresh.rng.getstate()
+    assert reused._repair_rng.getstate() == fresh._repair_rng.getstate()
+
+    if override_seed is not None:
+        reused.reset_rng()
+        original_fresh = MCBuilder(K=4, random_seed=13)
+        assert reused.rng.getstate() == original_fresh.rng.getstate()
+        assert reused._repair_rng.getstate() == original_fresh._repair_rng.getstate()
 
 
 def test_repair_handles_option_set_that_already_used_fallback() -> None:
@@ -368,7 +671,7 @@ def test_repair_caps_raw_preprocessing_before_expensive_candidate_work(
 def test_hypothetical_fallback_is_bounded_deterministic_and_rng_neutral(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Fallback samples only remaining capacity using a cloned RNG."""
+    """A question-local repair seed bounds work without touching either master."""
     scan_limit = 5
     gold = "Gold"
     universe = [f"candidate-{idx:05d}" for idx in range(20_000)]
@@ -376,21 +679,21 @@ def test_hypothetical_fallback_is_bounded_deterministic_and_rng_neutral(
     ranked = [universe[0]]
     builder = MCBuilder(K=2, random_seed=13, max_repair_attempts=scan_limit)
     monkeypatch.setattr(builder, "_aliases_collide", lambda *_args, **_kwargs: True)
-    original_bounded_fallback = builder._bounded_fallback_order_from_state
+    original_bounded_fallback = builder._bounded_fallback_order_from_seed
     fallback_calls: list[tuple[int, int, list[str], bool]] = []
 
     def bounded_fallback_spy(
         fallback_answers,
         selected,
         fallback_gold,
-        rng_state,
+        rng_seed,
         limit,
     ):
         sampled, exhausted = original_bounded_fallback(
             fallback_answers,
             selected,
             fallback_gold,
-            rng_state,
+            rng_seed,
             limit,
         )
         fallback_calls.append(
@@ -403,11 +706,12 @@ def test_hypothetical_fallback_is_bounded_deterministic_and_rng_neutral(
 
     monkeypatch.setattr(
         builder,
-        "_bounded_fallback_order_from_state",
+        "_bounded_fallback_order_from_seed",
         bounded_fallback_spy,
     )
     monkeypatch.setattr(random.Random, "shuffle", forbidden_shuffle)
-    before = builder.rng.getstate()
+    before_main = builder.rng.getstate()
+    before_repair = builder._repair_rng.getstate()
 
     first = _repair_directly(
         builder,
@@ -430,7 +734,8 @@ def test_hypothetical_fallback_is_bounded_deterministic_and_rng_neutral(
         fallback_order=None,
     )
 
-    assert builder.rng.getstate() == before
+    assert builder.rng.getstate() == before_main
+    assert builder._repair_rng.getstate() == before_repair
     assert first == second
     assert first.candidate_scans == scan_limit
     assert first.candidate_attempts == 0
@@ -451,10 +756,9 @@ def test_bounded_fallback_binary_search_preserves_sample_order(
     selected = answers[:exclusion_count]
     eligible = answers[exclusion_count:]
     builder = MCBuilder(K=2, random_seed=13)
-    rng_state = builder.rng.getstate()
+    rng_seed = 0xA5A5
 
-    expected_rng = random.Random()
-    expected_rng.setstate(rng_state)
+    expected_rng = random.Random(rng_seed)
     expected_ranks = expected_rng.sample(range(len(eligible)), len(eligible))
     expected = [eligible[rank] for rank in expected_ranks]
 
@@ -469,19 +773,21 @@ def test_bounded_fallback_binary_search_preserves_sample_order(
         "qb_data.mc_builder.bisect_right",
         counting_bisect_right,
     )
-    before = builder.rng.getstate()
+    before_main = builder.rng.getstate()
+    before_repair = builder._repair_rng.getstate()
 
-    sampled, exhaustive = builder._bounded_fallback_order_from_state(
+    sampled, exhaustive = builder._bounded_fallback_order_from_seed(
         answers,
         selected,
         selected[0],
-        rng_state,
+        rng_seed,
         len(eligible),
     )
 
     assert sampled == expected
     assert exhaustive is True
-    assert builder.rng.getstate() == before
+    assert builder.rng.getstate() == before_main
+    assert builder._repair_rng.getstate() == before_repair
     assert lookup_calls == len(eligible)
 
 
