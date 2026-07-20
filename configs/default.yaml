@@ -46,7 +46,7 @@ mc_guards:  # Anti-artifact guards from qb-rl
   alias_edit_distance_threshold: 0.2  # Reject similar answer aliases
   duplicate_token_overlap_threshold: 0.8  # Reject token-overlapping distractors
   max_length_ratio: 3.0  # Reject distractors much longer than answer
-  max_repair_attempts: 10000  # Deterministic per-item guard-repair work cap
+  max_repair_attempts: 10000  # Cap for each of candidate scans and search transitions
 
 bayesian:  # Bayesian buzzer sweep parameters (from qb-rl)
   threshold_sweep: [0.5, 0.6, 0.7, 0.8, 0.9]

@@ -51,7 +51,7 @@ class MCQuestion(TossupQuestion):
 
 @dataclass
 class _RepairSearchBudget:
-    """Deterministic scan/search ceilings shared by one repair."""
+    """Independent scan- and transition-count ceilings for one repair."""
 
     limit: int
     attempts: int = 0
@@ -60,7 +60,7 @@ class _RepairSearchBudget:
     candidate_scan_truncated: bool = False
 
     def consume(self) -> bool:
-        """Consume one candidate-extension attempt, or mark exhaustion."""
+        """Consume one unique prefix-candidate transition, or exhaust it."""
         if self.attempts >= self.limit:
             self.exhausted = True
             return False
@@ -179,7 +179,9 @@ class MCBuilder:
             max_K: Maximum K when ``variable_K`` is True.  Defaults to ``K``.
             max_repair_attempts: Deterministic per-repair ceiling applied
                 independently to raw candidate scans and unique search
-                extensions, shared by ranked and fallback phases.
+                transitions, shared by ranked and fallback phases.  These are
+                count ceilings, not primitive-operation or wall-clock limits;
+                each transition may inspect up to ``K`` chosen options.
         """
         if isinstance(K, bool) or not isinstance(K, int):
             raise ValueError("K must be an integer")
@@ -617,7 +619,13 @@ class MCBuilder:
         transition_memo: Dict[Tuple[int, str], int],
         next_node_id: List[int],
     ) -> Optional[List[str]]:
-        """Find a guard-passing option set within a deterministic work budget."""
+        """Find a guard-passing option set within a transition-count ceiling.
+
+        The budget charges previously unseen prefix-candidate transitions.
+        For a ceiling ``B`` and ``K`` choices, duplicate and length guards
+        perform ``O(B * K)`` option-level inspections, excluding text and
+        token-comparison costs.
+        """
         needed = target_k - 1
         if needed <= 0 or len(candidates) < needed:
             return None
