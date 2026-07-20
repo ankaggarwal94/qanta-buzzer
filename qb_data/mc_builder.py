@@ -507,6 +507,12 @@ class MCBuilder:
         ``_prepare_lookup``.  Known exclusions are located by binary search,
         avoiding a scan merely to construct the eligible population.
 
+        With ``N`` answers, ``E`` exclusions, and ``S`` sampled ranks, the
+        whole helper uses
+        ``O(E log N + (E + S) log(E + 1) + S)`` time and ``O(E + S)``
+        auxiliary space.  After exclusions are located and sorted, compressed
+        rank restoration alone is ``O(E + S log(E + 1))``.
+
         Returns the sampled prefix and whether it covers the eligible source.
         """
         excluded_indices: List[int] = []
