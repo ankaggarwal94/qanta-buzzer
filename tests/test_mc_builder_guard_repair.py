@@ -147,6 +147,77 @@ def _repair_directly(
     )
 
 
+def test_repair_permutation_reconstruction_uses_linear_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Large-K permutation recovery must avoid repeated linear searches."""
+
+    class CountingOption(str):
+        comparisons = 0
+
+        def __eq__(self, other: object) -> bool:
+            type(self).comparisons += 1
+            return super().__eq__(other)
+
+        __hash__ = str.__hash__
+
+    target_k = 256
+    ordered = [
+        CountingOption(f"answer-{index:04d}")
+        for index in range(target_k)
+    ]
+    gold, *selected = ordered
+    shuffled = list(reversed(ordered))
+    builder = MCBuilder(K=target_k, max_repair_attempts=target_k)
+    captured: dict[str, list[int]] = {}
+
+    monkeypatch.setattr(
+        builder,
+        "_append_repair_candidates",
+        lambda *_args, **_kwargs: True,
+    )
+
+    def return_supplied_permutation(
+        repair_gold,
+        _candidates,
+        repair_target_k,
+        permutation,
+        *_args,
+    ):
+        captured["permutation"] = permutation
+        repair_ordered = [repair_gold] + selected[: repair_target_k - 1]
+        return [repair_ordered[index] for index in permutation]
+
+    monkeypatch.setattr(
+        builder,
+        "_search_repaired_options",
+        return_supplied_permutation,
+    )
+
+    result = builder._repair_options_after_guard_failure(
+        question="an unrelated clue",
+        gold=gold,
+        selected=selected,
+        ranked=[],
+        answers=ordered,
+        gold_aliases=[gold],
+        gold_norms={str(normalize_answer(gold))},
+        target_k=target_k,
+        shuffled_options=shuffled,
+        fallback_rng_seed=13,
+        fallback_selected=[],
+        fallback_order=[],
+    )
+    comparison_count = CountingOption.comparisons
+
+    assert captured["permutation"] == list(reversed(range(target_k)))
+    assert result.options is not None
+    assert [id(option) for option in result.options] == [
+        id(option) for option in shuffled
+    ]
+    assert comparison_count < 4 * target_k
+
+
 def test_length_ratio_guard_searches_later_ranked_replacements() -> None:
     """A first ranked option set that fails length guard should be repaired."""
     answers = [

@@ -708,7 +708,12 @@ class MCBuilder:
             return _RepairResult(None, None, 0, 0, True)
 
         ordered_options = [gold] + selected[: target_k - 1]
-        permutation = [ordered_options.index(option) for option in shuffled_options]
+        option_positions: Dict[str, int] = {}
+        for index, option in enumerate(ordered_options):
+            # Match list.index's first-occurrence behavior defensively even
+            # though public repair inputs contain unique answer strings.
+            option_positions.setdefault(option, index)
+        permutation = [option_positions[option] for option in shuffled_options]
         ranked_candidates: List[str] = []
         seen: Set[str] = set()
         ranked_exhausted = self._append_repair_candidates(
