@@ -8,7 +8,7 @@ import hashlib
 import random
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -74,6 +74,79 @@ class _RepairSearchBudget:
             return False
         self.candidate_scans += 1
         return True
+
+
+class _LazyRepairCandidatePool:
+    """Screen ranked and fallback sources only as DFS requests candidates."""
+
+    def __init__(
+        self,
+        *,
+        budget: _RepairSearchBudget,
+        gold: str,
+        accepts: Callable[[str], bool],
+    ) -> None:
+        self.budget = budget
+        self.gold = gold
+        self.accepts = accepts
+        self.candidates: List[str] = []
+        self.seen: Set[str] = set()
+        self._raw_candidates: List[str] = []
+        self._raw_index = 0
+        self._excluded: Set[str] = set()
+        self._source_covers_phase = True
+        self.phase_terminal = True
+        self.phase_truncated = False
+
+    def begin_source(
+        self,
+        raw_candidates: List[str],
+        *,
+        source_covers_phase: bool = True,
+        excluded: Optional[Set[str]] = None,
+    ) -> None:
+        """Begin one source phase without discarding prior candidates."""
+        self._raw_candidates = raw_candidates
+        self._raw_index = 0
+        self._excluded = excluded or set()
+        self._source_covers_phase = source_covers_phase
+        self.phase_terminal = False
+        self.phase_truncated = False
+
+    def ensure_index(self, index: int) -> bool:
+        """Screen only enough raw entries to expose candidate ``index``."""
+        while len(self.candidates) <= index and not self.phase_terminal:
+            # Check physical exhaustion before charging another scan.  A
+            # complete source of exactly B entries is exhaustive, whereas a
+            # bounded prefix with an omitted tail remains fail-closed.
+            if self._raw_index >= len(self._raw_candidates):
+                self.phase_terminal = True
+                if not self._source_covers_phase:
+                    self.phase_truncated = True
+                    self.budget.candidate_scan_truncated = True
+                break
+
+            if not self.budget.consume_candidate_scan():
+                self.phase_terminal = True
+                self.phase_truncated = True
+                break
+
+            candidate = self._raw_candidates[self._raw_index]
+            self._raw_index += 1
+            if (
+                candidate == self.gold
+                or candidate in self._excluded
+                or candidate in self.seen
+            ):
+                continue
+            # Preserve the prior contract: once a unique raw candidate is
+            # screened, fallback must not reconsider it even if a guard
+            # rejects it.
+            self.seen.add(candidate)
+            if self.accepts(candidate):
+                self.candidates.append(candidate)
+
+        return index < len(self.candidates)
 
 
 @dataclass
@@ -435,16 +508,25 @@ class MCBuilder:
 
         return False
 
-    def _violates_duplicate_guard(self, candidate: str, selected: List[str]) -> bool:
-        """Check if candidate has too much token overlap with already selected options.
+    def _violates_duplicate_guard(
+        self,
+        candidate: str,
+        selected: List[str],
+        *,
+        gold: str,
+    ) -> bool:
+        """Check if candidate has too much token overlap with any option.
 
         Args:
             candidate: Candidate distractor.
             selected: List of already selected distractors.
+            gold: Correct answer that will appear in the option set.
 
         Returns:
             True if the candidate has too much overlap.
         """
+        if _token_overlap(candidate, gold) > self.duplicate_token_overlap_threshold:
+            return True
         for chosen in selected:
             if _token_overlap(candidate, chosen) > self.duplicate_token_overlap_threshold:
                 return True
@@ -478,6 +560,26 @@ class MCBuilder:
             if o_norm and o_norm in q_norm:
                 return True
         return False
+
+    def _passes_repair_candidate_filters(
+        self,
+        candidate: str,
+        question_norm: str,
+        gold_aliases: List[str],
+        gold_norms: set[str],
+    ) -> bool:
+        """Apply candidate-local alias and question-overlap filters."""
+        if self._aliases_collide(
+            candidate,
+            gold_aliases,
+            _gold_norms=gold_norms,
+        ):
+            return False
+        candidate_norm = str(normalize_answer(candidate))
+        return not (
+            candidate_norm
+            and candidate_norm in question_norm
+        )
 
     def _target_k(self) -> int:
         """Return the target K for the next question.
@@ -548,40 +650,6 @@ class MCBuilder:
             sample_size == eligible_count,
         )
 
-    def _append_repair_candidates(
-        self,
-        raw_candidates: List[str],
-        question_norm: str,
-        gold: str,
-        gold_aliases: List[str],
-        gold_norms: set[str],
-        candidates: List[str],
-        seen: Set[str],
-        budget: _RepairSearchBudget,
-        excluded: Optional[Set[str]] = None,
-    ) -> bool:
-        """Append bounded, fully filtered candidates in raw source order.
-
-        Every raw entry consumes the scan budget before alias normalization or
-        question-overlap work.  Returns True only when the source was fully
-        scanned.
-        """
-        excluded = excluded or set()
-        for idx in range(len(raw_candidates)):
-            if not budget.consume_candidate_scan():
-                return False
-            candidate = raw_candidates[idx]
-            if candidate == gold or candidate in excluded or candidate in seen:
-                continue
-            seen.add(candidate)
-            if self._aliases_collide(candidate, gold_aliases, _gold_norms=gold_norms):
-                continue
-            candidate_norm = str(normalize_answer(candidate))
-            if candidate_norm and candidate_norm in question_norm:
-                continue
-            candidates.append(candidate)
-        return True
-
     @staticmethod
     def _bounded_unseen_prefix(
         raw_candidates: List[str],
@@ -612,7 +680,7 @@ class MCBuilder:
     def _search_repaired_options(
         self,
         gold: str,
-        candidates: List[str],
+        candidate_pool: _LazyRepairCandidatePool,
         target_k: int,
         permutation: List[int],
         budget: _RepairSearchBudget,
@@ -627,12 +695,11 @@ class MCBuilder:
         token-comparison costs.
         """
         needed = target_k - 1
-        if needed <= 0 or len(candidates) < needed:
-            return None
 
-        # Preserve the recursive implementation's depth-first candidate order
-        # and monotone pruning without tying supported K to Python's recursion
-        # limit.
+        # Preserve depth-first candidate order and monotone pruning without
+        # tying supported K to Python's recursion limit.  Feasibility
+        # lookahead screens only enough candidates to complete the current
+        # prefix, so impossible prefixes consume no transition attempts.
         chosen: List[str] = []
         chosen_indices: List[int] = []
         chosen_node_ids: List[int] = []
@@ -640,7 +707,9 @@ class MCBuilder:
 
         while True:
             remaining = needed - len(chosen)
-            last_start = len(candidates) - remaining
+            required_last_idx = next_idx + remaining - 1
+            candidate_pool.ensure_index(required_last_idx)
+            last_start = len(candidate_pool.candidates) - remaining
 
             if next_idx > last_start:
                 if not chosen:
@@ -652,14 +721,18 @@ class MCBuilder:
 
             idx = next_idx
             next_idx += 1
-            candidate = candidates[idx]
+            candidate = candidate_pool.candidates[idx]
             parent_node_id = chosen_node_ids[-1] if chosen_node_ids else 0
             transition_key = (parent_node_id, candidate)
             child_node_id = transition_memo.get(transition_key)
             if child_node_id is None:
                 if not budget.consume():
                     return None
-                accepted = not self._violates_duplicate_guard(candidate, chosen)
+                accepted = not self._violates_duplicate_guard(
+                    candidate,
+                    chosen,
+                    gold=gold,
+                )
                 if accepted:
                     partial = [gold] + chosen + [candidate]
                     accepted = not self._violates_length_ratio_guard(partial)
@@ -714,23 +787,23 @@ class MCBuilder:
             # though public repair inputs contain unique answer strings.
             option_positions.setdefault(option, index)
         permutation = [option_positions[option] for option in shuffled_options]
-        ranked_candidates: List[str] = []
-        seen: Set[str] = set()
-        ranked_exhausted = self._append_repair_candidates(
-            ranked,
-            question_norm,
-            gold,
-            gold_aliases,
-            gold_norms,
-            ranked_candidates,
-            seen,
-            budget,
+
+        candidate_pool = _LazyRepairCandidatePool(
+            budget=budget,
+            gold=gold,
+            accepts=lambda candidate: self._passes_repair_candidate_filters(
+                candidate,
+                question_norm,
+                gold_aliases,
+                gold_norms,
+            ),
         )
+        candidate_pool.begin_source(ranked)
         transition_memo: Dict[Tuple[int, str], int] = {}
         next_node_id = [1]
         repaired = self._search_repaired_options(
             gold,
-            ranked_candidates,
+            candidate_pool,
             target_k,
             permutation,
             budget,
@@ -746,7 +819,7 @@ class MCBuilder:
                 False,
             )
 
-        if budget.exhausted or not ranked_exhausted:
+        if budget.exhausted or candidate_pool.phase_truncated:
             return _RepairResult(
                 None,
                 None,
@@ -759,7 +832,7 @@ class MCBuilder:
         # non-gold answer, so a fallback pass cannot add a candidate.
         ranked_covers_answers = (
             len(ranked) == max(0, len(answers) - 1)
-            and len(seen) == len(ranked)
+            and len(candidate_pool.seen) == len(ranked)
         )
         if ranked_covers_answers:
             return _RepairResult(
@@ -775,7 +848,7 @@ class MCBuilder:
             fallback_order, fallback_source_exhausted = (
                 self._bounded_fallback_order_from_seed(
                     answers,
-                    sorted(seen | set(fallback_selected)),
+                    sorted(candidate_pool.seen | set(fallback_selected)),
                     gold,
                     fallback_rng_seed,
                     remaining_scans,
@@ -786,39 +859,32 @@ class MCBuilder:
             fallback_order, fallback_source_exhausted = (
                 self._bounded_unseen_prefix(
                     fallback_order,
-                    seen | set(fallback_selected) | {gold},
+                    candidate_pool.seen | set(fallback_selected) | {gold},
                     remaining_scans,
                 )
             )
 
-        candidates = ranked_candidates[:]
-        fallback_exhausted = self._append_repair_candidates(
+        ranked_candidate_count = len(candidate_pool.candidates)
+        candidate_pool.begin_source(
             fallback_order,
-            question_norm,
-            gold,
-            gold_aliases,
-            gold_norms,
-            candidates,
-            seen,
-            budget,
+            source_covers_phase=fallback_source_exhausted,
             excluded=set(fallback_selected),
         )
-        if not fallback_source_exhausted:
-            budget.candidate_scan_truncated = True
-        fallback_exhausted = fallback_exhausted and fallback_source_exhausted
-
-        if candidates == ranked_candidates:
+        # Avoid replaying ranked DFS if fallback contributes no viable
+        # candidate.  This prefetch remains lazy: it stops at the first new
+        # candidate or a terminal source.
+        if not candidate_pool.ensure_index(ranked_candidate_count):
             return _RepairResult(
                 None,
                 None,
                 budget.attempts,
                 budget.candidate_scans,
-                not fallback_exhausted,
+                candidate_pool.phase_truncated,
             )
 
         repaired = self._search_repaired_options(
             gold,
-            candidates,
+            candidate_pool,
             target_k,
             permutation,
             budget,
@@ -831,7 +897,7 @@ class MCBuilder:
             budget.attempts,
             budget.candidate_scans,
             False if repaired is not None else (
-                budget.exhausted or not fallback_exhausted
+                budget.exhausted or candidate_pool.phase_truncated
             ),
         )
 
@@ -985,7 +1051,11 @@ class MCBuilder:
                     continue
                 if self._aliases_collide(candidate, gold_aliases, _gold_norms=gold_norms):
                     continue
-                if self._violates_duplicate_guard(candidate, selected):
+                if self._violates_duplicate_guard(
+                    candidate,
+                    selected,
+                    gold=gold,
+                ):
                     continue
                 selected.append(candidate)
                 if len(selected) >= target_k - 1:
@@ -1001,7 +1071,11 @@ class MCBuilder:
                 for candidate in fallback:
                     if self._aliases_collide(candidate, gold_aliases, _gold_norms=gold_norms):
                         continue
-                    if self._violates_duplicate_guard(candidate, selected):
+                    if self._violates_duplicate_guard(
+                        candidate,
+                        selected,
+                        gold=gold,
+                    ):
                         continue
                     selected.append(candidate)
                     if len(selected) >= target_k - 1:

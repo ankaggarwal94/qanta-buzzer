@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +18,63 @@ from scripts.build_mc_dataset import (
     resolve_output_dir,
 )
 from scripts.test_mc_builder import make_demo_mc_builder
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+BUILD_SCRIPT = PROJECT_ROOT / "scripts" / "build_mc_dataset.py"
+DEMO_SCRIPT = PROJECT_ROOT / "scripts" / "test_mc_builder.py"
+
+
+def test_build_script_remains_executable() -> None:
+    """The shebang entrypoint must retain its executable repository mode."""
+    assert BUILD_SCRIPT.stat().st_mode & 0o111
+
+
+def test_script_module_imports_do_not_mutate_sys_path() -> None:
+    """Ordinary package imports must not change process-global precedence."""
+    code = """
+import sys
+before = list(sys.path)
+import scripts.build_mc_dataset
+import scripts.test_mc_builder
+assert sys.path == before, (before, sys.path)
+"""
+
+    subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_direct_script_paths_resolve_repository_imports(tmp_path: Path) -> None:
+    """Direct path execution must still bootstrap imports outside the repo."""
+    help_result = subprocess.run(
+        [sys.executable, str(BUILD_SCRIPT), "--help"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+
+    probe = (
+        "import runpy, sys; "
+        f"root = {str(PROJECT_ROOT)!r}; "
+        "sys.path.append(root); "
+        f"runpy.run_path({str(DEMO_SCRIPT)!r}, run_name='__probe__'); "
+        "assert sys.path[0] == root, sys.path"
+    )
+    demo_result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert demo_result.returncode == 0, demo_result.stderr
 
 
 class TestBuildMcDatasetArgs:

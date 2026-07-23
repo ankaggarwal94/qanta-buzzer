@@ -11,7 +11,7 @@ import pytest
 
 from qb_data.answer_profiles import AnswerProfileBuilder
 from qb_data.data_loader import TossupQuestion
-from qb_data.mc_builder import MCBuilder, build_mc_questions
+from qb_data.mc_builder import MCBuilder, _token_overlap, build_mc_questions
 from qb_data.text_utils import normalize_answer
 
 
@@ -103,6 +103,7 @@ def _build_with_rankings(
     seed: int = 13,
     K: int = 4,
     max_repair_attempts: int = 10_000,
+    builder_kwargs: dict | None = None,
 ) -> tuple[list, MCBuilder]:
     reference = _reference(answers)
     profile_builder = AnswerProfileBuilder(min_questions_per_answer=1).fit(reference)
@@ -111,6 +112,7 @@ def _build_with_rankings(
         strategy="tfidf_profile",
         random_seed=seed,
         max_repair_attempts=max_repair_attempts,
+        **(builder_kwargs or {}),
     )
     builder._compute_rankings = lambda _answers, _profiles, _categories: rankings
     return builder.build(target, profile_builder, reference_questions=reference), builder
@@ -147,6 +149,16 @@ def _repair_directly(
     )
 
 
+def _assert_pairwise_duplicate_guard(options: list[str], builder: MCBuilder) -> None:
+    """Every emitted pair must satisfy the configured token-overlap guard."""
+    for left_idx, left in enumerate(options):
+        for right in options[left_idx + 1:]:
+            assert (
+                _token_overlap(left, right)
+                <= builder.duplicate_token_overlap_threshold
+            ), (left, right)
+
+
 def test_repair_permutation_reconstruction_uses_linear_lookup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -170,12 +182,6 @@ def test_repair_permutation_reconstruction_uses_linear_lookup(
     shuffled = list(reversed(ordered))
     builder = MCBuilder(K=target_k, max_repair_attempts=target_k)
     captured: dict[str, list[int]] = {}
-
-    monkeypatch.setattr(
-        builder,
-        "_append_repair_candidates",
-        lambda *_args, **_kwargs: True,
-    )
 
     def return_supplied_permutation(
         repair_gold,
@@ -216,6 +222,126 @@ def test_repair_permutation_reconstruction_uses_linear_lookup(
         id(option) for option in shuffled
     ]
     assert comparison_count < 4 * target_k
+
+
+@pytest.mark.parametrize(
+    ("ranked", "seed"),
+    [
+        (["Civil War American", "Zulu"], 13),
+        ([], 0),
+    ],
+    ids=["ranked", "fallback"],
+)
+def test_initial_selection_rejects_token_duplicate_of_gold(
+    ranked: list[str],
+    seed: int,
+) -> None:
+    """Initial ranked and fallback admission must compare against gold."""
+    gold = "American Civil War"
+    duplicate = "Civil War American"
+    valid = "Zulu"
+    answers = [gold, duplicate, valid]
+    target = [_make_question("target-initial-overlap", gold, "an unrelated clue")]
+
+    built, builder = _build_with_rankings(
+        target,
+        answers,
+        {gold: ranked},
+        seed=seed,
+        K=2,
+    )
+
+    assert len(built) == 1
+    assert set(built[0].option_answer_primary) == {gold, valid}
+    assert duplicate not in built[0].option_answer_primary
+    assert built[0].options[built[0].gold_index] == gold
+    assert builder.last_build_stats["repair"]["attempted_questions"] == 0
+    _assert_pairwise_duplicate_guard(built[0].options, builder)
+
+
+@pytest.mark.parametrize(
+    ("ranked", "expected_source"),
+    [
+        (
+            [
+                "Very Long Distractor Name With Numerous Extra Words Here Today Indeed",
+                "Civil War American",
+                "Zulu",
+            ],
+            "ranked",
+        ),
+        (
+            [
+                "Very Long Distractor Name With Numerous Extra Words Here Today Indeed",
+            ],
+            "fallback",
+        ),
+    ],
+)
+@pytest.mark.parametrize("variable_k", [False, True])
+def test_repair_rejects_token_duplicate_of_gold(
+    ranked: list[str],
+    expected_source: str,
+    variable_k: bool,
+) -> None:
+    """Ranked and fallback repair must never weaken gold-pair guarding."""
+    gold = "American Civil War"
+    duplicate = "Civil War American"
+    valid = "Zulu"
+    answers = [gold, ranked[0], duplicate, valid]
+    target = [_make_question("target-repair-overlap", gold, "an unrelated clue")]
+    builder_kwargs = (
+        {"variable_K": True, "min_K": 2, "max_K": 2}
+        if variable_k
+        else None
+    )
+
+    built, builder = _build_with_rankings(
+        target,
+        answers,
+        {gold: ranked},
+        seed=13,
+        K=2,
+        builder_kwargs=builder_kwargs,
+    )
+
+    assert len(built) == 1
+    assert set(built[0].option_answer_primary) == {gold, valid}
+    assert duplicate not in built[0].option_answer_primary
+    assert built[0].options[built[0].gold_index] == gold
+    repair = builder.last_build_stats["repair"]
+    assert repair["attempted_questions"] == 1
+    assert repair["succeeded_questions"] == 1
+    assert repair[f"{expected_source}_successes"] == 1
+    assert repair["candidate_attempts"] == 3
+    assert repair["candidate_scans"] == 3
+    _assert_pairwise_duplicate_guard(built[0].options, builder)
+
+
+def test_repair_drops_item_when_only_replacement_duplicates_gold() -> None:
+    """A gold-overlapping candidate is not a guard-preserving repair."""
+    gold = "American Civil War"
+    too_long = "Very Long Distractor Name With Numerous Extra Words Here Today Indeed"
+    duplicate = "Civil War American"
+    answers = [gold, too_long, duplicate]
+    target = [_make_question("target-overlap-drop", gold, "an unrelated clue")]
+
+    built, builder = _build_with_rankings(
+        target,
+        answers,
+        {gold: [too_long, duplicate]},
+        K=2,
+    )
+
+    assert built == []
+    assert builder.last_build_stats["drop_reasons"] == {
+        "guard_repair_failed": 1
+    }
+    repair = builder.last_build_stats["repair"]
+    assert repair["failed_questions"] == 1
+    assert repair["exhaustive_no_solution_questions"] == 1
+    assert repair["candidate_attempts"] == 2
+    assert repair["candidate_scans"] == 2
 
 
 def test_length_ratio_guard_searches_later_ranked_replacements() -> None:
@@ -687,6 +813,103 @@ def test_repair_handles_option_set_that_already_used_fallback() -> None:
         "Patrice Lumumba",
         "Austria",
     }
+
+
+def test_ranked_repair_screens_only_through_early_k2_solution() -> None:
+    """A second-ranked solution must not screen a 10k candidate tail."""
+    gold = "Rome"
+    too_long = "Very Long Distractor Name"
+    valid = "Athens"
+    tail = [f"tail-{idx:05d}" for idx in range(9_998)]
+    ranked = [too_long, valid, *tail]
+    builder = MCBuilder(K=2, max_repair_attempts=10_000)
+
+    result = _repair_directly(
+        builder,
+        gold=gold,
+        selected=[too_long],
+        ranked=ranked,
+        answers=[gold, *ranked],
+        target_k=2,
+        fallback_order=[],
+    )
+
+    assert result.options == [gold, valid]
+    assert result.source == "ranked"
+    assert result.candidate_attempts == 2
+    assert result.candidate_scans == 2
+    assert result.budget_exhausted is False
+
+
+def test_ranked_repair_screens_only_first_complete_k4_prefix() -> None:
+    """A valid first combination needs only K-1 screened candidates."""
+    gold = "Rome"
+    first = ["Athens", "Sparta", "Thebes"]
+    tail = [f"tail-{idx:05d}" for idx in range(100)]
+    builder = MCBuilder(K=4, max_repair_attempts=1_000)
+
+    result = _repair_directly(
+        builder,
+        gold=gold,
+        selected=first,
+        ranked=[*first, *tail],
+        answers=[gold, *first, *tail],
+        target_k=4,
+        fallback_order=[],
+    )
+
+    assert result.options == [gold, *first]
+    assert result.source == "ranked"
+    assert result.candidate_attempts == 3
+    assert result.candidate_scans == 3
+
+
+def test_lazy_search_preserves_depth_first_lexicographic_order() -> None:
+    """An earlier root with a late suffix precedes a later-root solution."""
+    gold = "gold answer"
+    first = "alpha beta"
+    second = "alpha beta red"
+    third = "alpha beta blue"
+    late_suffix = "charlie delta"
+    builder = MCBuilder(K=3, max_repair_attempts=10)
+
+    result = _repair_directly(
+        builder,
+        gold=gold,
+        selected=[first, late_suffix],
+        ranked=[first, second, third, late_suffix],
+        answers=[gold, first, second, third, late_suffix],
+        target_k=3,
+        fallback_order=[],
+    )
+
+    # [second, third] becomes valid one scan earlier, but exact DFS order
+    # must continue the earlier ``first`` prefix and choose its late suffix.
+    assert result.options == [gold, first, late_suffix]
+    assert result.candidate_attempts == 4
+    assert result.candidate_scans == 4
+
+
+def test_insufficient_lazy_candidate_suffix_charges_no_transitions() -> None:
+    """Feasibility lookahead must prune prefixes that cannot reach K."""
+    gold = "Gold"
+    ranked = ["Alpha", "Beta"]
+    builder = MCBuilder(K=4, max_repair_attempts=10)
+
+    result = _repair_directly(
+        builder,
+        gold=gold,
+        selected=["Alpha", "Beta", "Gamma"],
+        ranked=ranked,
+        answers=[gold, *ranked],
+        target_k=4,
+        fallback_order=[],
+    )
+
+    assert result.options is None
+    assert result.candidate_scans == 2
+    assert result.candidate_attempts == 0
+    assert result.budget_exhausted is False
 
 
 def test_repair_caps_raw_preprocessing_before_expensive_candidate_work(

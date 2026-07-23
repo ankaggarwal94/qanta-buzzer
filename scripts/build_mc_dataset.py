@@ -24,8 +24,12 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, List, Optional
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Direct path execution starts with ``scripts/`` on ``sys.path``.  Package
+# imports and ``python -m`` already have the repository root and must not
+# mutate process-global import precedence.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from qb_data import TossupQuestion
 from qb_data.answer_profiles import AnswerProfileBuilder
