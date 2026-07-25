@@ -41,6 +41,7 @@ mc_guards:
   alias_edit_distance_threshold: 0.2
   duplicate_token_overlap_threshold: 0.8
   max_length_ratio: 3.0
+  max_repair_attempts: 10000  # Cap for each of candidate scans and search transitions
 
 bayesian:  # Reduced sweep for smoke testing
   threshold_sweep: [0.5, 0.7, 0.9]

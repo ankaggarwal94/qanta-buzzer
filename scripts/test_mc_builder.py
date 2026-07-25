@@ -4,14 +4,35 @@
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Direct path execution starts with ``scripts/`` on ``sys.path``.  Package
+# imports and ``python -m`` already have the repository root and must not
+# mutate process-global import precedence.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from qb_data.data_loader import QANTADatasetLoader
 from qb_data.answer_profiles import AnswerProfileBuilder
 from qb_data.mc_builder import MCBuilder, MCQuestion
 from qb_data.config import load_config
+
+
+def make_demo_mc_builder(config: dict[str, Any]) -> MCBuilder:
+    """Create the lightweight TF-IDF builder used by this verification script."""
+    guards = config["mc_guards"]
+    return MCBuilder(
+        K=config["data"]["K"],
+        strategy="tfidf_profile",  # Avoid optional embedding dependencies.
+        alias_edit_distance_threshold=guards["alias_edit_distance_threshold"],
+        duplicate_token_overlap_threshold=guards[
+            "duplicate_token_overlap_threshold"
+        ],
+        max_length_ratio=guards["max_length_ratio"],
+        max_repair_attempts=guards.get("max_repair_attempts", 10_000),
+        random_seed=config["data"]["shuffle_seed"],
+    )
 
 
 def main():
@@ -42,14 +63,7 @@ def main():
     print(f"Built profiles for {len(profile_builder._grouped)} unique answers")
 
     # Create MC builder with guards from config
-    mc_builder = MCBuilder(
-        K=config["data"]["K"],
-        strategy="tfidf_profile",  # Use TF-IDF since it doesn't require embeddings
-        alias_edit_distance_threshold=config["mc_guards"]["alias_edit_distance_threshold"],
-        duplicate_token_overlap_threshold=config["mc_guards"]["duplicate_token_overlap_threshold"],
-        max_length_ratio=config["mc_guards"]["max_length_ratio"],
-        random_seed=config["data"]["shuffle_seed"]
-    )
+    mc_builder = make_demo_mc_builder(config)
 
     # Build MC questions
     print(f"\nBuilding MC questions with K={config['data']['K']} options...")

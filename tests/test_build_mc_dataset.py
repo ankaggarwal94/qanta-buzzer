@@ -3,9 +3,78 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
+from types import SimpleNamespace
+
+import pytest
 
 from qb_data.config import load_config as load_yaml_config, merge_overrides
-from scripts.build_mc_dataset import parse_args, parse_overrides, resolve_output_dir
+from scripts.build_mc_dataset import (
+    build_metadata_entry,
+    make_mc_builder,
+    parse_args,
+    parse_overrides,
+    resolve_output_dir,
+)
+from scripts.test_mc_builder import make_demo_mc_builder
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+BUILD_SCRIPT = PROJECT_ROOT / "scripts" / "build_mc_dataset.py"
+DEMO_SCRIPT = PROJECT_ROOT / "scripts" / "test_mc_builder.py"
+
+
+def test_build_script_remains_executable() -> None:
+    """The shebang entrypoint must retain its executable repository mode."""
+    assert BUILD_SCRIPT.stat().st_mode & 0o111
+
+
+def test_script_module_imports_do_not_mutate_sys_path() -> None:
+    """Ordinary package imports must not change process-global precedence."""
+    code = """
+import sys
+before = list(sys.path)
+import scripts.build_mc_dataset
+import scripts.test_mc_builder
+assert sys.path == before, (before, sys.path)
+"""
+
+    subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_direct_script_paths_resolve_repository_imports(tmp_path: Path) -> None:
+    """Direct path execution must still bootstrap imports outside the repo."""
+    help_result = subprocess.run(
+        [sys.executable, str(BUILD_SCRIPT), "--help"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+
+    probe = (
+        "import runpy, sys; "
+        f"root = {str(PROJECT_ROOT)!r}; "
+        "sys.path.append(root); "
+        f"runpy.run_path({str(DEMO_SCRIPT)!r}, run_name='__probe__'); "
+        "assert sys.path[0] == root, sys.path"
+    )
+    demo_result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert demo_result.returncode == 0, demo_result.stderr
 
 
 class TestBuildMcDatasetArgs:
@@ -50,6 +119,175 @@ class TestBuildMcDatasetArgs:
 
         assert cfg["data"]["max_questions"] == 50
         assert cfg["ppo"]["total_timesteps"] == 3000
+        assert cfg["mc_guards"]["max_repair_attempts"] == 10_000
+
+    def test_default_repair_budget_is_forwarded_to_mc_builder(self) -> None:
+        cfg = load_yaml_config(None, smoke=False)
+
+        builder = make_mc_builder(cfg)
+
+        assert cfg["mc_guards"]["max_repair_attempts"] == 10_000
+        assert builder.max_repair_attempts == 10_000
+
+    def test_integer_variable_k_overrides_preserve_config_semantics(self) -> None:
+        """Documented CLI integers remain valid without factory coercion."""
+        cfg = load_yaml_config(None, smoke=False)
+        args = parse_args(
+            [
+                "data.K=5",
+                "data.variable_K=true",
+                "data.min_K=1",
+                "data.max_K=null",
+            ]
+        )
+        cfg = merge_overrides(cfg, parse_overrides(args))
+
+        builder = make_mc_builder(cfg)
+
+        assert builder.K == 5
+        assert builder.variable_K is True
+        assert builder.min_K == 2
+        assert builder.max_K == 5
+
+    def test_boolean_false_variable_k_override_remains_disabled(self) -> None:
+        """The documented unquoted CLI boolean must remain a real False."""
+        cfg = load_yaml_config(None, smoke=False)
+        args = parse_args(["data.variable_K=false"])
+        cfg = merge_overrides(cfg, parse_overrides(args))
+
+        builder = make_mc_builder(cfg)
+
+        assert builder.variable_K is False
+
+    def test_missing_variable_k_uses_disabled_default(self) -> None:
+        """Legacy configs without variable_K keep the documented default."""
+        cfg = load_yaml_config(None, smoke=False)
+        cfg["data"].pop("variable_K")
+
+        builder = make_mc_builder(cfg)
+
+        assert builder.variable_K is False
+
+    @pytest.mark.parametrize("value", ["false", "true", "yes", "0"])
+    def test_string_variable_k_config_is_rejected(self, value: str) -> None:
+        """Quoted YAML/CLI strings must not be coerced by Python truthiness."""
+        cfg = load_yaml_config(None, smoke=False)
+        cfg["data"]["variable_K"] = value
+
+        with pytest.raises(ValueError, match="variable_K must be a boolean"):
+            make_mc_builder(cfg)
+
+    @pytest.mark.parametrize(
+        ("override", "message"),
+        [
+            ("data.K=4.5", "K must be an integer"),
+            ("data.min_K=2.5", "min_K must be an integer"),
+            ("data.max_K=4.5", "max_K must be an integer"),
+        ],
+    )
+    def test_non_integer_k_override_fails_in_builder_configuration(
+        self,
+        override: str,
+        message: str,
+    ) -> None:
+        """The config factory must not truncate invalid K bounds."""
+        cfg = load_yaml_config(None, smoke=False)
+        args = parse_args(["data.variable_K=true", override])
+        cfg = merge_overrides(cfg, parse_overrides(args))
+
+        with pytest.raises(ValueError, match=message):
+            make_mc_builder(cfg)
+
+    def test_demo_builder_forwards_configured_repair_budget(self) -> None:
+        cfg = load_yaml_config(None, smoke=False)
+        cfg["mc_guards"]["max_repair_attempts"] = 7
+
+        builder = make_demo_mc_builder(cfg)
+
+        assert builder.max_repair_attempts == 7
+
+    def test_demo_builder_defaults_repair_budget_for_legacy_config(self) -> None:
+        cfg = load_yaml_config(None, smoke=False)
+        cfg["mc_guards"].pop("max_repair_attempts")
+
+        builder = make_demo_mc_builder(cfg)
+
+        assert builder.max_repair_attempts == 10_000
+
+
+def test_build_metadata_preserves_repair_telemetry() -> None:
+    """Published split metadata must carry the stable repair schema."""
+    repair = {
+        "attempted_questions": 3,
+        "succeeded_questions": 1,
+        "ranked_successes": 1,
+        "fallback_successes": 0,
+        "budget_exhausted_questions": 1,
+        "candidate_attempts": 37,
+        "candidate_scans": 41,
+        "length_ratio_triggers": 2,
+        "question_overlap_triggers": 2,
+        "simultaneous_guard_triggers": 1,
+        "failed_questions": 2,
+        "exhaustive_no_solution_questions": 1,
+        "unrecoverable_gold_overlap_questions": 0,
+    }
+    stats = {
+        "reference_answer_count": 11,
+        "drop_reasons": {
+            "repair_budget_exhausted": 1,
+            "guard_repair_failed": 1,
+        },
+        "repair": repair,
+    }
+
+    metadata = build_metadata_entry([object(), object(), object()], [object()], stats)
+
+    assert metadata["raw_count"] == 3
+    assert metadata["retained_count"] == 1
+    assert metadata["repair"] == repair
+    assert metadata["repair"] is not repair
+
+
+def test_empty_target_stats_preserve_reference_counts_without_fitting() -> None:
+    """An empty target split still reports its supplied reference corpus."""
+    cfg = load_yaml_config(None, smoke=False)
+    builder = make_mc_builder(cfg)
+    references = [
+        SimpleNamespace(answer_primary="Alpha"),
+        SimpleNamespace(answer_primary="Alpha"),
+        SimpleNamespace(answer_primary="Beta"),
+    ]
+
+    class ProfileBuilderThatMustNotFit:
+        def fit(self, _questions) -> None:
+            raise AssertionError("empty-target builds must not fit reference profiles")
+
+    built = builder.build(
+        [],
+        ProfileBuilderThatMustNotFit(),
+        reference_questions=references,
+    )
+
+    assert built == []
+    assert builder.last_build_stats["target_questions"] == 0
+    assert builder.last_build_stats["reference_questions"] == 3
+    assert builder.last_build_stats["reference_answer_count"] == 2
+    assert builder.last_build_stats["repair"] == {
+        "attempted_questions": 0,
+        "succeeded_questions": 0,
+        "ranked_successes": 0,
+        "fallback_successes": 0,
+        "budget_exhausted_questions": 0,
+        "candidate_attempts": 0,
+        "candidate_scans": 0,
+        "length_ratio_triggers": 0,
+        "question_overlap_triggers": 0,
+        "simultaneous_guard_triggers": 0,
+        "failed_questions": 0,
+        "exhaustive_no_solution_questions": 0,
+        "unrecoverable_gold_overlap_questions": 0,
+    }
 
 
 class TestParseOverrides:

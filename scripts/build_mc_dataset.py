@@ -24,8 +24,12 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, List, Optional
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Direct path execution starts with ``scripts/`` on ``sys.path``.  Package
+# imports and ``python -m`` already have the repository root and must not
+# mutate process-global import precedence.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from qb_data import TossupQuestion
 from qb_data.answer_profiles import AnswerProfileBuilder
@@ -134,9 +138,9 @@ def make_mc_builder(config: dict[str, Any]) -> MCBuilder:
             config['likelihood'].get('embedding_model', 'all-MiniLM-L6-v2'),
         ),
         openai_model=config['likelihood'].get('openai_model', 'text-embedding-3-small'),
-        variable_K=bool(data_cfg.get('variable_K', False)),
-        min_K=int(data_cfg.get('min_K', 2)),
-        max_K=int(data_cfg['max_K']) if data_cfg.get('max_K') is not None else None,
+        variable_K=data_cfg.get('variable_K', False),
+        min_K=data_cfg.get('min_K', 2),
+        max_K=data_cfg.get('max_K'),
         **config['mc_guards'],
     )
 
@@ -152,6 +156,7 @@ def build_metadata_entry(raw_questions: List[TossupQuestion], mc_questions: List
         "retention_rate": retained / raw_count if raw_count else 0.0,
         "reference_answer_count": int(stats.get("reference_answer_count", 0)),
         "drop_reasons": dict(stats.get("drop_reasons", {})),
+        "repair": dict(stats.get("repair", {})),
     }
 
 

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
+import hashlib
 import random
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -15,6 +17,22 @@ from sklearn.metrics.pairwise import cosine_similarity
 from qb_data.answer_profiles import AnswerProfileBuilder
 from qb_data.data_loader import TossupQuestion
 from qb_data.text_utils import normalize_answer
+
+
+_REPAIR_RNG_DOMAIN = b"qanta-buzzer.mc-builder.guard-repair.v1\0"
+
+
+def _new_repair_rng(main_rng_state: object) -> random.Random:
+    """Derive a deterministic repair stream without replaying the main RNG.
+
+    The freshly initialized main RNG state captures both deterministic seeds
+    and ``None``'s system-entropy semantics without advancing that stream.
+    SHA-256 provides stable domain separation before the digest seeds the
+    independent repair RNG.
+    """
+    state_bytes = repr(main_rng_state).encode("ascii")
+    digest = hashlib.sha256(_REPAIR_RNG_DOMAIN + state_bytes).digest()
+    return random.Random(int.from_bytes(digest, "big"))
 
 
 @dataclass
@@ -29,6 +47,136 @@ class MCQuestion(TossupQuestion):
     option_profiles: List[str]
     option_answer_primary: List[str]
     distractor_strategy: str
+
+
+@dataclass
+class _RepairSearchBudget:
+    """Independent scan- and transition-count ceilings for one repair."""
+
+    limit: int
+    attempts: int = 0
+    exhausted: bool = False
+    candidate_scans: int = 0
+    candidate_scan_truncated: bool = False
+
+    def consume(self) -> bool:
+        """Consume one unique prefix-candidate transition, or exhaust it."""
+        if self.attempts >= self.limit:
+            self.exhausted = True
+            return False
+        self.attempts += 1
+        return True
+
+    def consume_candidate_scan(self) -> bool:
+        """Consume one raw-candidate scan, or mark the source truncated."""
+        if self.candidate_scans >= self.limit:
+            self.candidate_scan_truncated = True
+            return False
+        self.candidate_scans += 1
+        return True
+
+
+class _LazyRepairCandidatePool:
+    """Screen ranked and fallback sources only as DFS requests candidates."""
+
+    def __init__(
+        self,
+        *,
+        budget: _RepairSearchBudget,
+        gold: str,
+        accepts: Callable[[str], bool],
+    ) -> None:
+        self.budget = budget
+        self.gold = gold
+        self.accepts = accepts
+        self.candidates: List[str] = []
+        self.seen: Set[str] = set()
+        self._raw_candidates: List[str] = []
+        self._raw_index = 0
+        self._excluded: Set[str] = set()
+        self._source_covers_phase = True
+        self.phase_terminal = True
+        self.phase_truncated = False
+
+    def begin_source(
+        self,
+        raw_candidates: List[str],
+        *,
+        source_covers_phase: bool = True,
+        excluded: Optional[Set[str]] = None,
+    ) -> None:
+        """Begin one source phase without discarding prior candidates."""
+        self._raw_candidates = raw_candidates
+        self._raw_index = 0
+        self._excluded = excluded or set()
+        self._source_covers_phase = source_covers_phase
+        self.phase_terminal = False
+        self.phase_truncated = False
+
+    def ensure_index(self, index: int) -> bool:
+        """Screen only enough raw entries to expose candidate ``index``."""
+        while len(self.candidates) <= index and not self.phase_terminal:
+            # Check physical exhaustion before charging another scan.  A
+            # complete source of exactly B entries is exhaustive, whereas a
+            # bounded prefix with an omitted tail remains fail-closed.
+            if self._raw_index >= len(self._raw_candidates):
+                self.phase_terminal = True
+                if not self._source_covers_phase:
+                    self.phase_truncated = True
+                    self.budget.candidate_scan_truncated = True
+                break
+
+            if not self.budget.consume_candidate_scan():
+                self.phase_terminal = True
+                self.phase_truncated = True
+                break
+
+            candidate = self._raw_candidates[self._raw_index]
+            self._raw_index += 1
+            if (
+                candidate == self.gold
+                or candidate in self._excluded
+                or candidate in self.seen
+            ):
+                continue
+            # Preserve the prior contract: once a unique raw candidate is
+            # screened, fallback must not reconsider it even if a guard
+            # rejects it.
+            self.seen.add(candidate)
+            if self.accepts(candidate):
+                self.candidates.append(candidate)
+
+        return index < len(self.candidates)
+
+
+@dataclass
+class _RepairResult:
+    """Outcome and provenance for one guard-repair attempt."""
+
+    options: Optional[List[str]]
+    source: Optional[str]
+    candidate_attempts: int
+    candidate_scans: int
+    budget_exhausted: bool
+
+
+def _new_repair_stats() -> Dict[str, int]:
+    """Return a stable zero-valued repair telemetry schema."""
+    return {
+        "attempted_questions": 0,
+        "succeeded_questions": 0,
+        "ranked_successes": 0,
+        "fallback_successes": 0,
+        "budget_exhausted_questions": 0,
+        "candidate_attempts": 0,
+        "candidate_scans": 0,
+        "length_ratio_triggers": 0,
+        "question_overlap_triggers": 0,
+        "simultaneous_guard_triggers": 0,
+        "failed_questions": 0,
+        "exhaustive_no_solution_questions": 0,
+        "unrecoverable_gold_overlap_questions": 0,
+    }
 
 
 def _normalized_edit_distance(a: str, b: str) -> float:
@@ -85,6 +233,7 @@ class MCBuilder:
         variable_K: bool = False,
         min_K: int = 2,
         max_K: int | None = None,
+        max_repair_attempts: int = 10_000,
     ):
         """Initialize the MC builder.
 
@@ -101,19 +250,44 @@ class MCBuilder:
                 ``[min_K, max_K or K]``.
             min_K: Minimum K when ``variable_K`` is True.
             max_K: Maximum K when ``variable_K`` is True.  Defaults to ``K``.
+            max_repair_attempts: Deterministic per-repair ceiling applied
+                independently to raw candidate scans and unique search
+                transitions, shared by ranked and fallback phases.  These are
+                count ceilings, not primitive-operation or wall-clock limits;
+                each transition may inspect up to ``K`` chosen options.
         """
+        if isinstance(K, bool) or not isinstance(K, int):
+            raise ValueError("K must be an integer")
         if K < 2:
             raise ValueError("K must be >= 2")
+        if isinstance(min_K, bool) or not isinstance(min_K, int):
+            raise ValueError("min_K must be an integer")
+        if max_K is not None and (
+            isinstance(max_K, bool) or not isinstance(max_K, int)
+        ):
+            raise ValueError("max_K must be an integer or None")
+        if not isinstance(variable_K, bool):
+            raise ValueError("variable_K must be a boolean")
         self.K = K
         self.variable_K = variable_K
         self.min_K = max(2, min_K)
         self.max_K = max_K if max_K is not None else K
+        if self.variable_K and self.max_K < self.min_K:
+            raise ValueError("max_K must be >= min_K when variable_K is enabled")
+        if (
+            isinstance(max_repair_attempts, bool)
+            or not isinstance(max_repair_attempts, int)
+            or max_repair_attempts < 1
+        ):
+            raise ValueError("max_repair_attempts must be a positive integer")
+        self.max_repair_attempts = max_repair_attempts
         self.strategy = strategy
         self.alias_edit_distance_threshold = alias_edit_distance_threshold
         self.duplicate_token_overlap_threshold = duplicate_token_overlap_threshold
         self.max_length_ratio = max_length_ratio
         self._random_seed = random_seed
         self.rng = random.Random(random_seed)
+        self._repair_rng = _new_repair_rng(self.rng.getstate())
         self.embedding_model = embedding_model
         self.openai_model = openai_model
         self.last_build_stats: Dict[str, Any] = {}
@@ -142,7 +316,7 @@ class MCBuilder:
         self._ref_cache: Optional[Dict[str, Any]] = None
 
     def reset_rng(self, seed: int | None = None) -> None:
-        """Reset the per-builder RNG to the constructor seed (or override).
+        """Reset both per-builder RNG streams to the seed (or override).
 
         Used by ``scripts/build_mc_dataset.py`` to keep a single
         ``MCBuilder`` instance across train/val/test builds (so the
@@ -157,7 +331,9 @@ class MCBuilder:
             to the value passed to ``__init__`` (the documented default
             for callers that just want a deterministic reset).
         """
-        self.rng = random.Random(self._random_seed if seed is None else seed)
+        effective_seed = self._random_seed if seed is None else seed
+        self.rng = random.Random(effective_seed)
+        self._repair_rng = _new_repair_rng(self.rng.getstate())
 
     def _prepare_lookup(
         self, questions: List[TossupQuestion]
@@ -332,16 +508,25 @@ class MCBuilder:
 
         return False
 
-    def _violates_duplicate_guard(self, candidate: str, selected: List[str]) -> bool:
-        """Check if candidate has too much token overlap with already selected options.
+    def _violates_duplicate_guard(
+        self,
+        candidate: str,
+        selected: List[str],
+        *,
+        gold: str,
+    ) -> bool:
+        """Check if candidate has too much token overlap with any option.
 
         Args:
             candidate: Candidate distractor.
             selected: List of already selected distractors.
+            gold: Correct answer that will appear in the option set.
 
         Returns:
             True if the candidate has too much overlap.
         """
+        if _token_overlap(candidate, gold) > self.duplicate_token_overlap_threshold:
+            return True
         for chosen in selected:
             if _token_overlap(candidate, chosen) > self.duplicate_token_overlap_threshold:
                 return True
@@ -376,6 +561,26 @@ class MCBuilder:
                 return True
         return False
 
+    def _passes_repair_candidate_filters(
+        self,
+        candidate: str,
+        question_norm: str,
+        gold_aliases: List[str],
+        gold_norms: set[str],
+    ) -> bool:
+        """Apply candidate-local alias and question-overlap filters."""
+        if self._aliases_collide(
+            candidate,
+            gold_aliases,
+            _gold_norms=gold_norms,
+        ):
+            return False
+        candidate_norm = str(normalize_answer(candidate))
+        return not (
+            candidate_norm
+            and candidate_norm in question_norm
+        )
+
     def _target_k(self) -> int:
         """Return the target K for the next question.
 
@@ -385,6 +590,316 @@ class MCBuilder:
         if not self.variable_K:
             return self.K
         return self.rng.randint(self.min_K, self.max_K)
+
+    def _bounded_fallback_order_from_seed(
+        self,
+        answers: List[str],
+        selected: List[str],
+        gold: str,
+        rng_seed: int,
+        limit: int,
+    ) -> Tuple[List[str], bool]:
+        """Return a bounded fallback prefix from a question-local RNG seed.
+
+        A prefix of a full ``random.shuffle`` cannot be reproduced without
+        processing the full input.  ``sample`` instead gives a deterministic
+        ordered sample of at most ``limit`` raw answers.  The seed comes from
+        the domain-separated repair stream, so this does not advance or replay
+        any part of ``self.rng``.
+
+        ``answers`` is the sorted unique universe produced by
+        ``_prepare_lookup``.  Known exclusions are located by binary search,
+        avoiding a scan merely to construct the eligible population.
+
+        With ``N`` answers, ``E`` exclusions, and ``S`` sampled ranks, the
+        whole helper uses
+        ``O(E log N + (E + S) log(E + 1) + S)`` time and ``O(E + S)``
+        auxiliary space.  After exclusions are located and sorted, compressed
+        rank restoration alone is ``O(E + S log(E + 1))``.
+
+        Returns the sampled prefix and whether it covers the eligible source.
+        """
+        excluded_indices: List[int] = []
+        for answer in {*selected, gold}:
+            idx = bisect_left(answers, answer)
+            if idx < len(answers) and answers[idx] == answer:
+                excluded_indices.append(idx)
+        excluded_indices.sort()
+
+        eligible_count = len(answers) - len(excluded_indices)
+        fallback_rng = random.Random(rng_seed)
+        sample_size = min(limit, eligible_count)
+        eligible_ranks = fallback_rng.sample(range(eligible_count), sample_size)
+
+        # Removing exclusion ``i`` shifts the ranks of later answers by one.
+        # Expressing each excluded index in the compressed eligible space lets
+        # us restore an eligible rank with one binary search instead of walking
+        # every preceding exclusion for every sampled answer.
+        excluded_eligible_ranks = [
+            excluded_idx - offset
+            for offset, excluded_idx in enumerate(excluded_indices)
+        ]
+        sampled = [
+            answers[
+                rank + bisect_right(excluded_eligible_ranks, rank)
+            ]
+            for rank in eligible_ranks
+        ]
+        return (
+            sampled,
+            sample_size == eligible_count,
+        )
+
+    @staticmethod
+    def _bounded_unseen_prefix(
+        raw_candidates: List[str],
+        excluded: Set[str],
+        limit: int,
+    ) -> Tuple[List[str], bool]:
+        """Return up to ``limit`` unseen entries from a unique ordered source.
+
+        Materialized fallback orders are unique.  Therefore at most
+        ``limit + len(excluded)`` membership checks can either reach the end
+        or prove that another unseen entry remains.  Skipped known entries do
+        not consume the expensive candidate scan/normalization budget.
+        """
+        prefix: List[str] = []
+        membership_limit = min(
+            len(raw_candidates),
+            limit + len(excluded),
+        )
+        for idx in range(membership_limit):
+            candidate = raw_candidates[idx]
+            if candidate in excluded:
+                continue
+            if len(prefix) >= limit:
+                return prefix, False
+            prefix.append(candidate)
+        return prefix, membership_limit == len(raw_candidates)
+
+    def _search_repaired_options(
+        self,
+        gold: str,
+        candidate_pool: _LazyRepairCandidatePool,
+        target_k: int,
+        permutation: List[int],
+        budget: _RepairSearchBudget,
+        transition_memo: Dict[Tuple[int, str], int],
+        next_node_id: List[int],
+    ) -> Optional[List[str]]:
+        """Find a guard-passing option set within a transition-count ceiling.
+
+        The budget charges previously unseen prefix-candidate transitions.
+        For a ceiling ``B`` and ``K`` choices, duplicate and length guards
+        perform ``O(B * K)`` option-level inspections, excluding text and
+        token-comparison costs.
+        """
+        needed = target_k - 1
+
+        # Preserve depth-first candidate order and monotone pruning without
+        # tying supported K to Python's recursion limit.  Feasibility
+        # lookahead screens only enough candidates to complete the current
+        # prefix, so impossible prefixes consume no transition attempts.
+        chosen: List[str] = []
+        chosen_indices: List[int] = []
+        chosen_node_ids: List[int] = []
+        next_idx = 0
+
+        while True:
+            remaining = needed - len(chosen)
+            required_last_idx = next_idx + remaining - 1
+            candidate_pool.ensure_index(required_last_idx)
+            last_start = len(candidate_pool.candidates) - remaining
+
+            if next_idx > last_start:
+                if not chosen:
+                    return None
+                next_idx = chosen_indices.pop() + 1
+                chosen.pop()
+                chosen_node_ids.pop()
+                continue
+
+            idx = next_idx
+            next_idx += 1
+            candidate = candidate_pool.candidates[idx]
+            parent_node_id = chosen_node_ids[-1] if chosen_node_ids else 0
+            transition_key = (parent_node_id, candidate)
+            child_node_id = transition_memo.get(transition_key)
+            if child_node_id is None:
+                if not budget.consume():
+                    return None
+                accepted = not self._violates_duplicate_guard(
+                    candidate,
+                    chosen,
+                    gold=gold,
+                )
+                if accepted:
+                    partial = [gold] + chosen + [candidate]
+                    accepted = not self._violates_length_ratio_guard(partial)
+                if accepted:
+                    child_node_id = next_node_id[0]
+                    next_node_id[0] += 1
+                else:
+                    child_node_id = -1
+                transition_memo[transition_key] = child_node_id
+            if child_node_id < 0:
+                continue
+
+            chosen.append(candidate)
+            chosen_indices.append(idx)
+            chosen_node_ids.append(child_node_id)
+            if len(chosen) == needed:
+                ordered = [gold] + chosen
+                return [ordered[i] for i in permutation]
+            next_idx = idx + 1
+
+    def _repair_options_after_guard_failure(
+        self,
+        question: str,
+        gold: str,
+        selected: List[str],
+        ranked: List[str],
+        answers: List[str],
+        gold_aliases: List[str],
+        gold_norms: set[str],
+        target_k: int,
+        shuffled_options: List[str],
+        fallback_rng_seed: int,
+        fallback_selected: List[str],
+        fallback_order: Optional[List[str]],
+    ) -> _RepairResult:
+        """Try later ranked/fallback distractors without weakening guards."""
+        budget = _RepairSearchBudget(self.max_repair_attempts)
+        needed = target_k - 1
+        question_norm = str(normalize_answer(question))
+        gold_norm = str(normalize_answer(gold))
+        if gold_norm and gold_norm in question_norm:
+            return _RepairResult(None, None, 0, 0, False)
+        if needed <= 0:
+            return _RepairResult(None, None, 0, 0, False)
+        if needed > budget.limit:
+            return _RepairResult(None, None, 0, 0, True)
+
+        ordered_options = [gold] + selected[: target_k - 1]
+        option_positions: Dict[str, int] = {}
+        for index, option in enumerate(ordered_options):
+            # Match list.index's first-occurrence behavior defensively even
+            # though public repair inputs contain unique answer strings.
+            option_positions.setdefault(option, index)
+        permutation = [option_positions[option] for option in shuffled_options]
+
+        candidate_pool = _LazyRepairCandidatePool(
+            budget=budget,
+            gold=gold,
+            accepts=lambda candidate: self._passes_repair_candidate_filters(
+                candidate,
+                question_norm,
+                gold_aliases,
+                gold_norms,
+            ),
+        )
+        candidate_pool.begin_source(ranked)
+        transition_memo: Dict[Tuple[int, str], int] = {}
+        next_node_id = [1]
+        repaired = self._search_repaired_options(
+            gold,
+            candidate_pool,
+            target_k,
+            permutation,
+            budget,
+            transition_memo,
+            next_node_id,
+        )
+        if repaired is not None:
+            return _RepairResult(
+                repaired,
+                "ranked",
+                budget.attempts,
+                budget.candidate_scans,
+                False,
+            )
+
+        if budget.exhausted or candidate_pool.phase_truncated:
+            return _RepairResult(
+                None,
+                None,
+                budget.attempts,
+                budget.candidate_scans,
+                True,
+            )
+
+        # A complete, unique N-1 ranking already covers every possible
+        # non-gold answer, so a fallback pass cannot add a candidate.
+        ranked_covers_answers = (
+            len(ranked) == max(0, len(answers) - 1)
+            and len(candidate_pool.seen) == len(ranked)
+        )
+        if ranked_covers_answers:
+            return _RepairResult(
+                None,
+                None,
+                budget.attempts,
+                budget.candidate_scans,
+                False,
+            )
+
+        if fallback_order is None:
+            remaining_scans = budget.limit - budget.candidate_scans
+            fallback_order, fallback_source_exhausted = (
+                self._bounded_fallback_order_from_seed(
+                    answers,
+                    sorted(candidate_pool.seen | set(fallback_selected)),
+                    gold,
+                    fallback_rng_seed,
+                    remaining_scans,
+                )
+            )
+        else:
+            remaining_scans = budget.limit - budget.candidate_scans
+            fallback_order, fallback_source_exhausted = (
+                self._bounded_unseen_prefix(
+                    fallback_order,
+                    candidate_pool.seen | set(fallback_selected) | {gold},
+                    remaining_scans,
+                )
+            )
+
+        ranked_candidate_count = len(candidate_pool.candidates)
+        candidate_pool.begin_source(
+            fallback_order,
+            source_covers_phase=fallback_source_exhausted,
+            excluded=set(fallback_selected),
+        )
+        # Avoid replaying ranked DFS if fallback contributes no viable
+        # candidate.  This prefetch remains lazy: it stops at the first new
+        # candidate or a terminal source.
+        if not candidate_pool.ensure_index(ranked_candidate_count):
+            return _RepairResult(
+                None,
+                None,
+                budget.attempts,
+                budget.candidate_scans,
+                candidate_pool.phase_truncated,
+            )
+
+        repaired = self._search_repaired_options(
+            gold,
+            candidate_pool,
+            target_k,
+            permutation,
+            budget,
+            transition_memo,
+            next_node_id,
+        )
+        return _RepairResult(
+            repaired,
+            "fallback" if repaired is not None else None,
+            budget.attempts,
+            budget.candidate_scans,
+            False if repaired is not None else (
+                budget.exhausted or candidate_pool.phase_truncated
+            ),
+        )
 
     def build(
         self,
@@ -404,19 +919,23 @@ class MCBuilder:
         Returns:
             List of MCQuestion objects that passed all guards.
         """
+        ref_questions = (
+            questions if reference_questions is None else list(reference_questions)
+        )
         if not questions:
             self.last_build_stats = {
                 "target_questions": 0,
-                "reference_questions": 0,
-                "reference_answer_count": 0,
+                "reference_questions": len(ref_questions),
+                "reference_answer_count": len(
+                    {q.answer_primary for q in ref_questions}
+                ),
                 "built_questions": 0,
                 "dropped_questions": 0,
                 "retention_rate": 0.0,
                 "drop_reasons": {},
+                "repair": _new_repair_stats(),
             }
             return []
-
-        ref_questions = questions if reference_questions is None else list(reference_questions)
 
         # ref_questions defaults to the target questions for convenience.
         # ``AnswerProfileBuilder.fit`` is a no-op when ``qid_set`` already
@@ -508,8 +1027,14 @@ class MCBuilder:
 
         mc_questions: List[MCQuestion] = []
         drop_reasons: Dict[str, int] = defaultdict(int)
+        repair_stats = _new_repair_stats()
 
         for q in questions:
+            # Allocate one independent repair substream per input item even if
+            # the item is later skipped or never needs repair.  Consequently,
+            # a later item's repair candidates cannot depend on whether an
+            # earlier item happened to trigger the repair path.
+            fallback_rng_seed = self._repair_rng.getrandbits(256)
             target_k = self._target_k()
             gold = q.answer_primary
             if gold not in answer_to_aliases:
@@ -526,20 +1051,31 @@ class MCBuilder:
                     continue
                 if self._aliases_collide(candidate, gold_aliases, _gold_norms=gold_norms):
                     continue
-                if self._violates_duplicate_guard(candidate, selected):
+                if self._violates_duplicate_guard(
+                    candidate,
+                    selected,
+                    gold=gold,
+                ):
                     continue
                 selected.append(candidate)
                 if len(selected) >= target_k - 1:
                     break
 
             # If not enough distractors from ranking, try random fallback
+            selected_after_ranked = selected[:]
+            fallback_order: Optional[List[str]] = None
             if len(selected) < target_k - 1:
                 fallback = [a for a in answers if a not in selected and a != gold]
                 self.rng.shuffle(fallback)
+                fallback_order = fallback[:]
                 for candidate in fallback:
                     if self._aliases_collide(candidate, gold_aliases, _gold_norms=gold_norms):
                         continue
-                    if self._violates_duplicate_guard(candidate, selected):
+                    if self._violates_duplicate_guard(
+                        candidate,
+                        selected,
+                        gold=gold,
+                    ):
                         continue
                     selected.append(candidate)
                     if len(selected) >= target_k - 1:
@@ -556,15 +1092,62 @@ class MCBuilder:
             gold_index = option_answer_primary.index(gold)
             options = option_answer_primary[:]
 
-            # Apply guard 3: Check length ratio
-            if self._violates_length_ratio_guard(options):
-                drop_reasons["length_ratio_guard"] += 1
-                continue
+            length_guard_failed = self._violates_length_ratio_guard(options)
+            question_guard_failed = self._violates_question_overlap_guard(
+                q.question,
+                options,
+            )
+            if length_guard_failed or question_guard_failed:
+                if length_guard_failed:
+                    repair_stats["length_ratio_triggers"] += 1
+                if question_guard_failed:
+                    repair_stats["question_overlap_triggers"] += 1
+                if length_guard_failed and question_guard_failed:
+                    repair_stats["simultaneous_guard_triggers"] += 1
 
-            # Apply guard 4: Check question overlap
-            if self._violates_question_overlap_guard(q.question, options):
-                drop_reasons["question_overlap_guard"] += 1
-                continue
+                repair_stats["attempted_questions"] += 1
+
+                # Replacing distractors cannot repair a leaked gold answer.
+                if self._violates_question_overlap_guard(q.question, [gold]):
+                    repair_stats["failed_questions"] += 1
+                    repair_stats["unrecoverable_gold_overlap_questions"] += 1
+                    drop_reasons["question_overlap_guard"] += 1
+                    continue
+
+                repair = self._repair_options_after_guard_failure(
+                    q.question,
+                    gold,
+                    selected[: target_k - 1],
+                    ranked,
+                    answers,
+                    gold_aliases,
+                    gold_norms,
+                    target_k,
+                    option_answer_primary,
+                    fallback_rng_seed,
+                    selected_after_ranked,
+                    fallback_order,
+                )
+                repair_stats["candidate_attempts"] += repair.candidate_attempts
+                repair_stats["candidate_scans"] += repair.candidate_scans
+                if repair.options is None:
+                    repair_stats["failed_questions"] += 1
+                    if repair.budget_exhausted:
+                        repair_stats["budget_exhausted_questions"] += 1
+                        drop_reasons["repair_budget_exhausted"] += 1
+                    else:
+                        repair_stats["exhaustive_no_solution_questions"] += 1
+                        drop_reasons["guard_repair_failed"] += 1
+                    continue
+
+                repair_stats["succeeded_questions"] += 1
+                if repair.source == "ranked":
+                    repair_stats["ranked_successes"] += 1
+                else:
+                    repair_stats["fallback_successes"] += 1
+                option_answer_primary = repair.options
+                gold_index = option_answer_primary.index(gold)
+                options = option_answer_primary[:]
 
             # Build option profiles with leave-one-out for gold
             option_profiles: List[str] = []
@@ -604,6 +1187,7 @@ class MCBuilder:
                 len(mc_questions) / len(questions) if questions else 0.0
             ),
             "drop_reasons": dict(drop_reasons),
+            "repair": repair_stats,
         }
         return mc_questions
 
@@ -636,6 +1220,7 @@ def build_mc_questions(
         alias_edit_distance_threshold=float(guards.get("alias_edit_distance_threshold", 0.2)),
         duplicate_token_overlap_threshold=float(guards.get("duplicate_token_overlap_threshold", 0.8)),
         max_length_ratio=float(guards.get("max_length_ratio", 3.0)),
+        max_repair_attempts=guards.get("max_repair_attempts", 10_000),
         random_seed=random_seed,
     )
     return builder.build(questions=questions, profile_builder=profile_builder)
