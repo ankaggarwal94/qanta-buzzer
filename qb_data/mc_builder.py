@@ -48,6 +48,34 @@ class MCQuestion(TossupQuestion):
     option_answer_primary: List[str]
     distractor_strategy: str
 
+    def __post_init__(self) -> None:
+        """Restore the declared tuple-pair schema after JSON construction."""
+        value = self.human_buzz_positions
+        if value is None:
+            return
+        if not isinstance(value, list):
+            raise ValueError(
+                "human_buzz_positions must be a JSON list or null; "
+                f"got {type(value).__name__}"
+            )
+
+        restored: List[Tuple[int, int]] = []
+        for index, item in enumerate(value):
+            field = f"human_buzz_positions[{index}]"
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise ValueError(
+                    f"{field} must be a two-element [position, count] sequence"
+                )
+            position, count = item
+            for component_index, component in enumerate((position, count)):
+                if isinstance(component, bool) or not isinstance(component, int):
+                    raise ValueError(
+                        f"{field}[{component_index}] must be an integer; "
+                        f"got {type(component).__name__}"
+                    )
+            restored.append((position, count))
+        self.human_buzz_positions = restored
+
 
 @dataclass
 class _RepairSearchBudget:

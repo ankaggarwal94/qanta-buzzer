@@ -72,6 +72,7 @@ def test_human_buzz_positions_json_roundtrip_preserves_schema(
         pytest.param([[1, 2, 3]], id="wrong-arity"),
         pytest.param([7], id="scalar-entry"),
         pytest.param([["not-an-integer", 2]], id="non-integer-component"),
+        pytest.param([[True, 2]], id="boolean-component"),
     ],
 )
 def test_malformed_human_buzz_positions_fail_with_index_context(
@@ -96,4 +97,29 @@ def test_malformed_human_buzz_positions_fail_with_index_context(
     }
 
     with pytest.raises(ValueError, match=r"human_buzz_positions\[0\]"):
+        mc_question_from_dict(row)
+
+
+def test_non_list_human_buzz_positions_fails_at_field_boundary() -> None:
+    row = {
+        "qid": "q-human-buzz",
+        "question": "alpha beta",
+        "tokens": ["alpha", "beta"],
+        "answer_primary": "Alpha",
+        "clean_answers": ["Alpha"],
+        "run_indices": [0, 1],
+        "human_buzz_positions": {"position": 1, "count": 2},
+        "category": "Test",
+        "cumulative_prefixes": ["alpha", "alpha beta"],
+        "options": ["Alpha", "Beta"],
+        "gold_index": 0,
+        "option_profiles": ["alpha profile", "beta profile"],
+        "option_answer_primary": ["Alpha", "Beta"],
+        "distractor_strategy": "test",
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="human_buzz_positions must be a JSON list or null",
+    ):
         mc_question_from_dict(row)
