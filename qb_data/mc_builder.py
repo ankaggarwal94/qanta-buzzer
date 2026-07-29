@@ -234,6 +234,7 @@ class MCBuilder:
         min_K: int = 2,
         max_K: int | None = None,
         max_repair_attempts: int = 10_000,
+        similarity_block_size: int = 256,
     ):
         """Initialize the MC builder.
 
@@ -255,6 +256,8 @@ class MCBuilder:
                 transitions, shared by ranked and fallback phases.  These are
                 count ceilings, not primitive-operation or wall-clock limits;
                 each transition may inspect up to ``K`` chosen options.
+            similarity_block_size: Maximum number of profile-similarity rows
+                materialized at once.
         """
         if isinstance(K, bool) or not isinstance(K, int):
             raise ValueError("K must be an integer")
@@ -280,7 +283,16 @@ class MCBuilder:
             or max_repair_attempts < 1
         ):
             raise ValueError("max_repair_attempts must be a positive integer")
+        if (
+            isinstance(similarity_block_size, bool)
+            or not isinstance(similarity_block_size, int)
+            or similarity_block_size < 1
+        ):
+            raise ValueError(
+                "similarity_block_size must be a positive integer"
+            )
         self.max_repair_attempts = max_repair_attempts
+        self.similarity_block_size = similarity_block_size
         self.strategy = strategy
         self.alias_edit_distance_threshold = alias_edit_distance_threshold
         self.duplicate_token_overlap_threshold = duplicate_token_overlap_threshold
@@ -371,6 +383,88 @@ class MCBuilder:
 
         return answer_to_aliases_list, answer_to_category, answer_to_norm, answers
 
+    @staticmethod
+    def _top_similarity_indices(
+        row: np.ndarray,
+        M: int,
+    ) -> np.ndarray:
+        """Return raw top-M column indices with deterministic tie-breaking."""
+        row = np.asarray(row)
+        N = row.shape[0]
+        indices = np.arange(N)
+
+        if M >= N - 1:
+            candidates = indices
+        elif M <= 0:
+            return np.empty(0, dtype=int)
+        else:
+            # Find the Mth-largest score without sorting all N candidates.
+            # Include lower canonical indices first when the cutoff is tied.
+            threshold = np.partition(row, N - M)[N - M]
+            above = np.flatnonzero(row > threshold)
+            tied = np.flatnonzero(row == threshold)
+            needed = M - len(above)
+            candidates = np.concatenate((above, tied[:needed]))
+
+        order = np.lexsort((candidates, -row[candidates]))
+        return candidates[order]
+
+    def _rank_similarity_block(
+        self,
+        sim_rows: np.ndarray,
+        answers: List[str],
+        row_start: int,
+        M: int,
+    ) -> Dict[str, List[str]]:
+        """Rank one contiguous block of similarity rows."""
+        if sim_rows.ndim != 2 or sim_rows.shape[1] != len(answers):
+            raise ValueError(
+                "similarity block must have shape "
+                f"(B, {len(answers)}); got {sim_rows.shape}"
+            )
+        if row_start < 0 or row_start + sim_rows.shape[0] > len(answers):
+            raise ValueError(
+                "similarity block row range is outside the answer universe"
+            )
+
+        rankings: Dict[str, List[str]] = {}
+        for local_index, row in enumerate(sim_rows):
+            answer_index = row_start + local_index
+            order = self._top_similarity_indices(row, M)
+            rankings[answers[answer_index]] = [
+                answers[column_index]
+                for column_index in order
+                if column_index != answer_index
+            ]
+        return rankings
+
+    def _rank_similarity_blocks(
+        self,
+        answers: List[str],
+        M: int,
+        similarity_for_block: Callable[[int, int], np.ndarray],
+    ) -> Dict[str, List[str]]:
+        """Compute and immediately rank bounded blocks of similarity rows."""
+        rankings: Dict[str, List[str]] = {}
+        N = len(answers)
+        for start in range(0, N, self.similarity_block_size):
+            end = min(start + self.similarity_block_size, N)
+            sim_rows = np.asarray(similarity_for_block(start, end))
+            if sim_rows.shape != (end - start, N):
+                raise ValueError(
+                    "similarity block must have shape "
+                    f"({end - start}, {N}); got {sim_rows.shape}"
+                )
+            rankings.update(
+                self._rank_similarity_block(
+                    sim_rows,
+                    answers,
+                    start,
+                    M,
+                )
+            )
+        return rankings
+
     def _rank_by_similarity(
         self,
         sim: np.ndarray,
@@ -380,8 +474,8 @@ class MCBuilder:
     ) -> Dict[str, List[str]]:
         """Rank distractors for each answer using a similarity matrix.
 
-        Uses ``np.argpartition`` for top-M retrieval when M < N-1,
-        reducing per-answer work from O(N log N) to O(N + M log M).
+        Compatibility helper for callers that already have a full similarity
+        matrix. Production profile ranking uses ``_rank_similarity_blocks``.
 
         Parameters
         ----------
@@ -400,19 +494,21 @@ class MCBuilder:
             Each answer mapped to its ranked distractor list (length <= M).
         """
         N = len(answers)
+        if sim.shape != (N, N):
+            raise ValueError(
+                f"similarity matrix must have shape ({N}, {N}); "
+                f"got {sim.shape}"
+            )
         rankings: Dict[str, List[str]] = {}
         for answer in answers:
             idx = answer_idx[answer]
             row = sim[idx]
-            if M >= N - 1:
-                # Small N: full sort (no benefit from partition)
-                order = np.argsort(-row).tolist()
-            else:
-                # Top-M retrieval: O(N) partition + O(M log M) sort
-                top_m_idx = np.argpartition(-row, M)[:M]
-                top_m_idx = top_m_idx[np.argsort(-row[top_m_idx])]
-                order = top_m_idx.tolist()
-            rankings[answer] = [answers[i] for i in order if answers[i] != answer]
+            order = self._top_similarity_indices(row, M)
+            rankings[answer] = [
+                answers[column_index]
+                for column_index in order
+                if column_index != idx
+            ]
         return rankings
 
     def _compute_rankings(
@@ -423,10 +519,11 @@ class MCBuilder:
     ) -> Dict[str, List[str]]:
         """Compute distractor rankings for each answer.
 
-        For profile-based strategies, uses top-M retrieval via
-        ``np.argpartition`` instead of full ``np.argsort`` to reduce
-        per-answer complexity from O(N log N) to O(N + M log M) and
-        total memory from O(N^2) to O(N*M), where M = max(5*K, 30).
+        Profile-based strategies compute exact pairwise similarities in row
+        blocks of size ``B``. Pairwise work remains quadratic in ``N``;
+        top-M selection costs O(N^2 + N*M*log(M)), retained rankings use
+        O(N*M), and the temporary dense-similarity working set is bounded by
+        O(B*N), where ``M = min(max(5*K, 30), N-1)``.
 
         Args:
             answers: List of all unique answers.
@@ -457,15 +554,20 @@ class MCBuilder:
 
         # Profile-based ranking strategies
         docs = [answer_profiles[a] for a in answers]
-        answer_idx = {a: i for i, a in enumerate(answers)}
         M = min(max(5 * self.K, 30), len(answers) - 1)
 
         if self.strategy == "tfidf_profile":
             # TF-IDF based similarity
             vectorizer = TfidfVectorizer(stop_words="english")
             matrix = vectorizer.fit_transform(docs)
-            sim = cosine_similarity(matrix, matrix)
-            return self._rank_by_similarity(sim, answers, answer_idx, M)
+            return self._rank_similarity_blocks(
+                answers,
+                M,
+                lambda start, end: cosine_similarity(
+                    matrix[start:end],
+                    matrix,
+                ),
+            )
 
         if self.strategy in {"sbert_profile", "openai_profile"}:
             if self.strategy == "sbert_profile":
@@ -474,16 +576,24 @@ class MCBuilder:
                 # because it runs only during MC dataset construction.
                 from sentence_transformers import SentenceTransformer
                 encoder = SentenceTransformer(self.embedding_model)
-                embeddings = encoder.encode(docs, convert_to_numpy=True, normalize_embeddings=True)
-                sim = embeddings @ embeddings.T
+                embeddings = encoder.encode(
+                    docs,
+                    convert_to_numpy=True,
+                    normalize_embeddings=True,
+                )
             else:
                 from models.likelihoods import OpenAILikelihood
 
                 likelihood = OpenAILikelihood(model=self.openai_model)
                 embeddings = likelihood.embed_and_cache(docs)
-                sim = embeddings @ embeddings.T
-
-            return self._rank_by_similarity(sim, answers, answer_idx, M)
+            embeddings_transposed = embeddings.T
+            return self._rank_similarity_blocks(
+                answers,
+                M,
+                lambda start, end: (
+                    embeddings[start:end] @ embeddings_transposed
+                ),
+            )
 
         raise ValueError(f"Unknown distractor strategy: {self.strategy}")
 
