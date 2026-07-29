@@ -110,14 +110,7 @@ def test_experiments_tuple_lists_canonical_baseline() -> None:
 
 
 def test_experiments_tuple_includes_learned_value_pair() -> None:
-    """Prompt 5 learned-value branches must be wired into EXPERIMENTS.
-
-    The dispatched scripts (train_stopdff_value_model.py /
-    compute_stopdff_learned_value.py) do NOT yet exist in this commit;
-    invoking them produces a fail-fast subprocess error, which is the
-    correct behavior. The runner must still know about them so future
-    work can land the scripts without touching the runner.
-    """
+    """The learned-value producers must be wired into EXPERIMENTS."""
     m = _load_module()
     for required in ("learned_value_train", "learned_value_eval"):
         assert required in m.EXPERIMENTS, \
@@ -160,6 +153,26 @@ def test_build_command_dispatches_learned_value_eval_to_eval_script() -> None:
     assert "--eval-split" in cmd and "test" in cmd
 
 
+def test_build_command_dispatches_reproducible_five_arm_fair_qa() -> None:
+    """The canonical runner must reproduce the declared fair-QA arm set."""
+    m = _load_module()
+    from pathlib import PurePosixPath
+
+    cmd = m._build_command(
+        experiment="fair_qa",
+        artifact_subdir_abs=PurePosixPath("/artifacts/test_subdir"),
+        num_bootstrap=100,
+        max_wall_hours=1.0,
+        n_jobs=1,
+        resume=False,
+        smoke=False,
+    )
+
+    assert "scripts/stopdff_fair_qa_retest.py" in cmd
+    arms = cmd[cmd.index("--qa-arms") + 1].split(",")
+    assert arms == ["idealized", "krandom", "khard", "kdisjoint", "klex"]
+
+
 def test_build_command_smoke_trims_learned_value_train_hyperparams() -> None:
     """`smoke=True` must trim epochs/seeds/hidden for the trainer branch."""
     m = _load_module()
@@ -194,6 +207,52 @@ def test_build_command_still_dispatches_baseline_dp_sweep() -> None:
     assert "scripts/sweep_stopdff_dp.py" in cmd
     assert "--num-bootstrap" in cmd and "42" in cmd
     assert "--n-jobs" in cmd and "4" in cmd
+
+
+def test_stream_subprocess_forwards_exact_host_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The tool-poor Modal child must receive the verified host identity."""
+    m = _load_module()
+    captured = {}
+
+    class FakeProcess:
+        stdout = iter(())
+
+        @staticmethod
+        def wait() -> int:
+            return 0
+
+    def fake_popen(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(m.subprocess, "Popen", fake_popen)
+    commit = "a" * 40
+    producer_sha = "b" * 64
+    trainer_sha = "c" * 64
+    provenance_env = m._subprocess_provenance_env(
+        commit=commit,
+        tracked_status="",
+        producer_sha256=producer_sha,
+        trainer_sha256=trainer_sha,
+    )
+
+    rc = m._stream_subprocess(
+        ["python", "producer.py"],
+        log_path=tmp_path / "run.log",
+        cwd=str(tmp_path),
+        extra_env=provenance_env,
+    )
+
+    assert rc == 0
+    child_env = captured["kwargs"]["env"]
+    assert child_env["MODAL_HOST_GIT_COMMIT"] == commit
+    assert child_env["MODAL_HOST_GIT_STATUS"] == ""
+    assert child_env["MODAL_HOST_PRODUCER_SCRIPT_SHA256"] == producer_sha
+    assert child_env["MODAL_HOST_TRAINER_SCRIPT_SHA256"] == trainer_sha
 
 
 def test_app_and_volume_names_match_runbook() -> None:
