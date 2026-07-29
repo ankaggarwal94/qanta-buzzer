@@ -92,7 +92,7 @@ def _item_rng(seed: int, qid: str, arm: str) -> random.Random:
 
 def score_arms(questions, split, model, pool, pool_embs, gold_to_idx, seed, arms, reps=None):
     """Batched scoring. Returns {arm: DataFrame[ADAPTER_COLUMNS]} for arms in
-    {"MC","idealized","krandom","khard"}."""
+    {"MC","idealized","krandom","khard","kdisjoint","klex"}."""
     # Flattened batched encodes (deterministic; batch-invariant vs per-string).
     flat_pre, pre_slices = [], []
     flat_opt, opt_slices = [], []
