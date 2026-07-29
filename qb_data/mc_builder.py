@@ -292,8 +292,8 @@ class MCBuilder:
         self.openai_model = openai_model
         self.last_build_stats: Dict[str, Any] = {}
         # Cache of (answer_to_aliases, answer_to_category, answers,
-        # answer_profiles, rankings) keyed by the frozenset of reference
-        # qids. The expensive ``_compute_rankings`` call (TF-IDF / SBERT /
+        # answer_profiles, rankings) keyed by ordered reference content.
+        # The expensive ``_compute_rankings`` call (TF-IDF / SBERT /
         # OpenAI encoding over ~20k answer profiles) is shared across
         # split invocations of ``build()`` when ``reference_questions``
         # is identical. Only profile-based strategies are cached because
@@ -304,14 +304,19 @@ class MCBuilder:
         # ordering on val/test.
         # Cache key shape:
         #   ((max_tokens_per_profile, min_questions_per_answer),
-        #    frozenset[(qid, answer_primary, category,
-        #               hash(question), hash(sorted clean_answers))])
+        #    tuple[(qid, answer_primary, category, question,
+        #           tuple(sorted clean_answers)))])
         # Sentinel ``None`` means "no cache populated yet"; the type is
         # tuple-or-None so equality checks against a real cache miss for
-        # the first build() call without spuriously matching an empty
-        # frozenset.
+        # the first build() call without spuriously matching an empty tuple.
         self._ref_cache_key: Optional[
-            tuple[tuple[Any, Any], frozenset[tuple[str, str, str, int, int]]]
+            tuple[
+                tuple[Any, Any],
+                tuple[
+                    tuple[str, str, str, str, tuple[str, ...]],
+                    ...,
+                ],
+            ]
         ] = None
         self._ref_cache: Optional[Dict[str, Any]] = None
 
@@ -938,9 +943,9 @@ class MCBuilder:
             return []
 
         # ref_questions defaults to the target questions for convenience.
-        # ``AnswerProfileBuilder.fit`` is a no-op when ``qid_set`` already
-        # matches the cached fit, so we can call it on every build to keep
-        # the builder's invariant local and the cache check explicit.
+        # ``AnswerProfileBuilder.fit`` is a no-op when ordered content already
+        # matches the cached fit, so we can call it on every build to keep the
+        # builder's invariant local and the cache check explicit.
         profile_builder.fit(ref_questions)
 
         # Cache the per-reference-corpus heavy work so back-to-back
@@ -985,13 +990,13 @@ class MCBuilder:
         )
         ref_key = (
             profile_cfg,
-            frozenset(
+            tuple(
                 (
                     q.qid,
                     q.answer_primary,
                     q.category,
-                    hash(q.question),
-                    hash(tuple(sorted(q.clean_answers))),
+                    q.question,
+                    tuple(sorted(str(alias) for alias in q.clean_answers)),
                 )
                 for q in ref_questions
             ),
