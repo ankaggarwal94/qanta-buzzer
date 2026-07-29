@@ -662,6 +662,36 @@ def load_checkpoint_sidecar(
     return None, None, None
 
 
+def _restore_human_buzz_positions(
+    value: Any,
+) -> list[tuple[int, int]] | None:
+    """Restore and strictly validate JSON-encoded ``(position, count)`` pairs."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(
+            "human_buzz_positions must be a JSON list or null; "
+            f"got {type(value).__name__}"
+        )
+
+    restored: list[tuple[int, int]] = []
+    for index, item in enumerate(value):
+        field = f"human_buzz_positions[{index}]"
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            raise ValueError(
+                f"{field} must be a two-element [position, count] sequence"
+            )
+        position, count = item
+        for component_index, component in enumerate((position, count)):
+            if isinstance(component, bool) or not isinstance(component, int):
+                raise ValueError(
+                    f"{field}[{component_index}] must be an integer; "
+                    f"got {type(component).__name__}"
+                )
+        restored.append((position, count))
+    return restored
+
+
 def mc_question_from_dict(row: dict[str, Any]) -> MCQuestion:
     """Reconstruct an MCQuestion dataclass from a JSON-deserialized dict.
 
@@ -682,7 +712,9 @@ def mc_question_from_dict(row: dict[str, Any]) -> MCQuestion:
         answer_primary=row["answer_primary"],
         clean_answers=list(row["clean_answers"]),
         run_indices=list(row["run_indices"]),
-        human_buzz_positions=row.get("human_buzz_positions"),
+        human_buzz_positions=_restore_human_buzz_positions(
+            row.get("human_buzz_positions")
+        ),
         category=row.get("category", ""),
         cumulative_prefixes=list(row["cumulative_prefixes"]),
         options=list(row["options"]),
