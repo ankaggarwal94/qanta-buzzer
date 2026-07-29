@@ -67,6 +67,7 @@ Design constraints (see PRIOR LESSONS L1-L16 in the implementation prompt):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -93,11 +94,7 @@ EXPERIMENTS = (
     "smoke",
     "single",
     "dp_sweep",
-    # Prompt 5 deliverables -- scripts/train_stopdff_value_model.py and
-    # scripts/compute_stopdff_learned_value.py are not in this commit. The
-    # dispatcher is wired now so future Prompt 5 work can land without
-    # touching the runner; dispatching today will fail fast at subprocess
-    # spawn with FileNotFoundError, which is the correct behavior.
+    "fair_qa",
     "learned_value_train",
     "learned_value_eval",
 )
@@ -254,6 +251,46 @@ def _capture_local_git(
     return commit, tracked_porcelain, full_porcelain
 
 
+def _producer_script_path(experiment: str) -> Path:
+    mapping = {
+        "smoke": "scripts/compute_stopdff_dp.py",
+        "single": "scripts/compute_stopdff_dp.py",
+        "dp_sweep": "scripts/sweep_stopdff_dp.py",
+        "fair_qa": "scripts/stopdff_fair_qa_retest.py",
+        "learned_value_train": "scripts/train_stopdff_value_model.py",
+        "learned_value_eval": "scripts/compute_stopdff_learned_value.py",
+    }
+    try:
+        return LOCAL_REPO_ROOT / mapping[experiment]
+    except KeyError as exc:
+        raise ValueError(f"Unknown experiment: {experiment!r}") from exc
+
+
+def _canonical_source_sha256(path: Path) -> str:
+    payload = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _committed_file_sha256(commit: str, path: Path) -> str | None:
+    try:
+        relative = path.resolve().relative_to(LOCAL_REPO_ROOT).as_posix()
+    except ValueError:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{commit}:{relative}"],
+            cwd=str(LOCAL_REPO_ROOT),
+            check=False,
+            capture_output=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return hashlib.sha256(result.stdout).hexdigest()
+
+
 def _build_command(
     experiment: str,
     artifact_subdir_abs: PurePosixPath,
@@ -336,10 +373,8 @@ def _build_command(
         return cmd
 
     if experiment == "learned_value_train":
-        # Prompt 5 deliverable: trains a learned continuation-value model on
-        # the train split (with val for early stopping) so the DP solver can
-        # replace its empirical-bucket continuation estimator. The script
-        # itself will land later; this branch is the dispatch contract.
+        # Train a learned continuation-value model on train, using validation
+        # for early stopping, for the learned-value DP evaluator.
         checkpoint_dir = artifact_subdir_abs / "value_model"
         cmd = [
             python,
@@ -364,8 +399,8 @@ def _build_command(
         return cmd
 
     if experiment == "learned_value_eval":
-        # Prompt 5 deliverable: applies the trained learned-value model to
-        # the test split and writes paper_exports/stopdff_learned_value.json.
+        # Apply trained learned-value checkpoints to the test split and write
+        # paper_exports/stopdff_learned_value.json.
         # See learned_value_train for the upstream checkpoint that this run
         # consumes.
         checkpoint_dir = artifact_subdir_abs / "value_model"
@@ -384,6 +419,34 @@ def _build_command(
         ]
         if smoke:
             cmd.append("--smoke")
+        return cmd
+
+    if experiment == "fair_qa":
+        # Difficulty-matched fair-QA StopDFF retest with per-format calibration
+        # and item-bootstrap CIs (scripts/stopdff_fair_qa_retest.py). Reuses the
+        # real stopdff_dp solver; runs the full eval/fit splits by default. The
+        # --num-bootstrap value is forwarded; --smoke trims to 30/30 for a quick run.
+        out_json = exports_dir / "stopdff_fair_qa.json"
+        cmd = [
+            python,
+            "scripts/stopdff_fair_qa_retest.py",
+            "--num-bootstrap",
+            str(int(num_bootstrap)),
+            "--reward-schedule",
+            "power_mark",
+            "--fit-split",
+            "val",
+            "--eval-split",
+            "test",
+            "--qa-arms",
+            "idealized,krandom,khard,kdisjoint,klex",
+            "--calibrations",
+            "shared,performat",
+            "--out",
+            str(out_json),
+        ]
+        if smoke:
+            cmd.extend(["--n-test", "30", "--n-val", "30"])
         return cmd
 
     raise ValueError(f"Unknown experiment: {experiment!r} (expected one of {EXPERIMENTS})")
@@ -429,7 +492,13 @@ def _scrub_env(parent_env: dict, keep: tuple[str, ...] = ()) -> dict:
     return out
 
 
-def _stream_subprocess(cmd: list[str], log_path: Path, cwd: str) -> int:
+def _stream_subprocess(
+    cmd: list[str],
+    log_path: Path,
+    cwd: str,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> int:
     """Run ``cmd`` and tee live stdout/stderr to both ``sys.stdout`` and ``log_path``.
 
     Per L5: ``Popen`` + line-streaming loop avoids capture-deadlock and surfaces
@@ -444,6 +513,8 @@ def _stream_subprocess(cmd: list[str], log_path: Path, cwd: str) -> int:
 
     env = _scrub_env(dict(os.environ))
     env["PYTHONUNBUFFERED"] = "1"
+    if extra_env:
+        env.update(extra_env)
 
     with log_path.open("a", encoding="utf-8") as logf:
         logf.write(f"\n===== subprocess start {_utcnow_iso()} =====\n")
@@ -469,6 +540,22 @@ def _stream_subprocess(cmd: list[str], log_path: Path, cwd: str) -> int:
             rc = proc.wait()
             logf.write(f"===== subprocess exit rc={rc} {_utcnow_iso()} =====\n")
     return rc
+
+
+def _subprocess_provenance_env(
+    *,
+    commit: str | None,
+    tracked_status: str | None,
+    producer_sha256: str,
+    trainer_sha256: str,
+) -> dict[str, str]:
+    """Build the exact source identity passed into the tool-poor child."""
+    return {
+        "MODAL_HOST_GIT_COMMIT": commit or "",
+        "MODAL_HOST_GIT_STATUS": tracked_status or "",
+        "MODAL_HOST_PRODUCER_SCRIPT_SHA256": producer_sha256,
+        "MODAL_HOST_TRAINER_SCRIPT_SHA256": trainer_sha256,
+    }
 
 
 def _print_env_banner(artifact_subdir_abs: PurePosixPath) -> dict:
@@ -608,6 +695,8 @@ def run_stopdff(
     git_tracked_porcelain_local: Optional[str],
     git_porcelain_local: Optional[str],
     git_present_local: bool,
+    producer_script_sha256_local: str,
+    trainer_script_sha256_local: str,
     cli_invocation: list[str],
 ) -> dict:
     """Execute the StopDFF DP run on a Modal container and persist artifacts.
@@ -810,7 +899,18 @@ def run_stopdff(
     caught_exc: Optional[BaseException] = None
     try:
         try:
-            rc = _stream_subprocess(cmd, log_path=log_path, cwd=str(REPO_PATH))
+            provenance_env = _subprocess_provenance_env(
+                commit=git_ref_actual,
+                tracked_status=git_tracked_porcelain_local,
+                producer_sha256=producer_script_sha256_local,
+                trainer_sha256=trainer_script_sha256_local,
+            )
+            rc = _stream_subprocess(
+                cmd,
+                log_path=log_path,
+                cwd=str(REPO_PATH),
+                extra_env=provenance_env,
+            )
         except Exception as exc:  # OS-level failure (binary missing, etc.)
             rc = -1
             summary["status"] = "subprocess_launch_error"
@@ -856,6 +956,8 @@ def run_stopdff(
             "git_tracked_porcelain_local": git_tracked_porcelain_local,
             "git_porcelain_local": git_porcelain_local,
             "git_present_local": bool(git_present_local),
+            "producer_script_sha256_local": producer_script_sha256_local,
+            "trainer_script_sha256_local": trainer_script_sha256_local,
             "calibration_path": summary.get("calibration_path"),
             "calibration_sha256": summary.get("calibration_sha256"),
             "overwritten_existing": summary.get("overwritten_existing", False),
@@ -1009,21 +1111,25 @@ def main(
             raise SystemExit(
                 f"--experiment {experiment} requires {compute_script}, which is absent."
             )
+    elif experiment == "fair_qa":
+        target = LOCAL_REPO_ROOT / "scripts" / "stopdff_fair_qa_retest.py"
+        if not target.is_file():
+            raise SystemExit(
+                f"--experiment fair_qa requires {target}, which is absent."
+            )
     elif experiment == "learned_value_train":
         target = LOCAL_REPO_ROOT / "scripts" / "train_stopdff_value_model.py"
         if not target.is_file():
             raise SystemExit(
                 f"--experiment learned_value_train requires {target}, which is "
-                f"absent.\nThis script is a Prompt 5 deliverable and has not "
-                f"landed yet; ship it before dispatching."
+                f"absent."
             )
     elif experiment == "learned_value_eval":
         target = LOCAL_REPO_ROOT / "scripts" / "compute_stopdff_learned_value.py"
         if not target.is_file():
             raise SystemExit(
                 f"--experiment learned_value_eval requires {target}, which is "
-                f"absent.\nThis script is a Prompt 5 deliverable and has not "
-                f"landed yet; ship it before dispatching."
+                f"absent."
             )
 
     # --- Capture host git state (L11, FIX-3, FIX-9) --------------------
@@ -1033,6 +1139,34 @@ def main(
     git_ref_declared = git_ref.strip() if git_ref else None
     git_ref_actual = host_commit
     git_ref_recorded = git_ref_declared if git_ref_declared else host_commit
+    producer_script = _producer_script_path(experiment)
+    producer_script_sha256 = _canonical_source_sha256(producer_script)
+    committed_producer_sha256 = (
+        _committed_file_sha256(host_commit, producer_script)
+        if host_commit is not None
+        else None
+    )
+    if committed_producer_sha256 != producer_script_sha256:
+        raise SystemExit(
+            "The selected producer is not exactly present in the current Git commit: "
+            f"{producer_script.relative_to(LOCAL_REPO_ROOT)}. Commit the producer "
+            "before dispatch so outputs cannot cite a parent that lacks their writer."
+        )
+    trainer_script = LOCAL_REPO_ROOT / "scripts" / "train_stopdff_value_model.py"
+    trainer_script_sha256 = _canonical_source_sha256(trainer_script)
+    committed_trainer_sha256 = (
+        _committed_file_sha256(host_commit, trainer_script)
+        if host_commit is not None
+        else None
+    )
+    if (
+        experiment in {"learned_value_train", "learned_value_eval"}
+        and committed_trainer_sha256 != trainer_script_sha256
+    ):
+        raise SystemExit(
+            "The learned-value trainer is not exactly present in the current Git "
+            "commit. Commit the trainer before dispatch."
+        )
     git_present_local = host_commit is not None or tracked_porcelain is not None
 
     # --- Enforce dirty-tree refusal (L12, FIX-3) -----------------------
@@ -1154,6 +1288,8 @@ def main(
         git_tracked_porcelain_local=tracked_porcelain,
         git_porcelain_local=full_porcelain,
         git_present_local=git_present_local,
+        producer_script_sha256_local=producer_script_sha256,
+        trainer_script_sha256_local=trainer_script_sha256,
         cli_invocation=cli_invocation,
     )
 

@@ -29,9 +29,9 @@ Experiment modes:
   dp_sweep              Dispatches scripts/sweep_stopdff_dp.py (default;
                         preserves backward-compatible behavior).
   learned_value_train   Dispatches scripts/train_stopdff_value_model.py
-                        (Prompt 5 deliverable; not yet landed).
+                        with train/validation separation and provenance.
   learned_value_eval    Dispatches scripts/compute_stopdff_learned_value.py
-                        (Prompt 5 deliverable; not yet landed).
+                        against the held-out evaluation split.
 EOF
 }
 
@@ -403,11 +403,8 @@ case "$EXPERIMENT" in
     fi
     ;;
   learned_value_train)
-    # Prompt 5 deliverable: scripts/train_stopdff_value_model.py is not
-    # yet in the repo. The dispatch wiring is here so a future commit can
-    # land it without touching this script. Until it lands, this branch
-    # will fail fast with a "No such file" error from the Python
-    # interpreter -- the correct fail-fast behavior.
+    # Learned-value training producer. Keep this path explicit and fail fast
+    # rather than silently substituting a different producer.
     SWEEP_CMD=(
       "$PYTHON"
       "scripts/train_stopdff_value_model.py"
@@ -424,10 +421,8 @@ case "$EXPERIMENT" in
     fi
     ;;
   learned_value_eval)
-    # Prompt 5 deliverable: scripts/compute_stopdff_learned_value.py is not
-    # yet in the repo. See learned_value_train above for the same fail-fast
-    # rationale. The checkpoint dir defaults to whatever learned_value_train
-    # wrote inside the same RUN_DIR_PATH.
+    # Learned-value evaluation producer. The checkpoint dir defaults to what
+    # learned_value_train wrote inside the same RUN_DIR_PATH.
     SWEEP_CMD=(
       "$PYTHON"
       "scripts/compute_stopdff_learned_value.py"
