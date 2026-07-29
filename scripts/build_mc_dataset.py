@@ -13,7 +13,7 @@ Usage:
     python scripts/build_mc_dataset.py
     python scripts/build_mc_dataset.py --smoke  # Quick test with 50 questions in artifacts/smoke
     python scripts/build_mc_dataset.py --config configs/custom.yaml
-    python scripts/build_mc_dataset.py --data.K=5 --data.distractor_strategy=tfidf_profile
+    python scripts/build_mc_dataset.py data.K=5 data.distractor_strategy=tfidf_profile
 """
 
 import argparse
