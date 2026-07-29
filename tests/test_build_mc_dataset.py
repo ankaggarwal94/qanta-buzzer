@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -104,6 +105,46 @@ class TestBuildMcDatasetArgs:
         assert args.config == "configs/custom.yaml"
         assert args.output_dir == "custom/output"
         assert args.overrides == ["data.K=5"]
+
+    def test_displayed_override_command_matches_parser_contract(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The exact help example must parse and apply alongside known options."""
+        with pytest.raises(SystemExit) as exc_info:
+            parse_args(["--help"])
+        assert exc_info.value.code == 0
+        help_text = capsys.readouterr().out
+        command = next(
+            line.strip()
+            for line in help_text.splitlines()
+            if line.strip().startswith("python scripts/build_mc_dataset.py")
+            and "data.K=5" in line
+        )
+        command_tokens = shlex.split(command)
+        assert command_tokens[:2] == ["python", "scripts/build_mc_dataset.py"]
+        override_tokens = command_tokens[2:]
+        assert all(not token.startswith("--data.") for token in override_tokens)
+
+        args = parse_args(
+            [
+                "--smoke",
+                "--config",
+                "configs/custom.yaml",
+                "--output-dir",
+                "custom/output",
+                *override_tokens,
+            ]
+        )
+        assert args.smoke is True
+        assert args.config == "configs/custom.yaml"
+        assert args.output_dir == "custom/output"
+        merged = merge_overrides(
+            load_yaml_config(None, smoke=True),
+            parse_overrides(args),
+        )
+        assert merged["data"]["K"] == 5
+        assert merged["data"]["distractor_strategy"] == "tfidf_profile"
 
     def test_resolve_output_dir_defaults_to_smoke_artifacts(self) -> None:
         assert resolve_output_dir(None, smoke=True) == Path("artifacts/smoke")
