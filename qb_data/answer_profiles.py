@@ -37,15 +37,19 @@ class AnswerProfileBuilder:
         self.min_questions_per_answer = min_questions_per_answer
         self._grouped: Dict[str, List[Tuple[str, str]]] = {}
         self._cache: Dict[Tuple[str, Optional[str]], str] = {}
-        self._fit_qids: frozenset = frozenset()
+        self._fit_signature: Optional[
+            Tuple[Tuple[str, str, str], ...]
+        ] = None
 
     def fit(self, questions: List[TossupQuestion]) -> "AnswerProfileBuilder":
         """Fit the builder on a set of questions.
 
         Groups questions by their primary answer for efficient profile building.
-        Skips the refit when the builder is already fit on exactly the same
-        question set (by qid), avoiding redundant work when the same reference
-        corpus is passed across multiple ``MCBuilder.build()`` calls.
+        Skips the refit when the builder is already fit on the same ordered
+        question content, avoiding redundant work when the same reference
+        corpus is passed across multiple ``MCBuilder.build()`` calls.  Order
+        and multiplicity are significant because profiles concatenate text
+        before truncation.
 
         Args:
             questions: List of tossup questions to group by answer.
@@ -53,15 +57,17 @@ class AnswerProfileBuilder:
         Returns:
             Self for method chaining.
         """
-        qid_set = frozenset(q.qid for q in questions)
-        if qid_set == self._fit_qids and self._grouped:
+        fit_signature = tuple(
+            (q.qid, q.answer_primary, q.question) for q in questions
+        )
+        if fit_signature == self._fit_signature:
             return self
         grouped: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
         for q in questions:
             grouped[q.answer_primary].append((q.qid, q.question))
         self._grouped = dict(grouped)
         self._cache = {}
-        self._fit_qids = qid_set
+        self._fit_signature = fit_signature
         return self
 
     def _profile_text(
