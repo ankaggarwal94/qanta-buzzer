@@ -11,6 +11,8 @@ QA arms (all K-way, K = the item's MC option count):
                 NOTE: "hard" distractors are SBERT nearest neighbours in the same space used to
                 score, so they are adversarially close to gold -- a circularity caveat. khard is
                 the best available difficulty-matched proxy, not a clean open-ended measurement.
+  - kdisjoint : candidate set [gold] + (K-1) nearest neighbours in a disjoint embedding space
+  - klex      : candidate set [gold] + (K-1) nearest neighbours in lexical TF-IDF space
 
 Scoring replicates the adapter formulas (MC = max cos over options, correct=argmax==gold_index;
 QA arms scored over their candidate set) but uses BATCHED SBERT encoding so the full splits
