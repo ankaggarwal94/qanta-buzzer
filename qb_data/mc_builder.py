@@ -436,6 +436,9 @@ class MCBuilder:
         Returns:
             Dictionary mapping each answer to a ranked list of distractors.
         """
+        if not answers:
+            return {}
+
         if self.strategy == "category_random":
             # Random selection within the same category
             rankings: Dict[str, List[str]] = {}
@@ -1011,8 +1014,14 @@ class MCBuilder:
             answer_to_aliases, answer_to_category, _answer_to_norm, answers = (
                 self._prepare_lookup(ref_questions)
             )
-            rankings = self._compute_rankings(
-                answers, answer_profiles, answer_to_category
+            rankings = (
+                self._compute_rankings(
+                    answers,
+                    answer_profiles,
+                    answer_to_category,
+                )
+                if answers
+                else {}
             )
             if cacheable:
                 self._ref_cache = {
