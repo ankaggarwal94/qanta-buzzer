@@ -80,7 +80,7 @@ def _make_synthetic_answers(n: int) -> tuple[list[str], dict[str, str]]:
 def _full_sort_rankings(
     answers: list[str], profiles: dict[str, str]
 ) -> dict[str, list[str]]:
-    """Compute rankings via full argsort (reference implementation)."""
+    """Compute full rankings with canonical-index tie-breaking."""
     docs = [profiles[a] for a in answers]
     answer_idx = {a: i for i, a in enumerate(answers)}
     vectorizer = TfidfVectorizer(stop_words="english")
@@ -89,7 +89,9 @@ def _full_sort_rankings(
     rankings: dict[str, list[str]] = {}
     for answer in answers:
         idx = answer_idx[answer]
-        order = np.argsort(-sim[idx]).tolist()
+        order = np.lexsort(
+            (np.arange(len(answers)), -sim[idx])
+        ).tolist()
         rankings[answer] = [answers[i] for i in order if answers[i] != answer]
     return rankings
 
