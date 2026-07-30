@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stopdff_calibrator.schema.json",
+  "title": "StopDFF v5 calibration protocol",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["fit_rows", "application", "phase_boundaries", "similarity_temperature_grid",
+               "minimum_phase_rows", "both_classes_required"],
+  "properties": {
+    "fit_rows": {"const": "validation_mc_only"},
+    "application": {"const": "shared_map_applied_to_mc_and_qa"},
+    "phase_boundaries": {"type": "array", "items": {"type": "string"},
+      "const": ["0.33", "0.66"]},
+    "similarity_temperature_grid": {"type": "array", "items": {"type": "string"},
+      "const": ["0.25", "0.5", "0.75", "1.0", "1.5", "2.0", "3.0", "5.0"]},
+    "minimum_phase_rows": {"const": 10},
+    "both_classes_required": {"const": true}
+  },
+  "$defs": {
+    "calibrators": {"enum": ["platt-logistic", "similarity-temperature", "isotonic"]},
+    "phases": {"enum": ["early", "mid", "late"]}
+  }
+}

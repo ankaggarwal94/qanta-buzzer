@@ -34,6 +34,27 @@ def _make_questions(n: int, categories: list[str]) -> list[TossupQuestion]:
     return questions
 
 
+def _question(
+    qid: str,
+    text: str,
+    answer: str,
+    category: str = "History",
+) -> TossupQuestion:
+    """Build a minimally valid question for group-integrity tests."""
+    tokens = text.split()
+    return TossupQuestion(
+        qid=qid,
+        question=text,
+        tokens=tokens,
+        answer_primary=answer,
+        clean_answers=[answer],
+        run_indices=[max(0, len(tokens) - 1)],
+        human_buzz_positions=[],
+        category=category,
+        cumulative_prefixes=[text],
+    )
+
+
 def test_splits_deterministic_same_process():
     """Same seed produces identical splits within one process."""
     questions = _make_questions(60, ["History", "Science", "Literature"])
@@ -101,3 +122,130 @@ def test_splits_all_questions_assigned():
     all_qids = {q.qid for q in train} | {q.qid for q in val} | {q.qid for q in test}
     assert len(all_qids) == 100
     assert len(train) + len(val) + len(test) == 100
+
+
+def test_normalized_duplicate_questions_are_grouped_atomically():
+    """Unicode/case/whitespace variants of one question cannot cross splits."""
+    questions = [
+        _question("q0", "Unique question zero?", "Zero"),
+        _question("q1", "Unique question one?", "One"),
+        _question("q2", "café history?", "Paris"),
+        _question("q3", "Ｃａｆé History?", "Paris"),
+        _question("q4", "  Café   History?  ", "Paris"),
+        _question("q5", "Unique question five?", "Five"),
+    ]
+
+    train, val, test = create_stratified_splits(
+        questions,
+        ratios=[0.5, 0.25, 0.25],
+        seed=789685,
+    )
+    membership = {}
+    for split_name, split_questions in (
+        ("train", train),
+        ("val", val),
+        ("test", test),
+    ):
+        for question in split_questions:
+            membership[question.qid] = split_name
+
+    assert len({membership[qid] for qid in ("q2", "q3", "q4")}) == 1
+
+
+def test_normalized_question_group_with_conflicting_answers_fails_closed():
+    """A duplicated question with contradictory answers is not split arbitrarily."""
+    questions = [
+        _question("q0", "  Who wrote Hamlet? ", "William Shakespeare"),
+        _question("q1", "ｗｈｏ wrote HAMLET?", "Christopher Marlowe"),
+        _question("q2", "A unique question?", "Unique"),
+    ]
+
+    with pytest.raises(ValueError, match="conflicting normalized answers"):
+        create_stratified_splits(questions, seed=42)
+
+
+def test_duplicate_question_id_fails_closed_even_when_text_matches():
+    questions = [
+        _question("same", "Who wrote Hamlet?", "William Shakespeare"),
+        _question("same", "Who wrote Hamlet?", "William Shakespeare"),
+    ]
+
+    with pytest.raises(ValueError, match="duplicate question ID"):
+        create_stratified_splits(questions, seed=42)
+
+
+def test_empty_normalized_answer_fails_closed():
+    questions = [
+        _question("q0", "A question with no usable answer?", " !!! "),
+        _question("q1", "A unique question?", "Unique"),
+    ]
+
+    with pytest.raises(ValueError, match="empty normalized answer"):
+        create_stratified_splits(questions, seed=42)
+
+
+def test_answer_compatibility_variants_are_not_false_conflicts():
+    questions = [
+        _question("q0", "Where is the Eiffel Tower?", "ＰＡＲＩＳ"),
+        _question("q1", "WHERE is the Eiffel Tower?", "Paris"),
+        _question("q2", "A unique question?", "Unique"),
+    ]
+
+    train, val, test = create_stratified_splits(questions, seed=42)
+    membership = {
+        question.qid: split
+        for split, split_questions in (
+            ("train", train),
+            ("val", val),
+            ("test", test),
+        )
+        for question in split_questions
+    }
+    assert membership["q0"] == membership["q1"]
+
+
+def test_grouped_split_is_input_order_invariant():
+    questions = [
+        _question("q0", "Shared text?", "Same", "History"),
+        _question("q1", "ＳＨＡＲＥＤ   TEXT?", "Same", "Science"),
+        _question("q2", "Unique two?", "Two", "History"),
+        _question("q3", "Unique three?", "Three", "Science"),
+        _question("q4", "Unique four?", "Four", "Literature"),
+        _question("q5", "Unique five?", "Five", "Literature"),
+    ]
+
+    first = create_stratified_splits(questions, seed=7)
+    second = create_stratified_splits(list(reversed(questions)), seed=7)
+    assert [
+        [question.qid for question in split]
+        for split in first
+    ] == [
+        [question.qid for question in split]
+        for split in second
+    ]
+
+
+@pytest.mark.parametrize(
+    "ratios",
+    [
+        [],
+        [1.0],
+        [0.5, 0.5],
+        [0.25, 0.25, 0.25, 0.25],
+        [float("nan"), 0.5, 0.5],
+        [float("inf"), 0.0, 0.0],
+        [float("-inf"), 1.0, 1.0],
+        [-0.1, 0.5, 0.6],
+        [0.0, 0.0, 0.0],
+        [True, 0.5, 0.5],
+        ["0.5", 0.25, 0.25],
+        [10**1000, 1, 1],
+        [1e308, 1e308, 1.0],
+        [2.0, 1.0, 1.0],
+    ],
+)
+def test_split_ratios_fail_closed_unless_three_finite_nonnegative_weights(ratios):
+    questions = _make_questions(6, ["History", "Science"])
+
+    with pytest.raises(ValueError, match="ratios"):
+        create_stratified_splits(questions, ratios=ratios, seed=42)

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stopdff_continuation.schema.json",
+  "title": "StopDFF v5 continuation + FVI protocol",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["probability_bin_edges", "entropy_bin_edges", "minimum_bucket_count",
+               "missing_value", "clean_fallback_fraction_max", "clean_missing_fraction_max"],
+  "properties": {
+    "probability_bin_edges": {"const": ["0.0", "0.2", "0.4", "0.6", "0.8", "1.000000000001"]},
+    "entropy_bin_edges": {"const": ["0.0", "0.5", "0.9", "1.000000000001"]},
+    "minimum_bucket_count": {"const": 3},
+    "missing_value": {"const": "0"},
+    "clean_fallback_fraction_max": {"const": "0.05"},
+    "clean_missing_fraction_max": {"const": "0.01"}
+  },
+  "$defs": {
+    "fvi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["damping", "required_consecutive_converged_iterations",
+                   "numeric_dtype", "tolerance", "max_iterations"],
+      "properties": {
+        "damping": {"const": "0.5"},
+        "required_consecutive_converged_iterations": {"const": 2},
+        "numeric_dtype": {"const": "float64"},
+        "tolerance": {"enum": ["1e-6", "1e-8", "1e-10"]},
+        "max_iterations": {"enum": [50, 100, 200]}
+      }
+    },
+    "coverage_tags": {"enum": ["primary", "fallback", "missing"]}
+  }
+}
