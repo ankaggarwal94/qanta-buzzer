@@ -81,13 +81,38 @@ EXPECTED_CELLS = 96
 
 
 def normalize_cell(cell: dict[str, Any]) -> dict[str, str]:
-    """Return a canonical cell dict, applying legacy aliases. Raises on unknown values."""
+    """Return a canonical cell dictionary.
+
+    Parameters
+    ----------
+    cell
+        Cell axes using canonical names or a supported legacy alias.
+
+    Returns
+    -------
+    dict[str, str]
+        The validated cell in canonical axis order.
+
+    Raises
+    ------
+    ValueError
+        If an axis is missing, unknown, duplicated through an alias, or has an
+        unsupported value.
+    """
     out: dict[str, str] = {}
     remaining = dict(cell)
     # Axis-name aliases (subject_pooling -> category_pooling).
     for alias, canonical in _AXIS_NAME_ALIASES.items():
-        if alias in remaining and canonical not in remaining:
+        if alias in remaining:
+            if canonical in remaining:
+                raise ValueError(
+                    f"cell supplies both alias {alias!r} and canonical axis "
+                    f"{canonical!r}"
+                )
             remaining[canonical] = remaining.pop(alias)
+    unknown = sorted(set(remaining) - set(CELL_AXES))
+    if unknown:
+        raise ValueError(f"cell has unknown axes {unknown}: {cell}")
     for axis in CELL_AXES:
         if axis not in remaining:
             raise ValueError(f"cell missing axis {axis!r}: {cell}")
@@ -160,6 +185,13 @@ SMOKE_CELLS: list[dict[str, str]] = [
 
 
 def smoke_cells() -> list[dict[str, str]]:
+    """Return the two canonical smoke-test cells.
+
+    Returns
+    -------
+    list[dict[str, str]]
+        Fresh canonical copies of the explicitly registered smoke cells.
+    """
     return [normalize_cell(c) for c in SMOKE_CELLS]
 
 

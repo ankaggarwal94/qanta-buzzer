@@ -10,6 +10,7 @@ byte-deterministic fit_rows.jsonl.gz / eval_rows.jsonl.gz plus the adapter manif
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -193,6 +194,11 @@ def _validate_scoring_question(question: dict[str, Any]) -> None:
             f"MC scoring question {qid!r} cumulative_prefixes contain a value "
             "that is not a canonical question-token prefix"
         )
+    if prefix_tokens[-1] != full_tokens:
+        raise ValueError(
+            f"MC scoring question {qid!r} final cumulative prefix does not "
+            "equal the canonical full question"
+        )
     options = question.get("options")
     if (
         not isinstance(options, list)
@@ -207,6 +213,20 @@ def _validate_scoring_question(question: dict[str, Any]) -> None:
         or not 0 <= gold_index < len(options)
     ):
         raise ValueError(f"MC scoring question {qid!r} has invalid gold_index")
+    normalized_options = [normalize_split_answer(option) for option in options]
+    if any(not option for option in normalized_options):
+        raise ValueError(
+            f"MC scoring question {qid!r} has an empty normalized option"
+        )
+    if len(set(normalized_options)) != len(normalized_options):
+        raise ValueError(
+            f"MC scoring question {qid!r} has duplicate normalized options"
+        )
+    if normalized_options[gold_index] != normalize_split_answer(raw_answer):
+        raise ValueError(
+            f"MC scoring question {qid!r} gold_index does not identify "
+            "answer_primary"
+        )
 
 
 def _validate_split_bindings(
@@ -302,7 +322,12 @@ def _score_question_rows(question: dict, model, split: str) -> list[dict]:
     K = int(len(options))
     option_set_id = f"{qid}:K{K}"
     distractor_strategy = str(question.get("distractor_strategy", "unknown"))
-    full_len = max(1, len(full_q))
+    canonical_full_q = normalize_question_text(full_q)
+    canonical_prefixes = [
+        normalize_question_text(prefix)
+        for prefix in prefixes
+    ]
+    full_len = len(canonical_full_q)
 
     option_embs = model.encode(options, convert_to_numpy=True)
     answer_emb = model.encode([question["answer_primary"]], convert_to_numpy=True)
@@ -310,7 +335,11 @@ def _score_question_rows(question: dict, model, split: str) -> list[dict]:
 
     rows: list[dict] = []
     for t, prefix in enumerate(prefixes):
-        prefix_fraction = round(len(prefix) / full_len, _ROUND)
+        prefix_fraction = (
+            1.0
+            if t == len(prefixes) - 1
+            else round(len(canonical_prefixes[t]) / full_len, _ROUND)
+        )
         pe = prefix_embs[t : t + 1]
         mc_sims = cosine_similarity(pe, option_embs)[0]
         max_sim = float(np.max(mc_sims))
@@ -356,6 +385,97 @@ def _mc_coverage_evidence(rows: list[dict]) -> dict[str, Any]:
     }
 
 
+def _mc_retention_evidence(
+    data_dir: Path,
+    *,
+    fit_item_count: int,
+    eval_item_count: int,
+    allow_low_mc_retention: bool,
+) -> dict[str, Any]:
+    """Bind and enforce the repository's full-profile MC retention policy."""
+    from scripts._audit_gates import (
+        build_retention_metadata,
+        load_mc_build_metadata,
+    )
+
+    if not isinstance(allow_low_mc_retention, bool):
+        raise TypeError("allow_low_mc_retention must be boolean")
+    try:
+        build_metadata = load_mc_build_metadata(Path(data_dir))
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError(f"invalid MC build retention metadata: {exc}") from exc
+    if build_metadata.get("status") != "loaded":
+        raise ValueError("MC build retention metadata is required")
+
+    split_evidence: dict[str, dict[str, Any]] = {}
+    for role, split, retained_items in (
+        ("fit", "val", fit_item_count),
+        ("eval", "test", eval_item_count),
+    ):
+        try:
+            decision = build_retention_metadata(
+                build_metadata,
+                split=split,
+                smoke=False,
+                explicit_threshold=None,
+                override=allow_low_mc_retention,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"invalid MC {split} retention metadata: {exc}"
+            ) from exc
+        if not decision["applies"] or decision["passed"] is None:
+            raise ValueError(f"MC {split} retention metadata is required")
+
+        raw_count = decision["raw_count"]
+        retained_count = decision["retained_count"]
+        dropped_count = decision["dropped_count"]
+        if (
+            any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                for value in (raw_count, retained_count, dropped_count)
+            )
+            or retained_count + dropped_count != raw_count
+        ):
+            raise ValueError(f"MC {split} retention counts are inconsistent")
+        if retained_count != retained_items:
+            raise ValueError(
+                f"MC {split} retained_count does not match retained dataset"
+            )
+        recomputed_rate = retained_count / raw_count if raw_count else 0.0
+        if not math.isclose(
+            decision["retention_rate"],
+            recomputed_rate,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise ValueError(f"MC {split} retention_rate is inconsistent")
+
+        decision = dict(decision)
+        decision["effective_pass"] = bool(
+            decision["passed"] or decision["overridden"]
+        )
+        if not decision["effective_pass"]:
+            raise ValueError(
+                f"MC {split} retention {decision['retention_rate']:.1%} "
+                f"is below the full-profile threshold "
+                f"{decision['threshold']:.1%}"
+            )
+        split_evidence[role] = {
+            **decision,
+            "threshold": repr(float(decision["threshold"])),
+            "retention_rate": repr(float(decision["retention_rate"])),
+        }
+
+    return {
+        "build_metadata_sha256": build_metadata["source_sha256"],
+        "threshold_profile": "full",
+        "splits": split_evidence,
+    }
+
+
 def build_adapter_bundle(
     *,
     mc_dataset_path: Path,
@@ -368,6 +488,7 @@ def build_adapter_bundle(
     raw_input_bundle_id: str,
     model_snapshot_id: str,
     producer_hashes: dict[str, str],
+    allow_low_mc_retention: bool = False,
 ) -> dict[str, Any]:
     from .rowio import write_jsonl_gz
 
@@ -380,6 +501,12 @@ def build_adapter_bundle(
     _validate_split_bindings(val_index, test_index, questions)
     val_qids = set(val_index)
     test_qids = set(test_index)
+    mc_retention = _mc_retention_evidence(
+        Path(mc_dataset_path).parent,
+        fit_item_count=len(val_index),
+        eval_item_count=len(test_index),
+        allow_low_mc_retention=allow_low_mc_retention,
+    )
     _load_calibration(calibration_path)
     for question in questions:
         if _record_qid(question) in val_qids | test_qids:
@@ -410,7 +537,9 @@ def build_adapter_bundle(
     calibration_sha = sha256_file(out_dir / "calibration.json")
 
     mc_coverage = _mc_coverage_evidence(eval_rows)
-    mc_retention = {"fit_rows": len(fit_rows), "eval_rows": len(eval_rows)}
+    mc_retention.update(
+        {"fit_rows": len(fit_rows), "eval_rows": len(eval_rows)}
+    )
 
     identity = adapter_identity(
         source_manifest_id=source_manifest_id, raw_input_bundle_id=raw_input_bundle_id,

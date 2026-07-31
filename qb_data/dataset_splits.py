@@ -20,6 +20,23 @@ from qb_data.text_utils import normalize_answer
 def normalize_question_text(text: str) -> str:
     """Return the shared split-integrity key for a question.
 
+    Parameters
+    ----------
+    text
+        Raw question text.
+
+    Returns
+    -------
+    str
+        NFKC-normalized, case-folded text with collapsed whitespace.
+
+    Raises
+    ------
+    TypeError
+        If ``text`` is not a string.
+
+    Notes
+    -----
     Compatibility normalization is deliberately conservative: Unicode NFKC,
     case-folding, and whitespace collapse. Punctuation remains significant.
     """

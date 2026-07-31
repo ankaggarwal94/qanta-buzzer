@@ -80,7 +80,25 @@ def _canonicalize(value: Any, *, path: str = "$") -> Any:
 
 
 def canonical_bytes(identity: Any) -> bytes:
-    """Return the canonical UTF-8 identity bytes for ``identity``."""
+    """Return canonical UTF-8 identity bytes.
+
+    Parameters
+    ----------
+    identity
+        JSON-compatible identity value. Scientific decimal values must already
+        be encoded as strings.
+
+    Returns
+    -------
+    bytes
+        NFC-normalized, key-sorted, whitespace-free UTF-8 JSON bytes.
+
+    Raises
+    ------
+    IdentityError
+        If the value contains a float, unsupported type, or a key collision
+        after Unicode normalization.
+    """
     normalized = _canonicalize(identity)
     text = json.dumps(
         normalized,

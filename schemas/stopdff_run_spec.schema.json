@@ -1,127 +1,309 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "stopdff_run_spec.schema.json",
-  "title": "StopDFF v5 run spec (identity-bound)",
+  "title": "StopDFF v5 run-spec manifest envelope",
   "type": "object",
   "additionalProperties": false,
-  "required": ["kind", "profile_name", "schema_version", "profile_variant", "scientific_profile",
-               "identity", "evidence_roots", "reward_schedules", "calibration", "continuation", "gate",
-               "format_condition", "splits", "fvi_selected", "bootstrap"],
+  "required": ["id", "identity"],
   "properties": {
-    "kind": {"const": "run_spec"},
-    "profile_name": {"const": "stopdff_bucketed_dp_paired_v2"},
-    "schema_version": {"const": 2},
-    "profile_variant": {"enum": ["final", "smoke"]},
-    "scientific_profile": {"$ref": "stopdff_scientific_profile.schema.json"},
-    "identity": {"type": "object",
-      "additionalProperties": false,
-      "required": ["source_manifest_id", "raw_input_bundle_id", "model_snapshot_id",
-                   "adapter_bundle_id", "fvi_study_id", "bootstrap_plan_id", "environment_contract_id"],
-      "properties": {
-        "source_manifest_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "raw_input_bundle_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "model_snapshot_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "adapter_bundle_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "fvi_study_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "bootstrap_plan_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "environment_contract_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-      }},
-    "evidence_roots": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identity": {
+      "$ref": "#/$defs/identity"
+    }
+  },
+  "$defs": {
+    "identity": {
+      "title": "StopDFF v5 run-spec identity",
       "type": "object",
       "additionalProperties": false,
-      "required": ["myopic_artifact_sha256", "producer_hashes", "prerequisite_receipts"],
+      "required": [
+        "kind",
+        "profile_name",
+        "schema_version",
+        "profile_variant",
+        "scientific_profile",
+        "identity",
+        "evidence_roots",
+        "reward_schedules",
+        "calibration",
+        "continuation",
+        "gate",
+        "format_condition",
+        "splits",
+        "fvi_selected",
+        "bootstrap"
+      ],
       "properties": {
-        "myopic_artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "producer_hashes": {
+        "kind": {
+          "const": "run_spec"
+        },
+        "profile_name": {
+          "const": "stopdff_bucketed_dp_paired_v2"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "profile_variant": {
+          "enum": ["final", "smoke"]
+        },
+        "scientific_profile": {
+          "$ref": "stopdff_scientific_profile.schema.json"
+        },
+        "identity": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["checker.py", "sweep.py"],
+          "required": [
+            "source_manifest_id",
+            "raw_input_bundle_id",
+            "model_snapshot_id",
+            "adapter_bundle_id",
+            "fvi_study_id",
+            "bootstrap_plan_id",
+            "environment_contract_id"
+          ],
           "properties": {
-            "checker.py": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "sweep.py": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            "source_manifest_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "raw_input_bundle_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "model_snapshot_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "adapter_bundle_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "fvi_study_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "bootstrap_plan_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "environment_contract_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
           }
         },
-        "prerequisite_receipts": {
+        "evidence_roots": {
           "type": "object",
           "additionalProperties": false,
+          "required": [
+            "myopic_artifact_sha256",
+            "producer_hashes",
+            "prerequisite_receipts"
+          ],
           "properties": {
-            "smoke": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "mutation": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "determinism": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            "myopic_artifact_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "producer_hashes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["checker.py", "sweep.py"],
+              "properties": {
+                "checker.py": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "sweep.py": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              }
+            },
+            "prerequisite_receipts": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "smoke": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "mutation": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "determinism": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              }
+            }
           }
-        }
-      }
-    },
-    "reward_schedules": {"const": {
-      "acf_flat": {"correct_early": "10", "correct_late": "10", "wrong": "-5", "split": "1.0", "wait_cost": "0"},
-      "power_mark": {"correct_early": "15", "correct_late": "10", "wrong": "-5", "split": "0.5", "wait_cost": "0"},
-      "wait_cost_small": {"correct_early": "15", "correct_late": "10", "wrong": "-5", "split": "0.5", "wait_cost": "0.05"},
-      "strict_wrong": {"correct_early": "15", "correct_late": "10", "wrong": "-10", "split": "0.5", "wait_cost": "0"}
-    }},
-    "calibration": {"$ref": "stopdff_calibrator.schema.json"},
-    "continuation": {"$ref": "stopdff_continuation.schema.json"},
-    "gate": {"$ref": "stopdff_gate_policy.schema.json"},
-    "format_condition": {
-      "const": ["paired_qa_prefix_vs_mc_fixed"]
-    },
-    "splits": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["fit", "eval"],
-      "properties": {
-        "fit": {"const": "val"},
-        "eval": {"const": "test"}
-      }
-    },
-    "fvi_selected": {"type": "object",
-      "required": ["damping", "tolerance", "max_iterations",
-                   "required_consecutive_converged_iterations", "numeric_dtype"],
-      "additionalProperties": false,
-      "properties": {"damping": {"const": "0.5"},
-                     "tolerance": {"enum": ["1e-6", "1e-8", "1e-10"]},
-                     "max_iterations": {"enum": [50, 100, 200]},
-                     "required_consecutive_converged_iterations": {"const": 2},
-                     "numeric_dtype": {"const": "float64"}}},
-    "bootstrap": {"type": "object",
-      "required": ["bit_generator", "seed", "interval", "resampling_unit",
-                   "common_resamples_across_cells", "replicate_count"],
-      "additionalProperties": false,
-      "properties": {
-        "bit_generator": {"const": "PCG64"},
-        "seed": {"const": 1},
-        "interval": {"const": "percentile_95"},
-        "resampling_unit": {"const": "item"},
-        "common_resamples_across_cells": {"const": true},
-        "replicate_count": {"enum": [100, 1000]}
-      }}
-  },
-  "allOf": [
-    {
-      "if": {"properties": {"profile_variant": {"const": "smoke"}}},
-      "then": {
-        "properties": {
-          "evidence_roots": {
-            "properties": {
-              "prerequisite_receipts": {"maxProperties": 0}
+        },
+        "reward_schedules": {
+          "const": {
+            "acf_flat": {
+              "correct_early": "10",
+              "correct_late": "10",
+              "wrong": "-5",
+              "split": "1.0",
+              "wait_cost": "0"
+            },
+            "power_mark": {
+              "correct_early": "15",
+              "correct_late": "10",
+              "wrong": "-5",
+              "split": "0.5",
+              "wait_cost": "0"
+            },
+            "wait_cost_small": {
+              "correct_early": "15",
+              "correct_late": "10",
+              "wrong": "-5",
+              "split": "0.5",
+              "wait_cost": "0.05"
+            },
+            "strict_wrong": {
+              "correct_early": "15",
+              "correct_late": "10",
+              "wrong": "-10",
+              "split": "0.5",
+              "wait_cost": "0"
+            }
+          }
+        },
+        "calibration": {
+          "$ref": "stopdff_calibrator.schema.json"
+        },
+        "continuation": {
+          "$ref": "stopdff_continuation.schema.json"
+        },
+        "gate": {
+          "$ref": "stopdff_gate_policy.schema.json"
+        },
+        "format_condition": {
+          "const": ["paired_qa_prefix_vs_mc_fixed"]
+        },
+        "splits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fit", "eval"],
+          "properties": {
+            "fit": {
+              "const": "val"
+            },
+            "eval": {
+              "const": "test"
+            }
+          }
+        },
+        "fvi_selected": {
+          "type": "object",
+          "required": [
+            "damping",
+            "tolerance",
+            "max_iterations",
+            "required_consecutive_converged_iterations",
+            "numeric_dtype"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "damping": {
+              "const": "0.5"
+            },
+            "tolerance": {
+              "enum": ["1e-6", "1e-8", "1e-10"]
+            },
+            "max_iterations": {
+              "enum": [50, 100, 200]
+            },
+            "required_consecutive_converged_iterations": {
+              "const": 2
+            },
+            "numeric_dtype": {
+              "const": "float64"
+            }
+          }
+        },
+        "bootstrap": {
+          "type": "object",
+          "required": [
+            "bit_generator",
+            "seed",
+            "interval",
+            "resampling_unit",
+            "common_resamples_across_cells",
+            "replicate_count"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "bit_generator": {
+              "const": "PCG64"
+            },
+            "seed": {
+              "const": 1
+            },
+            "interval": {
+              "const": "percentile_95"
+            },
+            "resampling_unit": {
+              "const": "item"
+            },
+            "common_resamples_across_cells": {
+              "const": true
+            },
+            "replicate_count": {
+              "enum": [100, 1000]
             }
           }
         }
-      }
-    },
-    {
-      "if": {"properties": {"profile_variant": {"const": "final"}}},
-      "then": {
-        "properties": {
-          "evidence_roots": {
+      },
+      "allOf": [
+        {
+          "if": {
             "properties": {
-              "prerequisite_receipts": {
-                "required": ["smoke", "mutation", "determinism"],
-                "minProperties": 3
+              "profile_variant": {
+                "const": "smoke"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidence_roots": {
+                "properties": {
+                  "prerequisite_receipts": {
+                    "maxProperties": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "profile_variant": {
+                "const": "final"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidence_roots": {
+                "properties": {
+                  "prerequisite_receipts": {
+                    "required": ["smoke", "mutation", "determinism"],
+                    "minProperties": 3
+                  }
+                }
               }
             }
           }
         }
-      }
+      ]
     }
-  ]
+  }
 }

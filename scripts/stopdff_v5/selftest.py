@@ -120,7 +120,34 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
     eval_sha = sha256_file(bundle / "eval_rows.jsonl.gz")
     calibration_sha = sha256_file(bundle / "calibration.json")
 
-    source_id, raw_id, model_id = _hex("1"), _hex("2"), _hex("3")
+    input_manifest_dir = base_dir / "input_manifests"
+    input_manifest_dir.mkdir(parents=True, exist_ok=True)
+    input_manifests = {
+        "source_manifest": build_manifest(
+            {"kind": "source_snapshot", "fixture": "synthetic"}
+        ),
+        "raw_input_manifest": build_manifest(
+            {
+                "kind": "raw_input_bundle",
+                "fixture": "synthetic",
+                "semantic_checks": {"all_semantic_checks_pass": True},
+            }
+        ),
+        "model_snapshot_manifest": build_manifest(
+            {"kind": "model_snapshot", "fixture": "synthetic"}
+        ),
+    }
+    input_manifest_paths: dict[str, Path] = {}
+    for role, input_manifest in input_manifests.items():
+        input_manifest_path = input_manifest_dir / f"{role}.json"
+        input_manifest_path.write_text(
+            json.dumps(input_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        input_manifest_paths[role] = input_manifest_path
+    source_id = input_manifests["source_manifest"]["id"]
+    raw_id = input_manifests["raw_input_manifest"]["id"]
+    model_id = input_manifests["model_snapshot_manifest"]["id"]
     eval_mc_prefixes = {
         (r["item_id"], r["prefix_idx"])
         for r in eval_rows
@@ -147,7 +174,44 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
             ),
             "paired": eval_mc_prefixes == eval_qa_prefixes,
         },
-        mc_retention={"fit_rows": len(fit_rows), "eval_rows": len(eval_rows)},
+        mc_retention={
+            "build_metadata_sha256": _hex("e"),
+            "threshold_profile": "full",
+            "splits": {
+                "fit": {
+                    "applies": True,
+                    "split": "val",
+                    "threshold": "0.98",
+                    "retention_rate": "1.0",
+                    "raw_count": len({row["item_id"] for row in fit_rows}),
+                    "retained_count": len(
+                        {row["item_id"] for row in fit_rows}
+                    ),
+                    "dropped_count": 0,
+                    "passed": True,
+                    "overridden": False,
+                    "override_flag": "--allow-low-mc-retention",
+                    "effective_pass": True,
+                },
+                "eval": {
+                    "applies": True,
+                    "split": "test",
+                    "threshold": "0.98",
+                    "retention_rate": "1.0",
+                    "raw_count": len({row["item_id"] for row in eval_rows}),
+                    "retained_count": len(
+                        {row["item_id"] for row in eval_rows}
+                    ),
+                    "dropped_count": 0,
+                    "passed": True,
+                    "overridden": False,
+                    "override_flag": "--allow-low-mc-retention",
+                    "effective_pass": True,
+                },
+            },
+            "fit_rows": len(fit_rows),
+            "eval_rows": len(eval_rows),
+        },
         producer_hashes={"adapter_build.py": _hex("4")},
     )
     adapter_man = build_manifest(adapter_ident)
@@ -214,17 +278,15 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
     external_artifacts = [
         {
             "role": role,
-            "content_id": content_id,
-            "sha256": _hex(str(index + 1)),
-            "byte_size": index + 1,
-            "retrieval_path": f"/stopdff/{role}/{content_id}",
+            "content_id": input_manifests[role]["id"],
+            "sha256": sha256_file(input_manifest_paths[role]),
+            "byte_size": input_manifest_paths[role].stat().st_size,
+            "retrieval_path": str(input_manifest_paths[role]),
         }
-        for index, (role, content_id) in enumerate(
-            (
-                ("source_manifest", source_id),
-                ("raw_input_manifest", raw_id),
-                ("model_snapshot_manifest", model_id),
-            )
+        for role in (
+            "source_manifest",
+            "raw_input_manifest",
+            "model_snapshot_manifest",
         )
     ]
     external_artifacts.extend(

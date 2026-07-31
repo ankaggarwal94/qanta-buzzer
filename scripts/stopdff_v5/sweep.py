@@ -307,7 +307,14 @@ def _cell_record(ctx: SweepContext, cell: dict[str, str]) -> dict[str, Any]:
         "coverage": {**result.coverage, "clean": cov_clean},
         "ceiling_flags": flags,
         "index_shift_by_item": result.index_shift_by_item,
-        "bootstrap": {"point": stats["point"], "ci": stats["ci"]},
+        "bootstrap": {
+            "point": stats["point"],
+            "ci": stats["ci"],
+            # The family statistic consumes the same deterministic resamples.
+            # Persisting them avoids a second 1000-by-N indexed bootstrap for
+            # every cell while keeping resume evidence byte-verifiable.
+            "abs_median_replicates": stats["abs_median_replicates"].tolist(),
+        },
         "descriptive": result.descriptive,
         "mc_gate_overridden": mc_overridden,
         "verdict": verdict,
@@ -338,10 +345,12 @@ def _run_sweep_body(
     for cell in cells:
         key = cell_key_str(cell)
         record = (
-            precomputed_records[key]
+            precomputed_records.get(key)
             if precomputed_records is not None
-            else _cell_record(ctx, cell)
+            else None
         )
+        if record is None:
+            record = _cell_record(ctx, cell)
         _write_bound_json(
             cells_dir / f"{key}.json",
             record,
@@ -359,9 +368,13 @@ def _run_sweep_body(
             continue
 
         completed.add(key)
-        stats = cell_bootstrap_stats(record["index_shift_by_item"], ctx.bootstrap_plan)
-        abs_median_reps[key] = stats["abs_median_replicates"]
-        abs_median_point[key] = stats["abs_median_point"]
+        abs_median_reps[key] = np.asarray(
+            record["bootstrap"]["abs_median_replicates"],
+            dtype=np.float64,
+        )
+        abs_median_point[key] = float(
+            record["bootstrap"]["point"]["absolute_index_median"]
+        )
         per_cell_summary[key] = {
             "status": "completed",
             "verdict": record["verdict"],
@@ -564,11 +577,8 @@ def _resume_preflight(
     bootstrap_plan_id: str,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
     """Validate all existing run evidence before the resume attempt writes."""
-    expected_records = {
-        cell_key_str(cell): _cell_record(ctx, cell)
-        for cell in cells
-    }
-    expected_keys = set(expected_records)
+    cells_by_key = {cell_key_str(cell): cell for cell in cells}
+    expected_keys = set(cells_by_key)
     cells_dir = ctx.output_dir / "cells"
     actual_keys = (
         {path.stem for path in cells_dir.glob("*.json")}
@@ -577,6 +587,12 @@ def _resume_preflight(
     )
     if not actual_keys <= expected_keys:
         raise ValueError("resume cell set contains unexpected evidence")
+    # Recompute only evidence that actually exists. Missing cells are computed
+    # later by _run_sweep_body after every cached byte has passed preflight.
+    expected_records = {
+        key: _cell_record(ctx, cells_by_key[key])
+        for key in sorted(actual_keys)
+    }
     for key in sorted(actual_keys):
         path = cells_dir / f"{key}.json"
         data = (
@@ -588,39 +604,44 @@ def _resume_preflight(
     # Reconstruct the complete expected non-attempt evidence in an isolated
     # directory, then compare every existing run-level file before any actual
     # path is created or repaired.
-    with tempfile.TemporaryDirectory(prefix="stopdff_v5_resume_preflight_") as td:
-        probe = replace(
-            ctx,
-            output_dir=Path(td) / "run",
-            commit_fn=None,
-            resume=False,
-        )
-        _run_sweep_body(
-            probe,
-            spec_ids=spec_ids,
-            bootstrap_plan_id=bootstrap_plan_id,
-            precomputed_records=expected_records,
-        )
-        for name in (
-            "aggregate.json",
-            "run_manifest.json",
-            "command_manifest.json",
-            "run_spec.json",
-            "bootstrap_plan.json",
-            "environment.json",
-            "resource_summary.json",
-        ):
-            actual = ctx.output_dir / name
-            if not actual.exists():
-                continue
-            expected = probe.output_dir / name
-            if (
-                actual.is_symlink()
-                or not actual.is_file()
-                or not expected.is_file()
-                or actual.read_bytes() != expected.read_bytes()
-            ):
-                raise ValueError(f"resume evidence mismatch at {actual}")
+    run_level_names = (
+        "aggregate.json",
+        "run_manifest.json",
+        "command_manifest.json",
+        "run_spec.json",
+        "bootstrap_plan.json",
+        "environment.json",
+        "resource_summary.json",
+    )
+    existing_run_level = [
+        name for name in run_level_names if (ctx.output_dir / name).exists()
+    ]
+    if existing_run_level:
+        with tempfile.TemporaryDirectory(
+            prefix="stopdff_v5_resume_preflight_"
+        ) as td:
+            probe = replace(
+                ctx,
+                output_dir=Path(td) / "run",
+                commit_fn=None,
+                resume=False,
+            )
+            _run_sweep_body(
+                probe,
+                spec_ids=spec_ids,
+                bootstrap_plan_id=bootstrap_plan_id,
+                precomputed_records=expected_records,
+            )
+            for name in existing_run_level:
+                actual = ctx.output_dir / name
+                expected = probe.output_dir / name
+                if (
+                    actual.is_symlink()
+                    or not actual.is_file()
+                    or not expected.is_file()
+                    or actual.read_bytes() != expected.read_bytes()
+                ):
+                    raise ValueError(f"resume evidence mismatch at {actual}")
 
     attempt_records = [
         loads_no_duplicate_keys(line)

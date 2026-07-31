@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import PROFILE_NAME, PROTOCOL_VERSION
+from .identity import compute_id, loads_no_duplicate_keys
 from .profile import CALIBRATION, REWARD_SCHEDULES
 from .rewards import REWARD_SCHEDULE_STRINGS
 
@@ -267,6 +268,256 @@ def write_sha256sums(output_dir: Path) -> None:
     (root / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+_MANIFEST_EVIDENCE_PATHS = {
+    "source_manifest": "evidence/source_manifest.json",
+    "raw_input_manifest": "evidence/raw_input_manifest.json",
+    "model_snapshot_manifest": "evidence/model_snapshot_manifest.json",
+    "fvi_study": "evidence/fvi_study.json",
+    "environment_contract": "evidence/environment_contract.json",
+}
+_MANIFEST_KINDS = {
+    "source_manifest": {"source_snapshot"},
+    "raw_input_manifest": {"raw_input_bundle"},
+    "model_snapshot_manifest": {"model_snapshot"},
+    "fvi_study": {"fvi_study", "fvi_study_fixed"},
+    "environment_contract": {"environment_contract"},
+}
+
+
+def _manifest_from_bytes(data: bytes, *, role: str) -> dict[str, Any]:
+    try:
+        manifest = loads_no_duplicate_keys(data.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ValueError(f"{role} evidence is not canonical JSON: {exc}") from exc
+    identity = manifest.get("identity") if isinstance(manifest, dict) else None
+    if (
+        not isinstance(identity, dict)
+        or compute_id(identity) != manifest.get("id")
+        or identity.get("kind") not in _MANIFEST_KINDS[role]
+    ):
+        raise ValueError(f"{role} evidence has an invalid manifest identity")
+    if role == "raw_input_manifest":
+        semantic_checks = identity.get("semantic_checks")
+        if (
+            not isinstance(semantic_checks, dict)
+            or semantic_checks.get("all_semantic_checks_pass") is not True
+        ):
+            raise ValueError("raw-input semantic checks did not pass")
+    return manifest
+
+
+def _resolve_retrieval_path(root: Path, retrieval: str) -> Path:
+    path = Path(retrieval)
+    if path.is_absolute():
+        candidates = (path,)
+    else:
+        if ".." in path.parts:
+            raise ValueError(f"unsafe external-artifact retrieval path: {retrieval!r}")
+        candidates = (root / path, root.parents[1] / path)
+    for candidate in candidates:
+        if candidate.is_symlink():
+            raise ValueError(f"external-artifact retrieval path is a symlink: {candidate}")
+        if candidate.is_file():
+            return candidate
+    raise ValueError(f"external-artifact retrieval path is missing: {retrieval!r}")
+
+
+def _prepare_package_evidence(
+    root: Path,
+    *,
+    external_artifacts: list[dict[str, Any]],
+    evidence_files: dict[str, bytes],
+) -> tuple[list[dict[str, Any]], dict[str, bytes]]:
+    candidates: dict[str, bytes] = {}
+    for name, data in evidence_files.items():
+        path = Path(name)
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or not path.parts
+            or path.parts[0] != "evidence"
+            or not isinstance(data, bytes)
+        ):
+            raise ValueError(f"unsafe packaged evidence path: {name!r}")
+        candidates[path.as_posix()] = data
+
+    run_spec_path = root / "run_spec.json"
+    if not run_spec_path.exists():
+        normalized_legacy: list[dict[str, Any]] = []
+        for artifact in external_artifacts:
+            if not isinstance(artifact, dict):
+                raise ValueError("invalid external-artifact ledger entry")
+            retrieval = artifact.get("retrieval_path", artifact.get("retrieval"))
+            if (
+                not isinstance(artifact.get("role"), str)
+                or not isinstance(artifact.get("content_id"), str)
+                or not isinstance(artifact.get("sha256"), str)
+                or len(artifact.get("sha256", "")) != 64
+                or isinstance(artifact.get("byte_size"), bool)
+                or not isinstance(artifact.get("byte_size"), int)
+                or artifact.get("byte_size", 0) <= 0
+                or not isinstance(retrieval, str)
+                or not retrieval
+            ):
+                raise ValueError("invalid external-artifact ledger entry")
+            normalized_legacy.append(
+                {
+                    "role": artifact["role"],
+                    "content_id": artifact["content_id"],
+                    "sha256": artifact["sha256"],
+                    "byte_size": artifact["byte_size"],
+                    "retrieval_path": retrieval,
+                }
+            )
+        return normalized_legacy, candidates
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for artifact in external_artifacts:
+        if not isinstance(artifact, dict):
+            raise ValueError("invalid external-artifact ledger entry")
+        fields = set(artifact)
+        retrieval_fields = fields & {"retrieval", "retrieval_path"}
+        if (
+            fields
+            not in (
+                {"role", "content_id", "sha256", "byte_size", "retrieval"},
+                {"role", "content_id", "sha256", "byte_size", "retrieval_path"},
+            )
+            or len(retrieval_fields) != 1
+        ):
+            raise ValueError("invalid external-artifact ledger entry")
+        role = artifact.get("role")
+        content_id = artifact.get("content_id")
+        digest = artifact.get("sha256")
+        byte_size = artifact.get("byte_size")
+        retrieval = artifact[next(iter(retrieval_fields))]
+        if (
+            role not in _MANIFEST_EVIDENCE_PATHS
+            or role in normalized
+            or not isinstance(content_id, str)
+            or len(content_id) != 64
+            or any(ch not in "0123456789abcdef" for ch in content_id)
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(ch not in "0123456789abcdef" for ch in digest)
+            or isinstance(byte_size, bool)
+            or not isinstance(byte_size, int)
+            or byte_size <= 0
+            or not isinstance(retrieval, str)
+            or not retrieval
+        ):
+            raise ValueError("invalid external-artifact ledger entry")
+
+        packaged_path = _MANIFEST_EVIDENCE_PATHS[role]
+        if role in {
+            "source_manifest",
+            "raw_input_manifest",
+            "model_snapshot_manifest",
+        }:
+            data = _resolve_retrieval_path(root, retrieval).read_bytes()
+            candidates[packaged_path] = data
+        else:
+            data = candidates.get(packaged_path)
+            if data is None:
+                raise ValueError(f"missing packaged evidence for {role}")
+        manifest = _manifest_from_bytes(data, role=role)
+        actual_digest = hashlib.sha256(data).hexdigest()
+        if (
+            manifest["id"] != content_id
+            or actual_digest != digest
+            or len(data) != byte_size
+        ):
+            raise ValueError(f"{role} ledger entry does not match evidence bytes")
+        normalized[role] = {
+            "role": role,
+            "content_id": manifest["id"],
+            "sha256": actual_digest,
+            "byte_size": len(data),
+            "retrieval_path": packaged_path,
+        }
+
+    if set(normalized) != set(_MANIFEST_EVIDENCE_PATHS):
+        raise ValueError("external-artifact ledger roles are incomplete")
+
+    if run_spec_path.is_symlink() or not run_spec_path.is_file():
+        raise ValueError("package requires run_spec.json before packaging")
+    run_spec_manifest = loads_no_duplicate_keys(
+        run_spec_path.read_text(encoding="utf-8")
+    )
+    run_spec_identity = (
+        run_spec_manifest.get("identity")
+        if isinstance(run_spec_manifest, dict)
+        else None
+    )
+    if (
+        not isinstance(run_spec_identity, dict)
+        or compute_id(run_spec_identity) != run_spec_manifest.get("id")
+    ):
+        raise ValueError("package run_spec.json has an invalid manifest identity")
+    profile_variant = run_spec_identity.get("profile_variant")
+    receipt_ids = (
+        run_spec_identity.get("evidence_roots", {}).get("prerequisite_receipts")
+        if isinstance(run_spec_identity.get("evidence_roots"), dict)
+        else None
+    )
+    if not isinstance(receipt_ids, dict):
+        raise ValueError("package run spec prerequisite_receipts must be an object")
+    if profile_variant == "final":
+        if set(receipt_ids) != _RECEIPT_GATES:
+            raise ValueError("final package requires all prerequisite receipt IDs")
+        receipts: dict[str, dict[str, Any]] = {}
+        for gate in sorted(_RECEIPT_GATES):
+            receipt_id = receipt_ids[gate]
+            receipt_path = (
+                root.parents[1]
+                / "receipts"
+                / gate
+                / f"{receipt_id}.json"
+            )
+            if receipt_path.is_symlink() or not receipt_path.is_file():
+                raise ValueError(f"missing {gate} prerequisite receipt")
+            data = receipt_path.read_bytes()
+            manifest = loads_no_duplicate_keys(data.decode("utf-8"))
+            identity = manifest.get("identity") if isinstance(manifest, dict) else None
+            if (
+                not isinstance(identity, dict)
+                or compute_id(identity) != manifest.get("id")
+                or manifest.get("id") != receipt_id
+            ):
+                raise ValueError(f"{gate} prerequisite receipt id mismatch")
+            receipts[gate] = manifest
+            packaged_path = f"evidence/prerequisite_receipts/{gate}.json"
+            candidates[packaged_path] = data
+            role = f"prerequisite_receipt_{gate}"
+            normalized[role] = {
+                "role": role,
+                "content_id": receipt_id,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "byte_size": len(data),
+                "retrieval_path": packaged_path,
+            }
+        identity_bindings = {
+            key: run_spec_identity.get("identity", {}).get(key)
+            for key in _FULL_RECEIPT_BINDINGS
+        }
+        validate_prerequisite_receipts(
+            profile_variant="final",
+            identity_bindings=identity_bindings,
+            receipt_ids=receipt_ids,
+            receipts=receipts,
+        )
+    elif profile_variant == "smoke":
+        validate_prerequisite_receipts(
+            profile_variant="smoke",
+            identity_bindings={},
+            receipt_ids=receipt_ids,
+            receipts={},
+        )
+    else:
+        raise ValueError(f"unknown package profile variant {profile_variant!r}")
+    return [normalized[role] for role in sorted(normalized)], candidates
+
+
 def package_run(
     output_dir: Path,
     aggregate: dict[str, Any],
@@ -280,30 +531,12 @@ def package_run(
 
     if not external_artifacts:
         raise ValueError("package requires a nonempty external-artifact ledger")
-    for artifact in external_artifacts:
-        retrieval = (
-            artifact.get("retrieval_path")
-            if isinstance(artifact, dict)
-            else None
-        )
-        if retrieval is None and isinstance(artifact, dict):
-            # Backward-compatible synthetic checker fixture; real runners emit
-            # retrieval_path exclusively.
-            retrieval = artifact.get("retrieval")
-        if (
-            not isinstance(artifact, dict)
-            or not isinstance(artifact.get("role"), str)
-            or not isinstance(artifact.get("content_id"), str)
-            or not isinstance(artifact.get("sha256"), str)
-            or len(artifact.get("sha256", "")) != 64
-            or not isinstance(artifact.get("byte_size"), int)
-            or artifact.get("byte_size", -1) < 0
-            or not isinstance(retrieval, str)
-            or not retrieval
-        ):
-            raise ValueError("invalid external-artifact ledger entry")
-
     root = Path(output_dir)
+    normalized_artifacts, packaged_evidence = _prepare_package_evidence(
+        root,
+        external_artifacts=external_artifacts,
+        evidence_files=dict(evidence_files or {}),
+    )
     candidates: dict[str, bytes] = {
         "reports/report.md": render_markdown(
             aggregate,
@@ -312,23 +545,13 @@ def package_run(
         "reports/report.tex": render_latex(aggregate).encode("utf-8"),
         "external_artifacts.json": (
             json.dumps(
-                {"artifacts": external_artifacts},
+                {"artifacts": normalized_artifacts},
                 indent=2,
                 sort_keys=True,
             ) + "\n"
         ).encode("utf-8"),
     }
-    for name, data in (evidence_files or {}).items():
-        path = Path(name)
-        if (
-            path.is_absolute()
-            or ".." in path.parts
-            or not path.parts
-            or path.parts[0] != "evidence"
-            or not isinstance(data, bytes)
-        ):
-            raise ValueError(f"unsafe packaged evidence path: {name!r}")
-        candidates[path.as_posix()] = data
+    candidates.update(packaged_evidence)
 
     with tempfile.TemporaryDirectory(prefix="stopdff_v5_package_") as td:
         figure_root = Path(td)

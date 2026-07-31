@@ -20,6 +20,11 @@ from typing import Any
 
 from .bootstrap import build_bootstrap_plan, cell_bootstrap_stats, family_statistic
 from .cellcompute import compute_cell
+from .checker_calibration import platt_phase_errors
+from .checker_package import (
+    check_complete_checksums,
+    check_external_artifacts,
+)
 from .identity import compute_id, loads_no_duplicate_keys, sha256_file
 from .manifests import (
     ADAPTER_SCORING_SPEC,
@@ -53,6 +58,21 @@ from .verdicts import (
 _FLOAT_TOL = 1e-9
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _INTERRUPTED_REASON = "terminal_result_missing_at_resume"
+_FOCUSED_CHECKER_HASHES = {
+    "checker_calibration.py": "c6c7ed0474cdee8b50d38e0fceae58b10d2a420693245b897533fda309f07b7f",
+    "checker_package.py": "ad011316fcc19fa846a4510561544937195d9f0c47890fabd8bb136bc8075814",
+}
+
+
+def _verify_focused_checker_sources() -> None:
+    """Bind extracted checker responsibilities through checker.py's own hash."""
+    package_dir = Path(__file__).resolve().parent
+    for filename, expected in _FOCUSED_CHECKER_HASHES.items():
+        if sha256_file(package_dir / filename) != expected:
+            raise RuntimeError(f"focused checker source hash mismatch: {filename}")
+
+
+_verify_focused_checker_sources()
 
 
 @dataclass
@@ -104,6 +124,157 @@ def _is_quantized_number(value: Any, *, decimal_places: int) -> bool:
         return False
     number = float(value)
     return number == round(number, decimal_places)
+
+
+def _mc_retention_errors(
+    value: Any,
+    *,
+    fit_rows: list[dict[str, Any]],
+    eval_rows: list[dict[str, Any]],
+    fit_items: set[str],
+    eval_items: set[str],
+) -> list[str]:
+    """Independently validate the identity-bound MC retention decision."""
+    errors: list[str] = []
+    if not isinstance(value, dict):
+        return ["adapter MC retention evidence must be an object"]
+    expected_fields = {
+        "build_metadata_sha256",
+        "threshold_profile",
+        "splits",
+        "fit_rows",
+        "eval_rows",
+    }
+    _err(
+        errors,
+        set(value) == expected_fields,
+        "adapter MC retention evidence fields mismatch",
+    )
+    _err(
+        errors,
+        _is_sha256(value.get("build_metadata_sha256")),
+        "adapter MC retention build-metadata hash is invalid",
+    )
+    _err(
+        errors,
+        value.get("threshold_profile") == "full",
+        "adapter MC retention threshold profile must be full",
+    )
+    _err(
+        errors,
+        _is_strict_int(value.get("fit_rows"), minimum=0)
+        and value.get("fit_rows") == len(fit_rows),
+        "adapter MC retention fit_rows does not match row bytes",
+    )
+    _err(
+        errors,
+        _is_strict_int(value.get("eval_rows"), minimum=0)
+        and value.get("eval_rows") == len(eval_rows),
+        "adapter MC retention eval_rows does not match row bytes",
+    )
+
+    splits = value.get("splits")
+    if not isinstance(splits, dict) or set(splits) != {"fit", "eval"}:
+        errors.append("adapter MC retention splits must be exactly fit/eval")
+        return errors
+    expected_decision_fields = {
+        "applies",
+        "split",
+        "threshold",
+        "retention_rate",
+        "raw_count",
+        "retained_count",
+        "dropped_count",
+        "passed",
+        "overridden",
+        "override_flag",
+        "effective_pass",
+    }
+    for role, split, retained_items in (
+        ("fit", "val", len(fit_items)),
+        ("eval", "test", len(eval_items)),
+    ):
+        decision = splits.get(role)
+        if not isinstance(decision, dict):
+            errors.append(f"adapter MC retention {role} decision must be an object")
+            continue
+        _err(
+            errors,
+            set(decision) == expected_decision_fields,
+            f"adapter MC retention {role} decision fields mismatch",
+        )
+        _err(
+            errors,
+            decision.get("applies") is True and decision.get("split") == split,
+            f"adapter MC retention {role} split binding mismatch",
+        )
+        raw = decision.get("raw_count")
+        retained = decision.get("retained_count")
+        dropped = decision.get("dropped_count")
+        counts_valid = all(
+            _is_strict_int(count, minimum=0)
+            for count in (raw, retained, dropped)
+        )
+        _err(
+            errors,
+            counts_valid
+            and retained == retained_items
+            and retained + dropped == raw,
+            f"adapter MC retention {role} counts are inconsistent",
+        )
+
+        threshold_raw = decision.get("threshold")
+        rate_raw = decision.get("retention_rate")
+        try:
+            threshold = float(threshold_raw)
+            rate = float(rate_raw)
+        except (TypeError, ValueError, OverflowError):
+            threshold = math.nan
+            rate = math.nan
+        numeric_valid = (
+            isinstance(threshold_raw, str)
+            and isinstance(rate_raw, str)
+            and math.isfinite(threshold)
+            and math.isfinite(rate)
+            and 0.0 <= threshold <= 1.0
+            and 0.0 <= rate <= 1.0
+            and threshold_raw == repr(threshold)
+            and rate_raw == repr(rate)
+        )
+        expected_rate = (
+            retained / raw
+            if counts_valid and raw
+            else 0.0
+        )
+        _err(
+            errors,
+            numeric_valid
+            and math.isclose(rate, expected_rate, rel_tol=0.0, abs_tol=1e-12),
+            f"adapter MC retention {role} rate is inconsistent",
+        )
+        passed = decision.get("passed")
+        overridden = decision.get("overridden")
+        effective = decision.get("effective_pass")
+        bools_valid = all(
+            isinstance(flag, bool)
+            for flag in (passed, overridden, effective)
+        )
+        expected_passed = numeric_valid and rate >= threshold
+        _err(
+            errors,
+            bools_valid
+            and passed is expected_passed
+            and overridden is (not expected_passed)
+            and effective is (passed or overridden)
+            and effective is True,
+            f"adapter MC retention {role} gate decision is inconsistent",
+        )
+        _err(
+            errors,
+            decision.get("override_flag") == "--allow-low-mc-retention",
+            f"adapter MC retention {role} override flag mismatch",
+        )
+    return errors
 
 
 def _producer_hash_errors(
@@ -869,14 +1040,14 @@ def validate_adapter(bundle_dir: Path) -> CheckResult:
         ident.get("mc_coverage_evidence") == expected_coverage,
         "adapter MC coverage evidence does not match eval row bytes",
     )
-    expected_retention = {
-        "fit_rows": len(fit_rows),
-        "eval_rows": len(eval_rows),
-    }
-    _err(
-        errors,
-        ident.get("mc_retention_evidence") == expected_retention,
-        "adapter MC retention evidence does not match row bytes",
+    errors.extend(
+        _mc_retention_errors(
+            ident.get("mc_retention_evidence"),
+            fit_rows=fit_rows,
+            eval_rows=eval_rows,
+            fit_items=fit_items,
+            eval_items=eval_items,
+        )
     )
 
     calibration: dict[str, Any] | None = None
@@ -919,19 +1090,7 @@ def validate_adapter(bundle_dir: Path) -> CheckResult:
         if isinstance(per_bucket, dict):
             for phase in ("early", "mid", "late"):
                 block = per_bucket.get(phase)
-                _err(
-                    errors,
-                    isinstance(block, dict)
-                    and set(block) == {"platt_coef", "platt_intercept"},
-                    f"adapter calibration {phase} parameters are noncanonical",
-                )
-                if isinstance(block, dict):
-                    for parameter in ("platt_coef", "platt_intercept"):
-                        _err(
-                            errors,
-                            _is_finite_number(block.get(parameter)),
-                            f"adapter calibration {phase} {parameter} is invalid",
-                        )
+                errors.extend(platt_phase_errors(block, phase=phase))
 
     return CheckResult(
         passed=not errors,
@@ -961,38 +1120,6 @@ def _check_png(path: Path, errors: list[str]) -> None:
     width, height = struct.unpack(">II", data[16:24])
     if width <= 0 or height <= 0:
         errors.append(f"PNG has non-positive dimensions: {path.name}")
-
-
-def _check_checksums(run_root: Path, errors: list[str]) -> None:
-    sums_path = run_root / "SHA256SUMS"
-    if not sums_path.exists():
-        errors.append("missing SHA256SUMS")
-        return
-    listed: dict[str, str] = {}
-    for line in sums_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        parts = line.split()
-        if len(parts) != 2:
-            errors.append(f"malformed SHA256SUMS line: {line!r}")
-            continue
-        digest, name = parts[0], parts[1]
-        if name.startswith("/") or ".." in Path(name).parts:
-            errors.append(f"unsafe checksum path: {name!r}")
-        if name in listed:
-            errors.append(f"duplicate checksum entry: {name!r}")
-        listed[name] = digest
-    # Every listed file must exist, be a regular file (no symlink), and match.
-    for name, digest in listed.items():
-        p = run_root / name
-        if p.is_symlink():
-            errors.append(f"symlink in checksums: {name!r}")
-            continue
-        if not p.is_file():
-            errors.append(f"checksum target missing: {name!r}")
-            continue
-        if sha256_file(p) != digest:
-            errors.append(f"checksum mismatch: {name!r}")
 
 
 def _check_attempts(
@@ -1210,206 +1337,6 @@ def _check_reports(run_root: Path, errors: list[str]) -> None:
     if figs.exists():
         for png in sorted(figs.glob("*.png")):
             _check_png(png, errors)
-
-
-def _check_external_artifacts(
-    run_root: Path,
-    errors: list[str],
-    *,
-    spec_ids: dict[str, Any],
-    fvi_selected: dict[str, Any],
-    environment_claims: dict[str, Any],
-) -> None:
-    path = run_root / "external_artifacts.json"
-    if not path.is_file():
-        errors.append("missing external_artifacts.json")
-        return
-    try:
-        payload = load_json(path)
-    except (
-        OSError,
-        UnicodeError,
-        json.JSONDecodeError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        errors.append(f"external_artifacts.json cannot be decoded: {exc}")
-        return
-    artifacts = payload.get("artifacts") if isinstance(payload, dict) else None
-    if not isinstance(artifacts, list):
-        errors.append("external_artifacts.json must contain an artifacts list")
-        return
-    by_role: dict[str, dict[str, Any]] = {}
-    exact_fields = {
-        "role",
-        "content_id",
-        "sha256",
-        "byte_size",
-        "retrieval_path",
-    }
-    for index, artifact in enumerate(artifacts):
-        if not isinstance(artifact, dict) or set(artifact) != exact_fields:
-            errors.append(f"external artifact {index} fields are noncanonical")
-            continue
-        role = artifact.get("role")
-        if not isinstance(role, str) or not role or role in by_role:
-            errors.append(f"external artifact {index} has invalid/duplicate role")
-            continue
-        by_role[role] = artifact
-        _err(
-            errors,
-            _is_sha256(artifact.get("content_id")),
-            f"external artifact {role} content_id must be 64-hex",
-        )
-        _err(
-            errors,
-            _is_sha256(artifact.get("sha256")),
-            f"external artifact {role} sha256 must be 64-hex",
-        )
-        _err(
-            errors,
-            _is_strict_int(artifact.get("byte_size"), minimum=1),
-            f"external artifact {role} byte_size must be positive",
-        )
-        _err(
-            errors,
-            isinstance(artifact.get("retrieval_path"), str)
-            and bool(artifact.get("retrieval_path")),
-            f"external artifact {role} retrieval_path must be nonempty",
-        )
-    required = {
-        "source_manifest": spec_ids.get("source_manifest_id"),
-        "raw_input_manifest": spec_ids.get("raw_input_bundle_id"),
-        "model_snapshot_manifest": spec_ids.get("model_snapshot_id"),
-        "fvi_study": spec_ids.get("fvi_study_id"),
-        "environment_contract": spec_ids.get("environment_contract_id"),
-    }
-    for role, expected_id in required.items():
-        _err(errors, role in by_role, f"missing external artifact role {role}")
-        if role in by_role:
-            _err(
-                errors,
-                by_role[role].get("content_id") == expected_id,
-                f"external artifact {role} does not match run spec",
-            )
-
-    def _packaged_manifest(
-        role: str,
-        expected_path: str,
-    ) -> dict[str, Any]:
-        artifact = by_role.get(role)
-        if artifact is None:
-            return {}
-        retrieval_path = artifact.get("retrieval_path")
-        if retrieval_path != expected_path:
-            errors.append(
-                f"external artifact {role} must use {expected_path}"
-            )
-            return {}
-        relative = Path(retrieval_path)
-        if relative.is_absolute() or ".." in relative.parts:
-            errors.append(
-                f"external artifact {role} has an unsafe packaged path"
-            )
-            return {}
-        evidence_path = run_root / relative
-        if evidence_path.is_symlink() or not evidence_path.is_file():
-            errors.append(f"packaged {role} evidence is missing")
-            return {}
-        _err(
-            errors,
-            evidence_path.stat().st_size == artifact.get("byte_size"),
-            f"packaged {role} byte_size mismatch",
-        )
-        _err(
-            errors,
-            sha256_file(evidence_path) == artifact.get("sha256"),
-            f"packaged {role} sha256 mismatch",
-        )
-        try:
-            manifest = load_json(evidence_path)
-        except (
-            OSError,
-            UnicodeError,
-            json.JSONDecodeError,
-            TypeError,
-            ValueError,
-        ) as exc:
-            errors.append(f"packaged {role} cannot be decoded: {exc}")
-            return {}
-        if not isinstance(manifest, dict) or not isinstance(
-            manifest.get("identity"),
-            dict,
-        ):
-            errors.append(f"packaged {role} must be a manifest object")
-            return {}
-        try:
-            _err(
-                errors,
-                compute_id(manifest["identity"]) == manifest.get("id"),
-                f"packaged {role} manifest id mismatch",
-            )
-        except (TypeError, ValueError) as exc:
-            errors.append(
-                f"packaged {role} identity cannot be canonicalized: {exc}"
-            )
-            return {}
-        _err(
-            errors,
-            manifest.get("id") == artifact.get("content_id"),
-            f"packaged {role} content id mismatch",
-        )
-        return manifest
-
-    fvi_manifest = _packaged_manifest(
-        "fvi_study",
-        "evidence/fvi_study.json",
-    )
-    fvi_identity = fvi_manifest.get("identity", {})
-    if isinstance(fvi_identity, dict) and fvi_identity:
-        _err(
-            errors,
-            fvi_identity.get("kind") in {"fvi_study", "fvi_study_fixed"},
-            "packaged FVI evidence has an invalid kind",
-        )
-        _err(
-            errors,
-            fvi_identity.get("adapter_bundle_id")
-            == spec_ids.get("adapter_bundle_id"),
-            "packaged FVI evidence does not match the adapter",
-        )
-        selected = (
-            fvi_identity.get("selected_parameters")
-            if fvi_identity.get("kind") == "fvi_study"
-            else fvi_identity.get("selected")
-        )
-        _err(
-            errors,
-            selected == fvi_selected,
-            "packaged FVI selection does not match the run spec",
-        )
-
-    environment_manifest = _packaged_manifest(
-        "environment_contract",
-        "evidence/environment_contract.json",
-    )
-    environment_identity = environment_manifest.get("identity", {})
-    if isinstance(environment_identity, dict) and environment_identity:
-        try:
-            expected_environment_identity = environment_contract_identity(
-                python_version=environment_claims["python_version"],
-                package_versions=environment_claims["package_versions"],
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            errors.append(
-                f"packaged environment cannot be compared: {exc}"
-            )
-        else:
-            _err(
-                errors,
-                environment_identity == expected_environment_identity,
-                "packaged environment evidence does not match environment.json",
-            )
 
 
 def _resolve_run_binding(
@@ -2252,11 +2179,13 @@ def validate_run(
          f"release_status mismatch: stored {aggregate.get('release_status')!r} != recomputed {recomputed_status!r}")
 
     if require_package:
-        _check_checksums(run_root, errors)
-        _check_external_artifacts(
+        check_complete_checksums(run_root, errors)
+        check_external_artifacts(
             run_root,
             errors,
             spec_ids=spec_ids,
+            evidence_roots=evidence_roots,
+            profile_variant=variant,
             fvi_selected={
                 "tolerance": tol_label,
                 "max_iterations": max_iter,

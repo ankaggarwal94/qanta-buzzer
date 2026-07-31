@@ -137,10 +137,19 @@ def run_fvi_study(
     candidate_records: list[dict[str, Any]] = []
     for tol in FVI_TOLERANCES:
         for max_iter in FVI_MAX_ITERATIONS:
-            rec = run_candidate_on_cells(
-                rows=rows, cells=rep_cells, calibration_json=calibration_json,
-                tolerance_label=tol, max_iterations=max_iter,
-            )
+            if (
+                tol == FVI_STRICT_REFERENCE["tolerance"]
+                and max_iter == int(FVI_STRICT_REFERENCE["max_iterations"])
+            ):
+                rec = dict(strict)
+            else:
+                rec = run_candidate_on_cells(
+                    rows=rows,
+                    cells=rep_cells,
+                    calibration_json=calibration_json,
+                    tolerance_label=tol,
+                    max_iterations=max_iter,
+                )
             eligible, reasons = candidate_is_eligible(rec, strict)
             rec["eligible"] = eligible
             rec["ineligibility_reasons"] = reasons

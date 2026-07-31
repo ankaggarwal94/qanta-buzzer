@@ -1,0 +1,138 @@
+{
+  "axes": {
+    "calibrator": [
+      "platt-logistic",
+      "similarity-temperature",
+      "isotonic"
+    ],
+    "category_pooling": [
+      "per_category",
+      "pooled_category"
+    ],
+    "continuation": [
+      "empirical_bucket",
+      "pooled_empirical"
+    ],
+    "prefix_bucketing": [
+      "early_mid_late",
+      "exact_prefix"
+    ],
+    "reward_schedule": [
+      "acf_flat",
+      "power_mark",
+      "wait_cost_small",
+      "strict_wrong"
+    ]
+  },
+  "bellman": {
+    "abstain_value": "0",
+    "actions": [
+      "answer",
+      "wait",
+      "abstain"
+    ],
+    "nonterminal_tie_priority": [
+      "wait",
+      "abstain",
+      "answer"
+    ],
+    "terminal_tie_priority": [
+      "abstain",
+      "answer"
+    ]
+  },
+  "bootstrap": {
+    "bit_generator": "PCG64",
+    "common_resamples_across_cells": true,
+    "interval": "percentile_95",
+    "resampling_unit": "item",
+    "seed": 1
+  },
+  "calibration": {
+    "application": "shared_map_applied_to_mc_and_qa",
+    "both_classes_required": true,
+    "fit_rows": "validation_mc_only",
+    "minimum_phase_rows": 10,
+    "phase_boundaries": [
+      "0.33",
+      "0.66"
+    ],
+    "similarity_temperature_grid": [
+      "0.25",
+      "0.5",
+      "0.75",
+      "1.0",
+      "1.5",
+      "2.0",
+      "3.0",
+      "5.0"
+    ]
+  },
+  "continuation": {
+    "clean_fallback_fraction_max": "0.05",
+    "clean_missing_fraction_max": "0.01",
+    "entropy_bin_edges": [
+      "0.0",
+      "0.5",
+      "0.9",
+      "1.000000000001"
+    ],
+    "minimum_bucket_count": 3,
+    "missing_value": "0",
+    "probability_bin_edges": [
+      "0.0",
+      "0.2",
+      "0.4",
+      "0.6",
+      "0.8",
+      "1.000000000001"
+    ]
+  },
+  "expected_cells": 96,
+  "format_condition": [
+    "paired_qa_prefix_vs_mc_fixed"
+  ],
+  "gate": {
+    "allow_incomplete_mc_coverage": false,
+    "allow_low_mc_retention": false,
+    "family_statistic": "maximum_cell_median_absolute_prefix_index_shift",
+    "material_threshold": "1",
+    "primary_metric": "median_absolute_prefix_index_shift"
+  },
+  "profile_name": "stopdff_bucketed_dp_paired_v2",
+  "reward_schedules": {
+    "acf_flat": {
+      "correct_early": "10",
+      "correct_late": "10",
+      "split": "1.0",
+      "wait_cost": "0",
+      "wrong": "-5"
+    },
+    "power_mark": {
+      "correct_early": "15",
+      "correct_late": "10",
+      "split": "0.5",
+      "wait_cost": "0",
+      "wrong": "-5"
+    },
+    "strict_wrong": {
+      "correct_early": "15",
+      "correct_late": "10",
+      "split": "0.5",
+      "wait_cost": "0",
+      "wrong": "-10"
+    },
+    "wait_cost_small": {
+      "correct_early": "15",
+      "correct_late": "10",
+      "split": "0.5",
+      "wait_cost": "0.05",
+      "wrong": "-5"
+    }
+  },
+  "schema_version": 2,
+  "splits": {
+    "eval": "test",
+    "fit": "val"
+  }
+}

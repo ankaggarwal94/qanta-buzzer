@@ -115,8 +115,26 @@ snapshotted repository, runs the synthetic mutation gate, and forbids a final ru
 skips the FVI study. A final invocation also runs and independently validates a bounded
 two-cell smoke and performs an independent second adapter build before starting the
 96-cell sweep. The final run spec binds content-addressed successful receipts for the
-smoke, mutation self-test, and deterministic two-build gates. It refuses to reuse an
-output directory.
+smoke, mutation self-test, and deterministic two-build gates. Fresh mode refuses to reuse
+an output directory. Before starting a sweep it also persists the exact FVI manifest needed
+to reconstruct that run after interruption.
+
+To resume an interrupted sweep, use the same data/repository arguments, variant, and output
+directory with `--resume`:
+
+```bash
+python scripts/run_stopdff_v5_local.py --data-dir data/processed \
+    --paper-exports paper_exports --out-dir stopdff_v5_final_out \
+    --variant final --resume
+```
+
+Resume does not rebuild source, raw inputs, the model snapshot, adapters, FVI selection, or
+prerequisite receipts. It rehashes those completed stages, requires their identities to match
+the existing run spec and current executing source, reconstructs the bound bootstrap plan,
+validates the append-only attempt history, and derives the next consecutive attempt. The
+sweep's own preflight then compares every existing cell and run-level byte before it writes.
+An ambiguous history, a missing durable FVI manifest, multiple matching run directories, or
+any incompatible stage fails closed. A fully packaged, valid run is returned unchanged.
 
 The driver prints each stage's identities and asserts `release_status == VALID`. Output run
 directory: `<out-dir>/runs/<run_id>/` with `aggregate.json`, `cells/`, `reports/`,
@@ -132,6 +150,12 @@ for the source, raw-input, model, FVI, and environment evidence.
 > two-build byte-identical determinism pilot on Modal L40S.
 
 ## Modal reproduction
+
+Install the host-side Modal SDK explicitly before invoking the Modal runner:
+
+```bash
+pip install -e '.[modal]'
+```
 
 `scripts/modal_stopdff_v5_runner.py` defines the stage functions with a **source-only**
 image (`git archive`), the `/stopdff/` Volume layout on `cs321m-stopdff-artifacts`,
@@ -158,6 +182,43 @@ semantics assume the documented one-writer-per-run invariant. A Modal payment me
 and explicit compute authorization are required for L40S or full-release execution.
 Set `STOPDFF_V5_SOURCE_DIR` to the clean extracted archive for the frozen source SHA;
 the runner refuses to construct an image when this binding is absent.
+
+After uploading the source and raw-input bundles to their documented Volume paths, create a
+small control plan. The two adapter subdirectories must be distinct and create-once:
+
+```json
+{
+  "source_id": "<64-hex source manifest ID>",
+  "raw_id": "<64-hex raw-input manifest ID>",
+  "adapter_subdirs": ["control_build_a", "control_build_b"],
+  "gate_overrides": {},
+  "resource_summary": {"backend": "modal"}
+}
+```
+
+With explicit authorization for Modal compute, start the durable controller:
+
+```bash
+modal run scripts/modal_stopdff_v5_runner.py::control_main \
+    --plan-path stopdff_v5_control.json \
+    --state-path stopdff_v5_control_state.json
+```
+
+The controller verifies both uploaded bundles, freezes the model, performs and receipts two
+adapter builds, promotes the bound adapter, runs the FVI study, smoke bootstrap/sweep,
+mutation gate, final bootstrap/sweep, prepackage validation, packaging, and final validation
+in that fixed order. Each stage intent and result is fsynced to the state file and adjacent
+JSONL journal. To continue after an interrupted host process, use the same plan and state:
+
+```bash
+modal run scripts/modal_stopdff_v5_runner.py::control_main \
+    --plan-path stopdff_v5_control.json \
+    --state-path stopdff_v5_control_state.json --resume
+```
+
+Completed stages are reused from the bound journal. A sweep whose response was lost is
+retried as the next explicit resume attempt; incompatible state or a changed plan fails
+closed. `probe_main` remains available as a separate environment-only entry point.
 
 ## Standalone validation (acceptance contract)
 

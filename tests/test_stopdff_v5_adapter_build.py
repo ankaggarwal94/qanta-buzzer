@@ -83,7 +83,6 @@ def test_adapter_similarity_fields_keep_six_decimal_identity_contract():
             vectors = {
                 "option one": [1.0, 0.0],
                 "option two": [1.0, 2.0],
-                "answer": [2.0, 1.0],
                 "prefix": [1.0, 1.0],
                 "prefix extended": [1.0, 3.0],
             }
@@ -96,7 +95,7 @@ def test_adapter_similarity_fields_keep_six_decimal_identity_contract():
             "cumulative_prefixes": ["prefix", "prefix extended"],
             "options": ["option one", "option two"],
             "gold_index": 1,
-            "answer_primary": "answer",
+            "answer_primary": "option two",
             "category": "test",
         },
         FakeModel(),
