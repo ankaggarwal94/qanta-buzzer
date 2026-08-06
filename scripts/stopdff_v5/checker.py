@@ -61,8 +61,8 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _INTERRUPTED_REASON = "terminal_result_missing_at_resume"
 _FVI_STUDY_CACHE: dict[tuple[str, str, str, str], dict[str, Any]] = {}
 _FOCUSED_CHECKER_HASHES = {
-    "checker_calibration.py": "4df01eafb2d5c60d0479443d5d63652b7bf48807a8b3fc5923901a1cddc2e49a",
-    "checker_package.py": "696dda2d8f509cc3353fb8519a0cb2320b615158deff6e014118d2f60c257036",
+    "checker_calibration.py": "80f95a5521adb52a5183f9de5d90ceb81157248949bc365ff4270c2f7cd884c9",
+    "checker_package.py": "3810821a9bd50f2fae950b2b14443f67355ac8329ca908558e4535c3ee1a3243",
     "receipt_evidence.py": "ad32d7437e893ad2b4052b1fb51752f45f2096fa920eb8ac40427a0cdef7d9ac",
 }
 
@@ -681,6 +681,7 @@ def validate_adapter(bundle_dir: Path) -> CheckResult:
         "fit_rows_sha256",
         "eval_rows_sha256",
         "calibration_sha256",
+        "question_trajectory_binding_id",
         "mc_coverage_evidence",
         "mc_retention_evidence",
         "producer_hashes",
@@ -811,6 +812,40 @@ def validate_adapter(bundle_dir: Path) -> CheckResult:
                 ),
                 f"adapter {label} row {index} has invalid prefix_fraction",
             )
+            for digest_field in (
+                "prefix_text_sha256",
+                "full_question_sha256",
+            ):
+                _err(
+                    errors,
+                    _is_sha256(row.get(digest_field)),
+                    f"adapter {label} row {index} has invalid {digest_field}",
+                )
+            prefix_count = row.get("prefix_char_count")
+            full_count = row.get("full_question_char_count")
+            counts_valid = (
+                _is_strict_int(prefix_count, minimum=1)
+                and _is_strict_int(full_count, minimum=1)
+                and prefix_count <= full_count
+            )
+            _err(
+                errors,
+                counts_valid,
+                f"adapter {label} row {index} has invalid question lengths",
+            )
+            if counts_valid and _is_finite_number(row.get("prefix_fraction")):
+                expected_fraction = round(prefix_count / full_count, round_decimals)
+                _err(
+                    errors,
+                    math.isclose(
+                        float(row["prefix_fraction"]),
+                        expected_fraction,
+                        rel_tol=0.0,
+                        abs_tol=1e-12,
+                    ),
+                    f"adapter {label} row {index} prefix_fraction does not "
+                    "match bound question lengths",
+                )
             raw_similarity = row.get("raw_similarity")
             _err(
                 errors,
@@ -952,6 +987,10 @@ def validate_adapter(bundle_dir: Path) -> CheckResult:
 
         shared_fields = (
             "prefix_fraction",
+            "prefix_text_sha256",
+            "prefix_char_count",
+            "full_question_sha256",
+            "full_question_char_count",
             "split",
             "category",
             "K",
@@ -1023,6 +1062,27 @@ def validate_adapter(bundle_dir: Path) -> CheckResult:
                     "prefix fractions",
                 )
 
+            prefix_counts = [
+                row.get("prefix_char_count")
+                for row in representative_rows
+                if row is not None
+            ]
+            if len(prefix_counts) == len(representative_rows) and all(
+                _is_strict_int(value, minimum=1) for value in prefix_counts
+            ):
+                _err(
+                    errors,
+                    all(
+                        current < following
+                        for current, following in zip(
+                            prefix_counts,
+                            prefix_counts[1:],
+                        )
+                    ),
+                    f"adapter {label} item {item_id!r} prefix lengths do not "
+                    "strictly increase",
+                )
+
             terminal_fraction = fractions[-1] if fractions else None
             _err(
                 errors,
@@ -1033,6 +1093,31 @@ def validate_adapter(bundle_dir: Path) -> CheckResult:
                 ),
                 f"adapter {label} item {item_id!r} terminal "
                 "prefix_fraction must be 1.0",
+            )
+            full_bindings = {
+                (
+                    row.get("full_question_sha256"),
+                    row.get("full_question_char_count"),
+                )
+                for row in representative_rows
+                if row is not None
+            }
+            _err(
+                errors,
+                len(full_bindings) == 1,
+                f"adapter {label} item {item_id!r} full-question binding "
+                "changes across prefixes",
+            )
+            terminal_row = representative_rows[-1] if representative_rows else None
+            _err(
+                errors,
+                terminal_row is not None
+                and terminal_row.get("prefix_text_sha256")
+                == terminal_row.get("full_question_sha256")
+                and terminal_row.get("prefix_char_count")
+                == terminal_row.get("full_question_char_count"),
+                f"adapter {label} item {item_id!r} terminal prefix is not "
+                "bound to the full question",
             )
 
             if representative_rows and representative_rows[0] is not None:
@@ -1075,6 +1160,20 @@ def validate_adapter(bundle_dir: Path) -> CheckResult:
         not (fit_items & eval_items),
         "adapter fit/eval item IDs overlap",
     )
+    try:
+        from .adapter_build import question_trajectory_binding_from_rows
+
+        trajectory_id = question_trajectory_binding_from_rows(
+            fit_rows + eval_rows
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        errors.append(f"adapter question trajectory cannot be derived: {exc}")
+    else:
+        _err(
+            errors,
+            trajectory_id == ident.get("question_trajectory_binding_id"),
+            "adapter question trajectory binding does not match row bytes",
+        )
 
     eval_mc_prefixes = {
         (row["item_id"], row["prefix_idx"])

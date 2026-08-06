@@ -143,7 +143,12 @@ directory: `<out-dir>/runs/<run_id>/` with `aggregate.json`, `cells/`, `reports/
 `figures/`, `command_manifest.json` (local backend), and `SHA256SUMS`. Packaging is
 create-once: a repeat accepts only byte-identical cached report/evidence bytes. Every
 package contains exact FVI and environment manifests plus a nonempty retrieval ledger
-for the source, raw-input, model, FVI, and environment evidence.
+for the source, raw-input, model, FVI, and environment evidence. Source, raw-input, and
+model evidence is self-contained: packaging first validates each staged manifest against
+its exhaustive content tree, copies every declared byte under `evidence/`, and final
+validation repeats the exhaustive byte checks. The question-trajectory binding is then
+recomputed from the packaged val/test/MC raw datasets and compared with the adapter, so
+the raw manifest's semantic assertion is not trusted on its own.
 
 > Note on `all-MiniLM-L6-v2` numerics: raw cosine similarities are rounded to 6 decimals so
 > adapter rows are byte-stable across builds. Across *different* hardware the calibrated
@@ -183,8 +188,14 @@ consecutive. A missing older result, multiple missing results, an unexpected res
 a conflicting interruption record is ambiguous and fails closed. These recovery
 semantics assume the documented one-writer-per-run invariant. A Modal payment method
 and explicit compute authorization are required for L40S or full-release execution.
-Set `STOPDFF_V5_SOURCE_DIR` to the clean extracted archive for the frozen source SHA;
-the runner refuses to construct an image when this binding is absent.
+Set `STOPDFF_V5_SOURCE_DIR` to the canonical `source_snapshot/` bundle produced by
+the local runner (the directory containing `source_manifest.json` and `source/`).
+Before defining the Modal image, the runner validates the manifest, exact file set,
+modes, sizes, and digests, copies that closed tree to a private staging directory,
+revalidates the copy, and binds its manifest ID to the control plan. It refuses to
+construct an image from a bare or unlisted source tree. The directly callable adapter
+and sweep stages also reject any source identity other than the one bound into that
+validated image before importing reviewed project modules.
 
 After uploading the source and raw-input bundles to their documented Volume paths, create a
 small control plan. The two adapter subdirectories must be distinct and create-once:
@@ -219,9 +230,13 @@ modal run scripts/modal_stopdff_v5_runner.py::control_main \
     --state-path stopdff_v5_control_state.json --resume
 ```
 
-Completed stages are reused from the bound journal. A sweep whose response was lost is
-retried as the next explicit resume attempt; incompatible state or a changed plan fails
-closed. `probe_main` remains available as a separate environment-only entry point.
+Completed stages are reused from the bound journal. A sweep retry derives its evidence
+mode and number inside the remote call from the durable run directory: an absent root
+starts fresh at evidence attempt 1, a canonical nonempty history resumes at its next
+number, and a partial or malformed root fails closed without being repaired. The local
+controller invocation count is never reused as a scientific attempt number. A changed
+plan also fails closed. `probe_main` remains available as a separate environment-only
+entry point.
 
 ## Standalone validation (acceptance contract)
 

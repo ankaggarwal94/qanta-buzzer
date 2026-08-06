@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .identity import compute_id
+
 from . import PROFILE_NAME, PROTOCOL_VERSION, SCHEMA_VERSION
 from .profile import (
     BOOTSTRAP,
@@ -151,6 +153,7 @@ def adapter_identity(
     fit_rows_sha256: str,
     eval_rows_sha256: str,
     calibration_sha256: str,
+    question_trajectory_binding_id: str,
     mc_coverage: dict[str, Any],
     mc_retention: dict[str, Any],
     producer_hashes: dict[str, str],
@@ -169,10 +172,39 @@ def adapter_identity(
         "fit_rows_sha256": fit_rows_sha256,
         "eval_rows_sha256": eval_rows_sha256,
         "calibration_sha256": calibration_sha256,
+        "question_trajectory_binding_id": question_trajectory_binding_id,
         "mc_coverage_evidence": mc_coverage,
         "mc_retention_evidence": mc_retention,
         "producer_hashes": producer_hashes,
     }
+
+
+def question_trajectory_binding_id(
+    records: list[dict[str, Any]],
+) -> str:
+    """Return the canonical ID for raw/adapter question-prefix bindings."""
+    expected_fields = {
+        "split",
+        "item_id",
+        "prefix_idx",
+        "prefix_text_sha256",
+        "prefix_char_count",
+        "full_question_sha256",
+        "full_question_char_count",
+    }
+    canonical = sorted(
+        records,
+        key=lambda record: (
+            str(record.get("split")),
+            str(record.get("item_id")),
+            int(record.get("prefix_idx", -1)),
+        ),
+    )
+    if any(set(record) != expected_fields for record in canonical):
+        raise ValueError("question trajectory binding fields are noncanonical")
+    return compute_id(
+        {"kind": "question_trajectory_binding", "records": canonical}
+    )
 
 
 def fvi_study_identity(

@@ -323,6 +323,34 @@ _MANIFEST_KINDS = {
     "environment_contract": {"environment_contract"},
 }
 
+# External content is validated in its staged layout and copied into a
+# normalized, self-contained package layout.  Keeping the manifest paths
+# stable preserves the external-artifact ledger contract; these subtrees bind
+# every byte named by those manifests.
+_BOUND_CONTENT_LAYOUTS = {
+    "source_manifest": {
+        "kind": "source_snapshot",
+        "file_key": "files",
+        "name_key": "path",
+        "staged_subdir": "source",
+        "packaged_subdir": "source_snapshot/source",
+    },
+    "raw_input_manifest": {
+        "kind": "raw_input_bundle",
+        "file_key": "files",
+        "name_key": "role",
+        "staged_subdir": "",
+        "packaged_subdir": "raw_inputs/raw",
+    },
+    "model_snapshot_manifest": {
+        "kind": "model_snapshot",
+        "file_key": "files",
+        "name_key": "path",
+        "staged_subdir": "snapshot",
+        "packaged_subdir": "model_snapshot/snapshot",
+    },
+}
+
 
 def _manifest_from_bytes(data: bytes, *, role: str) -> dict[str, Any]:
     try:
@@ -336,13 +364,22 @@ def _manifest_from_bytes(data: bytes, *, role: str) -> dict[str, Any]:
         or identity.get("kind") not in _MANIFEST_KINDS[role]
     ):
         raise ValueError(f"{role} evidence has an invalid manifest identity")
-    if role == "raw_input_manifest":
-        semantic_checks = identity.get("semantic_checks")
-        if (
-            not isinstance(semantic_checks, dict)
-            or semantic_checks.get("all_semantic_checks_pass") is not True
-        ):
-            raise ValueError("raw-input semantic checks did not pass")
+    content_kinds = {
+        "source_manifest": "source_snapshot",
+        "raw_input_manifest": "raw_input_bundle",
+        "model_snapshot_manifest": "model_snapshot",
+    }
+    expected_kind = content_kinds.get(role)
+    if expected_kind is not None:
+        from .content_manifest import validate_content_manifest_document
+
+        validate_content_manifest_document(
+            manifest,
+            manifest_name=role,
+            expected_id=manifest["id"],
+            expected_kind=expected_kind,
+            require_semantic_pass=role == "raw_input_manifest",
+        )
     return manifest
 
 
@@ -454,13 +491,66 @@ def _prepare_package_evidence(
             "raw_input_manifest",
             "model_snapshot_manifest",
         }:
-            data = _resolve_retrieval_path(root, retrieval).read_bytes()
+            manifest_path = _resolve_retrieval_path(root, retrieval)
+            data = manifest_path.read_bytes()
             candidates[packaged_path] = data
         else:
             data = candidates.get(packaged_path)
             if data is None:
                 raise ValueError(f"missing packaged evidence for {role}")
         manifest = _manifest_from_bytes(data, role=role)
+        content_layout = _BOUND_CONTENT_LAYOUTS.get(role)
+        if content_layout is not None:
+            from .content_manifest import validate_bound_content_manifest
+
+            staged_subdir = content_layout["staged_subdir"]
+            packaged_subdir = content_layout["packaged_subdir"]
+            if (manifest_path.parent / packaged_subdir).is_dir():
+                staged_subdir = packaged_subdir
+            # Local staging keeps raw roles under ``raw/`` beside its operator
+            # record; the Modal Volume stores the same canonical role set next
+            # to the manifest.  Normalize both verified layouts into one
+            # packaged subtree.
+            elif role == "raw_input_manifest" and (
+                manifest_path.parent / "raw"
+            ).is_dir():
+                staged_subdir = "raw"
+            validate_bound_content_manifest(
+                manifest_path.parent,
+                manifest_name=manifest_path.name,
+                expected_id=manifest["id"],
+                expected_kind=content_layout["kind"],
+                file_key=content_layout["file_key"],
+                name_key=content_layout["name_key"],
+                content_subdir=staged_subdir,
+                require_semantic_pass=role == "raw_input_manifest",
+            )
+            staged_root = manifest_path.parent
+            if staged_subdir:
+                staged_root /= staged_subdir
+            for entry in manifest["identity"][content_layout["file_key"]]:
+                relative = entry[content_layout["name_key"]]
+                source = staged_root / relative
+                content = source.read_bytes()
+                if (
+                    len(content) != entry["size"]
+                    or hashlib.sha256(content).hexdigest() != entry["sha256"]
+                ):
+                    raise ValueError(
+                        f"{role} content changed during packaging: {relative}"
+                    )
+                destination = Path("evidence") / content_layout[
+                    "packaged_subdir"
+                ] / relative
+                packaged_name = destination.as_posix()
+                if (
+                    packaged_name in candidates
+                    and candidates[packaged_name] != content
+                ):
+                    raise ValueError(
+                        f"conflicting packaged evidence path: {packaged_name}"
+                    )
+                candidates[packaged_name] = content
         actual_digest = hashlib.sha256(data).hexdigest()
         if (
             manifest["id"] != content_id

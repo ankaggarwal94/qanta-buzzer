@@ -286,7 +286,7 @@ def _mc_rows(phase_frac, n, split_correct):
     return rows
 
 
-def test_platt_logistic_and_constant():
+def test_platt_logistic_rejects_constant_phase():
     cal = {
         "per_bucket": {
             "early": {"platt_coef": 4.0, "platt_intercept": -2.0},
@@ -295,9 +295,8 @@ def test_platt_logistic_and_constant():
                      "platt_model_type": "constant", "platt_constant_probability": 0.7},
         }
     }
-    c = calibrators.fit_platt(cal)
-    assert 0.0 <= c.apply(0.5, 0.1) <= 1.0
-    assert abs(c.apply(0.5, 0.9) - 0.7) < 1e-9  # late constant
+    with pytest.raises(calibrators.CalibratorFitError, match="requires logistic"):
+        calibrators.fit_platt(cal)
 
 
 def test_similarity_temperature_prereq_error():

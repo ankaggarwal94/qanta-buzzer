@@ -16,17 +16,25 @@ from typing import Any, Callable
 import numpy as np
 
 from . import checker
-from .adapter_build import ADAPTER_SCHEMA_COLUMNS, derive_bound_calibration
+from .adapter_build import (
+    ADAPTER_SCHEMA_COLUMNS,
+    derive_bound_calibration,
+    question_trajectory_binding_from_rows,
+)
 from .bootstrap import build_bootstrap_plan, plan_identity
 from .identity import build_manifest, compute_id, sha256_bytes, sha256_file
 from .fvi_study import run_fvi_study
 from .manifests import (
     ADAPTER_SCORING_SPEC,
     FVI_PRODUCER_FILES,
+    RAW_INPUT_ROLES,
     adapter_identity,
     environment_contract_identity,
     fvi_study_identity,
+    model_snapshot_identity,
+    raw_input_identity,
     run_spec_identity,
+    source_manifest_identity,
 )
 from .profile import smoke_cells
 from .rowio import write_jsonl_gz
@@ -46,7 +54,14 @@ def _synth_rows(n_items: int = 44, seed: int = 11) -> list[dict]:
         split = "val" if i < n_items // 2 else "test"
         cat = CATEGORIES[i % len(CATEGORIES)]
         off = rng.uniform(-0.15, 0.15)
-        for t, frac in enumerate(PREFIX_FRACS):
+        tokens = [f"{qid}w{index:02d}" for index in range(10)]
+        full_question = " ".join(tokens)
+        prefixes = [
+            " ".join(tokens[:count]) for count in (1, 3, 5, 7, 9, 10)
+        ]
+        full_digest = sha256_bytes(full_question.encode("utf-8"))
+        for t, prefix in enumerate(prefixes):
+            frac = round(len(prefix) / len(full_question), 6)
             mc = round(
                 float(
                     np.clip(
@@ -75,6 +90,10 @@ def _synth_rows(n_items: int = 44, seed: int = 11) -> list[dict]:
             )
             correct = int(mc + rng.uniform(-0.15, 0.15) > 0.55)
             base = {"item_id": qid, "prefix_idx": t, "prefix_fraction": frac, "split": split,
+                    "prefix_text_sha256": sha256_bytes(prefix.encode("utf-8")),
+                    "prefix_char_count": len(prefix),
+                    "full_question_sha256": full_digest,
+                    "full_question_char_count": len(full_question),
                     "category": cat, "K": 4, "option_set_id": f"{qid}:K4",
                     "distractor_strategy": "unknown"}
             second_best = round(max(-1.0, mc - 0.1), 6)
@@ -149,56 +168,148 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
 
     input_manifest_dir = base_dir / "input_manifests"
     input_manifest_dir.mkdir(parents=True, exist_ok=True)
+    source_bundle = input_manifest_dir / "source_bundle"
+    source_content = source_bundle / "source"
+    raw_bundle = input_manifest_dir / "raw_bundle"
+    model_bundle = input_manifest_dir / "model_bundle"
+    model_content = model_bundle / "snapshot"
+    source_content.mkdir(parents=True, exist_ok=True)
+    raw_bundle.mkdir(parents=True, exist_ok=True)
+    model_content.mkdir(parents=True, exist_ok=True)
     fvi_producer_hashes = {
         name: sha256_bytes(name.encode("utf-8"))
         for name in FVI_PRODUCER_FILES
     }
     source_producer_hashes = {
         **fvi_producer_hashes,
-        "adapter_build.py": _hex("4"),
-        "checker.py": _hex("8"),
-        "sweep.py": _hex("9"),
+        "adapter_build.py": sha256_bytes(b"adapter_build.py"),
+        "checker.py": sha256_bytes(b"checker.py"),
+        "sweep.py": sha256_bytes(b"sweep.py"),
     }
+    source_payloads = {
+        **{
+            f"scripts/stopdff_v5/{name}": name.encode("utf-8")
+            for name in source_producer_hashes
+        },
+        "pyproject.toml": b"pyproject.toml",
+        "uv.lock": b"uv.lock",
+    }
+    source_files = []
+    for relative, payload in source_payloads.items():
+        target = source_content / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+        source_files.append(
+            {
+                "path": relative,
+                "mode": "100644",
+                "size": len(payload),
+                "sha256": sha256_bytes(payload),
+            }
+        )
+    trajectory_id = question_trajectory_binding_from_rows(fit_rows + eval_rows)
+    def _raw_question(qid: str) -> str:
+        return " ".join(f"{qid}w{index:02d}" for index in range(10))
+
+    split_records = {
+        "train": [
+            {
+                "qid": "train-only",
+                "question": "train only question",
+                "answer": "train answer",
+            }
+        ],
+        "val": [
+            {"qid": f"q{i:03d}", "question": _raw_question(f"q{i:03d}"), "answer": "a"}
+            for i in range(fit_item_count)
+        ],
+        "test": [
+            {"qid": f"q{i:03d}", "question": _raw_question(f"q{i:03d}"), "answer": "a"}
+            for i in range(fit_item_count, fit_item_count + eval_item_count)
+        ],
+    }
+    mc_records = []
+    for record in split_records["val"] + split_records["test"]:
+        tokens = record["question"].split()
+        mc_records.append(
+            {
+                **record,
+                "cumulative_prefixes": [
+                    " ".join(tokens[:count])
+                    for count in (1, 3, 5, 7, 9, 10)
+                ],
+            }
+        )
+    raw_payloads = {
+        "mc_dataset.json": (
+            json.dumps({"questions": mc_records}, sort_keys=True) + "\n"
+        ).encode("utf-8"),
+        **{
+            f"{split}_dataset.json": (
+                json.dumps({"questions": records}, sort_keys=True) + "\n"
+            ).encode("utf-8")
+            for split, records in split_records.items()
+        },
+        "build_metadata.json": (bundle / "build_metadata.json").read_bytes(),
+    }
+    for role in RAW_INPUT_ROLES:
+        raw_payloads.setdefault(role, role.encode("utf-8"))
+        (raw_bundle / role).write_bytes(raw_payloads[role])
+    raw_files = [
+        {
+            "role": role,
+            "size": len(raw_payloads[role]),
+            "sha256": sha256_bytes(raw_payloads[role]),
+        }
+        for role in RAW_INPUT_ROLES
+    ]
+    model_payload = b"model.bin"
+    (model_content / "model.bin").write_bytes(model_payload)
     input_manifests = {
         "source_manifest": build_manifest(
-            {
-                "kind": "source_snapshot",
-                "fixture": "synthetic",
-                "files": [
-                    {
-                        "path": f"scripts/stopdff_v5/{name}",
-                        "sha256": digest,
-                    }
-                    for name, digest in source_producer_hashes.items()
-                ],
-            }
+            source_manifest_identity(
+                git_sha="a" * 40,
+                files=source_files,
+                pyproject_sha256=sha256_bytes(source_payloads["pyproject.toml"]),
+                uv_lock_sha256=sha256_bytes(source_payloads["uv.lock"]),
+            )
         ),
         "raw_input_manifest": build_manifest(
-            {
-                "kind": "raw_input_bundle",
-                "fixture": "synthetic",
-                "files": [
-                    {
-                        "role": "build_metadata.json",
-                        "size": (bundle / "build_metadata.json").stat().st_size,
-                        "sha256": build_metadata_sha,
-                    }
-                ],
-                "semantic_checks": {"all_semantic_checks_pass": True},
-            }
+            raw_input_identity(
+                files=raw_files,
+                semantic_checks={
+                    "all_semantic_checks_pass": True,
+                    "question_trajectory_binding_id": trajectory_id,
+                },
+            )
         ),
         "model_snapshot_manifest": build_manifest(
-            {"kind": "model_snapshot", "fixture": "synthetic"}
+            model_snapshot_identity(
+                model_id=ADAPTER_SCORING_SPEC["model_id"],
+                revision="b" * 40,
+                files=[
+                    {
+                        "path": "model.bin",
+                        "size": len(model_payload),
+                        "sha256": sha256_bytes(model_payload),
+                    }
+                ],
+                sentence_transformers_version="fixture",
+                transformers_version="fixture",
+            )
         ),
     }
-    input_manifest_paths: dict[str, Path] = {}
+    input_manifest_paths = {
+        "source_manifest": source_bundle / "source_manifest.json",
+        "raw_input_manifest": raw_bundle / "raw_input_manifest.json",
+        "model_snapshot_manifest": model_bundle / "model_snapshot_manifest.json",
+    }
     for role, input_manifest in input_manifests.items():
-        input_manifest_path = input_manifest_dir / f"{role}.json"
+        input_manifest_path = input_manifest_paths[role]
         input_manifest_path.write_text(
             json.dumps(input_manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        input_manifest_paths[role] = input_manifest_path
     source_id = input_manifests["source_manifest"]["id"]
     raw_id = input_manifests["raw_input_manifest"]["id"]
     model_id = input_manifests["model_snapshot_manifest"]["id"]
@@ -230,6 +341,7 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
         fit_row_count=len(fit_rows), eval_row_count=len(eval_rows),
         fit_rows_sha256=fit_sha, eval_rows_sha256=eval_sha,
         calibration_sha256=calibration_sha,
+        question_trajectory_binding_id=trajectory_id,
         mc_coverage={
             "eval_mc_items": len(
                 {item_id for item_id, _ in eval_mc_prefixes}
@@ -277,7 +389,9 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
             "fit_rows": len(fit_rows),
             "eval_rows": len(eval_rows),
         },
-        producer_hashes={"adapter_build.py": _hex("4")},
+        producer_hashes={
+            "adapter_build.py": source_producer_hashes["adapter_build.py"]
+        },
     )
     adapter_man = build_manifest(adapter_ident)
     (bundle / "manifest.json").write_text(json.dumps(adapter_man, indent=2, sort_keys=True), encoding="utf-8")
@@ -318,8 +432,8 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
     )
     env_id = environment_manifest["id"]
     run_producers = {
-        "checker.py": _hex("8"),
-        "sweep.py": _hex("9"),
+        "checker.py": source_producer_hashes["checker.py"],
+        "sweep.py": source_producer_hashes["sweep.py"],
     }
     myopic_sha256 = _hex("7")
     run_spec = run_spec_identity(

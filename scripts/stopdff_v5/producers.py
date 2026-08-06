@@ -17,10 +17,11 @@ from typing import Any
 
 from qb_data.dataset_splits import normalize_question_text, normalize_split_answer
 
-from .identity import build_manifest, sha256_file
+from .identity import build_manifest, sha256_bytes, sha256_file
 from .manifests import (
     RAW_INPUT_ROLES,
     environment_contract_identity,
+    question_trajectory_binding_id,
     raw_input_identity,
     source_manifest_identity,
 )
@@ -204,6 +205,105 @@ def _split_semantics(
     return checks, complete and pairwise_ok and not conflicts
 
 
+def _raw_question_trajectory_binding(
+    records_by_split: dict[str, list[dict[str, Any]]],
+    mc_records: list[dict[str, Any]],
+) -> str:
+    """Derive the canonical val/test prefix binding from staged raw bytes."""
+    mc_by_qid: dict[str, dict[str, Any]] = {}
+    for record in mc_records:
+        raw_qid = _record_value(record, ("qid", "question_id", "id"))
+        qid = (
+            str(raw_qid)
+            if isinstance(raw_qid, (str, int)) and not isinstance(raw_qid, bool)
+            else ""
+        )
+        if not qid or qid in mc_by_qid:
+            raise ValueError("MC dataset contains a missing or duplicate qid")
+        mc_by_qid[qid] = record
+
+    bindings: list[dict[str, Any]] = []
+    for split in ("val", "test"):
+        for record in records_by_split[split]:
+            raw_qid = _record_value(record, ("qid", "question_id", "id"))
+            qid = (
+                str(raw_qid)
+                if isinstance(raw_qid, (str, int))
+                and not isinstance(raw_qid, bool)
+                else ""
+            )
+            mc_record = mc_by_qid.get(qid)
+            if mc_record is None:
+                raise ValueError(f"MC dataset is missing {split} qid {qid!r}")
+            full_text = normalize_question_text(
+                _record_value(record, ("question", "text"))
+            )
+            mc_full_text = normalize_question_text(
+                _record_value(mc_record, ("question", "text"))
+            )
+            if not full_text or mc_full_text != full_text:
+                raise ValueError(
+                    f"MC question {qid!r} does not match staged {split} text"
+                )
+            raw_prefixes = mc_record.get("cumulative_prefixes")
+            if (
+                not isinstance(raw_prefixes, list)
+                or not raw_prefixes
+                or any(not isinstance(value, str) for value in raw_prefixes)
+            ):
+                raise ValueError(f"MC question {qid!r} has invalid prefixes")
+            prefixes = [normalize_question_text(value) for value in raw_prefixes]
+            full_tokens = full_text.split()
+            prefix_tokens = [value.split() for value in prefixes]
+            if (
+                any(not value for value in prefixes)
+                or any(
+                    len(current) >= len(following)
+                    for current, following in zip(
+                        prefix_tokens,
+                        prefix_tokens[1:],
+                    )
+                )
+                or any(
+                    tokens != full_tokens[: len(tokens)]
+                    for tokens in prefix_tokens
+                )
+                or prefixes[-1] != full_text
+            ):
+                raise ValueError(
+                    f"MC question {qid!r} prefixes do not bind the full question"
+                )
+            full_digest = sha256_bytes(full_text.encode("utf-8"))
+            for prefix_idx, prefix in enumerate(prefixes):
+                bindings.append(
+                    {
+                        "split": split,
+                        "item_id": qid,
+                        "prefix_idx": prefix_idx,
+                        "prefix_text_sha256": sha256_bytes(
+                            prefix.encode("utf-8")
+                        ),
+                        "prefix_char_count": len(prefix),
+                        "full_question_sha256": full_digest,
+                        "full_question_char_count": len(full_text),
+                    }
+                )
+    return question_trajectory_binding_id(bindings)
+
+
+def raw_question_trajectory_binding(raw_dir: Path) -> str:
+    """Recompute the val/test prefix binding from a bound raw-content tree."""
+    raw_dir = Path(raw_dir)
+    records_by_split = {
+        split: _dataset_records(raw_dir / f"{split}_dataset.json")
+        for split in ("train", "val", "test")
+    }
+    return _raw_question_trajectory_binding(
+        records_by_split,
+        _dataset_records(raw_dir / "mc_dataset.json"),
+    )
+
+
 def stage_raw_inputs(source_paths: dict[str, Path], out_dir: Path) -> dict[str, Any]:
     """Stage the ten raw inputs, run semantic checks, and emit the raw-input identity.
 
@@ -262,6 +362,15 @@ def stage_raw_inputs(source_paths: dict[str, Path], out_dir: Path) -> dict[str, 
     }
     split_checks, split_ok = _split_semantics(records_by_split)
     checks.update(split_checks)
+    try:
+        checks["question_trajectory_binding_id"] = raw_question_trajectory_binding(
+            raw_dir
+        )
+        trajectory_ok = True
+    except (KeyError, TypeError, ValueError) as exc:
+        checks["question_trajectory_binding_id"] = None
+        checks["question_trajectory_binding_error"] = str(exc)
+        trajectory_ok = False
     # Keep the legacy summary key, but derive it from both required dimensions.
     checks["val_test_disjoint"] = bool(
         checks["val_test_qid_disjoint"]
@@ -341,7 +450,8 @@ def stage_raw_inputs(source_paths: dict[str, Path], out_dir: Path) -> dict[str, 
     # No evaluation row may be used to fit a calibrator/continuation. This now
     # follows from fit_split=val plus byte-derived three-way disjointness.
     all_ok = (checks["threshold_sidecar_ok"] and checks["calibration_fit_split_is_val"]
-              and split_ok and checks["build_metadata_retention_consistent"]
+              and split_ok and trajectory_ok
+              and checks["build_metadata_retention_consistent"]
               and checks["myopic_semantics_valid"])
     checks["all_semantic_checks_pass"] = all_ok
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -67,12 +68,49 @@ def _load_modal_runner(monkeypatch):
         App=DummyApp,
     )
     monkeypatch.setitem(sys.modules, "modal", fake_modal)
-    monkeypatch.setenv("STOPDFF_V5_SOURCE_DIR", str(REPO))
+    from scripts.stopdff_v5.identity import build_manifest, sha256_file
+    from scripts.stopdff_v5.manifests import source_manifest_identity
+
+    source_bundle = Path(tempfile.mkdtemp(prefix="stopdff_v5_test_source_"))
+    source = source_bundle / "source"
+    source.mkdir()
+    source_names = (
+        "pyproject.toml",
+        "scripts/stopdff_v5/checker.py",
+        "scripts/stopdff_v5/sweep.py",
+        "uv.lock",
+    )
+    for name in source_names:
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{name}\n", encoding="utf-8")
+    files = [
+        {
+            "path": name,
+            "mode": "100644",
+            "size": (source / name).stat().st_size,
+            "sha256": sha256_file(source / name),
+        }
+        for name in source_names
+    ]
+    source_manifest = build_manifest(
+        source_manifest_identity(
+            git_sha="a" * 40,
+            files=files,
+            pyproject_sha256=files[0]["sha256"],
+            uv_lock_sha256=files[-1]["sha256"],
+        )
+    )
+    (source_bundle / "source_manifest.json").write_text(
+        json.dumps(source_manifest), encoding="utf-8"
+    )
+    monkeypatch.setenv("STOPDFF_V5_SOURCE_DIR", str(source_bundle))
     name = f"_pr30_modal_runner_{id(monkeypatch)}"
     spec = importlib.util.spec_from_file_location(name, MODAL_RUNNER)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
+    module.IMAGE_SOURCE_MANIFEST_ID = "1" * 64
     return module
 
 
@@ -92,7 +130,10 @@ def _write_raw_manifest(base: Path, *, passed: bool, kind: str = "raw_input_bund
     identity = {
         "kind": kind,
         "files": files,
-        "semantic_checks": {"all_semantic_checks_pass": passed},
+        "semantic_checks": {
+            "all_semantic_checks_pass": passed,
+            "question_trajectory_binding_id": "c" * 64,
+        },
     }
     manifest = build_manifest(identity)
     (base / "raw_input_manifest.json").write_text(
@@ -402,9 +443,60 @@ def test_control_plane_journals_order_and_resumes_lost_sweep(
     assert state["status"] == "completed"
     assert calls[0][0] == "run_sweep"
     smoke_wrapper = json.loads(calls[0][1][0])
-    assert smoke_wrapper["attempt"] == 2
+    assert "attempt" not in smoke_wrapper
     assert calls[0][1][-1] is True
     assert (tmp_path / "control.json.jsonl").is_file()
+
+
+def test_remote_sweep_attempt_is_derived_from_durable_state(
+    tmp_path,
+    monkeypatch,
+):
+    runner = _load_modal_runner(monkeypatch)
+    from scripts.stopdff_v5 import sweep
+
+    absent = tmp_path / "absent"
+    assert runner._resolve_remote_sweep_attempt(
+        absent,
+        recovery_requested=True,
+        sweep_module=sweep,
+    ) == (False, 1)
+    assert not absent.exists()
+
+    partial = tmp_path / "partial"
+    partial.mkdir()
+    with pytest.raises(ValueError, match="attempt history"):
+        runner._resolve_remote_sweep_attempt(
+            partial,
+            recovery_requested=True,
+            sweep_module=sweep,
+        )
+    assert list(partial.iterdir()) == []
+
+    records = [
+        {
+            "attempt": number,
+            "state": "started",
+            "mode": "fresh" if number == 1 else "resume",
+            "command": ["dp_sweep"] + (["--resume"] if number > 1 else []),
+        }
+        for number in (1, 2)
+    ]
+    (partial / "attempts.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    assert runner._resolve_remote_sweep_attempt(
+        partial,
+        recovery_requested=True,
+        sweep_module=sweep,
+    ) == (True, 3)
+    with pytest.raises(FileExistsError, match="already exists"):
+        runner._resolve_remote_sweep_attempt(
+            partial,
+            recovery_requested=False,
+            sweep_module=sweep,
+        )
 
 
 def test_local_resume_attempt_and_sweep_context(tmp_path, monkeypatch):

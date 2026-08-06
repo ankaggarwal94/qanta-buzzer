@@ -515,7 +515,7 @@ def test_adapter_accepts_cosine_endpoints_and_negative_values(tmp_path):
     assert result.passed, result.errors
 
 
-def test_adapter_accepts_tied_nondecreasing_prefix_fractions(tmp_path):
+def test_adapter_rejects_fraction_not_derived_from_bound_content(tmp_path):
     built = selftest.build_valid_package(tmp_path)
     _rewrite_fit_rows(
         built["adapter_bundle"],
@@ -526,10 +526,12 @@ def test_adapter_accepts_tied_nondecreasing_prefix_fractions(tmp_path):
             prefix_fraction=0.1,
         ),
     )
-    _rebind_calibration(built["adapter_bundle"])
-
     result = checker.validate_adapter(built["adapter_bundle"])
-    assert result.passed, result.errors
+    assert not result.passed
+    assert any(
+        "prefix_fraction does not match bound question lengths" in error
+        for error in result.errors
+    )
 
 
 def test_adapter_top_two_rounding_residual_boundary(tmp_path):

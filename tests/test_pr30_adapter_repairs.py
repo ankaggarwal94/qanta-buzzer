@@ -111,45 +111,40 @@ def test_adapter_binds_retention_decisions_and_canonical_prefix_fractions(
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    val = {
-        "qid": "val",
-        "question": "Ａlpha  BETA gamma",
-        "answer_primary": "Answer",
-    }
-    test = {
-        "qid": "test",
-        "question": "Ｄelta  EPSILON zeta",
-        "answer_primary": "Answer",
-    }
-    _write_json(data_dir / "val_dataset.json", [val])
-    _write_json(data_dir / "test_dataset.json", [test])
-    _write_json(
-        data_dir / "mc_dataset.json",
-        [
-            {
-                **val,
-                "cumulative_prefixes": [
-                    "alpha",
-                    "ALPHA beta",
-                    "Ａlpha beta gamma",
-                ],
-                "options": ["answer", "distractor"],
-                "gold_index": 0,
-            },
-            {
-                **test,
-                "cumulative_prefixes": [
-                    "delta",
-                    "DELTA epsilon",
-                    "Ｄelta epsilon zeta",
-                ],
-                "options": ["answer", "distractor"],
-                "gold_index": 0,
-            },
-        ],
-    )
+    val_records = []
+    test_records = []
+    mc_records = []
+    for split, stem, target in (
+        ("val", "alpha beta", val_records),
+        ("test", "delta epsilon", test_records),
+    ):
+        for index in range(10):
+            answer = "answer" if index % 2 == 0 else "distractor"
+            record = {
+                "qid": f"{split}{index:02d}",
+                "question": f"{stem} word{index:02d}",
+                "answer_primary": answer,
+            }
+            target.append(record)
+            mc_records.append(
+                {
+                    **record,
+                    "cumulative_prefixes": [
+                        stem.split()[0],
+                        stem,
+                        f"{stem} word{index:02d}",
+                    ],
+                    "options": ["answer", "distractor"],
+                    "gold_index": 0 if answer == "answer" else 1,
+                }
+            )
+    _write_json(data_dir / "val_dataset.json", val_records)
+    _write_json(data_dir / "test_dataset.json", test_records)
+    _write_json(data_dir / "mc_dataset.json", mc_records)
     _write_build_metadata(
         data_dir,
+        val_counts=(10, 10, 0),
+        test_counts=(10, 10, 0),
         thresholds={"smoke": 0.5, "full": 0.8},
     )
     _write_json(data_dir / "calibration.json", {"fit_split": "val"})
@@ -172,13 +167,13 @@ def test_adapter_binds_retention_decisions_and_canonical_prefix_fractions(
     retention = manifest["identity"]["mc_retention_evidence"]
     assert retention["threshold_profile"] == "full"
     assert retention["build_metadata_sha256"]
-    assert retention["fit_rows"] == 6
-    assert retention["eval_rows"] == 6
+    assert retention["fit_rows"] == 60
+    assert retention["eval_rows"] == 60
     for role, split in (("fit", "val"), ("eval", "test")):
         decision = retention["splits"][role]
         assert decision["split"] == split
-        assert decision["raw_count"] == 1
-        assert decision["retained_count"] == 1
+        assert decision["raw_count"] == 10
+        assert decision["retained_count"] == 10
         assert float(decision["threshold"]) == pytest.approx(0.8)
         assert decision["passed"] is True
         assert decision["overridden"] is False
@@ -190,7 +185,14 @@ def test_adapter_binds_retention_decisions_and_canonical_prefix_fractions(
         for row in fit_rows
         if row["format"] == "MC"
     ]
-    assert mc_fractions == [0.3125, 0.625, 1.0]
+    assert len(mc_fractions) == 30
+    assert all(
+        fractions[-1] == 1.0
+        for fractions in (
+            mc_fractions[index : index + 3]
+            for index in range(0, len(mc_fractions), 3)
+        )
+    )
 
     eval_rows = rowio.read_jsonl_gz(
         tmp_path / "bundle" / "eval_rows.jsonl.gz"

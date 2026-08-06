@@ -28,6 +28,23 @@ _MODEL_FIELDS = {
     "sentence_transformers_version",
     "transformers_version",
 }
+_CONTENT_LAYOUTS = {
+    "source_snapshot": (
+        "files",
+        "path",
+        {"path", "mode", "size", "sha256"},
+    ),
+    "raw_input_bundle": (
+        "files",
+        "role",
+        {"role", "size", "sha256"},
+    ),
+    "model_snapshot": (
+        "files",
+        "path",
+        {"path", "size", "sha256"},
+    ),
+}
 
 
 def _is_sha256(value: Any) -> bool:
@@ -97,9 +114,17 @@ def _validate_identity_schema(
         if tuple(names) != tuple(sorted(RAW_INPUT_ROLES)):
             raise ValueError(f"{manifest_name} raw-input roles mismatch")
         semantic_checks = identity.get("semantic_checks")
-        if require_semantic_pass and (
+        if (
             not isinstance(semantic_checks, dict)
-            or semantic_checks.get("all_semantic_checks_pass") is not True
+            or not _is_sha256(
+                semantic_checks.get("question_trajectory_binding_id")
+            )
+        ):
+            raise ValueError(
+                f"{manifest_name} lacks a canonical question trajectory binding"
+            )
+        if require_semantic_pass and (
+            semantic_checks.get("all_semantic_checks_pass") is not True
         ):
             raise ValueError(
                 f"{manifest_name} does not record passing semantic checks"
@@ -122,6 +147,74 @@ def _validate_identity_schema(
         raise ValueError(f"{manifest_name} has unsupported kind {kind!r}")
 
 
+def validate_content_manifest_document(
+    manifest: Any,
+    *,
+    manifest_name: str,
+    expected_id: str | None,
+    expected_kind: str | None = None,
+    require_semantic_pass: bool = False,
+) -> dict[str, Any]:
+    """Validate one source/raw/model manifest without trusting external bytes.
+
+    This document-level gate is shared by staging and package validation so a
+    self-consistently rehashed manifest cannot weaken the canonical identity
+    envelope.  ``validate_bound_content_manifest`` additionally proves that
+    the declared inventory is exhaustive for a supplied content root.
+    """
+    identity = manifest.get("identity") if isinstance(manifest, dict) else None
+    if not isinstance(identity, dict) or compute_id(identity) != manifest.get("id"):
+        raise ValueError(f"{manifest_name} id mismatch")
+    if expected_id is not None and manifest["id"] != expected_id:
+        raise ValueError(
+            f"{manifest_name} id {manifest['id']} != expected {expected_id}"
+        )
+    kind = identity.get("kind")
+    if expected_kind is not None and kind != expected_kind:
+        raise ValueError(
+            f"{manifest_name} kind {kind!r} != expected {expected_kind!r}"
+        )
+    layout = _CONTENT_LAYOUTS.get(kind)
+    if layout is None:
+        raise ValueError(f"{manifest_name} has unsupported kind {kind!r}")
+    file_key, name_key, entry_fields = layout
+    entries = identity.get(file_key)
+    if not isinstance(entries, list):
+        raise ValueError(f"{manifest_name} lacks {file_key}")
+
+    seen: set[str] = set()
+    names: list[str] = []
+    entries_by_name: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        name, _size, _digest = _canonical_entry(
+            entry,
+            expected_fields=entry_fields,
+            name_key=name_key,
+            manifest_name=manifest_name,
+        )
+        if name in seen:
+            raise ValueError(f"{manifest_name} contains a duplicate path")
+        seen.add(name)
+        names.append(name)
+        entries_by_name[name] = entry
+        if kind == "source_snapshot" and entry.get("mode") not in {
+            "100644",
+            "100755",
+        }:
+            raise ValueError(f"{manifest_name} source mode is noncanonical: {name}")
+    if names != sorted(names):
+        raise ValueError(f"{manifest_name} file entries are not canonically ordered")
+    _validate_identity_schema(
+        identity,
+        kind=str(kind),
+        names=names,
+        entries_by_name=entries_by_name,
+        manifest_name=manifest_name,
+        require_semantic_pass=require_semantic_pass,
+    )
+    return manifest
+
+
 def validate_bound_content_manifest(
     base: Path,
     *,
@@ -139,52 +232,29 @@ def validate_bound_content_manifest(
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise ValueError(f"{manifest_name} is missing or not a regular file")
     manifest = loads_no_duplicate_keys(manifest_path.read_text(encoding="utf-8"))
-    identity = manifest.get("identity") if isinstance(manifest, dict) else None
-    if not isinstance(identity, dict) or compute_id(identity) != manifest.get("id"):
-        raise ValueError(f"{manifest_name} id mismatch")
-    if expected_id is not None and manifest["id"] != expected_id:
-        raise ValueError(
-            f"{manifest_name} id {manifest['id']} != expected {expected_id}"
-        )
-    kind = identity.get("kind")
-    if expected_kind is not None and kind != expected_kind:
-        raise ValueError(
-            f"{manifest_name} kind {kind!r} != expected {expected_kind!r}"
-        )
-    expected_layout = {
-        "source_snapshot": ("files", "path", {"path", "mode", "size", "sha256"}),
-        "raw_input_bundle": ("files", "role", {"role", "size", "sha256"}),
-        "model_snapshot": ("files", "path", {"path", "size", "sha256"}),
-    }.get(kind)
-    if expected_layout is None:
-        raise ValueError(f"{manifest_name} has unsupported kind {kind!r}")
-    canonical_file_key, canonical_name_key, entry_fields = expected_layout
+    validate_content_manifest_document(
+        manifest,
+        manifest_name=manifest_name,
+        expected_id=expected_id,
+        expected_kind=expected_kind,
+        require_semantic_pass=require_semantic_pass,
+    )
+    identity = manifest["identity"]
+    kind = identity["kind"]
+    canonical_file_key, canonical_name_key, _entry_fields = _CONTENT_LAYOUTS[kind]
     if file_key != canonical_file_key or name_key != canonical_name_key:
         raise ValueError(f"{manifest_name} content layout mismatch")
-    entries = identity.get(file_key)
-    if not isinstance(entries, list):
-        raise ValueError(f"{manifest_name} lacks {file_key}")
+    entries = identity[file_key]
 
     content_root = base / content_subdir if content_subdir else base
     if content_root.is_symlink() or not content_root.is_dir():
         raise ValueError(f"{manifest_name} content root is noncanonical")
     seen: set[str] = set()
-    names: list[str] = []
-    entries_by_name: dict[str, dict[str, Any]] = {}
     for entry in entries:
-        name, size, digest = _canonical_entry(
-            entry,
-            expected_fields=entry_fields,
-            name_key=name_key,
-            manifest_name=manifest_name,
-        )
-        if name in seen:
-            raise ValueError(f"{manifest_name} contains a duplicate path")
+        name = entry[name_key]
+        size = entry["size"]
+        digest = entry["sha256"]
         seen.add(name)
-        names.append(name)
-        entries_by_name[name] = entry
-        if kind == "source_snapshot" and entry.get("mode") not in {"100644", "100755"}:
-            raise ValueError(f"{manifest_name} source mode is noncanonical: {name}")
         target = content_root / name
         if (
             target.is_symlink()
@@ -193,9 +263,6 @@ def validate_bound_content_manifest(
             or sha256_file(target) != digest
         ):
             raise ValueError(f"{manifest_name} file mismatch: {name}")
-    if names != sorted(names):
-        raise ValueError(f"{manifest_name} file entries are not canonically ordered")
-
     actual: set[str] = set()
     for path in content_root.rglob("*"):
         if path.is_symlink():
@@ -212,12 +279,4 @@ def validate_bound_content_manifest(
             f"{manifest_name} inventory mismatch: "
             f"unlisted={sorted(actual - seen)}, missing={sorted(seen - actual)}"
         )
-    _validate_identity_schema(
-        identity,
-        kind=str(kind),
-        names=names,
-        entries_by_name=entries_by_name,
-        manifest_name=manifest_name,
-        require_semantic_pass=require_semantic_pass,
-    )
     return manifest

@@ -16,9 +16,17 @@ from scripts.stopdff_v5 import checker, checker_package, selftest, writers  # no
 from scripts.stopdff_v5.checker_calibration import platt_phase_errors  # noqa: E402
 from scripts.stopdff_v5.identity import build_manifest, compute_id  # noqa: E402
 from scripts.stopdff_v5.manifests import (  # noqa: E402
+    ADAPTER_SCORING_SPEC,
     FVI_PRODUCER_FILES,
+    RAW_INPUT_ROLES,
     environment_contract_identity,
     fvi_study_identity,
+    model_snapshot_identity,
+    raw_input_identity,
+    source_manifest_identity,
+)
+from scripts.stopdff_v5.producers import (  # noqa: E402
+    raw_question_trajectory_binding,
 )
 from scripts.stopdff_v5.receipt_evidence import (  # noqa: E402
     DETERMINISM_FILES,
@@ -189,52 +197,249 @@ def test_rehashed_raw_manifest_still_requires_semantic_pass(tmp_path):
     assert "packaged raw-input semantic checks did not pass" in errors
 
 
+def _rebind_packaged_manifest(
+    root: Path,
+    *,
+    role: str,
+    manifest: dict,
+) -> None:
+    path = root / "evidence" / f"{role}.json"
+    data = _dump(path, manifest)
+    ledger_path = root / "external_artifacts.json"
+    ledger = checker.load_json(ledger_path)
+    ledger_role = role
+    for entry in ledger["artifacts"]:
+        if entry["role"] == ledger_role:
+            entry["content_id"] = manifest["id"]
+            entry["sha256"] = hashlib.sha256(data).hexdigest()
+            entry["byte_size"] = len(data)
+    _dump(ledger_path, ledger)
+
+
+def test_rehashed_packaged_source_cannot_weaken_identity_envelope(tmp_path):
+    built = selftest.build_valid_package(tmp_path)
+    root = built["run_root"]
+    source = checker.load_json(root / "evidence" / "source_manifest.json")
+    del source["identity"]["protocol_version"]
+    source["id"] = compute_id(source["identity"])
+    _rebind_packaged_manifest(
+        root,
+        role="source_manifest",
+        manifest=source,
+    )
+    spec = checker.load_json(root / "run_spec.json")["identity"]
+    spec_ids = dict(spec["identity"])
+    spec_ids["source_manifest_id"] = source["id"]
+    errors: list[str] = []
+    checker_package.check_external_artifacts(
+        root,
+        errors,
+        spec_ids=spec_ids,
+        evidence_roots=spec["evidence_roots"],
+        profile_variant="smoke",
+        fvi_selected=spec["fvi_selected"],
+        environment_claims=checker.load_json(root / "environment.json"),
+        adapter_identity=checker.load_json(
+            built["adapter_bundle"] / "manifest.json"
+        )["identity"],
+    )
+    assert any("identity envelope is invalid" in error for error in errors)
+
+
+def test_rehashed_raw_and_adapter_trajectory_cannot_override_bound_bytes(tmp_path):
+    built = selftest.build_valid_package(tmp_path)
+    root = built["run_root"]
+    raw = checker.load_json(root / "evidence" / "raw_input_manifest.json")
+    raw["identity"]["semantic_checks"][
+        "question_trajectory_binding_id"
+    ] = "f" * 64
+    raw["id"] = compute_id(raw["identity"])
+    _rebind_packaged_manifest(
+        root,
+        role="raw_input_manifest",
+        manifest=raw,
+    )
+    spec = checker.load_json(root / "run_spec.json")["identity"]
+    spec_ids = dict(spec["identity"])
+    spec_ids["raw_input_bundle_id"] = raw["id"]
+    errors: list[str] = []
+    adapter_identity = checker.load_json(
+        built["adapter_bundle"] / "manifest.json"
+    )["identity"]
+    adapter_identity["question_trajectory_binding_id"] = "f" * 64
+    checker_package.check_external_artifacts(
+        root,
+        errors,
+        spec_ids=spec_ids,
+        evidence_roots=spec["evidence_roots"],
+        profile_variant="smoke",
+        fvi_selected=spec["fvi_selected"],
+        environment_claims=checker.load_json(root / "environment.json"),
+        adapter_identity=adapter_identity,
+    )
+    assert (
+        "adapter question trajectory does not match packaged raw inputs"
+        in errors
+    )
+
+
+def test_packaged_content_inventory_rejects_unlisted_external_bytes(tmp_path):
+    built = selftest.build_valid_package(tmp_path)
+    root = built["run_root"]
+    unlisted = root / "evidence" / "source_snapshot" / "source" / "unlisted.py"
+    unlisted.write_text("unlisted\n", encoding="utf-8")
+    spec = checker.load_json(root / "run_spec.json")["identity"]
+    errors: list[str] = []
+    checker_package.check_external_artifacts(
+        root,
+        errors,
+        spec_ids=spec["identity"],
+        evidence_roots=spec["evidence_roots"],
+        profile_variant="smoke",
+        fvi_selected=spec["fvi_selected"],
+        environment_claims=checker.load_json(root / "environment.json"),
+        adapter_identity=checker.load_json(
+            built["adapter_bundle"] / "manifest.json"
+        )["identity"],
+    )
+    assert any("content inventory is invalid" in error for error in errors)
+
+
 def test_final_package_carries_and_revalidates_receipts(tmp_path, monkeypatch):
     root = tmp_path / "runs" / "final"
     root.mkdir(parents=True)
+    source_bundle = tmp_path / "inputs" / "source_bundle"
+    source_content = source_bundle / "source"
+    raw_bundle = tmp_path / "inputs" / "raw_bundle"
+    model_bundle = tmp_path / "inputs" / "model_bundle"
+    model_content = model_bundle / "snapshot"
+    source_content.mkdir(parents=True)
+    raw_bundle.mkdir(parents=True)
+    model_content.mkdir(parents=True)
     producer_hashes = {
         name: hashlib.sha256(name.encode("utf-8")).hexdigest()
         for name in FVI_PRODUCER_FILES
     }
-    adapter_producer_hashes = {"adapter_build.py": "d" * 64}
-    run_producer_hashes = {"checker.py": "e" * 64, "sweep.py": "f" * 64}
+    adapter_producer_hashes = {
+        "adapter_build.py": hashlib.sha256(b"adapter_build.py").hexdigest()
+    }
+    run_producer_hashes = {
+        "checker.py": hashlib.sha256(b"checker.py").hexdigest(),
+        "sweep.py": hashlib.sha256(b"sweep.py").hexdigest(),
+    }
     source_producer_hashes = {
         **producer_hashes,
         **adapter_producer_hashes,
         **run_producer_hashes,
     }
-    build_metadata_sha256 = "b" * 64
+    source_payloads = {
+        **{
+            f"scripts/stopdff_v5/{name}": name.encode("utf-8")
+            for name in source_producer_hashes
+        },
+        "pyproject.toml": b"pyproject.toml",
+        "uv.lock": b"uv.lock",
+    }
+    source_files = []
+    for relative, payload in source_payloads.items():
+        target = source_content / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+        source_files.append(
+            {
+                "path": relative,
+                "mode": "100644",
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+
+    split_questions = {
+        "train": [{"qid": "train", "question": "train question", "answer": "t"}],
+        "val": [{"qid": "val", "question": "val full question", "answer": "v"}],
+        "test": [{"qid": "test", "question": "test full question", "answer": "x"}],
+    }
+    mc_questions = [
+        {
+            **record,
+            "cumulative_prefixes": [
+                record["question"].split()[0],
+                record["question"],
+            ],
+        }
+        for record in split_questions["val"] + split_questions["test"]
+    ]
+    raw_payloads = {
+        "mc_dataset.json": (
+            json.dumps({"questions": mc_questions}, sort_keys=True) + "\n"
+        ).encode(),
+        **{
+            f"{split}_dataset.json": (
+                json.dumps({"questions": records}, sort_keys=True) + "\n"
+            ).encode()
+            for split, records in split_questions.items()
+        },
+        "build_metadata.json": b"build metadata",
+    }
+    for role in RAW_INPUT_ROLES:
+        raw_payloads.setdefault(role, role.encode())
+        (raw_bundle / role).write_bytes(raw_payloads[role])
+    raw_files = [
+        {
+            "role": role,
+            "size": len(raw_payloads[role]),
+            "sha256": hashlib.sha256(raw_payloads[role]).hexdigest(),
+        }
+        for role in RAW_INPUT_ROLES
+    ]
+    build_metadata_sha256 = hashlib.sha256(
+        raw_payloads["build_metadata.json"]
+    ).hexdigest()
+    trajectory_id = raw_question_trajectory_binding(raw_bundle)
+    model_payload = b"model.bin"
+    (model_content / "model.bin").write_bytes(model_payload)
     manifests = {
         "source_manifest": build_manifest(
-            {
-                "kind": "source_snapshot",
-                "files": [
-                    {
-                        "path": f"scripts/stopdff_v5/{name}",
-                        "sha256": digest,
-                    }
-                    for name, digest in source_producer_hashes.items()
-                ],
-            }
+            source_manifest_identity(
+                git_sha="a" * 40,
+                files=source_files,
+                pyproject_sha256=hashlib.sha256(
+                    source_payloads["pyproject.toml"]
+                ).hexdigest(),
+                uv_lock_sha256=hashlib.sha256(
+                    source_payloads["uv.lock"]
+                ).hexdigest(),
+            )
         ),
         "raw_input_manifest": build_manifest(
-            {
-                "kind": "raw_input_bundle",
-                "files": [
+            raw_input_identity(
+                files=raw_files,
+                semantic_checks={
+                    "all_semantic_checks_pass": True,
+                    "question_trajectory_binding_id": trajectory_id,
+                },
+            )
+        ),
+        "model_snapshot_manifest": build_manifest(
+            model_snapshot_identity(
+                model_id=ADAPTER_SCORING_SPEC["model_id"],
+                revision="c" * 40,
+                files=[
                     {
-                        "role": "build_metadata.json",
-                        "size": 1,
-                        "sha256": build_metadata_sha256,
+                        "path": "model.bin",
+                        "size": len(model_payload),
+                        "sha256": hashlib.sha256(model_payload).hexdigest(),
                     }
                 ],
-                "semantic_checks": {"all_semantic_checks_pass": True},
-            }
+                sentence_transformers_version="fixture",
+                transformers_version="fixture",
+            )
         ),
-        "model_snapshot_manifest": build_manifest({"kind": "model_snapshot"}),
     }
     manifest_paths = {
-        role: tmp_path / "inputs" / f"{role}.json"
-        for role in manifests
+        "source_manifest": source_bundle / "source_manifest.json",
+        "raw_input_manifest": raw_bundle / "raw_input_manifest.json",
+        "model_snapshot_manifest": model_bundle / "model_snapshot_manifest.json",
     }
     for role, manifest in manifests.items():
         _dump(manifest_paths[role], manifest)
@@ -252,6 +457,7 @@ def test_final_package_carries_and_revalidates_receipts(tmp_path, monkeypatch):
         "fit_rows_sha256": determinism_hashes["fit_rows.jsonl.gz"],
         "eval_rows_sha256": determinism_hashes["eval_rows.jsonl.gz"],
         "calibration_sha256": determinism_hashes["calibration.json"],
+        "question_trajectory_binding_id": trajectory_id,
         "producer_hashes": adapter_producer_hashes,
         "mc_retention_evidence": {
             "build_metadata_sha256": determinism_hashes[
@@ -532,8 +738,8 @@ def test_final_fvi_rejects_label_only_study_identity():
     assert "packaged FVI study fields do not match the canonical contract" in errors
 
 
-def test_constant_platt_phase_and_schema_envelope_are_supported():
-    assert platt_phase_errors(
+def test_constant_platt_phase_is_rejected_and_schema_envelope_is_supported():
+    assert "constant model is forbidden" in platt_phase_errors(
         {
             "platt_coef": None,
             "platt_intercept": None,
@@ -541,7 +747,7 @@ def test_constant_platt_phase_and_schema_envelope_are_supported():
             "platt_constant_probability": 0.7,
         },
         phase="late",
-    ) == []
+    )[0]
     assert platt_phase_errors(
         {
             "platt_coef": None,

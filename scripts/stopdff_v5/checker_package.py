@@ -151,7 +151,7 @@ def _check_fvi_study_identity(
         and strict.get("max_iterations")
         == FVI_STRICT_REFERENCE["max_iterations"]
         and _is_positive_int(strict.get("total_iterations"))
-        and isinstance(strict.get("all_converged"), bool)
+        and strict.get("all_converged") is True
     )
     _err(errors, strict_valid, "packaged FVI strict reference is noncanonical")
 
@@ -343,6 +343,48 @@ def _packaged_manifest(
         identity.get("kind") in expected_kinds,
         f"packaged {role} kind mismatch",
     )
+    content_kinds = {"source_snapshot", "raw_input_bundle", "model_snapshot"}
+    if len(expected_kinds) == 1 and next(iter(expected_kinds)) in content_kinds:
+        from .content_manifest import (
+            validate_bound_content_manifest,
+            validate_content_manifest_document,
+        )
+
+        try:
+            validate_content_manifest_document(
+                manifest,
+                manifest_name=f"packaged {role}",
+                expected_id=expected_id if isinstance(expected_id, str) else None,
+                expected_kind=next(iter(expected_kinds)),
+                require_semantic_pass=role == "raw_input_manifest",
+            )
+        except (TypeError, ValueError) as exc:
+            errors.append(f"packaged {role} identity envelope is invalid: {exc}")
+            return {}
+        packaged_subdirs = {
+            "source_manifest": "source_snapshot/source",
+            "raw_input_manifest": "raw_inputs/raw",
+            "model_snapshot_manifest": "model_snapshot/snapshot",
+        }
+        name_keys = {
+            "source_manifest": "path",
+            "raw_input_manifest": "role",
+            "model_snapshot_manifest": "path",
+        }
+        try:
+            validate_bound_content_manifest(
+                evidence_path.parent,
+                manifest_name=evidence_path.name,
+                expected_id=expected_id if isinstance(expected_id, str) else None,
+                expected_kind=next(iter(expected_kinds)),
+                file_key="files",
+                name_key=name_keys[role],
+                content_subdir=packaged_subdirs[role],
+                require_semantic_pass=role == "raw_input_manifest",
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            errors.append(f"packaged {role} content inventory is invalid: {exc}")
+            return {}
     return manifest
 
 
@@ -510,11 +552,31 @@ def check_external_artifacts(
         if isinstance(raw_identity, dict)
         else None
     )
+    recomputed_trajectory_id = None
+    try:
+        from .producers import raw_question_trajectory_binding
+
+        recomputed_trajectory_id = raw_question_trajectory_binding(
+            run_root / "evidence" / "raw_inputs" / "raw"
+        )
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        errors.append(
+            "packaged raw-input question trajectory cannot be recomputed: "
+            f"{exc}"
+        )
     _err(
         errors,
         isinstance(semantic_checks, dict)
         and semantic_checks.get("all_semantic_checks_pass") is True,
         "packaged raw-input semantic checks did not pass",
+    )
+    _err(
+        errors,
+        isinstance(semantic_checks, dict)
+        and semantic_checks.get("question_trajectory_binding_id")
+        == recomputed_trajectory_id
+        == adapter_identity.get("question_trajectory_binding_id"),
+        "adapter question trajectory does not match packaged raw inputs",
     )
     raw_files = raw_identity.get("files") if isinstance(raw_identity, dict) else None
     build_metadata_entries = [

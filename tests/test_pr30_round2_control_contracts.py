@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -65,12 +67,49 @@ def _load_modal_runner(monkeypatch):
             App=DummyApp,
         ),
     )
-    monkeypatch.setenv("STOPDFF_V5_SOURCE_DIR", str(REPO))
+    from scripts.stopdff_v5.identity import build_manifest, sha256_file
+    from scripts.stopdff_v5.manifests import source_manifest_identity
+
+    source_bundle = Path(tempfile.mkdtemp(prefix="stopdff_v5_test_source_"))
+    source = source_bundle / "source"
+    source.mkdir()
+    source_names = (
+        "pyproject.toml",
+        "scripts/stopdff_v5/checker.py",
+        "scripts/stopdff_v5/sweep.py",
+        "uv.lock",
+    )
+    for name in source_names:
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{name}\n", encoding="utf-8")
+    files = [
+        {
+            "path": name,
+            "mode": "100644",
+            "size": (source / name).stat().st_size,
+            "sha256": sha256_file(source / name),
+        }
+        for name in source_names
+    ]
+    source_manifest = build_manifest(
+        source_manifest_identity(
+            git_sha="a" * 40,
+            files=files,
+            pyproject_sha256=files[0]["sha256"],
+            uv_lock_sha256=files[-1]["sha256"],
+        )
+    )
+    (source_bundle / "source_manifest.json").write_text(
+        json.dumps(source_manifest), encoding="utf-8"
+    )
+    monkeypatch.setenv("STOPDFF_V5_SOURCE_DIR", str(source_bundle))
     name = f"_pr30_round2_modal_runner_{id(monkeypatch)}"
     spec = importlib.util.spec_from_file_location(name, MODAL_RUNNER)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
+    module.IMAGE_SOURCE_MANIFEST_ID = "1" * 64
     return module
 
 
@@ -419,19 +458,23 @@ def test_content_manifest_rejects_unlisted_bytes(
     content.mkdir()
     declared = content / "declared.py"
     declared.write_text("declared\n", encoding="utf-8")
+    (content / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (content / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    entries = [
+        {
+            "path": path.name,
+            "mode": "100644",
+            "size": path.stat().st_size,
+            "sha256": sha256_file(path),
+        }
+        for path in sorted(content.iterdir())
+    ]
     manifest = build_manifest(
         source_manifest_identity(
             git_sha="a" * 40,
-            files=[
-                {
-                    "path": "declared.py",
-                    "mode": "100644",
-                    "size": declared.stat().st_size,
-                    "sha256": sha256_file(declared),
-                }
-            ],
-            pyproject_sha256="",
-            uv_lock_sha256="",
+            files=entries,
+            pyproject_sha256=sha256_file(content / "pyproject.toml"),
+            uv_lock_sha256=sha256_file(content / "uv.lock"),
         )
     )
     (tmp_path / "source_manifest.json").write_text(
@@ -450,6 +493,63 @@ def test_content_manifest_rejects_unlisted_bytes(
             content_subdir="source",
             expected_kind="source_snapshot",
         )
+
+
+@pytest.mark.parametrize("extra_name", ["sitecustomize.py", "numpy.py"])
+def test_modal_image_preflight_rejects_unlisted_executable_source(
+    tmp_path,
+    monkeypatch,
+    extra_name,
+) -> None:
+    runner = _load_modal_runner(monkeypatch)
+    bundle = tmp_path / "source_bundle"
+    shutil.copytree(runner._IMAGE_SOURCE_DIR, bundle / "source")
+    shutil.copy2(
+        runner._IMAGE_SOURCE_DIR.parent / "source_manifest.json",
+        bundle / "source_manifest.json",
+    )
+    (bundle / "source" / extra_name).write_text(
+        "raise RuntimeError('unlisted')\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="inventory mismatch"):
+        runner._materialize_image_source(bundle)
+
+
+def test_control_plan_source_mismatch_makes_no_remote_calls(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runner = _load_modal_runner(monkeypatch)
+    runner.IMAGE_SOURCE_MANIFEST_ID = "2" * 64
+    state_path = tmp_path / "control.json"
+    with pytest.raises(ValueError, match="validated Modal image source"):
+        runner.run_control_plane(
+            _plan(),
+            state_path,
+            resume=False,
+            stage_api={},
+        )
+    assert not state_path.exists()
+
+
+def test_direct_modal_stages_reject_a_source_other_than_the_image(
+    monkeypatch,
+) -> None:
+    runner = _load_modal_runner(monkeypatch)
+    wrong_source = "2" * 64
+
+    with pytest.raises(ValueError, match="validated Modal image source"):
+        runner.build_adapter("candidate", wrong_source, "3" * 64, "4" * 64)
+
+    wrapper = {
+        "run_spec_identity": {
+            "identity": {"source_manifest_id": wrong_source},
+        }
+    }
+    with pytest.raises(ValueError, match="validated Modal image source"):
+        runner.run_sweep(json.dumps(wrapper), "5" * 64, "6" * 64, False)
 
 
 def test_public_schema_and_docs_match_round2_contracts() -> None:
@@ -485,3 +585,4 @@ def test_public_schema_and_docs_match_round2_contracts() -> None:
     assert "FVI_PRODUCER_FILES" in runner_source
     assert '"fvi_study.py",' in manifests_source
     assert "producer_hashes=producer_hashes" in runner_source
+    assert 'gate_overrides=binding["gate_overrides"]' in runner_source

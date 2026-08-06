@@ -58,13 +58,7 @@ def platt_phase_errors(block: Any, *, phase: str) -> list[str]:
                 return [f"{prefix} logistic parameters are invalid"]
             return []
         if model_type == "constant":
-            if (
-                coefficient is not None
-                or intercept is not None
-                or not _finite_number(probability, minimum=0.0, maximum=1.0)
-            ):
-                return [f"{prefix} constant parameters are invalid"]
-            return []
+            return [f"{prefix} constant model is forbidden by the v5 profile"]
         return [f"{prefix} platt_model_type is invalid"]
     if fields != producer_fields:
         return [f"{prefix} parameters are noncanonical"]
@@ -96,26 +90,5 @@ def platt_phase_errors(block: Any, *, phase: str) -> list[str]:
             return [f"{prefix} logistic parameters are invalid"]
         return []
     if model_type == "constant":
-        probability_valid = _finite_number(
-            probability,
-            minimum=0.0,
-            maximum=1.0,
-        )
-        fallback_valid = (
-            fallback_reason == "empty_validation_bucket"
-            and probability_valid
-            and float(probability) == 0.0
-        ) or (
-            fallback_reason == "single_class_validation_bucket"
-            and probability_valid
-            and float(probability) in {0.0, 1.0}
-        )
-        if (
-            coefficient is not None
-            or intercept is not None
-            or not probability_valid
-            or not fallback_valid
-        ):
-            return [f"{prefix} constant parameters are invalid"]
-        return []
+        return [f"{prefix} constant model is forbidden by the v5 profile"]
     return [f"{prefix} platt_model_type is invalid"]

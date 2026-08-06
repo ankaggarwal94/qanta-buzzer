@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Modal standalone runner for the StopDFF v5 evidentiary pipeline (remote functions).
 
-Source-only image (STOPDFF_V5_SOURCE_DIR = git-archive snapshot). One Volume
+Source-only image (STOPDFF_V5_SOURCE_DIR = validated source-snapshot bundle). One Volume
 `cs321m-stopdff-artifacts` mounted at /stopdff. One writer per run dir, max_containers=1,
 explicit Volume commits (per cell in the sweep), reload before resume. GPU (L40S) is used
 only by build_adapter; every other stage is CPU. Orchestration lives in the control-plane
@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import time
 from pathlib import Path, PurePosixPath
@@ -32,11 +33,65 @@ VOLUME_NAME = "cs321m-stopdff-artifacts"
 MNT = "/stopdff"
 REMOTE_SRC = "/root/src"
 DAY = 86400
-SOURCE_DIR = os.environ.get("STOPDFF_V5_SOURCE_DIR", "")
-if not SOURCE_DIR:
+SOURCE_BUNDLE_DIR = os.environ.get("STOPDFF_V5_SOURCE_DIR", "")
+if not SOURCE_BUNDLE_DIR:
     raise RuntimeError(
-        "STOPDFF_V5_SOURCE_DIR must point to the frozen git-archive source tree"
+        "STOPDFF_V5_SOURCE_DIR must point to the frozen source-snapshot bundle"
     )
+
+
+def _materialize_image_source(source_bundle: Path) -> tuple[Path, dict]:
+    """Copy and revalidate the exact source tree used to build the image.
+
+    The first validation rejects unlisted executable bytes.  The second binds
+    the private copy actually handed to Modal, avoiding a validate-then-upload
+    race against an operator-controlled directory.
+    """
+    from scripts.stopdff_v5.content_manifest import (
+        validate_bound_content_manifest,
+    )
+
+    source_bundle = Path(source_bundle)
+    manifest = validate_bound_content_manifest(
+        source_bundle,
+        manifest_name="source_manifest.json",
+        expected_id=None,
+        file_key="files",
+        name_key="path",
+        content_subdir="source",
+        expected_kind="source_snapshot",
+    )
+    staged_bundle = Path(tempfile.mkdtemp(prefix="stopdff_v5_image_source_"))
+    shutil.copy2(
+        source_bundle / "source_manifest.json",
+        staged_bundle / "source_manifest.json",
+    )
+    shutil.copytree(source_bundle / "source", staged_bundle / "source")
+    staged_manifest = validate_bound_content_manifest(
+        staged_bundle,
+        manifest_name="source_manifest.json",
+        expected_id=manifest["id"],
+        file_key="files",
+        name_key="path",
+        content_subdir="source",
+        expected_kind="source_snapshot",
+    )
+    return staged_bundle / "source", staged_manifest
+
+
+_IMAGE_SOURCE_DIR, _IMAGE_SOURCE_MANIFEST = _materialize_image_source(
+    Path(SOURCE_BUNDLE_DIR)
+)
+SOURCE_DIR = str(_IMAGE_SOURCE_DIR)
+IMAGE_SOURCE_MANIFEST_ID = _IMAGE_SOURCE_MANIFEST["id"]
+
+
+def _require_image_source_id(source_id: object) -> None:
+    """Reject a stage claim that is not bound to the source in its image."""
+    if source_id != IMAGE_SOURCE_MANIFEST_ID:
+        raise ValueError(
+            "stage source_id does not match the validated Modal image source"
+        )
 
 _PIP = [
     "numpy>=1.26,<3", "scipy>=1.11", "scikit-learn>=1.3", "pandas>=2.1",
@@ -47,6 +102,7 @@ _image = (
     .apt_install("git")
     .pip_install(*_PIP)
     .env({"PYTHONUNBUFFERED": "1", "MPLBACKEND": "Agg", "HF_HUB_DISABLE_TELEMETRY": "1",
+          "PYTHONDONTWRITEBYTECODE": "1",
           "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
           "TOKENIZERS_PARALLELISM": "false", "PYTHONPATH": REMOTE_SRC})
 )
@@ -333,6 +389,7 @@ def build_adapter(
     model_id: str,
     allow_low_mc_retention: bool = False,
 ) -> dict:
+    _require_image_source_id(source_id)
     from pathlib import Path
     from scripts.stopdff_v5 import adapter_build
     from scripts.stopdff_v5 import checker
@@ -623,8 +680,61 @@ def bootstrap_plan(adapter_id: str, replicates: int) -> dict:
     }
 
 
+def _resolve_remote_sweep_attempt(
+    run_root: Path,
+    *,
+    recovery_requested: bool,
+    sweep_module,
+) -> tuple[bool, int]:
+    """Derive evidence mode/number from authoritative durable run state."""
+    run_root = Path(run_root)
+    if run_root.is_symlink():
+        raise ValueError("sweep destination is a symlink")
+    if not run_root.exists():
+        return False, 1
+    if not run_root.is_dir():
+        raise ValueError("sweep destination is not a directory")
+    if not recovery_requested:
+        raise FileExistsError("fresh sweep destination already exists")
+    _, history = sweep_module._load_attempt_history(
+        run_root / "attempts.jsonl"
+    )
+    if not history:
+        raise ValueError("recovery destination has no durable attempt history")
+    return True, len(history) + 1
+
+
 @app.function(volumes={MNT: vol}, timeout=DAY, max_containers=1, memory=16384)
-def run_sweep(spec_json: str, adapter_id: str, bootstrap_plan_id: str, resume: bool) -> dict:
+def run_sweep(
+    spec_json: str,
+    adapter_id: str,
+    bootstrap_plan_id: str,
+    recovery_requested: bool,
+) -> dict:
+    # This guard deliberately uses only the stdlib already loaded by the image.
+    # It runs before importing reviewed project modules, so a directly invoked
+    # stage cannot claim a strict-subset source manifest while executing the
+    # larger source tree baked into this Modal image.  The canonical parser and
+    # complete run-spec validation still run below.
+    try:
+        early_spec = json.loads(spec_json)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError("sweep wrapper is not JSON") from exc
+    early_identity = (
+        early_spec.get("run_spec_identity")
+        if isinstance(early_spec, dict)
+        else None
+    )
+    early_ids = (
+        early_identity.get("identity")
+        if isinstance(early_identity, dict)
+        else None
+    )
+    _require_image_source_id(
+        early_ids.get("source_manifest_id")
+        if isinstance(early_ids, dict)
+        else None
+    )
     import importlib.metadata as im
     import platform
     from pathlib import Path
@@ -799,17 +909,19 @@ def run_sweep(spec_json: str, adapter_id: str, bootstrap_plan_id: str, resume: b
     run_root = Path(_p("runs", spec["run_id"]))
     if binding["run_spec_id"][:12] not in str(spec["run_id"]):
         raise ValueError("run_id is not bound to run_spec_id")
-    if run_root.exists() and not resume:
-        raise FileExistsError("fresh sweep destination already exists")
-    if resume:
-        if not run_root.is_dir():
-            raise FileNotFoundError("resume destination does not exist")
+    actual_resume, evidence_attempt = _resolve_remote_sweep_attempt(
+        run_root,
+        recovery_requested=bool(recovery_requested),
+        sweep_module=sweep,
+    )
+    if actual_resume:
         existing_spec = run_root / "run_spec.json"
         if existing_spec.exists():
             existing = checker.load_json(existing_spec)
             if existing != run_spec_manifest:
                 raise ValueError("resume destination is bound to another run spec")
-    run_root.mkdir(parents=True, exist_ok=resume)
+    else:
+        run_root.mkdir(parents=True, exist_ok=False)
     ctx = sweep.SweepContext(
         rows=rows, calibration_json=calibration,
         run_spec=binding["run_spec_identity"],
@@ -822,17 +934,19 @@ def run_sweep(spec_json: str, adapter_id: str, bootstrap_plan_id: str, resume: b
         adapter_eval_rows_sha256=binding["eval_rows_sha256"],
         myopic_artifact_sha256=myopic_sha256,
         producer_hashes=runtime_producer_hashes,
+        gate_overrides=binding["gate_overrides"],
         cells=cells, commit_fn=lambda: vol.commit(),
         environment={
             "python_version": platform.python_version(),
             "package_versions": package_versions,
         },
         resource_summary=spec.get("resource_summary", {}),
-        attempt={"attempt": spec.get("attempt", 1), "mode": "resume" if resume else "fresh",
-                 "command": ["dp_sweep"] + (["--resume"] if resume else []),
+        attempt={"attempt": evidence_attempt,
+                 "mode": "resume" if actual_resume else "fresh",
+                 "command": ["dp_sweep"] + (["--resume"] if actual_resume else []),
                  "run_spec_id": binding["run_spec_id"], "adapter_id": adapter_id,
                  "bootstrap_plan_id": bootstrap_plan_id},
-        resume=resume)
+        resume=actual_resume)
     agg = sweep.run_sweep(ctx)
     vol.commit()
     result = {"run_id": spec["run_id"], "requested": agg["requested"], "completed": agg["completed"],
@@ -1675,6 +1789,10 @@ def run_control_plane(
     )
 
     plan = _validate_control_plan(plan)
+    if plan["source_id"] != IMAGE_SOURCE_MANIFEST_ID:
+        raise ValueError(
+            "control plan source_id does not match the validated Modal image source"
+        )
     state_path = Path(state_path)
     digest = _control_plan_digest(plan)
     api = stage_api or _default_control_stage_api()
@@ -1968,7 +2086,6 @@ def run_control_plane(
             "run_id": smoke_run_id,
             "run_spec_id": smoke_spec_id,
             "run_spec_identity": smoke_spec,
-            "attempt": attempt,
             "resource_summary": plan["resource_summary"],
         }
         return api["run_sweep"](
@@ -2044,7 +2161,6 @@ def run_control_plane(
             "run_id": final_run_id,
             "run_spec_id": final_spec_id,
             "run_spec_identity": final_spec,
-            "attempt": attempt,
             "resource_summary": plan["resource_summary"],
         }
         return api["run_sweep"](

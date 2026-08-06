@@ -17,12 +17,18 @@ from typing import Any
 
 from qb_data.dataset_splits import normalize_question_text, normalize_split_answer
 
-from .identity import build_manifest, sha256_file
-from .manifests import adapter_identity, model_snapshot_identity
+from .identity import build_manifest, sha256_bytes, sha256_file
+from .manifests import (
+    adapter_identity,
+    model_snapshot_identity,
+    question_trajectory_binding_id,
+)
 
 MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
 ADAPTER_SCHEMA_COLUMNS = [
     "item_id", "prefix_idx", "prefix_fraction", "format", "split",
+    "prefix_text_sha256", "prefix_char_count",
+    "full_question_sha256", "full_question_char_count",
     "raw_similarity", "correct", "category", "K", "option_set_id",
     "distractor_strategy", "p_second_best", "top2_margin",
 ]
@@ -170,6 +176,7 @@ def derive_bound_calibration(
     """
     import numpy as np
     from sklearn.linear_model import LogisticRegression
+    from .calibrators import require_phase_fit_prerequisites
 
     phases = ("early", "mid", "late")
 
@@ -215,6 +222,9 @@ def derive_bound_calibration(
 
     per_bucket: dict[str, dict[str, Any]] = {}
     for phase in phases:
+        require_phase_fit_prerequisites(
+            fit_by_phase[phase], phase, "platt-logistic"
+        )
         fit_scores = np.asarray(
             [float(row["raw_similarity"]) for row in fit_by_phase[phase]],
             dtype=np.float64,
@@ -231,40 +241,23 @@ def derive_bound_calibration(
             [int(row["correct"]) for row in eval_by_phase[phase]],
             dtype=np.int64,
         )
-        if len(fit_labels) == 0:
-            coefficient = intercept = None
-            model_type = "constant"
-            fallback_reason = "empty_validation_bucket"
-            constant_probability = 0.0
-            probabilities = np.full(len(eval_scores), 0.0, dtype=np.float64)
-        elif len(np.unique(fit_labels)) == 1:
-            coefficient = intercept = None
-            model_type = "constant"
-            fallback_reason = "single_class_validation_bucket"
-            constant_probability = float(fit_labels[0])
-            probabilities = np.full(
-                len(eval_scores),
-                constant_probability,
-                dtype=np.float64,
-            )
-        else:
-            model = LogisticRegression(
-                C=1.0,
-                solver="lbfgs",
-                max_iter=1000,
-                random_state=789685,
-            )
-            model.fit(fit_scores.reshape(-1, 1), fit_labels)
-            coefficient = round(float(model.coef_[0][0]), 6)
-            intercept = round(float(model.intercept_[0]), 6)
-            model_type = "logistic"
-            fallback_reason = None
-            constant_probability = None
-            probabilities = (
-                model.predict_proba(eval_scores.reshape(-1, 1))[:, 1]
-                if len(eval_scores)
-                else np.asarray([], dtype=np.float64)
-            )
+        model = LogisticRegression(
+            C=1.0,
+            solver="lbfgs",
+            max_iter=1000,
+            random_state=789685,
+        )
+        model.fit(fit_scores.reshape(-1, 1), fit_labels)
+        coefficient = round(float(model.coef_[0][0]), 6)
+        intercept = round(float(model.intercept_[0]), 6)
+        model_type = "logistic"
+        fallback_reason = None
+        constant_probability = None
+        probabilities = (
+            model.predict_proba(eval_scores.reshape(-1, 1))[:, 1]
+            if len(eval_scores)
+            else np.asarray([], dtype=np.float64)
+        )
         per_bucket[phase] = {
             "ece": round(ece(probabilities, eval_labels), 6),
             "n_samples": int(len(eval_labels)),
@@ -462,6 +455,7 @@ def _score_question_rows(question: dict, model, split: str) -> list[dict]:
         for prefix in prefixes
     ]
     full_len = len(canonical_full_q)
+    full_question_sha256 = sha256_bytes(canonical_full_q.encode("utf-8"))
 
     option_embs = model.encode(options, convert_to_numpy=True)
     answer_emb = model.encode([question["answer_primary"]], convert_to_numpy=True)
@@ -469,11 +463,21 @@ def _score_question_rows(question: dict, model, split: str) -> list[dict]:
 
     rows: list[dict] = []
     for t, prefix in enumerate(prefixes):
+        canonical_prefix = canonical_prefixes[t]
+        prefix_len = len(canonical_prefix)
         prefix_fraction = (
             1.0
             if t == len(prefixes) - 1
-            else round(len(canonical_prefixes[t]) / full_len, _ROUND)
+            else round(prefix_len / full_len, _ROUND)
         )
+        content_binding = {
+            "prefix_text_sha256": sha256_bytes(
+                canonical_prefix.encode("utf-8")
+            ),
+            "prefix_char_count": prefix_len,
+            "full_question_sha256": full_question_sha256,
+            "full_question_char_count": full_len,
+        }
         pe = prefix_embs[t : t + 1]
         mc_sims = cosine_similarity(pe, option_embs)[0]
         max_sim = float(np.max(mc_sims))
@@ -481,6 +485,7 @@ def _score_question_rows(question: dict, model, split: str) -> list[dict]:
         second_best = float(np.partition(mc_sims, -2)[-2]) if len(mc_sims) >= 2 else 0.0
         rows.append({
             "item_id": qid, "prefix_idx": t, "prefix_fraction": prefix_fraction, "format": "MC",
+            **content_binding,
             "split": split, "raw_similarity": round(max_sim, _ROUND),
             "correct": int(predicted_idx == gold_index), "category": category, "K": K,
             "option_set_id": option_set_id, "distractor_strategy": distractor_strategy,
@@ -489,6 +494,7 @@ def _score_question_rows(question: dict, model, split: str) -> list[dict]:
         qa_sim = float(cosine_similarity(pe, answer_emb)[0][0])
         rows.append({
             "item_id": qid, "prefix_idx": t, "prefix_fraction": prefix_fraction, "format": "QA",
+            **content_binding,
             "split": split, "raw_similarity": round(qa_sim, _ROUND), "correct": 1,
             "category": category, "K": K, "option_set_id": option_set_id,
             "distractor_strategy": distractor_strategy, "p_second_best": 0.0, "top2_margin": 0.0,
@@ -498,6 +504,25 @@ def _score_question_rows(question: dict, model, split: str) -> list[dict]:
 
 def _sorted_rows(rows: list[dict]) -> list[dict]:
     return sorted(rows, key=lambda r: (str(r["item_id"]), r["format"], int(r["prefix_idx"])))
+
+
+def question_trajectory_binding_from_rows(rows: list[dict[str, Any]]) -> str:
+    """Bind each accepted trajectory to normalized prefix/full-question bytes."""
+    fields = (
+        "split",
+        "item_id",
+        "prefix_idx",
+        "prefix_text_sha256",
+        "prefix_char_count",
+        "full_question_sha256",
+        "full_question_char_count",
+    )
+    records = [
+        {field: row[field] for field in fields}
+        for row in rows
+        if row.get("format") == "MC"
+    ]
+    return question_trajectory_binding_id(records)
 
 
 def _mc_coverage_evidence(rows: list[dict]) -> dict[str, Any]:
@@ -696,6 +721,9 @@ def build_adapter_bundle(
         fit_row_count=len(fit_rows), eval_row_count=len(eval_rows),
         fit_rows_sha256=fit_sha, eval_rows_sha256=eval_sha,
         calibration_sha256=calibration_sha,
+        question_trajectory_binding_id=question_trajectory_binding_from_rows(
+            fit_rows + eval_rows
+        ),
         mc_coverage=mc_coverage, mc_retention=mc_retention, producer_hashes=producer_hashes,
     )
     manifest = build_manifest(identity)

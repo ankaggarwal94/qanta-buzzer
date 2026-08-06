@@ -91,6 +91,8 @@ def _action_disagreement(cand_actions: dict[str, int], ref_actions: dict[str, in
 
 def candidate_is_eligible(candidate: dict[str, Any], reference: dict[str, Any]) -> tuple[bool, list[str]]:
     reasons: list[str] = []
+    if reference.get("all_converged") is not True:
+        reasons.append("strict reference did not converge")
     if not candidate["all_converged"]:
         reasons.append("not all representative cells converged")
     for key, ref_cell in reference["cells"].items():
@@ -133,6 +135,8 @@ def run_fvi_study(
         tolerance_label=FVI_STRICT_REFERENCE["tolerance"],
         max_iterations=int(FVI_STRICT_REFERENCE["max_iterations"]),
     )
+    if strict.get("all_converged") is not True:
+        raise ValueError("strict FVI reference did not converge")
 
     candidate_records: list[dict[str, Any]] = []
     for tol in FVI_TOLERANCES:

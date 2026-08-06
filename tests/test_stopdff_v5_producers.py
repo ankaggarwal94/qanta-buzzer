@@ -34,7 +34,16 @@ def _source_paths(tmp_path: Path) -> dict[str, Path]:
         "train_dataset.json": [_record("tr", "Train only?", "Train")],
         "val_dataset.json": [_record("va", "Validation only?", "Validation")],
         "test_dataset.json": [_record("te", "Test only?", "Test")],
-        "mc_dataset.json": [],
+        "mc_dataset.json": [
+            {
+                **_record("va", "Validation only?", "Validation"),
+                "cumulative_prefixes": ["Validation only?"],
+            },
+            {
+                **_record("te", "Test only?", "Test"),
+                "cumulative_prefixes": ["Test only?"],
+            },
+        ],
     }
     for name, payload in datasets.items():
         _write_json(sources / name, payload)

@@ -12,8 +12,8 @@ Calibrators:
   similarity-temperature : p = sigma(s / T_phase), T fit over a fixed grid (min log loss).
   isotonic               : one isotonic model per phase (increasing, clip, y in [0,1]).
 
-A phase fit requires >= 10 MC rows and both correctness classes, except a platt phase that
-explicitly records a constant model. Failure invalidates the cell (no fallback).
+A phase fit requires >= 10 MC rows and both correctness classes. Failure
+invalidates the cell; the v5 profile defines no constant-model fallback.
 """
 from __future__ import annotations
 
@@ -80,7 +80,11 @@ def _rows_by_phase(mc_val_rows: Sequence[dict]) -> dict[str, list[dict]]:
     return out
 
 
-def _require_fit_prereq(rows: list[dict], phase: str, calibrator: str) -> None:
+def require_phase_fit_prerequisites(
+    rows: Sequence[dict],
+    phase: str,
+    calibrator: str,
+) -> None:
     if len(rows) < MIN_PHASE_ROWS:
         raise CalibratorFitError(
             f"{calibrator}: phase {phase!r} has {len(rows)} rows < {MIN_PHASE_ROWS}"
@@ -114,15 +118,14 @@ def fit_platt(calibration_json: dict) -> Calibrator:
         intercept = block.get("platt_intercept")
         model_type = block.get("platt_model_type")
         if coef is None or intercept is None:
-            if model_type != "constant":
-                raise CalibratorFitError(
-                    f"platt-logistic: phase {phase!r} has null params without model_type=constant"
-                )
-            prob = float(block.get("platt_constant_probability", 0.0))
-            prob = min(1.0, max(0.0, prob))
-            apply_fns[phase] = (lambda s, _p=prob: _p)
-            params[phase] = {"model": "constant", "probability": _fmt_num(prob)}
+            raise CalibratorFitError(
+                f"platt-logistic: phase {phase!r} requires logistic parameters"
+            )
         else:
+            if model_type not in (None, "logistic"):
+                raise CalibratorFitError(
+                    f"platt-logistic: phase {phase!r} model_type must be logistic"
+                )
             a = float(coef)
             b = float(intercept)
             apply_fns[phase] = (lambda s, _a=a, _b=b: _sigmoid(_a * s + _b))
@@ -139,7 +142,9 @@ def fit_similarity_temperature(mc_val_rows: Sequence[dict]) -> Calibrator:
     params: dict[str, dict[str, Any]] = {}
     for phase in PHASES:
         rows = by_phase[phase]
-        _require_fit_prereq(rows, phase, "similarity-temperature")
+        require_phase_fit_prerequisites(
+            rows, phase, "similarity-temperature"
+        )
         s = np.array([float(r["raw_similarity"]) for r in rows], dtype=np.float64)
         y = np.array([float(int(r["correct"])) for r in rows], dtype=np.float64)
         best_T = None
@@ -167,7 +172,7 @@ def fit_isotonic(mc_val_rows: Sequence[dict]) -> Calibrator:
     params: dict[str, dict[str, Any]] = {}
     for phase in PHASES:
         rows = by_phase[phase]
-        _require_fit_prereq(rows, phase, "isotonic")
+        require_phase_fit_prerequisites(rows, phase, "isotonic")
         s = np.array([float(r["raw_similarity"]) for r in rows], dtype=np.float64)
         y = np.array([float(int(r["correct"])) for r in rows], dtype=np.float64)
         iso = IsotonicRegression(increasing=True, out_of_bounds="clip", y_min=0.0, y_max=1.0)
@@ -190,6 +195,11 @@ def fit_calibrator(
     if name == "platt-logistic":
         if calibration_json is None:
             raise CalibratorFitError("platt-logistic requires calibration.json")
+        by_phase = _rows_by_phase(mc_val_rows)
+        for phase in PHASES:
+            require_phase_fit_prerequisites(
+                by_phase[phase], phase, "platt-logistic"
+            )
         return fit_platt(calibration_json)
     if name == "similarity-temperature":
         return fit_similarity_temperature(mc_val_rows)
