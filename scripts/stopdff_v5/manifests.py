@@ -1,4 +1,4 @@
-"""Content-addressed identity builders (IDENTITY_AND_ARTIFACT_CONTRACT.md 2-10).
+"""Content-addressed identity builders (see IDENTITY_AND_ARTIFACT_CONTRACT.md).
 
 Each function returns an ``identity`` dict (scientific-decimal quantities as strings).
 Use identity.build_manifest(identity, **volatile) to attach an ``id`` and volatile fields.
@@ -24,6 +24,54 @@ ADAPTER_SCORING_SPEC: dict[str, Any] = {
     "qa": "cosine_to_answer_primary",
     "round_decimals": 6,
 }
+
+# The raw-input bundle is a closed set.  Resume/remote consumers use this same
+# tuple as the producer so that a self-consistent manifest cannot silently omit
+# an acceptance-critical input.
+RAW_INPUT_ROLES: tuple[str, ...] = (
+    "mc_dataset.json",
+    "train_dataset.json",
+    "val_dataset.json",
+    "test_dataset.json",
+    "build_metadata.json",
+    "split_metadata.json",
+    "calibration.json",
+    "stopdff.json",
+    "threshold_manifest.json",
+    "threshold_manifest.json.sha256",
+)
+
+# Every package whose version can affect evidentiary bytes.  Keep this in one
+# place so the local runner, Modal control-plane probe, and remote sweep build
+# the same environment identity.
+ENVIRONMENT_PACKAGES: tuple[str, ...] = (
+    "numpy",
+    "scipy",
+    "scikit-learn",
+    "pandas",
+    "matplotlib",
+    "sentence-transformers",
+    "transformers",
+    "huggingface_hub",
+)
+
+# Source files whose bytes determine the FVI study and selection.  Producers
+# record this exact basename-keyed set; package validation closes every digest
+# back to the packaged source manifest.
+FVI_PRODUCER_FILES: tuple[str, ...] = (
+    "__init__.py",
+    "calibrators.py",
+    "cellcompute.py",
+    "continuation.py",
+    "fvi.py",
+    "fvi_study.py",
+    "identity.py",
+    "manifests.py",
+    "policy.py",
+    "profile.py",
+    "rewards.py",
+    "verdicts.py",
+)
 
 
 def source_manifest_identity(

@@ -15,6 +15,52 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from scripts.stopdff_v5 import checker, identity, selftest  # noqa: E402
+from scripts.stopdff_v5.adapter_build import derive_bound_calibration  # noqa: E402
+
+
+_EXPECTED_RUN_MUTATIONS = frozenset({
+    "stale_cache",
+    "cell_verdict_serialized_not_trusted",
+    "coverage_clean_serialized_not_trusted",
+    "ceiling_flags_tampered",
+    "wrong_family_maximum_statistic",
+    "family_verdict_hides_cell_warn",
+    "wrong_release_status",
+    "dual_backend_manifests",
+    "missing_backend_manifest",
+    "wrong_bootstrap_seed",
+    "wrong_bootstrap_count",
+    "tampered_run_spec_id",
+    "wrong_bootstrap_plan_hash",
+    "fresh_attempt_with_resume",
+    "resume_without_bare_resume",
+    "overwrite_in_evidence_run",
+    "unsafe_checksum_traversal",
+    "duplicate_checksum_entry",
+    "symlink_in_package",
+    "checksum_value_mismatch",
+    "invalid_png",
+    "truncated_png_after_ihdr",
+    "missing_external_artifacts",
+    "unconverged_fvi_marked_completed",
+    "cell_fingerprint_tampered",
+    "adapter_calibration_bytes_tampered",
+    "backend_adapter_binding",
+    "attempt_adapter_binding",
+    "cell_adapter_binding",
+    "fingerprint_adapter_hash_binding",
+    "aggregate_adapter_binding",
+    "aggregate_fvi_binding",
+    "unknown_attempt_mode",
+    "fingerprint_kind",
+    "fingerprint_producer_binding",
+    "cell_gate_override",
+    "backend_environment_binding",
+    "missing_fvi_evidence",
+    "missing_attempt_result",
+    "attempt_result_counts",
+})
+_EXPECTED_ADAPTER_MUTATIONS = frozenset({"invalid_adapter_row_hash"})
 
 
 def test_valid_package_passes(tmp_path):
@@ -77,11 +123,25 @@ def test_validate_adapter_ok(tmp_path):
 
 
 def test_negative_mutation_suite(tmp_path):
+    registered = list(selftest._RUN_MUTATIONS)
+    assert len(registered) == len(set(registered)) == len(_EXPECTED_RUN_MUTATIONS)
+    assert set(registered) == _EXPECTED_RUN_MUTATIONS
+
     ok, results = selftest.run_self_test(tmp_path)
     failures = [r for r in results if not r["ok"]]
     assert ok, f"mutations not rejected: {[(r['mutation'], r['errors']) for r in failures]}"
-    # sanity: we exercised a broad battery
-    assert len(results) >= 20
+
+    names = [result["mutation"] for result in results]
+    assert names[0] == "<baseline valid>"
+    assert results[0]["expected"] == "PASS"
+    assert len(names) == len(set(names))
+    assert set(names[1:]) == (
+        _EXPECTED_RUN_MUTATIONS | _EXPECTED_ADAPTER_MUTATIONS
+    )
+    assert len(results) == 1 + len(_EXPECTED_RUN_MUTATIONS) + len(
+        _EXPECTED_ADAPTER_MUTATIONS
+    )
+    assert all(result["expected"] == "REJECT" for result in results[1:])
 
 
 def test_validate_spec_placeholder_rejected(tmp_path):
@@ -253,6 +313,20 @@ def test_validate_run_rejects_self_valid_but_unbound_adapter(tmp_path):
     manifest_path = substituted / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["identity"]["model_snapshot_id"] = "9" * 64
+    calibration_path = substituted / "calibration.json"
+    calibration = derive_bound_calibration(
+        fit_rows=checker.load_jsonl_gz(substituted / "fit_rows.jsonl.gz"),
+        eval_rows=checker.load_jsonl_gz(substituted / "eval_rows.jsonl.gz"),
+        model_snapshot_id=manifest["identity"]["model_snapshot_id"],
+        fit_rows_sha256=manifest["identity"]["fit_rows_sha256"],
+    )
+    calibration_path.write_text(
+        json.dumps(calibration, sort_keys=True),
+        encoding="utf-8",
+    )
+    manifest["identity"]["calibration_sha256"] = identity.sha256_file(
+        calibration_path
+    )
     manifest["id"] = identity.compute_id(manifest["identity"])
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True),
@@ -384,7 +458,10 @@ def test_validate_run_binds_all_produced_records_to_run_spec(tmp_path, edge):
     elif edge == "aggregate_fvi_settings":
         path = run_root / "aggregate.json"
         record = json.loads(path.read_text(encoding="utf-8"))
-        record["fvi_selected"]["max_iterations"] = 200
+        current = record["fvi_selected"]["max_iterations"]
+        record["fvi_selected"]["max_iterations"] = (
+            50 if current != 50 else 100
+        )
     elif edge == "aggregate_gate_overrides":
         path = run_root / "aggregate.json"
         record = json.loads(path.read_text(encoding="utf-8"))

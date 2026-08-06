@@ -1,4 +1,4 @@
-"""FVI candidate study + deterministic selector (SCIENTIFIC_CONTRACT.md section 9.7).
+"""FVI candidate study + deterministic selector (indexed by SCIENTIFIC_CONTRACT.md).
 
 Candidate grid: tolerance in {1e-6,1e-8,1e-10} x max_iterations in {50,100,200}; damping 0.5.
 Representative set = 24 cells. Strict reference = tolerance 1e-10, max_iterations 200.

@@ -1,6 +1,6 @@
 """Canonical profile: axes, 96-cell grid, smoke cells, FVI representative set.
 
-Mirrors SCIENTIFIC_PROFILE.template.json and SCIENTIFIC_CONTRACT.md sections 2, 8, 9, 10.
+Mirrors SCIENTIFIC_PROFILE.template.json and the SCIENTIFIC_CONTRACT.md index.
 All scientific decimal constants are canonical strings (identity bytes).
 """
 from __future__ import annotations

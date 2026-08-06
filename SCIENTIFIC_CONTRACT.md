@@ -3,7 +3,7 @@
 This file is the stable prose index for the executable scientific contract.
 Canonical constants and the complete profile identity are defined by
 `scripts/stopdff_v5/profile.py`; the public JSON constraints are in
-`schemas/stopdff_profile.schema.json`, `schemas/stopdff_calibrator.schema.json`,
+`schemas/stopdff_scientific_profile.schema.json`, `schemas/stopdff_calibrator.schema.json`,
 `schemas/stopdff_continuation.schema.json`, and
 `schemas/stopdff_gate_policy.schema.json`.
 

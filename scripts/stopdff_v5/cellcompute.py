@@ -4,7 +4,7 @@ Used by both the sweep (metric_split='test') and the FVI study (metric_split='va
 fit-only). Operates on in-memory adapter rows so it is unit-testable on synthetic data;
 real-data invocation happens on Modal.
 
-Adapter row schema (SCIENTIFIC_CONTRACT.md section 4), minimum required here:
+Adapter row schema (indexed by SCIENTIFIC_CONTRACT.md), minimum required here:
     item_id, prefix_idx, prefix_fraction, format ("MC"|"QA"), split,
     raw_similarity, correct, category
 """

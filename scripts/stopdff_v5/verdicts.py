@@ -1,4 +1,4 @@
-"""Cell / family verdicts and release validity (SCIENTIFIC_CONTRACT.md sections 11-13).
+"""Cell / family verdicts and release validity (indexed by SCIENTIFIC_CONTRACT.md).
 
 Primary material threshold: median absolute prefix-index shift = 1.
 
@@ -105,7 +105,7 @@ def release_validity(
     backend_manifest_valid: bool,
     attempt_history_valid: bool,
 ) -> ReleaseCheck:
-    """Recompute release validity (SCIENTIFIC_CONTRACT.md section 13)."""
+    """Recompute release validity (indexed by SCIENTIFIC_CONTRACT.md)."""
     reasons: list[str] = []
     present_set = set(present_cell_keys)
     if len(present_cell_keys) != len(present_set):

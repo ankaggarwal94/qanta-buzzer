@@ -153,6 +153,140 @@ def _load_calibration(path: Path) -> dict[str, Any]:
     return data
 
 
+def derive_bound_calibration(
+    *,
+    fit_rows: list[dict[str, Any]],
+    eval_rows: list[dict[str, Any]],
+    model_snapshot_id: str,
+    fit_rows_sha256: str,
+) -> dict[str, Any]:
+    """Fit the staged Platt contract from the exact adapter row bytes.
+
+    The historical pipeline copied an independently generated calibration
+    artifact into a newly scored adapter.  Re-fitting here removes that
+    co-presence gap: the coefficients are deterministically derived from the
+    bound validation MC rows and the resulting artifact records both the row
+    hash and model-snapshot identity.
+    """
+    import numpy as np
+    from sklearn.linear_model import LogisticRegression
+
+    phases = ("early", "mid", "late")
+
+    def phase_of(value: float) -> str:
+        if value < 0.33:
+            return "early"
+        if value < 0.66:
+            return "mid"
+        return "late"
+
+    fit_by_phase: dict[str, list[dict[str, Any]]] = {phase: [] for phase in phases}
+    eval_by_phase: dict[str, list[dict[str, Any]]] = {phase: [] for phase in phases}
+    for rows, expected_split, target in (
+        (fit_rows, "val", fit_by_phase),
+        (eval_rows, "test", eval_by_phase),
+    ):
+        for row in rows:
+            if row.get("format") == "MC" and row.get("split") == expected_split:
+                target[phase_of(float(row["prefix_fraction"]))].append(row)
+
+    def ece(probabilities: np.ndarray, labels: np.ndarray) -> float:
+        if len(probabilities) == 0:
+            return 0.0
+        total = 0.0
+        edges = np.linspace(0.0, 1.0, 11)
+        for index in range(10):
+            lower, upper = edges[index], edges[index + 1]
+            mask = (
+                (probabilities >= lower)
+                & (
+                    probabilities <= upper
+                    if index == 9
+                    else probabilities < upper
+                )
+            )
+            count = int(mask.sum())
+            if count:
+                total += (count / len(probabilities)) * abs(
+                    float(labels[mask].mean())
+                    - float(probabilities[mask].mean())
+                )
+        return total
+
+    per_bucket: dict[str, dict[str, Any]] = {}
+    for phase in phases:
+        fit_scores = np.asarray(
+            [float(row["raw_similarity"]) for row in fit_by_phase[phase]],
+            dtype=np.float64,
+        )
+        fit_labels = np.asarray(
+            [int(row["correct"]) for row in fit_by_phase[phase]],
+            dtype=np.int64,
+        )
+        eval_scores = np.asarray(
+            [float(row["raw_similarity"]) for row in eval_by_phase[phase]],
+            dtype=np.float64,
+        )
+        eval_labels = np.asarray(
+            [int(row["correct"]) for row in eval_by_phase[phase]],
+            dtype=np.int64,
+        )
+        if len(fit_labels) == 0:
+            coefficient = intercept = None
+            model_type = "constant"
+            fallback_reason = "empty_validation_bucket"
+            constant_probability = 0.0
+            probabilities = np.full(len(eval_scores), 0.0, dtype=np.float64)
+        elif len(np.unique(fit_labels)) == 1:
+            coefficient = intercept = None
+            model_type = "constant"
+            fallback_reason = "single_class_validation_bucket"
+            constant_probability = float(fit_labels[0])
+            probabilities = np.full(
+                len(eval_scores),
+                constant_probability,
+                dtype=np.float64,
+            )
+        else:
+            model = LogisticRegression(
+                C=1.0,
+                solver="lbfgs",
+                max_iter=1000,
+                random_state=789685,
+            )
+            model.fit(fit_scores.reshape(-1, 1), fit_labels)
+            coefficient = round(float(model.coef_[0][0]), 6)
+            intercept = round(float(model.intercept_[0]), 6)
+            model_type = "logistic"
+            fallback_reason = None
+            constant_probability = None
+            probabilities = (
+                model.predict_proba(eval_scores.reshape(-1, 1))[:, 1]
+                if len(eval_scores)
+                else np.asarray([], dtype=np.float64)
+            )
+        per_bucket[phase] = {
+            "ece": round(ece(probabilities, eval_labels), 6),
+            "n_samples": int(len(eval_labels)),
+            "platt_coef": coefficient,
+            "platt_intercept": intercept,
+            "platt_model_type": model_type,
+            "platt_fallback_reason": fallback_reason,
+            "platt_constant_probability": constant_probability,
+        }
+    return {
+        "fit_split": "val",
+        "per_bucket": per_bucket,
+        "metadata": {
+            "fit_split": "val",
+            "model": MODEL_ID,
+            "model_snapshot_id": model_snapshot_id,
+            "fit_rows_sha256": fit_rows_sha256,
+            "algorithm": "platt_lbfgs_c1_seed789685_v1",
+        },
+    }
+
+
 def _validate_scoring_question(question: dict[str, Any]) -> None:
     """Reject malformed MC rows before any model scoring occurs."""
     qid = _record_qid(question)
@@ -532,8 +666,20 @@ def build_adapter_bundle(
     fit_sha = sha256_file(out_dir / "fit_rows.jsonl.gz")
     eval_sha = sha256_file(out_dir / "eval_rows.jsonl.gz")
 
-    # copy calibration.json into the bundle so the standalone checker is self-contained
-    (out_dir / "calibration.json").write_bytes(Path(calibration_path).read_bytes())
+    # Derive calibration from the exact scored fit rows; do not copy unrelated
+    # staged coefficients into this adapter.
+    bound_calibration = derive_bound_calibration(
+        fit_rows=fit_rows,
+        eval_rows=eval_rows,
+        model_snapshot_id=model_snapshot_id,
+        fit_rows_sha256=fit_sha,
+    )
+    (out_dir / "calibration.json").write_text(
+        json.dumps(bound_calibration, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    build_metadata_path = Path(mc_dataset_path).parent / "build_metadata.json"
+    (out_dir / "build_metadata.json").write_bytes(build_metadata_path.read_bytes())
     calibration_sha = sha256_file(out_dir / "calibration.json")
 
     mc_coverage = _mc_coverage_evidence(eval_rows)

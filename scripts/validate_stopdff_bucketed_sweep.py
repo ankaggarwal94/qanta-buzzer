@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone StopDFF bucketed-sweep validator (ACCEPTANCE_CONTRACT.md section 1).
+"""Standalone StopDFF bucketed-sweep validator (see ACCEPTANCE_CONTRACT.md).
 
 Subcommands:
   validate-spec   SPEC [--require-final-profile]

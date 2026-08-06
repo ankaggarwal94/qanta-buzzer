@@ -69,6 +69,31 @@ def _rewrite_eval_rows(
     _rewrite_rows(bundle, "eval", transform)
 
 
+def _rebind_calibration(bundle: Path) -> None:
+    """Rebuild calibration when a test intends row changes to remain valid."""
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    calibration = adapter_build.derive_bound_calibration(
+        fit_rows=_read_rows(bundle, "fit"),
+        eval_rows=_read_rows(bundle, "eval"),
+        model_snapshot_id=manifest["identity"]["model_snapshot_id"],
+        fit_rows_sha256=manifest["identity"]["fit_rows_sha256"],
+    )
+    calibration_path = bundle / "calibration.json"
+    calibration_path.write_text(
+        json.dumps(calibration, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    manifest["identity"]["calibration_sha256"] = identity.sha256_file(
+        calibration_path
+    )
+    manifest["id"] = identity.compute_id(manifest["identity"])
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 def _update_first(
     rows: list[dict],
     *,
@@ -484,6 +509,7 @@ def test_adapter_accepts_cosine_endpoints_and_negative_values(tmp_path):
         )
 
     _rewrite_fit_rows(built["adapter_bundle"], use_boundary_values)
+    _rebind_calibration(built["adapter_bundle"])
 
     result = checker.validate_adapter(built["adapter_bundle"])
     assert result.passed, result.errors
@@ -500,6 +526,7 @@ def test_adapter_accepts_tied_nondecreasing_prefix_fractions(tmp_path):
             prefix_fraction=0.1,
         ),
     )
+    _rebind_calibration(built["adapter_bundle"])
 
     result = checker.validate_adapter(built["adapter_bundle"])
     assert result.passed, result.errors
@@ -519,6 +546,7 @@ def test_adapter_top_two_rounding_residual_boundary(tmp_path):
             top2_margin=0.1,
         ),
     )
+    _rebind_calibration(built["adapter_bundle"])
     accepted = checker.validate_adapter(built["adapter_bundle"])
     assert accepted.passed, accepted.errors
 

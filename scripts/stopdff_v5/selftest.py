@@ -1,4 +1,4 @@
-"""Negative mutation suite + valid-package builder (ACCEPTANCE_CONTRACT.md section 6).
+"""Negative mutation suite + valid-package builder (see ACCEPTANCE_CONTRACT.md).
 
 build_valid_package() creates a self-contained synthetic package (adapter bundle + run
 package) that the checker accepts. run_self_test() applies a battery of mutations and
@@ -16,13 +16,16 @@ from typing import Any, Callable
 import numpy as np
 
 from . import checker
-from .adapter_build import ADAPTER_SCHEMA_COLUMNS
+from .adapter_build import ADAPTER_SCHEMA_COLUMNS, derive_bound_calibration
 from .bootstrap import build_bootstrap_plan, plan_identity
 from .identity import build_manifest, compute_id, sha256_bytes, sha256_file
+from .fvi_study import run_fvi_study
 from .manifests import (
     ADAPTER_SCORING_SPEC,
+    FVI_PRODUCER_FILES,
     adapter_identity,
     environment_contract_identity,
+    fvi_study_identity,
     run_spec_identity,
 )
 from .profile import smoke_cells
@@ -32,6 +35,7 @@ from .writers import package_run
 
 CATEGORIES = ["history", "science", "arts"]
 PREFIX_FRACS = [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
+_SYNTH_FVI_STUDY: dict[str, Any] | None = None
 
 
 def _synth_rows(n_items: int = 44, seed: int = 11) -> list[dict]:
@@ -82,17 +86,12 @@ def _synth_rows(n_items: int = 44, seed: int = 11) -> list[dict]:
     return rows
 
 
-def _calibration_json() -> dict:
-    block = {"platt_coef": 5.0, "platt_intercept": -2.5}
-    return {"per_bucket": {"early": dict(block), "mid": dict(block), "late": dict(block)},
-            "fit_split": "val"}
-
-
 def _hex(n: str) -> str:
     return (n * 64)[:64]
 
 
 def build_valid_package(base_dir: Path) -> dict[str, Any]:
+    global _SYNTH_FVI_STUDY
     base_dir = Path(base_dir)
     bundle = base_dir / "adapter_bundle"
     bundle.mkdir(parents=True, exist_ok=True)
@@ -115,21 +114,76 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
     )
     write_jsonl_gz(bundle / "fit_rows.jsonl.gz", fit_rows)
     write_jsonl_gz(bundle / "eval_rows.jsonl.gz", eval_rows)
-    (bundle / "calibration.json").write_text(json.dumps(_calibration_json(), sort_keys=True), encoding="utf-8")
     fit_sha = sha256_file(bundle / "fit_rows.jsonl.gz")
     eval_sha = sha256_file(bundle / "eval_rows.jsonl.gz")
-    calibration_sha = sha256_file(bundle / "calibration.json")
+    fit_item_count = len({row["item_id"] for row in fit_rows})
+    eval_item_count = len({row["item_id"] for row in eval_rows})
+    build_metadata = {
+        "retention_thresholds": {"smoke": 0.5, "full": 0.98},
+        "splits": {
+            "train": {
+                "raw_count": 1,
+                "retained_count": 1,
+                "dropped_count": 0,
+                "retention_rate": 1.0,
+            },
+            "val": {
+                "raw_count": fit_item_count,
+                "retained_count": fit_item_count,
+                "dropped_count": 0,
+                "retention_rate": 1.0,
+            },
+            "test": {
+                "raw_count": eval_item_count,
+                "retained_count": eval_item_count,
+                "dropped_count": 0,
+                "retention_rate": 1.0,
+            },
+        },
+    }
+    (bundle / "build_metadata.json").write_text(
+        json.dumps(build_metadata, sort_keys=True),
+        encoding="utf-8",
+    )
+    build_metadata_sha = sha256_file(bundle / "build_metadata.json")
 
     input_manifest_dir = base_dir / "input_manifests"
     input_manifest_dir.mkdir(parents=True, exist_ok=True)
+    fvi_producer_hashes = {
+        name: sha256_bytes(name.encode("utf-8"))
+        for name in FVI_PRODUCER_FILES
+    }
+    source_producer_hashes = {
+        **fvi_producer_hashes,
+        "adapter_build.py": _hex("4"),
+        "checker.py": _hex("8"),
+        "sweep.py": _hex("9"),
+    }
     input_manifests = {
         "source_manifest": build_manifest(
-            {"kind": "source_snapshot", "fixture": "synthetic"}
+            {
+                "kind": "source_snapshot",
+                "fixture": "synthetic",
+                "files": [
+                    {
+                        "path": f"scripts/stopdff_v5/{name}",
+                        "sha256": digest,
+                    }
+                    for name, digest in source_producer_hashes.items()
+                ],
+            }
         ),
         "raw_input_manifest": build_manifest(
             {
                 "kind": "raw_input_bundle",
                 "fixture": "synthetic",
+                "files": [
+                    {
+                        "role": "build_metadata.json",
+                        "size": (bundle / "build_metadata.json").stat().st_size,
+                        "sha256": build_metadata_sha,
+                    }
+                ],
                 "semantic_checks": {"all_semantic_checks_pass": True},
             }
         ),
@@ -148,6 +202,17 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
     source_id = input_manifests["source_manifest"]["id"]
     raw_id = input_manifests["raw_input_manifest"]["id"]
     model_id = input_manifests["model_snapshot_manifest"]["id"]
+    bound_calibration = derive_bound_calibration(
+        fit_rows=fit_rows,
+        eval_rows=eval_rows,
+        model_snapshot_id=model_id,
+        fit_rows_sha256=fit_sha,
+    )
+    (bundle / "calibration.json").write_text(
+        json.dumps(bound_calibration, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    calibration_sha = sha256_file(bundle / "calibration.json")
     eval_mc_prefixes = {
         (r["item_id"], r["prefix_idx"])
         for r in eval_rows
@@ -175,7 +240,7 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
             "paired": eval_mc_prefixes == eval_qa_prefixes,
         },
         mc_retention={
-            "build_metadata_sha256": _hex("e"),
+            "build_metadata_sha256": build_metadata_sha,
             "threshold_profile": "full",
             "splits": {
                 "fit": {
@@ -223,13 +288,25 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
     plan = build_bootstrap_plan(test_items, replicates=100, seed=1)
     bootstrap_id = compute_id(plan_identity(plan))
 
-    selected_fvi = {"tolerance": "1e-8", "max_iterations": 100}
+    if _SYNTH_FVI_STUDY is None:
+        _SYNTH_FVI_STUDY = run_fvi_study(
+            rows=rows,
+            calibration_json=bound_calibration,
+        )
+    study = json.loads(json.dumps(_SYNTH_FVI_STUDY))
+    selected_fvi = study["selected_parameters"]
     fvi_manifest = build_manifest(
-        {
-            "kind": "fvi_study",
-            "adapter_bundle_id": adapter_id,
-            "selected_parameters": selected_fvi,
-        }
+        fvi_study_identity(
+            adapter_bundle_id=adapter_id,
+            candidate_grid=study["candidate_grid"],
+            representative_generator=study["representative_cell_generator"],
+            candidate_results=study["candidate_convergence_results"],
+            strict_reference_results=study["strict_reference"],
+            selector_rule=study["selector_rule"],
+            selected_parameters=selected_fvi,
+            all96_validation=study["all96_fit_only_validation"],
+            producer_hashes=fvi_producer_hashes,
+        )
     )
     fvi_study_id = fvi_manifest["id"]
     environment = {
@@ -258,8 +335,10 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
 
     run_root = base_dir / "run"
     ctx = SweepContext(
-        rows=rows, calibration_json=_calibration_json(), run_spec=run_spec, run_spec_id=run_spec_id,
-        bootstrap_plan=plan, output_dir=run_root, fvi_tolerance="1e-8", fvi_max_iterations=100,
+        rows=rows, calibration_json=bound_calibration, run_spec=run_spec, run_spec_id=run_spec_id,
+        bootstrap_plan=plan, output_dir=run_root,
+        fvi_tolerance=selected_fvi["tolerance"],
+        fvi_max_iterations=selected_fvi["max_iterations"],
         backend="modal", profile_variant="smoke", adapter_bundle_id=adapter_id,
         adapter_fit_rows_sha256=fit_sha,
         adapter_eval_rows_sha256=eval_sha, myopic_artifact_sha256=myopic_sha256,
@@ -453,6 +532,12 @@ def _mut_invalid_png(rr, b):
         break
 
 
+def _mut_truncated_png_after_ihdr(rr, b):
+    for png in (rr / "figures").glob("*.png"):
+        png.write_bytes(png.read_bytes()[:24])
+        break
+
+
 def _mut_missing_external_artifacts(rr, b):
     (rr / "external_artifacts.json").unlink()
 
@@ -608,6 +693,7 @@ _RUN_MUTATIONS: dict[str, Callable] = {
     "symlink_in_package": _mut_symlink,
     "checksum_value_mismatch": _mut_checksum_value,
     "invalid_png": _mut_invalid_png,
+    "truncated_png_after_ihdr": _mut_truncated_png_after_ihdr,
     "missing_external_artifacts": _mut_missing_external_artifacts,
     "unconverged_fvi_marked_completed": _mut_unconverged_completed,
     "cell_fingerprint_tampered": _mut_fingerprint,

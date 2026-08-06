@@ -35,12 +35,25 @@ _INTERRUPTED_REASON = "terminal_result_missing_at_resume"
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Atomically replace a regular file and durably publish its directory entry."""
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if (path.exists() or path.is_symlink()) and (
+        path.is_symlink() or not path.is_file()
+    ):
+        raise ValueError(f"atomic-write destination is noncanonical: {path}")
     fd, tmp = tempfile.mkstemp(dir=str(path.parent))
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
@@ -142,6 +155,32 @@ def _context_identity(ctx: SweepContext) -> tuple[dict[str, Any], str]:
     return spec_ids, plan_id
 
 
+def _load_attempt_history(path: Path) -> tuple[bytes, list[dict[str, Any]]]:
+    """Load only a complete, newline-terminated canonical attempt history."""
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("attempt history is missing or noncanonical")
+    data = path.read_bytes()
+    if not data or not data.endswith(b"\n"):
+        raise ValueError("attempt history has an unterminated tail")
+    records: list[dict[str, Any]] = []
+    for line_number, line in enumerate(data[:-1].split(b"\n"), start=1):
+        if not line:
+            raise ValueError(f"attempt history line {line_number} is empty")
+        try:
+            record = loads_no_duplicate_keys(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, TypeError) as exc:
+            raise ValueError(
+                f"attempt history line {line_number} is invalid"
+            ) from exc
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"attempt history line {line_number} is not an object"
+            )
+        records.append(record)
+    return data, records
+
+
 def _prepare_attempt(
     ctx: SweepContext,
     *,
@@ -182,13 +221,7 @@ def _prepare_attempt(
     if ctx.resume:
         if mode != "resume" or command.count("--resume") != 1:
             raise ValueError("resume attempt requires one bare --resume")
-        if not attempts_path.is_file():
-            raise ValueError("resume requires an existing attempts.jsonl")
-        existing = [
-            loads_no_duplicate_keys(line)
-            for line in attempts_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        _, existing = _load_attempt_history(attempts_path)
         if not existing:
             raise ValueError("resume requires a prior attempt")
         previous_number = 0
@@ -517,11 +550,14 @@ def _plan_identity_for(plan: BootstrapPlan) -> dict:
 
 
 def _append_attempt(path: Path, attempt: dict) -> None:
+    """Atomically extend attempt history; never concatenate onto a torn tail."""
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(attempt, sort_keys=True) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    existing = b""
+    if path.exists() or path.is_symlink():
+        existing, _ = _load_attempt_history(path)
+    line = (json.dumps(attempt, sort_keys=True) + "\n").encode("utf-8")
+    atomic_write_bytes(path, existing + line)
 
 
 def _validate_attempt_result(
@@ -643,13 +679,9 @@ def _resume_preflight(
                 ):
                     raise ValueError(f"resume evidence mismatch at {actual}")
 
-    attempt_records = [
-        loads_no_duplicate_keys(line)
-        for line in (ctx.output_dir / "attempts.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()
-        if line.strip()
-    ]
+    _, attempt_records = _load_attempt_history(
+        ctx.output_dir / "attempts.jsonl"
+    )
     known_attempts = [record["attempt"] for record in attempt_records]
     results_dir = ctx.output_dir / "attempt_results"
     result_numbers: set[int] = set()

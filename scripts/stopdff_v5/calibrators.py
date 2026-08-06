@@ -1,4 +1,4 @@
-"""Calibrator registry (SCIENTIFIC_CONTRACT.md section 7).
+"""Calibrator registry (indexed by SCIENTIFIC_CONTRACT.md).
 
 Every calibrator is fitted on VALIDATION MC ROWS ONLY, per phase (early/mid/late), and
 the resulting phase-specific map is applied without refitting to both MC and QA rows.

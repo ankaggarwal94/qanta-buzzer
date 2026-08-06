@@ -14,7 +14,13 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from scripts.stopdff_v5 import adapter_build, checker, rowio  # noqa: E402
+from scripts.stopdff_v5 import (  # noqa: E402
+    adapter_build,
+    checker,
+    identity,
+    rowio,
+    selftest,
+)
 
 
 def _scoring_question() -> dict:
@@ -191,6 +197,7 @@ def test_adapter_binds_retention_decisions_and_canonical_prefix_fractions(
     )
     retention_errors = checker._mc_retention_errors(
         retention,
+        bundle_dir=tmp_path / "bundle",
         fit_rows=fit_rows,
         eval_rows=eval_rows,
         fit_items={row["item_id"] for row in fit_rows},
@@ -202,6 +209,7 @@ def test_adapter_binds_retention_decisions_and_canonical_prefix_fractions(
     mutated["splits"]["fit"]["retention_rate"] = "0.5"
     rejected = checker._mc_retention_errors(
         mutated,
+        bundle_dir=tmp_path / "bundle",
         fit_rows=fit_rows,
         eval_rows=eval_rows,
         fit_items={row["item_id"] for row in fit_rows},
@@ -275,3 +283,69 @@ def test_rowio_atomic_replace_failure_preserves_target_and_cleans_temp(
 
     assert target.read_bytes() == b"existing-bytes"
     assert list(tmp_path.iterdir()) == [target]
+
+
+def test_adapter_rejects_stale_calibration_after_all_hashes_are_rebound(
+    tmp_path,
+):
+    built = selftest.build_valid_package(tmp_path)
+    bundle = built["adapter_bundle"]
+    calibration_path = bundle / "calibration.json"
+    calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    calibration["per_bucket"]["early"]["platt_intercept"] += 0.125
+    calibration_path.write_text(
+        json.dumps(calibration, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["identity"]["calibration_sha256"] = identity.sha256_file(
+        calibration_path
+    )
+    manifest["id"] = identity.compute_id(manifest["identity"])
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    result = checker.validate_adapter(bundle)
+    assert result.passed is False
+    assert any("not derived from bound fit-row" in error for error in result.errors)
+
+
+def test_adapter_rejects_rebound_fit_rows_with_unrelated_calibration(tmp_path):
+    built = selftest.build_valid_package(tmp_path)
+    bundle = built["adapter_bundle"]
+    fit_path = bundle / "fit_rows.jsonl.gz"
+    fit_rows = rowio.read_jsonl_gz(fit_path)
+    fit_rows[0]["raw_similarity"] = round(
+        min(1.0, float(fit_rows[0]["raw_similarity"]) + 0.2),
+        6,
+    )
+    rowio.write_jsonl_gz(fit_path, fit_rows)
+
+    calibration_path = bundle / "calibration.json"
+    calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    new_fit_hash = identity.sha256_file(fit_path)
+    calibration["metadata"]["fit_rows_sha256"] = new_fit_hash
+    calibration_path.write_text(
+        json.dumps(calibration, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["identity"]["fit_rows_sha256"] = new_fit_hash
+    manifest["identity"]["calibration_sha256"] = identity.sha256_file(
+        calibration_path
+    )
+    manifest["id"] = identity.compute_id(manifest["identity"])
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    result = checker.validate_adapter(bundle)
+    assert result.passed is False
+    assert any("not derived from bound fit-row" in error for error in result.errors)

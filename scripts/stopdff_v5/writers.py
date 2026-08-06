@@ -1,4 +1,4 @@
-"""Report / figure / package writers (ACCEPTANCE_CONTRACT.md section 4, 7).
+"""Report / figure / package writers (see ACCEPTANCE_CONTRACT.md).
 
 Markdown + LaTeX include every normative definition and the resource/cost block; figures
 are valid PNGs with positive dimensions; the package carries a safe complete SHA256SUMS
@@ -17,23 +17,31 @@ from typing import Any
 from . import PROFILE_NAME, PROTOCOL_VERSION
 from .identity import compute_id, loads_no_duplicate_keys
 from .profile import CALIBRATION, REWARD_SCHEDULES
+from .receipt_evidence import (
+    DETERMINISM_BINDINGS,
+    FULL_RECEIPT_BINDINGS,
+    build_prerequisite_evidence,
+    prerequisite_evidence_sha256,
+    verify_prerequisite_evidence_bytes,
+)
 from .rewards import REWARD_SCHEDULE_STRINGS
 
 _RECEIPT_GATES = {"smoke", "mutation", "determinism"}
-_FULL_RECEIPT_BINDINGS = {
-    "source_manifest_id",
-    "raw_input_bundle_id",
-    "model_snapshot_id",
-    "adapter_bundle_id",
-    "fvi_study_id",
-    "environment_contract_id",
-}
-_DETERMINISM_BINDINGS = {
-    "source_manifest_id",
-    "raw_input_bundle_id",
-    "model_snapshot_id",
-    "adapter_bundle_id",
-}
+_FULL_RECEIPT_BINDINGS = FULL_RECEIPT_BINDINGS
+_DETERMINISM_BINDINGS = DETERMINISM_BINDINGS
+
+
+def _validate_receipt_evidence(gate: str, evidence: Any) -> None:
+    """Validate the digest that binds a receipt to its packaged evidence bytes."""
+    if not isinstance(evidence, dict) or set(evidence) != {"evidence_sha256"}:
+        raise ValueError(f"{gate} receipt evidence fields mismatch")
+    value = evidence.get("evidence_sha256")
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(ch not in "0123456789abcdef" for ch in value)
+    ):
+        raise ValueError(f"{gate} receipt evidence_sha256 must be lowercase SHA-256")
 
 
 def build_prerequisite_receipt(
@@ -54,8 +62,7 @@ def build_prerequisite_receipt(
     )
     if set(bindings) != required:
         raise ValueError(f"{gate} receipt bindings mismatch")
-    if not evidence:
-        raise ValueError(f"{gate} receipt evidence must be nonempty")
+    _validate_receipt_evidence(gate, evidence)
     return build_manifest({
         "kind": "prerequisite_receipt",
         "gate": gate,
@@ -63,6 +70,27 @@ def build_prerequisite_receipt(
         "bindings": {key: bindings[key] for key in sorted(bindings)},
         "evidence": evidence,
     })
+
+
+def build_evidenced_prerequisite_receipt(
+    *,
+    gate: str,
+    bindings: dict[str, str],
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Issue a receipt only after validating and hashing its full evidence object."""
+    from .receipt_evidence import validate_prerequisite_evidence
+
+    validate_prerequisite_evidence(
+        gate=gate,
+        bindings=bindings,
+        evidence=evidence,
+    )
+    return build_prerequisite_receipt(
+        gate=gate,
+        bindings=bindings,
+        evidence={"evidence_sha256": prerequisite_evidence_sha256(evidence)},
+    )
 
 
 def validate_prerequisite_receipts(
@@ -104,6 +132,8 @@ def validate_prerequisite_receipts(
             for key in sorted(required)
         }
         if (
+            set(identity) != {"kind", "gate", "status", "bindings", "evidence"}
+            or
             identity.get("kind") != "prerequisite_receipt"
             or identity.get("gate") != gate
             or identity.get("status") != "successful"
@@ -112,6 +142,7 @@ def validate_prerequisite_receipts(
             or not identity["evidence"]
         ):
             raise ValueError(f"{gate} receipt bindings/status mismatch")
+        _validate_receipt_evidence(gate, identity["evidence"])
 
 
 def render_markdown(aggregate: dict[str, Any], *, resource_summary: dict[str, Any]) -> str:
@@ -220,7 +251,12 @@ def write_min_png(path: Path, width: int = 16, height: int = 16, rgb=(40, 80, 16
     path.write_bytes(png)
 
 
-def write_figures(output_dir: Path, aggregate: dict[str, Any]) -> list[str]:
+def write_figures(
+    output_dir: Path,
+    aggregate: dict[str, Any],
+    *,
+    profile_variant: str | None = None,
+) -> list[str]:
     figs_dir = Path(output_dir) / "figures"
     figs_dir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
@@ -243,7 +279,11 @@ def write_figures(output_dir: Path, aggregate: dict[str, Any]) -> list[str]:
         fig.savefig(figs_dir / "cell_median_index_shift.png", dpi=100)
         plt.close(fig)
         written.append("figures/cell_median_index_shift.png")
-    except Exception:
+    except Exception as exc:
+        if profile_variant != "smoke":
+            raise RuntimeError(
+                "figure generation failed for a non-smoke package"
+            ) from exc
         write_min_png(figs_dir / "cell_median_index_shift.png")
         written.append("figures/cell_median_index_shift.png")
     return written
@@ -327,7 +367,7 @@ def _prepare_package_evidence(
     *,
     external_artifacts: list[dict[str, Any]],
     evidence_files: dict[str, bytes],
-) -> tuple[list[dict[str, Any]], dict[str, bytes]]:
+) -> tuple[list[dict[str, Any]], dict[str, bytes], str | None]:
     candidates: dict[str, bytes] = {}
     for name, data in evidence_files.items():
         path = Path(name)
@@ -369,7 +409,7 @@ def _prepare_package_evidence(
                     "retrieval_path": retrieval,
                 }
             )
-        return normalized_legacy, candidates
+        return normalized_legacy, candidates, None
 
     normalized: dict[str, dict[str, Any]] = {}
     for artifact in external_artifacts:
@@ -466,6 +506,7 @@ def _prepare_package_evidence(
         if set(receipt_ids) != _RECEIPT_GATES:
             raise ValueError("final package requires all prerequisite receipt IDs")
         receipts: dict[str, dict[str, Any]] = {}
+        receipt_evidence_bytes: dict[str, bytes] = {}
         for gate in sorted(_RECEIPT_GATES):
             receipt_id = receipt_ids[gate]
             receipt_path = (
@@ -488,6 +529,14 @@ def _prepare_package_evidence(
             receipts[gate] = manifest
             packaged_path = f"evidence/prerequisite_receipts/{gate}.json"
             candidates[packaged_path] = data
+            evidence_path = receipt_path.with_suffix(".evidence.json")
+            if evidence_path.is_symlink() or not evidence_path.is_file():
+                raise ValueError(f"missing {gate} prerequisite evidence")
+            evidence_data = evidence_path.read_bytes()
+            receipt_evidence_bytes[gate] = evidence_data
+            candidates[
+                f"evidence/prerequisite_receipts/{gate}.evidence.json"
+            ] = evidence_data
             role = f"prerequisite_receipt_{gate}"
             normalized[role] = {
                 "role": role,
@@ -506,6 +555,14 @@ def _prepare_package_evidence(
             receipt_ids=receipt_ids,
             receipts=receipts,
         )
+        for gate in sorted(_RECEIPT_GATES):
+            identity = receipts[gate]["identity"]
+            verify_prerequisite_evidence_bytes(
+                gate=gate,
+                bindings=identity["bindings"],
+                receipt_evidence=identity["evidence"],
+                data=receipt_evidence_bytes[gate],
+            )
     elif profile_variant == "smoke":
         validate_prerequisite_receipts(
             profile_variant="smoke",
@@ -515,7 +572,11 @@ def _prepare_package_evidence(
         )
     else:
         raise ValueError(f"unknown package profile variant {profile_variant!r}")
-    return [normalized[role] for role in sorted(normalized)], candidates
+    return (
+        [normalized[role] for role in sorted(normalized)],
+        candidates,
+        profile_variant,
+    )
 
 
 def package_run(
@@ -532,10 +593,12 @@ def package_run(
     if not external_artifacts:
         raise ValueError("package requires a nonempty external-artifact ledger")
     root = Path(output_dir)
-    normalized_artifacts, packaged_evidence = _prepare_package_evidence(
+    normalized_artifacts, packaged_evidence, package_profile = (
+        _prepare_package_evidence(
         root,
         external_artifacts=external_artifacts,
         evidence_files=dict(evidence_files or {}),
+        )
     )
     candidates: dict[str, bytes] = {
         "reports/report.md": render_markdown(
@@ -555,7 +618,11 @@ def package_run(
 
     with tempfile.TemporaryDirectory(prefix="stopdff_v5_package_") as td:
         figure_root = Path(td)
-        for name in write_figures(figure_root, aggregate):
+        for name in write_figures(
+            figure_root,
+            aggregate,
+            profile_variant=package_profile or aggregate.get("profile_variant"),
+        ):
             candidates[name] = (figure_root / name).read_bytes()
 
     managed_roots = {"reports", "figures", "evidence"}

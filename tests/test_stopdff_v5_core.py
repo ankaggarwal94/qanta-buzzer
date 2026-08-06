@@ -69,6 +69,11 @@ def test_final_prerequisite_receipts_are_content_addressed_and_input_bound():
     }
     manifests = {}
     ids = {}
+    evidence_by_gate = {
+        "smoke": {"evidence_sha256": "a" * 64},
+        "mutation": {"evidence_sha256": "b" * 64},
+        "determinism": {"evidence_sha256": "c" * 64},
+    }
     for gate in ("smoke", "mutation", "determinism"):
         receipt_bindings = dict(bindings)
         if gate == "determinism":
@@ -77,7 +82,7 @@ def test_final_prerequisite_receipts_are_content_addressed_and_input_bound():
         manifest = writers.build_prerequisite_receipt(
             gate=gate,
             bindings=receipt_bindings,
-            evidence={"result_sha256": gate[0] * 64},
+            evidence=evidence_by_gate[gate],
         )
         manifests[gate] = manifest
         ids[gate] = manifest["id"]

@@ -11,6 +11,7 @@ import pytest
 from scripts import run_stopdff_v5_local as local_runner
 from scripts.stopdff_v5.bootstrap import build_bootstrap_plan
 from scripts.stopdff_v5.identity import build_manifest, sha256_file
+from scripts.stopdff_v5.manifests import ENVIRONMENT_PACKAGES, RAW_INPUT_ROLES
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -76,15 +77,21 @@ def _load_modal_runner(monkeypatch):
 
 
 def _write_raw_manifest(base: Path, *, passed: bool, kind: str = "raw_input_bundle"):
-    content = b"{}\n"
-    (base / "stopdff.json").write_bytes(content)
+    files = []
+    for role in sorted(RAW_INPUT_ROLES):
+        content = (json.dumps({"role": role}, sort_keys=True) + "\n").encode()
+        path = base / role
+        path.write_bytes(content)
+        files.append(
+            {
+                "role": role,
+                "size": len(content),
+                "sha256": sha256_file(path),
+            }
+        )
     identity = {
         "kind": kind,
-        "files": [{
-            "role": "stopdff.json",
-            "size": len(content),
-            "sha256": sha256_file(base / "stopdff.json"),
-        }],
+        "files": files,
         "semantic_checks": {"all_semantic_checks_pass": passed},
     }
     manifest = build_manifest(identity)
@@ -247,7 +254,12 @@ def _fake_control_api(*, fail_first_smoke: bool = False):
         return call
 
     def verify(_rel, kind):
-        result = {"ok": True, "id": ids[kind], "n_files": 1}
+        result = {
+            "ok": True,
+            "id": ids[kind],
+            "mismatches": [],
+            "n_files": 1,
+        }
         if kind == "raw":
             result["myopic_artifact_sha256"] = ids["myopic"]
         return result
@@ -256,7 +268,10 @@ def _fake_control_api(*, fail_first_smoke: bool = False):
         return {
             "bootstrap_plan_id": (
                 ids["smoke_plan"] if replicates == 100 else ids["final_plan"]
-            )
+            ),
+            "replicates": replicates,
+            "n_items": 10,
+            "cached": False,
         }
 
     def sweep(spec_json, _adapter, _bootstrap, resume):
@@ -265,36 +280,85 @@ def _fake_control_api(*, fail_first_smoke: bool = False):
         if variant == "smoke" and fail["smoke"]:
             fail["smoke"] = False
             raise RuntimeError("lost smoke response")
-        result = {"run_id": wrapper["run_id"], "resume": resume}
+        result = {
+            "run_id": wrapper["run_id"],
+            "requested": 3,
+            "completed": 3,
+            "skipped": 0,
+            "failed": 0,
+            "release_status": "VALID",
+            "family": {"verdict": "PASS"},
+            "resume": resume,
+        }
         if variant == "smoke":
             result["prerequisite_receipt_id"] = ids["smoke_receipt"]
         return result
 
     api = {
-        "probe": record("probe", {"python": "3.11.0", "package_versions": {}}),
+        "probe": record("probe", {
+            "python": "3.11.0",
+            "package_versions": {
+                name: "1.0" for name in ENVIRONMENT_PACKAGES
+            },
+        }),
         "verify_volume_artifact": record("verify", verify),
-        "freeze_model": record("freeze_model", {"model_id": ids["model"]}),
+        "freeze_model": record("freeze_model", {
+            "model_id": ids["model"],
+            "cached": False,
+        }),
         "build_adapter": record(
             "build_adapter",
-            {"adapter_id": ids["adapter"], "cached": False},
+            lambda subdir, *_args: {
+                "adapter_id": ids["adapter"],
+                "fit_rows_sha256": "c" * 64,
+                "eval_rows_sha256": "d" * 64,
+                "subdir": subdir,
+                "cached": False,
+            },
         ),
         "adapter_determinism_receipt": record(
             "adapter_determinism",
-            {"prerequisite_receipt_id": ids["determinism"]},
+            {
+                "ok": True,
+                "adapter_id": ids["adapter"],
+                "prerequisite_receipt_id": ids["determinism"],
+            },
         ),
-        "promote_adapter": record("promote_adapter", {"cached": False}),
+        "promote_adapter": record(
+            "promote_adapter",
+            lambda _subdir, adapter_id: {
+                "canonical_subdir": f"canonical_{adapter_id}",
+                "cached": False,
+            },
+        ),
         "fvi_study": record("fvi_study", {
             "fvi_study_id": ids["fvi"],
             "selected": {"tolerance": "1e-6", "max_iterations": 50},
+            "cached": False,
         }),
         "bootstrap_plan": record("bootstrap", bootstrap),
         "run_sweep": record("run_sweep", sweep),
         "mutation_gate": record("mutation_gate", {
             "ok": True,
+            "n": 40,
+            "unexpected": [],
             "prerequisite_receipt_id": ids["mutation"],
         }),
-        "validate": record("validate", {"passed": True, "errors": []}),
-        "package": record("package", {"packaged": True}),
+        "validate": record(
+            "validate",
+            lambda _run_id, adapter_id, *_args: {
+                "passed": True,
+                "errors": [],
+                "recomputed": {
+                    "release_status": "VALID",
+                    "adapter_bundle_id": adapter_id,
+                },
+            },
+        ),
+        "package": record(
+            "package",
+            lambda run_id: {"run_id": run_id, "packaged": True},
+        ),
     }
     return api, calls, ids
 

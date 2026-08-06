@@ -1,4 +1,4 @@
-"""Fitted value iteration (SCIENTIFIC_CONTRACT.md section 9).
+"""Fitted value iteration (indexed by SCIENTIFIC_CONTRACT.md).
 
 Synchronous, float64, math.fsum reductions, zero initialization, fixed damping 0.5,
 two-consecutive-iteration convergence, cycle detection, and value-bound checks.

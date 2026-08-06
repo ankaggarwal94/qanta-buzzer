@@ -19,22 +19,10 @@ from qb_data.dataset_splits import normalize_question_text, normalize_split_answ
 
 from .identity import build_manifest, sha256_file
 from .manifests import (
+    RAW_INPUT_ROLES,
     environment_contract_identity,
     raw_input_identity,
     source_manifest_identity,
-)
-
-RAW_INPUT_ROLES = (
-    "mc_dataset.json",
-    "train_dataset.json",
-    "val_dataset.json",
-    "test_dataset.json",
-    "build_metadata.json",
-    "split_metadata.json",
-    "calibration.json",
-    "stopdff.json",
-    "threshold_manifest.json",
-    "threshold_manifest.json.sha256",
 )
 
 

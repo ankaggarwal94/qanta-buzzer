@@ -15,6 +15,7 @@ if str(REPO) not in sys.path:
 
 from scripts.stopdff_v5 import (  # noqa: E402
     bootstrap,
+    cellcompute,
     checker,
     identity,
     profile,
@@ -22,6 +23,8 @@ from scripts.stopdff_v5 import (  # noqa: E402
     sweep,
     writers,
 )
+from scripts.stopdff_v5.calibrators import CalibratorFitError  # noqa: E402
+from scripts.stopdff_v5.fvi import FVIResult  # noqa: E402
 from scripts.stopdff_v5.fvi_study import order_eligible  # noqa: E402
 from scripts.stopdff_v5.manifests import (  # noqa: E402
     environment_contract_identity,
@@ -199,6 +202,136 @@ def _resume_package_context(
             "command": ["dp_sweep", "--resume"],
         },
         resume=True,
+    )
+
+
+def _fresh_package_context(tmp_path: Path, built: dict) -> sweep.SweepContext:
+    ctx = _resume_package_context(built, attempt_number=1)
+    ctx.output_dir = tmp_path / "failed_run"
+    ctx.resume = False
+    ctx.attempt = {
+        "attempt": 1,
+        "mode": "fresh",
+        "command": ["dp_sweep"],
+    }
+    return ctx
+
+
+def _assert_failure_pipeline(
+    *,
+    ctx: sweep.SweepContext,
+    adapter_bundle: Path,
+    status: str,
+    release_reason: str,
+) -> None:
+    aggregate = sweep.run_sweep(ctx)
+    assert aggregate["completed"] == 0
+    assert aggregate["failed"] == len(profile.smoke_cells())
+    assert aggregate["family"] is None
+    assert aggregate["release_status"] == "INVALID"
+    assert release_reason in aggregate["release_reasons"]
+    assert all(
+        summary == {"status": status, "verdict": "INVALID"}
+        for summary in aggregate["cells"].values()
+    )
+
+    for cell in profile.smoke_cells():
+        path = ctx.output_dir / "cells" / f"{profile.cell_key_str(cell)}.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        assert record["status"] == status
+        assert record["reason"]
+        if status == "calibrator_failed":
+            assert "fvi" not in record
+        else:
+            assert record["fvi"] == {
+                "status": "max_iterations_reached",
+                "converged": False,
+                "iterations": ctx.fvi_max_iterations,
+                "final_delta": 1.0,
+            }
+
+    attempt_result = json.loads(
+        (ctx.output_dir / "attempt_results" / "1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert attempt_result == {
+        "attempt": 1,
+        "state": "completed",
+        "run_spec_id": ctx.run_spec_id,
+        "completed": 0,
+        "failed": len(profile.smoke_cells()),
+    }
+
+    checked = checker.validate_run(
+        ctx.output_dir,
+        backend="modal",
+        adapter_bundle=adapter_bundle,
+        require_final_profile=False,
+        require_package=False,
+    )
+    assert not checked.passed
+    assert checked.recomputed["release_status"] == "INVALID"
+    assert "release invalid: not all requested cells completed" in checked.errors
+    assert (
+        f"release invalid: {len(profile.smoke_cells())} cell(s) failed"
+        in checked.errors
+    )
+    assert f"release invalid: {release_reason}" in checked.errors
+
+
+def test_calibrator_failure_propagates_through_sweep_and_checker(
+    tmp_path,
+    monkeypatch,
+):
+    built = selftest.build_valid_package(tmp_path / "fixture")
+    ctx = _fresh_package_context(tmp_path, built)
+
+    def fail_calibrator(*_args, **_kwargs):
+        raise CalibratorFitError("forced calibrator failure")
+
+    monkeypatch.setattr(cellcompute, "fit_calibrator", fail_calibrator)
+    _assert_failure_pipeline(
+        ctx=ctx,
+        adapter_bundle=built["adapter_bundle"],
+        status="calibrator_failed",
+        release_reason="a calibrator failed to fit",
+    )
+
+
+def test_fvi_failure_propagates_through_sweep_and_checker(
+    tmp_path,
+    monkeypatch,
+):
+    built = selftest.build_valid_package(tmp_path / "fixture")
+    ctx = _fresh_package_context(tmp_path, built)
+
+    def fail_fvi(
+        _estimator,
+        _trajectories,
+        _schedule,
+        *,
+        tolerance,
+        max_iterations,
+        tolerance_label="",
+        **_kwargs,
+    ):
+        del tolerance
+        return FVIResult(
+            status="max_iterations_reached",
+            converged=False,
+            iterations=max_iterations,
+            final_delta=1.0,
+            tolerance=tolerance_label,
+            max_iterations=max_iterations,
+        )
+
+    monkeypatch.setattr(cellcompute, "run_fvi", fail_fvi)
+    _assert_failure_pipeline(
+        ctx=ctx,
+        adapter_bundle=built["adapter_bundle"],
+        status="fvi_failed",
+        release_reason="an FVI fit did not converge",
     )
 
 

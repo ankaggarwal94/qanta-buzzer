@@ -1,4 +1,4 @@
-"""Continuation estimators (SCIENTIFIC_CONTRACT.md section 8).
+"""Continuation estimators (indexed by SCIENTIFIC_CONTRACT.md).
 
 The estimator holds fixed per-bucket counts (from fit rows) and mutable per-bucket means
 (updated by FVI). At a decision point it walks the ladder for the current

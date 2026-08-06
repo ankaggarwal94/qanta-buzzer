@@ -1,4 +1,4 @@
-"""Common paired bootstrap (SCIENTIFIC_CONTRACT.md section 10).
+"""Common paired bootstrap (indexed by SCIENTIFIC_CONTRACT.md).
 
 One bootstrap plan for the complete evaluation item set:
     sorted item IDs; numpy Generator with PCG64; seed = 1;
@@ -126,7 +126,7 @@ def family_statistic(
     abs_median_replicates_by_cell: dict[str, np.ndarray],
     abs_median_point_by_cell: dict[str, float],
 ) -> dict:
-    """Family maximum-statistic (SCIENTIFIC_CONTRACT.md section 12).
+    """Family maximum-statistic (indexed by SCIENTIFIC_CONTRACT.md).
 
     M_b = max_c median_i |D_{i,c}| for each replicate b; M = max_c m_c.
     """

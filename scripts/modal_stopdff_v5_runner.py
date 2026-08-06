@@ -78,6 +78,12 @@ def _receipt_rel(gate: str, receipt_id: str) -> str:
     return _p("receipts", gate, f"{receipt_id}.json")
 
 
+def _receipt_evidence_rel(gate: str, receipt_id: str) -> str:
+    """Return the evidence sidecar paired with one content-addressed receipt."""
+    receipt = Path(_receipt_rel(gate, receipt_id))
+    return str(receipt.with_suffix(".evidence.json"))
+
+
 def _verified_content_manifest(
     base,
     *,
@@ -89,70 +95,21 @@ def _verified_content_manifest(
     expected_kind: str | None = None,
     require_semantic_pass: bool = False,
 ) -> dict:
-    """Verify a content-addressed manifest and every file it declares."""
-    from scripts.stopdff_v5.identity import (
-        compute_id,
-        loads_no_duplicate_keys,
-        sha256_file,
+    """Verify the canonical identity and every staged byte it exhaustively lists."""
+    from scripts.stopdff_v5.content_manifest import (
+        validate_bound_content_manifest,
     )
 
-    base = Path(base)
-    manifest_path = base / manifest_name
-    if manifest_path.is_symlink() or not manifest_path.is_file():
-        raise ValueError(f"{manifest_name} is missing or not a regular file")
-    manifest = loads_no_duplicate_keys(
-        manifest_path.read_text(encoding="utf-8")
+    return validate_bound_content_manifest(
+        Path(base),
+        manifest_name=manifest_name,
+        expected_id=expected_id,
+        file_key=file_key,
+        name_key=name_key,
+        content_subdir=content_subdir,
+        expected_kind=expected_kind,
+        require_semantic_pass=require_semantic_pass,
     )
-    if not isinstance(manifest, dict) or not isinstance(
-        manifest.get("identity"),
-        dict,
-    ):
-        raise ValueError(f"{manifest_name} is not a manifest object")
-    identity = manifest["identity"]
-    if compute_id(identity) != manifest.get("id"):
-        raise ValueError(f"{manifest_name} id mismatch")
-    if expected_id is not None and manifest["id"] != expected_id:
-        raise ValueError(
-            f"{manifest_name} id {manifest['id']} != expected {expected_id}"
-        )
-    if expected_kind is not None and identity.get("kind") != expected_kind:
-        raise ValueError(
-            f"{manifest_name} kind {identity.get('kind')!r} != "
-            f"expected {expected_kind!r}"
-        )
-    if require_semantic_pass:
-        semantic_checks = identity.get("semantic_checks")
-        if (
-            not isinstance(semantic_checks, dict)
-            or semantic_checks.get("all_semantic_checks_pass") is not True
-        ):
-            raise ValueError(
-                f"{manifest_name} does not record passing semantic checks"
-            )
-    entries = identity.get(file_key)
-    if not isinstance(entries, list):
-        raise ValueError(f"{manifest_name} lacks {file_key}")
-    seen: set[str] = set()
-    content_root = base / content_subdir if content_subdir else base
-    for entry in entries:
-        name = entry.get(name_key) if isinstance(entry, dict) else None
-        if (
-            not isinstance(name, str)
-            or not name
-            or name.startswith("/")
-            or ".." in PurePosixPath(name).parts
-            or name in seen
-        ):
-            raise ValueError(f"{manifest_name} contains unsafe/duplicate path")
-        seen.add(name)
-        path = content_root / name
-        if path.is_symlink() or not path.is_file():
-            raise ValueError(f"{manifest_name} file missing: {name}")
-        if int(entry.get("size", -1)) != path.stat().st_size:
-            raise ValueError(f"{manifest_name} size mismatch: {name}")
-        if entry.get("sha256") != sha256_file(path):
-            raise ValueError(f"{manifest_name} sha mismatch: {name}")
-    return manifest
 
 
 def _verified_raw_input_manifest(base, *, expected_id: str | None) -> dict:
@@ -268,16 +225,13 @@ def _validated_cached_fvi(
 
 @app.function(volumes={MNT: vol}, timeout=1800, max_containers=1)
 def probe() -> dict:
+    from importlib import metadata as im
     import platform
-    import numpy, scipy, sklearn, pandas, sentence_transformers, transformers, huggingface_hub
+    from scripts.stopdff_v5.manifests import ENVIRONMENT_PACKAGES
+
     package_versions = {
-        "numpy": numpy.__version__,
-        "scipy": scipy.__version__,
-        "scikit-learn": sklearn.__version__,
-        "pandas": pandas.__version__,
-        "sentence-transformers": sentence_transformers.__version__,
-        "transformers": transformers.__version__,
-        "huggingface_hub": huggingface_hub.__version__,
+        name: im.version(name)
+        for name in ENVIRONMENT_PACKAGES
     }
     return {
         "python": platform.python_version(),
@@ -495,11 +449,7 @@ def adapter_determinism_receipt(
     import json
     from pathlib import Path
     from scripts.stopdff_v5 import checker, sweep, writers
-    from scripts.stopdff_v5.identity import (
-        canonical_bytes,
-        sha256_bytes,
-        sha256_file,
-    )
+    from scripts.stopdff_v5.identity import sha256_file
 
     vol.reload()
     bindings = json.loads(binding_json)
@@ -515,19 +465,37 @@ def adapter_determinism_receipt(
         or second_result.recomputed.get("adapter_bundle_id") != adapter_id
     ):
         raise ValueError("adapter determinism inputs are invalid or unbound")
-    compared = ("fit_rows.jsonl.gz", "eval_rows.jsonl.gz", "calibration.json")
+    compared = (
+        "fit_rows.jsonl.gz",
+        "eval_rows.jsonl.gz",
+        "calibration.json",
+        "build_metadata.json",
+    )
     first_hashes = {name: sha256_file(first / name) for name in compared}
     second_hashes = {name: sha256_file(second / name) for name in compared}
     if first_hashes != second_hashes:
         raise ValueError("independent adapter builds are not byte-identical")
-    receipt = writers.build_prerequisite_receipt(
+    first_manifest = checker.load_json(first / "manifest.json")
+    second_manifest = checker.load_json(second / "manifest.json")
+    evidence = writers.build_prerequisite_evidence(
         gate="determinism",
         bindings=bindings,
-        evidence={
-            "bundle_files_sha256": sha256_bytes(
-                canonical_bytes(first_hashes)
-            )
+        details={
+            "first_adapter_manifest": first_manifest,
+            "second_adapter_manifest": second_manifest,
+            "first_file_sha256": first_hashes,
+            "second_file_sha256": second_hashes,
         },
+    )
+    receipt = writers.build_evidenced_prerequisite_receipt(
+        gate="determinism",
+        bindings=bindings,
+        evidence=evidence,
+    )
+    sweep._write_bound_json(
+        Path(_receipt_evidence_rel("determinism", receipt["id"])),
+        evidence,
+        resume=True,
     )
     sweep._write_bound_json(
         Path(_receipt_rel("determinism", receipt["id"])),
@@ -549,8 +517,11 @@ def fvi_study(adapter_id: str) -> dict:
     from scripts.stopdff_v5 import fvi_study as fs
     from scripts.stopdff_v5 import checker
     from scripts.stopdff_v5.checker import load_adapter_rows
-    from scripts.stopdff_v5.identity import build_manifest
-    from scripts.stopdff_v5.manifests import fvi_study_identity
+    from scripts.stopdff_v5.identity import build_manifest, sha256_file
+    from scripts.stopdff_v5.manifests import (
+        FVI_PRODUCER_FILES,
+        fvi_study_identity,
+    )
     vol.reload()
     adir = Path(_p("adapters", f"canonical_{adapter_id}"))
     adapter_result = checker.validate_adapter(adir)
@@ -565,13 +536,17 @@ def fvi_study(adapter_id: str) -> dict:
     rows = load_adapter_rows(adir)
     calibration = json.loads((adir / "calibration.json").read_text())
     study = fs.run_fvi_study(rows=rows, calibration_json=calibration)
+    producer_hashes = {
+        name: sha256_file(Path(REMOTE_SRC) / "scripts" / "stopdff_v5" / name)
+        for name in FVI_PRODUCER_FILES
+    }
     ident = fvi_study_identity(
         adapter_bundle_id=adapter_id, candidate_grid=study["candidate_grid"],
         representative_generator=study["representative_cell_generator"],
         candidate_results=study["candidate_convergence_results"],
         strict_reference_results=study["strict_reference"], selector_rule=study["selector_rule"],
         selected_parameters=study["selected_parameters"], all96_validation=study["all96_fit_only_validation"],
-        producer_hashes={})
+        producer_hashes=producer_hashes)
     man = build_manifest(ident)
     out = Path(_p("fvi", man["id"]))
     if out.exists():
@@ -749,18 +724,11 @@ def run_sweep(spec_json: str, adapter_id: str, bootstrap_plan_id: str, resume: b
     ):
         raise ValueError("FVI study does not match the verified run spec")
 
-    package_names = (
-        "numpy",
-        "scipy",
-        "scikit-learn",
-        "pandas",
-        "sentence-transformers",
-        "transformers",
-        "huggingface_hub",
-    )
+    from scripts.stopdff_v5.manifests import ENVIRONMENT_PACKAGES
+
     package_versions = {
         name: im.version(name)
-        for name in package_names
+        for name in ENVIRONMENT_PACKAGES
     }
     environment_identity = environment_contract_identity(
         python_version=platform.python_version(),
@@ -811,6 +779,17 @@ def run_sweep(spec_json: str, adapter_id: str, bootstrap_plan_id: str, resume: b
         receipt_ids=receipt_ids,
         receipts=receipts,
     )
+    if binding["variant"] == "final":
+        for gate, receipt in receipts.items():
+            evidence_path = Path(_receipt_evidence_rel(gate, receipt["id"]))
+            if evidence_path.is_symlink() or not evidence_path.is_file():
+                raise ValueError(f"{gate} prerequisite evidence is unavailable")
+            writers.verify_prerequisite_evidence_bytes(
+                gate=gate,
+                bindings=receipt["identity"]["bindings"],
+                receipt_evidence=receipt["identity"]["evidence"],
+                data=evidence_path.read_bytes(),
+            )
 
     rows = binding["rows"]
     calibration = binding["calibration"]
@@ -869,27 +848,39 @@ def run_sweep(spec_json: str, adapter_id: str, bootstrap_plan_id: str, resume: b
         )
         if not validation.passed or agg["release_status"] != "VALID":
             raise ValueError("smoke run cannot issue a success receipt")
-        receipt = writers.build_prerequisite_receipt(
+        receipt_bindings = {
+            key: spec_ids[key]
+            for key in (
+                "source_manifest_id",
+                "raw_input_bundle_id",
+                "model_snapshot_id",
+                "adapter_bundle_id",
+                "fvi_study_id",
+                "environment_contract_id",
+            )
+        }
+        evidence = writers.build_prerequisite_evidence(
             gate="smoke",
-            bindings={
-                key: spec_ids[key]
-                for key in (
-                    "source_manifest_id",
-                    "raw_input_bundle_id",
-                    "model_snapshot_id",
-                    "adapter_bundle_id",
-                    "fvi_study_id",
-                    "environment_contract_id",
-                )
-            },
-            evidence={
-                "run_id": spec["run_id"],
-                "aggregate_sha256": sha256_file(
-                    run_root / "aggregate.json"
-                ),
+            bindings=receipt_bindings,
+            details={
+                "run_spec": {
+                    "id": binding["run_spec_id"],
+                    "identity": binding["run_spec_identity"],
+                },
+                "aggregate": agg,
             },
         )
+        receipt = writers.build_evidenced_prerequisite_receipt(
+            gate="smoke",
+            bindings=receipt_bindings,
+            evidence=evidence,
+        )
         receipt_path = Path(_receipt_rel("smoke", receipt["id"]))
+        sweep._write_bound_json(
+            Path(_receipt_evidence_rel("smoke", receipt["id"])),
+            evidence,
+            resume=True,
+        )
         sweep._write_bound_json(receipt_path, receipt, resume=True)
         vol.commit()
         result["prerequisite_receipt_id"] = receipt["id"]
@@ -1041,16 +1032,25 @@ def mutation_gate(binding_json: str) -> dict:
     import tempfile
     from pathlib import Path
     from scripts.stopdff_v5 import selftest, sweep, writers
-    from scripts.stopdff_v5.identity import canonical_bytes, sha256_bytes
     bindings = json.loads(binding_json)
     ok, results = selftest.run_self_test(Path(tempfile.mkdtemp()))
     unexpected = [r["mutation"] for r in results if not r["ok"]]
     if not ok:
         return {"ok": False, "n": len(results), "unexpected": unexpected}
-    receipt = writers.build_prerequisite_receipt(
+    evidence = writers.build_prerequisite_evidence(
         gate="mutation",
         bindings=bindings,
-        evidence={"result_sha256": sha256_bytes(canonical_bytes(results))},
+        details={"results": results},
+    )
+    receipt = writers.build_evidenced_prerequisite_receipt(
+        gate="mutation",
+        bindings=bindings,
+        evidence=evidence,
+    )
+    sweep._write_bound_json(
+        Path(_receipt_evidence_rel("mutation", receipt["id"])),
+        evidence,
+        resume=True,
     )
     sweep._write_bound_json(
         Path(_receipt_rel("mutation", receipt["id"])),
@@ -1099,16 +1099,25 @@ def _load_control_json(path: Path) -> dict:
 
 def _write_control_state(path: Path, state: dict) -> None:
     """Atomically replace and fsync the local control-plane checkpoint."""
+    data = (json.dumps(state, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    _atomic_replace_control_bytes(path, data)
+
+
+def _atomic_replace_control_bytes(path: Path, data: bytes) -> None:
+    """Replace one local control artifact without exposing partial bytes."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if (path.exists() or path.is_symlink()) and (
+        path.is_symlink() or not path.is_file()
+    ):
+        raise ValueError(f"control artifact is noncanonical: {path}")
     fd, temporary = tempfile.mkstemp(
         prefix=f".{path.name}.",
         dir=str(path.parent),
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, indent=2, sort_keys=True)
-            handle.write("\n")
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
@@ -1123,11 +1132,100 @@ def _write_control_state(path: Path, state: dict) -> None:
 
 
 def _append_control_event(path: Path, event: dict) -> None:
+    """Atomically append one canonical event to the local journal."""
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, sort_keys=True) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    existing = b""
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"control journal is noncanonical: {path}")
+        existing = path.read_bytes()
+        if existing and not existing.endswith(b"\n"):
+            raise ValueError("control journal has an unterminated tail")
+    line = (json.dumps(event, sort_keys=True) + "\n").encode("utf-8")
+    _atomic_replace_control_bytes(path, existing + line)
+
+
+def _reconcile_control_journal(state_path: Path, state: dict) -> None:
+    """Repair one provable final-record gap or reject journal drift."""
+    journal_path = state_path.with_name(state_path.name + ".jsonl")
+    journal_bytes = b""
+    if journal_path.exists() or journal_path.is_symlink():
+        if journal_path.is_symlink() or not journal_path.is_file():
+            raise ValueError("control journal is noncanonical")
+        journal_bytes = journal_path.read_bytes()
+
+    complete_lines: list[bytes]
+    torn_tail: bytes | None
+    if journal_bytes and not journal_bytes.endswith(b"\n"):
+        parts = journal_bytes.split(b"\n")
+        complete_lines = parts[:-1]
+        torn_tail = parts[-1]
+    else:
+        complete_lines = (
+            journal_bytes[:-1].split(b"\n") if journal_bytes else []
+        )
+        torn_tail = None
+
+    records: list[dict] = []
+    for line_number, line in enumerate(complete_lines, start=1):
+        if not line:
+            raise ValueError(
+                f"control journal line {line_number} is empty"
+            )
+        try:
+            record = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"control journal line {line_number} is invalid JSON"
+            ) from exc
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"control journal line {line_number} is not an object"
+            )
+        if record.get("sequence") != line_number:
+            raise ValueError("control journal sequence is not contiguous")
+        records.append(record)
+
+    sequence = state.get("sequence", 0)
+    if (
+        not isinstance(sequence, int)
+        or isinstance(sequence, bool)
+        or sequence < 0
+    ):
+        raise ValueError("control state sequence is invalid")
+    last_event = state.get("last_event")
+    if torn_tail is not None:
+        canonical_last = (
+            json.dumps(last_event, sort_keys=True) + "\n"
+        ).encode("utf-8") if isinstance(last_event, dict) else b""
+        if (
+            not torn_tail
+            or len(records) != sequence - 1
+            or not isinstance(last_event, dict)
+            or last_event.get("sequence") != sequence
+            or not canonical_last[:-1].startswith(torn_tail)
+        ):
+            raise ValueError("control journal has an unprovable torn tail")
+        complete_prefix = journal_bytes[:-len(torn_tail)]
+        _atomic_replace_control_bytes(
+            journal_path,
+            complete_prefix + canonical_last,
+        )
+        records.append(last_event)
+
+    if len(records) == sequence:
+        if sequence and records[-1] != last_event:
+            raise ValueError("control state and journal last event disagree")
+        return
+    if (
+        len(records) == sequence - 1
+        and isinstance(last_event, dict)
+        and last_event.get("sequence") == sequence
+    ):
+        _append_control_event(journal_path, last_event)
+        return
+    raise ValueError("control state and journal sequence disagree")
 
 
 def _record_control_event(
@@ -1234,14 +1332,41 @@ def _run_control_stage(
     *,
     name: str,
     invoke,
+    validate_result,
 ) -> dict:
+    if not callable(validate_result):
+        raise TypeError(f"control stage {name} requires a result validator")
     completed = state.setdefault("completed", {})
+    attempts = state.setdefault("stage_attempts", {})
     if name in completed:
         result = completed[name]
-        if not isinstance(result, dict):
-            raise ValueError(f"control stage {name} has a non-object checkpoint")
-        return result
-    attempts = state.setdefault("stage_attempts", {})
+        try:
+            _validate_control_stage_result(name, result, validate_result)
+        except Exception as exc:
+            completed.pop(name, None)
+            prior_attempt = attempts.get(name, 0)
+            if (
+                not isinstance(prior_attempt, int)
+                or isinstance(prior_attempt, bool)
+                or prior_attempt < 1
+            ):
+                prior_attempt = 1
+                attempts[name] = prior_attempt
+            state["status"] = "running"
+            state["last_error"] = {
+                "stage": name,
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            _record_control_event(
+                state_path,
+                state,
+                event="stage_checkpoint_invalid",
+                stage=name,
+                detail={"attempt": prior_attempt, **state["last_error"]},
+            )
+        else:
+            return result
     attempt = int(attempts.get(name, 0)) + 1
     attempts[name] = attempt
     state["status"] = "running"
@@ -1254,8 +1379,7 @@ def _run_control_stage(
     )
     try:
         result = invoke(attempt)
-        if not isinstance(result, dict):
-            raise TypeError(f"control stage {name} returned a non-object")
+        _validate_control_stage_result(name, result, validate_result)
     except BaseException as exc:
         state["status"] = "failed"
         state["last_error"] = {
@@ -1283,24 +1407,256 @@ def _run_control_stage(
     return result
 
 
-def _require_control_result(
+def _validate_control_stage_result(
+    stage: str,
+    result,
+    validate_result,
+) -> None:
+    """Apply generic and stage-specific success checks before checkpointing."""
+    if not isinstance(result, dict):
+        raise TypeError(f"control stage {stage} returned a non-object")
+    if result.get("ok") is False:
+        raise ValueError(
+            f"control stage {stage} returned ok=false: "
+            f"{result.get('error') or result.get('errors')}"
+        )
+    if result.get("passed") is False:
+        raise ValueError(
+            f"control stage {stage} returned passed=false: "
+            f"{result.get('error') or result.get('errors')}"
+        )
+    validate_result(result)
+
+
+def _require_control_sha(
     stage: str,
     result: dict,
     *,
-    expected_id: tuple[str, str] | None = None,
-) -> dict:
-    if result.get("ok") is False:
+    field: str,
+    expected: str | None = None,
+) -> str:
+    value = result.get(field)
+    if not _is_control_sha(value):
         raise ValueError(
-            f"control stage {stage} failed verification: {result.get('error')}"
+            f"control stage {stage} returned a noncanonical {field}"
         )
-    if expected_id is not None:
-        field, expected = expected_id
-        if result.get(field) != expected:
-            raise ValueError(
-                f"control stage {stage} returned {field}={result.get(field)!r}, "
-                f"expected {expected!r}"
-            )
-    return result
+    if expected is not None and value != expected:
+        raise ValueError(
+            f"control stage {stage} returned {field}={value!r}, "
+            f"expected {expected!r}"
+        )
+    return value
+
+
+def _is_control_sha(value) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(ch in "0123456789abcdef" for ch in value)
+    )
+
+
+def _is_final_control_run_id(value) -> bool:
+    prefix = "final_modal_"
+    return (
+        isinstance(value, str)
+        and value.startswith(prefix)
+        and len(value) == len(prefix) + 12
+        and all(ch in "0123456789abcdef" for ch in value[len(prefix):])
+    )
+
+
+def _require_control_bool(stage: str, result: dict, field: str) -> bool:
+    value = result.get(field)
+    if not isinstance(value, bool):
+        raise ValueError(f"control stage {stage} returned an invalid {field}")
+    return value
+
+
+def _require_control_count(
+    stage: str,
+    result: dict,
+    field: str,
+    *,
+    positive: bool = False,
+) -> int:
+    value = result.get(field)
+    lower_bound = 1 if positive else 0
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < lower_bound
+    ):
+        qualifier = "positive" if positive else "nonnegative"
+        raise ValueError(
+            f"control stage {stage} returned a non-{qualifier} {field}"
+        )
+    return value
+
+
+def _validate_verified_artifact_result(
+    stage: str,
+    result: dict,
+    *,
+    expected_id: str,
+    require_myopic: bool,
+) -> None:
+    if result.get("ok") is not True or result.get("mismatches") != []:
+        raise ValueError(f"control stage {stage} did not verify cleanly")
+    _require_control_sha(stage, result, field="id", expected=expected_id)
+    _require_control_count(stage, result, "n_files", positive=True)
+    if require_myopic:
+        _require_control_sha(stage, result, field="myopic_artifact_sha256")
+
+
+def _validate_probe_result(result: dict, package_names: tuple[str, ...]) -> None:
+    stage = "environment_probe"
+    python_version = result.get("python")
+    versions = result.get("package_versions")
+    if not isinstance(python_version, str) or not python_version:
+        raise ValueError("environment probe returned an invalid Python version")
+    if not isinstance(versions, dict) or set(versions) != set(package_names):
+        raise ValueError("environment probe returned an incomplete package set")
+    if not all(isinstance(value, str) and value for value in versions.values()):
+        raise ValueError(f"control stage {stage} returned an invalid package version")
+
+
+def _validate_model_result(result: dict) -> None:
+    _require_control_sha("freeze_model", result, field="model_id")
+    _require_control_bool("freeze_model", result, "cached")
+
+
+def _validate_adapter_result(
+    stage: str,
+    result: dict,
+    *,
+    expected_subdir: str,
+    expected_id: str | None = None,
+) -> None:
+    _require_control_sha(
+        stage,
+        result,
+        field="adapter_id",
+        expected=expected_id,
+    )
+    _require_control_sha(stage, result, field="fit_rows_sha256")
+    _require_control_sha(stage, result, field="eval_rows_sha256")
+    if result.get("subdir") != expected_subdir:
+        raise ValueError(f"control stage {stage} returned the wrong subdir")
+    _require_control_bool(stage, result, "cached")
+
+
+def _validate_determinism_result(result: dict, adapter_id: str) -> None:
+    stage = "adapter_determinism"
+    if result.get("ok") is not True:
+        raise ValueError("adapter determinism did not pass")
+    _require_control_sha(
+        stage,
+        result,
+        field="adapter_id",
+        expected=adapter_id,
+    )
+    _require_control_sha(stage, result, field="prerequisite_receipt_id")
+
+
+def _validate_promotion_result(result: dict, adapter_id: str) -> None:
+    stage = "promote_adapter"
+    if result.get("canonical_subdir") != f"canonical_{adapter_id}":
+        raise ValueError("adapter promotion returned the wrong destination")
+    _require_control_bool(stage, result, "cached")
+
+
+def _validate_fvi_result(result: dict) -> None:
+    stage = "fvi_study"
+    _require_control_sha(stage, result, field="fvi_study_id")
+    selected = result.get("selected")
+    if not isinstance(selected, dict) or set(selected) != {
+        "tolerance",
+        "max_iterations",
+    }:
+        raise ValueError("FVI stage returned an incomplete selection")
+    if not isinstance(selected["tolerance"], str) or not selected["tolerance"]:
+        raise ValueError("FVI stage returned an invalid tolerance")
+    if (
+        not isinstance(selected["max_iterations"], int)
+        or isinstance(selected["max_iterations"], bool)
+        or selected["max_iterations"] < 1
+    ):
+        raise ValueError("FVI stage returned invalid max_iterations")
+    _require_control_bool(stage, result, "cached")
+
+
+def _validate_bootstrap_result(
+    stage: str,
+    result: dict,
+    replicates: int,
+) -> None:
+    _require_control_sha(stage, result, field="bootstrap_plan_id")
+    if result.get("replicates") != replicates:
+        raise ValueError(f"control stage {stage} returned the wrong replicate count")
+    _require_control_count(stage, result, "n_items", positive=True)
+    _require_control_bool(stage, result, "cached")
+
+
+def _validate_sweep_result(
+    stage: str,
+    result: dict,
+    *,
+    run_id: str,
+    require_receipt: bool,
+) -> None:
+    if result.get("run_id") != run_id:
+        raise ValueError(f"control stage {stage} returned the wrong run_id")
+    requested = _require_control_count(stage, result, "requested", positive=True)
+    completed = _require_control_count(stage, result, "completed")
+    skipped = _require_control_count(stage, result, "skipped")
+    failed = _require_control_count(stage, result, "failed")
+    if completed != requested or skipped != 0 or failed != 0:
+        raise ValueError(f"control stage {stage} did not complete every cell")
+    if result.get("release_status") != "VALID":
+        raise ValueError(f"control stage {stage} did not produce a valid release")
+    if not isinstance(result.get("family"), dict):
+        raise ValueError(f"control stage {stage} returned no family result")
+    if require_receipt:
+        _require_control_sha(stage, result, field="prerequisite_receipt_id")
+
+
+def _validate_mutation_result(result: dict) -> None:
+    stage = "mutation_gate"
+    if result.get("ok") is not True or result.get("unexpected") != []:
+        raise ValueError("mutation gate did not pass cleanly")
+    _require_control_count(stage, result, "n", positive=True)
+    _require_control_sha(stage, result, field="prerequisite_receipt_id")
+
+
+def _validate_checker_result(
+    stage: str,
+    result: dict,
+    *,
+    expected_adapter_id: str | None = None,
+) -> None:
+    if result.get("passed") is not True or result.get("errors") != []:
+        raise ValueError(f"control stage {stage} did not pass cleanly")
+    recomputed = result.get("recomputed")
+    if (
+        not isinstance(recomputed, dict)
+        or recomputed.get("release_status") != "VALID"
+    ):
+        raise ValueError(
+            f"control stage {stage} did not recompute a valid release"
+        )
+    if (
+        expected_adapter_id is not None
+        and recomputed.get("adapter_bundle_id") != expected_adapter_id
+    ):
+        raise ValueError(
+            f"control stage {stage} recomputed the wrong adapter identity"
+        )
+
+
+def _validate_package_result(result: dict, run_id: str) -> None:
+    if result.get("run_id") != run_id or result.get("packaged") is not True:
+        raise ValueError("package stage did not package the expected run")
 
 
 def run_control_plane(
@@ -1313,6 +1669,7 @@ def run_control_plane(
     """Run the canonical Modal stage order with a durable local checkpoint."""
     from scripts.stopdff_v5.identity import compute_id, sha256_file
     from scripts.stopdff_v5.manifests import (
+        ENVIRONMENT_PACKAGES,
         environment_contract_identity,
         run_spec_identity,
     )
@@ -1320,13 +1677,78 @@ def run_control_plane(
     plan = _validate_control_plan(plan)
     state_path = Path(state_path)
     digest = _control_plan_digest(plan)
+    api = stage_api or _default_control_stage_api()
     if resume:
         state = _load_control_json(state_path)
+        _reconcile_control_journal(state_path, state)
         if state.get("plan_digest") != digest or state.get("plan") != plan:
             raise ValueError("resume control plan does not match durable state")
         if state.get("schema_version") != 1:
             raise ValueError("unsupported control-state schema")
-        if state.get("status") == "completed":
+        if state.get("status") in {"completed", "recovery_required"}:
+            stored_result = state.get("result")
+            validator = api.get("validate") if isinstance(api, dict) else None
+            if (
+                not isinstance(stored_result, dict)
+                or not _is_final_control_run_id(stored_result.get("run_id"))
+                or not _is_control_sha(stored_result.get("adapter_id"))
+                or not callable(validator)
+            ):
+                state["status"] = "recovery_required"
+                state["last_error"] = {
+                    "stage": "completed_resume_revalidation",
+                    "type": "RecoveryRequired",
+                    "message": "completed state cannot re-prove the final package",
+                }
+                _record_control_event(
+                    state_path,
+                    state,
+                    event="control_recovery_required",
+                    stage="validate_package",
+                    detail=state["last_error"],
+                )
+                return state
+            try:
+                current_validation = validator(
+                    stored_result["run_id"],
+                    stored_result["adapter_id"],
+                    True,
+                    True,
+                )
+                _validate_control_stage_result(
+                    "completed_resume_revalidation",
+                    current_validation,
+                    lambda result: _validate_checker_result(
+                        "completed_resume_revalidation",
+                        result,
+                        expected_adapter_id=stored_result["adapter_id"],
+                    ),
+                )
+            except BaseException as exc:
+                state["status"] = "recovery_required"
+                state["last_error"] = {
+                    "stage": "completed_resume_revalidation",
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+                _record_control_event(
+                    state_path,
+                    state,
+                    event="control_recovery_required",
+                    stage="validate_package",
+                    detail=state["last_error"],
+                )
+                return state
+            stored_result["validation"] = current_validation
+            state["status"] = "completed"
+            state.pop("last_error", None)
+            _record_control_event(
+                state_path,
+                state,
+                event="control_revalidated",
+                stage="validate_package",
+                detail={"run_id": stored_result["run_id"]},
+            )
             return state
     else:
         if state_path.exists() or state_path.is_symlink():
@@ -1346,7 +1768,6 @@ def run_control_plane(
             event="control_initialized",
         )
 
-    api = stage_api or _default_control_stage_api()
     required_api = {
         "probe",
         "verify_volume_artifact",
@@ -1366,7 +1787,7 @@ def run_control_plane(
 
     source_id = plan["source_id"]
     raw_id = plan["raw_id"]
-    source_check = _run_control_stage(
+    _run_control_stage(
         state_path,
         state,
         name="verify_source",
@@ -1374,11 +1795,12 @@ def run_control_plane(
             f"inputs/source_{source_id}",
             "source",
         ),
-    )
-    _require_control_result(
-        "verify_source",
-        source_check,
-        expected_id=("id", source_id),
+        validate_result=lambda result: _validate_verified_artifact_result(
+            "verify_source",
+            result,
+            expected_id=source_id,
+            require_myopic=False,
+        ),
     )
     raw_check = _run_control_stage(
         state_path,
@@ -1388,31 +1810,25 @@ def run_control_plane(
             f"inputs/raw_{raw_id}",
             "raw",
         ),
+        validate_result=lambda result: _validate_verified_artifact_result(
+            "verify_raw",
+            result,
+            expected_id=raw_id,
+            require_myopic=True,
+        ),
     )
-    _require_control_result(
-        "verify_raw",
-        raw_check,
-        expected_id=("id", raw_id),
-    )
-    myopic_sha256 = raw_check.get("myopic_artifact_sha256")
-    if (
-        not isinstance(myopic_sha256, str)
-        or len(myopic_sha256) != 64
-        or any(ch not in "0123456789abcdef" for ch in myopic_sha256)
-    ):
-        raise ValueError("verified raw bundle lacks a canonical myopic artifact hash")
+    myopic_sha256 = raw_check["myopic_artifact_sha256"]
 
     probe_result = _run_control_stage(
         state_path,
         state,
         name="environment_probe",
         invoke=lambda _: api["probe"](),
+        validate_result=lambda result: _validate_probe_result(
+            result,
+            ENVIRONMENT_PACKAGES,
+        ),
     )
-    if (
-        not isinstance(probe_result.get("python"), str)
-        or not isinstance(probe_result.get("package_versions"), dict)
-    ):
-        raise ValueError("environment probe returned an invalid contract")
     environment_identity = environment_contract_identity(
         python_version=probe_result["python"],
         package_versions=probe_result["package_versions"],
@@ -1428,10 +1844,9 @@ def run_control_plane(
         state,
         name="freeze_model",
         invoke=lambda _: api["freeze_model"](),
+        validate_result=_validate_model_result,
     )
-    model_id = model_result.get("model_id")
-    if not isinstance(model_id, str):
-        raise ValueError("model stage returned no model_id")
+    model_id = model_result["model_id"]
 
     first_subdir, second_subdir = plan["adapter_subdirs"]
     first_adapter = _run_control_stage(
@@ -1445,8 +1860,14 @@ def run_control_plane(
             model_id,
             bool(plan["gate_overrides"].get("allow_low_mc_retention", False)),
         ),
+        validate_result=lambda result: _validate_adapter_result(
+            "build_adapter_first",
+            result,
+            expected_subdir=first_subdir,
+        ),
     )
-    second_adapter = _run_control_stage(
+    adapter_id = first_adapter["adapter_id"]
+    _run_control_stage(
         state_path,
         state,
         name="build_adapter_second",
@@ -1457,10 +1878,13 @@ def run_control_plane(
             model_id,
             bool(plan["gate_overrides"].get("allow_low_mc_retention", False)),
         ),
+        validate_result=lambda result: _validate_adapter_result(
+            "build_adapter_second",
+            result,
+            expected_subdir=second_subdir,
+            expected_id=adapter_id,
+        ),
     )
-    adapter_id = first_adapter.get("adapter_id")
-    if not isinstance(adapter_id, str) or second_adapter.get("adapter_id") != adapter_id:
-        raise ValueError("two adapter builds did not return one bound identity")
     determinism_bindings = {
         "source_manifest_id": source_id,
         "raw_input_bundle_id": raw_id,
@@ -1476,27 +1900,32 @@ def run_control_plane(
             second_subdir,
             json.dumps(determinism_bindings, sort_keys=True),
         ),
+        validate_result=lambda result: _validate_determinism_result(
+            result,
+            adapter_id,
+        ),
     )
-    determinism_receipt_id = determinism.get("prerequisite_receipt_id")
-    if not isinstance(determinism_receipt_id, str):
-        raise ValueError("adapter determinism stage returned no receipt")
+    determinism_receipt_id = determinism["prerequisite_receipt_id"]
 
     _run_control_stage(
         state_path,
         state,
         name="promote_adapter",
         invoke=lambda _: api["promote_adapter"](first_subdir, adapter_id),
+        validate_result=lambda result: _validate_promotion_result(
+            result,
+            adapter_id,
+        ),
     )
     fvi_result = _run_control_stage(
         state_path,
         state,
         name="fvi_study",
         invoke=lambda _: api["fvi_study"](adapter_id),
+        validate_result=_validate_fvi_result,
     )
-    fvi_id = fvi_result.get("fvi_study_id")
-    selected = fvi_result.get("selected")
-    if not isinstance(fvi_id, str) or not isinstance(selected, dict):
-        raise ValueError("FVI stage returned an incomplete selection")
+    fvi_id = fvi_result["fvi_study_id"]
+    selected = fvi_result["selected"]
 
     common_bindings = {
         **determinism_bindings,
@@ -1508,10 +1937,13 @@ def run_control_plane(
         state,
         name="smoke_bootstrap",
         invoke=lambda _: api["bootstrap_plan"](adapter_id, 100),
+        validate_result=lambda result: _validate_bootstrap_result(
+            "smoke_bootstrap",
+            result,
+            100,
+        ),
     )
-    smoke_bootstrap_id = smoke_bootstrap.get("bootstrap_plan_id")
-    if not isinstance(smoke_bootstrap_id, str):
-        raise ValueError("smoke bootstrap stage returned no identity")
+    smoke_bootstrap_id = smoke_bootstrap["bootstrap_plan_id"]
     smoke_spec = run_spec_identity(
         source_manifest_id=source_id,
         raw_input_bundle_id=raw_id,
@@ -1551,10 +1983,14 @@ def run_control_plane(
         state,
         name="smoke_sweep",
         invoke=invoke_smoke,
+        validate_result=lambda result: _validate_sweep_result(
+            "smoke_sweep",
+            result,
+            run_id=smoke_run_id,
+            require_receipt=True,
+        ),
     )
-    smoke_receipt_id = smoke_result.get("prerequisite_receipt_id")
-    if not isinstance(smoke_receipt_id, str):
-        raise ValueError("smoke stage returned no prerequisite receipt")
+    smoke_receipt_id = smoke_result["prerequisite_receipt_id"]
 
     mutation = _run_control_stage(
         state_path,
@@ -1563,22 +1999,22 @@ def run_control_plane(
         invoke=lambda _: api["mutation_gate"](
             json.dumps(common_bindings, sort_keys=True)
         ),
+        validate_result=_validate_mutation_result,
     )
-    if mutation.get("ok") is not True:
-        raise ValueError("mutation gate did not pass")
-    mutation_receipt_id = mutation.get("prerequisite_receipt_id")
-    if not isinstance(mutation_receipt_id, str):
-        raise ValueError("mutation gate returned no prerequisite receipt")
+    mutation_receipt_id = mutation["prerequisite_receipt_id"]
 
     final_bootstrap = _run_control_stage(
         state_path,
         state,
         name="final_bootstrap",
         invoke=lambda _: api["bootstrap_plan"](adapter_id, 1000),
+        validate_result=lambda result: _validate_bootstrap_result(
+            "final_bootstrap",
+            result,
+            1000,
+        ),
     )
-    final_bootstrap_id = final_bootstrap.get("bootstrap_plan_id")
-    if not isinstance(final_bootstrap_id, str):
-        raise ValueError("final bootstrap stage returned no identity")
+    final_bootstrap_id = final_bootstrap["bootstrap_plan_id"]
     receipt_ids = {
         "determinism": determinism_receipt_id,
         "mutation": mutation_receipt_id,
@@ -1623,8 +2059,14 @@ def run_control_plane(
         state,
         name="final_sweep",
         invoke=invoke_final,
+        validate_result=lambda result: _validate_sweep_result(
+            "final_sweep",
+            result,
+            run_id=final_run_id,
+            require_receipt=False,
+        ),
     )
-    prepackage = _run_control_stage(
+    _run_control_stage(
         state_path,
         state,
         name="validate_unpacked",
@@ -1634,17 +2076,21 @@ def run_control_plane(
             True,
             False,
         ),
+        validate_result=lambda result: _validate_checker_result(
+            "validate_unpacked",
+            result,
+            expected_adapter_id=adapter_id,
+        ),
     )
-    if prepackage.get("passed") is not True:
-        raise ValueError(
-            "final run failed prepackage validation: "
-            + "; ".join(prepackage.get("errors", [])[:10])
-        )
     _run_control_stage(
         state_path,
         state,
         name="package",
         invoke=lambda _: api["package"](final_run_id),
+        validate_result=lambda result: _validate_package_result(
+            result,
+            final_run_id,
+        ),
     )
     final_validation = _run_control_stage(
         state_path,
@@ -1656,12 +2102,12 @@ def run_control_plane(
             True,
             True,
         ),
+        validate_result=lambda result: _validate_checker_result(
+            "validate_package",
+            result,
+            expected_adapter_id=adapter_id,
+        ),
     )
-    if final_validation.get("passed") is not True:
-        raise ValueError(
-            "final package validation failed: "
-            + "; ".join(final_validation.get("errors", [])[:10])
-        )
     state["status"] = "completed"
     state["result"] = {
         "run_id": final_run_id,
@@ -1692,9 +2138,16 @@ def control_main(
         Path(state_path),
         resume=resume,
     )
+    if state.get("status") != "completed":
+        raise RuntimeError(
+            "control plane requires recovery: "
+            + str(state.get("last_error", {}).get("message", "unknown error"))
+        )
     print(json.dumps(state["result"], indent=2, sort_keys=True))
 
 
 @app.local_entrypoint()
 def probe_main():
-    print(probe.remote())
+    from scripts.stopdff_v5.identity import canonical_bytes
+
+    print(canonical_bytes(probe.remote()).decode("utf-8"))

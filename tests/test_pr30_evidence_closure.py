@@ -1,0 +1,337 @@
+"""Fail-closed regressions for content inventories and receipt evidence bytes."""
+from __future__ import annotations
+
+import copy
+import hashlib
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[1]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+from scripts.stopdff_v5.content_manifest import (  # noqa: E402
+    validate_bound_content_manifest,
+)
+from scripts.stopdff_v5.identity import build_manifest, sha256_file  # noqa: E402
+from scripts.stopdff_v5.manifests import (  # noqa: E402
+    RAW_INPUT_ROLES,
+    raw_input_identity,
+    source_manifest_identity,
+)
+from scripts.stopdff_v5.receipt_evidence import (  # noqa: E402
+    DETERMINISM_FILES,
+    MUTATION_ROSTER,
+    build_prerequisite_evidence,
+    prerequisite_evidence_bytes,
+    validate_prerequisite_evidence,
+    verify_prerequisite_evidence_bytes,
+)
+from scripts.stopdff_v5 import writers  # noqa: E402
+
+
+def _bindings() -> dict[str, str]:
+    return {
+        "source_manifest_id": "1" * 64,
+        "raw_input_bundle_id": "2" * 64,
+        "model_snapshot_id": "3" * 64,
+        "adapter_bundle_id": "4" * 64,
+        "fvi_study_id": "5" * 64,
+        "environment_contract_id": "6" * 64,
+    }
+
+
+def _determinism_bindings() -> dict[str, str]:
+    return {
+        key: _bindings()[key]
+        for key in (
+            "source_manifest_id",
+            "raw_input_bundle_id",
+            "model_snapshot_id",
+            "adapter_bundle_id",
+        )
+    }
+
+
+def _adapter_manifest() -> tuple[dict, dict[str, str]]:
+    hashes = {
+        name: hashlib.sha256(name.encode("utf-8")).hexdigest()
+        for name in DETERMINISM_FILES
+    }
+    identity = {
+        "kind": "adapter_bundle",
+        "source_manifest_id": "1" * 64,
+        "raw_input_bundle_id": "2" * 64,
+        "model_snapshot_id": "3" * 64,
+        "fit_rows_sha256": hashes["fit_rows.jsonl.gz"],
+        "eval_rows_sha256": hashes["eval_rows.jsonl.gz"],
+        "calibration_sha256": hashes["calibration.json"],
+        "mc_retention_evidence": {
+            "build_metadata_sha256": hashes["build_metadata.json"],
+        },
+    }
+    manifest = build_manifest(identity)
+    bindings = _determinism_bindings()
+    bindings["adapter_bundle_id"] = manifest["id"]
+    return manifest, bindings
+
+
+def _mutation_results() -> list[dict]:
+    return [
+        {
+            "mutation": name,
+            "expected": "PASS" if index == 0 else "REJECT",
+            "passed_check": index == 0,
+            "ok": True,
+            "errors": [],
+        }
+        for index, name in enumerate(MUTATION_ROSTER)
+    ]
+
+
+def _smoke_evidence() -> tuple[dict, dict[str, str]]:
+    bindings = _bindings()
+    spec_identity = {
+        "kind": "run_spec",
+        "profile_variant": "smoke",
+        "identity": bindings,
+        "evidence_roots": {"prerequisite_receipts": {}},
+    }
+    run_spec = build_manifest(spec_identity)
+    evidence = build_prerequisite_evidence(
+        gate="smoke",
+        bindings=bindings,
+        details={
+            "run_spec": run_spec,
+            "aggregate": {
+                "profile_variant": "smoke",
+                "run_spec_id": run_spec["id"],
+                "adapter_bundle_id": bindings["adapter_bundle_id"],
+                "fvi_study_id": bindings["fvi_study_id"],
+                "requested": 2,
+                "completed": 2,
+                "failed": 0,
+                "skipped": 0,
+                "release_status": "VALID",
+                "release_reasons": [],
+            },
+        },
+    )
+    return evidence, bindings
+
+
+def _gate_fixture(gate: str) -> tuple[dict, dict[str, str]]:
+    if gate == "smoke":
+        return _smoke_evidence()
+    if gate == "mutation":
+        bindings = _bindings()
+        return build_prerequisite_evidence(
+            gate=gate,
+            bindings=bindings,
+            details={"results": _mutation_results()},
+        ), bindings
+    manifest, bindings = _adapter_manifest()
+    hashes = {
+        name: manifest["identity"].get(
+            {
+                "fit_rows.jsonl.gz": "fit_rows_sha256",
+                "eval_rows.jsonl.gz": "eval_rows_sha256",
+                "calibration.json": "calibration_sha256",
+            }.get(name, "")
+        )
+        for name in DETERMINISM_FILES
+    }
+    hashes["build_metadata.json"] = manifest["identity"][
+        "mc_retention_evidence"
+    ]["build_metadata_sha256"]
+    return build_prerequisite_evidence(
+        gate=gate,
+        bindings=bindings,
+        details={
+            "first_adapter_manifest": manifest,
+            "second_adapter_manifest": manifest,
+            "first_file_sha256": hashes,
+            "second_file_sha256": hashes,
+        },
+    ), bindings
+
+
+@pytest.mark.parametrize("gate", ["smoke", "mutation", "determinism"])
+def test_receipt_evidence_round_trips_exact_packaged_bytes(gate):
+    evidence, bindings = _gate_fixture(gate)
+    receipt = writers.build_evidenced_prerequisite_receipt(
+        gate=gate,
+        bindings=bindings,
+        evidence=evidence,
+    )
+    data = prerequisite_evidence_bytes(evidence)
+    assert verify_prerequisite_evidence_bytes(
+        gate=gate,
+        bindings=bindings,
+        receipt_evidence=receipt["identity"]["evidence"],
+        data=data,
+    ) == evidence
+
+
+@pytest.mark.parametrize(
+    ("gate", "mutate", "message"),
+    [
+        (
+            "smoke",
+            lambda evidence: evidence["aggregate"].update(
+                {"release_status": "INVALID"}
+            ),
+            "complete VALID run",
+        ),
+        (
+            "mutation",
+            lambda evidence: evidence["results"].pop(),
+            "roster mismatch",
+        ),
+        (
+            "determinism",
+            lambda evidence: evidence["second_file_sha256"].update(
+                {"fit_rows.jsonl.gz": "f" * 64}
+            ),
+            "hashes (differ|do not match)",
+        ),
+    ],
+)
+def test_semantically_false_gate_evidence_is_rejected(gate, mutate, message):
+    evidence, bindings = _gate_fixture(gate)
+    tampered = copy.deepcopy(evidence)
+    mutate(tampered)
+    with pytest.raises(ValueError, match=message):
+        validate_prerequisite_evidence(
+            gate=gate,
+            bindings=bindings,
+            evidence=tampered,
+        )
+
+
+def test_arbitrary_hex_receipt_cannot_authorize_unrelated_bytes():
+    evidence, bindings = _smoke_evidence()
+    data = prerequisite_evidence_bytes(evidence)
+    with pytest.raises(ValueError, match="digest mismatch"):
+        verify_prerequisite_evidence_bytes(
+            gate="smoke",
+            bindings=bindings,
+            receipt_evidence={"evidence_sha256": "a" * 64},
+            data=data,
+        )
+
+
+def test_noncanonical_evidence_bytes_are_rejected_even_when_digest_matches():
+    evidence, bindings = _smoke_evidence()
+    data = prerequisite_evidence_bytes(evidence).replace(b"\n", b"\r\n")
+    with pytest.raises(ValueError, match="noncanonical"):
+        verify_prerequisite_evidence_bytes(
+            gate="smoke",
+            bindings=bindings,
+            receipt_evidence={
+                "evidence_sha256": hashlib.sha256(data).hexdigest(),
+            },
+            data=data,
+        )
+
+
+def test_source_manifest_rejects_extra_identity_fields_and_unlisted_bytes(tmp_path):
+    content = tmp_path / "source"
+    content.mkdir()
+    declared = content / "declared.py"
+    declared.write_text("declared\n", encoding="utf-8")
+    identity = source_manifest_identity(
+        git_sha="a" * 40,
+        files=[
+            {
+                "path": "declared.py",
+                "mode": "100644",
+                "size": declared.stat().st_size,
+                "sha256": sha256_file(declared),
+            }
+        ],
+        pyproject_sha256="",
+        uv_lock_sha256="",
+    )
+    manifest = build_manifest(identity)
+    (tmp_path / "source_manifest.json").write_bytes(
+        prerequisite_evidence_bytes(manifest)
+    )
+    validate_bound_content_manifest(
+        tmp_path,
+        manifest_name="source_manifest.json",
+        expected_id=manifest["id"],
+        expected_kind="source_snapshot",
+        file_key="files",
+        name_key="path",
+        content_subdir="source",
+    )
+
+    (content / "unlisted.py").write_text("unlisted\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="inventory mismatch"):
+        validate_bound_content_manifest(
+            tmp_path,
+            manifest_name="source_manifest.json",
+            expected_id=manifest["id"],
+            expected_kind="source_snapshot",
+            file_key="files",
+            name_key="path",
+            content_subdir="source",
+        )
+    (content / "unlisted.py").unlink()
+    identity["unbound_claim"] = True
+    altered = build_manifest(identity)
+    (tmp_path / "source_manifest.json").write_bytes(
+        prerequisite_evidence_bytes(altered)
+    )
+    with pytest.raises(ValueError, match="identity fields mismatch"):
+        validate_bound_content_manifest(
+            tmp_path,
+            manifest_name="source_manifest.json",
+            expected_id=altered["id"],
+            expected_kind="source_snapshot",
+            file_key="files",
+            name_key="path",
+            content_subdir="source",
+        )
+
+
+def test_raw_manifest_requires_the_exact_producer_role_set(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    entries = []
+    for role in RAW_INPUT_ROLES[:-1]:
+        path = raw / role
+        path.write_text("{}\n", encoding="utf-8")
+        entries.append(
+            {"role": role, "size": path.stat().st_size, "sha256": sha256_file(path)}
+        )
+    manifest = build_manifest(
+        raw_input_identity(
+            files=entries,
+            semantic_checks={"all_semantic_checks_pass": True},
+        )
+    )
+    (tmp_path / "raw_input_manifest.json").write_bytes(
+        prerequisite_evidence_bytes(manifest)
+    )
+    with pytest.raises(ValueError, match="raw-input roles mismatch"):
+        validate_bound_content_manifest(
+            tmp_path,
+            manifest_name="raw_input_manifest.json",
+            expected_id=manifest["id"],
+            expected_kind="raw_input_bundle",
+            file_key="files",
+            name_key="role",
+            content_subdir="raw",
+            require_semantic_pass=True,
+        )
+
+
+def test_modal_and_local_resume_use_the_same_closed_manifest_validator():
+    modal_source = (REPO / "scripts" / "modal_stopdff_v5_runner.py").read_text()
+    local_source = (REPO / "scripts" / "run_stopdff_v5_local.py").read_text()
+    assert "return validate_bound_content_manifest(" in modal_source
+    assert "return validate_bound_content_manifest(" in local_source

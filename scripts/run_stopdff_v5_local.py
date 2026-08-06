@@ -36,23 +36,23 @@ from scripts.stopdff_v5 import (  # noqa: E402
 from scripts.stopdff_v5.bootstrap import build_bootstrap_plan  # noqa: E402
 from scripts.stopdff_v5.identity import (  # noqa: E402
     build_manifest,
-    canonical_bytes,
     compute_id,
     loads_no_duplicate_keys,
     sha256_bytes,
     sha256_file,
 )
 from scripts.stopdff_v5.manifests import (  # noqa: E402
-    environment_contract_identity, fvi_study_identity, run_spec_identity,
+    ENVIRONMENT_PACKAGES,
+    FVI_PRODUCER_FILES,
+    environment_contract_identity,
+    fvi_study_identity,
+    run_spec_identity,
 )
-
-_PKGS = ["numpy", "scipy", "scikit-learn", "pandas", "sentence-transformers",
-         "transformers", "huggingface_hub"]
 
 
 def _versions() -> dict[str, str]:
     out = {}
-    for name in _PKGS:
+    for name in ENVIRONMENT_PACKAGES:
         try:
             out[name] = im.version(name)
         except im.PackageNotFoundError:
@@ -276,7 +276,10 @@ def main(argv: list[str] | None = None) -> int:
             candidate_results=study["candidate_convergence_results"],
             strict_reference_results=study["strict_reference"], selector_rule=study["selector_rule"],
             selected_parameters=selected, all96_validation=study["all96_fit_only_validation"],
-            producer_hashes={})
+            producer_hashes={
+                name: sha256_file(_REPO / "scripts" / "stopdff_v5" / name)
+                for name in FVI_PRODUCER_FILES
+            })
         fvi_manifest = build_manifest(fvi_identity)
         fvi_id = fvi_manifest["id"]
         print("  selected", selected, "fvi_study_id", fvi_id)
@@ -315,8 +318,17 @@ def main(argv: list[str] | None = None) -> int:
     }
     receipt_ids: dict[str, str] = {}
 
-    def persist_receipt(gate: str, receipt: dict) -> None:
+    def persist_receipt(
+        gate: str,
+        receipt: dict,
+        evidence: dict,
+    ) -> None:
         path = out / "receipts" / gate / f"{receipt['id']}.json"
+        sweep._write_bound_json(
+            path.with_suffix(".evidence.json"),
+            evidence,
+            resume=True,
+        )
         sweep._write_bound_json(path, receipt, resume=True)
         receipt_ids[gate] = receipt["id"]
 
@@ -340,7 +352,12 @@ def main(argv: list[str] | None = None) -> int:
             },
             allow_low_mc_retention=args.allow_low_mc_retention,
         )
-        compared = ("fit_rows.jsonl.gz", "eval_rows.jsonl.gz", "calibration.json")
+        compared = (
+            "fit_rows.jsonl.gz",
+            "eval_rows.jsonl.gz",
+            "calibration.json",
+            "build_metadata.json",
+        )
         first_hashes = {
             name: sha256_file(adapter_dir / name)
             for name in compared
@@ -351,37 +368,47 @@ def main(argv: list[str] | None = None) -> int:
         }
         if second_adapter["id"] != adapter_id or second_hashes != first_hashes:
             raise ValueError("two-build adapter determinism gate failed")
+        determinism_bindings = {
+            key: common_bindings[key]
+            for key in (
+                "source_manifest_id",
+                "raw_input_bundle_id",
+                "model_snapshot_id",
+                "adapter_bundle_id",
+            )
+        }
+        determinism_evidence = writers.build_prerequisite_evidence(
+            gate="determinism",
+            bindings=determinism_bindings,
+            details={
+                "first_adapter_manifest": adapter_man,
+                "second_adapter_manifest": second_adapter,
+                "first_file_sha256": first_hashes,
+                "second_file_sha256": second_hashes,
+            },
+        )
         persist_receipt(
             "determinism",
-            writers.build_prerequisite_receipt(
+            writers.build_evidenced_prerequisite_receipt(
                 gate="determinism",
-                bindings={
-                    key: common_bindings[key]
-                    for key in (
-                        "source_manifest_id",
-                        "raw_input_bundle_id",
-                        "model_snapshot_id",
-                        "adapter_bundle_id",
-                    )
-                },
-                evidence={
-                    "bundle_files_sha256": sha256_bytes(
-                        canonical_bytes(first_hashes)
-                    )
-                },
+                bindings=determinism_bindings,
+                evidence=determinism_evidence,
             ),
+            determinism_evidence,
+        )
+        mutation_evidence = writers.build_prerequisite_evidence(
+            gate="mutation",
+            bindings=common_bindings,
+            details={"results": mutation_results},
         )
         persist_receipt(
             "mutation",
-            writers.build_prerequisite_receipt(
+            writers.build_evidenced_prerequisite_receipt(
                 gate="mutation",
                 bindings=common_bindings,
-                evidence={
-                    "result_sha256": sha256_bytes(
-                        canonical_bytes(mutation_results)
-                    )
-                },
+                evidence=mutation_evidence,
             ),
+            mutation_evidence,
         )
         print("== required bounded smoke before final sweep ==")
         smoke_plan = build_bootstrap_plan(
@@ -428,17 +455,22 @@ def main(argv: list[str] | None = None) -> int:
                 "bounded smoke failed: "
                 + "; ".join(smoke_result.errors[:10])
             )
+        smoke_evidence = writers.build_prerequisite_evidence(
+            gate="smoke",
+            bindings=common_bindings,
+            details={
+                "run_spec": {"id": smoke_id, "identity": smoke_spec},
+                "aggregate": smoke_aggregate,
+            },
+        )
         persist_receipt(
             "smoke",
-            writers.build_prerequisite_receipt(
+            writers.build_evidenced_prerequisite_receipt(
                 gate="smoke",
                 bindings=common_bindings,
-                evidence={
-                    "aggregate_sha256": sha256_file(
-                        smoke_root / "aggregate.json"
-                    )
-                },
+                evidence=smoke_evidence,
             ),
+            smoke_evidence,
         )
 
     replicates = 1000 if args.variant == "final" else 100
@@ -509,49 +541,21 @@ def _load_bound_content_manifest(
     name_key: str,
     content_subdir: str = "",
 ) -> dict:
-    """Load one content manifest and rehash every declared regular file."""
-    base = Path(base)
-    path = base / manifest_name
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"resume manifest is missing or noncanonical: {path}")
-    manifest = loads_no_duplicate_keys(path.read_text(encoding="utf-8"))
-    identity = manifest.get("identity") if isinstance(manifest, dict) else None
-    if (
-        not isinstance(identity, dict)
-        or compute_id(identity) != manifest.get("id")
-        or identity.get("kind") != expected_kind
-    ):
-        raise ValueError(f"resume manifest identity is invalid: {path}")
-    entries = identity.get(file_key)
-    if not isinstance(entries, list):
-        raise ValueError(f"resume manifest lacks {file_key}: {path}")
-    seen: set[str] = set()
-    content_root = base / content_subdir if content_subdir else base
-    for entry in entries:
-        name = entry.get(name_key) if isinstance(entry, dict) else None
-        parsed = PurePosixPath(name) if isinstance(name, str) else None
-        if (
-            not isinstance(name, str)
-            or not name
-            or parsed is None
-            or parsed.is_absolute()
-            or ".." in parsed.parts
-            or name in seen
-        ):
-            raise ValueError(f"resume manifest has an unsafe file entry: {path}")
-        seen.add(name)
-        declared_size = entry.get("size")
-        target = content_root / name
-        if (
-            isinstance(declared_size, bool)
-            or not isinstance(declared_size, int)
-            or target.is_symlink()
-            or not target.is_file()
-            or target.stat().st_size != declared_size
-            or sha256_file(target) != entry.get("sha256")
-        ):
-            raise ValueError(f"resume manifest file mismatch: {target}")
-    return manifest
+    """Load one canonical content manifest and rehash its exhaustive inventory."""
+    from scripts.stopdff_v5.content_manifest import (
+        validate_bound_content_manifest,
+    )
+
+    return validate_bound_content_manifest(
+        base,
+        manifest_name=manifest_name,
+        expected_id=None,
+        expected_kind=expected_kind,
+        file_key=file_key,
+        name_key=name_key,
+        content_subdir=content_subdir,
+        require_semantic_pass=expected_kind == "raw_input_bundle",
+    )
 
 
 def _next_resume_attempt(
@@ -886,6 +890,24 @@ def _resume_local_run(*, args, out: Path, run_sha: str) -> int:
         receipt_ids=receipt_ids,
         receipts=receipts,
     )
+    if args.variant == "final":
+        for gate, receipt in receipts.items():
+            evidence_path = (
+                out
+                / "receipts"
+                / gate
+                / f"{receipt['id']}.evidence.json"
+            )
+            if evidence_path.is_symlink() or not evidence_path.is_file():
+                raise ValueError(
+                    f"resume prerequisite evidence is missing: {gate}"
+                )
+            writers.verify_prerequisite_evidence_bytes(
+                gate=gate,
+                bindings=receipt["identity"]["bindings"],
+                receipt_evidence=receipt["identity"]["evidence"],
+                data=evidence_path.read_bytes(),
+            )
 
     rows = checker.load_adapter_rows(adapter_dir)
     mc = {

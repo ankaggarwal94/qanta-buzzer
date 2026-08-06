@@ -62,6 +62,8 @@ scripts/stopdff_v5/
   rowio.py           deterministic (byte-stable) gzip row I/O
   writers.py         Markdown / LaTeX / PNG report writers + package builder
   checker.py         standalone validator: independent recomputation of all statistics
+  checker_calibration.py focused producer/calibrator shape validation
+  checker_package.py packaged evidence and manifest-graph validation
   selftest.py        negative mutation suite + valid-package builder
 scripts/validate_stopdff_bucketed_sweep.py   standalone checker CLI (acceptance contract)
 scripts/run_stopdff_v5_local.py              CPU/local end-to-end reproduction driver
@@ -146,7 +148,8 @@ for the source, raw-input, model, FVI, and environment evidence.
 > Note on `all-MiniLM-L6-v2` numerics: raw cosine similarities are rounded to 6 decimals so
 > adapter rows are byte-stable across builds. Across *different* hardware the calibrated
 > probabilities can differ negligibly, so the exact family CI is guaranteed only on matching
-> hardware; the qualitative verdict is stable. The historical run's adapter reported a
+> hardware. No cross-hardware qualitative-verdict stability claim is made without a
+> fresh validated run. The historical run's adapter reported a
 > two-build byte-identical determinism pilot on Modal L40S.
 
 ## Modal reproduction
@@ -253,7 +256,7 @@ python -m pytest tests/test_stopdff_v5_core.py tests/test_stopdff_v5_pipeline.py
 
 ## Deviations from the v5 contract (documented)
 
-1. Environments are pinned via explicit `pip` versions and recorded in each run's
+1. Environments are constrained by declared `pip` ranges; exact resolved versions are recorded in each run's
    `environment.json` / environment-contract identity, rather than `uv sync --frozen` from a
    committed `uv.lock` (none exists in this repo).
 2. Large raw inputs, model snapshots, adapter rows, and bootstrap arrays remain external

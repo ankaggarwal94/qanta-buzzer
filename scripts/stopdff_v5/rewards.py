@@ -1,4 +1,4 @@
-"""Reward schedules (SCIENTIFIC_CONTRACT.md section 6).
+"""Reward schedules (indexed by SCIENTIFIC_CONTRACT.md).
 
 | Name            | Early correct | Late correct | Wrong | Early/late split | Wait cost |
 |-----------------|--------------:|-------------:|------:|-----------------:|----------:|

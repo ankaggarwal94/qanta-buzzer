@@ -1,4 +1,4 @@
-"""Three-action Bellman policy (SCIENTIFIC_CONTRACT.md section 5).
+"""Three-action Bellman policy (indexed by SCIENTIFIC_CONTRACT.md).
 
 At every prefix t (including nonterminal) the action set is ANSWER / WAIT / ABSTAIN.
 ABSTAIN means "never buzz" and has value 0.

@@ -6,8 +6,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from . import PROTOCOL_VERSION
 from .identity import compute_id, loads_no_duplicate_keys, sha256_file
-from .manifests import environment_contract_identity
+from .manifests import FVI_PRODUCER_FILES, environment_contract_identity
+from .profile import FVI_MAX_ITERATIONS, FVI_STRICT_REFERENCE, FVI_TOLERANCES
+from .receipt_evidence import verify_prerequisite_evidence_bytes
 from .writers import validate_prerequisite_receipts
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -35,8 +38,184 @@ def _is_positive_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
+def _check_fvi_study_identity(
+    identity: dict[str, Any],
+    errors: list[str],
+) -> None:
+    """Validate the complete canonical FVI-study envelope.
+
+    This is deliberately structural: the checker cannot rerun the expensive
+    study from a package alone, but it must not accept a label-only manifest as
+    proof that the preregistered study occurred.
+    """
+    expected_fields = {
+        "kind",
+        "adapter_bundle_id",
+        "scientific_protocol_version",
+        "candidate_grid",
+        "representative_cell_generator",
+        "candidate_convergence_results",
+        "strict_reference_results",
+        "selector_rule",
+        "selected_parameters",
+        "all96_fit_only_validation",
+        "producer_hashes",
+    }
+    _err(
+        errors,
+        set(identity) == expected_fields,
+        "packaged FVI study fields do not match the canonical contract",
+    )
+    _err(
+        errors,
+        identity.get("scientific_protocol_version") == PROTOCOL_VERSION,
+        "packaged FVI study protocol version mismatch",
+    )
+    expected_grid = {
+        "tolerance": list(FVI_TOLERANCES),
+        "max_iterations": list(FVI_MAX_ITERATIONS),
+    }
+    _err(
+        errors,
+        identity.get("candidate_grid") == expected_grid,
+        "packaged FVI candidate grid mismatch",
+    )
+    _err(
+        errors,
+        identity.get("representative_cell_generator")
+        == "representative_24_parity",
+        "packaged FVI representative generator mismatch",
+    )
+    _err(
+        errors,
+        identity.get("selector_rule")
+        == "min_total_iterations__then_larger_tolerance__then_smaller_max_iter",
+        "packaged FVI selector rule mismatch",
+    )
+
+    expected_pairs = {
+        (tolerance, max_iterations)
+        for tolerance in FVI_TOLERANCES
+        for max_iterations in FVI_MAX_ITERATIONS
+    }
+    candidate_pairs: set[tuple[str, int]] = set()
+    eligible_pairs: set[tuple[str, int]] = set()
+    candidates = identity.get("candidate_convergence_results")
+    candidates_valid = isinstance(candidates, list) and len(candidates) == len(
+        expected_pairs
+    )
+    if isinstance(candidates, list):
+        for candidate in candidates:
+            if not isinstance(candidate, dict) or set(candidate) != {
+                "tolerance",
+                "max_iterations",
+                "total_iterations",
+                "all_converged",
+                "eligible",
+                "ineligibility_reasons",
+            }:
+                candidates_valid = False
+                continue
+            pair = (
+                candidate.get("tolerance"),
+                candidate.get("max_iterations"),
+            )
+            reasons = candidate.get("ineligibility_reasons")
+            if (
+                pair not in expected_pairs
+                or pair in candidate_pairs
+                or not _is_positive_int(candidate.get("total_iterations"))
+                or not isinstance(candidate.get("all_converged"), bool)
+                or not isinstance(candidate.get("eligible"), bool)
+                or not isinstance(reasons, list)
+                or not all(isinstance(reason, str) for reason in reasons)
+                or (candidate.get("eligible") is True and reasons)
+            ):
+                candidates_valid = False
+            else:
+                candidate_pairs.add(pair)
+                if candidate["eligible"]:
+                    eligible_pairs.add(pair)
+    _err(
+        errors,
+        candidates_valid and candidate_pairs == expected_pairs,
+        "packaged FVI candidate results are noncanonical",
+    )
+
+    strict = identity.get("strict_reference_results")
+    strict_valid = (
+        isinstance(strict, dict)
+        and set(strict)
+        == {"tolerance", "max_iterations", "total_iterations", "all_converged"}
+        and strict.get("tolerance") == FVI_STRICT_REFERENCE["tolerance"]
+        and strict.get("max_iterations")
+        == FVI_STRICT_REFERENCE["max_iterations"]
+        and _is_positive_int(strict.get("total_iterations"))
+        and isinstance(strict.get("all_converged"), bool)
+    )
+    _err(errors, strict_valid, "packaged FVI strict reference is noncanonical")
+
+    selected = identity.get("selected_parameters")
+    selected_pair = (
+        selected.get("tolerance"),
+        selected.get("max_iterations"),
+    ) if isinstance(selected, dict) else (None, None)
+    _err(
+        errors,
+        isinstance(selected, dict)
+        and set(selected) == {"tolerance", "max_iterations"}
+        and selected_pair in eligible_pairs,
+        "packaged FVI selected parameters are not an eligible candidate",
+    )
+    all96 = identity.get("all96_fit_only_validation")
+    _err(
+        errors,
+        isinstance(all96, dict)
+        and set(all96)
+        == {"tolerance", "max_iterations", "all_converged", "total_iterations"}
+        and (
+            all96.get("tolerance"),
+            all96.get("max_iterations"),
+        )
+        == selected_pair
+        and all96.get("all_converged") is True
+        and _is_positive_int(all96.get("total_iterations")),
+        "packaged FVI all-96 validation is noncanonical",
+    )
+
+    producer_hashes = identity.get("producer_hashes")
+    _err(
+        errors,
+        isinstance(producer_hashes, dict)
+        and set(producer_hashes) == set(FVI_PRODUCER_FILES)
+        and all(_is_sha256(value) for value in producer_hashes.values()),
+        "packaged FVI producer_hashes do not match the canonical producer set",
+    )
+
+
 def _load_json(path: Path) -> Any:
     return loads_no_duplicate_keys(path.read_text(encoding="utf-8"))
+
+
+def _check_source_producer_map(
+    errors: list[str],
+    *,
+    source_hashes: dict[str, str],
+    claimed: Any,
+    expected_basenames: set[str],
+    label: str,
+) -> None:
+    if not isinstance(claimed, dict) or set(claimed) != expected_basenames:
+        errors.append(f"{label} does not match the canonical producer set")
+        return
+    for basename in sorted(expected_basenames):
+        expected_path = f"scripts/stopdff_v5/{basename}"
+        digest = claimed.get(basename)
+        _err(
+            errors,
+            _is_sha256(digest) and source_hashes.get(expected_path) == digest,
+            f"{label} {basename!r} does not match packaged source",
+        )
 
 
 def check_complete_checksums(run_root: Path, errors: list[str]) -> None:
@@ -176,6 +355,8 @@ def check_external_artifacts(
     profile_variant: Any,
     fvi_selected: dict[str, Any],
     environment_claims: dict[str, Any],
+    adapter_identity: dict[str, Any],
+    recomputed_fvi_study: dict[str, Any] | None = None,
 ) -> None:
     """Recompute all packaged manifest and prerequisite-receipt bindings."""
     run_root = Path(run_root)
@@ -284,6 +465,27 @@ def check_external_artifacts(
         expected_id=spec_ids.get("source_manifest_id"),
         expected_kind="source_snapshot",
     )
+    source_entries = source_manifest.get("identity", {}).get("files", [])
+    source_hashes: dict[str, str] = {}
+    source_entries_valid = isinstance(source_entries, list)
+    if isinstance(source_entries, list):
+        for entry in source_entries:
+            path_value = entry.get("path") if isinstance(entry, dict) else None
+            digest = entry.get("sha256") if isinstance(entry, dict) else None
+            if (
+                not isinstance(path_value, str)
+                or not path_value
+                or path_value in source_hashes
+                or not _is_sha256(digest)
+            ):
+                source_entries_valid = False
+                continue
+            source_hashes[path_value] = digest
+    _err(
+        errors,
+        source_entries_valid,
+        "packaged source manifest file inventory is noncanonical",
+    )
     raw_manifest = _packaged_manifest(
         run_root=run_root,
         errors=errors,
@@ -314,6 +516,47 @@ def check_external_artifacts(
         and semantic_checks.get("all_semantic_checks_pass") is True,
         "packaged raw-input semantic checks did not pass",
     )
+    raw_files = raw_identity.get("files") if isinstance(raw_identity, dict) else None
+    build_metadata_entries = [
+        entry
+        for entry in raw_files
+        if isinstance(entry, dict) and entry.get("role") == "build_metadata.json"
+    ] if isinstance(raw_files, list) else []
+    retention = (
+        adapter_identity.get("mc_retention_evidence")
+        if isinstance(adapter_identity, dict)
+        else None
+    )
+    _err(
+        errors,
+        len(build_metadata_entries) == 1
+        and isinstance(retention, dict)
+        and build_metadata_entries[0].get("sha256")
+        == retention.get("build_metadata_sha256"),
+        "adapter retention evidence does not match packaged build metadata",
+    )
+    _check_source_producer_map(
+        errors,
+        source_hashes=source_hashes,
+        claimed=(
+            adapter_identity.get("producer_hashes")
+            if isinstance(adapter_identity, dict)
+            else None
+        ),
+        expected_basenames={"adapter_build.py"},
+        label="adapter producer_hashes",
+    )
+    _check_source_producer_map(
+        errors,
+        source_hashes=source_hashes,
+        claimed=(
+            evidence_roots.get("producer_hashes")
+            if isinstance(evidence_roots, dict)
+            else None
+        ),
+        expected_basenames={"checker.py", "sweep.py"},
+        label="run-spec producer_hashes",
+    )
 
     fvi_manifest = _packaged_manifest(
         run_root=run_root,
@@ -322,7 +565,11 @@ def check_external_artifacts(
         role="fvi_study",
         expected_path="evidence/fvi_study.json",
         expected_id=spec_ids.get("fvi_study_id"),
-        expected_kind={"fvi_study", "fvi_study_fixed"},
+        expected_kind=(
+            "fvi_study"
+            if profile_variant == "final"
+            else {"fvi_study", "fvi_study_fixed"}
+        ),
     )
     fvi_identity = fvi_manifest.get("identity", {})
     if isinstance(fvi_identity, dict) and fvi_identity:
@@ -342,6 +589,40 @@ def check_external_artifacts(
             selected == fvi_selected,
             "packaged FVI selection does not match the run spec",
         )
+        if fvi_identity.get("kind") == "fvi_study":
+            _check_fvi_study_identity(fvi_identity, errors)
+            if recomputed_fvi_study is not None:
+                scientific_fields = {
+                    "candidate_grid": "candidate_grid",
+                    "representative_cell_generator": (
+                        "representative_cell_generator"
+                    ),
+                    "candidate_convergence_results": (
+                        "candidate_convergence_results"
+                    ),
+                    "strict_reference_results": "strict_reference",
+                    "selector_rule": "selector_rule",
+                    "selected_parameters": "selected_parameters",
+                    "all96_fit_only_validation": (
+                        "all96_fit_only_validation"
+                    ),
+                }
+                for identity_field, recomputed_field in scientific_fields.items():
+                    _err(
+                        errors,
+                        fvi_identity.get(identity_field)
+                        == recomputed_fvi_study.get(recomputed_field),
+                        "packaged FVI study does not match independent "
+                        f"recomputation: {identity_field}",
+                    )
+            producer_hashes = fvi_identity.get("producer_hashes")
+            _check_source_producer_map(
+                errors,
+                source_hashes=source_hashes,
+                claimed=producer_hashes,
+                expected_basenames=set(FVI_PRODUCER_FILES),
+                label="packaged FVI producer_hashes",
+            )
 
     environment_manifest = _packaged_manifest(
         run_root=run_root,
@@ -392,5 +673,22 @@ def check_external_artifacts(
             receipt_ids=receipt_ids,
             receipts=receipts,
         )
+        if profile_variant == "final":
+            for gate in _RECEIPT_GATES:
+                evidence_path = (
+                    run_root
+                    / "evidence"
+                    / "prerequisite_receipts"
+                    / f"{gate}.evidence.json"
+                )
+                if evidence_path.is_symlink() or not evidence_path.is_file():
+                    raise ValueError(f"missing packaged {gate} prerequisite evidence")
+                receipt_identity = receipts[gate]["identity"]
+                verify_prerequisite_evidence_bytes(
+                    gate=gate,
+                    bindings=receipt_identity["bindings"],
+                    receipt_evidence=receipt_identity["evidence"],
+                    data=evidence_path.read_bytes(),
+                )
     except (KeyError, TypeError, ValueError) as exc:
         errors.append(f"packaged prerequisite receipts are invalid: {exc}")

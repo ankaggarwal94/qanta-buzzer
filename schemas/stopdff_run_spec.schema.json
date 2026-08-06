@@ -272,6 +272,13 @@
           },
           "then": {
             "properties": {
+              "bootstrap": {
+                "properties": {
+                  "replicate_count": {
+                    "const": 100
+                  }
+                }
+              },
               "evidence_roots": {
                 "properties": {
                   "prerequisite_receipts": {
@@ -292,6 +299,13 @@
           },
           "then": {
             "properties": {
+              "bootstrap": {
+                "properties": {
+                  "replicate_count": {
+                    "const": 1000
+                  }
+                }
+              },
               "evidence_roots": {
                 "properties": {
                   "prerequisite_receipts": {
