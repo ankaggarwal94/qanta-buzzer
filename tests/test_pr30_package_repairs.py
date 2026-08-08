@@ -529,7 +529,18 @@ def test_final_package_carries_and_revalidates_receipts(tmp_path, monkeypatch):
         "mutation": writers.build_prerequisite_evidence(
             gate="mutation",
             bindings=bindings,
-            details={"results": mutation_results},
+            details={
+                "source_execution": {
+                    "environment": "local_clean_worktree",
+                    "executing_source_manifest_id": bindings[
+                        "source_manifest_id"
+                    ],
+                    "runtime_source_manifest_id": bindings[
+                        "source_manifest_id"
+                    ],
+                },
+                "results": mutation_results,
+            },
         ),
         "determinism": writers.build_prerequisite_evidence(
             gate="determinism",
@@ -543,6 +554,37 @@ def test_final_package_carries_and_revalidates_receipts(tmp_path, monkeypatch):
                 )
             },
             details={
+                "source_execution": {
+                    "environment": "local_clean_worktree",
+                    "executing_source_manifest_id": bindings[
+                        "source_manifest_id"
+                    ],
+                    "runtime_source_manifest_id": bindings[
+                        "source_manifest_id"
+                    ],
+                },
+                "first_build_execution": {
+                    "environment": "local_process",
+                    "execution_id": "local-first",
+                    "adapter_subdir": "adapter_build_a",
+                    "source_manifest_id": bindings["source_manifest_id"],
+                    "raw_input_bundle_id": bindings["raw_input_bundle_id"],
+                    "model_snapshot_id": bindings["model_snapshot_id"],
+                    "adapter_bundle_id": bindings["adapter_bundle_id"],
+                    "cached": False,
+                    "output_sha256": determinism_hashes,
+                },
+                "second_build_execution": {
+                    "environment": "local_process",
+                    "execution_id": "local-second",
+                    "adapter_subdir": "adapter_build_b",
+                    "source_manifest_id": bindings["source_manifest_id"],
+                    "raw_input_bundle_id": bindings["raw_input_bundle_id"],
+                    "model_snapshot_id": bindings["model_snapshot_id"],
+                    "adapter_bundle_id": bindings["adapter_bundle_id"],
+                    "cached": False,
+                    "output_sha256": determinism_hashes,
+                },
                 "first_adapter_manifest": adapter_manifest,
                 "second_adapter_manifest": adapter_manifest,
                 "first_file_sha256": determinism_hashes,

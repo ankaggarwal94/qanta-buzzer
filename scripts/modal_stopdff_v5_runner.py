@@ -93,6 +93,7 @@ def _require_image_source_id(source_id: object) -> None:
             "stage source_id does not match the validated Modal image source"
         )
 
+
 _PIP = [
     "numpy>=1.26,<3", "scipy>=1.11", "scikit-learn>=1.3", "pandas>=2.1",
     "matplotlib>=3.7", "sentence-transformers>=2.7", "huggingface_hub>=0.23",
@@ -109,7 +110,7 @@ _image = (
 _image = _image.add_local_dir(SOURCE_DIR, remote_path=REMOTE_SRC, copy=True)
 
 vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
-app = modal.App(APP_NAME, image=_image)
+app = modal.App(APP_NAME, image=_image, include_source=False)
 
 
 def _p(*parts) -> str:
@@ -120,6 +121,21 @@ def _p(*parts) -> str:
             raise ValueError(f"unsafe volume path component: {part!r}")
         path /= candidate
     return str(path)
+
+
+def _canonical_adapter_subdir(value: object) -> str:
+    """Return one canonical adapter path component or fail closed."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("adapter subdir must be a nonempty string")
+    parsed = PurePosixPath(value)
+    if (
+        parsed.is_absolute()
+        or ".." in parsed.parts
+        or len(parsed.parts) != 1
+        or str(parsed) != value
+    ):
+        raise ValueError(f"unsafe or noncanonical adapter subdir: {value!r}")
+    return value
 
 
 def _receipt_rel(gate: str, receipt_id: str) -> str:
@@ -181,61 +197,33 @@ def _verified_raw_input_manifest(base, *, expected_id: str | None) -> dict:
     )
 
 
-def _validated_cached_adapter(
-    out: Path,
-    *,
-    subdir: str,
-    source_id: str,
-    raw_id: str,
-    model_id: str,
-    checker_module,
-    allow_low_mc_retention: bool = False,
-) -> dict:
-    """Return a cached adapter only after complete validation and binding checks."""
-    if out.is_symlink() or not out.is_dir():
-        raise FileExistsError("adapter destination exists but is not a directory")
-    result = checker_module.validate_adapter(out)
-    if not result.passed:
-        raise FileExistsError(
-            "adapter destination exists but is invalid: "
-            + "; ".join(result.errors)
-        )
-    manifest = checker_module.load_json(out / "manifest.json")
-    identity = manifest.get("identity") if isinstance(manifest, dict) else None
-    expected_bindings = {
-        "source_manifest_id": source_id,
-        "raw_input_bundle_id": raw_id,
-        "model_snapshot_id": model_id,
-    }
-    if (
-        not isinstance(identity, dict)
-        or any(identity.get(key) != value for key, value in expected_bindings.items())
-        or result.recomputed.get("adapter_bundle_id") != manifest.get("id")
-    ):
-        raise FileExistsError(
-            "adapter destination exists with incompatible identity bindings"
-        )
-    retention = identity.get("mc_retention_evidence")
-    splits = retention.get("splits") if isinstance(retention, dict) else None
-    used_override = (
-        isinstance(splits, dict)
-        and any(
-            isinstance(splits.get(role), dict)
-            and splits[role].get("overridden") is True
-            for role in ("fit", "eval")
-        )
+def _verified_executing_source(source_id: object) -> dict:
+    """Bind a stage to both its staged manifest and executing source bytes."""
+    _require_image_source_id(source_id)
+    from scripts.stopdff_v5.identity import sha256_file
+
+    source_root = Path(_p("inputs", f"source_{source_id}"))
+    source_manifest = _verified_content_manifest(
+        source_root,
+        manifest_name="source_manifest.json",
+        expected_id=source_id,
+        file_key="files",
+        name_key="path",
+        content_subdir="source",
+        expected_kind="source_snapshot",
     )
-    if used_override and not allow_low_mc_retention:
-        raise FileExistsError(
-            "adapter destination requires the low-retention gate override"
-        )
-    return {
-        "adapter_id": manifest["id"],
-        "fit_rows_sha256": identity["fit_rows_sha256"],
-        "eval_rows_sha256": identity["eval_rows_sha256"],
-        "subdir": subdir,
-        "cached": True,
-    }
+    runtime_source = Path(REMOTE_SRC)
+    for entry in source_manifest["identity"]["files"]:
+        runtime_path = runtime_source / entry["path"]
+        if (
+            runtime_path.is_symlink()
+            or not runtime_path.is_file()
+            or sha256_file(runtime_path) != entry["sha256"]
+        ):
+            raise ValueError(
+                f"executing source does not match source manifest: {entry['path']}"
+            )
+    return source_manifest
 
 
 def _validated_cached_fvi(
@@ -389,24 +377,17 @@ def build_adapter(
     model_id: str,
     allow_low_mc_retention: bool = False,
 ) -> dict:
+    dest_subdir = _canonical_adapter_subdir(dest_subdir)
     _require_image_source_id(source_id)
     from pathlib import Path
     from scripts.stopdff_v5 import adapter_build
     from scripts.stopdff_v5 import checker
     from scripts.stopdff_v5.identity import sha256_file
     vol.reload()
-    source_root = Path(_p("inputs", f"source_{source_id}"))
     raw = Path(_p("inputs", f"raw_{raw_id}"))
     model_root = Path(_p("inputs", "model"))
     model_dir = model_root / "snapshot"
-    source_manifest = _verified_content_manifest(
-        source_root,
-        manifest_name="source_manifest.json",
-        expected_id=source_id,
-        file_key="files",
-        name_key="path",
-        content_subdir="source",
-    )
+    _verified_executing_source(source_id)
     _verified_raw_input_manifest(raw, expected_id=raw_id)
     _verified_content_manifest(
         model_root,
@@ -416,29 +397,10 @@ def build_adapter(
         name_key="path",
         content_subdir="snapshot",
     )
-    # The bytes imported by this function must be the frozen source bytes.
-    runtime_source = Path(REMOTE_SRC)
-    for entry in source_manifest["identity"]["files"]:
-        runtime_path = runtime_source / entry["path"]
-        if (
-            runtime_path.is_symlink()
-            or not runtime_path.is_file()
-            or sha256_file(runtime_path) != entry["sha256"]
-        ):
-            raise ValueError(
-                f"executing source does not match source manifest: {entry['path']}"
-            )
-
     out = Path(_p("adapters", dest_subdir))
-    if out.exists():
-        return _validated_cached_adapter(
-            out,
-            subdir=dest_subdir,
-            source_id=source_id,
-            raw_id=raw_id,
-            model_id=model_id,
-            checker_module=checker,
-            allow_low_mc_retention=allow_low_mc_retention,
+    if out.exists() or out.is_symlink():
+        raise FileExistsError(
+            "fresh adapter build destination already exists; choose a new subdir"
         )
     man = adapter_build.build_adapter_bundle(
         mc_dataset_path=raw / "mc_dataset.json", val_dataset_path=raw / "val_dataset.json",
@@ -454,9 +416,16 @@ def build_adapter(
             "new adapter failed validation: " + "; ".join(result.errors)
         )
     vol.commit()
-    return {"adapter_id": man["id"], "fit_rows_sha256": man["identity"]["fit_rows_sha256"],
-            "eval_rows_sha256": man["identity"]["eval_rows_sha256"],
-            "subdir": dest_subdir, "cached": False}
+    return {
+        "adapter_id": man["id"],
+        "fit_rows_sha256": man["identity"]["fit_rows_sha256"],
+        "eval_rows_sha256": man["identity"]["eval_rows_sha256"],
+        "source_manifest_id": source_id,
+        "raw_input_bundle_id": raw_id,
+        "model_snapshot_id": model_id,
+        "subdir": dest_subdir,
+        "cached": False,
+    }
 
 
 @app.function(volumes={MNT: vol}, timeout=3600, max_containers=1)
@@ -496,25 +465,80 @@ def promote_adapter(from_subdir: str, adapter_id: str) -> dict:
     return {"canonical_subdir": f"canonical_{adapter_id}", "cached": False}
 
 
-@app.function(volumes={MNT: vol}, timeout=3600, max_containers=1)
+@app.function(volumes={MNT: vol}, timeout=DAY, max_containers=1)
 def adapter_determinism_receipt(
     first_subdir: str,
     second_subdir: str,
-    binding_json: str,
+    source_id: str,
+    raw_id: str,
+    model_id: str,
+    allow_low_mc_retention: bool = False,
 ) -> dict:
-    """Validate two independent adapter builds and persist their success receipt."""
-    import json
+    """Own two fresh adapter executions and persist their determinism receipt."""
+    first_subdir = _canonical_adapter_subdir(first_subdir)
+    second_subdir = _canonical_adapter_subdir(second_subdir)
+    if first_subdir == second_subdir:
+        raise ValueError("adapter determinism requires distinct canonical subdirs")
+    _require_image_source_id(source_id)
+    vol.reload()
+    source_manifest = _verified_executing_source(source_id)
+
     from pathlib import Path
     from scripts.stopdff_v5 import checker, sweep, writers
     from scripts.stopdff_v5.identity import sha256_file
 
+    first_call = build_adapter.spawn(
+        first_subdir,
+        source_id,
+        raw_id,
+        model_id,
+        allow_low_mc_retention,
+    )
+    first_result = first_call.get()
+    _validate_adapter_result(
+        "adapter_determinism_first_build",
+        first_result,
+        expected_subdir=first_subdir,
+        expected_source_id=source_id,
+        expected_raw_id=raw_id,
+        expected_model_id=model_id,
+        require_fresh=True,
+    )
+    second_call = build_adapter.spawn(
+        second_subdir,
+        source_id,
+        raw_id,
+        model_id,
+        allow_low_mc_retention,
+    )
+    second_result = second_call.get()
+    adapter_id = first_result["adapter_id"]
+    _validate_adapter_result(
+        "adapter_determinism_second_build",
+        second_result,
+        expected_subdir=second_subdir,
+        expected_id=adapter_id,
+        expected_source_id=source_id,
+        expected_raw_id=raw_id,
+        expected_model_id=model_id,
+        require_fresh=True,
+    )
+    first_execution_id = getattr(first_call, "object_id", None)
+    second_execution_id = getattr(second_call, "object_id", None)
+    if (
+        not isinstance(first_execution_id, str)
+        or not first_execution_id
+        or not isinstance(second_execution_id, str)
+        or not second_execution_id
+        or first_execution_id == second_execution_id
+    ):
+        raise ValueError("adapter builds lack distinct Modal function-call IDs")
+
     vol.reload()
-    bindings = json.loads(binding_json)
     first = Path(_p("adapters", first_subdir))
     second = Path(_p("adapters", second_subdir))
     first_result = checker.validate_adapter(first)
     second_result = checker.validate_adapter(second)
-    adapter_id = bindings.get("adapter_bundle_id")
     if (
         not first_result.passed
         or not second_result.passed
@@ -534,10 +558,46 @@ def adapter_determinism_receipt(
         raise ValueError("independent adapter builds are not byte-identical")
     first_manifest = checker.load_json(first / "manifest.json")
     second_manifest = checker.load_json(second / "manifest.json")
+    bindings = {
+        "source_manifest_id": source_id,
+        "raw_input_bundle_id": raw_id,
+        "model_snapshot_id": model_id,
+        "adapter_bundle_id": adapter_id,
+    }
+    source_execution = {
+        "environment": "modal_image",
+        "executing_source_manifest_id": IMAGE_SOURCE_MANIFEST_ID,
+        "runtime_source_manifest_id": source_manifest["id"],
+    }
+
+    def build_execution(*, execution_id: str, subdir: str, hashes: dict) -> dict:
+        return {
+            "environment": "modal_function_call",
+            "execution_id": execution_id,
+            "adapter_subdir": subdir,
+            "source_manifest_id": source_id,
+            "raw_input_bundle_id": raw_id,
+            "model_snapshot_id": model_id,
+            "adapter_bundle_id": adapter_id,
+            "cached": False,
+            "output_sha256": hashes,
+        }
+
     evidence = writers.build_prerequisite_evidence(
         gate="determinism",
         bindings=bindings,
         details={
+            "source_execution": source_execution,
+            "first_build_execution": build_execution(
+                execution_id=first_execution_id,
+                subdir=first_subdir,
+                hashes=first_hashes,
+            ),
+            "second_build_execution": build_execution(
+                execution_id=second_execution_id,
+                subdir=second_subdir,
+                hashes=second_hashes,
+            ),
             "first_adapter_manifest": first_manifest,
             "second_adapter_manifest": second_manifest,
             "first_file_sha256": first_hashes,
@@ -563,6 +623,9 @@ def adapter_determinism_receipt(
     return {
         "ok": True,
         "adapter_id": adapter_id,
+        "source_manifest_id": source_id,
+        "first_build_execution_id": first_execution_id,
+        "second_build_execution_id": second_execution_id,
         "prerequisite_receipt_id": receipt["id"],
     }
 
@@ -1145,8 +1208,25 @@ def mutation_gate(binding_json: str) -> dict:
     import json
     import tempfile
     from pathlib import Path
-    from scripts.stopdff_v5 import selftest, sweep, writers
+
     bindings = json.loads(binding_json)
+    if not isinstance(bindings, dict):
+        raise ValueError("mutation gate bindings must be an object")
+    _require_image_source_id(bindings.get("source_manifest_id"))
+    vol.reload()
+    source_manifest = _verified_executing_source(
+        bindings["source_manifest_id"]
+    )
+
+    from scripts.stopdff_v5 import selftest, sweep, writers
+    from scripts.stopdff_v5.receipt_evidence import (
+        validate_prerequisite_bindings,
+    )
+
+    bindings = validate_prerequisite_bindings(
+        gate="mutation",
+        bindings=bindings,
+    )
     ok, results = selftest.run_self_test(Path(tempfile.mkdtemp()))
     unexpected = [r["mutation"] for r in results if not r["ok"]]
     if not ok:
@@ -1154,7 +1234,14 @@ def mutation_gate(binding_json: str) -> dict:
     evidence = writers.build_prerequisite_evidence(
         gate="mutation",
         bindings=bindings,
-        details={"results": results},
+        details={
+            "source_execution": {
+                "environment": "modal_image",
+                "executing_source_manifest_id": IMAGE_SOURCE_MANIFEST_ID,
+                "runtime_source_manifest_id": source_manifest["id"],
+            },
+            "results": results,
+        },
     )
     receipt = writers.build_evidenced_prerequisite_receipt(
         gate="mutation",
@@ -1172,8 +1259,13 @@ def mutation_gate(binding_json: str) -> dict:
         resume=True,
     )
     vol.commit()
-    return {"ok": True, "n": len(results), "unexpected": [],
-            "prerequisite_receipt_id": receipt["id"]}
+    return {
+        "ok": True,
+        "n": len(results),
+        "unexpected": [],
+        "source_manifest_id": IMAGE_SOURCE_MANIFEST_ID,
+        "prerequisite_receipt_id": receipt["id"],
+    }
 
 
 @app.function(volumes={MNT: vol}, timeout=1800, max_containers=1)
@@ -1396,13 +1488,11 @@ def _validate_control_plan(plan: dict) -> dict:
         not isinstance(subdirs, list)
         or len(subdirs) != 2
         or not all(isinstance(value, str) and value for value in subdirs)
-        or len(set(subdirs)) != 2
     ):
         raise ValueError("control plan requires two distinct adapter_subdirs")
-    for subdir in subdirs:
-        parsed = PurePosixPath(subdir)
-        if parsed.is_absolute() or ".." in parsed.parts or len(parsed.parts) != 1:
-            raise ValueError(f"unsafe adapter subdir: {subdir!r}")
+    canonical_subdirs = [_canonical_adapter_subdir(value) for value in subdirs]
+    if len(set(canonical_subdirs)) != 2:
+        raise ValueError("control plan requires two distinct adapter_subdirs")
     gate_overrides = plan.get("gate_overrides", {})
     if (
         not isinstance(gate_overrides, dict)
@@ -1417,7 +1507,7 @@ def _validate_control_plan(plan: dict) -> dict:
     return {
         "source_id": source_id,
         "raw_id": raw_id,
-        "adapter_subdirs": list(subdirs),
+        "adapter_subdirs": canonical_subdirs,
         "gate_overrides": dict(gate_overrides),
         "resource_summary": dict(resource_summary),
     }
@@ -1428,7 +1518,6 @@ def _default_control_stage_api() -> dict[str, object]:
         "probe": probe.remote,
         "verify_volume_artifact": verify_volume_artifact.remote,
         "freeze_model": freeze_model.remote,
-        "build_adapter": build_adapter.remote,
         "adapter_determinism_receipt": adapter_determinism_receipt.remote,
         "promote_adapter": promote_adapter.remote,
         "fvi_study": fvi_study.remote,
@@ -1646,6 +1735,10 @@ def _validate_adapter_result(
     *,
     expected_subdir: str,
     expected_id: str | None = None,
+    expected_source_id: str | None = None,
+    expected_raw_id: str | None = None,
+    expected_model_id: str | None = None,
+    require_fresh: bool = False,
 ) -> None:
     _require_control_sha(
         stage,
@@ -1658,18 +1751,36 @@ def _validate_adapter_result(
     if result.get("subdir") != expected_subdir:
         raise ValueError(f"control stage {stage} returned the wrong subdir")
     _require_control_bool(stage, result, "cached")
+    expected_bindings = {
+        "source_manifest_id": expected_source_id,
+        "raw_input_bundle_id": expected_raw_id,
+        "model_snapshot_id": expected_model_id,
+    }
+    for field, expected in expected_bindings.items():
+        if expected is not None and result.get(field) != expected:
+            raise ValueError(f"control stage {stage} returned the wrong {field}")
+    if require_fresh and result.get("cached") is not False:
+        raise ValueError(f"control stage {stage} did not execute a fresh build")
 
 
-def _validate_determinism_result(result: dict, adapter_id: str) -> None:
+def _validate_determinism_result(result: dict, source_id: str) -> None:
     stage = "adapter_determinism"
     if result.get("ok") is not True:
         raise ValueError("adapter determinism did not pass")
+    _require_control_sha(stage, result, field="adapter_id")
     _require_control_sha(
-        stage,
-        result,
-        field="adapter_id",
-        expected=adapter_id,
+        stage, result, field="source_manifest_id", expected=source_id
     )
+    first_execution = result.get("first_build_execution_id")
+    second_execution = result.get("second_build_execution_id")
+    if (
+        not isinstance(first_execution, str)
+        or not first_execution
+        or not isinstance(second_execution, str)
+        or not second_execution
+        or first_execution == second_execution
+    ):
+        raise ValueError("adapter determinism returned invalid build executions")
     _require_control_sha(stage, result, field="prerequisite_receipt_id")
 
 
@@ -1735,11 +1846,14 @@ def _validate_sweep_result(
         _require_control_sha(stage, result, field="prerequisite_receipt_id")
 
 
-def _validate_mutation_result(result: dict) -> None:
+def _validate_mutation_result(result: dict, source_id: str) -> None:
     stage = "mutation_gate"
     if result.get("ok") is not True or result.get("unexpected") != []:
         raise ValueError("mutation gate did not pass cleanly")
     _require_control_count(stage, result, "n", positive=True)
+    _require_control_sha(
+        stage, result, field="source_manifest_id", expected=source_id
+    )
     _require_control_sha(stage, result, field="prerequisite_receipt_id")
 
 
@@ -1801,7 +1915,7 @@ def run_control_plane(
         _reconcile_control_journal(state_path, state)
         if state.get("plan_digest") != digest or state.get("plan") != plan:
             raise ValueError("resume control plan does not match durable state")
-        if state.get("schema_version") != 1:
+        if state.get("schema_version") != 2:
             raise ValueError("unsupported control-state schema")
         if state.get("status") in {"completed", "recovery_required"}:
             stored_result = state.get("result")
@@ -1872,7 +1986,7 @@ def run_control_plane(
         if state_path.exists() or state_path.is_symlink():
             raise FileExistsError("fresh control state already exists")
         state = {
-            "schema_version": 1,
+            "schema_version": 2,
             "plan": plan,
             "plan_digest": digest,
             "status": "initialized",
@@ -1890,7 +2004,6 @@ def run_control_plane(
         "probe",
         "verify_volume_artifact",
         "freeze_model",
-        "build_adapter",
         "adapter_determinism_receipt",
         "promote_adapter",
         "fvi_study",
@@ -1967,48 +2080,6 @@ def run_control_plane(
     model_id = model_result["model_id"]
 
     first_subdir, second_subdir = plan["adapter_subdirs"]
-    first_adapter = _run_control_stage(
-        state_path,
-        state,
-        name="build_adapter_first",
-        invoke=lambda _: api["build_adapter"](
-            first_subdir,
-            source_id,
-            raw_id,
-            model_id,
-            bool(plan["gate_overrides"].get("allow_low_mc_retention", False)),
-        ),
-        validate_result=lambda result: _validate_adapter_result(
-            "build_adapter_first",
-            result,
-            expected_subdir=first_subdir,
-        ),
-    )
-    adapter_id = first_adapter["adapter_id"]
-    _run_control_stage(
-        state_path,
-        state,
-        name="build_adapter_second",
-        invoke=lambda _: api["build_adapter"](
-            second_subdir,
-            source_id,
-            raw_id,
-            model_id,
-            bool(plan["gate_overrides"].get("allow_low_mc_retention", False)),
-        ),
-        validate_result=lambda result: _validate_adapter_result(
-            "build_adapter_second",
-            result,
-            expected_subdir=second_subdir,
-            expected_id=adapter_id,
-        ),
-    )
-    determinism_bindings = {
-        "source_manifest_id": source_id,
-        "raw_input_bundle_id": raw_id,
-        "model_snapshot_id": model_id,
-        "adapter_bundle_id": adapter_id,
-    }
     determinism = _run_control_stage(
         state_path,
         state,
@@ -2016,14 +2087,24 @@ def run_control_plane(
         invoke=lambda _: api["adapter_determinism_receipt"](
             first_subdir,
             second_subdir,
-            json.dumps(determinism_bindings, sort_keys=True),
+            source_id,
+            raw_id,
+            model_id,
+            bool(plan["gate_overrides"].get("allow_low_mc_retention", False)),
         ),
         validate_result=lambda result: _validate_determinism_result(
             result,
-            adapter_id,
+            source_id,
         ),
     )
+    adapter_id = determinism["adapter_id"]
     determinism_receipt_id = determinism["prerequisite_receipt_id"]
+    determinism_bindings = {
+        "source_manifest_id": source_id,
+        "raw_input_bundle_id": raw_id,
+        "model_snapshot_id": model_id,
+        "adapter_bundle_id": adapter_id,
+    }
 
     _run_control_stage(
         state_path,
@@ -2116,7 +2197,10 @@ def run_control_plane(
         invoke=lambda _: api["mutation_gate"](
             json.dumps(common_bindings, sort_keys=True)
         ),
-        validate_result=_validate_mutation_result,
+        validate_result=lambda result: _validate_mutation_result(
+            result,
+            source_id,
+        ),
     )
     mutation_receipt_id = mutation["prerequisite_receipt_id"]
 

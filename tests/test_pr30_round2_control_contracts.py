@@ -46,11 +46,24 @@ def _load_modal_runner(monkeypatch):
 
     class DummyApp:
         def __init__(self, *_args, **_kwargs):
-            pass
+            self.include_source = _kwargs.get("include_source")
 
         def function(self, **_kwargs):
             def decorate(function):
                 function.remote = function
+                sequence = {"value": 0}
+
+                def spawn(*args, **kwargs):
+                    sequence["value"] += 1
+                    result = function(*args, **kwargs)
+                    return types.SimpleNamespace(
+                        object_id=(
+                            f"fc-{function.__name__}-{sequence['value']}"
+                        ),
+                        get=lambda: result,
+                    )
+
+                function.spawn = spawn
                 return function
 
             return decorate
@@ -369,7 +382,7 @@ def test_completed_resume_revalidates_or_requires_recovery(
     plan = runner._validate_control_plan(_plan())
     state_path = tmp_path / "control.json"
     state = {
-        "schema_version": 1,
+        "schema_version": 2,
         "plan": plan,
         "plan_digest": runner._control_plan_digest(plan),
         "status": "completed",
@@ -538,10 +551,25 @@ def test_direct_modal_stages_reject_a_source_other_than_the_image(
     monkeypatch,
 ) -> None:
     runner = _load_modal_runner(monkeypatch)
+    assert runner.app.include_source is False
     wrong_source = "2" * 64
 
     with pytest.raises(ValueError, match="validated Modal image source"):
         runner.build_adapter("candidate", wrong_source, "3" * 64, "4" * 64)
+
+    with pytest.raises(ValueError, match="validated Modal image source"):
+        runner.adapter_determinism_receipt(
+            "candidate_a",
+            "candidate_b",
+            wrong_source,
+            "3" * 64,
+            "4" * 64,
+        )
+
+    with pytest.raises(ValueError, match="validated Modal image source"):
+        runner.mutation_gate(
+            json.dumps({"source_manifest_id": wrong_source})
+        )
 
     wrapper = {
         "run_spec_identity": {
@@ -550,6 +578,25 @@ def test_direct_modal_stages_reject_a_source_other_than_the_image(
     }
     with pytest.raises(ValueError, match="validated Modal image source"):
         runner.run_sweep(json.dumps(wrapper), "5" * 64, "6" * 64, False)
+
+
+@pytest.mark.parametrize(
+    "subdirs",
+    [
+        ["build_a", "./build_a"],
+        ["build_a", "build_a/"],
+        ["build_a", "build_a"],
+    ],
+)
+def test_adapter_subdirs_must_be_canonical_and_distinct(
+    monkeypatch,
+    subdirs,
+) -> None:
+    runner = _load_modal_runner(monkeypatch)
+    plan = _plan()
+    plan["adapter_subdirs"] = subdirs
+    with pytest.raises(ValueError, match="noncanonical|distinct"):
+        runner._validate_control_plan(plan)
 
 
 def test_public_schema_and_docs_match_round2_contracts() -> None:

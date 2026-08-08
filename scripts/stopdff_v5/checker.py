@@ -63,7 +63,7 @@ _FVI_STUDY_CACHE: dict[tuple[str, str, str, str], dict[str, Any]] = {}
 _FOCUSED_CHECKER_HASHES = {
     "checker_calibration.py": "80f95a5521adb52a5183f9de5d90ceb81157248949bc365ff4270c2f7cd884c9",
     "checker_package.py": "3810821a9bd50f2fae950b2b14443f67355ac8329ca908558e4535c3ee1a3243",
-    "receipt_evidence.py": "ad32d7437e893ad2b4052b1fb51752f45f2096fa920eb8ac40427a0cdef7d9ac",
+    "receipt_evidence.py": "e692d5e73104bb797703262365cad3f593074b037abd924ca05e010f7bfc2c8f",
 }
 
 

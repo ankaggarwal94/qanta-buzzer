@@ -91,6 +91,31 @@ def _mutation_results() -> list[dict]:
     ]
 
 
+def _source_execution(source_id: str) -> dict[str, str]:
+    return {
+        "environment": "local_clean_worktree",
+        "executing_source_manifest_id": source_id,
+        "runtime_source_manifest_id": source_id,
+    }
+
+
+def _build_execution(
+    *,
+    bindings: dict[str, str],
+    hashes: dict[str, str],
+    execution_id: str,
+    subdir: str,
+) -> dict:
+    return {
+        "environment": "local_process",
+        "execution_id": execution_id,
+        "adapter_subdir": subdir,
+        **bindings,
+        "cached": False,
+        "output_sha256": hashes,
+    }
+
+
 def _smoke_evidence() -> tuple[dict, dict[str, str]]:
     bindings = _bindings()
     spec_identity = {
@@ -130,7 +155,12 @@ def _gate_fixture(gate: str) -> tuple[dict, dict[str, str]]:
         return build_prerequisite_evidence(
             gate=gate,
             bindings=bindings,
-            details={"results": _mutation_results()},
+            details={
+                "source_execution": _source_execution(
+                    bindings["source_manifest_id"]
+                ),
+                "results": _mutation_results(),
+            },
         ), bindings
     manifest, bindings = _adapter_manifest()
     hashes = {
@@ -150,6 +180,21 @@ def _gate_fixture(gate: str) -> tuple[dict, dict[str, str]]:
         gate=gate,
         bindings=bindings,
         details={
+            "source_execution": _source_execution(
+                bindings["source_manifest_id"]
+            ),
+            "first_build_execution": _build_execution(
+                bindings=bindings,
+                hashes=hashes,
+                execution_id="local-first",
+                subdir="adapter_build_a",
+            ),
+            "second_build_execution": _build_execution(
+                bindings=bindings,
+                hashes=hashes,
+                execution_id="local-second",
+                subdir="adapter_build_b",
+            ),
             "first_adapter_manifest": manifest,
             "second_adapter_manifest": manifest,
             "first_file_sha256": hashes,
@@ -208,6 +253,59 @@ def test_semantically_false_gate_evidence_is_rejected(gate, mutate, message):
             gate=gate,
             bindings=bindings,
             evidence=tampered,
+        )
+
+
+def test_mutation_evidence_rejects_a_different_executing_source():
+    evidence, bindings = _gate_fixture("mutation")
+    tampered = copy.deepcopy(evidence)
+    tampered["source_execution"]["executing_source_manifest_id"] = "f" * 64
+    with pytest.raises(ValueError, match="executing source mismatch"):
+        validate_prerequisite_evidence(
+            gate="mutation",
+            bindings=bindings,
+            evidence=tampered,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("execution_id", "local-first", "not distinct"),
+        ("adapter_subdir", "adapter_build_a", "not distinct"),
+        ("adapter_subdir", "./adapter_build_b", "noncanonical"),
+    ],
+)
+def test_determinism_evidence_requires_distinct_canonical_fresh_builds(
+    field,
+    value,
+    message,
+):
+    evidence, bindings = _gate_fixture("determinism")
+    tampered = copy.deepcopy(evidence)
+    tampered["second_build_execution"][field] = value
+    with pytest.raises(ValueError, match=message):
+        validate_prerequisite_evidence(
+            gate="determinism",
+            bindings=bindings,
+            evidence=tampered,
+        )
+
+
+@pytest.mark.parametrize("gate", ["mutation", "determinism"])
+def test_legacy_provenance_evidence_is_rejected(gate):
+    evidence, bindings = _gate_fixture(gate)
+    legacy = copy.deepcopy(evidence)
+    legacy["schema_version"] = 1
+    legacy.pop("source_execution")
+    if gate == "determinism":
+        legacy.pop("first_build_execution")
+        legacy.pop("second_build_execution")
+    with pytest.raises(ValueError, match="fields mismatch"):
+        validate_prerequisite_evidence(
+            gate=gate,
+            bindings=bindings,
+            evidence=legacy,
         )
 
 

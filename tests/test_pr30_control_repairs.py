@@ -50,11 +50,24 @@ def _load_modal_runner(monkeypatch):
 
     class DummyApp:
         def __init__(self, *_args, **_kwargs):
-            pass
+            self.include_source = _kwargs.get("include_source")
 
         def function(self, **_kwargs):
             def decorate(function):
                 function.remote = function
+                sequence = {"value": 0}
+
+                def spawn(*args, **kwargs):
+                    sequence["value"] += 1
+                    result = function(*args, **kwargs)
+                    return types.SimpleNamespace(
+                        object_id=(
+                            f"fc-{function.__name__}-{sequence['value']}"
+                        ),
+                        get=lambda: result,
+                    )
+
+                function.spawn = spawn
                 return function
 
             return decorate
@@ -166,26 +179,49 @@ def test_raw_manifest_requires_kind_and_passing_semantics(tmp_path, monkeypatch)
         )
 
 
-def test_cached_adapter_and_fvi_require_complete_bound_evidence(
+def test_adapter_build_is_fresh_only_and_fvi_cache_remains_bound(
     tmp_path,
     monkeypatch,
 ):
     runner = _load_modal_runner(monkeypatch)
-
-    adapter = tmp_path / "adapter"
-    adapter.mkdir()
-    adapter_id = "a" * 64
-    adapter_manifest = {
-        "id": adapter_id,
-        "identity": {
-            "source_manifest_id": "1" * 64,
-            "raw_input_bundle_id": "2" * 64,
-            "model_snapshot_id": "3" * 64,
-            "fit_rows_sha256": "4" * 64,
-            "eval_rows_sha256": "5" * 64,
-        },
-    }
-    (adapter / "manifest.json").write_text(json.dumps(adapter_manifest))
+    runner.MNT = str(tmp_path)
+    existing = tmp_path / "adapters" / "retry"
+    existing.mkdir(parents=True)
+    marker = existing / "preseeded.txt"
+    marker.write_text("must remain untouched", encoding="utf-8")
+    monkeypatch.setattr(
+        runner,
+        "_verified_executing_source",
+        lambda _source_id: {"id": "1" * 64},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_verified_raw_input_manifest",
+        lambda *_args, **_kwargs: {"id": "2" * 64},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_verified_content_manifest",
+        lambda *_args, **_kwargs: {"id": "3" * 64},
+    )
+    with pytest.raises(FileExistsError, match="fresh adapter build destination"):
+        runner.build_adapter(
+            "retry",
+            "1" * 64,
+            "2" * 64,
+            "3" * 64,
+        )
+    assert marker.read_text(encoding="utf-8") == "must remain untouched"
+    dangling = tmp_path / "adapters" / "dangling"
+    dangling.symlink_to(tmp_path / "missing-adapter", target_is_directory=True)
+    with pytest.raises(FileExistsError, match="fresh adapter build destination"):
+        runner.build_adapter(
+            "dangling",
+            "1" * 64,
+            "2" * 64,
+            "3" * 64,
+        )
+    assert dangling.is_symlink()
 
     class AdapterChecker:
         @staticmethod
@@ -193,57 +229,12 @@ def test_cached_adapter_and_fvi_require_complete_bound_evidence(
             return types.SimpleNamespace(
                 passed=True,
                 errors=[],
-                recomputed={"adapter_bundle_id": adapter_id},
+                recomputed={"adapter_bundle_id": "a" * 64},
             )
 
         @staticmethod
         def load_json(path):
             return json.loads(path.read_text())
-
-    cached = runner._validated_cached_adapter(
-        adapter,
-        subdir="retry",
-        source_id="1" * 64,
-        raw_id="2" * 64,
-        model_id="3" * 64,
-        checker_module=AdapterChecker,
-    )
-    assert cached["cached"] is True
-    with pytest.raises(FileExistsError, match="incompatible"):
-        runner._validated_cached_adapter(
-            adapter,
-            subdir="retry",
-            source_id="1" * 64,
-            raw_id="9" * 64,
-            model_id="3" * 64,
-            checker_module=AdapterChecker,
-        )
-
-    adapter_manifest["identity"]["mc_retention_evidence"] = {
-        "splits": {
-            "fit": {"overridden": True},
-            "eval": {"overridden": True},
-        }
-    }
-    (adapter / "manifest.json").write_text(json.dumps(adapter_manifest))
-    with pytest.raises(FileExistsError, match="low-retention gate override"):
-        runner._validated_cached_adapter(
-            adapter,
-            subdir="retry",
-            source_id="1" * 64,
-            raw_id="2" * 64,
-            model_id="3" * 64,
-            checker_module=AdapterChecker,
-        )
-    assert runner._validated_cached_adapter(
-        adapter,
-        subdir="retry",
-        source_id="1" * 64,
-        raw_id="2" * 64,
-        model_id="3" * 64,
-        checker_module=AdapterChecker,
-        allow_low_mc_retention=True,
-    )["cached"] is True
 
     fvi = tmp_path / "fvi"
     fvi.mkdir()
@@ -268,6 +259,100 @@ def test_cached_adapter_and_fvi_require_complete_bound_evidence(
             execution=execution,
             checker_module=AdapterChecker,
         )
+
+
+def test_determinism_stage_owns_two_fresh_producer_calls(
+    tmp_path,
+    monkeypatch,
+):
+    runner = _load_modal_runner(monkeypatch)
+    runner.MNT = str(tmp_path)
+    source_id = "1" * 64
+    raw_id = "2" * 64
+    model_id = "3" * 64
+    hashes = {
+        "fit_rows.jsonl.gz": "4" * 64,
+        "eval_rows.jsonl.gz": "5" * 64,
+        "calibration.json": "6" * 64,
+        "build_metadata.json": "7" * 64,
+    }
+    adapter_manifest = build_manifest(
+        {
+            "kind": "adapter_bundle",
+            "source_manifest_id": source_id,
+            "raw_input_bundle_id": raw_id,
+            "model_snapshot_id": model_id,
+            "fit_rows_sha256": hashes["fit_rows.jsonl.gz"],
+            "eval_rows_sha256": hashes["eval_rows.jsonl.gz"],
+            "calibration_sha256": hashes["calibration.json"],
+            "mc_retention_evidence": {
+                "build_metadata_sha256": hashes["build_metadata.json"],
+            },
+        }
+    )
+    adapter_id = adapter_manifest["id"]
+    monkeypatch.setattr(
+        runner,
+        "_verified_executing_source",
+        lambda _source_id: {"id": source_id},
+    )
+    from scripts.stopdff_v5 import checker, identity
+
+    monkeypatch.setattr(
+        checker,
+        "validate_adapter",
+        lambda _path: types.SimpleNamespace(
+            passed=True,
+            errors=[],
+            recomputed={"adapter_bundle_id": adapter_id},
+        ),
+    )
+    monkeypatch.setattr(checker, "load_json", lambda _path: adapter_manifest)
+    monkeypatch.setattr(identity, "sha256_file", lambda path: hashes[path.name])
+    calls = []
+
+    class ProducerCall:
+        def __init__(self, execution_id, result):
+            self.object_id = execution_id
+            self._result = result
+
+        def get(self):
+            return dict(self._result)
+
+    def spawn(subdir, source, raw, model, allow_override):
+        calls.append((subdir, source, raw, model, allow_override))
+        return ProducerCall(
+            f"fc-{len(calls)}",
+            {
+                "adapter_id": adapter_id,
+                "fit_rows_sha256": hashes["fit_rows.jsonl.gz"],
+                "eval_rows_sha256": hashes["eval_rows.jsonl.gz"],
+                "source_manifest_id": source,
+                "raw_input_bundle_id": raw,
+                "model_snapshot_id": model,
+                "subdir": subdir,
+                "cached": False,
+            },
+        )
+
+    monkeypatch.setattr(runner.build_adapter, "spawn", spawn)
+    result = runner.adapter_determinism_receipt(
+        "fresh_a",
+        "fresh_b",
+        source_id,
+        raw_id,
+        model_id,
+        True,
+    )
+    assert calls == [
+        ("fresh_a", source_id, raw_id, model_id, True),
+        ("fresh_b", source_id, raw_id, model_id, True),
+    ]
+    assert result["ok"] is True
+    assert result["first_build_execution_id"] == "fc-1"
+    assert result["second_build_execution_id"] == "fc-2"
+    receipt_id = result["prerequisite_receipt_id"]
+    assert (tmp_path / "receipts" / "determinism" / f"{receipt_id}.json").is_file()
 
 
 def _fake_control_api(*, fail_first_smoke: bool = False):
@@ -347,21 +432,14 @@ def _fake_control_api(*, fail_first_smoke: bool = False):
             "model_id": ids["model"],
             "cached": False,
         }),
-        "build_adapter": record(
-            "build_adapter",
-            lambda subdir, *_args: {
-                "adapter_id": ids["adapter"],
-                "fit_rows_sha256": "c" * 64,
-                "eval_rows_sha256": "d" * 64,
-                "subdir": subdir,
-                "cached": False,
-            },
-        ),
         "adapter_determinism_receipt": record(
             "adapter_determinism",
             {
                 "ok": True,
                 "adapter_id": ids["adapter"],
+                "source_manifest_id": ids["source"],
+                "first_build_execution_id": "fc-first",
+                "second_build_execution_id": "fc-second",
                 "prerequisite_receipt_id": ids["determinism"],
             },
         ),
@@ -381,8 +459,9 @@ def _fake_control_api(*, fail_first_smoke: bool = False):
         "run_sweep": record("run_sweep", sweep),
         "mutation_gate": record("mutation_gate", {
             "ok": True,
-            "n": 40,
+            "n": 42,
             "unexpected": [],
+            "source_manifest_id": ids["source"],
             "prerequisite_receipt_id": ids["mutation"],
         }),
         "validate": record(
@@ -425,9 +504,17 @@ def test_control_plane_journals_order_and_resumes_lost_sweep(
             resume=False,
             stage_api=api,
         )
-    adapter_calls = [call for call in calls if call[0] == "build_adapter"]
-    assert len(adapter_calls) == 2
-    assert all(call[1][-1] is True for call in adapter_calls)
+    determinism_call = next(
+        call for call in calls if call[0] == "adapter_determinism"
+    )
+    assert determinism_call[1] == (
+        "build_a",
+        "build_b",
+        ids["source"],
+        ids["raw"],
+        ids["model"],
+        True,
+    )
     smoke_call = next(call for call in calls if call[0] == "run_sweep")
     smoke_spec = json.loads(smoke_call[1][0])["run_spec_identity"]
     assert smoke_spec["gate"]["allow_low_mc_retention"] is True

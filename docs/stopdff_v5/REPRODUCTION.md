@@ -194,8 +194,11 @@ Before defining the Modal image, the runner validates the manifest, exact file s
 modes, sizes, and digests, copies that closed tree to a private staging directory,
 revalidates the copy, and binds its manifest ID to the control plan. It refuses to
 construct an image from a bare or unlisted source tree. The directly callable adapter
-and sweep stages also reject any source identity other than the one bound into that
-validated image before importing reviewed project modules.
+build, adapter-determinism, mutation, and sweep stages also reject any source identity
+other than the one bound into that validated image. Each of those stages rehashes the
+executing source tree before producing or consuming scientific evidence. Modal automatic
+source inclusion is disabled, so the function-defining module is imported only from that
+validated frozen tree rather than from an additional host-side source overlay.
 
 After uploading the source and raw-input bundles to their documented Volume paths, create a
 small control plan. The two adapter subdirectories must be distinct and create-once:
@@ -218,8 +221,11 @@ modal run scripts/modal_stopdff_v5_runner.py::control_main \
     --state-path stopdff_v5_control_state.json
 ```
 
-The controller verifies both uploaded bundles, freezes the model, performs and receipts two
-adapter builds, promotes the bound adapter, runs the FVI study, smoke bootstrap/sweep,
+The controller verifies both uploaded bundles, freezes the model, and invokes one
+determinism gate that owns exactly two fresh, path-distinct adapter producer calls. The
+gate rejects pre-existing destinations and records the two distinct Modal function-call
+IDs in schema-v2 evidence before issuing a receipt. The controller then promotes the
+bound adapter, runs the FVI study, smoke bootstrap/sweep,
 mutation gate, final bootstrap/sweep, prepackage validation, packaging, and final validation
 in that fixed order. Each stage intent and result is fsynced to the state file and adjacent
 JSONL journal. To continue after an interrupted host process, use the same plan and state:
@@ -230,7 +236,10 @@ modal run scripts/modal_stopdff_v5_runner.py::control_main \
     --state-path stopdff_v5_control_state.json --resume
 ```
 
-Completed stages are reused from the bound journal. A sweep retry derives its evidence
+Completed stages are reused from the bound journal. Control-state schema v1 predates
+fresh build provenance and is rejected; restart with new adapter subdirectories. A lost
+adapter-build response after its Volume commit likewise requires new subdirectories so
+the determinism claim fails closed. A sweep retry derives its evidence
 mode and number inside the remote call from the durable run directory: an absent root
 starts fresh at evidence attempt 1, a canonical nonempty history resumes at its next
 number, and a partial or malformed root fails closed without being repaired. The local

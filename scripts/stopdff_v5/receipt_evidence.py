@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import PurePosixPath
 from typing import Any
 
 from .identity import compute_id, loads_no_duplicate_keys
@@ -74,13 +75,43 @@ MUTATION_ROSTER = (
 )
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_EVIDENCE_SCHEMA_VERSIONS = {
+    "smoke": 1,
+    "mutation": 2,
+    "determinism": 2,
+}
+_SOURCE_EXECUTION_FIELDS = {
+    "environment",
+    "executing_source_manifest_id",
+    "runtime_source_manifest_id",
+}
+_BUILD_EXECUTION_FIELDS = {
+    "environment",
+    "execution_id",
+    "adapter_subdir",
+    "source_manifest_id",
+    "raw_input_bundle_id",
+    "model_snapshot_id",
+    "adapter_bundle_id",
+    "cached",
+    "output_sha256",
+}
 _EVIDENCE_FIELDS = {
     "smoke": {"kind", "schema_version", "bindings", "run_spec", "aggregate"},
-    "mutation": {"kind", "schema_version", "bindings", "results"},
+    "mutation": {
+        "kind",
+        "schema_version",
+        "bindings",
+        "source_execution",
+        "results",
+    },
     "determinism": {
         "kind",
         "schema_version",
         "bindings",
+        "source_execution",
+        "first_build_execution",
+        "second_build_execution",
         "first_adapter_manifest",
         "second_adapter_manifest",
         "first_file_sha256",
@@ -121,6 +152,17 @@ def _validate_bindings(gate: str, bindings: Any) -> dict[str, str]:
     if any(not _is_sha256(value) for value in bindings.values()):
         raise ValueError(f"{gate} prerequisite evidence binding is not SHA-256")
     return {key: bindings[key] for key in sorted(bindings)}
+
+
+def validate_prerequisite_bindings(
+    *,
+    gate: str,
+    bindings: Any,
+) -> dict[str, str]:
+    """Return one gate's canonical bindings or fail before expensive work."""
+    if gate not in _EVIDENCE_FIELDS:
+        raise ValueError(f"unknown prerequisite gate {gate!r}")
+    return _validate_bindings(gate, bindings)
 
 
 def _validate_smoke(evidence: dict[str, Any], bindings: dict[str, str]) -> None:
@@ -168,7 +210,30 @@ def _validate_smoke(evidence: dict[str, Any], bindings: dict[str, str]) -> None:
         raise ValueError("smoke evidence does not prove a complete VALID run")
 
 
-def _validate_mutation(evidence: dict[str, Any]) -> None:
+def _validate_source_execution(
+    evidence: dict[str, Any],
+    bindings: dict[str, str],
+) -> str:
+    execution = evidence.get("source_execution")
+    if not isinstance(execution, dict) or set(execution) != _SOURCE_EXECUTION_FIELDS:
+        raise ValueError("prerequisite evidence source execution fields mismatch")
+    environment = execution.get("environment")
+    if environment not in {"modal_image", "local_clean_worktree"}:
+        raise ValueError("prerequisite evidence source environment is invalid")
+    source_id = bindings["source_manifest_id"]
+    if (
+        execution.get("executing_source_manifest_id") != source_id
+        or execution.get("runtime_source_manifest_id") != source_id
+    ):
+        raise ValueError("prerequisite evidence executing source mismatch")
+    return environment
+
+
+def _validate_mutation(
+    evidence: dict[str, Any],
+    bindings: dict[str, str],
+) -> None:
+    _validate_source_execution(evidence, bindings)
     results = evidence.get("results")
     if not isinstance(results, list) or tuple(
         result.get("mutation") if isinstance(result, dict) else None
@@ -190,6 +255,46 @@ def _validate_mutation(evidence: dict[str, Any]) -> None:
             or any(not isinstance(error, str) for error in errors)
         ):
             raise ValueError(f"mutation evidence outcome mismatch: {result.get('mutation')}")
+
+
+def _validate_build_execution(
+    execution: Any,
+    *,
+    bindings: dict[str, str],
+    expected_hashes: dict[str, str],
+) -> dict[str, Any]:
+    if not isinstance(execution, dict) or set(execution) != _BUILD_EXECUTION_FIELDS:
+        raise ValueError("determinism evidence build execution fields mismatch")
+    environment = execution.get("environment")
+    if environment not in {"modal_function_call", "local_process"}:
+        raise ValueError("determinism evidence build environment is invalid")
+    execution_id = execution.get("execution_id")
+    if (
+        not isinstance(execution_id, str)
+        or not execution_id
+        or execution_id != execution_id.strip()
+        or len(execution_id) > 256
+    ):
+        raise ValueError("determinism evidence build execution ID is invalid")
+    subdir = execution.get("adapter_subdir")
+    parsed = PurePosixPath(subdir) if isinstance(subdir, str) else None
+    if (
+        parsed is None
+        or parsed.is_absolute()
+        or ".." in parsed.parts
+        or len(parsed.parts) != 1
+        or str(parsed) != subdir
+    ):
+        raise ValueError("determinism evidence adapter subdir is noncanonical")
+    for key in DETERMINISM_BINDINGS:
+        if execution.get(key) != bindings[key]:
+            raise ValueError("determinism evidence build bindings mismatch")
+    if execution.get("cached") is not False:
+        raise ValueError("determinism evidence build was not fresh")
+    hashes = execution.get("output_sha256")
+    if hashes != expected_hashes:
+        raise ValueError("determinism evidence build hashes mismatch")
+    return execution
 
 
 def _validate_adapter_manifest(
@@ -216,6 +321,7 @@ def _validate_determinism(
     evidence: dict[str, Any],
     bindings: dict[str, str],
 ) -> None:
+    source_environment = _validate_source_execution(evidence, bindings)
     first_manifest = evidence.get("first_adapter_manifest")
     second_manifest = evidence.get("second_adapter_manifest")
     first_identity = _validate_adapter_manifest(first_manifest, bindings=bindings)
@@ -249,6 +355,31 @@ def _validate_determinism(
     }
     if first_hashes != expected_hashes:
         raise ValueError("determinism evidence hashes do not match adapter identity")
+    first_execution = _validate_build_execution(
+        evidence.get("first_build_execution"),
+        bindings=bindings,
+        expected_hashes=first_hashes,
+    )
+    second_execution = _validate_build_execution(
+        evidence.get("second_build_execution"),
+        bindings=bindings,
+        expected_hashes=second_hashes,
+    )
+    expected_build_environment = (
+        "modal_function_call"
+        if source_environment == "modal_image"
+        else "local_process"
+    )
+    if (
+        first_execution["environment"] != expected_build_environment
+        or second_execution["environment"] != expected_build_environment
+    ):
+        raise ValueError("determinism evidence execution environments mismatch")
+    if (
+        first_execution["execution_id"] == second_execution["execution_id"]
+        or first_execution["adapter_subdir"] == second_execution["adapter_subdir"]
+    ):
+        raise ValueError("determinism evidence builds are not distinct")
 
 
 def validate_prerequisite_evidence(
@@ -263,14 +394,17 @@ def validate_prerequisite_evidence(
     normalized_bindings = _validate_bindings(gate, bindings)
     if not isinstance(evidence, dict) or set(evidence) != _EVIDENCE_FIELDS[gate]:
         raise ValueError(f"{gate} prerequisite evidence fields mismatch")
-    if evidence.get("kind") != f"{gate}_gate_evidence" or evidence.get("schema_version") != 1:
+    if (
+        evidence.get("kind") != f"{gate}_gate_evidence"
+        or evidence.get("schema_version") != _EVIDENCE_SCHEMA_VERSIONS[gate]
+    ):
         raise ValueError(f"{gate} prerequisite evidence envelope mismatch")
     if evidence.get("bindings") != normalized_bindings:
         raise ValueError(f"{gate} prerequisite evidence bindings mismatch")
     if gate == "smoke":
         _validate_smoke(evidence, normalized_bindings)
     elif gate == "mutation":
-        _validate_mutation(evidence)
+        _validate_mutation(evidence, normalized_bindings)
     else:
         _validate_determinism(evidence, normalized_bindings)
     prerequisite_evidence_bytes(evidence)
@@ -286,7 +420,7 @@ def build_prerequisite_evidence(
     normalized_bindings = _validate_bindings(gate, bindings)
     evidence = {
         "kind": f"{gate}_gate_evidence",
-        "schema_version": 1,
+        "schema_version": _EVIDENCE_SCHEMA_VERSIONS[gate],
         "bindings": normalized_bindings,
         **details,
     }

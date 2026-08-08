@@ -14,9 +14,11 @@ from __future__ import annotations
 import argparse
 import importlib.metadata as im
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path, PurePosixPath
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -58,6 +60,36 @@ def _versions() -> dict[str, str]:
         except im.PackageNotFoundError:
             pass
     return out
+
+
+def _verified_local_source_execution(
+    repo_root: Path,
+    source_manifest: dict,
+) -> dict[str, str]:
+    """Rehash the executing clean checkout against its source snapshot."""
+    identity = source_manifest.get("identity")
+    if (
+        not isinstance(identity, dict)
+        or identity.get("kind") != "source_snapshot"
+        or not isinstance(source_manifest.get("id"), str)
+    ):
+        raise ValueError("local source manifest is invalid")
+    for entry in identity.get("files", []):
+        runtime_path = repo_root / entry["path"]
+        if (
+            runtime_path.is_symlink()
+            or not runtime_path.is_file()
+            or sha256_file(runtime_path) != entry["sha256"]
+        ):
+            raise ValueError(
+                f"executing source does not match source manifest: {entry['path']}"
+            )
+    source_id = source_manifest["id"]
+    return {
+        "environment": "local_clean_worktree",
+        "executing_source_manifest_id": source_id,
+        "runtime_source_manifest_id": source_id,
+    }
 
 
 def _run_bound_sweep(
@@ -187,22 +219,33 @@ def main(argv: list[str] | None = None) -> int:
             run_sha=run_sha,
         )
 
-    with tempfile.TemporaryDirectory(prefix="stopdff_v5_selftest_") as work:
-        mutation_ok, mutation_results = selftest.run_self_test(Path(work))
-    if not mutation_ok:
-        failed = [
-            result["mutation"]
-            for result in mutation_results
-            if not result["ok"]
-        ]
-        raise ValueError(f"v5 mutation gate failed: {failed}")
+    with tempfile.TemporaryDirectory(prefix="stopdff_v5_source_") as source_work:
+        print("== source snapshot ==")
+        staged_source = Path(source_work) / "source_snapshot"
+        src_man = producers.build_source_snapshot(
+            args.repo_root,
+            run_sha,
+            staged_source,
+        )
+        source_id = src_man["id"]
+        source_execution = _verified_local_source_execution(
+            args.repo_root,
+            src_man,
+        )
+        print("  source_manifest_id", source_id)
 
-    out.mkdir(parents=True, exist_ok=False)
+        with tempfile.TemporaryDirectory(prefix="stopdff_v5_selftest_") as work:
+            mutation_ok, mutation_results = selftest.run_self_test(Path(work))
+        if not mutation_ok:
+            failed = [
+                result["mutation"]
+                for result in mutation_results
+                if not result["ok"]
+            ]
+            raise ValueError(f"v5 mutation gate failed: {failed}")
 
-    print("== source snapshot ==")
-    src_man = producers.build_source_snapshot(args.repo_root, run_sha, out / "source_snapshot")
-    source_id = src_man["id"]
-    print("  source_manifest_id", source_id)
+        out.mkdir(parents=True, exist_ok=False)
+        shutil.copytree(staged_source, out / "source_snapshot")
 
     print("== stage raw inputs ==")
     roles = {
@@ -230,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("== adapter bundle (CPU scoring) ==")
     adapter_dir = out / "adapter_bundle"
+    first_build_execution_id = f"local-{uuid.uuid4().hex}"
     adapter_man = adapter_build.build_adapter_bundle(
         mc_dataset_path=raw_dir / "mc_dataset.json", val_dataset_path=raw_dir / "val_dataset.json",
         test_dataset_path=raw_dir / "test_dataset.json", calibration_path=raw_dir / "calibration.json",
@@ -335,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.variant == "final":
         print("== required deterministic two-build adapter gate ==")
         second_adapter_dir = out / "adapter_bundle_determinism"
+        second_build_execution_id = f"local-{uuid.uuid4().hex}"
         second_adapter = adapter_build.build_adapter_bundle(
             mc_dataset_path=raw_dir / "mc_dataset.json",
             val_dataset_path=raw_dir / "val_dataset.json",
@@ -381,6 +426,23 @@ def main(argv: list[str] | None = None) -> int:
             gate="determinism",
             bindings=determinism_bindings,
             details={
+                "source_execution": source_execution,
+                "first_build_execution": {
+                    "environment": "local_process",
+                    "execution_id": first_build_execution_id,
+                    "adapter_subdir": "adapter_bundle",
+                    **determinism_bindings,
+                    "cached": False,
+                    "output_sha256": first_hashes,
+                },
+                "second_build_execution": {
+                    "environment": "local_process",
+                    "execution_id": second_build_execution_id,
+                    "adapter_subdir": "adapter_bundle_determinism",
+                    **determinism_bindings,
+                    "cached": False,
+                    "output_sha256": second_hashes,
+                },
                 "first_adapter_manifest": adapter_man,
                 "second_adapter_manifest": second_adapter,
                 "first_file_sha256": first_hashes,
@@ -399,7 +461,10 @@ def main(argv: list[str] | None = None) -> int:
         mutation_evidence = writers.build_prerequisite_evidence(
             gate="mutation",
             bindings=common_bindings,
-            details={"results": mutation_results},
+            details={
+                "source_execution": source_execution,
+                "results": mutation_results,
+            },
         )
         persist_receipt(
             "mutation",
