@@ -24,6 +24,43 @@ def _canonical_cell() -> dict[str, str]:
     }
 
 
+def _fvi_cell(
+    *,
+    converged: bool = True,
+    median_index: float = 2.0,
+    signed_mean: float = 0.25,
+    abs_mean: float = 0.5,
+    actions: dict[str, int] | None = None,
+) -> dict[str, object]:
+    """Return one non-vacuous representative-cell result."""
+    return {
+        "status": "ok",
+        "converged": converged,
+        "iterations": 3,
+        "residual": 1e-12,
+        "median_index": median_index,
+        "signed_mean": signed_mean,
+        "abs_mean": abs_mean,
+        "actions": {"item:0": 4} if actions is None else actions,
+    }
+
+
+def _fvi_record(
+    tolerance: str,
+    max_iterations: int,
+    *,
+    total_iterations: int,
+    converged: bool = True,
+) -> dict[str, object]:
+    return {
+        "tolerance": tolerance,
+        "max_iterations": max_iterations,
+        "total_iterations": total_iterations,
+        "all_converged": converged,
+        "cells": {"representative-cell": _fvi_cell(converged=converged)},
+    }
+
+
 def test_normalize_cell_rejects_unknown_and_alias_collision() -> None:
     unknown = {**_canonical_cell(), "category_poolng": "per_category"}
     with pytest.raises(ValueError, match="unknown axes"):
@@ -74,21 +111,20 @@ def test_fvi_study_reuses_strict_representative_result(monkeypatch) -> None:
         calibration_json,
         tolerance_label,
         max_iterations,
+        prepared,
     ):
-        del rows, calibration_json
+        del rows, calibration_json, prepared
         scope = "representative" if cells is representative else "full"
         calls.append((tolerance_label, max_iterations, scope))
-        return {
-            "tolerance": tolerance_label,
-            "max_iterations": max_iterations,
-            "total_iterations": (
+        return _fvi_record(
+            tolerance_label,
+            max_iterations,
+            total_iterations=(
                 1
                 if (tolerance_label, max_iterations) == ("1e-6", 50)
                 else 100
             ),
-            "all_converged": True,
-            "cells": {},
-        }
+        )
 
     monkeypatch.setattr(fvi_study, "run_candidate_on_cells", fake_run)
     result = fvi_study.run_fvi_study(rows=[], calibration_json=None)
@@ -97,6 +133,10 @@ def test_fvi_study_reuses_strict_representative_result(monkeypatch) -> None:
         "tolerance": "1e-6",
         "max_iterations": 50,
     }
+    assert all(
+        candidate["eligible"]
+        for candidate in result["candidate_convergence_results"]
+    )
     assert calls.count(("1e-10", 200, "representative")) == 1
 
 
@@ -122,21 +162,21 @@ def test_fvi_selector_falls_through_failed_full_validation(monkeypatch) -> None:
         calibration_json,
         tolerance_label,
         max_iterations,
+        prepared,
     ):
         nonlocal full_calls
-        del rows, calibration_json
+        del rows, calibration_json, prepared
         if cells is full:
             full_calls += 1
             converged = full_calls > 1
         else:
             converged = True
-        return {
-            "tolerance": tolerance_label,
-            "max_iterations": max_iterations,
-            "total_iterations": 1 if tolerance_label == "1e-6" else 2,
-            "all_converged": converged,
-            "cells": {},
-        }
+        return _fvi_record(
+            tolerance_label,
+            max_iterations,
+            total_iterations=1 if tolerance_label == "1e-6" else 2,
+            converged=converged,
+        )
 
     monkeypatch.setattr(fvi_study, "run_candidate_on_cells", fake_run)
     result = fvi_study.run_fvi_study(rows=[], calibration_json=None)
@@ -145,6 +185,46 @@ def test_fvi_selector_falls_through_failed_full_validation(monkeypatch) -> None:
         "tolerance": "1e-8",
         "max_iterations": 50,
     }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_reason"),
+    [
+        ("missing_cell", "missing cell representative-cell"),
+        ("not_converged", "representative-cell: not converged"),
+        ("median", "representative-cell: median != reference"),
+        ("signed_mean", "representative-cell: signed mean drift"),
+        ("abs_mean", "representative-cell: abs mean drift"),
+        ("actions", "representative-cell: action disagreement"),
+    ],
+)
+def test_fvi_eligibility_exercises_each_scientific_predicate(
+    mutation: str,
+    expected_reason: str,
+) -> None:
+    reference = _fvi_record("1e-10", 200, total_iterations=9)
+    candidate = _fvi_record("1e-8", 100, total_iterations=4)
+    assert fvi_study.candidate_is_eligible(candidate, reference) == (True, [])
+
+    cell = candidate["cells"]["representative-cell"]
+    if mutation == "missing_cell":
+        candidate["cells"] = {}
+    elif mutation == "not_converged":
+        cell["converged"] = False
+    elif mutation == "median":
+        cell["median_index"] = 3.0
+    elif mutation == "signed_mean":
+        cell["signed_mean"] = 0.251001
+    elif mutation == "abs_mean":
+        cell["abs_mean"] = 0.501001
+    elif mutation == "actions":
+        cell["actions"] = {"item:0": 5}
+    else:  # pragma: no cover - parametrization is intentionally exhaustive
+        raise AssertionError(f"unknown mutation {mutation}")
+
+    eligible, reasons = fvi_study.candidate_is_eligible(candidate, reference)
+    assert eligible is False
+    assert expected_reason in reasons
 
 
 def test_resume_preflight_recomputes_only_cached_cells(

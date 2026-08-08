@@ -26,6 +26,7 @@ from .identity import build_manifest, compute_id, sha256_bytes, sha256_file
 from .fvi_study import run_fvi_study
 from .manifests import (
     ADAPTER_SCORING_SPEC,
+    ENVIRONMENT_PACKAGES,
     FVI_PRODUCER_FILES,
     RAW_INPUT_ROLES,
     adapter_identity,
@@ -425,7 +426,10 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
     fvi_study_id = fvi_manifest["id"]
     environment = {
         "python_version": "3.11.0",
-        "package_versions": {"numpy": np.__version__},
+        "package_versions": {
+            name: np.__version__ if name == "numpy" else "synthetic-test"
+            for name in ENVIRONMENT_PACKAGES
+        },
     }
     environment_manifest = build_manifest(
         environment_contract_identity(**environment)

@@ -22,6 +22,8 @@ from .receipt_evidence import (
     FULL_RECEIPT_BINDINGS,
     build_prerequisite_evidence,
     prerequisite_evidence_sha256,
+    validate_prerequisite_receipts,
+    validate_receipt_evidence_digest,
     verify_prerequisite_evidence_bytes,
 )
 from .rewards import REWARD_SCHEDULE_STRINGS
@@ -29,19 +31,6 @@ from .rewards import REWARD_SCHEDULE_STRINGS
 _RECEIPT_GATES = {"smoke", "mutation", "determinism"}
 _FULL_RECEIPT_BINDINGS = FULL_RECEIPT_BINDINGS
 _DETERMINISM_BINDINGS = DETERMINISM_BINDINGS
-
-
-def _validate_receipt_evidence(gate: str, evidence: Any) -> None:
-    """Validate the digest that binds a receipt to its packaged evidence bytes."""
-    if not isinstance(evidence, dict) or set(evidence) != {"evidence_sha256"}:
-        raise ValueError(f"{gate} receipt evidence fields mismatch")
-    value = evidence.get("evidence_sha256")
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(ch not in "0123456789abcdef" for ch in value)
-    ):
-        raise ValueError(f"{gate} receipt evidence_sha256 must be lowercase SHA-256")
 
 
 def build_prerequisite_receipt(
@@ -62,7 +51,7 @@ def build_prerequisite_receipt(
     )
     if set(bindings) != required:
         raise ValueError(f"{gate} receipt bindings mismatch")
-    _validate_receipt_evidence(gate, evidence)
+    validate_receipt_evidence_digest(gate, evidence)
     return build_manifest({
         "kind": "prerequisite_receipt",
         "gate": gate,
@@ -91,58 +80,6 @@ def build_evidenced_prerequisite_receipt(
         bindings=bindings,
         evidence={"evidence_sha256": prerequisite_evidence_sha256(evidence)},
     )
-
-
-def validate_prerequisite_receipts(
-    *,
-    profile_variant: str,
-    identity_bindings: dict[str, str],
-    receipt_ids: dict[str, str],
-    receipts: dict[str, dict[str, Any]],
-) -> None:
-    """Fail closed on missing, mismatched, or unbound final-run receipts."""
-    from .identity import compute_id
-
-    if profile_variant == "smoke":
-        if receipt_ids or receipts:
-            raise ValueError("smoke run must not claim prerequisite receipts")
-        return
-    if profile_variant != "final":
-        raise ValueError(f"unknown profile variant {profile_variant!r}")
-    if set(receipt_ids) != _RECEIPT_GATES or set(receipts) != _RECEIPT_GATES:
-        raise ValueError("final run requires smoke/mutation/determinism receipts")
-    if set(identity_bindings) != _FULL_RECEIPT_BINDINGS:
-        raise ValueError("final receipt identity bindings are incomplete")
-    for gate in sorted(_RECEIPT_GATES):
-        manifest = receipts[gate]
-        identity = manifest.get("identity")
-        if (
-            not isinstance(identity, dict)
-            or compute_id(identity) != manifest.get("id")
-            or manifest.get("id") != receipt_ids[gate]
-        ):
-            raise ValueError(f"{gate} receipt id mismatch")
-        required = (
-            _DETERMINISM_BINDINGS
-            if gate == "determinism"
-            else _FULL_RECEIPT_BINDINGS
-        )
-        expected_bindings = {
-            key: identity_bindings[key]
-            for key in sorted(required)
-        }
-        if (
-            set(identity) != {"kind", "gate", "status", "bindings", "evidence"}
-            or
-            identity.get("kind") != "prerequisite_receipt"
-            or identity.get("gate") != gate
-            or identity.get("status") != "successful"
-            or identity.get("bindings") != expected_bindings
-            or not isinstance(identity.get("evidence"), dict)
-            or not identity["evidence"]
-        ):
-            raise ValueError(f"{gate} receipt bindings/status mismatch")
-        _validate_receipt_evidence(gate, identity["evidence"])
 
 
 def render_markdown(aggregate: dict[str, Any], *, resource_summary: dict[str, Any]) -> str:

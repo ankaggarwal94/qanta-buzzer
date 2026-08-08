@@ -14,6 +14,7 @@ a comparison policy.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -25,7 +26,26 @@ if str(_REPO) not in sys.path:
 from scripts.stopdff_v5 import checker, selftest  # noqa: E402
 
 
-def _print_result(label: str, result: "checker.CheckResult") -> int:
+def _print_result(
+    label: str,
+    result: "checker.CheckResult",
+    *,
+    json_output: bool = False,
+) -> int:
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "command": label,
+                    "passed": result.passed,
+                    "errors": result.errors,
+                    "recomputed": result.recomputed,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0 if result.passed else 1
     if result.passed:
         print(f"{label}: PASS")
         return 0
@@ -42,9 +62,11 @@ def main(argv: list[str] | None = None) -> int:
     p_spec = sub.add_parser("validate-spec")
     p_spec.add_argument("spec", type=Path)
     p_spec.add_argument("--require-final-profile", action="store_true")
+    p_spec.add_argument("--json", action="store_true", dest="json_output")
 
     p_adapter = sub.add_parser("validate-adapter")
     p_adapter.add_argument("bundle", type=Path)
+    p_adapter.add_argument("--json", action="store_true", dest="json_output")
 
     p_val = sub.add_parser("validate")
     p_val.add_argument("run_root", type=Path)
@@ -52,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     p_val.add_argument("--adapter-bundle", type=Path, required=True)
     p_val.add_argument("--require-final-profile", action="store_true")
     p_val.add_argument("--require-package", action="store_true")
+    p_val.add_argument("--json", action="store_true", dest="json_output")
 
     p_self = sub.add_parser("self-test")
     p_self.add_argument("--work-dir", type=Path, default=None)
@@ -59,10 +82,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "validate-spec":
-        return _print_result("validate-spec",
-                             checker.validate_spec(args.spec, require_final_profile=args.require_final_profile))
+        return _print_result(
+            "validate-spec",
+            checker.validate_spec(
+                args.spec,
+                require_final_profile=args.require_final_profile,
+            ),
+            json_output=args.json_output,
+        )
     if args.command == "validate-adapter":
-        return _print_result("validate-adapter", checker.validate_adapter(args.bundle))
+        return _print_result(
+            "validate-adapter",
+            checker.validate_adapter(args.bundle),
+            json_output=args.json_output,
+        )
     if args.command == "validate":
         return _print_result(
             "validate",
@@ -70,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.run_root, backend=args.backend, adapter_bundle=args.adapter_bundle,
                 require_final_profile=args.require_final_profile, require_package=args.require_package,
             ),
+            json_output=args.json_output,
         )
     if args.command == "self-test":
         work = args.work_dir

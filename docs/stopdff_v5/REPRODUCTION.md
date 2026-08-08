@@ -269,6 +269,20 @@ interval, the family verdict, gate-override effects, and release validity; it ne
 serialized verdict field. Device-1-style integrity checks (safe checksums, PNG validity, path
 safety) are also enforced with `--require-package`.
 
+The standalone checker has a **trusted-producer boundary**. It verifies canonical bytes,
+identity bindings, two distinct logical call IDs and adapter destinations, and equality of the
+two committed adapter outputs. The recorded Modal function-call IDs, `cached: false` values,
+and source-execution fields are unsigned assertions made by the supported checked-in producer;
+they are not Modal-signed receipts and the checker does not independently authenticate the
+invocation or its executing source. Accordingly, standalone validation establishes internal
+package consistency under the supported producer workflow, not provenance against a hostile
+package author. Modal may retry a logical call, so distinct call IDs also do not prove exactly
+two physical container attempts.
+
+Pass `--json` to `validate-spec`, `validate-adapter`, or `validate` for a versioned object with
+the command, pass status, errors, and recomputed identity/status fields. Without `--json`, the
+existing human-readable `PASS`/`FAIL` output and exit-code contract are unchanged.
+
 ## Tests
 
 ```bash

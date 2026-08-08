@@ -27,6 +27,7 @@ from scripts.stopdff_v5.calibrators import CalibratorFitError  # noqa: E402
 from scripts.stopdff_v5.fvi import FVIResult  # noqa: E402
 from scripts.stopdff_v5.fvi_study import order_eligible  # noqa: E402
 from scripts.stopdff_v5.manifests import (  # noqa: E402
+    ENVIRONMENT_PACKAGES,
     environment_contract_identity,
     run_spec_identity,
 )
@@ -79,7 +80,7 @@ def _make_ctx(tmp_path: Path, rows, cells, replicates=100) -> sweep.SweepContext
     }
     environment = {
         "python_version": "3.11.0",
-        "package_versions": {"numpy": "test"},
+        "package_versions": {name: "test" for name in ENVIRONMENT_PACKAGES},
     }
     environment_id = identity.compute_id(
         environment_contract_identity(**environment)
@@ -426,12 +427,12 @@ def test_interrupted_first_attempt_is_durable_and_resumable(tmp_path, monkeypatc
     original = sweep._cell_record
     calls = 0
 
-    def interrupted(context, cell):
+    def interrupted(context, cell, *, prepared=None):
         nonlocal calls
         calls += 1
         if calls == 1:
             raise RuntimeError("simulated interruption")
-        return original(context, cell)
+        return original(context, cell, prepared=prepared)
 
     monkeypatch.setattr(sweep, "_cell_record", interrupted)
     with pytest.raises(RuntimeError, match="simulated interruption"):

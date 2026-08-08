@@ -18,7 +18,7 @@ import numpy as np
 
 from . import PROFILE_NAME
 from .bootstrap import BootstrapPlan, cell_bootstrap_stats, family_statistic
-from .cellcompute import compute_cell
+from .cellcompute import CellInputs, compute_cell, prepare_cell_inputs
 from .identity import build_manifest, compute_id, loads_no_duplicate_keys
 from .manifests import cell_fingerprint_identity
 from .profile import cell_key_str, full_grid
@@ -273,12 +273,18 @@ def _prepare_attempt(
     return attempt
 
 
-def _cell_record(ctx: SweepContext, cell: dict[str, str]) -> dict[str, Any]:
+def _cell_record(
+    ctx: SweepContext,
+    cell: dict[str, str],
+    *,
+    prepared: CellInputs | None = None,
+) -> dict[str, Any]:
     tol = float(ctx.fvi_tolerance)
     result = compute_cell(
         rows=ctx.rows, cell=cell, calibration_json=ctx.calibration_json,
         tolerance=tol, max_iterations=ctx.fvi_max_iterations, tolerance_label=ctx.fvi_tolerance,
         metric_split="test",
+        prepared=prepared,
     )
     fvi_settings = {
         "damping": "0.5", "tolerance": ctx.fvi_tolerance,
@@ -374,6 +380,7 @@ def _run_sweep_body(
     failed: set[str] = set()
     all_calibrators_fitted = True
     all_fvi_converged = True
+    prepared = prepare_cell_inputs(ctx.rows, ctx.calibration_json)
 
     for cell in cells:
         key = cell_key_str(cell)
@@ -383,7 +390,7 @@ def _run_sweep_body(
             else None
         )
         if record is None:
-            record = _cell_record(ctx, cell)
+            record = _cell_record(ctx, cell, prepared=prepared)
         _write_bound_json(
             cells_dir / f"{key}.json",
             record,

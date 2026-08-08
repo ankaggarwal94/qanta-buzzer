@@ -73,6 +73,7 @@ MUTATION_ROSTER = (
     "attempt_result_counts",
     "invalid_adapter_row_hash",
 )
+RECEIPT_GATES = {"smoke", "mutation", "determinism"}
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _EVIDENCE_SCHEMA_VERSIONS = {
@@ -124,6 +125,101 @@ def _is_sha256(value: Any) -> bool:
     return isinstance(value, str) and _SHA256_RE.fullmatch(value) is not None
 
 
+def validate_receipt_evidence_digest(gate: str, evidence: Any) -> None:
+    """Validate the digest that binds a receipt to packaged evidence bytes.
+
+    Parameters
+    ----------
+    gate
+        Prerequisite gate named by the receipt.
+    evidence
+        Candidate receipt evidence-digest envelope.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If the envelope is incomplete or its digest is not lowercase SHA-256.
+    """
+    if not isinstance(evidence, dict) or set(evidence) != {"evidence_sha256"}:
+        raise ValueError(f"{gate} receipt evidence fields mismatch")
+    if not _is_sha256(evidence.get("evidence_sha256")):
+        raise ValueError(f"{gate} receipt evidence_sha256 must be lowercase SHA-256")
+
+
+def validate_prerequisite_receipts(
+    *,
+    profile_variant: str,
+    identity_bindings: dict[str, str],
+    receipt_ids: dict[str, str],
+    receipts: dict[str, dict[str, Any]],
+) -> None:
+    """Validate successful receipt envelopes against a run's identities.
+
+    Parameters
+    ----------
+    profile_variant
+        Run profile, either ``"smoke"`` or ``"final"``.
+    identity_bindings
+        Complete source, data, model, adapter, FVI, and environment identities.
+    receipt_ids
+        Gate-to-receipt-ID mapping claimed by the run spec.
+    receipts
+        Gate-to-receipt-manifest mapping loaded from the package.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If a required receipt is missing, malformed, or identity-unbound.
+    """
+    if profile_variant == "smoke":
+        if receipt_ids or receipts:
+            raise ValueError("smoke run must not claim prerequisite receipts")
+        return
+    if profile_variant != "final":
+        raise ValueError(f"unknown profile variant {profile_variant!r}")
+    if set(receipt_ids) != RECEIPT_GATES or set(receipts) != RECEIPT_GATES:
+        raise ValueError("final run requires smoke/mutation/determinism receipts")
+    if set(identity_bindings) != FULL_RECEIPT_BINDINGS:
+        raise ValueError("final receipt identity bindings are incomplete")
+    for gate in sorted(RECEIPT_GATES):
+        manifest = receipts[gate]
+        identity = manifest.get("identity")
+        if (
+            not isinstance(identity, dict)
+            or compute_id(identity) != manifest.get("id")
+            or manifest.get("id") != receipt_ids[gate]
+        ):
+            raise ValueError(f"{gate} receipt id mismatch")
+        required = (
+            DETERMINISM_BINDINGS
+            if gate == "determinism"
+            else FULL_RECEIPT_BINDINGS
+        )
+        expected_bindings = {
+            key: identity_bindings[key]
+            for key in sorted(required)
+        }
+        if (
+            set(identity) != {"kind", "gate", "status", "bindings", "evidence"}
+            or identity.get("kind") != "prerequisite_receipt"
+            or identity.get("gate") != gate
+            or identity.get("status") != "successful"
+            or identity.get("bindings") != expected_bindings
+            or not isinstance(identity.get("evidence"), dict)
+            or not identity["evidence"]
+        ):
+            raise ValueError(f"{gate} receipt bindings/status mismatch")
+        validate_receipt_evidence_digest(gate, identity["evidence"])
+
+
 def prerequisite_evidence_bytes(evidence: dict[str, Any]) -> bytes:
     """Return the single accepted byte encoding for packaged gate evidence."""
     if not isinstance(evidence, dict):
@@ -159,7 +255,25 @@ def validate_prerequisite_bindings(
     gate: str,
     bindings: Any,
 ) -> dict[str, str]:
-    """Return one gate's canonical bindings or fail before expensive work."""
+    """Validate and canonicalize one prerequisite gate's identity bindings.
+
+    Parameters
+    ----------
+    gate
+        Supported prerequisite gate name.
+    bindings
+        Candidate identity-binding mapping for the selected gate.
+
+    Returns
+    -------
+    dict[str, str]
+        The complete binding mapping in canonical key order.
+
+    Raises
+    ------
+    ValueError
+        If the gate is unknown or its bindings are incomplete or malformed.
+    """
     if gate not in _EVIDENCE_FIELDS:
         raise ValueError(f"unknown prerequisite gate {gate!r}")
     return _validate_bindings(gate, bindings)
@@ -388,7 +502,32 @@ def validate_prerequisite_evidence(
     bindings: dict[str, str],
     evidence: dict[str, Any],
 ) -> None:
-    """Validate one gate's exact self-contained evidence contract."""
+    """Validate one gate's exact self-contained evidence contract.
+
+    Parameters
+    ----------
+    gate
+        Supported prerequisite gate name.
+    bindings
+        Expected identity bindings for the evidence.
+    evidence
+        Parsed self-contained evidence object.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If the gate, bindings, envelope, or evidence semantics are invalid.
+
+    Notes
+    -----
+    Execution IDs and source-execution fields are unsigned assertions supplied
+    by the trusted producer. This validator proves internal consistency; it does
+    not independently authenticate a Modal invocation or its executing source.
+    """
     if gate not in _EVIDENCE_FIELDS:
         raise ValueError(f"unknown prerequisite gate {gate!r}")
     normalized_bindings = _validate_bindings(gate, bindings)
@@ -416,7 +555,29 @@ def build_prerequisite_evidence(
     bindings: dict[str, str],
     details: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build and validate a gate evidence object before a receipt is issued."""
+    """Build and validate a gate evidence object before a receipt is issued.
+
+    Parameters
+    ----------
+    gate
+        Supported prerequisite gate name.
+    bindings
+        Identity bindings for the evidence.
+    details
+        Gate-specific evidence fields supplied by the trusted producer.
+
+    Returns
+    -------
+    dict[str, Any]
+        Canonical evidence object ready for byte encoding.
+
+    Raises
+    ------
+    ValueError
+        If the gate is unknown or any evidence field is invalid.
+    """
+    if gate not in _EVIDENCE_SCHEMA_VERSIONS:
+        raise ValueError(f"unknown prerequisite gate {gate!r}")
     normalized_bindings = _validate_bindings(gate, bindings)
     evidence = {
         "kind": f"{gate}_gate_evidence",
@@ -439,7 +600,29 @@ def verify_prerequisite_evidence_bytes(
     receipt_evidence: dict[str, Any],
     data: bytes,
 ) -> dict[str, Any]:
-    """Verify canonical packaged bytes, receipt digest, and gate semantics."""
+    """Verify canonical packaged bytes, receipt digest, and gate semantics.
+
+    Parameters
+    ----------
+    gate
+        Supported prerequisite gate name.
+    bindings
+        Expected identity bindings for the evidence.
+    receipt_evidence
+        Receipt digest envelope.
+    data
+        Packaged canonical evidence bytes.
+
+    Returns
+    -------
+    dict[str, Any]
+        Parsed and validated evidence object.
+
+    Raises
+    ------
+    ValueError
+        If the digest, encoding, gate, bindings, or evidence is invalid.
+    """
     if set(receipt_evidence) != {"evidence_sha256"} or not _is_sha256(
         receipt_evidence.get("evidence_sha256")
     ):

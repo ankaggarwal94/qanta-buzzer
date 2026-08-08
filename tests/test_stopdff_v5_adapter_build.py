@@ -78,7 +78,10 @@ def test_dataset_index_rejects_non_string_text_and_answer(tmp_path, field):
 
 def test_adapter_similarity_fields_keep_six_decimal_identity_contract():
     class FakeModel:
+        calls = 0
+
         def encode(self, values, *, convert_to_numpy):
+            self.calls += 1
             assert convert_to_numpy is True
             vectors = {
                 "option one": [1.0, 0.0],
@@ -88,6 +91,7 @@ def test_adapter_similarity_fields_keep_six_decimal_identity_contract():
             }
             return np.asarray([vectors[value] for value in values], dtype=float)
 
+    model = FakeModel()
     rows = adapter_build._score_question_rows(
         {
             "qid": "q",
@@ -98,10 +102,11 @@ def test_adapter_similarity_fields_keep_six_decimal_identity_contract():
             "answer_primary": "option two",
             "category": "test",
         },
-        FakeModel(),
+        model,
         "val",
     )
 
+    assert model.calls == 1
     for row in rows:
         for field in (
             "prefix_fraction",

@@ -14,16 +14,21 @@ from __future__ import annotations
 import argparse
 import importlib.metadata as im
 import json
-import shutil
+import os
 import subprocess
 import sys
 import tempfile
 import uuid
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 
 _REPO = Path(__file__).resolve().parents[1]
-if str(_REPO) not in sys.path:
-    sys.path.insert(0, str(_REPO))
+_REPO_IMPORT_ROOT = str(_REPO)
+# Membership is not precedence: checkout B can otherwise remain before the
+# reviewed checkout A on PYTHONPATH.  Make this entrypoint's checkout the
+# authoritative import root before loading evidentiary producer code.
+sys.path[:] = [entry for entry in sys.path if entry != _REPO_IMPORT_ROOT]
+sys.path.insert(0, _REPO_IMPORT_ROOT)
 
 from scripts.stopdff_v5 import (  # noqa: E402
     adapter_build,
@@ -50,16 +55,83 @@ from scripts.stopdff_v5.manifests import (  # noqa: E402
     fvi_study_identity,
     run_spec_identity,
 )
+from scripts.stopdff_v5.receipt_evidence import MUTATION_ROSTER  # noqa: E402
+
+
+_IMPORTED_PRODUCER_MODULES: tuple[ModuleType, ...] = (
+    adapter_build,
+    checker,
+    fvi_study,
+    producers,
+    profile,
+    selftest,
+    sweep,
+    writers,
+    sys.modules[build_bootstrap_plan.__module__],
+    sys.modules[build_manifest.__module__],
+    sys.modules[environment_contract_identity.__module__],
+)
+
+
+def _verify_imported_producer_origins() -> None:
+    """Fail unless every imported producer came from this exact checkout."""
+    repo = _REPO.resolve()
+    modules = {module.__name__: module for module in _IMPORTED_PRODUCER_MODULES}
+    modules.update(
+        {
+            name: module
+            for name, module in sys.modules.items()
+            if isinstance(module, ModuleType)
+            and (
+                name == "scripts.stopdff_v5"
+                or name.startswith("scripts.stopdff_v5.")
+                or name == "qb_data"
+                or name.startswith("qb_data.")
+            )
+        }
+    )
+    for name, module in sorted(modules.items()):
+        origin = getattr(module, "__file__", None)
+        if not isinstance(origin, str):
+            raise ValueError(
+                f"imported producer {name} has no filesystem origin"
+            )
+        stem = repo.joinpath(*name.split("."))
+        expected = (
+            stem / "__init__.py"
+            if (stem / "__init__.py").is_file()
+            else stem.with_suffix(".py")
+        )
+        try:
+            actual = Path(origin).resolve(strict=True)
+            expected = expected.resolve(strict=True)
+        except (FileNotFoundError, OSError) as exc:
+            raise ValueError(
+                f"imported producer {name} has an invalid origin"
+            ) from exc
+        if actual != expected:
+            raise ValueError(
+                "imported producer does not originate from the executing "
+                f"repository: {name} ({actual} != {expected})"
+            )
 
 
 def _versions() -> dict[str, str]:
-    out = {}
+    out: dict[str, str] = {}
+    missing: list[str] = []
     for name in ENVIRONMENT_PACKAGES:
         try:
             out[name] = im.version(name)
         except im.PackageNotFoundError:
-            pass
-    return out
+            missing.append(name)
+    if missing:
+        raise ValueError(
+            "required environment distributions are missing: "
+            + ", ".join(missing)
+        )
+    if set(out) != set(ENVIRONMENT_PACKAGES):
+        raise ValueError("environment package set is not the declared closed set")
+    return {name: out[name] for name in ENVIRONMENT_PACKAGES}
 
 
 def _verified_local_source_execution(
@@ -67,6 +139,7 @@ def _verified_local_source_execution(
     source_manifest: dict,
 ) -> dict[str, str]:
     """Rehash the executing clean checkout against its source snapshot."""
+    _verify_imported_producer_origins()
     identity = source_manifest.get("identity")
     if (
         not isinstance(identity, dict)
@@ -164,7 +237,232 @@ def _run_bound_sweep(
     return aggregate, result
 
 
+_LOCAL_LIFECYCLE_FILE = "local_lifecycle.json"
+_LOCAL_LIFECYCLE_SCHEMA_VERSION = 1
+
+
+def _atomic_write_json(path: Path, value: dict) -> None:
+    """Publish a small lifecycle checkpoint with replace semantics."""
+    path = Path(path)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(temporary, "x", encoding="utf-8") as handle:
+            handle.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _lifecycle_contract(*, args, run_sha: str) -> dict:
+    return {
+        "schema_version": _LOCAL_LIFECYCLE_SCHEMA_VERSION,
+        "run_sha": run_sha,
+        "variant": args.variant,
+        "skip_fvi_study": args.skip_fvi_study,
+        "fvi_tolerance": args.fvi_tolerance,
+        "fvi_max_iterations": args.fvi_max_iterations,
+        "allow_low_mc_retention": args.allow_low_mc_retention,
+    }
+
+
+def _load_or_create_lifecycle(
+    *,
+    out: Path,
+    args,
+    run_sha: str,
+    resume: bool,
+) -> dict:
+    path = out / _LOCAL_LIFECYCLE_FILE
+    expected = _lifecycle_contract(args=args, run_sha=run_sha)
+    if resume:
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(
+                "--resume before sweep creation requires local_lifecycle.json"
+            )
+        state = loads_no_duplicate_keys(path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            raise ValueError("local lifecycle checkpoint is invalid")
+        actual_contract = {
+            key: state.get(key)
+            for key in expected
+        }
+        if actual_contract != expected:
+            raise ValueError("local lifecycle checkpoint does not match this command")
+        executions = state.get("adapter_executions")
+        if not isinstance(executions, dict):
+            raise ValueError("local lifecycle adapter execution map is invalid")
+        return state
+    state = {**expected, "adapter_executions": {}}
+    _atomic_write_json(path, state)
+    return state
+
+
+def _validate_checkpointed_mutation_results(results: object) -> list[dict]:
+    """Return a complete successful mutation roster or fail closed."""
+    if not isinstance(results, list) or tuple(
+        result.get("mutation") if isinstance(result, dict) else None
+        for result in results
+    ) != MUTATION_ROSTER:
+        raise ValueError("local lifecycle mutation roster is invalid")
+    expected_fields = {"mutation", "expected", "passed_check", "ok", "errors"}
+    for index, result in enumerate(results):
+        expected = "PASS" if index == 0 else "REJECT"
+        passed_check = index == 0
+        if (
+            not isinstance(result, dict)
+            or set(result) != expected_fields
+            or result.get("expected") != expected
+            or result.get("passed_check") is not passed_check
+            or result.get("ok") is not True
+            or not isinstance(result.get("errors"), list)
+            or any(
+                not isinstance(error, str)
+                for error in result.get("errors", [])
+            )
+        ):
+            raise ValueError("local lifecycle mutation outcome is invalid")
+    return results
+
+
+def _checkpoint_adapter_execution(
+    *,
+    out: Path,
+    state: dict,
+    stage: str,
+    execution_id: str,
+    adapter_id: str,
+) -> None:
+    executions = state["adapter_executions"]
+    existing = executions.get(stage)
+    value = {"execution_id": execution_id, "adapter_id": adapter_id}
+    if existing is not None and existing != value:
+        raise ValueError(f"local lifecycle {stage} checkpoint mismatch")
+    executions[stage] = value
+    _atomic_write_json(out / _LOCAL_LIFECYCLE_FILE, state)
+
+
+def _adapter_execution_id(
+    *,
+    state: dict,
+    stage: str,
+    adapter_id: str,
+) -> str:
+    record = state["adapter_executions"].get(stage)
+    if (
+        not isinstance(record, dict)
+        or record.get("adapter_id") != adapter_id
+        or not isinstance(record.get("execution_id"), str)
+        or not record["execution_id"].startswith("local-")
+    ):
+        raise ValueError(f"local lifecycle {stage} execution is not checkpointed")
+    return record["execution_id"]
+
+
+def _variant_run_candidates(out: Path, variant: str) -> list[Path]:
+    runs_dir = out / "runs"
+    prefix = f"{variant}_local_"
+    if not runs_dir.is_dir() or runs_dir.is_symlink():
+        return []
+    return sorted(
+        path
+        for path in runs_dir.iterdir()
+        if (
+            path.name.startswith(prefix)
+            and not path.is_symlink()
+            and path.is_dir()
+        )
+    )
+
+
+def _publish_stage_directory(
+    *,
+    out: Path,
+    target_name: str,
+    build,
+):
+    """Build away from the public path and atomically publish the directory."""
+    target = out / target_name
+    if target.exists() or target.is_symlink():
+        raise FileExistsError(f"local stage already exists: {target_name}")
+    with tempfile.TemporaryDirectory(prefix=f".{target_name}-", dir=out) as holder:
+        staged = Path(holder) / "artifact"
+        result = build(staged)
+        staged.replace(target)
+        directory = os.open(out, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return result
+
+
+def _load_valid_adapter_stage(
+    path: Path,
+    *,
+    source_id: str,
+    raw_id: str,
+    model_id: str,
+) -> dict:
+    result = checker.validate_adapter(path)
+    manifest = checker.load_json(path / "manifest.json")
+    identity = manifest.get("identity") if isinstance(manifest, dict) else None
+    expected = {
+        "source_manifest_id": source_id,
+        "raw_input_bundle_id": raw_id,
+        "model_snapshot_id": model_id,
+    }
+    if (
+        not result.passed
+        or not isinstance(identity, dict)
+        or result.recomputed.get("adapter_bundle_id") != manifest.get("id")
+        or any(identity.get(key) != value for key, value in expected.items())
+    ):
+        raise ValueError(
+            "local adapter stage is invalid or bound to different inputs: "
+            + "; ".join(result.errors[:10])
+        )
+    return manifest
+
+
+def _worktree_status_command(
+    *,
+    repo_root: Path,
+    out: Path,
+    resume: bool,
+) -> list[str]:
+    """Build the clean-tree query while excluding only resumed output bytes."""
+    command = [
+        "git",
+        "-C",
+        str(repo_root),
+        "status",
+        "--porcelain",
+        "--untracked-files=normal",
+        "--",
+        ".",
+    ]
+    if not resume:
+        return command
+    try:
+        relative_out = out.relative_to(repo_root)
+    except ValueError:
+        return command
+    if relative_out == Path("."):
+        raise ValueError("--out-dir cannot be the repository root")
+    command.append(f":(top,exclude){relative_out.as_posix()}")
+    return command
+
+
 def main(argv: list[str] | None = None) -> int:
+    _verify_imported_producer_origins()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-dir", type=Path, default=_REPO / "data" / "processed")
     ap.add_argument("--paper-exports", type=Path, default=_REPO / "paper_exports")
@@ -193,15 +491,17 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.variant == "final" and args.skip_fvi_study:
         raise ValueError("final runs cannot skip the FVI selection study")
+    repo_root = args.repo_root.resolve()
+    out = Path(args.out_dir).absolute()
+    if out.resolve(strict=False) != out:
+        raise ValueError("--out-dir must not traverse symlinked path components")
+    status_command = _worktree_status_command(
+        repo_root=repo_root,
+        out=out,
+        resume=args.resume,
+    )
     status = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(args.repo_root),
-            "status",
-            "--porcelain",
-            "--untracked-files=normal",
-        ],
+        status_command,
         check=True,
         capture_output=True,
         text=True,
@@ -211,41 +511,73 @@ def main(argv: list[str] | None = None) -> int:
 
     run_sha = subprocess.run(["git", "-C", str(args.repo_root), "rev-parse", "HEAD"],
                              check=True, capture_output=True, text=True).stdout.strip()
-    out = Path(args.out_dir)
-    if args.resume:
+    runs_dir = out / "runs"
+    if runs_dir.is_symlink():
+        raise ValueError("local runs directory must not be a symlink")
+    if args.resume and _variant_run_candidates(out, args.variant):
         return _resume_local_run(
             args=args,
             out=out,
             run_sha=run_sha,
         )
+    if args.resume:
+        if out.is_symlink() or not out.is_dir():
+            raise ValueError("--resume requires an existing canonical --out-dir")
+    else:
+        out.mkdir(parents=True, exist_ok=False)
+    lifecycle = _load_or_create_lifecycle(
+        out=out,
+        args=args,
+        run_sha=run_sha,
+        resume=args.resume,
+    )
 
-    with tempfile.TemporaryDirectory(prefix="stopdff_v5_source_") as source_work:
-        print("== source snapshot ==")
-        staged_source = Path(source_work) / "source_snapshot"
-        src_man = producers.build_source_snapshot(
-            args.repo_root,
-            run_sha,
-            staged_source,
+    print("== source snapshot ==")
+    source_stage = out / "source_snapshot"
+    if source_stage.exists() or source_stage.is_symlink():
+        src_man = _load_bound_content_manifest(
+            source_stage,
+            manifest_name="source_manifest.json",
+            expected_kind="source_snapshot",
+            file_key="files",
+            name_key="path",
+            content_subdir="source",
         )
-        source_id = src_man["id"]
-        source_execution = _verified_local_source_execution(
-            args.repo_root,
-            src_man,
+        if src_man["identity"].get("git_sha") != run_sha:
+            raise ValueError("local source snapshot does not match executing commit")
+    else:
+        src_man = _publish_stage_directory(
+            out=out,
+            target_name="source_snapshot",
+            build=lambda staged: producers.build_source_snapshot(
+                args.repo_root,
+                run_sha,
+                staged,
+            ),
         )
-        print("  source_manifest_id", source_id)
+    source_id = src_man["id"]
+    source_execution = _verified_local_source_execution(args.repo_root, src_man)
+    print("  source_manifest_id", source_id)
 
+    recorded_mutations = lifecycle.get("mutation_results")
+    if recorded_mutations is not None:
+        mutation_results = _validate_checkpointed_mutation_results(
+            recorded_mutations
+        )
+        mutation_ok = True
+    else:
         with tempfile.TemporaryDirectory(prefix="stopdff_v5_selftest_") as work:
             mutation_ok, mutation_results = selftest.run_self_test(Path(work))
-        if not mutation_ok:
-            failed = [
-                result["mutation"]
-                for result in mutation_results
-                if not result["ok"]
-            ]
-            raise ValueError(f"v5 mutation gate failed: {failed}")
-
-        out.mkdir(parents=True, exist_ok=False)
-        shutil.copytree(staged_source, out / "source_snapshot")
+        if mutation_ok:
+            lifecycle["mutation_results"] = mutation_results
+            _atomic_write_json(out / _LOCAL_LIFECYCLE_FILE, lifecycle)
+    if not mutation_ok:
+        failed = [
+            result["mutation"]
+            for result in mutation_results
+            if not result["ok"]
+        ]
+        raise ValueError(f"v5 mutation gate failed: {failed}")
 
     print("== stage raw inputs ==")
     roles = {
@@ -260,78 +592,184 @@ def main(argv: list[str] | None = None) -> int:
         "threshold_manifest.json": args.repo_root / "threshold_manifest.json",
         "threshold_manifest.json.sha256": args.repo_root / "threshold_manifest.json.sha256",
     }
-    raw_man = producers.stage_raw_inputs(roles, out / "raw_inputs")
+    raw_stage = out / "raw_inputs"
+    if raw_stage.exists() or raw_stage.is_symlink():
+        raw_man = _load_bound_content_manifest(
+            raw_stage,
+            manifest_name="raw_input_manifest.json",
+            expected_kind="raw_input_bundle",
+            file_key="files",
+            name_key="role",
+            content_subdir="raw",
+        )
+    else:
+        raw_man = _publish_stage_directory(
+            out=out,
+            target_name="raw_inputs",
+            build=lambda staged: producers.stage_raw_inputs(roles, staged),
+        )
     raw_id = raw_man["id"]
     myopic_sha = next(f["sha256"] for f in raw_man["identity"]["files"] if f["role"] == "stopdff.json")
     raw_dir = out / "raw_inputs" / "raw"
     print("  raw_input_bundle_id", raw_id)
 
     print("== model snapshot (all-MiniLM-L6-v2, pinned revision) ==")
-    model_man = adapter_build.freeze_model_snapshot(out / "model")
+    model_stage = out / "model"
+    if model_stage.exists() or model_stage.is_symlink():
+        model_man = _load_bound_content_manifest(
+            model_stage,
+            manifest_name="model_snapshot_manifest.json",
+            expected_kind="model_snapshot",
+            file_key="files",
+            name_key="path",
+            content_subdir="snapshot",
+        )
+    else:
+        model_man = _publish_stage_directory(
+            out=out,
+            target_name="model",
+            build=adapter_build.freeze_model_snapshot,
+        )
+        model_man["snapshot_dir"] = str(model_stage / "snapshot")
+        _atomic_write_json(
+            model_stage / "model_snapshot_manifest.json",
+            model_man,
+        )
     model_id = model_man["id"]
     print("  model_snapshot_id", model_id, "rev", model_man["identity"]["model_revision"])
 
     print("== adapter bundle (CPU scoring) ==")
     adapter_dir = out / "adapter_bundle"
-    first_build_execution_id = f"local-{uuid.uuid4().hex}"
-    adapter_man = adapter_build.build_adapter_bundle(
-        mc_dataset_path=raw_dir / "mc_dataset.json", val_dataset_path=raw_dir / "val_dataset.json",
-        test_dataset_path=raw_dir / "test_dataset.json", calibration_path=raw_dir / "calibration.json",
-        model_snapshot_dir=out / "model" / "snapshot", out_dir=adapter_dir,
-        source_manifest_id=source_id, raw_input_bundle_id=raw_id, model_snapshot_id=model_id,
-        producer_hashes={"adapter_build.py": sha256_file(_REPO / "scripts/stopdff_v5/adapter_build.py")},
-        allow_low_mc_retention=args.allow_low_mc_retention,
-    )
-    adapter_id = adapter_man["id"]
-    adapter_result = checker.validate_adapter(adapter_dir)
-    if (
-        not adapter_result.passed
-        or adapter_result.recomputed.get("adapter_bundle_id") != adapter_id
-    ):
-        raise ValueError(
-            "new adapter failed validation: "
-            + "; ".join(adapter_result.errors)
+    if adapter_dir.exists() or adapter_dir.is_symlink():
+        adapter_man = _load_valid_adapter_stage(
+            adapter_dir,
+            source_id=source_id,
+            raw_id=raw_id,
+            model_id=model_id,
         )
+    else:
+        def build_primary_adapter(staged: Path) -> dict:
+            return adapter_build.build_adapter_bundle(
+                mc_dataset_path=raw_dir / "mc_dataset.json",
+                val_dataset_path=raw_dir / "val_dataset.json",
+                test_dataset_path=raw_dir / "test_dataset.json",
+                calibration_path=raw_dir / "calibration.json",
+                model_snapshot_dir=out / "model" / "snapshot",
+                out_dir=staged,
+                source_manifest_id=source_id,
+                raw_input_bundle_id=raw_id,
+                model_snapshot_id=model_id,
+                producer_hashes={
+                    "adapter_build.py": sha256_file(
+                        _REPO / "scripts/stopdff_v5/adapter_build.py"
+                    )
+                },
+                allow_low_mc_retention=args.allow_low_mc_retention,
+            )
+
+        adapter_man = _publish_stage_directory(
+            out=out,
+            target_name="adapter_bundle",
+            build=build_primary_adapter,
+        )
+    adapter_id = adapter_man["id"]
+    _load_valid_adapter_stage(
+        adapter_dir,
+        source_id=source_id,
+        raw_id=raw_id,
+        model_id=model_id,
+    )
+    if "adapter_bundle" not in lifecycle["adapter_executions"]:
+        _checkpoint_adapter_execution(
+            out=out,
+            state=lifecycle,
+            stage="adapter_bundle",
+            execution_id=f"local-{uuid.uuid4().hex}",
+            adapter_id=adapter_id,
+        )
+    first_build_execution_id = _adapter_execution_id(
+        state=lifecycle,
+        stage="adapter_bundle",
+        adapter_id=adapter_id,
+    )
     print("  adapter_bundle_id", adapter_id)
 
     rows = checker.load_adapter_rows(adapter_dir)
     calibration = json.loads((adapter_dir / "calibration.json").read_text())
 
-    if args.skip_fvi_study:
-        selected = {"tolerance": args.fvi_tolerance, "max_iterations": args.fvi_max_iterations}
-        fvi_identity = {
-            "kind": "fvi_study_fixed",
-            "adapter_bundle_id": adapter_id,
-            "selected": selected,
-        }
-        fvi_manifest = build_manifest(fvi_identity)
+    fvi_path = out / "fvi_study.json"
+    if fvi_path.exists() or fvi_path.is_symlink():
+        if fvi_path.is_symlink() or not fvi_path.is_file():
+            raise ValueError("local FVI stage is not a canonical file")
+        fvi_manifest = checker.load_json(fvi_path)
+        fvi_identity = (
+            fvi_manifest.get("identity")
+            if isinstance(fvi_manifest, dict)
+            else None
+        )
+        if (
+            not isinstance(fvi_identity, dict)
+            or compute_id(fvi_identity) != fvi_manifest.get("id")
+            or fvi_identity.get("adapter_bundle_id") != adapter_id
+        ):
+            raise ValueError("local FVI stage is invalid or bound to another adapter")
+        selected = (
+            fvi_identity.get("selected_parameters")
+            if fvi_identity.get("kind") == "fvi_study"
+            else fvi_identity.get("selected")
+        )
+        expected_kind = "fvi_study_fixed" if args.skip_fvi_study else "fvi_study"
+        if fvi_identity.get("kind") != expected_kind or not isinstance(selected, dict):
+            raise ValueError("local FVI stage does not match this command")
+        if args.skip_fvi_study and selected != {
+            "tolerance": args.fvi_tolerance,
+            "max_iterations": args.fvi_max_iterations,
+        }:
+            raise ValueError("local fixed FVI parameters do not match this command")
         fvi_id = fvi_manifest["id"]
-        print("== FVI: fixed params (study skipped) ==", selected)
+        print("== FVI: reused verified stage ==", selected)
     else:
-        print("== FVI candidate study + selector (slow on CPU) ==")
-        study = fvi_study.run_fvi_study(rows=rows, calibration_json=calibration)
-        selected = study["selected_parameters"]
-        if selected is None:
-            print("FVI selector found no eligible candidate", file=sys.stderr)
-            return 1
-        fvi_identity = fvi_study_identity(
-            adapter_bundle_id=adapter_id, candidate_grid=study["candidate_grid"],
-            representative_generator=study["representative_cell_generator"],
-            candidate_results=study["candidate_convergence_results"],
-            strict_reference_results=study["strict_reference"], selector_rule=study["selector_rule"],
-            selected_parameters=selected, all96_validation=study["all96_fit_only_validation"],
-            producer_hashes={
-                name: sha256_file(_REPO / "scripts" / "stopdff_v5" / name)
-                for name in FVI_PRODUCER_FILES
-            })
-        fvi_manifest = build_manifest(fvi_identity)
-        fvi_id = fvi_manifest["id"]
-        print("  selected", selected, "fvi_study_id", fvi_id)
-    sweep._write_bound_json(
-        out / "fvi_study.json",
-        fvi_manifest,
-        resume=False,
-    )
+        if args.skip_fvi_study:
+            selected = {
+                "tolerance": args.fvi_tolerance,
+                "max_iterations": args.fvi_max_iterations,
+            }
+            fvi_identity = {
+                "kind": "fvi_study_fixed",
+                "adapter_bundle_id": adapter_id,
+                "selected": selected,
+            }
+            fvi_manifest = build_manifest(fvi_identity)
+            fvi_id = fvi_manifest["id"]
+            print("== FVI: fixed params (study skipped) ==", selected)
+        else:
+            print("== FVI candidate study + selector (slow on CPU) ==")
+            study = fvi_study.run_fvi_study(
+                rows=rows,
+                calibration_json=calibration,
+            )
+            selected = study["selected_parameters"]
+            if selected is None:
+                print("FVI selector found no eligible candidate", file=sys.stderr)
+                return 1
+            fvi_identity = fvi_study_identity(
+                adapter_bundle_id=adapter_id,
+                candidate_grid=study["candidate_grid"],
+                representative_generator=study["representative_cell_generator"],
+                candidate_results=study["candidate_convergence_results"],
+                strict_reference_results=study["strict_reference"],
+                selector_rule=study["selector_rule"],
+                selected_parameters=selected,
+                all96_validation=study["all96_fit_only_validation"],
+                producer_hashes={
+                    name: sha256_file(_REPO / "scripts" / "stopdff_v5" / name)
+                    for name in FVI_PRODUCER_FILES
+                },
+            )
+            fvi_manifest = build_manifest(fvi_identity)
+            fvi_id = fvi_manifest["id"]
+            print("  selected", selected, "fvi_study_id", fvi_id)
+        sweep._write_bound_json(fvi_path, fvi_manifest, resume=False)
 
     versions = _versions()
     environment_identity = environment_contract_identity(
@@ -379,23 +817,50 @@ def main(argv: list[str] | None = None) -> int:
     if args.variant == "final":
         print("== required deterministic two-build adapter gate ==")
         second_adapter_dir = out / "adapter_bundle_determinism"
-        second_build_execution_id = f"local-{uuid.uuid4().hex}"
-        second_adapter = adapter_build.build_adapter_bundle(
-            mc_dataset_path=raw_dir / "mc_dataset.json",
-            val_dataset_path=raw_dir / "val_dataset.json",
-            test_dataset_path=raw_dir / "test_dataset.json",
-            calibration_path=raw_dir / "calibration.json",
-            model_snapshot_dir=out / "model" / "snapshot",
-            out_dir=second_adapter_dir,
-            source_manifest_id=source_id,
-            raw_input_bundle_id=raw_id,
-            model_snapshot_id=model_id,
-            producer_hashes={
-                "adapter_build.py": sha256_file(
-                    _REPO / "scripts/stopdff_v5/adapter_build.py"
+        if second_adapter_dir.exists() or second_adapter_dir.is_symlink():
+            second_adapter = _load_valid_adapter_stage(
+                second_adapter_dir,
+                source_id=source_id,
+                raw_id=raw_id,
+                model_id=model_id,
+            )
+        else:
+            def build_second_adapter(staged: Path) -> dict:
+                return adapter_build.build_adapter_bundle(
+                    mc_dataset_path=raw_dir / "mc_dataset.json",
+                    val_dataset_path=raw_dir / "val_dataset.json",
+                    test_dataset_path=raw_dir / "test_dataset.json",
+                    calibration_path=raw_dir / "calibration.json",
+                    model_snapshot_dir=out / "model" / "snapshot",
+                    out_dir=staged,
+                    source_manifest_id=source_id,
+                    raw_input_bundle_id=raw_id,
+                    model_snapshot_id=model_id,
+                    producer_hashes={
+                        "adapter_build.py": sha256_file(
+                            _REPO / "scripts/stopdff_v5/adapter_build.py"
+                        )
+                    },
+                    allow_low_mc_retention=args.allow_low_mc_retention,
                 )
-            },
-            allow_low_mc_retention=args.allow_low_mc_retention,
+
+            second_adapter = _publish_stage_directory(
+                out=out,
+                target_name="adapter_bundle_determinism",
+                build=build_second_adapter,
+            )
+        if "adapter_bundle_determinism" not in lifecycle["adapter_executions"]:
+            _checkpoint_adapter_execution(
+                out=out,
+                state=lifecycle,
+                stage="adapter_bundle_determinism",
+                execution_id=f"local-{uuid.uuid4().hex}",
+                adapter_id=second_adapter["id"],
+            )
+        second_build_execution_id = _adapter_execution_id(
+            state=lifecycle,
+            stage="adapter_bundle_determinism",
+            adapter_id=second_adapter["id"],
         )
         compared = (
             "fit_rows.jsonl.gz",
@@ -501,17 +966,56 @@ def main(argv: list[str] | None = None) -> int:
         )
         smoke_id = compute_id(smoke_spec)
         smoke_root = out / "runs" / f"smoke_local_{smoke_id[:12]}"
-        smoke_aggregate, smoke_result = _run_bound_sweep(
-            adapter_dir=adapter_dir,
-            run_spec=smoke_spec,
-            plan=smoke_plan,
-            run_root=smoke_root,
-            myopic_sha256=myopic_sha,
-            producer_hashes=producer_hashes,
-            environment=environment_record,
-            cells=profile.smoke_cells(),
-            command=["run_stopdff_v5_local", "--variant", "smoke"],
-        )
+        if smoke_root.resolve(strict=False) != smoke_root.absolute():
+            raise ValueError("local smoke run path must not traverse symlinks")
+        smoke_result = None
+        smoke_aggregate = None
+        if args.resume and smoke_root.is_dir() and not smoke_root.is_symlink():
+            existing_smoke = checker.validate_run(
+                smoke_root,
+                backend="local",
+                adapter_bundle=adapter_dir,
+                require_final_profile=False,
+                require_package=False,
+            )
+            aggregate_path = smoke_root / "aggregate.json"
+            if existing_smoke.passed and aggregate_path.is_file():
+                candidate = checker.load_json(aggregate_path)
+                if candidate.get("release_status") == "VALID":
+                    smoke_result = existing_smoke
+                    smoke_aggregate = candidate
+        if smoke_aggregate is None:
+            smoke_resume = args.resume and smoke_root.is_dir()
+            smoke_attempt = (
+                _next_resume_attempt(
+                    smoke_root,
+                    run_spec_id=smoke_id,
+                    adapter_id=adapter_id,
+                    bootstrap_plan_id=compute_id(_plan_ident(smoke_plan)),
+                )
+                if smoke_resume
+                else 1
+            )
+            smoke_aggregate, smoke_result = _run_bound_sweep(
+                adapter_dir=adapter_dir,
+                run_spec=smoke_spec,
+                plan=smoke_plan,
+                run_root=smoke_root,
+                myopic_sha256=myopic_sha,
+                producer_hashes=producer_hashes,
+                environment=environment_record,
+                cells=profile.smoke_cells(),
+                command=[
+                    "run_stopdff_v5_local",
+                    "--variant",
+                    "smoke",
+                    *(["--resume"] if smoke_resume else []),
+                ],
+                resume=smoke_resume,
+                attempt_number=smoke_attempt,
+            )
+        assert smoke_result is not None
+        assert smoke_aggregate is not None
         if (
             not smoke_result.passed
             or smoke_aggregate["release_status"] != "VALID"

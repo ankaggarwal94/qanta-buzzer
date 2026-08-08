@@ -40,7 +40,7 @@
                      "interval": {"const": "percentile_95"},
                      "resampling_unit": {"const": "item"},
                      "common_resamples_across_cells": {"const": true}}},
-    "gate": {"$ref": "stopdff_gate_policy.schema.json"},
+    "gate": {"$ref": "stopdff_gate_policy.schema.json#/$defs/static_gate"},
     "expected_cells": {"const": 96}
   }
 }

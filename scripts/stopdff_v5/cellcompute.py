@@ -48,6 +48,80 @@ class CellResult:
     descriptive: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class CellInputs:
+    """Invocation-local reusable inputs for a family of cell computations."""
+
+    rows: Sequence[dict]
+    calibration_json: dict | None
+    val_mc_rows: list[dict]
+    trajectories_by_split: dict[str, list[_Traj]] = field(default_factory=dict)
+    calibrators: dict[str, Calibrator] = field(default_factory=dict)
+    calibrated_trajectories: dict[
+        tuple[str, str],
+        list[list[float]],
+    ] = field(default_factory=dict)
+
+
+def prepare_cell_inputs(
+    rows: Sequence[dict],
+    calibration_json: dict | None,
+) -> CellInputs:
+    """Prepare immutable row groups for repeated cell computations.
+
+    Parameters
+    ----------
+    rows
+        Adapter rows shared by the cell family.
+    calibration_json
+        Optional precomputed calibration contract.
+
+    Returns
+    -------
+    CellInputs
+        Invocation-local groups and caches. The object must not be reused for
+        another run or a different calibration contract.
+    """
+    return CellInputs(
+        rows=rows,
+        calibration_json=calibration_json,
+        val_mc_rows=[
+            row
+            for row in rows
+            if row["split"] == "val" and row["format"] == "MC"
+        ],
+    )
+
+
+def _prepared_trajectories(
+    prepared: CellInputs,
+    split: str,
+) -> list[_Traj]:
+    trajectories = prepared.trajectories_by_split.get(split)
+    if trajectories is None:
+        trajectories = _group_trajectories(prepared.rows, split)
+        prepared.trajectories_by_split[split] = trajectories
+    return trajectories
+
+
+def _prepared_calibrated_trajectories(
+    prepared: CellInputs,
+    *,
+    calibrator_name: str,
+    split: str,
+    calibrator: Calibrator,
+) -> list[list[float]]:
+    key = (calibrator_name, split)
+    calibrated = prepared.calibrated_trajectories.get(key)
+    if calibrated is None:
+        calibrated = [
+            _calibrated_p(calibrator, trajectory)
+            for trajectory in _prepared_trajectories(prepared, split)
+        ]
+        prepared.calibrated_trajectories[key] = calibrated
+    return calibrated
+
+
 def _group_trajectories(rows: Sequence[dict], split: str) -> list[_Traj]:
     buckets: dict[tuple[str, str], list[dict]] = {}
     for r in rows:
@@ -100,25 +174,42 @@ def compute_cell(
     max_iterations: int,
     tolerance_label: str = "",
     metric_split: str = "test",
+    prepared: CellInputs | None = None,
 ) -> CellResult:
     schedule = get_schedule(cell["reward_schedule"])
     prefix_bucketing = cell["prefix_bucketing"]
-
-    val_mc_rows = [r for r in rows if r["split"] == "val" and r["format"] == "MC"]
+    if prepared is None:
+        prepared = prepare_cell_inputs(rows, calibration_json)
+    elif (
+        prepared.rows is not rows
+        or prepared.calibration_json != calibration_json
+    ):
+        raise ValueError("prepared cell inputs do not match computation inputs")
 
     # 1) calibrator (validation MC only)
+    calibrator_name = cell["calibrator"]
     try:
-        cal = fit_calibrator(
-            cell["calibrator"], mc_val_rows=val_mc_rows, calibration_json=calibration_json
-        )
+        cal = prepared.calibrators.get(calibrator_name)
+        if cal is None:
+            cal = fit_calibrator(
+                calibrator_name,
+                mc_val_rows=prepared.val_mc_rows,
+                calibration_json=calibration_json,
+            )
+            prepared.calibrators[calibrator_name] = cal
     except CalibratorFitError as exc:
         return CellResult(status="calibrator_failed", reason=str(exc))
 
     # 2) fit trajectories (val, both formats) + continuation estimator
-    fit_trajs = _group_trajectories(rows, "val")
+    fit_trajs = _prepared_trajectories(prepared, "val")
+    fit_probabilities = _prepared_calibrated_trajectories(
+        prepared,
+        calibrator_name=calibrator_name,
+        split="val",
+        calibrator=cal,
+    )
     fvi_fit: list[FitTrajectory] = []
-    for tr in fit_trajs:
-        p = _calibrated_p(cal, tr)
+    for tr, p in zip(fit_trajs, fit_probabilities, strict=True):
         obs = _obs_for(tr, p, prefix_bucketing)
         fvi_fit.append(
             FitTrajectory(
@@ -139,13 +230,18 @@ def compute_cell(
                           calibrator_parameters=cal.parameters())
 
     # 4) solve metric split (both formats), collect stop indices per item
-    metric_trajs = _group_trajectories(rows, metric_split)
+    metric_trajs = _prepared_trajectories(prepared, metric_split)
+    metric_probabilities = _prepared_calibrated_trajectories(
+        prepared,
+        calibrator_name=calibrator_name,
+        split=metric_split,
+        calibrator=cal,
+    )
     mc_stop: dict[str, DPTrace] = {}
     qa_stop: dict[str, DPTrace] = {}
     cov_primary = cov_fallback = cov_missing = 0
 
-    for tr in metric_trajs:
-        p = _calibrated_p(cal, tr)
+    for tr, p in zip(metric_trajs, metric_probabilities, strict=True):
         obs = _obs_for(tr, p, prefix_bucketing)
 
         def _cont(t, p, prefix_fraction, _obs=obs):

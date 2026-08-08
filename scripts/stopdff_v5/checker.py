@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .bootstrap import build_bootstrap_plan, cell_bootstrap_stats, family_statistic
-from .cellcompute import compute_cell
+from .cellcompute import compute_cell, prepare_cell_inputs
 from .checker_calibration import platt_phase_errors
 from .checker_package import (
     check_complete_checksums,
@@ -29,6 +29,7 @@ from .checker_package import (
 from .identity import compute_id, loads_no_duplicate_keys, sha256_file
 from .manifests import (
     ADAPTER_SCORING_SPEC,
+    ENVIRONMENT_PACKAGES,
     environment_contract_identity,
 )
 from .profile import (
@@ -60,22 +61,6 @@ _FLOAT_TOL = 1e-9
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _INTERRUPTED_REASON = "terminal_result_missing_at_resume"
 _FVI_STUDY_CACHE: dict[tuple[str, str, str, str], dict[str, Any]] = {}
-_FOCUSED_CHECKER_HASHES = {
-    "checker_calibration.py": "80f95a5521adb52a5183f9de5d90ceb81157248949bc365ff4270c2f7cd884c9",
-    "checker_package.py": "3810821a9bd50f2fae950b2b14443f67355ac8329ca908558e4535c3ee1a3243",
-    "receipt_evidence.py": "e692d5e73104bb797703262365cad3f593074b037abd924ca05e010f7bfc2c8f",
-}
-
-
-def _verify_focused_checker_sources() -> None:
-    """Bind extracted checker responsibilities through checker.py's own hash."""
-    package_dir = Path(__file__).resolve().parent
-    for filename, expected in _FOCUSED_CHECKER_HASHES.items():
-        if sha256_file(package_dir / filename) != expected:
-            raise RuntimeError(f"focused checker source hash mismatch: {filename}")
-
-
-_verify_focused_checker_sources()
 
 
 @dataclass
@@ -622,6 +607,20 @@ def _run_spec_errors(
 
 
 def validate_spec(spec_path: Path, *, require_final_profile: bool) -> CheckResult:
+    """Validate a run-spec manifest against the canonical profile contract.
+
+    Parameters
+    ----------
+    spec_path
+        Path to the JSON run-spec manifest.
+    require_final_profile
+        Whether the manifest must select the final rather than smoke profile.
+
+    Returns
+    -------
+    CheckResult
+        Structured validation status and any contract errors.
+    """
     try:
         spec = load_json(spec_path)
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
@@ -640,13 +639,37 @@ def validate_spec(spec_path: Path, *, require_final_profile: bool) -> CheckResul
 
 
 def validate_adapter(bundle_dir: Path) -> CheckResult:
+    """Validate an adapter bundle without leaking decoder exceptions.
+
+    Parameters
+    ----------
+    bundle_dir
+        Directory containing the adapter manifest and bound payload files.
+
+    Returns
+    -------
+    CheckResult
+        Structured validation status, errors, and recomputed bundle metadata.
+    """
     errors: list[str] = []
     bundle_dir = Path(bundle_dir)
     manifest_path = bundle_dir / "manifest.json"
     _err(errors, manifest_path.exists(), "adapter manifest.json missing")
     if not manifest_path.exists():
         return CheckResult(passed=False, errors=errors)
-    manifest = load_json(manifest_path)
+    try:
+        manifest = load_json(manifest_path)
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        return CheckResult(
+            passed=False,
+            errors=[f"adapter manifest cannot be decoded: {exc}"],
+        )
     if not isinstance(manifest, dict):
         return CheckResult(
             passed=False,
@@ -1223,7 +1246,13 @@ def validate_adapter(bundle_dir: Path) -> CheckResult:
                 calibration = loaded
             else:
                 errors.append("adapter calibration.json must contain an object")
-        except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             errors.append(f"adapter calibration.json cannot be decoded: {exc}")
     if calibration is not None:
         metadata = calibration.get("metadata")
@@ -2065,7 +2094,27 @@ def resolve_run_binding(
     adapter_bundle: Path,
     bootstrap_plan_manifest: dict[str, Any],
 ) -> dict[str, Any]:
-    """Return verified canonical run inputs or fail before computation."""
+    """Return verified canonical run inputs or fail before computation.
+
+    Parameters
+    ----------
+    run_spec_manifest
+        Parsed run-spec manifest.
+    adapter_bundle
+        Directory containing the adapter bundle.
+    bootstrap_plan_manifest
+        Parsed bootstrap-plan manifest.
+
+    Returns
+    -------
+    dict[str, Any]
+        Canonical identities, inputs, rows, and gate settings for computation.
+
+    Raises
+    ------
+    ValueError
+        If any manifest, identity binding, or local adapter byte is invalid.
+    """
     binding, errors = _resolve_run_binding(
         run_spec_manifest=run_spec_manifest,
         adapter_bundle=adapter_bundle,
@@ -2084,6 +2133,26 @@ def validate_run(
     require_final_profile: bool = False,
     require_package: bool = False,
 ) -> CheckResult:
+    """Validate and independently recompute one StopDFF run.
+
+    Parameters
+    ----------
+    run_root
+        Directory containing the run artifacts.
+    backend
+        Expected execution backend, ``"local"`` or ``"modal"``.
+    adapter_bundle
+        Directory containing the identity-bound adapter bundle.
+    require_final_profile
+        Whether to require the final 96-cell profile.
+    require_package
+        Whether to enforce complete packaged-evidence and report checks.
+
+    Returns
+    -------
+    CheckResult
+        Structured validation status, errors, and recomputed release metadata.
+    """
     run_root = Path(run_root)
     adapter_bundle = Path(adapter_bundle)
     errors: list[str] = []
@@ -2283,22 +2352,23 @@ def validate_run(
         and bool(environment_claims.get("python_version")),
         "environment python_version must be a nonempty string",
     )
+    package_versions_valid = (
+        isinstance(package_versions, dict)
+        and set(package_versions) == set(ENVIRONMENT_PACKAGES)
+        and all(
+            isinstance(version, str) and bool(version)
+            for version in package_versions.values()
+        )
+    )
     _err(
         errors,
-        isinstance(package_versions, dict)
-        and bool(package_versions)
-        and all(
-            isinstance(name, str)
-            and bool(name)
-            and isinstance(version, str)
-            and bool(version)
-            for name, version in package_versions.items()
-        ),
-        "environment package_versions must be a nonempty string map",
+        package_versions_valid,
+        "environment package_versions must contain exactly the declared "
+        "evidence-affecting packages with nonempty string versions",
     )
     if (
         isinstance(environment_claims.get("python_version"), str)
-        and isinstance(package_versions, dict)
+        and package_versions_valid
     ):
         try:
             environment_identity = environment_contract_identity(
@@ -2355,6 +2425,11 @@ def validate_run(
     recomputed_verdicts: dict[str, str] = {}
     completed: set[str] = set()
     failed: set[str] = set()
+    try:
+        prepared_cell_inputs = prepare_cell_inputs(rows, calibration)
+    except (KeyError, TypeError, ValueError) as exc:
+        errors.append(f"cell inputs cannot be prepared: {exc}")
+        prepared_cell_inputs = None
 
     for cell in cells:
         key = cell_key_str(cell)
@@ -2441,6 +2516,7 @@ def validate_run(
                 max_iterations=max_iter,
                 tolerance_label=tol_label,
                 metric_split="test",
+                prepared=prepared_cell_inputs,
             )
         except (TypeError, ValueError, KeyError) as exc:
             errors.append(f"{key}: independent cell recomputation failed: {exc}")

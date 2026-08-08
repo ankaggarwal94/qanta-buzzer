@@ -10,8 +10,10 @@ from . import PROTOCOL_VERSION
 from .identity import compute_id, loads_no_duplicate_keys, sha256_file
 from .manifests import FVI_PRODUCER_FILES, environment_contract_identity
 from .profile import FVI_MAX_ITERATIONS, FVI_STRICT_REFERENCE, FVI_TOLERANCES
-from .receipt_evidence import verify_prerequisite_evidence_bytes
-from .writers import validate_prerequisite_receipts
+from .receipt_evidence import (
+    validate_prerequisite_receipts,
+    verify_prerequisite_evidence_bytes,
+)
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _RECEIPT_GATES = ("smoke", "mutation", "determinism")

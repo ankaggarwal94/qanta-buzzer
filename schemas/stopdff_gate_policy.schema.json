@@ -14,6 +14,19 @@
     "allow_incomplete_mc_coverage": {"type": "boolean"}
   },
   "$defs": {
+    "static_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary_metric", "material_threshold", "family_statistic",
+                   "allow_low_mc_retention", "allow_incomplete_mc_coverage"],
+      "properties": {
+        "primary_metric": {"const": "median_absolute_prefix_index_shift"},
+        "material_threshold": {"const": "1"},
+        "family_statistic": {"const": "maximum_cell_median_absolute_prefix_index_shift"},
+        "allow_low_mc_retention": {"const": false},
+        "allow_incomplete_mc_coverage": {"const": false}
+      }
+    },
     "bellman": {
       "type": "object",
       "additionalProperties": false,

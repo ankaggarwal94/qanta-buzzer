@@ -20,7 +20,12 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from .cellcompute import CellResult, compute_cell
+from .cellcompute import (
+    CellInputs,
+    CellResult,
+    compute_cell,
+    prepare_cell_inputs,
+)
 from .profile import (
     FVI_MAX_ITERATIONS,
     FVI_STRICT_REFERENCE,
@@ -56,6 +61,7 @@ def run_candidate_on_cells(
     calibration_json: dict | None,
     tolerance_label: str,
     max_iterations: int,
+    prepared: CellInputs | None = None,
 ) -> dict[str, Any]:
     tol = float(tolerance_label)
     per_cell: dict[str, dict[str, Any]] = {}
@@ -66,6 +72,7 @@ def run_candidate_on_cells(
             rows=rows, cell=cell, calibration_json=calibration_json,
             tolerance=tol, max_iterations=max_iterations, tolerance_label=tolerance_label,
             metric_split="val",  # FVI study is fit-only
+            prepared=prepared,
         )
         m = _cell_metrics(res)
         per_cell[cell_key_str(cell)] = m
@@ -129,11 +136,13 @@ def run_fvi_study(
 ) -> dict[str, Any]:
     """Full data-dependent FVI study driver. Returns a study record + selected params."""
     rep_cells = representative_24()
+    prepared = prepare_cell_inputs(rows, calibration_json)
 
     strict = run_candidate_on_cells(
         rows=rows, cells=rep_cells, calibration_json=calibration_json,
         tolerance_label=FVI_STRICT_REFERENCE["tolerance"],
         max_iterations=int(FVI_STRICT_REFERENCE["max_iterations"]),
+        prepared=prepared,
     )
     if strict.get("all_converged") is not True:
         raise ValueError("strict FVI reference did not converge")
@@ -153,6 +162,7 @@ def run_fvi_study(
                     calibration_json=calibration_json,
                     tolerance_label=tol,
                     max_iterations=max_iter,
+                    prepared=prepared,
                 )
             eligible, reasons = candidate_is_eligible(rec, strict)
             rec["eligible"] = eligible
@@ -169,6 +179,7 @@ def run_fvi_study(
         val = run_candidate_on_cells(
             rows=rows, cells=all_grid, calibration_json=calibration_json,
             tolerance_label=cand["tolerance"], max_iterations=cand["max_iterations"],
+            prepared=prepared,
         )
         if val["all_converged"]:
             selected = {"tolerance": cand["tolerance"], "max_iterations": cand["max_iterations"]}

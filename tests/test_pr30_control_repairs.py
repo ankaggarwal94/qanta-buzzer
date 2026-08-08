@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import types
@@ -177,6 +180,37 @@ def test_raw_manifest_requires_kind_and_passing_semantics(tmp_path, monkeypatch)
             tmp_path,
             expected_id=wrong_kind["id"],
         )
+
+
+def test_modal_executing_source_rehash_rejects_remote_runtime_byte_drift(
+    tmp_path,
+    monkeypatch,
+):
+    runner = _load_modal_runner(monkeypatch)
+    manifest = runner._IMAGE_SOURCE_MANIFEST
+    source_id = manifest["id"]
+    staged_root = tmp_path / "volume" / "inputs" / f"source_{source_id}"
+    staged_root.mkdir(parents=True)
+    shutil.copytree(Path(runner.SOURCE_DIR), staged_root / "source")
+    (staged_root / "source_manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    runtime_root = tmp_path / "remote_src"
+    shutil.copytree(Path(runner.SOURCE_DIR), runtime_root)
+    drifted_entry = manifest["identity"]["files"][0]
+    runtime_path = runtime_root / drifted_entry["path"]
+    runtime_path.write_bytes(runtime_path.read_bytes() + b"\n# runtime drift\n")
+
+    runner.MNT = str(tmp_path / "volume")
+    runner.REMOTE_SRC = str(runtime_root)
+    runner.IMAGE_SOURCE_MANIFEST_ID = source_id
+    with pytest.raises(
+        ValueError,
+        match="executing source does not match source manifest",
+    ) as exc_info:
+        runner._verified_executing_source(source_id)
+    assert drifted_entry["path"] in str(exc_info.value)
 
 
 def test_adapter_build_is_fresh_only_and_fvi_cache_remains_bound(
@@ -669,3 +703,361 @@ def test_local_resume_attempt_and_sweep_context(tmp_path, monkeypatch):
     assert captured["ctx"].resume is True
     assert captured["ctx"].attempt["attempt"] == 3
     assert captured["ctx"].attempt["mode"] == "resume"
+
+
+def test_local_runner_makes_reviewed_checkout_authoritative_and_rejects_drift(
+    tmp_path,
+):
+    checkout_b = tmp_path / "checkout_b"
+    shutil.copytree(REPO / "scripts", checkout_b / "scripts")
+    foreign_adapter = checkout_b / "scripts" / "stopdff_v5" / "adapter_build.py"
+    foreign_adapter.write_text(
+        foreign_adapter.read_text(encoding="utf-8")
+        + "\n# runtime-byte-drift\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join((str(checkout_b), str(REPO)))
+
+    ordinary = subprocess.run(
+        [sys.executable, str(REPO / "scripts" / "run_stopdff_v5_local.py"), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert ordinary.returncode == 0, ordinary.stderr
+
+    probe = f"""
+import importlib.util
+import sys
+from pathlib import Path
+
+foreign = Path({str(checkout_b)!r})
+reviewed = Path({str(REPO)!r})
+sys.path.insert(0, str(foreign))
+from scripts.stopdff_v5 import adapter_build  # preload checkout B
+
+spec = importlib.util.spec_from_file_location(
+    "_reviewed_local_runner",
+    reviewed / "scripts" / "run_stopdff_v5_local.py",
+)
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+runtime = reviewed / "scripts" / "stopdff_v5" / "adapter_build.py"
+manifest = runner.build_manifest({{
+    "kind": "source_snapshot",
+    "files": [{{
+        "path": "scripts/stopdff_v5/adapter_build.py",
+        "sha256": runner.sha256_file(runtime),
+    }}],
+}})
+runner._verified_local_source_execution(reviewed, manifest)
+"""
+    drift = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert drift.returncode != 0
+    assert "does not originate from the executing repository" in drift.stderr
+
+
+def test_local_source_rehash_rejects_correct_origin_runtime_byte_drift(tmp_path):
+    reviewed = tmp_path / "reviewed"
+    shutil.copytree(REPO / "scripts", reviewed / "scripts")
+    shutil.copytree(REPO / "qb_data", reviewed / "qb_data")
+    probe = f"""
+import importlib.util
+import sys
+from pathlib import Path
+
+reviewed = Path({str(reviewed)!r})
+sys.path.insert(0, str(reviewed))
+spec = importlib.util.spec_from_file_location(
+    "_reviewed_local_runner_byte_drift",
+    reviewed / "scripts" / "run_stopdff_v5_local.py",
+)
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+relative = "scripts/stopdff_v5/adapter_build.py"
+runtime = reviewed / relative
+manifest = runner.build_manifest({{
+    "kind": "source_snapshot",
+    "files": [{{
+        "path": relative,
+        "sha256": runner.sha256_file(runtime),
+    }}],
+}})
+runtime.write_bytes(runtime.read_bytes() + b"\\n# runtime drift\\n")
+runner._verified_local_source_execution(reviewed, manifest)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert (
+        "executing source does not match source manifest: "
+        "scripts/stopdff_v5/adapter_build.py"
+    ) in result.stderr
+    assert "does not originate from the executing repository" not in result.stderr
+
+
+def test_local_versions_require_the_exact_declared_package_set(monkeypatch):
+    missing = ENVIRONMENT_PACKAGES[-1]
+
+    def incomplete(name):
+        if name == missing:
+            raise local_runner.im.PackageNotFoundError(name)
+        return f"version-{name}"
+
+    monkeypatch.setattr(local_runner.im, "version", incomplete)
+    with pytest.raises(ValueError, match=f"missing: {missing}"):
+        local_runner._versions()
+
+    monkeypatch.setattr(
+        local_runner.im,
+        "version",
+        lambda name: f"version-{name}",
+    )
+    versions = local_runner._versions()
+    assert tuple(versions) == ENVIRONMENT_PACKAGES
+    assert set(versions) == set(ENVIRONMENT_PACKAGES)
+
+
+def test_public_local_lifecycle_resumes_before_run_directory_exists(
+    tmp_path,
+    monkeypatch,
+):
+    out = tmp_path / "reproduction"
+    ids = {
+        "source": "1" * 64,
+        "raw": "2" * 64,
+        "model": "3" * 64,
+        "adapter": "4" * 64,
+    }
+    manifests = {
+        "source_snapshot": {
+            "id": ids["source"],
+            "identity": {
+                "kind": "source_snapshot",
+                "git_sha": "a" * 40,
+                "files": [],
+            },
+        },
+        "raw_inputs": {
+            "id": ids["raw"],
+            "identity": {
+                "kind": "raw_input_bundle",
+                "files": [
+                    {"role": "stopdff.json", "sha256": "b" * 64},
+                ],
+                "semantic_checks": {"all_semantic_checks_pass": True},
+            },
+        },
+        "model": {
+            "id": ids["model"],
+            "identity": {
+                "kind": "model_snapshot",
+                "model_revision": "c" * 40,
+                "files": [],
+            },
+        },
+    }
+    adapter_manifest = {
+        "id": ids["adapter"],
+        "identity": {
+            "source_manifest_id": ids["source"],
+            "raw_input_bundle_id": ids["raw"],
+            "model_snapshot_id": ids["model"],
+        },
+    }
+    calls = {"source": 0, "raw": 0, "model": 0, "adapter": 0, "run": 0}
+
+    def git_run(command, **_kwargs):
+        stdout = "" if "status" in command else "a" * 40 + "\n"
+        return types.SimpleNamespace(stdout=stdout)
+
+    monkeypatch.setattr(local_runner.subprocess, "run", git_run)
+    monkeypatch.setattr(
+        local_runner,
+        "_verified_local_source_execution",
+        lambda _repo, manifest: {
+            "environment": "local_clean_worktree",
+            "executing_source_manifest_id": manifest["id"],
+            "runtime_source_manifest_id": manifest["id"],
+        },
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_load_bound_content_manifest",
+        lambda base, **_kwargs: manifests[Path(base).name],
+    )
+
+    def source_build(_repo, _sha, staged):
+        calls["source"] += 1
+        staged.mkdir(parents=True)
+        return manifests["source_snapshot"]
+
+    def raw_build(_roles, staged):
+        calls["raw"] += 1
+        (staged / "raw").mkdir(parents=True)
+        return manifests["raw_inputs"]
+
+    def model_build(staged):
+        calls["model"] += 1
+        if calls["model"] == 1:
+            raise RuntimeError("interrupted before sweep creation")
+        (staged / "snapshot").mkdir(parents=True)
+        return manifests["model"]
+
+    def adapter_build(**kwargs):
+        calls["adapter"] += 1
+        destination = Path(kwargs["out_dir"])
+        destination.mkdir(parents=True)
+        (destination / "calibration.json").write_text("{}", encoding="utf-8")
+        return adapter_manifest
+
+    monkeypatch.setattr(local_runner.producers, "build_source_snapshot", source_build)
+    monkeypatch.setattr(local_runner.producers, "stage_raw_inputs", raw_build)
+    monkeypatch.setattr(local_runner.adapter_build, "freeze_model_snapshot", model_build)
+    monkeypatch.setattr(local_runner.adapter_build, "build_adapter_bundle", adapter_build)
+    monkeypatch.setattr(
+        local_runner,
+        "_load_valid_adapter_stage",
+        lambda *_args, **_kwargs: adapter_manifest,
+    )
+    monkeypatch.setattr(
+        local_runner.selftest,
+        "run_self_test",
+        lambda _path: (
+            True,
+            [
+                {
+                    "mutation": mutation,
+                    "expected": "PASS" if index == 0 else "REJECT",
+                    "passed_check": index == 0,
+                    "ok": True,
+                    "errors": [],
+                }
+                for index, mutation in enumerate(local_runner.MUTATION_ROSTER)
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        local_runner.checker,
+        "load_adapter_rows",
+        lambda _path: [
+            {"item_id": "q1", "split": "test", "format": "MC"},
+            {"item_id": "q1", "split": "test", "format": "QA"},
+        ],
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_versions",
+        lambda: {name: "1.0" for name in ENVIRONMENT_PACKAGES},
+    )
+    monkeypatch.setattr(local_runner, "sha256_file", lambda _path: "d" * 64)
+
+    def run_sweep(**kwargs):
+        calls["run"] += 1
+        kwargs["run_root"].mkdir(parents=True)
+        return (
+            {
+                "release_status": "VALID",
+                "requested": 1,
+                "completed": 1,
+                "failed": 0,
+                "family": {"verdict": "PASS"},
+            },
+            types.SimpleNamespace(passed=True, errors=[]),
+        )
+
+    packaged = []
+    monkeypatch.setattr(local_runner, "_run_bound_sweep", run_sweep)
+    monkeypatch.setattr(
+        local_runner,
+        "_package_and_validate_local_run",
+        lambda **kwargs: packaged.append(kwargs) or 0,
+    )
+    argv = [
+        "--out-dir",
+        str(out),
+        "--variant",
+        "smoke",
+        "--skip-fvi-study",
+    ]
+    with pytest.raises(RuntimeError, match="interrupted before sweep creation"):
+        local_runner.main(argv)
+    assert (out / "local_lifecycle.json").is_file()
+    assert (out / "source_snapshot").is_dir()
+    assert (out / "raw_inputs").is_dir()
+    assert not (out / "runs").exists()
+
+    assert local_runner.main([*argv, "--resume"]) == 0
+    assert calls == {"source": 1, "raw": 1, "model": 2, "adapter": 1, "run": 1}
+    assert len(packaged) == 1
+
+
+def test_local_status_query_excludes_only_resumed_in_repo_output(tmp_path):
+    repo = tmp_path / "repo"
+    out = repo / "stopdff_v5_final_out"
+    command = local_runner._worktree_status_command(
+        repo_root=repo,
+        out=out,
+        resume=True,
+    )
+    assert command[-2:] == [
+        ".",
+        ":(top,exclude)stopdff_v5_final_out",
+    ]
+    assert local_runner._worktree_status_command(
+        repo_root=repo,
+        out=out,
+        resume=False,
+    )[-1] == "."
+
+
+def test_checkpointed_mutation_results_require_complete_roster():
+    with pytest.raises(ValueError, match="mutation roster"):
+        local_runner._validate_checkpointed_mutation_results(
+            [
+                {
+                    "mutation": "<baseline valid>",
+                    "expected": "PASS",
+                    "passed_check": True,
+                    "ok": True,
+                    "errors": [],
+                }
+            ]
+        )
+
+
+def test_local_resume_rejects_symlinked_runs_directory(tmp_path, monkeypatch):
+    out = tmp_path / "reproduction"
+    out.mkdir()
+    external = tmp_path / "external-runs"
+    external.mkdir()
+    (out / "runs").symlink_to(external, target_is_directory=True)
+
+    def git_run(command, **_kwargs):
+        stdout = "" if "status" in command else "a" * 40 + "\n"
+        return types.SimpleNamespace(stdout=stdout)
+
+    monkeypatch.setattr(local_runner.subprocess, "run", git_run)
+    with pytest.raises(ValueError, match="runs directory.*symlink"):
+        local_runner.main(
+            [
+                "--out-dir",
+                str(out),
+                "--variant",
+                "smoke",
+                "--skip-fvi-study",
+                "--resume",
+            ]
+        )

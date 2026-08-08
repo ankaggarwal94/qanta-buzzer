@@ -1,28 +1,39 @@
 """Regression coverage for PR #30 package-contract repairs."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import sys
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from scripts.stopdff_v5 import checker, checker_package, selftest, writers  # noqa: E402
+from scripts.stopdff_v5 import (  # noqa: E402
+    checker,
+    checker_package,
+    profile,
+    selftest,
+    writers,
+)
 from scripts.stopdff_v5.checker_calibration import platt_phase_errors  # noqa: E402
 from scripts.stopdff_v5.identity import build_manifest, compute_id  # noqa: E402
 from scripts.stopdff_v5.manifests import (  # noqa: E402
     ADAPTER_SCORING_SPEC,
+    ENVIRONMENT_PACKAGES,
     FVI_PRODUCER_FILES,
     RAW_INPUT_ROLES,
     environment_contract_identity,
     fvi_study_identity,
     model_snapshot_identity,
     raw_input_identity,
+    run_spec_identity,
     source_manifest_identity,
 )
 from scripts.stopdff_v5.producers import (  # noqa: E402
@@ -470,7 +481,9 @@ def test_final_package_carries_and_revalidates_receipts(tmp_path, monkeypatch):
     fvi = build_manifest(_canonical_fvi_identity(adapter_id, producer_hashes))
     environment_claims = {
         "python_version": "3.11.0",
-        "package_versions": {"numpy": "2.0.0"},
+        "package_versions": {
+            package: "2.0.0" for package in ENVIRONMENT_PACKAGES
+        },
     }
     environment = build_manifest(
         environment_contract_identity(**environment_claims)
@@ -780,7 +793,7 @@ def test_final_fvi_rejects_label_only_study_identity():
     assert "packaged FVI study fields do not match the canonical contract" in errors
 
 
-def test_constant_platt_phase_is_rejected_and_schema_envelope_is_supported():
+def test_constant_platt_phase_is_rejected():
     assert "constant model is forbidden" in platt_phase_errors(
         {
             "platt_coef": None,
@@ -800,12 +813,86 @@ def test_constant_platt_phase_is_rejected_and_schema_envelope_is_supported():
         phase="late",
     )
 
-    schema = json.loads(
-        (REPO / "schemas" / "stopdff_run_spec.schema.json").read_text()
+
+
+def test_draft_2020_12_schemas_validate_meta_and_instances() -> None:
+    schema_documents = {
+        path.name: json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((REPO / "schemas").glob("stopdff_*.schema.json"))
+    }
+    assert set(schema_documents) == {
+        "stopdff_calibrator.schema.json",
+        "stopdff_continuation.schema.json",
+        "stopdff_gate_policy.schema.json",
+        "stopdff_run_spec.schema.json",
+        "stopdff_scientific_profile.schema.json",
+    }
+
+    registry = Registry().with_resources(
+        (
+            schema["$id"],
+            Resource.from_contents(schema),
+        )
+        for schema in schema_documents.values()
     )
-    assert schema["required"] == ["id", "identity"]
-    assert schema["properties"]["identity"]["$ref"] == "#/$defs/identity"
-    assert schema["$defs"]["identity"]["properties"]["kind"]["const"] == "run_spec"
+    for name, schema in schema_documents.items():
+        assert schema["$schema"] == (
+            "https://json-schema.org/draft/2020-12/schema"
+        )
+        Draft202012Validator.check_schema(schema)
+
+    run_spec = build_manifest(
+        run_spec_identity(
+            source_manifest_id="1" * 64,
+            raw_input_bundle_id="2" * 64,
+            model_snapshot_id="3" * 64,
+            adapter_bundle_id="4" * 64,
+            fvi_study_id="5" * 64,
+            bootstrap_plan_id="6" * 64,
+            environment_contract_id="7" * 64,
+            fvi_selected={"tolerance": "1e-8", "max_iterations": 100},
+            replicate_count=100,
+            profile_variant="smoke",
+            myopic_artifact_sha256="8" * 64,
+            producer_hashes={"checker.py": "9" * 64, "sweep.py": "a" * 64},
+            prerequisite_receipts={},
+        )
+    )
+    valid_instances = {
+        "stopdff_calibrator.schema.json": copy.deepcopy(profile.CALIBRATION),
+        "stopdff_continuation.schema.json": copy.deepcopy(profile.CONTINUATION),
+        "stopdff_gate_policy.schema.json": copy.deepcopy(profile.GATE),
+        "stopdff_scientific_profile.schema.json": (
+            profile.profile_static_identity()
+        ),
+        "stopdff_run_spec.schema.json": run_spec,
+    }
+    invalid_instances = copy.deepcopy(valid_instances)
+    invalid_instances["stopdff_calibrator.schema.json"][
+        "minimum_phase_rows"
+    ] = 9
+    invalid_instances["stopdff_continuation.schema.json"].pop(
+        "minimum_bucket_count"
+    )
+    invalid_instances["stopdff_gate_policy.schema.json"][
+        "material_threshold"
+    ] = 1
+    invalid_instances["stopdff_scientific_profile.schema.json"][
+        "expected_cells"
+    ] = 95
+    invalid_instances["stopdff_run_spec.schema.json"]["identity"][
+        "profile_variant"
+    ] = "adhoc"
+
+    for name, valid_instance in valid_instances.items():
+        validator = Draft202012Validator(
+            schema_documents[name],
+            registry=registry,
+        )
+        validator.validate(valid_instance)
+        assert list(validator.iter_errors(invalid_instances[name])), (
+            f"representative invalid instance unexpectedly passed {name}"
+        )
 
 
 def test_unbound_ledger_alias_is_normalized_and_zero_size_is_rejected(

@@ -1493,6 +1493,10 @@ def _validate_control_plan(plan: dict) -> dict:
     canonical_subdirs = [_canonical_adapter_subdir(value) for value in subdirs]
     if len(set(canonical_subdirs)) != 2:
         raise ValueError("control plan requires two distinct adapter_subdirs")
+    if any("__attempt_" in value for value in canonical_subdirs):
+        raise ValueError(
+            "control plan adapter_subdirs use a reserved retry namespace"
+        )
     gate_overrides = plan.get("gate_overrides", {})
     if (
         not isinstance(gate_overrides, dict)
@@ -1511,6 +1515,32 @@ def _validate_control_plan(plan: dict) -> dict:
         "gate_overrides": dict(gate_overrides),
         "resource_summary": dict(resource_summary),
     }
+
+
+def _adapter_attempt_subdirs(
+    base_subdirs: list[str],
+    attempt: int,
+) -> tuple[str, str]:
+    """Derive fresh adapter destinations for one controller attempt."""
+    if (
+        not isinstance(attempt, int)
+        or isinstance(attempt, bool)
+        or attempt < 1
+    ):
+        raise ValueError("adapter attempt must be a positive integer")
+    if len(base_subdirs) != 2:
+        raise ValueError("adapter attempt requires two base subdirs")
+    if attempt == 1:
+        candidates = tuple(base_subdirs)
+    else:
+        candidates = tuple(
+            f"{base}__attempt_{attempt}" for base in base_subdirs
+        )
+    first = _canonical_adapter_subdir(candidates[0])
+    second = _canonical_adapter_subdir(candidates[1])
+    if first == second:
+        raise ValueError("adapter attempt requires distinct subdirs")
+    return first, second
 
 
 def _default_control_stage_api() -> dict[str, object]:
@@ -1917,6 +1947,22 @@ def run_control_plane(
             raise ValueError("resume control plan does not match durable state")
         if state.get("schema_version") != 2:
             raise ValueError("unsupported control-state schema")
+        if (
+            state.get("status") not in {"completed", "recovery_required"}
+            and "validate_package" in state.get("completed", {})
+        ):
+            state["completed"].pop("validate_package")
+            _record_control_event(
+                state_path,
+                state,
+                event="stage_checkpoint_refresh_required",
+                stage="validate_package",
+                detail={
+                    "reason": (
+                        "nonterminal resume must re-read packaged bytes"
+                    )
+                },
+            )
         if state.get("status") in {"completed", "recovery_required"}:
             stored_result = state.get("result")
             validator = api.get("validate") if isinstance(api, dict) else None
@@ -2079,23 +2125,38 @@ def run_control_plane(
     )
     model_id = model_result["model_id"]
 
-    first_subdir, second_subdir = plan["adapter_subdirs"]
+    def invoke_adapter_determinism(attempt: int) -> dict:
+        attempt_first, attempt_second = _adapter_attempt_subdirs(
+            plan["adapter_subdirs"],
+            attempt,
+        )
+        return api["adapter_determinism_receipt"](
+            attempt_first,
+            attempt_second,
+            source_id,
+            raw_id,
+            model_id,
+            bool(
+                plan["gate_overrides"].get(
+                    "allow_low_mc_retention",
+                    False,
+                )
+            ),
+        )
+
     determinism = _run_control_stage(
         state_path,
         state,
         name="adapter_determinism",
-        invoke=lambda _: api["adapter_determinism_receipt"](
-            first_subdir,
-            second_subdir,
-            source_id,
-            raw_id,
-            model_id,
-            bool(plan["gate_overrides"].get("allow_low_mc_retention", False)),
-        ),
+        invoke=invoke_adapter_determinism,
         validate_result=lambda result: _validate_determinism_result(
             result,
             source_id,
         ),
+    )
+    first_subdir, second_subdir = _adapter_attempt_subdirs(
+        plan["adapter_subdirs"],
+        state["stage_attempts"]["adapter_determinism"],
     )
     adapter_id = determinism["adapter_id"]
     determinism_receipt_id = determinism["prerequisite_receipt_id"]

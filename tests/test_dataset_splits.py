@@ -124,6 +124,95 @@ def test_splits_all_questions_assigned():
     assert len(train) + len(val) + len(test) == 100
 
 
+def test_ordinary_splits_realize_global_and_category_ratios_exactly():
+    ratios = [0.6, 0.2, 0.2]
+    categories = ["History", "Science", "Literature", "Fine Arts"]
+    questions = _make_questions(120, categories)
+
+    splits = create_stratified_splits(questions, ratios=ratios, seed=42)
+    assert tuple(len(split) for split in splits) == (72, 24, 24)
+    assert [len(split) / len(questions) for split in splits] == pytest.approx(
+        ratios
+    )
+
+    for category in categories:
+        realized = [
+            sum(question.category == category for question in split)
+            for split in splits
+        ]
+        assert realized == [18, 6, 6]
+        assert [count / 30 for count in realized] == pytest.approx(ratios)
+
+
+def test_atomic_multicategory_groups_stay_within_feasible_ratio_error():
+    ratios = [0.7, 0.15, 0.15]
+    categories = ("History", "Science", "Literature")
+    questions: list[TossupQuestion] = []
+    atomic_qids: list[tuple[str, ...]] = []
+    qid_index = 0
+
+    # Seven three-row text groups each span all categories. The remaining rows
+    # are singletons, leaving 23 rows per category and 69 rows globally.
+    for group_index in range(7):
+        group_qids = []
+        for category in categories:
+            qid = f"q{qid_index:04d}"
+            group_qids.append(qid)
+            questions.append(
+                _question(
+                    qid,
+                    f"Shared atomic question {group_index}?",
+                    f"Shared answer {group_index}",
+                    category,
+                )
+            )
+            qid_index += 1
+        atomic_qids.append(tuple(group_qids))
+    for category in categories:
+        for unique_index in range(16):
+            questions.append(
+                _question(
+                    f"q{qid_index:04d}",
+                    f"Unique {category} question {unique_index}?",
+                    f"Unique {category} answer {unique_index}",
+                    category,
+                )
+            )
+            qid_index += 1
+
+    splits = create_stratified_splits(questions, ratios=ratios, seed=42)
+    membership = {
+        question.qid: split_index
+        for split_index, split in enumerate(splits)
+        for question in split
+    }
+    for group_qids in atomic_qids:
+        assert len({membership[qid] for qid in group_qids}) == 1
+
+    # No indivisible group can force more than its own size of global error,
+    # or more than its category contribution of category-proportion error.
+    max_atomic_group_size = 3
+    max_category_contribution = 1
+    total = len(questions)
+    realized_global = [len(split) / total for split in splits]
+    assert realized_global != pytest.approx(ratios)
+    for actual, requested in zip(realized_global, ratios):
+        assert abs(actual - requested) <= max_atomic_group_size / total
+
+    category_total = 23
+    for category in categories:
+        realized_category = [
+            sum(question.category == category for question in split)
+            / category_total
+            for split in splits
+        ]
+        for actual, requested in zip(realized_category, ratios):
+            assert (
+                abs(actual - requested)
+                <= max_category_contribution / category_total
+            )
+
+
 def test_normalized_duplicate_questions_are_grouped_atomically():
     """Unicode/case/whitespace variants of one question cannot cross splits."""
     questions = [

@@ -457,9 +457,12 @@ def _score_question_rows(question: dict, model, split: str) -> list[dict]:
     full_len = len(canonical_full_q)
     full_question_sha256 = sha256_bytes(canonical_full_q.encode("utf-8"))
 
-    option_embs = model.encode(options, convert_to_numpy=True)
-    answer_emb = model.encode([question["answer_primary"]], convert_to_numpy=True)
-    prefix_embs = model.encode(list(prefixes), convert_to_numpy=True)
+    texts = [*options, question["answer_primary"], *prefixes]
+    embeddings = model.encode(texts, convert_to_numpy=True)
+    option_end = len(options)
+    option_embs = embeddings[:option_end]
+    answer_emb = embeddings[option_end : option_end + 1]
+    prefix_embs = embeddings[option_end + 1 :]
 
     rows: list[dict] = []
     for t, prefix in enumerate(prefixes):
