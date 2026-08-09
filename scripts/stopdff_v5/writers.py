@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import struct
 import tempfile
 import zlib
@@ -188,6 +189,118 @@ def write_min_png(path: Path, width: int = 16, height: int = 16, rgb=(40, 80, 16
     path.write_bytes(png)
 
 
+def _stored_zlib_stream(data: bytes) -> bytes:
+    """Return a deterministic zlib stream made only of stored DEFLATE blocks."""
+    stream = bytearray(b"\x78\x01")
+    offset = 0
+    while offset < len(data):
+        block = data[offset:offset + 65535]
+        offset += len(block)
+        stream.append(1 if offset == len(data) else 0)
+        stream.extend(struct.pack("<H", len(block)))
+        stream.extend(struct.pack("<H", 0xFFFF - len(block)))
+        stream.extend(block)
+    stream.extend(struct.pack(">I", zlib.adler32(data) & 0xFFFFFFFF))
+    return bytes(stream)
+
+
+def _canonical_figure_points(
+    aggregate: dict[str, Any],
+) -> list[tuple[str, float]]:
+    cells = aggregate.get("cells")
+    if not isinstance(cells, dict):
+        raise ValueError("aggregate cells must be an object for figure rendering")
+    points: list[tuple[str, float]] = []
+    for cell_key, cell in sorted(cells.items()):
+        if not isinstance(cell_key, str) or not isinstance(cell, dict):
+            raise ValueError("aggregate cell summaries are invalid for rendering")
+        if "abs_median_point" not in cell:
+            continue
+        value = cell["abs_median_point"]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            raise ValueError("figure points must be finite numeric values")
+        points.append((cell_key, float(value)))
+    return points
+
+
+def _write_canonical_histogram(
+    path: Path,
+    points: list[tuple[str, float]],
+) -> None:
+    """Render the canonical histogram without fonts or platform libraries."""
+    width, height = 600, 400
+    left, right, top, bottom = 55, 580, 25, 350
+    pixels = bytearray([0]) * (width * height)
+
+    def fill(x0: int, y0: int, x1: int, y1: int, color: int) -> None:
+        x0, x1 = max(0, x0), min(width, x1)
+        y0, y1 = max(0, y0), min(height, y1)
+        for y in range(y0, y1):
+            start = y * width + x0
+            pixels[start:start + max(0, x1 - x0)] = bytes([color]) * max(
+                0, x1 - x0
+            )
+
+    values = [value for _key, value in points]
+    bins = min(20, max(3, len(values)))
+    low = min([0.0, 1.0, *values])
+    high = max([0.0, 1.0, *values])
+    if high == low:
+        high = low + 1.0
+    counts = [0] * bins
+    for value in values:
+        index = int((value - low) / (high - low) * bins)
+        counts[min(bins - 1, max(0, index))] += 1
+    maximum = max(counts, default=0)
+    plot_width = right - left
+    plot_height = bottom - top
+    for index, count in enumerate(counts):
+        x0 = left + index * plot_width // bins + 1
+        x1 = left + (index + 1) * plot_width // bins - 1
+        bar_height = 0 if maximum == 0 else count * (plot_height - 5) // maximum
+        fill(x0, bottom - bar_height, max(x0 + 1, x1), bottom, 2)
+    fill(left - 2, top, left, bottom + 2, 1)
+    fill(left - 2, bottom, right, bottom + 2, 1)
+    threshold_x = left + round((1.0 - low) / (high - low) * plot_width)
+    for y in range(top, bottom, 10):
+        fill(threshold_x, y, threshold_x + 2, min(y + 6, bottom), 3)
+
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)
+        raw.extend(pixels[y * width:(y + 1) * width])
+    metadata = json.dumps(
+        {
+            "bins": bins,
+            "kind": "cell_median_absolute_index_shift_histogram",
+            "points": points,
+            "schema_version": 1,
+            "threshold": 1.0,
+            "title": "StopDFF cell median absolute index shift",
+            "x_label": "cell median |index shift|",
+            "y_label": "count",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 3, 0, 0, 0)
+    palette = bytes((255, 255, 255, 30, 30, 30, 40, 80, 160, 220, 30, 30))
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"PLTE", palette)
+        + _png_chunk(b"tEXt", b"stopdff_v5\x00" + metadata)
+        + _png_chunk(b"IDAT", _stored_zlib_stream(bytes(raw)))
+        + _png_chunk(b"IEND", b"")
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(png)
+
+
 def write_figures(
     output_dir: Path,
     aggregate: dict[str, Any],
@@ -196,34 +309,12 @@ def write_figures(
 ) -> list[str]:
     figs_dir = Path(output_dir) / "figures"
     figs_dir.mkdir(parents=True, exist_ok=True)
-    written: list[str] = []
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        cells = aggregate.get("cells", {})
-        points = [c.get("abs_median_point", 0.0) for c in cells.values() if "abs_median_point" in c]
-        fig, ax = plt.subplots(figsize=(6, 4))
-        if points:
-            ax.hist(points, bins=min(20, max(3, len(points))))
-        ax.axvline(1.0, color="red", linestyle="--", label="material threshold")
-        ax.set_xlabel("cell median |index shift|")
-        ax.set_ylabel("count")
-        ax.set_title("StopDFF cell median absolute index shift")
-        ax.legend()
-        fig.tight_layout()
-        fig.savefig(figs_dir / "cell_median_index_shift.png", dpi=100)
-        plt.close(fig)
-        written.append("figures/cell_median_index_shift.png")
-    except Exception as exc:
-        if profile_variant != "smoke":
-            raise RuntimeError(
-                "figure generation failed for a non-smoke package"
-            ) from exc
-        write_min_png(figs_dir / "cell_median_index_shift.png")
-        written.append("figures/cell_median_index_shift.png")
-    return written
+    relative = "figures/cell_median_index_shift.png"
+    _write_canonical_histogram(
+        Path(output_dir) / relative,
+        _canonical_figure_points(aggregate),
+    )
+    return [relative]
 
 
 def write_external_artifacts(output_dir: Path, artifacts: list[dict[str, Any]]) -> None:

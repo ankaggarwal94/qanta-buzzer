@@ -255,6 +255,7 @@ def run_spec_identity(
     fvi_study_id: str,
     bootstrap_plan_id: str,
     environment_contract_id: str,
+    resource_summary_id: str,
     fvi_selected: dict[str, Any],  # {tolerance, max_iterations} as strings/ints
     replicate_count: int,
     profile_variant: str,  # "final" | "smoke"
@@ -285,6 +286,7 @@ def run_spec_identity(
             "fvi_study_id": fvi_study_id,
             "bootstrap_plan_id": bootstrap_plan_id,
             "environment_contract_id": environment_contract_id,
+            "resource_summary_id": resource_summary_id,
         },
         "evidence_roots": {
             "myopic_artifact_sha256": myopic_artifact_sha256,

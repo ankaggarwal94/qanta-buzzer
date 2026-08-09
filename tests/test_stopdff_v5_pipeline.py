@@ -93,6 +93,7 @@ def _make_ctx(tmp_path: Path, rows, cells, replicates=100) -> sweep.SweepContext
         fvi_study_id="4" * 64,
         bootstrap_plan_id=identity.compute_id(bootstrap.plan_identity(plan)),
         environment_contract_id=environment_id,
+        resource_summary_id=identity.compute_id({"backend": "modal"}),
         fvi_selected={"tolerance": "1e-8", "max_iterations": 100},
         replicate_count=replicates,
         profile_variant="smoke",

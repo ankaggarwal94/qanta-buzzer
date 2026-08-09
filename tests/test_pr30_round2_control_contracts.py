@@ -148,27 +148,32 @@ def test_semantic_failure_is_retryable_not_completed(
         "stage_attempts": {},
         "completed": {},
     }
+    runner._record_control_event(
+        state_path,
+        state,
+        event="control_initialized",
+    )
 
     with pytest.raises(ValueError, match="returned .*false"):
         runner._run_control_stage(
             state_path,
             state,
-            name="verify",
+            name="verify_source",
             invoke=lambda _attempt: result,
             validate_result=lambda _result: None,
         )
 
-    assert "verify" not in state["completed"]
+    assert "verify_source" not in state["completed"]
     assert state["status"] == "failed"
     accepted = runner._run_control_stage(
         state_path,
         state,
-        name="verify",
+        name="verify_source",
         invoke=lambda _attempt: {"ok": True},
         validate_result=lambda _result: None,
     )
     assert accepted == {"ok": True}
-    assert state["stage_attempts"]["verify"] == 2
+    assert state["stage_attempts"]["verify_source"] == 2
 
 
 def test_invalid_cached_result_is_discarded_and_retried(
@@ -177,11 +182,33 @@ def test_invalid_cached_result_is_discarded_and_retried(
     runner = _load_modal_runner(monkeypatch)
     state_path = tmp_path / "control.json"
     state = {
-        "status": "running",
+        "status": "initialized",
         "sequence": 0,
-        "stage_attempts": {"verify": 1},
-        "completed": {"verify": {"id": "bad"}},
+        "stage_attempts": {},
+        "completed": {},
     }
+    runner._record_control_event(
+        state_path,
+        state,
+        event="control_initialized",
+    )
+    state["status"] = "running"
+    state["stage_attempts"]["verify_source"] = 1
+    runner._record_control_event(
+        state_path,
+        state,
+        event="stage_started",
+        stage="verify_source",
+        detail={"attempt": 1},
+    )
+    state["completed"]["verify_source"] = {"id": "bad"}
+    runner._record_control_event(
+        state_path,
+        state,
+        event="stage_completed",
+        stage="verify_source",
+        detail={"attempt": 1},
+    )
     calls = []
 
     def validate(result):
@@ -191,21 +218,21 @@ def test_invalid_cached_result_is_discarded_and_retried(
     accepted = runner._run_control_stage(
         state_path,
         state,
-        name="verify",
+        name="verify_source",
         invoke=lambda attempt: calls.append(attempt) or {"id": "good"},
         validate_result=validate,
     )
 
     assert accepted == {"id": "good"}
     assert calls == [2]
-    assert state["stage_attempts"]["verify"] == 2
+    assert state["stage_attempts"]["verify_source"] == 2
     events = [
         json.loads(line)["event"]
         for line in state_path.with_name("control.json.jsonl")
         .read_text(encoding="utf-8")
         .splitlines()
     ]
-    assert events == [
+    assert events[-3:] == [
         "stage_checkpoint_invalid",
         "stage_started",
         "stage_completed",
@@ -223,6 +250,11 @@ def test_stage_postcondition_rejects_fresh_result_before_checkpoint(
         "stage_attempts": {},
         "completed": {},
     }
+    runner._record_control_event(
+        state_path,
+        state,
+        event="control_initialized",
+    )
 
     def require_expected_identity(result):
         if result.get("id") != "expected":
@@ -232,12 +264,12 @@ def test_stage_postcondition_rejects_fresh_result_before_checkpoint(
         runner._run_control_stage(
             state_path,
             state,
-            name="verify",
+            name="verify_source",
             invoke=lambda _attempt: {"ok": True, "id": "wrong"},
             validate_result=require_expected_identity,
         )
 
-    assert "verify" not in state["completed"]
+    assert "verify_source" not in state["completed"]
     assert state["status"] == "failed"
 
 
@@ -250,8 +282,8 @@ def test_cached_validation_interrupt_does_not_discard_or_retry(
     state = {
         "status": "running",
         "sequence": 0,
-        "stage_attempts": {"verify": 1},
-        "completed": {"verify": cached},
+        "stage_attempts": {"verify_source": 1},
+        "completed": {"verify_source": cached},
     }
     calls = []
 
@@ -262,13 +294,13 @@ def test_cached_validation_interrupt_does_not_discard_or_retry(
         runner._run_control_stage(
             state_path,
             state,
-            name="verify",
+            name="verify_source",
             invoke=lambda attempt: calls.append(attempt),
             validate_result=interrupted,
         )
 
-    assert state["completed"]["verify"] is cached
-    assert state["stage_attempts"]["verify"] == 1
+    assert state["completed"]["verify_source"] is cached
+    assert state["stage_attempts"]["verify_source"] == 1
     assert calls == []
     assert not state_path.exists()
 
@@ -331,7 +363,13 @@ def test_torn_final_journal_record_repairs_only_matching_prefix(
     state_path = tmp_path / "control.json"
     state = {"status": "initialized", "sequence": 0}
     runner._record_control_event(state_path, state, event="control_initialized")
-    runner._record_control_event(state_path, state, event="stage_started")
+    runner._record_control_event(
+        state_path,
+        state,
+        event="stage_started",
+        stage="verify_source",
+        detail={"attempt": 1},
+    )
     journal = state_path.with_name("control.json.jsonl")
     complete = journal.read_bytes()
     lines = complete.splitlines(keepends=True)
@@ -360,7 +398,13 @@ def test_unprovable_torn_journal_tail_is_rejected_without_rewrite(
     state_path = tmp_path / "control.json"
     state = {"status": "initialized", "sequence": 0}
     runner._record_control_event(state_path, state, event="control_initialized")
-    runner._record_control_event(state_path, state, event="stage_started")
+    runner._record_control_event(
+        state_path,
+        state,
+        event="stage_started",
+        stage="verify_source",
+        detail={"attempt": 1},
+    )
     journal = state_path.with_name("control.json.jsonl")
     lines = journal.read_bytes().splitlines(keepends=True)
     torn = b"".join(lines[:-1]) + b"X"
@@ -382,7 +426,7 @@ def test_completed_resume_revalidates_or_requires_recovery(
     plan = runner._validate_control_plan(_plan())
     state_path = tmp_path / "control.json"
     state = {
-        "schema_version": 2,
+        "schema_version": 3,
         "plan": plan,
         "plan_digest": runner._control_plan_digest(plan),
         "status": "completed",
@@ -391,13 +435,23 @@ def test_completed_resume_revalidates_or_requires_recovery(
         "completed": {},
         "result": {
             "run_id": "final_modal_aaaaaaaaaaaa",
+            "run_spec_id": "b" * 64,
             "adapter_id": "a" * 64,
         },
     }
     runner._record_control_event(
         state_path,
         state,
+        event="control_initialized",
+    )
+    runner._record_control_event(
+        state_path,
+        state,
         event="control_completed",
+        detail={
+            "run_id": "final_modal_aaaaaaaaaaaa",
+            "run_spec_id": "b" * 64,
+        },
     )
     calls = []
 

@@ -559,8 +559,7 @@ def _run_identity_files(ctx: SweepContext) -> tuple[tuple[str, Any], ...]:
     ]
     if ctx.environment:
         files.append(("environment.json", ctx.environment))
-    if ctx.resource_summary:
-        files.append(("resource_summary.json", ctx.resource_summary))
+    files.append(("resource_summary.json", ctx.resource_summary))
     return tuple(files)
 
 

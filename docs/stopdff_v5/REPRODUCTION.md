@@ -213,6 +213,10 @@ small control plan. The two adapter subdirectories must be distinct and create-o
 }
 ```
 
+`resource_summary` is content-addressed into the run spec. Its values must use the
+canonical identity types (objects, arrays, strings, integers, booleans, or null);
+record decimal costs as strings rather than binary floating-point values.
+
 With explicit authorization for Modal compute, start the durable controller:
 
 ```bash
@@ -226,9 +230,13 @@ determinism gate that owns exactly two fresh, path-distinct adapter producer cal
 gate rejects pre-existing destinations and records the two distinct Modal function-call
 IDs in schema-v2 evidence before issuing a receipt. The controller then promotes the
 bound adapter, runs the FVI study, smoke bootstrap/sweep,
-mutation gate, final bootstrap/sweep, prepackage validation, packaging, and final validation
-in that fixed order. Each stage intent and result is fsynced to the state file and adjacent
-JSONL journal. To continue after an interrupted host process, use the same plan and state:
+mutation gate, final bootstrap/sweep, package-internal prevalidation, packaging,
+and final validation in that fixed order. Each stage intent and result is fsynced
+to the state file and adjacent JSONL journal. Schema-v3 journal records have exact
+event-specific shapes, canonical JSON bytes, and a hash link to the preceding
+record. Replay requires the canonical stage set and binds attempts, completed
+stages, terminal status, result identity, and failure detail back to the checkpoint.
+To continue after an interrupted host process, use the same plan and state:
 
 ```bash
 modal run scripts/modal_stopdff_v5_runner.py::control_main \
@@ -236,8 +244,9 @@ modal run scripts/modal_stopdff_v5_runner.py::control_main \
     --state-path stopdff_v5_control_state.json --resume
 ```
 
-Completed stages are reused from the bound journal. Control-state schema v1 predates
-fresh build provenance and is rejected; restart with new adapter subdirectories. A lost
+Completed stages are reused from the bound journal. Control-state schemas v1 and
+v2 predate canonical hash-linked history and are rejected; restart with new adapter
+subdirectories. A lost
 adapter-build response after its Volume commit likewise requires new subdirectories so
 the determinism claim fails closed. A sweep retry derives its evidence
 mode and number inside the remote call from the durable run directory: an absent root

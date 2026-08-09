@@ -73,7 +73,7 @@ def test_receipts_reject_arbitrary_or_contradictory_evidence(gate, evidence):
         )
 
 
-def test_final_figure_failure_is_fatal_but_smoke_fallback_is_explicit(
+def test_figure_renderer_is_deterministic_without_matplotlib(
     tmp_path,
     monkeypatch,
 ):
@@ -85,16 +85,19 @@ def test_final_figure_failure_is_fatal_but_smoke_fallback_is_explicit(
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fail_matplotlib)
-    with pytest.raises(RuntimeError, match="non-smoke"):
-        writers.write_figures(
-            tmp_path / "final",
-            {"cells": {}},
-            profile_variant="final",
-        )
-    written = writers.write_figures(
+    final_written = writers.write_figures(
+        tmp_path / "final",
+        {"cells": {}},
+        profile_variant="final",
+    )
+    smoke_written = writers.write_figures(
         tmp_path / "smoke",
         {"cells": {}},
         profile_variant="smoke",
     )
-    assert written == ["figures/cell_median_index_shift.png"]
-    assert (tmp_path / "smoke" / written[0]).read_bytes().startswith(b"\x89PNG")
+    assert final_written == smoke_written == [
+        "figures/cell_median_index_shift.png"
+    ]
+    assert (
+        tmp_path / "final" / final_written[0]
+    ).read_bytes() == (tmp_path / "smoke" / smoke_written[0]).read_bytes()

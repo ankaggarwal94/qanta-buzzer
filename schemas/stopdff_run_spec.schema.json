@@ -62,7 +62,8 @@
             "adapter_bundle_id",
             "fvi_study_id",
             "bootstrap_plan_id",
-            "environment_contract_id"
+            "environment_contract_id",
+            "resource_summary_id"
           ],
           "properties": {
             "source_manifest_id": {
@@ -90,6 +91,10 @@
               "pattern": "^[0-9a-f]{64}$"
             },
             "environment_contract_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "resource_summary_id": {
               "type": "string",
               "pattern": "^[0-9a-f]{64}$"
             }

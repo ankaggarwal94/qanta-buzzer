@@ -15,6 +15,7 @@ import argparse
 import importlib.metadata as im
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -382,6 +383,46 @@ def _variant_run_candidates(out: Path, variant: str) -> list[Path]:
     )
 
 
+def _fsync_staged_tree(root: Path) -> None:
+    """Make a closed staged tree durable before publishing its directory entry."""
+    root = Path(root)
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("local stage builder did not produce a canonical directory")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    for directory_name, child_directories, filenames in os.walk(
+        root,
+        topdown=False,
+        followlinks=False,
+    ):
+        directory = Path(directory_name)
+        for name in child_directories:
+            child = directory / name
+            if child.is_symlink():
+                raise ValueError(f"local stage contains a symlink: {child}")
+        for name in filenames:
+            path = directory / name
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"local stage contains a non-file: {path}")
+            descriptor = os.open(path, os.O_RDONLY | nofollow)
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise ValueError(
+                        f"local stage contains a non-regular file: {path}"
+                    )
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        descriptor = os.open(
+            directory,
+            os.O_RDONLY | directory_flag | nofollow,
+        )
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
 def _publish_stage_directory(
     *,
     out: Path,
@@ -395,6 +436,7 @@ def _publish_stage_directory(
     with tempfile.TemporaryDirectory(prefix=f".{target_name}-", dir=out) as holder:
         staged = Path(holder) / "artifact"
         result = build(staged)
+        _fsync_staged_tree(staged)
         staged.replace(target)
         directory = os.open(out, os.O_RDONLY)
         try:
@@ -631,15 +673,19 @@ def main(argv: list[str] | None = None) -> int:
             content_subdir="snapshot",
         )
     else:
+        def build_model_snapshot(staged: Path) -> dict:
+            manifest = adapter_build.freeze_model_snapshot(staged)
+            manifest["snapshot_dir"] = str(model_stage / "snapshot")
+            _atomic_write_json(
+                staged / "model_snapshot_manifest.json",
+                manifest,
+            )
+            return manifest
+
         model_man = _publish_stage_directory(
             out=out,
             target_name="model",
-            build=adapter_build.freeze_model_snapshot,
-        )
-        model_man["snapshot_dir"] = str(model_stage / "snapshot")
-        _atomic_write_json(
-            model_stage / "model_snapshot_manifest.json",
-            model_man,
+            build=build_model_snapshot,
         )
     model_id = model_man["id"]
     print("  model_snapshot_id", model_id, "rev", model_man["identity"]["model_revision"])
@@ -960,6 +1006,7 @@ def main(argv: list[str] | None = None) -> int:
             fvi_study_id=fvi_id,
             bootstrap_plan_id=compute_id(_plan_ident(smoke_plan)),
             environment_contract_id=env_id,
+            resource_summary_id=compute_id({"backend": "local"}),
             fvi_selected=selected,
             replicate_count=100,
             profile_variant="smoke",
@@ -1055,7 +1102,9 @@ def main(argv: list[str] | None = None) -> int:
     run_spec = run_spec_identity(
         source_manifest_id=source_id, raw_input_bundle_id=raw_id, model_snapshot_id=model_id,
         adapter_bundle_id=adapter_id, fvi_study_id=fvi_id, bootstrap_plan_id=compute_id(_plan_ident(plan)),
-        environment_contract_id=env_id, fvi_selected=selected, replicate_count=replicates,
+        environment_contract_id=env_id,
+        resource_summary_id=compute_id({"backend": "local"}),
+        fvi_selected=selected, replicate_count=replicates,
         profile_variant=args.variant,
         myopic_artifact_sha256=myopic_sha,
         producer_hashes=producer_hashes,

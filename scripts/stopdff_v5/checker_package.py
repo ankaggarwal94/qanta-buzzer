@@ -342,7 +342,8 @@ def _packaged_manifest(
     expected_kinds = expected_kind if isinstance(expected_kind, set) else {expected_kind}
     _err(
         errors,
-        identity.get("kind") in expected_kinds,
+            isinstance(identity.get("kind"), str)
+            and identity.get("kind") in expected_kinds,
         f"packaged {role} kind mismatch",
     )
     content_kinds = {"source_snapshot", "raw_input_bundle", "model_snapshot"}

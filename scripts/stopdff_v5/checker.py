@@ -14,6 +14,7 @@ import json
 import math
 import re
 import struct
+import tempfile
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -456,7 +457,11 @@ def _run_spec_errors(
         "run spec schema_version must be 2",
     )
     variant = spec_identity.get("profile_variant")
-    _err(errors, variant in {"smoke", "final"}, "invalid run spec profile_variant")
+    _err(
+        errors,
+        isinstance(variant, str) and variant in {"smoke", "final"},
+        "invalid run spec profile_variant",
+    )
     if require_final_profile:
         _err(errors, variant == "final", "final validation requires final run spec")
 
@@ -504,6 +509,7 @@ def _run_spec_errors(
         "fvi_study_id",
         "bootstrap_plan_id",
         "environment_contract_id",
+        "resource_summary_id",
     }
     _err(
         errors,
@@ -644,7 +650,11 @@ def _run_spec_errors(
     return errors
 
 
-def validate_spec(spec_path: Path, *, require_final_profile: bool) -> CheckResult:
+def _validate_spec_impl(
+    spec_path: Path,
+    *,
+    require_final_profile: bool,
+) -> CheckResult:
     """Validate a run-spec manifest against the canonical profile contract.
 
     Parameters
@@ -673,10 +683,50 @@ def validate_spec(spec_path: Path, *, require_final_profile: bool) -> CheckResul
     return CheckResult(passed=not errors, errors=errors)
 
 
+def validate_spec(spec_path: Path, *, require_final_profile: bool) -> CheckResult:
+    """Validate an untrusted run-spec manifest.
+
+    Parameters
+    ----------
+    spec_path
+        Path to the JSON run-spec manifest.
+    require_final_profile
+        Whether the manifest must select the final rather than smoke profile.
+
+    Returns
+    -------
+    CheckResult
+        Structured validation status; malformed data never escapes this boundary.
+    """
+    try:
+        return _validate_spec_impl(
+            spec_path,
+            require_final_profile=require_final_profile,
+        )
+    except (
+        AttributeError,
+        EOFError,
+        KeyError,
+        OSError,
+        OverflowError,
+        RecursionError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+    ) as exc:
+        return CheckResult(
+            passed=False,
+            errors=[
+                "run spec cannot be validated safely: "
+                f"{type(exc).__name__}: {exc}"
+            ],
+        )
+
+
 # --- validate-adapter -------------------------------------------------------------
 
 
-def validate_adapter(bundle_dir: Path) -> CheckResult:
+def _validate_adapter_impl(bundle_dir: Path) -> CheckResult:
     """Validate an adapter bundle without leaking decoder exceptions.
 
     Parameters
@@ -801,12 +851,26 @@ def validate_adapter(bundle_dir: Path) -> CheckResult:
     try:
         if (bundle_dir / "fit_rows.jsonl.gz").exists():
             fit_rows = load_jsonl_gz(bundle_dir / "fit_rows.jsonl.gz")
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+    except (
+        EOFError,
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
         errors.append(f"adapter fit_rows cannot be decoded: {exc}")
     try:
         if (bundle_dir / "eval_rows.jsonl.gz").exists():
             eval_rows = load_jsonl_gz(bundle_dir / "eval_rows.jsonl.gz")
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+    except (
+        EOFError,
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
         errors.append(f"adapter eval_rows cannot be decoded: {exc}")
 
     from .adapter_build import ADAPTER_SCHEMA_COLUMNS
@@ -1353,6 +1417,41 @@ def validate_adapter(bundle_dir: Path) -> CheckResult:
     )
 
 
+def validate_adapter(bundle_dir: Path) -> CheckResult:
+    """Validate an untrusted adapter bundle.
+
+    Parameters
+    ----------
+    bundle_dir
+        Directory containing the adapter manifest and bound payload files.
+
+    Returns
+    -------
+    CheckResult
+        Structured validation status; malformed data never escapes this boundary.
+    """
+    try:
+        return _validate_adapter_impl(bundle_dir)
+    except (
+        AttributeError,
+        EOFError,
+        KeyError,
+        OSError,
+        OverflowError,
+        RecursionError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+    ) as exc:
+        return CheckResult(
+            passed=False,
+            errors=[
+                "adapter bundle cannot be validated safely: "
+                f"{type(exc).__name__}: {exc}"
+            ],
+        )
+
+
 # --- validate (run) ---------------------------------------------------------------
 
 
@@ -1624,7 +1723,7 @@ def _check_attempts(
         attempt_numbers.append(num)
         mode = a.get("mode")
         cmd = a.get("command", [])
-        if mode not in {"fresh", "resume"}:
+        if not isinstance(mode, str) or mode not in {"fresh", "resume"}:
             errors.append(f"unknown attempt mode {mode!r}")
         if a.get("state") != "started":
             errors.append("attempt record state must be 'started'")
@@ -1779,26 +1878,100 @@ def _check_attempts(
     return len(errors) == error_count
 
 
-def _check_reports(run_root: Path, errors: list[str]) -> None:
-    md = run_root / "reports" / "report.md"
-    tex = run_root / "reports" / "report.tex"
-    required_md = [
-        "profile", "paired", "reward", "calibrat", "continuation", "fvi",
-        "family", "verdict", "override", "resource",
-    ]
-    if not md.exists():
-        errors.append("missing reports/report.md")
-    else:
-        text = md.read_text(encoding="utf-8").lower()
-        for token in required_md:
-            if token not in text:
-                errors.append(f"report.md missing required content: {token!r}")
-    if not tex.exists():
-        errors.append("missing reports/report.tex")
-    figs = run_root / "figures"
-    if figs.exists():
-        for png in sorted(figs.glob("*.png")):
-            _check_png(png, errors)
+def _check_reports(
+    run_root: Path,
+    aggregate: dict[str, Any],
+    resource_summary: dict[str, Any],
+    errors: list[str],
+) -> None:
+    """Bind every displayed package byte to the validated scientific inputs."""
+    from . import writers
+
+    try:
+        expected: dict[str, bytes] = {
+            "reports/report.md": writers.render_markdown(
+                aggregate,
+                resource_summary=resource_summary,
+            ).encode("utf-8"),
+            "reports/report.tex": writers.render_latex(aggregate).encode(
+                "utf-8"
+            ),
+        }
+        with tempfile.TemporaryDirectory(prefix="stopdff_v5_check_figures_") as td:
+            figure_root = Path(td)
+            figure_paths = writers.write_figures(
+                figure_root,
+                aggregate,
+                profile_variant=aggregate.get("profile_variant"),
+            )
+            for relative in figure_paths:
+                expected[relative] = (figure_root / relative).read_bytes()
+    except (
+        AttributeError,
+        KeyError,
+        OSError,
+        OverflowError,
+        RecursionError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        errors.append(
+            "canonical reports/figures cannot be regenerated: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return
+
+    for directory_name in ("reports", "figures"):
+        directory = run_root / directory_name
+        expected_names = {
+            Path(relative).name
+            for relative in expected
+            if Path(relative).parts[0] == directory_name
+        }
+        if directory.is_symlink() or not directory.is_dir():
+            errors.append(f"missing or noncanonical {directory_name} directory")
+            continue
+        actual_names: set[str] = set()
+        try:
+            entries = list(directory.iterdir())
+        except OSError as exc:
+            errors.append(f"{directory_name} directory cannot be read: {exc}")
+            continue
+        for path in entries:
+            if path.is_symlink() or not path.is_file():
+                errors.append(
+                    f"unexpected non-file package evidence: "
+                    f"{directory_name}/{path.name}"
+                )
+                continue
+            actual_names.add(path.name)
+        for name in sorted(expected_names - actual_names):
+            errors.append(f"missing {directory_name}/{name}")
+        for name in sorted(actual_names - expected_names):
+            errors.append(f"unexpected {directory_name}/{name}")
+
+    for relative, expected_bytes in sorted(expected.items()):
+        path = run_root / relative
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            actual_size = path.stat().st_size
+        except OSError as exc:
+            errors.append(f"{relative} cannot be inspected: {exc}")
+            continue
+        if actual_size != len(expected_bytes):
+            errors.append(f"{relative} does not match canonical rendered content")
+            continue
+        try:
+            actual_bytes = path.read_bytes()
+        except OSError as exc:
+            errors.append(f"{relative} cannot be read: {exc}")
+            continue
+        if actual_bytes != expected_bytes:
+            errors.append(f"{relative} does not match canonical rendered content")
+        if path.suffix == ".png":
+            _check_png(path, errors)
 
 
 def _resolve_run_binding(
@@ -1930,9 +2103,17 @@ def _resolve_run_binding(
 
     seed_value = plan_identity.get("seed")
     replicate_value = plan_identity.get("replicate_count")
+    variant = spec_identity.get("profile_variant")
+    valid_variant = isinstance(variant, str) and variant in {"smoke", "final"}
+    expected_replicates = (
+        FINAL_REPLICATES
+        if variant == "final"
+        else SMOKE_REPLICATES if variant == "smoke" else None
+    )
     if (
         not _is_strict_int(seed_value, minimum=0)
         or not _is_strict_int(replicate_value, minimum=1)
+        or replicate_value not in {SMOKE_REPLICATES, FINAL_REPLICATES}
     ):
         seed = -1
         replicates = -1
@@ -1940,32 +2121,13 @@ def _resolve_run_binding(
     else:
         seed = seed_value
         replicates = replicate_value
+    if valid_variant and replicates != expected_replicates:
+        errors.append(
+            f"{variant} profile must use {expected_replicates} replicates "
+            f"(got {replicates})"
+        )
+        replicates = -1
     _err(errors, seed == 1, f"bootstrap seed must be 1 (got {seed})")
-
-    plan = None
-    if item_ids and seed >= 0 and replicates > 0:
-        try:
-            plan = build_bootstrap_plan(item_ids, replicates=replicates, seed=seed)
-            _err(
-                errors,
-                plan.resample_index_sha256
-                == plan_identity.get("resample_index_sha256"),
-                "bootstrap resample-index hash mismatch",
-            )
-            _err(
-                errors,
-                plan.item_id_list_sha256
-                == plan_identity.get("evaluation_item_id_list_sha256"),
-                "bootstrap item-id-list hash mismatch",
-            )
-            _err(
-                errors,
-                plan.numpy_version
-                == plan_identity.get("numpy_version_contract"),
-                "bootstrap NumPy version contract mismatch",
-            )
-        except (TypeError, ValueError) as exc:
-            errors.append(f"bootstrap plan cannot be rebuilt: {exc}")
 
     rows: list[dict] = []
     try:
@@ -1975,6 +2137,7 @@ def _resolve_run_binding(
         ):
             rows = load_adapter_rows(adapter_bundle)
     except (
+        EOFError,
         OSError,
         UnicodeError,
         json.JSONDecodeError,
@@ -1999,19 +2162,42 @@ def _resolve_run_binding(
         "bootstrap item_ids do not match paired adapter eval items",
     )
 
-    variant = spec_identity.get("profile_variant")
+    # Never allocate a manifest-selected resample matrix until its item universe
+    # is proven to be the exact, bounded universe derived from the adapter rows.
+    plan = None
+    if (
+        item_ids
+        and item_ids == expected_item_ids
+        and seed >= 0
+        and replicates > 0
+    ):
+        try:
+            plan = build_bootstrap_plan(item_ids, replicates=replicates, seed=seed)
+            _err(
+                errors,
+                plan.resample_index_sha256
+                == plan_identity.get("resample_index_sha256"),
+                "bootstrap resample-index hash mismatch",
+            )
+            _err(
+                errors,
+                plan.item_id_list_sha256
+                == plan_identity.get("evaluation_item_id_list_sha256"),
+                "bootstrap item-id-list hash mismatch",
+            )
+            _err(
+                errors,
+                plan.numpy_version
+                == plan_identity.get("numpy_version_contract"),
+                "bootstrap NumPy version contract mismatch",
+            )
+        except (TypeError, ValueError) as exc:
+            errors.append(f"bootstrap plan cannot be rebuilt: {exc}")
+
     _err(
         errors,
-        variant in {"smoke", "final"},
+        valid_variant,
         f"unsupported run spec profile_variant {variant!r}",
-    )
-    expected_replicates = (
-        FINAL_REPLICATES if variant == "final" else SMOKE_REPLICATES
-    )
-    _err(
-        errors,
-        replicates == expected_replicates,
-        f"{variant} profile must use {expected_replicates} replicates (got {replicates})",
     )
     spec_bootstrap = spec_identity.get("bootstrap", {})
     spec_seed = (
@@ -2042,13 +2228,18 @@ def _resolve_run_binding(
     if not isinstance(fvi_selected, dict):
         errors.append("run spec fvi_selected must be an object")
         fvi_selected = {}
-    try:
-        tolerance = str(fvi_selected["tolerance"])
-        max_iterations = int(fvi_selected["max_iterations"])
-    except (KeyError, TypeError, ValueError):
+    raw_tolerance = fvi_selected.get("tolerance")
+    raw_max_iterations = fvi_selected.get("max_iterations")
+    if (
+        raw_tolerance not in FVI_TOLERANCES
+        or raw_max_iterations not in FVI_MAX_ITERATIONS
+    ):
         tolerance = ""
         max_iterations = -1
         errors.append("run spec FVI settings are invalid")
+    else:
+        tolerance = str(raw_tolerance)
+        max_iterations = int(raw_max_iterations)
 
     gate = spec_identity.get("gate", {})
     if not isinstance(gate, dict):
@@ -2169,7 +2360,7 @@ def resolve_run_binding(
     return binding
 
 
-def validate_run(
+def _validate_run_impl(
     run_root: Path,
     *,
     backend: str,
@@ -2254,6 +2445,8 @@ def validate_run(
     )
     errors.extend(binding_errors)
     manifest_graph_valid = not binding_errors
+    if binding_errors:
+        return CheckResult(passed=False, errors=errors)
 
     run_spec_id = binding.get("run_spec_id")
     adapter_bundle_id = binding.get("adapter_bundle_id")
@@ -2335,6 +2528,17 @@ def validate_run(
         _scientific_equal(aggregate.get("gate_overrides"), gate_overrides),
         "aggregate gate_overrides do not match run spec",
     )
+
+    resource_summary_claims = _required_json("resource_summary.json")
+    try:
+        _err(
+            errors,
+            compute_id(resource_summary_claims)
+            == spec_ids.get("resource_summary_id"),
+            "resource_summary.json does not match resource_summary_id",
+        )
+    except (TypeError, ValueError) as exc:
+        errors.append(f"resource summary cannot be canonicalized: {exc}")
 
     # Backend manifest exclusivity and identity binding.
     run_manifest_path = run_root / "run_manifest.json"
@@ -2475,6 +2679,11 @@ def validate_run(
         errors,
         backend_manifest.get("environment") == environment_claims,
         "backend manifest environment does not match environment.json",
+    )
+    _err(
+        errors,
+        backend_manifest.get("resource_summary") == resource_summary_claims,
+        "backend manifest resource summary does not match resource_summary.json",
     )
     backend_manifest_valid = len(errors) == backend_error_count
 
@@ -2941,7 +3150,7 @@ def validate_run(
             adapter_identity=adapter_identity,
             recomputed_fvi_study=recomputed_fvi_study,
         )
-        _check_reports(run_root, errors)
+        _check_reports(run_root, aggregate, resource_summary_claims, errors)
 
     return CheckResult(
         passed=not errors, errors=errors,
@@ -2952,3 +3161,58 @@ def validate_run(
                     "adapter_bundle_id": adapter_bundle_id,
                     "bootstrap_plan_id": bootstrap_plan_id},
     )
+
+
+def validate_run(
+    run_root: Path,
+    *,
+    backend: str,
+    adapter_bundle: Path,
+    require_final_profile: bool = False,
+    require_package: bool = False,
+) -> CheckResult:
+    """Validate and independently recompute untrusted run evidence.
+
+    Parameters
+    ----------
+    run_root
+        Directory containing the run artifacts.
+    backend
+        Expected execution backend, ``"local"`` or ``"modal"``.
+    adapter_bundle
+        Directory containing the identity-bound adapter bundle.
+    require_final_profile
+        Whether to require the final 96-cell profile.
+    require_package
+        Whether to enforce complete packaged-evidence and report checks.
+
+    Returns
+    -------
+    CheckResult
+        Structured validation status. Data-derived recursion and numeric
+        overflow failures are normalized rather than escaping this boundary.
+    """
+    try:
+        return _validate_run_impl(
+            run_root,
+            backend=backend,
+            adapter_bundle=adapter_bundle,
+            require_final_profile=require_final_profile,
+            require_package=require_package,
+        )
+    except (
+        AttributeError,
+        EOFError,
+        KeyError,
+        OverflowError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        return CheckResult(
+            passed=False,
+            errors=[
+                "run evidence cannot be validated safely: "
+                f"{type(exc).__name__}: {exc}"
+            ],
+        )

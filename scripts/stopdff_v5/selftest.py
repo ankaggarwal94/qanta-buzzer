@@ -443,7 +443,9 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
     run_spec = run_spec_identity(
         source_manifest_id=source_id, raw_input_bundle_id=raw_id, model_snapshot_id=model_id,
         adapter_bundle_id=adapter_id, fvi_study_id=fvi_study_id, bootstrap_plan_id=bootstrap_id,
-        environment_contract_id=env_id, fvi_selected=selected_fvi,
+        environment_contract_id=env_id,
+        resource_summary_id=compute_id({"backend": "modal", "usd": 0}),
+        fvi_selected=selected_fvi,
         replicate_count=100, profile_variant="smoke",
         myopic_artifact_sha256=myopic_sha256,
         producer_hashes=run_producers,

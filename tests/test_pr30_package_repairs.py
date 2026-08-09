@@ -850,6 +850,7 @@ def test_draft_2020_12_schemas_validate_meta_and_instances() -> None:
             fvi_study_id="5" * 64,
             bootstrap_plan_id="6" * 64,
             environment_contract_id="7" * 64,
+            resource_summary_id="b" * 64,
             fvi_selected={"tolerance": "1e-8", "max_iterations": 100},
             replicate_count=100,
             profile_variant="smoke",

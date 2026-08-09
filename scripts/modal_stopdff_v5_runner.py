@@ -1207,10 +1207,13 @@ def package(run_id: str) -> dict:
             "retrieval_path": "evidence/environment_contract.json",
         },
     ]
+    resource_summary = checker.load_json(run_root / "resource_summary.json")
+    if not isinstance(resource_summary, dict):
+        raise ValueError("run resource summary must contain an object")
     writers.package_run(
         run_root,
         agg,
-        resource_summary={"backend": "modal"},
+        resource_summary=resource_summary,
         external_artifacts=external_artifacts,
         evidence_files=evidence_bytes,
     )
@@ -1378,8 +1381,272 @@ def _append_control_event(path: Path, event: dict) -> None:
     _atomic_replace_control_bytes(path, existing + line)
 
 
+_CONTROL_EVENT_NAMES = {
+    "control_completed",
+    "control_initialized",
+    "control_recovery_required",
+    "control_revalidated",
+    "stage_checkpoint_invalid",
+    "stage_checkpoint_refresh_required",
+    "stage_completed",
+    "stage_failed",
+    "stage_started",
+}
+_CONTROL_STAGE_NAMES = {
+    "adapter_determinism",
+    "environment_probe",
+    "final_bootstrap",
+    "final_sweep",
+    "freeze_model",
+    "fvi_study",
+    "mutation_gate",
+    "package",
+    "promote_adapter",
+    "smoke_bootstrap",
+    "smoke_sweep",
+    "validate_package",
+    "verify_raw",
+    "verify_source",
+}
+
+
+def _control_event_sha256(record: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            record,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_control_event_record(
+    record: object,
+    *,
+    expected_sequence: int,
+    previous_record: dict | None,
+) -> dict:
+    """Validate one canonical, hash-linked control-journal record."""
+    required = {
+        "sequence",
+        "event",
+        "stage",
+        "utc_epoch_seconds",
+        "detail",
+        "previous_event_sha256",
+    }
+    if not isinstance(record, dict) or set(record) != required:
+        raise ValueError("control journal record schema is invalid")
+    if record.get("sequence") != expected_sequence:
+        raise ValueError("control journal sequence is not contiguous")
+    event = record.get("event")
+    if not isinstance(event, str) or event not in _CONTROL_EVENT_NAMES:
+        raise ValueError("control journal event is unknown")
+    timestamp = record.get("utc_epoch_seconds")
+    if (
+        not isinstance(timestamp, int)
+        or isinstance(timestamp, bool)
+        or timestamp < 0
+    ):
+        raise ValueError("control journal timestamp is invalid")
+    detail = record.get("detail")
+    if not isinstance(detail, dict):
+        raise ValueError("control journal detail must be an object")
+
+    expected_previous = (
+        _control_event_sha256(previous_record)
+        if previous_record is not None
+        else None
+    )
+    if record.get("previous_event_sha256") != expected_previous:
+        raise ValueError("control journal hash chain is invalid")
+    if (
+        previous_record is not None
+        and timestamp < previous_record["utc_epoch_seconds"]
+    ):
+        raise ValueError("control journal timestamps are not monotonic")
+
+    stage = record.get("stage")
+    stage_event = event.startswith("stage_") or event in {
+        "control_recovery_required",
+        "control_revalidated",
+    }
+    if stage_event:
+        if not isinstance(stage, str) or stage not in _CONTROL_STAGE_NAMES:
+            raise ValueError("control journal stage is invalid")
+    elif stage is not None:
+        raise ValueError("control journal event must not name a stage")
+
+    if expected_sequence == 1 and event != "control_initialized":
+        raise ValueError("control journal must begin with initialization")
+    if event == "control_initialized" and (
+        expected_sequence != 1 or detail
+    ):
+        raise ValueError("control initialization event is invalid")
+    detail_fields = {
+        "control_completed": {"run_id", "run_spec_id"},
+        "control_initialized": set(),
+        "control_recovery_required": {"stage", "type", "message"},
+        "control_revalidated": {"run_id"},
+        "stage_checkpoint_invalid": {"attempt", "stage", "type", "message"},
+        "stage_checkpoint_refresh_required": {"reason"},
+        "stage_completed": {"attempt"},
+        "stage_failed": {"attempt", "stage", "type", "message"},
+        "stage_started": {"attempt"},
+    }
+    if set(detail) != detail_fields[event]:
+        raise ValueError("control journal event detail schema is invalid")
+    if event in {
+        "stage_checkpoint_invalid",
+        "stage_completed",
+        "stage_failed",
+        "stage_started",
+    }:
+        attempt = detail.get("attempt")
+        if (
+            not isinstance(attempt, int)
+            or isinstance(attempt, bool)
+            or attempt < 1
+        ):
+            raise ValueError("control journal stage attempt is invalid")
+    if event in {"stage_checkpoint_invalid", "stage_failed"}:
+        if (
+            detail.get("stage") != stage
+            or not isinstance(detail.get("type"), str)
+            or not detail.get("type")
+            or not isinstance(detail.get("message"), str)
+        ):
+            raise ValueError("control journal stage failure detail is invalid")
+    if event == "stage_checkpoint_refresh_required" and not isinstance(
+        detail.get("reason"), str
+    ):
+        raise ValueError("control journal refresh detail is invalid")
+    if event == "control_recovery_required" and (
+        not isinstance(detail.get("stage"), str)
+        or not isinstance(detail.get("type"), str)
+        or not isinstance(detail.get("message"), str)
+    ):
+        raise ValueError("control journal recovery detail is invalid")
+    if event == "control_revalidated" and not _is_final_control_run_id(
+        detail.get("run_id")
+    ):
+        raise ValueError("control journal revalidation detail is invalid")
+    if event == "control_completed" and (
+        not _is_final_control_run_id(detail.get("run_id"))
+        or not _is_control_sha(detail.get("run_spec_id"))
+    ):
+        raise ValueError("control journal completion detail is invalid")
+    return record
+
+
+def _validate_control_journal_projection(
+    records: list[dict],
+    state: dict,
+) -> None:
+    """Replay the journal's stage projection and bind it to the checkpoint."""
+    attempts: dict[str, int] = {}
+    active: tuple[str, int] | None = None
+    completed: set[str] = set()
+    for record in records:
+        event = record["event"]
+        stage = record["stage"]
+        detail = record["detail"]
+        if event == "stage_started":
+            attempt = detail["attempt"]
+            if attempt != attempts.get(stage, 0) + 1:
+                raise ValueError("control journal stage attempts are inconsistent")
+            if active is not None and active[0] != stage:
+                raise ValueError("control journal has overlapping active stages")
+            attempts[stage] = attempt
+            active = (stage, attempt)
+        elif event in {"stage_completed", "stage_failed"}:
+            if active != (stage, detail["attempt"]):
+                raise ValueError(
+                    "control journal stage terminal event lacks its start"
+                )
+            active = None
+            if event == "stage_completed":
+                completed.add(stage)
+            else:
+                completed.discard(stage)
+        elif event == "stage_checkpoint_invalid":
+            if (
+                stage not in completed
+                or detail["attempt"] != attempts.get(stage)
+            ):
+                raise ValueError(
+                    "control journal invalidation lacks a completed checkpoint"
+                )
+            completed.remove(stage)
+        elif event == "stage_checkpoint_refresh_required":
+            if stage not in completed:
+                raise ValueError(
+                    "control journal refresh lacks a completed checkpoint"
+                )
+            completed.remove(stage)
+        elif event in {
+            "control_completed",
+            "control_recovery_required",
+            "control_revalidated",
+        } and active is not None:
+            raise ValueError("control journal terminal event has an active stage")
+
+    strict_state = state.get("schema_version") == 3
+    state_attempts = state.get("stage_attempts")
+    if strict_state and not isinstance(state_attempts, dict):
+        raise ValueError("control state stage attempts must be an object")
+    if isinstance(state_attempts, dict) and state_attempts != attempts:
+        raise ValueError("control state stage attempts disagree with journal")
+    state_completed = state.get("completed")
+    if strict_state and not isinstance(state_completed, dict):
+        raise ValueError("control state completed stages must be an object")
+    if isinstance(state_completed, dict) and set(state_completed) != completed:
+        raise ValueError("control state completed stages disagree with journal")
+
+    if strict_state:
+        if not records:
+            raise ValueError("schema-v3 control journal cannot be empty")
+        last = records[-1]
+        expected_status = {
+            "control_completed": "completed",
+            "control_initialized": "initialized",
+            "control_recovery_required": "recovery_required",
+            "control_revalidated": "completed",
+            "stage_checkpoint_invalid": "running",
+            "stage_checkpoint_refresh_required": "running",
+            "stage_completed": "running",
+            "stage_failed": "failed",
+            "stage_started": "running",
+        }[last["event"]]
+        if state.get("status") != expected_status:
+            raise ValueError("control state status disagrees with journal")
+        if last["event"] in {"control_completed", "control_revalidated"}:
+            result = state.get("result")
+            if (
+                not isinstance(result, dict)
+                or result.get("run_id") != last["detail"]["run_id"]
+                or (
+                    last["event"] == "control_completed"
+                    and result.get("run_spec_id")
+                    != last["detail"]["run_spec_id"]
+                )
+            ):
+                raise ValueError("control state result disagrees with journal")
+        if last["event"] in {"control_recovery_required", "stage_failed"}:
+            last_error = state.get("last_error")
+            expected_error = {
+                key: last["detail"][key]
+                for key in ("stage", "type", "message")
+            }
+            if last_error != expected_error:
+                raise ValueError("control state error disagrees with journal")
+
+
 def _reconcile_control_journal(state_path: Path, state: dict) -> None:
     """Repair one provable final-record gap or reject journal drift."""
+    from scripts.stopdff_v5.identity import loads_no_duplicate_keys
+
     journal_path = state_path.with_name(state_path.name + ".jsonl")
     journal_bytes = b""
     if journal_path.exists() or journal_path.is_symlink():
@@ -1406,18 +1673,21 @@ def _reconcile_control_journal(state_path: Path, state: dict) -> None:
                 f"control journal line {line_number} is empty"
             )
         try:
-            record = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            record = loads_no_duplicate_keys(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             raise ValueError(
                 f"control journal line {line_number} is invalid JSON"
             ) from exc
-        if not isinstance(record, dict):
+        canonical_line = json.dumps(record, sort_keys=True).encode("utf-8")
+        if line != canonical_line:
             raise ValueError(
-                f"control journal line {line_number} is not an object"
+                f"control journal line {line_number} is not canonical JSON"
             )
-        if record.get("sequence") != line_number:
-            raise ValueError("control journal sequence is not contiguous")
-        records.append(record)
+        records.append(_validate_control_event_record(
+            record,
+            expected_sequence=line_number,
+            previous_record=records[-1] if records else None,
+        ))
 
     sequence = state.get("sequence", 0)
     if (
@@ -1427,6 +1697,8 @@ def _reconcile_control_journal(state_path: Path, state: dict) -> None:
     ):
         raise ValueError("control state sequence is invalid")
     last_event = state.get("last_event")
+    if sequence == 0 and last_event is not None:
+        raise ValueError("empty control state must not contain a last event")
     if torn_tail is not None:
         canonical_last = (
             json.dumps(last_event, sort_keys=True) + "\n"
@@ -1439,22 +1711,35 @@ def _reconcile_control_journal(state_path: Path, state: dict) -> None:
             or not canonical_last[:-1].startswith(torn_tail)
         ):
             raise ValueError("control journal has an unprovable torn tail")
+        validated_last = _validate_control_event_record(
+            last_event,
+            expected_sequence=sequence,
+            previous_record=records[-1] if records else None,
+        )
+        _validate_control_journal_projection(records + [validated_last], state)
         complete_prefix = journal_bytes[:-len(torn_tail)]
         _atomic_replace_control_bytes(
             journal_path,
             complete_prefix + canonical_last,
         )
-        records.append(last_event)
+        records.append(validated_last)
 
     if len(records) == sequence:
         if sequence and records[-1] != last_event:
             raise ValueError("control state and journal last event disagree")
+        _validate_control_journal_projection(records, state)
         return
     if (
         len(records) == sequence - 1
         and isinstance(last_event, dict)
         and last_event.get("sequence") == sequence
     ):
+        validated_last = _validate_control_event_record(
+            last_event,
+            expected_sequence=sequence,
+            previous_record=records[-1] if records else None,
+        )
+        _validate_control_journal_projection(records + [validated_last], state)
         _append_control_event(journal_path, last_event)
         return
     raise ValueError("control state and journal sequence disagree")
@@ -1469,13 +1754,26 @@ def _record_control_event(
     detail: dict | None = None,
 ) -> None:
     state["sequence"] = int(state.get("sequence", 0)) + 1
+    previous_event = state.get("last_event")
     record = {
         "sequence": state["sequence"],
         "event": event,
         "stage": stage,
         "utc_epoch_seconds": int(time.time()),
         "detail": detail or {},
+        "previous_event_sha256": (
+            _control_event_sha256(previous_event)
+            if isinstance(previous_event, dict)
+            else None
+        ),
     }
+    _validate_control_event_record(
+        record,
+        expected_sequence=state["sequence"],
+        previous_record=(
+            previous_event if isinstance(previous_event, dict) else None
+        ),
+    )
     state["last_event"] = record
     _write_control_state(state_path, state)
     _append_control_event(
@@ -1485,12 +1783,15 @@ def _record_control_event(
 
 
 def _validate_control_plan(plan: dict) -> dict:
+    from scripts.stopdff_v5.identity import compute_id
+
     allowed = {
         "source_id",
         "raw_id",
         "adapter_subdirs",
         "gate_overrides",
         "resource_summary",
+        "resource_summary_id",
     }
     if set(plan) - allowed:
         raise ValueError(
@@ -1534,12 +1835,25 @@ def _validate_control_plan(plan: dict) -> dict:
     resource_summary = plan.get("resource_summary", {})
     if not isinstance(resource_summary, dict):
         raise ValueError("control plan resource_summary must be an object")
+    try:
+        resource_summary_id = compute_id(resource_summary)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "control plan resource_summary is not canonically identity-safe"
+        ) from exc
+    supplied_resource_id = plan.get("resource_summary_id")
+    if (
+        supplied_resource_id is not None
+        and supplied_resource_id != resource_summary_id
+    ):
+        raise ValueError("control plan resource_summary_id mismatch")
     return {
         "source_id": source_id,
         "raw_id": raw_id,
         "adapter_subdirs": canonical_subdirs,
         "gate_overrides": dict(gate_overrides),
         "resource_summary": dict(resource_summary),
+        "resource_summary_id": resource_summary_id,
     }
 
 
@@ -1971,11 +2285,11 @@ def run_control_plane(
     api = stage_api or _default_control_stage_api()
     if resume:
         state = _load_control_json(state_path)
+        if state.get("schema_version") != 3:
+            raise ValueError("unsupported control-state schema")
         _reconcile_control_journal(state_path, state)
         if state.get("plan_digest") != digest or state.get("plan") != plan:
             raise ValueError("resume control plan does not match durable state")
-        if state.get("schema_version") != 2:
-            raise ValueError("unsupported control-state schema")
         if (
             state.get("status") not in {"completed", "recovery_required"}
             and "validate_package" in state.get("completed", {})
@@ -2061,7 +2375,7 @@ def run_control_plane(
         if state_path.exists() or state_path.is_symlink():
             raise FileExistsError("fresh control state already exists")
         state = {
-            "schema_version": 2,
+            "schema_version": 3,
             "plan": plan,
             "plan_digest": digest,
             "status": "initialized",
@@ -2241,6 +2555,7 @@ def run_control_plane(
         fvi_study_id=fvi_id,
         bootstrap_plan_id=smoke_bootstrap_id,
         environment_contract_id=environment_contract_id,
+        resource_summary_id=plan["resource_summary_id"],
         fvi_selected=selected,
         replicate_count=100,
         profile_variant="smoke",
@@ -2319,6 +2634,7 @@ def run_control_plane(
         fvi_study_id=fvi_id,
         bootstrap_plan_id=final_bootstrap_id,
         environment_contract_id=environment_contract_id,
+        resource_summary_id=plan["resource_summary_id"],
         fvi_selected=selected,
         replicate_count=1000,
         profile_variant="final",
@@ -2356,22 +2672,10 @@ def run_control_plane(
             require_receipt=False,
         ),
     )
-    _run_control_stage(
-        state_path,
-        state,
-        name="validate_unpacked",
-        invoke=lambda _: api["validate"](
-            final_run_id,
-            adapter_id,
-            True,
-            False,
-        ),
-        validate_result=lambda result: _validate_checker_result(
-            "validate_unpacked",
-            result,
-            expected_adapter_id=adapter_id,
-        ),
-    )
+    # package() performs its own fail-closed unpacked validation.  A separate
+    # controller validation here would repeat the complete 96-cell computation
+    # without adding a trust boundary; keep the independent packaged validation
+    # below, after publication has changed the evidence surface.
     _run_control_stage(
         state_path,
         state,
