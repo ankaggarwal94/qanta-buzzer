@@ -372,6 +372,7 @@ def _run_sweep_body(
     cells = ctx.cells if ctx.cells is not None else full_grid()
     expected_keys = {cell_key_str(c) for c in cells}
     cells_dir = ctx.output_dir / "cells"
+    _validate_cells_directory(cells_dir)
     cells_dir.mkdir(parents=True, exist_ok=True)
 
     per_cell_summary: dict[str, dict[str, Any]] = {}
@@ -659,6 +660,14 @@ def _validate_attempt_result(
     return None
 
 
+def _validate_cells_directory(cells_dir: Path) -> None:
+    """Reject a cells path that cannot be a canonical in-run directory."""
+    if cells_dir.is_symlink():
+        raise ValueError("cells directory must not be a symlink")
+    if cells_dir.exists() and not cells_dir.is_dir():
+        raise ValueError("cells path must be a directory")
+
+
 def _resume_preflight(
     ctx: SweepContext,
     *,
@@ -670,6 +679,7 @@ def _resume_preflight(
     cells_by_key = {cell_key_str(cell): cell for cell in cells}
     expected_keys = set(cells_by_key)
     cells_dir = ctx.output_dir / "cells"
+    _validate_cells_directory(cells_dir)
     actual_keys = (
         {path.stem for path in cells_dir.glob("*.json")}
         if cells_dir.is_dir()

@@ -128,6 +128,8 @@ def _canonical_adapter_subdir(value: object) -> str:
     """Return one canonical adapter path component or fail closed."""
     if not isinstance(value, str) or not value:
         raise ValueError("adapter subdir must be a nonempty string")
+    if "\0" in value:
+        raise ValueError("adapter subdir must not contain NUL")
     parsed = PurePosixPath(value)
     if (
         parsed.is_absolute()

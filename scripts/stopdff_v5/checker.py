@@ -106,6 +106,44 @@ def _is_finite_number(
     )
 
 
+def _scientific_equal(actual: Any, expected: Any) -> bool:
+    """Compare recomputable JSON claims without Python's coercive equality."""
+    if expected is None:
+        return actual is None
+    if isinstance(expected, bool):
+        return actual is expected
+    if isinstance(expected, int):
+        return _is_strict_int(actual) and actual == expected
+    if isinstance(expected, float):
+        return _is_finite_number(actual) and math.isclose(
+            float(actual),
+            expected,
+            rel_tol=0.0,
+            abs_tol=_FLOAT_TOL,
+        )
+    if isinstance(expected, str):
+        return isinstance(actual, str) and actual == expected
+    if isinstance(expected, dict):
+        return (
+            isinstance(actual, dict)
+            and set(actual) == set(expected)
+            and all(
+                _scientific_equal(actual[key], value)
+                for key, value in expected.items()
+            )
+        )
+    if isinstance(expected, list):
+        return (
+            isinstance(actual, list)
+            and len(actual) == len(expected)
+            and all(
+                _scientific_equal(actual_value, expected_value)
+                for actual_value, expected_value in zip(actual, expected)
+            )
+        )
+    return type(actual) is type(expected) and actual == expected
+
+
 def _is_quantized_number(value: Any, *, decimal_places: int) -> bool:
     """Return whether a finite number is unchanged by producer rounding."""
     if not _is_finite_number(value):
@@ -1936,7 +1974,13 @@ def _resolve_run_binding(
             and (adapter_bundle / "eval_rows.jsonl.gz").is_file()
         ):
             rows = load_adapter_rows(adapter_bundle)
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
         errors.append(f"adapter rows cannot be decoded: {exc}")
     eval_mc_items = {
         str(row.get("item_id"))
@@ -2175,6 +2219,34 @@ def validate_run(
     aggregate = _required_json("aggregate.json")
     spec_manifest = _required_json("run_spec.json")
     plan_manifest = _required_json("bootstrap_plan.json")
+    expected_aggregate_fields = {
+        "profile_name",
+        "profile_variant",
+        "backend",
+        "run_spec_id",
+        "adapter_bundle_id",
+        "bootstrap_plan_id",
+        "fvi_study_id",
+        "adapter_fit_rows_sha256",
+        "adapter_eval_rows_sha256",
+        "myopic_artifact_sha256",
+        "requested",
+        "completed",
+        "skipped",
+        "failed",
+        "expected_cell_keys",
+        "fvi_selected",
+        "cells",
+        "family",
+        "gate_overrides",
+        "release_status",
+        "release_reasons",
+    }
+    _err(
+        errors,
+        set(aggregate) == expected_aggregate_fields,
+        "aggregate fields do not match the canonical contract",
+    )
     binding, binding_errors = _resolve_run_binding(
         run_spec_manifest=spec_manifest,
         adapter_bundle=adapter_bundle,
@@ -2235,7 +2307,16 @@ def validate_run(
     _err(
         errors,
         isinstance(aggregate_fvi, dict)
-        and str(aggregate_fvi.get("tolerance")) == tol_label,
+        and set(aggregate_fvi) == {"tolerance", "max_iterations"},
+        "aggregate FVI fields do not match the canonical contract",
+    )
+    _err(
+        errors,
+        isinstance(aggregate_fvi, dict)
+        and _scientific_equal(
+            aggregate_fvi.get("tolerance"),
+            tol_label,
+        ),
         "aggregate FVI tolerance does not match run spec",
     )
     aggregate_max_iterations = (
@@ -2251,7 +2332,7 @@ def validate_run(
     )
     _err(
         errors,
-        aggregate.get("gate_overrides") == gate_overrides,
+        _scientific_equal(aggregate.get("gate_overrides"), gate_overrides),
         "aggregate gate_overrides do not match run spec",
     )
 
@@ -2278,8 +2359,15 @@ def validate_run(
     backend_manifest: dict[str, Any] = {}
     if expected_manifest_path.exists():
         try:
-            backend_manifest = load_json(expected_manifest_path)
+            loaded_backend_manifest = load_json(expected_manifest_path)
+            if not isinstance(loaded_backend_manifest, dict):
+                errors.append("backend manifest must contain an object")
+                loaded_backend_manifest = {}
+            backend_manifest = loaded_backend_manifest
             backend_identity = backend_manifest.get("identity", {})
+            if not isinstance(backend_identity, dict):
+                errors.append("backend manifest identity must contain an object")
+                backend_identity = {}
             _err(
                 errors,
                 compute_id(backend_identity) == backend_manifest.get("id"),
@@ -2410,10 +2498,28 @@ def validate_run(
         aggregate.get("expected_cell_keys") == sorted(expected_keys),
         "aggregate expected_cell_keys mismatch",
     )
-    actual_cell_keys = {
-        path.stem
-        for path in (run_root / "cells").glob("*.json")
-    } if (run_root / "cells").is_dir() else set()
+    aggregate_cells = aggregate.get("cells")
+    if not isinstance(aggregate_cells, dict):
+        errors.append("aggregate cells must contain an object")
+        aggregate_cells = {}
+    _err(
+        errors,
+        set(aggregate_cells) == expected_keys,
+        "aggregate cell keys do not match the profile",
+    )
+
+    cells_dir = run_root / "cells"
+    if cells_dir.is_symlink():
+        errors.append("run cells directory must not be a symlink")
+        actual_cell_keys: set[str] = set()
+    elif not cells_dir.is_dir():
+        errors.append("run cells path must be a directory")
+        actual_cell_keys = set()
+    else:
+        actual_cell_keys = {
+            path.stem
+            for path in cells_dir.glob("*.json")
+        }
     _err(
         errors,
         actual_cell_keys == expected_keys,
@@ -2425,20 +2531,59 @@ def validate_run(
     recomputed_verdicts: dict[str, str] = {}
     completed: set[str] = set()
     failed: set[str] = set()
+    all_calibrators_fitted = True
+    all_fvi_converged = True
     try:
         prepared_cell_inputs = prepare_cell_inputs(rows, calibration)
     except (KeyError, TypeError, ValueError) as exc:
         errors.append(f"cell inputs cannot be prepared: {exc}")
         prepared_cell_inputs = None
 
+    common_cell_fields = {
+        "cell",
+        "cell_key",
+        "fingerprint_id",
+        "fingerprint_identity",
+        "status",
+        "run_spec_id",
+        "adapter_bundle_id",
+        "bootstrap_plan_id",
+        "calibrator_parameters",
+    }
+    completed_cell_fields = common_cell_fields | {
+        "fvi",
+        "coverage",
+        "ceiling_flags",
+        "index_shift_by_item",
+        "bootstrap",
+        "descriptive",
+        "mc_gate_overridden",
+        "verdict",
+    }
+
     for cell in cells:
         key = cell_key_str(cell)
-        cell_path = run_root / "cells" / f"{key}.json"
-        if not cell_path.exists():
-            errors.append(f"missing cell file: {key}")
+        cell_path = cells_dir / f"{key}.json"
+        if cell_path.is_symlink() or not cell_path.is_file():
+            errors.append(f"{key}: cell evidence must be a regular non-symlink file")
             failed.add(key)
             continue
-        stored = load_json(cell_path)
+        try:
+            stored = load_json(cell_path)
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            errors.append(f"{key}: cell evidence cannot be decoded: {exc}")
+            failed.add(key)
+            continue
+        if not isinstance(stored, dict):
+            errors.append(f"{key}: cell evidence must contain an object")
+            failed.add(key)
+            continue
         _err(errors, stored.get("cell_key") == key, f"{key}: cell_key mismatch")
         _err(errors, stored.get("cell") == cell, f"{key}: cell payload mismatch")
         _err(
@@ -2458,10 +2603,17 @@ def validate_run(
         )
 
         fingerprint = stored.get("fingerprint_identity", {})
+        fingerprint_id_matches = False
+        if isinstance(fingerprint, dict):
+            try:
+                fingerprint_id_matches = (
+                    compute_id(fingerprint) == stored.get("fingerprint_id")
+                )
+            except (TypeError, ValueError) as exc:
+                errors.append(f"{key}: fingerprint cannot be canonicalized: {exc}")
         _err(
             errors,
-            isinstance(fingerprint, dict)
-            and compute_id(fingerprint) == stored.get("fingerprint_id"),
+            fingerprint_id_matches,
             f"{key}: fingerprint id mismatch",
         )
         _err(
@@ -2525,31 +2677,72 @@ def validate_run(
         _err(
             errors,
             isinstance(fingerprint, dict)
-            and fingerprint.get("calibrator_parameters")
-            == res.calibrator_parameters,
+            and _scientific_equal(
+                fingerprint.get("calibrator_parameters"),
+                res.calibrator_parameters,
+            ),
             f"{key}: fingerprint calibrator_parameters mismatch",
         )
         _err(
             errors,
-            stored.get("calibrator_parameters") == res.calibrator_parameters,
+            _scientific_equal(
+                stored.get("calibrator_parameters"),
+                res.calibrator_parameters,
+            ),
             f"{key}: stored calibrator_parameters mismatch",
         )
         if res.status != "completed":
             failed.add(key)
-            _err(errors, stored.get("status") == res.status,
-                 f"{key}: stored status {stored.get('status')!r} != recomputed {res.status!r}")
-            # A non-completed cell must not be serialized as completed with a verdict.
-            _err(errors, stored.get("status") != "completed",
-                 f"{key}: non-converged/failed cell serialized as completed")
+            if res.status == "calibrator_failed":
+                all_calibrators_fitted = False
+            if res.status == "fvi_failed":
+                all_fvi_converged = False
+            expected_failed_fields = common_cell_fields | {"reason"}
+            expected_failed_claims: dict[str, Any] = {
+                "status": res.status,
+                "reason": res.reason,
+            }
+            if res.fvi is not None:
+                expected_failed_fields.add("fvi")
+                expected_failed_claims["fvi"] = {
+                    "status": res.fvi.status,
+                    "converged": res.fvi.converged,
+                    "iterations": res.fvi.iterations,
+                    "final_delta": res.fvi.final_delta,
+                }
+            _err(
+                errors,
+                set(stored) == expected_failed_fields,
+                f"{key}: failed cell fields do not match the canonical contract",
+            )
+            for field, expected in expected_failed_claims.items():
+                _err(
+                    errors,
+                    _scientific_equal(stored.get(field), expected),
+                    f"{key}: stored {field} does not match independent recomputation",
+                )
+            expected_summary = {"status": res.status, "verdict": "INVALID"}
+            _err(
+                errors,
+                _scientific_equal(aggregate_cells.get(key), expected_summary),
+                f"{key}: aggregate cell summary mismatch",
+            )
             continue
 
         completed.add(key)
-        # index shifts must match exactly (no trusting serialized).
-        stored_shifts = {str(k): int(v) for k, v in stored.get("index_shift_by_item", {}).items()}
-        _err(errors, stored_shifts == res.index_shift_by_item,
-             f"{key}: index_shift_by_item mismatch (cache stale or tampered)")
-
-        stats = cell_bootstrap_stats(res.index_shift_by_item, plan)
+        _err(
+            errors,
+            set(stored) == completed_cell_fields,
+            f"{key}: completed cell fields do not match the canonical contract",
+        )
+        if plan is None:
+            errors.append(f"{key}: bootstrap plan unavailable for recomputation")
+            continue
+        try:
+            stats = cell_bootstrap_stats(res.index_shift_by_item, plan)
+        except (KeyError, TypeError, ValueError) as exc:
+            errors.append(f"{key}: bootstrap cannot be recomputed: {exc}")
+            continue
         flags = ceiling_flags(res.mc_stops, res.qa_stops, list(res.index_shift_by_item.values()))
         ceiling_any = any(flags.values())
         cov_clean = coverage_clean(res.coverage["fallback_fraction"], res.coverage["missing_fraction"])
@@ -2558,48 +2751,40 @@ def validate_run(
             ceiling_any=ceiling_any, mc_gate_overridden=mc_overridden,
         )
         recomputed_verdicts[key] = verdict
-        _err(errors, stored.get("verdict") == verdict,
-             f"{key}: stored verdict {stored.get('verdict')!r} != recomputed {verdict!r}")
-        # coverage/ceiling serialized must match recomputed (no hiding a WARN).
-        stored_cov = stored.get("coverage", {})
-        _err(errors, bool(stored_cov.get("clean")) == cov_clean,
-             f"{key}: coverage clean flag mismatch")
-        _err(errors, stored.get("ceiling_flags") == flags, f"{key}: ceiling flags mismatch")
-        _err(
-            errors,
-            stored.get("mc_gate_overridden") is mc_overridden,
-            f"{key}: mc_gate_overridden mismatch",
-        )
-        stored_fvi = stored.get("fvi", {})
-        _err(
-            errors,
-            str(stored_fvi.get("tolerance")) == tol_label
-            and int(stored_fvi.get("max_iterations", -1)) == max_iter,
-            f"{key}: stored FVI settings do not match run spec",
-        )
-
-        # Bootstrap point estimates and CIs must match independent recomputation.
-        stored_point = stored.get("bootstrap", {}).get("point", {})
-        for metric, expected in stats["point"].items():
-            try:
-                matches = abs(float(stored_point.get(metric)) - expected) < _FLOAT_TOL
-            except (TypeError, ValueError):
-                matches = False
-            _err(errors, matches, f"{key}: bootstrap point mismatch for {metric}")
-        stored_ci = stored.get("bootstrap", {}).get("ci", {}).get("absolute_index_median", [None, None])
-        try:
-            ci_matches = (
-                len(stored_ci) == 2
-                and abs(float(stored_ci[0]) - stats["abs_median_ci"][0])
-                < _FLOAT_TOL
-                and abs(float(stored_ci[1]) - stats["abs_median_ci"][1])
-                < _FLOAT_TOL
+        if res.fvi is None:
+            errors.append(f"{key}: completed recomputation has no FVI result")
+            continue
+        expected_scientific_claims = {
+            "status": "completed",
+            "fvi": {
+                "status": res.fvi.status,
+                "converged": res.fvi.converged,
+                "iterations": res.fvi.iterations,
+                "final_delta": res.fvi.final_delta,
+                "tolerance": tol_label,
+                "max_iterations": max_iter,
+            },
+            "coverage": {**res.coverage, "clean": cov_clean},
+            "ceiling_flags": flags,
+            "index_shift_by_item": res.index_shift_by_item,
+            "bootstrap": {
+                "point": stats["point"],
+                "ci": stats["ci"],
+                "abs_median_replicates": stats[
+                    "abs_median_replicates"
+                ].tolist(),
+            },
+            "descriptive": res.descriptive,
+            "mc_gate_overridden": mc_overridden,
+            "verdict": verdict,
+        }
+        for field, expected in expected_scientific_claims.items():
+            _err(
+                errors,
+                _scientific_equal(stored.get(field), expected),
+                f"{key}: stored {field} does not match independent recomputation",
             )
-        except (TypeError, ValueError):
-            ci_matches = False
-        _err(errors, ci_matches, f"{key}: abs-median CI mismatch")
 
-        aggregate_summary = (aggregate.get("cells") or {}).get(key, {})
         expected_summary = {
             "status": "completed",
             "verdict": verdict,
@@ -2610,7 +2795,7 @@ def validate_run(
         }
         _err(
             errors,
-            aggregate_summary == expected_summary,
+            _scientific_equal(aggregate_cells.get(key), expected_summary),
             f"{key}: aggregate cell summary mismatch",
         )
 
@@ -2618,6 +2803,7 @@ def validate_run(
         abs_median_point[key] = stats["abs_median_point"]
 
     # Family recompute.
+    recomputed_family: dict[str, Any] | None = None
     family_valid = bool(abs_median_reps)
     if family_valid:
         fam = family_statistic(abs_median_reps, abs_median_point)
@@ -2627,40 +2813,66 @@ def validate_run(
         fam_verdict = family_verdict(
             family_ci=fam["ci"], all_cells_pass=all_cells_pass, mc_override_active=mc_overridden
         )
-        stored_family = aggregate.get("family") or {}
+        recomputed_family = {
+            "M": fam["M"],
+            "ci": fam["ci"],
+            "verdict": fam_verdict,
+        }
+        stored_family_value = aggregate.get("family")
+        stored_family = (
+            stored_family_value
+            if isinstance(stored_family_value, dict)
+            else {}
+        )
         _err(
             errors,
-            isinstance(stored_family, dict)
+            isinstance(stored_family_value, dict)
             and set(stored_family) == {"M", "ci", "verdict"},
             "family fields do not match the canonical contract",
         )
-        try:
-            family_m_matches = (
-                abs(float(stored_family.get("M")) - fam["M"]) < _FLOAT_TOL
-            )
-        except (TypeError, ValueError):
-            family_m_matches = False
-        _err(errors, family_m_matches, "family M mismatch")
+        _err(
+            errors,
+            _scientific_equal(stored_family.get("M"), fam["M"]),
+            "family M mismatch",
+        )
         _err(errors, stored_family.get("verdict") == fam_verdict,
              f"family verdict mismatch: stored {stored_family.get('verdict')!r} != recomputed {fam_verdict!r}")
         stored_family_ci = stored_family.get("ci")
-        try:
-            family_ci_matches = (
-                isinstance(stored_family_ci, list)
-                and len(stored_family_ci) == 2
-                and all(_is_finite_number(value) for value in stored_family_ci)
-                and abs(float(stored_family_ci[0]) - fam["ci"][0]) < _FLOAT_TOL
-                and abs(float(stored_family_ci[1]) - fam["ci"][1]) < _FLOAT_TOL
-            )
-        except (TypeError, ValueError, IndexError):
-            family_ci_matches = False
-        _err(errors, family_ci_matches, "family CI mismatch")
+        _err(
+            errors,
+            _scientific_equal(stored_family_ci, fam["ci"]),
+            "family CI mismatch",
+        )
+    else:
+        _err(
+            errors,
+            aggregate.get("family") is None,
+            "family must be null when no cells completed",
+        )
 
     # Counts.
-    _err(errors, aggregate.get("requested") == len(expected_keys), "requested count mismatch")
-    _err(errors, aggregate.get("completed") == len(completed), "completed count mismatch")
-    _err(errors, aggregate.get("failed") == len(failed), "failed count mismatch")
-    _err(errors, int(aggregate.get("skipped", 0)) == 0, "skipped must be 0")
+    _err(
+        errors,
+        aggregate.get("profile_name") == "stopdff_bucketed_dp_paired_v2",
+        "aggregate profile_name mismatch",
+    )
+    for field, expected_count in (
+        ("requested", len(expected_keys)),
+        ("completed", len(completed)),
+        ("failed", len(failed)),
+    ):
+        value = aggregate.get(field)
+        _err(
+            errors,
+            _is_strict_int(value, minimum=0) and value == expected_count,
+            f"{field} count mismatch",
+        )
+    skipped = aggregate.get("skipped")
+    _err(
+        errors,
+        _is_strict_int(skipped, minimum=0) and skipped == 0,
+        "skipped must be 0",
+    )
 
     # Release validity recompute.
     pre_release_valid = not errors
@@ -2668,8 +2880,8 @@ def validate_run(
     release = release_validity(
         expected_cell_keys=expected_keys, present_cell_keys=sorted(completed | failed),
         completed_keys=completed, failed_keys=failed, skipped_keys=set(),
-        all_calibrators_fitted=not any("calibrator_failed" == load_json(run_root / "cells" / f"{k}.json").get("status") for k in failed),
-        all_fvi_converged=not any("fvi_failed" == load_json(run_root / "cells" / f"{k}.json").get("status") for k in failed),
+        all_calibrators_fitted=all_calibrators_fitted,
+        all_fvi_converged=all_fvi_converged,
         manifests_valid=graph_and_records_valid,
         cache_matches_aggregate=(
             pre_release_valid and (completed | failed) == expected_keys
@@ -2682,6 +2894,11 @@ def validate_run(
     recomputed_status = "VALID" if release.valid else "INVALID"
     _err(errors, aggregate.get("release_status") == recomputed_status,
          f"release_status mismatch: stored {aggregate.get('release_status')!r} != recomputed {recomputed_status!r}")
+    _err(
+        errors,
+        _scientific_equal(aggregate.get("release_reasons"), release.reasons),
+        "release_reasons mismatch",
+    )
     if not release.valid:
         errors.extend(f"release invalid: {reason}" for reason in release.reasons)
 
@@ -2729,7 +2946,7 @@ def validate_run(
     return CheckResult(
         passed=not errors, errors=errors,
         recomputed={"release_status": recomputed_status,
-                    "family": aggregate.get("family"),
+                    "family": recomputed_family,
                     "completed": len(completed), "failed": len(failed),
                     "run_spec_id": run_spec_id,
                     "adapter_bundle_id": adapter_bundle_id,
