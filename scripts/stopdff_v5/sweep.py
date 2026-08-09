@@ -20,6 +20,11 @@ import numpy as np
 from . import PROFILE_NAME
 from .bootstrap import BootstrapPlan, cell_bootstrap_stats, family_statistic
 from .cellcompute import CellInputs, compute_cell, prepare_cell_inputs
+from .attempt_history import (
+    ATTEMPT_FIELDS,
+    canonical_attempt_line,
+    load_attempt_history,
+)
 from .identity import build_manifest, compute_id, loads_no_duplicate_keys
 from .manifests import cell_fingerprint_identity
 from .profile import cell_key_str, full_grid
@@ -157,29 +162,8 @@ def _context_identity(ctx: SweepContext) -> tuple[dict[str, Any], str]:
 
 
 def _load_attempt_history(path: Path) -> tuple[bytes, list[dict[str, Any]]]:
-    """Load only a complete, newline-terminated canonical attempt history."""
-    path = Path(path)
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("attempt history is missing or noncanonical")
-    data = path.read_bytes()
-    if not data or not data.endswith(b"\n"):
-        raise ValueError("attempt history has an unterminated tail")
-    records: list[dict[str, Any]] = []
-    for line_number, line in enumerate(data[:-1].split(b"\n"), start=1):
-        if not line:
-            raise ValueError(f"attempt history line {line_number} is empty")
-        try:
-            record = loads_no_duplicate_keys(line.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError, TypeError) as exc:
-            raise ValueError(
-                f"attempt history line {line_number} is invalid"
-            ) from exc
-        if not isinstance(record, dict):
-            raise ValueError(
-                f"attempt history line {line_number} is not an object"
-            )
-        records.append(record)
-    return data, records
+    """Compatibility wrapper around the shared canonical parser."""
+    return load_attempt_history(path)
 
 
 def _prepare_attempt(
@@ -191,6 +175,12 @@ def _prepare_attempt(
     if not ctx.attempt:
         raise ValueError("sweep context requires an attempt record")
     attempt = dict(ctx.attempt)
+    surplus_fields = set(attempt) - (ATTEMPT_FIELDS - {"state"})
+    if surplus_fields:
+        raise ValueError(
+            "attempt input fields do not match the canonical contract: "
+            f"surplus={sorted(surplus_fields)}"
+        )
     expected_attempt_fields = {
         "run_spec_id": ctx.run_spec_id,
         "adapter_id": ctx.adapter_bundle_id,
@@ -570,7 +560,7 @@ def _append_attempt(path: Path, attempt: dict) -> None:
     existing = b""
     if path.exists() or path.is_symlink():
         existing, _ = _load_attempt_history(path)
-    line = (json.dumps(attempt, sort_keys=True) + "\n").encode("utf-8")
+    line = canonical_attempt_line(attempt)
     atomic_write_bytes(path, existing + line)
 
 

@@ -33,6 +33,7 @@ ADAPTER_SCHEMA_COLUMNS = [
     "distractor_strategy", "p_second_best", "top2_margin",
 ]
 _ROUND = 6  # decimals for similarity fields; coarse enough to absorb GPU float jitter
+_ENCODE_BATCH_SIZE = 64
 # (byte-identical rows across builds) while far finer than calibration/binning needs.
 
 
@@ -133,11 +134,14 @@ def _dataset_index(path: Path, *, split: str) -> dict[str, dict[str, str]]:
             raise ValueError(
                 f"{split} dataset record has non-string question text or answer"
             ) from exc
+        category = rec.get("category")
+        if not isinstance(category, str) or not category.strip():
+            raise ValueError(f"{split} dataset record has invalid category")
         if not qid or not text or not answer:
             raise ValueError(f"{split} dataset record lacks qid, question text, or answer")
         if qid in out:
             raise ValueError(f"{split} dataset contains duplicate qid {qid!r}")
-        out[qid] = {"text": text, "answer": answer}
+        out[qid] = {"text": text, "answer": answer, "category": category}
     return out
 
 
@@ -176,7 +180,7 @@ def derive_bound_calibration(
     """
     import numpy as np
     from sklearn.linear_model import LogisticRegression
-    from .calibrators import require_phase_fit_prerequisites
+    from .calibrators import apply_platt_logistic, require_phase_fit_prerequisites
 
     phases = ("early", "mid", "late")
 
@@ -253,10 +257,12 @@ def derive_bound_calibration(
         model_type = "logistic"
         fallback_reason = None
         constant_probability = None
-        probabilities = (
-            model.predict_proba(eval_scores.reshape(-1, 1))[:, 1]
-            if len(eval_scores)
-            else np.asarray([], dtype=np.float64)
+        probabilities = np.asarray(
+            [
+                apply_platt_logistic(score, coefficient, intercept)
+                for score in eval_scores
+            ],
+            dtype=np.float64,
         )
         per_bucket[phase] = {
             "ece": round(ece(probabilities, eval_labels), 6),
@@ -354,6 +360,9 @@ def _validate_scoring_question(question: dict[str, Any]) -> None:
             f"MC scoring question {qid!r} gold_index does not identify "
             "answer_primary"
         )
+    category = question.get("category")
+    if not isinstance(category, str) or not category.strip():
+        raise ValueError(f"MC scoring question {qid!r} has invalid category")
 
 
 def _validate_split_bindings(
@@ -425,6 +434,12 @@ def _validate_split_bindings(
                 raise ValueError(
                     f"MC question {qid!r} answer does not match its {split} split record"
                 )
+            mc_category = question.get("category")
+            if mc_category != source["category"]:
+                raise ValueError(
+                    f"MC question {qid!r} category does not match its "
+                    f"{split} split record"
+                )
 
         missing = set(split_index) - set(mc_index)
         if missing:
@@ -435,7 +450,13 @@ def _validate_split_bindings(
     return mc_index
 
 
-def _score_question_rows(question: dict, model, split: str) -> list[dict]:
+def _score_question_rows(
+    question: dict,
+    model,
+    split: str,
+    *,
+    embeddings=None,
+) -> list[dict]:
     import numpy as np
     from sklearn.metrics.pairwise import cosine_similarity
 
@@ -445,7 +466,7 @@ def _score_question_rows(question: dict, model, split: str) -> list[dict]:
     prefixes = question["cumulative_prefixes"]
     options = question["options"]
     gold_index = int(question["gold_index"])
-    category = str(question.get("category", ""))
+    category = question["category"]
     K = int(len(options))
     option_set_id = f"{qid}:K{K}"
     distractor_strategy = str(question.get("distractor_strategy", "unknown"))
@@ -458,7 +479,16 @@ def _score_question_rows(question: dict, model, split: str) -> list[dict]:
     full_question_sha256 = sha256_bytes(canonical_full_q.encode("utf-8"))
 
     texts = [*options, question["answer_primary"], *prefixes]
-    embeddings = model.encode(texts, convert_to_numpy=True)
+    if embeddings is None:
+        embeddings = model.encode(
+            texts,
+            batch_size=_ENCODE_BATCH_SIZE,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        )
+    embeddings = np.asarray(embeddings)
+    if len(embeddings) != len(texts):
+        raise ValueError("encoder output does not align with requested texts")
     option_end = len(options)
     option_embs = embeddings[:option_end]
     answer_emb = embeddings[option_end : option_end + 1]
@@ -502,6 +532,46 @@ def _score_question_rows(question: dict, model, split: str) -> list[dict]:
             "category": category, "K": K, "option_set_id": option_set_id,
             "distractor_strategy": distractor_strategy, "p_second_best": 0.0, "top2_margin": 0.0,
         })
+    return rows
+
+
+def _score_questions_rows(
+    questions: list[tuple[dict[str, Any], str]],
+    model,
+) -> list[dict[str, Any]]:
+    """Score all retained questions through one bounded encoder dispatch."""
+    flattened_texts: list[str] = []
+    slices: list[tuple[dict[str, Any], str, int, int]] = []
+    for question, split in questions:
+        _validate_scoring_question(question)
+        texts = [
+            *question["options"],
+            question["answer_primary"],
+            *question["cumulative_prefixes"],
+        ]
+        start = len(flattened_texts)
+        flattened_texts.extend(texts)
+        slices.append((question, split, start, len(flattened_texts)))
+    if not flattened_texts:
+        return []
+    embeddings = model.encode(
+        flattened_texts,
+        batch_size=_ENCODE_BATCH_SIZE,
+        convert_to_numpy=True,
+        show_progress_bar=False,
+    )
+    if len(embeddings) != len(flattened_texts):
+        raise ValueError("encoder output does not align with requested texts")
+    rows: list[dict[str, Any]] = []
+    for question, split, start, end in slices:
+        rows.extend(
+            _score_question_rows(
+                question,
+                None,
+                split,
+                embeddings=embeddings[start:end],
+            )
+        )
     return rows
 
 
@@ -678,14 +748,17 @@ def build_adapter_bundle(
 
     model = SentenceTransformer(str(model_snapshot_dir), trust_remote_code=False)
 
-    fit_rows: list[dict] = []
-    eval_rows: list[dict] = []
+    retained_questions: list[tuple[dict[str, Any], str]] = []
     for q in sorted(questions, key=lambda x: str(x["qid"])):
         qid = str(q["qid"])
         if qid in val_qids:
-            fit_rows.extend(_score_question_rows(q, model, "val"))
+            retained_questions.append((q, "val"))
         if qid in test_qids:
-            eval_rows.extend(_score_question_rows(q, model, "test"))
+            retained_questions.append((q, "test"))
+
+    scored_rows = _score_questions_rows(retained_questions, model)
+    fit_rows = [row for row in scored_rows if row["split"] == "val"]
+    eval_rows = [row for row in scored_rows if row["split"] == "test"]
 
     fit_rows = _sorted_rows(fit_rows)
     eval_rows = _sorted_rows(eval_rows)

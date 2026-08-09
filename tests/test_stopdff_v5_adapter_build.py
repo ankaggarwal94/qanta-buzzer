@@ -15,17 +15,23 @@ if str(REPO) not in sys.path:
 from scripts.stopdff_v5 import adapter_build  # noqa: E402
 
 
-def _entry(qid: str, question: str, answer: str) -> dict:
+def _entry(
+    qid: str,
+    question: str,
+    answer: str,
+    category: str = "Test",
+) -> dict:
     return {
         "qid": qid,
         "question": question,
         "answer_primary": answer,
+        "category": category,
     }
 
 
 def test_adapter_split_binding_requires_every_retained_split_qid():
-    val = {"v": {"text": "validation?", "answer": "validation"}}
-    test = {"t": {"text": "test?", "answer": "test"}}
+    val = {"v": {"text": "validation?", "answer": "validation", "category": "Test"}}
+    test = {"t": {"text": "test?", "answer": "test", "category": "Test"}}
 
     with pytest.raises(ValueError, match="missing val split qids"):
         adapter_build._validate_split_bindings(
@@ -36,8 +42,8 @@ def test_adapter_split_binding_requires_every_retained_split_qid():
 
 
 def test_adapter_split_binding_rejects_normalized_text_overlap():
-    val = {"v": {"text": "shared question?", "answer": "same"}}
-    test = {"t": {"text": "shared question?", "answer": "same"}}
+    val = {"v": {"text": "shared question?", "answer": "same", "category": "Test"}}
+    test = {"t": {"text": "shared question?", "answer": "same", "category": "Test"}}
 
     with pytest.raises(ValueError, match="normalized question-text overlap"):
         adapter_build._validate_split_bindings(
@@ -51,8 +57,8 @@ def test_adapter_split_binding_rejects_normalized_text_overlap():
 
 
 def test_adapter_split_binding_rejects_mc_source_mismatch():
-    val = {"v": {"text": "validation?", "answer": "validation"}}
-    test = {"t": {"text": "test?", "answer": "test"}}
+    val = {"v": {"text": "validation?", "answer": "validation", "category": "Test"}}
+    test = {"t": {"text": "test?", "answer": "test", "category": "Test"}}
 
     with pytest.raises(ValueError, match="answer does not match"):
         adapter_build._validate_split_bindings(
@@ -80,9 +86,18 @@ def test_adapter_similarity_fields_keep_six_decimal_identity_contract():
     class FakeModel:
         calls = 0
 
-        def encode(self, values, *, convert_to_numpy):
+        def encode(
+            self,
+            values,
+            *,
+            batch_size,
+            convert_to_numpy,
+            show_progress_bar,
+        ):
             self.calls += 1
+            assert batch_size == adapter_build._ENCODE_BATCH_SIZE
             assert convert_to_numpy is True
+            assert show_progress_bar is False
             vectors = {
                 "option one": [1.0, 0.0],
                 "option two": [1.0, 2.0],

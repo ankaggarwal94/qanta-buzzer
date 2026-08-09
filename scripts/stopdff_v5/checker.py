@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .attempt_history import load_attempt_history
 from .bootstrap import build_bootstrap_plan, cell_bootstrap_stats, family_statistic
 from .cellcompute import compute_cell, prepare_cell_inputs
 from .checker_calibration import platt_phase_errors
@@ -404,6 +405,12 @@ def load_adapter_rows(bundle_dir: Path) -> list[dict]:
 # --- validate-spec ----------------------------------------------------------------
 
 
+def _run_spec_manifest_envelope_errors(manifest: Any) -> list[str]:
+    if not isinstance(manifest, dict) or set(manifest) != {"id", "identity"}:
+        return ["run spec manifest fields do not match the canonical envelope"]
+    return []
+
+
 def _run_spec_errors(
     spec_identity: Any,
     spec_id: Any,
@@ -675,11 +682,12 @@ def _validate_spec_impl(
         return CheckResult(passed=False, errors=[f"run spec cannot be decoded: {exc}"])
     if not isinstance(spec, dict):
         return CheckResult(passed=False, errors=["run spec manifest must be an object"])
-    errors = _run_spec_errors(
+    errors = _run_spec_manifest_envelope_errors(spec)
+    errors.extend(_run_spec_errors(
         spec.get("identity"),
         spec.get("id"),
         require_final_profile=require_final_profile,
-    )
+    ))
     return CheckResult(passed=not errors, errors=errors)
 
 
@@ -858,6 +866,7 @@ def _validate_adapter_impl(bundle_dir: Path) -> CheckResult:
         json.JSONDecodeError,
         TypeError,
         ValueError,
+        zlib.error,
     ) as exc:
         errors.append(f"adapter fit_rows cannot be decoded: {exc}")
     try:
@@ -870,6 +879,7 @@ def _validate_adapter_impl(bundle_dir: Path) -> CheckResult:
         json.JSONDecodeError,
         TypeError,
         ValueError,
+        zlib.error,
     ) as exc:
         errors.append(f"adapter eval_rows cannot be decoded: {exc}")
 
@@ -1021,10 +1031,7 @@ def _validate_adapter_impl(bundle_dir: Path) -> CheckResult:
                 _err(
                     errors,
                     isinstance(row.get(text_field), str)
-                    and (
-                        text_field == "category"
-                        or bool(row.get(text_field))
-                    ),
+                    and bool(row.get(text_field).strip()),
                     f"adapter {label} row {index} has invalid {text_field}",
                 )
             valid_k = _is_strict_int(row.get("K"), minimum=2)
@@ -1442,6 +1449,7 @@ def validate_adapter(bundle_dir: Path) -> CheckResult:
         TypeError,
         UnicodeError,
         ValueError,
+        zlib.error,
     ) as exc:
         return CheckResult(
             passed=False,
@@ -1694,17 +1702,10 @@ def _check_attempts(
 ) -> bool:
     error_count = len(errors)
     path = run_root / "attempts.jsonl"
-    if not path.exists():
-        errors.append("missing attempts.jsonl")
-        return False
     try:
-        attempts = [
-            loads_no_duplicate_keys(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        errors.append(f"attempts.jsonl cannot be decoded: {exc}")
+        _, attempts = load_attempt_history(path)
+    except (OSError, UnicodeError, TypeError, ValueError) as exc:
+        errors.append(f"attempts.jsonl is noncanonical: {exc}")
         return False
     if not attempts:
         errors.append("attempts.jsonl contains no attempts")
@@ -1983,6 +1984,7 @@ def _resolve_run_binding(
     """Resolve canonical run inputs from self-valid manifests and local bytes."""
     errors: list[str] = []
     adapter_bundle = Path(adapter_bundle)
+    errors.extend(_run_spec_manifest_envelope_errors(run_spec_manifest))
 
     adapter_result = validate_adapter(adapter_bundle)
     errors.extend(adapter_result.errors)
@@ -2143,6 +2145,7 @@ def _resolve_run_binding(
         json.JSONDecodeError,
         TypeError,
         ValueError,
+        zlib.error,
     ) as exc:
         errors.append(f"adapter rows cannot be decoded: {exc}")
     eval_mc_items = {
@@ -3192,6 +3195,11 @@ def validate_run(
         Structured validation status. Data-derived recursion and numeric
         overflow failures are normalized rather than escaping this boundary.
     """
+    if not isinstance(backend, str) or backend not in {"local", "modal"}:
+        return CheckResult(
+            passed=False,
+            errors=["backend must be exactly 'local' or 'modal'"],
+        )
     try:
         return _validate_run_impl(
             run_root,
@@ -3204,10 +3212,12 @@ def validate_run(
         AttributeError,
         EOFError,
         KeyError,
+        OSError,
         OverflowError,
         RecursionError,
         TypeError,
         ValueError,
+        zlib.error,
     ) as exc:
         return CheckResult(
             passed=False,

@@ -464,8 +464,8 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
         adapter_eval_rows_sha256=eval_sha, myopic_artifact_sha256=myopic_sha256,
         producer_hashes=run_producers, cells=smoke_cells(),
         environment=environment, resource_summary={"backend": "modal", "usd": 0},
-        attempt={"attempt": 1, "mode": "fresh", "command": ["dp_sweep"], "run_spec_id": run_spec_id,
-                 "adapter_id": adapter_id, "completed": 2, "skipped": 0, "failed": 0},
+        attempt={"attempt": 1, "mode": "fresh", "command": ["dp_sweep"],
+                 "run_spec_id": run_spec_id, "adapter_id": adapter_id},
     )
     aggregate = run_sweep(ctx)
     fvi_bytes = (

@@ -42,6 +42,8 @@ from scripts.stopdff_v5 import (  # noqa: E402
     writers,
 )
 from scripts.stopdff_v5.bootstrap import build_bootstrap_plan  # noqa: E402
+from scripts.stopdff_v5.attempt_history import load_attempt_history  # noqa: E402
+from scripts.stopdff_v5.content_manifest import git_mode_for_path  # noqa: E402
 from scripts.stopdff_v5.identity import (  # noqa: E402
     build_manifest,
     compute_id,
@@ -154,6 +156,7 @@ def _verified_local_source_execution(
             runtime_path.is_symlink()
             or not runtime_path.is_file()
             or sha256_file(runtime_path) != entry["sha256"]
+            or git_mode_for_path(runtime_path) != entry["mode"]
         ):
             raise ValueError(
                 f"executing source does not match source manifest: {entry['path']}"
@@ -1191,13 +1194,10 @@ def _next_resume_attempt(
 ) -> int:
     """Validate the append-only started records and derive the next attempt."""
     attempts_path = Path(run_root) / "attempts.jsonl"
-    if attempts_path.is_symlink() or not attempts_path.is_file():
-        raise ValueError("resume requires a canonical attempts.jsonl")
-    records = [
-        loads_no_duplicate_keys(line)
-        for line in attempts_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    try:
+        _, records = load_attempt_history(attempts_path)
+    except (OSError, TypeError, UnicodeError, ValueError) as exc:
+        raise ValueError("resume requires a canonical attempts.jsonl") from exc
     if not records:
         raise ValueError("resume requires at least one prior attempt")
     for number, record in enumerate(records, start=1):

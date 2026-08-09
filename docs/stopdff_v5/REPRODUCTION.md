@@ -40,6 +40,14 @@ Those claims must be evaluated only with the historical package and validator. A
 release remains pending until artifacts are rebuilt from a frozen merged SHA and pass the
 current checker and mutation suite.
 
+The corrected source changes science-affecting behavior: a uniquely optimal nonterminal
+`ABSTAIN` now terminates as never-buzz, category labels must be nonempty and agree exactly
+between split and MC rows, integer split targets use deterministic Hamilton apportionment,
+and calibration ECE is recomputed from the rounded Platt parameters that are actually
+serialized and used by the sweep. `torch` is also part of the environment identity. Therefore
+all affected adapter, split, calibration, sweep, report, and package evidence must be
+regenerated; none of the historical scientific bytes can certify the corrected release.
+
 ## Code layout
 
 ```
@@ -68,6 +76,8 @@ scripts/stopdff_v5/
 scripts/validate_stopdff_bucketed_sweep.py   standalone checker CLI (acceptance contract)
 scripts/run_stopdff_v5_local.py              CPU/local end-to-end reproduction driver
 scripts/modal_stopdff_v5_runner.py           Modal remote functions (source-only image)
+scripts/modal_stopdff_v5_assurance.py        cross-process Modal recovery-assurance driver
+scripts/verify_stopdff_v5_modal_assurance.py offline recovery-receipt verifier
 schemas/stopdff_*.schema.json                JSON schemas for profile/run-spec/calibrator/continuation/gate
 tests/test_stopdff_v5_*.py                        unit/integration/identity/mutation tests
 ```
@@ -80,12 +90,16 @@ Python 3.11. Install the runtime dependencies:
 python3.11 -m venv .venv-stopdff-v5 && source .venv-stopdff-v5/bin/activate
 pip install -U pip
 pip install "numpy>=1.26,<3" "scipy>=1.11" "scikit-learn>=1.3" "pandas>=2.1" \
-            "matplotlib>=3.7" "sentence-transformers>=2.7" "huggingface_hub>=0.23"
+            "matplotlib>=3.7" "sentence-transformers>=2.7" "torch>=2.0.0" \
+            "huggingface_hub>=0.23"
 ```
 
 The historical run reported: python 3.11.12, numpy 2.4.6, scipy 1.17.1, scikit-learn 1.9.0,
 pandas 3.0.3, sentence-transformers 5.6.0, transformers 5.13.1, huggingface_hub 1.23.0
-(recorded in each run's `environment.json`).
+(recorded in each run's `environment.json`). That older package list omitted `torch`, so its
+environment identity is incomplete and stale under the corrected contract. No historical
+`torch` version is inferred here. New local and Modal environment identities include the
+resolved `torch` version alongside every other evidentiary package.
 
 ## Local (CPU) reproduction — no Modal required
 
@@ -168,12 +182,14 @@ pip install -e '.[modal]'
 `scripts/modal_stopdff_v5_runner.py` defines the stage functions with a **source-only**
 image (`git archive`), the `/stopdff/` Volume layout on `cs321m-stopdff-artifacts`,
 one-writer-per-run + per-cell Volume commits + reload-on-resume, and **L40S only for the
-adapter build** (CPU elsewhere). Orchestration (upload → verify → adapter determinism pilot
-→ FVI study → bootstrap → smoke → mutation gate → 96-cell final → validate → package) is
-driven from a control machine. Each checked-in remote stage now revalidates the exact
-source/raw/model/adapter/bootstrap/run-spec graph before it writes evidence. The required
-order is upload and verify inputs → two-build adapter determinism pilot → FVI study →
-bootstrap → smoke → mutation gate → final sweep → validate → package. The final stage
+adapter build** (CPU elsewhere). Orchestration (create-once stage + verify inputs → adapter
+determinism pilot → FVI study → bootstrap → smoke → mutation gate → 96-cell final →
+package → validate the packaged output) is driven from a control machine. Each checked-in
+remote stage now revalidates the exact source/raw/model/adapter/bootstrap/run-spec graph
+before it writes evidence. The required order is create-once stage and verify inputs →
+two-build adapter determinism pilot → FVI study → bootstrap → smoke → mutation gate →
+final sweep → package (with fail-closed internal prevalidation) → validate the packaged
+output. The final sweep
 must carry the three content-addressed receipt IDs in `run_spec.evidence_roots` and each
 receipt must bind the exact source/raw/model/adapter/FVI/environment identities. The
 remote sweep verifies the receipt bytes and IDs before creating its run directory, so
@@ -198,10 +214,33 @@ build, adapter-determinism, mutation, and sweep stages also reject any source id
 other than the one bound into that validated image. Each of those stages rehashes the
 executing source tree before producing or consuming scientific evidence. Modal automatic
 source inclusion is disabled, so the function-defining module is imported only from that
-validated frozen tree rather than from an additional host-side source overlay.
+validated frozen tree rather than from an additional host-side source overlay. During host
+deployment, `modal.is_local()` gates bundle materialization and `add_local_dir`; the validated
+source-manifest ID and selected App name are baked into the image environment. A remote
+container import never reads `STOPDFF_V5_SOURCE_DIR` or a host temporary path: it requires the
+baked 64-hex identity and sets its execution source to `/root/src`.
 
-After uploading the source and raw-input bundles to their documented Volume paths, create a
-small control plan. The two adapter subdirectories must be distinct and create-once:
+Stage both input bundles with the checked-in create-once entry point; do not upload their
+directories by hand. `STOPDFF_V5_SOURCE_DIR` must name the same closed source-snapshot bundle
+used for `--source-bundle`, and `--raw-bundle` is the local runner's closed `raw_inputs/`
+directory. Use a new local receipt path:
+
+```bash
+export STOPDFF_V5_SOURCE_DIR=/absolute/path/to/stopdff_v5_final_out/source_snapshot
+modal run scripts/modal_stopdff_v5_runner.py::stage_inputs_main \
+    --source-bundle "$STOPDFF_V5_SOURCE_DIR" \
+    --raw-bundle /absolute/path/to/stopdff_v5_final_out/raw_inputs \
+    --receipt-path stopdff_v5_input_staging_receipt.json
+```
+
+For each content-addressed destination, the receipt reports `status: created` only when the
+remote destination had no entries and the runner uploaded it with
+`Volume.batch_upload(force=False)`. An existing, exactly valid bundle reports
+`status: cached`. Both paths require remote exhaustive
+manifest verification and a host-side readback of the exact manifest bytes. A partial,
+malformed, mismatched, or otherwise noncanonical existing path fails closed; the staging
+command never repairs or overwrites it. Copy the `source.id` and `raw.id` from the receipt
+into a small control plan. The two adapter subdirectories must be distinct and create-once:
 
 ```json
 {
@@ -232,10 +271,18 @@ IDs in schema-v2 evidence before issuing a receipt. The controller then promotes
 bound adapter, runs the FVI study, smoke bootstrap/sweep,
 mutation gate, final bootstrap/sweep, package-internal prevalidation, packaging,
 and final validation in that fixed order. Each stage intent and result is fsynced
-to the state file and adjacent JSONL journal. Schema-v3 journal records have exact
-event-specific shapes, canonical JSON bytes, and a hash link to the preceding
-record. Replay requires the canonical stage set and binds attempts, completed
-stages, terminal status, result identity, and failure detail back to the checkpoint.
+to the state file and adjacent JSONL journal. Schema-v4 journal records have exact
+event-specific shapes, canonical JSON bytes, and a hash link to the preceding record.
+Every `stage_completed` event binds the complete completed-stage payload by a SHA-256
+of finite canonical JSON. `control_completed` and `control_revalidated` likewise bind
+the exact terminal result object (`run_id`, `run_spec_id`, `adapter_id`, `receipt_ids`,
+and `validation`) rather than only its run ID. Replay requires the canonical stage set
+and binds attempts, completed payloads, terminal status/result, and failure detail back
+to the checkpoint; mutation of either a cached stage payload or the terminal validation
+therefore fails replay. Projection replay also enforces the fixed stage order, requires
+every predecessor before a stage can start, and forbids terminal completion until every
+canonical stage is complete.
+
 To continue after an interrupted host process, use the same plan and state:
 
 ```bash
@@ -244,9 +291,21 @@ modal run scripts/modal_stopdff_v5_runner.py::control_main \
     --state-path stopdff_v5_control_state.json --resume
 ```
 
-Completed stages are reused from the bound journal. Control-state schemas v1 and
-v2 predate canonical hash-linked history and are rejected; restart with new adapter
-subdirectories. A lost
+Completed stages are reused only after their validators and journal digests pass. If a
+cached stage is invalid, the controller conservatively invalidates every completed stage
+later in the fixed stage order (the full transitive downstream suffix), journals each
+removal, and then invalidates and retries the upstream stage. Attempt counters are retained,
+so each rerun receives the next attempt number. This suffix rule deliberately favors
+fail-closed recomputation over trying to infer a narrower dependency graph.
+
+If the host controller disappears after a durable `stage_started` event, resume first closes
+that exact controller attempt with a `stage_failed` event of type
+`HostControllerInterrupted`, before validating or invalidating any cached stage. The stage's
+next invocation then receives its next controller attempt number; Modal sweep evidence still
+derives its separate scientific attempt number from the durable run root.
+
+Control-state schemas v1, v2, and v3 predate complete payload/terminal-result binding and
+are rejected; restart with new adapter subdirectories. A lost
 adapter-build response after its Volume commit likewise requires new subdirectories so
 the determinism claim fails closed. A sweep retry derives its evidence
 mode and number inside the remote call from the durable run directory: an absent root
@@ -255,6 +314,97 @@ number, and a partial or malformed root fails closed without being repaired. The
 controller invocation count is never reused as a scientific attempt number. A changed
 plan also fails closed. `probe_main` remains available as a separate environment-only
 entry point.
+
+### Bounded live recovery assurance
+
+The checked-in recovery assurance is a CPU-only, zero-cell canary for the production sweep
+attempt protocol. It deliberately hard-exits once, after committing attempt 1's `started`
+record and a durable crash arm. The arm makes an automatic Modal reschedule return instead
+of crashing again. A later call commits the canonical `interrupted` classification before
+attempt 2 is appended; another call finishes attempt 2; a final call independently reads the
+durable bytes back. Use a fresh 8–64 character lowercase hex/hyphen tag and a fresh local
+receipt directory for every campaign.
+
+Before any mutation, `classify` requires the exact initial state and `finish` requires the
+exact classified state; `verify` requires the exact finished state. Repeating `classify` or
+`finish` after its exact durable result exists performs an idempotent readback. Any other
+out-of-order, partial, or noncanonical observed phase state fails before the sweep protocol
+is invoked.
+
+First deploy the exact frozen-source runner. Then run each driver command as a separate host
+process so recovery cannot depend on the submitting process's memory:
+
+```bash
+export STOPDFF_V5_SOURCE_DIR=/absolute/path/to/stopdff_v5_final_out/source_snapshot
+export STOPDFF_V5_APP_NAME=cs321m-stopdff-v5-assurance-45b7f81f
+modal deploy scripts/modal_stopdff_v5_runner.py
+
+export STOPDFF_ASSURANCE_DEPLOYMENT="$STOPDFF_V5_APP_NAME"
+export STOPDFF_ASSURANCE_TAG=45b7f81f-acde
+export STOPDFF_ASSURANCE_SOURCE_ID="replace-with-source.id-from-the-staging-receipt"
+export STOPDFF_ASSURANCE_DIR=stopdff_v5_modal_assurance_45b7f81f-acde
+mkdir "$STOPDFF_ASSURANCE_DIR"
+
+python scripts/modal_stopdff_v5_assurance.py submit \
+    --deployment "$STOPDFF_ASSURANCE_DEPLOYMENT" \
+    --tag "$STOPDFF_ASSURANCE_TAG" \
+    --receipt "$STOPDFF_ASSURANCE_DIR/submitted.json"
+
+python scripts/modal_stopdff_v5_assurance.py recover \
+    --call-receipt "$STOPDFF_ASSURANCE_DIR/submitted.json" \
+    --timeout-seconds 300 \
+    --receipt "$STOPDFF_ASSURANCE_DIR/recovered.json"
+
+python scripts/modal_stopdff_v5_assurance.py classify \
+    --deployment "$STOPDFF_ASSURANCE_DEPLOYMENT" \
+    --tag "$STOPDFF_ASSURANCE_TAG" \
+    --timeout-seconds 300 \
+    --receipt "$STOPDFF_ASSURANCE_DIR/classified.json"
+
+python scripts/modal_stopdff_v5_assurance.py finish \
+    --deployment "$STOPDFF_ASSURANCE_DEPLOYMENT" \
+    --tag "$STOPDFF_ASSURANCE_TAG" \
+    --timeout-seconds 300 \
+    --receipt "$STOPDFF_ASSURANCE_DIR/finished.json"
+
+python scripts/modal_stopdff_v5_assurance.py verify \
+    --deployment "$STOPDFF_ASSURANCE_DEPLOYMENT" \
+    --tag "$STOPDFF_ASSURANCE_TAG" \
+    --timeout-seconds 300 \
+    --receipt "$STOPDFF_ASSURANCE_DIR/verified.json"
+
+python scripts/verify_stopdff_v5_modal_assurance.py \
+    --submitted "$STOPDFF_ASSURANCE_DIR/submitted.json" \
+    --recovered "$STOPDFF_ASSURANCE_DIR/recovered.json" \
+    --classified "$STOPDFF_ASSURANCE_DIR/classified.json" \
+    --finished "$STOPDFF_ASSURANCE_DIR/finished.json" \
+    --verified "$STOPDFF_ASSURANCE_DIR/verified.json" \
+    --expected-source-manifest-id "$STOPDFF_ASSURANCE_SOURCE_ID"
+```
+
+`submit` persists the Modal FunctionCall ID before its process exits. `recover` reconstructs
+that call with `FunctionCall.from_id`. Each later phase is also submitted as a FunctionCall
+whose ID is bound into its receipt. Every wait is limited by `--timeout-seconds`; a timed-out
+call and its containers are cancelled, and each remote phase also has the runner's 300-second
+function timeout. All five local receipts are create-once. A timeout, cancellation, or failed
+phase makes that tag inconclusive; diagnose it and start a new campaign with a fresh tag rather
+than overwriting evidence.
+
+The final verifier is offline and read-only. It requires exact receipt schemas and consistent
+deployment/tag/call identities; the exact frozen source-manifest ID; canonical, digest-bound
+run-spec and bootstrap manifests; a nonempty stable input ID across the hard-exit reschedule;
+different container hostnames; the exact attempt/result transition; byte-stable interruption
+evidence; and agreement between the finished and final-readback observations. It prints a
+canonical PASS verdict JSON to standard output and exits nonzero on any violation.
+
+The canary exercises real Volume commit/reload, hard-exit rescheduling, cross-process
+FunctionCall recovery, missing-terminal classification, consecutive attempt numbering,
+create-once terminal results, and final readback. It does **not** build an adapter, request an
+L40S, run any sensitivity-grid cells, validate scientific outputs, or certify the full Modal
+controller/release. Those remain separate full-reproduction and standalone-acceptance gates.
+After the receipts and PASS verdict have been copied to durable storage, stop only the
+uniquely named assurance App. Do not stop the default pipeline App or delete the shared
+Volume.
 
 ## Standalone validation (acceptance contract)
 

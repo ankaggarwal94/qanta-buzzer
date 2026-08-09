@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -28,20 +29,26 @@ from pathlib import Path, PurePosixPath
 
 import modal
 
-APP_NAME = "cs321m-stopdff-v5"
+APP_NAME = os.environ.get("STOPDFF_V5_APP_NAME", "cs321m-stopdff-v5")
+if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", APP_NAME) is None:
+    raise RuntimeError("STOPDFF_V5_APP_NAME is not a canonical Modal app name")
 VOLUME_NAME = "cs321m-stopdff-artifacts"
 MNT = "/stopdff"
 REMOTE_SRC = "/root/src"
 DAY = 86400
 _ADAPTER_COMPONENT_MAX_BYTES = 255
-SOURCE_BUNDLE_DIR = os.environ.get("STOPDFF_V5_SOURCE_DIR", "")
-if not SOURCE_BUNDLE_DIR:
-    raise RuntimeError(
-        "STOPDFF_V5_SOURCE_DIR must point to the frozen source-snapshot bundle"
-    )
+_SOURCE_ID_ENV = "STOPDFF_V5_IMAGE_SOURCE_MANIFEST_ID"
+_MODAL_IS_LOCAL = modal.is_local()
+SOURCE_BUNDLE_DIR = (
+    os.environ.get("STOPDFF_V5_SOURCE_DIR", "")
+    if _MODAL_IS_LOCAL
+    else ""
+)
 
 
-def _materialize_image_source(source_bundle: Path) -> tuple[Path, dict]:
+def _materialize_image_source(
+    source_bundle: Path,
+) -> tuple[tempfile.TemporaryDirectory, Path, dict]:
     """Copy and revalidate the exact source tree used to build the image.
 
     The first validation rejects unlisted executable bytes.  The second binds
@@ -62,29 +69,55 @@ def _materialize_image_source(source_bundle: Path) -> tuple[Path, dict]:
         content_subdir="source",
         expected_kind="source_snapshot",
     )
-    staged_bundle = Path(tempfile.mkdtemp(prefix="stopdff_v5_image_source_"))
-    shutil.copy2(
-        source_bundle / "source_manifest.json",
-        staged_bundle / "source_manifest.json",
-    )
-    shutil.copytree(source_bundle / "source", staged_bundle / "source")
-    staged_manifest = validate_bound_content_manifest(
-        staged_bundle,
-        manifest_name="source_manifest.json",
-        expected_id=manifest["id"],
-        file_key="files",
-        name_key="path",
-        content_subdir="source",
-        expected_kind="source_snapshot",
-    )
-    return staged_bundle / "source", staged_manifest
+    owner = tempfile.TemporaryDirectory(prefix="stopdff_v5_image_source_")
+    staged_bundle = Path(owner.name)
+    try:
+        shutil.copy2(
+            source_bundle / "source_manifest.json",
+            staged_bundle / "source_manifest.json",
+        )
+        shutil.copytree(source_bundle / "source", staged_bundle / "source")
+        staged_manifest = validate_bound_content_manifest(
+            staged_bundle,
+            manifest_name="source_manifest.json",
+            expected_id=manifest["id"],
+            file_key="files",
+            name_key="path",
+            content_subdir="source",
+            expected_kind="source_snapshot",
+        )
+    except BaseException:
+        owner.cleanup()
+        raise
+    return owner, staged_bundle / "source", staged_manifest
 
 
-_IMAGE_SOURCE_DIR, _IMAGE_SOURCE_MANIFEST = _materialize_image_source(
-    Path(SOURCE_BUNDLE_DIR)
-)
-SOURCE_DIR = str(_IMAGE_SOURCE_DIR)
-IMAGE_SOURCE_MANIFEST_ID = _IMAGE_SOURCE_MANIFEST["id"]
+if _MODAL_IS_LOCAL:
+    if not SOURCE_BUNDLE_DIR:
+        raise RuntimeError(
+            "STOPDFF_V5_SOURCE_DIR must point to the frozen source-snapshot bundle"
+        )
+    (
+        _IMAGE_SOURCE_OWNER,
+        _IMAGE_SOURCE_DIR,
+        _IMAGE_SOURCE_MANIFEST,
+    ) = _materialize_image_source(Path(SOURCE_BUNDLE_DIR))
+    SOURCE_DIR = str(_IMAGE_SOURCE_DIR)
+    IMAGE_SOURCE_MANIFEST_ID = _IMAGE_SOURCE_MANIFEST["id"]
+else:
+    _IMAGE_SOURCE_OWNER = None
+    _IMAGE_SOURCE_DIR = Path(REMOTE_SRC)
+    _IMAGE_SOURCE_MANIFEST = None
+    SOURCE_DIR = REMOTE_SRC
+    IMAGE_SOURCE_MANIFEST_ID = os.environ.get(_SOURCE_ID_ENV, "")
+
+if (
+    not isinstance(IMAGE_SOURCE_MANIFEST_ID, str)
+    or re.fullmatch(r"[0-9a-f]{64}", IMAGE_SOURCE_MANIFEST_ID) is None
+):
+    raise RuntimeError(
+        f"{_SOURCE_ID_ENV} must be the validated source manifest ID"
+    )
 
 
 def _require_image_source_id(source_id: object) -> None:
@@ -97,7 +130,8 @@ def _require_image_source_id(source_id: object) -> None:
 
 _PIP = [
     "numpy>=1.26,<3", "scipy>=1.11", "scikit-learn>=1.3", "pandas>=2.1",
-    "matplotlib>=3.7", "sentence-transformers>=2.7", "huggingface_hub>=0.23",
+    "matplotlib>=3.7", "sentence-transformers>=2.7", "torch>=2.0",
+    "huggingface_hub>=0.23",
 ]
 _image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -106,9 +140,16 @@ _image = (
     .env({"PYTHONUNBUFFERED": "1", "MPLBACKEND": "Agg", "HF_HUB_DISABLE_TELEMETRY": "1",
           "PYTHONDONTWRITEBYTECODE": "1",
           "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
-          "TOKENIZERS_PARALLELISM": "false", "PYTHONPATH": REMOTE_SRC})
+          "TOKENIZERS_PARALLELISM": "false", "PYTHONPATH": REMOTE_SRC,
+          _SOURCE_ID_ENV: IMAGE_SOURCE_MANIFEST_ID,
+          "STOPDFF_V5_APP_NAME": APP_NAME})
 )
-_image = _image.add_local_dir(SOURCE_DIR, remote_path=REMOTE_SRC, copy=True)
+if _MODAL_IS_LOCAL:
+    _image = _image.add_local_dir(
+        SOURCE_DIR,
+        remote_path=REMOTE_SRC,
+        copy=True,
+    )
 
 vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 app = modal.App(APP_NAME, image=_image, include_source=False)
@@ -228,6 +269,7 @@ def _verified_raw_input_manifest(base, *, expected_id: str | None) -> dict:
 def _verified_executing_source(source_id: object) -> dict:
     """Bind a stage to both its staged manifest and executing source bytes."""
     _require_image_source_id(source_id)
+    from scripts.stopdff_v5.content_manifest import git_mode_for_path
     from scripts.stopdff_v5.identity import sha256_file
 
     source_root = Path(_p("inputs", f"source_{source_id}"))
@@ -247,6 +289,7 @@ def _verified_executing_source(source_id: object) -> dict:
             runtime_path.is_symlink()
             or not runtime_path.is_file()
             or sha256_file(runtime_path) != entry["sha256"]
+            or git_mode_for_path(runtime_path) != entry["mode"]
         ):
             raise ValueError(
                 f"executing source does not match source manifest: {entry['path']}"
@@ -362,6 +405,105 @@ def verify_volume_artifact(rel_dir: str, kind: str) -> dict:
             return {"ok": False, "error": "raw-input manifest lacks stopdff.json"}
         result["myopic_artifact_sha256"] = stopdff["sha256"]
     return result
+
+
+def _validated_local_input_bundle(bundle: Path, kind: str) -> tuple[dict, str]:
+    """Validate a complete local source/raw bundle before any host upload."""
+    from scripts.stopdff_v5.content_manifest import (
+        validate_bound_content_manifest,
+    )
+
+    bundle = Path(bundle)
+    if kind == "source":
+        manifest_name = "source_manifest.json"
+        manifest = validate_bound_content_manifest(
+            bundle,
+            manifest_name=manifest_name,
+            expected_id=None,
+            file_key="files",
+            name_key="path",
+            content_subdir="source",
+            expected_kind="source_snapshot",
+        )
+    elif kind == "raw":
+        manifest_name = "raw_input_manifest.json"
+        manifest = validate_bound_content_manifest(
+            bundle,
+            manifest_name=manifest_name,
+            expected_id=None,
+            file_key="files",
+            name_key="role",
+            expected_kind="raw_input_bundle",
+            require_semantic_pass=True,
+        )
+    else:
+        raise ValueError(f"unsupported input-bundle kind {kind!r}")
+    return manifest, manifest_name
+
+
+def _is_volume_not_found(exc: BaseException) -> bool:
+    """Recognize only the SDK/local missing-path boundary."""
+    return isinstance(exc, FileNotFoundError) or type(exc).__name__ == "NotFoundError"
+
+
+def _stage_one_input_bundle(
+    bundle: Path,
+    kind: str,
+    *,
+    volume=None,
+    verifier=None,
+) -> dict:
+    """Create-once stage, remotely verify, and host-read one input bundle."""
+    from scripts.stopdff_v5.identity import sha256_bytes
+
+    bundle = Path(bundle)
+    manifest, manifest_name = _validated_local_input_bundle(bundle, kind)
+    manifest_id = manifest["id"]
+    remote_dir = f"inputs/{kind}_{manifest_id}"
+    target_volume = volume or vol
+    remote_verifier = verifier or verify_volume_artifact.remote
+    try:
+        existing_entries = list(
+            target_volume.listdir(remote_dir, recursive=True)
+        )
+    except BaseException as exc:
+        if not _is_volume_not_found(exc):
+            raise
+        existing_entries = []
+
+    if existing_entries:
+        status = "cached"
+    else:
+        with target_volume.batch_upload(force=False) as batch:
+            batch.put_directory(str(bundle), remote_dir)
+        status = "created"
+
+    verified = remote_verifier(remote_dir, kind)
+    if (
+        not isinstance(verified, dict)
+        or verified.get("ok") is not True
+        or verified.get("mismatches") != []
+        or verified.get("id") != manifest_id
+        or not isinstance(verified.get("n_files"), int)
+        or isinstance(verified.get("n_files"), bool)
+        or verified.get("n_files") < 1
+    ):
+        raise ValueError(f"staged {kind} bundle failed remote verification")
+
+    local_manifest_bytes = (bundle / manifest_name).read_bytes()
+    remote_manifest_bytes = b"".join(
+        target_volume.read_file(f"{remote_dir}/{manifest_name}")
+    )
+    if remote_manifest_bytes != local_manifest_bytes:
+        raise ValueError(f"staged {kind} manifest readback mismatch")
+    return {
+        "status": status,
+        "kind": kind,
+        "id": manifest_id,
+        "remote_dir": remote_dir,
+        "n_files": verified["n_files"],
+        "manifest_sha256": sha256_bytes(remote_manifest_bytes),
+    }
 
 
 @app.function(volumes={MNT: vol}, timeout=DAY, max_containers=1, memory=8192)
@@ -835,6 +977,7 @@ def run_sweep(
         loads_no_duplicate_keys,
         sha256_file,
     )
+    from scripts.stopdff_v5.content_manifest import git_mode_for_path
     from scripts.stopdff_v5.manifests import environment_contract_identity
     vol.reload()
     spec = loads_no_duplicate_keys(spec_json)
@@ -894,6 +1037,7 @@ def run_sweep(
             runtime_path.is_symlink()
             or not runtime_path.is_file()
             or sha256_file(runtime_path) != entry["sha256"]
+            or git_mode_for_path(runtime_path) != entry["mode"]
         ):
             raise ValueError(
                 f"executing source does not match source manifest: {entry['path']}"
@@ -1256,7 +1400,10 @@ def mutation_gate(binding_json: str) -> dict:
         gate="mutation",
         bindings=bindings,
     )
-    ok, results = selftest.run_self_test(Path(tempfile.mkdtemp()))
+    with tempfile.TemporaryDirectory(
+        prefix="stopdff_v5_mutation_selftest_"
+    ) as selftest_dir:
+        ok, results = selftest.run_self_test(Path(selftest_dir))
     unexpected = [r["mutation"] for r in results if not r["ok"]]
     if not ok:
         return {"ok": False, "n": len(results), "unexpected": unexpected}
@@ -1307,6 +1454,533 @@ def durability_heartbeat(tag: str) -> dict:
     (d / "heartbeat.json").write_text(json.dumps(hb))
     vol.commit()
     return {"tag": tag, "committed": True}
+
+
+def _canonical_assurance_tag(tag: object) -> str:
+    if (
+        not isinstance(tag, str)
+        or not re.fullmatch(r"[0-9a-f][0-9a-f-]{7,63}", tag)
+        or ".." in tag
+    ):
+        raise ValueError("assurance tag must be 8-64 lowercase hex/hyphen characters")
+    return tag
+
+
+def _modal_runtime_identity() -> dict:
+    """Return stable call/input identifiers plus this container hostname."""
+    import socket
+
+    def required_call(name: str) -> str:
+        function = getattr(modal, name, None)
+        value = function() if callable(function) else None
+        if not isinstance(value, str) or not value:
+            raise RuntimeError(f"Modal runtime did not expose a nonempty {name}")
+        return value
+
+    return {
+        "container_hostname": socket.gethostname(),
+        "function_call_id": required_call("current_function_call_id"),
+        "input_id": required_call("current_input_id"),
+    }
+
+
+def _assurance_sweep_context(
+    tag: str,
+    *,
+    attempt: int,
+    resume: bool,
+    commit_fn,
+):
+    """Build a zero-cell context that still uses the production attempt protocol."""
+    from scripts.stopdff_v5.bootstrap import build_bootstrap_plan, plan_identity
+    from scripts.stopdff_v5.identity import compute_id
+    from scripts.stopdff_v5.sweep import SweepContext
+
+    def oracle_id(label: str) -> str:
+        return compute_id({"kind": "modal_assurance", "tag": tag, "label": label})
+
+    plan = build_bootstrap_plan(["oracle-item"], replicates=1, seed=1)
+    bootstrap_plan_id = compute_id(plan_identity(plan))
+    adapter_id = oracle_id("adapter")
+    myopic_id = oracle_id("myopic")
+    producer_hashes = {
+        "checker.py": oracle_id("checker"),
+        "sweep.py": oracle_id("sweep"),
+    }
+    run_spec = {
+        "profile_variant": "smoke",
+        "identity": {
+            "source_manifest_id": IMAGE_SOURCE_MANIFEST_ID,
+            "raw_input_bundle_id": oracle_id("raw"),
+            "model_snapshot_id": oracle_id("model"),
+            "adapter_bundle_id": adapter_id,
+            "fvi_study_id": oracle_id("fvi"),
+            "bootstrap_plan_id": bootstrap_plan_id,
+            "environment_contract_id": oracle_id("environment"),
+            "resource_summary_id": oracle_id("resources"),
+        },
+        "evidence_roots": {
+            "myopic_artifact_sha256": myopic_id,
+            "producer_hashes": producer_hashes,
+        },
+        "fvi_selected": {"tolerance": "1e-6", "max_iterations": 1},
+        "gate": {
+            "allow_low_mc_retention": False,
+            "allow_incomplete_mc_coverage": False,
+        },
+    }
+    run_spec_id = compute_id(run_spec)
+    return SweepContext(
+        rows=[],
+        calibration_json=None,
+        run_spec=run_spec,
+        run_spec_id=run_spec_id,
+        bootstrap_plan=plan,
+        output_dir=Path(_p("pilots", tag, "run")),
+        fvi_tolerance="1e-6",
+        fvi_max_iterations=1,
+        backend="modal",
+        profile_variant="smoke",
+        adapter_bundle_id=adapter_id,
+        adapter_fit_rows_sha256=oracle_id("fit-rows"),
+        adapter_eval_rows_sha256=oracle_id("eval-rows"),
+        myopic_artifact_sha256=myopic_id,
+        producer_hashes=producer_hashes,
+        cells=[],
+        commit_fn=commit_fn,
+        resource_summary={"backend": "modal", "assurance_tag": tag},
+        attempt={
+            "attempt": attempt,
+            "mode": "resume" if resume else "fresh",
+            "command": ["modal_assurance"] + (["--resume"] if resume else []),
+        },
+        resume=resume,
+    )
+
+
+def _assurance_observation(tag: str) -> dict:
+    """Read and validate the durable attempt records for one assurance tag."""
+    from scripts.stopdff_v5.attempt_history import load_attempt_history
+    from scripts.stopdff_v5.identity import (
+        loads_no_duplicate_keys,
+        sha256_bytes,
+        sha256_file,
+    )
+
+    root = Path(_p("pilots", tag))
+    run_root = root / "run"
+    _, attempts = load_attempt_history(run_root / "attempts.jsonl")
+    results: dict[str, dict] = {}
+    result_sha256: dict[str, str] = {}
+    results_dir = run_root / "attempt_results"
+    if results_dir.is_dir():
+        for path in sorted(results_dir.iterdir()):
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("assurance attempt result path is noncanonical")
+            value = loads_no_duplicate_keys(path.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                raise ValueError("assurance attempt result is not an object")
+            results[path.name] = value
+            result_sha256[path.name] = sha256_file(path)
+    arm_path = root / "crash_arm.json"
+    if arm_path.is_symlink() or not arm_path.is_file():
+        raise ValueError("assurance crash arm is missing")
+    arm = loads_no_duplicate_keys(arm_path.read_text(encoding="utf-8"))
+    if not isinstance(arm, dict):
+        raise ValueError("assurance crash arm is invalid")
+
+    def identity_file(name: str, fields: set[str]) -> tuple[dict, str]:
+        path = run_root / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"assurance {name} is missing or noncanonical")
+        data = path.read_bytes()
+        try:
+            value = loads_no_duplicate_keys(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError(f"assurance {name} is invalid JSON") from exc
+        expected_bytes = (
+            json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        ).encode("utf-8")
+        if (
+            not isinstance(value, dict)
+            or set(value) != fields
+            or data != expected_bytes
+        ):
+            raise ValueError(f"assurance {name} is noncanonical")
+        return value, sha256_bytes(data)
+
+    run_spec, run_spec_sha256 = identity_file(
+        "run_spec.json",
+        {"id", "identity"},
+    )
+    bootstrap_plan, bootstrap_plan_sha256 = identity_file(
+        "bootstrap_plan.json",
+        {"id", "identity", "item_ids"},
+    )
+    return {
+        "tag": tag,
+        "attempts": attempts,
+        "results": results,
+        "result_sha256": result_sha256,
+        "crash_arm": arm,
+        "attempts_sha256": sha256_file(run_root / "attempts.jsonl"),
+        "crash_arm_sha256": sha256_file(arm_path),
+        "run_spec": run_spec,
+        "run_spec_sha256": run_spec_sha256,
+        "bootstrap_plan": bootstrap_plan,
+        "bootstrap_plan_sha256": bootstrap_plan_sha256,
+    }
+
+
+def _assurance_expected_evidence(tag: str) -> dict:
+    """Derive the exact canary histories and immutable run identities."""
+    from scripts.stopdff_v5.bootstrap import plan_identity
+    from scripts.stopdff_v5.identity import compute_id
+
+    first_context = _assurance_sweep_context(
+        tag,
+        attempt=1,
+        resume=False,
+        commit_fn=lambda: None,
+    )
+    second_context = _assurance_sweep_context(
+        tag,
+        attempt=2,
+        resume=True,
+        commit_fn=lambda: None,
+    )
+
+    def attempt_record(context) -> dict:
+        return {
+            **context.attempt,
+            "run_spec_id": context.run_spec_id,
+            "adapter_id": context.adapter_bundle_id,
+            "bootstrap_plan_id": compute_id(
+                plan_identity(context.bootstrap_plan)
+            ),
+            "state": "started",
+        }
+
+    first = attempt_record(first_context)
+    second = attempt_record(second_context)
+    return {
+        "first_context": first_context,
+        "second_context": second_context,
+        "first_attempt": first,
+        "second_attempt": second,
+        "interrupted": {
+            "attempt": 1,
+            "state": "interrupted",
+            "run_spec_id": first_context.run_spec_id,
+            "reason": "terminal_result_missing_at_resume",
+        },
+        "completed": {
+            "attempt": 2,
+            "state": "completed",
+            "run_spec_id": first_context.run_spec_id,
+            "completed": 0,
+            "failed": 0,
+        },
+        "run_spec": {
+            "id": first_context.run_spec_id,
+            "identity": first_context.run_spec,
+        },
+        "bootstrap_plan": {
+            "id": first["bootstrap_plan_id"],
+            "identity": plan_identity(first_context.bootstrap_plan),
+            "item_ids": first_context.bootstrap_plan.item_ids,
+        },
+    }
+
+
+def _assurance_phase_state(tag: str, observation: dict) -> tuple[str, dict]:
+    """Classify only exact initial/classified/finished durable states."""
+    expected = _assurance_expected_evidence(tag)
+    arm = observation.get("crash_arm")
+    if not isinstance(arm, dict) or set(arm) != {
+        "tag",
+        "source_manifest_id",
+        "runtime",
+        "exit_code",
+        "armed_after_attempt_start_commit",
+    }:
+        raise ValueError("assurance crash arm schema is invalid")
+    runtime = arm.get("runtime")
+    if (
+        arm.get("tag") != tag
+        or arm.get("source_manifest_id") != IMAGE_SOURCE_MANIFEST_ID
+        or arm.get("exit_code") != 91
+        or arm.get("armed_after_attempt_start_commit") is not True
+        or not isinstance(runtime, dict)
+        or set(runtime)
+        != {"container_hostname", "function_call_id", "input_id"}
+        or not all(
+            isinstance(runtime[field], str) and runtime[field]
+            for field in runtime
+        )
+    ):
+        raise ValueError("assurance crash arm bindings are invalid")
+    if observation.get("run_spec") != expected["run_spec"]:
+        raise ValueError("assurance run spec does not match the canary context")
+    if observation.get("bootstrap_plan") != expected["bootstrap_plan"]:
+        raise ValueError(
+            "assurance bootstrap plan does not match the canary context"
+        )
+
+    attempts = observation.get("attempts")
+    results = observation.get("results")
+    if attempts == [expected["first_attempt"]] and results == {}:
+        return "initial", expected
+    if attempts == [expected["first_attempt"]] and results == {
+        "1.json": expected["interrupted"]
+    }:
+        return "classified", expected
+    if attempts == [
+        expected["first_attempt"],
+        expected["second_attempt"],
+    ] and results == {
+        "1.json": expected["interrupted"],
+        "2.json": expected["completed"],
+    }:
+        return "finished", expected
+    raise ValueError("assurance durable phase state is noncanonical")
+
+
+def _assurance_expected_aggregate(context, sweep_module) -> dict:
+    identity = context.run_spec["identity"]
+    return {
+        "profile_name": sweep_module.PROFILE_NAME,
+        "profile_variant": "smoke",
+        "backend": "modal",
+        "run_spec_id": context.run_spec_id,
+        "adapter_bundle_id": context.adapter_bundle_id,
+        "bootstrap_plan_id": identity["bootstrap_plan_id"],
+        "fvi_study_id": identity["fvi_study_id"],
+        "adapter_fit_rows_sha256": context.adapter_fit_rows_sha256,
+        "adapter_eval_rows_sha256": context.adapter_eval_rows_sha256,
+        "myopic_artifact_sha256": context.myopic_artifact_sha256,
+        "requested": 0,
+        "completed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "expected_cell_keys": [],
+        "fvi_selected": {"tolerance": "1e-6", "max_iterations": 1},
+        "cells": {},
+        "family": None,
+        "gate_overrides": {
+            "allow_low_mc_retention": False,
+            "allow_incomplete_mc_coverage": False,
+        },
+        "release_status": "INVALID",
+        "release_reasons": [
+            "bootstrap evidence invalid",
+            "family-max evidence invalid",
+        ],
+    }
+
+
+def _load_assurance_aggregate(tag: str, context, sweep_module) -> dict:
+    from scripts.stopdff_v5.identity import loads_no_duplicate_keys
+
+    path = Path(_p("pilots", tag, "run", "aggregate.json"))
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("assurance aggregate is missing or noncanonical")
+    data = path.read_bytes()
+    try:
+        aggregate = loads_no_duplicate_keys(data.decode("utf-8"))
+        expected_bytes = (
+            json.dumps(
+                aggregate,
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ValueError("assurance aggregate is invalid JSON") from exc
+    if (
+        data != expected_bytes
+        or aggregate != _assurance_expected_aggregate(context, sweep_module)
+    ):
+        raise ValueError("assurance aggregate is noncanonical")
+    return aggregate
+
+
+@app.function(volumes={MNT: vol}, timeout=300, max_containers=1)
+def recovery_assurance(tag: str, phase: str) -> dict:
+    """One-shot hard-exit, classification, finish, and readback canary."""
+    from scripts.stopdff_v5 import sweep
+
+    tag = _canonical_assurance_tag(tag)
+    if phase not in {"crash", "classify", "finish", "verify"}:
+        raise ValueError("unknown recovery-assurance phase")
+    vol.reload()
+    root = Path(_p("pilots", tag))
+    arm_path = root / "crash_arm.json"
+    runtime = _modal_runtime_identity()
+
+    if phase == "crash" and arm_path.is_file():
+        observation = _assurance_observation(tag)
+        state, _ = _assurance_phase_state(tag, observation)
+        if state != "initial":
+            raise ValueError("rescheduled crash call found a non-initial state")
+        first_runtime = observation["crash_arm"]["runtime"]
+        if (
+            first_runtime.get("container_hostname")
+            == runtime.get("container_hostname")
+        ):
+            raise ValueError("hard-exit call did not cross a container boundary")
+        if first_runtime.get("input_id") != runtime.get("input_id"):
+            raise ValueError("rescheduled hard-exit call changed its input identity")
+        if first_runtime.get("function_call_id") != runtime.get(
+            "function_call_id"
+        ):
+            raise ValueError(
+                "rescheduled hard-exit call changed its function-call identity"
+            )
+        return {
+            "phase": "crash_rescheduled",
+            "runtime": runtime,
+            "observation": observation,
+        }
+
+    if phase == "crash":
+        if root.exists() or root.is_symlink():
+            raise FileExistsError("fresh assurance namespace already exists")
+        root.mkdir(parents=True)
+        commit_count = 0
+
+        def commit_then_crash_once() -> None:
+            nonlocal commit_count
+            commit_count += 1
+            vol.commit()
+            if commit_count != 1:
+                return
+            sweep.atomic_write_json(
+                arm_path,
+                {
+                    "tag": tag,
+                    "source_manifest_id": IMAGE_SOURCE_MANIFEST_ID,
+                    "runtime": runtime,
+                    "exit_code": 91,
+                    "armed_after_attempt_start_commit": True,
+                },
+            )
+            vol.commit()
+            os._exit(91)
+
+        context = _assurance_sweep_context(
+            tag,
+            attempt=1,
+            resume=False,
+            commit_fn=commit_then_crash_once,
+        )
+        sweep.run_sweep(context)
+        raise AssertionError("hard-exit assurance returned without exiting")
+
+    if not arm_path.is_file():
+        raise ValueError("assurance crash phase has not committed its arm")
+    before = _assurance_observation(tag)
+    durable_state, expected = _assurance_phase_state(tag, before)
+    if phase == "verify":
+        if durable_state != "finished":
+            raise ValueError("verify phase requires an exact finished state")
+        _load_assurance_aggregate(
+            tag,
+            expected["second_context"],
+            sweep,
+        )
+        return {
+            "phase": "verify",
+            "runtime": runtime,
+            "observation": before,
+        }
+
+    if phase == "classify":
+        if durable_state == "classified":
+            return {
+                "phase": "classified",
+                "runtime": runtime,
+                "observation": before,
+            }
+        if durable_state != "initial":
+            raise ValueError("classify phase requires an exact initial state")
+        commit_count = 0
+
+        class ClassificationCommitted(BaseException):
+            pass
+
+        def commit_then_stop() -> None:
+            nonlocal commit_count
+            commit_count += 1
+            vol.commit()
+            if commit_count == 1:
+                raise ClassificationCommitted()
+
+        context = _assurance_sweep_context(
+            tag,
+            attempt=2,
+            resume=True,
+            commit_fn=commit_then_stop,
+        )
+        try:
+            sweep.run_sweep(context)
+        except ClassificationCommitted:
+            observation = _assurance_observation(tag)
+            classified_state, _ = _assurance_phase_state(tag, observation)
+            if classified_state != "classified":
+                raise ValueError("classification did not stop canonically")
+            return {
+                "phase": "classified",
+                "runtime": runtime,
+                "observation": observation,
+            }
+        raise AssertionError("classification phase did not stop at its commit")
+
+    if durable_state == "finished":
+        return {
+            "phase": "finished",
+            "runtime": runtime,
+            "aggregate": _load_assurance_aggregate(
+                tag,
+                expected["second_context"],
+                sweep,
+            ),
+            "observation": before,
+        }
+    if durable_state != "classified":
+        raise ValueError("finish phase requires an exact classified state")
+    interrupted_before = before["results"].get("1.json")
+    interrupted_sha256_before = before["result_sha256"].get("1.json")
+    context = _assurance_sweep_context(
+        tag,
+        attempt=2,
+        resume=True,
+        commit_fn=vol.commit,
+    )
+    aggregate = sweep.run_sweep(context)
+    observation = _assurance_observation(tag)
+    finished_state, _ = _assurance_phase_state(tag, observation)
+    if finished_state != "finished":
+        raise ValueError("finish phase did not produce an exact finished state")
+    if observation["results"].get("1.json") != interrupted_before:
+        raise ValueError("finish phase rewrote interruption evidence")
+    if (
+        observation["result_sha256"].get("1.json")
+        != interrupted_sha256_before
+    ):
+        raise ValueError("finish phase changed interruption-result bytes")
+    if aggregate != _assurance_expected_aggregate(context, sweep):
+        raise ValueError("finish phase returned a noncanonical aggregate")
+    if aggregate != _load_assurance_aggregate(tag, context, sweep):
+        raise ValueError("finish phase aggregate readback mismatch")
+    return {
+        "phase": "finished",
+        "runtime": runtime,
+        "aggregate": aggregate,
+        "observation": observation,
+    }
 
 
 def _control_plan_digest(plan: dict) -> str:
@@ -1366,6 +2040,37 @@ def _atomic_replace_control_bytes(path: Path, data: bytes) -> None:
             os.unlink(temporary)
 
 
+def _atomic_create_control_bytes(path: Path, data: bytes) -> None:
+    """Publish one fsynced control artifact without replacing any path."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"create-once control artifact already exists: {path}"
+            ) from exc
+        os.unlink(temporary)
+        temporary = ""
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def _append_control_event(path: Path, event: dict) -> None:
     """Atomically append one canonical event to the local journal."""
     path = Path(path)
@@ -1392,21 +2097,29 @@ _CONTROL_EVENT_NAMES = {
     "stage_failed",
     "stage_started",
 }
-_CONTROL_STAGE_NAMES = {
-    "adapter_determinism",
+_CONTROL_STAGE_ORDER = (
+    "verify_source",
+    "verify_raw",
     "environment_probe",
-    "final_bootstrap",
-    "final_sweep",
     "freeze_model",
-    "fvi_study",
-    "mutation_gate",
-    "package",
+    "adapter_determinism",
     "promote_adapter",
+    "fvi_study",
     "smoke_bootstrap",
     "smoke_sweep",
+    "mutation_gate",
+    "final_bootstrap",
+    "final_sweep",
+    "package",
     "validate_package",
-    "verify_raw",
-    "verify_source",
+)
+_CONTROL_STAGE_NAMES = set(_CONTROL_STAGE_ORDER)
+_CONTROL_RESULT_FIELDS = {
+    "run_id",
+    "run_spec_id",
+    "adapter_id",
+    "receipt_ids",
+    "validation",
 }
 
 
@@ -1419,6 +2132,21 @@ def _control_event_sha256(record: dict) -> str:
             ensure_ascii=False,
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _control_payload_sha256(payload: object) -> str:
+    """Hash finite canonical JSON used in a durable controller checkpoint."""
+    try:
+        data = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("control payload is not finite canonical JSON") from exc
+    return hashlib.sha256(data).hexdigest()
 
 
 def _validate_control_event_record(
@@ -1485,13 +2213,13 @@ def _validate_control_event_record(
     ):
         raise ValueError("control initialization event is invalid")
     detail_fields = {
-        "control_completed": {"run_id", "run_spec_id"},
+        "control_completed": {"run_id", "run_spec_id", "result_sha256"},
         "control_initialized": set(),
         "control_recovery_required": {"stage", "type", "message"},
-        "control_revalidated": {"run_id"},
+        "control_revalidated": {"run_id", "result_sha256"},
         "stage_checkpoint_invalid": {"attempt", "stage", "type", "message"},
         "stage_checkpoint_refresh_required": {"reason"},
-        "stage_completed": {"attempt"},
+        "stage_completed": {"attempt", "result_sha256"},
         "stage_failed": {"attempt", "stage", "type", "message"},
         "stage_started": {"attempt"},
     }
@@ -1537,6 +2265,12 @@ def _validate_control_event_record(
         or not _is_control_sha(detail.get("run_spec_id"))
     ):
         raise ValueError("control journal completion detail is invalid")
+    if event in {
+        "stage_completed",
+        "control_completed",
+        "control_revalidated",
+    } and not _is_control_sha(detail.get("result_sha256")):
+        raise ValueError("control journal result digest is invalid")
     return record
 
 
@@ -1548,16 +2282,38 @@ def _validate_control_journal_projection(
     attempts: dict[str, int] = {}
     active: tuple[str, int] | None = None
     completed: set[str] = set()
+    completed_digests: dict[str, str] = {}
+    terminal_result_digest: str | None = None
+    terminal_run_id: str | None = None
+    terminal_run_spec_id: str | None = None
+    terminal_seen = False
+
+    def require_completed_prefix() -> None:
+        expected = set(_CONTROL_STAGE_ORDER[: len(completed)])
+        if completed != expected:
+            raise ValueError(
+                "control journal completed stages are not a canonical prefix"
+            )
+
     for record in records:
         event = record["event"]
         stage = record["stage"]
         detail = record["detail"]
+        if terminal_seen and event.startswith("stage_"):
+            raise ValueError(
+                "control journal has stage activity after a terminal event"
+            )
         if event == "stage_started":
             attempt = detail["attempt"]
             if attempt != attempts.get(stage, 0) + 1:
                 raise ValueError("control journal stage attempts are inconsistent")
-            if active is not None and active[0] != stage:
+            if active is not None:
                 raise ValueError("control journal has overlapping active stages")
+            stage_index = _CONTROL_STAGE_ORDER.index(stage)
+            if completed != set(_CONTROL_STAGE_ORDER[:stage_index]):
+                raise ValueError(
+                    "control journal stage start lacks its completed predecessors"
+                )
             attempts[stage] = attempt
             active = (stage, attempt)
         elif event in {"stage_completed", "stage_failed"}:
@@ -1568,9 +2324,16 @@ def _validate_control_journal_projection(
             active = None
             if event == "stage_completed":
                 completed.add(stage)
+                completed_digests[stage] = detail["result_sha256"]
+                require_completed_prefix()
             else:
                 completed.discard(stage)
+                completed_digests.pop(stage, None)
         elif event == "stage_checkpoint_invalid":
+            if active is not None:
+                raise ValueError(
+                    "control journal invalidated a checkpoint with an active stage"
+                )
             if (
                 stage not in completed
                 or detail["attempt"] != attempts.get(stage)
@@ -1579,20 +2342,55 @@ def _validate_control_journal_projection(
                     "control journal invalidation lacks a completed checkpoint"
                 )
             completed.remove(stage)
+            completed_digests.pop(stage, None)
+            require_completed_prefix()
         elif event == "stage_checkpoint_refresh_required":
+            if active is not None:
+                raise ValueError(
+                    "control journal refreshed a checkpoint with an active stage"
+                )
             if stage not in completed:
                 raise ValueError(
                     "control journal refresh lacks a completed checkpoint"
                 )
             completed.remove(stage)
+            completed_digests.pop(stage, None)
+            require_completed_prefix()
         elif event in {
             "control_completed",
             "control_recovery_required",
             "control_revalidated",
-        } and active is not None:
-            raise ValueError("control journal terminal event has an active stage")
+        }:
+            if active is not None:
+                raise ValueError(
+                    "control journal terminal event has an active stage"
+                )
+            if completed != _CONTROL_STAGE_NAMES:
+                raise ValueError(
+                    "control journal terminal event lacks completed stages"
+                )
+            if event == "control_completed" and terminal_seen:
+                raise ValueError(
+                    "control journal has a duplicate completion event"
+                )
+            if event in {
+                "control_recovery_required",
+                "control_revalidated",
+            } and not terminal_seen:
+                raise ValueError(
+                    "control journal recovery event lacks prior completion"
+                )
+            terminal_seen = True
+            if event in {"control_completed", "control_revalidated"}:
+                terminal_result_digest = detail["result_sha256"]
+                terminal_run_id = detail["run_id"]
+                terminal_run_spec_id = (
+                    detail["run_spec_id"]
+                    if event == "control_completed"
+                    else None
+                )
 
-    strict_state = state.get("schema_version") == 3
+    strict_state = state.get("schema_version") == 4
     state_attempts = state.get("stage_attempts")
     if strict_state and not isinstance(state_attempts, dict):
         raise ValueError("control state stage attempts must be an object")
@@ -1603,10 +2401,19 @@ def _validate_control_journal_projection(
         raise ValueError("control state completed stages must be an object")
     if isinstance(state_completed, dict) and set(state_completed) != completed:
         raise ValueError("control state completed stages disagree with journal")
+    if isinstance(state_completed, dict):
+        for stage in sorted(completed):
+            if (
+                _control_payload_sha256(state_completed[stage])
+                != completed_digests.get(stage)
+            ):
+                raise ValueError(
+                    "control state completed payload disagrees with journal"
+                )
 
     if strict_state:
         if not records:
-            raise ValueError("schema-v3 control journal cannot be empty")
+            raise ValueError("schema-v4 control journal cannot be empty")
         last = records[-1]
         expected_status = {
             "control_completed": "completed",
@@ -1621,15 +2428,21 @@ def _validate_control_journal_projection(
         }[last["event"]]
         if state.get("status") != expected_status:
             raise ValueError("control state status disagrees with journal")
-        if last["event"] in {"control_completed", "control_revalidated"}:
+        if terminal_result_digest is None:
+            if "result" in state:
+                raise ValueError("control state has an unbound terminal result")
+        else:
             result = state.get("result")
             if (
                 not isinstance(result, dict)
-                or result.get("run_id") != last["detail"]["run_id"]
+                or set(result) != _CONTROL_RESULT_FIELDS
+                or result.get("run_id") != terminal_run_id
+                or _control_payload_sha256(result)
+                != terminal_result_digest
                 or (
-                    last["event"] == "control_completed"
+                    terminal_run_spec_id is not None
                     and result.get("run_spec_id")
-                    != last["detail"]["run_spec_id"]
+                    != terminal_run_spec_id
                 )
             ):
                 raise ValueError("control state result disagrees with journal")
@@ -1753,6 +2566,18 @@ def _record_control_event(
     stage: str | None = None,
     detail: dict | None = None,
 ) -> None:
+    event_detail = dict(detail or {})
+    if event == "stage_completed":
+        completed = state.get("completed")
+        if not isinstance(completed, dict) or stage not in completed:
+            raise ValueError("completed stage event lacks checkpoint payload")
+        event_detail["result_sha256"] = _control_payload_sha256(
+            completed[stage]
+        )
+    elif event in {"control_completed", "control_revalidated"}:
+        event_detail["result_sha256"] = _control_payload_sha256(
+            state.get("result")
+        )
     state["sequence"] = int(state.get("sequence", 0)) + 1
     previous_event = state.get("last_event")
     record = {
@@ -1760,7 +2585,7 @@ def _record_control_event(
         "event": event,
         "stage": stage,
         "utc_epoch_seconds": int(time.time()),
-        "detail": detail or {},
+        "detail": event_detail,
         "previous_event_sha256": (
             _control_event_sha256(previous_event)
             if isinstance(previous_event, dict)
@@ -1780,6 +2605,41 @@ def _record_control_event(
         state_path.with_name(state_path.name + ".jsonl"),
         record,
     )
+
+
+def _close_interrupted_control_attempt(
+    state_path: Path,
+    state: dict,
+) -> bool:
+    """Close a host-abandoned stage before a resumed controller does work."""
+    last_event = state.get("last_event")
+    if (
+        not isinstance(last_event, dict)
+        or last_event.get("event") != "stage_started"
+    ):
+        return False
+    stage = last_event.get("stage")
+    detail = last_event.get("detail")
+    attempt = detail.get("attempt") if isinstance(detail, dict) else None
+    if stage not in _CONTROL_STAGE_NAMES or not isinstance(attempt, int):
+        raise ValueError("active control attempt is noncanonical")
+    error = {
+        "stage": stage,
+        "type": "HostControllerInterrupted",
+        "message": (
+            "controller resumed after a stage start without a terminal event"
+        ),
+    }
+    state["status"] = "failed"
+    state["last_error"] = error
+    _record_control_event(
+        state_path,
+        state,
+        event="stage_failed",
+        stage=stage,
+        detail={"attempt": attempt, **error},
+    )
+    return True
 
 
 def _validate_control_plan(plan: dict) -> dict:
@@ -1902,6 +2762,77 @@ def _default_control_stage_api() -> dict[str, object]:
     }
 
 
+def _invalidate_control_dependents(
+    state_path: Path,
+    state: dict,
+    *,
+    upstream: str,
+    reason: str,
+) -> None:
+    """Remove and journal every completed suffix dependent of ``upstream``."""
+    if upstream not in _CONTROL_STAGE_NAMES:
+        raise ValueError("cannot invalidate dependents of an unknown stage")
+    completed = state.setdefault("completed", {})
+    attempts = state.setdefault("stage_attempts", {})
+    upstream_index = _CONTROL_STAGE_ORDER.index(upstream)
+    for dependent in reversed(_CONTROL_STAGE_ORDER[upstream_index + 1 :]):
+        if dependent not in completed:
+            continue
+        attempt = attempts.get(dependent)
+        if (
+            not isinstance(attempt, int)
+            or isinstance(attempt, bool)
+            or attempt < 1
+        ):
+            raise ValueError(
+                f"completed dependent {dependent} lacks a canonical attempt"
+            )
+        completed.pop(dependent)
+        state["status"] = "running"
+        _record_control_event(
+            state_path,
+            state,
+            event="stage_checkpoint_invalid",
+            stage=dependent,
+            detail={
+                "attempt": attempt,
+                "stage": dependent,
+                "type": "DependencyInvalidated",
+                "message": (
+                    f"upstream stage {upstream} requires refresh: {reason}"
+                ),
+            },
+        )
+
+
+def _refresh_control_stage(
+    state_path: Path,
+    state: dict,
+    *,
+    stage: str,
+    reason: str,
+) -> None:
+    """Explicitly refresh a completed stage and all transitive dependents."""
+    completed = state.setdefault("completed", {})
+    if stage not in completed:
+        return
+    _invalidate_control_dependents(
+        state_path,
+        state,
+        upstream=stage,
+        reason=reason,
+    )
+    completed.pop(stage)
+    state["status"] = "running"
+    _record_control_event(
+        state_path,
+        state,
+        event="stage_checkpoint_refresh_required",
+        stage=stage,
+        detail={"reason": reason},
+    )
+
+
 def _run_control_stage(
     state_path: Path,
     state: dict,
@@ -1919,6 +2850,12 @@ def _run_control_stage(
         try:
             _validate_control_stage_result(name, result, validate_result)
         except Exception as exc:
+            _invalidate_control_dependents(
+                state_path,
+                state,
+                upstream=name,
+                reason=f"{type(exc).__name__}: {exc}",
+            )
             completed.pop(name, None)
             prior_attempt = attempts.get(name, 0)
             if (
@@ -1946,6 +2883,7 @@ def _run_control_stage(
     attempt = int(attempts.get(name, 0)) + 1
     attempts[name] = attempt
     state["status"] = "running"
+    state.pop("last_error", None)
     _record_control_event(
         state_path,
         state,
@@ -2285,26 +3223,21 @@ def run_control_plane(
     api = stage_api or _default_control_stage_api()
     if resume:
         state = _load_control_json(state_path)
-        if state.get("schema_version") != 3:
+        if state.get("schema_version") != 4:
             raise ValueError("unsupported control-state schema")
         _reconcile_control_journal(state_path, state)
         if state.get("plan_digest") != digest or state.get("plan") != plan:
             raise ValueError("resume control plan does not match durable state")
+        _close_interrupted_control_attempt(state_path, state)
         if (
             state.get("status") not in {"completed", "recovery_required"}
             and "validate_package" in state.get("completed", {})
         ):
-            state["completed"].pop("validate_package")
-            _record_control_event(
+            _refresh_control_stage(
                 state_path,
                 state,
-                event="stage_checkpoint_refresh_required",
                 stage="validate_package",
-                detail={
-                    "reason": (
-                        "nonterminal resume must re-read packaged bytes"
-                    )
-                },
+                reason="nonterminal resume must re-read packaged bytes",
             )
         if state.get("status") in {"completed", "recovery_required"}:
             stored_result = state.get("result")
@@ -2372,10 +3305,16 @@ def run_control_plane(
             )
             return state
     else:
-        if state_path.exists() or state_path.is_symlink():
-            raise FileExistsError("fresh control state already exists")
+        journal_path = state_path.with_name(state_path.name + ".jsonl")
+        if (
+            state_path.exists()
+            or state_path.is_symlink()
+            or journal_path.exists()
+            or journal_path.is_symlink()
+        ):
+            raise FileExistsError("fresh control state or journal already exists")
         state = {
-            "schema_version": 3,
+            "schema_version": 4,
             "plan": plan,
             "plan_digest": digest,
             "status": "initialized",
@@ -2717,6 +3656,37 @@ def run_control_plane(
         detail={"run_id": final_run_id, "run_spec_id": final_spec_id},
     )
     return state
+
+
+@app.local_entrypoint()
+def stage_inputs_main(
+    source_bundle: str,
+    raw_bundle: str,
+    receipt_path: str,
+):
+    """Create-once stage and independently read back both canonical inputs."""
+    receipt = Path(receipt_path)
+    if receipt.exists() or receipt.is_symlink():
+        raise FileExistsError(f"staging receipt already exists: {receipt}")
+    source_result = _stage_one_input_bundle(
+        Path(source_bundle),
+        "source",
+    )
+    raw_result = _stage_one_input_bundle(
+        Path(raw_bundle),
+        "raw",
+    )
+    result = {
+        "schema_version": 1,
+        "volume": VOLUME_NAME,
+        "source": source_result,
+        "raw": raw_result,
+    }
+    data = (
+        json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    ).encode("utf-8")
+    _atomic_create_control_bytes(receipt, data)
+    print(data.decode("utf-8"), end="")
 
 
 @app.local_entrypoint()

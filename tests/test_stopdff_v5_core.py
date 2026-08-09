@@ -222,8 +222,33 @@ def test_nonterminal_abstain_beats_answer_when_answer_nonpositive():
         p_trajectory=[0.2495, 0.9], prefix_fractions=[0.1, 1.0], schedule=s,
         continuation_fn=_const_cont(0.0),
     )
-    # wait_value at t0 = -0.05; A_0 ~ -0.01 > wait but <= abstain(0) -> not answer
+    # wait_value at t0 = -0.05; A_0 ~ -0.01, so ABSTAIN is uniquely optimal.
+    assert tr.stop_index == 2
+    assert tr.never_buzz is True
+
+
+def test_nonterminal_wait_abstain_tie_prefers_wait():
+    s = get_schedule("wait_cost_small")
+    tr = policy.solve_trajectory(
+        p_trajectory=[0.2495, 0.9],
+        prefix_fractions=[0.1, 1.0],
+        schedule=s,
+        continuation_fn=_const_cont(0.05),
+    )
     assert tr.stop_index == 1
+    assert tr.never_buzz is False
+
+
+def test_nonterminal_abstain_answer_tie_prefers_abstain():
+    s = get_schedule("wait_cost_small")
+    tr = policy.solve_trajectory(
+        p_trajectory=[0.25, 0.9],
+        prefix_fractions=[0.1, 1.0],
+        schedule=s,
+        continuation_fn=_const_cont(0.0),
+    )
+    assert tr.stop_index == 2
+    assert tr.never_buzz is True
 
 
 def test_signed_index_shift():

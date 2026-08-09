@@ -451,7 +451,7 @@ def test_control_plane_uses_only_post_package_validation(
     assert "validate_package" in state["completed"]
 
 
-def test_schema_v2_control_state_fails_closed_before_remote_calls(
+def test_schema_v3_control_state_fails_closed_before_remote_calls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -459,7 +459,7 @@ def test_schema_v2_control_state_fails_closed_before_remote_calls(
     api, calls, ids = _fake_control_api()
     state_path = tmp_path / "control.json"
     state = {
-        "schema_version": 2,
+        "schema_version": 3,
         "plan": _plan(ids),
         "plan_digest": runner._control_plan_digest(_plan(ids)),
         "status": "initialized",

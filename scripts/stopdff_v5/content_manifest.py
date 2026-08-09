@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import stat
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -49,6 +50,11 @@ _CONTENT_LAYOUTS = {
 
 def _is_sha256(value: Any) -> bool:
     return isinstance(value, str) and _SHA256_RE.fullmatch(value) is not None
+
+
+def git_mode_for_path(path: Path) -> str:
+    """Return the only executable-bit distinction tracked by Git."""
+    return "100755" if stat.S_IMODE(Path(path).stat().st_mode) & 0o111 else "100644"
 
 
 def _canonical_entry(
@@ -261,6 +267,10 @@ def validate_bound_content_manifest(
             or not target.is_file()
             or target.stat().st_size != size
             or sha256_file(target) != digest
+            or (
+                kind == "source_snapshot"
+                and git_mode_for_path(target) != entry["mode"]
+            )
         ):
             raise ValueError(f"{manifest_name} file mismatch: {name}")
     actual: set[str] = set()

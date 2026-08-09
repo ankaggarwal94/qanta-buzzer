@@ -78,6 +78,7 @@ def _load_modal_runner(monkeypatch):
             Image=DummyImage,
             Volume=DummyVolume,
             App=DummyApp,
+            is_local=lambda: True,
         ),
     )
     from scripts.stopdff_v5.identity import build_manifest, sha256_file
@@ -134,6 +135,71 @@ def _plan() -> dict:
         "gate_overrides": {},
         "resource_summary": {},
     }
+
+
+def _reachable_completed_control_state(
+    runner,
+    state_path: Path,
+    *,
+    plan: dict | None = None,
+) -> dict:
+    """Write one schema-v4 terminal state through every canonical stage."""
+    result = {
+        "run_id": "final_modal_aaaaaaaaaaaa",
+        "run_spec_id": "b" * 64,
+        "adapter_id": "a" * 64,
+        "receipt_ids": {
+            "determinism": "c" * 64,
+            "mutation": "d" * 64,
+            "smoke": "e" * 64,
+        },
+        "validation": {
+            "passed": True,
+            "errors": [],
+            "recomputed": {
+                "release_status": "VALID",
+                "adapter_bundle_id": "a" * 64,
+            },
+        },
+    }
+    state = {
+        "schema_version": 4,
+        "status": "initialized",
+        "sequence": 0,
+        "stage_attempts": {},
+        "completed": {},
+    }
+    if plan is not None:
+        state["plan"] = plan
+        state["plan_digest"] = runner._control_plan_digest(plan)
+    runner._record_control_event(
+        state_path,
+        state,
+        event="control_initialized",
+    )
+    for stage in runner._CONTROL_STAGE_ORDER:
+        runner._run_control_stage(
+            state_path,
+            state,
+            name=stage,
+            invoke=lambda _attempt, stage=stage: {
+                "ok": True,
+                "stage": stage,
+            },
+            validate_result=lambda _result: None,
+        )
+    state["status"] = "completed"
+    state["result"] = result
+    runner._record_control_event(
+        state_path,
+        state,
+        event="control_completed",
+        detail={
+            "run_id": result["run_id"],
+            "run_spec_id": result["run_spec_id"],
+        },
+    )
+    return state
 
 
 @pytest.mark.parametrize("result", [{"ok": False}, {"passed": False}])
@@ -237,6 +303,96 @@ def test_invalid_cached_result_is_discarded_and_retried(
         "stage_started",
         "stage_completed",
     ]
+
+
+def test_resume_closes_host_interrupted_stage_before_cache_invalidation(
+    tmp_path, monkeypatch
+) -> None:
+    runner = _load_modal_runner(monkeypatch)
+    state_path = tmp_path / "control.json"
+    state = {
+        "schema_version": 4,
+        "status": "initialized",
+        "sequence": 0,
+        "stage_attempts": {},
+        "completed": {},
+    }
+    runner._record_control_event(
+        state_path,
+        state,
+        event="control_initialized",
+    )
+    runner._run_control_stage(
+        state_path,
+        state,
+        name="verify_source",
+        invoke=lambda _attempt: {"id": "stale"},
+        validate_result=lambda _result: None,
+    )
+    for stage in ("verify_raw", "environment_probe"):
+        runner._run_control_stage(
+            state_path,
+            state,
+            name=stage,
+            invoke=lambda _attempt, stage=stage: {"stage": stage},
+            validate_result=lambda _result: None,
+        )
+    state["stage_attempts"]["freeze_model"] = 1
+    state["status"] = "running"
+    runner._record_control_event(
+        state_path,
+        state,
+        event="stage_started",
+        stage="freeze_model",
+        detail={"attempt": 1},
+    )
+
+    assert runner._close_interrupted_control_attempt(state_path, state)
+
+    def require_fresh(result: dict) -> None:
+        if result.get("id") != "fresh":
+            raise ValueError("stale source checkpoint")
+
+    result = runner._run_control_stage(
+        state_path,
+        state,
+        name="verify_source",
+        invoke=lambda _attempt: {"id": "fresh"},
+        validate_result=require_fresh,
+    )
+    assert result == {"id": "fresh"}
+    assert state["stage_attempts"] == {
+        "verify_source": 2,
+        "verify_raw": 1,
+        "environment_probe": 1,
+        "freeze_model": 1,
+    }
+    assert "last_error" not in state
+    records = [
+        json.loads(line)
+        for line in state_path.with_name("control.json.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [record["event"] for record in records][-6:] == [
+        "stage_failed",
+        "stage_checkpoint_invalid",
+        "stage_checkpoint_invalid",
+        "stage_checkpoint_invalid",
+        "stage_started",
+        "stage_completed",
+    ]
+    assert records[-6]["stage"] == "freeze_model"
+    assert records[-6]["detail"]["type"] == "HostControllerInterrupted"
+    assert [record["stage"] for record in records[-5:-2]] == [
+        "environment_probe",
+        "verify_raw",
+        "verify_source",
+    ]
+    runner._reconcile_control_journal(
+        state_path,
+        runner._load_control_json(state_path),
+    )
 
 
 def test_stage_postcondition_rejects_fresh_result_before_checkpoint(
@@ -425,33 +581,10 @@ def test_completed_resume_revalidates_or_requires_recovery(
     runner = _load_modal_runner(monkeypatch)
     plan = runner._validate_control_plan(_plan())
     state_path = tmp_path / "control.json"
-    state = {
-        "schema_version": 3,
-        "plan": plan,
-        "plan_digest": runner._control_plan_digest(plan),
-        "status": "completed",
-        "sequence": 0,
-        "stage_attempts": {},
-        "completed": {},
-        "result": {
-            "run_id": "final_modal_aaaaaaaaaaaa",
-            "run_spec_id": "b" * 64,
-            "adapter_id": "a" * 64,
-        },
-    }
-    runner._record_control_event(
+    _reachable_completed_control_state(
+        runner,
         state_path,
-        state,
-        event="control_initialized",
-    )
-    runner._record_control_event(
-        state_path,
-        state,
-        event="control_completed",
-        detail={
-            "run_id": "final_modal_aaaaaaaaaaaa",
-            "run_spec_id": "b" * 64,
-        },
+        plan=plan,
     )
     calls = []
 
@@ -503,6 +636,248 @@ def test_completed_resume_revalidates_or_requires_recovery(
     )
     assert restored["status"] == "completed"
     assert restored["last_event"]["event"] == "control_revalidated"
+
+
+def test_schema_v4_rejects_mutated_completed_stage_payload(
+    tmp_path, monkeypatch
+) -> None:
+    runner = _load_modal_runner(monkeypatch)
+    state_path = tmp_path / "control.json"
+    state = {
+        "schema_version": 4,
+        "status": "initialized",
+        "sequence": 0,
+        "stage_attempts": {},
+        "completed": {},
+    }
+    runner._record_control_event(
+        state_path,
+        state,
+        event="control_initialized",
+    )
+    runner._run_control_stage(
+        state_path,
+        state,
+        name="verify_source",
+        invoke=lambda _attempt: {"ok": True, "id": "1" * 64},
+        validate_result=lambda _result: None,
+    )
+
+    durable = runner._load_control_json(state_path)
+    durable["completed"]["verify_source"]["id"] = "2" * 64
+    state_path.write_text(
+        json.dumps(durable, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="completed payload disagrees with journal",
+    ):
+        runner._reconcile_control_journal(state_path, durable)
+
+
+def test_schema_v4_rejects_mutated_terminal_result(
+    tmp_path, monkeypatch
+) -> None:
+    runner = _load_modal_runner(monkeypatch)
+    state_path = tmp_path / "control.json"
+    _reachable_completed_control_state(runner, state_path)
+
+    durable = runner._load_control_json(state_path)
+    durable["result"]["adapter_id"] = "f" * 64
+    state_path.write_text(
+        json.dumps(durable, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="control state result disagrees with journal",
+    ):
+        runner._reconcile_control_journal(state_path, durable)
+
+
+def test_schema_v4_rejects_out_of_order_stage_start(
+    tmp_path, monkeypatch
+) -> None:
+    runner = _load_modal_runner(monkeypatch)
+    state_path = tmp_path / "control.json"
+    state = {
+        "schema_version": 4,
+        "status": "initialized",
+        "sequence": 0,
+        "stage_attempts": {},
+        "completed": {},
+    }
+    runner._record_control_event(
+        state_path,
+        state,
+        event="control_initialized",
+    )
+    state["status"] = "running"
+    state["stage_attempts"]["verify_raw"] = 1
+    runner._record_control_event(
+        state_path,
+        state,
+        event="stage_started",
+        stage="verify_raw",
+        detail={"attempt": 1},
+    )
+
+    with pytest.raises(ValueError, match="order|predecessor"):
+        runner._reconcile_control_journal(
+            state_path,
+            runner._load_control_json(state_path),
+        )
+
+
+def test_schema_v4_rejects_incomplete_terminal_history(
+    tmp_path, monkeypatch
+) -> None:
+    runner = _load_modal_runner(monkeypatch)
+    state_path = tmp_path / "control.json"
+    state = {
+        "schema_version": 4,
+        "status": "initialized",
+        "sequence": 0,
+        "stage_attempts": {},
+        "completed": {},
+    }
+    runner._record_control_event(
+        state_path,
+        state,
+        event="control_initialized",
+    )
+    runner._run_control_stage(
+        state_path,
+        state,
+        name="verify_source",
+        invoke=lambda _attempt: {"ok": True},
+        validate_result=lambda _result: None,
+    )
+    state["status"] = "completed"
+    state["result"] = {
+        "run_id": "final_modal_aaaaaaaaaaaa",
+        "run_spec_id": "b" * 64,
+        "adapter_id": "a" * 64,
+        "receipt_ids": {},
+        "validation": {"passed": True},
+    }
+    runner._record_control_event(
+        state_path,
+        state,
+        event="control_completed",
+        detail={
+            "run_id": "final_modal_aaaaaaaaaaaa",
+            "run_spec_id": "b" * 64,
+        },
+    )
+
+    with pytest.raises(ValueError, match="complete|canonical stage"):
+        runner._reconcile_control_journal(
+            state_path,
+            runner._load_control_json(state_path),
+        )
+
+
+def test_schema_v4_rejects_stage_activity_after_terminal_event(
+    tmp_path, monkeypatch
+) -> None:
+    runner = _load_modal_runner(monkeypatch)
+    state_path = tmp_path / "control.json"
+    state = _reachable_completed_control_state(runner, state_path)
+    state["status"] = "running"
+    state["stage_attempts"]["verify_source"] = 2
+    runner._record_control_event(
+        state_path,
+        state,
+        event="stage_started",
+        stage="verify_source",
+        detail={"attempt": 2},
+    )
+
+    with pytest.raises(ValueError, match="terminal"):
+        runner._reconcile_control_journal(
+            state_path,
+            runner._load_control_json(state_path),
+        )
+
+
+def test_invalid_cached_stage_discards_every_completed_suffix(
+    tmp_path, monkeypatch
+) -> None:
+    runner = _load_modal_runner(monkeypatch)
+    state_path = tmp_path / "control.json"
+    state = {
+        "schema_version": 4,
+        "status": "initialized",
+        "sequence": 0,
+        "stage_attempts": {},
+        "completed": {},
+    }
+    runner._record_control_event(
+        state_path,
+        state,
+        event="control_initialized",
+    )
+    for stage in (
+        "verify_source",
+        "verify_raw",
+        "environment_probe",
+        "freeze_model",
+    ):
+        runner._run_control_stage(
+            state_path,
+            state,
+            name=stage,
+            invoke=lambda _attempt, stage=stage: {
+                "stage": stage,
+                "valid": stage != "verify_raw",
+            },
+            validate_result=lambda _result: None,
+        )
+
+    def require_fresh_raw(result: dict) -> None:
+        if result.get("valid") is not True:
+            raise ValueError("stale raw checkpoint")
+
+    accepted = runner._run_control_stage(
+        state_path,
+        state,
+        name="verify_raw",
+        invoke=lambda _attempt: {"stage": "verify_raw", "valid": True},
+        validate_result=require_fresh_raw,
+    )
+
+    assert accepted == {"stage": "verify_raw", "valid": True}
+    assert set(state["completed"]) == {"verify_source", "verify_raw"}
+    assert state["stage_attempts"] == {
+        "verify_source": 1,
+        "verify_raw": 2,
+        "environment_probe": 1,
+        "freeze_model": 1,
+    }
+    records = [
+        json.loads(line)
+        for line in state_path.with_name("control.json.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    invalidated = [
+        record["stage"]
+        for record in records
+        if record["event"] == "stage_checkpoint_invalid"
+    ]
+    assert invalidated[-3:] == [
+        "freeze_model",
+        "environment_probe",
+        "verify_raw",
+    ]
+    runner._reconcile_control_journal(
+        state_path,
+        runner._load_control_json(state_path),
+    )
 
 
 def test_probe_main_prints_canonical_json(monkeypatch, capsys) -> None:

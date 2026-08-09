@@ -50,6 +50,17 @@ def _sigmoid(z: float) -> float:
     return 1.0 / (1.0 + math.exp(-z))
 
 
+def apply_platt_logistic(
+    raw_similarity: float,
+    coefficient: float,
+    intercept: float,
+) -> float:
+    """Apply the serialized Platt parameters used by the sweep."""
+    return _sigmoid(
+        float(coefficient) * float(raw_similarity) + float(intercept)
+    )
+
+
 def _binary_log_loss(ys: np.ndarray, ps: np.ndarray) -> float:
     ps = np.clip(ps, _EPS, 1.0 - _EPS)
     return float(np.mean(-(ys * np.log(ps) + (1.0 - ys) * np.log(1.0 - ps))))
@@ -128,7 +139,9 @@ def fit_platt(calibration_json: dict) -> Calibrator:
                 )
             a = float(coef)
             b = float(intercept)
-            apply_fns[phase] = (lambda s, _a=a, _b=b: _sigmoid(_a * s + _b))
+            apply_fns[phase] = (
+                lambda s, _a=a, _b=b: apply_platt_logistic(s, _a, _b)
+            )
             params[phase] = {"model": "logistic", "a": _fmt_num(a), "b": _fmt_num(b)}
     return Calibrator(name="platt-logistic", phase_params=params, _apply_phase=apply_fns)
 

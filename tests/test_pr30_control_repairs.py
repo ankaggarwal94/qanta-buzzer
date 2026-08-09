@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from scripts import run_stopdff_v5_local as local_runner
+from scripts.stopdff_v5.attempt_history import canonical_attempt_line
 from scripts.stopdff_v5.bootstrap import build_bootstrap_plan
 from scripts.stopdff_v5.identity import build_manifest, sha256_file
 from scripts.stopdff_v5.manifests import ENVIRONMENT_PACKAGES, RAW_INPUT_ROLES
@@ -22,7 +23,10 @@ REPO = Path(__file__).resolve().parents[1]
 MODAL_RUNNER = REPO / "scripts" / "modal_stopdff_v5_runner.py"
 
 
-def _load_modal_runner(monkeypatch):
+def _load_modal_runner(monkeypatch, *, modal_is_local: bool = True):
+    image_envs: list[dict] = []
+    local_dirs: list[tuple[tuple, dict]] = []
+
     class DummyImage:
         @classmethod
         def debian_slim(cls, **_kwargs):
@@ -34,10 +38,12 @@ def _load_modal_runner(monkeypatch):
         def pip_install(self, *_args):
             return self
 
-        def env(self, *_args):
+        def env(self, values):
+            image_envs.append(dict(values))
             return self
 
-        def add_local_dir(self, *_args, **_kwargs):
+        def add_local_dir(self, *args, **kwargs):
+            local_dirs.append((args, kwargs))
             return self
 
     class DummyVolume:
@@ -82,45 +88,57 @@ def _load_modal_runner(monkeypatch):
         Image=DummyImage,
         Volume=DummyVolume,
         App=DummyApp,
+        is_local=lambda: modal_is_local,
+        image_envs=image_envs,
+        local_dirs=local_dirs,
     )
     monkeypatch.setitem(sys.modules, "modal", fake_modal)
     from scripts.stopdff_v5.identity import build_manifest, sha256_file
     from scripts.stopdff_v5.manifests import source_manifest_identity
 
-    source_bundle = Path(tempfile.mkdtemp(prefix="stopdff_v5_test_source_"))
-    source = source_bundle / "source"
-    source.mkdir()
-    source_names = (
-        "pyproject.toml",
-        "scripts/stopdff_v5/checker.py",
-        "scripts/stopdff_v5/sweep.py",
-        "uv.lock",
-    )
-    for name in source_names:
-        path = source / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"{name}\n", encoding="utf-8")
-    files = [
-        {
-            "path": name,
-            "mode": "100644",
-            "size": (source / name).stat().st_size,
-            "sha256": sha256_file(source / name),
-        }
-        for name in source_names
-    ]
-    source_manifest = build_manifest(
-        source_manifest_identity(
-            git_sha="a" * 40,
-            files=files,
-            pyproject_sha256=files[0]["sha256"],
-            uv_lock_sha256=files[-1]["sha256"],
+    if modal_is_local:
+        source_bundle = Path(
+            tempfile.mkdtemp(prefix="stopdff_v5_test_source_")
         )
-    )
-    (source_bundle / "source_manifest.json").write_text(
-        json.dumps(source_manifest), encoding="utf-8"
-    )
-    monkeypatch.setenv("STOPDFF_V5_SOURCE_DIR", str(source_bundle))
+        source = source_bundle / "source"
+        source.mkdir()
+        source_names = (
+            "pyproject.toml",
+            "scripts/stopdff_v5/checker.py",
+            "scripts/stopdff_v5/sweep.py",
+            "uv.lock",
+        )
+        for source_name in source_names:
+            path = source / source_name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{source_name}\n", encoding="utf-8")
+        files = [
+            {
+                "path": source_name,
+                "mode": "100644",
+                "size": (source / source_name).stat().st_size,
+                "sha256": sha256_file(source / source_name),
+            }
+            for source_name in source_names
+        ]
+        source_manifest = build_manifest(
+            source_manifest_identity(
+                git_sha="a" * 40,
+                files=files,
+                pyproject_sha256=files[0]["sha256"],
+                uv_lock_sha256=files[-1]["sha256"],
+            )
+        )
+        (source_bundle / "source_manifest.json").write_text(
+            json.dumps(source_manifest), encoding="utf-8"
+        )
+        monkeypatch.setenv("STOPDFF_V5_SOURCE_DIR", str(source_bundle))
+    else:
+        monkeypatch.delenv("STOPDFF_V5_SOURCE_DIR", raising=False)
+        monkeypatch.setenv(
+            "STOPDFF_V5_IMAGE_SOURCE_MANIFEST_ID",
+            "1" * 64,
+        )
     name = f"_pr30_modal_runner_{id(monkeypatch)}"
     spec = importlib.util.spec_from_file_location(name, MODAL_RUNNER)
     module = importlib.util.module_from_spec(spec)
@@ -157,6 +175,26 @@ def _write_raw_manifest(base: Path, *, passed: bool, kind: str = "raw_input_bund
         encoding="utf-8",
     )
     return manifest
+
+
+def test_modal_remote_import_uses_baked_source_identity_without_host_bundle(
+    monkeypatch,
+) -> None:
+    app_name = "cs321m-stopdff-v5-assurance-deadbeef"
+    monkeypatch.setenv("STOPDFF_V5_APP_NAME", app_name)
+
+    runner = _load_modal_runner(monkeypatch, modal_is_local=False)
+
+    assert runner.SOURCE_BUNDLE_DIR == ""
+    assert runner.SOURCE_DIR == runner.REMOTE_SRC
+    assert runner._IMAGE_SOURCE_OWNER is None
+    assert runner.IMAGE_SOURCE_MANIFEST_ID == "1" * 64
+    assert runner.APP_NAME == app_name
+    assert runner.modal.local_dirs == []
+    assert runner.modal.image_envs[-1][
+        "STOPDFF_V5_IMAGE_SOURCE_MANIFEST_ID"
+    ] == "1" * 64
+    assert runner.modal.image_envs[-1]["STOPDFF_V5_APP_NAME"] == app_name
 
 
 def test_raw_manifest_requires_kind_and_passing_semantics(tmp_path, monkeypatch):
@@ -569,6 +607,35 @@ def test_control_plane_journals_order_and_resumes_lost_sweep(
     assert (tmp_path / "control.json.jsonl").is_file()
 
 
+def test_fresh_control_rejects_orphan_journal_before_remote_work(
+    tmp_path,
+    monkeypatch,
+):
+    runner = _load_modal_runner(monkeypatch)
+    api, calls, ids = _fake_control_api()
+    plan = {
+        "source_id": ids["source"],
+        "raw_id": ids["raw"],
+        "adapter_subdirs": ["build_a", "build_b"],
+        "gate_overrides": {},
+        "resource_summary": {"backend": "modal"},
+    }
+    state_path = tmp_path / "control.json"
+    state_path.with_name("control.json.jsonl").write_text(
+        '{"stale":true}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileExistsError, match="state or journal"):
+        runner.run_control_plane(
+            plan,
+            state_path,
+            resume=False,
+            stage_api=api,
+        )
+    assert calls == []
+
+
 def test_remote_sweep_attempt_is_derived_from_durable_state(
     tmp_path,
     monkeypatch,
@@ -600,12 +667,14 @@ def test_remote_sweep_attempt_is_derived_from_durable_state(
             "state": "started",
             "mode": "fresh" if number == 1 else "resume",
             "command": ["dp_sweep"] + (["--resume"] if number > 1 else []),
+            "run_spec_id": "1" * 64,
+            "adapter_id": "2" * 64,
+            "bootstrap_plan_id": "3" * 64,
         }
         for number in (1, 2)
     ]
-    (partial / "attempts.jsonl").write_text(
-        "".join(json.dumps(record) + "\n" for record in records),
-        encoding="utf-8",
+    (partial / "attempts.jsonl").write_bytes(
+        b"".join(canonical_attempt_line(record) for record in records)
     )
     assert runner._resolve_remote_sweep_attempt(
         partial,
@@ -646,8 +715,8 @@ def test_local_resume_attempt_and_sweep_context(tmp_path, monkeypatch):
             "bootstrap_plan_id": bootstrap_id,
         },
     ]
-    (run_root / "attempts.jsonl").write_text(
-        "".join(json.dumps(record) + "\n" for record in records)
+    (run_root / "attempts.jsonl").write_bytes(
+        b"".join(canonical_attempt_line(record) for record in records)
     )
     assert local_runner._next_resume_attempt(
         run_root,
@@ -749,6 +818,7 @@ manifest = runner.build_manifest({{
     "kind": "source_snapshot",
     "files": [{{
         "path": "scripts/stopdff_v5/adapter_build.py",
+        "mode": "100644",
         "sha256": runner.sha256_file(runtime),
     }}],
 }})
@@ -788,6 +858,7 @@ manifest = runner.build_manifest({{
     "kind": "source_snapshot",
     "files": [{{
         "path": relative,
+        "mode": "100644",
         "sha256": runner.sha256_file(runtime),
     }}],
 }})
@@ -806,6 +877,49 @@ runner._verified_local_source_execution(reviewed, manifest)
         "scripts/stopdff_v5/adapter_build.py"
     ) in result.stderr
     assert "does not originate from the executing repository" not in result.stderr
+
+
+def test_local_source_rehash_rejects_runtime_executable_mode_drift(tmp_path):
+    reviewed = tmp_path / "reviewed"
+    shutil.copytree(REPO / "scripts", reviewed / "scripts")
+    shutil.copytree(REPO / "qb_data", reviewed / "qb_data")
+    probe = f"""
+import importlib.util
+import sys
+from pathlib import Path
+
+reviewed = Path({str(reviewed)!r})
+sys.path.insert(0, str(reviewed))
+spec = importlib.util.spec_from_file_location(
+    "_reviewed_local_runner_mode_drift",
+    reviewed / "scripts" / "run_stopdff_v5_local.py",
+)
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+relative = "scripts/stopdff_v5/adapter_build.py"
+runtime = reviewed / relative
+manifest = runner.build_manifest({{
+    "kind": "source_snapshot",
+    "files": [{{
+        "path": relative,
+        "mode": "100644",
+        "sha256": runner.sha256_file(runtime),
+    }}],
+}})
+runtime.chmod(runtime.stat().st_mode | 0o111)
+runner._verified_local_source_execution(reviewed, manifest)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert (
+        "executing source does not match source manifest: "
+        "scripts/stopdff_v5/adapter_build.py"
+    ) in result.stderr
 
 
 @pytest.mark.parametrize(

@@ -98,7 +98,9 @@ def solve_trajectory(
                 t, p=float(p_trajectory[t]), prefix_fraction=float(prefix_fractions[t])
             )
 
-    # Forward pass: first prefix where ANSWER is strictly optimal.
+    # Forward pass: select the full action under the declared tie priority.
+    # Advancing is valid only for WAIT; a nonterminal ABSTAIN is an immediate
+    # terminal never-buzz decision, represented by stop_index=T.
     stop_index = T
     for t in range(T):
         a = answer_utils[t]
@@ -107,6 +109,12 @@ def solve_trajectory(
         else:
             wait_value = -schedule.wait_cost + continuation_values[t]
             answered = (a > wait_value) and (a > ABSTAIN_VALUE)
+            abstained = (
+                ABSTAIN_VALUE > wait_value
+                and ABSTAIN_VALUE >= a
+            )
+            if abstained:
+                break
         if answered:
             stop_index = t
             break

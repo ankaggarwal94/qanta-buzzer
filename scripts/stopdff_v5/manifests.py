@@ -53,6 +53,7 @@ ENVIRONMENT_PACKAGES: tuple[str, ...] = (
     "pandas",
     "matplotlib",
     "sentence-transformers",
+    "torch",
     "transformers",
     "huggingface_hub",
 )

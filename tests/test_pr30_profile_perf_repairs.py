@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.stopdff_v5 import fvi_study, profile, sweep
+from scripts.stopdff_v5.attempt_history import canonical_attempt_line
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -233,9 +234,18 @@ def test_resume_preflight_recomputes_only_cached_cells(
     cells = [{"key": "cached"}, {"key": "missing"}]
     cells_dir = tmp_path / "cells"
     cells_dir.mkdir()
-    (tmp_path / "attempts.jsonl").write_text(
-        json.dumps({"attempt": 1}) + "\n",
-        encoding="utf-8",
+    (tmp_path / "attempts.jsonl").write_bytes(
+        canonical_attempt_line(
+            {
+                "attempt": 1,
+                "mode": "fresh",
+                "command": ["dp_sweep"],
+                "run_spec_id": "a" * 64,
+                "adapter_id": "c" * 64,
+                "bootstrap_plan_id": "b" * 64,
+                "state": "started",
+            }
+        )
     )
     expected = {"cell_key": "cached"}
     (cells_dir / "cached.json").write_text(

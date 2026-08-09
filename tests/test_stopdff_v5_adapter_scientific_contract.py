@@ -641,6 +641,7 @@ def test_adapter_producer_accepts_canonical_text_variants():
         ],
         "options": ["answer", "distractor"],
         "gold_index": 0,
+        "category": "Test",
     }
 
     adapter_build._validate_scoring_question(question)

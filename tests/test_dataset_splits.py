@@ -144,6 +144,23 @@ def test_ordinary_splits_realize_global_and_category_ratios_exactly():
         assert [count / 30 for count in realized] == pytest.approx(ratios)
 
 
+@pytest.mark.parametrize(
+    ("total", "ratios", "expected"),
+    [
+        (1, [1.0, 0.0, 0.0], [1, 0, 0]),
+        (1, [0.0, 1.0, 0.0], [0, 1, 0]),
+        (1, [0.0, 0.0, 1.0], [0, 0, 1]),
+        (2, [0.2, 0.3, 0.5], [0, 1, 1]),
+        (2, [0.0, 0.0, 1.0], [0, 0, 2]),
+        (3, [0.5, 0.5, 0.0], [2, 1, 0]),
+    ],
+)
+def test_tiny_targets_are_determined_by_ratios(total, ratios, expected):
+    from qb_data.dataset_splits import _target_counts
+
+    assert _target_counts(total, ratios) == expected
+
+
 def test_atomic_multicategory_groups_stay_within_feasible_ratio_error():
     ratios = [0.7, 0.15, 0.15]
     categories = ("History", "Science", "Literature")

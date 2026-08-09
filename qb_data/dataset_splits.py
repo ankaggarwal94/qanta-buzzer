@@ -54,14 +54,17 @@ def normalize_split_answer(answer: str) -> str:
 
 
 def _target_counts(total: int, ratios: List[float]) -> list[int]:
-    """Return deterministic integer targets compatible with the legacy splitter."""
-    if total == 1:
-        return [1, 0, 0]
-    if total == 2:
-        return [1, 1, 0]
-    train = int(total * ratios[0])
-    val = int(total * ratios[1])
-    return [train, val, total - train - val]
+    """Hamilton-apportion ``total`` with train→val→test as the tie order."""
+    quotas = [total * ratio for ratio in ratios]
+    targets = [math.floor(quota) for quota in quotas]
+    remaining = total - sum(targets)
+    order = sorted(
+        range(len(ratios)),
+        key=lambda index: (-(quotas[index] - targets[index]), index),
+    )
+    for index in order[:remaining]:
+        targets[index] += 1
+    return targets
 
 
 def create_stratified_splits(
@@ -116,7 +119,9 @@ def create_stratified_splits(
         raise ValueError("ratios must sum to 1.0") from exc
     if not math.isfinite(ratio_total) or abs(ratio_total - 1.0) > 1e-6:
         raise ValueError(f"ratios must sum to 1.0, got {ratio_total}")
-    ratios = normalized_inputs
+    # Normalize the accepted tolerance window so apportionment always allocates
+    # exactly the observed total, even for very large datasets.
+    ratios = [value / ratio_total for value in normalized_inputs]
 
     # Group globally by normalized question text before considering categories.
     # This prevents paraphrase-equivalent rows from leaking across splits.

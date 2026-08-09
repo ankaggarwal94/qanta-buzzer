@@ -95,8 +95,17 @@ def test_adapter_binds_retention_decisions_and_canonical_prefix_fractions(
             assert Path(model_dir).name == "model"
             assert trust_remote_code is False
 
-        def encode(self, values, *, convert_to_numpy):
+        def encode(
+            self,
+            values,
+            *,
+            batch_size,
+            convert_to_numpy,
+            show_progress_bar,
+        ):
+            assert batch_size == adapter_build._ENCODE_BATCH_SIZE
             assert convert_to_numpy is True
+            assert show_progress_bar is False
             return np.asarray(
                 [
                     [1.0, float((sum(map(ord, value)) % 7) + 1)]
@@ -124,6 +133,7 @@ def test_adapter_binds_retention_decisions_and_canonical_prefix_fractions(
                 "qid": f"{split}{index:02d}",
                 "question": f"{stem} word{index:02d}",
                 "answer_primary": answer,
+                "category": "Test",
             }
             target.append(record)
             mc_records.append(
