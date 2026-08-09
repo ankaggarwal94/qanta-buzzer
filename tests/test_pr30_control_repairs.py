@@ -808,6 +808,100 @@ runner._verified_local_source_execution(reviewed, manifest)
     assert "does not originate from the executing repository" not in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("runtime_drift", "expected_error"),
+    [
+        (True, "hidden runtime drift"),
+        (False, "after source preflight"),
+    ],
+)
+def test_run_present_resume_rehashes_executing_source_before_cached_evidence(
+    tmp_path,
+    monkeypatch,
+    runtime_drift,
+    expected_error,
+):
+    out = tmp_path / "reproduction"
+    out.mkdir()
+    source = {
+        "id": "1" * 64,
+        "identity": {
+            "kind": "source_snapshot",
+            "git_sha": "a" * 40,
+            "files": [],
+        },
+    }
+    raw = {
+        "id": "2" * 64,
+        "identity": {
+            "kind": "raw_input_bundle",
+            "files": [],
+            "semantic_checks": {"all_semantic_checks_pass": True},
+        },
+    }
+    model = {
+        "id": "3" * 64,
+        "identity": {"kind": "model_snapshot", "files": []},
+    }
+    manifests = {
+        "source_snapshot": source,
+        "raw_inputs": raw,
+        "model": model,
+    }
+    preflight_order = []
+
+    def load_manifest(base, **_kwargs):
+        name = Path(base).name
+        preflight_order.append(f"load:{name}")
+        return manifests[name]
+
+    monkeypatch.setattr(
+        local_runner,
+        "_load_bound_content_manifest",
+        load_manifest,
+    )
+    source_preflights = []
+
+    def verify_source(repo_root, manifest):
+        preflight_order.append("verify:executing_source")
+        source_preflights.append((repo_root, manifest))
+        if runtime_drift:
+            raise ValueError("hidden runtime drift")
+        return {
+            "environment": "local_clean_worktree",
+            "executing_source_manifest_id": manifest["id"],
+            "runtime_source_manifest_id": manifest["id"],
+        }
+
+    monkeypatch.setattr(
+        local_runner,
+        "_verified_local_source_execution",
+        verify_source,
+    )
+
+    def after_source_preflight(_path):
+        raise ValueError("after source preflight")
+
+    monkeypatch.setattr(
+        local_runner.checker,
+        "validate_adapter",
+        after_source_preflight,
+    )
+    args = types.SimpleNamespace(repo_root=tmp_path)
+
+    with pytest.raises(ValueError, match=expected_error):
+        local_runner._resume_local_run(
+            args=args,
+            out=out,
+            run_sha="a" * 40,
+        )
+    assert source_preflights == [(tmp_path, source)]
+    assert preflight_order[:2] == [
+        "load:source_snapshot",
+        "verify:executing_source",
+    ]
+
+
 def test_local_versions_require_the_exact_declared_package_set(monkeypatch):
     missing = ENVIRONMENT_PACKAGES[-1]
 
@@ -828,6 +922,67 @@ def test_local_versions_require_the_exact_declared_package_set(monkeypatch):
     versions = local_runner._versions()
     assert tuple(versions) == ENVIRONMENT_PACKAGES
     assert set(versions) == set(ENVIRONMENT_PACKAGES)
+
+
+@pytest.mark.parametrize(
+    ("stored_skip", "requested_skip", "compatible"),
+    [
+        (True, False, False),
+        (False, True, False),
+        (True, True, True),
+        (False, False, True),
+    ],
+)
+def test_run_present_resume_validates_current_fvi_mode_before_dispatch(
+    tmp_path,
+    monkeypatch,
+    stored_skip,
+    requested_skip,
+    compatible,
+):
+    out = tmp_path / "reproduction"
+    (out / "runs" / "smoke_local_candidate").mkdir(parents=True)
+    lifecycle = {
+        "schema_version": 1,
+        "run_sha": "a" * 40,
+        "variant": "smoke",
+        "skip_fvi_study": stored_skip,
+        "fvi_tolerance": "1e-6",
+        "fvi_max_iterations": 100,
+        "allow_low_mc_retention": False,
+        "adapter_executions": {},
+    }
+    (out / "local_lifecycle.json").write_text(
+        json.dumps(lifecycle, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    def git_run(command, **_kwargs):
+        stdout = "" if "status" in command else "a" * 40 + "\n"
+        return types.SimpleNamespace(stdout=stdout)
+
+    monkeypatch.setattr(local_runner, "_verify_imported_producer_origins", lambda: None)
+    monkeypatch.setattr(local_runner.subprocess, "run", git_run)
+    dispatched = []
+    monkeypatch.setattr(
+        local_runner,
+        "_resume_local_run",
+        lambda **kwargs: dispatched.append(kwargs) or 0,
+    )
+    argv = ["--out-dir", str(out), "--variant", "smoke", "--resume"]
+    if requested_skip:
+        argv.append("--skip-fvi-study")
+
+    if compatible:
+        assert local_runner.main(argv) == 0
+        assert len(dispatched) == 1
+    else:
+        with pytest.raises(
+            ValueError,
+            match="local lifecycle checkpoint does not match this command",
+        ):
+            local_runner.main(argv)
+        assert dispatched == []
 
 
 def test_public_local_lifecycle_resumes_before_run_directory_exists(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -521,32 +522,14 @@ def _run_sweep_body(
             resume=ctx.resume,
         )
 
-    # Self-contained spec + bootstrap plan manifests for the standalone checker.
-    _write_bound_json(
-        ctx.output_dir / "run_spec.json",
-        {"id": ctx.run_spec_id, "identity": ctx.run_spec},
-        resume=ctx.resume,
-    )
-    from .bootstrap import plan_identity
-    plan_ident = plan_identity(ctx.bootstrap_plan)
-    _write_bound_json(
-        ctx.output_dir / "bootstrap_plan.json",
-        {"id": compute_id(plan_ident), "identity": plan_ident,
-         "item_ids": ctx.bootstrap_plan.item_ids},
-        resume=ctx.resume,
-    )
-
-    if ctx.environment:
+    # Fresh initialization publishes these files together with attempt 1 before
+    # exposing the canonical directory. The isolated resume probe also calls
+    # this body directly, so create absent files and accept only identical ones.
+    for name, value in _run_identity_files(ctx):
         _write_bound_json(
-            ctx.output_dir / "environment.json",
-            ctx.environment,
-            resume=ctx.resume,
-        )
-    if ctx.resource_summary:
-        _write_bound_json(
-            ctx.output_dir / "resource_summary.json",
-            ctx.resource_summary,
-            resume=ctx.resume,
+            ctx.output_dir / name,
+            value,
+            resume=True,
         )
     return aggregate
 
@@ -554,6 +537,30 @@ def _run_sweep_body(
 def _plan_identity_for(plan: BootstrapPlan) -> dict:
     from .bootstrap import plan_identity
     return plan_identity(plan)
+
+
+def _run_identity_files(ctx: SweepContext) -> tuple[tuple[str, Any], ...]:
+    """Return the immutable files that make a visible run resumable."""
+    plan_ident = _plan_identity_for(ctx.bootstrap_plan)
+    files: list[tuple[str, Any]] = [
+        (
+            "run_spec.json",
+            {"id": ctx.run_spec_id, "identity": ctx.run_spec},
+        ),
+        (
+            "bootstrap_plan.json",
+            {
+                "id": compute_id(plan_ident),
+                "identity": plan_ident,
+                "item_ids": ctx.bootstrap_plan.item_ids,
+            },
+        ),
+    ]
+    if ctx.environment:
+        files.append(("environment.json", ctx.environment))
+    if ctx.resource_summary:
+        files.append(("resource_summary.json", ctx.resource_summary))
+    return tuple(files)
 
 
 def _append_attempt(path: Path, attempt: dict) -> None:
@@ -565,6 +572,46 @@ def _append_attempt(path: Path, attempt: dict) -> None:
         existing, _ = _load_attempt_history(path)
     line = (json.dumps(attempt, sort_keys=True) + "\n").encode("utf-8")
     atomic_write_bytes(path, existing + line)
+
+
+def _publish_fresh_initialization(
+    ctx: SweepContext,
+    *,
+    started_attempt: dict[str, Any],
+) -> None:
+    """Atomically expose a fresh run only after identity and attempt are durable."""
+    output_dir = Path(ctx.output_dir)
+    if output_dir.exists() or output_dir.is_symlink():
+        raise FileExistsError(f"fresh run destination already exists: {output_dir}")
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    staged = Path(
+        tempfile.mkdtemp(
+            prefix=".stopdff_run_initializing_",
+            dir=output_dir.parent,
+        )
+    )
+    try:
+        for name, value in _run_identity_files(ctx):
+            _write_bound_json(staged / name, value, resume=False)
+        _append_attempt(staged / "attempts.jsonl", started_attempt)
+        staged_fd = os.open(staged, os.O_RDONLY)
+        try:
+            os.fsync(staged_fd)
+        finally:
+            os.close(staged_fd)
+        if output_dir.exists() or output_dir.is_symlink():
+            raise FileExistsError(
+                f"fresh run destination appeared concurrently: {output_dir}"
+            )
+        os.rename(staged, output_dir)
+        parent_fd = os.open(output_dir.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    finally:
+        if staged.exists():
+            shutil.rmtree(staged)
 
 
 def _validate_attempt_result(
@@ -772,7 +819,10 @@ def run_sweep(ctx: SweepContext) -> dict[str, Any]:
         _commit(ctx)
 
     started = {**bound_attempt, "state": "started"}
-    _append_attempt(ctx.output_dir / "attempts.jsonl", started)
+    if ctx.resume:
+        _append_attempt(ctx.output_dir / "attempts.jsonl", started)
+    else:
+        _publish_fresh_initialization(ctx, started_attempt=started)
     _commit(ctx)
     attempt_number = int(bound_attempt["attempt"])
     result_path = (

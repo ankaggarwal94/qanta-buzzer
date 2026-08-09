@@ -515,6 +515,12 @@ def main(argv: list[str] | None = None) -> int:
     if runs_dir.is_symlink():
         raise ValueError("local runs directory must not be a symlink")
     if args.resume and _variant_run_candidates(out, args.variant):
+        _load_or_create_lifecycle(
+            out=out,
+            args=args,
+            run_sha=run_sha,
+            resume=True,
+        )
         return _resume_local_run(
             args=args,
             out=out,
@@ -1271,6 +1277,9 @@ def _resume_local_run(*, args, out: Path, run_sha: str) -> int:
         name_key="path",
         content_subdir="source",
     )
+    if source_manifest["identity"].get("git_sha") != run_sha:
+        raise ValueError("resume source snapshot does not match executing commit")
+    _verified_local_source_execution(args.repo_root, source_manifest)
     raw_manifest = _load_bound_content_manifest(
         out / "raw_inputs",
         manifest_name="raw_input_manifest.json",
@@ -1287,8 +1296,6 @@ def _resume_local_run(*, args, out: Path, run_sha: str) -> int:
         name_key="path",
         content_subdir="snapshot",
     )
-    if source_manifest["identity"].get("git_sha") != run_sha:
-        raise ValueError("resume source snapshot does not match executing commit")
     semantic_checks = raw_manifest["identity"].get("semantic_checks")
     if (
         not isinstance(semantic_checks, dict)

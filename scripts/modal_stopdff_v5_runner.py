@@ -33,6 +33,7 @@ VOLUME_NAME = "cs321m-stopdff-artifacts"
 MNT = "/stopdff"
 REMOTE_SRC = "/root/src"
 DAY = 86400
+_ADAPTER_COMPONENT_MAX_BYTES = 255
 SOURCE_BUNDLE_DIR = os.environ.get("STOPDFF_V5_SOURCE_DIR", "")
 if not SOURCE_BUNDLE_DIR:
     raise RuntimeError(
@@ -135,7 +136,32 @@ def _canonical_adapter_subdir(value: object) -> str:
         or str(parsed) != value
     ):
         raise ValueError(f"unsafe or noncanonical adapter subdir: {value!r}")
+    if len(value.encode("utf-8")) > _ADAPTER_COMPONENT_MAX_BYTES:
+        raise ValueError("adapter subdir must be at most 255 UTF-8 bytes")
     return value
+
+
+def _retry_adapter_subdir(base: str, attempt: int) -> str:
+    """Derive a stable retry component within the internal byte contract."""
+    attempt_text = str(attempt)
+    readable_suffix = f"__attempt_{attempt_text}"
+    candidate = f"{base}{readable_suffix}"
+    if len(candidate.encode("utf-8")) <= _ADAPTER_COMPONENT_MAX_BYTES:
+        return candidate
+
+    digest = hashlib.sha256(
+        f"{base}\0{attempt_text}".encode("utf-8")
+    ).hexdigest()[:16]
+    if len(readable_suffix.encode("utf-8")) <= 48:
+        suffix = f"{readable_suffix}_{digest}"
+    else:
+        suffix = f"__attempt_{digest}"
+    prefix_budget = _ADAPTER_COMPONENT_MAX_BYTES - len(suffix.encode("utf-8"))
+    prefix = base.encode("utf-8")[:prefix_budget].decode(
+        "utf-8",
+        errors="ignore",
+    )
+    return f"{prefix}{suffix}"
 
 
 def _receipt_rel(gate: str, receipt_id: str) -> str:
@@ -983,8 +1009,6 @@ def run_sweep(
             existing = checker.load_json(existing_spec)
             if existing != run_spec_manifest:
                 raise ValueError("resume destination is bound to another run spec")
-    else:
-        run_root.mkdir(parents=True, exist_ok=False)
     ctx = sweep.SweepContext(
         rows=rows, calibration_json=calibration,
         run_spec=binding["run_spec_identity"],
@@ -1530,11 +1554,14 @@ def _adapter_attempt_subdirs(
         raise ValueError("adapter attempt must be a positive integer")
     if len(base_subdirs) != 2:
         raise ValueError("adapter attempt requires two base subdirs")
+    canonical_bases = tuple(
+        _canonical_adapter_subdir(base) for base in base_subdirs
+    )
     if attempt == 1:
-        candidates = tuple(base_subdirs)
+        candidates = canonical_bases
     else:
         candidates = tuple(
-            f"{base}__attempt_{attempt}" for base in base_subdirs
+            _retry_adapter_subdir(base, attempt) for base in canonical_bases
         )
     first = _canonical_adapter_subdir(candidates[0])
     second = _canonical_adapter_subdir(candidates[1])

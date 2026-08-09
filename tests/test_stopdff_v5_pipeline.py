@@ -159,6 +159,60 @@ sweep.run_sweep(ctx)
     )
 
 
+def test_fresh_initialization_failure_never_exposes_a_canonical_run(
+    tmp_path,
+    monkeypatch,
+):
+    ctx = _make_ctx(tmp_path, _synth_rows(), [])
+    original_write = sweep.atomic_write_bytes
+
+    def fail_run_spec(path, data):
+        if Path(path).name == "run_spec.json":
+            raise RuntimeError("interrupted while staging run identity")
+        original_write(path, data)
+
+    monkeypatch.setattr(sweep, "atomic_write_bytes", fail_run_spec)
+    with pytest.raises(RuntimeError, match="staging run identity"):
+        sweep.run_sweep(ctx)
+    assert not ctx.output_dir.exists()
+
+
+def test_first_visible_run_contains_identity_and_attempt_and_is_resumable(
+    tmp_path,
+):
+    rows = _synth_rows()
+    ctx = _make_ctx(tmp_path, rows, [])
+    publications = 0
+
+    def interrupt_after_first_publication():
+        nonlocal publications
+        publications += 1
+        if publications == 1:
+            raise RuntimeError("interrupted after first publication")
+
+    ctx.commit_fn = interrupt_after_first_publication
+    with pytest.raises(RuntimeError, match="after first publication"):
+        sweep.run_sweep(ctx)
+
+    assert (ctx.output_dir / "run_spec.json").is_file()
+    assert (ctx.output_dir / "bootstrap_plan.json").is_file()
+    attempts_before = (ctx.output_dir / "attempts.jsonl").read_bytes()
+    assert attempts_before.count(b"\n") == 1
+
+    resumed = _make_ctx(tmp_path, rows, [])
+    resumed.resume = True
+    resumed.attempt = {
+        "attempt": 2,
+        "mode": "resume",
+        "command": ["dp_sweep", "--resume"],
+    }
+    aggregate = sweep.run_sweep(resumed)
+    assert aggregate["requested"] == 0
+    assert (ctx.output_dir / "attempts.jsonl").read_bytes().startswith(
+        attempts_before
+    )
+
+
 def _resume_package_context(
     built: dict,
     *,

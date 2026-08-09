@@ -117,12 +117,19 @@ def test_validate_adapter_normalizes_manifest_decoder_errors(tmp_path: Path) -> 
     assert any("adapter manifest cannot be decoded" in error for error in result.errors)
 
 
-def test_environment_requires_exact_declared_package_set(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mutation", ["missing", "surplus"])
+def test_environment_requires_exact_declared_package_set(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
     built = selftest.build_valid_package(tmp_path)
     environment_path = built["run_root"] / "environment.json"
     environment = json.loads(environment_path.read_text(encoding="utf-8"))
     assert set(environment["package_versions"]) == set(ENVIRONMENT_PACKAGES)
-    environment["package_versions"].pop(ENVIRONMENT_PACKAGES[-1])
+    if mutation == "missing":
+        environment["package_versions"].pop(ENVIRONMENT_PACKAGES[-1])
+    else:
+        environment["package_versions"]["undeclared-package"] = "1"
     environment_path.write_text(
         json.dumps(environment, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -136,6 +143,36 @@ def test_environment_requires_exact_declared_package_set(tmp_path: Path) -> None
 
     assert not result.passed
     assert any("exactly the declared evidence-affecting packages" in e for e in result.errors)
+
+
+def test_validate_adapter_normalizes_calibration_duplicate_key_error(
+    tmp_path: Path,
+) -> None:
+    built = selftest.build_valid_package(tmp_path)
+    bundle = built["adapter_bundle"]
+    calibration_path = bundle / "calibration.json"
+    calibration_path.write_text(
+        '{"per_bucket": {}, "per_bucket": {}}\n',
+        encoding="utf-8",
+    )
+    manifest_path = bundle / "manifest.json"
+    manifest = checker.load_json(manifest_path)
+    manifest["identity"]["calibration_sha256"] = checker.sha256_file(
+        calibration_path
+    )
+    manifest["id"] = compute_id(manifest["identity"])
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    result = checker.validate_adapter(bundle)
+
+    assert not result.passed
+    assert any(
+        "adapter calibration.json cannot be decoded" in error
+        for error in result.errors
+    )
 
 
 def test_static_and_run_bound_gate_schemas_are_distinct() -> None:
@@ -325,3 +362,30 @@ def test_cli_json_and_subprocess_exit_contract(tmp_path: Path) -> None:
     assert failure_payload["passed"] is False
     assert failure_payload["command"] == "validate-adapter"
     assert failure_payload["errors"] == ["adapter manifest.json missing"]
+
+    built = selftest.build_valid_package(tmp_path / "valid-package")
+    validate = subprocess.run(
+        [
+            sys.executable,
+            str(CLI),
+            "validate",
+            str(built["run_root"]),
+            "--backend",
+            "modal",
+            "--adapter-bundle",
+            str(built["adapter_bundle"]),
+            "--json",
+        ],
+        cwd=REPO,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert validate.returncode == 0, validate.stderr
+    assert validate.stderr == ""
+    validate_payload = json.loads(validate.stdout)
+    assert validate_payload["schema_version"] == 1
+    assert validate_payload["command"] == "validate"
+    assert validate_payload["passed"] is True
+    assert validate_payload["errors"] == []
+    assert isinstance(validate_payload["recomputed"], dict)

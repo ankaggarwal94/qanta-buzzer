@@ -120,7 +120,7 @@ def test_smoke_receipts_must_be_empty():
         )
 
 
-def test_modal_final_receipts_are_validated_before_run_directory_creation():
+def test_modal_final_receipts_are_validated_before_atomic_run_publication():
     source = (
         REPO / "scripts" / "modal_stopdff_v5_runner.py"
     ).read_text(encoding="utf-8")
@@ -138,14 +138,16 @@ def test_modal_final_receipts_are_validated_before_run_directory_creation():
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "validate_prerequisite_receipts"
     )
-    run_root_creation = next(
+    atomic_run_publication = next(
         node.lineno
         for node in ast.walk(run_function)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "mkdir"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "sweep"
+        and node.func.attr == "run_sweep"
     )
-    assert receipt_validation < run_root_creation
+    assert receipt_validation < atomic_run_publication
 
 
 # --- rewards ----------------------------------------------------------------------

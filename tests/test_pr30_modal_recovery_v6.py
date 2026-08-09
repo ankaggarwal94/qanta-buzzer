@@ -74,6 +74,42 @@ def test_control_plan_reserves_attempt_scoped_adapter_namespace(
         runner._validate_control_plan(plan)
 
 
+@pytest.mark.parametrize(
+    "base_subdirs",
+    [
+        ["a" * 255, "a" * 254 + "b"],
+        ["é" * 127, "é" * 126 + "ø"],
+    ],
+)
+@pytest.mark.parametrize("attempt", [2, 10**300])
+def test_retry_adapter_components_are_deterministic_and_byte_bounded(
+    monkeypatch,
+    base_subdirs,
+    attempt,
+):
+    runner = _load_modal_runner(monkeypatch)
+    first = runner._adapter_attempt_subdirs(base_subdirs, attempt)
+    second = runner._adapter_attempt_subdirs(base_subdirs, attempt)
+
+    assert first == second
+    assert first[0] != first[1]
+    assert all(len(value.encode("utf-8")) <= 255 for value in first)
+    assert all("/" not in value and value not in {".", ".."} for value in first)
+
+
+@pytest.mark.parametrize("value", ["a" * 256, "é" * 128])
+def test_control_plan_rejects_overlong_encoded_adapter_component(
+    monkeypatch,
+    value,
+):
+    runner = _load_modal_runner(monkeypatch)
+    _api, _calls, ids = _fake_control_api()
+    plan = _plan(ids)
+    plan["adapter_subdirs"] = [value, "build_b"]
+    with pytest.raises(ValueError, match="255 UTF-8 bytes"):
+        runner._validate_control_plan(plan)
+
+
 def test_nonterminal_resume_revalidates_checkpointed_package(
     tmp_path,
     monkeypatch,
