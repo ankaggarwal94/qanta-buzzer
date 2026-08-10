@@ -234,6 +234,8 @@ def validate_bound_content_manifest(
 ) -> dict[str, Any]:
     """Validate identity schema, declared bytes, and the exhaustive inventory."""
     base = Path(base)
+    if base.is_symlink() or not base.is_dir():
+        raise ValueError(f"{manifest_name} manifest root is noncanonical")
     manifest_path = base / manifest_name
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise ValueError(f"{manifest_name} is missing or not a regular file")
