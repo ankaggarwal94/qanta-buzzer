@@ -184,6 +184,58 @@ def test_validate_adapter_ok(tmp_path):
     assert res.passed, res.errors
 
 
+def test_validate_adapter_rejects_symlinked_bundle_root(tmp_path):
+    built = selftest.build_valid_package(tmp_path)
+    link = tmp_path / "symlinked_bundle"
+    link.symlink_to(built["adapter_bundle"])
+    res = checker.validate_adapter(link)
+    assert not res.passed
+    assert any("non-symlink directory" in e for e in res.errors)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "manifest.json",
+        "fit_rows.jsonl.gz",
+        "eval_rows.jsonl.gz",
+        "calibration.json",
+        "build_metadata.json",
+    ],
+)
+def test_validate_adapter_rejects_symlinked_payload(tmp_path, payload):
+    built = selftest.build_valid_package(tmp_path)
+    bundle = built["adapter_bundle"]
+    target = bundle / payload
+    tmp_copy = tmp_path / f"real_{payload}"
+    tmp_copy.write_bytes(target.read_bytes())
+    target.unlink()
+    target.symlink_to(tmp_copy)
+    res = checker.validate_adapter(bundle)
+    assert not res.passed
+    assert any("non-symlink" in e for e in res.errors)
+
+
+def test_validate_adapter_symlinked_payload_no_hash_or_decode(tmp_path, monkeypatch):
+    """sha256_file and load_jsonl_gz must not be invoked for a symlinked payload."""
+    built = selftest.build_valid_package(tmp_path)
+    bundle = built["adapter_bundle"]
+    target = bundle / "fit_rows.jsonl.gz"
+    tmp_copy = tmp_path / "real_fit_rows.jsonl.gz"
+    tmp_copy.write_bytes(target.read_bytes())
+    target.unlink()
+    target.symlink_to(tmp_copy)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("sha256_file must not follow symlinks")
+
+    monkeypatch.setattr(checker, "sha256_file", fail_if_called)
+
+    res = checker.validate_adapter(bundle)
+    assert not res.passed
+    assert any("non-symlink" in e for e in res.errors)
+
+
 def test_negative_mutation_suite(tmp_path):
     registered = list(selftest._RUN_MUTATIONS)
     assert len(registered) == len(set(registered)) == len(_EXPECTED_RUN_MUTATIONS)

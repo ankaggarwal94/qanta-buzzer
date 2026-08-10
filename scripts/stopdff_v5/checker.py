@@ -750,10 +750,17 @@ def _validate_adapter_impl(bundle_dir: Path) -> CheckResult:
     """
     errors: list[str] = []
     bundle_dir = Path(bundle_dir)
+    if bundle_dir.is_symlink() or not bundle_dir.is_dir():
+        return CheckResult(
+            passed=False,
+            errors=["adapter bundle root must be a non-symlink directory"],
+        )
     manifest_path = bundle_dir / "manifest.json"
-    _err(errors, manifest_path.exists(), "adapter manifest.json missing")
-    if not manifest_path.exists():
-        return CheckResult(passed=False, errors=errors)
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        return CheckResult(
+            passed=False,
+            errors=["adapter manifest.json must be a non-symlink regular file"],
+        )
     try:
         manifest = load_json(manifest_path)
     except (
@@ -843,7 +850,11 @@ def _validate_adapter_impl(bundle_dir: Path) -> CheckResult:
     )
     for name in required_files:
         p = bundle_dir / name
-        _err(errors, p.exists(), f"adapter bundle missing {name}")
+        if p.is_symlink() or not p.is_file():
+            errors.append(f"adapter bundle {name} must be a non-symlink regular file")
+
+    if errors:
+        return CheckResult(passed=False, errors=errors)
 
     hash_bindings = (
         ("fit_rows.jsonl.gz", "fit_rows_sha256", "adapter fit_rows sha mismatch"),
@@ -852,14 +863,12 @@ def _validate_adapter_impl(bundle_dir: Path) -> CheckResult:
     )
     for filename, identity_key, message in hash_bindings:
         path = bundle_dir / filename
-        if path.exists():
-            _err(errors, sha256_file(path) == ident.get(identity_key), message)
+        _err(errors, sha256_file(path) == ident.get(identity_key), message)
 
     fit_rows: list[dict] = []
     eval_rows: list[dict] = []
     try:
-        if (bundle_dir / "fit_rows.jsonl.gz").exists():
-            fit_rows = load_jsonl_gz(bundle_dir / "fit_rows.jsonl.gz")
+        fit_rows = load_jsonl_gz(bundle_dir / "fit_rows.jsonl.gz")
     except (
         EOFError,
         OSError,
@@ -871,8 +880,7 @@ def _validate_adapter_impl(bundle_dir: Path) -> CheckResult:
     ) as exc:
         errors.append(f"adapter fit_rows cannot be decoded: {exc}")
     try:
-        if (bundle_dir / "eval_rows.jsonl.gz").exists():
-            eval_rows = load_jsonl_gz(bundle_dir / "eval_rows.jsonl.gz")
+        eval_rows = load_jsonl_gz(bundle_dir / "eval_rows.jsonl.gz")
     except (
         EOFError,
         OSError,
