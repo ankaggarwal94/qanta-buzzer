@@ -82,6 +82,21 @@ def _is_sha256(value: Any) -> bool:
     return isinstance(value, str) and _SHA256_RE.fullmatch(value) is not None
 
 
+def _canonical_path_issue(
+    path: Path,
+    *,
+    expect_directory: bool,
+) -> str | None:
+    """Classify a path that must not follow symlinks."""
+    if path.is_symlink():
+        return "symlink"
+    if not path.exists():
+        return "missing"
+    if expect_directory:
+        return None if path.is_dir() else "wrong_type"
+    return None if path.is_file() else "wrong_type"
+
+
 def _is_strict_int(value: Any, *, minimum: int | None = None) -> bool:
     return (
         isinstance(value, int)
@@ -750,23 +765,24 @@ def _validate_adapter_impl(bundle_dir: Path) -> CheckResult:
     """
     errors: list[str] = []
     bundle_dir = Path(bundle_dir)
-    if bundle_dir.is_symlink():
+    bundle_issue = _canonical_path_issue(bundle_dir, expect_directory=True)
+    if bundle_issue == "symlink":
         return CheckResult(
             passed=False,
             errors=["adapter bundle root must be a non-symlink directory"],
         )
-    if not bundle_dir.exists():
+    if bundle_issue == "missing":
         return CheckResult(
             passed=False,
             errors=["adapter manifest.json missing"],
         )
-    if not bundle_dir.is_dir():
+    if bundle_issue is not None:
         return CheckResult(
             passed=False,
             errors=["adapter bundle root must be a non-symlink directory"],
         )
     manifest_path = bundle_dir / "manifest.json"
-    if manifest_path.is_symlink() or not manifest_path.is_file():
+    if _canonical_path_issue(manifest_path, expect_directory=False) is not None:
         return CheckResult(
             passed=False,
             errors=["adapter manifest.json must be a non-symlink regular file"],
@@ -2416,11 +2432,23 @@ def _validate_run_impl(
     run_root = Path(run_root)
     adapter_bundle = Path(adapter_bundle)
     errors: list[str] = []
+    run_root_issue = _canonical_path_issue(run_root, expect_directory=True)
+    if run_root_issue == "missing":
+        return CheckResult(passed=False, errors=["run root does not exist"])
+    if run_root_issue is not None:
+        return CheckResult(
+            passed=False,
+            errors=["run root must be a non-symlink directory"],
+        )
 
     def _required_json(filename: str) -> dict[str, Any]:
         path = run_root / filename
-        if not path.is_file():
+        path_issue = _canonical_path_issue(path, expect_directory=False)
+        if path_issue == "missing":
             errors.append(f"missing {filename}")
+            return {}
+        if path_issue is not None:
+            errors.append(f"{filename} must be a non-symlink regular file")
             return {}
         try:
             loaded = load_json(path)

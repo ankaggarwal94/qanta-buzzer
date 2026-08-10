@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -199,6 +200,18 @@ def _load_json(path: Path) -> Any:
     return loads_no_duplicate_keys(path.read_text(encoding="utf-8"))
 
 
+def _package_entry_kind(path: Path) -> str:
+    """Return the non-following filesystem kind for one package entry."""
+    mode = path.lstat().st_mode
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISREG(mode):
+        return "file"
+    return "special"
+
+
 def inspect_packaged_fvi_manifest_kind(
     run_root: Path,
     *,
@@ -306,11 +319,21 @@ def check_complete_checksums(run_root: Path, errors: list[str]) -> None:
     actual: set[str] = set()
     for path in sorted(run_root.rglob("*")):
         relative = path.relative_to(run_root).as_posix()
-        if path.is_symlink():
+        try:
+            kind = _package_entry_kind(path)
+        except OSError as exc:
+            errors.append(f"package entry cannot be inspected: {relative!r}: {exc}")
+            continue
+        if kind == "symlink":
             errors.append(f"symlink in package: {relative!r}")
             continue
-        if path.is_file() and relative != "SHA256SUMS":
-            actual.add(relative)
+        if kind == "directory":
+            continue
+        if kind == "file":
+            if relative != "SHA256SUMS":
+                actual.add(relative)
+            continue
+        errors.append(f"non-regular package entry: {relative!r}")
 
     missing = sorted(actual - set(listed))
     unexpected = sorted(set(listed) - actual)

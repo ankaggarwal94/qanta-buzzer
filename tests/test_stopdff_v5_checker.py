@@ -236,6 +236,89 @@ def test_validate_adapter_symlinked_payload_no_hash_or_decode(tmp_path, monkeypa
     assert any("non-symlink" in e for e in res.errors)
 
 
+def test_validate_run_rejects_symlinked_run_root_before_decode(tmp_path, monkeypatch):
+    built = selftest.build_valid_package(tmp_path)
+    link = tmp_path / "symlinked_run"
+    link.symlink_to(built["run_root"], target_is_directory=True)
+    calls: list[Path] = []
+    original = checker.load_json
+
+    def record(path):
+        calls.append(Path(path))
+        return original(path)
+
+    monkeypatch.setattr(checker, "load_json", record)
+    result = checker.validate_run(
+        link,
+        backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=False,
+        require_package=False,
+    )
+
+    assert not result.passed
+    assert result.errors == ["run root must be a non-symlink directory"]
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["aggregate.json", "run_spec.json", "bootstrap_plan.json"],
+)
+def test_validate_run_rejects_symlinked_required_json_before_decode(
+    tmp_path,
+    monkeypatch,
+    filename,
+):
+    built = selftest.build_valid_package(tmp_path)
+    run_root = built["run_root"]
+    target = run_root / filename
+    tmp_copy = tmp_path / f"real_{filename}"
+    tmp_copy.write_bytes(target.read_bytes())
+    target.unlink()
+    target.symlink_to(tmp_copy)
+    calls: list[Path] = []
+    original = checker.load_json
+
+    def record(path):
+        calls.append(Path(path))
+        return original(path)
+
+    monkeypatch.setattr(checker, "load_json", record)
+    result = checker.validate_run(
+        run_root,
+        backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=False,
+        require_package=False,
+    )
+
+    assert not result.passed
+    assert f"{filename} must be a non-symlink regular file" in result.errors
+    assert target not in calls
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["aggregate.json", "run_spec.json", "bootstrap_plan.json"],
+)
+def test_validate_run_missing_required_json_retains_contract(tmp_path, filename):
+    built = selftest.build_valid_package(tmp_path)
+    target = built["run_root"] / filename
+    target.unlink()
+
+    result = checker.validate_run(
+        built["run_root"],
+        backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=False,
+        require_package=False,
+    )
+
+    assert not result.passed
+    assert f"missing {filename}" in result.errors
+
+
 def test_negative_mutation_suite(tmp_path):
     registered = list(selftest._RUN_MUTATIONS)
     assert len(registered) == len(set(registered)) == len(_EXPECTED_RUN_MUTATIONS)

@@ -569,6 +569,7 @@ def freeze_model() -> dict:
             file_key="files",
             name_key="path",
             content_subdir="snapshot",
+            expected_kind="model_snapshot",
         )
         return {"model_id": cached["id"], "cached": True}
     root.mkdir(parents=True, exist_ok=True)
@@ -580,6 +581,7 @@ def freeze_model() -> dict:
         file_key="files",
         name_key="path",
         content_subdir="snapshot",
+        expected_kind="model_snapshot",
     )
     vol.commit()
     return {"model_id": man["id"], "revision": man["identity"]["model_revision"], "cached": False}
@@ -612,6 +614,7 @@ def build_adapter(
         file_key="files",
         name_key="path",
         content_subdir="snapshot",
+        expected_kind="model_snapshot",
     )
     out = Path(_p("adapters", dest_subdir))
     if out.exists() or out.is_symlink():

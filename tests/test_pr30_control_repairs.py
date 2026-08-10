@@ -333,6 +333,141 @@ def test_adapter_build_is_fresh_only_and_fvi_cache_remains_bound(
         )
 
 
+def _write_model_manifest(root: Path, *, kind: str, model_id: str) -> dict[str, object]:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "snapshot").mkdir(exist_ok=True)
+    manifest = {
+        "id": model_id,
+        "identity": {
+            "kind": kind,
+            "files": [],
+        },
+    }
+    (root / "model_snapshot_manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def test_freeze_model_cached_reuse_requires_model_snapshot_kind(
+    tmp_path,
+    monkeypatch,
+):
+    runner = _load_modal_runner(monkeypatch)
+    runner.MNT = str(tmp_path)
+    model_id = "3" * 64
+    root = tmp_path / "inputs" / "model"
+    expected_kinds: list[object] = []
+
+    def verifying_manifest(base, **kwargs):
+        expected_kinds.append(kwargs.get("expected_kind"))
+        manifest = json.loads(
+            (Path(base) / kwargs["manifest_name"]).read_text(encoding="utf-8")
+        )
+        if kwargs.get("expected_kind") is not None and (
+            manifest["identity"].get("kind") != kwargs["expected_kind"]
+        ):
+            raise ValueError("kind mismatch")
+        return manifest
+
+    monkeypatch.setattr(runner, "_verified_content_manifest", verifying_manifest)
+    _write_model_manifest(root, kind="source_snapshot", model_id=model_id)
+    with pytest.raises(ValueError, match="kind mismatch"):
+        runner.freeze_model()
+
+    _write_model_manifest(root, kind="model_snapshot", model_id=model_id)
+    result = runner.freeze_model()
+
+    assert result == {"model_id": model_id, "cached": True}
+    assert expected_kinds == ["model_snapshot", "model_snapshot"]
+
+
+def test_freeze_model_postfreeze_recheck_requires_model_snapshot_kind(
+    tmp_path,
+    monkeypatch,
+):
+    runner = _load_modal_runner(monkeypatch)
+    runner.MNT = str(tmp_path)
+    model_id = "3" * 64
+    from scripts.stopdff_v5 import adapter_build
+
+    def freeze_to_wrong_kind(root):
+        return _write_model_manifest(
+            Path(root),
+            kind="source_snapshot",
+            model_id=model_id,
+        )
+
+    def verifying_manifest(base, **kwargs):
+        manifest = json.loads(
+            (Path(base) / kwargs["manifest_name"]).read_text(encoding="utf-8")
+        )
+        if kwargs.get("expected_kind") is not None and (
+            manifest["identity"].get("kind") != kwargs["expected_kind"]
+        ):
+            raise ValueError("kind mismatch")
+        return manifest
+
+    monkeypatch.setattr(adapter_build, "freeze_model_snapshot", freeze_to_wrong_kind)
+    monkeypatch.setattr(runner, "_verified_content_manifest", verifying_manifest)
+
+    with pytest.raises(ValueError, match="kind mismatch"):
+        runner.freeze_model()
+
+
+def test_build_adapter_recheck_requires_model_snapshot_kind(
+    tmp_path,
+    monkeypatch,
+):
+    runner = _load_modal_runner(monkeypatch)
+    runner.MNT = str(tmp_path)
+    source_id = "1" * 64
+    raw_id = "2" * 64
+    model_id = "3" * 64
+    from scripts.stopdff_v5 import adapter_build
+
+    _write_model_manifest(
+        tmp_path / "inputs" / "model",
+        kind="source_snapshot",
+        model_id=model_id,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_verified_executing_source",
+        lambda _source_id: {"id": source_id},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_verified_raw_input_manifest",
+        lambda *_args, **_kwargs: {"id": raw_id},
+    )
+
+    def verifying_manifest(base, **kwargs):
+        manifest = json.loads(
+            (Path(base) / kwargs["manifest_name"]).read_text(encoding="utf-8")
+        )
+        if kwargs.get("expected_kind") is not None and (
+            manifest["identity"].get("kind") != kwargs["expected_kind"]
+        ):
+            raise ValueError("kind mismatch")
+        return manifest
+
+    def forbidden_build(**_kwargs):
+        raise AssertionError("adapter build must not run on poisoned model cache")
+
+    monkeypatch.setattr(runner, "_verified_content_manifest", verifying_manifest)
+    monkeypatch.setattr(adapter_build, "build_adapter_bundle", forbidden_build)
+
+    with pytest.raises(ValueError, match="kind mismatch"):
+        runner.build_adapter(
+            "fresh",
+            source_id,
+            raw_id,
+            model_id,
+        )
+
+
 def test_determinism_stage_owns_two_fresh_producer_calls(
     tmp_path,
     monkeypatch,

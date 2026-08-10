@@ -4,6 +4,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
+import socket
 import sys
 from pathlib import Path
 
@@ -168,6 +170,58 @@ def test_checksum_inventory_rejects_unlisted_files_and_symlinks(tmp_path):
     errors = []
     checker_package.check_complete_checksums(root, errors)
     assert "symlink in package: 'link'" in errors
+
+
+def test_checksum_inventory_accepts_nested_directories_and_regular_files(tmp_path):
+    root = tmp_path / "package"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    (nested / "bound.txt").write_text("bound", encoding="utf-8")
+    writers.write_sha256sums(root)
+
+    errors: list[str] = []
+    checker_package.check_complete_checksums(root, errors)
+
+    assert errors == []
+
+
+@pytest.mark.parametrize("entry_kind", ["fifo", "unix_socket"])
+def test_checksum_inventory_rejects_special_entries_without_hashing(
+    tmp_path,
+    monkeypatch,
+    entry_kind,
+):
+    root = tmp_path / "package"
+    root.mkdir()
+    (root / "bound.txt").write_text("bound", encoding="utf-8")
+    writers.write_sha256sums(root)
+    special = root / entry_kind
+    sock = None
+    try:
+        if entry_kind == "fifo":
+            if not hasattr(os, "mkfifo"):
+                pytest.skip("mkfifo unsupported on this platform")
+            os.mkfifo(special)
+        else:
+            if not hasattr(socket, "AF_UNIX"):
+                pytest.skip("AF_UNIX unsupported on this platform")
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.bind(str(special))
+        original = checker_package.sha256_file
+
+        def guarded_sha256(path):
+            if Path(path) == special:
+                raise AssertionError("special package entries must not be hashed")
+            return original(path)
+
+        monkeypatch.setattr(checker_package, "sha256_file", guarded_sha256)
+        errors: list[str] = []
+        checker_package.check_complete_checksums(root, errors)
+    finally:
+        if sock is not None:
+            sock.close()
+
+    assert errors == [f"non-regular package entry: '{entry_kind}'"]
 
 
 def test_rehashed_raw_manifest_still_requires_semantic_pass(tmp_path):
