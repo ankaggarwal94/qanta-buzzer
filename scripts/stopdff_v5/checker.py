@@ -27,6 +27,7 @@ from .checker_calibration import platt_phase_errors
 from .checker_package import (
     check_complete_checksums,
     check_external_artifacts,
+    inspect_packaged_fvi_manifest_kind,
 )
 from .identity import compute_id, loads_no_duplicate_keys, sha256_file
 from .manifests import (
@@ -3116,7 +3117,21 @@ def _validate_run_impl(
 
     if require_package:
         recomputed_fvi_study = None
-        if manifest_graph_valid and rows and isinstance(calibration, dict):
+        packaged_fvi_kind = None
+        try:
+            packaged_fvi_kind = inspect_packaged_fvi_manifest_kind(
+                run_root,
+                expected_id=spec_ids.get("fvi_study_id"),
+                profile_variant=variant,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            errors.append(f"packaged FVI preflight is invalid: {exc}")
+        if (
+            packaged_fvi_kind == "fvi_study"
+            and manifest_graph_valid
+            and rows
+            and isinstance(calibration, dict)
+        ):
             cache_key = (
                 str(adapter_bundle_id),
                 str(adapter_identity.get("fit_rows_sha256")),

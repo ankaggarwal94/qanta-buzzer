@@ -793,6 +793,28 @@ def test_final_fvi_rejects_label_only_study_identity():
     assert "packaged FVI study fields do not match the canonical contract" in errors
 
 
+def test_final_profile_preflight_rejects_fixed_fvi_manifest(tmp_path):
+    root = tmp_path / "package"
+    manifest = build_manifest(
+        {
+            "kind": "fvi_study_fixed",
+            "adapter_bundle_id": "a" * 64,
+            "selected": {
+                "tolerance": "1e-8",
+                "max_iterations": 100,
+            },
+        }
+    )
+    _dump(root / "evidence" / "fvi_study.json", manifest)
+
+    with pytest.raises(ValueError, match="packaged fvi_study kind mismatch"):
+        checker_package.inspect_packaged_fvi_manifest_kind(
+            root,
+            expected_id=manifest["id"],
+            profile_variant="final",
+        )
+
+
 def test_constant_platt_phase_is_rejected():
     assert "constant model is forbidden" in platt_phase_errors(
         {

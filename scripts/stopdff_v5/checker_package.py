@@ -199,6 +199,50 @@ def _load_json(path: Path) -> Any:
     return loads_no_duplicate_keys(path.read_text(encoding="utf-8"))
 
 
+def inspect_packaged_fvi_manifest_kind(
+    run_root: Path,
+    *,
+    expected_id: Any,
+    profile_variant: Any,
+) -> str:
+    """Return the canonical packaged FVI manifest kind bound to the run spec."""
+    path = Path(run_root) / "evidence" / "fvi_study.json"
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("packaged fvi_study evidence is missing")
+    try:
+        manifest = _load_json(path)
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise ValueError(f"packaged fvi_study cannot be decoded: {exc}") from exc
+    identity = manifest.get("identity") if isinstance(manifest, dict) else None
+    if not isinstance(identity, dict):
+        raise ValueError("packaged fvi_study must be a manifest object")
+    try:
+        recomputed_id = compute_id(identity)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"packaged fvi_study identity cannot be canonicalized: {exc}"
+        ) from exc
+    if recomputed_id != manifest.get("id"):
+        raise ValueError("packaged fvi_study manifest id mismatch")
+    if manifest.get("id") != expected_id:
+        raise ValueError("packaged fvi_study does not match run spec")
+    allowed_kinds = (
+        {"fvi_study"}
+        if profile_variant == "final"
+        else {"fvi_study", "fvi_study_fixed"}
+    )
+    kind = identity.get("kind")
+    if not isinstance(kind, str) or kind not in allowed_kinds:
+        raise ValueError("packaged fvi_study kind mismatch")
+    return kind
+
+
 def _check_source_producer_map(
     errors: list[str],
     *,

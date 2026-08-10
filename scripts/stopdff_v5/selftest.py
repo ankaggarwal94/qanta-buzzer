@@ -110,7 +110,11 @@ def _hex(n: str) -> str:
     return (n * 64)[:64]
 
 
-def build_valid_package(base_dir: Path) -> dict[str, Any]:
+def build_valid_package(
+    base_dir: Path,
+    *,
+    fixed_fvi: bool = False,
+) -> dict[str, Any]:
     global _SYNTH_FVI_STUDY
     base_dir = Path(base_dir)
     bundle = base_dir / "adapter_bundle"
@@ -411,7 +415,13 @@ def build_valid_package(base_dir: Path) -> dict[str, Any]:
     study = json.loads(json.dumps(_SYNTH_FVI_STUDY))
     selected_fvi = study["selected_parameters"]
     fvi_manifest = build_manifest(
-        fvi_study_identity(
+        {
+            "kind": "fvi_study_fixed",
+            "adapter_bundle_id": adapter_id,
+            "selected": selected_fvi,
+        }
+        if fixed_fvi
+        else fvi_study_identity(
             adapter_bundle_id=adapter_id,
             candidate_grid=study["candidate_grid"],
             representative_generator=study["representative_cell_generator"],

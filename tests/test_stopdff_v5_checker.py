@@ -14,7 +14,7 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from scripts.stopdff_v5 import checker, identity, selftest  # noqa: E402
+from scripts.stopdff_v5 import checker, fvi_study, identity, selftest  # noqa: E402
 from scripts.stopdff_v5.adapter_build import derive_bound_calibration  # noqa: E402
 
 
@@ -70,6 +70,50 @@ def test_valid_package_passes(tmp_path):
         require_final_profile=False, require_package=True,
     )
     assert res.passed, res.errors
+
+
+def test_fixed_fvi_smoke_package_skips_selector_recomputation(tmp_path, monkeypatch):
+    built = selftest.build_valid_package(tmp_path, fixed_fvi=True)
+    checker._FVI_STUDY_CACHE.clear()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("run_fvi_study should not run for fvi_study_fixed")
+
+    monkeypatch.setattr(fvi_study, "run_fvi_study", fail_if_called)
+
+    result = checker.validate_run(
+        built["run_root"],
+        backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=False,
+        require_package=True,
+    )
+
+    assert result.passed, result.errors
+
+
+def test_genuine_fvi_package_still_recomputes_selector(tmp_path, monkeypatch):
+    built = selftest.build_valid_package(tmp_path)
+    checker._FVI_STUDY_CACHE.clear()
+    expected = copy.deepcopy(selftest._SYNTH_FVI_STUDY)
+    calls: list[tuple[list[dict], dict]] = []
+
+    def record_and_return(rows, calibration_json):
+        calls.append((rows, calibration_json))
+        return copy.deepcopy(expected)
+
+    monkeypatch.setattr(fvi_study, "run_fvi_study", record_and_return)
+
+    result = checker.validate_run(
+        built["run_root"],
+        backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=False,
+        require_package=True,
+    )
+
+    assert result.passed, result.errors
+    assert len(calls) == 1
 
 
 def test_checker_rejects_unhashable_attempt_result_state_without_exception(
