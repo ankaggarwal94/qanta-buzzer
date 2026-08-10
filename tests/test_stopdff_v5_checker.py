@@ -16,6 +16,7 @@ if str(REPO) not in sys.path:
 
 from scripts.stopdff_v5 import checker, fvi_study, identity, selftest  # noqa: E402
 from scripts.stopdff_v5.adapter_build import derive_bound_calibration  # noqa: E402
+from scripts.stopdff_v5.checker_package import inspect_packaged_fvi_manifest_kind  # noqa: E402
 
 
 _EXPECTED_RUN_MUTATIONS = frozenset({
@@ -114,6 +115,21 @@ def test_genuine_fvi_package_still_recomputes_selector(tmp_path, monkeypatch):
 
     assert result.passed, result.errors
     assert len(calls) == 1
+
+
+def test_fixed_fvi_final_package_rejected(tmp_path):
+    """A fixed-FVI manifest in a final-profile package must be rejected."""
+    built = selftest.build_valid_package(tmp_path, fixed_fvi=True)
+    run_spec = json.loads(
+        (built["run_root"] / "run_spec.json").read_text(encoding="utf-8")
+    )
+    fvi_study_id = run_spec["identity"]["identity"]["fvi_study_id"]
+    with pytest.raises(ValueError, match="kind mismatch"):
+        inspect_packaged_fvi_manifest_kind(
+            built["run_root"],
+            expected_id=fvi_study_id,
+            profile_variant="final",
+        )
 
 
 def test_checker_rejects_unhashable_attempt_result_state_without_exception(
