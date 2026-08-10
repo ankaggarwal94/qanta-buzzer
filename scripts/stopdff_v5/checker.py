@@ -2603,18 +2603,29 @@ def _validate_run_impl(
     forbidden_manifest_path = (
         command_manifest_path if backend == "modal" else run_manifest_path
     )
-    _err(
-        errors,
-        expected_manifest_path.exists(),
-        f"{backend} backend requires {expected_manifest_path.name}",
+    expected_manifest_issue = _canonical_path_issue(
+        expected_manifest_path,
+        expect_directory=False,
     )
+    forbidden_manifest_issue = _canonical_path_issue(
+        forbidden_manifest_path,
+        expect_directory=False,
+    )
+    if expected_manifest_issue == "missing":
+        errors.append(
+            f"{backend} backend requires {expected_manifest_path.name}"
+        )
+    elif expected_manifest_issue is not None:
+        errors.append(
+            f"{expected_manifest_path.name} must be a non-symlink regular file"
+        )
     _err(
         errors,
-        not forbidden_manifest_path.exists(),
+        forbidden_manifest_issue == "missing",
         f"{backend} backend forbids {forbidden_manifest_path.name}",
     )
     backend_manifest: dict[str, Any] = {}
-    if expected_manifest_path.exists():
+    if expected_manifest_issue is None:
         try:
             loaded_backend_manifest = load_json(expected_manifest_path)
             if not isinstance(loaded_backend_manifest, dict):
@@ -2665,25 +2676,7 @@ def _validate_run_impl(
         ) as exc:
             errors.append(f"backend manifest cannot be validated: {exc}")
 
-    environment_path = run_root / "environment.json"
-    environment_claims: dict[str, Any] = {}
-    if not environment_path.is_file():
-        errors.append("missing environment.json")
-    else:
-        try:
-            loaded_environment = load_json(environment_path)
-            if isinstance(loaded_environment, dict):
-                environment_claims = loaded_environment
-            else:
-                errors.append("environment.json must contain an object")
-        except (
-            OSError,
-            UnicodeError,
-            json.JSONDecodeError,
-            TypeError,
-            ValueError,
-        ) as exc:
-            errors.append(f"environment.json cannot be decoded: {exc}")
+    environment_claims = _required_json("environment.json")
     expected_environment_keys = {"python_version", "package_versions"}
     _err(
         errors,

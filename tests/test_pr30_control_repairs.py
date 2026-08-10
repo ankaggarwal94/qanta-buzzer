@@ -15,8 +15,12 @@ import pytest
 from scripts import run_stopdff_v5_local as local_runner
 from scripts.stopdff_v5.attempt_history import canonical_attempt_line
 from scripts.stopdff_v5.bootstrap import build_bootstrap_plan
-from scripts.stopdff_v5.identity import build_manifest, sha256_file
-from scripts.stopdff_v5.manifests import ENVIRONMENT_PACKAGES, RAW_INPUT_ROLES
+from scripts.stopdff_v5.identity import build_manifest, compute_id, sha256_file
+from scripts.stopdff_v5.manifests import (
+    ENVIRONMENT_PACKAGES,
+    RAW_INPUT_ROLES,
+    environment_contract_identity,
+)
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -690,6 +694,15 @@ def _fake_control_api(*, fail_first_smoke: bool = False):
     return api, calls, ids
 
 
+def _probe_payload(*, torch_version: str = "1.0") -> dict:
+    versions = {name: "1.0" for name in ENVIRONMENT_PACKAGES}
+    versions["torch"] = torch_version
+    return {
+        "python": "3.11.0",
+        "package_versions": versions,
+    }
+
+
 def test_control_plane_journals_order_and_resumes_lost_sweep(
     tmp_path,
     monkeypatch,
@@ -726,6 +739,11 @@ def test_control_plane_journals_order_and_resumes_lost_sweep(
     smoke_spec = json.loads(smoke_call[1][0])["run_spec_identity"]
     assert smoke_spec["gate"]["allow_low_mc_retention"] is True
     assert json.loads(state_path.read_text())["stage_attempts"]["smoke_sweep"] == 1
+    resume_journal_offset = len(
+        state_path.with_name("control.json.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
 
     calls.clear()
     state = runner.run_control_plane(
@@ -735,11 +753,272 @@ def test_control_plane_journals_order_and_resumes_lost_sweep(
         stage_api=api,
     )
     assert state["status"] == "completed"
-    assert calls[0][0] == "run_sweep"
-    smoke_wrapper = json.loads(calls[0][1][0])
+    assert [name for name, _args in calls[:2]] == ["probe", "run_sweep"]
+    smoke_wrapper = json.loads(calls[1][1][0])
     assert "attempt" not in smoke_wrapper
-    assert calls[0][1][-1] is True
+    assert calls[1][1][-1] is True
+    assert state["stage_attempts"]["environment_probe"] == 1
+    assert state["stage_attempts"]["freeze_model"] == 1
+    assert state["stage_attempts"]["adapter_determinism"] == 1
+    resume_records = [
+        json.loads(line)
+        for line in state_path.with_name("control.json.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[resume_journal_offset:]
+    ]
+    assert not any(
+        record["event"]
+        in {"stage_checkpoint_invalid", "stage_checkpoint_refresh_required"}
+        for record in resume_records
+    )
     assert (tmp_path / "control.json.jsonl").is_file()
+
+
+def test_nonterminal_resume_refreshes_changed_environment_once(
+    tmp_path,
+    monkeypatch,
+):
+    runner = _load_modal_runner(monkeypatch)
+    api, calls, ids = _fake_control_api(fail_first_smoke=True)
+    plan = {
+        "source_id": ids["source"],
+        "raw_id": ids["raw"],
+        "adapter_subdirs": ["build_a", "build_b"],
+        "gate_overrides": {},
+        "resource_summary": {"backend": "modal"},
+    }
+    state_path = tmp_path / "control.json"
+    with pytest.raises(RuntimeError, match="lost smoke response"):
+        runner.run_control_plane(
+            plan,
+            state_path,
+            resume=False,
+            stage_api=api,
+        )
+    old_smoke_call = next(call for call in calls if call[0] == "run_sweep")
+    old_environment_id = json.loads(old_smoke_call[1][0])[
+        "run_spec_identity"
+    ]["identity"]["environment_contract_id"]
+    resume_journal_offset = len(
+        state_path.with_name("control.json.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+
+    current_probe = _probe_payload(torch_version="2.0")
+    current_environment_id = compute_id(
+        environment_contract_identity(
+            python_version=current_probe["python"],
+            package_versions=current_probe["package_versions"],
+        )
+    )
+    probe_calls = []
+
+    def probe_current_environment():
+        probe_calls.append(True)
+        return current_probe
+
+    original_sweep = api["run_sweep"]
+    interrupt_refreshed_smoke = True
+
+    def interrupt_first_refreshed_smoke(spec_json, *args):
+        nonlocal interrupt_refreshed_smoke
+        result = original_sweep(spec_json, *args)
+        variant = json.loads(spec_json)["run_spec_identity"]["profile_variant"]
+        if variant == "smoke" and interrupt_refreshed_smoke:
+            interrupt_refreshed_smoke = False
+            raise RuntimeError("lost refreshed smoke response")
+        return result
+
+    api["probe"] = probe_current_environment
+    api["run_sweep"] = interrupt_first_refreshed_smoke
+    calls.clear()
+    with pytest.raises(RuntimeError, match="lost refreshed smoke response"):
+        runner.run_control_plane(
+            plan,
+            state_path,
+            resume=True,
+            stage_api=api,
+        )
+
+    drift_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert drift_state["status"] == "failed"
+    assert probe_calls == [True]
+    assert old_environment_id != current_environment_id
+    resume_records = [
+        json.loads(line)
+        for line in state_path.with_name("control.json.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[resume_journal_offset:]
+    ]
+    assert [
+        (record["event"], record["stage"])
+        for record in resume_records[:6]
+    ] == [
+        ("stage_checkpoint_invalid", "smoke_bootstrap"),
+        ("stage_checkpoint_invalid", "fvi_study"),
+        ("stage_checkpoint_invalid", "promote_adapter"),
+        ("stage_checkpoint_invalid", "adapter_determinism"),
+        ("stage_checkpoint_invalid", "freeze_model"),
+        ("stage_checkpoint_refresh_required", "environment_probe"),
+    ]
+    second_resume_offset = len(
+        state_path.with_name("control.json.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+
+    state = runner.run_control_plane(
+        plan,
+        state_path,
+        resume=True,
+        stage_api=api,
+    )
+
+    assert state["status"] == "completed"
+    assert probe_calls == [True, True]
+    sweep_calls = [args for name, args in calls if name == "run_sweep"]
+    assert len(sweep_calls) == 3
+    assert {
+        json.loads(args[0])["run_spec_identity"]["identity"][
+            "environment_contract_id"
+        ]
+        for args in sweep_calls
+    } == {current_environment_id}
+    assert state["completed"]["environment_probe"] == current_probe
+    assert state["stage_attempts"]["verify_source"] == 1
+    assert state["stage_attempts"]["verify_raw"] == 1
+    for stage in (
+        "environment_probe",
+        "freeze_model",
+        "adapter_determinism",
+        "promote_adapter",
+        "fvi_study",
+        "smoke_bootstrap",
+    ):
+        assert state["stage_attempts"][stage] == 2
+    assert state["stage_attempts"]["smoke_sweep"] == 3
+    second_resume_records = [
+        json.loads(line)
+        for line in state_path.with_name("control.json.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[second_resume_offset:]
+    ]
+    assert not any(
+        record["event"]
+        in {"stage_checkpoint_invalid", "stage_checkpoint_refresh_required"}
+        for record in second_resume_records
+    )
+    runner._reconcile_control_journal(
+        state_path,
+        runner._load_control_json(state_path),
+    )
+
+
+@pytest.mark.parametrize("probe_mode", ["raises", "malformed"])
+def test_nonterminal_resume_probe_failure_preserves_checkpoints(
+    tmp_path,
+    monkeypatch,
+    probe_mode,
+):
+    runner = _load_modal_runner(monkeypatch)
+    api, calls, ids = _fake_control_api(fail_first_smoke=True)
+    plan = {
+        "source_id": ids["source"],
+        "raw_id": ids["raw"],
+        "adapter_subdirs": ["build_a", "build_b"],
+        "gate_overrides": {},
+        "resource_summary": {"backend": "modal"},
+    }
+    state_path = tmp_path / "control.json"
+    journal_path = state_path.with_name("control.json.jsonl")
+    with pytest.raises(RuntimeError, match="lost smoke response"):
+        runner.run_control_plane(
+            plan,
+            state_path,
+            resume=False,
+            stage_api=api,
+        )
+    state_before = state_path.read_bytes()
+    journal_before = journal_path.read_bytes()
+    probe_calls = []
+
+    def unavailable_probe():
+        probe_calls.append(True)
+        if probe_mode == "raises":
+            raise RuntimeError("probe unavailable")
+        malformed = _probe_payload()
+        malformed["package_versions"].pop(ENVIRONMENT_PACKAGES[-1])
+        return malformed
+
+    api["probe"] = unavailable_probe
+    calls.clear()
+    expected_error = (
+        "probe unavailable"
+        if probe_mode == "raises"
+        else "incomplete package set"
+    )
+    with pytest.raises((RuntimeError, ValueError), match=expected_error):
+        runner.run_control_plane(
+            plan,
+            state_path,
+            resume=True,
+            stage_api=api,
+        )
+
+    assert probe_calls == [True]
+    assert calls == []
+    assert state_path.read_bytes() == state_before
+    assert journal_path.read_bytes() == journal_before
+
+
+def test_resume_without_probe_checkpoint_invokes_probe_once(
+    tmp_path,
+    monkeypatch,
+):
+    runner = _load_modal_runner(monkeypatch)
+    api, calls, ids = _fake_control_api()
+    plan = {
+        "source_id": ids["source"],
+        "raw_id": ids["raw"],
+        "adapter_subdirs": ["build_a", "build_b"],
+        "gate_overrides": {},
+        "resource_summary": {"backend": "modal"},
+    }
+    original_verify = api["verify_volume_artifact"]
+    fail_raw = True
+
+    def fail_raw_once(rel_dir, kind):
+        nonlocal fail_raw
+        if kind == "raw" and fail_raw:
+            fail_raw = False
+            raise RuntimeError("raw verification interrupted")
+        return original_verify(rel_dir, kind)
+
+    api["verify_volume_artifact"] = fail_raw_once
+    state_path = tmp_path / "control.json"
+    with pytest.raises(RuntimeError, match="raw verification interrupted"):
+        runner.run_control_plane(
+            plan,
+            state_path,
+            resume=False,
+            stage_api=api,
+        )
+    assert "environment_probe" not in json.loads(
+        state_path.read_text(encoding="utf-8")
+    )["completed"]
+
+    calls.clear()
+    state = runner.run_control_plane(
+        plan,
+        state_path,
+        resume=True,
+        stage_api=api,
+    )
+
+    assert state["status"] == "completed"
+    assert [name for name, _args in calls].count("probe") == 1
+    assert state["stage_attempts"]["environment_probe"] == 1
 
 
 def test_fresh_control_rejects_orphan_journal_before_remote_work(

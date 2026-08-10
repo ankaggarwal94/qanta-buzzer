@@ -3427,11 +3427,73 @@ def run_control_plane(
     )
     myopic_sha256 = raw_check["myopic_artifact_sha256"]
 
+    resumed_probe_result = None
+    if resume and "environment_probe" in state["completed"]:
+        current_probe = api["probe"]()
+        _validate_control_stage_result(
+            "environment_probe",
+            current_probe,
+            lambda result: _validate_probe_result(
+                result,
+                ENVIRONMENT_PACKAGES,
+            ),
+        )
+        current_environment_id = compute_id(
+            environment_contract_identity(
+                python_version=current_probe["python"],
+                package_versions=current_probe["package_versions"],
+            )
+        )
+        cached_probe = state["completed"]["environment_probe"]
+        refresh_reason = None
+        try:
+            _validate_control_stage_result(
+                "environment_probe",
+                cached_probe,
+                lambda result: _validate_probe_result(
+                    result,
+                    ENVIRONMENT_PACKAGES,
+                ),
+            )
+            cached_environment_id = compute_id(
+                environment_contract_identity(
+                    python_version=cached_probe["python"],
+                    package_versions=cached_probe["package_versions"],
+                )
+            )
+        except Exception as exc:
+            refresh_reason = (
+                "cached environment probe is invalid: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        else:
+            if cached_environment_id != current_environment_id:
+                refresh_reason = (
+                    "nonterminal resume observed a different Modal "
+                    f"environment contract: {cached_environment_id} -> "
+                    f"{current_environment_id}"
+                )
+        if refresh_reason is not None:
+            _refresh_control_stage(
+                state_path,
+                state,
+                stage="environment_probe",
+                reason=refresh_reason,
+            )
+            # The live probe is a read-only resume preflight. Reuse its already
+            # validated payload when checkpointing the refreshed stage so one
+            # resume performs exactly one remote environment probe.
+            resumed_probe_result = current_probe
+
     probe_result = _run_control_stage(
         state_path,
         state,
         name="environment_probe",
-        invoke=lambda _: api["probe"](),
+        invoke=lambda _: (
+            resumed_probe_result
+            if resumed_probe_result is not None
+            else api["probe"]()
+        ),
         validate_result=lambda result: _validate_probe_result(
             result,
             ENVIRONMENT_PACKAGES,

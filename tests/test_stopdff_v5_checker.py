@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import gzip
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -317,6 +318,147 @@ def test_validate_run_missing_required_json_retains_contract(tmp_path, filename)
 
     assert not result.passed
     assert f"missing {filename}" in result.errors
+
+
+@pytest.mark.parametrize(
+    ("backend", "filename"),
+    [
+        ("modal", "run_manifest.json"),
+        ("local", "command_manifest.json"),
+    ],
+)
+def test_validate_run_rejects_symlinked_backend_manifest_before_decode(
+    tmp_path,
+    monkeypatch,
+    backend,
+    filename,
+):
+    built = selftest.build_valid_package(tmp_path)
+    run_root = built["run_root"]
+    if backend == "local":
+        modal_path = run_root / "run_manifest.json"
+        manifest = json.loads(modal_path.read_text(encoding="utf-8"))
+        manifest["identity"]["kind"] = "command_manifest"
+        manifest["identity"]["backend"] = "local"
+        manifest["id"] = identity.compute_id(manifest["identity"])
+        (run_root / filename).write_text(
+            json.dumps(manifest, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        modal_path.unlink()
+        aggregate_path = run_root / "aggregate.json"
+        aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+        aggregate["backend"] = "local"
+        aggregate_path.write_text(
+            json.dumps(aggregate, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    target = run_root / filename
+    external = tmp_path / f"external_{backend}_{filename}"
+    external.write_bytes(target.read_bytes())
+    target.unlink()
+    target.symlink_to(external)
+    calls: list[Path] = []
+    original = checker.load_json
+
+    def record(path):
+        calls.append(Path(path))
+        return original(path)
+
+    monkeypatch.setattr(checker, "load_json", record)
+    result = checker.validate_run(
+        run_root,
+        backend=backend,
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=False,
+        require_package=False,
+    )
+
+    assert not result.passed
+    assert f"{filename} must be a non-symlink regular file" in result.errors
+    assert target not in calls
+
+
+def test_validate_run_rejects_symlinked_environment_before_decode(
+    tmp_path,
+    monkeypatch,
+):
+    built = selftest.build_valid_package(tmp_path)
+    run_root = built["run_root"]
+    target = run_root / "environment.json"
+    external = tmp_path / "external_environment.json"
+    external.write_bytes(target.read_bytes())
+    target.unlink()
+    target.symlink_to(external)
+    calls: list[Path] = []
+    original = checker.load_json
+
+    def record(path):
+        calls.append(Path(path))
+        return original(path)
+
+    monkeypatch.setattr(checker, "load_json", record)
+    result = checker.validate_run(
+        run_root,
+        backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=False,
+        require_package=False,
+    )
+
+    assert not result.passed
+    assert (
+        "environment.json must be a non-symlink regular file"
+        in result.errors
+    )
+    assert target not in calls
+
+
+@pytest.mark.parametrize("forbidden_kind", ["dangling_symlink", "fifo"])
+def test_validate_run_rejects_noncanonical_forbidden_backend_manifest(
+    tmp_path,
+    forbidden_kind,
+):
+    built = selftest.build_valid_package(tmp_path)
+    forbidden = built["run_root"] / "command_manifest.json"
+    if forbidden_kind == "dangling_symlink":
+        forbidden.symlink_to(tmp_path / "missing_command_manifest.json")
+    else:
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO creation is unavailable on this platform")
+        os.mkfifo(forbidden)
+
+    result = checker.validate_run(
+        built["run_root"],
+        backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=False,
+        require_package=False,
+    )
+
+    assert not result.passed
+    assert "modal backend forbids command_manifest.json" in result.errors
+
+
+def test_validate_run_missing_backend_and_environment_retains_diagnostics(
+    tmp_path,
+):
+    built = selftest.build_valid_package(tmp_path)
+    (built["run_root"] / "run_manifest.json").unlink()
+    (built["run_root"] / "environment.json").unlink()
+
+    result = checker.validate_run(
+        built["run_root"],
+        backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=False,
+        require_package=False,
+    )
+
+    assert not result.passed
+    assert "modal backend requires run_manifest.json" in result.errors
+    assert "missing environment.json" in result.errors
 
 
 def test_negative_mutation_suite(tmp_path):
