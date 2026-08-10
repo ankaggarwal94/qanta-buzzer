@@ -1,0 +1,292 @@
+name: One-shot fixed-FVI package repair
+
+on:
+  push:
+    branches:
+      - codex/post18-v5-code
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.event.head_commit.message == 'chore: launch one-shot fixed-FVI repair'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/post18-v5-code
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v3
+        with:
+          python-version: '3.11'
+
+      - name: Apply narrowly scoped repair and regression tests
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          checker_path = Path('scripts/stopdff_v5/checker.py')
+          source = checker_path.read_text(encoding='utf-8')
+
+          marker = '\ndef _validate_run_impl(\n'
+          if source.count(marker) != 1:
+              raise SystemExit('checker insertion marker is not unique')
+
+          helper = r'''
+
+def _recompute_packaged_fvi_study(
+    run_root: Path,
+    *,
+    expected_fvi_id: Any,
+    manifest_graph_valid: bool,
+    rows: list[dict],
+    calibration: dict | None,
+    adapter_bundle_id: Any,
+    adapter_identity: dict[str, Any],
+    errors: list[str],
+) -> dict[str, Any] | None:
+    """Recompute selector evidence only for a bound full-study package."""
+    path = Path(run_root) / "evidence" / "fvi_study.json"
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        manifest = load_json(path)
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        errors.append(f"packaged FVI manifest cannot be decoded: {exc}")
+        return None
+
+    identity = manifest.get("identity") if isinstance(manifest, dict) else None
+    try:
+        envelope_valid = (
+            isinstance(manifest, dict)
+            and set(manifest) == {"id", "identity"}
+            and isinstance(identity, dict)
+            and compute_id(identity) == manifest.get("id")
+            and manifest.get("id") == expected_fvi_id
+        )
+    except (TypeError, ValueError) as exc:
+        errors.append(f"packaged FVI manifest cannot be canonicalized: {exc}")
+        return None
+    if not envelope_valid:
+        errors.append("packaged FVI manifest envelope is invalid")
+        return None
+
+    kind = identity.get("kind")
+    if kind not in {"fvi_study", "fvi_study_fixed"}:
+        errors.append("packaged FVI manifest kind is invalid")
+        return None
+    if kind == "fvi_study_fixed":
+        return None
+    if not (manifest_graph_valid and rows and isinstance(calibration, dict)):
+        return None
+
+    cache_key = (
+        str(adapter_bundle_id),
+        str(adapter_identity.get("fit_rows_sha256")),
+        str(adapter_identity.get("eval_rows_sha256")),
+        str(adapter_identity.get("calibration_sha256")),
+    )
+    recomputed = _FVI_STUDY_CACHE.get(cache_key)
+    if recomputed is not None:
+        return recomputed
+    try:
+        from .fvi_study import run_fvi_study
+
+        recomputed = run_fvi_study(
+            rows=rows,
+            calibration_json=calibration,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        errors.append(f"FVI study cannot be independently recomputed: {exc}")
+        return None
+    _FVI_STUDY_CACHE[cache_key] = recomputed
+    return recomputed
+'''
+          source = source.replace(marker, helper + marker)
+
+          old = '''    if require_package:
+        recomputed_fvi_study = None
+        if manifest_graph_valid and rows and isinstance(calibration, dict):
+            cache_key = (
+                str(adapter_bundle_id),
+                str(adapter_identity.get("fit_rows_sha256")),
+                str(adapter_identity.get("eval_rows_sha256")),
+                str(adapter_identity.get("calibration_sha256")),
+            )
+            recomputed_fvi_study = _FVI_STUDY_CACHE.get(cache_key)
+            if recomputed_fvi_study is None:
+                try:
+                    from .fvi_study import run_fvi_study
+
+                    recomputed_fvi_study = run_fvi_study(
+                        rows=rows,
+                        calibration_json=calibration,
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    errors.append(
+                        f"FVI study cannot be independently recomputed: {exc}"
+                    )
+                else:
+                    _FVI_STUDY_CACHE[cache_key] = recomputed_fvi_study
+        check_complete_checksums(run_root, errors)
+'''
+          new = '''    if require_package:
+        recomputed_fvi_study = _recompute_packaged_fvi_study(
+            run_root,
+            expected_fvi_id=spec_ids.get("fvi_study_id"),
+            manifest_graph_valid=manifest_graph_valid,
+            rows=rows,
+            calibration=calibration,
+            adapter_bundle_id=adapter_bundle_id,
+            adapter_identity=adapter_identity,
+            errors=errors,
+        )
+        check_complete_checksums(run_root, errors)
+'''
+          if source.count(old) != 1:
+              raise SystemExit('checker package-recompute block is not unique')
+          checker_path.write_text(source.replace(old, new), encoding='utf-8')
+
+          test_path = Path('tests/test_pr30_fixed_fvi_package_guard.py')
+          if test_path.exists():
+              raise SystemExit(f'{test_path} already exists')
+          test_path.write_text(r'''"""Regressions for fixed-FVI package validation on PR #30."""
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+from scripts.stopdff_v5 import checker, checker_package, fvi_study
+from scripts.stopdff_v5.identity import build_manifest
+
+
+def _write_fvi_manifest(root: Path, *, kind: str) -> dict:
+    identity = {
+        "kind": kind,
+        "adapter_bundle_id": "a" * 64,
+    }
+    if kind == "fvi_study_fixed":
+        identity["selected"] = {
+            "tolerance": "1e-6",
+            "max_iterations": 100,
+        }
+    else:
+        identity["selected_parameters"] = {
+            "tolerance": "1e-6",
+            "max_iterations": 100,
+        }
+    manifest = build_manifest(identity)
+    path = root / "evidence" / "fvi_study.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def _recompute(root: Path, manifest: dict, errors: list[str]):
+    return checker._recompute_packaged_fvi_study(
+        root,
+        expected_fvi_id=manifest["id"],
+        manifest_graph_valid=True,
+        rows=[{"row": 1}],
+        calibration={},
+        adapter_bundle_id="a" * 64,
+        adapter_identity={
+            "fit_rows_sha256": "b" * 64,
+            "eval_rows_sha256": "c" * 64,
+            "calibration_sha256": "d" * 64,
+        },
+        errors=errors,
+    )
+
+
+def test_fixed_fvi_package_does_not_run_selector(tmp_path, monkeypatch):
+    manifest = _write_fvi_manifest(tmp_path, kind="fvi_study_fixed")
+
+    def fail_if_called(**_kwargs):
+        raise AssertionError("fixed FVI package must not invoke the selector")
+
+    monkeypatch.setattr(fvi_study, "run_fvi_study", fail_if_called)
+    checker._FVI_STUDY_CACHE.clear()
+    errors: list[str] = []
+    assert _recompute(tmp_path, manifest, errors) is None
+    assert errors == []
+
+
+def test_full_fvi_package_still_recomputes_selector(tmp_path, monkeypatch):
+    manifest = _write_fvi_manifest(tmp_path, kind="fvi_study")
+    expected = {"selected_parameters": {"tolerance": "1e-6"}}
+    calls = []
+
+    def fake_run(**kwargs):
+        calls.append(kwargs)
+        return expected
+
+    monkeypatch.setattr(fvi_study, "run_fvi_study", fake_run)
+    checker._FVI_STUDY_CACHE.clear()
+    errors: list[str] = []
+    assert _recompute(tmp_path, manifest, errors) == expected
+    assert errors == []
+    assert len(calls) == 1
+
+
+def test_final_profile_still_rejects_fixed_fvi_manifest(tmp_path):
+    manifest = _write_fvi_manifest(tmp_path, kind="fvi_study_fixed")
+    path = tmp_path / "evidence" / "fvi_study.json"
+    data = path.read_bytes()
+    artifact = {
+        "role": "fvi_study",
+        "content_id": manifest["id"],
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "byte_size": len(data),
+        "retrieval_path": "evidence/fvi_study.json",
+    }
+    errors: list[str] = []
+    checker_package._packaged_manifest(
+        run_root=tmp_path,
+        errors=errors,
+        by_role={"fvi_study": artifact},
+        role="fvi_study",
+        expected_path="evidence/fvi_study.json",
+        expected_id=manifest["id"],
+        expected_kind="fvi_study",
+    )
+    assert "packaged fvi_study kind mismatch" in errors
+''', encoding='utf-8')
+          PY
+
+      - name: Install project and test dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8
+          pip install -e '.[dev]'
+
+      - name: Run focused validation
+        shell: bash
+        run: |
+          flake8 scripts/stopdff_v5/checker.py tests/test_pr30_fixed_fvi_package_guard.py \
+            --select=E9,F63,F7,F82 --show-source --statistics
+          pytest tests/test_pr30_fixed_fvi_package_guard.py tests/test_pr30_package_repairs.py -q --tb=short
+
+      - name: Commit repair and remove one-shot workflow
+        shell: bash
+        run: |
+          rm .github/workflows/one-shot-fixed-fvi-repair.yml
+          git config user.name 'Ankit Aggarwal'
+          git config user.email 'ankagg94@users.noreply.github.com'
+          git add scripts/stopdff_v5/checker.py tests/test_pr30_fixed_fvi_package_guard.py .github/workflows/one-shot-fixed-fvi-repair.yml
+          git commit -m 'fix: skip selector recomputation for fixed FVI packages'
+          git push origin HEAD:codex/post18-v5-code
