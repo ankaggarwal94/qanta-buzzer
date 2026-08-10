@@ -123,6 +123,8 @@ def test_fixed_fvi_final_package_rejected(tmp_path):
     run_spec = json.loads(
         (built["run_root"] / "run_spec.json").read_text(encoding="utf-8")
     )
+    # run_spec.json is a manifest: {"id": ..., "identity": <run_spec_identity>}.
+    # run_spec_identity itself contains a nested "identity" dict with the IDs.
     fvi_study_id = run_spec["identity"]["identity"]["fvi_study_id"]
     with pytest.raises(ValueError, match="kind mismatch"):
         inspect_packaged_fvi_manifest_kind(
