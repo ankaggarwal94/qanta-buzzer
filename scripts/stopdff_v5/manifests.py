@@ -220,6 +220,10 @@ def fvi_study_identity(
     all96_validation: dict[str, Any],
     producer_hashes: dict[str, str],
 ) -> dict[str, Any]:
+    if not isinstance(selected_parameters, dict):
+        raise ValueError("FVI selector found no eligible candidate")
+    if not isinstance(all96_validation, dict):
+        raise ValueError("FVI selected candidate lacks all-96 validation")
     return {
         "kind": "fvi_study",
         "adapter_bundle_id": adapter_bundle_id,
