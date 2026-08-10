@@ -750,7 +750,17 @@ def _validate_adapter_impl(bundle_dir: Path) -> CheckResult:
     """
     errors: list[str] = []
     bundle_dir = Path(bundle_dir)
-    if bundle_dir.is_symlink() or not bundle_dir.is_dir():
+    if bundle_dir.is_symlink():
+        return CheckResult(
+            passed=False,
+            errors=["adapter bundle root must be a non-symlink directory"],
+        )
+    if not bundle_dir.exists():
+        return CheckResult(
+            passed=False,
+            errors=["adapter manifest.json missing"],
+        )
+    if not bundle_dir.is_dir():
         return CheckResult(
             passed=False,
             errors=["adapter bundle root must be a non-symlink directory"],
