@@ -848,12 +848,15 @@ def _validate_adapter_impl(bundle_dir: Path) -> CheckResult:
         "calibration.json",
         "build_metadata.json",
     )
+    payload_errors: list[str] = []
     for name in required_files:
         p = bundle_dir / name
         if p.is_symlink() or not p.is_file():
-            errors.append(f"adapter bundle {name} must be a non-symlink regular file")
-
-    if errors:
+            payload_errors.append(
+                f"adapter bundle {name} must be a non-symlink regular file"
+            )
+    if payload_errors:
+        errors.extend(payload_errors)
         return CheckResult(passed=False, errors=errors)
 
     hash_bindings = (
