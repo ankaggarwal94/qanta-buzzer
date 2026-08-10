@@ -338,6 +338,19 @@ def _validated_cached_fvi(
     }
 
 
+def _canonical_bootstrap_plan_path(root: Path) -> Path:
+    """Return the durable plan path only for a canonical cache entry."""
+    plan_path = root / "bootstrap_plan.json"
+    if (
+        root.is_symlink()
+        or not root.is_dir()
+        or plan_path.is_symlink()
+        or not plan_path.is_file()
+    ):
+        raise ValueError("bootstrap cache is incomplete or noncanonical")
+    return plan_path
+
+
 @app.function(volumes={MNT: vol}, timeout=1800, max_containers=1)
 def probe() -> dict:
     from importlib import metadata as im
@@ -940,8 +953,14 @@ def bootstrap_plan(adapter_id: str, replicates: int) -> dict:
     pid = compute_id(ident)
     out = Path(_p("bootstrap", pid))
     manifest = {"id": pid, "identity": ident, "item_ids": plan.item_ids}
-    if out.exists():
-        existing = checker.load_json(out / "bootstrap_plan.json")
+    if out.exists() or out.is_symlink():
+        try:
+            plan_path = _canonical_bootstrap_plan_path(out)
+        except ValueError as exc:
+            raise FileExistsError(
+                "bootstrap destination is incomplete or noncanonical"
+            ) from exc
+        existing = checker.load_json(plan_path)
         if existing == manifest:
             return {
                 "bootstrap_plan_id": pid,
@@ -1037,7 +1056,9 @@ def run_sweep(
         "identity": spec.get("run_spec_identity"),
     }
     adir = Path(_p("adapters", f"canonical_{adapter_id}"))
-    plan_path = Path(_p("bootstrap", bootstrap_plan_id)) / "bootstrap_plan.json"
+    plan_path = _canonical_bootstrap_plan_path(
+        Path(_p("bootstrap", bootstrap_plan_id))
+    )
     plan_manifest = checker.load_json(plan_path)
     binding = checker.resolve_run_binding(
         run_spec_manifest=run_spec_manifest,

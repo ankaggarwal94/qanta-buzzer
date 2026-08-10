@@ -337,6 +337,134 @@ def test_adapter_build_is_fresh_only_and_fvi_cache_remains_bound(
         )
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "root_symlink",
+        "plan_symlink",
+        "dangling_root",
+        "dangling_plan",
+        "root_file",
+        "plan_directory",
+    ],
+)
+def test_bootstrap_cache_rejects_noncanonical_paths_before_decode(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    runner = _load_modal_runner(monkeypatch)
+    runner.MNT = str(tmp_path)
+    adapter_id = "a" * 64
+    from scripts.stopdff_v5 import checker
+
+    monkeypatch.setattr(
+        checker,
+        "validate_adapter",
+        lambda _path: types.SimpleNamespace(
+            passed=True,
+            errors=[],
+            recomputed={"adapter_bundle_id": adapter_id},
+        ),
+    )
+    monkeypatch.setattr(
+        checker,
+        "load_adapter_rows",
+        lambda _path: [
+            {"item_id": "q1", "split": "test", "format": "MC"},
+            {"item_id": "q1", "split": "test", "format": "QA"},
+        ],
+    )
+
+    created = runner.bootstrap_plan(adapter_id, 1)
+    assert created["cached"] is False
+    root = tmp_path / "bootstrap" / created["bootstrap_plan_id"]
+    plan_path = root / "bootstrap_plan.json"
+    decoded: list[Path] = []
+    original_load_json = checker.load_json
+
+    def recording_load_json(path):
+        decoded.append(Path(path))
+        return original_load_json(path)
+
+    monkeypatch.setattr(checker, "load_json", recording_load_json)
+    reused = runner.bootstrap_plan(adapter_id, 1)
+    assert reused["cached"] is True
+    assert reused["bootstrap_plan_id"] == created["bootstrap_plan_id"]
+    assert decoded == [plan_path]
+
+    if mutation in {"root_symlink", "dangling_root"}:
+        external = tmp_path / "external-bootstrap"
+        root.rename(external)
+        target = external if mutation == "root_symlink" else tmp_path / "missing"
+        root.symlink_to(target, target_is_directory=True)
+    elif mutation in {"plan_symlink", "dangling_plan"}:
+        external = tmp_path / "external-bootstrap-plan.json"
+        plan_path.rename(external)
+        target = external if mutation == "plan_symlink" else tmp_path / "missing.json"
+        plan_path.symlink_to(target)
+    elif mutation == "root_file":
+        shutil.rmtree(root)
+        root.write_text("not a directory", encoding="utf-8")
+    else:
+        plan_path.unlink()
+        plan_path.mkdir()
+
+    with pytest.raises(FileExistsError, match="incomplete or noncanonical"):
+        runner.bootstrap_plan(adapter_id, 1)
+    assert decoded == [plan_path]
+
+
+@pytest.mark.parametrize("mutation", ["root_symlink", "plan_symlink"])
+def test_run_sweep_rejects_symlinked_bootstrap_cache_before_decode(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    runner = _load_modal_runner(monkeypatch)
+    runner.MNT = str(tmp_path)
+    bootstrap_id = "b" * 64
+    root = tmp_path / "bootstrap" / bootstrap_id
+    root.mkdir(parents=True)
+    plan_path = root / "bootstrap_plan.json"
+    plan_path.write_text("{}", encoding="utf-8")
+    if mutation == "root_symlink":
+        external = tmp_path / "external-bootstrap"
+        root.rename(external)
+        root.symlink_to(external, target_is_directory=True)
+    else:
+        external = tmp_path / "external-bootstrap-plan.json"
+        plan_path.rename(external)
+        plan_path.symlink_to(external)
+
+    from scripts.stopdff_v5 import checker
+
+    monkeypatch.setattr(
+        checker,
+        "load_json",
+        lambda _path: pytest.fail("noncanonical bootstrap plan was decoded"),
+    )
+    monkeypatch.setattr(
+        checker,
+        "resolve_run_binding",
+        lambda **_kwargs: pytest.fail("noncanonical bootstrap plan was bound"),
+    )
+    wrapper = {
+        "run_spec_identity": {
+            "identity": {
+                "source_manifest_id": runner.IMAGE_SOURCE_MANIFEST_ID,
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="incomplete or noncanonical"):
+        runner.run_sweep(
+            json.dumps(wrapper),
+            "a" * 64,
+            bootstrap_id,
+            False,
+        )
+
+
 def _write_model_manifest(root: Path, *, kind: str, model_id: str) -> dict[str, object]:
     root.mkdir(parents=True, exist_ok=True)
     (root / "snapshot").mkdir(exist_ok=True)
