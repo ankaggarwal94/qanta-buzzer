@@ -217,6 +217,7 @@ def _run_bound_sweep(
         adapter_eval_rows_sha256=binding["eval_rows_sha256"],
         myopic_artifact_sha256=myopic_sha256,
         producer_hashes=producer_hashes,
+        gate_overrides=binding["gate_overrides"],
         cells=cells,
         environment=environment,
         resource_summary={"backend": "local"},

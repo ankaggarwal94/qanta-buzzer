@@ -689,7 +689,16 @@ def test_remote_sweep_attempt_is_derived_from_durable_state(
         )
 
 
-def test_local_resume_attempt_and_sweep_context(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("resume", "attempt_number"),
+    [(False, 1), (True, 3)],
+)
+def test_local_attempt_and_sweep_context(
+    tmp_path,
+    monkeypatch,
+    resume,
+    attempt_number,
+):
     run_spec_id = "1" * 64
     adapter_id = "2" * 64
     bootstrap_id = "3" * 64
@@ -740,6 +749,10 @@ def test_local_resume_attempt_and_sweep_context(tmp_path, monkeypatch):
         "fit_rows_sha256": "4" * 64,
         "eval_rows_sha256": "5" * 64,
         "bootstrap_plan_id": bootstrap_id,
+        "gate_overrides": {
+            "allow_low_mc_retention": True,
+            "allow_incomplete_mc_coverage": False,
+        },
     }
     monkeypatch.setattr(
         local_runner.checker,
@@ -765,13 +778,19 @@ def test_local_resume_attempt_and_sweep_context(tmp_path, monkeypatch):
         producer_hashes={},
         environment={},
         cells=[],
-        command=["run_stopdff_v5_local", "--resume"],
-        resume=True,
-        attempt_number=3,
+        command=[
+            "run_stopdff_v5_local",
+            *(["--resume"] if resume else []),
+        ],
+        resume=resume,
+        attempt_number=attempt_number,
     )
-    assert captured["ctx"].resume is True
-    assert captured["ctx"].attempt["attempt"] == 3
-    assert captured["ctx"].attempt["mode"] == "resume"
+    assert captured["ctx"].gate_overrides == binding["gate_overrides"]
+    assert captured["ctx"].resume is resume
+    assert captured["ctx"].attempt["attempt"] == attempt_number
+    assert captured["ctx"].attempt["mode"] == (
+        "resume" if resume else "fresh"
+    )
 
 
 def test_local_runner_makes_reviewed_checkout_authoritative_and_rejects_drift(

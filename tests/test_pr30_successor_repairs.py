@@ -12,10 +12,17 @@ import numpy as np
 import pytest
 
 from scripts.stopdff_v5 import adapter_build, checker, selftest, sweep
-from scripts.stopdff_v5.identity import compute_id, sha256_file
+from scripts.stopdff_v5.identity import (
+    build_manifest,
+    compute_id,
+    sha256_bytes,
+    sha256_file,
+)
 from scripts.stopdff_v5.manifests import (
     ENVIRONMENT_PACKAGES,
+    RAW_INPUT_ROLES,
     environment_contract_identity,
+    raw_input_identity,
 )
 from tests.test_pr30_control_repairs import _load_modal_runner
 
@@ -510,6 +517,7 @@ class _FakeVolume:
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {}
         self.uploads = 0
+        self.upload_sources: list[str] = []
 
     def listdir(self, remote_dir: str, *, recursive: bool):
         assert recursive is True
@@ -535,6 +543,7 @@ class _FakeVolume:
                 return False
 
             def put_directory(self, local: str, remote: str) -> None:
+                volume.upload_sources.append(local)
                 for path in sorted(Path(local).rglob("*")):
                     if path.is_file():
                         relative = path.relative_to(local).as_posix()
@@ -544,6 +553,41 @@ class _FakeVolume:
 
     def read_file(self, path: str):
         return iter((self.files[path],))
+
+
+def _write_nested_raw_input_bundle(bundle: Path) -> dict:
+    raw = bundle / "raw"
+    raw.mkdir(parents=True)
+    files = []
+    for role in RAW_INPUT_ROLES:
+        path = raw / role
+        data = f"fixture for {role}\n".encode("utf-8")
+        path.write_bytes(data)
+        files.append(
+            {
+                "role": role,
+                "size": len(data),
+                "sha256": sha256_bytes(data),
+            }
+        )
+    manifest = build_manifest(
+        raw_input_identity(
+            files=files,
+            semantic_checks={
+                "all_semantic_checks_pass": True,
+                "question_trajectory_binding_id": "c" * 64,
+            },
+        )
+    )
+    (bundle / "raw_input_manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (bundle / "raw_input_stage_record.json").write_text(
+        json.dumps({"source_paths": {"private": "/not/for/upload"}}) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
 
 
 def test_input_staging_is_create_once_cached_and_fail_closed(
@@ -603,6 +647,103 @@ def test_input_staging_is_create_once_cached_and_fail_closed(
             },
         )
     assert partial.uploads == 0
+
+
+def test_raw_input_staging_flattens_private_copy_and_reuses_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _load_modal_runner(monkeypatch)
+    bundle = tmp_path / "raw_inputs"
+    manifest = _write_nested_raw_input_bundle(bundle)
+    remote_dir = f"inputs/raw_{manifest['id']}"
+    expected_paths = {
+        f"{remote_dir}/raw_input_manifest.json",
+        *(f"{remote_dir}/{role}" for role in RAW_INPUT_ROLES),
+    }
+    volume = _FakeVolume()
+
+    def verifier(actual_remote_dir: str, kind: str) -> dict:
+        assert actual_remote_dir == remote_dir
+        assert kind == "raw"
+        assert set(volume.files) == expected_paths
+        remote_manifest = json.loads(
+            volume.files[f"{remote_dir}/raw_input_manifest.json"]
+        )
+        for entry in remote_manifest["identity"]["files"]:
+            data = volume.files[f"{remote_dir}/{entry['role']}"]
+            assert len(data) == entry["size"]
+            assert sha256_bytes(data) == entry["sha256"]
+        return {
+            "ok": True,
+            "id": remote_manifest["id"],
+            "mismatches": [],
+            "n_files": len(remote_manifest["identity"]["files"]),
+        }
+
+    first = runner._stage_one_input_bundle(
+        bundle,
+        "raw",
+        volume=volume,
+        verifier=verifier,
+    )
+    assert first["status"] == "created"
+    assert volume.uploads == 1
+    assert len(volume.upload_sources) == 1
+    assert not Path(volume.upload_sources[0]).exists()
+    assert not any("/raw/" in path for path in volume.files)
+    assert not any(path.endswith("raw_input_stage_record.json") for path in volume.files)
+
+    second = runner._stage_one_input_bundle(
+        bundle,
+        "raw",
+        volume=volume,
+        verifier=verifier,
+    )
+    assert second == {**first, "status": "cached"}
+    assert volume.uploads == 1
+
+    partial = _FakeVolume()
+    partial.files[f"{remote_dir}/raw_input_manifest.json"] = (
+        bundle / "raw_input_manifest.json"
+    ).read_bytes()
+    with pytest.raises(ValueError, match="failed remote verification"):
+        runner._stage_one_input_bundle(
+            bundle,
+            "raw",
+            volume=partial,
+            verifier=lambda *_args: {
+                "ok": False,
+                "id": manifest["id"],
+                "mismatches": ["partial"],
+                "n_files": 0,
+            },
+        )
+    assert partial.uploads == 0
+
+
+def test_raw_input_staging_rejects_local_tampering_before_upload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _load_modal_runner(monkeypatch)
+    bundle = tmp_path / "raw_inputs"
+    _write_nested_raw_input_bundle(bundle)
+    role_path = bundle / "raw" / RAW_INPUT_ROLES[0]
+    original = role_path.read_bytes()
+
+    role_path.write_bytes(b"tampered\n")
+    tampered = _FakeVolume()
+    with pytest.raises(ValueError, match="file mismatch"):
+        runner._stage_one_input_bundle(bundle, "raw", volume=tampered)
+    assert tampered.uploads == 0
+
+    role_path.write_bytes(original)
+    (bundle / "raw" / "unlisted.json").write_text("{}\n", encoding="utf-8")
+    unlisted = _FakeVolume()
+    with pytest.raises(ValueError, match="inventory mismatch"):
+        runner._stage_one_input_bundle(bundle, "raw", volume=unlisted)
+    assert unlisted.uploads == 0
 
 
 def test_create_once_control_bytes_never_replace_existing_destination(

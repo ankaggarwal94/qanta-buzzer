@@ -433,12 +433,47 @@ def _validated_local_input_bundle(bundle: Path, kind: str) -> tuple[dict, str]:
             expected_id=None,
             file_key="files",
             name_key="role",
+            content_subdir="raw",
             expected_kind="raw_input_bundle",
             require_semantic_pass=True,
         )
     else:
         raise ValueError(f"unsupported input-bundle kind {kind!r}")
     return manifest, manifest_name
+
+
+def _materialize_raw_upload_bundle(
+    bundle: Path,
+    manifest: dict,
+) -> tuple[tempfile.TemporaryDirectory, Path]:
+    """Return a private, flat, revalidated copy for the Modal Volume."""
+    from scripts.stopdff_v5.content_manifest import (
+        validate_bound_content_manifest,
+    )
+
+    owner = tempfile.TemporaryDirectory(prefix="stopdff_v5_raw_upload_")
+    staged_bundle = Path(owner.name) / "raw"
+    try:
+        shutil.copytree(bundle / "raw", staged_bundle)
+        shutil.copy2(
+            bundle / "raw_input_manifest.json",
+            staged_bundle / "raw_input_manifest.json",
+        )
+        staged_manifest = validate_bound_content_manifest(
+            staged_bundle,
+            manifest_name="raw_input_manifest.json",
+            expected_id=manifest["id"],
+            file_key="files",
+            name_key="role",
+            expected_kind="raw_input_bundle",
+            require_semantic_pass=True,
+        )
+        if staged_manifest != manifest:
+            raise ValueError("raw-input manifest changed during materialization")
+    except BaseException:
+        owner.cleanup()
+        raise
+    return owner, staged_bundle
 
 
 def _is_volume_not_found(exc: BaseException) -> bool:
@@ -474,8 +509,19 @@ def _stage_one_input_bundle(
     if existing_entries:
         status = "cached"
     else:
-        with target_volume.batch_upload(force=False) as batch:
-            batch.put_directory(str(bundle), remote_dir)
+        upload_owner = None
+        upload_bundle = bundle
+        try:
+            if kind == "raw":
+                upload_owner, upload_bundle = _materialize_raw_upload_bundle(
+                    bundle,
+                    manifest,
+                )
+            with target_volume.batch_upload(force=False) as batch:
+                batch.put_directory(str(upload_bundle), remote_dir)
+        finally:
+            if upload_owner is not None:
+                upload_owner.cleanup()
         status = "created"
 
     verified = remote_verifier(remote_dir, kind)
