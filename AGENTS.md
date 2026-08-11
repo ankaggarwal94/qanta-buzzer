@@ -109,7 +109,7 @@ Notes:
 | `configs/smoke.yaml` | Quick tests: 50 questions, TF-IDF likelihood, 3k PPO timesteps |
 | `configs/t5_policy.yaml` | T5 policy pipeline: model, supervised, PPO, and data sections |
 
-qb-rl config aliases are supported (e.g., `data.dataset`, `likelihood.sbert_name`, `environment.reward` as alias for `reward_mode`).
+qb-rl config aliases are supported (e.g. `data.dataset`, `likelihood.sbert_name`, `environment.reward` as alias for `reward_mode`).
 
 Additional environment options:
 - `environment.end_mode: force_commit|no_buzz` controls horizon behavior
@@ -131,3 +131,5 @@ OpenAI support is opt-in only. Default local workflows stay offline-friendly and
 - RL notation: `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
 - Prefer NumPy/PyTorch vectorized operations over loops in ML code
 - Explicit seeds for reproducibility (use 1, 2, 3 for multi-seed runs)
+
+<!-- transient exact-tree verification trigger -->
