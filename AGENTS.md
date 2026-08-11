@@ -131,5 +131,3 @@ OpenAI support is opt-in only. Default local workflows stay offline-friendly and
 - RL notation: `V` (value), `R` (reward), `T` (transition), `gamma` (discount), `s`/`a` (state/action)
 - Prefer NumPy/PyTorch vectorized operations over loops in ML code
 - Explicit seeds for reproducibility (use 1, 2, 3 for multi-seed runs)
-
-<!-- transient exact-tree verification trigger -->
