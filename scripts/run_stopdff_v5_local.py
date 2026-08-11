@@ -371,6 +371,61 @@ def _adapter_execution_id(
     return record["execution_id"]
 
 
+def _materialize_adapter_stage(
+    *,
+    out: Path,
+    state: dict,
+    stage: str,
+    build,
+    source_id: str,
+    raw_id: str,
+    model_id: str,
+) -> tuple[dict, str]:
+    """Create or reuse an adapter only with a matching durable execution record."""
+    stage_path = out / stage
+    stage_present = stage_path.exists() or stage_path.is_symlink()
+    checkpoint_present = stage in state["adapter_executions"]
+    if stage_present != checkpoint_present:
+        raise ValueError(
+            f"local lifecycle {stage} stage/checkpoint presence mismatch"
+        )
+
+    if stage_present:
+        manifest = _load_valid_adapter_stage(
+            stage_path,
+            source_id=source_id,
+            raw_id=raw_id,
+            model_id=model_id,
+        )
+        execution_id = _adapter_execution_id(
+            state=state,
+            stage=stage,
+            adapter_id=manifest["id"],
+        )
+        return manifest, execution_id
+
+    _publish_stage_directory(
+        out=out,
+        target_name=stage,
+        build=build,
+    )
+    manifest = _load_valid_adapter_stage(
+        stage_path,
+        source_id=source_id,
+        raw_id=raw_id,
+        model_id=model_id,
+    )
+    execution_id = f"local-{uuid.uuid4().hex}"
+    _checkpoint_adapter_execution(
+        out=out,
+        state=state,
+        stage=stage,
+        execution_id=execution_id,
+        adapter_id=manifest["id"],
+    )
+    return manifest, execution_id
+
+
 def _variant_run_candidates(out: Path, variant: str) -> list[Path]:
     runs_dir = out / "runs"
     prefix = f"{variant}_local_"
@@ -696,58 +751,36 @@ def main(argv: list[str] | None = None) -> int:
 
     print("== adapter bundle (CPU scoring) ==")
     adapter_dir = out / "adapter_bundle"
-    if adapter_dir.exists() or adapter_dir.is_symlink():
-        adapter_man = _load_valid_adapter_stage(
-            adapter_dir,
-            source_id=source_id,
-            raw_id=raw_id,
-            model_id=model_id,
-        )
-    else:
-        def build_primary_adapter(staged: Path) -> dict:
-            return adapter_build.build_adapter_bundle(
-                mc_dataset_path=raw_dir / "mc_dataset.json",
-                val_dataset_path=raw_dir / "val_dataset.json",
-                test_dataset_path=raw_dir / "test_dataset.json",
-                calibration_path=raw_dir / "calibration.json",
-                model_snapshot_dir=out / "model" / "snapshot",
-                out_dir=staged,
-                source_manifest_id=source_id,
-                raw_input_bundle_id=raw_id,
-                model_snapshot_id=model_id,
-                producer_hashes={
-                    "adapter_build.py": sha256_file(
-                        _REPO / "scripts/stopdff_v5/adapter_build.py"
-                    )
-                },
-                allow_low_mc_retention=args.allow_low_mc_retention,
-            )
 
-        adapter_man = _publish_stage_directory(
-            out=out,
-            target_name="adapter_bundle",
-            build=build_primary_adapter,
+    def build_primary_adapter(staged: Path) -> dict:
+        return adapter_build.build_adapter_bundle(
+            mc_dataset_path=raw_dir / "mc_dataset.json",
+            val_dataset_path=raw_dir / "val_dataset.json",
+            test_dataset_path=raw_dir / "test_dataset.json",
+            calibration_path=raw_dir / "calibration.json",
+            model_snapshot_dir=out / "model" / "snapshot",
+            out_dir=staged,
+            source_manifest_id=source_id,
+            raw_input_bundle_id=raw_id,
+            model_snapshot_id=model_id,
+            producer_hashes={
+                "adapter_build.py": sha256_file(
+                    _REPO / "scripts/stopdff_v5/adapter_build.py"
+                )
+            },
+            allow_low_mc_retention=args.allow_low_mc_retention,
         )
-    adapter_id = adapter_man["id"]
-    _load_valid_adapter_stage(
-        adapter_dir,
+
+    adapter_man, first_build_execution_id = _materialize_adapter_stage(
+        out=out,
+        state=lifecycle,
+        stage="adapter_bundle",
+        build=build_primary_adapter,
         source_id=source_id,
         raw_id=raw_id,
         model_id=model_id,
     )
-    if "adapter_bundle" not in lifecycle["adapter_executions"]:
-        _checkpoint_adapter_execution(
-            out=out,
-            state=lifecycle,
-            stage="adapter_bundle",
-            execution_id=f"local-{uuid.uuid4().hex}",
-            adapter_id=adapter_id,
-        )
-    first_build_execution_id = _adapter_execution_id(
-        state=lifecycle,
-        stage="adapter_bundle",
-        adapter_id=adapter_id,
-    )
+    adapter_id = adapter_man["id"]
     print("  adapter_bundle_id", adapter_id)
 
     rows = checker.load_adapter_rows(adapter_dir)
@@ -873,50 +906,34 @@ def main(argv: list[str] | None = None) -> int:
     if args.variant == "final":
         print("== required deterministic two-build adapter gate ==")
         second_adapter_dir = out / "adapter_bundle_determinism"
-        if second_adapter_dir.exists() or second_adapter_dir.is_symlink():
-            second_adapter = _load_valid_adapter_stage(
-                second_adapter_dir,
-                source_id=source_id,
-                raw_id=raw_id,
-                model_id=model_id,
-            )
-        else:
-            def build_second_adapter(staged: Path) -> dict:
-                return adapter_build.build_adapter_bundle(
-                    mc_dataset_path=raw_dir / "mc_dataset.json",
-                    val_dataset_path=raw_dir / "val_dataset.json",
-                    test_dataset_path=raw_dir / "test_dataset.json",
-                    calibration_path=raw_dir / "calibration.json",
-                    model_snapshot_dir=out / "model" / "snapshot",
-                    out_dir=staged,
-                    source_manifest_id=source_id,
-                    raw_input_bundle_id=raw_id,
-                    model_snapshot_id=model_id,
-                    producer_hashes={
-                        "adapter_build.py": sha256_file(
-                            _REPO / "scripts/stopdff_v5/adapter_build.py"
-                        )
-                    },
-                    allow_low_mc_retention=args.allow_low_mc_retention,
-                )
 
-            second_adapter = _publish_stage_directory(
-                out=out,
-                target_name="adapter_bundle_determinism",
-                build=build_second_adapter,
+        def build_second_adapter(staged: Path) -> dict:
+            return adapter_build.build_adapter_bundle(
+                mc_dataset_path=raw_dir / "mc_dataset.json",
+                val_dataset_path=raw_dir / "val_dataset.json",
+                test_dataset_path=raw_dir / "test_dataset.json",
+                calibration_path=raw_dir / "calibration.json",
+                model_snapshot_dir=out / "model" / "snapshot",
+                out_dir=staged,
+                source_manifest_id=source_id,
+                raw_input_bundle_id=raw_id,
+                model_snapshot_id=model_id,
+                producer_hashes={
+                    "adapter_build.py": sha256_file(
+                        _REPO / "scripts/stopdff_v5/adapter_build.py"
+                    )
+                },
+                allow_low_mc_retention=args.allow_low_mc_retention,
             )
-        if "adapter_bundle_determinism" not in lifecycle["adapter_executions"]:
-            _checkpoint_adapter_execution(
-                out=out,
-                state=lifecycle,
-                stage="adapter_bundle_determinism",
-                execution_id=f"local-{uuid.uuid4().hex}",
-                adapter_id=second_adapter["id"],
-            )
-        second_build_execution_id = _adapter_execution_id(
+
+        second_adapter, second_build_execution_id = _materialize_adapter_stage(
+            out=out,
             state=lifecycle,
             stage="adapter_bundle_determinism",
-            adapter_id=second_adapter["id"],
+            build=build_second_adapter,
+            source_id=source_id,
+            raw_id=raw_id,
+            model_id=model_id,
         )
         compared = (
             "fit_rows.jsonl.gz",
