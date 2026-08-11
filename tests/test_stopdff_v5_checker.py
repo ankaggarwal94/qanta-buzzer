@@ -908,3 +908,33 @@ def test_validate_spec_rejects_self_hashed_noncanonical_contract(
     )
     result = checker.validate_spec(path, require_final_profile=False)
     assert not result.passed, mutation
+def test_validate_spec_rejects_symlink_before_decode(tmp_path, monkeypatch):
+    built = selftest.build_valid_package(tmp_path)
+    canonical = built["run_root"] / "run_spec.json"
+    external = tmp_path / "external-run-spec.json"
+    external.write_bytes(canonical.read_bytes())
+    selected = tmp_path / "selected-run-spec.json"
+    selected.symlink_to(external)
+
+    monkeypatch.setattr(
+        checker,
+        "load_json",
+        lambda _path: pytest.fail("symlinked run spec was decoded"),
+    )
+    result = checker.validate_spec(
+        selected,
+        require_final_profile=False,
+    )
+    assert not result.passed
+    assert result.errors == [
+        "run spec path must be a non-symlink regular file"
+    ]
+
+
+def test_validate_spec_preserves_missing_path_diagnostic(tmp_path):
+    result = checker.validate_spec(
+        tmp_path / "missing-run-spec.json",
+        require_final_profile=False,
+    )
+    assert not result.passed
+    assert result.errors == ["run spec is missing"]

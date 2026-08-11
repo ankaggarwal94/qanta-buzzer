@@ -165,6 +165,42 @@ def _p(*parts) -> str:
     return str(path)
 
 
+_MODAL_RUN_ID_RE = re.compile(r"(smoke|final)_modal_([0-9a-f]{12})")
+
+
+def _canonical_modal_run_id(
+    value: object,
+    *,
+    variant: str | None = None,
+    run_spec_id: str | None = None,
+) -> str:
+    """Return the exact one-component run slot bound to a run-spec ID."""
+    if not isinstance(value, str) or not value or "\0" in value:
+        raise ValueError("run_id must be a nonempty canonical string")
+    parsed = PurePosixPath(value)
+    if (
+        parsed.is_absolute()
+        or ".." in parsed.parts
+        or len(parsed.parts) != 1
+        or str(parsed) != value
+        or _MODAL_RUN_ID_RE.fullmatch(value) is None
+    ):
+        raise ValueError(f"unsafe or noncanonical run_id: {value!r}")
+    if (variant is None) != (run_spec_id is None):
+        raise ValueError("run_id binding requires both variant and run_spec_id")
+    if variant is not None:
+        if (
+            variant not in {"smoke", "final"}
+            or not isinstance(run_spec_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", run_spec_id) is None
+        ):
+            raise ValueError("run_id binding inputs are noncanonical")
+        expected = f"{variant}_modal_{run_spec_id[:12]}"
+        if value != expected:
+            raise ValueError("run_id is not bound to run_spec_id")
+    return value
+
+
 def _canonical_adapter_subdir(value: object) -> str:
     """Return one canonical adapter path component or fail closed."""
     if not isinstance(value, str) or not value:
@@ -297,6 +333,20 @@ def _verified_executing_source(source_id: object) -> dict:
     return source_manifest
 
 
+def _canonical_fvi_study_path(root: Path) -> Path:
+    """Return the FVI manifest only from its canonical cache slot."""
+    root = Path(root)
+    manifest_path = root / "fvi_study.json"
+    if (
+        root.is_symlink()
+        or not root.is_dir()
+        or manifest_path.is_symlink()
+        or not manifest_path.is_file()
+    ):
+        raise ValueError("FVI cache is incomplete or noncanonical")
+    return manifest_path
+
+
 def _validated_cached_fvi(
     out: Path,
     *,
@@ -306,16 +356,14 @@ def _validated_cached_fvi(
     checker_module,
 ) -> dict:
     """Validate both durable FVI records before accepting a cache hit."""
-    manifest_path = out / "fvi_study.json"
+    try:
+        manifest_path = _canonical_fvi_study_path(out)
+    except ValueError as exc:
+        raise FileExistsError(
+            "FVI destination is incomplete or noncanonical"
+        ) from exc
     execution_path = out / "fvi_study_execution.json"
-    if (
-        out.is_symlink()
-        or not out.is_dir()
-        or manifest_path.is_symlink()
-        or not manifest_path.is_file()
-        or execution_path.is_symlink()
-        or not execution_path.is_file()
-    ):
+    if execution_path.is_symlink() or not execution_path.is_file():
         raise FileExistsError("FVI destination is incomplete or noncanonical")
     try:
         existing_manifest = checker_module.load_json(manifest_path)
@@ -1102,6 +1150,11 @@ def run_sweep(
         raise ValueError("adapter argument does not match verified run spec")
     if binding["bootstrap_plan_id"] != bootstrap_plan_id:
         raise ValueError("bootstrap argument does not match verified run spec")
+    run_id = _canonical_modal_run_id(
+        spec.get("run_id"),
+        variant=binding["variant"],
+        run_spec_id=binding["run_spec_id"],
+    )
 
     # Reject contradictory duplicated wrapper fields instead of trusting them.
     wrapper_bindings = {
@@ -1157,7 +1210,7 @@ def run_sweep(
 
     fvi_id = spec_ids["fvi_study_id"]
     fvi_manifest = checker.load_json(
-        Path(_p("fvi", fvi_id)) / "fvi_study.json"
+        _canonical_fvi_study_path(Path(_p("fvi", fvi_id)))
     )
     if (
         compute_id(fvi_manifest.get("identity", {})) != fvi_manifest.get("id")
@@ -1244,9 +1297,7 @@ def run_sweep(
     plan = binding["bootstrap_plan"]
     variant = binding["variant"]
     cells = profile.full_grid() if variant == "final" else profile.smoke_cells()
-    run_root = Path(_p("runs", spec["run_id"]))
-    if binding["run_spec_id"][:12] not in str(spec["run_id"]):
-        raise ValueError("run_id is not bound to run_spec_id")
+    run_root = Path(_p("runs", run_id))
     actual_resume, evidence_attempt = _resolve_remote_sweep_attempt(
         run_root,
         recovery_requested=bool(recovery_requested),
@@ -1285,7 +1336,7 @@ def run_sweep(
         resume=actual_resume)
     agg = sweep.run_sweep(ctx)
     vol.commit()
-    result = {"run_id": spec["run_id"], "requested": agg["requested"], "completed": agg["completed"],
+    result = {"run_id": run_id, "requested": agg["requested"], "completed": agg["completed"],
               "skipped": agg["skipped"], "failed": agg["failed"], "release_status": agg["release_status"],
               "family": agg.get("family")}
     if variant == "smoke":
@@ -1347,6 +1398,7 @@ def package(run_id: str) -> dict:
     )
     from scripts.stopdff_v5.manifests import environment_contract_identity
     vol.reload()
+    run_id = _canonical_modal_run_id(run_id)
     run_root = Path(_p("runs", run_id))
     agg = checker.load_json(run_root / "aggregate.json")
     adapter_id = agg.get("adapter_bundle_id")
@@ -1365,6 +1417,11 @@ def package(run_id: str) -> dict:
             + "; ".join(validation.errors)
         )
     spec_manifest = checker.load_json(run_root / "run_spec.json")
+    _canonical_modal_run_id(
+        run_id,
+        variant=spec_manifest["identity"]["profile_variant"],
+        run_spec_id=spec_manifest["id"],
+    )
     spec_ids = spec_manifest["identity"]["identity"]
     source_path = Path(_p(
         "inputs",
@@ -1385,11 +1442,10 @@ def package(run_id: str) -> dict:
         "model",
         "model_snapshot_manifest.json",
     ))
-    fvi_path = Path(_p(
+    fvi_path = _canonical_fvi_study_path(Path(_p(
         "fvi",
         spec_ids["fvi_study_id"],
-        "fvi_study.json",
-    ))
+    )))
     evidence_bytes = {
         "evidence/fvi_study.json": fvi_path.read_bytes(),
     }
@@ -1473,10 +1529,43 @@ def validate(run_id: str, adapter_id: str, require_final: bool, require_package:
     from pathlib import Path
     from scripts.stopdff_v5 import checker
     vol.reload()
-    res = checker.validate_run(Path(_p("runs", run_id)), backend="modal",
-                              adapter_bundle=Path(_p("adapters", f"canonical_{adapter_id}")),
-                              require_final_profile=require_final, require_package=require_package)
-    return {"passed": res.passed, "errors": res.errors[:50], "recomputed": res.recomputed}
+    run_id = _canonical_modal_run_id(run_id)
+    run_root = Path(_p("runs", run_id))
+    spec_path = run_root / "run_spec.json"
+    if not spec_path.is_symlink() and spec_path.is_file():
+        try:
+            spec_manifest = checker.load_json(spec_path)
+        except (OSError, UnicodeError, TypeError, ValueError):
+            pass
+        else:
+            identity = (
+                spec_manifest.get("identity")
+                if isinstance(spec_manifest, dict)
+                else None
+            )
+            if (
+                isinstance(identity, dict)
+                and identity.get("profile_variant") in {"smoke", "final"}
+                and isinstance(spec_manifest.get("id"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", spec_manifest["id"])
+            ):
+                _canonical_modal_run_id(
+                    run_id,
+                    variant=identity["profile_variant"],
+                    run_spec_id=spec_manifest["id"],
+                )
+    res = checker.validate_run(
+        run_root,
+        backend="modal",
+        adapter_bundle=Path(_p("adapters", f"canonical_{adapter_id}")),
+        require_final_profile=require_final,
+        require_package=require_package,
+    )
+    return {
+        "passed": res.passed,
+        "errors": res.errors[:50],
+        "recomputed": res.recomputed,
+    }
 
 
 @app.function(volumes={MNT: vol}, timeout=7200, max_containers=1)

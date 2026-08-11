@@ -692,6 +692,18 @@ def _validate_spec_impl(
     CheckResult
         Structured validation status and any contract errors.
     """
+    spec_path = Path(spec_path)
+    path_issue = _canonical_path_issue(
+        spec_path,
+        expect_directory=False,
+    )
+    if path_issue == "missing":
+        return CheckResult(passed=False, errors=["run spec is missing"])
+    if path_issue is not None:
+        return CheckResult(
+            passed=False,
+            errors=["run spec path must be a non-symlink regular file"],
+        )
     try:
         spec = load_json(spec_path)
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:

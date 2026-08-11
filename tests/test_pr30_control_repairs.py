@@ -1988,3 +1988,84 @@ def test_local_resume_rejects_symlinked_runs_directory(tmp_path, monkeypatch):
                 "--resume",
             ]
         )
+def test_modal_run_id_contract_rejects_nested_and_mismatched_values(
+    monkeypatch,
+):
+    runner = _load_modal_runner(monkeypatch)
+    spec_id = "a" * 64
+    valid = f"smoke_modal_{spec_id[:12]}"
+    assert runner._canonical_modal_run_id(
+        valid,
+        variant="smoke",
+        run_spec_id=spec_id,
+    ) == valid
+
+    invalid = (
+        f"nested/{valid}",
+        f"{valid}/nested",
+        f"final_modal_{spec_id[:12]}",
+        "smoke_modal_not-hex",
+        "smoke_modal_aaaaaaaaaaaa/..",
+    )
+    for value in invalid:
+        with pytest.raises(ValueError):
+            runner._canonical_modal_run_id(
+                value,
+                variant="smoke",
+                run_spec_id=spec_id,
+            )
+
+
+@pytest.mark.parametrize("entrypoint", ["package", "validate"])
+def test_modal_run_entrypoints_reject_nested_ids_before_path_use(
+    monkeypatch,
+    entrypoint,
+):
+    runner = _load_modal_runner(monkeypatch)
+
+    def forbidden_path(*_parts):
+        raise AssertionError("noncanonical run_id reached volume path derivation")
+
+    monkeypatch.setattr(runner, "_p", forbidden_path)
+    with pytest.raises(ValueError, match="run_id"):
+        if entrypoint == "package":
+            runner.package("nested/final_modal_aaaaaaaaaaaa")
+        else:
+            runner.validate(
+                "nested/final_modal_aaaaaaaaaaaa",
+                "b" * 64,
+                True,
+                True,
+            )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["root_symlink", "manifest_symlink", "manifest_directory"],
+)
+def test_fvi_manifest_path_rejects_noncanonical_cache_before_read(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    runner = _load_modal_runner(monkeypatch)
+    root = tmp_path / "fvi" / ("f" * 64)
+    root.mkdir(parents=True)
+    manifest = root / "fvi_study.json"
+    manifest.write_text("{}", encoding="utf-8")
+    assert runner._canonical_fvi_study_path(root) == manifest
+
+    if mutation == "root_symlink":
+        external = tmp_path / "external-fvi"
+        root.rename(external)
+        root.symlink_to(external, target_is_directory=True)
+    elif mutation == "manifest_symlink":
+        external = tmp_path / "external-fvi.json"
+        manifest.rename(external)
+        manifest.symlink_to(external)
+    else:
+        manifest.unlink()
+        manifest.mkdir()
+
+    with pytest.raises(ValueError, match="FVI cache"):
+        runner._canonical_fvi_study_path(root)

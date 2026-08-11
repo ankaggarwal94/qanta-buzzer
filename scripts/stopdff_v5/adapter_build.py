@@ -461,7 +461,7 @@ def _score_question_rows(
     from sklearn.metrics.pairwise import cosine_similarity
 
     _validate_scoring_question(question)
-    qid = str(question["qid"])
+    qid = _record_qid(question)
     full_q = question["question"]
     prefixes = question["cumulative_prefixes"]
     options = question["options"]
@@ -533,6 +533,24 @@ def _score_question_rows(
             "distractor_strategy": distractor_strategy, "p_second_best": 0.0, "top2_margin": 0.0,
         })
     return rows
+
+
+def _select_retained_questions(
+    questions: list[dict[str, Any]],
+    val_qids: set[str],
+    test_qids: set[str],
+) -> list[tuple[dict[str, Any], str]]:
+    """Select validated MC rows using the repository's accepted qid aliases."""
+    retained: list[tuple[dict[str, Any], str]] = []
+    for question in sorted(questions, key=_record_qid):
+        qid = _record_qid(question)
+        if not qid:
+            raise ValueError("MC dataset record lacks qid")
+        if qid in val_qids:
+            retained.append((question, "val"))
+        if qid in test_qids:
+            retained.append((question, "test"))
+    return retained
 
 
 def _score_questions_rows(
@@ -748,13 +766,11 @@ def build_adapter_bundle(
 
     model = SentenceTransformer(str(model_snapshot_dir), trust_remote_code=False)
 
-    retained_questions: list[tuple[dict[str, Any], str]] = []
-    for q in sorted(questions, key=lambda x: str(x["qid"])):
-        qid = str(q["qid"])
-        if qid in val_qids:
-            retained_questions.append((q, "val"))
-        if qid in test_qids:
-            retained_questions.append((q, "test"))
+    retained_questions = _select_retained_questions(
+        questions,
+        val_qids,
+        test_qids,
+    )
 
     scored_rows = _score_questions_rows(retained_questions, model)
     fit_rows = [row for row in scored_rows if row["split"] == "val"]

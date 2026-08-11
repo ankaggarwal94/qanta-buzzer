@@ -190,3 +190,57 @@ def test_adapter_scoring_rows_fail_closed_before_model_use(field, value, match):
 
     with pytest.raises(ValueError, match=match):
         adapter_build._validate_scoring_question(question)
+def test_adapter_retained_selection_accepts_qid_aliases():
+    questions = [
+        {"question_id": "val-b"},
+        {"id": "test-a"},
+        {"qid": "ignored"},
+    ]
+    retained = adapter_build._select_retained_questions(
+        questions,
+        {"val-b"},
+        {"test-a"},
+    )
+    assert [
+        (adapter_build._record_qid(question), split)
+        for question, split in retained
+    ] == [("test-a", "test"), ("val-b", "val")]
+
+
+@pytest.mark.parametrize("qid_field", ["question_id", "id"])
+def test_adapter_scoring_accepts_qid_aliases(qid_field):
+    class FakeModel:
+        def encode(
+            self,
+            values,
+            *,
+            batch_size,
+            convert_to_numpy,
+            show_progress_bar,
+        ):
+            assert batch_size == adapter_build._ENCODE_BATCH_SIZE
+            assert convert_to_numpy is True
+            assert show_progress_bar is False
+            vectors = {
+                "correct": [1.0, 0.0],
+                "wrong": [0.0, 1.0],
+                "prefix": [1.0, 0.0],
+            }
+            return np.asarray([vectors[value] for value in values], dtype=float)
+
+    question = {
+        qid_field: "alias-qid",
+        "question": "prefix",
+        "cumulative_prefixes": ["prefix"],
+        "options": ["correct", "wrong"],
+        "gold_index": 0,
+        "answer_primary": "correct",
+        "category": "Test",
+    }
+    rows = adapter_build._score_question_rows(
+        question,
+        FakeModel(),
+        "val",
+    )
+    assert rows
+    assert {row["item_id"] for row in rows} == {"alias-qid"}
