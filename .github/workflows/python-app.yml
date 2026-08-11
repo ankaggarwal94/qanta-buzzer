@@ -79,12 +79,23 @@ jobs:
         set -euo pipefail
         pytest tests/test_build_mc_dataset.py tests/test_stopdff_v5_producers.py -q --tb=short
         flake8 scripts/build_mc_dataset.py scripts/stopdff_v5/producers.py tests/test_build_mc_dataset.py tests/test_stopdff_v5_producers.py --select=E9,F63,F7,F82 --show-source --statistics
+    - name: Prepare clean candidate commit
+      shell: bash
+      run: |
+        set -euo pipefail
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add AGENTS.md docs/stopdff_v5/REPRODUCTION.md \
+          scripts/build_mc_dataset.py scripts/stopdff_v5/producers.py \
+          tests/test_build_mc_dataset.py tests/test_stopdff_v5_producers.py
+        git commit -m "Fix retained split metadata contract"
+        test -z "$(git status --porcelain)"
     - name: Full verification
       shell: bash
       run: |
         set -euo pipefail
         pytest tests/ -q --tb=short
-    - name: Commit and CAS-push repair
+    - name: CAS-push verified repair
       shell: bash
       run: |
         set -euo pipefail
@@ -94,10 +105,4 @@ jobs:
           echo "Branch moved from $START_HEAD to $REMOTE_HEAD; refusing to push"
           exit 78
         }
-        git config user.name "github-actions[bot]"
-        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        git add AGENTS.md docs/stopdff_v5/REPRODUCTION.md \
-          scripts/build_mc_dataset.py scripts/stopdff_v5/producers.py \
-          tests/test_build_mc_dataset.py tests/test_stopdff_v5_producers.py
-        git commit -m "Fix retained split metadata contract"
         git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
