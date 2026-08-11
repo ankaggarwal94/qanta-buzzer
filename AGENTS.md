@@ -65,9 +65,10 @@ python scripts/train_ppo.py --smoke
 python scripts/evaluate_all.py --smoke
 ```
 
-`build_mc_dataset.py` writes `train_dataset.json`, `val_dataset.json`, and
-`test_dataset.json` as the canonical downstream inputs. `mc_dataset.json`
-remains as a combined legacy/debug artifact. By default, `run_baselines.py`
+`build_mc_dataset.py` writes `train_dataset.json`, `val_dataset.json`,
+`test_dataset.json`, and retained-split `split_metadata.json` as canonical
+downstream inputs. `mc_dataset.json` remains as a combined legacy/debug
+artifact. By default, `run_baselines.py`
 selects thresholds on validation, `train_ppo.py` trains on train and writes
 validation metrics to `ppo_summary.json`, and `evaluate_all.py` writes the
 canonical final test report on the test split (`evaluation_report.json`).

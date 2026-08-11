@@ -125,6 +125,88 @@ def _record_value(record: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
+def _strict_nonnegative_int(value: Any) -> bool:
+    """Return whether value is a JSON integer count, excluding booleans."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= 0
+    )
+
+
+def _record_category_distribution(
+    records: list[dict[str, Any]],
+) -> dict[str, int] | None:
+    """Derive a deterministic category distribution from staged records."""
+    counts: dict[str, int] = {}
+    for record in records:
+        category = _record_value(record, ("category",))
+        if not isinstance(category, str):
+            return None
+        counts[category] = counts.get(category, 0) + 1
+    return {key: counts[key] for key in sorted(counts)}
+
+
+def _split_metadata_consistent(
+    metadata: object,
+    records_by_split: dict[str, list[dict[str, Any]]],
+) -> bool:
+    """Verify retained-split metadata against the staged dataset bytes."""
+    split_names = ("train", "val", "test")
+    expected_top = {*split_names, "total_questions", "split_ratios"}
+    if not isinstance(metadata, dict) or set(metadata) != expected_top:
+        return False
+
+    counts: list[int] = []
+    for split in split_names:
+        block = metadata.get(split)
+        if not isinstance(block, dict) or set(block) != {"count", "categories"}:
+            return False
+        count = block.get("count")
+        categories = block.get("categories")
+        if not _strict_nonnegative_int(count) or not isinstance(categories, dict):
+            return False
+        if any(
+            not isinstance(key, str)
+            or not _strict_nonnegative_int(value)
+            for key, value in categories.items()
+        ):
+            return False
+        expected_categories = _record_category_distribution(records_by_split[split])
+        if expected_categories is None or categories != expected_categories:
+            return False
+        if count != len(records_by_split[split]) or sum(categories.values()) != count:
+            return False
+        counts.append(count)
+
+    total = metadata.get("total_questions")
+    if not _strict_nonnegative_int(total) or total != sum(counts):
+        return False
+
+    ratios = metadata.get("split_ratios")
+    if not isinstance(ratios, list) or len(ratios) != len(split_names):
+        return False
+    expected_ratios = (
+        [count / total for count in counts]
+        if total
+        else [0.0, 0.0, 0.0]
+    )
+    for actual, expected in zip(ratios, expected_ratios):
+        if (
+            isinstance(actual, bool)
+            or not isinstance(actual, (int, float))
+            or not math.isfinite(float(actual))
+            or not math.isclose(
+                float(actual),
+                expected,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        ):
+            return False
+    return True
+
+
 def _split_semantics(
     records_by_split: dict[str, list[dict[str, Any]]],
 ) -> tuple[dict[str, Any], bool]:
@@ -360,6 +442,10 @@ def stage_raw_inputs(source_paths: dict[str, Path], out_dir: Path) -> dict[str, 
         split: _dataset_records(staged[f"{split}_dataset.json"])
         for split in ("train", "val", "test")
     }
+    checks["split_metadata_consistent"] = _split_metadata_consistent(
+        decoded["split_metadata.json"],
+        records_by_split,
+    )
     split_checks, split_ok = _split_semantics(records_by_split)
     checks.update(split_checks)
     try:
@@ -451,6 +537,7 @@ def stage_raw_inputs(source_paths: dict[str, Path], out_dir: Path) -> dict[str, 
     # follows from fit_split=val plus byte-derived three-way disjointness.
     all_ok = (checks["threshold_sidecar_ok"] and checks["calibration_fit_split_is_val"]
               and split_ok and trajectory_ok
+              and checks["split_metadata_consistent"]
               and checks["build_metadata_retention_consistent"]
               and checks["myopic_semantics_valid"])
     checks["all_semantic_checks_pass"] = all_ok

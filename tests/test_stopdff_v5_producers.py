@@ -15,11 +15,17 @@ if str(REPO) not in sys.path:
 from scripts.stopdff_v5 import producers  # noqa: E402
 
 
-def _record(qid: str, question: str, answer: str) -> dict:
+def _record(
+    qid: str,
+    question: str,
+    answer: str,
+    category: str = "General",
+) -> dict:
     return {
         "qid": qid,
         "question": question,
         "answer_primary": answer,
+        "category": category,
     }
 
 
@@ -60,7 +66,16 @@ def _source_paths(tmp_path: Path) -> dict[str, Path]:
             }
         },
     )
-    _write_json(sources / "split_metadata.json", {"claimed_disjoint": True})
+    _write_json(
+        sources / "split_metadata.json",
+        {
+            "train": {"count": 1, "categories": {"General": 1}},
+            "val": {"count": 1, "categories": {"General": 1}},
+            "test": {"count": 1, "categories": {"General": 1}},
+            "total_questions": 3,
+            "split_ratios": [1 / 3, 1 / 3, 1 / 3],
+        },
+    )
     _write_json(
         sources / "calibration.json",
         {"metadata": {"fit_split": "val"}},
@@ -245,6 +260,32 @@ def test_stage_raw_inputs_requires_and_recomputes_all_retained_counts(
 def test_stage_raw_inputs_gates_on_canonical_myopic_metric(tmp_path, payload):
     source_paths = _source_paths(tmp_path)
     _write_json(source_paths["stopdff.json"], payload)
+
+    with pytest.raises(ValueError, match="raw-input semantic checks failed"):
+        producers.stage_raw_inputs(source_paths, tmp_path / "staged")
+
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["count", "category", "total", "ratio", "shape"],
+)
+def test_stage_raw_inputs_rejects_stale_split_metadata(tmp_path, mutation):
+    """The retained-split sidecar must agree with the staged dataset bytes."""
+    source_paths = _source_paths(tmp_path)
+    metadata_path = source_paths["split_metadata.json"]
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if mutation == "count":
+        payload["train"]["count"] = 2
+    elif mutation == "category":
+        payload["val"]["categories"] = {"Stale": 1}
+    elif mutation == "total":
+        payload["total_questions"] = 4
+    elif mutation == "ratio":
+        payload["split_ratios"] = [0.5, 0.25, 0.25]
+    else:
+        payload["unexpected"] = True
+    _write_json(metadata_path, payload)
 
     with pytest.raises(ValueError, match="raw-input semantic checks failed"):
         producers.stage_raw_inputs(source_paths, tmp_path / "staged")

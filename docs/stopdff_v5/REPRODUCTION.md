@@ -111,8 +111,10 @@ You need ten raw inputs (the full-scale `mc_dataset.json` / `train_dataset.json`
 `val_dataset.json` / `test_dataset.json` / `build_metadata.json` /
 `split_metadata.json` live under
 `data/processed/`; `calibration.json` and `stopdff.json` under `paper_exports/`;
-`threshold_manifest.json{,.sha256}` at the repo root). These large inputs are reproducible
-from the belief-feature pipeline (`scripts/build_mc_dataset.py`, `scripts/fresh_split.py`,
+`threshold_manifest.json{,.sha256}` at the repo root). `split_metadata.json` is emitted by
+`scripts/build_mc_dataset.py` from the retained MC train/validation/test bytes and is
+validated against those exact datasets during v5 staging. These large inputs are reproducible
+from the belief-feature pipeline (`scripts/build_mc_dataset.py`,
 `scripts/compute_prefix_calibration.py`, `scripts/compute_stopdff.py`) and are synced via
 Dropbox rather than committed (see `.gitignore` and `DATA.md`).
 
