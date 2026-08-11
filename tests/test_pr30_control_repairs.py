@@ -515,6 +515,103 @@ def test_freeze_model_cached_reuse_requires_model_snapshot_kind(
     assert expected_kinds == ["model_snapshot", "model_snapshot"]
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "live_root_symlink",
+        "dangling_root_symlink",
+        "root_file",
+        "manifest_symlink",
+        "snapshot_symlink",
+    ],
+)
+def test_freeze_model_rejects_noncanonical_fresh_cache_before_write(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    """A poisoned fresh model cache is rejected before snapshot writes."""
+    runner = _load_modal_runner(monkeypatch)
+    runner.MNT = str(tmp_path)
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    root = inputs / "model"
+    external = tmp_path / "external-model"
+    external.mkdir()
+    external_manifest = tmp_path / "external-manifest.json"
+    external_manifest.write_text("outside", encoding="utf-8")
+
+    if mutation == "live_root_symlink":
+        root.symlink_to(external, target_is_directory=True)
+    elif mutation == "dangling_root_symlink":
+        root.symlink_to(tmp_path / "missing-model", target_is_directory=True)
+    elif mutation == "root_file":
+        root.write_text("not a directory", encoding="utf-8")
+    elif mutation == "manifest_symlink":
+        root.mkdir()
+        (root / "model_snapshot_manifest.json").symlink_to(external_manifest)
+    else:
+        root.mkdir()
+        (root / "snapshot").symlink_to(external, target_is_directory=True)
+
+    from scripts.stopdff_v5 import adapter_build
+
+    monkeypatch.setattr(
+        adapter_build,
+        "freeze_model_snapshot",
+        lambda _root: pytest.fail("snapshot writer reached poisoned cache"),
+    )
+
+    with pytest.raises((ValueError, FileExistsError), match="model cache"):
+        runner.freeze_model()
+
+    assert list(external.iterdir()) == []
+    assert external_manifest.read_text(encoding="utf-8") == "outside"
+
+
+def test_freeze_model_accepts_empty_canonical_fresh_cache(
+    tmp_path,
+    monkeypatch,
+):
+    """An empty real cache directory remains a valid fresh destination."""
+    runner = _load_modal_runner(monkeypatch)
+    runner.MNT = str(tmp_path)
+    root = tmp_path / "inputs" / "model"
+    root.mkdir(parents=True)
+    model_id = "3" * 64
+    from scripts.stopdff_v5 import adapter_build
+
+    def freeze_valid_model(destination):
+        manifest = _write_model_manifest(
+            Path(destination),
+            kind="model_snapshot",
+            model_id=model_id,
+        )
+        manifest["identity"]["model_revision"] = "a" * 40
+        (Path(destination) / "model_snapshot_manifest.json").write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+        )
+        return manifest
+
+    monkeypatch.setattr(
+        adapter_build,
+        "freeze_model_snapshot",
+        freeze_valid_model,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_verified_content_manifest",
+        lambda *_args, **_kwargs: {"id": model_id},
+    )
+
+    assert runner.freeze_model() == {
+        "model_id": model_id,
+        "revision": "a" * 40,
+        "cached": False,
+    }
+
+
 def test_freeze_model_postfreeze_recheck_requires_model_snapshot_kind(
     tmp_path,
     monkeypatch,

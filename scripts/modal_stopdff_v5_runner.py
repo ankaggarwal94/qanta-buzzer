@@ -351,6 +351,36 @@ def _canonical_bootstrap_plan_path(root: Path) -> Path:
     return plan_path
 
 
+def _model_cache_state(root: Path) -> tuple[Path, bool]:
+    """Classify the immutable model cache without following unsafe paths."""
+    root = Path(root)
+    manifest_path = root / "model_snapshot_manifest.json"
+    if root.is_symlink():
+        raise ValueError("model cache root must be a non-symlink directory")
+    if root.exists() and not root.is_dir():
+        raise ValueError("model cache root must be a non-symlink directory")
+    if manifest_path.is_symlink():
+        raise ValueError(
+            "model cache manifest must be a non-symlink regular file"
+        )
+    if manifest_path.exists():
+        if not manifest_path.is_file():
+            raise ValueError(
+                "model cache manifest must be a non-symlink regular file"
+            )
+        return manifest_path, True
+    if root.exists():
+        try:
+            nonempty = next(root.iterdir(), None) is not None
+        except OSError as exc:
+            raise ValueError("model cache root cannot be inspected") from exc
+        if nonempty:
+            raise FileExistsError(
+                "model cache destination is incomplete or noncanonical"
+            )
+    return manifest_path, False
+
+
 @app.function(volumes={MNT: vol}, timeout=1800, max_containers=1)
 def probe() -> dict:
     from importlib import metadata as im
@@ -572,8 +602,8 @@ def freeze_model() -> dict:
     from scripts.stopdff_v5 import adapter_build
     vol.reload()
     root = Path(_p("inputs", "model"))
-    mpath = root / "model_snapshot_manifest.json"
-    if mpath.exists():
+    mpath, cached_entry = _model_cache_state(root)
+    if cached_entry:
         cached = json.loads(mpath.read_text())
         _verified_content_manifest(
             root,
@@ -586,6 +616,9 @@ def freeze_model() -> dict:
         )
         return {"model_id": cached["id"], "cached": True}
     root.mkdir(parents=True, exist_ok=True)
+    _, appeared_after_mkdir = _model_cache_state(root)
+    if appeared_after_mkdir:
+        raise FileExistsError("model cache appeared during fresh creation")
     man = adapter_build.freeze_model_snapshot(root)
     _verified_content_manifest(
         root,
