@@ -1,144 +1,23 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
 import json
 import os
 import shutil
-import sys
-import tempfile
-import types
 from pathlib import Path
 
 import pytest
 
 from scripts import stopdff_v5_control_plane as control_plane
+from tests.harness_control_plane import (
+    _fake_control_api,
+    _load_modal_runner,
+    _plan,
+)
 
 
 REPO = Path(__file__).resolve().parents[1]
 MODAL_RUNNER = REPO / "scripts" / "modal_stopdff_v5_runner.py"
-
-
-def _load_modal_runner(monkeypatch):
-    class DummyImage:
-        @classmethod
-        def debian_slim(cls, **_kwargs):
-            return cls()
-
-        def apt_install(self, *_args):
-            return self
-
-        def pip_install(self, *_args):
-            return self
-
-        def env(self, *_args):
-            return self
-
-        def add_local_dir(self, *_args, **_kwargs):
-            return self
-
-    class DummyVolume:
-        @classmethod
-        def from_name(cls, *_args, **_kwargs):
-            return cls()
-
-        def reload(self):
-            return None
-
-        def commit(self):
-            return None
-
-    class DummyApp:
-        def __init__(self, *_args, **_kwargs):
-            self.include_source = _kwargs.get("include_source")
-
-        def function(self, **_kwargs):
-            def decorate(function):
-                function.remote = function
-                sequence = {"value": 0}
-
-                def spawn(*args, **kwargs):
-                    sequence["value"] += 1
-                    result = function(*args, **kwargs)
-                    return types.SimpleNamespace(
-                        object_id=(
-                            f"fc-{function.__name__}-{sequence['value']}"
-                        ),
-                        get=lambda: result,
-                    )
-
-                function.spawn = spawn
-                return function
-
-            return decorate
-
-        def local_entrypoint(self):
-            return lambda function: function
-
-    monkeypatch.setitem(
-        sys.modules,
-        "modal",
-        types.SimpleNamespace(
-            Image=DummyImage,
-            Volume=DummyVolume,
-            App=DummyApp,
-            is_local=lambda: True,
-        ),
-    )
-    from scripts.stopdff_v5.identity import build_manifest, sha256_file
-    from scripts.stopdff_v5.manifests import source_manifest_identity
-
-    source_bundle = Path(tempfile.mkdtemp(prefix="stopdff_v5_test_source_"))
-    source = source_bundle / "source"
-    source.mkdir()
-    source_names = (
-        "pyproject.toml",
-        "scripts/stopdff_v5/checker.py",
-        "scripts/stopdff_v5/sweep.py",
-        "uv.lock",
-    )
-    for name in source_names:
-        path = source / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"{name}\n", encoding="utf-8")
-    files = [
-        {
-            "path": name,
-            "mode": "100644",
-            "size": (source / name).stat().st_size,
-            "sha256": sha256_file(source / name),
-        }
-        for name in source_names
-    ]
-    source_manifest = build_manifest(
-        source_manifest_identity(
-            git_sha="a" * 40,
-            files=files,
-            pyproject_sha256=files[0]["sha256"],
-            uv_lock_sha256=files[-1]["sha256"],
-        )
-    )
-    (source_bundle / "source_manifest.json").write_text(
-        json.dumps(source_manifest), encoding="utf-8"
-    )
-    monkeypatch.setenv("STOPDFF_V5_SOURCE_DIR", str(source_bundle))
-    name = f"_pr30_round2_modal_runner_{id(monkeypatch)}"
-    spec = importlib.util.spec_from_file_location(name, MODAL_RUNNER)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    module.IMAGE_SOURCE_MANIFEST_ID = "1" * 64
-    return module
-
-
-def _plan() -> dict:
-    return {
-        "source_id": "1" * 64,
-        "raw_id": "2" * 64,
-        "adapter_subdirs": ["build_a", "build_b"],
-        "gate_overrides": {},
-        "resource_summary": {},
-    }
 
 
 def _reachable_completed_control_state(
@@ -583,7 +462,8 @@ def test_completed_resume_revalidates_or_requires_recovery(
     tmp_path, monkeypatch
 ) -> None:
     runner = _load_modal_runner(monkeypatch)
-    plan = runner._validate_control_plan(_plan())
+    _api, _calls, ids = _fake_control_api()
+    plan = runner._validate_control_plan(_plan(ids))
     state_path = tmp_path / "control.json"
     _reachable_completed_control_state(
         runner,
@@ -969,10 +849,11 @@ def test_control_plan_source_mismatch_makes_no_remote_calls(
 ) -> None:
     runner = _load_modal_runner(monkeypatch)
     runner.IMAGE_SOURCE_MANIFEST_ID = "2" * 64
+    _api, _calls, ids = _fake_control_api()
     state_path = tmp_path / "control.json"
     with pytest.raises(ValueError, match="validated Modal image source"):
         runner.run_control_plane(
-            _plan(),
+            _plan(ids),
             state_path,
             resume=False,
             stage_api={},
@@ -1026,7 +907,8 @@ def test_adapter_subdirs_must_be_canonical_and_distinct(
     subdirs,
 ) -> None:
     runner = _load_modal_runner(monkeypatch)
-    plan = _plan()
+    _api, _calls, ids = _fake_control_api()
+    plan = _plan(ids)
     plan["adapter_subdirs"] = subdirs
     with pytest.raises(ValueError, match="noncanonical|distinct"):
         runner._validate_control_plan(plan)
@@ -1130,7 +1012,8 @@ def test_control_plane_lock_serializes_drivers_per_state_path(tmp_path):
     state_path = tmp_path / "control.json"
     lock_path = tmp_path / "control.json.lock"
     key = os.path.realpath(lock_path)
-    plan = _plan()
+    _api, _calls, ids = _fake_control_api()
+    plan = _plan(ids)
 
     # The lock is acquired at driver entry, before the resume state read.
     with pytest.raises(ValueError, match="control JSON is missing"):

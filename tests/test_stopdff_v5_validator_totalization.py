@@ -641,7 +641,7 @@ def test_lifecycle_lock_fails_fast_when_another_driver_holds_it(
         os.close(foreign_fd)
 
     local_runner._acquire_lifecycle_lock(out)
-    assert str(lock_path) in local_runner._LIFECYCLE_LOCK_FDS
+    assert os.path.realpath(lock_path) in local_runner._LIFECYCLE_LOCK_FDS
     # Sequential re-entry by the same process reuses the held lock instead
     # of self-deadlocking (flock conflicts across open-file-descriptions).
     local_runner._acquire_lifecycle_lock(out)
@@ -684,4 +684,37 @@ def test_lifecycle_journal_creation_is_guarded_by_the_driver_lock(
     )
     assert state["adapter_executions"] == {}
     assert (out / "local_lifecycle.json").exists()
-    assert str(lock_path) in local_runner._LIFECYCLE_LOCK_FDS
+    assert os.path.realpath(lock_path) in local_runner._LIFECYCLE_LOCK_FDS
+
+
+def test_lifecycle_lock_reentrant_across_symlinked_spellings(tmp_path, monkeypatch):
+    """Re-entrancy keys on file identity, not text: a second acquire reached
+    through a symlinked spelling of the same workspace reuses the held fd
+    instead of opening a new descriptor that self-conflicts on LOCK_EX and
+    spuriously fails fast. Mirrors the control-plane twin
+    (test_control_plane_lock_reentrant_across_symlinked_spellings); the local
+    lifecycle lock lacked this coverage (L-V4-01, PR #30 round 4)."""
+    import os
+
+    monkeypatch.setattr(local_runner, "_LIFECYCLE_LOCK_FDS", {})
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir, target_is_directory=True)
+
+    key = os.path.realpath(real_dir / "local_lifecycle.json.lock")
+    try:
+        local_runner._acquire_lifecycle_lock(real_dir)
+        assert key in local_runner._LIFECYCLE_LOCK_FDS
+        held_fd = local_runner._LIFECYCLE_LOCK_FDS[key]
+
+        # Different text, same inode (link_dir -> real_dir): the second acquire
+        # must be a no-op that reuses the held fd. Keyed on the raw textual path
+        # this would open a second descriptor and fail fast on LOCK_EX.
+        local_runner._acquire_lifecycle_lock(link_dir)
+        assert local_runner._LIFECYCLE_LOCK_FDS[key] == held_fd
+        assert list(local_runner._LIFECYCLE_LOCK_FDS) == [key]
+    finally:
+        fd = local_runner._LIFECYCLE_LOCK_FDS.pop(key, None)
+        if fd is not None:
+            os.close(fd)
