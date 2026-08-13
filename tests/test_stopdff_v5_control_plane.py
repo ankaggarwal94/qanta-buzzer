@@ -30,13 +30,15 @@ MODAL_RUNNER = REPO / "scripts" / "modal_stopdff_v5_runner.py"
 def _load_modal_runner(monkeypatch, *, modal_is_local: bool = True):
     image_envs: list[dict] = []
     local_dirs: list[tuple[tuple, dict]] = []
+    apt_installs: list[tuple] = []
 
     class DummyImage:
         @classmethod
         def debian_slim(cls, **_kwargs):
             return cls()
 
-        def apt_install(self, *_args):
+        def apt_install(self, *args):
+            apt_installs.append(tuple(args))
             return self
 
         def pip_install(self, *_args):
@@ -95,6 +97,7 @@ def _load_modal_runner(monkeypatch, *, modal_is_local: bool = True):
         is_local=lambda: modal_is_local,
         image_envs=image_envs,
         local_dirs=local_dirs,
+        apt_installs=apt_installs,
     )
     monkeypatch.setitem(sys.modules, "modal", fake_modal)
     from scripts.stopdff_v5.identity import build_manifest, sha256_file

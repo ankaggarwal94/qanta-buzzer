@@ -16,18 +16,21 @@ from pathlib import Path
 from typing import Any
 
 from . import PROFILE_NAME, PROTOCOL_VERSION
-from .identity import compute_id, loads_no_duplicate_keys
+from .fileio import publish_bytes
+from .identity import build_manifest, compute_id, loads_no_duplicate_keys, sha256_file
 from .profile import CALIBRATION, REWARD_SCHEDULES
 from .receipt_evidence import (
     DETERMINISM_BINDINGS,
     FULL_RECEIPT_BINDINGS,
     build_prerequisite_evidence,
     prerequisite_evidence_sha256,
+    validate_prerequisite_evidence,
     validate_prerequisite_receipts,
     validate_receipt_evidence_digest,
     verify_prerequisite_evidence_bytes,
 )
 from .rewards import REWARD_SCHEDULE_STRINGS
+from .verdicts import MATERIAL_THRESHOLD
 
 _RECEIPT_GATES = {"smoke", "mutation", "determinism"}
 _FULL_RECEIPT_BINDINGS = FULL_RECEIPT_BINDINGS
@@ -41,8 +44,6 @@ def build_prerequisite_receipt(
     evidence: dict[str, Any],
 ) -> dict[str, Any]:
     """Build a content-addressed successful prerequisite receipt."""
-    from .identity import build_manifest
-
     if gate not in _RECEIPT_GATES:
         raise ValueError(f"unknown prerequisite gate {gate!r}")
     required = (
@@ -69,8 +70,6 @@ def build_evidenced_prerequisite_receipt(
     evidence: dict[str, Any],
 ) -> dict[str, Any]:
     """Issue a receipt only after validating and hashing its full evidence object."""
-    from .receipt_evidence import validate_prerequisite_evidence
-
     validate_prerequisite_evidence(
         gate=gate,
         bindings=bindings,
@@ -83,8 +82,48 @@ def build_evidenced_prerequisite_receipt(
     )
 
 
+def _gate_override_active(aggregate: dict[str, Any]) -> bool:
+    ov = aggregate.get("gate_overrides") or {}
+    return bool(
+        ov.get("allow_low_mc_retention") or ov.get("allow_incomplete_mc_coverage")
+    )
+
+
+def _rendered_cell_verdict(cell: dict[str, Any], *, override_active: bool) -> str:
+    """Render a per-cell verdict with the qualifier reasons the JSON carries.
+
+    A bare WARN is not actionable; the reader must see whether it came from a
+    ceiling flag, dirty coverage, an active MC gate override, or a CI upper
+    bound above the material threshold (mirrors verdicts.cell_verdict).
+    """
+    verdict = str(cell.get("verdict"))
+    if cell.get("status") != "completed":
+        return verdict
+    reasons: list[str] = []
+    if cell.get("ceiling_any"):
+        reasons.append("ceiling")
+    if cell.get("coverage_clean") is False:
+        reasons.append("coverage")
+    if override_active:
+        reasons.append("override")
+    ci = cell.get("abs_median_ci")
+    if (
+        verdict == "WARN"
+        and isinstance(ci, (list, tuple))
+        and len(ci) == 2
+        and not isinstance(ci[1], bool)
+        and isinstance(ci[1], (int, float))
+        and float(ci[1]) > MATERIAL_THRESHOLD
+    ):
+        reasons.append("ci_above_threshold")
+    if reasons:
+        return f"{verdict} ({', '.join(reasons)})"
+    return verdict
+
+
 def render_markdown(aggregate: dict[str, Any], *, resource_summary: dict[str, Any]) -> str:
     fam = aggregate.get("family") or {}
+    any_override = _gate_override_active(aggregate)
     lines: list[str] = []
     lines.append(f"# StopDFF bucketed-DP paired audit ({PROFILE_NAME}, protocol {PROTOCOL_VERSION})")
     lines.append("")
@@ -130,6 +169,12 @@ def render_markdown(aggregate: dict[str, Any], *, resource_summary: dict[str, An
         if v in counts:
             counts[v] += 1
     lines.append(f"- cell verdicts: PASS={counts['PASS']} WARN={counts['WARN']} FAIL={counts['FAIL']}")
+    for key, c in sorted(aggregate.get("cells", {}).items()):
+        if c.get("verdict") in ("WARN", "FAIL"):
+            lines.append(
+                f"- {key}: "
+                f"{_rendered_cell_verdict(c, override_active=any_override)}"
+            )
     lines.append("")
     lines.append("## Family maximum statistic and CI")
     lines.append(f"- family statistic M (max cell median |index shift|): {fam.get('M')}")
@@ -140,7 +185,6 @@ def render_markdown(aggregate: dict[str, Any], *, resource_summary: dict[str, An
     ov = aggregate.get("gate_overrides", {})
     lines.append(f"- allow_low_mc_retention: {ov.get('allow_low_mc_retention')}")
     lines.append(f"- allow_incomplete_mc_coverage: {ov.get('allow_incomplete_mc_coverage')}")
-    any_override = bool(ov.get("allow_low_mc_retention") or ov.get("allow_incomplete_mc_coverage"))
     if any_override:
         lines.append("- NOTE: an override is active; family PASS is prevented (retained MC subset).")
     lines.append("")
@@ -158,9 +202,11 @@ def render_markdown(aggregate: dict[str, Any], *, resource_summary: dict[str, An
 
 def render_latex(aggregate: dict[str, Any]) -> str:
     fam = aggregate.get("family") or {}
+    any_override = _gate_override_active(aggregate)
     rows = []
     for key, c in sorted(aggregate.get("cells", {}).items()):
-        rows.append(f"{key.replace('_', ' ')} & {c.get('verdict')} \\\\")
+        verdict = _rendered_cell_verdict(c, override_active=any_override)
+        rows.append(f"{key.replace('_', ' ')} & {verdict} \\\\")
     body = "\n".join(rows) if rows else "none & none \\\\"
     return (
         "% StopDFF bucketed-DP paired audit table\n"
@@ -317,13 +363,20 @@ def write_figures(
     return [relative]
 
 
-def write_external_artifacts(output_dir: Path, artifacts: list[dict[str, Any]]) -> None:
-    from .sweep import atomic_write_json
-    atomic_write_json(Path(output_dir) / "external_artifacts.json", {"artifacts": artifacts})
+# Every character str.splitlines() treats as a line boundary: a name carrying
+# one would tear the line-oriented SHA256SUMS format at parse time, so the
+# writer fails closed instead of emitting an inventory its checker rejects.
+_CHECKSUM_LINE_BREAKS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+
+
+def _checksum_line(digest: str, rel: str) -> str:
+    """Format one SHA256SUMS entry, rejecting names the format cannot carry."""
+    if any(ch in _CHECKSUM_LINE_BREAKS for ch in rel):
+        raise ValueError(f"checksum path contains a line break: {rel!r}")
+    return f"{digest}  {rel}"
 
 
 def write_sha256sums(output_dir: Path) -> None:
-    from .identity import sha256_file
     root = Path(output_dir)
     lines: list[str] = []
     for p in sorted(root.rglob("*")):
@@ -332,8 +385,45 @@ def write_sha256sums(output_dir: Path) -> None:
         rel = p.relative_to(root).as_posix()
         if rel == "SHA256SUMS":
             continue
-        lines.append(f"{sha256_file(p)}  {rel}")
+        lines.append(_checksum_line(sha256_file(p), rel))
     (root / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# Package path policy (in-toto DISALLOW-unknown norm): the complete namespace
+# a packaged run root may contain. Sweep publishes the run-level files and the
+# two json-only evidence directories; package_run itself manages the three
+# package roots and the two package-level files. Anything else — typically an
+# orphaned ``tmpXXXXXX`` left by a hard kill between mkstemp and rename — is
+# partial-failure residue that no validation lane audits, so both the packager
+# (here) and the checker (checker._check_package_path_policy) reject it
+# instead of byte-attesting it into SHA256SUMS.
+RUN_LEVEL_FILES = frozenset({
+    "run_spec.json",
+    "bootstrap_plan.json",
+    "environment.json",
+    "resource_summary.json",
+    "aggregate.json",
+    "attempts.jsonl",
+    "run_manifest.json",
+    "command_manifest.json",
+})
+RUN_JSON_ONLY_DIRS = frozenset({"cells", "attempt_results"})
+PACKAGE_MANAGED_ROOTS = frozenset({"reports", "figures", "evidence"})
+PACKAGE_LEVEL_FILES = frozenset({"external_artifacts.json", "SHA256SUMS"})
+
+
+def _packageable_path_violation(rel: str) -> str | None:
+    """Return why a non-candidate regular file may not be packaged, if so."""
+    parts = Path(rel).parts
+    if len(parts) == 1:
+        if parts[0] not in RUN_LEVEL_FILES:
+            return f"unaudited run-level file cannot be packaged: {rel!r}"
+        return None
+    if parts[0] in RUN_JSON_ONLY_DIRS:
+        if len(parts) != 2 or Path(parts[1]).suffix != ".json":
+            return f"unaudited file in {parts[0]}/ cannot be packaged: {rel!r}"
+        return None
+    return f"unaudited file cannot be packaged: {rel!r}"
 
 
 _MANIFEST_EVIDENCE_PATHS = {
@@ -433,6 +523,12 @@ def _prepare_package_evidence(
     external_artifacts: list[dict[str, Any]],
     evidence_files: dict[str, bytes],
 ) -> tuple[list[dict[str, Any]], dict[str, bytes], str | None]:
+    # Byte-verified packaging needs the run spec; a root without one cannot
+    # be verified, so it fails closed instead of taking a lenient path.
+    run_spec_path = root / "run_spec.json"
+    if run_spec_path.is_symlink() or not run_spec_path.is_file():
+        raise ValueError("package requires run_spec.json before packaging")
+
     candidates: dict[str, bytes] = {}
     for name, data in evidence_files.items():
         path = Path(name)
@@ -446,56 +542,23 @@ def _prepare_package_evidence(
             raise ValueError(f"unsafe packaged evidence path: {name!r}")
         candidates[path.as_posix()] = data
 
-    run_spec_path = root / "run_spec.json"
-    if not run_spec_path.exists():
-        normalized_legacy: list[dict[str, Any]] = []
-        for artifact in external_artifacts:
-            if not isinstance(artifact, dict):
-                raise ValueError("invalid external-artifact ledger entry")
-            retrieval = artifact.get("retrieval_path", artifact.get("retrieval"))
-            if (
-                not isinstance(artifact.get("role"), str)
-                or not isinstance(artifact.get("content_id"), str)
-                or not isinstance(artifact.get("sha256"), str)
-                or len(artifact.get("sha256", "")) != 64
-                or isinstance(artifact.get("byte_size"), bool)
-                or not isinstance(artifact.get("byte_size"), int)
-                or artifact.get("byte_size", 0) <= 0
-                or not isinstance(retrieval, str)
-                or not retrieval
-            ):
-                raise ValueError("invalid external-artifact ledger entry")
-            normalized_legacy.append(
-                {
-                    "role": artifact["role"],
-                    "content_id": artifact["content_id"],
-                    "sha256": artifact["sha256"],
-                    "byte_size": artifact["byte_size"],
-                    "retrieval_path": retrieval,
-                }
-            )
-        return normalized_legacy, candidates, None
-
     normalized: dict[str, dict[str, Any]] = {}
     for artifact in external_artifacts:
         if not isinstance(artifact, dict):
             raise ValueError("invalid external-artifact ledger entry")
-        fields = set(artifact)
-        retrieval_fields = fields & {"retrieval", "retrieval_path"}
-        if (
-            fields
-            not in (
-                {"role", "content_id", "sha256", "byte_size", "retrieval"},
-                {"role", "content_id", "sha256", "byte_size", "retrieval_path"},
-            )
-            or len(retrieval_fields) != 1
-        ):
+        if set(artifact) != {
+            "role",
+            "content_id",
+            "sha256",
+            "byte_size",
+            "retrieval_path",
+        }:
             raise ValueError("invalid external-artifact ledger entry")
         role = artifact.get("role")
         content_id = artifact.get("content_id")
         digest = artifact.get("sha256")
         byte_size = artifact.get("byte_size")
-        retrieval = artifact[next(iter(retrieval_fields))]
+        retrieval = artifact.get("retrieval_path")
         if (
             role not in _MANIFEST_EVIDENCE_PATHS
             or role in normalized
@@ -597,8 +660,6 @@ def _prepare_package_evidence(
     if set(normalized) != set(_MANIFEST_EVIDENCE_PATHS):
         raise ValueError("external-artifact ledger roles are incomplete")
 
-    if run_spec_path.is_symlink() or not run_spec_path.is_file():
-        raise ValueError("package requires run_spec.json before packaging")
     run_spec_manifest = loads_no_duplicate_keys(
         run_spec_path.read_text(encoding="utf-8")
     )
@@ -706,8 +767,6 @@ def package_run(
     evidence_files: dict[str, bytes] | None = None,
 ) -> None:
     """Create a package once, or accept only byte-identical cached content."""
-    from .sweep import atomic_write_bytes
-
     if not external_artifacts:
         raise ValueError("package requires a nonempty external-artifact ledger")
     root = Path(output_dir)
@@ -743,12 +802,11 @@ def package_run(
         ):
             candidates[name] = (figure_root / name).read_bytes()
 
-    managed_roots = {"reports", "figures", "evidence"}
     for path in root.rglob("*"):
         if not path.is_file() and not path.is_symlink():
             continue
         rel = path.relative_to(root).as_posix()
-        if Path(rel).parts[0] in managed_roots and rel not in candidates:
+        if Path(rel).parts[0] in PACKAGE_MANAGED_ROOTS and rel not in candidates:
             raise ValueError(f"unexpected cached package evidence at {path}")
 
     checksum_lines: list[str] = []
@@ -761,9 +819,14 @@ def package_run(
         rel = path.relative_to(root).as_posix()
         if rel == "SHA256SUMS" or rel in candidates:
             continue
+        violation = _packageable_path_violation(rel)
+        if violation is not None:
+            raise ValueError(violation)
         scientific_paths[rel] = path.read_bytes()
     for rel, data in {**scientific_paths, **candidates}.items():
-        checksum_lines.append(f"{hashlib.sha256(data).hexdigest()}  {rel}")
+        checksum_lines.append(
+            _checksum_line(hashlib.sha256(data).hexdigest(), rel)
+        )
     candidates["SHA256SUMS"] = (
         "\n".join(sorted(checksum_lines)) + "\n"
     ).encode("utf-8")
@@ -780,4 +843,4 @@ def package_run(
     for rel, data in candidates.items():
         path = root / rel
         if not path.exists():
-            atomic_write_bytes(path, data)
+            publish_bytes(path, data)

@@ -134,10 +134,3 @@ def solve_trajectory(
 def signed_index_shift(mc_trace: DPTrace, qa_trace: DPTrace) -> int:
     """D_i^index = tau_{i,MC} - tau_{i,QA}. Negative => MC stops earlier."""
     return mc_trace.stop_index - qa_trace.stop_index
-
-
-def stop_fraction(trace: DPTrace, prefix_fractions: Sequence[float]) -> float:
-    """Descriptive stop fraction: prefix_fraction[stop] when it answers, else 1.0."""
-    if trace.never_buzz:
-        return 1.0
-    return float(prefix_fractions[trace.stop_index])

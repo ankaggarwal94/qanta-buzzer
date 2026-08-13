@@ -12,6 +12,7 @@ all-MiniLM-L6-v2 runs on CPU (slower). See --help for options.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import importlib.metadata as im
 import json
 import os
@@ -34,6 +35,7 @@ sys.path.insert(0, _REPO_IMPORT_ROOT)
 from scripts.stopdff_v5 import (  # noqa: E402
     adapter_build,
     checker,
+    fileio,
     fvi_study,
     producers,
     profile,
@@ -41,7 +43,10 @@ from scripts.stopdff_v5 import (  # noqa: E402
     sweep,
     writers,
 )
-from scripts.stopdff_v5.bootstrap import build_bootstrap_plan  # noqa: E402
+from scripts.stopdff_v5.bootstrap import (  # noqa: E402
+    build_bootstrap_plan,
+    plan_identity,
+)
 from scripts.stopdff_v5.attempt_history import load_attempt_history  # noqa: E402
 from scripts.stopdff_v5.content_manifest import git_mode_for_path  # noqa: E402
 from scripts.stopdff_v5.identity import (  # noqa: E402
@@ -184,8 +189,6 @@ def _run_bound_sweep(
     attempt_number: int = 1,
 ) -> tuple[dict, "checker.CheckResult"]:
     """Resolve manifests before writing, run the sweep, and verify its output."""
-    from scripts.stopdff_v5.bootstrap import plan_identity
-
     run_spec_manifest = {
         "id": compute_id(run_spec),
         "identity": run_spec,
@@ -245,25 +248,40 @@ def _run_bound_sweep(
 _LOCAL_LIFECYCLE_FILE = "local_lifecycle.json"
 _LOCAL_LIFECYCLE_SCHEMA_VERSION = 1
 
+# Advisory locks this process holds, keyed by lock-file path. Held for the
+# process lifetime (the OS releases them at exit); the map lets one process
+# re-enter the same workspace (e.g. sequential driver invocations in tests)
+# without self-deadlocking, since flock treats each open() independently.
+_LIFECYCLE_LOCK_FDS: dict[str, int] = {}
+
+
+def _acquire_lifecycle_lock(out: Path) -> None:
+    """Serialize local drivers per workspace with an advisory flock.
+
+    The lifecycle checkpoint (``local_lifecycle.json``) is mutated by
+    read-modify-write with last-writer-wins replace semantics; two concurrent
+    drivers against the same --out-dir could interleave and silently drop a
+    checkpoint update. Fail fast instead of racing. Run evidence itself is
+    already create-once, so this guards only the local audit journal.
+    """
+    lock_path = Path(out) / f"{_LOCAL_LIFECYCLE_FILE}.lock"
+    key = str(lock_path)
+    if key in _LIFECYCLE_LOCK_FDS:
+        return
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        raise RuntimeError(
+            f"another local StopDFF driver holds {lock_path}"
+        ) from exc
+    _LIFECYCLE_LOCK_FDS[key] = fd
+
 
 def _atomic_write_json(path: Path, value: dict) -> None:
     """Publish a small lifecycle checkpoint with replace semantics."""
-    path = Path(path)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with open(temporary, "x", encoding="utf-8") as handle:
-            handle.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
+    fileio.publish_bytes(Path(path), fileio.dumps_json_bytes(value))
 
 
 def _lifecycle_contract(*, args, run_sha: str) -> dict:
@@ -285,6 +303,9 @@ def _load_or_create_lifecycle(
     run_sha: str,
     resume: bool,
 ) -> dict:
+    # Every lifecycle mutation path starts here, so acquiring the workspace
+    # lock here guards all later read-modify-write checkpoint updates.
+    _acquire_lifecycle_lock(out)
     path = out / _LOCAL_LIFECYCLE_FILE
     expected = _lifecycle_contract(args=args, run_sha=run_sha)
     if resume:
@@ -562,8 +583,8 @@ def _worktree_status_command(
     return command
 
 
-def main(argv: list[str] | None = None) -> int:
-    _verify_imported_producer_origins()
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    """Parse the local reproduction command line."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-dir", type=Path, default=_REPO / "data" / "processed")
     ap.add_argument("--paper-exports", type=Path, default=_REPO / "paper_exports")
@@ -585,7 +606,11 @@ def main(argv: list[str] | None = None) -> int:
         help="identity-bind and allow a below-threshold MC retention decision",
     )
     args = ap.parse_args(argv)
+    return args
 
+
+def _preflight_clean_worktree(args: argparse.Namespace) -> tuple[Path, str]:
+    """Gate on the executing checkout: options, clean tree, and commit."""
     if args.repo_root.resolve() != _REPO.resolve():
         raise ValueError(
             "--repo-root must be the repository whose code is executing"
@@ -612,33 +637,16 @@ def main(argv: list[str] | None = None) -> int:
 
     run_sha = subprocess.run(["git", "-C", str(args.repo_root), "rev-parse", "HEAD"],
                              check=True, capture_output=True, text=True).stdout.strip()
-    runs_dir = out / "runs"
-    if runs_dir.is_symlink():
-        raise ValueError("local runs directory must not be a symlink")
-    if args.resume and _variant_run_candidates(out, args.variant):
-        _load_or_create_lifecycle(
-            out=out,
-            args=args,
-            run_sha=run_sha,
-            resume=True,
-        )
-        return _resume_local_run(
-            args=args,
-            out=out,
-            run_sha=run_sha,
-        )
-    if args.resume:
-        if out.is_symlink() or not out.is_dir():
-            raise ValueError("--resume requires an existing canonical --out-dir")
-    else:
-        out.mkdir(parents=True, exist_ok=False)
-    lifecycle = _load_or_create_lifecycle(
-        out=out,
-        args=args,
-        run_sha=run_sha,
-        resume=args.resume,
-    )
+    return out, run_sha
 
+
+def _stage_source_snapshot(
+    *,
+    out: Path,
+    args: argparse.Namespace,
+    run_sha: str,
+) -> tuple[str, dict[str, str]]:
+    """Create or reuse the source snapshot bound to the executing commit."""
     print("== source snapshot ==")
     source_stage = out / "source_snapshot"
     if source_stage.exists() or source_stage.is_symlink():
@@ -665,7 +673,11 @@ def main(argv: list[str] | None = None) -> int:
     source_id = src_man["id"]
     source_execution = _verified_local_source_execution(args.repo_root, src_man)
     print("  source_manifest_id", source_id)
+    return source_id, source_execution
 
+
+def _run_mutation_gate(*, out: Path, lifecycle: dict) -> list[dict]:
+    """Run (or replay) the checkpointed v5 mutation gate; fail closed."""
     recorded_mutations = lifecycle.get("mutation_results")
     if recorded_mutations is not None:
         mutation_results = _validate_checkpointed_mutation_results(
@@ -685,7 +697,15 @@ def main(argv: list[str] | None = None) -> int:
             if not result["ok"]
         ]
         raise ValueError(f"v5 mutation gate failed: {failed}")
+    return mutation_results
 
+
+def _stage_raw_inputs(
+    *,
+    out: Path,
+    args: argparse.Namespace,
+) -> tuple[str, str, Path]:
+    """Create or reuse the staged raw-input bundle."""
     print("== stage raw inputs ==")
     roles = {
         "mc_dataset.json": args.data_dir / "mc_dataset.json",
@@ -719,7 +739,11 @@ def main(argv: list[str] | None = None) -> int:
     myopic_sha = next(f["sha256"] for f in raw_man["identity"]["files"] if f["role"] == "stopdff.json")
     raw_dir = out / "raw_inputs" / "raw"
     print("  raw_input_bundle_id", raw_id)
+    return raw_id, myopic_sha, raw_dir
 
+
+def _stage_model_snapshot(out: Path) -> str:
+    """Create or reuse the pinned model snapshot stage."""
     print("== model snapshot (all-MiniLM-L6-v2, pinned revision) ==")
     model_stage = out / "model"
     if model_stage.exists() or model_stage.is_symlink():
@@ -748,10 +772,21 @@ def main(argv: list[str] | None = None) -> int:
         )
     model_id = model_man["id"]
     print("  model_snapshot_id", model_id, "rev", model_man["identity"]["model_revision"])
+    return model_id
 
+
+def _stage_adapter_bundle(
+    *,
+    out: Path,
+    lifecycle: dict,
+    args: argparse.Namespace,
+    raw_dir: Path,
+    source_id: str,
+    raw_id: str,
+    model_id: str,
+) -> tuple[dict, str, str]:
+    """Create or reuse the primary adapter bundle with its execution record."""
     print("== adapter bundle (CPU scoring) ==")
-    adapter_dir = out / "adapter_bundle"
-
     def build_primary_adapter(staged: Path) -> dict:
         return adapter_build.build_adapter_bundle(
             mc_dataset_path=raw_dir / "mc_dataset.json",
@@ -782,10 +817,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     adapter_id = adapter_man["id"]
     print("  adapter_bundle_id", adapter_id)
+    return adapter_man, adapter_id, first_build_execution_id
 
-    rows = checker.load_adapter_rows(adapter_dir)
-    calibration = json.loads((adapter_dir / "calibration.json").read_text())
 
+def _stage_fvi(
+    *,
+    out: Path,
+    args: argparse.Namespace,
+    adapter_id: str,
+    rows: list[dict],
+    calibration: dict,
+) -> tuple[dict | None, str | None, dict | None]:
+    """Create or reuse the durable FVI stage bound to the adapter.
+
+    Returns ``(None, None, None)`` when the selection study finds no
+    eligible candidate (the caller exits nonzero).
+    """
     fvi_path = out / "fvi_study.json"
     if fvi_path.exists() or fvi_path.is_symlink():
         if fvi_path.is_symlink() or not fvi_path.is_file():
@@ -840,7 +887,7 @@ def main(argv: list[str] | None = None) -> int:
             selected = study["selected_parameters"]
             if selected is None:
                 print("FVI selector found no eligible candidate", file=sys.stderr)
-                return 1
+                return None, None, None
             fvi_identity = fvi_study_identity(
                 adapter_bundle_id=adapter_id,
                 candidate_grid=study["candidate_grid"],
@@ -859,7 +906,11 @@ def main(argv: list[str] | None = None) -> int:
             fvi_id = fvi_manifest["id"]
             print("  selected", selected, "fvi_study_id", fvi_id)
         sweep._write_bound_json(fvi_path, fvi_manifest, resume=False)
+    return fvi_manifest, fvi_id, selected
 
+
+def _environment_contract() -> tuple[dict, dict, str]:
+    """Bind the executing environment to its contract identity."""
     versions = _versions()
     environment_identity = environment_contract_identity(
         python_version="%d.%d.%d" % sys.version_info[:3],
@@ -871,258 +922,403 @@ def main(argv: list[str] | None = None) -> int:
         "python_version": "%d.%d.%d" % sys.version_info[:3],
         "package_versions": versions,
     }
+    return environment_manifest, environment_record, env_id
 
-    mc = {r["item_id"] for r in rows if r["split"] == "test" and r["format"] == "MC"}
-    qa = {r["item_id"] for r in rows if r["split"] == "test" and r["format"] == "QA"}
-    paired_items = sorted(mc & qa)
-    producer_hashes = {
+
+def _executing_producer_hashes() -> dict[str, str]:
+    """Hash the executing evidence producers named by the run-spec contract."""
+    return {
         "sweep.py": sha256_file(_REPO / "scripts/stopdff_v5/sweep.py"),
         "checker.py": sha256_file(_REPO / "scripts/stopdff_v5/checker.py"),
     }
-    common_bindings = {
-        "source_manifest_id": source_id,
-        "raw_input_bundle_id": raw_id,
-        "model_snapshot_id": model_id,
-        "adapter_bundle_id": adapter_id,
-        "fvi_study_id": fvi_id,
-        "environment_contract_id": env_id,
-    }
-    receipt_ids: dict[str, str] = {}
 
-    def persist_receipt(
-        gate: str,
-        receipt: dict,
-        evidence: dict,
-    ) -> None:
-        path = out / "receipts" / gate / f"{receipt['id']}.json"
-        sweep._write_bound_json(
-            path.with_suffix(".evidence.json"),
-            evidence,
-            resume=True,
-        )
-        sweep._write_bound_json(path, receipt, resume=True)
-        receipt_ids[gate] = receipt["id"]
 
-    if args.variant == "final":
-        print("== required deterministic two-build adapter gate ==")
-        second_adapter_dir = out / "adapter_bundle_determinism"
+def _persist_receipt(
+    out: Path,
+    receipt_ids: dict[str, str],
+    gate: str,
+    receipt: dict,
+    evidence: dict,
+) -> None:
+    """Durably persist one prerequisite receipt + evidence and record its id."""
+    path = out / "receipts" / gate / f"{receipt['id']}.json"
+    sweep._write_bound_json(
+        path.with_suffix(".evidence.json"),
+        evidence,
+        resume=True,
+    )
+    sweep._write_bound_json(path, receipt, resume=True)
+    receipt_ids[gate] = receipt["id"]
 
-        def build_second_adapter(staged: Path) -> dict:
-            return adapter_build.build_adapter_bundle(
-                mc_dataset_path=raw_dir / "mc_dataset.json",
-                val_dataset_path=raw_dir / "val_dataset.json",
-                test_dataset_path=raw_dir / "test_dataset.json",
-                calibration_path=raw_dir / "calibration.json",
-                model_snapshot_dir=out / "model" / "snapshot",
-                out_dir=staged,
-                source_manifest_id=source_id,
-                raw_input_bundle_id=raw_id,
-                model_snapshot_id=model_id,
-                producer_hashes={
-                    "adapter_build.py": sha256_file(
-                        _REPO / "scripts/stopdff_v5/adapter_build.py"
-                    )
-                },
-                allow_low_mc_retention=args.allow_low_mc_retention,
-            )
 
-        second_adapter, second_build_execution_id = _materialize_adapter_stage(
-            out=out,
-            state=lifecycle,
-            stage="adapter_bundle_determinism",
-            build=build_second_adapter,
-            source_id=source_id,
-            raw_id=raw_id,
-            model_id=model_id,
-        )
-        compared = (
-            "fit_rows.jsonl.gz",
-            "eval_rows.jsonl.gz",
-            "calibration.json",
-            "build_metadata.json",
-        )
-        first_hashes = {
-            name: sha256_file(adapter_dir / name)
-            for name in compared
-        }
-        second_hashes = {
-            name: sha256_file(second_adapter_dir / name)
-            for name in compared
-        }
-        if second_adapter["id"] != adapter_id or second_hashes != first_hashes:
-            raise ValueError("two-build adapter determinism gate failed")
-        determinism_bindings = {
-            key: common_bindings[key]
-            for key in (
-                "source_manifest_id",
-                "raw_input_bundle_id",
-                "model_snapshot_id",
-                "adapter_bundle_id",
-            )
-        }
-        determinism_evidence = writers.build_prerequisite_evidence(
-            gate="determinism",
-            bindings=determinism_bindings,
-            details={
-                "source_execution": source_execution,
-                "first_build_execution": {
-                    "environment": "local_process",
-                    "execution_id": first_build_execution_id,
-                    "adapter_subdir": "adapter_bundle",
-                    **determinism_bindings,
-                    "cached": False,
-                    "output_sha256": first_hashes,
-                },
-                "second_build_execution": {
-                    "environment": "local_process",
-                    "execution_id": second_build_execution_id,
-                    "adapter_subdir": "adapter_bundle_determinism",
-                    **determinism_bindings,
-                    "cached": False,
-                    "output_sha256": second_hashes,
-                },
-                "first_adapter_manifest": adapter_man,
-                "second_adapter_manifest": second_adapter,
-                "first_file_sha256": first_hashes,
-                "second_file_sha256": second_hashes,
-            },
-        )
-        persist_receipt(
-            "determinism",
-            writers.build_evidenced_prerequisite_receipt(
-                gate="determinism",
-                bindings=determinism_bindings,
-                evidence=determinism_evidence,
-            ),
-            determinism_evidence,
-        )
-        mutation_evidence = writers.build_prerequisite_evidence(
-            gate="mutation",
-            bindings=common_bindings,
-            details={
-                "source_execution": source_execution,
-                "results": mutation_results,
-            },
-        )
-        persist_receipt(
-            "mutation",
-            writers.build_evidenced_prerequisite_receipt(
-                gate="mutation",
-                bindings=common_bindings,
-                evidence=mutation_evidence,
-            ),
-            mutation_evidence,
-        )
-        print("== required bounded smoke before final sweep ==")
-        smoke_plan = build_bootstrap_plan(
-            paired_items,
-            replicates=100,
-            seed=1,
-        )
-        smoke_spec = run_spec_identity(
+def _determinism_gate_receipt(
+    *,
+    out: Path,
+    lifecycle: dict,
+    args: argparse.Namespace,
+    raw_dir: Path,
+    source_id: str,
+    raw_id: str,
+    model_id: str,
+    adapter_dir: Path,
+    adapter_id: str,
+    adapter_man: dict,
+    first_build_execution_id: str,
+    source_execution: dict[str, str],
+    common_bindings: dict[str, str],
+    receipt_ids: dict[str, str],
+) -> None:
+    """Run the required deterministic two-build adapter gate and persist it."""
+    print("== required deterministic two-build adapter gate ==")
+    second_adapter_dir = out / "adapter_bundle_determinism"
+
+    def build_second_adapter(staged: Path) -> dict:
+        return adapter_build.build_adapter_bundle(
+            mc_dataset_path=raw_dir / "mc_dataset.json",
+            val_dataset_path=raw_dir / "val_dataset.json",
+            test_dataset_path=raw_dir / "test_dataset.json",
+            calibration_path=raw_dir / "calibration.json",
+            model_snapshot_dir=out / "model" / "snapshot",
+            out_dir=staged,
             source_manifest_id=source_id,
             raw_input_bundle_id=raw_id,
             model_snapshot_id=model_id,
-            adapter_bundle_id=adapter_id,
-            fvi_study_id=fvi_id,
-            bootstrap_plan_id=compute_id(_plan_ident(smoke_plan)),
-            environment_contract_id=env_id,
-            resource_summary_id=compute_id({"backend": "local"}),
-            fvi_selected=selected,
-            replicate_count=100,
-            profile_variant="smoke",
-            myopic_artifact_sha256=myopic_sha,
-            producer_hashes=producer_hashes,
-            prerequisite_receipts={},
-            gate_overrides={
-                "allow_low_mc_retention": args.allow_low_mc_retention,
-            },
-        )
-        smoke_id = compute_id(smoke_spec)
-        smoke_root = out / "runs" / f"smoke_local_{smoke_id[:12]}"
-        if smoke_root.resolve(strict=False) != smoke_root.absolute():
-            raise ValueError("local smoke run path must not traverse symlinks")
-        smoke_result = None
-        smoke_aggregate = None
-        if args.resume and smoke_root.is_dir() and not smoke_root.is_symlink():
-            existing_smoke = checker.validate_run(
-                smoke_root,
-                backend="local",
-                adapter_bundle=adapter_dir,
-                require_final_profile=False,
-                require_package=False,
-            )
-            aggregate_path = smoke_root / "aggregate.json"
-            if existing_smoke.passed and aggregate_path.is_file():
-                candidate = checker.load_json(aggregate_path)
-                if candidate.get("release_status") == "VALID":
-                    smoke_result = existing_smoke
-                    smoke_aggregate = candidate
-        if smoke_aggregate is None:
-            smoke_resume = args.resume and smoke_root.is_dir()
-            smoke_attempt = (
-                _next_resume_attempt(
-                    smoke_root,
-                    run_spec_id=smoke_id,
-                    adapter_id=adapter_id,
-                    bootstrap_plan_id=compute_id(_plan_ident(smoke_plan)),
+            producer_hashes={
+                "adapter_build.py": sha256_file(
+                    _REPO / "scripts/stopdff_v5/adapter_build.py"
                 )
-                if smoke_resume
-                else 1
-            )
-            smoke_aggregate, smoke_result = _run_bound_sweep(
-                adapter_dir=adapter_dir,
-                run_spec=smoke_spec,
-                plan=smoke_plan,
-                run_root=smoke_root,
-                myopic_sha256=myopic_sha,
-                producer_hashes=producer_hashes,
-                environment=environment_record,
-                cells=profile.smoke_cells(),
-                command=[
-                    "run_stopdff_v5_local",
-                    "--variant",
-                    "smoke",
-                    *(["--resume"] if smoke_resume else []),
-                ],
-                resume=smoke_resume,
-                attempt_number=smoke_attempt,
-            )
-        assert smoke_result is not None
-        assert smoke_aggregate is not None
-        if (
-            not smoke_result.passed
-            or smoke_aggregate["release_status"] != "VALID"
-        ):
-            raise ValueError(
-                "bounded smoke failed: "
-                + "; ".join(smoke_result.errors[:10])
-            )
-        smoke_evidence = writers.build_prerequisite_evidence(
-            gate="smoke",
-            bindings=common_bindings,
-            details={
-                "run_spec": {"id": smoke_id, "identity": smoke_spec},
-                "aggregate": smoke_aggregate,
             },
-        )
-        persist_receipt(
-            "smoke",
-            writers.build_evidenced_prerequisite_receipt(
-                gate="smoke",
-                bindings=common_bindings,
-                evidence=smoke_evidence,
-            ),
-            smoke_evidence,
+            allow_low_mc_retention=args.allow_low_mc_retention,
         )
 
+    second_adapter, second_build_execution_id = _materialize_adapter_stage(
+        out=out,
+        state=lifecycle,
+        stage="adapter_bundle_determinism",
+        build=build_second_adapter,
+        source_id=source_id,
+        raw_id=raw_id,
+        model_id=model_id,
+    )
+    compared = (
+        "fit_rows.jsonl.gz",
+        "eval_rows.jsonl.gz",
+        "calibration.json",
+        "build_metadata.json",
+    )
+    first_hashes = {
+        name: sha256_file(adapter_dir / name)
+        for name in compared
+    }
+    second_hashes = {
+        name: sha256_file(second_adapter_dir / name)
+        for name in compared
+    }
+    if second_adapter["id"] != adapter_id or second_hashes != first_hashes:
+        raise ValueError("two-build adapter determinism gate failed")
+    determinism_bindings = {
+        key: common_bindings[key]
+        for key in (
+            "source_manifest_id",
+            "raw_input_bundle_id",
+            "model_snapshot_id",
+            "adapter_bundle_id",
+        )
+    }
+    determinism_evidence = writers.build_prerequisite_evidence(
+        gate="determinism",
+        bindings=determinism_bindings,
+        details={
+            "source_execution": source_execution,
+            "first_build_execution": {
+                "environment": "local_process",
+                "execution_id": first_build_execution_id,
+                "adapter_subdir": "adapter_bundle",
+                **determinism_bindings,
+                "cached": False,
+                "output_sha256": first_hashes,
+            },
+            "second_build_execution": {
+                "environment": "local_process",
+                "execution_id": second_build_execution_id,
+                "adapter_subdir": "adapter_bundle_determinism",
+                **determinism_bindings,
+                "cached": False,
+                "output_sha256": second_hashes,
+            },
+            "first_adapter_manifest": adapter_man,
+            "second_adapter_manifest": second_adapter,
+            "first_file_sha256": first_hashes,
+            "second_file_sha256": second_hashes,
+        },
+    )
+    _persist_receipt(
+        out,
+        receipt_ids,
+        "determinism",
+        writers.build_evidenced_prerequisite_receipt(
+            gate="determinism",
+            bindings=determinism_bindings,
+            evidence=determinism_evidence,
+        ),
+        determinism_evidence,
+    )
+
+
+def _mutation_gate_receipt(
+    *,
+    out: Path,
+    source_execution: dict[str, str],
+    mutation_results: list[dict],
+    common_bindings: dict[str, str],
+    receipt_ids: dict[str, str],
+) -> None:
+    """Persist the mutation-gate receipt over the checkpointed results."""
+    mutation_evidence = writers.build_prerequisite_evidence(
+        gate="mutation",
+        bindings=common_bindings,
+        details={
+            "source_execution": source_execution,
+            "results": mutation_results,
+        },
+    )
+    _persist_receipt(
+        out,
+        receipt_ids,
+        "mutation",
+        writers.build_evidenced_prerequisite_receipt(
+            gate="mutation",
+            bindings=common_bindings,
+            evidence=mutation_evidence,
+        ),
+        mutation_evidence,
+    )
+
+
+def _bounded_smoke_receipt(
+    *,
+    out: Path,
+    args: argparse.Namespace,
+    adapter_dir: Path,
+    adapter_id: str,
+    paired_items: list[str],
+    selected: dict,
+    fvi_id: str,
+    env_id: str,
+    myopic_sha: str,
+    producer_hashes: dict[str, str],
+    environment_record: dict,
+    common_bindings: dict[str, str],
+    source_id: str,
+    raw_id: str,
+    model_id: str,
+    receipt_ids: dict[str, str],
+) -> None:
+    """Run (or reuse) the required bounded smoke and persist its receipt."""
+    print("== required bounded smoke before final sweep ==")
+    smoke_plan = build_bootstrap_plan(
+        paired_items,
+        replicates=100,
+        seed=1,
+    )
+    smoke_spec = run_spec_identity(
+        source_manifest_id=source_id,
+        raw_input_bundle_id=raw_id,
+        model_snapshot_id=model_id,
+        adapter_bundle_id=adapter_id,
+        fvi_study_id=fvi_id,
+        bootstrap_plan_id=compute_id(plan_identity(smoke_plan)),
+        environment_contract_id=env_id,
+        resource_summary_id=compute_id({"backend": "local"}),
+        fvi_selected=selected,
+        replicate_count=100,
+        profile_variant="smoke",
+        myopic_artifact_sha256=myopic_sha,
+        producer_hashes=producer_hashes,
+        prerequisite_receipts={},
+        gate_overrides={
+            "allow_low_mc_retention": args.allow_low_mc_retention,
+        },
+    )
+    smoke_id = compute_id(smoke_spec)
+    smoke_root = out / "runs" / f"smoke_local_{smoke_id[:12]}"
+    if smoke_root.resolve(strict=False) != smoke_root.absolute():
+        raise ValueError("local smoke run path must not traverse symlinks")
+    smoke_result = None
+    smoke_aggregate = None
+    if args.resume and smoke_root.is_dir() and not smoke_root.is_symlink():
+        existing_smoke = checker.validate_run(
+            smoke_root,
+            backend="local",
+            adapter_bundle=adapter_dir,
+            require_final_profile=False,
+            require_package=False,
+        )
+        aggregate_path = smoke_root / "aggregate.json"
+        if existing_smoke.passed and aggregate_path.is_file():
+            candidate = checker.load_json(aggregate_path)
+            if candidate.get("release_status") == "VALID":
+                smoke_result = existing_smoke
+                smoke_aggregate = candidate
+    if smoke_aggregate is None:
+        smoke_resume = args.resume and smoke_root.is_dir()
+        smoke_attempt = (
+            _next_resume_attempt(
+                smoke_root,
+                run_spec_id=smoke_id,
+                adapter_id=adapter_id,
+                bootstrap_plan_id=compute_id(plan_identity(smoke_plan)),
+            )
+            if smoke_resume
+            else 1
+        )
+        smoke_aggregate, smoke_result = _run_bound_sweep(
+            adapter_dir=adapter_dir,
+            run_spec=smoke_spec,
+            plan=smoke_plan,
+            run_root=smoke_root,
+            myopic_sha256=myopic_sha,
+            producer_hashes=producer_hashes,
+            environment=environment_record,
+            cells=profile.smoke_cells(),
+            command=[
+                "run_stopdff_v5_local",
+                "--variant",
+                "smoke",
+                *(["--resume"] if smoke_resume else []),
+            ],
+            resume=smoke_resume,
+            attempt_number=smoke_attempt,
+        )
+    assert smoke_result is not None
+    assert smoke_aggregate is not None
+    if (
+        not smoke_result.passed
+        or smoke_aggregate["release_status"] != "VALID"
+    ):
+        raise ValueError(
+            "bounded smoke failed: "
+            + "; ".join(smoke_result.errors[:10])
+        )
+    smoke_evidence = writers.build_prerequisite_evidence(
+        gate="smoke",
+        bindings=common_bindings,
+        details={
+            "run_spec": {"id": smoke_id, "identity": smoke_spec},
+            "aggregate": smoke_aggregate,
+        },
+    )
+    _persist_receipt(
+        out,
+        receipt_ids,
+        "smoke",
+        writers.build_evidenced_prerequisite_receipt(
+            gate="smoke",
+            bindings=common_bindings,
+            evidence=smoke_evidence,
+        ),
+        smoke_evidence,
+    )
+
+
+def _final_prerequisite_receipts(
+    *,
+    out: Path,
+    args: argparse.Namespace,
+    lifecycle: dict,
+    raw_dir: Path,
+    source_id: str,
+    raw_id: str,
+    model_id: str,
+    adapter_dir: Path,
+    adapter_id: str,
+    adapter_man: dict,
+    first_build_execution_id: str,
+    source_execution: dict[str, str],
+    mutation_results: list[dict],
+    common_bindings: dict[str, str],
+    paired_items: list[str],
+    selected: dict,
+    fvi_id: str,
+    env_id: str,
+    myopic_sha: str,
+    producer_hashes: dict[str, str],
+    environment_record: dict,
+) -> dict[str, str]:
+    """Produce the three final-profile prerequisite receipts in gate order."""
+    receipt_ids: dict[str, str] = {}
+    _determinism_gate_receipt(
+        out=out,
+        lifecycle=lifecycle,
+        args=args,
+        raw_dir=raw_dir,
+        source_id=source_id,
+        raw_id=raw_id,
+        model_id=model_id,
+        adapter_dir=adapter_dir,
+        adapter_id=adapter_id,
+        adapter_man=adapter_man,
+        first_build_execution_id=first_build_execution_id,
+        source_execution=source_execution,
+        common_bindings=common_bindings,
+        receipt_ids=receipt_ids,
+    )
+    _mutation_gate_receipt(
+        out=out,
+        source_execution=source_execution,
+        mutation_results=mutation_results,
+        common_bindings=common_bindings,
+        receipt_ids=receipt_ids,
+    )
+    _bounded_smoke_receipt(
+        out=out,
+        args=args,
+        adapter_dir=adapter_dir,
+        adapter_id=adapter_id,
+        paired_items=paired_items,
+        selected=selected,
+        fvi_id=fvi_id,
+        env_id=env_id,
+        myopic_sha=myopic_sha,
+        producer_hashes=producer_hashes,
+        environment_record=environment_record,
+        common_bindings=common_bindings,
+        source_id=source_id,
+        raw_id=raw_id,
+        model_id=model_id,
+        receipt_ids=receipt_ids,
+    )
+    return receipt_ids
+
+
+def _run_primary_sweep(
+    *,
+    out: Path,
+    args: argparse.Namespace,
+    adapter_dir: Path,
+    adapter_id: str,
+    paired_items: list[str],
+    selected: dict,
+    fvi_id: str,
+    env_id: str,
+    myopic_sha: str,
+    producer_hashes: dict[str, str],
+    environment_record: dict,
+    receipt_ids: dict[str, str],
+    fvi_manifest: dict,
+    environment_manifest: dict,
+    source_id: str,
+    raw_id: str,
+    model_id: str,
+) -> int:
+    """Build the bootstrap plan and run spec, sweep, then package/validate."""
     replicates = 1000 if args.variant == "final" else 100
     plan = build_bootstrap_plan(paired_items, replicates=replicates, seed=1)
     print("== bootstrap plan ==", "reps", replicates, "items", plan.n_items)
 
     run_spec = run_spec_identity(
         source_manifest_id=source_id, raw_input_bundle_id=raw_id, model_snapshot_id=model_id,
-        adapter_bundle_id=adapter_id, fvi_study_id=fvi_id, bootstrap_plan_id=compute_id(_plan_ident(plan)),
+        adapter_bundle_id=adapter_id, fvi_study_id=fvi_id, bootstrap_plan_id=compute_id(plan_identity(plan)),
         environment_contract_id=env_id,
         resource_summary_id=compute_id({"backend": "local"}),
         fvi_selected=selected, replicate_count=replicates,
@@ -1174,6 +1370,130 @@ def main(argv: list[str] | None = None) -> int:
         raw_id=raw_id,
         model_id=model_id,
         require_final=args.variant == "final",
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    _verify_imported_producer_origins()
+    args = _parse_args(argv)
+    out, run_sha = _preflight_clean_worktree(args)
+    runs_dir = out / "runs"
+    if runs_dir.is_symlink():
+        raise ValueError("local runs directory must not be a symlink")
+    if args.resume and _variant_run_candidates(out, args.variant):
+        _load_or_create_lifecycle(
+            out=out,
+            args=args,
+            run_sha=run_sha,
+            resume=True,
+        )
+        return _resume_local_run(
+            args=args,
+            out=out,
+            run_sha=run_sha,
+        )
+    if args.resume:
+        if out.is_symlink() or not out.is_dir():
+            raise ValueError("--resume requires an existing canonical --out-dir")
+    else:
+        out.mkdir(parents=True, exist_ok=False)
+    lifecycle = _load_or_create_lifecycle(
+        out=out,
+        args=args,
+        run_sha=run_sha,
+        resume=args.resume,
+    )
+
+    source_id, source_execution = _stage_source_snapshot(
+        out=out,
+        args=args,
+        run_sha=run_sha,
+    )
+    mutation_results = _run_mutation_gate(out=out, lifecycle=lifecycle)
+    raw_id, myopic_sha, raw_dir = _stage_raw_inputs(out=out, args=args)
+    model_id = _stage_model_snapshot(out)
+    adapter_man, adapter_id, first_build_execution_id = _stage_adapter_bundle(
+        out=out,
+        lifecycle=lifecycle,
+        args=args,
+        raw_dir=raw_dir,
+        source_id=source_id,
+        raw_id=raw_id,
+        model_id=model_id,
+    )
+    adapter_dir = out / "adapter_bundle"
+
+    rows = checker.load_adapter_rows(adapter_dir)
+    calibration = json.loads((adapter_dir / "calibration.json").read_text())
+
+    fvi_manifest, fvi_id, selected = _stage_fvi(
+        out=out,
+        args=args,
+        adapter_id=adapter_id,
+        rows=rows,
+        calibration=calibration,
+    )
+    if fvi_manifest is None:
+        return 1
+
+    environment_manifest, environment_record, env_id = _environment_contract()
+
+    mc = {r["item_id"] for r in rows if r["split"] == "test" and r["format"] == "MC"}
+    qa = {r["item_id"] for r in rows if r["split"] == "test" and r["format"] == "QA"}
+    paired_items = sorted(mc & qa)
+    producer_hashes = _executing_producer_hashes()
+    common_bindings = {
+        "source_manifest_id": source_id,
+        "raw_input_bundle_id": raw_id,
+        "model_snapshot_id": model_id,
+        "adapter_bundle_id": adapter_id,
+        "fvi_study_id": fvi_id,
+        "environment_contract_id": env_id,
+    }
+    receipt_ids: dict[str, str] = {}
+    if args.variant == "final":
+        receipt_ids = _final_prerequisite_receipts(
+            out=out,
+            args=args,
+            lifecycle=lifecycle,
+            raw_dir=raw_dir,
+            source_id=source_id,
+            raw_id=raw_id,
+            model_id=model_id,
+            adapter_dir=adapter_dir,
+            adapter_id=adapter_id,
+            adapter_man=adapter_man,
+            first_build_execution_id=first_build_execution_id,
+            source_execution=source_execution,
+            mutation_results=mutation_results,
+            common_bindings=common_bindings,
+            paired_items=paired_items,
+            selected=selected,
+            fvi_id=fvi_id,
+            env_id=env_id,
+            myopic_sha=myopic_sha,
+            producer_hashes=producer_hashes,
+            environment_record=environment_record,
+        )
+
+    return _run_primary_sweep(
+        out=out,
+        args=args,
+        adapter_dir=adapter_dir,
+        adapter_id=adapter_id,
+        paired_items=paired_items,
+        selected=selected,
+        fvi_id=fvi_id,
+        env_id=env_id,
+        myopic_sha=myopic_sha,
+        producer_hashes=producer_hashes,
+        environment_record=environment_record,
+        receipt_ids=receipt_ids,
+        fvi_manifest=fvi_manifest,
+        environment_manifest=environment_manifest,
+        source_id=source_id,
+        raw_id=raw_id,
+        model_id=model_id,
     )
 
 
@@ -1475,16 +1795,8 @@ def _resume_local_run(*, args, out: Path, run_sha: str) -> int:
     ):
         raise ValueError("resume FVI manifest does not match the run spec")
 
-    versions = _versions()
-    environment_record = {
-        "python_version": "%d.%d.%d" % sys.version_info[:3],
-        "package_versions": versions,
-    }
-    environment_manifest = build_manifest(environment_contract_identity(
-        python_version=environment_record["python_version"],
-        package_versions=versions,
-    ))
-    if environment_manifest["id"] != spec_ids.get("environment_contract_id"):
+    environment_manifest, environment_record, env_id = _environment_contract()
+    if env_id != spec_ids.get("environment_contract_id"):
         raise ValueError("resume environment does not match the run spec")
 
     raw_files = {
@@ -1498,10 +1810,7 @@ def _resume_local_run(*, args, out: Path, run_sha: str) -> int:
         != myopic.get("sha256")
     ):
         raise ValueError("resume myopic artifact does not match the run spec")
-    producer_hashes = {
-        "sweep.py": sha256_file(_REPO / "scripts/stopdff_v5/sweep.py"),
-        "checker.py": sha256_file(_REPO / "scripts/stopdff_v5/checker.py"),
-    }
+    producer_hashes = _executing_producer_hashes()
     if run_spec["evidence_roots"].get("producer_hashes") != producer_hashes:
         raise ValueError("resume producer hashes do not match executing source")
 
@@ -1569,7 +1878,7 @@ def _resume_local_run(*, args, out: Path, run_sha: str) -> int:
         replicates=replicate_count,
         seed=1,
     )
-    bootstrap_plan_id = compute_id(_plan_ident(plan))
+    bootstrap_plan_id = compute_id(plan_identity(plan))
     if bootstrap_plan_id != spec_ids.get("bootstrap_plan_id"):
         raise ValueError("resume bootstrap plan does not match the run spec")
 
@@ -1633,11 +1942,6 @@ def _resume_local_run(*, args, out: Path, run_sha: str) -> int:
         model_id=model_manifest["id"],
         require_final=args.variant == "final",
     )
-
-
-def _plan_ident(plan):
-    from scripts.stopdff_v5.bootstrap import plan_identity
-    return plan_identity(plan)
 
 
 def _ledger_entry(

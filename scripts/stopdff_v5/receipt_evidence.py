@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from pathlib import PurePosixPath
 from typing import Any
 
-from .identity import compute_id, loads_no_duplicate_keys
+from .identity import compute_id, is_sha256_hex, loads_no_duplicate_keys
 
 FULL_RECEIPT_BINDINGS = {
     "source_manifest_id",
@@ -75,7 +74,6 @@ MUTATION_ROSTER = (
 )
 RECEIPT_GATES = {"smoke", "mutation", "determinism"}
 
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _EVIDENCE_SCHEMA_VERSIONS = {
     "smoke": 1,
     "mutation": 2,
@@ -121,10 +119,6 @@ _EVIDENCE_FIELDS = {
 }
 
 
-def _is_sha256(value: Any) -> bool:
-    return isinstance(value, str) and _SHA256_RE.fullmatch(value) is not None
-
-
 def validate_receipt_evidence_digest(gate: str, evidence: Any) -> None:
     """Validate the digest that binds a receipt to packaged evidence bytes.
 
@@ -146,7 +140,7 @@ def validate_receipt_evidence_digest(gate: str, evidence: Any) -> None:
     """
     if not isinstance(evidence, dict) or set(evidence) != {"evidence_sha256"}:
         raise ValueError(f"{gate} receipt evidence fields mismatch")
-    if not _is_sha256(evidence.get("evidence_sha256")):
+    if not is_sha256_hex(evidence.get("evidence_sha256")):
         raise ValueError(f"{gate} receipt evidence_sha256 must be lowercase SHA-256")
 
 
@@ -245,7 +239,7 @@ def _validate_bindings(gate: str, bindings: Any) -> dict[str, str]:
     required = DETERMINISM_BINDINGS if gate == "determinism" else FULL_RECEIPT_BINDINGS
     if not isinstance(bindings, dict) or set(bindings) != required:
         raise ValueError(f"{gate} prerequisite evidence bindings mismatch")
-    if any(not _is_sha256(value) for value in bindings.values()):
+    if any(not is_sha256_hex(value) for value in bindings.values()):
         raise ValueError(f"{gate} prerequisite evidence binding is not SHA-256")
     return {key: bindings[key] for key in sorted(bindings)}
 
@@ -451,8 +445,8 @@ def _validate_determinism(
         or not isinstance(second_hashes, dict)
         or set(first_hashes) != expected_files
         or set(second_hashes) != expected_files
-        or any(not _is_sha256(value) for value in first_hashes.values())
-        or any(not _is_sha256(value) for value in second_hashes.values())
+        or any(not is_sha256_hex(value) for value in first_hashes.values())
+        or any(not is_sha256_hex(value) for value in second_hashes.values())
         or first_hashes != second_hashes
     ):
         raise ValueError("determinism evidence file hashes differ or are incomplete")
@@ -623,7 +617,7 @@ def verify_prerequisite_evidence_bytes(
     ValueError
         If the digest, encoding, gate, bindings, or evidence is invalid.
     """
-    if set(receipt_evidence) != {"evidence_sha256"} or not _is_sha256(
+    if set(receipt_evidence) != {"evidence_sha256"} or not is_sha256_hex(
         receipt_evidence.get("evidence_sha256")
     ):
         raise ValueError(f"{gate} receipt evidence digest is invalid")

@@ -22,13 +22,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import unicodedata
 from pathlib import Path
 from typing import Any
 
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
 
 class IdentityError(ValueError):
     """Raised when an object cannot be canonicalized under the identity contract."""
+
+
+def is_sha256_hex(value: object) -> bool:
+    """Return True when ``value`` is a 64-char lowercase-hex sha256 digest string."""
+    return isinstance(value, str) and _SHA256_RE.fullmatch(value) is not None
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -47,6 +55,37 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def loads_no_duplicate_keys(text: str) -> Any:
     """Parse JSON text, rejecting duplicate object keys anywhere in the tree."""
     return json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+
+
+def _reject_nonfinite_constant(value: str) -> Any:
+    raise IdentityError(f"non-finite JSON constant {value!r}")
+
+
+def loads_strict(text: str) -> Any:
+    """Parse JSON text, rejecting duplicate object keys and non-finite constants.
+
+    The canonical strict parse discipline for v5 artifacts: ``NaN`` /
+    ``Infinity`` / ``-Infinity`` fail at parse time instead of leaking floats
+    the checker rejects anyway.
+    """
+    return json.loads(
+        text,
+        object_pairs_hook=_reject_duplicate_keys,
+        parse_constant=_reject_nonfinite_constant,
+    )
+
+
+def load_json_strict(path: str | Path) -> Any:
+    """Read ``path`` as UTF-8 JSON under the strict parse discipline.
+
+    Any decode failure (malformed JSON, duplicate keys, non-finite constants,
+    bad UTF-8) is re-raised as ``ValueError('invalid JSON in <path>: ...')``.
+    """
+    path = Path(path)
+    try:
+        return loads_strict(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(f"invalid JSON in {path}: {exc}") from exc
 
 
 def _canonicalize(value: Any, *, path: str = "$") -> Any:

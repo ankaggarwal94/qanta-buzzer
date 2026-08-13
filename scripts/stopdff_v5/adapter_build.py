@@ -12,17 +12,19 @@ from __future__ import annotations
 import json
 import math
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
 from qb_data.dataset_splits import normalize_question_text, normalize_split_answer
 
-from .identity import build_manifest, sha256_bytes, sha256_file
+from .identity import build_manifest, load_json_strict, sha256_bytes, sha256_file
 from .manifests import (
     adapter_identity,
     model_snapshot_identity,
     question_trajectory_binding_id,
 )
+from .producers import _record_value
 
 MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
 ADAPTER_SCHEMA_COLUMNS = [
@@ -53,6 +55,16 @@ def freeze_model_snapshot(out_dir: Path, *, model_id: str = MODEL_ID, revision: 
 
     snapshot_download(repo_id=model_id, revision=revision, local_dir=str(snap))
 
+    # huggingface_hub's local_dir layout records transport metadata (etags,
+    # wall-clock timestamps) under .cache/huggingface/. Those bytes are not
+    # part of the pinned revision, and hashing them would make identical
+    # revisions freeze to different content-addressed identities, so prune
+    # the directory before the inventory walk (downstream bound-content
+    # validation reproduces this walk and requires exact correspondence).
+    hub_cache = snap / ".cache"
+    if hub_cache.is_dir():
+        shutil.rmtree(hub_cache)
+
     files: list[dict[str, Any]] = []
     for p in sorted(snap.rglob("*")):
         if p.is_file():
@@ -69,45 +81,12 @@ def freeze_model_snapshot(out_dir: Path, *, model_id: str = MODEL_ID, revision: 
     return manifest
 
 
-def _load_json_unique(path: Path) -> Any:
-    """Decode JSON while rejecting duplicate keys and non-finite constants."""
-    path = Path(path)
-
-    def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate JSON key {key!r}")
-            result[key] = value
-        return result
-
-    def _reject_constant(value: str) -> Any:
-        raise ValueError(f"non-finite JSON constant {value!r}")
-
-    try:
-        return json.loads(
-            path.read_text(encoding="utf-8"),
-            object_pairs_hook=_unique_object,
-            parse_constant=_reject_constant,
-        )
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
-        raise ValueError(f"invalid JSON in {path}: {exc}") from exc
-
-
 def _load_mc_questions(mc_dataset_path: Path) -> list[dict]:
-    data = _load_json_unique(mc_dataset_path)
+    data = load_json_strict(mc_dataset_path)
     records = data["questions"] if isinstance(data, dict) and "questions" in data else data
     if not isinstance(records, list) or not all(isinstance(record, dict) for record in records):
         raise ValueError(f"MC dataset {mc_dataset_path} must contain question objects")
     return records
-
-
-def _record_value(record: dict[str, Any], keys: tuple[str, ...]) -> Any:
-    for key in keys:
-        value = record.get(key)
-        if value is not None:
-            return value
-    return None
 
 
 def _record_qid(record: dict[str, Any]) -> str:
@@ -118,7 +97,7 @@ def _record_qid(record: dict[str, Any]) -> str:
 
 
 def _dataset_index(path: Path, *, split: str) -> dict[str, dict[str, str]]:
-    data = _load_json_unique(path)
+    data = load_json_strict(path)
     records = data["questions"] if isinstance(data, dict) and "questions" in data else data
     if not isinstance(records, list) or not all(isinstance(record, dict) for record in records):
         raise ValueError(f"{split} dataset {path} must contain question objects")
@@ -147,7 +126,7 @@ def _dataset_index(path: Path, *, split: str) -> dict[str, dict[str, str]]:
 
 def _load_calibration(path: Path) -> dict[str, Any]:
     """Load the calibration artifact and bind it to the adapter fit split."""
-    data = _load_json_unique(path)
+    data = load_json_strict(path)
     if not isinstance(data, dict):
         raise ValueError(f"calibration {path} must contain an object")
     metadata = data.get("metadata")

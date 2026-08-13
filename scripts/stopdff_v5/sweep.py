@@ -18,8 +18,14 @@ from typing import Any, Callable, Sequence
 import numpy as np
 
 from . import PROFILE_NAME
-from .bootstrap import BootstrapPlan, cell_bootstrap_stats, family_statistic
+from .bootstrap import (
+    BootstrapPlan,
+    cell_bootstrap_stats,
+    family_statistic,
+    plan_identity,
+)
 from .cellcompute import CellInputs, compute_cell, prepare_cell_inputs
+from .fileio import dumps_json_bytes, publish_bytes
 from .attempt_history import (
     ATTEMPT_FIELDS,
     canonical_attempt_line,
@@ -40,38 +46,19 @@ CommitFn = Callable[[], None]
 _INTERRUPTED_REASON = "terminal_result_missing_at_resume"
 
 
-def atomic_write_bytes(path: Path, data: bytes) -> None:
-    """Atomically replace a regular file and durably publish its directory entry."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if (path.exists() or path.is_symlink()) and (
-        path.is_symlink() or not path.is_file()
-    ):
-        raise ValueError(f"atomic-write destination is noncanonical: {path}")
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        if os.path.exists(tmp):
-            os.remove(tmp)
+# Canonical durable-write mechanics live in ``fileio``; sweep re-exports the
+# historical name because runners import it here and tests monkeypatch
+# ``sweep.atomic_write_bytes`` for crash injection.
+atomic_write_bytes = publish_bytes
 
 
 def atomic_write_json(path: Path, obj: Any) -> None:
-    atomic_write_bytes(path, (json.dumps(obj, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    atomic_write_bytes(path, dumps_json_bytes(obj))
 
 
 def _write_bound_json(path: Path, obj: Any, *, resume: bool) -> None:
     """Create evidence once; on resume accept only byte-identical existing data."""
-    data = (json.dumps(obj, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    data = dumps_json_bytes(obj)
     if path.exists():
         if not resume:
             raise FileExistsError(f"fresh run would overwrite {path}")
@@ -155,7 +142,7 @@ def _context_identity(ctx: SweepContext) -> tuple[dict[str, Any], str]:
     if bound_overrides != ctx.gate_overrides:
         raise ValueError("run spec gate overrides do not match sweep context")
 
-    plan_id = compute_id(_plan_identity_for(ctx.bootstrap_plan))
+    plan_id = compute_id(plan_identity(ctx.bootstrap_plan))
     if spec_ids.get("bootstrap_plan_id") != plan_id:
         raise ValueError("run spec bootstrap_plan_id does not match sweep context")
     return spec_ids, plan_id
@@ -286,7 +273,7 @@ def _cell_record(
     fp_ident = cell_fingerprint_identity(
         run_spec_id=ctx.run_spec_id,
         adapter_bundle_id=ctx.adapter_bundle_id,
-        bootstrap_plan_id=compute_id(_plan_identity_for(ctx.bootstrap_plan)),
+        bootstrap_plan_id=compute_id(plan_identity(ctx.bootstrap_plan)),
         cell=cell,
         adapter_fit_rows_sha256=ctx.adapter_fit_rows_sha256,
         adapter_eval_rows_sha256=ctx.adapter_eval_rows_sha256,
@@ -304,7 +291,7 @@ def _cell_record(
         "status": result.status,
         "run_spec_id": ctx.run_spec_id,
         "adapter_bundle_id": ctx.adapter_bundle_id,
-        "bootstrap_plan_id": compute_id(_plan_identity_for(ctx.bootstrap_plan)),
+        "bootstrap_plan_id": compute_id(plan_identity(ctx.bootstrap_plan)),
         "calibrator_parameters": result.calibrator_parameters,
     }
     if result.status != "completed":
@@ -358,7 +345,18 @@ def _run_sweep_body(
     spec_ids: dict[str, Any],
     bootstrap_plan_id: str,
     precomputed_records: dict[str, dict[str, Any]] | None = None,
+    compute_missing_cells: bool = True,
 ) -> dict[str, Any]:
+    """Run the sweep body; ``compute_missing_cells=False`` is probe-only.
+
+    The resume-preflight probe passes ``compute_missing_cells=False`` so cells
+    absent from ``precomputed_records`` are skipped instead of computed into a
+    discarded directory: the probe exists to byte-compare run-level files that
+    already exist, and ``aggregate.json`` can only exist when every cell does
+    (in which case ``precomputed_records`` is complete and nothing is
+    skipped). Only callers that never publish the resulting aggregate may set
+    it.
+    """
     cells = ctx.cells if ctx.cells is not None else full_grid()
     expected_keys = {cell_key_str(c) for c in cells}
     cells_dir = ctx.output_dir / "cells"
@@ -372,7 +370,9 @@ def _run_sweep_body(
     failed: set[str] = set()
     all_calibrators_fitted = True
     all_fvi_converged = True
-    prepared = prepare_cell_inputs(ctx.rows, ctx.calibration_json)
+    # Prepared lazily: a body fed entirely from precomputed records (the
+    # resume probe, a fully-cached resume) never regroups or refits anything.
+    prepared: CellInputs | None = None
 
     for cell in cells:
         key = cell_key_str(cell)
@@ -382,6 +382,10 @@ def _run_sweep_body(
             else None
         )
         if record is None:
+            if not compute_missing_cells:
+                continue
+            if prepared is None:
+                prepared = prepare_cell_inputs(ctx.rows, ctx.calibration_json)
             record = _cell_record(ctx, cell, prepared=prepared)
         _write_bound_json(
             cells_dir / f"{key}.json",
@@ -525,14 +529,9 @@ def _run_sweep_body(
     return aggregate
 
 
-def _plan_identity_for(plan: BootstrapPlan) -> dict:
-    from .bootstrap import plan_identity
-    return plan_identity(plan)
-
-
 def _run_identity_files(ctx: SweepContext) -> tuple[tuple[str, Any], ...]:
     """Return the immutable files that make a visible run resumable."""
-    plan_ident = _plan_identity_for(ctx.bootstrap_plan)
+    plan_ident = plan_identity(ctx.bootstrap_plan)
     files: list[tuple[str, Any]] = [
         (
             "run_spec.json",
@@ -669,17 +668,36 @@ def _resume_preflight(
     expected_keys = set(cells_by_key)
     cells_dir = ctx.output_dir / "cells"
     _validate_cells_directory(cells_dir)
-    actual_keys = (
-        {path.stem for path in cells_dir.glob("*.json")}
-        if cells_dir.is_dir()
-        else set()
-    )
+    actual_keys: set[str] = set()
+    if cells_dir.is_dir():
+        # Enumerate every entry, not just *.json: an orphaned atomic-write
+        # temp file (hard kill between mkstemp and rename) must fail the
+        # first resume instead of surviving into an attested package.
+        for path in sorted(cells_dir.iterdir()):
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or path.suffix != ".json"
+            ):
+                raise ValueError(
+                    "resume cells directory contains an unexpected entry: "
+                    f"{path.name!r}"
+                )
+            actual_keys.add(path.stem)
     if not actual_keys <= expected_keys:
         raise ValueError("resume cell set contains unexpected evidence")
-    # Recompute only evidence that actually exists. Missing cells are computed
-    # later by _run_sweep_body after every cached byte has passed preflight.
+    # Recompute only evidence that actually exists, sharing one prepared-input
+    # cache across cells (trajectory regrouping and calibrator refits are
+    # cell-invariant); a per-cell rebuild would make resume cost scale with
+    # the number of already-completed cells. Missing cells are computed later
+    # by _run_sweep_body after every cached byte has passed preflight.
+    prepared = (
+        prepare_cell_inputs(ctx.rows, ctx.calibration_json)
+        if actual_keys
+        else None
+    )
     expected_records = {
-        key: _cell_record(ctx, cells_by_key[key])
+        key: _cell_record(ctx, cells_by_key[key], prepared=prepared)
         for key in sorted(actual_keys)
     }
     for key in sorted(actual_keys):
@@ -720,6 +738,11 @@ def _resume_preflight(
                 spec_ids=spec_ids,
                 bootstrap_plan_id=bootstrap_plan_id,
                 precomputed_records=expected_records,
+                # Probe-only: never recompute missing cells into this
+                # discarded directory — the real body computes them once,
+                # durably. Existing run-level bytes are still fully
+                # reconstructed and compared below.
+                compute_missing_cells=False,
             )
             for name in existing_run_level:
                 actual = ctx.output_dir / name

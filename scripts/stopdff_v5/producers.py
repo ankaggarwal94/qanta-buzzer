@@ -17,7 +17,7 @@ from typing import Any
 
 from qb_data.dataset_splits import normalize_question_text, normalize_split_answer
 
-from .identity import build_manifest, sha256_bytes, sha256_file
+from .identity import build_manifest, load_json_strict, sha256_bytes, sha256_file
 from .manifests import (
     RAW_INPUT_ROLES,
     environment_contract_identity,
@@ -49,20 +49,34 @@ def build_source_snapshot(repo_dir: Path, run_sha: str, out_dir: Path) -> dict[s
                 raise ValueError(f"source snapshot rejects link member: {name}")
             if name.startswith("/") or ".." in Path(name).parts:
                 raise ValueError(f"unsafe source member: {name}")
-        tar.extractall(src_dir)  # noqa: S202 (members validated above)
+        # filter="data" pins extraction semantics ahead of the Python 3.14
+        # default flip and rejects residual special member types the checks
+        # above do not name; the member validation stays as defense in depth.
+        tar.extractall(src_dir, filter="data")  # noqa: S202 (members validated above)
     archive.unlink()
 
-    # File modes/sizes from git; sha256 from extracted files.
-    ls = subprocess.run(["git", "-C", str(repo_dir), "ls-tree", "-r", "-l", run_sha],
-                        check=True, capture_output=True, text=True).stdout
+    # File modes/sizes from git; sha256 from extracted files. -z yields
+    # NUL-delimited records with verbatim paths (never C-quoted), so
+    # unicode/special-character names resolve to their extracted files
+    # instead of silently falling out of the inventory; utf-8 matches
+    # tarfile's member-name decoding independent of locale.
+    ls = subprocess.run(["git", "-C", str(repo_dir), "ls-tree", "-r", "-l", "-z", run_sha],
+                        check=True, capture_output=True, encoding="utf-8").stdout
     files: list[dict[str, Any]] = []
-    for line in ls.splitlines():
+    for record in ls.split("\0"):
+        if not record:
+            continue
         # <mode> <type> <sha> <size>\t<path>
-        meta, path = line.split("\t", 1)
-        mode, _type, _obj, size = meta.split()
+        meta, path = record.split("\t", 1)
+        mode, otype, _obj, size = meta.split()
         fpath = src_dir / path
         if not fpath.is_file():
-            continue
+            # Fail closed: every listed tree entry must have an extracted
+            # counterpart (gitlinks/submodules never extract); a silent skip
+            # would under-cover the content-addressed source identity.
+            raise ValueError(
+                f"source member listed by git but not extracted: {path!r} (type {otype})"
+            )
         files.append({"path": path, "mode": mode, "size": int(size), "sha256": sha256_file(fpath)})
 
     def _sha_of(rel: str) -> str:
@@ -84,33 +98,8 @@ def build_source_snapshot(repo_dir: Path, run_sha: str, out_dir: Path) -> dict[s
 # --- raw-input staging ------------------------------------------------------------
 
 
-def _load_json_unique(path: Path) -> Any:
-    """Decode JSON while rejecting duplicate object keys and non-finite constants."""
-    path = Path(path)
-
-    def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate JSON key {key!r}")
-            result[key] = value
-        return result
-
-    def _reject_constant(value: str) -> Any:
-        raise ValueError(f"non-finite JSON constant {value!r}")
-
-    try:
-        return json.loads(
-            path.read_text(encoding="utf-8"),
-            object_pairs_hook=_unique_object,
-            parse_constant=_reject_constant,
-        )
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
-        raise ValueError(f"invalid JSON in {path}: {exc}") from exc
-
-
 def _dataset_records(dataset_path: Path) -> list[dict[str, Any]]:
-    data = _load_json_unique(dataset_path)
+    data = load_json_strict(dataset_path)
     records = data["questions"] if isinstance(data, dict) and "questions" in data else data
     if not isinstance(records, list) or not all(isinstance(record, dict) for record in records):
         raise ValueError(f"dataset {dataset_path} must contain a list of question objects")
@@ -413,7 +402,7 @@ def stage_raw_inputs(source_paths: dict[str, Path], out_dir: Path) -> dict[str, 
     # Parse every declared JSON role up front. Some inputs are only identity
     # material here, but ambiguous duplicate-key JSON must never enter the bundle.
     decoded = {
-        role: _load_json_unique(path)
+        role: load_json_strict(path)
         for role, path in staged.items()
         if role.endswith(".json")
     }

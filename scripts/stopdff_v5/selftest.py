@@ -2,8 +2,21 @@
 
 build_valid_package() creates a self-contained synthetic package (adapter bundle + run
 package) that the checker accepts. run_self_test() applies a battery of mutations and
-asserts the checker REJECTS every one. Synthetic fixtures only; real-data mutation gate
-runs the same logic on Modal against the real package.
+asserts the checker REJECTS every one, exercising BOTH rejection layers per mutation:
+
+- stale-checksum adversary: the mutation is validated as applied, so the SHA256SUMS
+  sweep (or a deeper layer) must reject;
+- checksum-consistent adversary: SHA256SUMS is regenerated after the mutation (except
+  for the mutations that tamper SHA256SUMS itself), so the semantic recompute /
+  binding layer alone must reject.
+
+A final-profile phase then builds a receipt-bearing final package (production
+``writers.build_evidenced_prerequisite_receipt`` path), proves it validates
+end-to-end under ``require_final_profile=True``, and asserts receipt/evidence-ledger
+forgeries are rejected with regenerated checksums.
+
+Synthetic fixtures only; the Modal mutation gate re-runs this same synthetic-fixture
+suite inside the image (it does not mutate the real package).
 """
 from __future__ import annotations
 
@@ -37,10 +50,20 @@ from .manifests import (
     run_spec_identity,
     source_manifest_identity,
 )
-from .profile import smoke_cells
+from .profile import FINAL_REPLICATES, full_grid, smoke_cells
+from .receipt_evidence import (
+    DETERMINISM_BINDINGS,
+    MUTATION_ROSTER,
+    build_prerequisite_evidence,
+    prerequisite_evidence_bytes,
+)
 from .rowio import write_jsonl_gz
 from .sweep import SweepContext, run_sweep
-from .writers import package_run
+from .writers import (
+    build_evidenced_prerequisite_receipt,
+    package_run,
+    write_sha256sums,
+)
 
 CATEGORIES = ["history", "science", "arts"]
 PREFIX_FRACS = [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
@@ -114,8 +137,11 @@ def build_valid_package(
     base_dir: Path,
     *,
     fixed_fvi: bool = False,
+    final_variant: bool = False,
 ) -> dict[str, Any]:
     global _SYNTH_FVI_STUDY
+    if final_variant and fixed_fvi:
+        raise ValueError("a final-profile package requires a genuine FVI study")
     base_dir = Path(base_dir)
     bundle = base_dir / "adapter_bundle"
     bundle.mkdir(parents=True, exist_ok=True)
@@ -516,16 +542,188 @@ def build_valid_package(
             },
         ]
     )
+    if not final_variant:
+        package_run(
+            run_root, aggregate, resource_summary={"backend": "modal", "usd": 0},
+            external_artifacts=external_artifacts,
+            evidence_files={
+                "evidence/fvi_study.json": fvi_bytes,
+                "evidence/environment_contract.json": environment_bytes,
+            },
+        )
+        return {"run_root": run_root, "adapter_bundle": bundle, "aggregate": aggregate,
+                "run_spec_id": run_spec_id}
+
+    # Final-profile variant: mint the three prerequisite receipts through the
+    # production writers path, then run and package the 96-cell final profile.
+    receipt_ids = _mint_final_prerequisite_receipts(
+        base_dir,
+        full_bindings={
+            "source_manifest_id": source_id,
+            "raw_input_bundle_id": raw_id,
+            "model_snapshot_id": model_id,
+            "adapter_bundle_id": adapter_id,
+            "fvi_study_id": fvi_study_id,
+            "environment_contract_id": env_id,
+        },
+        smoke_spec=run_spec,
+        smoke_spec_id=run_spec_id,
+        smoke_aggregate=_load(run_root / "aggregate.json"),
+        adapter_manifest=adapter_man,
+        determinism_file_hashes={
+            "fit_rows.jsonl.gz": fit_sha,
+            "eval_rows.jsonl.gz": eval_sha,
+            "calibration.json": calibration_sha,
+            "build_metadata.json": build_metadata_sha,
+        },
+    )
+    final_plan = build_bootstrap_plan(
+        test_items, replicates=FINAL_REPLICATES, seed=1
+    )
+    final_bootstrap_id = compute_id(plan_identity(final_plan))
+    final_spec = run_spec_identity(
+        source_manifest_id=source_id, raw_input_bundle_id=raw_id,
+        model_snapshot_id=model_id, adapter_bundle_id=adapter_id,
+        fvi_study_id=fvi_study_id, bootstrap_plan_id=final_bootstrap_id,
+        environment_contract_id=env_id,
+        resource_summary_id=compute_id({"backend": "modal", "usd": 0}),
+        fvi_selected=selected_fvi,
+        replicate_count=FINAL_REPLICATES, profile_variant="final",
+        myopic_artifact_sha256=myopic_sha256,
+        producer_hashes=run_producers,
+        prerequisite_receipts=receipt_ids,
+    )
+    final_spec_id = compute_id(final_spec)
+    # package_run resolves receipts from run_root.parents[1] / "receipts", so
+    # the final run root sits one level deeper than the smoke run root.
+    final_root = base_dir / "runs" / "run"
+    final_ctx = SweepContext(
+        rows=rows, calibration_json=bound_calibration, run_spec=final_spec,
+        run_spec_id=final_spec_id, bootstrap_plan=final_plan,
+        output_dir=final_root,
+        fvi_tolerance=selected_fvi["tolerance"],
+        fvi_max_iterations=selected_fvi["max_iterations"],
+        backend="modal", profile_variant="final", adapter_bundle_id=adapter_id,
+        adapter_fit_rows_sha256=fit_sha,
+        adapter_eval_rows_sha256=eval_sha,
+        myopic_artifact_sha256=myopic_sha256,
+        producer_hashes=run_producers, cells=full_grid(),
+        environment=environment,
+        resource_summary={"backend": "modal", "usd": 0},
+        attempt={"attempt": 1, "mode": "fresh", "command": ["dp_sweep"],
+                 "run_spec_id": final_spec_id, "adapter_id": adapter_id},
+    )
+    final_aggregate = run_sweep(final_ctx)
     package_run(
-        run_root, aggregate, resource_summary={"backend": "modal", "usd": 0},
+        final_root, final_aggregate,
+        resource_summary={"backend": "modal", "usd": 0},
         external_artifacts=external_artifacts,
         evidence_files={
             "evidence/fvi_study.json": fvi_bytes,
             "evidence/environment_contract.json": environment_bytes,
         },
     )
-    return {"run_root": run_root, "adapter_bundle": bundle, "aggregate": aggregate,
-            "run_spec_id": run_spec_id}
+    return {"run_root": final_root, "adapter_bundle": bundle,
+            "aggregate": final_aggregate, "run_spec_id": final_spec_id,
+            "prerequisite_receipt_ids": receipt_ids}
+
+
+def _mint_final_prerequisite_receipts(
+    base_dir: Path,
+    *,
+    full_bindings: dict[str, str],
+    smoke_spec: dict[str, Any],
+    smoke_spec_id: str,
+    smoke_aggregate: dict[str, Any],
+    adapter_manifest: dict[str, Any],
+    determinism_file_hashes: dict[str, str],
+) -> dict[str, str]:
+    """Mint smoke/mutation/determinism receipts through the production path.
+
+    Returns
+    -------
+    dict[str, str]
+        Gate-to-receipt-ID mapping for the final run spec.
+    """
+    determinism_bindings = {
+        key: full_bindings[key] for key in sorted(DETERMINISM_BINDINGS)
+    }
+    source_execution = {
+        "environment": "local_clean_worktree",
+        "executing_source_manifest_id": full_bindings["source_manifest_id"],
+        "runtime_source_manifest_id": full_bindings["source_manifest_id"],
+    }
+
+    def _build_execution(execution_id: str, subdir: str) -> dict[str, Any]:
+        return {
+            "environment": "local_process",
+            "execution_id": execution_id,
+            "adapter_subdir": subdir,
+            **determinism_bindings,
+            "cached": False,
+            "output_sha256": determinism_file_hashes,
+        }
+
+    gate_inputs = {
+        "smoke": (
+            full_bindings,
+            {
+                "run_spec": {"id": smoke_spec_id, "identity": smoke_spec},
+                "aggregate": smoke_aggregate,
+            },
+        ),
+        "mutation": (
+            full_bindings,
+            {
+                "source_execution": source_execution,
+                "results": [
+                    {
+                        "mutation": name,
+                        "expected": "PASS" if index == 0 else "REJECT",
+                        "passed_check": index == 0,
+                        "ok": True,
+                        "errors": [],
+                    }
+                    for index, name in enumerate(MUTATION_ROSTER)
+                ],
+            },
+        ),
+        "determinism": (
+            determinism_bindings,
+            {
+                "source_execution": source_execution,
+                "first_build_execution": _build_execution(
+                    "selftest-determinism-first", "first"
+                ),
+                "second_build_execution": _build_execution(
+                    "selftest-determinism-second", "second"
+                ),
+                "first_adapter_manifest": adapter_manifest,
+                "second_adapter_manifest": adapter_manifest,
+                "first_file_sha256": determinism_file_hashes,
+                "second_file_sha256": determinism_file_hashes,
+            },
+        ),
+    }
+    receipt_ids: dict[str, str] = {}
+    for gate, (bindings, details) in gate_inputs.items():
+        evidence = build_prerequisite_evidence(
+            gate=gate, bindings=bindings, details=details
+        )
+        receipt = build_evidenced_prerequisite_receipt(
+            gate=gate, bindings=bindings, evidence=evidence
+        )
+        gate_dir = base_dir / "receipts" / gate
+        gate_dir.mkdir(parents=True, exist_ok=True)
+        (gate_dir / f"{receipt['id']}.json").write_text(
+            json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        (gate_dir / f"{receipt['id']}.evidence.json").write_bytes(
+            prerequisite_evidence_bytes(evidence)
+        )
+        receipt_ids[gate] = receipt["id"]
+    return receipt_ids
 
 
 # --- mutations --------------------------------------------------------------------
@@ -730,9 +928,13 @@ def _mut_aggregate_adapter_binding(rr, b):
 
 
 def _mut_aggregate_fvi_binding(rr, b):
+    # Offset from the recorded value: a fixed constant can collide with the
+    # study-selected setting, turning this into a checksum-only byte change.
     path = rr / "aggregate.json"
     aggregate = _load(path)
-    aggregate["fvi_selected"]["max_iterations"] = 200
+    aggregate["fvi_selected"]["max_iterations"] = (
+        int(aggregate["fvi_selected"]["max_iterations"]) + 100
+    )
     _save(path, aggregate)
 
 
@@ -801,6 +1003,86 @@ def _mut_attempt_result_counts(rr, b):
     _save(path, record)
 
 
+# Mutations that tamper the SHA256SUMS file itself: regenerating the checksum
+# inventory would erase the mutation, so these three exercise ONLY the
+# stale-checksum layer (that layer is exactly what they test).
+_CHECKSUM_CONTENT_MUTATIONS = frozenset({
+    "unsafe_checksum_traversal",
+    "duplicate_checksum_entry",
+    "checksum_value_mismatch",
+})
+
+
+def _rewrite_receipt_ledger_entry(rr: Path, role: str, path: Path) -> None:
+    """Rebind one external-artifact ledger entry to a forged receipt's bytes."""
+    record = _load(rr / "external_artifacts.json")
+    manifest = _load(path)
+    data = path.read_bytes()
+    for artifact in record["artifacts"]:
+        if artifact.get("role") == role:
+            artifact["content_id"] = manifest["id"]
+            artifact["sha256"] = sha256_bytes(data)
+            artifact["byte_size"] = len(data)
+    _save(rr / "external_artifacts.json", record)
+
+
+def _mut_final_receipt_evidence_bytes_tampered(rr, b):
+    # Digest binding: packaged evidence bytes no longer hash to the receipt's
+    # evidence_sha256, even though every checksum in SHA256SUMS is consistent.
+    path = rr / "evidence" / "prerequisite_receipts" / "smoke.evidence.json"
+    path.write_bytes(path.read_bytes() + b"\n")
+
+
+def _mut_final_receipt_id_forged(rr, b):
+    path = rr / "evidence" / "prerequisite_receipts" / "mutation.json"
+    manifest = _load(path)
+    manifest["id"] = _hex("0")
+    _save(path, manifest)
+    _rewrite_receipt_ledger_entry(rr, "prerequisite_receipt_mutation", path)
+
+
+def _mut_final_receipt_binding_mismatch(rr, b):
+    # Self-consistent forgery: the receipt hashes to its own identity but was
+    # minted for a different adapter; the run-spec receipt pin must reject it.
+    path = rr / "evidence" / "prerequisite_receipts" / "determinism.json"
+    manifest = _load(path)
+    manifest["identity"]["bindings"]["adapter_bundle_id"] = _hex("9")
+    manifest["id"] = compute_id(manifest["identity"])
+    _save(path, manifest)
+    _rewrite_receipt_ledger_entry(rr, "prerequisite_receipt_determinism", path)
+
+
+def _mut_final_missing_receipt_role(rr, b):
+    record = _load(rr / "external_artifacts.json")
+    record["artifacts"] = [
+        artifact
+        for artifact in record["artifacts"]
+        if artifact.get("role") != "prerequisite_receipt_smoke"
+    ]
+    _save(rr / "external_artifacts.json", record)
+
+
+def _mut_final_spec_drops_receipts(rr, b):
+    # A self-consistent final spec that claims no receipts: the profile-variant
+    # receipt requirement (and every run_spec_id binding) must reject it.
+    path = rr / "run_spec.json"
+    manifest = _load(path)
+    manifest["identity"]["evidence_roots"]["prerequisite_receipts"] = {}
+    manifest["id"] = compute_id(manifest["identity"])
+    _save(path, manifest)
+
+
+_FINAL_RECEIPT_MUTATIONS: dict[str, Callable] = {
+    "final_receipt_evidence_bytes_tampered": (
+        _mut_final_receipt_evidence_bytes_tampered
+    ),
+    "final_receipt_id_forged": _mut_final_receipt_id_forged,
+    "final_receipt_binding_mismatch": _mut_final_receipt_binding_mismatch,
+    "final_missing_prerequisite_receipt_role": _mut_final_missing_receipt_role,
+    "final_spec_drops_prerequisite_receipts": _mut_final_spec_drops_receipts,
+}
+
+
 _RUN_MUTATIONS: dict[str, Callable] = {
     "stale_cache": _mut_stale_cache,
     "cell_verdict_serialized_not_trusted": _mut_flip_verdict,
@@ -845,7 +1127,72 @@ _RUN_MUTATIONS: dict[str, Callable] = {
 }
 
 
+def run_final_receipt_self_test(
+    base_dir: Path,
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Final-profile receipt/evidence-ledger negative phase.
+
+    Builds a receipt-bearing final package, proves the checker accepts it
+    end-to-end under ``require_final_profile=True``, then asserts every
+    receipt/evidence-ledger forgery is rejected by the semantic receipt layer
+    alone (SHA256SUMS is regenerated after each mutation).
+    """
+    base_dir = Path(base_dir)
+    valid_dir = base_dir / "valid"
+    built = build_valid_package(valid_dir, final_variant=True)
+
+    results: list[dict[str, Any]] = []
+    baseline = checker.validate_run(
+        built["run_root"], backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=True, require_package=True,
+    )
+    results.append({"mutation": "<final baseline valid>", "expected": "PASS",
+                    "passed_check": baseline.passed, "ok": baseline.passed,
+                    "errors": baseline.errors[:3]})
+    all_ok = baseline.passed
+
+    for name, fn in _FINAL_RECEIPT_MUTATIONS.items():
+        mdir = base_dir / f"mut_{name}"
+        if mdir.exists():
+            shutil.rmtree(mdir)
+        shutil.copytree(valid_dir, mdir, symlinks=True)
+        rr, bundle = mdir / "runs" / "run", mdir / "adapter_bundle"
+        fn(rr, bundle)
+        write_sha256sums(rr)
+        res = checker.validate_run(
+            rr, backend="modal", adapter_bundle=bundle,
+            require_final_profile=True, require_package=True,
+        )
+        rejected = not res.passed
+        results.append({"mutation": name, "expected": "REJECT",
+                        "passed_check": res.passed, "ok": rejected,
+                        "errors": res.errors[:2]})
+        all_ok = all_ok and rejected
+
+    return all_ok, results
+
+
 def run_self_test(base_dir: Path) -> tuple[bool, list[dict[str, Any]]]:
+    """Run the normative negative-mutation gate on synthetic fixtures.
+
+    Every run-package mutation is validated twice: once as applied (the
+    stale-checksum sweep or a deeper layer must reject), and once after
+    ``SHA256SUMS`` is regenerated (the semantic recompute/binding layer alone
+    must reject a checksum-consistent adversary). The three SHA256SUMS-content
+    mutations run only the first pass, since regeneration would erase them.
+    A final-profile receipt phase then runs via
+    :func:`run_final_receipt_self_test`.
+
+    Returns
+    -------
+    tuple[bool, list[dict[str, Any]]]
+        ``all_ok`` plus one result entry per mutation. On success the entries
+        match ``receipt_evidence.MUTATION_ROSTER`` exactly (the mutation-gate
+        receipt evidence pins that roster, so passing final-phase entries are
+        not appended); on failure the failing final-phase entries are appended
+        for diagnostics.
+    """
     base_dir = Path(base_dir)
     valid_dir = base_dir / "valid"
     built = build_valid_package(valid_dir)
@@ -868,13 +1215,25 @@ def run_self_test(base_dir: Path) -> tuple[bool, list[dict[str, Any]]]:
         shutil.copytree(valid_dir, mdir, symlinks=True)
         rr, bundle = mdir / "run", mdir / "adapter_bundle"
         fn(rr, bundle)
-        res = checker.validate_run(
+        stale = checker.validate_run(
             rr, backend="modal", adapter_bundle=bundle,
             require_final_profile=False, require_package=True,
         )
-        rejected = not res.passed
-        results.append({"mutation": name, "expected": "REJECT", "passed_check": res.passed,
-                        "ok": rejected, "errors": res.errors[:2]})
+        if name in _CHECKSUM_CONTENT_MUTATIONS:
+            accepted_by_any_layer = stale.passed
+            errors = stale.errors[:2]
+        else:
+            write_sha256sums(rr)
+            semantic = checker.validate_run(
+                rr, backend="modal", adapter_bundle=bundle,
+                require_final_profile=False, require_package=True,
+            )
+            accepted_by_any_layer = stale.passed or semantic.passed
+            errors = semantic.errors[:2]
+        rejected = not accepted_by_any_layer
+        results.append({"mutation": name, "expected": "REJECT",
+                        "passed_check": accepted_by_any_layer,
+                        "ok": rejected, "errors": errors})
         all_ok = all_ok and rejected
 
     # adapter-level mutation
@@ -887,5 +1246,13 @@ def run_self_test(base_dir: Path) -> tuple[bool, list[dict[str, Any]]]:
     results.append({"mutation": "invalid_adapter_row_hash", "expected": "REJECT",
                     "passed_check": ares.passed, "ok": not ares.passed, "errors": ares.errors[:2]})
     all_ok = all_ok and not ares.passed
+
+    final_ok, final_results = run_final_receipt_self_test(base_dir / "final")
+    all_ok = all_ok and final_ok
+    if not final_ok:
+        # Diagnostics only: the mutation-gate receipt evidence pins the result
+        # roster to receipt_evidence.MUTATION_ROSTER, and a failing gate never
+        # mints a receipt, so the extra entries are safe to surface here.
+        results.extend(final_results)
 
     return all_ok, results

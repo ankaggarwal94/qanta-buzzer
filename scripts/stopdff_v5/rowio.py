@@ -9,10 +9,11 @@ from __future__ import annotations
 import gzip
 import io
 import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Iterable
+
+from .fileio import publish_bytes
+from .identity import loads_strict
 
 _COMPRESSLEVEL = 6
 
@@ -30,24 +31,30 @@ def dumps_rows(rows: Iterable[dict]) -> bytes:
 
 
 def write_jsonl_gz(path: str | Path, rows: Iterable[dict]) -> None:
-    data = dumps_rows(rows)
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.remove(tmp)
+    """Atomically and durably publish one adapter row file.
+
+    Row serialization stays canonical (``dumps_rows``); the crash-durable
+    publish mechanics (flush + file fsync before the rename, directory fsync
+    after) are the package-wide primitive ``fileio.publish_bytes``.
+    """
+    publish_bytes(Path(path), dumps_rows(rows))
 
 
 def read_jsonl_gz(path: str | Path) -> list[dict]:
+    """Strictly read adapter rows.
+
+    Each line is parsed under the canonical strict discipline (duplicate keys
+    and non-finite constants rejected) and must decode to a JSON object; the
+    checker's row reader delegates here so producer and checker reads share
+    one fail-closed loader.
+    """
     rows: list[dict] = []
     with gzip.open(path, "rt", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
             if line:
-                rows.append(json.loads(line))
+                row = loads_strict(line)
+                if not isinstance(row, dict):
+                    raise ValueError("adapter JSONL row must be an object")
+                rows.append(row)
     return rows

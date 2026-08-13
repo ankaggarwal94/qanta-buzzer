@@ -41,6 +41,13 @@ ACTION_DISAGREEMENT_MAX = 0.001
 
 def _cell_metrics(result: CellResult) -> dict[str, Any]:
     shifts = list(result.index_shift_by_item.values())
+    if not shifts and result.status == "completed":
+        # Fail closed instead of substituting a default: a completed cell with
+        # no paired MC/QA items would otherwise fabricate median/mean shifts of
+        # exactly 0.0, indistinguishable from a genuinely perfect cell on both
+        # the candidate and reference sides of the eligibility comparison
+        # (docs/solutions/logic-errors/scientific-metric-edge-case-guards.md).
+        raise ValueError("FVI study cell has no paired MC/QA index shifts")
     arr = np.array(shifts, dtype=np.float64) if shifts else np.array([0.0])
     return {
         "status": result.status,

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from tests.test_pr30_control_repairs import _fake_control_api, _load_modal_runner
+from scripts import stopdff_v5_control_plane
+from tests.test_stopdff_v5_control_plane import _fake_control_api, _load_modal_runner
 
 
 def _plan(ids: dict[str, str]) -> dict:
@@ -117,7 +118,9 @@ def test_nonterminal_resume_revalidates_checkpointed_package(
     runner = _load_modal_runner(monkeypatch)
     api, calls, ids = _fake_control_api()
     state_path = tmp_path / "control.json"
-    original_record = runner._record_control_event
+    # The driver lives in scripts/stopdff_v5_control_plane.py (the runner only
+    # re-exports it), so the interruption seam must be patched there.
+    original_record = stopdff_v5_control_plane._record_control_event
     interrupted = False
 
     def interrupt_after_validation(*args, **kwargs):
@@ -131,7 +134,11 @@ def test_nonterminal_resume_revalidates_checkpointed_package(
             interrupted = True
             raise RuntimeError("crash before control completion")
 
-    monkeypatch.setattr(runner, "_record_control_event", interrupt_after_validation)
+    monkeypatch.setattr(
+        stopdff_v5_control_plane,
+        "_record_control_event",
+        interrupt_after_validation,
+    )
     with pytest.raises(RuntimeError, match="crash before control completion"):
         runner.run_control_plane(
             _plan(ids),

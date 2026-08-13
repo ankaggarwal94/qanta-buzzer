@@ -17,6 +17,7 @@ if str(REPO) not in sys.path:
 from scripts.stopdff_v5 import (  # noqa: E402
     adapter_build,
     checker,
+    fileio,
     identity,
     rowio,
     selftest,
@@ -289,7 +290,7 @@ def test_rowio_atomic_replace_failure_preserves_target_and_cleans_temp(
     def fail_replace(source, destination):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr(rowio.os, "replace", fail_replace)
+    monkeypatch.setattr(fileio.os, "replace", fail_replace)
     with pytest.raises(OSError, match="simulated replace failure"):
         rowio.write_jsonl_gz(target, [{"answer": "雪"}])
 

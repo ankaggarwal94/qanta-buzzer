@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -244,3 +245,102 @@ def test_adapter_scoring_accepts_qid_aliases(qid_field):
     )
     assert rows
     assert {row["item_id"] for row in rows} == {"alias-qid"}
+
+
+def test_freeze_model_snapshot_prunes_volatile_hub_cache_from_identity(
+    tmp_path, monkeypatch
+):
+    """huggingface_hub local_dir transport metadata (.cache/) is volatile
+    (etag + wall-clock timestamps) and must not enter the content-addressed
+    model-snapshot identity, while pinned dot-files stay inventoried."""
+    from scripts.stopdff_v5.content_manifest import validate_bound_content_manifest
+
+    pinned_content = {
+        ".gitattributes": b"*.safetensors filter=lfs\n",
+        "config.json": b'{"hidden_size": 384}\n',
+        "model.safetensors": b"\x00fixed-model-bytes\xff\n",
+    }
+
+    class _UnusedApi:
+        def __init__(self):
+            raise AssertionError("HfApi must not be constructed for a pinned revision")
+
+    def _freeze(out_dir: Path, volatile: bytes) -> dict:
+        def snapshot_download(*, repo_id: str, revision: str, local_dir: str) -> None:
+            root = Path(local_dir)
+            for name, data in pinned_content.items():
+                (root / name).write_bytes(data)
+            meta_dir = root / ".cache" / "huggingface" / "download"
+            meta_dir.mkdir(parents=True, exist_ok=True)
+            (meta_dir / "model.safetensors.metadata").write_bytes(volatile)
+
+        hub = types.ModuleType("huggingface_hub")
+        hub.HfApi = _UnusedApi
+        hub.snapshot_download = snapshot_download
+        monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+        for name, version in (
+            ("sentence_transformers", "0.0.st-test"),
+            ("transformers", "0.0.tf-test"),
+        ):
+            module = types.ModuleType(name)
+            module.__version__ = version
+            monkeypatch.setitem(sys.modules, name, module)
+        return adapter_build.freeze_model_snapshot(out_dir, revision="a" * 40)
+
+    first = _freeze(tmp_path / "one", b"etag-1 timestamp=1111111111.111\n")
+    second = _freeze(tmp_path / "two", b"etag-2 timestamp=2222222222.222\n")
+
+    # Identical pinned revisions freeze to the identical identity even when
+    # the hub's transport metadata differs between downloads.
+    assert first["id"] == second["id"]
+    inventory = [entry["path"] for entry in first["identity"]["files"]]
+    assert inventory == sorted(pinned_content)
+    assert not any(".cache" in Path(path).parts for path in inventory)
+    assert not (tmp_path / "one" / "snapshot" / ".cache").exists()
+
+    # The pruned tree still satisfies the exhaustive bound-content walk that
+    # every downstream consumer reproduces.
+    validate_bound_content_manifest(
+        tmp_path / "one",
+        manifest_name="model_snapshot_manifest.json",
+        expected_id=first["id"],
+        file_key="files",
+        name_key="path",
+        content_subdir="snapshot",
+        expected_kind="model_snapshot",
+    )
+
+
+def test_write_jsonl_gz_fsyncs_file_and_directory_around_publish(
+    tmp_path, monkeypatch
+):
+    """Adapter row publication is crash-durable, not just rename-atomic.
+
+    The row writer routes through the canonical durable-publish primitive
+    (``fileio.publish_bytes``): flush + fsync the temp file before the
+    rename, then fsync the directory so the published name survives a crash.
+    """
+    import os as os_module
+
+    from scripts.stopdff_v5 import fileio, rowio
+
+    events: list[str] = []
+    real_fsync = os_module.fsync
+    real_replace = os_module.replace
+
+    def recording_fsync(fd):
+        events.append("fsync")
+        return real_fsync(fd)
+
+    def recording_replace(src, dst):
+        events.append("replace")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(fileio.os, "fsync", recording_fsync)
+    monkeypatch.setattr(fileio.os, "replace", recording_replace)
+
+    path = tmp_path / "rows.jsonl.gz"
+    rowio.write_jsonl_gz(path, [{"b": 2, "a": 1}])
+
+    assert events == ["fsync", "replace", "fsync"]
+    assert rowio.read_jsonl_gz(path) == [{"a": 1, "b": 2}]

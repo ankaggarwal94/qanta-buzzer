@@ -10,8 +10,14 @@ import sys
 from pathlib import Path
 
 import pytest
-from jsonschema import Draft202012Validator
-from referencing import Registry, Resource
+
+# Optional dev extras: skip (as the sibling suites do) rather than fail
+# collection on a minimal `pip install -e .` environment.
+jsonschema = pytest.importorskip("jsonschema")
+referencing = pytest.importorskip("referencing")
+Draft202012Validator = jsonschema.Draft202012Validator
+Registry = referencing.Registry
+Resource = referencing.Resource
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
@@ -54,21 +60,14 @@ def _dump(path: Path, value: object) -> bytes:
     return data
 
 
-def _ledger(
-    role: str,
-    manifest: dict,
-    path: Path,
-    *,
-    legacy_retrieval: bool = False,
-) -> dict:
-    entry = {
+def _ledger(role: str, manifest: dict, path: Path) -> dict:
+    return {
         "role": role,
         "content_id": manifest["id"],
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "byte_size": path.stat().st_size,
+        "retrieval_path": str(path),
     }
-    entry["retrieval" if legacy_retrieval else "retrieval_path"] = str(path)
-    return entry
 
 
 def _canonical_fvi_identity(
@@ -183,6 +182,63 @@ def test_checksum_inventory_accepts_nested_directories_and_regular_files(tmp_pat
     checker_package.check_complete_checksums(root, errors)
 
     assert errors == []
+
+
+def test_checksum_inventory_round_trips_paths_containing_spaces(tmp_path):
+    root = tmp_path / "package"
+    nested = root / "evidence dir"
+    nested.mkdir(parents=True)
+    (nested / "name with  spaces.txt").write_text("bound", encoding="utf-8")
+    writers.write_sha256sums(root)
+
+    errors: list[str] = []
+    checker_package.check_complete_checksums(root, errors)
+    assert errors == []
+
+    listed = (root / "SHA256SUMS").read_text(encoding="utf-8")
+    assert "evidence dir/name with  spaces.txt" in listed
+
+    (nested / "name with  spaces.txt").write_text("tampered", encoding="utf-8")
+    errors = []
+    checker_package.check_complete_checksums(root, errors)
+    assert errors == [
+        "checksum mismatch: 'evidence dir/name with  spaces.txt'"
+    ]
+
+
+def test_checksum_writers_reject_line_breaking_path_names(tmp_path):
+    for breaker in ("\n", "\r", "\u2028"):
+        with pytest.raises(ValueError, match="line break"):
+            writers._checksum_line(
+                "a" * 64,
+                f"evidence/torn{breaker}name.txt",
+            )
+    assert writers._checksum_line("a" * 64, "evidence/name with space.txt") == (
+        "a" * 64 + "  evidence/name with space.txt"
+    )
+
+    root = tmp_path / "package"
+    root.mkdir()
+    (root / "bound\nname.txt").write_text("bound", encoding="utf-8")
+    with pytest.raises(ValueError, match="line break"):
+        writers.write_sha256sums(root)
+    assert not (root / "SHA256SUMS").exists()
+
+
+def test_checksum_inventory_rejects_single_space_separator_lines(tmp_path):
+    root = tmp_path / "package"
+    root.mkdir()
+    (root / "bound.txt").write_text("bound", encoding="utf-8")
+    writers.write_sha256sums(root)
+    digest = hashlib.sha256(b"bound").hexdigest()
+    (root / "SHA256SUMS").write_text(
+        f"{digest} bound.txt\n",
+        encoding="utf-8",
+    )
+
+    errors: list[str] = []
+    checker_package.check_complete_checksums(root, errors)
+    assert f"malformed SHA256SUMS line: {digest + ' bound.txt'!r}" in errors
 
 
 @pytest.mark.parametrize("entry_kind", ["fifo", "unix_socket"])
@@ -704,12 +760,7 @@ def test_final_package_carries_and_revalidates_receipts(tmp_path, monkeypatch):
         {"id": compute_id(run_spec_identity), "identity": run_spec_identity},
     )
     external_artifacts = [
-        _ledger(
-            role,
-            manifests[role],
-            manifest_paths[role],
-            legacy_retrieval=True,
-        )
+        _ledger(role, manifests[role], manifest_paths[role])
         for role in manifests
     ]
     external_artifacts.extend(
@@ -891,7 +942,7 @@ def test_constant_platt_phase_is_rejected():
 
 
 
-def test_draft_2020_12_schemas_validate_meta_and_instances() -> None:
+def _load_schema_registry() -> tuple[dict[str, dict], object]:
     schema_documents = {
         path.name: json.loads(path.read_text(encoding="utf-8"))
         for path in sorted((REPO / "schemas").glob("stopdff_*.schema.json"))
@@ -903,7 +954,6 @@ def test_draft_2020_12_schemas_validate_meta_and_instances() -> None:
         "stopdff_run_spec.schema.json",
         "stopdff_scientific_profile.schema.json",
     }
-
     registry = Registry().with_resources(
         (
             schema["$id"],
@@ -911,6 +961,11 @@ def test_draft_2020_12_schemas_validate_meta_and_instances() -> None:
         )
         for schema in schema_documents.values()
     )
+    return schema_documents, registry
+
+
+def test_draft_2020_12_schemas_validate_meta_and_instances() -> None:
+    schema_documents, registry = _load_schema_registry()
     for name, schema in schema_documents.items():
         assert schema["$schema"] == (
             "https://json-schema.org/draft/2020-12/schema"
@@ -972,36 +1027,81 @@ def test_draft_2020_12_schemas_validate_meta_and_instances() -> None:
         )
 
 
-def test_unbound_ledger_alias_is_normalized_and_zero_size_is_rejected(
-    tmp_path,
-    monkeypatch,
-):
-    root = tmp_path / "report"
-    root.mkdir()
+def test_schemas_validate_writer_emitted_artifacts(tmp_path) -> None:
+    """Every shipped schema validates a REAL emitted artifact, not just
+    hand-assembled instances: the packaged ``run_spec.json`` manifest that
+    the sweep writer emits, and the contract blocks embedded in it."""
+    schema_documents, registry = _load_schema_registry()
+
+    built = selftest.build_valid_package(tmp_path)
+    emitted_spec = json.loads(
+        (built["run_root"] / "run_spec.json").read_text(encoding="utf-8")
+    )
+    assert emitted_spec["id"] == built["run_spec_id"]
+    identity = emitted_spec["identity"]
+    instances = {
+        "stopdff_run_spec.schema.json": emitted_spec,
+        "stopdff_scientific_profile.schema.json": identity[
+            "scientific_profile"
+        ],
+        "stopdff_calibrator.schema.json": identity["calibration"],
+        "stopdff_continuation.schema.json": identity["continuation"],
+        "stopdff_gate_policy.schema.json": identity["gate"],
+    }
+    for name, instance in instances.items():
+        Draft202012Validator(
+            schema_documents[name],
+            registry=registry,
+        ).validate(instance)
+
+
+def test_ledger_alias_missing_run_spec_and_zero_size_are_rejected(tmp_path):
+    aggregate = {
+        "cells": {},
+        "family": {},
+        "fvi_selected": {},
+        "gate_overrides": {},
+    }
     artifact = {
         "role": "source_manifest",
         "content_id": "1" * 64,
         "sha256": "2" * 64,
         "byte_size": 1,
-        "retrieval": "source.json",
+        "retrieval_path": "source.json",
     }
-    monkeypatch.setattr(writers, "write_figures", lambda *_args, **_kwargs: [])
-    writers.package_run(
-        root,
-        {"cells": {}, "family": {}, "fvi_selected": {}, "gate_overrides": {}},
-        resource_summary={},
-        external_artifacts=[artifact],
-    )
-    stored = checker.load_json(root / "external_artifacts.json")["artifacts"][0]
-    assert "retrieval" not in stored
-    assert stored["retrieval_path"] == "source.json"
 
-    bad_root = tmp_path / "bad-report"
-    bad_root.mkdir()
+    # A root without run_spec.json must fail closed, never take a lenient
+    # legacy path that skips byte verification of ledger entries.
+    no_spec_root = tmp_path / "no-spec"
+    no_spec_root.mkdir()
+    with pytest.raises(ValueError, match="requires run_spec.json"):
+        writers.package_run(
+            no_spec_root,
+            aggregate,
+            resource_summary={},
+            external_artifacts=[artifact],
+        )
+    assert not (no_spec_root / "external_artifacts.json").exists()
+
+    root = tmp_path / "report"
+    root.mkdir()
+    (root / "run_spec.json").write_text("{}", encoding="utf-8")
+
+    # The writer accepts only the canonical spelling the checker requires.
+    alias_entry = dict(artifact)
+    alias_entry["retrieval"] = alias_entry.pop("retrieval_path")
     with pytest.raises(ValueError, match="invalid external-artifact"):
         writers.package_run(
-            bad_root,
-            {"cells": {}, "family": {}, "fvi_selected": {}, "gate_overrides": {}},
+            root,
+            aggregate,
+            resource_summary={},
+            external_artifacts=[alias_entry],
+        )
+
+    with pytest.raises(ValueError, match="invalid external-artifact"):
+        writers.package_run(
+            root,
+            aggregate,
             resource_summary={},
             external_artifacts=[{**artifact, "byte_size": 0}],
         )

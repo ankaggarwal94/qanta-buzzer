@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import stat
 import subprocess
+import warnings
 from pathlib import Path
 
 import pytest
@@ -102,6 +103,93 @@ def test_build_source_snapshot_uses_committed_archive_bytes_and_inventory(
         "repo_dir": str(repo),
         "file_count": len(committed_bytes),
     }
+
+
+def test_build_source_snapshot_extraction_pins_tar_filter_semantics(
+    tmp_path: Path,
+) -> None:
+    """Extraction passes filter='data' explicitly: no tarfile deprecation on
+    Python 3.12+, and bytes plus the git-tracked exec bit stay unchanged."""
+    repo = tmp_path / "repo"
+    _initialize_repo(repo)
+    (repo / "tool.sh").write_bytes(b"#!/bin/sh\nexit 0\n")
+    (repo / "tool.sh").chmod(0o755)
+    (repo / "data.txt").write_bytes(b"plain\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "filter fixture")
+    run_sha = _git(repo, "rev-parse", "HEAD")
+
+    output = tmp_path / "snapshot"
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        manifest = build_source_snapshot(repo, run_sha, output)
+
+    source = output / "source"
+    assert (source / "data.txt").read_bytes() == b"plain\n"
+    assert stat.S_IMODE((source / "tool.sh").stat().st_mode) & 0o100
+    assert not (stat.S_IMODE((source / "data.txt").stat().st_mode) & 0o111)
+    assert [entry["path"] for entry in manifest["identity"]["files"]] == [
+        "data.txt",
+        "tool.sh",
+    ]
+
+
+def test_build_source_snapshot_inventories_c_quoted_paths(tmp_path: Path) -> None:
+    """Names git C-quotes in porcelain listings (unicode, embedded quotes)
+    must resolve to their extracted files instead of silently dropping out."""
+    repo = tmp_path / "repo"
+    _initialize_repo(repo)
+    # Pin quoting so the fixture C-quotes deterministically on every machine.
+    _git(repo, "config", "core.quotepath", "true")
+    committed_bytes = {
+        "unicode-源.txt": b"unicode payload\n",
+        'quo"ted.txt': b"quoted payload\n",
+    }
+    for relative_path, data in committed_bytes.items():
+        (repo / relative_path).write_bytes(data)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "c-quoted fixture")
+    run_sha = _git(repo, "rev-parse", "HEAD")
+
+    # Precondition: without -z these paths really are C-quoted by git.
+    assert '"' in _git(repo, "ls-tree", "-r", "-l", run_sha)
+
+    output = tmp_path / "snapshot"
+    manifest = build_source_snapshot(repo, run_sha, output)
+    source = output / "source"
+
+    inventory = {entry["path"]: entry for entry in manifest["identity"]["files"]}
+    assert sorted(inventory) == sorted(committed_bytes)
+    assert manifest["file_count"] == len(committed_bytes)
+    for relative_path, data in committed_bytes.items():
+        assert (source / relative_path).read_bytes() == data
+        assert inventory[relative_path]["mode"] == "100644"
+        assert inventory[relative_path]["size"] == len(data)
+        assert inventory[relative_path]["sha256"] == sha256_bytes(data)
+
+
+def test_build_source_snapshot_rejects_unextracted_tree_entries(
+    tmp_path: Path,
+) -> None:
+    """A listed tree entry with no extracted counterpart (a gitlink, which
+    git archive never extracts) must fail closed, not silently vanish."""
+    repo = tmp_path / "repo"
+    _initialize_repo(repo)
+    (repo / "real.txt").write_bytes(b"real\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    # Stage a gitlink (submodule entry) without materializing a submodule.
+    _git(repo, "update-index", "--add", "--cacheinfo", f"160000,{base_sha},vendored")
+    _git(repo, "commit", "-q", "-m", "gitlink fixture")
+    run_sha = _git(repo, "rev-parse", "HEAD")
+
+    output = tmp_path / "snapshot"
+    with pytest.raises(
+        ValueError, match=r"not extracted: 'vendored' \(type commit\)"
+    ):
+        build_source_snapshot(repo, run_sha, output)
+    assert not (output / "source_manifest.json").exists()
 
 
 def test_build_source_snapshot_rejects_git_link_members(tmp_path: Path) -> None:

@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import json
-import re
 import stat
 from pathlib import Path
 from typing import Any
 
 from . import PROTOCOL_VERSION
-from .identity import compute_id, loads_no_duplicate_keys, sha256_file
+from .identity import compute_id, is_sha256_hex, loads_no_duplicate_keys, sha256_file
 from .manifests import FVI_PRODUCER_FILES, environment_contract_identity
 from .profile import FVI_MAX_ITERATIONS, FVI_STRICT_REFERENCE, FVI_TOLERANCES
 from .receipt_evidence import (
@@ -16,7 +15,6 @@ from .receipt_evidence import (
     verify_prerequisite_evidence_bytes,
 )
 
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _RECEIPT_GATES = ("smoke", "mutation", "determinism")
 _RECEIPT_BINDINGS = (
     "source_manifest_id",
@@ -29,12 +27,9 @@ _RECEIPT_BINDINGS = (
 
 
 def _err(errors: list[str], condition: bool, message: str) -> None:
+    """Append ``message`` when ``condition`` fails (shared with checker.py)."""
     if not condition:
         errors.append(message)
-
-
-def _is_sha256(value: Any) -> bool:
-    return isinstance(value, str) and _SHA256_RE.fullmatch(value) is not None
 
 
 def _is_positive_int(value: Any) -> bool:
@@ -191,7 +186,7 @@ def _check_fvi_study_identity(
         errors,
         isinstance(producer_hashes, dict)
         and set(producer_hashes) == set(FVI_PRODUCER_FILES)
-        and all(_is_sha256(value) for value in producer_hashes.values()),
+        and all(is_sha256_hex(value) for value in producer_hashes.values()),
         "packaged FVI producer_hashes do not match the canonical producer set",
     )
 
@@ -272,7 +267,7 @@ def _check_source_producer_map(
         digest = claimed.get(basename)
         _err(
             errors,
-            _is_sha256(digest) and source_hashes.get(expected_path) == digest,
+            is_sha256_hex(digest) and source_hashes.get(expected_path) == digest,
             f"{label} {basename!r} does not match packaged source",
         )
 
@@ -294,11 +289,13 @@ def check_complete_checksums(run_root: Path, errors: list[str]) -> None:
     for line in lines:
         if not line.strip():
             continue
-        parts = line.split()
-        if len(parts) != 2:
+        # GNU-style two-space separator: split on the first occurrence only,
+        # so names containing whitespace round-trip (writer rejects names
+        # containing line breaks, the one class this format cannot carry).
+        digest, sep, name = line.partition("  ")
+        if not sep or not name:
             errors.append(f"malformed SHA256SUMS line: {line!r}")
             continue
-        digest, name = parts
         relative = Path(name)
         if (
             relative.is_absolute()
@@ -308,7 +305,7 @@ def check_complete_checksums(run_root: Path, errors: list[str]) -> None:
         ):
             errors.append(f"unsafe checksum path: {name!r}")
             continue
-        if not _is_sha256(digest):
+        if not is_sha256_hex(digest):
             errors.append(f"invalid checksum digest for {name!r}")
             continue
         if name in listed:
@@ -511,12 +508,12 @@ def check_external_artifacts(
         by_role[role] = artifact
         _err(
             errors,
-            _is_sha256(artifact.get("content_id")),
+            is_sha256_hex(artifact.get("content_id")),
             f"external artifact {role} content_id must be 64-hex",
         )
         _err(
             errors,
-            _is_sha256(artifact.get("sha256")),
+            is_sha256_hex(artifact.get("sha256")),
             f"external artifact {role} sha256 must be 64-hex",
         )
         _err(
@@ -588,7 +585,7 @@ def check_external_artifacts(
                 not isinstance(path_value, str)
                 or not path_value
                 or path_value in source_hashes
-                or not _is_sha256(digest)
+                or not is_sha256_hex(digest)
             ):
                 source_entries_valid = False
                 continue

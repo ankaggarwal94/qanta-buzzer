@@ -8,7 +8,7 @@ import pytest
 
 from scripts.stopdff_v5 import checker, fvi_study as fvi_study_module, identity
 from scripts.stopdff_v5.manifests import fvi_study_identity
-from tests.test_pr30_control_repairs import _load_modal_runner
+from tests.test_stopdff_v5_control_plane import _load_modal_runner
 
 
 def _identity_kwargs() -> dict:

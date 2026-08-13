@@ -24,7 +24,7 @@ from scripts.stopdff_v5.manifests import (
     environment_contract_identity,
     raw_input_identity,
 )
-from tests.test_pr30_control_repairs import _load_modal_runner
+from tests.test_stopdff_v5_control_plane import _load_modal_runner
 
 
 EXPECTED_ENVIRONMENT_PACKAGES = (

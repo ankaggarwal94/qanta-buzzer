@@ -7,10 +7,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import PROTOCOL_VERSION
-from .identity import compute_id, loads_no_duplicate_keys, sha256_file
+from .identity import compute_id, is_sha256_hex, loads_no_duplicate_keys, sha256_file
 from .manifests import ADAPTER_SCORING_SPEC, RAW_INPUT_ROLES
 
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _SOURCE_FIELDS = {
     "kind",
     "protocol_version",
@@ -48,10 +47,6 @@ _CONTENT_LAYOUTS = {
 }
 
 
-def _is_sha256(value: Any) -> bool:
-    return isinstance(value, str) and _SHA256_RE.fullmatch(value) is not None
-
-
 def git_mode_for_path(path: Path) -> str:
     """Return the only executable-bit distinction tracked by Git."""
     return "100755" if stat.S_IMODE(Path(path).stat().st_mode) & 0o111 else "100644"
@@ -82,7 +77,7 @@ def _canonical_entry(
         or isinstance(size, bool)
         or not isinstance(size, int)
         or size < 0
-        or not _is_sha256(digest)
+        or not is_sha256_hex(digest)
     ):
         raise ValueError(f"{manifest_name} contains a noncanonical file entry")
     return name, size, digest
@@ -122,7 +117,7 @@ def _validate_identity_schema(
         semantic_checks = identity.get("semantic_checks")
         if (
             not isinstance(semantic_checks, dict)
-            or not _is_sha256(
+            or not is_sha256_hex(
                 semantic_checks.get("question_trajectory_binding_id")
             )
         ):

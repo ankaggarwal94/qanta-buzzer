@@ -10,8 +10,8 @@ import pytest
 
 from scripts import run_stopdff_v5_local as local_runner
 from scripts.stopdff_v5 import checker, selftest, writers
-from tests.test_pr30_control_repairs import _fake_control_api, _load_modal_runner
-from tests.test_pr30_modal_recovery_v6 import _plan
+from tests.test_stopdff_v5_control_plane import _fake_control_api, _load_modal_runner
+from tests.test_modal_runner_recovery import _plan
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -68,6 +68,72 @@ def test_package_display_bytes_are_bound_to_validated_inputs(
         or "unexpected figures/" in error
         for error in checked.errors
     ), checked.errors
+
+
+def test_reports_render_per_cell_verdicts_with_warn_reason_qualifiers() -> None:
+    aggregate = {
+        "profile_variant": "smoke",
+        "backend": "modal",
+        "requested": 4,
+        "completed": 3,
+        "skipped": 0,
+        "failed": 1,
+        "fvi_selected": {"tolerance": "1e-8", "max_iterations": 100},
+        "cells": {
+            "cell_ceiling": {
+                "status": "completed",
+                "verdict": "WARN",
+                "abs_median_point": 0.0,
+                "abs_median_ci": [0.0, 0.5],
+                "coverage_clean": True,
+                "ceiling_any": True,
+            },
+            "cell_coverage_ci": {
+                "status": "completed",
+                "verdict": "WARN",
+                "abs_median_point": 0.6,
+                "abs_median_ci": [0.2, 1.4],
+                "coverage_clean": False,
+                "ceiling_any": False,
+            },
+            "cell_clean": {
+                "status": "completed",
+                "verdict": "PASS",
+                "abs_median_point": 0.0,
+                "abs_median_ci": [0.0, 0.4],
+                "coverage_clean": True,
+                "ceiling_any": False,
+            },
+            "cell_invalid": {"status": "calibrator_failed", "verdict": "INVALID"},
+        },
+        "family": {"M": 0.6, "ci": [0.2, 1.4], "verdict": "WARN"},
+        "gate_overrides": {
+            "allow_low_mc_retention": False,
+            "allow_incomplete_mc_coverage": False,
+        },
+        "release_status": "INVALID",
+    }
+
+    markdown = writers.render_markdown(
+        aggregate, resource_summary={"backend": "modal"}
+    )
+    latex = writers.render_latex(aggregate)
+    for rendered in (markdown, latex):
+        assert "WARN (ceiling)" in rendered
+        assert "WARN (coverage, ci_above_threshold)" in rendered
+    # Qualified verdicts stay per-cell: clean and invalid cells render bare.
+    assert "- cell_clean:" not in markdown
+    assert "cell clean & PASS \\\\" in latex
+    assert "cell invalid & INVALID \\\\" in latex
+
+    # An active MC gate override is a run-level qualifier on completed cells.
+    overridden = json.loads(json.dumps(aggregate))
+    overridden["gate_overrides"]["allow_low_mc_retention"] = True
+    overridden["cells"]["cell_clean"]["verdict"] = "WARN"
+    assert "WARN (ceiling, override)" in writers.render_latex(overridden)
+    assert "WARN (override)" in writers.render_markdown(
+        overridden, resource_summary={"backend": "modal"}
+    )
 
 
 def test_validate_run_totalizes_over_nested_json(tmp_path: Path) -> None:
@@ -545,3 +611,74 @@ def test_schema_v3_journal_binds_terminal_status_and_known_stages(
             expected_sequence=2,
             previous_record=None,
         )
+
+
+def test_lifecycle_lock_fails_fast_when_another_driver_holds_it(
+    tmp_path, monkeypatch
+):
+    """The local driver refuses to race another process for the journal."""
+    import fcntl
+    import os
+
+    monkeypatch.setattr(local_runner, "_LIFECYCLE_LOCK_FDS", {})
+    out = tmp_path / "workspace"
+    out.mkdir()
+    lock_path = out / "local_lifecycle.json.lock"
+    # An independent open-file-description stands in for a second driver
+    # process: flock treats each open() independently even in one process.
+    foreign_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(foreign_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(
+            RuntimeError, match="another local StopDFF driver holds"
+        ):
+            local_runner._acquire_lifecycle_lock(out)
+        assert local_runner._LIFECYCLE_LOCK_FDS == {}
+    finally:
+        os.close(foreign_fd)
+
+    local_runner._acquire_lifecycle_lock(out)
+    assert str(lock_path) in local_runner._LIFECYCLE_LOCK_FDS
+    # Sequential re-entry by the same process reuses the held lock instead
+    # of self-deadlocking (flock conflicts across open-file-descriptions).
+    local_runner._acquire_lifecycle_lock(out)
+
+
+def test_lifecycle_journal_creation_is_guarded_by_the_driver_lock(
+    tmp_path, monkeypatch
+):
+    import fcntl
+    import os
+    import types
+
+    monkeypatch.setattr(local_runner, "_LIFECYCLE_LOCK_FDS", {})
+    out = tmp_path / "workspace"
+    out.mkdir()
+    args = types.SimpleNamespace(
+        variant="smoke",
+        skip_fvi_study=False,
+        fvi_tolerance="1e-6",
+        fvi_max_iterations=100,
+        allow_low_mc_retention=False,
+    )
+    lock_path = out / "local_lifecycle.json.lock"
+    foreign_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(foreign_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(
+            RuntimeError, match="another local StopDFF driver holds"
+        ):
+            local_runner._load_or_create_lifecycle(
+                out=out, args=args, run_sha="a" * 40, resume=False
+            )
+        # Fail-fast happens before any journal byte exists.
+        assert not (out / "local_lifecycle.json").exists()
+    finally:
+        os.close(foreign_fd)
+
+    state = local_runner._load_or_create_lifecycle(
+        out=out, args=args, run_sha="a" * 40, resume=False
+    )
+    assert state["adapter_executions"] == {}
+    assert (out / "local_lifecycle.json").exists()
+    assert str(lock_path) in local_runner._LIFECYCLE_LOCK_FDS

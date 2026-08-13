@@ -874,35 +874,23 @@ def test_successful_attempt_has_explicit_completion_state(tmp_path):
 
 
 def test_package_is_create_once_or_byte_identical(tmp_path):
-    root = tmp_path / "run"
-    root.mkdir()
-    aggregate = {
-        "profile_variant": "smoke",
-        "backend": "local",
-        "cells": {},
-        "family": {},
-        "fvi_selected": {},
-        "gate_overrides": {},
+    built = selftest.build_valid_package(tmp_path)
+    root = built["run_root"]
+    artifacts = checker.load_json(root / "external_artifacts.json")["artifacts"]
+    evidence_files = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in (root / "evidence").rglob("*")
+        if path.is_file()
     }
-    artifacts = [{
-        "role": "source_manifest",
-        "content_id": "1" * 64,
-        "sha256": "2" * 64,
-        "byte_size": 1,
-        "retrieval_path": "source_manifest.json",
-    }]
-    writers.package_run(
-        root,
-        aggregate,
-        resource_summary={"backend": "local"},
-        external_artifacts=artifacts,
-    )
+    resource_summary = checker.load_json(root / "resource_summary.json")
+
     before = (root / "external_artifacts.json").read_bytes()
     writers.package_run(
         root,
-        aggregate,
-        resource_summary={"backend": "local"},
+        built["aggregate"],
+        resource_summary=resource_summary,
         external_artifacts=artifacts,
+        evidence_files=evidence_files,
     )
     assert (root / "external_artifacts.json").read_bytes() == before
 
@@ -912,9 +900,10 @@ def test_package_is_create_once_or_byte_identical(tmp_path):
     with pytest.raises(ValueError, match="package evidence mismatch"):
         writers.package_run(
             root,
-            aggregate,
-            resource_summary={"backend": "local"},
+            built["aggregate"],
+            resource_summary=resource_summary,
             external_artifacts=artifacts,
+            evidence_files=evidence_files,
         )
     assert (root / "SHA256SUMS").read_bytes() == checksum_before
 
@@ -945,3 +934,178 @@ def test_selector_ordering_pure():
     assert ordered[0]["tolerance"] == "1e-6"
     assert ordered[1]["tolerance"] == "1e-8"
     assert ordered[2]["total_iterations"] == 50
+
+
+def test_fvi_study_metrics_reject_completed_cell_with_no_paired_items():
+    from scripts.stopdff_v5 import fvi_study
+
+    converged = FVIResult(
+        status="converged", converged=True, iterations=3, final_delta=0.0
+    )
+    completed_empty = cellcompute.CellResult(
+        status="completed", fvi=converged, index_shift_by_item={}
+    )
+    with pytest.raises(ValueError, match="no paired MC/QA index shifts"):
+        fvi_study._cell_metrics(completed_empty)
+
+    # Non-completed cells legitimately carry no shifts; their metrics are
+    # inert (converged=False keeps them out of every eligibility comparison).
+    failed_empty = cellcompute.CellResult(
+        status="calibrator_failed", index_shift_by_item={}
+    )
+    metrics = fvi_study._cell_metrics(failed_empty)
+    assert metrics["converged"] is False
+    assert metrics["median_index"] == 0.0
+
+
+def test_resume_rejects_orphaned_temp_file_in_cells(tmp_path):
+    rows = _synth_rows()
+    cells = profile.smoke_cells()
+    first = _make_ctx(tmp_path, rows, cells)
+    sweep.run_sweep(first)
+    orphan = first.output_dir / "cells" / "tmpa1b2c3d4"
+    orphan.write_bytes(b"orphaned partial write")
+    attempts_before = (first.output_dir / "attempts.jsonl").read_bytes()
+
+    resumed = _make_ctx(tmp_path, rows, cells)
+    resumed.resume = True
+    resumed.attempt = {
+        "attempt": 2,
+        "mode": "resume",
+        "command": ["dp_sweep", "--resume"],
+    }
+    with pytest.raises(ValueError, match="unexpected entry"):
+        sweep.run_sweep(resumed)
+
+    assert orphan.read_bytes() == b"orphaned partial write"
+    assert (first.output_dir / "attempts.jsonl").read_bytes() == attempts_before
+    assert not (first.output_dir / "attempt_results" / "2.json").exists()
+
+
+def test_resume_fails_closed_when_completed_run_loses_a_cell(tmp_path):
+    """A missing cell behind an existing aggregate is corruption, not repair work."""
+    rows = _synth_rows()
+    cells = profile.smoke_cells()
+    first = _make_ctx(tmp_path, rows, cells)
+    sweep.run_sweep(first)
+    victim = sorted((first.output_dir / "cells").glob("*.json"))[0]
+    victim.unlink()
+    attempts_before = (first.output_dir / "attempts.jsonl").read_bytes()
+
+    resumed = _make_ctx(tmp_path, rows, cells)
+    resumed.resume = True
+    resumed.attempt = {
+        "attempt": 2,
+        "mode": "resume",
+        "command": ["dp_sweep", "--resume"],
+    }
+    with pytest.raises(ValueError, match="resume evidence mismatch"):
+        sweep.run_sweep(resumed)
+
+    assert not victim.exists()  # never silently recreated
+    assert (first.output_dir / "attempts.jsonl").read_bytes() == attempts_before
+
+
+def test_resume_probe_skips_missing_cells_and_shares_prepared_inputs(
+    tmp_path, monkeypatch
+):
+    """Resume computes each cell at most once and shares one prepared cache.
+
+    Interrupt a fresh run after its first cell commit, then resume with
+    counting wrappers: the existing cell is recomputed once by preflight, the
+    missing cell once by the real body, and the preflight probe computes
+    nothing into its discarded directory. Input preparation happens at most
+    twice (one shared preflight cache, one lazy body cache) instead of once
+    per existing cell plus once per body invocation.
+    """
+    exited = _run_hard_exit_child(tmp_path, exit_after_commit=2)
+    assert exited.returncode == 91, (exited.stdout, exited.stderr)
+
+    rows = _synth_rows()
+    cells = profile.smoke_cells()
+    existing = list((tmp_path / "run" / "cells").glob("*.json"))
+    assert len(existing) == 1
+
+    cell_record_calls: list[str] = []
+    real_cell_record = sweep._cell_record
+
+    def counting_cell_record(ctx, cell, *, prepared=None):
+        cell_record_calls.append(profile.cell_key_str(cell))
+        return real_cell_record(ctx, cell, prepared=prepared)
+
+    prep_calls: list[int] = []
+    real_prepare = sweep.prepare_cell_inputs
+
+    def counting_prepare(rows_arg, calibration_json):
+        prep_calls.append(1)
+        return real_prepare(rows_arg, calibration_json)
+
+    monkeypatch.setattr(sweep, "_cell_record", counting_cell_record)
+    monkeypatch.setattr(sweep, "prepare_cell_inputs", counting_prepare)
+    monkeypatch.setattr(cellcompute, "prepare_cell_inputs", counting_prepare)
+
+    resumed = _make_ctx(tmp_path, rows, cells)
+    resumed.resume = True
+    resumed.attempt = {
+        "attempt": 2,
+        "mode": "resume",
+        "command": ["dp_sweep", "--resume"],
+    }
+    aggregate = sweep.run_sweep(resumed)
+
+    assert aggregate["completed"] == len(cells)
+    assert len(cell_record_calls) == len(cells), cell_record_calls
+    assert len(prep_calls) <= 2
+    assert json.loads(
+        (resumed.output_dir / "attempt_results" / "1.json").read_text()
+    )["state"] == "interrupted"
+    assert json.loads(
+        (resumed.output_dir / "attempt_results" / "2.json").read_text()
+    )["state"] == "completed"
+
+
+def test_package_run_rejects_orphaned_temp_files(tmp_path):
+    built = selftest.build_valid_package(tmp_path)
+    root = built["run_root"]
+    artifacts = checker.load_json(root / "external_artifacts.json")["artifacts"]
+    evidence_files = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in (root / "evidence").rglob("*")
+        if path.is_file()
+    }
+    resource_summary = checker.load_json(root / "resource_summary.json")
+
+    def repackage():
+        writers.package_run(
+            root,
+            built["aggregate"],
+            resource_summary=resource_summary,
+            external_artifacts=artifacts,
+            evidence_files=evidence_files,
+        )
+
+    repackage()  # canonical tree re-packages byte-identically
+
+    cell_orphan = root / "cells" / "tmpa1b2c3d4"
+    cell_orphan.write_bytes(b"orphaned partial write")
+    with pytest.raises(ValueError, match="unaudited file in cells/"):
+        repackage()
+    cell_orphan.unlink()
+
+    result_orphan = root / "attempt_results" / "tmpq5w6e7r8"
+    result_orphan.write_bytes(b"orphaned partial write")
+    with pytest.raises(ValueError, match="unaudited file in attempt_results/"):
+        repackage()
+    result_orphan.unlink()
+
+    root_orphan = root / "tmpz9y8x7w6"
+    root_orphan.write_bytes(b"orphaned partial write")
+    with pytest.raises(ValueError, match="unaudited run-level file"):
+        repackage()
+    root_orphan.unlink()
+
+    stray_dir = root / "scratch"
+    stray_dir.mkdir()
+    (stray_dir / "leftover.bin").write_bytes(b"x")
+    with pytest.raises(ValueError, match="unaudited file cannot be packaged"):
+        repackage()

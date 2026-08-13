@@ -15,9 +15,12 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from scripts.stopdff_v5 import checker, fvi_study, identity, selftest  # noqa: E402
+from scripts.stopdff_v5 import checker, fvi_study, identity, selftest, writers  # noqa: E402
 from scripts.stopdff_v5.adapter_build import derive_bound_calibration  # noqa: E402
 from scripts.stopdff_v5.checker_package import inspect_packaged_fvi_manifest_kind  # noqa: E402
+from scripts.stopdff_v5.receipt_evidence import (  # noqa: E402
+    build_prerequisite_evidence,
+)
 
 
 _EXPECTED_RUN_MUTATIONS = frozenset({
@@ -63,6 +66,18 @@ _EXPECTED_RUN_MUTATIONS = frozenset({
     "attempt_result_counts",
 })
 _EXPECTED_ADAPTER_MUTATIONS = frozenset({"invalid_adapter_row_hash"})
+_EXPECTED_CHECKSUM_CONTENT_MUTATIONS = frozenset({
+    "unsafe_checksum_traversal",
+    "duplicate_checksum_entry",
+    "checksum_value_mismatch",
+})
+_EXPECTED_FINAL_RECEIPT_MUTATIONS = frozenset({
+    "final_receipt_evidence_bytes_tampered",
+    "final_receipt_id_forged",
+    "final_receipt_binding_mismatch",
+    "final_missing_prerequisite_receipt_role",
+    "final_spec_drops_prerequisite_receipts",
+})
 
 
 def test_valid_package_passes(tmp_path):
@@ -461,10 +476,42 @@ def test_validate_run_missing_backend_and_environment_retains_diagnostics(
     assert "missing environment.json" in result.errors
 
 
-def test_negative_mutation_suite(tmp_path):
+def test_negative_mutation_suite(tmp_path, monkeypatch):
     registered = list(selftest._RUN_MUTATIONS)
     assert len(registered) == len(set(registered)) == len(_EXPECTED_RUN_MUTATIONS)
     assert set(registered) == _EXPECTED_RUN_MUTATIONS
+    assert (
+        selftest._CHECKSUM_CONTENT_MUTATIONS
+        == _EXPECTED_CHECKSUM_CONTENT_MUTATIONS
+    )
+    assert (
+        set(selftest._FINAL_RECEIPT_MUTATIONS)
+        == _EXPECTED_FINAL_RECEIPT_MUTATIONS
+    )
+
+    # Spy on the gate's two-layer structure: every non-SHA256SUMS-content
+    # mutation (and every final receipt mutation) must be re-validated with a
+    # regenerated checksum inventory, so the semantic layer alone rejects it.
+    regenerated: list[Path] = []
+    real_write_sha256sums = selftest.write_sha256sums
+
+    def counting_write_sha256sums(root):
+        regenerated.append(Path(root))
+        return real_write_sha256sums(root)
+
+    monkeypatch.setattr(
+        selftest, "write_sha256sums", counting_write_sha256sums
+    )
+
+    validate_calls = {"smoke": 0, "final": 0}
+    real_validate_run = checker.validate_run
+
+    def counting_validate_run(*args, **kwargs):
+        key = "final" if kwargs.get("require_final_profile") else "smoke"
+        validate_calls[key] += 1
+        return real_validate_run(*args, **kwargs)
+
+    monkeypatch.setattr(checker, "validate_run", counting_validate_run)
 
     ok, results = selftest.run_self_test(tmp_path)
     failures = [r for r in results if not r["ok"]]
@@ -481,6 +528,124 @@ def test_negative_mutation_suite(tmp_path):
         _EXPECTED_ADAPTER_MUTATIONS
     )
     assert all(result["expected"] == "REJECT" for result in results[1:])
+    assert all(result["passed_check"] is False for result in results[1:])
+
+    # Two-layer accounting: 37 semantic re-validations in the run-mutation
+    # loop plus one per final receipt mutation.
+    run_semantic = len(selftest._RUN_MUTATIONS) - len(
+        selftest._CHECKSUM_CONTENT_MUTATIONS
+    )
+    final_mutations = len(selftest._FINAL_RECEIPT_MUTATIONS)
+    assert len(regenerated) == run_semantic + final_mutations
+    assert validate_calls["smoke"] == (
+        1 + len(selftest._RUN_MUTATIONS) + run_semantic
+    )
+    assert validate_calls["final"] == 1 + final_mutations
+
+    # Lockstep with the mutation-gate receipt contract: the strengthened
+    # gate's successful results must still mint mutation-gate evidence
+    # (receipt_evidence pins the roster and per-entry fields).
+    source_id = "1" * 64
+    evidence = build_prerequisite_evidence(
+        gate="mutation",
+        bindings={
+            "source_manifest_id": source_id,
+            "raw_input_bundle_id": "2" * 64,
+            "model_snapshot_id": "3" * 64,
+            "adapter_bundle_id": "4" * 64,
+            "fvi_study_id": "5" * 64,
+            "environment_contract_id": "6" * 64,
+        },
+        details={
+            "source_execution": {
+                "environment": "modal_image",
+                "executing_source_manifest_id": source_id,
+                "runtime_source_manifest_id": source_id,
+            },
+            "results": results,
+        },
+    )
+    assert evidence["kind"] == "mutation_gate_evidence"
+
+
+def test_semantic_recompute_rejects_checksum_consistent_verdict_flip(tmp_path):
+    """H-1 headline scenario: an adversary who regenerates SHA256SUMS after
+    flipping a serialized cell verdict must still be rejected — by the
+    semantic recompute layer, with no checksum error in sight."""
+    built = selftest.build_valid_package(tmp_path)
+    selftest._mut_flip_verdict(built["run_root"], built["adapter_bundle"])
+    writers.write_sha256sums(built["run_root"])
+
+    res = checker.validate_run(
+        built["run_root"], backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=False, require_package=True,
+    )
+
+    assert not res.passed
+    assert not any("checksum" in error.lower() for error in res.errors)
+    assert any("verdict" in error.lower() for error in res.errors)
+
+
+@pytest.fixture(scope="module")
+def final_built(tmp_path_factory):
+    """One receipt-bearing final package, shared read-only across tests."""
+    base = tmp_path_factory.mktemp("final_pkg")
+    return base / "valid", selftest.build_valid_package(
+        base / "valid", final_variant=True
+    )
+
+
+def test_final_profile_package_validates_end_to_end(final_built):
+    _, built = final_built
+    res = checker.validate_run(
+        built["run_root"], backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=True, require_package=True,
+    )
+    assert res.passed, res.errors
+    assert set(built["prerequisite_receipt_ids"]) == {
+        "smoke", "mutation", "determinism",
+    }
+
+
+def test_smoke_package_rejected_under_require_final_profile(tmp_path):
+    built = selftest.build_valid_package(tmp_path)
+    res = checker.validate_run(
+        built["run_root"], backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=True, require_package=True,
+    )
+    assert not res.passed
+    assert any("final validation requires" in error for error in res.errors)
+
+
+@pytest.mark.parametrize("mutation", sorted(_EXPECTED_FINAL_RECEIPT_MUTATIONS))
+def test_final_receipt_mutations_rejected_with_regenerated_checksums(
+    final_built,
+    tmp_path,
+    mutation,
+):
+    """Receipt/evidence-ledger forgeries must be rejected by the receipt
+    layer itself: SHA256SUMS is regenerated, so no stale-checksum rejection
+    can mask a regression in receipt validation."""
+    valid_dir, _ = final_built
+    mdir = tmp_path / f"mut_{mutation}"
+    shutil.copytree(valid_dir, mdir, symlinks=True)
+    rr, bundle = mdir / "runs" / "run", mdir / "adapter_bundle"
+
+    selftest._FINAL_RECEIPT_MUTATIONS[mutation](rr, bundle)
+    writers.write_sha256sums(rr)
+
+    res = checker.validate_run(
+        rr, backend="modal", adapter_bundle=bundle,
+        require_final_profile=True, require_package=True,
+    )
+    assert not res.passed, mutation
+    assert not any("checksum" in error.lower() for error in res.errors)
+    assert any(
+        "receipt" in error or "prerequisite" in error for error in res.errors
+    ), res.errors
 
 
 def test_validate_spec_placeholder_rejected(tmp_path):
@@ -908,6 +1073,67 @@ def test_validate_spec_rejects_self_hashed_noncanonical_contract(
     )
     result = checker.validate_spec(path, require_final_profile=False)
     assert not result.passed, mutation
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        # int -> bool coercion: True == 1 under Python ``==``.
+        ("bootstrap_seed_true", "run spec bootstrap contract mismatch"),
+        # bool -> int coercion: 1 == True under Python ``==``.
+        (
+            "bootstrap_common_resamples_one",
+            "run spec bootstrap contract mismatch",
+        ),
+        (
+            "calibration_both_classes_one",
+            "run spec calibration contract mismatch",
+        ),
+        (
+            "profile_nested_bootstrap_seed_true",
+            "run spec scientific_profile does not match the canonical profile",
+        ),
+    ],
+)
+def test_validate_spec_rejects_bool_int_coerced_constants(
+    tmp_path,
+    mutation,
+    expected_error,
+):
+    """Bool/int-coerced constants are byte-distinct canonical identities and
+    must fail validation even though Python ``==`` treats True == 1."""
+    built = selftest.build_valid_package(tmp_path)
+    source = json.loads(
+        (built["run_root"] / "run_spec.json").read_text(encoding="utf-8")
+    )
+    candidate = copy.deepcopy(source)
+    body = candidate["identity"]
+    if mutation == "bootstrap_seed_true":
+        assert body["bootstrap"]["seed"] == 1
+        body["bootstrap"]["seed"] = True
+    elif mutation == "bootstrap_common_resamples_one":
+        assert body["bootstrap"]["common_resamples_across_cells"] is True
+        body["bootstrap"]["common_resamples_across_cells"] = 1
+    elif mutation == "calibration_both_classes_one":
+        assert body["calibration"]["both_classes_required"] is True
+        body["calibration"]["both_classes_required"] = 1
+    else:
+        assert body["scientific_profile"]["bootstrap"]["seed"] == 1
+        body["scientific_profile"]["bootstrap"]["seed"] = True
+    # Self-hash the mutated identity so only the strict constant-block
+    # comparison can reject it, not the id check.
+    candidate["id"] = identity.compute_id(body)
+
+    path = tmp_path / f"coerced-{mutation}.json"
+    path.write_text(
+        json.dumps(candidate, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    result = checker.validate_spec(path, require_final_profile=False)
+    assert not result.passed, mutation
+    assert expected_error in result.errors
+
+
 def test_validate_spec_rejects_symlink_before_decode(tmp_path, monkeypatch):
     built = selftest.build_valid_package(tmp_path)
     canonical = built["run_root"] / "run_spec.json"
@@ -938,3 +1164,86 @@ def test_validate_spec_preserves_missing_path_diagnostic(tmp_path):
     )
     assert not result.passed
     assert result.errors == ["run spec is missing"]
+
+
+def test_validate_run_rejects_orphaned_temp_file_in_cells(tmp_path):
+    """A mkstemp orphan under cells/ must fail both validation modes."""
+    built = selftest.build_valid_package(tmp_path)
+    orphan = built["run_root"] / "cells" / "tmpa1b2c3d4"
+    orphan.write_bytes(b"orphaned partial write")
+
+    packaged = checker.validate_run(
+        built["run_root"],
+        backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=False,
+        require_package=True,
+    )
+    assert not packaged.passed
+    assert any(
+        "unexpected non-cell entry in cells/" in error
+        for error in packaged.errors
+    ), packaged.errors
+    assert any(
+        "unaudited entry in cells/" in error for error in packaged.errors
+    ), packaged.errors
+
+    unpackaged = checker.validate_run(
+        built["run_root"],
+        backend="modal",
+        adapter_bundle=built["adapter_bundle"],
+        require_final_profile=False,
+        require_package=False,
+    )
+    assert not unpackaged.passed
+    assert any(
+        "unexpected non-cell entry in cells/" in error
+        for error in unpackaged.errors
+    ), unpackaged.errors
+
+
+def test_validate_run_rejects_unaudited_top_level_package_entries(tmp_path):
+    built = selftest.build_valid_package(tmp_path)
+    run_root = built["run_root"]
+
+    def _validate() -> checker.CheckResult:
+        return checker.validate_run(
+            run_root,
+            backend="modal",
+            adapter_bundle=built["adapter_bundle"],
+            require_final_profile=False,
+            require_package=True,
+        )
+
+    stray_file = run_root / "tmpz9y8x7w6"
+    stray_file.write_bytes(b"orphaned partial write")
+    result = _validate()
+    assert not result.passed
+    assert any(
+        "unaudited package file: 'tmpz9y8x7w6'" in error
+        for error in result.errors
+    ), result.errors
+    stray_file.unlink()
+
+    stray_dir = run_root / "scratch"
+    stray_dir.mkdir()
+    result = _validate()
+    assert not result.passed
+    assert any(
+        "unaudited package directory: 'scratch'" in error
+        for error in result.errors
+    ), result.errors
+    stray_dir.rmdir()
+
+    orphan_result = run_root / "attempt_results" / "tmpq5w6e7r8"
+    orphan_result.write_bytes(b"orphaned partial write")
+    result = _validate()
+    assert not result.passed
+    assert any(
+        "unaudited entry in attempt_results/" in error
+        for error in result.errors
+    ), result.errors
+    orphan_result.unlink()
+
+    recovered = _validate()
+    assert recovered.passed, recovered.errors

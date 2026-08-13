@@ -121,6 +121,10 @@ def test_smoke_receipts_must_be_empty():
 
 
 def test_modal_final_receipts_are_validated_before_atomic_run_publication():
+    """Execution dominance, not lexical order: the receipt validation must be
+    an unconditional top-level statement of the runner's ``run_sweep`` body
+    that precedes the publication statement, so no refactor can nest it under
+    a skippable guard (``if receipts: ...``) while this test stays green."""
     source = (
         REPO / "scripts" / "modal_stopdff_v5_runner.py"
     ).read_text(encoding="utf-8")
@@ -131,15 +135,56 @@ def test_modal_final_receipts_are_validated_before_atomic_run_publication():
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name == "run_sweep"
     )
+
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(run_function):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+
+    # Any of these between the function body and the call means the call can
+    # be skipped (or deferred) on some path through run_sweep.
+    conditional_nodes = tuple(
+        node_type
+        for node_type in (
+            ast.If,
+            ast.IfExp,
+            ast.For,
+            ast.AsyncFor,
+            ast.While,
+            ast.Try,
+            getattr(ast, "TryStar", None),
+            ast.ExceptHandler,
+            ast.BoolOp,
+            ast.Lambda,
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.ListComp,
+            ast.SetComp,
+            ast.DictComp,
+            ast.GeneratorExp,
+        )
+        if node_type is not None
+    )
+
+    def _dominating_statement_index(call: ast.Call, label: str) -> int:
+        node: ast.AST = call
+        while parents.get(node) is not run_function:
+            node = parents[node]
+            assert not isinstance(node, conditional_nodes), (
+                f"{label} is nested under {type(node).__name__}, so it is "
+                "not guaranteed to execute on every run_sweep path"
+            )
+        return run_function.body.index(node)
+
     receipt_validation = next(
-        node.lineno
+        node
         for node in ast.walk(run_function)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "validate_prerequisite_receipts"
     )
     atomic_run_publication = next(
-        node.lineno
+        node
         for node in ast.walk(run_function)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
@@ -147,7 +192,13 @@ def test_modal_final_receipts_are_validated_before_atomic_run_publication():
         and node.func.value.id == "sweep"
         and node.func.attr == "run_sweep"
     )
-    assert receipt_validation < atomic_run_publication
+    validation_index = _dominating_statement_index(
+        receipt_validation, "receipt validation"
+    )
+    publication_index = _dominating_statement_index(
+        atomic_run_publication, "atomic run publication"
+    )
+    assert validation_index < publication_index
 
 
 # --- rewards ----------------------------------------------------------------------

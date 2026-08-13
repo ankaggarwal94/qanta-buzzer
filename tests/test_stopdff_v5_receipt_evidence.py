@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -15,9 +16,15 @@ if str(REPO) not in sys.path:
 from scripts.stopdff_v5.content_manifest import (  # noqa: E402
     validate_bound_content_manifest,
 )
-from scripts.stopdff_v5.identity import build_manifest, sha256_file  # noqa: E402
+from scripts.stopdff_v5.identity import (  # noqa: E402
+    build_manifest,
+    sha256_bytes,
+    sha256_file,
+)
 from scripts.stopdff_v5.manifests import (  # noqa: E402
+    ADAPTER_SCORING_SPEC,
     RAW_INPUT_ROLES,
+    model_snapshot_identity,
     raw_input_identity,
     source_manifest_identity,
 )
@@ -428,8 +435,76 @@ def test_raw_manifest_requires_the_exact_producer_role_set(tmp_path):
         )
 
 
-def test_modal_and_local_resume_use_the_same_closed_manifest_validator():
-    modal_source = (REPO / "scripts" / "modal_stopdff_v5_runner.py").read_text()
-    local_source = (REPO / "scripts" / "run_stopdff_v5_local.py").read_text()
-    assert "return validate_bound_content_manifest(" in modal_source
-    assert "return validate_bound_content_manifest(" in local_source
+def _staged_model_snapshot(base: Path) -> dict:
+    """Stage one canonical model-snapshot content bundle under ``base``."""
+    content = base / "snapshot"
+    content.mkdir(parents=True)
+    payload = b"model-bytes"
+    (content / "model.bin").write_bytes(payload)
+    manifest = build_manifest(
+        model_snapshot_identity(
+            model_id=ADAPTER_SCORING_SPEC["model_id"],
+            revision="b" * 40,
+            files=[
+                {
+                    "path": "model.bin",
+                    "size": len(payload),
+                    "sha256": sha256_bytes(payload),
+                }
+            ],
+            sentence_transformers_version="fixture",
+            transformers_version="fixture",
+        )
+    )
+    (base / "model_snapshot_manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def test_modal_and_local_resume_use_the_same_closed_manifest_validator(
+    tmp_path,
+    monkeypatch,
+):
+    """Behavioral mirror check: both lanes' cached-manifest loaders accept the
+    same staged content, and a tampered cached byte fails on BOTH lanes with
+    the shared closed validator's exact error."""
+    from scripts import run_stopdff_v5_local as local_runner
+    from tests.test_stopdff_v5_control_plane import _load_modal_runner
+
+    modal_runner = _load_modal_runner(monkeypatch)
+    base = tmp_path / "model"
+    manifest = _staged_model_snapshot(base)
+    kwargs = dict(
+        manifest_name="model_snapshot_manifest.json",
+        file_key="files",
+        name_key="path",
+        content_subdir="snapshot",
+    )
+
+    local_manifest = local_runner._load_bound_content_manifest(
+        base, expected_kind="model_snapshot", **kwargs
+    )
+    modal_manifest = modal_runner._verified_content_manifest(
+        base,
+        expected_id=manifest["id"],
+        expected_kind="model_snapshot",
+        **kwargs,
+    )
+    assert local_manifest == modal_manifest == manifest
+
+    (base / "snapshot" / "model.bin").write_bytes(b"tampered-bytes")
+    with pytest.raises(ValueError) as local_error:
+        local_runner._load_bound_content_manifest(
+            base, expected_kind="model_snapshot", **kwargs
+        )
+    with pytest.raises(ValueError) as modal_error:
+        modal_runner._verified_content_manifest(
+            base,
+            expected_id=manifest["id"],
+            expected_kind="model_snapshot",
+            **kwargs,
+        )
+    assert str(local_error.value) == str(modal_error.value)
+    assert "file mismatch: model.bin" in str(local_error.value)

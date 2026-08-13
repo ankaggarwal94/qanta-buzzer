@@ -253,11 +253,22 @@ def test_resume_preflight_recomputes_only_cached_cells(
         encoding="utf-8",
     )
     calls: list[str] = []
+    prepare_calls: list[int] = []
 
     monkeypatch.setattr(sweep, "cell_key_str", lambda cell: cell["key"])
 
-    def fake_cell_record(ctx, cell):
+    def fake_prepare(rows, calibration_json):
+        del rows, calibration_json
+        prepare_calls.append(1)
+        return "shared-prepared-inputs"
+
+    monkeypatch.setattr(sweep, "prepare_cell_inputs", fake_prepare)
+
+    def fake_cell_record(ctx, cell, *, prepared=None):
         del ctx
+        # Preflight must reuse one shared prepared-input cache across cells
+        # rather than re-deriving trajectories per recomputed cell.
+        assert prepared == "shared-prepared-inputs"
         calls.append(cell["key"])
         return {"cell_key": cell["key"]}
 
@@ -265,6 +276,8 @@ def test_resume_preflight_recomputes_only_cached_cells(
     ctx = SimpleNamespace(
         output_dir=tmp_path,
         run_spec_id="a" * 64,
+        rows=[],
+        calibration_json=None,
     )
     records, interrupted = sweep._resume_preflight(
         ctx,
@@ -273,6 +286,7 @@ def test_resume_preflight_recomputes_only_cached_cells(
         bootstrap_plan_id="b" * 64,
     )
     assert calls == ["cached"]
+    assert prepare_calls == [1]
     assert records == {"cached": expected}
     assert interrupted == {
         "attempt": 1,

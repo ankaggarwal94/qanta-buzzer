@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import shutil
@@ -1060,5 +1061,59 @@ def test_public_schema_and_docs_match_round2_contracts() -> None:
     assert '"matplotlib",' in manifests_source
     assert "FVI_PRODUCER_FILES" in runner_source
     assert '"fvi_study.py",' in manifests_source
-    assert "producer_hashes=producer_hashes" in runner_source
-    assert 'gate_overrides=binding["gate_overrides"]' in runner_source
+
+    # AST-anchored structural pins (not substring matches, which pass on any
+    # unrelated occurrence anywhere in the file). The run_control_plane
+    # driver lives in scripts/stopdff_v5_control_plane.py (the runner
+    # re-exports it as a facade), so its pin parses that module; run_sweep
+    # remains a runner stage function.
+    runner_module = ast.parse(runner_source)
+    control_plane_module = ast.parse(
+        MODAL_RUNNER.with_name("stopdff_v5_control_plane.py").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    def _module_function(module: ast.Module, name: str) -> ast.FunctionDef:
+        return next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        )
+
+    def _keyword_value(call: ast.Call, name: str) -> ast.expr:
+        return next(kw.value for kw in call.keywords if kw.arg == name)
+
+    # Both control-plane run specs (smoke and final) bind the runtime-verified
+    # producer hashes into run-spec identity.
+    spec_calls = [
+        node
+        for node in ast.walk(
+            _module_function(control_plane_module, "run_control_plane")
+        )
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "run_spec_identity"
+    ]
+    assert len(spec_calls) == 2
+    for call in spec_calls:
+        value = _keyword_value(call, "producer_hashes")
+        assert isinstance(value, ast.Name) and value.id == "producer_hashes"
+
+    # The remote sweep body forwards the control-validated gate overrides from
+    # the run-spec binding into its sweep context.
+    sweep_context_call = next(
+        node
+        for node in ast.walk(_module_function(runner_module, "run_sweep"))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "SweepContext"
+    )
+    overrides = _keyword_value(sweep_context_call, "gate_overrides")
+    assert (
+        isinstance(overrides, ast.Subscript)
+        and isinstance(overrides.value, ast.Name)
+        and overrides.value.id == "binding"
+        and isinstance(overrides.slice, ast.Constant)
+        and overrides.slice.value == "gate_overrides"
+    )

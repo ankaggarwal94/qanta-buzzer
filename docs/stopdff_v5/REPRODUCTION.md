@@ -90,7 +90,7 @@ Python 3.11. Install the runtime dependencies:
 python3.11 -m venv .venv-stopdff-v5 && source .venv-stopdff-v5/bin/activate
 pip install -U pip
 pip install "numpy>=1.26,<3" "scipy>=1.11" "scikit-learn>=1.3" "pandas>=2.1" \
-            "matplotlib>=3.7" "sentence-transformers>=2.7" "torch>=2.0.0" \
+            "matplotlib>=3.7" "sentence-transformers>=2.3.0" "torch>=2.6.0" \
             "huggingface_hub>=0.23"
 ```
 
@@ -334,11 +334,21 @@ out-of-order, partial, or noncanonical observed phase state fails before the swe
 is invoked.
 
 First deploy the exact frozen-source runner. Then run each driver command as a separate host
-process so recovery cannot depend on the submitting process's memory:
+process so recovery cannot depend on the submitting process's memory.
+
+`STOPDFF_V5_APP_NAME` deploys a second app against the shared
+`cs321m-stopdff-artifacts` Volume, and `max_containers=1` serializes writers per *app* — so
+a non-default app name weakens the single-writer invariant on shared slots. The runner
+therefore refuses a non-default app name unless `STOPDFF_V5_ALLOW_APP_OVERRIDE=1` is also
+set, and prints a warning to stderr while the override is active. The assurance campaign
+below is the intended use: its uniquely tagged canary writes only under `pilots/<tag>/`,
+never the pipeline's input/adapter/run slots. Do not run an overridden app concurrently
+with the default pipeline app against the same slots.
 
 ```bash
 export STOPDFF_V5_SOURCE_DIR=/absolute/path/to/stopdff_v5_final_out/source_snapshot
 export STOPDFF_V5_APP_NAME=cs321m-stopdff-v5-assurance-45b7f81f
+export STOPDFF_V5_ALLOW_APP_OVERRIDE=1
 modal deploy scripts/modal_stopdff_v5_runner.py
 
 export STOPDFF_ASSURANCE_DEPLOYMENT="$STOPDFF_V5_APP_NAME"
