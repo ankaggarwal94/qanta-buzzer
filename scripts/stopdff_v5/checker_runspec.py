@@ -15,11 +15,11 @@ from typing import Any
 from .checker_common import (
     CheckResult,
     _canonical_path_issue,
+    _err,
     _producer_hash_errors,
     _scientific_equal,
     load_json,
 )
-from .checker_package import _err
 from .identity import compute_id, is_sha256_hex
 from .profile import (
     BOOTSTRAP,

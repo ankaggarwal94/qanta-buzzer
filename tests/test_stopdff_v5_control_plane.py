@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import types
 from pathlib import Path
 
@@ -15,173 +13,18 @@ import pytest
 from scripts import run_stopdff_v5_local as local_runner
 from scripts.stopdff_v5.attempt_history import canonical_attempt_line
 from scripts.stopdff_v5.bootstrap import build_bootstrap_plan
-from scripts.stopdff_v5.identity import build_manifest, compute_id, sha256_file
+from scripts.stopdff_v5.identity import build_manifest, compute_id
 from scripts.stopdff_v5.manifests import (
     ENVIRONMENT_PACKAGES,
-    RAW_INPUT_ROLES,
     environment_contract_identity,
 )
-
-
-REPO = Path(__file__).resolve().parents[1]
-MODAL_RUNNER = REPO / "scripts" / "modal_stopdff_v5_runner.py"
-
-
-def _load_modal_runner(monkeypatch, *, modal_is_local: bool = True):
-    image_envs: list[dict] = []
-    local_dirs: list[tuple[tuple, dict]] = []
-    apt_installs: list[tuple] = []
-
-    class DummyImage:
-        @classmethod
-        def debian_slim(cls, **_kwargs):
-            return cls()
-
-        def apt_install(self, *args):
-            apt_installs.append(tuple(args))
-            return self
-
-        def pip_install(self, *_args):
-            return self
-
-        def env(self, values):
-            image_envs.append(dict(values))
-            return self
-
-        def add_local_dir(self, *args, **kwargs):
-            local_dirs.append((args, kwargs))
-            return self
-
-    class DummyVolume:
-        @classmethod
-        def from_name(cls, *_args, **_kwargs):
-            return cls()
-
-        def reload(self):
-            return None
-
-        def commit(self):
-            return None
-
-    class DummyApp:
-        def __init__(self, *_args, **_kwargs):
-            self.include_source = _kwargs.get("include_source")
-
-        def function(self, **_kwargs):
-            def decorate(function):
-                function.remote = function
-                sequence = {"value": 0}
-
-                def spawn(*args, **kwargs):
-                    sequence["value"] += 1
-                    result = function(*args, **kwargs)
-                    return types.SimpleNamespace(
-                        object_id=(
-                            f"fc-{function.__name__}-{sequence['value']}"
-                        ),
-                        get=lambda: result,
-                    )
-
-                function.spawn = spawn
-                return function
-
-            return decorate
-
-        def local_entrypoint(self):
-            return lambda function: function
-
-    fake_modal = types.SimpleNamespace(
-        Image=DummyImage,
-        Volume=DummyVolume,
-        App=DummyApp,
-        is_local=lambda: modal_is_local,
-        image_envs=image_envs,
-        local_dirs=local_dirs,
-        apt_installs=apt_installs,
-    )
-    monkeypatch.setitem(sys.modules, "modal", fake_modal)
-    from scripts.stopdff_v5.identity import build_manifest, sha256_file
-    from scripts.stopdff_v5.manifests import source_manifest_identity
-
-    if modal_is_local:
-        source_bundle = Path(
-            tempfile.mkdtemp(prefix="stopdff_v5_test_source_")
-        )
-        source = source_bundle / "source"
-        source.mkdir()
-        source_names = (
-            "pyproject.toml",
-            "scripts/stopdff_v5/checker.py",
-            "scripts/stopdff_v5/sweep.py",
-            "uv.lock",
-        )
-        for source_name in source_names:
-            path = source / source_name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f"{source_name}\n", encoding="utf-8")
-        files = [
-            {
-                "path": source_name,
-                "mode": "100644",
-                "size": (source / source_name).stat().st_size,
-                "sha256": sha256_file(source / source_name),
-            }
-            for source_name in source_names
-        ]
-        source_manifest = build_manifest(
-            source_manifest_identity(
-                git_sha="a" * 40,
-                files=files,
-                pyproject_sha256=files[0]["sha256"],
-                uv_lock_sha256=files[-1]["sha256"],
-            )
-        )
-        (source_bundle / "source_manifest.json").write_text(
-            json.dumps(source_manifest), encoding="utf-8"
-        )
-        monkeypatch.setenv("STOPDFF_V5_SOURCE_DIR", str(source_bundle))
-    else:
-        monkeypatch.delenv("STOPDFF_V5_SOURCE_DIR", raising=False)
-        monkeypatch.setenv(
-            "STOPDFF_V5_IMAGE_SOURCE_MANIFEST_ID",
-            "1" * 64,
-        )
-    name = f"_pr30_modal_runner_{id(monkeypatch)}"
-    spec = importlib.util.spec_from_file_location(name, MODAL_RUNNER)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    module.IMAGE_SOURCE_MANIFEST_ID = "1" * 64
-    return module
-
-
-def _write_raw_manifest(base: Path, *, passed: bool, kind: str = "raw_input_bundle"):
-    files = []
-    for role in sorted(RAW_INPUT_ROLES):
-        content = (json.dumps({"role": role}, sort_keys=True) + "\n").encode()
-        path = base / role
-        path.write_bytes(content)
-        files.append(
-            {
-                "role": role,
-                "size": len(content),
-                "sha256": sha256_file(path),
-            }
-        )
-    identity = {
-        "kind": kind,
-        "files": files,
-        "semantic_checks": {
-            "all_semantic_checks_pass": passed,
-            "question_trajectory_binding_id": "c" * 64,
-        },
-    }
-    manifest = build_manifest(identity)
-    (base / "raw_input_manifest.json").write_text(
-        json.dumps(manifest),
-        encoding="utf-8",
-    )
-    return manifest
+from tests.harness_control_plane import (
+    REPO,
+    _fake_control_api,
+    _load_modal_runner,
+    _write_model_manifest,
+    _write_raw_manifest,
+)
 
 
 def test_modal_remote_import_uses_baked_source_identity_without_host_bundle(
@@ -466,23 +309,6 @@ def test_run_sweep_rejects_symlinked_bootstrap_cache_before_decode(
             bootstrap_id,
             False,
         )
-
-
-def _write_model_manifest(root: Path, *, kind: str, model_id: str) -> dict[str, object]:
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "snapshot").mkdir(exist_ok=True)
-    manifest = {
-        "id": model_id,
-        "identity": {
-            "kind": kind,
-            "files": [],
-        },
-    }
-    (root / "model_snapshot_manifest.json").write_text(
-        json.dumps(manifest),
-        encoding="utf-8",
-    )
-    return manifest
 
 
 def test_freeze_model_cached_reuse_requires_model_snapshot_kind(
@@ -792,134 +618,6 @@ def test_determinism_stage_owns_two_fresh_producer_calls(
     assert result["second_build_execution_id"] == "fc-2"
     receipt_id = result["prerequisite_receipt_id"]
     assert (tmp_path / "receipts" / "determinism" / f"{receipt_id}.json").is_file()
-
-
-def _fake_control_api(*, fail_first_smoke: bool = False):
-    calls = []
-    ids = {key: value * 64 for key, value in {
-        "source": "1",
-        "raw": "2",
-        "model": "3",
-        "adapter": "4",
-        "determinism": "5",
-        "fvi": "6",
-        "smoke_plan": "7",
-        "final_plan": "8",
-        "smoke_receipt": "9",
-        "mutation": "a",
-        "myopic": "b",
-    }.items()}
-    fail = {"smoke": fail_first_smoke}
-
-    def record(name, result):
-        def call(*args):
-            calls.append((name, args))
-            return result(*args) if callable(result) else dict(result)
-
-        return call
-
-    def verify(_rel, kind):
-        result = {
-            "ok": True,
-            "id": ids[kind],
-            "mismatches": [],
-            "n_files": 1,
-        }
-        if kind == "raw":
-            result["myopic_artifact_sha256"] = ids["myopic"]
-        return result
-
-    def bootstrap(_adapter, replicates):
-        return {
-            "bootstrap_plan_id": (
-                ids["smoke_plan"] if replicates == 100 else ids["final_plan"]
-            ),
-            "replicates": replicates,
-            "n_items": 10,
-            "cached": False,
-        }
-
-    def sweep(spec_json, _adapter, _bootstrap, resume):
-        wrapper = json.loads(spec_json)
-        variant = wrapper["run_spec_identity"]["profile_variant"]
-        if variant == "smoke" and fail["smoke"]:
-            fail["smoke"] = False
-            raise RuntimeError("lost smoke response")
-        result = {
-            "run_id": wrapper["run_id"],
-            "requested": 3,
-            "completed": 3,
-            "skipped": 0,
-            "failed": 0,
-            "release_status": "VALID",
-            "family": {"verdict": "PASS"},
-            "resume": resume,
-        }
-        if variant == "smoke":
-            result["prerequisite_receipt_id"] = ids["smoke_receipt"]
-        return result
-
-    api = {
-        "probe": record("probe", {
-            "python": "3.11.0",
-            "package_versions": {
-                name: "1.0" for name in ENVIRONMENT_PACKAGES
-            },
-        }),
-        "verify_volume_artifact": record("verify", verify),
-        "freeze_model": record("freeze_model", {
-            "model_id": ids["model"],
-            "cached": False,
-        }),
-        "adapter_determinism_receipt": record(
-            "adapter_determinism",
-            {
-                "ok": True,
-                "adapter_id": ids["adapter"],
-                "source_manifest_id": ids["source"],
-                "first_build_execution_id": "fc-first",
-                "second_build_execution_id": "fc-second",
-                "prerequisite_receipt_id": ids["determinism"],
-            },
-        ),
-        "promote_adapter": record(
-            "promote_adapter",
-            lambda _subdir, adapter_id: {
-                "canonical_subdir": f"canonical_{adapter_id}",
-                "cached": False,
-            },
-        ),
-        "fvi_study": record("fvi_study", {
-            "fvi_study_id": ids["fvi"],
-            "selected": {"tolerance": "1e-6", "max_iterations": 50},
-            "cached": False,
-        }),
-        "bootstrap_plan": record("bootstrap", bootstrap),
-        "run_sweep": record("run_sweep", sweep),
-        "mutation_gate": record("mutation_gate", {
-            "ok": True,
-            "n": 42,
-            "unexpected": [],
-            "source_manifest_id": ids["source"],
-            "prerequisite_receipt_id": ids["mutation"],
-        }),
-        "validate": record(
-            "validate",
-            lambda _run_id, adapter_id, *_args: {
-                "passed": True,
-                "errors": [],
-                "recomputed": {
-                    "release_status": "VALID",
-                    "adapter_bundle_id": adapter_id,
-                },
-            },
-        ),
-        "package": record(
-            "package",
-            lambda run_id: {"run_id": run_id, "packaged": True},
-        ),
-    }
-    return api, calls, ids
 
 
 def _probe_payload(*, torch_version: str = "1.0") -> dict:
@@ -1473,6 +1171,7 @@ spec = importlib.util.spec_from_file_location(
     reviewed / "scripts" / "run_stopdff_v5_local.py",
 )
 runner = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = runner  # documented spec-loading step
 spec.loader.exec_module(runner)
 runtime = reviewed / "scripts" / "stopdff_v5" / "adapter_build.py"
 manifest = runner.build_manifest({{
@@ -1512,6 +1211,7 @@ spec = importlib.util.spec_from_file_location(
     reviewed / "scripts" / "run_stopdff_v5_local.py",
 )
 runner = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = runner  # documented spec-loading step
 spec.loader.exec_module(runner)
 relative = "scripts/stopdff_v5/adapter_build.py"
 runtime = reviewed / relative
@@ -1556,6 +1256,7 @@ spec = importlib.util.spec_from_file_location(
     reviewed / "scripts" / "run_stopdff_v5_local.py",
 )
 runner = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = runner  # documented spec-loading step
 spec.loader.exec_module(runner)
 relative = "scripts/stopdff_v5/adapter_build.py"
 runtime = reviewed / relative
@@ -2072,26 +1773,22 @@ def test_fvi_manifest_path_rejects_noncanonical_cache_before_read(
 
     with pytest.raises(ValueError, match="FVI cache"):
         runner._canonical_fvi_study_path(root)
-@pytest.mark.parametrize(
-    ("stage_present", "checkpoint_present"),
-    [(True, False), (False, True)],
-)
-def test_local_adapter_stage_reuse_requires_paired_checkpoint(
+def test_local_adapter_stage_checkpoint_without_stage_stays_fail_closed(
     tmp_path,
     monkeypatch,
-    stage_present,
-    checkpoint_present,
 ):
+    """A durable execution record whose stage directory is gone is evidence
+    loss, not a crash window — it must never be rebuilt or re-minted."""
     stage = "adapter_bundle_determinism"
     adapter_id = "a" * 64
-    if stage_present:
-        (tmp_path / stage).mkdir()
-    state = {"adapter_executions": {}}
-    if checkpoint_present:
-        state["adapter_executions"][stage] = {
-            "execution_id": "local-recorded",
-            "adapter_id": adapter_id,
+    state = {
+        "adapter_executions": {
+            stage: {
+                "execution_id": "local-recorded",
+                "adapter_id": adapter_id,
+            }
         }
+    }
 
     monkeypatch.setattr(
         local_runner,
@@ -2125,6 +1822,82 @@ def test_local_adapter_stage_reuse_requires_paired_checkpoint(
             raw_id="2" * 64,
             model_id="3" * 64,
         )
+
+
+def test_local_adapter_stage_adopts_published_stage_without_checkpoint(
+    tmp_path,
+    monkeypatch,
+):
+    """A crash between the atomic stage publish and its lifecycle checkpoint
+    leaves a complete validated stage with no execution record; the next run
+    adopts it under a fresh execution id instead of bricking every resume."""
+    stage = "adapter_bundle_determinism"
+    stage_path = tmp_path / stage
+    stage_path.mkdir()
+    adapter_id = "a" * 64
+    state = {"adapter_executions": {}}
+    checkpoints = []
+
+    monkeypatch.setattr(
+        local_runner,
+        "_load_valid_adapter_stage",
+        lambda path, **_kwargs: (
+            {"id": adapter_id}
+            if path == stage_path
+            else pytest.fail("unexpected adapter path")
+        ),
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_publish_stage_directory",
+        lambda **_kwargs: pytest.fail("adopted stage was rebuilt"),
+    )
+
+    def checkpoint(**kwargs):
+        checkpoints.append(kwargs)
+        state["adapter_executions"][stage] = {
+            "execution_id": kwargs["execution_id"],
+            "adapter_id": kwargs["adapter_id"],
+        }
+
+    monkeypatch.setattr(
+        local_runner,
+        "_checkpoint_adapter_execution",
+        checkpoint,
+    )
+
+    manifest, execution_id = local_runner._materialize_adapter_stage(
+        out=tmp_path,
+        state=state,
+        stage=stage,
+        build=lambda _path: pytest.fail("unexpected adapter build"),
+        source_id="1" * 64,
+        raw_id="2" * 64,
+        model_id="3" * 64,
+    )
+
+    assert manifest == {"id": adapter_id}
+    assert execution_id.startswith("local-")
+    assert checkpoints == [
+        {
+            "out": tmp_path,
+            "state": state,
+            "stage": stage,
+            "execution_id": execution_id,
+            "adapter_id": adapter_id,
+        }
+    ]
+    # The adopted stage now behaves exactly like a checkpointed reuse.
+    reloaded_manifest, reloaded_id = local_runner._materialize_adapter_stage(
+        out=tmp_path,
+        state=state,
+        stage=stage,
+        build=lambda _path: pytest.fail("unexpected adapter build"),
+        source_id="1" * 64,
+        raw_id="2" * 64,
+        model_id="3" * 64,
+    )
+    assert (reloaded_manifest, reloaded_id) == (manifest, execution_id)
 
 
 def test_local_adapter_stage_reuse_preserves_checkpointed_execution(

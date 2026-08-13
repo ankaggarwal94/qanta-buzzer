@@ -4,17 +4,11 @@ from __future__ import annotations
 import pytest
 
 from scripts import stopdff_v5_control_plane
-from tests.test_stopdff_v5_control_plane import _fake_control_api, _load_modal_runner
-
-
-def _plan(ids: dict[str, str]) -> dict:
-    return {
-        "source_id": ids["source"],
-        "raw_id": ids["raw"],
-        "adapter_subdirs": ["build_a", "build_b"],
-        "gate_overrides": {},
-        "resource_summary": {"backend": "modal"},
-    }
+from tests.harness_control_plane import (
+    _fake_control_api,
+    _load_modal_runner,
+    _plan,
+)
 
 
 def test_lost_adapter_response_rebinds_to_attempt_scoped_destinations(

@@ -16,7 +16,7 @@ import pytest
 
 from scripts.stopdff_v5.identity import sha256_file
 from scripts.stopdff_v5.manifests import RAW_INPUT_ROLES
-from tests.test_stopdff_v5_control_plane import (
+from tests.harness_control_plane import (
     _load_modal_runner,
     _write_raw_manifest,
 )

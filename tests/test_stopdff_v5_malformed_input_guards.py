@@ -12,9 +12,13 @@ from pathlib import Path
 import pytest
 
 from scripts.stopdff_v5 import checker, profile, selftest, sweep
-from tests.test_stopdff_v5_control_plane import _fake_control_api, _load_modal_runner
-from tests.test_modal_runner_recovery import _plan
-from tests.test_stopdff_v5_pipeline import _make_ctx, _synth_rows
+from tests.harness_control_plane import (
+    _fake_control_api,
+    _load_modal_runner,
+    _make_ctx,
+    _plan,
+    _synth_rows,
+)
 
 
 REPO = Path(__file__).resolve().parents[1]

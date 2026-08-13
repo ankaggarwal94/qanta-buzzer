@@ -11,14 +11,6 @@ from pathlib import Path
 
 import pytest
 
-# Optional dev extras: skip (as the sibling suites do) rather than fail
-# collection on a minimal `pip install -e .` environment.
-jsonschema = pytest.importorskip("jsonschema")
-referencing = pytest.importorskip("referencing")
-Draft202012Validator = jsonschema.Draft202012Validator
-Registry = referencing.Registry
-Resource = referencing.Resource
-
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
@@ -942,7 +934,25 @@ def test_constant_platt_phase_is_rejected():
 
 
 
+def _schema_stack() -> tuple[type, type, type]:
+    """Gate the jsonschema stack inside the tests that need it.
+
+    Function-local importorskip (the repo pattern; cf.
+    test_stopdff_v5_checker_public_api.py) so only the two schema tests skip
+    on a minimal ``pip install -e .`` environment — jsonschema/referencing
+    are dev extras and the module's other tests do not touch them.
+    """
+    jsonschema = pytest.importorskip("jsonschema", exc_type=ModuleNotFoundError)
+    referencing = pytest.importorskip("referencing", exc_type=ModuleNotFoundError)
+    return (
+        jsonschema.Draft202012Validator,
+        referencing.Registry,
+        referencing.Resource,
+    )
+
+
 def _load_schema_registry() -> tuple[dict[str, dict], object]:
+    _, Registry, Resource = _schema_stack()
     schema_documents = {
         path.name: json.loads(path.read_text(encoding="utf-8"))
         for path in sorted((REPO / "schemas").glob("stopdff_*.schema.json"))
@@ -965,6 +975,7 @@ def _load_schema_registry() -> tuple[dict[str, dict], object]:
 
 
 def test_draft_2020_12_schemas_validate_meta_and_instances() -> None:
+    Draft202012Validator, _, _ = _schema_stack()
     schema_documents, registry = _load_schema_registry()
     for name, schema in schema_documents.items():
         assert schema["$schema"] == (
@@ -1031,6 +1042,7 @@ def test_schemas_validate_writer_emitted_artifacts(tmp_path) -> None:
     """Every shipped schema validates a REAL emitted artifact, not just
     hand-assembled instances: the packaged ``run_spec.json`` manifest that
     the sweep writer emits, and the contract blocks embedded in it."""
+    Draft202012Validator, _, _ = _schema_stack()
     schema_documents, registry = _load_schema_registry()
 
     built = selftest.build_valid_package(tmp_path)

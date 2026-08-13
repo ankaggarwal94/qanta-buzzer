@@ -34,6 +34,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path, PurePosixPath
 
@@ -41,6 +42,12 @@ import modal
 
 from scripts import stopdff_v5_assurance_stages as _assurance_stages
 from scripts import stopdff_v5_control_plane as _control_plane
+from scripts.stopdff_v5.identity import is_sha256_hex
+
+# Deliberate strangler-fig intermediate: this facade re-exports the moved
+# control-plane names so existing imports keep working; the re-export list
+# below is frozen (no additions) pending full migration of callers to
+# ``scripts.stopdff_v5_control_plane``.
 from scripts.stopdff_v5_control_plane import (  # noqa: F401  (facade re-exports)
     _ADAPTER_COMPONENT_MAX_BYTES,
     _adapter_attempt_subdirs,
@@ -117,6 +124,13 @@ MNT = "/stopdff"
 REMOTE_SRC = "/root/src"
 DAY = 86400
 _STAGING_PREFIX = ".staging_"
+# Reclaim only staging directories that provably cannot belong to a live
+# container: the longest-running staging user (freeze_model/fvi_study/
+# bootstrap_plan) runs under timeout=DAY, so anything older than twice that
+# bound is crash garbage even across Volume background-commit clock skew.
+# Younger leftovers are inert (uuid-named, never published, never audited)
+# and are reclaimed by a later fresh attempt once they age out.
+_STAGING_REAP_AGE_S = 2 * DAY
 _SOURCE_ID_ENV = "STOPDFF_V5_IMAGE_SOURCE_MANIFEST_ID"
 SOURCE_BUNDLE_DIR = (
     os.environ.get("STOPDFF_V5_SOURCE_DIR", "")
@@ -190,10 +204,7 @@ else:
     SOURCE_DIR = REMOTE_SRC
     IMAGE_SOURCE_MANIFEST_ID = os.environ.get(_SOURCE_ID_ENV, "")
 
-if (
-    not isinstance(IMAGE_SOURCE_MANIFEST_ID, str)
-    or re.fullmatch(r"[0-9a-f]{64}", IMAGE_SOURCE_MANIFEST_ID) is None
-):
+if not is_sha256_hex(IMAGE_SOURCE_MANIFEST_ID):
     raise RuntimeError(
         f"{_SOURCE_ID_ENV} must be the validated source manifest ID"
     )
@@ -275,11 +286,7 @@ def _canonical_modal_run_id(
     if (variant is None) != (run_spec_id is None):
         raise ValueError("run_id binding requires both variant and run_spec_id")
     if variant is not None:
-        if (
-            variant not in {"smoke", "final"}
-            or not isinstance(run_spec_id, str)
-            or re.fullmatch(r"[0-9a-f]{64}", run_spec_id) is None
-        ):
+        if variant not in {"smoke", "final"} or not is_sha256_hex(run_spec_id):
             raise ValueError("run_id binding inputs are noncanonical")
         expected = f"{variant}_modal_{run_spec_id[:12]}"
         if value != expected:
@@ -290,11 +297,7 @@ def _canonical_modal_run_id(
 def _receipt_rel(gate: str, receipt_id: str) -> str:
     if gate not in {"smoke", "mutation", "determinism"}:
         raise ValueError(f"unknown prerequisite receipt gate: {gate}")
-    if (
-        not isinstance(receipt_id, str)
-        or len(receipt_id) != 64
-        or any(ch not in "0123456789abcdef" for ch in receipt_id)
-    ):
+    if not is_sha256_hex(receipt_id):
         raise ValueError(f"invalid {gate} prerequisite receipt id")
     return _p("receipts", gate, f"{receipt_id}.json")
 
@@ -480,16 +483,26 @@ def _reclaim_staging_dirs(parent: Path) -> int:
     never referenced by any manifest, so any that persist (e.g. via a Volume
     background commit racing a crash) are reclaimable garbage — not evidence.
     Reclaiming them keeps a crashed download from bricking future runs.
+
+    Only entries older than ``_STAGING_REAP_AGE_S`` are removed: a second
+    controller sharing the Volume (dual ``modal run`` invocations, or the
+    ``STOPDFF_V5_ALLOW_APP_OVERRIDE`` escape hatch) may surface a live peer's
+    in-flight staging directory via a background commit, and deleting it would
+    fail that peer's publish after it loses the whole materialization. The age
+    gate exceeds every staging stage's function timeout, so a directory past
+    it cannot belong to a live container.
     """
     parent = Path(parent)
     if parent.is_symlink() or not parent.is_dir():
         return 0
     reclaimed = 0
+    now = time.time()
     for entry in parent.iterdir():
         if (
             entry.name.startswith(_STAGING_PREFIX)
             and not entry.is_symlink()
             and entry.is_dir()
+            and (now - entry.stat().st_mtime) > _STAGING_REAP_AGE_S
         ):
             shutil.rmtree(entry)
             reclaimed += 1
@@ -874,12 +887,26 @@ def promote_adapter(from_subdir: str, adapter_id: str) -> dict:
                 "cached": True,
             }
         raise FileExistsError("canonical adapter destination exists but is invalid")
-    shutil.copytree(src, dst)
-    copied = checker.validate_adapter(dst)
-    if not copied.passed:
-        raise ValueError(
-            "copied adapter failed validation: " + "; ".join(copied.errors)
-        )
+    # Copy into a sibling staging directory and publish by one atomic rename
+    # (same discipline as freeze_model/fvi_study/bootstrap_plan): the
+    # create-once canonical slot never holds a partial copy, so a crash
+    # mid-copytree cannot brick this adapter_id permanently — crash-persisted
+    # leftovers land in the reclaimable ``.staging_*`` namespace instead.
+    _reclaim_staging_dirs(dst.parent)
+    staging = _new_staging_dir(dst.parent)
+    try:
+        copy = staging / "bundle"
+        shutil.copytree(src, copy)
+        copied = checker.validate_adapter(copy)
+        if not copied.passed:
+            raise ValueError(
+                "copied adapter failed validation: " + "; ".join(copied.errors)
+            )
+        _publish_staged_dir(copy, dst)
+    finally:
+        # On success only the emptied staging holder remains; on any failure
+        # this also removes the partial copy without masking the exception.
+        shutil.rmtree(staging, ignore_errors=True)
     vol.commit()
     return {"canonical_subdir": f"canonical_{adapter_id}", "cached": False}
 
@@ -1028,12 +1055,12 @@ def adapter_determinism_receipt(
         bindings=bindings,
         evidence=evidence,
     )
-    sweep._write_bound_json(
+    sweep.write_bound_json(
         Path(_receipt_evidence_rel("determinism", receipt["id"])),
         evidence,
         resume=True,
     )
-    sweep._write_bound_json(
+    sweep.write_bound_json(
         Path(_receipt_rel("determinism", receipt["id"])),
         receipt,
         resume=True,
@@ -1499,12 +1526,12 @@ def run_sweep(
             evidence=evidence,
         )
         receipt_path = Path(_receipt_rel("smoke", receipt["id"]))
-        sweep._write_bound_json(
+        sweep.write_bound_json(
             Path(_receipt_evidence_rel("smoke", receipt["id"])),
             evidence,
             resume=True,
         )
-        sweep._write_bound_json(receipt_path, receipt, resume=True)
+        sweep.write_bound_json(receipt_path, receipt, resume=True)
         vol.commit()
         result["prerequisite_receipt_id"] = receipt["id"]
     return result
@@ -1668,8 +1695,7 @@ def validate(run_id: str, adapter_id: str, require_final: bool, require_package:
             if (
                 isinstance(identity, dict)
                 and identity.get("profile_variant") in {"smoke", "final"}
-                and isinstance(spec_manifest.get("id"), str)
-                and re.fullmatch(r"[0-9a-f]{64}", spec_manifest["id"])
+                and is_sha256_hex(spec_manifest.get("id"))
             ):
                 _canonical_modal_run_id(
                     run_id,
@@ -1738,12 +1764,12 @@ def mutation_gate(binding_json: str) -> dict:
         bindings=bindings,
         evidence=evidence,
     )
-    sweep._write_bound_json(
+    sweep.write_bound_json(
         Path(_receipt_evidence_rel("mutation", receipt["id"])),
         evidence,
         resume=True,
     )
-    sweep._write_bound_json(
+    sweep.write_bound_json(
         Path(_receipt_rel("mutation", receipt["id"])),
         receipt,
         resume=True,

@@ -5,8 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
-import tempfile
 from pathlib import Path
 
 import modal
@@ -20,36 +18,15 @@ def _require_receipt_absent(path: Path) -> None:
 
 
 def _write_once(path: Path, value: object) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Deferred like every scripts.* import in this driver: the module must
+    # stay importable as a bare `python scripts/modal_stopdff_v5_assurance.py`
+    # entry point until the repository package is actually needed.
+    from scripts.stopdff_v5.fileio import create_once_bytes
+
     data = (
         json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
     ).encode("utf-8")
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        dir=str(path.parent),
-    )
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(temporary, path)
-        except FileExistsError as exc:
-            raise FileExistsError(
-                f"assurance receipt already exists: {path}"
-            ) from exc
-        os.unlink(temporary)
-        temporary = ""
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        if temporary and os.path.exists(temporary):
-            os.unlink(temporary)
+    create_once_bytes(Path(path), data, exists_label="assurance receipt")
 
 
 def _load_object(path: Path) -> dict:

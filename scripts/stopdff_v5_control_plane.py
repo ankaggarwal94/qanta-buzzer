@@ -17,13 +17,52 @@ here as explicit parameters.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from scripts.stopdff_v5.fileio import publish_bytes
+from scripts.stopdff_v5.fileio import create_once_bytes, publish_bytes
+from scripts.stopdff_v5.identity import is_sha256_hex, loads_no_duplicate_keys
+
+# Advisory control-plane locks this process holds, keyed by lock-file path.
+# Held for the process lifetime (the OS releases them at exit); the map lets
+# one process re-enter the same state path (e.g. sequential fresh-then-resume
+# driver invocations in tests) without self-deadlocking, since flock treats
+# each open() independently.
+_CONTROL_LOCK_FDS: dict[str, int] = {}
+
+
+def _acquire_control_plane_lock(state_path: Path) -> None:
+    """Serialize control-plane drivers per state path with an advisory flock.
+
+    The checkpoint (``_write_control_state``) and the event journal
+    (``_append_control_event``) are both mutated by read-modify-write with
+    last-writer-wins replace semantics; two concurrent drivers against the
+    same state path could interleave and silently drop a journal event or
+    checkpoint, and would double-drive the same remote Modal stages. Fail
+    fast instead of racing. Remote scientific evidence is already create-once
+    and manifest-verified, so this guards the local audit journal and the
+    driver's single-writer invariant.
+    """
+    state_path = Path(state_path)
+    lock_path = state_path.with_name(state_path.name + ".lock")
+    key = str(lock_path)
+    if key in _CONTROL_LOCK_FDS:
+        return
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        raise RuntimeError(
+            f"another control-plane driver holds {lock_path}"
+        ) from exc
+    _CONTROL_LOCK_FDS[key] = fd
+
 
 _ADAPTER_COMPONENT_MAX_BYTES = 255
 
@@ -34,8 +73,6 @@ def _canonical_adapter_subdir(value: object) -> str:
         raise ValueError("adapter subdir must be a nonempty string")
     if "\0" in value:
         raise ValueError("adapter subdir must not contain NUL")
-    from pathlib import PurePosixPath
-
     parsed = PurePosixPath(value)
     if (
         parsed.is_absolute()
@@ -84,8 +121,6 @@ def _control_plan_digest(plan: dict) -> str:
 
 
 def _load_control_json(path: Path) -> dict:
-    from scripts.stopdff_v5.identity import loads_no_duplicate_keys
-
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"control JSON is missing or noncanonical: {path}")
@@ -112,36 +147,16 @@ def _atomic_replace_control_bytes(path: Path, data: bytes) -> None:
 
 
 def _atomic_create_control_bytes(path: Path, data: bytes) -> None:
-    """Publish one fsynced control artifact without replacing any path."""
-    import tempfile
+    """Publish one fsynced control artifact without replacing any path.
 
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        dir=str(path.parent),
+    Delegates to the package-wide create-once primitive so the link-publish
+    durability discipline is implemented in exactly one place.
+    """
+    create_once_bytes(
+        Path(path),
+        data,
+        exists_label="create-once control artifact",
     )
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(temporary, path)
-        except FileExistsError as exc:
-            raise FileExistsError(
-                f"create-once control artifact already exists: {path}"
-            ) from exc
-        os.unlink(temporary)
-        temporary = ""
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        if temporary and os.path.exists(temporary):
-            os.unlink(temporary)
 
 
 def _append_control_event(path: Path, event: dict) -> None:
@@ -531,8 +546,6 @@ def _validate_control_journal_projection(
 
 def _reconcile_control_journal(state_path: Path, state: dict) -> None:
     """Repair one provable final-record gap or reject journal drift."""
-    from scripts.stopdff_v5.identity import loads_no_duplicate_keys
-
     journal_path = state_path.with_name(state_path.name + ".jsonl")
     journal_bytes = b""
     if journal_path.exists() or journal_path.is_symlink():
@@ -733,11 +746,7 @@ def _validate_control_plan(plan: dict) -> dict:
 
     def require_sha(name: str) -> str:
         value = plan.get(name)
-        if (
-            not isinstance(value, str)
-            or len(value) != 64
-            or any(ch not in "0123456789abcdef" for ch in value)
-        ):
+        if not is_sha256_hex(value):
             raise ValueError(f"control plan {name} must be canonical 64-hex")
         return value
 
@@ -1020,11 +1029,7 @@ def _require_control_sha(
 
 
 def _is_control_sha(value) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(ch in "0123456789abcdef" for ch in value)
-    )
+    return is_sha256_hex(value)
 
 
 def _is_final_control_run_id(value) -> bool:
@@ -1284,6 +1289,7 @@ def run_control_plane(
             "control plan source_id does not match the validated Modal image source"
         )
     state_path = Path(state_path)
+    _acquire_control_plane_lock(state_path)
     digest = _control_plan_digest(plan)
     api = stage_api
     if resume:

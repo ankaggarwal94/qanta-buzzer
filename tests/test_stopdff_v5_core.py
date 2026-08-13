@@ -48,6 +48,26 @@ def test_identity_rejects_duplicate_keys_on_load():
         identity.loads_no_duplicate_keys('{"a":1,"a":2}')
 
 
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_loads_strict_rejects_nonfinite_constants(constant):
+    # The strict parse discipline fails non-finite constants at parse time
+    # (parse_constant hook) instead of leaking floats downstream.
+    with pytest.raises(identity.IdentityError, match="non-finite JSON constant"):
+        identity.loads_strict(f'{{"value": {constant}}}')
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_load_json_strict_normalizes_nonfinite_rejection(tmp_path, constant):
+    # load_json_strict re-raises any decode failure as
+    # ValueError("invalid JSON in <path>: ..."), preserving the cause.
+    path = tmp_path / "payload.json"
+    path.write_text(f'{{"value": {constant}}}', encoding="utf-8")
+    with pytest.raises(
+        ValueError, match=r"invalid JSON in .*non-finite JSON constant"
+    ):
+        identity.load_json_strict(path)
+
+
 def test_manifest_roundtrip_and_verify():
     ident = {"kind": "demo", "value": "0.05"}
     man = identity.build_manifest(ident, path="/tmp/x", ts="now")

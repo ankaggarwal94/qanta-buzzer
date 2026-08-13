@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -10,6 +11,8 @@ import types
 from pathlib import Path
 
 import pytest
+
+from scripts import stopdff_v5_control_plane as control_plane
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1117,3 +1120,51 @@ def test_public_schema_and_docs_match_round2_contracts() -> None:
         and isinstance(overrides.slice, ast.Constant)
         and overrides.slice.value == "gate_overrides"
     )
+
+
+def test_control_plane_lock_serializes_drivers_per_state_path(tmp_path):
+    """The journal/state read-modify-write window is flock-guarded: the driver
+    takes the lock at entry (before any journal IO), sequential in-process
+    re-entry reuses the held lock, and a second driver fails fast instead of
+    interleaving last-writer-wins journal rewrites."""
+    state_path = tmp_path / "control.json"
+    lock_path = tmp_path / "control.json.lock"
+    key = str(lock_path)
+    plan = _plan()
+
+    # The lock is acquired at driver entry, before the resume state read.
+    with pytest.raises(ValueError, match="control JSON is missing"):
+        control_plane.run_control_plane(
+            plan,
+            state_path,
+            resume=True,
+            stage_api={},
+            image_source_id="1" * 64,
+            source_dir="unused",
+        )
+    assert lock_path.is_file()
+    assert key in control_plane._CONTROL_LOCK_FDS
+
+    # Same-process re-entry (fresh-then-resume driver sequences) reuses the
+    # held lock instead of self-deadlocking.
+    control_plane._acquire_control_plane_lock(state_path)
+    assert key in control_plane._CONTROL_LOCK_FDS
+
+    # A second driver — a fresh open file description without the reuse-map
+    # entry, as another process would hold — fails fast and loudly.
+    held_fd = control_plane._CONTROL_LOCK_FDS.pop(key)
+    try:
+        with pytest.raises(
+            RuntimeError, match="another control-plane driver holds"
+        ):
+            control_plane.run_control_plane(
+                plan,
+                state_path,
+                resume=True,
+                stage_api={},
+                image_source_id="1" * 64,
+                source_dir="unused",
+            )
+        assert key not in control_plane._CONTROL_LOCK_FDS
+    finally:
+        os.close(held_fd)

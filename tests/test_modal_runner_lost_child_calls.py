@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_stopdff_v5_control_plane import _load_modal_runner
+from tests.harness_control_plane import _load_modal_runner
 
 
 @pytest.mark.parametrize(

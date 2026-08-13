@@ -471,7 +471,7 @@ def test_modal_and_local_resume_use_the_same_closed_manifest_validator(
     same staged content, and a tampered cached byte fails on BOTH lanes with
     the shared closed validator's exact error."""
     from scripts import run_stopdff_v5_local as local_runner
-    from tests.test_stopdff_v5_control_plane import _load_modal_runner
+    from tests.harness_control_plane import _load_modal_runner
 
     modal_runner = _load_modal_runner(monkeypatch)
     base = tmp_path / "model"

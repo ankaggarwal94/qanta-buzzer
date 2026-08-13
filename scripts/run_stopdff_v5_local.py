@@ -21,7 +21,8 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from pathlib import Path, PurePosixPath
+from dataclasses import dataclass
+from pathlib import Path
 from types import ModuleType
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -402,11 +403,22 @@ def _materialize_adapter_stage(
     raw_id: str,
     model_id: str,
 ) -> tuple[dict, str]:
-    """Create or reuse an adapter only with a matching durable execution record."""
+    """Create, reuse, or adopt an adapter stage with a durable execution record.
+
+    ``_publish_stage_directory`` renames the finished tree into place before
+    ``_checkpoint_adapter_execution`` records it, so a hard kill between the
+    two steps leaves a complete published stage with no execution record.
+    That orphan is adopted here under a fresh execution id: publication is
+    atomic (the stage is never partial) and ``_load_valid_adapter_stage`` is
+    identity-complete (checker validation plus upstream-id binding), so
+    adoption accepts exactly what a checkpointed reuse would — instead of
+    bricking every later resume of the workspace. The reverse mismatch (a
+    checkpoint whose stage directory is gone) stays fail-closed.
+    """
     stage_path = out / stage
     stage_present = stage_path.exists() or stage_path.is_symlink()
     checkpoint_present = stage in state["adapter_executions"]
-    if stage_present != checkpoint_present:
+    if checkpoint_present and not stage_present:
         raise ValueError(
             f"local lifecycle {stage} stage/checkpoint presence mismatch"
         )
@@ -418,6 +430,17 @@ def _materialize_adapter_stage(
             raw_id=raw_id,
             model_id=model_id,
         )
+        if not checkpoint_present:
+            # Adopt the crash-orphaned published stage (see docstring).
+            execution_id = f"local-{uuid.uuid4().hex}"
+            _checkpoint_adapter_execution(
+                out=out,
+                state=state,
+                stage=stage,
+                execution_id=execution_id,
+                adapter_id=manifest["id"],
+            )
+            return manifest, execution_id
         execution_id = _adapter_execution_id(
             state=state,
             stage=stage,
@@ -905,7 +928,7 @@ def _stage_fvi(
             fvi_manifest = build_manifest(fvi_identity)
             fvi_id = fvi_manifest["id"]
             print("  selected", selected, "fvi_study_id", fvi_id)
-        sweep._write_bound_json(fvi_path, fvi_manifest, resume=False)
+        sweep.write_bound_json(fvi_path, fvi_manifest, resume=False)
     return fvi_manifest, fvi_id, selected
 
 
@@ -933,6 +956,36 @@ def _executing_producer_hashes() -> dict[str, str]:
     }
 
 
+@dataclass(frozen=True)
+class RunIdentityBundle:
+    """The six verified per-run identity ids threaded through the local phases.
+
+    Built exactly once in ``main`` after every input stage has produced its
+    manifest, then passed as one immutable value through the phase functions.
+    ``common_bindings`` derives the canonical receipt/run-spec binding dict
+    from the same six ids, so the individual-id and dict shapes can never
+    desynchronize.
+    """
+
+    source_id: str
+    raw_id: str
+    model_id: str
+    adapter_id: str
+    fvi_id: str
+    env_id: str
+
+    def common_bindings(self) -> dict[str, str]:
+        """Return the canonical prerequisite-receipt binding dict."""
+        return {
+            "source_manifest_id": self.source_id,
+            "raw_input_bundle_id": self.raw_id,
+            "model_snapshot_id": self.model_id,
+            "adapter_bundle_id": self.adapter_id,
+            "fvi_study_id": self.fvi_id,
+            "environment_contract_id": self.env_id,
+        }
+
+
 def _persist_receipt(
     out: Path,
     receipt_ids: dict[str, str],
@@ -942,12 +995,12 @@ def _persist_receipt(
 ) -> None:
     """Durably persist one prerequisite receipt + evidence and record its id."""
     path = out / "receipts" / gate / f"{receipt['id']}.json"
-    sweep._write_bound_json(
+    sweep.write_bound_json(
         path.with_suffix(".evidence.json"),
         evidence,
         resume=True,
     )
-    sweep._write_bound_json(path, receipt, resume=True)
+    sweep.write_bound_json(path, receipt, resume=True)
     receipt_ids[gate] = receipt["id"]
 
 
@@ -957,15 +1010,11 @@ def _determinism_gate_receipt(
     lifecycle: dict,
     args: argparse.Namespace,
     raw_dir: Path,
-    source_id: str,
-    raw_id: str,
-    model_id: str,
+    ids: RunIdentityBundle,
     adapter_dir: Path,
-    adapter_id: str,
     adapter_man: dict,
     first_build_execution_id: str,
     source_execution: dict[str, str],
-    common_bindings: dict[str, str],
     receipt_ids: dict[str, str],
 ) -> None:
     """Run the required deterministic two-build adapter gate and persist it."""
@@ -980,9 +1029,9 @@ def _determinism_gate_receipt(
             calibration_path=raw_dir / "calibration.json",
             model_snapshot_dir=out / "model" / "snapshot",
             out_dir=staged,
-            source_manifest_id=source_id,
-            raw_input_bundle_id=raw_id,
-            model_snapshot_id=model_id,
+            source_manifest_id=ids.source_id,
+            raw_input_bundle_id=ids.raw_id,
+            model_snapshot_id=ids.model_id,
             producer_hashes={
                 "adapter_build.py": sha256_file(
                     _REPO / "scripts/stopdff_v5/adapter_build.py"
@@ -996,9 +1045,9 @@ def _determinism_gate_receipt(
         state=lifecycle,
         stage="adapter_bundle_determinism",
         build=build_second_adapter,
-        source_id=source_id,
-        raw_id=raw_id,
-        model_id=model_id,
+        source_id=ids.source_id,
+        raw_id=ids.raw_id,
+        model_id=ids.model_id,
     )
     compared = (
         "fit_rows.jsonl.gz",
@@ -1014,8 +1063,9 @@ def _determinism_gate_receipt(
         name: sha256_file(second_adapter_dir / name)
         for name in compared
     }
-    if second_adapter["id"] != adapter_id or second_hashes != first_hashes:
+    if second_adapter["id"] != ids.adapter_id or second_hashes != first_hashes:
         raise ValueError("two-build adapter determinism gate failed")
+    common_bindings = ids.common_bindings()
     determinism_bindings = {
         key: common_bindings[key]
         for key in (
@@ -1070,10 +1120,11 @@ def _mutation_gate_receipt(
     out: Path,
     source_execution: dict[str, str],
     mutation_results: list[dict],
-    common_bindings: dict[str, str],
+    ids: RunIdentityBundle,
     receipt_ids: dict[str, str],
 ) -> None:
     """Persist the mutation-gate receipt over the checkpointed results."""
+    common_bindings = ids.common_bindings()
     mutation_evidence = writers.build_prerequisite_evidence(
         gate="mutation",
         bindings=common_bindings,
@@ -1100,18 +1151,12 @@ def _bounded_smoke_receipt(
     out: Path,
     args: argparse.Namespace,
     adapter_dir: Path,
-    adapter_id: str,
+    ids: RunIdentityBundle,
     paired_items: list[str],
     selected: dict,
-    fvi_id: str,
-    env_id: str,
     myopic_sha: str,
     producer_hashes: dict[str, str],
     environment_record: dict,
-    common_bindings: dict[str, str],
-    source_id: str,
-    raw_id: str,
-    model_id: str,
     receipt_ids: dict[str, str],
 ) -> None:
     """Run (or reuse) the required bounded smoke and persist its receipt."""
@@ -1122,13 +1167,13 @@ def _bounded_smoke_receipt(
         seed=1,
     )
     smoke_spec = run_spec_identity(
-        source_manifest_id=source_id,
-        raw_input_bundle_id=raw_id,
-        model_snapshot_id=model_id,
-        adapter_bundle_id=adapter_id,
-        fvi_study_id=fvi_id,
+        source_manifest_id=ids.source_id,
+        raw_input_bundle_id=ids.raw_id,
+        model_snapshot_id=ids.model_id,
+        adapter_bundle_id=ids.adapter_id,
+        fvi_study_id=ids.fvi_id,
         bootstrap_plan_id=compute_id(plan_identity(smoke_plan)),
-        environment_contract_id=env_id,
+        environment_contract_id=ids.env_id,
         resource_summary_id=compute_id({"backend": "local"}),
         fvi_selected=selected,
         replicate_count=100,
@@ -1166,7 +1211,7 @@ def _bounded_smoke_receipt(
             _next_resume_attempt(
                 smoke_root,
                 run_spec_id=smoke_id,
-                adapter_id=adapter_id,
+                adapter_id=ids.adapter_id,
                 bootstrap_plan_id=compute_id(plan_identity(smoke_plan)),
             )
             if smoke_resume
@@ -1200,6 +1245,7 @@ def _bounded_smoke_receipt(
             "bounded smoke failed: "
             + "; ".join(smoke_result.errors[:10])
         )
+    common_bindings = ids.common_bindings()
     smoke_evidence = writers.build_prerequisite_evidence(
         gate="smoke",
         bindings=common_bindings,
@@ -1227,20 +1273,14 @@ def _final_prerequisite_receipts(
     args: argparse.Namespace,
     lifecycle: dict,
     raw_dir: Path,
-    source_id: str,
-    raw_id: str,
-    model_id: str,
+    ids: RunIdentityBundle,
     adapter_dir: Path,
-    adapter_id: str,
     adapter_man: dict,
     first_build_execution_id: str,
     source_execution: dict[str, str],
     mutation_results: list[dict],
-    common_bindings: dict[str, str],
     paired_items: list[str],
     selected: dict,
-    fvi_id: str,
-    env_id: str,
     myopic_sha: str,
     producer_hashes: dict[str, str],
     environment_record: dict,
@@ -1252,40 +1292,30 @@ def _final_prerequisite_receipts(
         lifecycle=lifecycle,
         args=args,
         raw_dir=raw_dir,
-        source_id=source_id,
-        raw_id=raw_id,
-        model_id=model_id,
+        ids=ids,
         adapter_dir=adapter_dir,
-        adapter_id=adapter_id,
         adapter_man=adapter_man,
         first_build_execution_id=first_build_execution_id,
         source_execution=source_execution,
-        common_bindings=common_bindings,
         receipt_ids=receipt_ids,
     )
     _mutation_gate_receipt(
         out=out,
         source_execution=source_execution,
         mutation_results=mutation_results,
-        common_bindings=common_bindings,
+        ids=ids,
         receipt_ids=receipt_ids,
     )
     _bounded_smoke_receipt(
         out=out,
         args=args,
         adapter_dir=adapter_dir,
-        adapter_id=adapter_id,
+        ids=ids,
         paired_items=paired_items,
         selected=selected,
-        fvi_id=fvi_id,
-        env_id=env_id,
         myopic_sha=myopic_sha,
         producer_hashes=producer_hashes,
         environment_record=environment_record,
-        common_bindings=common_bindings,
-        source_id=source_id,
-        raw_id=raw_id,
-        model_id=model_id,
         receipt_ids=receipt_ids,
     )
     return receipt_ids
@@ -1296,20 +1326,15 @@ def _run_primary_sweep(
     out: Path,
     args: argparse.Namespace,
     adapter_dir: Path,
-    adapter_id: str,
+    ids: RunIdentityBundle,
     paired_items: list[str],
     selected: dict,
-    fvi_id: str,
-    env_id: str,
     myopic_sha: str,
     producer_hashes: dict[str, str],
     environment_record: dict,
     receipt_ids: dict[str, str],
     fvi_manifest: dict,
     environment_manifest: dict,
-    source_id: str,
-    raw_id: str,
-    model_id: str,
 ) -> int:
     """Build the bootstrap plan and run spec, sweep, then package/validate."""
     replicates = 1000 if args.variant == "final" else 100
@@ -1317,9 +1342,11 @@ def _run_primary_sweep(
     print("== bootstrap plan ==", "reps", replicates, "items", plan.n_items)
 
     run_spec = run_spec_identity(
-        source_manifest_id=source_id, raw_input_bundle_id=raw_id, model_snapshot_id=model_id,
-        adapter_bundle_id=adapter_id, fvi_study_id=fvi_id, bootstrap_plan_id=compute_id(plan_identity(plan)),
-        environment_contract_id=env_id,
+        source_manifest_id=ids.source_id, raw_input_bundle_id=ids.raw_id,
+        model_snapshot_id=ids.model_id,
+        adapter_bundle_id=ids.adapter_id, fvi_study_id=ids.fvi_id,
+        bootstrap_plan_id=compute_id(plan_identity(plan)),
+        environment_contract_id=ids.env_id,
         resource_summary_id=compute_id({"backend": "local"}),
         fvi_selected=selected, replicate_count=replicates,
         profile_variant=args.variant,
@@ -1366,9 +1393,9 @@ def _run_primary_sweep(
         aggregate=agg,
         fvi_manifest=fvi_manifest,
         environment_manifest=environment_manifest,
-        source_id=source_id,
-        raw_id=raw_id,
-        model_id=model_id,
+        source_id=ids.source_id,
+        raw_id=ids.raw_id,
+        model_id=ids.model_id,
         require_final=args.variant == "final",
     )
 
@@ -1442,14 +1469,14 @@ def main(argv: list[str] | None = None) -> int:
     qa = {r["item_id"] for r in rows if r["split"] == "test" and r["format"] == "QA"}
     paired_items = sorted(mc & qa)
     producer_hashes = _executing_producer_hashes()
-    common_bindings = {
-        "source_manifest_id": source_id,
-        "raw_input_bundle_id": raw_id,
-        "model_snapshot_id": model_id,
-        "adapter_bundle_id": adapter_id,
-        "fvi_study_id": fvi_id,
-        "environment_contract_id": env_id,
-    }
+    ids = RunIdentityBundle(
+        source_id=source_id,
+        raw_id=raw_id,
+        model_id=model_id,
+        adapter_id=adapter_id,
+        fvi_id=fvi_id,
+        env_id=env_id,
+    )
     receipt_ids: dict[str, str] = {}
     if args.variant == "final":
         receipt_ids = _final_prerequisite_receipts(
@@ -1457,20 +1484,14 @@ def main(argv: list[str] | None = None) -> int:
             args=args,
             lifecycle=lifecycle,
             raw_dir=raw_dir,
-            source_id=source_id,
-            raw_id=raw_id,
-            model_id=model_id,
+            ids=ids,
             adapter_dir=adapter_dir,
-            adapter_id=adapter_id,
             adapter_man=adapter_man,
             first_build_execution_id=first_build_execution_id,
             source_execution=source_execution,
             mutation_results=mutation_results,
-            common_bindings=common_bindings,
             paired_items=paired_items,
             selected=selected,
-            fvi_id=fvi_id,
-            env_id=env_id,
             myopic_sha=myopic_sha,
             producer_hashes=producer_hashes,
             environment_record=environment_record,
@@ -1480,20 +1501,15 @@ def main(argv: list[str] | None = None) -> int:
         out=out,
         args=args,
         adapter_dir=adapter_dir,
-        adapter_id=adapter_id,
+        ids=ids,
         paired_items=paired_items,
         selected=selected,
-        fvi_id=fvi_id,
-        env_id=env_id,
         myopic_sha=myopic_sha,
         producer_hashes=producer_hashes,
         environment_record=environment_record,
         receipt_ids=receipt_ids,
         fvi_manifest=fvi_manifest,
         environment_manifest=environment_manifest,
-        source_id=source_id,
-        raw_id=raw_id,
-        model_id=model_id,
     )
 
 

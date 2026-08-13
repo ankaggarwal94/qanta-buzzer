@@ -10,6 +10,8 @@ and the apt-free v5 image.
 from __future__ import annotations
 
 import json
+import os
+import time
 import types
 from pathlib import Path
 
@@ -17,10 +19,16 @@ import pytest
 
 from scripts import stopdff_v5_assurance_stages, stopdff_v5_control_plane
 from scripts.stopdff_v5 import checker
-from tests.test_stopdff_v5_control_plane import (
+from tests.harness_control_plane import (
     _load_modal_runner,
     _write_model_manifest,
 )
+
+
+def _backdate_past_reap_age(runner, path: Path) -> None:
+    """Age one staging directory past the reclaim gate (a crash relic)."""
+    stale = time.time() - runner._STAGING_REAP_AGE_S - 3600
+    os.utime(path, (stale, stale))
 
 
 # --- app-name override gate (adv#L-2) --------------------------------------
@@ -186,10 +194,13 @@ def test_freeze_model_crash_cannot_brick_the_singleton_slot(
     # The live singleton slot never held partial content.
     assert not root.exists()
 
-    # Simulate a crash-persisted staging leftover (background commit case).
+    # Simulate a stale crash-persisted staging leftover (background commit
+    # case); reclaim is age-gated, so only a leftover past the reap age is
+    # provably not a live peer's in-flight staging.
     leftover = tmp_path / "inputs" / ".staging_deadbeef"
     leftover.mkdir(parents=True)
     (leftover / "junk.bin").write_text("orphan", encoding="utf-8")
+    _backdate_past_reap_age(runner, leftover)
 
     def freeze_valid_model(destination):
         manifest = _write_model_manifest(
@@ -253,13 +264,18 @@ def test_publish_helpers_fail_closed_and_reclaim_only_staging(
     runner._publish_staged_dir(staging, empty)
     assert (empty / "new").read_text(encoding="utf-8") == "new"
 
-    # Reclaim removes only .staging_* directories, never live entries.
+    # Reclaim removes only stale .staging_* directories: never live entries,
+    # never files, and never a young staging dir that could still belong to a
+    # live peer container (the age gate).
     parent = tmp_path / "cache"
     (parent / ".staging_orphan").mkdir(parents=True)
+    _backdate_past_reap_age(runner, parent / ".staging_orphan")
+    (parent / ".staging_young").mkdir()
     (parent / "live_slot").mkdir()
     (parent / ".staging_file").write_text("file, not dir", encoding="utf-8")
     assert runner._reclaim_staging_dirs(parent) == 1
     assert not (parent / ".staging_orphan").exists()
+    assert (parent / ".staging_young").is_dir()
     assert (parent / "live_slot").is_dir()
     assert (parent / ".staging_file").is_file()
 
@@ -290,6 +306,7 @@ def test_bootstrap_plan_publishes_by_rename_and_reclaims_staging(
     leftover = tmp_path / "bootstrap" / ".staging_leftover"
     leftover.mkdir(parents=True)
     (leftover / "bootstrap_plan.json").write_text("partial", encoding="utf-8")
+    _backdate_past_reap_age(runner, leftover)
 
     result = runner.bootstrap_plan(adapter_id, 3)
 

@@ -56,8 +56,26 @@ def atomic_write_json(path: Path, obj: Any) -> None:
     atomic_write_bytes(path, dumps_json_bytes(obj))
 
 
-def _write_bound_json(path: Path, obj: Any, *, resume: bool) -> None:
-    """Create evidence once; on resume accept only byte-identical existing data."""
+def write_bound_json(path: Path, obj: Any, *, resume: bool) -> None:
+    """Create one bound JSON evidence artifact exactly once.
+
+    Parameters
+    ----------
+    path : Path
+        Destination artifact path.
+    obj : Any
+        JSON-encodable payload, published via ``fileio.dumps_json_bytes``.
+    resume : bool
+        When False, an existing ``path`` raises ``FileExistsError``. When
+        True, an existing ``path`` is accepted only if its bytes equal the
+        fresh encoding (``ValueError`` otherwise).
+
+    Notes
+    -----
+    Public API: both runner scripts publish their bound evidence through this
+    helper, historically under the private name ``_write_bound_json`` (kept
+    below as a deprecated alias).
+    """
     data = dumps_json_bytes(obj)
     if path.exists():
         if not resume:
@@ -66,6 +84,11 @@ def _write_bound_json(path: Path, obj: Any, *, resume: bool) -> None:
             raise ValueError(f"resume evidence mismatch at {path}")
         return
     atomic_write_bytes(path, data)
+
+
+# Deprecated alias: pre-rename callers imported the behavior under a private
+# name; drop after one release once no caller references it.
+_write_bound_json = write_bound_json
 
 
 @dataclass
@@ -387,7 +410,7 @@ def _run_sweep_body(
             if prepared is None:
                 prepared = prepare_cell_inputs(ctx.rows, ctx.calibration_json)
             record = _cell_record(ctx, cell, prepared=prepared)
-        _write_bound_json(
+        write_bound_json(
             cells_dir / f"{key}.json",
             record,
             resume=ctx.resume,
@@ -473,7 +496,7 @@ def _run_sweep_body(
         "release_status": "VALID" if release.valid else "INVALID",
         "release_reasons": release.reasons,
     }
-    _write_bound_json(
+    write_bound_json(
         ctx.output_dir / "aggregate.json",
         aggregate,
         resume=ctx.resume,
@@ -493,7 +516,7 @@ def _run_sweep_body(
             },
             environment=ctx.environment, resource_summary=ctx.resource_summary,
         )
-        _write_bound_json(
+        write_bound_json(
             ctx.output_dir / "run_manifest.json",
             run_manifest,
             resume=ctx.resume,
@@ -511,7 +534,7 @@ def _run_sweep_body(
             },
             environment=ctx.environment, resource_summary=ctx.resource_summary,
         )
-        _write_bound_json(
+        write_bound_json(
             ctx.output_dir / "command_manifest.json",
             cmd_manifest,
             resume=ctx.resume,
@@ -521,7 +544,7 @@ def _run_sweep_body(
     # exposing the canonical directory. The isolated resume probe also calls
     # this body directly, so create absent files and accept only identical ones.
     for name, value in _run_identity_files(ctx):
-        _write_bound_json(
+        write_bound_json(
             ctx.output_dir / name,
             value,
             resume=True,
@@ -581,7 +604,7 @@ def _publish_fresh_initialization(
     )
     try:
         for name, value in _run_identity_files(ctx):
-            _write_bound_json(staged / name, value, resume=False)
+            write_bound_json(staged / name, value, resume=False)
         _append_attempt(staged / "attempts.jsonl", started_attempt)
         staged_fd = os.open(staged, os.O_RDONLY)
         try:
@@ -833,7 +856,7 @@ def run_sweep(ctx: SweepContext) -> dict[str, Any]:
         )
     if interrupted_result is not None:
         interrupted_number = int(interrupted_result["attempt"])
-        _write_bound_json(
+        write_bound_json(
             ctx.output_dir / "attempt_results" / f"{interrupted_number}.json",
             interrupted_result,
             resume=False,
@@ -858,7 +881,7 @@ def run_sweep(ctx: SweepContext) -> dict[str, Any]:
             precomputed_records=precomputed,
         )
     except BaseException as exc:
-        _write_bound_json(
+        write_bound_json(
             result_path,
             {
                 "attempt": attempt_number,
@@ -872,7 +895,7 @@ def run_sweep(ctx: SweepContext) -> dict[str, Any]:
         _commit(ctx)
         raise
 
-    _write_bound_json(
+    write_bound_json(
         result_path,
         {
             "attempt": attempt_number,

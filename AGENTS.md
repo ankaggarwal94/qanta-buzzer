@@ -45,7 +45,7 @@ pip install -e '.[modal]'     # Modal cloud execution for the StopDFF v5 runners
 
 ## Testing
 
-~1204 test functions across 87 test files (measured 2026-08-13; run `pytest tests/ --collect-only -q | tail -1` for the live count). Tests requiring optional extras (including `modal`) skip when those are not installed.
+The test suite spans the full v5 pipeline; counts drift with every PR, so no number is pinned here — count them live with `pytest tests/ --collect-only -q | tail -1`. Tests requiring optional extras (including `modal`) skip when those are not installed.
 
 ```bash
 pytest                    # full suite

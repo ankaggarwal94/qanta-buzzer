@@ -10,8 +10,11 @@ import pytest
 
 from scripts import run_stopdff_v5_local as local_runner
 from scripts.stopdff_v5 import checker, selftest, writers
-from tests.test_stopdff_v5_control_plane import _fake_control_api, _load_modal_runner
-from tests.test_modal_runner_recovery import _plan
+from tests.harness_control_plane import (
+    _fake_control_api,
+    _load_modal_runner,
+    _plan,
+)
 
 
 REPO = Path(__file__).resolve().parents[1]

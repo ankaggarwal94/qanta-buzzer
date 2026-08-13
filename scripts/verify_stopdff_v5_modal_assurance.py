@@ -6,10 +6,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any, Mapping
+
+from scripts.stopdff_v5.identity import (
+    IdentityError,
+    is_sha256_hex,
+    loads_strict,
+)
+from scripts.stopdff_v5_assurance_stages import canonical_assurance_tag
 
 
 _RECEIPT_NAMES = (
@@ -73,10 +79,6 @@ _AGGREGATE_FIELDS = frozenset(
         "release_reasons",
     }
 )
-_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_TAG_RE = re.compile(r"[0-9a-f][0-9a-f-]{7,63}\Z")
-
-
 class AssuranceVerificationError(ValueError):
     """Raised when a receipt violates the assurance evidence contract."""
 
@@ -110,7 +112,7 @@ def _nonempty_string(value: Any, where: str) -> str:
 
 
 def _sha256(value: Any, where: str) -> str:
-    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+    if not is_sha256_hex(value):
         _fail(f"{where} must be a lowercase SHA-256 digest")
     return value
 
@@ -152,19 +154,6 @@ def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _reject_constant(value: str) -> Any:
-    raise AssuranceVerificationError(f"non-finite JSON constant is forbidden: {value}")
-
-
-def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            _fail(f"duplicate JSON key is forbidden: {key!r}")
-        result[key] = value
-    return result
-
-
 def _load_receipt(path: Path, name: str) -> tuple[dict, bytes]:
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -172,16 +161,18 @@ def _load_receipt(path: Path, name: str) -> tuple[dict, bytes]:
     try:
         data = path.read_bytes()
         text = data.decode("utf-8")
-        value = json.loads(
-            text,
-            object_pairs_hook=_reject_duplicate_keys,
-            parse_constant=_reject_constant,
-        )
+        value = loads_strict(text)
     except AssuranceVerificationError:
         raise
     except (RecursionError, OverflowError) as exc:
         raise AssuranceVerificationError(
             f"{name} receipt exceeds the supported structural complexity: {path}"
+        ) from exc
+    except IdentityError as exc:
+        # The package's canonical strict parse rejected the receipt (duplicate
+        # JSON key or non-finite constant); keep the detail, normalize the type.
+        raise AssuranceVerificationError(
+            f"{name} receipt is not strict canonical JSON: {exc}: {path}"
         ) from exc
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise AssuranceVerificationError(
@@ -625,7 +616,9 @@ def _verify_assurance_receipts(
     _validate_schema_version(submitted, "submitted")
     deployment = _nonempty_string(submitted["deployment"], "submitted.deployment")
     tag = submitted["tag"]
-    if not isinstance(tag, str) or _TAG_RE.fullmatch(tag) is None or ".." in tag:
+    try:
+        canonical_assurance_tag(tag)
+    except ValueError:
         _fail("submitted.tag is not a canonical assurance tag")
     _exact_value(submitted["phase"], "crash", "submitted.phase")
     call_id = _nonempty_string(

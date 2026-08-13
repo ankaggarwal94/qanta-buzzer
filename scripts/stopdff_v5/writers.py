@@ -224,7 +224,7 @@ def _png_chunk(tag: bytes, data: bytes) -> bytes:
 
 
 def write_min_png(path: Path, width: int = 16, height: int = 16, rgb=(40, 80, 160)) -> None:
-    """Write a valid solid-color PNG (used when matplotlib is unavailable)."""
+    """Write a valid solid-color PNG (test fixture; production figures use ``write_figures``)."""
     raw = bytearray()
     row = b"\x00" + bytes(rgb) * width
     for _ in range(height):

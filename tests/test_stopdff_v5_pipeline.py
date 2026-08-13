@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
@@ -26,96 +25,11 @@ from scripts.stopdff_v5 import (  # noqa: E402
 from scripts.stopdff_v5.calibrators import CalibratorFitError  # noqa: E402
 from scripts.stopdff_v5.fvi import FVIResult  # noqa: E402
 from scripts.stopdff_v5.fvi_study import order_eligible  # noqa: E402
-from scripts.stopdff_v5.manifests import (  # noqa: E402
-    ENVIRONMENT_PACKAGES,
-    environment_contract_identity,
-    run_spec_identity,
+
+from tests.harness_control_plane import (  # noqa: E402
+    _make_ctx,
+    _synth_rows,
 )
-
-CATEGORIES = ["history", "science", "arts"]
-PREFIX_FRACS = [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
-
-
-def _synth_rows(n_items: int = 40, seed: int = 7) -> list[dict]:
-    rng = np.random.default_rng(seed)
-    rows: list[dict] = []
-    for i in range(n_items):
-        qid = f"q{i:03d}"
-        split = "val" if i < n_items // 2 else "test"
-        cat = CATEGORIES[i % len(CATEGORIES)]
-        item_off = rng.uniform(-0.15, 0.15)
-        for t, frac in enumerate(PREFIX_FRACS):
-            mc_sim = float(np.clip(0.25 + 0.55 * frac + item_off + rng.uniform(-0.05, 0.05), 0.0, 1.0))
-            qa_sim = float(np.clip(0.20 + 0.60 * frac + item_off + rng.uniform(-0.05, 0.05), 0.0, 1.0))
-            mc_correct = int(mc_sim + rng.uniform(-0.15, 0.15) > 0.55)
-            rows.append({
-                "item_id": qid, "prefix_idx": t, "prefix_fraction": frac, "format": "MC",
-                "split": split, "raw_similarity": mc_sim, "correct": mc_correct, "category": cat,
-            })
-            rows.append({
-                "item_id": qid, "prefix_idx": t, "prefix_fraction": frac, "format": "QA",
-                "split": split, "raw_similarity": qa_sim, "correct": 1, "category": cat,
-            })
-    return rows
-
-
-def _calibration_json() -> dict:
-    block = {"platt_coef": 5.0, "platt_intercept": -2.5}
-    return {"per_bucket": {"early": dict(block), "mid": dict(block), "late": dict(block)}}
-
-
-def _test_item_ids(rows: list[dict]) -> list[str]:
-    mc = {r["item_id"] for r in rows if r["split"] == "test" and r["format"] == "MC"}
-    qa = {r["item_id"] for r in rows if r["split"] == "test" and r["format"] == "QA"}
-    return sorted(mc & qa)
-
-
-def _make_ctx(tmp_path: Path, rows, cells, replicates=100) -> sweep.SweepContext:
-    plan = bootstrap.build_bootstrap_plan(_test_item_ids(rows), replicates=replicates, seed=1)
-    adapter_id = "e" * 64
-    myopic_sha256 = "c" * 64
-    producer_hashes = {
-        "checker.py": "d" * 64,
-        "sweep.py": "f" * 64,
-    }
-    environment = {
-        "python_version": "3.11.0",
-        "package_versions": {name: "test" for name in ENVIRONMENT_PACKAGES},
-    }
-    environment_id = identity.compute_id(
-        environment_contract_identity(**environment)
-    )
-    run_spec = run_spec_identity(
-        source_manifest_id="1" * 64,
-        raw_input_bundle_id="2" * 64,
-        model_snapshot_id="3" * 64,
-        adapter_bundle_id=adapter_id,
-        fvi_study_id="4" * 64,
-        bootstrap_plan_id=identity.compute_id(bootstrap.plan_identity(plan)),
-        environment_contract_id=environment_id,
-        resource_summary_id=identity.compute_id({"backend": "modal"}),
-        fvi_selected={"tolerance": "1e-8", "max_iterations": 100},
-        replicate_count=replicates,
-        profile_variant="smoke",
-        myopic_artifact_sha256=myopic_sha256,
-        producer_hashes=producer_hashes,
-        prerequisite_receipts={},
-    )
-    return sweep.SweepContext(
-        rows=rows, calibration_json=_calibration_json(),
-        run_spec=run_spec, run_spec_id=identity.compute_id(run_spec),
-        bootstrap_plan=plan, output_dir=tmp_path / "run",
-        fvi_tolerance="1e-8", fvi_max_iterations=100, backend="modal",
-        profile_variant="smoke", adapter_bundle_id=adapter_id,
-        adapter_fit_rows_sha256="a" * 64,
-        adapter_eval_rows_sha256="b" * 64,
-        myopic_artifact_sha256=myopic_sha256,
-        producer_hashes=producer_hashes,
-        cells=cells,
-        environment=environment,
-        resource_summary={"backend": "modal"},
-        attempt={"attempt": 1, "mode": "fresh", "command": ["dp_sweep"]},
-    )
 
 
 def _run_hard_exit_child(
@@ -129,7 +43,7 @@ import sys
 from pathlib import Path
 
 from scripts.stopdff_v5 import profile, sweep
-from tests.test_stopdff_v5_pipeline import _make_ctx, _synth_rows
+from tests.harness_control_plane import _make_ctx, _synth_rows
 
 base = Path(sys.argv[1])
 exit_after_commit = int(sys.argv[2])

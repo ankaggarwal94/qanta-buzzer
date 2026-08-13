@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from scripts.stopdff_v5 import cellcompute
 from scripts.stopdff_v5.profile import full_grid
-from tests.test_stopdff_v5_pipeline import _calibration_json, _synth_rows
+from tests.harness_control_plane import _calibration_json, _synth_rows
 
 
 def test_cell_family_reuses_calibrator_and_row_preparation(monkeypatch):

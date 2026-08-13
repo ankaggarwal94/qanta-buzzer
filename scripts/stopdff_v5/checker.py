@@ -34,6 +34,7 @@ from .checker_calibration import platt_phase_errors
 from .checker_common import (
     CheckResult,
     _canonical_path_issue,
+    _err,
     _is_finite_number,
     _is_quantized_number,
     _is_strict_int,
@@ -44,7 +45,6 @@ from .checker_common import (
     load_jsonl_gz,
 )
 from .checker_package import (
-    _err,
     check_complete_checksums,
     check_external_artifacts,
     inspect_packaged_fvi_manifest_kind,

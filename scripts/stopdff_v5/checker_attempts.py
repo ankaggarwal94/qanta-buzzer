@@ -12,10 +12,19 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from . import writers
 from .attempt_history import load_attempt_history
-from .checker_common import _INTERRUPTED_REASON, _is_strict_int, load_json
-from .checker_package import _err
+from .checker_common import _INTERRUPTED_REASON, _err, _is_strict_int, load_json
 from .checker_png import _check_png
+from .writers import (
+    _BOUND_CONTENT_LAYOUTS,
+    _MANIFEST_EVIDENCE_PATHS,
+    _RECEIPT_GATES,
+    PACKAGE_LEVEL_FILES,
+    PACKAGE_MANAGED_ROOTS,
+    RUN_JSON_ONLY_DIRS,
+    RUN_LEVEL_FILES,
+)
 
 def _check_attempts(
     run_root: Path,
@@ -213,18 +222,13 @@ def _check_package_path_policy(run_root: Path, errors: list[str]) -> None:
     orphaned atomic-write temp file present at package time is hashed into
     SHA256SUMS and stays self-consistent forever. Enforce the same explicit
     namespace the packager enforces (writers path-policy constants), plus the
-    two package-level files and the three package-managed roots whose
-    contents are audited by the checksum bijection, report regeneration, and
-    evidence lanes. Symlinks and special entries are already rejected by
-    ``check_complete_checksums``.
+    two package-level files and the three package-managed roots.
+    ``reports``/``figures`` contents are exact-membership checked by the
+    report-regeneration lane; the ``evidence`` namespace is recursed here for
+    exact membership (:func:`_check_evidence_namespace`) because the checksum
+    bijection constrains hashes, never which paths may appear. Symlinks and
+    special entries are already rejected by ``check_complete_checksums``.
     """
-    from .writers import (
-        PACKAGE_LEVEL_FILES,
-        PACKAGE_MANAGED_ROOTS,
-        RUN_JSON_ONLY_DIRS,
-        RUN_LEVEL_FILES,
-    )
-
     audited_files = RUN_LEVEL_FILES | PACKAGE_LEVEL_FILES
     audited_dirs = RUN_JSON_ONLY_DIRS | PACKAGE_MANAGED_ROOTS
     for path in sorted(run_root.iterdir()):
@@ -251,6 +255,128 @@ def _check_package_path_policy(run_root: Path, errors: list[str]) -> None:
             errors.append(
                 f"unaudited entry in {dir_name}/: {path.name!r}"
             )
+    _check_evidence_namespace(run_root, errors)
+
+
+def _packaged_profile_variant(run_root: Path) -> Any:
+    """Best-effort read of the packaged run spec's declared profile variant.
+
+    The identity lanes validate ``run_spec.json`` (and bind its declared
+    variant) independently, so tampering with the declaration already fails
+    validation there; the value is only used here for namespace membership.
+    An unreadable or malformed spec returns ``None``, which fails closed —
+    the receipts directory is then treated as unaudited.
+    """
+    try:
+        manifest = load_json(run_root / "run_spec.json")
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    identity = manifest.get("identity")
+    if not isinstance(identity, dict):
+        return None
+    return identity.get("profile_variant")
+
+
+def _check_evidence_namespace(run_root: Path, errors: list[str]) -> None:
+    """Recurse ``evidence/`` enforcing exact membership (DISALLOW-unknown).
+
+    The checksum bijection constrains hashes, the external-artifact ledger
+    audits the five manifest files at fixed paths, the bound-content lane
+    exhaustively inventories the files under the three packaged content
+    subtrees, and the receipt lane audits the canonical receipt files — but
+    none of them enumerates ``evidence/`` itself, so an extra file (or an
+    empty directory, which SHA256SUMS and the content inventories never see)
+    would otherwise ride inside an accepted package. Membership is
+    single-sourced from the packager's layout tables in ``writers``:
+
+    - top level: the manifest evidence files, the three bound content roots,
+      and (for the final profile only) ``prerequisite_receipts/``;
+    - each bound content root: exactly its packaged content subdir, whose
+      file inventory the bound-content lane audits exhaustively;
+    - ``prerequisite_receipts/``: only canonical receipt file names;
+    - everywhere: directories with no entries are rejected — no lane audits
+      a bare directory name.
+    """
+    evidence_root = run_root / "evidence"
+    if evidence_root.is_symlink() or not evidence_root.is_dir():
+        return  # a missing evidence tree is the external-artifact lane's error
+
+    audited_files = {
+        Path(packaged_path).name
+        for packaged_path in _MANIFEST_EVIDENCE_PATHS.values()
+    }
+    bound_roots: dict[str, str] = {}
+    for layout in _BOUND_CONTENT_LAYOUTS.values():
+        root_name, subdir_name = Path(layout["packaged_subdir"]).parts
+        bound_roots[root_name] = subdir_name
+    receipt_files = {
+        f"{gate}{suffix}"
+        for gate in _RECEIPT_GATES
+        for suffix in (".json", ".evidence.json")
+    }
+    receipts_expected = _packaged_profile_variant(run_root) == "final"
+
+    def _rel(path: Path) -> str:
+        return path.relative_to(run_root).as_posix()
+
+    for path in sorted([evidence_root, *evidence_root.rglob("*")]):
+        if path.is_symlink() or not path.is_dir():
+            continue
+        if not any(path.iterdir()):
+            errors.append(
+                f"unaudited empty package directory: {_rel(path)!r}"
+            )
+
+    for path in sorted(evidence_root.iterdir()):
+        name = path.name
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            if name in bound_roots:
+                _check_bound_content_root(
+                    run_root, path, bound_roots[name], errors
+                )
+            elif name == "prerequisite_receipts" and receipts_expected:
+                for entry in sorted(path.iterdir()):
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir():
+                        errors.append(
+                            f"unaudited package directory: {_rel(entry)!r}"
+                        )
+                    elif entry.is_file() and entry.name not in receipt_files:
+                        errors.append(
+                            f"unaudited package file: {_rel(entry)!r}"
+                        )
+            else:
+                errors.append(f"unaudited package directory: {_rel(path)!r}")
+        elif path.is_file():
+            if name not in audited_files:
+                errors.append(f"unaudited package file: {_rel(path)!r}")
+
+
+def _check_bound_content_root(
+    run_root: Path,
+    content_root: Path,
+    subdir_name: str,
+    errors: list[str],
+) -> None:
+    """A bound content root may contain only its packaged content subdir."""
+    for path in sorted(content_root.iterdir()):
+        if path.is_symlink():
+            continue
+        if path.is_dir() and path.name == subdir_name:
+            # The subtree's file inventory is audited exhaustively by the
+            # bound-content manifest lane; entry-free directories inside it
+            # are rejected by the namespace walk above.
+            continue
+        rel = path.relative_to(run_root).as_posix()
+        if path.is_dir():
+            errors.append(f"unaudited package directory: {rel!r}")
+        elif path.is_file():
+            errors.append(f"unaudited package file: {rel!r}")
 
 
 def _check_reports(
@@ -260,8 +386,6 @@ def _check_reports(
     errors: list[str],
 ) -> None:
     """Bind every displayed package byte to the validated scientific inputs."""
-    from . import writers
-
     try:
         expected: dict[str, bytes] = {
             "reports/report.md": writers.render_markdown(

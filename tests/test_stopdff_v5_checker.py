@@ -77,7 +77,17 @@ _EXPECTED_FINAL_RECEIPT_MUTATIONS = frozenset({
     "final_receipt_binding_mismatch",
     "final_missing_prerequisite_receipt_role",
     "final_spec_drops_prerequisite_receipts",
+    "final_extra_evidence_file",
+    "final_extra_evidence_dir",
 })
+# The final phase covers two classes: receipt/evidence-ledger forgeries
+# (rejected by the receipt lane) and evidence-namespace tampers (rejected by
+# the package path policy's evidence recursion).
+_FINAL_MUTATION_ERROR_MARKERS = {
+    "final_extra_evidence_file": ("unaudited package file",),
+    "final_extra_evidence_dir": ("unaudited empty package directory",),
+}
+_DEFAULT_FINAL_MUTATION_MARKERS = ("receipt", "prerequisite")
 
 
 def test_valid_package_passes(tmp_path):
@@ -626,9 +636,9 @@ def test_final_receipt_mutations_rejected_with_regenerated_checksums(
     tmp_path,
     mutation,
 ):
-    """Receipt/evidence-ledger forgeries must be rejected by the receipt
-    layer itself: SHA256SUMS is regenerated, so no stale-checksum rejection
-    can mask a regression in receipt validation."""
+    """Receipt/evidence-ledger forgeries and evidence-namespace tampers must
+    be rejected by their semantic lane itself: SHA256SUMS is regenerated, so
+    no stale-checksum rejection can mask a regression in that lane."""
     valid_dir, _ = final_built
     mdir = tmp_path / f"mut_{mutation}"
     shutil.copytree(valid_dir, mdir, symlinks=True)
@@ -643,8 +653,11 @@ def test_final_receipt_mutations_rejected_with_regenerated_checksums(
     )
     assert not res.passed, mutation
     assert not any("checksum" in error.lower() for error in res.errors)
+    markers = _FINAL_MUTATION_ERROR_MARKERS.get(
+        mutation, _DEFAULT_FINAL_MUTATION_MARKERS
+    )
     assert any(
-        "receipt" in error or "prerequisite" in error for error in res.errors
+        marker in error for error in res.errors for marker in markers
     ), res.errors
 
 
@@ -1247,3 +1260,128 @@ def test_validate_run_rejects_unaudited_top_level_package_entries(tmp_path):
 
     recovered = _validate()
     assert recovered.passed, recovered.errors
+
+
+def test_validate_run_rejects_unaudited_evidence_namespace_entries(tmp_path):
+    """Extras under evidence/ must fail even when SHA256SUMS is regenerated.
+
+    The checksum bijection constrains hashes, never which paths may appear:
+    a checksum-consistent adversary can attest arbitrary bytes under
+    evidence/ unless the path policy recurses the namespace for exact
+    membership (and rejects entry-free directories, which SHA256SUMS never
+    sees at all).
+    """
+    built = selftest.build_valid_package(tmp_path)
+    run_root = built["run_root"]
+    evidence = run_root / "evidence"
+
+    def _validate() -> checker.CheckResult:
+        writers.write_sha256sums(run_root)
+        return checker.validate_run(
+            run_root,
+            backend="modal",
+            adapter_bundle=built["adapter_bundle"],
+            require_final_profile=False,
+            require_package=True,
+        )
+
+    def _assert_rejected(expected_error: str) -> None:
+        result = _validate()
+        assert not result.passed
+        assert any(
+            expected_error in error for error in result.errors
+        ), (expected_error, result.errors)
+
+    stray_file = evidence / "backdoor.bin"
+    stray_file.write_bytes(b"attested but unaudited")
+    _assert_rejected("unaudited package file: 'evidence/backdoor.bin'")
+    stray_file.unlink()
+
+    stray_tree = evidence / "rogue"
+    stray_tree.mkdir()
+    (stray_tree / "payload.bin").write_bytes(b"attested but unaudited")
+    _assert_rejected("unaudited package directory: 'evidence/rogue'")
+    shutil.rmtree(stray_tree)
+
+    bound_sibling = evidence / "source_snapshot" / "extra.bin"
+    bound_sibling.write_bytes(b"attested but unaudited")
+    _assert_rejected(
+        "unaudited package file: 'evidence/source_snapshot/extra.bin'"
+    )
+    bound_sibling.unlink()
+
+    empty_dir = evidence / "source_snapshot" / "source" / "rogue"
+    empty_dir.mkdir()
+    _assert_rejected(
+        "unaudited empty package directory: "
+        "'evidence/source_snapshot/source/rogue'"
+    )
+    empty_dir.rmdir()
+
+    # A receipts subtree in a smoke package is unaudited even when every
+    # file inside uses a canonical receipt name: no smoke lane ever reads it.
+    smoke_receipts = evidence / "prerequisite_receipts"
+    smoke_receipts.mkdir()
+    (smoke_receipts / "smoke.json").write_bytes(b"{}")
+    _assert_rejected(
+        "unaudited package directory: 'evidence/prerequisite_receipts'"
+    )
+    shutil.rmtree(smoke_receipts)
+
+    recovered = _validate()
+    assert recovered.passed, recovered.errors
+
+
+def test_final_package_rejects_unaudited_prerequisite_receipt_entries(
+    final_built,
+    tmp_path,
+):
+    """Non-canonical names under prerequisite_receipts/ must be rejected:
+    the receipt lane audits only the fixed per-gate paths, so extra entries
+    would otherwise be attested without any lane reading them."""
+    valid_dir, _ = final_built
+
+    def _validate_copy(tamper) -> checker.CheckResult:
+        mdir = tmp_path / f"case_{len(list(tmp_path.iterdir()))}"
+        shutil.copytree(valid_dir, mdir, symlinks=True)
+        rr = mdir / "runs" / "run"
+        tamper(rr / "evidence" / "prerequisite_receipts")
+        writers.write_sha256sums(rr)
+        return checker.validate_run(
+            rr,
+            backend="modal",
+            adapter_bundle=mdir / "adapter_bundle",
+            require_final_profile=True,
+            require_package=True,
+        )
+
+    result = _validate_copy(
+        lambda receipts: (receipts / "rogue.json").write_bytes(b"{}")
+    )
+    assert not result.passed
+    assert any(
+        "unaudited package file: 'evidence/prerequisite_receipts/rogue.json'"
+        in error
+        for error in result.errors
+    ), result.errors
+
+    def _nested_dir(receipts):
+        nested = receipts / "nested"
+        nested.mkdir()
+        (nested / "payload.bin").write_bytes(b"attested but unaudited")
+
+    result = _validate_copy(_nested_dir)
+    assert not result.passed
+    assert any(
+        "unaudited package directory: 'evidence/prerequisite_receipts/nested'"
+        in error
+        for error in result.errors
+    ), result.errors
+
+    result = _validate_copy(lambda receipts: (receipts / "empty").mkdir())
+    assert not result.passed
+    assert any(
+        "unaudited empty package directory: "
+        "'evidence/prerequisite_receipts/empty'" in error
+        for error in result.errors
+    ), result.errors

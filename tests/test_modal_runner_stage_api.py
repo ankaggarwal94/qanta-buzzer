@@ -21,7 +21,7 @@ from __future__ import annotations
 import ast
 import inspect
 
-from tests.test_stopdff_v5_control_plane import MODAL_RUNNER, _load_modal_runner
+from tests.harness_control_plane import MODAL_RUNNER, _load_modal_runner
 
 CONTROL_PLANE = MODAL_RUNNER.with_name("stopdff_v5_control_plane.py")
 

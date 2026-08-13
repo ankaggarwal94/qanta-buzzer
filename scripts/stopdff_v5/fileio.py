@@ -42,11 +42,67 @@ def publish_bytes(path: Path, data: bytes) -> None:
             os.remove(tmp)
 
 
+def create_once_bytes(
+    path: Path,
+    data: bytes,
+    *,
+    exists_label: str = "create-once artifact",
+) -> None:
+    """Durably publish a new regular file, failing closed if ``path`` exists.
+
+    Same fsync discipline as ``publish_bytes`` (same-directory temp, flush +
+    file fsync before publication, directory fsync after) but with create-once
+    semantics: the temp file is ``os.link``-ed onto the destination, so an
+    existing ``path`` raises ``FileExistsError`` instead of being replaced.
+
+    Parameters
+    ----------
+    path
+        Destination that must not already exist.
+    data
+        Bytes to publish.
+    exists_label
+        Artifact description used in the ``FileExistsError`` message, so
+        callers keep their historical error wording.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"{exists_label} already exists: {path}"
+            ) from exc
+        os.unlink(temporary)
+        temporary = ""
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def dumps_json_bytes(obj: Any) -> bytes:
     """Encode ``obj`` with the package's artifact JSON convention.
 
     Sorted keys, two-space indent, trailing newline — byte-identical to what
     every v5 JSON artifact writer has always published (these bytes are
-    hash-attested, so the encoding must not drift).
+    hash-attested, so the encoding must not drift). ``allow_nan=False`` makes a
+    non-finite float fail loudly at write time instead of emitting non-JSON
+    bytes the strict readers reject anyway; valid artifacts are unaffected.
     """
-    return (json.dumps(obj, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    return (
+        json.dumps(obj, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    ).encode("utf-8")

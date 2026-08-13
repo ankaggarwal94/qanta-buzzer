@@ -1674,7 +1674,6 @@ def test_producer_dirty_check_includes_helper_modules_and_inputs(tmp_path, monke
     # Synthesize input fixtures so unrelated input paths are clean / off-tree.
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    from tests.test_stopdff_dp import _fake_mc_question  # already defined for adapter tests
     val_qs = [_fake_mc_question(f"v{i}") for i in range(3)]
     test_qs = [_fake_mc_question(f"t{i}") for i in range(3)]
     (data_dir / "mc_dataset.json").write_text(_json.dumps(val_qs + test_qs))

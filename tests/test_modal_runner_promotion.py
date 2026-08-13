@@ -13,21 +13,25 @@ Branch matrix:
 2. recomputed adapter id != requested id          -> ``ValueError``
 3. destination exists, valid, same id             -> ``{"cached": True}`` reuse
 4. destination exists but invalid                 -> ``FileExistsError``
-5. fresh copytree + post-copy revalidation        -> ``{"cached": False}``
-   (including the post-copy revalidation failure  -> ``ValueError``)
+5. fresh staged copy + pre-publish revalidation   -> ``{"cached": False}``
+   + atomic rename into the canonical slot
+   (including the staged revalidation failure     -> ``ValueError``,
+   crash-persisted stale staging reclaim, and the interrupted-copy retry)
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import time
 import types
 from pathlib import Path
 
 import pytest
 
 from scripts.stopdff_v5 import checker, selftest
-from tests.test_stopdff_v5_control_plane import _load_modal_runner
+from tests.harness_control_plane import _load_modal_runner
 
 
 @pytest.fixture(scope="module")
@@ -153,11 +157,12 @@ def test_promote_adapter_rejects_copy_that_fails_revalidation(
     tmp_path,
     monkeypatch,
 ):
-    """Branch 5's guard: the freshly copied destination is revalidated."""
+    """Branch 5's guard: the staged copy is revalidated before publication."""
     runner = _load_modal_runner(monkeypatch)
     runner.MNT = str(tmp_path)
     adapter_id = "a" * 64
-    src = tmp_path / "adapters" / "build_a"
+    adapters = tmp_path / "adapters"
+    src = adapters / "build_a"
     src.mkdir(parents=True)
     (src / "manifest.json").write_text("{}", encoding="utf-8")
 
@@ -186,7 +191,98 @@ def test_promote_adapter_rejects_copy_that_fails_revalidation(
     with pytest.raises(ValueError, match="copied adapter failed validation"):
         runner.promote_adapter("build_a", adapter_id)
 
-    assert validated == [
-        src,
-        tmp_path / "adapters" / f"canonical_{adapter_id}",
+    # The copy is validated inside the private staging area, never at the
+    # live canonical name.
+    assert validated[0] == src
+    staged_copy = validated[1]
+    assert staged_copy.name == "bundle"
+    assert staged_copy.parent.parent == adapters
+    assert staged_copy.parent.name.startswith(".staging_")
+    # Fail-closed and clean: no canonical slot, no staging residue.
+    assert not (adapters / f"canonical_{adapter_id}").exists()
+    assert list(adapters.glob(".staging_*")) == []
+
+
+def test_promote_adapter_crash_persisted_partial_staging_cannot_brick_promotion(
+    tmp_path,
+    monkeypatch,
+    valid_adapter_bundle,
+):
+    """A crash-persisted partial staging leftover is reclaimed once stale, a
+    live peer's young staging dir survives, and the canonical slot is only
+    ever observed complete — the permanent partial-canonical brick is gone."""
+    runner = _load_modal_runner(monkeypatch)
+    adapter_id = _stage_build(runner, tmp_path, valid_adapter_bundle)
+    adapters = tmp_path / "adapters"
+
+    # Crash-persisted partial copy from a previous hard-killed promotion:
+    # lives under .staging_*, never at the canonical name.
+    stale = adapters / ".staging_deadbeef"
+    (stale / "bundle").mkdir(parents=True)
+    (stale / "bundle" / "manifest.json").write_text(
+        "partial bytes", encoding="utf-8"
+    )
+    old = time.time() - runner._STAGING_REAP_AGE_S - 3600
+    os.utime(stale, (old, old))
+
+    # A young staging directory (a live peer mid-copy) must not be reclaimed.
+    young = adapters / ".staging_young"
+    young.mkdir()
+
+    result = runner.promote_adapter("build_a", adapter_id)
+
+    assert result == {
+        "canonical_subdir": f"canonical_{adapter_id}",
+        "cached": False,
+    }
+    dst = adapters / f"canonical_{adapter_id}"
+    copied = checker.validate_adapter(dst)
+    assert copied.passed
+    assert copied.recomputed["adapter_bundle_id"] == adapter_id
+    assert not stale.exists()
+    assert young.is_dir()
+    # No residue from the successful promotion itself.
+    assert [entry.name for entry in adapters.glob(".staging_*")] == [
+        ".staging_young"
     ]
+
+
+def test_promote_adapter_interrupted_copy_leaves_no_canonical_and_retry_succeeds(
+    tmp_path,
+    monkeypatch,
+    valid_adapter_bundle,
+):
+    """An interrupted copy never creates the canonical slot (partial bytes land
+    only under .staging_*), and the immediate retry promotes cleanly."""
+    runner = _load_modal_runner(monkeypatch)
+    adapter_id = _stage_build(runner, tmp_path, valid_adapter_bundle)
+    adapters = tmp_path / "adapters"
+    dst = adapters / f"canonical_{adapter_id}"
+
+    real_copytree = shutil.copytree
+    calls = {"count": 0}
+
+    def interrupted_copytree(source, destination, **kwargs):
+        calls["count"] += 1
+        real_copytree(source, destination, **kwargs)
+        if calls["count"] == 1:
+            raise RuntimeError("interrupted copy")
+
+    monkeypatch.setattr(shutil, "copytree", interrupted_copytree)
+
+    with pytest.raises(RuntimeError, match="interrupted copy"):
+        runner.promote_adapter("build_a", adapter_id)
+
+    # The live canonical name was never created; the controlled failure also
+    # cleaned up its own staging directory.
+    assert not dst.exists()
+    assert list(adapters.glob(".staging_*")) == []
+
+    retry = runner.promote_adapter("build_a", adapter_id)
+
+    assert retry == {
+        "canonical_subdir": f"canonical_{adapter_id}",
+        "cached": False,
+    }
+    assert checker.validate_adapter(dst).passed
+    assert list(adapters.glob(".staging_*")) == []

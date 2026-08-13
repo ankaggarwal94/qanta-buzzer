@@ -27,6 +27,12 @@ class CheckResult:
     recomputed: dict[str, Any] = field(default_factory=dict)
 
 
+def _err(errors: list[str], condition: bool, message: str) -> None:
+    """Append ``message`` when ``condition`` fails (shared across the checker family)."""
+    if not condition:
+        errors.append(message)
+
+
 def _canonical_path_issue(
     path: Path,
     *,
@@ -142,6 +148,23 @@ def _producer_hash_errors(
 
 
 def load_json(path: Path) -> Any:
+    """Read one UTF-8 JSON artifact, rejecting duplicate object keys.
+
+    Parameters
+    ----------
+    path : Path
+        JSON file to read.
+
+    Returns
+    -------
+    Any
+        The decoded JSON value.
+
+    Raises
+    ------
+    IdentityError
+        If the document repeats an object key anywhere in the tree.
+    """
     return loads_no_duplicate_keys(Path(path).read_text(encoding="utf-8"))
 
 
@@ -151,6 +174,20 @@ load_jsonl_gz = read_jsonl_gz
 
 
 def load_adapter_rows(bundle_dir: Path) -> list[dict]:
+    """Load the fit and eval adapter rows of one bundle, fit rows first.
+
+    Parameters
+    ----------
+    bundle_dir : Path
+        Adapter bundle directory containing ``fit_rows.jsonl.gz`` and
+        ``eval_rows.jsonl.gz``.
+
+    Returns
+    -------
+    list[dict]
+        Concatenated row objects, parsed under the strict row discipline
+        (duplicate keys and non-finite constants rejected).
+    """
     rows = load_jsonl_gz(bundle_dir / "fit_rows.jsonl.gz")
     rows += load_jsonl_gz(bundle_dir / "eval_rows.jsonl.gz")
     return rows

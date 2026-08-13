@@ -19,7 +19,15 @@ _COMPRESSLEVEL = 6
 
 
 def _canonical_row(row: dict) -> str:
-    return json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    # allow_nan=False: a non-finite value fails loudly at write time instead of
+    # emitting a row that ``read_jsonl_gz``'s strict parse rejects anyway.
+    return json.dumps(
+        row,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
 
 
 def dumps_rows(rows: Iterable[dict]) -> bytes:

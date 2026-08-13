@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from . import PROTOCOL_VERSION
-from .identity import compute_id, is_sha256_hex, loads_no_duplicate_keys, sha256_file
+from .checker_common import _err, load_json
+from .identity import compute_id, is_sha256_hex, sha256_file
 from .manifests import FVI_PRODUCER_FILES, environment_contract_identity
 from .profile import FVI_MAX_ITERATIONS, FVI_STRICT_REFERENCE, FVI_TOLERANCES
 from .receipt_evidence import (
@@ -24,12 +25,6 @@ _RECEIPT_BINDINGS = (
     "fvi_study_id",
     "environment_contract_id",
 )
-
-
-def _err(errors: list[str], condition: bool, message: str) -> None:
-    """Append ``message`` when ``condition`` fails (shared with checker.py)."""
-    if not condition:
-        errors.append(message)
 
 
 def _is_positive_int(value: Any) -> bool:
@@ -191,10 +186,6 @@ def _check_fvi_study_identity(
     )
 
 
-def _load_json(path: Path) -> Any:
-    return loads_no_duplicate_keys(path.read_text(encoding="utf-8"))
-
-
 def _package_entry_kind(path: Path) -> str:
     """Return the non-following filesystem kind for one package entry."""
     mode = path.lstat().st_mode
@@ -218,7 +209,7 @@ def inspect_packaged_fvi_manifest_kind(
     if path.is_symlink() or not path.is_file():
         raise ValueError("packaged fvi_study evidence is missing")
     try:
-        manifest = _load_json(path)
+        manifest = load_json(path)
     except (
         OSError,
         UnicodeError,
@@ -374,7 +365,7 @@ def _packaged_manifest(
         f"packaged {role} sha256 mismatch",
     )
     try:
-        manifest = _load_json(evidence_path)
+        manifest = load_json(evidence_path)
     except (
         OSError,
         UnicodeError,
@@ -474,7 +465,7 @@ def check_external_artifacts(
         errors.append("missing external_artifacts.json")
         return
     try:
-        payload = _load_json(path)
+        payload = load_json(path)
     except (
         OSError,
         UnicodeError,

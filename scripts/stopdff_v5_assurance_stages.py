@@ -22,6 +22,25 @@ from pathlib import Path
 
 
 def canonical_assurance_tag(tag: object) -> str:
+    """Validate one assurance campaign tag against the canary tag grammar.
+
+    Parameters
+    ----------
+    tag : object
+        Candidate tag. Only a lowercase hex/hyphen string of 8-64 characters
+        starting with a hex digit (and free of ``..``) is canonical, which
+        keeps the tag safe to embed in volume paths and app names.
+
+    Returns
+    -------
+    str
+        The tag unchanged, once proven canonical.
+
+    Raises
+    ------
+    ValueError
+        If ``tag`` is not a canonical assurance tag.
+    """
     if (
         not isinstance(tag, str)
         or not re.fullmatch(r"[0-9a-f][0-9a-f-]{7,63}", tag)
@@ -315,6 +334,24 @@ def assurance_phase_state(
 
 
 def assurance_expected_aggregate(context, sweep_module) -> dict:
+    """Derive the exact aggregate a zero-cell canary sweep must produce.
+
+    Parameters
+    ----------
+    context : SweepContext
+        The oracle canary context built by ``assurance_sweep_context``; its
+        run-spec identity and artifact digests are bound into the expectation.
+    sweep_module : module
+        The sweep implementation whose ``PROFILE_NAME`` the aggregate names
+        (passed in so this module stays import-light on the host).
+
+    Returns
+    -------
+    dict
+        The complete expected ``aggregate.json`` object: zero requested or
+        completed cells, no family verdict, and an INVALID release status
+        (a zero-cell canary can never attest bootstrap or family evidence).
+    """
     identity = context.run_spec["identity"]
     return {
         "profile_name": sweep_module.PROFILE_NAME,
@@ -348,6 +385,30 @@ def assurance_expected_aggregate(context, sweep_module) -> dict:
 
 
 def load_assurance_aggregate(context, sweep_module, *, path: Path) -> dict:
+    """Read the canary aggregate back and prove it byte-exact and expected.
+
+    Parameters
+    ----------
+    context : SweepContext
+        The oracle canary context the aggregate must have been derived from.
+    sweep_module : module
+        The sweep implementation used to derive the expected aggregate.
+    path : Path
+        Durable ``aggregate.json`` written by the finished canary attempt.
+
+    Returns
+    -------
+    dict
+        The parsed aggregate, only if the durable bytes are exactly the
+        canonical serialization of exactly
+        ``assurance_expected_aggregate(context, sweep_module)``.
+
+    Raises
+    ------
+    ValueError
+        If the file is missing, noncanonical (symlink, duplicate keys,
+        non-canonical serialization), or differs from the expectation.
+    """
     from scripts.stopdff_v5.identity import loads_no_duplicate_keys
 
     path = Path(path)
