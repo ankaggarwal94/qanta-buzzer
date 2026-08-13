@@ -5,9 +5,27 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 
 import modal
+
+_REPO = Path(__file__).resolve().parents[1]
+_REPO_IMPORT_ROOT = str(_REPO)
+# ``scripts`` is excluded from packaging (pyproject) and the documented form is
+# ``python scripts/modal_stopdff_v5_assurance.py <subcmd>`` (REPRODUCTION.md),
+# so the script's own dir — not the repo root — is on sys.path[0]. Bootstrap
+# the repo root before importing ``scripts.*`` below. Membership is not
+# precedence: make this entrypoint's checkout the authoritative import root so
+# a second checkout cannot shadow the evidentiary producer code loaded here.
+sys.path[:] = [entry for entry in sys.path if entry != _REPO_IMPORT_ROOT]
+sys.path.insert(0, _REPO_IMPORT_ROOT)
+
+from scripts.stopdff_v5.fileio import (  # noqa: E402
+    create_once_bytes,
+    dumps_json_bytes,
+)
+from scripts.stopdff_v5.identity import loads_no_duplicate_keys  # noqa: E402
 
 
 def _require_receipt_absent(path: Path) -> None:
@@ -18,29 +36,18 @@ def _require_receipt_absent(path: Path) -> None:
 
 
 def _write_once(path: Path, value: object) -> None:
-    # Deferred like every scripts.* import in this driver: the module must
-    # stay importable as a bare `python scripts/modal_stopdff_v5_assurance.py`
-    # entry point until the repository package is actually needed.
-    from scripts.stopdff_v5.fileio import create_once_bytes
-
-    data = (
-        json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    ).encode("utf-8")
+    data = dumps_json_bytes(value)
     create_once_bytes(Path(path), data, exists_label="assurance receipt")
 
 
 def _load_object(path: Path) -> dict:
-    from scripts.stopdff_v5.identity import loads_no_duplicate_keys
-
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"assurance receipt must be a regular file: {path}")
     data = path.read_bytes()
     try:
         value = loads_no_duplicate_keys(data.decode("utf-8"))
-        canonical = (
-            json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
-        ).encode("utf-8")
+        canonical = dumps_json_bytes(value)
     except (UnicodeDecodeError, ValueError, TypeError) as exc:
         raise ValueError(f"assurance receipt is invalid JSON: {path}") from exc
     if not isinstance(value, dict) or data != canonical:

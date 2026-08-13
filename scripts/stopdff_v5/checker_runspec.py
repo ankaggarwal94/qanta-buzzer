@@ -164,8 +164,7 @@ def _run_spec_errors(
         for key in sorted(required_ids):
             _err(
                 errors,
-                isinstance(ids.get(key), str)
-                and re.fullmatch(r"[0-9a-f]{64}", ids[key]) is not None,
+                is_sha256_hex(ids.get(key)),
                 f"run spec {key} must be a 64-hex ID",
             )
 

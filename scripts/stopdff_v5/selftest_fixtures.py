@@ -50,7 +50,6 @@ from .writers import (
 )
 
 CATEGORIES = ["history", "science", "arts"]
-PREFIX_FRACS = [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
 _SYNTH_FVI_STUDY: dict[str, Any] | None = None
 
 
@@ -123,6 +122,40 @@ def build_valid_package(
     fixed_fvi: bool = False,
     final_variant: bool = False,
 ) -> dict[str, Any]:
+    """Build a checker-valid StopDFF v5 run package from synthetic fixtures.
+
+    Mints a self-contained adapter bundle, input manifests, sweep evidence, and
+    a packaged run tree that ``checker.validate_run`` accepts — used both as a
+    positive fixture and as the pristine base the negative mutation gates tamper.
+
+    Parameters
+    ----------
+    base_dir : Path
+        Directory under which the adapter bundle and packaged run tree are
+        created.
+    fixed_fvi : bool, optional
+        When True, build a smoke package whose FVI study carries fixed
+        parameters (so the checker skips selector recomputation). Mutually
+        exclusive with ``final_variant``.
+    final_variant : bool, optional
+        When True, build a final-profile package (a genuine FVI study plus the
+        three prerequisite-receipt gates) instead of the default smoke package.
+
+    Returns
+    -------
+    dict[str, Any]
+        Identity/paths dict with keys ``run_root`` (Path to the packaged run
+        root), ``adapter_bundle`` (Path to the validated adapter bundle),
+        ``aggregate`` (the aggregate manifest), ``run_spec_id`` (the 64-hex
+        run-spec manifest id), and ``prerequisite_receipt_ids`` (gate -> receipt
+        id, populated for the final variant).
+
+    Raises
+    ------
+    ValueError
+        If both ``final_variant`` and ``fixed_fvi`` are set — a final-profile
+        package requires a genuine FVI study.
+    """
     global _SYNTH_FVI_STUDY
     if final_variant and fixed_fvi:
         raise ValueError("a final-profile package requires a genuine FVI study")

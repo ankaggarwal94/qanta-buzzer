@@ -36,7 +36,6 @@ from .writers import write_sha256sums
 # gates below and for every external consumer.
 from .selftest_fixtures import (  # noqa: F401  (fixture re-exports)
     CATEGORIES,
-    PREFIX_FRACS,
     _hex,
     _mint_final_prerequisite_receipts,
     _synth_rows,

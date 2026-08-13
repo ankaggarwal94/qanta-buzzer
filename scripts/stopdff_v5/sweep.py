@@ -73,8 +73,7 @@ def write_bound_json(path: Path, obj: Any, *, resume: bool) -> None:
     Notes
     -----
     Public API: both runner scripts publish their bound evidence through this
-    helper, historically under the private name ``_write_bound_json`` (kept
-    below as a deprecated alias).
+    helper (historically under the private name ``_write_bound_json``).
     """
     data = dumps_json_bytes(obj)
     if path.exists():
@@ -84,11 +83,6 @@ def write_bound_json(path: Path, obj: Any, *, resume: bool) -> None:
             raise ValueError(f"resume evidence mismatch at {path}")
         return
     atomic_write_bytes(path, data)
-
-
-# Deprecated alias: pre-rename callers imported the behavior under a private
-# name; drop after one release once no caller references it.
-_write_bound_json = write_bound_json
 
 
 @dataclass
@@ -725,9 +719,7 @@ def _resume_preflight(
     }
     for key in sorted(actual_keys):
         path = cells_dir / f"{key}.json"
-        data = (
-            json.dumps(expected_records[key], indent=2, sort_keys=True) + "\n"
-        ).encode("utf-8")
+        data = dumps_json_bytes(expected_records[key])
         if path.is_symlink() or not path.is_file() or path.read_bytes() != data:
             raise ValueError(f"resume evidence mismatch at {path}")
 

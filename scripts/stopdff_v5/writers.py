@@ -32,7 +32,7 @@ from .receipt_evidence import (
 from .rewards import REWARD_SCHEDULE_STRINGS
 from .verdicts import MATERIAL_THRESHOLD
 
-_RECEIPT_GATES = {"smoke", "mutation", "determinism"}
+RECEIPT_GATES = {"smoke", "mutation", "determinism"}
 _FULL_RECEIPT_BINDINGS = FULL_RECEIPT_BINDINGS
 _DETERMINISM_BINDINGS = DETERMINISM_BINDINGS
 
@@ -44,7 +44,7 @@ def build_prerequisite_receipt(
     evidence: dict[str, Any],
 ) -> dict[str, Any]:
     """Build a content-addressed successful prerequisite receipt."""
-    if gate not in _RECEIPT_GATES:
+    if gate not in RECEIPT_GATES:
         raise ValueError(f"unknown prerequisite gate {gate!r}")
     required = (
         _DETERMINISM_BINDINGS
@@ -426,7 +426,7 @@ def _packageable_path_violation(rel: str) -> str | None:
     return f"unaudited file cannot be packaged: {rel!r}"
 
 
-_MANIFEST_EVIDENCE_PATHS = {
+MANIFEST_EVIDENCE_PATHS = {
     "source_manifest": "evidence/source_manifest.json",
     "raw_input_manifest": "evidence/raw_input_manifest.json",
     "model_snapshot_manifest": "evidence/model_snapshot_manifest.json",
@@ -445,7 +445,7 @@ _MANIFEST_KINDS = {
 # normalized, self-contained package layout.  Keeping the manifest paths
 # stable preserves the external-artifact ledger contract; these subtrees bind
 # every byte named by those manifests.
-_BOUND_CONTENT_LAYOUTS = {
+BOUND_CONTENT_LAYOUTS = {
     "source_manifest": {
         "kind": "source_snapshot",
         "file_key": "files",
@@ -560,7 +560,7 @@ def _prepare_package_evidence(
         byte_size = artifact.get("byte_size")
         retrieval = artifact.get("retrieval_path")
         if (
-            role not in _MANIFEST_EVIDENCE_PATHS
+            role not in MANIFEST_EVIDENCE_PATHS
             or role in normalized
             or not isinstance(content_id, str)
             or len(content_id) != 64
@@ -576,7 +576,7 @@ def _prepare_package_evidence(
         ):
             raise ValueError("invalid external-artifact ledger entry")
 
-        packaged_path = _MANIFEST_EVIDENCE_PATHS[role]
+        packaged_path = MANIFEST_EVIDENCE_PATHS[role]
         if role in {
             "source_manifest",
             "raw_input_manifest",
@@ -590,7 +590,7 @@ def _prepare_package_evidence(
             if data is None:
                 raise ValueError(f"missing packaged evidence for {role}")
         manifest = _manifest_from_bytes(data, role=role)
-        content_layout = _BOUND_CONTENT_LAYOUTS.get(role)
+        content_layout = BOUND_CONTENT_LAYOUTS.get(role)
         if content_layout is not None:
             from .content_manifest import validate_bound_content_manifest
 
@@ -657,7 +657,7 @@ def _prepare_package_evidence(
             "retrieval_path": packaged_path,
         }
 
-    if set(normalized) != set(_MANIFEST_EVIDENCE_PATHS):
+    if set(normalized) != set(MANIFEST_EVIDENCE_PATHS):
         raise ValueError("external-artifact ledger roles are incomplete")
 
     run_spec_manifest = loads_no_duplicate_keys(
@@ -682,11 +682,11 @@ def _prepare_package_evidence(
     if not isinstance(receipt_ids, dict):
         raise ValueError("package run spec prerequisite_receipts must be an object")
     if profile_variant == "final":
-        if set(receipt_ids) != _RECEIPT_GATES:
+        if set(receipt_ids) != RECEIPT_GATES:
             raise ValueError("final package requires all prerequisite receipt IDs")
         receipts: dict[str, dict[str, Any]] = {}
         receipt_evidence_bytes: dict[str, bytes] = {}
-        for gate in sorted(_RECEIPT_GATES):
+        for gate in sorted(RECEIPT_GATES):
             receipt_id = receipt_ids[gate]
             receipt_path = (
                 root.parents[1]
@@ -734,7 +734,7 @@ def _prepare_package_evidence(
             receipt_ids=receipt_ids,
             receipts=receipts,
         )
-        for gate in sorted(_RECEIPT_GATES):
+        for gate in sorted(RECEIPT_GATES):
             identity = receipts[gate]["identity"]
             verify_prerequisite_evidence_bytes(
                 gate=gate,

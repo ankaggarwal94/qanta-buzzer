@@ -17,11 +17,11 @@ from .attempt_history import load_attempt_history
 from .checker_common import _INTERRUPTED_REASON, _err, _is_strict_int, load_json
 from .checker_png import _check_png
 from .writers import (
-    _BOUND_CONTENT_LAYOUTS,
-    _MANIFEST_EVIDENCE_PATHS,
-    _RECEIPT_GATES,
+    BOUND_CONTENT_LAYOUTS,
+    MANIFEST_EVIDENCE_PATHS,
     PACKAGE_LEVEL_FILES,
     PACKAGE_MANAGED_ROOTS,
+    RECEIPT_GATES,
     RUN_JSON_ONLY_DIRS,
     RUN_LEVEL_FILES,
 )
@@ -305,15 +305,15 @@ def _check_evidence_namespace(run_root: Path, errors: list[str]) -> None:
 
     audited_files = {
         Path(packaged_path).name
-        for packaged_path in _MANIFEST_EVIDENCE_PATHS.values()
+        for packaged_path in MANIFEST_EVIDENCE_PATHS.values()
     }
     bound_roots: dict[str, str] = {}
-    for layout in _BOUND_CONTENT_LAYOUTS.values():
+    for layout in BOUND_CONTENT_LAYOUTS.values():
         root_name, subdir_name = Path(layout["packaged_subdir"]).parts
         bound_roots[root_name] = subdir_name
     receipt_files = {
         f"{gate}{suffix}"
-        for gate in _RECEIPT_GATES
+        for gate in RECEIPT_GATES
         for suffix in (".json", ".evidence.json")
     }
     receipts_expected = _packaged_profile_variant(run_root) == "final"

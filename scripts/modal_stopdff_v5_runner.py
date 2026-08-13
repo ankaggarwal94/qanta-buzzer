@@ -1083,6 +1083,7 @@ def fvi_study(adapter_id: str) -> dict:
     from scripts.stopdff_v5 import fvi_study as fs
     from scripts.stopdff_v5 import checker
     from scripts.stopdff_v5.checker import load_adapter_rows
+    from scripts.stopdff_v5.fileio import dumps_json_bytes
     from scripts.stopdff_v5.identity import build_manifest, sha256_file
     from scripts.stopdff_v5.manifests import (
         FVI_PRODUCER_FILES,
@@ -1128,10 +1129,7 @@ def fvi_study(adapter_id: str) -> dict:
     _reclaim_staging_dirs(out.parent)
     staging = _new_staging_dir(out.parent)
     try:
-        (staging / "fvi_study.json").write_text(
-            json.dumps(man, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        (staging / "fvi_study.json").write_bytes(dumps_json_bytes(man))
         (staging / "fvi_study_execution.json").write_text(
             json.dumps(study, indent=2, sort_keys=True, default=str) + "\n",
             encoding="utf-8",
@@ -2103,6 +2101,8 @@ def stage_inputs_main(
     receipt_path: str,
 ):
     """Create-once stage and independently read back both canonical inputs."""
+    from scripts.stopdff_v5.fileio import dumps_json_bytes
+
     receipt = Path(receipt_path)
     if receipt.exists() or receipt.is_symlink():
         raise FileExistsError(f"staging receipt already exists: {receipt}")
@@ -2120,9 +2120,7 @@ def stage_inputs_main(
         "source": source_result,
         "raw": raw_result,
     }
-    data = (
-        json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    ).encode("utf-8")
+    data = dumps_json_bytes(result)
     _atomic_create_control_bytes(receipt, data)
     print(data.decode("utf-8"), end="")
 

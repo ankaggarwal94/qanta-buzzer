@@ -266,7 +266,10 @@ def _acquire_lifecycle_lock(out: Path) -> None:
     already create-once, so this guards only the local audit journal.
     """
     lock_path = Path(out) / f"{_LOCAL_LIFECYCLE_FILE}.lock"
-    key = str(lock_path)
+    # Key the re-entrancy map on the resolved path (os.path.realpath) so distinct
+    # spellings of one lock file (symlinks, /var vs /private/var) share a slot and
+    # cannot double-acquire — mirrors _CONTROL_LOCK_FDS in stopdff_v5_control_plane.
+    key = os.path.realpath(lock_path)
     if key in _LIFECYCLE_LOCK_FDS:
         return
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)

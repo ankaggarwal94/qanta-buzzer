@@ -27,11 +27,12 @@ from pathlib import Path, PurePosixPath
 from scripts.stopdff_v5.fileio import create_once_bytes, publish_bytes
 from scripts.stopdff_v5.identity import is_sha256_hex, loads_no_duplicate_keys
 
-# Advisory control-plane locks this process holds, keyed by lock-file path.
-# Held for the process lifetime (the OS releases them at exit); the map lets
-# one process re-enter the same state path (e.g. sequential fresh-then-resume
-# driver invocations in tests) without self-deadlocking, since flock treats
-# each open() independently.
+# Advisory control-plane locks this process holds, keyed by the resolved
+# lock-file path (os.path.realpath) so distinct spellings of one file share a
+# single fd. Held for the process lifetime (the OS releases them at exit); the
+# map lets one process re-enter the same state path (e.g. sequential
+# fresh-then-resume driver invocations in tests) without self-deadlocking,
+# since flock treats each open() independently.
 _CONTROL_LOCK_FDS: dict[str, int] = {}
 
 
@@ -49,7 +50,10 @@ def _acquire_control_plane_lock(state_path: Path) -> None:
     """
     state_path = Path(state_path)
     lock_path = state_path.with_name(state_path.name + ".lock")
-    key = str(lock_path)
+    # Resolve symlinks and redundant components so two textual spellings of the
+    # same lock file map to one entry; a second in-process acquire then reuses
+    # the held fd instead of opening a descriptor that self-conflicts on flock.
+    key = os.path.realpath(lock_path)
     if key in _CONTROL_LOCK_FDS:
         return
     lock_path.parent.mkdir(parents=True, exist_ok=True)

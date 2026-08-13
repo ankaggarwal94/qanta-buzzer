@@ -10,12 +10,26 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
-from scripts.stopdff_v5.identity import (
+_REPO = Path(__file__).resolve().parents[1]
+_REPO_IMPORT_ROOT = str(_REPO)
+# ``scripts`` is excluded from packaging (pyproject) and the documented form is
+# ``python scripts/verify_stopdff_v5_modal_assurance.py`` (REPRODUCTION.md), so
+# the script's own dir — not the repo root — is on sys.path[0]. Bootstrap the
+# repo root before importing ``scripts.*`` below. Membership is not precedence:
+# make this entrypoint's checkout the authoritative import root so a second
+# checkout cannot shadow the evidentiary producer code loaded here.
+sys.path[:] = [entry for entry in sys.path if entry != _REPO_IMPORT_ROOT]
+sys.path.insert(0, _REPO_IMPORT_ROOT)
+
+from scripts.stopdff_v5.fileio import dumps_json_bytes  # noqa: E402
+from scripts.stopdff_v5.identity import (  # noqa: E402
     IdentityError,
     is_sha256_hex,
     loads_strict,
 )
-from scripts.stopdff_v5_assurance_stages import canonical_assurance_tag
+from scripts.stopdff_v5_assurance_stages import (  # noqa: E402
+    canonical_assurance_tag,
+)
 
 
 _RECEIPT_NAMES = (
@@ -119,9 +133,7 @@ def _sha256(value: Any, where: str) -> str:
 
 def _pretty_json_bytes(value: Any) -> bytes:
     try:
-        return (
-            json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
-        ).encode("utf-8")
+        return dumps_json_bytes(value)
     except (RecursionError, OverflowError) as exc:
         raise AssuranceVerificationError(
             "receipt JSON exceeds the supported structural complexity"

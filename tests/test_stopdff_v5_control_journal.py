@@ -1129,7 +1129,7 @@ def test_control_plane_lock_serializes_drivers_per_state_path(tmp_path):
     interleaving last-writer-wins journal rewrites."""
     state_path = tmp_path / "control.json"
     lock_path = tmp_path / "control.json.lock"
-    key = str(lock_path)
+    key = os.path.realpath(lock_path)
     plan = _plan()
 
     # The lock is acquired at driver entry, before the resume state read.
@@ -1168,3 +1168,32 @@ def test_control_plane_lock_serializes_drivers_per_state_path(tmp_path):
         assert key not in control_plane._CONTROL_LOCK_FDS
     finally:
         os.close(held_fd)
+
+
+def test_control_plane_lock_reentrant_across_symlinked_spellings(tmp_path):
+    """Re-entrancy keys on file identity, not text: a second acquire reached
+    through a symlinked spelling of the same lock file reuses the held fd
+    instead of opening a new descriptor that self-conflicts on LOCK_EX and
+    spuriously fails fast (L-V3-1 reliability, PR #30 round 3)."""
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir, target_is_directory=True)
+
+    real_state = real_dir / "control.json"
+    link_state = link_dir / "control.json"
+    key = os.path.realpath(real_dir / "control.json.lock")
+    try:
+        control_plane._acquire_control_plane_lock(real_state)
+        assert key in control_plane._CONTROL_LOCK_FDS
+        held_fd = control_plane._CONTROL_LOCK_FDS[key]
+
+        # Different text, same inode (link_dir -> real_dir): the acquire must be
+        # a no-op that reuses the held fd. Keyed on the raw textual path this
+        # raised a spurious "another control-plane driver holds ..." fail-fast.
+        control_plane._acquire_control_plane_lock(link_state)
+        assert control_plane._CONTROL_LOCK_FDS[key] == held_fd
+    finally:
+        fd = control_plane._CONTROL_LOCK_FDS.pop(key, None)
+        if fd is not None:
+            os.close(fd)
