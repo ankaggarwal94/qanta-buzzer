@@ -20,8 +20,16 @@ import tempfile
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
-if str(_REPO) not in sys.path:
-    sys.path.insert(0, str(_REPO))
+_REPO_IMPORT_ROOT = str(_REPO)
+# ``scripts`` is excluded from packaging (pyproject) and the documented form is
+# ``python scripts/validate_stopdff_bucketed_sweep.py <subcmd>`` (REPRODUCTION.md),
+# so the script's own dir — not the repo root — is on sys.path[0]. Bootstrap the
+# repo root before importing ``scripts.*`` below. Membership is not precedence:
+# make this acceptance validator's checkout the authoritative import root so a
+# second checkout already on PYTHONPATH cannot shadow the evidentiary producer
+# code it recomputes against.
+sys.path[:] = [entry for entry in sys.path if entry != _REPO_IMPORT_ROOT]
+sys.path.insert(0, _REPO_IMPORT_ROOT)
 
 from scripts.stopdff_v5 import checker, selftest  # noqa: E402
 
