@@ -248,21 +248,26 @@ def test_publish_helpers_fail_closed_and_reclaim_only_staging(
     occupied = tmp_path / "occupied"
     occupied.mkdir()
     (occupied / "old").write_text("old", encoding="utf-8")
-    with pytest.raises(FileExistsError, match="appeared concurrently"):
+    with pytest.raises(FileExistsError, match="already exists"):
         runner._publish_staged_dir(staging, occupied)
     assert (occupied / "old").read_text(encoding="utf-8") == "old"
 
-    # Symlinked destination fails closed before any rename.
+    # Symlinked destination fails closed before any rename (the mkdir-claim
+    # never follows the link into its target).
     link_dest = tmp_path / "linked"
     link_dest.symlink_to(occupied, target_is_directory=True)
-    with pytest.raises(FileExistsError, match="symlink"):
+    with pytest.raises(FileExistsError, match="already exists"):
         runner._publish_staged_dir(staging, link_dest)
 
-    # An empty pre-existing destination directory is atomically replaced.
+    # A pre-existing EMPTY destination also fails closed (create-once): a bare
+    # os.rename would silently replace it, so this is exactly the mutation the
+    # os.mkdir claim closes.
     empty = tmp_path / "empty"
     empty.mkdir()
-    runner._publish_staged_dir(staging, empty)
-    assert (empty / "new").read_text(encoding="utf-8") == "new"
+    with pytest.raises(FileExistsError, match="already exists"):
+        runner._publish_staged_dir(staging, empty)
+    assert list(empty.iterdir()) == []  # never populated
+    assert (staging / "new").read_text(encoding="utf-8") == "new"  # staging intact
 
     # Reclaim removes only stale .staging_* directories: never live entries,
     # never files, and never a young staging dir that could still belong to a
@@ -278,6 +283,26 @@ def test_publish_helpers_fail_closed_and_reclaim_only_staging(
     assert (parent / ".staging_young").is_dir()
     assert (parent / "live_slot").is_dir()
     assert (parent / ".staging_file").is_file()
+
+
+def test_publish_staged_dir_fails_closed_on_pre_existing_empty_dest(
+    tmp_path, monkeypatch
+):
+    """Create-once publish: an empty destination a racing peer created fails
+    closed instead of being silently replaced -- the pre-fix os.rename hole
+    (model/FVI/bootstrap/promote all publish through this helper). Asserts the
+    raise, so it is red against the pre-fix os.rename code.
+    """
+    runner = _load_modal_runner(monkeypatch)
+    staging = tmp_path / ".staging_x"
+    staging.mkdir()
+    (staging / "payload").write_text("staged", encoding="utf-8")
+    empty_dest = tmp_path / "slot"
+    empty_dest.mkdir()  # a racing peer's empty slot
+    with pytest.raises(FileExistsError, match="already exists"):
+        runner._publish_staged_dir(staging, empty_dest)
+    assert list(empty_dest.iterdir()) == []  # never populated
+    assert (staging / "payload").read_text(encoding="utf-8") == "staged"
 
 
 def test_bootstrap_plan_publishes_by_rename_and_reclaims_staging(

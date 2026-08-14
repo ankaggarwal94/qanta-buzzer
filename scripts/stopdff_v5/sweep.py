@@ -25,7 +25,7 @@ from .bootstrap import (
     plan_identity,
 )
 from .cellcompute import CellInputs, compute_cell, prepare_cell_inputs
-from .fileio import dumps_json_bytes, publish_bytes
+from .fileio import dumps_json_bytes, publish_bytes, publish_dir_create_once
 from .attempt_history import (
     ATTEMPT_FIELDS,
     canonical_attempt_line,
@@ -585,7 +585,13 @@ def _publish_fresh_initialization(
     *,
     started_attempt: dict[str, Any],
 ) -> None:
-    """Atomically expose a fresh run only after identity and attempt are durable."""
+    """Atomically expose a fresh run only after identity and attempt are durable.
+
+    The run root is published create-once: it is claimed with ``os.mkdir`` and
+    then filled by rename, so a racing peer's empty ``runs/<id>`` directory
+    fails closed instead of being silently replaced by a bare rename (the
+    create-once run-root contract).
+    """
     output_dir = Path(ctx.output_dir)
     if output_dir.exists() or output_dir.is_symlink():
         raise FileExistsError(f"fresh run destination already exists: {output_dir}")
@@ -605,16 +611,9 @@ def _publish_fresh_initialization(
             os.fsync(staged_fd)
         finally:
             os.close(staged_fd)
-        if output_dir.exists() or output_dir.is_symlink():
-            raise FileExistsError(
-                f"fresh run destination appeared concurrently: {output_dir}"
-            )
-        os.rename(staged, output_dir)
-        parent_fd = os.open(output_dir.parent, os.O_RDONLY)
-        try:
-            os.fsync(parent_fd)
-        finally:
-            os.close(parent_fd)
+        publish_dir_create_once(
+            staged, output_dir, exists_label="fresh run destination"
+        )
     finally:
         if staged.exists():
             shutil.rmtree(staged)

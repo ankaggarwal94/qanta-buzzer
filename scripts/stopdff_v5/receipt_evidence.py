@@ -6,7 +6,9 @@ import json
 from pathlib import PurePosixPath
 from typing import Any
 
+from .checker_runspec import _run_spec_errors
 from .identity import compute_id, is_sha256_hex, loads_no_duplicate_keys
+from .profile import cell_key_str, smoke_cells
 
 FULL_RECEIPT_BINDINGS = {
     "source_manifest_id",
@@ -279,22 +281,31 @@ def _validate_smoke(evidence: dict[str, Any], bindings: dict[str, str]) -> None:
     if (
         not isinstance(spec_identity, dict)
         or set(run_spec) != {"id", "identity"}
-        or compute_id(spec_identity) != run_spec.get("id")
-        or spec_identity.get("kind") != "run_spec"
         or spec_identity.get("profile_variant") != "smoke"
     ):
         raise ValueError("smoke evidence run spec is invalid")
+    # Run the embedded smoke run spec through the SAME canonical run-spec/profile
+    # validator the acceptance pipeline applies to every run spec (``checker``
+    # calls ``_run_spec_errors`` identically). This pins the full smoke contract
+    # -- id/identity consistency, the constant profile blocks, an empty
+    # prerequisite_receipts root, and the canonical 100-replicate smoke bootstrap
+    # -- so a degenerate one-replicate run spec can no longer satisfy a
+    # content-addressed final package's bounded-smoke prerequisite.
+    spec_errors = _run_spec_errors(
+        spec_identity,
+        run_spec.get("id"),
+        require_final_profile=False,
+    )
+    if spec_errors:
+        raise ValueError(
+            "smoke evidence run spec violates the canonical contract: "
+            + "; ".join(spec_errors)
+        )
     spec_bindings = spec_identity.get("identity")
     if not isinstance(spec_bindings, dict) or any(
         spec_bindings.get(key) != value for key, value in bindings.items()
     ):
         raise ValueError("smoke evidence run spec bindings mismatch")
-    roots = spec_identity.get("evidence_roots")
-    if (
-        not isinstance(roots, dict)
-        or roots.get("prerequisite_receipts") != {}
-    ):
-        raise ValueError("smoke evidence run spec claims prerequisite receipts")
 
     aggregate = evidence.get("aggregate")
     if not isinstance(aggregate, dict):
@@ -316,6 +327,18 @@ def _validate_smoke(evidence: dict[str, Any], bindings: dict[str, str]) -> None:
         or aggregate.get("skipped") != 0
     ):
         raise ValueError("smoke evidence does not prove a complete VALID run")
+    # Require the two registered smoke cells: the aggregate must enumerate
+    # exactly the canonical smoke cell set (``smoke_cells()`` -- explicitly
+    # listed, NOT a truncation of the 96-cell grid). A one-cell aggregate with
+    # otherwise-matching IDs therefore no longer passes the smoke gate.
+    expected_smoke_cell_keys = sorted(cell_key_str(cell) for cell in smoke_cells())
+    if (
+        aggregate.get("expected_cell_keys") != expected_smoke_cell_keys
+        or requested != len(expected_smoke_cell_keys)
+    ):
+        raise ValueError(
+            "smoke evidence aggregate does not prove the canonical smoke cell set"
+        )
 
 
 def _validate_source_execution(

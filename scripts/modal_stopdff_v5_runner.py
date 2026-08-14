@@ -519,23 +519,22 @@ def _new_staging_dir(parent: Path) -> Path:
 
 
 def _publish_staged_dir(staging: Path, dest: Path) -> None:
-    """Atomically publish a fully-materialized staging directory.
+    """Atomically publish a fully-materialized staging directory, create-once.
 
-    ``os.rename`` either installs the complete directory under its live name
-    or fails; the live slot never holds partial content. A destination that
-    materialized concurrently (or was left non-empty by damage predating the
-    staging discipline) fails closed instead of being overwritten.
+    Publication claims ``dest`` with ``os.mkdir`` before filling it, so ANY
+    pre-existing destination fails closed with ``FileExistsError`` instead of
+    being overwritten: an empty directory a peer created, a non-empty directory
+    left by damage predating the staging discipline, or a symlink. The live
+    slot is therefore either absent or the complete published directory, never
+    a silently-replaced one. (A bare ``os.rename`` onto an existing empty
+    directory replaces it; the ``os.mkdir`` claim closes that hole — see
+    ``fileio.publish_dir_create_once``.)
     """
-    staging = Path(staging)
-    dest = Path(dest)
-    if dest.is_symlink():
-        raise FileExistsError(f"publish destination is a symlink: {dest}")
-    try:
-        os.rename(staging, dest)
-    except OSError as exc:
-        raise FileExistsError(
-            f"publish destination appeared concurrently or is not replaceable: {dest}"
-        ) from exc
+    from scripts.stopdff_v5.fileio import publish_dir_create_once
+
+    publish_dir_create_once(
+        Path(staging), Path(dest), exists_label="publish destination"
+    )
 
 
 @app.function(volumes={MNT: vol}, timeout=1800, max_containers=1)

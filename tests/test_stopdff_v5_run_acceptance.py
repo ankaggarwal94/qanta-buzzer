@@ -4,6 +4,7 @@ from __future__ import annotations
 import gzip
 import json
 import math
+import os
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -831,6 +832,77 @@ def test_assurance_phase_guards_prevent_duplicate_or_out_of_order_mutation(
     monkeypatch.setattr(runner, "_assurance_observation", lambda _tag: classified)
     with pytest.raises(ValueError, match="verify phase requires"):
         runner.recovery_assurance(tag, "verify")
+
+
+# --- fresh run-root publication is create-once (PR #30) ----------------------
+#
+# ``_publish_fresh_initialization`` must claim ``runs/<id>`` before filling it,
+# so a racing peer's empty run root fails closed instead of being silently
+# replaced by a bare rename. Identity/attempt materialization is stubbed here
+# to isolate the publish mechanics the fix changed.
+
+
+def test_publish_fresh_initialization_publishes_into_absent_run_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path across the create-once refactor: the staged run root is
+    installed under its live name and the private staging holder is gone."""
+    monkeypatch.setattr(
+        sweep, "_run_identity_files", lambda ctx: (("run_spec.json", {"id": "x"}),)
+    )
+    monkeypatch.setattr(
+        sweep,
+        "_append_attempt",
+        lambda path, attempt: Path(path).write_text("{}\n", encoding="utf-8"),
+    )
+    output_dir = tmp_path / "runs" / ("r" * 8)
+    ctx = SimpleNamespace(output_dir=output_dir)
+
+    sweep._publish_fresh_initialization(ctx, started_attempt={"attempt": 1})
+
+    assert output_dir.is_dir()
+    assert (output_dir / "run_spec.json").is_file()
+    assert (output_dir / "attempts.jsonl").is_file()
+    assert not list((tmp_path / "runs").glob(".stopdff_run_initializing_*"))
+
+
+def test_publish_fresh_initialization_fails_closed_on_racing_empty_run_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A concurrent peer that claims an empty ``runs/<id>`` directory in the
+    publish window must not be silently clobbered.
+
+    Pre-fix, ``os.rename`` onto that empty peer directory replaces it (the
+    create-once run-root violation). Post-fix the run root is claimed with
+    ``os.mkdir`` first, so the concurrent claim collides and publication fails
+    closed. Asserting the raise makes this red against the pre-fix os.rename
+    code (mutation-discrimination).
+    """
+    monkeypatch.setattr(
+        sweep, "_run_identity_files", lambda ctx: (("run_spec.json", {"id": "x"}),)
+    )
+    monkeypatch.setattr(
+        sweep,
+        "_append_attempt",
+        lambda path, attempt: Path(path).write_text("{}\n", encoding="utf-8"),
+    )
+    output_dir = tmp_path / "runs" / ("r" * 8)
+    ctx = SimpleNamespace(output_dir=output_dir)
+
+    real_rename = os.rename
+
+    def racing_rename(src, dst):
+        # A concurrent sweep peer materializes the empty run root in the
+        # check-to-publish window, then the real move proceeds.
+        os.mkdir(dst)
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", racing_rename)
+
+    with pytest.raises(FileExistsError):
+        sweep._publish_fresh_initialization(ctx, started_attempt={"attempt": 1})
 
 
 def test_source_executable_mode_is_bound_and_rechecked_at_runtime(

@@ -26,7 +26,13 @@ from scripts.stopdff_v5.manifests import (  # noqa: E402
     RAW_INPUT_ROLES,
     model_snapshot_identity,
     raw_input_identity,
+    run_spec_identity,
     source_manifest_identity,
+)
+from scripts.stopdff_v5.profile import (  # noqa: E402
+    SMOKE_REPLICATES,
+    cell_key_str,
+    smoke_cells,
 )
 from scripts.stopdff_v5.receipt_evidence import (  # noqa: E402
     DETERMINISM_FILES,
@@ -123,15 +129,40 @@ def _build_execution(
     }
 
 
+def _canonical_smoke_run_spec(
+    bindings: dict[str, str],
+    *,
+    replicate_count: int = SMOKE_REPLICATES,
+) -> dict:
+    """Build a genuine canonical smoke run-spec manifest via the shared builder.
+
+    This is the same ``run_spec_identity`` the pipeline mints and the checker
+    validates, so a receipt embedding it satisfies the reused canonical
+    run-spec/profile checks.
+    """
+    spec_identity = run_spec_identity(
+        source_manifest_id=bindings["source_manifest_id"],
+        raw_input_bundle_id=bindings["raw_input_bundle_id"],
+        model_snapshot_id=bindings["model_snapshot_id"],
+        adapter_bundle_id=bindings["adapter_bundle_id"],
+        fvi_study_id=bindings["fvi_study_id"],
+        bootstrap_plan_id="7" * 64,
+        environment_contract_id=bindings["environment_contract_id"],
+        resource_summary_id="8" * 64,
+        fvi_selected={"tolerance": "1e-10", "max_iterations": 200},
+        replicate_count=replicate_count,
+        profile_variant="smoke",
+        myopic_artifact_sha256="9" * 64,
+        producer_hashes={"checker.py": "a" * 64, "sweep.py": "b" * 64},
+        prerequisite_receipts={},
+    )
+    return build_manifest(spec_identity)
+
+
 def _smoke_evidence() -> tuple[dict, dict[str, str]]:
     bindings = _bindings()
-    spec_identity = {
-        "kind": "run_spec",
-        "profile_variant": "smoke",
-        "identity": bindings,
-        "evidence_roots": {"prerequisite_receipts": {}},
-    }
-    run_spec = build_manifest(spec_identity)
+    run_spec = _canonical_smoke_run_spec(bindings)
+    expected_cell_keys = sorted(cell_key_str(cell) for cell in smoke_cells())
     evidence = build_prerequisite_evidence(
         gate="smoke",
         bindings=bindings,
@@ -142,12 +173,13 @@ def _smoke_evidence() -> tuple[dict, dict[str, str]]:
                 "run_spec_id": run_spec["id"],
                 "adapter_bundle_id": bindings["adapter_bundle_id"],
                 "fvi_study_id": bindings["fvi_study_id"],
-                "requested": 2,
-                "completed": 2,
+                "requested": len(expected_cell_keys),
+                "completed": len(expected_cell_keys),
                 "failed": 0,
                 "skipped": 0,
                 "release_status": "VALID",
                 "release_reasons": [],
+                "expected_cell_keys": expected_cell_keys,
             },
         },
     )
@@ -225,6 +257,56 @@ def test_receipt_evidence_round_trips_exact_packaged_bytes(gate):
         receipt_evidence=receipt["identity"]["evidence"],
         data=data,
     ) == evidence
+
+
+def test_genuine_canonical_smoke_receipt_is_accepted():
+    """A smoke receipt proving the two registered smoke cells and the canonical
+    100-replicate bootstrap must validate cleanly."""
+    evidence, bindings = _smoke_evidence()
+    validate_prerequisite_evidence(
+        gate="smoke",
+        bindings=bindings,
+        evidence=evidence,
+    )
+
+
+def test_degenerate_one_cell_smoke_receipt_is_rejected():
+    """Regression for the smoke prerequisite gate: a one-cell/one-replicate
+    smoke aggregate with matching IDs, VALID status, and
+    ``requested == completed == 1`` was previously accepted. It must now be
+    rejected -- it does not prove the documented smoke gate (two registered
+    smoke cells)."""
+    evidence, bindings = _smoke_evidence()
+    tampered = copy.deepcopy(evidence)
+    one_cell = tampered["aggregate"]["expected_cell_keys"][:1]
+    tampered["aggregate"].update(
+        {"requested": 1, "completed": 1, "expected_cell_keys": one_cell}
+    )
+    with pytest.raises(ValueError, match="canonical smoke cell set"):
+        validate_prerequisite_evidence(
+            gate="smoke",
+            bindings=bindings,
+            evidence=tampered,
+        )
+
+
+def test_smoke_receipt_requires_the_canonical_100_replicate_bootstrap():
+    """A smoke run spec whose bootstrap claims a non-canonical replicate count
+    (a degenerate one-replicate smoke) must be rejected by the reused canonical
+    run-spec validator -- even with content-addressed IDs recomputed to match,
+    so the rejection is on the smoke shape, not an incidental ID mismatch."""
+    evidence, bindings = _smoke_evidence()
+    tampered = copy.deepcopy(evidence)
+    spec_identity = tampered["run_spec"]["identity"]
+    spec_identity["bootstrap"]["replicate_count"] = 1
+    tampered["run_spec"] = build_manifest(spec_identity)
+    tampered["aggregate"]["run_spec_id"] = tampered["run_spec"]["id"]
+    with pytest.raises(ValueError, match="canonical contract"):
+        validate_prerequisite_evidence(
+            gate="smoke",
+            bindings=bindings,
+            evidence=tampered,
+        )
 
 
 @pytest.mark.parametrize(

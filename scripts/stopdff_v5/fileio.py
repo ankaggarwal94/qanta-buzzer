@@ -94,6 +94,67 @@ def create_once_bytes(
             os.unlink(temporary)
 
 
+def publish_dir_create_once(
+    staged: Path,
+    dest: Path,
+    *,
+    exists_label: str = "create-once directory",
+) -> None:
+    """Atomically publish a staged directory into a create-once slot.
+
+    Directory analogue of ``create_once_bytes`` (``os.link`` has no directory
+    form): publication happens in two steps that fail closed on ANY
+    pre-existing ``dest`` — empty directory, non-empty directory, file, or
+    symlink alike.
+
+    1. Claim ``dest`` with ``os.mkdir``. ``mkdir`` is atomic and raises
+       ``FileExistsError`` whenever the name already exists, so exactly one
+       concurrent caller can create it. A pre-existing *empty* directory
+       therefore fails closed here instead of being silently replaced — the
+       hole a bare ``os.rename`` leaves, since ``rename`` onto an empty
+       directory replaces it.
+    2. Fill the freshly-claimed empty slot with ``os.rename(staged, dest)``.
+       The claimant is the sole actor past the ``mkdir`` gate, so ``dest`` is
+       still the empty directory it just created and the rename installs
+       ``staged``'s complete contents under the live name in one step; no peer
+       can rename into ``dest`` because no peer won the claim.
+
+    The published directory entry is made durable by fsync-ing ``dest``'s
+    parent after the rename, so the live name survives a crash. This changes
+    only publish mechanics: the bytes inside ``staged`` are published
+    unchanged.
+
+    ``staged`` is owned by the caller: on ``FileExistsError`` (the slot was
+    already claimed) ``staged`` is left untouched for the caller's existing
+    cleanup path, and no exception is masked.
+
+    Parameters
+    ----------
+    staged
+        Fully-materialized source directory to publish. It should be a sibling
+        of ``dest`` (same parent, hence same filesystem) so the rename is an
+        atomic same-filesystem move.
+    dest
+        Create-once destination slot that must not already exist.
+    exists_label
+        Description used in the ``FileExistsError`` message so callers keep
+        their historical error wording.
+    """
+    staged = Path(staged)
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.mkdir(dest)
+    except FileExistsError as exc:
+        raise FileExistsError(f"{exists_label} already exists: {dest}") from exc
+    os.rename(staged, dest)
+    directory_fd = os.open(dest.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def dumps_json_bytes(obj: Any) -> bytes:
     """Encode ``obj`` with the package's artifact JSON convention.
 

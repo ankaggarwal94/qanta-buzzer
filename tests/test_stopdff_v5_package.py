@@ -113,6 +113,57 @@ def _canonical_fvi_identity(
     )
 
 
+def _canonical_smoke_prerequisite_evidence(bindings: dict[str, str]) -> dict:
+    """Build genuine smoke gate evidence for a final package's smoke receipt.
+
+    Mirrors the production smoke run the checker mints: a canonical run spec
+    (validated by the shared run-spec/profile checks, including the
+    100-replicate smoke bootstrap) plus an aggregate that enumerates exactly the
+    two registered smoke cells. A degenerate one-cell/one-replicate shortcut is
+    no longer accepted by the smoke prerequisite gate.
+    """
+    spec_identity = run_spec_identity(
+        source_manifest_id=bindings["source_manifest_id"],
+        raw_input_bundle_id=bindings["raw_input_bundle_id"],
+        model_snapshot_id=bindings["model_snapshot_id"],
+        adapter_bundle_id=bindings["adapter_bundle_id"],
+        fvi_study_id=bindings["fvi_study_id"],
+        bootstrap_plan_id="7" * 64,
+        environment_contract_id=bindings["environment_contract_id"],
+        resource_summary_id="8" * 64,
+        fvi_selected={"tolerance": "1e-8", "max_iterations": 100},
+        replicate_count=profile.SMOKE_REPLICATES,
+        profile_variant="smoke",
+        myopic_artifact_sha256="9" * 64,
+        producer_hashes={"checker.py": "a" * 64, "sweep.py": "b" * 64},
+        prerequisite_receipts={},
+    )
+    run_spec = build_manifest(spec_identity)
+    expected_cell_keys = sorted(
+        profile.cell_key_str(cell) for cell in profile.smoke_cells()
+    )
+    return writers.build_prerequisite_evidence(
+        gate="smoke",
+        bindings=bindings,
+        details={
+            "run_spec": run_spec,
+            "aggregate": {
+                "profile_variant": "smoke",
+                "run_spec_id": run_spec["id"],
+                "adapter_bundle_id": bindings["adapter_bundle_id"],
+                "fvi_study_id": bindings["fvi_study_id"],
+                "requested": len(expected_cell_keys),
+                "completed": len(expected_cell_keys),
+                "failed": 0,
+                "skipped": 0,
+                "release_status": "VALID",
+                "release_reasons": [],
+                "expected_cell_keys": expected_cell_keys,
+            },
+        },
+    )
+
+
 def test_valid_smoke_package_binds_all_input_manifests(tmp_path):
     built = selftest.build_valid_package(tmp_path)
     root = built["run_root"]
@@ -601,16 +652,6 @@ def test_final_package_carries_and_revalidates_receipts(tmp_path, monkeypatch):
         "environment_contract_id": environment["id"],
     }
     receipts = {}
-    smoke_spec_identity = {
-        "kind": "run_spec",
-        "profile_variant": "smoke",
-        "identity": bindings,
-        "evidence_roots": {"prerequisite_receipts": {}},
-    }
-    smoke_spec = {
-        "id": compute_id(smoke_spec_identity),
-        "identity": smoke_spec_identity,
-    }
     mutation_results = [
         {
             "mutation": name,
@@ -622,25 +663,7 @@ def test_final_package_carries_and_revalidates_receipts(tmp_path, monkeypatch):
         for index, name in enumerate(MUTATION_ROSTER)
     ]
     gate_evidence = {
-        "smoke": writers.build_prerequisite_evidence(
-            gate="smoke",
-            bindings=bindings,
-            details={
-                "run_spec": smoke_spec,
-                "aggregate": {
-                    "profile_variant": "smoke",
-                    "run_spec_id": smoke_spec["id"],
-                    "adapter_bundle_id": adapter_id,
-                    "fvi_study_id": fvi["id"],
-                    "requested": 1,
-                    "completed": 1,
-                    "failed": 0,
-                    "skipped": 0,
-                    "release_status": "VALID",
-                    "release_reasons": [],
-                },
-            },
-        ),
+        "smoke": _canonical_smoke_prerequisite_evidence(bindings),
         "mutation": writers.build_prerequisite_evidence(
             gate="mutation",
             bindings=bindings,

@@ -398,11 +398,19 @@ def test_freeze_model_rejects_noncanonical_fresh_cache_before_write(
     assert external_manifest.read_text(encoding="utf-8") == "outside"
 
 
-def test_freeze_model_accepts_empty_canonical_fresh_cache(
+def test_freeze_model_fails_closed_on_pre_existing_empty_canonical_slot(
     tmp_path,
     monkeypatch,
 ):
-    """An empty real cache directory remains a valid fresh destination."""
+    """A pre-existing empty ``inputs/model`` slot fails closed (create-once).
+
+    Previously freeze_model treated an empty canonical directory as a valid
+    fresh destination and published into it by a bare ``os.rename`` that
+    silently replaced it. Under the no-replace publish primitive every
+    pre-existing destination -- including an empty one a concurrent peer
+    claimed -- fails closed instead of being overwritten (PR #30). This is red
+    against the pre-fix os.rename code.
+    """
     runner = _load_modal_runner(monkeypatch)
     runner.MNT = str(tmp_path)
     root = tmp_path / "inputs" / "model"
@@ -434,11 +442,12 @@ def test_freeze_model_accepts_empty_canonical_fresh_cache(
         lambda *_args, **_kwargs: {"id": model_id},
     )
 
-    assert runner.freeze_model() == {
-        "model_id": model_id,
-        "revision": "a" * 40,
-        "cached": False,
-    }
+    with pytest.raises(FileExistsError, match="already exists"):
+        runner.freeze_model()
+    # The pre-existing slot is never populated, and no staging leftover
+    # survives the fail-closed publish.
+    assert list(root.iterdir()) == []
+    assert not list((tmp_path / "inputs").glob(".staging_*"))
 
 
 def test_freeze_model_postfreeze_recheck_requires_model_snapshot_kind(
