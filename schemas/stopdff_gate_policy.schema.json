@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stopdff_gate_policy.schema.json",
+  "title": "StopDFF v5 gate + Bellman policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["primary_metric", "material_threshold", "family_statistic",
+               "allow_low_mc_retention", "allow_incomplete_mc_coverage"],
+  "properties": {
+    "primary_metric": {"const": "median_absolute_prefix_index_shift"},
+    "material_threshold": {"const": "1"},
+    "family_statistic": {"const": "maximum_cell_median_absolute_prefix_index_shift"},
+    "allow_low_mc_retention": {"type": "boolean"},
+    "allow_incomplete_mc_coverage": {"type": "boolean"}
+  },
+  "$defs": {
+    "static_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary_metric", "material_threshold", "family_statistic",
+                   "allow_low_mc_retention", "allow_incomplete_mc_coverage"],
+      "properties": {
+        "primary_metric": {"const": "median_absolute_prefix_index_shift"},
+        "material_threshold": {"const": "1"},
+        "family_statistic": {"const": "maximum_cell_median_absolute_prefix_index_shift"},
+        "allow_low_mc_retention": {"const": false},
+        "allow_incomplete_mc_coverage": {"const": false}
+      }
+    },
+    "bellman": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actions", "abstain_value", "nonterminal_tie_priority", "terminal_tie_priority"],
+      "properties": {
+        "actions": {"const": ["answer", "wait", "abstain"]},
+        "abstain_value": {"const": "0"},
+        "nonterminal_tie_priority": {"const": ["wait", "abstain", "answer"]},
+        "terminal_tie_priority": {"const": ["abstain", "answer"]}
+      }
+    },
+    "cell_verdict": {"enum": ["PASS", "WARN", "FAIL"]},
+    "family_verdict": {"enum": ["PASS", "WARN", "FAIL"]},
+    "release_status": {"enum": ["VALID", "INVALID"]}
+  }
+}

@@ -208,7 +208,7 @@ If you are an AI coding agent executing this runbook:
 
 3. **Do not run phases 2/3/5 sequentially** if the parallel script is available — they are independent and running them in parallel saves 2–3x wall time. Phase 11 must run after Phase 4 and before Phase 15 (it reads `baseline_summary.json` which Phase 15 overwrites). Phases 9/13/15 each overwrite `baseline_summary.json` and must run sequentially after Phase 11.
 
-4. **Do not modify the Phase 1 dataset artifacts** after they are built. The canonical downstream inputs are `train_dataset.json`, `val_dataset.json`, and `test_dataset.json`; `mc_dataset.json` is only the combined legacy/debug artifact.
+4. **Do not modify the Phase 1 dataset artifacts** after they are built. The canonical downstream inputs are `train_dataset.json`, `val_dataset.json`, and `test_dataset.json`, plus retained-split `split_metadata.json`; `mc_dataset.json` is only the combined legacy/debug artifact.
 
 5. **Phases 7, 8, 10, 11 (EW PPO), 12, 18, 19** are not in the automated script. Run them manually if needed.
 
@@ -238,7 +238,7 @@ mkdir -p artifacts/main results
 **Config:** `configs/default.yaml`
 **Distractor strategy:** `sbert_profile` (SBERT-based semantic ranking)
 **K:** 4 fixed answer choices
-**Expected output:** `artifacts/main/train_dataset.json`, `artifacts/main/val_dataset.json`, `artifacts/main/test_dataset.json`, `artifacts/main/mc_dataset.json`, `artifacts/main/build_metadata.json`, `artifacts/main/answer_profiles.json`
+**Expected output:** `artifacts/main/train_dataset.json`, `artifacts/main/val_dataset.json`, `artifacts/main/test_dataset.json`, `artifacts/main/mc_dataset.json`, `artifacts/main/split_metadata.json`, `artifacts/main/build_metadata.json`, `artifacts/main/answer_profiles.json`
 
 ```bash
 python scripts/build_mc_dataset.py \
@@ -253,7 +253,7 @@ python scripts/build_mc_dataset.py \
 - Builds answer profiles from the raw training split only
 - Ranks distractors by SBERT profile similarity (top-M argpartition)
 - Applies 4 anti-artifact guards
-- Writes `train_dataset.json`, `val_dataset.json`, `test_dataset.json` as the canonical split-safe artifacts
+- Writes `train_dataset.json`, `val_dataset.json`, `test_dataset.json`, and retained-split `split_metadata.json` as the canonical split-safe artifacts
 - Writes `mc_dataset.json` as the combined legacy/debug convenience artifact
 - Writes `build_metadata.json` with split retention and drop reasons
 

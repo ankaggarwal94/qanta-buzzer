@@ -7,12 +7,64 @@ category distribution across all splits.
 
 import hashlib
 import json
-import random
+import math
+import unicodedata
 from collections import defaultdict
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 
 from qb_data.data_loader import TossupQuestion
+from qb_data.text_utils import normalize_answer
+
+
+def normalize_question_text(text: str) -> str:
+    """Return the shared split-integrity key for a question.
+
+    Parameters
+    ----------
+    text
+        Raw question text.
+
+    Returns
+    -------
+    str
+        NFKC-normalized, case-folded text with collapsed whitespace.
+
+    Raises
+    ------
+    TypeError
+        If ``text`` is not a string.
+
+    Notes
+    -----
+    Compatibility normalization is deliberately conservative: Unicode NFKC,
+    case-folding, and whitespace collapse. Punctuation remains significant.
+    """
+    if not isinstance(text, str):
+        raise TypeError("question text must be a string")
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    return " ".join(normalized.split())
+
+
+def normalize_split_answer(answer: str) -> str:
+    """Normalize an answer for split-integrity comparisons."""
+    if not isinstance(answer, str):
+        raise TypeError("answer must be a string")
+    return normalize_answer(unicodedata.normalize("NFKC", answer).casefold())
+
+
+def _target_counts(total: int, ratios: List[float]) -> list[int]:
+    """Hamilton-apportion ``total`` with train→val→test as the tie order."""
+    quotas = [total * ratio for ratio in ratios]
+    targets = [math.floor(quota) for quota in quotas]
+    remaining = total - sum(targets)
+    order = sorted(
+        range(len(ratios)),
+        key=lambda index: (-(quotas[index] - targets[index]), index),
+    )
+    for index in order[:remaining]:
+        targets[index] += 1
+    return targets
 
 
 def create_stratified_splits(
@@ -28,7 +80,7 @@ def create_stratified_splits(
     questions : List[TossupQuestion]
         List of questions to split
     ratios : List[float]
-        Train/val/test split ratios (must sum to 1.0)
+        Three finite, nonnegative train/val/test ratios that sum to 1.0.
     seed : int
         Random seed for reproducibility
 
@@ -40,57 +92,133 @@ def create_stratified_splits(
     Raises
     ------
     ValueError
-        If ratios don't sum to 1.0 or questions list is empty
+        If ratios are invalid or questions list is empty
     """
     # Validate inputs
     if not questions:
         raise ValueError("Cannot split empty question list")
 
-    if abs(sum(ratios) - 1.0) > 1e-6:
-        raise ValueError(f"Ratios must sum to 1.0, got {sum(ratios)}")
+    if not isinstance(ratios, (list, tuple)) or len(ratios) != 3:
+        raise ValueError("ratios must contain exactly three values")
+    normalized_inputs: list[float] = []
+    for value in ratios:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("ratios must be finite, nonnegative numeric values")
+        try:
+            numeric = float(value)
+        except (OverflowError, ValueError) as exc:
+            raise ValueError(
+                "ratios must be finite, nonnegative numeric values"
+            ) from exc
+        if not math.isfinite(numeric) or numeric < 0.0:
+            raise ValueError("ratios must be finite, nonnegative numeric values")
+        normalized_inputs.append(numeric)
+    try:
+        ratio_total = math.fsum(normalized_inputs)
+    except OverflowError as exc:
+        raise ValueError("ratios must sum to 1.0") from exc
+    if not math.isfinite(ratio_total) or abs(ratio_total - 1.0) > 1e-6:
+        raise ValueError(f"ratios must sum to 1.0, got {ratio_total}")
+    # Normalize the accepted tolerance window so apportionment always allocates
+    # exactly the observed total, even for very large datasets.
+    ratios = [value / ratio_total for value in normalized_inputs]
 
-    # Initialize random generator for reproducibility
-    rng = random.Random(seed)
-
-    # Group questions by category
-    category_groups = defaultdict(list)
+    # Group globally by normalized question text before considering categories.
+    # This prevents paraphrase-equivalent rows from leaking across splits.
+    text_groups: dict[str, list[TossupQuestion]] = defaultdict(list)
+    qid_text: dict[str, str] = {}
     for q in questions:
-        category_groups[q.category].append(q)
+        text_key = normalize_question_text(q.question)
+        if not text_key:
+            raise ValueError(f"question {q.qid!r} has empty normalized text")
+        qid = str(q.qid)
+        if qid in qid_text:
+            raise ValueError(f"duplicate question ID {qid!r}")
+        qid_text[qid] = text_key
+        text_groups[text_key].append(q)
 
-    # Initialize output lists
-    train_questions = []
-    val_questions = []
-    test_questions = []
+    for text_key, group in text_groups.items():
+        normalized_answers = {
+            normalize_split_answer(question.answer_primary)
+            for question in group
+        }
+        if "" in normalized_answers:
+            qids = sorted(str(question.qid) for question in group)
+            raise ValueError(
+                "normalized question group has an empty normalized answer: "
+                f"text={text_key!r}, qids={qids}"
+            )
+        if len(normalized_answers) > 1:
+            qids = sorted(str(question.qid) for question in group)
+            raise ValueError(
+                "normalized question group has conflicting normalized answers: "
+                f"text={text_key!r}, qids={qids}, answers={sorted(normalized_answers)}"
+            )
 
-    # Split each category maintaining ratios
-    for category, category_questions in category_groups.items():
-        # Sort for deterministic splits
-        sorted_questions = sorted(category_questions, key=lambda q: q.qid)
+    # Preserve category proportions as closely as atomic text groups allow. The
+    # greedy objective compares category and global count errors against the same
+    # integer targets the legacy row-wise splitter used.
+    category_groups: dict[str, list[TossupQuestion]] = defaultdict(list)
+    for q in questions:
+        category_groups[str(q.category)].append(q)
 
-        # Deterministic per-category seed via MD5 (immune to PYTHONHASHSEED)
-        cat_hash = int(hashlib.md5(category.encode("utf-8")).hexdigest(), 16)
-        category_seed = seed + cat_hash % 1_000_000
-        category_rng = random.Random(category_seed)
-        shuffled = sorted_questions.copy()
-        category_rng.shuffle(shuffled)
+    split_count = 3
+    category_targets = {
+        category: _target_counts(len(category_questions), ratios)
+        for category, category_questions in category_groups.items()
+    }
+    global_targets = _target_counts(len(questions), ratios)
+    category_counts = {
+        category: [0] * split_count
+        for category in category_groups
+    }
+    global_counts = [0] * split_count
 
-        n = len(shuffled)
+    def _seeded_group_key(item: tuple[str, list[TossupQuestion]]) -> tuple[int, str]:
+        text_key, group = item
+        digest = hashlib.sha256(f"{seed}\0{text_key}".encode("utf-8")).hexdigest()
+        return (-len(group), digest)
 
-        # Calculate split indices
-        train_end = int(n * ratios[0])
-        val_end = train_end + int(n * ratios[1])
+    ordered_groups = sorted(text_groups.items(), key=_seeded_group_key)
+    split_questions: list[list[TossupQuestion]] = [[], [], []]
 
-        # Handle small categories - ensure at least 1 in train if possible
-        if n == 1:
-            train_questions.extend(shuffled)
-        elif n == 2:
-            train_questions.extend(shuffled[:1])
-            val_questions.extend(shuffled[1:])
-        else:
-            # Standard split
-            train_questions.extend(shuffled[:train_end])
-            val_questions.extend(shuffled[train_end:val_end])
-            test_questions.extend(shuffled[val_end:])
+    for _text_key, group in ordered_groups:
+        group_category_counts: dict[str, int] = defaultdict(int)
+        for question in group:
+            group_category_counts[str(question.category)] += 1
+
+        def _assignment_penalty(split_idx: int) -> tuple[float, int]:
+            penalty = 0.0
+            for category, added in group_category_counts.items():
+                targets = category_targets[category]
+                for idx in range(split_count):
+                    count = category_counts[category][idx]
+                    if idx == split_idx:
+                        count += added
+                    target = targets[idx]
+                    scale = max(1, target)
+                    penalty += ((count - target) / scale) ** 2
+
+            for idx in range(split_count):
+                count = global_counts[idx]
+                if idx == split_idx:
+                    count += len(group)
+                target = global_targets[idx]
+                scale = max(1, target)
+                penalty += ((count - target) / scale) ** 2
+
+            # Prefer the split with more remaining capacity on an exact tie.
+            remaining = global_targets[split_idx] - global_counts[split_idx]
+            return penalty, -remaining
+
+        selected = min(range(split_count), key=_assignment_penalty)
+        ordered_members = sorted(group, key=lambda question: str(question.qid))
+        split_questions[selected].extend(ordered_members)
+        global_counts[selected] += len(group)
+        for category, added in group_category_counts.items():
+            category_counts[category][selected] += added
+
+    train_questions, val_questions, test_questions = split_questions
 
     # Verify all questions assigned exactly once
     total_original = len(questions)
@@ -98,6 +226,21 @@ def create_stratified_splits(
 
     if total_original != total_split:
         raise RuntimeError(f"Split mismatch: {total_original} original vs {total_split} split")
+
+    qid_sets = [
+        {str(question.qid) for question in split}
+        for split in split_questions
+    ]
+    text_sets = [
+        {normalize_question_text(question.question) for question in split}
+        for split in split_questions
+    ]
+    for left in range(split_count):
+        for right in range(left + 1, split_count):
+            if qid_sets[left] & qid_sets[right]:
+                raise RuntimeError("question ID overlap across generated splits")
+            if text_sets[left] & text_sets[right]:
+                raise RuntimeError("normalized question-text overlap across generated splits")
 
     # Log category distribution statistics
     print(f"Dataset split complete:")

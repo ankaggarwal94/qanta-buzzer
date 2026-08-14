@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stopdff_scientific_profile.schema.json",
+  "title": "StopDFF bucketed-DP paired scientific profile (v5)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile_name", "splits", "format_condition", "axes",
+               "reward_schedules", "bellman", "calibration", "continuation", "bootstrap",
+               "gate", "expected_cells"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "profile_name": {"const": "stopdff_bucketed_dp_paired_v2"},
+    "splits": {"type": "object", "required": ["fit", "eval"],
+      "additionalProperties": false,
+      "properties": {"fit": {"const": "val"}, "eval": {"const": "test"}}},
+    "format_condition": {"const": ["paired_qa_prefix_vs_mc_fixed"]},
+    "axes": {"type": "object", "required": ["reward_schedule", "continuation", "calibrator",
+                                            "prefix_bucketing", "category_pooling"],
+      "additionalProperties": false,
+      "properties": {
+        "reward_schedule": {"const": ["acf_flat", "power_mark", "wait_cost_small", "strict_wrong"]},
+        "continuation": {"const": ["empirical_bucket", "pooled_empirical"]},
+        "calibrator": {"const": ["platt-logistic", "similarity-temperature", "isotonic"]},
+        "prefix_bucketing": {"const": ["early_mid_late", "exact_prefix"]},
+        "category_pooling": {"const": ["per_category", "pooled_category"]}
+      }},
+    "bellman": {"$ref": "stopdff_gate_policy.schema.json#/$defs/bellman"},
+    "reward_schedules": {"const": {
+      "acf_flat": {"correct_early": "10", "correct_late": "10", "wrong": "-5", "split": "1.0", "wait_cost": "0"},
+      "power_mark": {"correct_early": "15", "correct_late": "10", "wrong": "-5", "split": "0.5", "wait_cost": "0"},
+      "wait_cost_small": {"correct_early": "15", "correct_late": "10", "wrong": "-5", "split": "0.5", "wait_cost": "0.05"},
+      "strict_wrong": {"correct_early": "15", "correct_late": "10", "wrong": "-10", "split": "0.5", "wait_cost": "0"}
+    }},
+    "calibration": {"$ref": "stopdff_calibrator.schema.json"},
+    "continuation": {"$ref": "stopdff_continuation.schema.json"},
+    "bootstrap": {"type": "object", "required": ["bit_generator", "seed", "interval",
+                                                 "resampling_unit", "common_resamples_across_cells"],
+      "additionalProperties": false,
+      "properties": {"bit_generator": {"const": "PCG64"}, "seed": {"const": 1},
+                     "interval": {"const": "percentile_95"},
+                     "resampling_unit": {"const": "item"},
+                     "common_resamples_across_cells": {"const": true}}},
+    "gate": {"$ref": "stopdff_gate_policy.schema.json#/$defs/static_gate"},
+    "expected_cells": {"const": 96}
+  }
+}

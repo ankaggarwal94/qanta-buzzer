@@ -13,6 +13,7 @@ import pytest
 from qb_data.config import load_config as load_yaml_config, merge_overrides
 from scripts.build_mc_dataset import (
     build_metadata_entry,
+    build_retained_split_metadata,
     make_mc_builder,
     parse_args,
     parse_overrides,
@@ -459,3 +460,37 @@ class TestPrintStatisticsPerSplitStats:
         # snapshot (5) must.
         assert "unseen_gold_answer: 999 rejections" not in out
         assert "unseen_gold_answer: 5 rejections" in out
+
+
+
+def test_retained_split_metadata_uses_retained_mc_outputs() -> None:
+    """The sidecar describes retained splits with deterministic categories."""
+    train = [
+        SimpleNamespace(category="Science"),
+        SimpleNamespace(category="Arts"),
+        SimpleNamespace(category="Science"),
+    ]
+    val = [SimpleNamespace(category="History")]
+    test = [SimpleNamespace(category="Arts"), SimpleNamespace(category="History")]
+
+    metadata = build_retained_split_metadata(train, val, test)
+
+    assert metadata == {
+        "train": {"count": 3, "categories": {"Arts": 1, "Science": 2}},
+        "val": {"count": 1, "categories": {"History": 1}},
+        "test": {"count": 2, "categories": {"Arts": 1, "History": 1}},
+        "total_questions": 6,
+        "split_ratios": [0.5, 1 / 6, 1 / 3],
+    }
+    assert list(metadata["train"]["categories"]) == ["Arts", "Science"]
+
+
+def test_retained_split_metadata_handles_all_empty_splits() -> None:
+    """An all-filtered build has a finite, deterministic zero-ratio sidecar."""
+    assert build_retained_split_metadata([], [], []) == {
+        "train": {"count": 0, "categories": {}},
+        "val": {"count": 0, "categories": {}},
+        "test": {"count": 0, "categories": {}},
+        "total_questions": 0,
+        "split_ratios": [0.0, 0.0, 0.0],
+    }

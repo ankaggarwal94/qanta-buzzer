@@ -4,7 +4,7 @@ Canonical repo contract for all coding agents (Claude, Copilot, Cursor, etc.).
 
 ## Project Overview
 
-Stanford CS234 final project: a unified quiz bowl RL buzzer system with two tracks. The belief-feature pipeline builds MC tossups, scores answer profiles with TF-IDF / SBERT / T5 / optional OpenAI / optional DSPy, trains or compares buzzers, and evaluates with S_q, Expected Wins, and calibration metrics. The T5 policy pipeline provides supervised warm-start and PPO for an end-to-end text policy using factorized stop/answer semantics (`P(WAIT)` and `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`). Three opt-in extensions: Expected Wins reward mode, variable-K answer choices, and DSPy integration. Additional opt-in feature-port surfaces are available for stop-only PPO (`scripts/train_ppo.py --policy-mode stop_only`) and no-buzz horizon behavior (`environment.end_mode: no_buzz`). `qanta-buzzer` is the canonical repo. qb-rl compatibility is preserved through additive shims rather than structural rewrites.
+Stanford CS234 final project: a unified quiz bowl RL buzzer system with three tracks. The belief-feature pipeline builds MC tossups, scores answer profiles with TF-IDF / SBERT / T5 / optional OpenAI / optional DSPy, trains or compares buzzers, and evaluates with S_q, Expected Wins, and calibration metrics. The T5 policy pipeline provides supervised warm-start and PPO for an end-to-end text policy using factorized stop/answer semantics (`P(WAIT)` and `P(BUZZ_i) = P(BUZZ) * P(answer_i | BUZZ)`). The StopDFF v5 evidentiary pipeline (`scripts/stopdff_v5/`, CS321M) produces identity-bound, fail-closed audit runs; its normative contracts are `ACCEPTANCE_CONTRACT.md`, `SCIENTIFIC_CONTRACT.md`, and `IDENTITY_AND_ARTIFACT_CONTRACT.md` at the repo root, with reproduction steps in `docs/stopdff_v5/REPRODUCTION.md`. Three opt-in extensions: Expected Wins reward mode, variable-K answer choices, and DSPy integration. Additional opt-in feature-port surfaces are available for stop-only PPO (`scripts/train_ppo.py --policy-mode stop_only`) and no-buzz horizon behavior (`environment.end_mode: no_buzz`). `qanta-buzzer` is the canonical repo. qb-rl compatibility is preserved through additive shims rather than structural rewrites.
 
 ## Setup
 
@@ -25,6 +25,7 @@ Optional extras:
 pip install -e '.[openai]'    # OpenAI embedding support
 pip install -e '.[maskable]'  # MaskablePPO for variable-K
 pip install -e '.[dspy]'      # DSPy LM-based scoring
+pip install -e '.[modal]'     # Modal cloud execution for the StopDFF v5 runners
 ```
 
 ## Architecture
@@ -37,12 +38,14 @@ pip install -e '.[dspy]'      # DSPy LM-based scoring
 | `agents/` | Threshold, softmax-profile, sequential Bayes, PPO wrapper |
 | `evaluation/` | S_q metric, Expected Wins, calibration, control experiments, plotting |
 | `scripts/` | Pipeline entrypoints, DSPy compile, shared helpers |
+| `scripts/stopdff_v5/` | StopDFF v5 fail-closed pipeline (identity, manifests, checker, sweep, writers) |
 | `training/` | T5 policy supervised + PPO trainers, hazard bridge utilities |
 | `configs/` | YAML configuration files (default, smoke, t5_policy) |
+| `schemas/` | JSON Schemas for StopDFF v5 profile/run-spec/calibrator/continuation/gate |
 
 ## Testing
 
-429 tests across 33 test files (4 skipped when optional extras not installed).
+The test suite spans the full v5 pipeline; counts drift with every PR, so no number is pinned here — count them live with `pytest tests/ --collect-only -q | tail -1`. Tests requiring optional extras (including `modal`) skip when those are not installed.
 
 ```bash
 pytest                    # full suite
@@ -65,9 +68,10 @@ python scripts/train_ppo.py --smoke
 python scripts/evaluate_all.py --smoke
 ```
 
-`build_mc_dataset.py` writes `train_dataset.json`, `val_dataset.json`, and
-`test_dataset.json` as the canonical downstream inputs. `mc_dataset.json`
-remains as a combined legacy/debug artifact. By default, `run_baselines.py`
+`build_mc_dataset.py` writes `train_dataset.json`, `val_dataset.json`,
+`test_dataset.json`, and retained-split `split_metadata.json` as canonical
+downstream inputs. `mc_dataset.json` remains as a combined legacy/debug
+artifact. By default, `run_baselines.py`
 selects thresholds on validation, `train_ppo.py` trains on train and writes
 validation metrics to `ppo_summary.json`, and `evaluate_all.py` writes the
 canonical final test report on the test split (`evaluation_report.json`).
@@ -99,6 +103,22 @@ python scripts/compare_policies.py --config configs/t5_policy.yaml
 
 Notes:
 `scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the future hazard bridge. `--hazard-pretrain` intentionally raises `NotImplementedError` until that loop is implemented.
+
+## StopDFF v5 Pipeline (CS321M)
+
+Identity-bound, fail-closed StopDFF audit pipeline in `scripts/stopdff_v5/` with JSON Schemas in `schemas/`. Runs are create-once and content-addressed; the normative contracts are `ACCEPTANCE_CONTRACT.md` (acceptance gate), `SCIENTIFIC_CONTRACT.md` (scientific protocol), and `IDENTITY_AND_ARTIFACT_CONTRACT.md` (identity and artifact rules). Full local (CPU) and Modal reproduction steps: `docs/stopdff_v5/REPRODUCTION.md`.
+
+```bash
+# local end-to-end run (smoke variant)
+python scripts/run_stopdff_v5_local.py --data-dir data/processed \
+    --paper-exports paper_exports --out-dir stopdff_v5_smoke_out --variant smoke
+
+# standalone acceptance-gate validation of a run package
+python scripts/validate_stopdff_bucketed_sweep.py validate RUN_ROOT \
+    --backend local --adapter-bundle ADAPTER_BUNDLE --require-final-profile --require-package
+```
+
+Modal execution uses `scripts/modal_stopdff_v5_runner.py` (requires the `modal` extra and explicit compute authorization).
 
 ## Configuration
 

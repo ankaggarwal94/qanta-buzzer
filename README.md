@@ -59,6 +59,11 @@ These are the novel scripts implementing the three-metric audit framework:
 | `scripts/compute_stopdff.py` | Myopic-threshold StopDFF diagnostic | `paper_exports/stopdff.json` |
 | `scripts/make_audit_card.py` | Aggregate all metrics into Pilot Benchmark Translation Card | `paper_exports/audit_card.json` |
 | `scripts/regenerate_figures.py` | Regenerate LaTeX tables and figures from cached JSONs | `paper_exports/audit_table.tex`, `paper_exports/csli_panel.png`, `paper_exports/reliability_*.png` |
+| `scripts/run_stopdff_v5_local.py` | StopDFF v5 local (CPU) end-to-end audit driver (uses `scripts/stopdff_v5/`) | identity-bound run package under `<out-dir>/runs/<run_id>/` |
+| `scripts/modal_stopdff_v5_runner.py` | StopDFF v5 Modal stage functions + durable controller | run package on the `cs321m-stopdff-artifacts` Volume |
+| `scripts/modal_stopdff_v5_assurance.py` | StopDFF v5 cross-process Modal recovery-assurance canary | create-once assurance receipts |
+| `scripts/verify_stopdff_v5_modal_assurance.py` | Offline verifier for the recovery-assurance receipts | PASS verdict JSON |
+| `scripts/validate_stopdff_bucketed_sweep.py` | StopDFF v5 standalone acceptance-gate checker (see `ACCEPTANCE_CONTRACT.md`) | `PASS`/`FAIL` verdict (`--json` report) |
 
 ## Pre-computed Artifacts
 
@@ -84,6 +89,10 @@ Additionally at repo root:
 | `threshold_manifest.json` | Frozen threshold parameters (pre-registered before test inspection) |
 | `threshold_manifest.json.sha256` | SHA-256 integrity sidecar for manifest (verified at load time by `scripts/threshold_manifest.py`) |
 | `stopdff_report.json` | StopDFF attestation report with timestamp and verdict |
+| `ACCEPTANCE_CONTRACT.md` | StopDFF v5 acceptance gate: what `scripts/validate_stopdff_bucketed_sweep.py` must verify for a run to be accepted |
+| `SCIENTIFIC_CONTRACT.md` | StopDFF v5 scientific contract (prose index for the executable profile constants) |
+| `IDENTITY_AND_ARTIFACT_CONTRACT.md` | StopDFF v5 content-addressed identity, evidence, and create-once artifact rules |
+| `SCIENTIFIC_PROFILE.template.json` | Template for the preregistered StopDFF v5 scientific profile |
 
 ## Repository Structure
 
@@ -101,6 +110,9 @@ qanta-buzzer/
 |   +-- make_audit_card.py        [CS321M] Audit card aggregation
 |   +-- regenerate_figures.py     [CS321M] Figure/table regeneration
 |   +-- fresh_split.py            [CS321M] Fresh split protocol
+|   +-- run_stopdff_v5_local.py   [CS321M] StopDFF v5 local reproduction driver
+|   +-- validate_stopdff_bucketed_sweep.py  [CS321M] StopDFF v5 acceptance-gate checker
+|   +-- stopdff_v5/               [CS321M] StopDFF v5 fail-closed audit pipeline package
 +-- qb_data/              [CS234] Data loading, MC construction, stratified splits
 +-- qb_env/               [CS234] Gymnasium environment, opponent models
 +-- models/               [CS234] Likelihood models (TF-IDF, SBERT, T5)
@@ -108,6 +120,7 @@ qanta-buzzer/
 +-- evaluation/           [CS234] S_q metric, calibration, plotting utilities
 +-- training/             [CS234] T5 policy trainers (supervised + PPO)
 +-- configs/              [CS234] YAML configuration files
++-- schemas/              [CS321M] JSON Schemas for StopDFF v5 artifacts
 +-- tests/                [CS234] unit + regression test suite (run via `pytest`)
 +-- paper_exports/        [CS321M] Pre-computed audit results and figures
 +-- artifacts/            Generated pipeline outputs (smoke/ and main/)
@@ -135,6 +148,9 @@ qanta-buzzer/
 - `scripts/regenerate_figures.py` -- Figure/table regeneration from cached data
 - `scripts/fresh_split.py` -- v10 section 0.3 fresh split protocol
 - `modal_cs321m.py` -- Modal A100 compute orchestration wrapper
+- `scripts/stopdff_v5/` -- StopDFF v5 fail-closed evidentiary audit pipeline (identity, manifests, sweep, checker, writers)
+- `scripts/run_stopdff_v5_local.py`, `scripts/modal_stopdff_v5_runner.py`, `scripts/modal_stopdff_v5_assurance.py`, `scripts/verify_stopdff_v5_modal_assurance.py`, `scripts/validate_stopdff_bucketed_sweep.py` -- StopDFF v5 runners and acceptance-gate checker
+- `schemas/` -- JSON Schemas for StopDFF v5 artifacts, plus root contracts (`ACCEPTANCE_CONTRACT.md`, `SCIENTIFIC_CONTRACT.md`, `IDENTITY_AND_ARTIFACT_CONTRACT.md`, `SCIENTIFIC_PROFILE.template.json`)
 
 **Reused (CS234 team, attributed to original contributors):**
 - `qb_data/` -- Data loading, MC construction, stratified splits

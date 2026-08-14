@@ -160,6 +160,46 @@ def build_metadata_entry(raw_questions: List[TossupQuestion], mc_questions: List
     }
 
 
+def build_retained_split_metadata(
+    train: List[MCQuestion],
+    val: List[MCQuestion],
+    test: List[MCQuestion],
+) -> dict[str, Any]:
+    """Describe the retained MC splits consumed by StopDFF v5 staging."""
+    split_questions = {
+        "train": train,
+        "val": val,
+        "test": test,
+    }
+    blocks: dict[str, dict[str, Any]] = {}
+    counts: list[int] = []
+    for split_name, questions in split_questions.items():
+        category_counts: dict[str, int] = {}
+        for question in questions:
+            category = str(question.category)
+            category_counts[category] = category_counts.get(category, 0) + 1
+        blocks[split_name] = {
+            "count": len(questions),
+            "categories": {
+                category: category_counts[category]
+                for category in sorted(category_counts)
+            },
+        }
+        counts.append(len(questions))
+
+    total = sum(counts)
+    ratios = (
+        [count / total for count in counts]
+        if total
+        else [0.0, 0.0, 0.0]
+    )
+    return {
+        **blocks,
+        "total_questions": total,
+        "split_ratios": ratios,
+    }
+
+
 def warn_on_low_retention(split_name: str, metadata: dict[str, Any], threshold: float) -> None:
     """Warn when retained questions for a split drop below the threshold."""
     retention = float(metadata.get("retention_rate", 0.0))
@@ -405,6 +445,10 @@ def main(argv: Optional[list[str]] = None):
     save_json(output_dir / "train_dataset.json", train)
     save_json(output_dir / "val_dataset.json", val)
     save_json(output_dir / "test_dataset.json", test)
+    save_json(
+        output_dir / "split_metadata.json",
+        build_retained_split_metadata(train, val, test),
+    )
 
     build_metadata = {
         "split_reference": "train_dataset.json is the canonical reference corpus for all splits",
