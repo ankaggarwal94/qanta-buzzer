@@ -1000,16 +1000,22 @@ def test_remote_sweep_attempt_is_derived_from_durable_state(
     ) == (False, 1)
     assert not absent.exists()
 
+    # An empty run root left by a crash in the create-once mkdir->rename window
+    # is reclaimed on a deliberate recovery and degraded to a fresh attempt 1
+    # (PR #30 crash-recovery reclaim), freeing the slot for the fresh publish
+    # downstream. A populated-but-corrupt root is a different case, exercised by
+    # test_remote_sweep_recovery_leaves_corrupt_history_closed below.
+    empty_relic = tmp_path / "empty_relic"
+    empty_relic.mkdir()
+    assert runner._resolve_remote_sweep_attempt(
+        empty_relic,
+        recovery_requested=True,
+        sweep_module=sweep,
+    ) == (False, 1)
+    assert not empty_relic.exists()  # relic reclaimed
+
     partial = tmp_path / "partial"
     partial.mkdir()
-    with pytest.raises(ValueError, match="attempt history"):
-        runner._resolve_remote_sweep_attempt(
-            partial,
-            recovery_requested=True,
-            sweep_module=sweep,
-        )
-    assert list(partial.iterdir()) == []
-
     records = [
         {
             "attempt": number,
@@ -1036,6 +1042,78 @@ def test_remote_sweep_attempt_is_derived_from_durable_state(
             recovery_requested=False,
             sweep_module=sweep,
         )
+
+
+def test_remote_sweep_recovery_reclaims_empty_relic_then_publishes(
+    tmp_path,
+    monkeypatch,
+):
+    # End-to-end recovery at the wired site: a crash relic (empty run root) is
+    # reclaimed by the deliberate-recovery decision, after which a fresh
+    # create-once publish re-claims the freed slot (reclaim -> mkdir -> rename).
+    runner = _load_modal_runner(monkeypatch)
+    from scripts.stopdff_v5 import sweep
+    from scripts.stopdff_v5.fileio import publish_dir_create_once
+
+    run_root = tmp_path / "runs" / "final_deadbeef"
+    run_root.mkdir(parents=True)  # empty mkdir->rename crash relic
+
+    assert runner._resolve_remote_sweep_attempt(
+        run_root,
+        recovery_requested=True,
+        sweep_module=sweep,
+    ) == (False, 1)
+    assert not run_root.exists()  # relic reclaimed, slot freed
+
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "attempts.jsonl").write_bytes(b"{}\n")
+    publish_dir_create_once(staged, run_root)  # fresh publish now succeeds
+    assert (run_root / "attempts.jsonl").read_bytes() == b"{}\n"
+
+
+def test_remote_sweep_fresh_does_not_reclaim_empty_relic(
+    tmp_path,
+    monkeypatch,
+):
+    # Regression / codex invariant: the reclaim is gated on a deliberate
+    # recovery. A FRESH attempt (recovery_requested=False) hitting a pre-existing
+    # empty run root must STILL fail closed and must NOT reclaim it -- a fresh
+    # collision could be a peer, so the reclaim must never leak into this path.
+    runner = _load_modal_runner(monkeypatch)
+    from scripts.stopdff_v5 import sweep
+
+    run_root = tmp_path / "runs" / "final_cafef00d"
+    run_root.mkdir(parents=True)  # pre-existing empty slot
+    with pytest.raises(FileExistsError, match="already exists"):
+        runner._resolve_remote_sweep_attempt(
+            run_root,
+            recovery_requested=False,
+            sweep_module=sweep,
+        )
+    assert run_root.is_dir()  # NOT reclaimed on the fresh path
+
+
+def test_remote_sweep_recovery_leaves_corrupt_history_closed(
+    tmp_path,
+    monkeypatch,
+):
+    # The reclaim removes ONLY an empty relic. A populated-but-corrupt run root
+    # (a different, non-empty damage shape) is never reclaimed and still fails
+    # closed on recovery, so recovery can never destroy real evidence.
+    runner = _load_modal_runner(monkeypatch)
+    from scripts.stopdff_v5 import sweep
+
+    run_root = tmp_path / "runs" / "final_0badbeef"
+    run_root.mkdir(parents=True)
+    (run_root / "attempts.jsonl").write_bytes(b"not canonical json\n")
+    with pytest.raises(ValueError):
+        runner._resolve_remote_sweep_attempt(
+            run_root,
+            recovery_requested=True,
+            sweep_module=sweep,
+        )
+    assert (run_root / "attempts.jsonl").read_bytes() == b"not canonical json\n"
 
 
 @pytest.mark.parametrize(

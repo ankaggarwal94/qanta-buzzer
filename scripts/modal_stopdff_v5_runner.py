@@ -1224,9 +1224,32 @@ def _resolve_remote_sweep_attempt(
         raise ValueError("sweep destination is not a directory")
     if not recovery_requested:
         raise FileExistsError("fresh sweep destination already exists")
-    _, history = sweep_module._load_attempt_history(
-        run_root / "attempts.jsonl"
-    )
+    # Recovery reclaim: a crash in the create-once mkdir->rename window of
+    # sweep._publish_fresh_initialization can leave an EMPTY run root with no
+    # durable attempt history (that publisher stages everything and renames it
+    # in atomically, so its only crash-relic shape is an empty directory). On a
+    # deliberate recovery (recovery_requested is True) under this run_sweep
+    # singleton (max_containers=1, run-id-addressed slot), such an empty relic
+    # is this run's own crashed fresh-init: reclaim it and recover as a fresh
+    # attempt 1. A populated-but-corrupt root is never reclaimed
+    # (reclaim_empty_relic refuses a non-empty directory) and still fails closed
+    # via the re-raise below; the fresh branch above still fails closed on ANY
+    # pre-existing root, so the reclaim never leaks into a fresh peer collision.
+    try:
+        _, history = sweep_module._load_attempt_history(
+            run_root / "attempts.jsonl"
+        )
+    except ValueError:
+        from scripts.stopdff_v5.fileio import reclaim_empty_relic
+
+        # Reclaiming an empty crash relic here is race-safe ONLY because this is
+        # the recovery branch AND run_sweep is max_containers=1 (a single
+        # publisher per run-id-addressed root). If run_sweep ever stops being a
+        # singleton, reclaim_empty_relic can delete a concurrent publisher's
+        # in-flight mkdir claim (see its docstring WARNING) — re-audit before then.
+        if reclaim_empty_relic(run_root):
+            return False, 1
+        raise
     if not history:
         raise ValueError("recovery destination has no durable attempt history")
     return True, len(history) + 1

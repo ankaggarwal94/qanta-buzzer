@@ -21,6 +21,7 @@ if str(REPO) not in sys.path:
 from scripts.stopdff_v5.fileio import (  # noqa: E402
     dumps_json_bytes,
     publish_dir_create_once,
+    reclaim_empty_relic,
 )
 
 
@@ -104,3 +105,64 @@ def test_publish_dir_create_once_uses_custom_exists_label(tmp_path):
         FileExistsError, match="fresh run destination already exists"
     ):
         publish_dir_create_once(staged, dest, exists_label="fresh run destination")
+
+
+# --- reclaim_empty_relic (PR #30: create-once crash-recovery step) -----------
+#
+# Best-effort recovery companion to publish_dir_create_once: it removes ONLY an
+# empty crash relic (the mkdir-succeeded/rename-crashed shape) so a deliberate
+# recovery can re-claim the slot, and it must NEVER touch a real artifact (a
+# non-empty directory, a file, or a symlink) nor raise.
+
+
+def test_reclaim_empty_relic_removes_empty_directory(tmp_path):
+    dest = tmp_path / "relic"
+    dest.mkdir()  # the empty mkdir->rename crash relic
+    assert reclaim_empty_relic(dest) is True
+    assert not dest.exists()  # relic reclaimed
+
+
+def test_reclaim_empty_relic_refuses_nonempty_directory(tmp_path):
+    dest = tmp_path / "artifact"
+    dest.mkdir()
+    (dest / "keep.bin").write_bytes(b"real")
+    assert reclaim_empty_relic(dest) is False
+    assert dest.is_dir()
+    assert (dest / "keep.bin").read_bytes() == b"real"  # artifact intact
+
+
+def test_reclaim_empty_relic_refuses_regular_file(tmp_path):
+    dest = tmp_path / "file"
+    dest.write_bytes(b"real")
+    assert reclaim_empty_relic(dest) is False
+    assert dest.is_file()
+    assert dest.read_bytes() == b"real"
+
+
+def test_reclaim_empty_relic_refuses_symlink(tmp_path):
+    # Never follow or remove a symlink; leave it for the later mkdir gate.
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "keep.bin").write_bytes(b"real")
+    dest = tmp_path / "dest"
+    dest.symlink_to(target, target_is_directory=True)
+    assert reclaim_empty_relic(dest) is False
+    assert dest.is_symlink()  # link untouched
+    assert (target / "keep.bin").read_bytes() == b"real"  # target untouched
+
+
+def test_reclaim_empty_relic_absent_dest_is_noop(tmp_path):
+    dest = tmp_path / "absent"
+    assert reclaim_empty_relic(dest) is False
+    assert not dest.exists()
+
+
+def test_reclaim_empty_relic_then_publish_recovers_the_slot(tmp_path):
+    # End-to-end recovery: an empty crash relic is reclaimed, after which the
+    # create-once publish succeeds via reclaim -> mkdir -> rename.
+    dest = tmp_path / "dest"
+    dest.mkdir()  # crash relic blocking the create-once mkdir claim
+    staged = _make_staged(tmp_path)
+    assert reclaim_empty_relic(dest) is True
+    publish_dir_create_once(staged, dest)  # mkdir claim now succeeds
+    assert (dest / "artifact.bin").read_bytes() == b"payload"
