@@ -419,7 +419,7 @@ def test_stage_tree_is_fsynced_before_directory_publication(
     real_open = local_runner.os.open
     real_close = local_runner.os.close
     real_fsync = local_runner.os.fsync
-    real_replace = Path.replace
+    real_rename = local_runner.os.rename
 
     def tracked_open(path, flags, *args, **kwargs):
         descriptor = real_open(path, flags, *args, **kwargs)
@@ -436,14 +436,18 @@ def test_stage_tree_is_fsynced_before_directory_publication(
         finally:
             descriptors.pop(descriptor, None)
 
-    def tracked_replace(path, target):
-        events.append(("replace", str(target)))
-        return real_replace(path, target)
+    # _publish_stage_directory now publishes via fileio.publish_dir_create_once,
+    # whose publication step is os.rename (create-once: os.mkdir claim + rename).
+    # local_runner.os is the shared os module, so patching it here also captures
+    # the primitive's rename/fsync in fileio.
+    def tracked_rename(src, dst, *args, **kwargs):
+        events.append(("rename", str(dst)))
+        return real_rename(src, dst, *args, **kwargs)
 
     monkeypatch.setattr(local_runner.os, "open", tracked_open)
     monkeypatch.setattr(local_runner.os, "fsync", tracked_fsync)
     monkeypatch.setattr(local_runner.os, "close", tracked_close)
-    monkeypatch.setattr(Path, "replace", tracked_replace)
+    monkeypatch.setattr(local_runner.os, "rename", tracked_rename)
 
     def build(staged: Path) -> str:
         nested = staged / "nested"
@@ -457,15 +461,44 @@ def test_stage_tree_is_fsynced_before_directory_publication(
         build=build,
     )
     assert result == "built"
-    replace_index = next(
-        index for index, event in enumerate(events) if event[0] == "replace"
+    publish_index = next(
+        index for index, event in enumerate(events) if event[0] == "rename"
     )
-    before = events[:replace_index]
-    after = events[replace_index + 1:]
+    before = events[:publish_index]
+    after = events[publish_index + 1:]
     assert any("payload.bin" in path for kind, path in before if kind == "fsync")
     assert any("nested" in path for kind, path in before if kind == "fsync")
     assert any(kind == "fsync" for kind, _path in after)
     assert (out / "source" / "nested" / "payload.bin").read_bytes() == b"durable payload"
+
+
+def test_publish_stage_directory_fails_closed_when_peer_wins_empty_slot(
+    tmp_path: Path,
+) -> None:
+    """A peer or stale supervisor can create the same empty stage slot in the
+    window between the entry precheck and publication. Publication must fail
+    closed (create-once) rather than let os.replace silently overwrite the
+    empty peer directory and claim a slot that was no longer absent."""
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def build(staged: Path) -> str:
+        staged.mkdir()
+        (staged / "manifest.json").write_text("{}", encoding="utf-8")
+        # A peer wins the slot AFTER the entry precheck, inside the
+        # build->publish window, so the precheck cannot mask the race.
+        (out / "source").mkdir()
+        return "built"
+
+    with pytest.raises(FileExistsError):
+        local_runner._publish_stage_directory(
+            out=out,
+            target_name="source",
+            build=build,
+        )
+    # The peer's empty directory is left intact, never replaced by staged bytes.
+    assert (out / "source").is_dir()
+    assert list((out / "source").iterdir()) == []
 
 
 def test_control_journal_rejects_ambiguous_historical_json(

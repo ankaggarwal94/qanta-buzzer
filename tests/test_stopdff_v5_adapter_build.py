@@ -133,6 +133,73 @@ def test_adapter_similarity_fields_keep_six_decimal_identity_contract():
             assert row[field] == round(row[field], 6)
 
 
+class _AliasFakeModel:
+    """Deterministic encoder mapping the fixture strings to fixed vectors."""
+
+    def encode(
+        self,
+        values,
+        *,
+        batch_size,
+        convert_to_numpy,
+        show_progress_bar,
+    ):
+        vectors = {
+            "option one": [1.0, 0.0],
+            "option two": [1.0, 2.0],
+            "prefix": [1.0, 1.0],
+            "prefix extended": [1.0, 3.0],
+        }
+        return np.asarray([vectors[value] for value in values], dtype=float)
+
+
+def _canonical_scoring_question() -> dict:
+    return {
+        "qid": "q",
+        "question": "prefix extended",
+        "cumulative_prefixes": ["prefix", "prefix extended"],
+        "options": ["option one", "option two"],
+        "gold_index": 1,
+        "answer_primary": "option two",
+        "category": "test",
+    }
+
+
+def _alias_scoring_question() -> dict:
+    """Same row as the canonical fixture but via the text/answer aliases that
+    producers._raw_question_trajectory_binding and
+    adapter_build._validate_split_bindings already accept."""
+    return {
+        "qid": "q",
+        "text": "prefix extended",
+        "cumulative_prefixes": ["prefix", "prefix extended"],
+        "options": ["option one", "option two"],
+        "gold_index": 1,
+        "answer": "option two",
+        "category": "test",
+    }
+
+
+def test_scoring_validator_accepts_text_answer_aliases():
+    """A bundle staged via the text/answer aliases (accepted by the raw and
+    split gates) must not be rejected by the adapter-build scoring validator;
+    otherwise it is stageable but impossible to build into an adapter."""
+    adapter_build._validate_scoring_question(_alias_scoring_question())
+
+
+def test_scoring_rows_resolve_aliases_and_match_canonical_bytes():
+    """The downstream scoring lookup must resolve the same aliases, and a
+    canonical bundle's scored rows must be byte-identical (hash-attested rows
+    never drift because _record_value prefers the canonical key)."""
+    canonical_rows = adapter_build._score_question_rows(
+        _canonical_scoring_question(), _AliasFakeModel(), "val"
+    )
+    alias_rows = adapter_build._score_question_rows(
+        _alias_scoring_question(), _AliasFakeModel(), "val"
+    )
+    assert alias_rows == canonical_rows
+
+
 @pytest.mark.parametrize("loader", ["mc", "dataset", "calibration"])
 def test_adapter_inputs_reject_duplicate_json_keys(tmp_path, loader):
     path = tmp_path / f"{loader}.json"

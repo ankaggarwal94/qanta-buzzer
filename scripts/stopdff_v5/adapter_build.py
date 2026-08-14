@@ -270,10 +270,10 @@ def _validate_scoring_question(question: dict[str, Any]) -> None:
     qid = _record_qid(question)
     if not qid:
         raise ValueError("MC scoring question lacks a scalar qid")
-    raw_question = question.get("question")
+    raw_question = _record_value(question, ("question", "text"))
     if not isinstance(raw_question, str) or not normalize_question_text(raw_question):
         raise ValueError(f"MC scoring question {qid!r} has invalid question text")
-    raw_answer = question.get("answer_primary")
+    raw_answer = _record_value(question, ("answer_primary", "answer", "answer_text"))
     if not isinstance(raw_answer, str) or not normalize_split_answer(raw_answer):
         raise ValueError(f"MC scoring question {qid!r} has invalid answer_primary")
     prefixes = question.get("cumulative_prefixes")
@@ -441,7 +441,7 @@ def _score_question_rows(
 
     _validate_scoring_question(question)
     qid = _record_qid(question)
-    full_q = question["question"]
+    full_q = _record_value(question, ("question", "text"))
     prefixes = question["cumulative_prefixes"]
     options = question["options"]
     gold_index = int(question["gold_index"])
@@ -457,7 +457,11 @@ def _score_question_rows(
     full_len = len(canonical_full_q)
     full_question_sha256 = sha256_bytes(canonical_full_q.encode("utf-8"))
 
-    texts = [*options, question["answer_primary"], *prefixes]
+    texts = [
+        *options,
+        _record_value(question, ("answer_primary", "answer", "answer_text")),
+        *prefixes,
+    ]
     if embeddings is None:
         embeddings = model.encode(
             texts,
@@ -543,7 +547,7 @@ def _score_questions_rows(
         _validate_scoring_question(question)
         texts = [
             *question["options"],
-            question["answer_primary"],
+            _record_value(question, ("answer_primary", "answer", "answer_text")),
             *question["cumulative_prefixes"],
         ]
         start = len(flattened_texts)

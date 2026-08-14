@@ -535,7 +535,7 @@ def _publish_stage_directory(
     target_name: str,
     build,
 ):
-    """Build away from the public path and atomically publish the directory."""
+    """Build away from the public path and create-once publish the directory."""
     target = out / target_name
     if target.exists() or target.is_symlink():
         raise FileExistsError(f"local stage already exists: {target_name}")
@@ -543,12 +543,16 @@ def _publish_stage_directory(
         staged = Path(holder) / "artifact"
         result = build(staged)
         _fsync_staged_tree(staged)
-        staged.replace(target)
-        directory = os.open(out, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        # The entry precheck above fails fast on the common already-published
+        # case, but a peer or stale supervisor can create the same empty slot in
+        # the window between it and publication. Publish through the package's
+        # no-replace primitive so that race fails closed (the os.mkdir claim
+        # raises) instead of letting os.replace silently overwrite the empty
+        # peer directory; the primitive also fsyncs the parent so the published
+        # entry survives a crash.
+        fileio.publish_dir_create_once(
+            staged, target, exists_label=f"local stage {target_name}"
+        )
         return result
 
 
