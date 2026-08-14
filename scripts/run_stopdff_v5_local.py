@@ -417,6 +417,19 @@ def _materialize_adapter_stage(
     adoption accepts exactly what a checkpointed reuse would — instead of
     bricking every later resume of the workspace. The reverse mismatch (a
     checkpoint whose stage directory is gone) stays fail-closed.
+
+    Accepted known limitation (PR #30 review): an adopted orphan is minted a
+    fresh ``local-`` execution id and later serialized into the two-build
+    determinism receipt (``_determinism_gate_receipt``) as ``cached: False``,
+    so bytes produced by an earlier unrecorded attempt read as a fresh in-run
+    build. This is a deliberate, narrow ``--resume`` crash-window tradeoff
+    (chosen over bricking resume, above), and it fails safe: the determinism
+    gate still hash-compares the two stages and adoption is identity-gated by
+    ``_load_valid_adapter_stage``. Reopen if that ``cached``/provenance
+    labeling becomes load-bearing for an external integrity consumer, or if
+    local ``--resume`` provenance must be exact; the honest fix is then to
+    force a genuine rebuild for the ``adapter_bundle_determinism`` gate stage
+    and surface ``adopted: true`` instead of ``cached: false``.
     """
     stage_path = out / stage
     stage_present = stage_path.exists() or stage_path.is_symlink()
