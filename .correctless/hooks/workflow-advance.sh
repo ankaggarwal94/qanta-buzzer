@@ -8,6 +8,13 @@
 
 set -euo pipefail
 
+# Portability: uses bash 4+ parameter expansion (${x,,}); fail loud on older bash
+# (e.g. macOS /bin/bash 3.2) with a clear message rather than a cryptic mid-run error.
+if [ "${BASH_VERSINFO:-0}" -lt 4 ]; then
+  echo "workflow-advance: bash >= 4 required (found ${BASH_VERSION:-<4}); run under a modern bash." >&2
+  exit 1
+fi
+
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 CONFIG_FILE="$REPO_ROOT/.correctless/config/workflow-config.json"
 ARTIFACTS_DIR="$REPO_ROOT/.correctless/artifacts"

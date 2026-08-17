@@ -19,6 +19,15 @@ set -euo pipefail
 # Disable glob expansion — patterns like *.pem must not expand to filenames
 set -f
 
+# Portability: this guard uses bash 4+ parameter expansion (${x,,}). On bash < 4
+# (e.g. macOS /bin/bash 3.2) that errors mid-run. Degrade LOUDLY to allow (exit 0)
+# rather than crash, and WARN that secret-file protection is disabled so the
+# fail-open is visible (no worse than the pre-existing bash<4 error behavior).
+if [ "${BASH_VERSINFO:-0}" -lt 4 ]; then
+  echo "sensitive-file-guard: SECURITY — bash >= 4 required; guard DISABLED on bash ${BASH_VERSION:-<4}, operation allowed UNGUARDED. Upgrade bash to re-enable secret-file protection." >&2
+  exit 0
+fi
+
 # ============================================
 # STEP 1: Check jq availability (EA-004)
 # ============================================
