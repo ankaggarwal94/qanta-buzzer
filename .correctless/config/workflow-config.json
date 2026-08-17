@@ -6,9 +6,9 @@
     "description": ""
   },
   "commands": {
-    "test": "pytest",
-    "test_verbose": "pytest -v",
-    "coverage": "pytest --cov",
+    "test": ".venv/bin/python -m pytest",
+    "test_verbose": ".venv/bin/python -m pytest -v",
+    "coverage": ".venv/bin/python -m pytest --cov",
     "lint": "ruff check .",
     "build": ""
   },
