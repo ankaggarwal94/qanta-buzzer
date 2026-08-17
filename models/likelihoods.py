@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import warnings
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -692,6 +693,10 @@ def build_likelihood_from_config(
         - ``"openai"``: OpenAI embedding similarity
         - ``"t5"`` / ``"t5-small"`` / ``"t5-base"`` / ``"t5-large"``:
           T5 encoder semantic similarity
+        - ``"dspy"``: DSPy listwise LM scorer. Not production-wired — the
+          factory cannot build a real scorer from config, so this **fails loud**
+          (``NotImplementedError``) unless ``dspy.allow_uniform_placeholder`` is
+          set. Inject ``DSPyLikelihood(scorer=...)`` directly for real use.
 
         Optional config keys:
         - ``"sbert_name"`` or ``"embedding_model"``: SentenceTransformer model
@@ -699,6 +704,9 @@ def build_likelihood_from_config(
         - ``"openai_model"``: OpenAI embedding model name
           (default: ``"text-embedding-3-small"``)
         - ``"t5_name"``: T5 model name (default: ``"t5-base"``)
+        - ``"dspy.allow_uniform_placeholder"``: opt into an explicit, *warned*
+          uniform ``1/K`` stub for the ``"dspy"`` model (plumbing tests only;
+          never valid for experiments)
 
     corpus_texts : list[str] or None
         Text corpus for TF-IDF fitting. Required when ``model == "tfidf"``,
@@ -760,6 +768,32 @@ def build_likelihood_from_config(
         dspy_cfg = config.get("dspy", {})
         cache_dir = dspy_cfg.get("cache_dir")
         fingerprint = dspy_cfg.get("program_fingerprint", "default")
+
+        # No compiled DSPy program can be loaded from config today:
+        # scripts/optimize_dspy.py compiles but does not persist a program, and
+        # this factory has no loader or dspy.Predict->callable adapter. Rather
+        # than silently return a UNIFORM (inert) scorer — which yields a flat
+        # belief and no buzz signal, invalidating any experiment that selects
+        # it — fail loud by default. A caller who wants a real scorer should
+        # inject DSPyLikelihood(scorer=...) directly; the uniform stub is
+        # available only as an explicit, warned opt-in for plumbing tests.
+        if not dspy_cfg.get("allow_uniform_placeholder", False):
+            raise NotImplementedError(
+                "likelihood.model='dspy' has no compiled scorer to load: "
+                "scripts/optimize_dspy.py does not persist a program and the "
+                "factory cannot build a real DSPy scorer from config. Inject "
+                "DSPyLikelihood(scorer=...) directly, or set "
+                "dspy.allow_uniform_placeholder: true to opt into an explicit "
+                "UNIFORM stub (plumbing tests only)."
+            )
+
+        warnings.warn(
+            "DSPy likelihood is using a UNIFORM placeholder scorer (every "
+            "option scored 1/K); beliefs will not update from clues. Plumbing "
+            "stub only — not valid for experiments.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
         def _placeholder_scorer(clue: str, options: list[str]) -> list[float]:
             return [1.0 / max(1, len(options))] * len(options)

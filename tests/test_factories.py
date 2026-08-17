@@ -234,14 +234,28 @@ class TestMakeEnvFromConfig:
 class TestDSPyFactoryIntegration:
     """Factory dispatches to DSPyLikelihood when configured."""
 
-    def test_factory_returns_dspy_likelihood(self):
+    def test_dspy_without_scorer_config_fails_loud(self):
+        # No real scorer can be built from config (optimize_dspy.py does not
+        # persist a compiled program and the factory has no loader), so
+        # selecting dspy without the explicit opt-in must fail loud rather than
+        # silently return a uniform-scoring (inert) model.
+        config = {"likelihood": {"model": "dspy"}, "dspy": {}}
+        with pytest.raises((NotImplementedError, ValueError)):
+            build_likelihood_from_config(config)
+
+    def test_dspy_uniform_placeholder_is_opt_in_and_warns(self):
         from models.dspy_likelihood import DSPyLikelihood
 
         config = {
             "likelihood": {"model": "dspy"},
-            "dspy": {"cache_dir": None, "program_fingerprint": "test"},
+            "dspy": {
+                "cache_dir": None,
+                "program_fingerprint": "test",
+                "allow_uniform_placeholder": True,
+            },
         }
-        model = build_likelihood_from_config(config)
+        with pytest.warns(RuntimeWarning, match="(?i)uniform"):
+            model = build_likelihood_from_config(config)
         assert isinstance(model, DSPyLikelihood)
 
     def test_default_paths_unchanged(self, sample_corpus):
