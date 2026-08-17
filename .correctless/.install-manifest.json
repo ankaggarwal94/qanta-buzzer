@@ -11,8 +11,8 @@
       "source_hash": "c8bc471f1be9317b94a92b03b8669f7adaeabe319079b75d22f1e8725974a63a"
     },
     "hooks/sensitive-file-guard.sh": {
-      "installed_hash": "f41772b2e5086dee85daa0ddfe7e6d11092461e0289482ce869244e51d574dd7",
-      "source_hash": "f41772b2e5086dee85daa0ddfe7e6d11092461e0289482ce869244e51d574dd7"
+      "installed_hash": "14de08c186674ad5c9d4a4d1ff22bb97c2f74f2f50af74a2a3190856958b537b",
+      "source_hash": "14de08c186674ad5c9d4a4d1ff22bb97c2f74f2f50af74a2a3190856958b537b"
     },
     "hooks/statusline.sh": {
       "installed_hash": "0a62b8ef706161bc864493f5e6b37d21d1d104671da6fc4ffc2c6454dd33f5b0",
@@ -23,12 +23,12 @@
       "source_hash": "7751df5714b2e857b54c5d433488de93e5bd8d98d994d29e1a025e6e92e40966"
     },
     "hooks/workflow-advance.sh": {
-      "installed_hash": "59f9d168f8ce502fae76e3b3b5a459cdb6cb4f600d1369279d8dca41e69865ef",
-      "source_hash": "59f9d168f8ce502fae76e3b3b5a459cdb6cb4f600d1369279d8dca41e69865ef"
+      "installed_hash": "1323855103ac8966fbda6e9ac1d18ff14615b834b38d6149b9d5c89a6dd7bbf7",
+      "source_hash": "1323855103ac8966fbda6e9ac1d18ff14615b834b38d6149b9d5c89a6dd7bbf7"
     },
     "hooks/workflow-gate.sh": {
-      "installed_hash": "bb10dcc3206fbd452360e797553067ec96a4f0d04e8c19aa56214007094d3c28",
-      "source_hash": "bb10dcc3206fbd452360e797553067ec96a4f0d04e8c19aa56214007094d3c28"
+      "installed_hash": "cb3e987b1e561915951d4da683d200da86787888c83f79d2f6243e0886553983",
+      "source_hash": "cb3e987b1e561915951d4da683d200da86787888c83f79d2f6243e0886553983"
     },
     "scripts/antipattern-scan.sh": {
       "installed_hash": "68b16b3c568aada22cf18f9a06b229522094121468550127d21b53f41c6cdbaa",
