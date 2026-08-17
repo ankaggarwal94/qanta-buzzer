@@ -802,8 +802,10 @@ Requires the `dspy` extra and an LM API key.
 > pipeline contract via compilation only; there is no meaningful end-to-end
 > evaluation to run until a real scorer is wired (inject
 > `DSPyLikelihood(scorer=...)` directly). The uniform stub remains reachable for
-> plumbing tests only, via the explicit `dspy.allow_uniform_placeholder` opt-in,
-> but its scores are inert and must never be recorded as a baseline.
+> unit-level factory tests only, via the explicit
+> `dspy.allow_uniform_placeholder: true` opt-in (literal boolean); it cannot
+> run through the CLI pipeline (embedding pre-compute is unsupported by the
+> score-only model) and its inert scores must never be recorded as a baseline.
 >
 > **Data path caveat:** `optimize_dspy.py` prefers
 > `artifacts/smoke/train_dataset.json` over `artifacts/main/train_dataset.json`.
@@ -820,13 +822,13 @@ python scripts/optimize_dspy.py \
     --config configs/default.yaml \
     --max-examples 100
 
-# There is no meaningful end-to-end dspy eval yet: likelihood.model=dspy fails
-# loud (NotImplementedError) because the factory cannot load a compiled scorer
-# from config. To smoke-test ONLY the plumbing, opt into the inert 1/K uniform
-# stub explicitly — its output is NOT a baseline, so never copy it into results/:
-#   python scripts/run_baselines.py --config configs/default.yaml \
-#       --mc-path artifacts/main/mc_dataset.json \
-#       likelihood.model=dspy dspy.allow_uniform_placeholder=true
+# There is no end-to-end dspy eval: likelihood.model=dspy fails loud
+# (NotImplementedError) because the factory cannot load a compiled scorer from
+# config. The uniform-stub opt-in (dspy.allow_uniform_placeholder) is
+# unit-test-only and does NOT run through this CLI either: run_baselines.py
+# pre-computes embeddings, which the score-only DSPyLikelihood does not
+# support, so the pipeline aborts before writing any output. Phase 12 ends at
+# compilation above.
 ```
 
 ---

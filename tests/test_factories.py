@@ -264,6 +264,30 @@ class TestDSPyFactoryIntegration:
         assert abs(float(sum(scores)) - 1.0) < 1e-9
         assert all(abs(float(s) - 0.25) < 1e-9 for s in scores)
 
+    def test_dspy_opt_in_requires_literal_true(self):
+        # The escape hatch must not be enabled by truthy non-booleans (e.g. a
+        # YAML-quoted "true"/"false" string, or an int) — literal boolean only.
+        for bad in ("true", "false", 1):
+            config = {
+                "likelihood": {"model": "dspy"},
+                "dspy": {"allow_uniform_placeholder": bad},
+            }
+            with pytest.raises((NotImplementedError, ValueError), match="(?i)dspy"):
+                build_likelihood_from_config(config)
+
+    def test_dspy_placeholder_ignores_configured_cache(self):
+        # Cache isolation: a configured dspy.cache_dir must NOT be wired into
+        # the placeholder — a pre-seeded persistent score cache would otherwise
+        # be returned by score() before the scorer runs, silently violating the
+        # "uniform" warning.
+        config = {
+            "likelihood": {"model": "dspy"},
+            "dspy": {"cache_dir": "cache/dspy", "allow_uniform_placeholder": True},
+        }
+        with pytest.warns(RuntimeWarning, match="(?i)uniform"):
+            model = build_likelihood_from_config(config)
+        assert model._cache_dir is None
+
     def test_dspy_likelihood_module_imports_without_dspy_extra(self):
         # T2 regression guard: the fail-loud path relies on models.dspy_likelihood
         # importing WITHOUT the `dspy` package, so NotImplementedError (not
