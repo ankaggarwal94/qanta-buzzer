@@ -795,10 +795,15 @@ Requires the `dspy` extra and an LM API key.
 
 > **Limitation:** `optimize_dspy.py` compiles and reports metrics, but does
 > not persist the compiled program in a way that `build_likelihood_from_config()`
-> can load it. Setting `likelihood.model=dspy` constructs `DSPyLikelihood`
-> with a placeholder uniform scorer, not the compiled program. This phase
-> is useful for validating the DSPy pipeline contract, but the evaluated
-> baselines below will use uniform scores — not the compiled model's.
+> can load it. Because no compiled program can be loaded from config,
+> `likelihood.model=dspy` now **fails loud** (`NotImplementedError`) rather than
+> silently constructing a uniform-scorer `DSPyLikelihood` — an inert 1/K belief
+> would invalidate any experiment that used it. This phase validates the DSPy
+> pipeline contract via compilation only; there is no meaningful end-to-end
+> evaluation to run until a real scorer is wired (inject
+> `DSPyLikelihood(scorer=...)` directly). The uniform stub remains reachable for
+> plumbing tests only, via the explicit `dspy.allow_uniform_placeholder` opt-in,
+> but its scores are inert and must never be recorded as a baseline.
 >
 > **Data path caveat:** `optimize_dspy.py` prefers
 > `artifacts/smoke/train_dataset.json` over `artifacts/main/train_dataset.json`.
@@ -815,12 +820,13 @@ python scripts/optimize_dspy.py \
     --config configs/default.yaml \
     --max-examples 100
 
-# Evaluate with DSPy scorer (NOTE: uses placeholder uniform scorer, not compiled)
-python scripts/run_baselines.py \
-    --config configs/default.yaml \
-    --mc-path artifacts/main/mc_dataset.json \
-    likelihood.model=dspy
-cp artifacts/main/baseline_summary.json results/baselines_dspy.json
+# There is no meaningful end-to-end dspy eval yet: likelihood.model=dspy fails
+# loud (NotImplementedError) because the factory cannot load a compiled scorer
+# from config. To smoke-test ONLY the plumbing, opt into the inert 1/K uniform
+# stub explicitly — its output is NOT a baseline, so never copy it into results/:
+#   python scripts/run_baselines.py --config configs/default.yaml \
+#       --mc-path artifacts/main/mc_dataset.json \
+#       likelihood.model=dspy dspy.allow_uniform_placeholder=true
 ```
 
 ---
