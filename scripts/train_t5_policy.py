@@ -507,12 +507,6 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.skip_supervised and args.model_path is None:
         print("ERROR: --model-path is required when using --skip-supervised")
         sys.exit(1)
-    if args.hazard_pretrain:
-        raise NotImplementedError(
-            "Hazard pretraining loop not yet implemented. "
-            "The math utilities are available in training/hazard_pretrain.py, "
-            "but the end-to-end bridge has not been wired into train_t5_policy.py yet."
-        )
 
 
 def split_questions(questions: list, config: dict) -> tuple:
@@ -594,6 +588,24 @@ def main() -> None:
     else:
         supervised_model_path = args.model_path
         print(f"\nSkipping supervised training, using model: {supervised_model_path}")
+
+    # Phase 1.5: Hazard-pretrain warm-start bridge (optional).
+    # Slots between the supervised warm-start and PPO: teaches the buzz/stop
+    # head *when to buzz* before PPO, then hands its checkpoint to PPO.
+    if args.hazard_pretrain:
+        print("\n" + "=" * 60)
+        print("PHASE 1.5: HAZARD-PRETRAIN WARM-START BRIDGE")
+        print("=" * 60)
+        from training.hazard_pretrain import run_hazard_pretrain
+
+        supervised_model_path = run_hazard_pretrain(
+            config=flat_config,
+            train_questions=train_questions,
+            pretrained_model_path=supervised_model_path,
+            beta_terminal=args.beta_terminal,
+            freeze_answer_head=args.freeze_answer_head,
+        )
+        print(f"Hazard-bridge model saved to: {supervised_model_path}")
 
     # Phase 2: PPO fine-tuning
     print("\n" + "=" * 60)
