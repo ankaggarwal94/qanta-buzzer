@@ -106,7 +106,10 @@ _read_spec_hash() {
   [ -f "$REPO_ROOT/$_spec_path" ] || return 1
 
   _spec_hash="$(sha256_hash_file "$REPO_ROOT/$_spec_path" 2>/dev/null || echo "")"
-  _spec_lines="$(wc -l < "$REPO_ROOT/$_spec_path" 2>/dev/null || echo "0")"
+  # Strip whitespace: BSD/macOS `wc -l` left-pads its output (e.g. "      40"),
+  # which jq `tonumber` rejects downstream ("cannot be parsed as a number").
+  _spec_lines="$(wc -l < "$REPO_ROOT/$_spec_path" 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$_spec_lines" ] || _spec_lines="0"
   [ -n "$_spec_hash" ] || return 1
 }
 
