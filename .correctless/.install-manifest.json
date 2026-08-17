@@ -1,6 +1,6 @@
 {
   "installed_at": "2026-08-17T07:49:24Z",
-  "source_dir": "/Users/ankit.aggarwal/.claude/plugins/cache/correctless/correctless/3.0.0",
+  "source_dir": "",
   "files": {
     "hooks/audit-trail.sh": {
       "installed_hash": "ad8f6bf3db3367b1a7d3fae872deede6876f7a66cb859b8bec0ed8be16285fed",

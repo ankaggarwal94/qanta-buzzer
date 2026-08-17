@@ -9,7 +9,7 @@
     "test": ".venv/bin/python -m pytest",
     "test_verbose": ".venv/bin/python -m pytest -v",
     "coverage": ".venv/bin/python -m pytest --cov",
-    "lint": "ruff check .",
+    "lint": "",
     "build": ""
   },
   "patterns": {

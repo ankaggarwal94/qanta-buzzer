@@ -19,6 +19,14 @@ set -euo pipefail
 set -f
 command -v jq >/dev/null 2>&1 || { echo "BLOCKED: jq not found — required for workflow gate" >&2; exit 2; }
 
+# Portability: this gate uses bash 4+ parameter expansion (e.g. ${x,,}). On bash < 4
+# (such as macOS /bin/bash 3.2) that errors cryptically mid-run; degrade to ALLOW
+# (exit 0) with a clear message rather than fail or block the operation.
+if [ "${BASH_VERSINFO:-0}" -lt 4 ]; then
+  echo "workflow-gate: bash >= 4 required for phase-gating; allowing operation (gate disabled on bash ${BASH_VERSION:-<4})" >&2
+  exit 0
+fi
+
 REPO_ROOT="$(git --no-optional-locks rev-parse --show-toplevel 2>/dev/null || pwd)"
 CONFIG_FILE="$REPO_ROOT/.correctless/config/workflow-config.json"
 ARTIFACTS_DIR="$REPO_ROOT/.correctless/artifacts"

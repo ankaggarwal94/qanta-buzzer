@@ -240,7 +240,7 @@ class TestDSPyFactoryIntegration:
         # selecting dspy without the explicit opt-in must fail loud rather than
         # silently return a uniform-scoring (inert) model.
         config = {"likelihood": {"model": "dspy"}, "dspy": {}}
-        with pytest.raises((NotImplementedError, ValueError)):
+        with pytest.raises((NotImplementedError, ValueError), match="(?i)dspy"):
             build_likelihood_from_config(config)
 
     def test_dspy_uniform_placeholder_is_opt_in_and_warns(self):
@@ -257,6 +257,22 @@ class TestDSPyFactoryIntegration:
         with pytest.warns(RuntimeWarning, match="(?i)uniform"):
             model = build_likelihood_from_config(config)
         assert isinstance(model, DSPyLikelihood)
+        # T1: assert the stub's BEHAVIOR (inert uniform 1/K), not just its type —
+        # a non-uniform or unnormalized regression must fail here.
+        scores = model.score("some clue", ["a", "b", "c", "d"])
+        assert len(scores) == 4
+        assert abs(float(sum(scores)) - 1.0) < 1e-9
+        assert all(abs(float(s) - 0.25) < 1e-9 for s in scores)
+
+    def test_dspy_likelihood_module_imports_without_dspy_extra(self):
+        # T2 regression guard: the fail-loud path relies on models.dspy_likelihood
+        # importing WITHOUT the `dspy` package, so NotImplementedError (not
+        # ImportError) is the primary failure. A future top-level `import dspy`
+        # there would silently flip the failure mode and break the fail-loud test.
+        import importlib
+
+        mod = importlib.import_module("models.dspy_likelihood")
+        assert hasattr(mod, "DSPyLikelihood")
 
     def test_default_paths_unchanged(self, sample_corpus):
         config = {"likelihood": {"model": "tfidf"}}

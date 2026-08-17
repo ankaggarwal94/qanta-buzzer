@@ -1,4 +1,4 @@
-# Antipatterns — {PROJECT_NAME}
+# Antipatterns — qanta-buzzer
 
 Every item is a bug class that escaped testing at least once.
 The /cspec and /creview skills check new features against this list.

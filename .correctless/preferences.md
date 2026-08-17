@@ -10,8 +10,8 @@
 
 <!-- Which severity levels to auto-fix vs surface to the human -->
 
-- **Auto-fix**: CRITICAL, HIGH (default — the agent fixes these without asking)
-- **Surface**: MEDIUM, LOW (default — reported in the PR summary for human review)
+- **Auto-fix**: CRITICAL, HIGH, and MEDIUM findings under 50 LOC (matches `config/auto-policy.json` `qa_dispositions`, where `medium` = `{ fix_under_loc: 50, defer_over_loc: true }`)
+- **Surface / defer**: MEDIUM findings ≥ 50 LOC, and LOW (reported for human review rather than auto-fixed)
 
 <!-- Recommended: keep the default. Override only if your project has specific triage rules. -->
 

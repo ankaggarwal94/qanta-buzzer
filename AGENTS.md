@@ -144,6 +144,10 @@ Old qb-rl import paths that still resolve:
 
 OpenAI support is opt-in only. Default local workflows stay offline-friendly and do not require the `openai` package or `OPENAI_API_KEY`.
 
+## Correctless (structured-development tooling)
+
+`.correctless/` vendors the Correctless dev-workflow framework (spec → review → TDD → verify gates). It is **advisory tooling layered under GSD, which remains canonical for planning and phase state** (`.planning/`). The root `CLAUDE.md` rule "Never run a second orchestration engine inside active GSD-managed execution" is honored: Correctless is used for structured review/TDD, not as a competing planning engine, and `.correctless/ARCHITECTURE.md` records the GSD-canonical-for-planning carve-out (adopted as a deliberate, consented decision). Its hook wiring (`.claude/settings.json`) is **gitignored**, so a plain checkout does not auto-run any gate. Update/remove: re-run `/csetup` to regenerate `.correctless/` from `.correctless/.install-manifest.json`, or `rm -rf .correctless/` to uninstall. See `.correctless/AGENT_CONTEXT.md`.
+
 ## Conventions
 
 - NumPy-style docstrings with Parameters/Returns sections

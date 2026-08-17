@@ -722,6 +722,11 @@ def build_likelihood_from_config(
     ValueError
         If ``model`` is ``"tfidf"`` and ``corpus_texts`` is None.
         If ``model`` is not a recognized model type.
+        If ``model`` is ``"dspy"`` and the ``dspy`` config is not a mapping.
+    NotImplementedError
+        If ``model`` is ``"dspy"`` without ``dspy.allow_uniform_placeholder``:
+        no compiled scorer can be built from config, so the factory fails loud
+        rather than returning an inert uniform stub.
 
     Examples
     --------
@@ -766,6 +771,12 @@ def build_likelihood_from_config(
                 "Install with: pip install -e '.[dspy]'"
             ) from exc
         dspy_cfg = config.get("dspy", {})
+        if not isinstance(dspy_cfg, dict):
+            raise ValueError(
+                "likelihood 'dspy' config must be a mapping (e.g. "
+                "dspy: {allow_uniform_placeholder: true}); got "
+                f"{type(dspy_cfg).__name__}."
+            )
         cache_dir = dspy_cfg.get("cache_dir")
         fingerprint = dspy_cfg.get("program_fingerprint", "default")
 

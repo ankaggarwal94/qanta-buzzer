@@ -44,9 +44,9 @@ sub-project; not a deployed service.
 | Need to... | Do this |
 |------------|---------|
 | Run tests | `.venv/bin/python -m pytest` (canonical env; not homebrew py3.11 for torch tests) |
-| Lint | `ruff check .` |
+| Lint | `ruff check .` (requires `pip install ruff`; not in the default `.venv`) |
 | Offline DSPy compile | `python scripts/optimize_dspy.py --config configs/default.yaml` (prints fingerprint; does not persist a program yet) |
-| Find a spec | `.correctless/specs/{feature}.md` |
+| Find a spec | `.correctless/specs/{feature}.md` (created on first `/cspec`) |
 | Check architecture | `.correctless/ARCHITECTURE.md` (essentials) + `AGENTS.md` (canonical) |
 | Planning / phase state | `.planning/` (GSD is canonical) |
 | See known bugs | `.correctless/antipatterns.md` |

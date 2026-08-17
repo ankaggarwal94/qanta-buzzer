@@ -354,6 +354,14 @@ def main() -> None:
         ),
         "resolved_mc_path": project_relative(mc_path),
         "likelihood_model": str(config.get("likelihood", {}).get("model", "")),
+        # Degeneracy marker (PROMOTED-2): True when the dspy backend ran with the
+        # inert uniform 1/K placeholder (explicit opt-in), so a uniform-scored
+        # summary is never mistaken for a real dspy baseline in a later sweep.
+        "dspy_uniform_placeholder": bool(
+            str(config.get("likelihood", {}).get("model", "")) == "dspy"
+            and isinstance(config.get("dspy"), dict)
+            and config["dspy"].get("allow_uniform_placeholder", False)
+        ),
     }
     save_json(out_dir / "baseline_summary.json", summary)
 
