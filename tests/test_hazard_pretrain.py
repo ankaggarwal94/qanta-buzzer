@@ -669,3 +669,26 @@ def test_qa013_supervised_best_gate_saves_on_zero_val_accuracy(
         "(epoch 1 always saves under the -inf init)"
     )
     assert summary["best_val_acc"] == pytest.approx(0.0)
+
+
+# Tests MA-018 [unit]: the ablation parameter is keyword-only (a positional
+# caller could silently bind it to another slot), and the CLI's mirrored
+# ablation tuple stays in lockstep with the training module's.
+def test_ma018_ablation_keyword_only_and_tuple_parity() -> None:
+    import inspect
+
+    import scripts.train_t5_policy as train_t5_policy
+    import training.hazard_pretrain as hazard_pretrain
+
+    signature = inspect.signature(hazard_pretrain.run_hazard_pretrain)
+    assert (
+        signature.parameters["ablation"].kind
+        is inspect.Parameter.KEYWORD_ONLY
+    ), "run_hazard_pretrain's ablation must stay keyword-only (MA-018)"
+
+    assert tuple(train_t5_policy.KNOWN_HAZARD_ABLATIONS) == tuple(
+        hazard_pretrain._VALID_ABLATIONS
+    ), (
+        "the CLI mirror KNOWN_HAZARD_ABLATIONS must equal the training "
+        "module's _VALID_ABLATIONS (MA-018 ablation-tuple parity)"
+    )

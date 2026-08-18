@@ -41,6 +41,7 @@ From command line::
 from __future__ import annotations
 
 import json
+import math
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -932,14 +933,44 @@ def run_ppo_training(
         print(f"Test Accuracy: {test_metrics['accuracy']:.4f}")
         print(f"Test Avg Reward: {test_metrics['average_reward']:.4f}")
 
-        # Save test results
-        test_results = {
-            "test_metrics": test_metrics,
-            "training_summary": summary,
-        }
+        # Save test results.
+        # MA-017: never serialize non-finite floats into JSON artifacts —
+        # summary["best_val_reward"] is -inf when no validation improved it,
+        # and ``json.dump`` would emit the strict-invalid ``-Infinity``
+        # token (default=float only fires for non-serializable types, so it
+        # cannot catch a plain float). Non-finite numbers are clamped to
+        # null; allow_nan=False is the belt-and-braces guard.
+        test_results = _json_finite(
+            {
+                "test_metrics": test_metrics,
+                "training_summary": summary,
+            }
+        )
         results_path = trainer.checkpoint_dir / "test_results.json"
         with open(results_path, "w", encoding="utf-8") as f:
-            json.dump(test_results, f, indent=2, default=float)
+            json.dump(test_results, f, indent=2, default=float, allow_nan=False)
         print(f"Test results saved to {results_path}")
 
     return model, trainer
+
+
+def _json_finite(obj: Any) -> Any:
+    """Recursively replace non-finite floats with ``None`` (MA-017).
+
+    Applied to the ``test_results.json`` payload before dumping so a
+    ``-inf`` ``best_val_reward`` (or any NaN metric) becomes JSON ``null``
+    instead of the strict-invalid ``-Infinity`` token. Numpy scalars are
+    handled via their ``float()`` coercion; containers recurse; everything
+    else passes through unchanged (``default=float`` still covers exotic
+    numpy types at dump time).
+    """
+    if isinstance(obj, dict):
+        return {key: _json_finite(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_finite(value) for value in obj]
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, (float, np.floating)):
+        number = float(obj)
+        return number if math.isfinite(number) else None
+    return obj

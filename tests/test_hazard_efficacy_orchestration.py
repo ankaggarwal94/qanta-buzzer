@@ -538,8 +538,13 @@ def test_r008_plan_argv_flag_mapping(tmp_path: Path) -> None:
         assert _flag_value(argv, "--hazard-ablation") == "shuffled_nll"
 
 
-# Tests R-008 [integration]: repeatable --variant NAME:FLAGS adds B-variant
-# runs with their own dirs and extra hazard flags.
+# Tests R-008 [integration]: repeatable --variant NAME:FLAGS adds hazard
+# variant runs with their own dirs and extra hazard flags.
+# AMENDED in mini-audit fix round (MA-008): variants now live in a namespace
+# DISTINCT from the role-bearing core arms — run dirs are
+# variant_<NAME>_seed<k>, arm label variant:<NAME> — and they INHERIT the
+# invocation's hazard knobs with FLAGS overriding (an overridden knob is not
+# re-injected, so each knob flag appears exactly once).
 def test_r008_variant_plan_adds_hazard_variant_runs(tmp_path: Path) -> None:
     out = tmp_path / "out"
     args = _namespace(
@@ -549,14 +554,24 @@ def test_r008_variant_plan_adds_hazard_variant_runs(tmp_path: Path) -> None:
     plan = harness.plan_runs(args)
     assert len(plan) == 8  # (A, B, C, Bfz) x 2 seeds
 
-    variants = [rec for rec in plan if rec["arm"] == "Bfz"]
+    variants = [rec for rec in plan if rec["arm"] == "variant:Bfz"]
     assert len(variants) == 2
     for rec in variants:
-        assert Path(rec["run_dir"]) == out / f"Bfz_seed{rec['seed']}"
+        assert rec["variant"] == "Bfz"
+        assert Path(rec["run_dir"]) == out / f"variant_Bfz_seed{rec['seed']}"
         argv = rec["argv"]
         assert "--hazard-pretrain" in argv
+        # FLAGS override the inherited knobs: exactly one occurrence each.
+        assert argv.count("--beta-terminal") == 1
         assert _flag_value(argv, "--beta-terminal") == "2.0"
-        assert "--freeze-answer-head" in argv
+        assert argv.count("--freeze-answer-head") == 1
+        # MA-001: the planned hazard identity mirrors the parsed argv.
+        assert rec["hazard_knobs"] == {
+            "pretrain": True,
+            "beta_terminal": 2.0,
+            "freeze_answer_head": True,
+            "ablation": None,
+        }
 
 
 # Tests R-008 [unit]: defensive — variant names that would escape the out
@@ -1307,6 +1322,8 @@ def test_qa002_force_rebuilds_shared_supervised(
 # Tests QA-003 [integration]: a config-override variant composes an argv the
 # REAL child parser accepts, with every positional key=value override
 # contiguous at the argv tail.
+# AMENDED in mini-audit fix round (MA-008): variant run dirs/arm labels moved
+# to the distinct variant_<NAME>_seed<k> / variant:<NAME> namespace.
 def test_qa003_variant_positional_override_argv_parses_and_stays_tail(
     tmp_path: Path,
 ) -> None:
@@ -1316,14 +1333,14 @@ def test_qa003_variant_positional_override_argv_parses_and_stays_tail(
     plan = harness.plan_runs(
         _namespace(out, seeds=[1], variant=["lr_sweep:ppo.lr=2e-5"])
     )
-    variant = next(rec for rec in plan if rec["arm"] == "lr_sweep")
+    variant = next(rec for rec in plan if rec["arm"] == "variant:lr_sweep")
     argv = variant["argv"]
 
     positional = [t for t in argv[2:] if "=" in t and not t.startswith("-")]
     assert positional == [
         "ppo.lr=2e-5",
         "ppo.eval_interval=1",
-        f"supervised.checkpoint_dir={out / 'lr_sweep_seed1'}",
+        f"supervised.checkpoint_dir={out / 'variant_lr_sweep_seed1'}",
     ]
     assert argv[-len(positional):] == positional, (
         "positional overrides must be CONTIGUOUS at the argv tail; "

@@ -281,6 +281,7 @@ def make_run_dir(
     marker_git_sha: str | None = None,
     marker_wall_clock_seconds: float = 12.5,
     marker_smoke: bool = True,
+    marker_extra: dict[str, Any] | None = None,
     model_name: str = "t5-small",
     ppo_checkpoint_dir: str = "checkpoints",
     split_source: str = "persisted_artifacts",
@@ -358,17 +359,19 @@ def make_run_dir(
         write_json(run_dir / "eval_result.json", payload)
 
     if marker:
-        write_json(
-            run_dir / "RUN_COMPLETE.json",
-            {
-                "git_sha": marker_git_sha or current_git_sha(),
-                "arm": arm,
-                "seed": seed,
-                "completed_at": "2026-08-18T00:00:00Z",
-                "wall_clock_seconds": marker_wall_clock_seconds,
-                "smoke": marker_smoke,
-            },
-        )
+        marker_payload: dict[str, Any] = {
+            "git_sha": marker_git_sha or current_git_sha(),
+            "arm": arm,
+            "seed": seed,
+            "completed_at": "2026-08-18T00:00:00Z",
+            "wall_clock_seconds": marker_wall_clock_seconds,
+            "smoke": marker_smoke,
+        }
+        # marker_extra (additive, mini-audit round): extra/overriding marker
+        # fields, e.g. MA-003's shared_supervised_weights_sha256 or MA-015's
+        # doctored-type fields.
+        marker_payload.update(marker_extra or {})
+        write_json(run_dir / "RUN_COMPLETE.json", marker_payload)
     return run_dir
 
 

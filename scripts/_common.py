@@ -588,7 +588,7 @@ def to_serializable(item: Any) -> Any:
     return item
 
 
-def save_json(path: str | Path, data: Any) -> Path:
+def save_json(path: str | Path, data: Any, *, allow_nan: bool = True) -> Path:
     """Save data to a JSON file, creating parent directories as needed.
 
     Applies ``to_serializable`` to convert dataclasses before writing.
@@ -599,6 +599,13 @@ def save_json(path: str | Path, data: Any) -> Path:
         Output file path.
     data : Any
         Data to serialize. Dataclasses are converted to dicts automatically.
+    allow_nan : bool, keyword-only
+        MA-017 (additive; default ``True`` preserves every existing
+        caller's behavior): when ``False``, non-finite floats
+        (NaN/Infinity/-Infinity) raise ``ValueError`` instead of being
+        serialized as strict-invalid JSON tokens. New writers — and any
+        writer whose artifact is re-read with a strict parser — should pass
+        ``allow_nan=False``.
 
     Returns
     -------
@@ -608,7 +615,7 @@ def save_json(path: str | Path, data: Any) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("w", encoding="utf-8") as f:
-        json.dump(to_serializable(data), f, indent=2)
+        json.dump(to_serializable(data), f, indent=2, allow_nan=allow_nan)
     return p
 
 

@@ -168,6 +168,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--skip-test-eval",
+        action="store_true",
+        help=(
+            "Skip the final test-set evaluation after PPO (MA-017). Used by "
+            "orchestrators whose PPO phase is discarded (e.g. the hazard-"
+            "efficacy shared supervised child) so the unconditional test-"
+            "eval tail is not paid for a throwaway checkpoint."
+        ),
+    )
+    parser.add_argument(
         "overrides",
         nargs="*",
         help="Config overrides: key=value (e.g. model.model_name=t5-base)",
@@ -706,11 +716,19 @@ def main() -> None:
     # R-001: re-seed immediately before the PPO phase.
     if args.seed is not None:
         _seed_all_rngs(args.seed)
+    # MA-017: --skip-test-eval threads test_questions=None so run_ppo_training
+    # skips its final test-eval tail (getattr keeps hand-built namespaces
+    # from older callers valid; the real parse_args always sets the flag).
+    if getattr(args, "skip_test_eval", False):
+        print("Skipping final test-set evaluation (--skip-test-eval).")
+        ppo_test_questions = None
+    else:
+        ppo_test_questions = test_questions
     model, trainer = run_ppo_training(
         config=flat_config,
         train_questions=train_questions,
         val_questions=val_questions,
-        test_questions=test_questions,
+        test_questions=ppo_test_questions,
         pretrained_model_path=supervised_model_path,
     )
 

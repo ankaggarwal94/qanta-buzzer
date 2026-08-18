@@ -38,11 +38,14 @@ import fnmatch
 import hashlib
 import io
 import json
+import math
 import os
 import platform
+import queue
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -94,12 +97,74 @@ PRIMARY_MIN_POSITION_GAIN = 1.0
 PRIMARY_MAX_ACCURACY_DROP = 0.01
 SIGNIFICANCE_MIN_QUESTIONS = 50
 PROBE_MAX_QUESTIONS = 32
+# MA-006: default output-staleness watchdog for child runs (minutes without a
+# single output line before the child is killed); 0/negative disables.
+DEFAULT_STALL_TIMEOUT_MINUTES = 60.0
 
 _TRAIN_SCRIPT = PROJECT_ROOT / "scripts" / "train_t5_policy.py"
 _SHARED_SUPERVISED_DIRNAME = "shared_supervised"
 _PERSISTED_SOURCE = "persisted_artifacts"
 _CORE_ARMS = frozenset(DEFAULT_ARMS)
 _LOG_TAIL_LINES = 20
+
+# MA-006: active watchdog limits (seconds), armed by main() from the CLI
+# flags. Module-level (not extra _run_child positional args) so the pinned
+# single injectable seam signature `_run_child(argv, log_path)` survives.
+_ACTIVE_STALL_TIMEOUT_SECONDS: float | None = DEFAULT_STALL_TIMEOUT_MINUTES * 60.0
+_ACTIVE_CHILD_TIMEOUT_SECONDS: float | None = None
+
+# MA-005 / QA-001: ONE atomic invalidation set for all per-run derived
+# artifacts — every file here is unlinked before a child is (re-)launched
+# into an existing dir, so no stale derived artifact can outlive its run.
+_STALE_RUN_ARTIFACTS = (
+    RUN_COMPLETE_MARKER,
+    EVAL_RESULT_FILENAME,
+    HAZARD_DYNAMICS_FILENAME,
+)
+
+# MA-008: the variant namespace is DISTINCT from the role-bearing core-arm
+# literals: run dirs are ``variant_<NAME>_seed<k>`` and the arm label is
+# ``variant:<NAME>``, so a variant can never capture a control/treatment
+# role in the endpoint/significance/deltas keying (which keys on "A"/"B").
+_VARIANT_DIR_PREFIX = "variant_"
+_VARIANT_ARM_PREFIX = "variant:"
+
+# MA-008: FLAGS tokens a variant may NEVER smuggle past arm control. The
+# flag set covers identity-bearing child flags (last-wins would silently
+# rebind the run identity); the override prefixes cover the two positional
+# overrides the harness itself injects.
+_RESERVED_VARIANT_FLAGS = frozenset(
+    {"--seed", "--model-path", "--config", "--skip-supervised", "--mc-path",
+     "--smoke"}
+)
+_RESERVED_VARIANT_OVERRIDE_PREFIXES = (
+    "supervised.checkpoint_dir=",
+    "ppo.eval_interval=",
+)
+
+# MA-008: value-taking flags of the child parser (scripts/train_t5_policy.py)
+# — the token FOLLOWING one of these in variant FLAGS is its value, not a
+# bare positional (the roundtrip through the real parser remains the
+# authority; this mirror only scopes the bare-token preflight check).
+_CHILD_VALUE_FLAGS = frozenset(
+    {"--config", "--model-path", "--mc-path", "--ppo-iterations",
+     "--beta-terminal", "--hazard-ablation", "--seed"}
+)
+
+# MA-007: per-checkpoint disk estimates (bytes) used by the preflight disk
+# budget when no shared checkpoint exists yet to measure.
+_MODEL_SIZE_ESTIMATE_BYTES: dict[str, float] = {
+    "t5-small": 0.25e9,
+    "t5-base": 0.95e9,
+    "t5-large": 3.1e9,
+}
+_DEFAULT_MODEL_SIZE_ESTIMATE_BYTES = 3.1e9  # unknown model: assume t5-large scale
+
+# MA-014: resume affordance appended to abort paths (child failures, SIGINT).
+_RESUME_GUIDANCE = (
+    "Completed runs keep their RUN_COMPLETE.json markers — re-running the "
+    "same command resumes from them (partial dirs need deletion or --force)."
+)
 
 # R-011: the ONLY flags a smoke child receives, shared by the arm children and
 # the shared supervised child. The eval-interval override suffices (the first
@@ -130,12 +195,25 @@ _PAIRED_DESIGN_CAVEAT = (
     "seeds sample hazard/PPO variance only (paired design)."
 )
 
+# MA-011 (amended in mini-audit fix round): the endpoint string names the
+# EXACT payload keys and index conventions so it is executable by hand from
+# the report alone.
 ENDPOINT_DEFINITION = (
     "Primary endpoint (R-006): treatment mean correct-answer buzz position "
     "<= control mean correct-answer buzz position - 1.0 prefixes AND "
     "treatment accuracy >= control accuracy - 0.01 (absolute), replicated "
     "in >= 2 of 3 seeds (inclusive thresholds). A seed where either arm has "
-    "zero correct policy buzzes is a non-success with undefined_position."
+    "zero correct policy buzzes is a non-success with undefined_position. "
+    "Exact payload keys (MA-011): per arm x seed, position = eval_result.json"
+    "['mean_correct_buzz_position'] — the mean of runs[].buzz_position over "
+    "records with buzzed=true AND correct=true, where buzz_position is the "
+    "0-indexed prefix index at buzz time (step_count - 1) as emitted by "
+    "scripts.compare_policies.evaluate_t5_policy; accuracy = eval_result.json"
+    "['accuracy'] (policy-buzz answer accuracy over all evaluated questions); "
+    "the zero-buzz guard reads eval_result.json['n_correct_policy_buzzes']. "
+    "NOTE the report's hazard_dynamics block uses 1-indexed expected buzz "
+    "positions (see its index_convention field) — the two blocks are NOT on "
+    "the same index base."
 )
 
 
@@ -242,8 +320,210 @@ def _log_tail(log_path: Path, n_lines: int = _LOG_TAIL_LINES) -> str:
 
 
 def _run_name(record: dict[str, Any]) -> str:
-    """Canonical ``<arm>_seed<k>`` display name for a plan record."""
+    """Canonical run-dir display name for a plan record.
+
+    ``<arm>_seed<k>`` for core arms; ``variant_<NAME>_seed<k>`` for variant
+    records (MA-008: the variant namespace is distinct from the core-arm
+    literals), matching the run-dir name in both cases.
+    """
+    variant = record.get("variant")
+    if variant:
+        return f"{_VARIANT_DIR_PREFIX}{variant}_seed{record['seed']}"
     return f"{record['arm']}_seed{record['seed']}"
+
+
+def _atomic_save_json(path: Path, payload: Any) -> Path:
+    """Write a JSON marker atomically: temp file + ``os.replace`` (MA-015).
+
+    An in-place rewrite (e.g. the QA-R2-3 identity-marker update) can leave
+    a truncated file behind on crash, which then classifies as complete and
+    dies unreadable. ``allow_nan=False`` (MA-017): a marker must never carry
+    strict-invalid JSON.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        json.dumps(payload, indent=2, allow_nan=False), encoding="utf-8"
+    )
+    os.replace(tmp, path)
+    return path
+
+
+def _read_run_marker(path: Path) -> dict[str, Any]:
+    """Typed ``RUN_COMPLETE.json`` reader (MA-015).
+
+    A corrupt/truncated/mistyped marker raises ``PartialRunError`` WITH
+    remediation (delete the dir or ``--force``) instead of an unexplained
+    decode error mid-resume; field types are validated before any consumer
+    coerces them (a string ``smoke`` or boolean ``wall_clock_seconds`` must
+    never silently skew the cohort/compute blocks).
+    """
+    path = Path(path)
+    remediation = (
+        "Delete the run directory to re-run it fresh, or pass --force to "
+        "re-run everything (MA-015)."
+    )
+    if not path.exists():
+        raise PartialRunError(f"run marker is missing: {path}. {remediation}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise PartialRunError(
+            f"Run marker {path} is corrupt or unreadable ({exc}); the run "
+            f"cannot be trusted as complete. {remediation}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise PartialRunError(
+            f"Run marker {path} must be a JSON object, got "
+            f"{type(payload).__name__}. {remediation}"
+        )
+    type_specs: list[tuple[str, tuple[type, ...], bool]] = [
+        # (field, allowed types, required)
+        ("git_sha", (str,), True),
+        ("arm", (str,), True),
+        ("completed_at", (str,), False),
+        ("smoke", (bool,), False),
+        ("shared_supervised_weights_sha256", (str,), False),
+    ]
+    for field, allowed, required in type_specs:
+        value = payload.get(field)
+        if value is None:
+            if required:
+                raise PartialRunError(
+                    f"Run marker {path} is missing required field "
+                    f"{field!r}. {remediation}"
+                )
+            continue
+        if not isinstance(value, allowed):
+            raise PartialRunError(
+                f"Run marker {path} field {field!r} has invalid type "
+                f"{type(value).__name__} (value {value!r}). {remediation}"
+            )
+    seed = payload.get("seed")
+    if seed is None or isinstance(seed, bool) or not isinstance(seed, int):
+        raise PartialRunError(
+            f"Run marker {path} field 'seed' must be an integer, got "
+            f"{seed!r}. {remediation}"
+        )
+    wall = payload.get("wall_clock_seconds")
+    if wall is not None and (
+        isinstance(wall, bool) or not isinstance(wall, (int, float))
+        or not math.isfinite(float(wall))
+    ):
+        raise PartialRunError(
+            f"Run marker {path} field 'wall_clock_seconds' must be a finite "
+            f"number, got {wall!r}. {remediation}"
+        )
+    return payload
+
+
+# MA-003: files the HARNESS itself writes into the shared checkpoint dir
+# after the build (R-008 persists split_manifest.json next to the weights).
+# They are provenance sidecars, not weight content, so the fingerprint must
+# ignore them — otherwise the harness's own manifest write would read as a
+# checkpoint mutation on the very next reuse.
+_FINGERPRINT_EXCLUDED_FILES = frozenset({"split_manifest.json"})
+
+
+def _weights_fingerprint(model_dir: Path) -> str:
+    """Content sha256 of a saved checkpoint dir (MA-003).
+
+    Hashes every regular MODEL file under ``model_dir`` in sorted
+    relative-path order (path + NUL + bytes per file), skipping symlinks and
+    the harness-written provenance sidecars
+    (``_FINGERPRINT_EXCLUDED_FILES``), so two saves of different weights can
+    never share a fingerprint and a rebuilt branch point is detectable from
+    descendants.
+    """
+    model_dir = Path(model_dir)
+    if not model_dir.is_dir():
+        raise ProvenanceError(
+            f"_weights_fingerprint: {model_dir} is not a directory"
+        )
+    files = sorted(
+        p
+        for p in model_dir.rglob("*")
+        if p.is_file()
+        and not p.is_symlink()
+        and p.name not in _FINGERPRINT_EXCLUDED_FILES
+    )
+    if not files:
+        raise ProvenanceError(
+            f"_weights_fingerprint: {model_dir} contains no model files"
+        )
+    digest = hashlib.sha256()
+    for file_path in files:
+        digest.update(file_path.relative_to(model_dir).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(file_path.read_bytes())
+    return digest.hexdigest()
+
+
+def assert_unique_qids(
+    qids: list, *, where: str, error_cls: type = ProvenanceError
+) -> None:
+    """MA-016: uniqueness asserted at every qid ingestion boundary.
+
+    Duplicate qids double-weight accuracy/means while the paired bootstrap
+    dedups per qid — an inconsistent weighting that must fail loud instead
+    of silently skewing the report.
+    """
+    seen: set = set()
+    dupes: set = set()
+    for qid in qids:
+        if qid in seen:
+            dupes.add(qid)
+        seen.add(qid)
+    if dupes:
+        raise error_cls(
+            f"{where} carries {len(dupes)} duplicate qid(s) (e.g. "
+            f"{sorted(dupes)[:5]}); duplicates double-weight accuracy while "
+            "the paired bootstrap dedups per qid (MA-016). Rebuild the "
+            "artifacts / delete the offending run dir."
+        )
+
+
+def _validated_metric(value: Any, *, key: str, where: str) -> float | None:
+    """MA-018: metric-float validator for eval-payload consumers.
+
+    ``None`` passes through (legitimately-absent metric); anything else must
+    be a finite real number (bool excluded) or the consumer fails loud
+    naming the payload instead of propagating NaN/inf into the report.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ProvenanceError(
+            f"{where}: metric {key!r} must be numeric or null, got "
+            f"{value!r} (MA-018)"
+        )
+    number = float(value)
+    if not math.isfinite(number):
+        raise ProvenanceError(
+            f"{where}: metric {key!r} is non-finite ({value!r}) (MA-018)"
+        )
+    return number
+
+
+def _measure_disk_usage(root: Path) -> int:
+    """Total bytes of regular files under ``root`` (MA-018 hardened walk).
+
+    Never follows directory symlinks (no cycles, no counting content
+    outside the tree), skips symlinked files, and tolerates files vanishing
+    mid-walk (children may still be flushing/cleaning up).
+    """
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+        for name in filenames:
+            file_path = Path(dirpath) / name
+            try:
+                if file_path.is_symlink():
+                    continue
+                total += file_path.stat().st_size
+            except OSError:
+                continue  # vanished mid-walk — tolerated, not fatal
+    return int(total)
 
 
 def shared_supervised_root(out_dir: Path) -> Path:
@@ -279,6 +559,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     (flag), ``--report-only`` (flag), ``--prune-checkpoints`` (flag),
     ``--variant`` (repeatable ``NAME:FLAGS``; ``args.variant`` is a
     list[str], default []).
+
+    Additive flags (mini-audit fix round): ``--re-eval`` (flag, MA-012),
+    ``--stall-timeout-minutes`` (float, default 60, MA-006),
+    ``--child-timeout-minutes`` (float, default None, MA-006).
     """
     parser = argparse.ArgumentParser(
         description=(
@@ -354,7 +638,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Extra hazard B-variant as NAME:FLAGS (repeatable); FLAGS are "
-            "whitespace-split and appended to a hazard-arm child argv."
+            "whitespace-split and appended to a hazard-arm child argv. The "
+            "variant inherits the invocation's hazard knobs (FLAGS override); "
+            "its run dirs are variant_<NAME>_seed<k> with arm label "
+            "variant:<NAME> (MA-008)."
+        ),
+    )
+    parser.add_argument(
+        "--re-eval",
+        action="store_true",
+        help=(
+            "Re-run eval + probe for resumed runs even when eval_result.json"
+            " / hazard_dynamics.json already exist (MA-012)."
+        ),
+    )
+    parser.add_argument(
+        "--stall-timeout-minutes",
+        type=float,
+        default=DEFAULT_STALL_TIMEOUT_MINUTES,
+        help=(
+            "Kill a child that prints no output line for this many minutes "
+            f"(0 disables; default {DEFAULT_STALL_TIMEOUT_MINUTES:g} — MA-006)."
+        ),
+    )
+    parser.add_argument(
+        "--child-timeout-minutes",
+        type=float,
+        default=None,
+        help=(
+            "Optional hard cap on any single child's total runtime in "
+            "minutes (default: none — MA-006)."
         ),
     )
     args = parser.parse_args(argv)
@@ -498,11 +811,28 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
 
     Returns one record per run: ``{"arm": str, "seed": int, "run_dir":
     Path == <out>/<arm>_seed<k>, "hazard": bool, "argv": list[str],
-    "log_path": Path == run_dir / "train.log", "variant": str | None}``.
+    "log_path": Path == run_dir / "train.log", "variant": str | None,
+    "hazard_knobs": dict}`` — ``hazard_knobs`` (additive, MA-001) is the
+    hazard identity the CHILD will record into ``config_used.json``
+    (``{"pretrain", "beta_terminal", "freeze_answer_head", "ablation"}``),
+    derived from round-tripping the composed argv through the REAL child
+    parser, and is positively asserted at every consumption site.
+
     ``--variant NAME:FLAGS`` (split on the FIRST colon; FLAGS
-    whitespace-split and appended to a hazard-arm argv) adds one extra
-    B-variant arm named NAME per seed. Variant names containing path
-    separators or ``..`` raise ``PreflightError``.
+    whitespace-split) adds one extra hazard variant per seed with run dir
+    ``<out>/variant_<NAME>_seed<k>`` and arm label ``variant:<NAME>``
+    (MA-008: distinct namespace from the role-bearing core arms). Variants
+    inherit the invocation's hazard knobs; FLAGS override them. Rejected at
+    preflight (``PreflightError``): names with path separators / ``..``,
+    names shadowing core arms A/B/C, reserved FLAGS tokens (``--seed``,
+    ``--model-path``, ``--config``, ``--skip-supervised``, ``--mc-path``,
+    ``--smoke``), reserved overrides (``supervised.checkpoint_dir=`` /
+    ``ppo.eval_interval=``), and bare ``=``-less non-flag tokens (silent
+    positional no-ops in the child).
+
+    MA-018 preflight domain checks: every seed must satisfy
+    ``0 <= seed < 2**32`` (NumPy seeding constraint) and
+    ``--beta-terminal`` must be finite.
     """
     out_dir = Path(args.out_dir)
     shared_ckpt = shared_supervised_checkpoint(out_dir)
@@ -511,6 +841,22 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
     seeds = [int(s) for s in args.seeds]
     if not arms or not seeds:
         raise PreflightError("plan_runs: --arms and --seeds must be non-empty")
+
+    # MA-018: seed domain check at preflight (np.random.seed rejects values
+    # outside [0, 2**32) only after hours of child work otherwise).
+    for seed in seeds:
+        if not (0 <= seed < 2**32):
+            raise PreflightError(
+                f"--seeds value {seed} is outside the valid seed domain "
+                "[0, 2**32) (NumPy seeding constraint; MA-018)."
+            )
+
+    # MA-018: a non-finite terminal penalty poisons the hazard loss.
+    if not math.isfinite(float(args.beta_terminal)):
+        raise PreflightError(
+            f"--beta-terminal must be finite, got {args.beta_terminal!r} "
+            "(MA-018)."
+        )
 
     unknown = [arm for arm in arms if arm not in _CORE_ARMS]
     if unknown:
@@ -531,9 +877,50 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
         if "/" in name or "\\" in name or ".." in name:
             raise PreflightError(
                 f"variant name {name!r} must not contain path separators or "
-                "'..' (it becomes the run-dir name <out>/<NAME>_seed<k>)"
+                "'..' (it becomes the run-dir name "
+                f"<out>/{_VARIANT_DIR_PREFIX}<NAME>_seed<k>)"
             )
-        variants.append((name, flags_str.split()))
+        if name in _CORE_ARMS:
+            raise PreflightError(
+                f"variant name {name!r} shadows a core arm (A/B/C); the core "
+                "arms carry the control/treatment roles and cannot be "
+                "re-bound by a variant (MA-008). Pick a distinct name."
+            )
+        flags = flags_str.split()
+        index = 0
+        while index < len(flags):
+            token = flags[index]
+            base = token.split("=", 1)[0]
+            if token.startswith("-"):
+                if base in _RESERVED_VARIANT_FLAGS:
+                    raise PreflightError(
+                        f"variant {name!r}: FLAGS token {token!r} is reserved "
+                        "— --seed/--model-path/--config/--skip-supervised/"
+                        "--mc-path/--smoke are owned by arm control and a "
+                        "last-wins duplicate would smuggle a different run "
+                        "identity past it (MA-008)."
+                    )
+                if base in _CHILD_VALUE_FLAGS and "=" not in token:
+                    # The next token is this flag's VALUE, not a bare
+                    # positional; the roundtrip still validates it.
+                    index += 2
+                    continue
+            elif "=" in token:
+                if token.startswith(_RESERVED_VARIANT_OVERRIDE_PREFIXES):
+                    raise PreflightError(
+                        f"variant {name!r}: override {token!r} is reserved — "
+                        "supervised.checkpoint_dir= and ppo.eval_interval= "
+                        "are injected by the harness itself (MA-008)."
+                    )
+            else:
+                raise PreflightError(
+                    f"variant {name!r}: bare token {token!r} is neither a "
+                    "--flag nor a key=value override; the child parser would "
+                    "swallow it as a silent positional no-op at non-smoke "
+                    "scale (MA-008)."
+                )
+            index += 1
+        variants.append((name, flags))
 
     records: list[dict[str, Any]] = []
 
@@ -545,7 +932,14 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
         variant: str | None = None,
         **argv_kwargs: Any,
     ) -> None:
-        run_dir = out_dir / f"{arm}_seed{seed}"
+        # MA-008: variants live in their own dir/arm namespace so they can
+        # never capture a core arm's control/treatment role.
+        if variant:
+            run_dir = out_dir / f"{_VARIANT_DIR_PREFIX}{variant}_seed{seed}"
+            arm_label = f"{_VARIANT_ARM_PREFIX}{variant}"
+        else:
+            run_dir = out_dir / f"{arm}_seed{seed}"
+            arm_label = arm
         argv = build_child_argv(
             arm=arm,
             seed=seed,
@@ -558,7 +952,7 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
         )
         records.append(
             {
-                "arm": arm,
+                "arm": arm_label,
                 "seed": seed,
                 "run_dir": run_dir,
                 "hazard": hazard,
@@ -584,19 +978,39 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
                 _add(arm, seed, hazard=True, ablation="shuffled_nll", **hazard_knobs)
 
     for name, flags in variants:
+        # MA-008: variants INHERIT the invocation's hazard knobs; FLAGS
+        # override them. An overridden knob is not re-injected, so the argv
+        # carries exactly ONE occurrence of each knob flag.
+        inherited: dict[str, Any] = dict(hazard_knobs)
+        if "--beta-terminal" in flags:
+            inherited["beta_terminal"] = None
+        if "--freeze-answer-head" in flags:
+            inherited["freeze_answer_head"] = False
         for seed in seeds:
-            _add(name, seed, hazard=True, variant=name, extra_flags=flags)
+            _add(
+                name, seed, hazard=True, variant=name,
+                extra_flags=flags, **inherited,
+            )
 
     run_dirs = [rec["run_dir"] for rec in records]
     if len(set(run_dirs)) != len(run_dirs):
         raise PreflightError(
             "plan_runs: duplicate run dirs in the plan (repeated arm/seed "
-            "or a variant name colliding with a core arm)"
+            "or a repeated variant name)"
         )
     # QA-003 (R-013): every planned argv must round-trip through the real
-    # child parser BEFORE any child is launched.
+    # child parser BEFORE any child is launched. MA-001/MA-008: the parsed
+    # namespace IS the run's expected identity — the exact values the child
+    # will record into config_used.json — stored on the record and asserted
+    # at every later consumption site.
     for record in records:
-        _roundtrip_child_argv(record)
+        parsed = _roundtrip_child_argv(record)
+        record["hazard_knobs"] = {
+            "pretrain": bool(parsed.hazard_pretrain),
+            "beta_terminal": float(parsed.beta_terminal),
+            "freeze_answer_head": bool(parsed.freeze_answer_head),
+            "ablation": parsed.hazard_ablation,
+        }
     return records
 
 
@@ -678,7 +1092,7 @@ def build_child_argv(
     return argv
 
 
-def _roundtrip_child_argv(record: dict[str, Any]) -> None:
+def _roundtrip_child_argv(record: dict[str, Any]) -> argparse.Namespace:
     """Preflight-validate one planned argv against the REAL child parser.
 
     QA-003 (R-013): orchestrators validate composed argvs against the
@@ -688,6 +1102,13 @@ def _roundtrip_child_argv(record: dict[str, Any]) -> None:
     ``[sys.executable, script]`` prefix) through
     ``scripts.train_t5_policy.parse_args`` and raises ``PreflightError``
     naming the run when argparse rejects it.
+
+    MA-008 (class fix): the roundtrip additionally compares the PARSED
+    namespace to the planned values — the parsed ``--seed`` must equal the
+    record's seed (a smuggled last-wins ``--seed`` can never survive to a
+    child), the parsed hazard flag must match the record's arm role, and a
+    non-finite parsed ``--beta-terminal`` is rejected (MA-018). Returns the
+    parsed namespace (MA-001: it is the run's expected recorded identity).
     """
     import scripts.train_t5_policy as train_t5_policy
 
@@ -695,7 +1116,7 @@ def _roundtrip_child_argv(record: dict[str, Any]) -> None:
     stderr_capture = io.StringIO()
     try:
         with contextlib.redirect_stderr(stderr_capture):
-            train_t5_policy.parse_args(argv=child_argv)
+            parsed = train_t5_policy.parse_args(argv=child_argv)
     except SystemExit as exc:
         raise PreflightError(
             f"Planned child argv for run {_run_name(record)} is rejected by "
@@ -703,13 +1124,42 @@ def _roundtrip_child_argv(record: dict[str, Any]) -> None:
             f"{stderr_capture.getvalue().strip()}\n  argv: {child_argv}"
         ) from exc
 
+    if parsed.seed != record.get("seed"):
+        raise PreflightError(
+            f"Planned child argv for run {_run_name(record)} parses to "
+            f"--seed {parsed.seed!r} but the plan slot is seed "
+            f"{record.get('seed')!r}; a variant FLAGS token has rebound the "
+            "run identity (MA-008).\n  argv: " + str(child_argv)
+        )
+    if bool(parsed.hazard_pretrain) != bool(record.get("hazard")):
+        raise PreflightError(
+            f"Planned child argv for run {_run_name(record)} parses to "
+            f"hazard_pretrain={bool(parsed.hazard_pretrain)} but the plan "
+            f"slot expects hazard={bool(record.get('hazard'))} (MA-008).\n"
+            "  argv: " + str(child_argv)
+        )
+    if not math.isfinite(float(parsed.beta_terminal)):
+        raise PreflightError(
+            f"Planned child argv for run {_run_name(record)} parses to a "
+            f"non-finite --beta-terminal ({parsed.beta_terminal!r}); a "
+            "non-finite terminal penalty poisons the hazard loss (MA-018).\n"
+            "  argv: " + str(child_argv)
+        )
+    return parsed
+
 
 # ---------------------------------------------------------------------------
 # Child execution / resume
 # ---------------------------------------------------------------------------
 
 
-def _run_child(argv: list[str], log_path: Path) -> int:
+def _run_child(
+    argv: list[str],
+    log_path: Path,
+    *,
+    stall_timeout_seconds: float | None = None,
+    child_timeout_seconds: float | None = None,
+) -> int:
     """Run one child via subprocess (shell=False), tee output to log_path.
 
     Single injectable seam: tests monkeypatch
@@ -718,10 +1168,41 @@ def _run_child(argv: list[str], log_path: Path) -> int:
     log. QA-009: the Popen lifetime is bound to a context manager and a
     tee-loop exception kills the child — a leaked child would keep
     writing into the run dir after the harness moved on.
+
+    MA-006 (watchdog): the tee loop runs an output-staleness watchdog — a
+    child that prints NO output line for ``stall_timeout_seconds`` (default:
+    the module-level limit armed by ``main()`` from
+    ``--stall-timeout-minutes``; 60 min out of the box) is killed and
+    ``ChildRunError`` is raised naming the last-output age, so a wedged
+    multi-hour child can never hang the harness silently forever.
+    ``child_timeout_seconds`` (``--child-timeout-minutes``; default off)
+    additionally caps the child's TOTAL runtime. Both keyword-only
+    parameters are additive; ``None`` defers to the module-level limits and
+    ``<= 0`` disables. Lines are pumped by a daemon reader thread into a
+    queue so the watchdog's clock never blocks on the pipe.
     """
+    stall_limit = (
+        _ACTIVE_STALL_TIMEOUT_SECONDS
+        if stall_timeout_seconds is None
+        else stall_timeout_seconds
+    )
+    if stall_limit is not None and stall_limit <= 0:
+        stall_limit = None
+    total_limit = (
+        _ACTIVE_CHILD_TIMEOUT_SECONDS
+        if child_timeout_seconds is None
+        else child_timeout_seconds
+    )
+    if total_limit is not None and total_limit <= 0:
+        total_limit = None
+
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     argv = [str(token) for token in argv]
+
+    limits = [limit for limit in (stall_limit, total_limit) if limit]
+    poll_seconds = max(0.01, min(0.5, (min(limits) / 5.0) if limits else 0.5))
+
     with log_path.open("w", encoding="utf-8") as log_file:
         with subprocess.Popen(  # noqa: S603 - fixed argv list, shell=False
             argv,
@@ -731,11 +1212,74 @@ def _run_child(argv: list[str], log_path: Path) -> int:
             errors="replace",
         ) as proc:
             assert proc.stdout is not None  # PIPE above guarantees a stream
+            lines: queue.SimpleQueue = queue.SimpleQueue()
+
+            def _pump(stream: Any) -> None:
+                try:
+                    for line in stream:
+                        lines.put(line)
+                finally:
+                    lines.put(None)  # EOF sentinel
+
+            pump = threading.Thread(
+                target=_pump, args=(proc.stdout,), daemon=True
+            )
+            pump.start()
+
+            started = time.monotonic()
+            last_output = started
             try:
-                for line in proc.stdout:
+                while True:
+                    try:
+                        line = lines.get(timeout=poll_seconds)
+                    except queue.Empty:
+                        now = time.monotonic()
+                        age = now - last_output
+                        if stall_limit is not None and age > stall_limit:
+                            proc.kill()
+                            proc.wait()
+                            raise ChildRunError(
+                                f"Child stalled: no output line for "
+                                f"{age:.1f}s (stall timeout "
+                                f"{stall_limit:.1f}s — --stall-timeout-"
+                                "minutes); the child was killed (MA-006). "
+                                f"Log: {log_path}\n--- log tail ---\n"
+                                f"{_log_tail(log_path)}"
+                            )
+                        if (
+                            total_limit is not None
+                            and now - started > total_limit
+                        ):
+                            proc.kill()
+                            proc.wait()
+                            raise ChildRunError(
+                                f"Child exceeded its total runtime cap of "
+                                f"{total_limit:.1f}s (--child-timeout-"
+                                "minutes) and was killed (MA-006). Log: "
+                                f"{log_path}\n--- log tail ---\n"
+                                f"{_log_tail(log_path)}"
+                            )
+                        continue
+                    if line is None:
+                        break
+                    last_output = time.monotonic()
                     log_file.write(line)
                     sys.stdout.write(line)
+                    if (
+                        total_limit is not None
+                        and last_output - started > total_limit
+                    ):
+                        proc.kill()
+                        proc.wait()
+                        raise ChildRunError(
+                            f"Child exceeded its total runtime cap of "
+                            f"{total_limit:.1f}s (--child-timeout-minutes) "
+                            f"and was killed (MA-006). Log: {log_path}\n"
+                            f"--- log tail ---\n{_log_tail(log_path)}"
+                        )
             except BaseException:
+                # QA-009: never leak a child; killing an already-dead child
+                # is a safe no-op.
                 proc.kill()
                 raise
             return proc.wait()
@@ -857,6 +1401,177 @@ def validate_resumed_run(
                 )
 
 
+def _assert_run_identity(
+    record: dict[str, Any], *, marker: dict[str, Any] | None = None
+) -> None:
+    """MA-001: positively identify a run dir against its plan slot.
+
+    ``hazard.*`` and ``seed`` are exactly the arm-control-EXEMPT config keys
+    (R-003), so equality-diffing can never catch a copied dir fabricating a
+    replication or a C checkpoint swapped in as B. This assertion replaces
+    exemption-from-equality with per-run identity:
+
+    - ``config_used.json``'s top-level ``seed`` must equal the plan seed;
+    - its ``hazard`` block must equal the plan record's ``hazard_knobs``
+      (derived from round-tripping the composed argv through the real child
+      parser — skipped for hand-built records without the key);
+    - the ``RUN_COMPLETE.json`` marker's ``arm``/``seed`` (when given) must
+      match the plan slot (sidecars are self-identifying).
+
+    Raises ``ProvenanceError`` naming the run with delete/--force
+    remediation.
+    """
+    run_dir = Path(record["run_dir"])
+    name = _run_name(record)
+    remediation = (
+        "Delete the directory or pass --force to re-run everything (MA-001)."
+    )
+
+    config_used = _load_json_file(
+        run_dir / "ppo_t5" / "config_used.json", error_cls=ProvenanceError
+    )
+    if not isinstance(config_used, dict):
+        raise ProvenanceError(
+            f"Run {name}: config_used.json is not an object; the run cannot "
+            f"be identified. {remediation}"
+        )
+    actual_seed = config_used.get("seed")
+    if actual_seed != record["seed"]:
+        raise ProvenanceError(
+            f"Run {name}: config_used.json records seed={actual_seed!r} but "
+            f"the plan slot expects seed={record['seed']!r}; the dir does "
+            f"not belong to this plan slot (copied/renamed run dir?). "
+            f"{remediation}"
+        )
+    expected_hazard = record.get("hazard_knobs")
+    if expected_hazard is not None:
+        actual_hazard = config_used.get("hazard")
+        if actual_hazard != expected_hazard:
+            raise ProvenanceError(
+                f"Run {name}: config_used.json hazard block "
+                f"{actual_hazard!r} does not match the planned hazard "
+                f"identity {expected_hazard!r} (arm role swap or knob "
+                f"drift). {remediation}"
+            )
+    if marker is not None:
+        marker_arm = marker.get("arm")
+        marker_seed = marker.get("seed")
+        if marker_arm != record["arm"] or marker_seed != record["seed"]:
+            raise ProvenanceError(
+                f"Run {name}: {RUN_COMPLETE_MARKER} identifies itself as "
+                f"arm={marker_arm!r} seed={marker_seed!r} but the plan slot "
+                f"is arm={record['arm']!r} seed={record['seed']!r}. "
+                f"{remediation}"
+            )
+
+
+def _assert_shared_fingerprint(
+    record: dict[str, Any],
+    marker: dict[str, Any],
+    expected_run_context: dict[str, Any] | None,
+) -> None:
+    """MA-003: a resumed run must have branched from the CURRENT shared
+    checkpoint content.
+
+    Compares the marker's recorded ``shared_supervised_weights_sha256``
+    against the invocation's freshly computed fingerprint
+    (``expected_run_context["shared_weights_sha256"]``). Mismatch raises
+    ``ProvenanceError`` (a rebuilt branch point would make the probe's
+    "before" leg and the paired contrast span two different checkpoints);
+    a legacy marker without the field warns (unverifiable, not fatal).
+    """
+    expected = (expected_run_context or {}).get("shared_weights_sha256")
+    if not expected:
+        return
+    recorded = marker.get("shared_supervised_weights_sha256")
+    if recorded is None:
+        print(
+            f"WARNING: resumed run {_run_name(record)} predates the "
+            "shared-checkpoint weight fingerprint (legacy marker); its "
+            "branch-point identity cannot be verified (MA-003)."
+        )
+        return
+    if recorded != expected:
+        raise ProvenanceError(
+            f"Resumed run {_run_name(record)} branched from a shared "
+            f"supervised checkpoint with weights sha256 {recorded[:12]}… "
+            f"but the CURRENT shared checkpoint hashes to {expected[:12]}…; "
+            "the branch point was rebuilt since this run trained (MA-003). "
+            "Delete the run dir or pass --force to re-run everything."
+        )
+
+
+def verify_run_records(
+    run_records: list[dict[str, Any]],
+    *,
+    expected_run_context: dict[str, Any] | None = None,
+) -> None:
+    """MA-002: the single validated-records gate for report-producing paths.
+
+    BOTH the execute path and ``--report-only`` route through this gate
+    before ``assemble_report``, so a heterogeneous or partial run tree can
+    never assemble into a normal-looking report. Per record: complete
+    classification (R-013), typed marker read (MA-015), positive run
+    identity (MA-001), split-source assertion (R-013); then the full
+    cross-run arm-control diff (R-003). ``expected_run_context`` (optional)
+    additionally validates every record against the CURRENT invocation via
+    :func:`validate_resumed_run` (QA-002).
+    """
+    for record in run_records:
+        run_dir = Path(record["run_dir"])
+        state = classify_run_dir(run_dir, hazard=bool(record.get("hazard")))
+        if state != "complete":
+            raise PartialRunError(
+                f"Run {_run_name(record)} dir {run_dir} is {state}, not "
+                f"complete ({RUN_COMPLETE_MARKER} + checkpoints + sidecars "
+                "required); it cannot enter a report (MA-002). Delete the "
+                "directory, or re-run the harness (with --force if needed) "
+                "to rebuild it."
+            )
+        marker = _read_run_marker(run_dir / RUN_COMPLETE_MARKER)
+        _assert_run_identity(record, marker=marker)
+        _assert_split_source(record)
+        if expected_run_context:
+            validate_resumed_run(record, expected_run_context)
+    assert_arm_control(run_records)
+
+
+def preflight_resume_states(
+    plan: list[dict[str, Any]],
+    *,
+    force: bool = False,
+    expected_run_context: dict[str, Any] | None = None,
+) -> None:
+    """MA-013: resume state is decided at PREFLIGHT, before any child runs.
+
+    A partial dir or a stale resumed dir used to be discovered fail-late,
+    mid-execution, after the shared supervised phase (hours at scale). This
+    sweep classifies every planned dir up front: partial dirs raise
+    ``PartialRunError`` (unless ``force``); complete dirs are validated
+    (identity, split source, current-invocation match) NOW. ``force``
+    short-circuits: everything re-runs anyway.
+    """
+    if force:
+        return
+    for record in plan:
+        run_dir = Path(record["run_dir"])
+        state = classify_run_dir(run_dir, hazard=bool(record.get("hazard")))
+        if state == "partial":
+            raise PartialRunError(
+                f"Run dir {run_dir} has outputs but no valid completion "
+                f"state ({RUN_COMPLETE_MARKER} + checkpoints + sidecars). "
+                f"Delete the directory to re-run {_run_name(record)} fresh, "
+                "or pass --force to re-run everything. (MA-013: decided at "
+                "preflight, before any child ran.)"
+            )
+        if state == "complete":
+            marker = _read_run_marker(run_dir / RUN_COMPLETE_MARKER)
+            _assert_run_identity(record, marker=marker)
+            _assert_split_source(record)
+            if expected_run_context:
+                validate_resumed_run(record, expected_run_context)
+
+
 def execute_plan(
     records: list[dict[str, Any]],
     *,
@@ -879,7 +1594,12 @@ def execute_plan(
     :func:`_run_child` — a float >= 0; ``smoke`` is the invocation's
     ``--smoke`` flag, an additive marker field — QA-R2-2: ``--report-only``
     rereads it so the report's smoke labeling comes from what the runs
-    were actually trained as, never from a later invocation's flag).
+    were actually trained as, never from a later invocation's flag;
+    ``shared_supervised_weights_sha256`` — additive, MA-003 — records the
+    branch point's content fingerprint when the caller supplies
+    ``expected_run_context["shared_weights_sha256"]``, and is asserted on
+    resume; markers are written atomically via temp + ``os.replace`` —
+    MA-015).
     Ends by running :func:`assert_arm_control` over all records (resumed
     dirs included). Returns updated records.
 
@@ -914,9 +1634,11 @@ def execute_plan(
             print(f"[{index}/{total}] arm={record['arm']} seed={record['seed']} "
                   "resumed (complete run dir found, skipping child)")
             record["resumed"] = True
-            marker = _load_json_file(
-                run_dir / RUN_COMPLETE_MARKER, error_cls=PartialRunError
-            )
+            # MA-015: typed, remediation-carrying marker read.
+            marker = _read_run_marker(run_dir / RUN_COMPLETE_MARKER)
+            # MA-001: the resumed dir must positively identify as THIS plan
+            # slot (config seed + hazard block + marker arm/seed).
+            _assert_run_identity(record, marker=marker)
             mismatch = marker.get("git_sha") != current_sha
             record["git_sha_mismatch"] = bool(mismatch)
             if mismatch:
@@ -929,6 +1651,9 @@ def execute_plan(
             _assert_split_source(record)
             if expected_run_context:
                 validate_resumed_run(record, expected_run_context)
+                # MA-003: the run must have branched from the CURRENT
+                # shared checkpoint content.
+                _assert_shared_fingerprint(record, marker, expected_run_context)
             continue
 
         if state == "partial" and not force:
@@ -939,11 +1664,12 @@ def execute_plan(
                 "--force to re-run everything."
             )
 
-        # QA-001: invalidate-before-mutate — stale completion/eval markers
-        # must never survive into (or beyond) a failed re-run of an
-        # existing dir.
+        # QA-001 + MA-005: invalidate-before-mutate — the FULL per-run
+        # derived-artifact set (completion marker, eval result, hazard
+        # dynamics) is unlinked before any child is (re-)launched into an
+        # existing dir, so no stale derived artifact can outlive its run.
         if run_dir.exists():
-            for stale_name in (RUN_COMPLETE_MARKER, EVAL_RESULT_FILENAME):
+            for stale_name in _STALE_RUN_ARTIFACTS:
                 stale = run_dir / stale_name
                 if stale.exists():
                     stale.unlink()
@@ -956,7 +1682,8 @@ def execute_plan(
             raise ChildRunError(
                 f"Child run {name} (arm={record['arm']}, "
                 f"seed={record['seed']}) failed with exit code {exit_code}; "
-                f"log: {log_path}\n--- log tail ---\n{_log_tail(log_path)}"
+                f"log: {log_path}\n--- log tail ---\n{_log_tail(log_path)}\n"
+                f"{_RESUME_GUIDANCE}"
             )
 
         check_child_outputs(record)
@@ -964,9 +1691,13 @@ def execute_plan(
             raise ChildRunError(
                 f"Hazard run {name} left no hazard checkpoint at "
                 f"{run_dir / 'hazard' / 'best_model'}; inspect the child "
-                f"log: {log_path}"
+                f"log: {log_path}\n{_RESUME_GUIDANCE}"
             )
         _assert_split_source(record)
+        # MA-001: the fresh child's recorded identity (config seed + hazard
+        # block) must match the plan slot before the completion marker is
+        # written.
+        _assert_run_identity(record)
 
         marker = {
             "git_sha": current_sha,
@@ -978,7 +1709,13 @@ def execute_plan(
             # can label the report from the runs' real provenance.
             "smoke": bool(smoke),
         }
-        save_json(run_dir / RUN_COMPLETE_MARKER, marker)
+        # MA-003: stamp the shared branch point's content identity into the
+        # descendant's marker (when the caller supplied it).
+        shared_fp = (expected_run_context or {}).get("shared_weights_sha256")
+        if shared_fp:
+            marker["shared_supervised_weights_sha256"] = str(shared_fp)
+        # MA-015: markers are written atomically (temp + os.replace).
+        _atomic_save_json(run_dir / RUN_COMPLETE_MARKER, marker)
         record["resumed"] = False
         record["git_sha_mismatch"] = False
         print(
@@ -1108,7 +1845,7 @@ def write_supervised_split_manifest(
     out_dir = Path(supervised_ckpt_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "split_manifest.json"
-    save_json(out_path, manifest)
+    save_json(out_path, manifest, allow_nan=False)  # MA-017: strict JSON
     return out_path
 
 
@@ -1212,6 +1949,14 @@ def evaluate_run(
             f"{_run_name(record)}; return_runs=True is required (R-002/R-005)"
         )
 
+    # MA-016: uniqueness asserted at the eval ingestion boundary — duplicate
+    # qids would double-weight accuracy while the bootstrap dedups.
+    assert_unique_qids(
+        [r.get("qid") for r in runs if isinstance(r, dict)],
+        where=f"run {_run_name(record)} evaluate_t5_policy runs records",
+        error_cls=HarnessError,
+    )
+
     n = len(runs)
     n_buzzed = sum(1 for r in runs if r.get("buzzed"))
     correct_buzzes = [r for r in runs if r.get("buzzed") and r.get("correct")]
@@ -1236,22 +1981,75 @@ def evaluate_run(
         }
     )
     # R-014: persisted IMMEDIATELY, before any later run can fail.
-    save_json(run_dir / EVAL_RESULT_FILENAME, enriched)
+    # MA-017: strict JSON — non-finite floats must never reach an artifact.
+    save_json(run_dir / EVAL_RESULT_FILENAME, enriched, allow_nan=False)
     return enriched
 
 
 def evaluate_all_runs(
-    records: list[dict[str, Any]], test_questions: list, config: dict[str, Any]
+    records: list[dict[str, Any]],
+    test_questions: list,
+    config: dict[str, Any],
+    *,
+    prune: bool = False,
+    re_eval: bool = False,
 ) -> list[dict[str, Any]]:
     """Evaluate every run: exactly one ``evaluate_t5_policy`` call each,
     identical test split and kwargs (except checkpoint path) across calls.
     Per-run ``eval_result.json`` files already written are never deleted
-    by a later failure (R-014)."""
+    by a later failure (R-014).
+
+    Parameters (additive)
+    ---------------------
+    prune : bool, keyword-only
+        MA-007 (reclaim at unit completion): when True, each run's
+        ``iter_*``/``epoch_*``/``training_state.pt`` are pruned right after
+        its ``eval_result.json`` exists — peak disk never accumulates
+        across the whole pipeline. Default ``False`` keeps the pre-existing
+        behavior for direct callers.
+    re_eval : bool, keyword-only
+        MA-012 (read-before-recompute): a RESUMED run whose
+        ``eval_result.json`` already exists is loaded instead of
+        re-evaluated (with an "eval resumed" print and an MA-001 identity
+        check on the loaded payload) unless ``re_eval`` forces a recompute.
+        Default ``False``.
+    """
     results: list[dict[str, Any]] = []
     total = len(records)
     for index, record in enumerate(records, start=1):
-        print(f"[eval {index}/{total}] arm={record['arm']} seed={record['seed']}")
-        results.append(evaluate_run(record, test_questions, config))
+        run_dir = Path(record["run_dir"])
+        eval_path = run_dir / EVAL_RESULT_FILENAME
+        if record.get("resumed") and not re_eval and eval_path.exists():
+            print(
+                f"[eval {index}/{total}] arm={record['arm']} "
+                f"seed={record['seed']} eval resumed ({EVAL_RESULT_FILENAME} "
+                "exists, skipping recompute; --re-eval overrides)"
+            )
+            payload = _load_json_file(eval_path, error_cls=ProvenanceError)
+            if not isinstance(payload, dict) or (
+                payload.get("arm") != record["arm"]
+                or payload.get("seed") != record["seed"]
+            ):
+                raise ProvenanceError(
+                    f"Run {_run_name(record)}: resumed {EVAL_RESULT_FILENAME} "
+                    "identifies itself as arm="
+                    f"{payload.get('arm') if isinstance(payload, dict) else None!r} "
+                    f"seed={payload.get('seed') if isinstance(payload, dict) else None!r} "
+                    f"but the plan slot is arm={record['arm']!r} "
+                    f"seed={record['seed']!r} (MA-001). Delete the stale run "
+                    "dir or pass --re-eval."
+                )
+            results.append(payload)
+        else:
+            print(
+                f"[eval {index}/{total}] arm={record['arm']} "
+                f"seed={record['seed']}"
+            )
+            results.append(evaluate_run(record, test_questions, config))
+        if prune:
+            # MA-007: reclaim per run, immediately after its eval artifact
+            # exists — never only after the entire pipeline.
+            prune_run_checkpoints(run_dir)
     return results
 
 
@@ -1581,6 +2379,16 @@ def build_hazard_dynamics(
         "expected_buzz_time_delta": float(time_after - time_before),
         "first_half_mean_loss": float(np.mean(first_half)),
         "second_half_mean_loss": float(np.mean(second_half)),
+        # MA-011 (additive): name the block's index conventions so it is
+        # executable by hand — and explicitly NOT on the same index base as
+        # the endpoint's 0-indexed buzz_position.
+        "index_convention": (
+            "per_position_mean_before/after: array index i is prefix "
+            "position i+1 (positions are 1-indexed prefixes); "
+            "expected_buzz_time_* are expected 1-indexed stop positions "
+            "(forced commit at position T). NOTE eval_result runs[]."
+            "buzz_position (the endpoint's source) is 0-indexed."
+        ),
     }
 
 
@@ -1626,8 +2434,51 @@ def probe_and_write_hazard_dynamics(
 
     history = _load_json_file(Path(hazard_history_path), error_cls=ProvenanceError)
     block = build_hazard_dynamics(before, after, history)
-    save_json(Path(out_path), block)
+    save_json(Path(out_path), block, allow_nan=False)  # MA-017: strict JSON
     return block
+
+
+def _probe_all_hazard_runs(
+    records: list[dict[str, Any]],
+    shared_ckpt: Path,
+    probe_questions: list,
+    *,
+    re_eval: bool = False,
+) -> None:
+    """R-010b probe stage over every hazard run (extracted for MA-012/018).
+
+    Prints a ``[probe j/M]`` banner per hazard run (MA-018) and, for
+    RESUMED runs whose ``hazard_dynamics.json`` already exists, skips the
+    recompute with a "probe resumed" print unless ``re_eval`` (MA-012:
+    read-before-recompute at every stage granularity). The supervised
+    "before" probe is shared across runs via the QA-007 cache.
+    """
+    hazard_records = [rec for rec in records if rec.get("hazard")]
+    total = len(hazard_records)
+    probe_cache: dict[str, Any] = {}
+    for index, record in enumerate(hazard_records, start=1):
+        run_dir = Path(record["run_dir"])
+        out_path = run_dir / HAZARD_DYNAMICS_FILENAME
+        if record.get("resumed") and not re_eval and out_path.exists():
+            print(
+                f"[probe {index}/{total}] arm={record['arm']} "
+                f"seed={record['seed']} probe resumed "
+                f"({HAZARD_DYNAMICS_FILENAME} exists, skipping recompute; "
+                "--re-eval overrides)"
+            )
+            continue
+        print(
+            f"[probe {index}/{total}] arm={record['arm']} "
+            f"seed={record['seed']}"
+        )
+        probe_and_write_hazard_dynamics(
+            str(shared_ckpt),
+            str(run_dir / "hazard" / "best_model"),
+            probe_questions,
+            run_dir / "hazard" / "hazard_history.json",
+            out_path,
+            before_cache=probe_cache,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1660,7 +2511,25 @@ def prune_run_checkpoints(run_dir: Path) -> None:
             "the run first (nothing was deleted)."
         )
 
-    root = run_dir.resolve()
+    removed = _delete_prunables(run_dir.resolve())
+    # MA-014: prune narrates what it reclaimed and what it kept.
+    print(
+        f"[prune] {run_dir.name}: removed {removed['dirs']} checkpoint "
+        f"dir(s) + {removed['files']} optimizer-state file(s), reclaimed "
+        f"{removed['bytes']} bytes; kept best_model/, sidecars, and "
+        f"{EVAL_RESULT_FILENAME}"
+    )
+
+
+def _delete_prunables(root: Path) -> dict[str, int]:
+    """Delete ``iter_*``/``epoch_*`` dirs + ``training_state.pt`` under
+    ``root`` with the QA-010 symlink/containment discipline.
+
+    Shared by :func:`prune_run_checkpoints` and
+    :func:`prune_shared_supervised_checkpoints` (MA-007). Returns
+    ``{"dirs", "files", "bytes"}`` reclaim stats (MA-014 narration).
+    """
+    root = Path(root).resolve()
 
     def _contained(path: Path) -> bool:
         resolved = path.resolve()
@@ -1683,16 +2552,70 @@ def prune_run_checkpoints(run_dir: Path) -> None:
             if name == "training_state.pt":
                 state_files.append(Path(dirpath) / name)
 
+    reclaimed = 0
+    n_dirs = 0
+    n_files = 0
     for path in prunable_dirs:
         if not path.is_symlink() and path.is_dir() and _contained(path):
+            reclaimed += _measure_disk_usage(path)
             shutil.rmtree(path)
+            n_dirs += 1
     for state_file in state_files:
         if (
             not state_file.is_symlink()
             and state_file.is_file()
             and _contained(state_file)
         ):
+            try:
+                reclaimed += state_file.stat().st_size
+            except OSError:
+                pass
             state_file.unlink()
+            n_files += 1
+    return {"dirs": n_dirs, "files": n_files, "bytes": int(reclaimed)}
+
+
+def prune_shared_supervised_checkpoints(out_dir: Path) -> None:
+    """MA-007: reclaim the SHARED supervised tree's transient checkpoints.
+
+    Deletes ``epoch_*``/``iter_*`` dirs and ``training_state.pt`` files
+    under ``<out>/shared_supervised`` (the supervised trainer writes
+    per-epoch checkpoints there; its discarded 1-iteration PPO phase may
+    add ``iter_*``), keeping every ``best_model/`` dir and sidecar so the
+    branch point stays loadable. Called only AFTER all arms complete
+    (``--prune-checkpoints``); a missing shared root is a silent no-op
+    (e.g. ``--report-only`` over a tree without one).
+    """
+    root = shared_supervised_root(Path(out_dir))
+    if not root.is_dir():
+        return
+    removed = _delete_prunables(root.resolve())
+    print(
+        f"[prune] {root.name}: removed {removed['dirs']} checkpoint dir(s) "
+        f"+ {removed['files']} optimizer-state file(s), reclaimed "
+        f"{removed['bytes']} bytes; kept best_model/ dirs and sidecars"
+    )
+
+
+def _plot_arm_mean(
+    runs: list[dict[str, Any]], arm: str, key: str
+) -> float | None:
+    """Mean of one numeric report key over an arm's runs; ``None`` if none.
+
+    MA-009: a no-data arm must return ``None`` (rendered as a gap +
+    annotation), NEVER 0.0 — on the lower-is-earlier buzz-position axis a
+    coerced 0.0 reads as the OPTIMAL value.
+    """
+    values = []
+    for run in runs:
+        if run.get("arm") != arm:
+            continue
+        value = run.get(key)
+        # bool is an int subclass; a flag must never plot as 0/1.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        values.append(float(value))
+    return float(np.mean(values)) if values else None
 
 
 def write_plot(report: dict[str, Any], out_dir: Path) -> Path:
@@ -1700,7 +2623,8 @@ def write_plot(report: dict[str, Any], out_dir: Path) -> Path:
 
     Matplotlib is imported lazily inside this function with the Agg
     backend selected before pyplot, and the figure is persisted via
-    ``savefig`` only.
+    ``savefig`` only. MA-009: an arm with no data for a metric renders as a
+    visible NaN gap annotated "no data" — never as a 0.0 bar.
     """
     try:
         import matplotlib
@@ -1715,29 +2639,33 @@ def write_plot(report: dict[str, Any], out_dir: Path) -> Path:
     runs = report.get("runs", []) or []
     arms = sorted({run["arm"] for run in runs})
 
-    def _arm_mean(arm: str, key: str) -> float:
-        """Mean of one numeric report key over an arm's runs (0.0 if none)."""
-        values = []
-        for run in runs:
-            if run.get("arm") != arm:
-                continue
-            value = run.get(key)
-            # bool is an int subclass; a flag must never plot as 0/1.
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                continue
-            values.append(float(value))
-        return float(np.mean(values)) if values else 0.0
+    def _bars(ax: Any, values: list[float | None], color: str) -> None:
+        heights = [v if v is not None else float("nan") for v in values]
+        ax.bar(arms, heights, color=color)
+        for index, value in enumerate(values):
+            if value is None:
+                ax.annotate(
+                    "no data",
+                    xy=(index, 0.0),
+                    xytext=(0, 4),
+                    textcoords="offset points",
+                    ha="center",
+                    fontsize=8,
+                    color="dimgray",
+                )
 
     fig, (ax_pos, ax_acc) = plt.subplots(1, 2, figsize=(10.0, 4.0))
 
-    positions = [_arm_mean(arm, "mean_correct_buzz_position") for arm in arms]
-    ax_pos.bar(arms, positions, color="steelblue")
+    positions = [
+        _plot_arm_mean(runs, arm, "mean_correct_buzz_position") for arm in arms
+    ]
+    _bars(ax_pos, positions, "steelblue")
     ax_pos.set_title("Mean correct-buzz position (lower = earlier)")
     ax_pos.set_xlabel("arm")
     ax_pos.set_ylabel("prefix position")
 
-    accuracies = [_arm_mean(arm, "accuracy") for arm in arms]
-    ax_acc.bar(arms, accuracies, color="darkorange")
+    accuracies = [_plot_arm_mean(runs, arm, "accuracy") for arm in arms]
+    _bars(ax_acc, accuracies, "darkorange")
     ax_acc.set_title("Policy accuracy")
     ax_acc.set_xlabel("arm")
     ax_acc.set_ylabel("accuracy")
@@ -1758,10 +2686,25 @@ def write_plot(report: dict[str, Any], out_dir: Path) -> Path:
 
 
 def _endpoint_arm_view(eval_result: dict[str, Any]) -> dict[str, Any]:
-    """The three eval fields :func:`compute_primary_endpoint` reads per arm."""
+    """The three eval fields :func:`compute_primary_endpoint` reads per arm.
+
+    MA-018: the metric floats are validated (finite real number or null) at
+    this ingestion boundary so a doctored/NaN payload fails loud instead of
+    propagating into the endpoint booleans.
+    """
+    where = (
+        f"eval_result for arm={eval_result.get('arm')!r} "
+        f"seed={eval_result.get('seed')!r}"
+    )
     return {
-        "mean_correct_buzz_position": eval_result.get("mean_correct_buzz_position"),
-        "accuracy": eval_result.get("accuracy"),
+        "mean_correct_buzz_position": _validated_metric(
+            eval_result.get("mean_correct_buzz_position"),
+            key="mean_correct_buzz_position",
+            where=where,
+        ),
+        "accuracy": _validated_metric(
+            eval_result.get("accuracy"), key="accuracy", where=where
+        ),
         "n_correct_policy_buzzes": eval_result.get("n_correct_policy_buzzes", 0),
     }
 
@@ -1803,7 +2746,18 @@ def _sq_by_seed_for_arm(
             qid = run.get("qid")
             sq = run.get("sq")
             if qid is not None and sq is not None:
-                qid_map[str(qid)] = float(sq)
+                # MA-018: validated at the ingestion boundary — a NaN/inf
+                # S_q must fail loud, never skew the paired bootstrap.
+                validated = _validated_metric(
+                    sq,
+                    key="sq",
+                    where=(
+                        f"eval runs record arm={run_arm!r} seed={seed!r} "
+                        f"qid={qid!r}"
+                    ),
+                )
+                assert validated is not None  # sq is non-None here
+                qid_map[str(qid)] = validated
         if qid_map:
             by_seed[seed] = qid_map
     return by_seed
@@ -1859,6 +2813,7 @@ def _read_run_sidecars(
 
     for record in run_records:
         run_dir = Path(record["run_dir"])
+        name = _run_name(record)
         config_used = _load_json_file(
             run_dir / "ppo_t5" / "config_used.json", error_cls=ProvenanceError
         )
@@ -1868,14 +2823,51 @@ def _read_run_sidecars(
         eval_result = _load_json_file(
             run_dir / EVAL_RESULT_FILENAME, error_cls=ProvenanceError
         )
+        if not isinstance(eval_result, dict):
+            raise ProvenanceError(
+                f"Run {name}: {EVAL_RESULT_FILENAME} is not an object"
+            )
+        # MA-001: the eval sidecar is self-identifying — it must name THIS
+        # plan slot before feeding the report.
+        if (
+            eval_result.get("arm") != record["arm"]
+            or eval_result.get("seed") != record["seed"]
+        ):
+            raise ProvenanceError(
+                f"Run {name}: {EVAL_RESULT_FILENAME} identifies itself as "
+                f"arm={eval_result.get('arm')!r} "
+                f"seed={eval_result.get('seed')!r} but the plan slot is "
+                f"arm={record['arm']!r} seed={record['seed']!r} (MA-001). "
+                "Delete the stale run dir or pass --force to re-run "
+                "everything."
+            )
+        # MA-016: uniqueness asserted at the report's ingestion boundary.
+        runs_records = eval_result.get("runs")
+        if isinstance(runs_records, list):
+            assert_unique_qids(
+                [r.get("qid") for r in runs_records if isinstance(r, dict)],
+                where=f"run {name} {EVAL_RESULT_FILENAME} runs records",
+            )
         if first_config is None:
             first_config, first_manifest = config_used, manifest
+
+        # MA-018: a ProvenanceError from the provenance assembly names the
+        # run whose sidecar broke it.
+        try:
+            provenance = collect_provenance(config_used)
+        except ProvenanceError as exc:
+            raise ProvenanceError(f"Run {name}: {exc}") from exc
 
         eval_by_run[(record["arm"], record["seed"])] = eval_result
         report_runs.append(
             {
                 "arm": record["arm"],
                 "seed": record["seed"],
+                # MA-001: the run's hazard identity is echoed into its
+                # report row so the report is auditable per run.
+                "hazard": config_used.get("hazard")
+                if isinstance(config_used, dict)
+                else None,
                 "resumed": bool(record.get("resumed", False)),
                 "git_sha_mismatch": bool(record.get("git_sha_mismatch", False)),
                 "policy_buzz_rate": eval_result.get("policy_buzz_rate"),
@@ -1890,7 +2882,7 @@ def _read_run_sidecars(
                     "mean_correct_buzz_position"
                 ),
                 "n_questions": eval_result.get("n_questions"),
-                "provenance": collect_provenance(config_used),
+                "provenance": provenance,
             }
         )
 
@@ -1904,7 +2896,9 @@ def _build_scale(
     """Scale block: model, split sizes, PPO iterations, on-disk footprint.
 
     ``disk_usage_bytes`` is measured BEFORE the report and plot are written,
-    so it reflects the run tree the report describes.
+    so it reflects the run tree the report describes. MA-018: the disk walk
+    never follows symlinks (no cycles, no out-of-tree bytes) and tolerates
+    files vanishing mid-walk.
     """
     try:
         return {
@@ -1914,9 +2908,7 @@ def _build_scale(
             "n_test": manifest["test_count"],
             "ppo_iterations": config_used["ppo"]["iterations"],
             "device": config_used["model"]["device"],
-            "disk_usage_bytes": int(
-                sum(f.stat().st_size for f in Path(out_dir).rglob("*") if f.is_file())
-            ),
+            "disk_usage_bytes": _measure_disk_usage(Path(out_dir)),
         }
     except (KeyError, TypeError) as exc:
         raise ProvenanceError(
@@ -2089,10 +3081,12 @@ def _read_hazard_artifacts(
     hazard_wall_clock_seconds: float | None = None
     child_total_wall_clock_seconds: float | None = None
     hazard_dynamics: dict[str, Any] | None = None
+    source_seed: int | None = None
 
     b_records = [rec for rec in run_records if rec["arm"] == "B"]
     if b_records:
         b_dir = Path(b_records[0]["run_dir"])
+        source_seed = b_records[0]["seed"]
         history = _read_optional_json(b_dir / "hazard" / "hazard_history.json")
         if history is not None:
             steps = history.get("steps")
@@ -2107,14 +3101,64 @@ def _read_hazard_artifacts(
             if raw is not None:
                 child_total_wall_clock_seconds = float(raw)
         hazard_dynamics = _read_optional_json(b_dir / HAZARD_DYNAMICS_FILENAME)
+        if isinstance(hazard_dynamics, dict):
+            # MA-010: single-replicate blocks carry explicit source labels.
+            hazard_dynamics = {
+                **hazard_dynamics,
+                "source_arm": "B",
+                "source_seed": source_seed,
+            }
 
     hazard_compute = {
         "optimizer_steps": optimizer_steps,
         "wall_clock_seconds": hazard_wall_clock_seconds,
         "child_total_wall_clock_seconds": child_total_wall_clock_seconds,
+        # MA-010: name the single replicate these numbers came from.
+        "source_arm": "B" if b_records else None,
+        "source_seed": source_seed,
         "step_matching_note": _HAZARD_STEP_MATCHING_NOTE,
     }
     return hazard_compute, hazard_dynamics
+
+
+def _assert_hazard_step_parity(run_records: list[dict[str, Any]]) -> None:
+    """MA-010: C's step-matching invariant is asserted at report time.
+
+    Arm C is the STEP-MATCHED compute control — its whole point is running
+    exactly as many hazard optimizer steps as arm B. For every seed where
+    BOTH arms' ``hazard_history.json`` files exist, their step counts must
+    be equal; a mismatch raises ``ProvenanceError`` naming the seed and
+    counts. Missing histories are skipped (the blocks they feed are
+    best-effort), never silently compared.
+    """
+    steps_by: dict[tuple[str, int], int | None] = {}
+    for record in run_records:
+        if record["arm"] not in ("B", "C"):
+            continue
+        history = _read_optional_json(
+            Path(record["run_dir"]) / "hazard" / "hazard_history.json"
+        )
+        if history is None:
+            continue
+        steps = history.get("steps") if isinstance(history, dict) else None
+        steps_by[(record["arm"], record["seed"])] = (
+            len(steps) if isinstance(steps, list) else None
+        )
+
+    shared_seeds = {seed for (arm, seed) in steps_by if arm == "B"} & {
+        seed for (arm, seed) in steps_by if arm == "C"
+    }
+    for seed in sorted(shared_seeds):
+        b_steps = steps_by[("B", seed)]
+        c_steps = steps_by[("C", seed)]
+        if b_steps is not None and c_steps is not None and b_steps != c_steps:
+            raise ProvenanceError(
+                f"Arm C is the step-matched compute control, but at seed "
+                f"{seed} it ran {c_steps} hazard optimizer step(s) vs arm "
+                f"B's {b_steps}; the compute-confound control is void "
+                "(MA-010). Inspect the hazard histories and re-run the "
+                "mismatched arm."
+            )
 
 
 def _build_caveats(*, smoke: bool) -> list[str]:
@@ -2208,6 +3252,9 @@ def assemble_report(
     eval_by_run, report_runs, first_config, first_manifest = _read_run_sidecars(
         run_records
     )
+    # MA-010: the step-matched control's invariant is asserted from run
+    # artifacts at report time, before any block is built from them.
+    _assert_hazard_step_parity(run_records)
     scale = _build_scale(first_config, first_manifest, out_dir)
     endpoint = _build_endpoint(eval_by_run)
     significance = _build_significance(eval_by_run)
@@ -2243,7 +3290,7 @@ def assemble_report(
     }
 
     write_plot(report, out_dir)
-    save_json(out_dir / REPORT_FILENAME, report)
+    save_json(out_dir / REPORT_FILENAME, report, allow_nan=False)  # MA-017
     return report
 
 
@@ -2258,14 +3305,28 @@ def _prune_all_runs(records: list[dict[str, Any]]) -> None:
         prune_run_checkpoints(Path(record["run_dir"]))
 
 
-def _print_plan(records: list[dict[str, Any]], splits: dict[str, Path] | None) -> None:
-    """Print the full preflighted plan (R-013)."""
+def _print_plan(
+    records: list[dict[str, Any]],
+    splits: dict[str, Path] | None,
+    *,
+    supervised_argv: list[str] | None = None,
+) -> None:
+    """Print the full preflighted plan (R-013).
+
+    ``supervised_argv`` (additive, MA-013): the shared supervised child's
+    argv is part of the plan and is printed (and round-tripped by the
+    caller) like every arm argv — it must never be the one child the
+    dry-run cannot see.
+    """
     print("=" * 60)
     print(f"HAZARD EFFICACY PLAN — {len(records)} run(s)")
     if splits:
         for split in ("train", "val", "test"):
             if split in splits:
                 print(f"  split[{split}]: {splits[split]} (source: persisted artifacts)")
+    if supervised_argv:
+        print("  [shared supervised] runs FIRST; every arm branches from it")
+        print(f"      argv: {' '.join(str(t) for t in supervised_argv)}")
     for index, record in enumerate(records, start=1):
         print(
             f"  [{index}/{len(records)}] {Path(record['run_dir']).name}  "
@@ -2275,6 +3336,114 @@ def _print_plan(records: list[dict[str, Any]], splits: dict[str, Path] | None) -
         )
         print(f"      argv: {' '.join(record['argv'])}")
     print("=" * 60)
+
+
+def _free_disk_bytes(path: Path) -> int:
+    """Free bytes on the filesystem holding ``path`` (nearest existing
+    ancestor when the path itself does not exist yet)."""
+    probe = Path(path)
+    while not probe.exists():
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    return int(shutil.disk_usage(probe).free)
+
+
+def _print_disk_preflight(
+    args: argparse.Namespace, plan: list[dict[str, Any]], out_dir: Path
+) -> None:
+    """MA-007: byte budget at preflight — estimate vs free space.
+
+    Estimate = number of planned checkpoint dirs (2 for the shared
+    supervised tree + 1 per run + 1 extra per hazard run) x a per-checkpoint
+    size that is MEASURED from the existing shared checkpoint when present,
+    else ESTIMATED from the resolved model name. Printed with the plan;
+    warns (never fails) when the estimate exceeds 80% of free space.
+    """
+    shared_ckpt = shared_supervised_checkpoint(Path(out_dir))
+    if shared_ckpt.is_dir() and any(shared_ckpt.iterdir()):
+        per_ckpt = float(_measure_disk_usage(shared_ckpt))
+        source = "measured from the existing shared checkpoint"
+    else:
+        base_config = _resolved_child_base_config(
+            str(args.config), bool(args.smoke)
+        )
+        model_name = base_config.get("model", {}).get("model_name")
+        per_ckpt = _MODEL_SIZE_ESTIMATE_BYTES.get(
+            str(model_name), _DEFAULT_MODEL_SIZE_ESTIMATE_BYTES
+        )
+        source = f"estimated for model {model_name!r}"
+    n_ckpt_dirs = 2 + sum(
+        1 + (1 if rec.get("hazard") else 0) for rec in plan
+    )
+    estimate = n_ckpt_dirs * per_ckpt
+    free = _free_disk_bytes(Path(out_dir))
+    print(
+        f"  disk preflight: ~{n_ckpt_dirs} checkpoint dir(s) x "
+        f"{per_ckpt / 1e9:.2f} GB ({source}) ≈ {estimate / 1e9:.2f} GB; "
+        f"free: {free / 1e9:.2f} GB"
+    )
+    if estimate > free * 0.8:
+        print(
+            "WARNING: the planned checkpoint footprint exceeds 80% of free "
+            "disk space (MA-007); consider --prune-checkpoints, fewer "
+            "arms/seeds, or a smaller model."
+        )
+
+
+def _scan_unplanned_run_dirs(
+    out_dir: Path, plan: list[dict[str, Any]]
+) -> list[str]:
+    """MA-015: disk-minus-plan reconciliation for ``--report-only``.
+
+    Returns one warning per run-dir-shaped directory under ``out_dir``
+    (carries a ``RUN_COMPLETE.json`` or a ``ppo_t5/`` tree) that the
+    current plan does NOT name — it is silently excluded from the report,
+    which the reader deserves to know.
+    """
+    out_dir = Path(out_dir)
+    if not out_dir.is_dir():
+        return []
+    planned_names = {Path(rec["run_dir"]).name for rec in plan}
+    warnings: list[str] = []
+    for child in sorted(out_dir.iterdir()):
+        if not child.is_dir() or child.is_symlink():
+            continue
+        if child.name in planned_names or child.name == _SHARED_SUPERVISED_DIRNAME:
+            continue
+        if (child / RUN_COMPLETE_MARKER).exists() or (child / "ppo_t5").is_dir():
+            warnings.append(
+                f"run dir {child.name} exists on disk but is NOT in the "
+                "current plan; it is EXCLUDED from the report (MA-015: "
+                "disk-minus-plan reconciliation)"
+            )
+    return warnings
+
+
+def _print_closing_summary(
+    report: dict[str, Any], out_dir: Path, *, pruned: bool
+) -> None:
+    """MA-014: closing summary = outcome + footprint + cleanup + paths."""
+    verdict = report.get("verdict", {}) if isinstance(report, dict) else {}
+    scale = report.get("scale", {}) if isinstance(report, dict) else {}
+    print("=" * 60)
+    print(f"VERDICT: {verdict.get('verdict')} — {verdict.get('scope')}")
+    disk = scale.get("disk_usage_bytes")
+    if isinstance(disk, int):
+        print(f"Output tree disk usage: {disk / 1e9:.2f} GB ({disk} bytes)")
+    if pruned:
+        print(
+            "Checkpoints pruned (--prune-checkpoints): iter_*/epoch_*/"
+            "training_state.pt reclaimed; best_model dirs + sidecars kept."
+        )
+    else:
+        print(
+            "Cleanup hint: pass --prune-checkpoints to reclaim "
+            "iter_*/epoch_*/training_state.pt once eval results exist."
+        )
+    print(f"Report written to {Path(out_dir) / REPORT_FILENAME}")
+    print(f"Plot written to {Path(out_dir) / PLOT_FILENAME}")
 
 
 def _manifest_from_artifacts(
@@ -2309,6 +3478,83 @@ def _manifest_from_artifacts(
     }
 
 
+def build_shared_supervised_argv(
+    args: argparse.Namespace, out_dir: Path
+) -> list[str]:
+    """The ONE shared supervised child's argv (MA-013: planned + printed +
+    round-tripped like every arm argv).
+
+    Carries NO ``--skip-supervised``; ``--ppo-iterations 1`` (QA-007: the
+    child's PPO phase is discarded — every arm re-runs PPO from the branch
+    point); ``--skip-test-eval`` (MA-017: the unconditional full test-eval
+    tail is pure waste for a discarded PPO phase); the smoke flags when
+    smoke; and the ``supervised.checkpoint_dir=<root>`` positional override
+    last.
+    """
+    sup_root = shared_supervised_root(Path(out_dir))
+    argv: list[str] = [
+        sys.executable,
+        str(_TRAIN_SCRIPT),
+        "--config",
+        str(args.config),
+        "--seed",
+        str(int(args.seeds[0])),
+        # QA-007: the branched checkpoint is the SUPERVISED one; the child's
+        # own PPO phase is discarded, so stop it at the branch point.
+        "--ppo-iterations",
+        "1",
+        # MA-017: the discarded PPO phase must not pay the full test-eval
+        # tail either.
+        "--skip-test-eval",
+    ]
+    if args.smoke:
+        argv += list(_SMOKE_CHILD_FLAGS)
+    argv.append(f"supervised.checkpoint_dir={sup_root}")
+    return argv
+
+
+def shared_manifest_for_reuse(
+    out_dir: Path, test_qids: list
+) -> dict[str, Any] | None:
+    """MA-004: on reuse, the disjointness proof comes from the PRODUCER.
+
+    Reads the shared supervised child's OWN recorded split
+    (``<shared_root>/ppo_t5/split_manifest.json``, written by the real
+    trainer's PPO phase) and asserts ITS ``train_qids`` are disjoint from
+    the CURRENT invocation's test qids — a reused checkpoint after an
+    artifact rebuild must never ship a disjointness proof computed from
+    artifacts it never saw. Returns the producer manifest (the persisted
+    supervised manifest is then derived from it), or ``None`` when the
+    producer manifest does not exist (fresh build / legacy tree — the
+    caller falls back to the current-invocation manifest, which IS the
+    producer's input in the fresh case).
+    """
+    producer_path = (
+        shared_supervised_root(Path(out_dir)) / "ppo_t5" / "split_manifest.json"
+    )
+    if not producer_path.exists():
+        return None
+    producer = _load_json_file(producer_path, error_cls=ProvenanceError)
+    if not isinstance(producer, dict):
+        raise ProvenanceError(
+            f"{producer_path} is not an object; the shared checkpoint's "
+            "recorded split cannot be validated (MA-004)."
+        )
+    overlap = sorted(
+        set(producer.get("train_qids") or []) & set(test_qids)
+    )
+    if overlap:
+        raise ProvenanceError(
+            f"The reused shared supervised checkpoint's OWN recorded split "
+            f"({producer_path}) trained on {len(overlap)} qid(s) that are "
+            f"in the CURRENT test split (e.g. {overlap[:5]}); the "
+            "supervised phase has seen test questions (MA-004 / R-008). "
+            "Rebuild the shared checkpoint with --force or rebuild the "
+            "artifacts."
+        )
+    return producer
+
+
 def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
     """Run the ONE shared supervised warm-start child (R-003/R-008).
 
@@ -2324,13 +3570,16 @@ def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
 
     QA-002: a fresh build writes an identity marker
     (``<root>/SHARED_SUPERVISED.json`` = ``{"config_hash", "git_sha",
-    "model_name", "supervised_seed"}``). An existing non-empty shared
-    checkpoint is reused ONLY when the marker exists and its
-    ``config_hash``/``model_name`` match THIS invocation
-    (``ProvenanceError`` otherwise — a t5-small smoke checkpoint must
-    never silently seed a t5-base comparison); a ``git_sha`` drift warns
-    without raising (R-013 policy). ``--force`` rebuilds the shared
-    checkpoint unconditionally.
+    "model_name", "supervised_seed", "weights_sha256"}`` — the last is the
+    MA-003 content fingerprint of the saved checkpoint). An existing
+    non-empty shared checkpoint is reused ONLY when the marker exists, its
+    ``config_hash``/``model_name`` match THIS invocation, AND (MA-003) the
+    checkpoint bytes still hash to the marker's ``weights_sha256``
+    (``ProvenanceError`` otherwise — a t5-small smoke checkpoint or a
+    silently mutated/rebuilt checkpoint must never seed the comparison); a
+    ``git_sha`` drift warns without raising (R-013 policy; the drift is not
+    persisted — MA-018 wording). ``--force`` rebuilds the shared checkpoint
+    unconditionally.
 
     QA-R2-3: ``supervised_seed`` (the build's ``seeds[0]``) is
     RECORDED-AND-WARN, never enforced: on reuse with a different
@@ -2375,11 +3624,32 @@ def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
                     f"{sup_root} or pass --force to rebuild it."
                 )
             if marker.get("git_sha") != identity["git_sha"]:
+                # MA-018 wording: nothing persists this drift for the shared
+                # checkpoint — say so ("recorded" only where written).
                 print(
                     "WARNING: shared supervised checkpoint was built at git "
                     f"sha {marker.get('git_sha')!r} but the current checkout "
-                    f"is {identity['git_sha']!r}; reusing it (drift recorded, "
-                    "not fatal)."
+                    f"is {identity['git_sha']!r}; reusing it (warning only — "
+                    "this drift is NOT persisted anywhere, not fatal)."
+                )
+            # MA-003: rebuilds/mutations of the branch point must be
+            # detectable — the marker's content fingerprint must match the
+            # bytes on disk right now.
+            current_fp = _weights_fingerprint(shared_ckpt)
+            recorded_fp = marker.get("weights_sha256")
+            if recorded_fp is None:
+                print(
+                    "WARNING: shared supervised identity marker predates the "
+                    "weight fingerprint (legacy marker); the checkpoint "
+                    "content cannot be verified against its build (MA-003)."
+                )
+            elif recorded_fp != current_fp:
+                raise ProvenanceError(
+                    f"Shared supervised checkpoint at {shared_ckpt} hashes "
+                    f"to weights sha256 {current_fp[:12]}… but its identity "
+                    f"marker recorded {str(recorded_fp)[:12]}…; the "
+                    "checkpoint content changed since it was built (MA-003). "
+                    f"Delete {sup_root} or pass --force to rebuild it."
                 )
             # QA-R2-3: build-seed drift is RECORDED-AND-WARN, never enforced —
             # any fixed shared prefix preserves the paired contrast.
@@ -2397,7 +3667,8 @@ def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
                     "not fatal)."
                 )
                 if not marker.get("shared_supervised_seed_mismatch"):
-                    save_json(
+                    # MA-015: identity-marker rewrites are atomic.
+                    _atomic_save_json(
                         marker_path,
                         {**marker, "shared_supervised_seed_mismatch": True},
                     )
@@ -2410,21 +3681,7 @@ def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
     if marker_path.exists():
         marker_path.unlink()
 
-    argv: list[str] = [
-        sys.executable,
-        str(_TRAIN_SCRIPT),
-        "--config",
-        str(args.config),
-        "--seed",
-        str(int(args.seeds[0])),
-        # QA-007: the branched checkpoint is the SUPERVISED one; the child's
-        # own PPO phase is discarded, so stop it at the branch point.
-        "--ppo-iterations",
-        "1",
-    ]
-    if args.smoke:
-        argv += _SMOKE_CHILD_FLAGS
-    argv.append(f"supervised.checkpoint_dir={sup_root}")
+    argv = build_shared_supervised_argv(args, out_dir)
 
     print("[supervised] shared warm-start started")
     start = time.monotonic()
@@ -2433,14 +3690,20 @@ def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
     if exit_code != 0:
         raise ChildRunError(
             f"Shared supervised run failed with exit code {exit_code}; "
-            f"log: {sup_log}\n--- log tail ---\n{_log_tail(sup_log)}"
+            f"log: {sup_log}\n--- log tail ---\n{_log_tail(sup_log)}\n"
+            f"{_RESUME_GUIDANCE}"
         )
     if not shared_ckpt.is_dir():
         raise ChildRunError(
             f"Shared supervised run left no checkpoint at {shared_ckpt}; "
             f"inspect the child log: {sup_log}"
         )
-    save_json(marker_path, identity)
+    # MA-003: the branch point carries its own content identity; MA-015:
+    # written atomically.
+    _atomic_save_json(
+        marker_path,
+        {**identity, "weights_sha256": _weights_fingerprint(shared_ckpt)},
+    )
     print(f"[supervised] finished, elapsed {elapsed:.1f}s")
     return shared_ckpt
 
@@ -2473,6 +3736,10 @@ def subset_questions_by_manifest(
     a manifest qid missing from the loaded artifacts raises
     ``ProvenanceError`` (the run predates an artifact rebuild).
     """
+    # MA-016: uniqueness asserted at the manifest-read boundary.
+    assert_unique_qids(
+        list(qids), where=f"{split} qids named by {manifest_path}"
+    )
     by_qid: dict[str, Any] = {}
     for question in questions:
         by_qid.setdefault(question.qid, question)
@@ -2494,13 +3761,18 @@ def main(argv: list[str] | None = None) -> None:
     ``--dry-run`` stops after preflight+plan with zero children;
     ``--report-only`` performs zero training/eval calls (and no split
     preflight) and reassembles report + plot from existing run dirs,
-    reconciling the surviving dirs against the FULL plan (QA-R2-1: a
-    wholly missing planned dir becomes a report warning, never a silent
-    drop) and deriving the report's smoke label from the runs'
-    ``RUN_COMPLETE.json`` markers (QA-R2-2: mixed smoke provenance raises
-    ``ProvenanceError``; markers predating the field fall back to
-    ``--smoke``); ``--report-only --dry-run`` is plan-print only — zero
-    writes and zero deletions, ``--prune-checkpoints`` included (QA-005).
+    routing them through the shared :func:`verify_run_records` gate
+    (MA-002), reconciling the surviving dirs against the FULL plan
+    (QA-R2-1: a wholly missing planned dir becomes a report warning, never
+    a silent drop; MA-015: unplanned on-disk run dirs warn too) and
+    deriving the report's smoke label from the runs' ``RUN_COMPLETE.json``
+    markers (QA-R2-2: mixed smoke provenance raises ``ProvenanceError``;
+    markers predating the field fall back to ``--smoke`` with a legacy
+    warning — MA-015); ``--report-only --dry-run`` is plan-print only —
+    zero writes and zero deletions, ``--prune-checkpoints`` included
+    (QA-005). MA-006: ``--stall-timeout-minutes`` /
+    ``--child-timeout-minutes`` arm the child watchdog. MA-014: a SIGINT
+    abort prints the resume affordance before re-raising.
     """
     args = parse_args(argv)
     validate_flag_compatibility(args)
@@ -2511,84 +3783,156 @@ def main(argv: list[str] | None = None) -> None:
     args.out_dir = str(Path(args.out_dir).resolve())
     out_dir = Path(args.out_dir)
 
+    # MA-006: arm the child watchdog for this invocation.
+    global _ACTIVE_STALL_TIMEOUT_SECONDS, _ACTIVE_CHILD_TIMEOUT_SECONDS
+    stall_minutes = getattr(
+        args, "stall_timeout_minutes", DEFAULT_STALL_TIMEOUT_MINUTES
+    )
+    _ACTIVE_STALL_TIMEOUT_SECONDS = (
+        float(stall_minutes) * 60.0
+        if stall_minutes is not None and stall_minutes > 0
+        else None
+    )
+    child_minutes = getattr(args, "child_timeout_minutes", None)
+    _ACTIVE_CHILD_TIMEOUT_SECONDS = (
+        float(child_minutes) * 60.0
+        if child_minutes is not None and child_minutes > 0
+        else None
+    )
+
     if args.report_only:
-        plan = plan_runs(args)
-        records = [rec for rec in plan if Path(rec["run_dir"]).exists()]
-        if args.dry_run:
-            # QA-005: plan-print only under the zero-actions combination.
-            _print_plan(plan, None)
-            print(
-                "--report-only --dry-run: would reassemble the report from "
-                f"{len(records)} existing run dir(s) under {out_dir}; zero "
-                "children, zero writes, zero deletions."
-            )
-            return
-        if not records:
-            raise PreflightError(
-                f"--report-only found no existing run dirs under {out_dir} "
-                f"for the planned arms/seeds "
-                f"({[Path(r['run_dir']).name for r in plan]})"
-            )
-        # QA-R2-1: reconcile the surviving dirs against the FULL plan — a
-        # planned arm/seed whose dir is wholly missing becomes a printed
-        # report warning instead of a silent drop.
-        plan_warnings = _reconcile_planned_dirs(plan, records)
-        current_sha = _git_sha()
-        marker_smoke_by_run: dict[str, bool] = {}
-        for record in records:
-            record["resumed"] = True
-            # QA-008: git-sha drift is read from each run's real marker —
-            # never unconditionally False (R-013 drift recording).
-            marker = _read_optional_json(
-                Path(record["run_dir"]) / RUN_COMPLETE_MARKER
-            )
-            record["git_sha_mismatch"] = (
-                marker is None or marker.get("git_sha") != current_sha
-            )
-            # QA-R2-2: collect each run's persisted smoke flag (additive
-            # marker field; markers predating it contribute nothing).
-            if marker is not None and marker.get("smoke") is not None:
-                marker_smoke_by_run[_run_name(record)] = bool(marker["smoke"])
-        smoke_values = set(marker_smoke_by_run.values())
-        if len(smoke_values) > 1:
-            smoke_runs = sorted(
-                name for name, value in marker_smoke_by_run.items() if value
-            )
-            full_runs = sorted(
-                name for name, value in marker_smoke_by_run.items() if not value
-            )
-            raise ProvenanceError(
-                f"--report-only found MIXED smoke provenance under {out_dir}: "
-                f"runs {smoke_runs} completed with --smoke while runs "
-                f"{full_runs} did not (their RUN_COMPLETE.json markers "
-                "disagree); one report cannot honestly label both cohorts "
-                "(QA-R2-2). Delete the stale run dirs or report on a single "
-                "cohort."
-            )
-        # QA-R2-2: the report's smoke labeling (verdict scale note + smoke
-        # caveat) comes from the runs' own provenance, not this
-        # invocation's flag; legacy markers without the field fall back to
-        # --smoke (the pre-existing behavior).
-        report_smoke = (
-            next(iter(smoke_values)) if smoke_values else bool(args.smoke)
-        )
-        assemble_report(
-            out_dir, records, smoke=report_smoke, extra_warnings=plan_warnings
-        )
-        if args.prune_checkpoints:
-            _prune_all_runs(records)
-        print(f"Report written to {out_dir / REPORT_FILENAME}")
+        _main_report_only(args, out_dir)
         return
 
-    # R-013 preflight: split artifacts + full plan validation BEFORE any child.
-    splits = resolve_split_artifacts(smoke=bool(args.smoke))
+    try:
+        _main_execute(args, out_dir)
+    except KeyboardInterrupt:
+        # MA-014: abort messages state the resume invariant.
+        print(f"\nInterrupted (SIGINT). {_RESUME_GUIDANCE}")
+        raise
+
+
+def _main_report_only(args: argparse.Namespace, out_dir: Path) -> None:
+    """The ``--report-only`` entry path (see :func:`main` docstring)."""
     plan = plan_runs(args)
-    _print_plan(plan, splits)
+    records = [rec for rec in plan if Path(rec["run_dir"]).exists()]
+    if args.dry_run:
+        # QA-005: plan-print only under the zero-actions combination.
+        _print_plan(plan, None)
+        print(
+            "--report-only --dry-run: would reassemble the report from "
+            f"{len(records)} existing run dir(s) under {out_dir}; zero "
+            "children, zero writes, zero deletions."
+        )
+        return
+    if not records:
+        raise PreflightError(
+            f"--report-only found no existing run dirs under {out_dir} "
+            f"for the planned arms/seeds "
+            f"({[Path(r['run_dir']).name for r in plan]})"
+        )
+    # QA-R2-1: reconcile the surviving dirs against the FULL plan — a
+    # planned arm/seed whose dir is wholly missing becomes a printed
+    # report warning instead of a silent drop. MA-015: the opposite
+    # direction too — unplanned on-disk run dirs are named.
+    plan_warnings = _reconcile_planned_dirs(plan, records)
+    plan_warnings += _scan_unplanned_run_dirs(out_dir, plan)
+    # MA-002: --report-only routes through the SAME validated-records gate
+    # as the execute path (complete classification + typed markers +
+    # MA-001 identity + split source + arm control) before any assembly.
+    verify_run_records(records)
+    current_sha = _git_sha()
+    marker_smoke_by_run: dict[str, bool] = {}
+    legacy_marker_runs: list[str] = []
+    for record in records:
+        record["resumed"] = True
+        # QA-008: git-sha drift is read from each run's real marker —
+        # never unconditionally False (R-013 drift recording).
+        marker = _read_optional_json(
+            Path(record["run_dir"]) / RUN_COMPLETE_MARKER
+        )
+        record["git_sha_mismatch"] = (
+            marker is None or marker.get("git_sha") != current_sha
+        )
+        # QA-R2-2: collect each run's persisted smoke flag (additive
+        # marker field; markers predating it contribute nothing).
+        if marker is not None and marker.get("smoke") is not None:
+            marker_smoke_by_run[_run_name(record)] = bool(marker["smoke"])
+        elif marker is not None:
+            legacy_marker_runs.append(_run_name(record))
+    if legacy_marker_runs:
+        # MA-015: legacy field-less markers must not SILENTLY skew the
+        # smoke-cohort derivation.
+        print(
+            "WARNING: run marker(s) without the 'smoke' field (legacy "
+            f"markers predating QA-R2-2): {sorted(legacy_marker_runs)}; "
+            "they contribute nothing to the smoke-cohort check and the "
+            "report label may fall back to this invocation's --smoke flag "
+            "(MA-015)."
+        )
+    smoke_values = set(marker_smoke_by_run.values())
+    if len(smoke_values) > 1:
+        smoke_runs = sorted(
+            name for name, value in marker_smoke_by_run.items() if value
+        )
+        full_runs = sorted(
+            name for name, value in marker_smoke_by_run.items() if not value
+        )
+        raise ProvenanceError(
+            f"--report-only found MIXED smoke provenance under {out_dir}: "
+            f"runs {smoke_runs} completed with --smoke while runs "
+            f"{full_runs} did not (their RUN_COMPLETE.json markers "
+            "disagree); one report cannot honestly label both cohorts "
+            "(QA-R2-2). Delete the stale run dirs or report on a single "
+            "cohort."
+        )
+    # QA-R2-2: the report's smoke labeling (verdict scale note + smoke
+    # caveat) comes from the runs' own provenance, not this
+    # invocation's flag; legacy markers without the field fall back to
+    # --smoke (the pre-existing behavior).
+    report_smoke = (
+        next(iter(smoke_values)) if smoke_values else bool(args.smoke)
+    )
+    report = assemble_report(
+        out_dir, records, smoke=report_smoke, extra_warnings=plan_warnings
+    )
+    pruned = False
+    if args.prune_checkpoints:
+        _prune_all_runs(records)
+        prune_shared_supervised_checkpoints(out_dir)
+        pruned = True
+    # MA-014: closing summary (verdict + disk + cleanup + report AND plot
+    # paths — report-only used to drop the plot line).
+    _print_closing_summary(report, out_dir, pruned=pruned)
+
+
+def _main_execute(args: argparse.Namespace, out_dir: Path) -> None:
+    """The execute entry path: preflight -> children -> eval -> report."""
+    # R-013 preflight: split artifacts + config + full plan validation
+    # BEFORE any child. MA-013: a typo'd --config dies HERE, not after the
+    # supervised phase; the shared supervised argv is planned, printed, and
+    # round-tripped like every arm argv.
+    splits = resolve_split_artifacts(smoke=bool(args.smoke))
+    yaml_config = _load_yaml_config(str(args.config))
+    plan = plan_runs(args)
+    supervised_argv = build_shared_supervised_argv(args, out_dir)
+    _roundtrip_child_argv(
+        {
+            "arm": "shared_supervised",
+            "seed": int(args.seeds[0]),
+            "run_dir": shared_supervised_root(out_dir),
+            "hazard": False,
+            "argv": supervised_argv,
+            "variant": None,
+        }
+    )
+    _print_plan(plan, splits, supervised_argv=supervised_argv)
+    # MA-007: byte budget at preflight (plan print + warn, never fail).
+    _print_disk_preflight(args, plan, out_dir)
     if args.dry_run:
         print("--dry-run: stopping after preflight; zero children launched.")
         return
 
-    yaml_config = _load_yaml_config(str(args.config))
     train_questions = load_mc_questions(splits["train"])
     val_questions = load_mc_questions(splits["val"])
     test_questions = load_mc_questions(splits["test"])
@@ -2598,15 +3942,22 @@ def main(argv: list[str] | None = None) -> None:
             f"(train={len(train_questions)}, test={len(test_questions)}); "
             "rebuild them with scripts/build_mc_dataset.py"
         )
-
-    # Shared supervised warm-start: the FIRST child (R-003/R-008), identity-
-    # validated on reuse and rebuilt under --force (QA-002).
-    shared_ckpt = _run_shared_supervised(args, out_dir)
+    # MA-016: uniqueness asserted at the artifact ingestion boundary.
+    for split_name, questions in (
+        ("train", train_questions),
+        ("val", val_questions),
+        ("test", test_questions),
+    ):
+        assert_unique_qids(
+            [q.qid for q in questions],
+            where=f"persisted {split_name} artifact {splits[split_name]}",
+            error_cls=PreflightError,
+        )
 
     # QA-002: resumed arm dirs must match what THIS invocation would produce
     # (model identity + current-artifact split membership).
     base_config = _resolved_child_base_config(str(args.config), bool(args.smoke))
-    expected_run_context = {
+    expected_run_context: dict[str, Any] = {
         "model_name": base_config.get("model", {}).get("model_name"),
         "artifact_qids": {
             "train": {q.qid for q in train_questions},
@@ -2614,6 +3965,29 @@ def main(argv: list[str] | None = None) -> None:
             "test": {q.qid for q in test_questions},
         },
     }
+
+    # MA-013: resume state (partial dirs, resumed-dir validation) is decided
+    # NOW — before the shared supervised child burns hours.
+    preflight_resume_states(
+        plan, force=bool(args.force), expected_run_context=expected_run_context
+    )
+
+    # MA-004: remember whether the shared checkpoint pre-existed (reuse) —
+    # on reuse the disjointness proof must come from ITS recorded split.
+    shared_ckpt_path = shared_supervised_checkpoint(out_dir)
+    shared_reused = (
+        shared_ckpt_path.is_dir()
+        and any(shared_ckpt_path.iterdir())
+        and not bool(args.force)
+    )
+
+    # Shared supervised warm-start: the FIRST child (R-003/R-008), identity-
+    # validated on reuse and rebuilt under --force (QA-002).
+    shared_ckpt = _run_shared_supervised(args, out_dir)
+    # MA-003: the branch point's content identity for this invocation —
+    # stamped into every fresh run's marker and asserted on resumed ones.
+    shared_weights_sha256 = _weights_fingerprint(shared_ckpt)
+    expected_run_context["shared_weights_sha256"] = shared_weights_sha256
 
     # Arm children with resume/partial/force semantics + arm control.
     # QA-R2-2: the invocation's smoke flag is persisted into each fresh
@@ -2624,6 +3998,10 @@ def main(argv: list[str] | None = None) -> None:
         expected_run_context=expected_run_context,
         smoke=bool(args.smoke),
     )
+
+    # MA-002: the execute path routes through the SAME validated-records
+    # gate as --report-only before anything report-shaped is derived.
+    verify_run_records(records)
 
     # QA-004 / R-005: single-source split resolution — the eval/probe/
     # supervised-manifest question sets are subset from the loaded artifacts
@@ -2655,50 +4033,70 @@ def main(argv: list[str] | None = None) -> None:
         manifest_path=first_manifest_path,
     )
 
-    # R-008: persist the supervised split manifest from the SAME resolved
-    # split every run trained/evaluated against (QA-004), asserting
-    # supervised-train/test disjointness.
-    manifest = _manifest_from_artifacts(
-        splits, train_questions, val_questions, test_questions
-    )
+    # R-008: persist the supervised split manifest, asserting supervised-
+    # train/test disjointness. MA-004: when the shared checkpoint was
+    # REUSED, the proof (and the persisted manifest) comes from the
+    # producer's own recorded split, never from artifacts it never saw.
+    manifest: dict[str, Any] | None = None
+    if shared_reused:
+        manifest = shared_manifest_for_reuse(
+            out_dir, [q.qid for q in test_questions]
+        )
+    if manifest is None:
+        manifest = _manifest_from_artifacts(
+            splits, train_questions, val_questions, test_questions
+        )
     write_supervised_split_manifest(shared_ckpt, manifest)
 
     # R-005/R-014: identical eval path per run on the TEST split, persisted
-    # immediately per run.
+    # immediately per run. MA-007: per-run prune right after each
+    # eval_result.json when requested; MA-012: resumed runs with eval
+    # artifacts are read, not recomputed.
     eval_context = {
         "config": yaml_config,
         "reference_questions": train_questions,
         "test_set_source": _PERSISTED_SOURCE,
     }
-    evaluate_all_runs(records, test_questions, eval_context)
+    evaluate_all_runs(
+        records,
+        test_questions,
+        eval_context,
+        prune=bool(args.prune_checkpoints),
+        re_eval=bool(getattr(args, "re_eval", False)),
+    )
 
     # R-010b: stop-probability probe per hazard run (supervised vs hazard).
-    # QA-007: the supervised "before" probe is identical across hazard runs
-    # (same shared checkpoint, same probe questions), so it is computed once
-    # via the shared cache and reused.
+    # QA-007: the supervised "before" probe is computed once via the shared
+    # cache. MA-003: the probe's "before" leg must span exactly ONE
+    # checkpoint content — re-verified right before probing.
     probe_questions = select_probe_questions(train_questions)
-    probe_cache: dict[str, Any] = {}
-    for record in records:
-        if not record.get("hazard"):
-            continue
-        run_dir = Path(record["run_dir"])
-        probe_and_write_hazard_dynamics(
-            str(shared_ckpt),
-            str(run_dir / "hazard" / "best_model"),
-            probe_questions,
-            run_dir / "hazard" / "hazard_history.json",
-            run_dir / HAZARD_DYNAMICS_FILENAME,
-            before_cache=probe_cache,
+    current_fp = _weights_fingerprint(shared_ckpt)
+    if current_fp != shared_weights_sha256:
+        raise ProvenanceError(
+            "Shared supervised checkpoint content changed mid-pipeline "
+            f"(weights sha256 {shared_weights_sha256[:12]}… -> "
+            f"{current_fp[:12]}…); the probe's before-leg would span two "
+            "different checkpoints (MA-003)."
         )
+    _probe_all_hazard_runs(
+        records,
+        shared_ckpt,
+        probe_questions,
+        re_eval=bool(getattr(args, "re_eval", False)),
+    )
 
     # R-009/R-014: report + plot, read exclusively from per-run files.
-    assemble_report(out_dir, records, smoke=bool(args.smoke))
+    report = assemble_report(out_dir, records, smoke=bool(args.smoke))
 
+    pruned = False
     if args.prune_checkpoints:
-        _prune_all_runs(records)
+        # Per-run prune already ran inside evaluate_all_runs (MA-007);
+        # the SHARED tree is reclaimed only after all arms complete.
+        prune_shared_supervised_checkpoints(out_dir)
+        pruned = True
 
-    print(f"Report written to {out_dir / REPORT_FILENAME}")
-    print(f"Plot written to {out_dir / PLOT_FILENAME}")
+    # MA-014: closing summary — outcome + footprint + cleanup + paths.
+    _print_closing_summary(report, out_dir, pruned=pruned)
 
 
 if __name__ == "__main__":
