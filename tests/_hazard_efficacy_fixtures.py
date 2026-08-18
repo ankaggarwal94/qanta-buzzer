@@ -9,8 +9,10 @@ producers byte-for-schema (AP-031 format pinning):
 - ``split_manifest.json``: exact field set of
   ``scripts/train_t5_policy.py::_build_split_manifest``.
 - ``hazard_history.json``: pinned R-010 schema
-  ``{"steps": [{"epoch", "question_index", "loss"}], "config": {...}}``
-  (producer-to-be: ``training/hazard_pretrain.py::run_hazard_pretrain``).
+  ``{"steps": [{"epoch", "question_index", "loss"}], "config": {...},
+  "wall_clock_seconds": float}`` (top-level hazard-phase wall clock added
+  in QA fix round 1, QA-006; producer:
+  ``training/hazard_pretrain.py::run_hazard_pretrain``).
 - ``eval_result.json``: pass-through keys use the REAL
   ``scripts/compare_policies.py::evaluate_t5_policy`` output names
   (``accuracy``, ``mean_sq``, ``ece``, ``brier``, ``avg_buzz_pos``,
@@ -226,8 +228,15 @@ def make_eval_result(
     }
 
 
-def make_hazard_history(losses: list[float] | None = None) -> dict:
-    """Pinned R-010 hazard_history.json schema."""
+def make_hazard_history(
+    losses: list[float] | None = None,
+    *,
+    wall_clock_seconds: float = 3.75,
+) -> dict:
+    """Pinned R-010 hazard_history.json schema (QA-006: top-level
+    ``wall_clock_seconds`` = the HAZARD-PHASE wall clock; the default 3.75
+    is deliberately distinct from every RUN_COMPLETE.json marker value used
+    by the tests so the report's data source is discriminable)."""
     losses = losses if losses is not None else [4.0, 4.0, 2.0, 2.0]
     steps = [
         {"epoch": i // 2, "question_index": i % 2, "loss": float(loss)}
@@ -242,6 +251,7 @@ def make_hazard_history(losses: list[float] | None = None) -> dict:
             "lr": 1e-3,
             "epochs": 2,
         },
+        "wall_clock_seconds": float(wall_clock_seconds),
     }
 
 

@@ -15,7 +15,9 @@ Covers the hazard-efficacy-eval spec, instrumentation half only:
   (``<checkpoint_dir>/hazard/``) with the PINNED schema
   ``{"steps": [{"epoch": int, "question_index": int, "loss": float}],
   "config": {"beta_terminal": float, "freeze_answer_head": bool,
-  "ablation": str|null, "lr": float, "epochs": int}}``; one record per
+  "ablation": str|null, "lr": float, "epochs": int},
+  "wall_clock_seconds": float}`` (top-level hazard-phase wall clock added
+  in QA fix round 1, QA-006 — spec Format-pinning amended); one record per
   optimizer step; all losses finite; the returned checkpoint path and
   ``policy_head.pt`` format are UNCHANGED (PPO consumption unaffected).
 
@@ -221,9 +223,14 @@ def test_r010a_history_written_with_pinned_schema_and_step_count(
     assert (out / "policy_head.pt").exists()
 
     history = _load_history(out_path)
-    assert set(history) == {"steps", "config"}, (
-        "hazard_history.json top-level keys are pinned to {steps, config}"
+    assert set(history) == {"steps", "config", "wall_clock_seconds"}, (
+        "hazard_history.json top-level keys are pinned to {steps, config, "
+        "wall_clock_seconds} (wall_clock_seconds added in QA fix round 1, "
+        "QA-006 — the hazard-PHASE wall clock, spec Format-pinning amended)"
     )
+    wall_clock = history["wall_clock_seconds"]
+    assert isinstance(wall_clock, float) and not isinstance(wall_clock, bool)
+    assert math.isfinite(wall_clock) and wall_clock >= 0.0
 
     steps = history["steps"]
     assert isinstance(steps, list)
@@ -309,6 +316,9 @@ def test_r010a_empty_run_still_writes_history(
     assert cfg_block["ablation"] is None
     assert cfg_block["lr"] == pytest.approx(2e-4)
     assert cfg_block["epochs"] == 3
+    # QA-006: even the degenerate no-op records its hazard-phase wall clock.
+    assert isinstance(history["wall_clock_seconds"], float)
+    assert history["wall_clock_seconds"] >= 0.0
 
 
 # ---------------------------------------------------------------------------

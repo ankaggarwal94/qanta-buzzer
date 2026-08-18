@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List
@@ -103,8 +104,12 @@ def run_hazard_pretrain(
     ``<checkpoint_dir>/hazard/hazard_history.json`` (R-010a) with the pinned
     schema ``{"steps": [{"epoch": int, "question_index": int, "loss": float}],
     "config": {"beta_terminal": float, "freeze_answer_head": bool,
-    "ablation": str|null, "lr": float, "epochs": int}}``; the returned
-    checkpoint path and format are unchanged.
+    "ablation": str|null, "lr": float, "epochs": int},
+    "wall_clock_seconds": float}`` (the top-level ``wall_clock_seconds`` —
+    the HAZARD-PHASE wall clock covering checkpoint load, training loop, and
+    checkpoint save — was added in QA fix round 1, QA-006; the whole-child
+    elapsed time is PPO-dominated and lives in the harness's run marker, not
+    here); the returned checkpoint path and format are unchanged.
 
     Parameters
     ----------
@@ -189,6 +194,11 @@ def run_hazard_pretrain(
             f"{pretrained_model_path!r}. The hazard bridge requires a saved "
             "supervised T5 policy checkpoint to warm-start from."
         )
+
+    # QA-006: the hazard-PHASE wall clock (load + train + save), measured at
+    # the phase boundary so the report can describe the hazard phase itself
+    # rather than the PPO-dominated child total.
+    phase_start = time.monotonic()
 
     device = config.get("device")
     # A directory that is not a valid policy checkpoint (missing config or
@@ -291,6 +301,8 @@ def run_hazard_pretrain(
             "lr": float(lr),
             "epochs": int(epochs),
         },
+        # QA-006 (spec amendment, QA fix round 1): hazard-phase wall clock.
+        "wall_clock_seconds": float(time.monotonic() - phase_start),
     }
     history_path = save_dir.parent / "hazard_history.json"
     history_path.parent.mkdir(parents=True, exist_ok=True)

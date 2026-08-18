@@ -609,3 +609,63 @@ def test_main_skips_hazard_when_flag_absent(
     train_mod.main()
 
     assert calls["ppo"]["pretrained_model_path"] == supervised_path
+
+
+# ---------------------------------------------------------------------------
+# QA-013: supervised save-best gate (the shared warm-start every hazard/PPO
+# arm branches from is produced by this trainer)
+# ---------------------------------------------------------------------------
+
+
+def test_qa013_supervised_best_gate_saves_on_zero_val_accuracy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QA-013: save-best gates initialize to -inf, not a reachable value.
+
+    With the old ``best_val_acc = 0.0`` init and the strict ``>`` gate, a
+    run whose validation accuracy is exactly 0.0 (plausible for fresh
+    t5-small heads on a tiny smoke split) never wrote
+    ``supervised/best_model`` and the efficacy harness died loud on the
+    missing shared checkpoint. Epoch 1 must ALWAYS save (mirrors
+    ``PPOTrainer.best_val_reward = -inf``).
+    """
+    pytest.importorskip("transformers")
+    import training.train_supervised_t5 as sup_mod
+
+    class _StubModel:
+        device = "cpu"
+
+        def parameters(self):
+            return iter([torch.nn.Parameter(torch.zeros(1))])
+
+    trainer = sup_mod.SupervisedTrainer(
+        model=_StubModel(),
+        train_questions=[],
+        val_questions=[],
+        config={
+            "supervised_epochs": 1,
+            "checkpoint_dir": str(tmp_path / "ckpt"),
+        },
+    )
+    assert trainer.best_val_acc == -float("inf"), (
+        "the save-best gate must initialize to -inf, never to a reachable "
+        "metric value (QA-013)"
+    )
+
+    saves: list[bool] = []
+    monkeypatch.setattr(trainer, "train_epoch", lambda: (1.0, 0.0))
+    monkeypatch.setattr(trainer, "validate", lambda: (1.0, 0.0))  # 0.0 acc
+    monkeypatch.setattr(
+        trainer,
+        "save_checkpoint",
+        lambda is_best=False: saves.append(is_best) or (tmp_path / "ckpt"),
+    )
+    monkeypatch.setattr(trainer, "save_history", lambda: tmp_path / "h.json")
+
+    summary = trainer.train()
+
+    assert True in saves, (
+        "a 0.0-validation-accuracy epoch must still write best_model "
+        "(epoch 1 always saves under the -inf init)"
+    )
+    assert summary["best_val_acc"] == pytest.approx(0.0)

@@ -33,7 +33,12 @@ Pipeline:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fnmatch
+import hashlib
+import io
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -69,6 +74,10 @@ from scripts.compare_policies import evaluate_t5_policy
 SCHEMA_VERSION = 1
 DEVICE2_CAVEAT = "Full-scale t5-large efficacy remains a Device-2 (RTX 5090) run."
 RUN_COMPLETE_MARKER = "RUN_COMPLETE.json"
+# QA-002: identity marker written beside the shared supervised checkpoint
+# ({"config_hash", "git_sha", "model_name"}); validated on every reuse so a
+# stale checkpoint (different model/config) can never silently seed all arms.
+SHARED_SUPERVISED_MARKER = "SHARED_SUPERVISED.json"
 REPORT_FILENAME = "hazard_efficacy_report.json"
 PLOT_FILENAME = "hazard_efficacy_plot.png"
 EVAL_RESULT_FILENAME = "eval_result.json"
@@ -351,6 +360,84 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def validate_flag_compatibility(args: argparse.Namespace) -> None:
+    """Central flag-compatibility matrix, run right after parse (QA-005).
+
+    Rules:
+
+    - ``--report-only --force`` is contradictory (force demands re-running
+      every child; report-only forbids launching any) and raises
+      ``PreflightError``.
+    - ``--report-only --dry-run`` is ALLOWED and means plan-print only:
+      :func:`main` performs zero writes and zero deletions for the
+      combination (``--prune-checkpoints`` included), never a destructive
+      action under a zero-actions flag.
+    """
+    if args.report_only and args.force:
+        raise PreflightError(
+            "--report-only and --force are incompatible: --force re-runs "
+            "every child while --report-only forbids launching any. Drop "
+            "one of the two flags."
+        )
+
+
+def _resolve_config_path(config_path: str) -> Path:
+    """Absolutize ``--config`` once at the CLI boundary (QA-012).
+
+    A relative path is anchored to the CURRENT working directory when it
+    exists there, then to ``PROJECT_ROOT``; the result is threaded to
+    every child argv so children (which inherit an arbitrary CWD) and the
+    harness resolve the same file. A missing config is returned
+    best-effort absolute — :func:`_load_yaml_config` fails loud on it.
+    """
+    path = Path(config_path)
+    if path.is_absolute():
+        return path
+    if path.exists():
+        return path.resolve()
+    anchored = PROJECT_ROOT / path
+    if anchored.exists():
+        return anchored
+    return path.resolve()
+
+
+def _resolved_child_base_config(config_path: str, smoke: bool) -> dict[str, Any]:
+    """The child trainer's base resolved config: YAML + its smoke section.
+
+    Reuses ``scripts.train_t5_policy.load_config_with_overrides`` (never a
+    reimplementation) with a minimal namespace, i.e. the config every child
+    of THIS invocation starts from before positional overrides (QA-002).
+    """
+    import scripts.train_t5_policy as train_t5_policy
+
+    namespace = argparse.Namespace(
+        config=str(config_path), smoke=bool(smoke), ppo_iterations=None
+    )
+    return train_t5_policy.load_config_with_overrides(namespace)
+
+
+def _config_identity_hash(payload: Any) -> str:
+    """Deterministic sha256 over a JSON-serializable payload (QA-002)."""
+    canonical = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _shared_supervised_identity(args: argparse.Namespace) -> dict[str, Any]:
+    """Identity the shared supervised checkpoint must match (QA-002).
+
+    Returns ``{"config_hash", "git_sha", "model_name"}`` derived from THIS
+    invocation's resolved base config (YAML + smoke section) and checkout.
+    """
+    base_config = _resolved_child_base_config(str(args.config), bool(args.smoke))
+    return {
+        "config_hash": _config_identity_hash(
+            {"config": base_config, "smoke": bool(args.smoke)}
+        ),
+        "git_sha": _git_sha(),
+        "model_name": base_config.get("model", {}).get("model_name"),
+    }
+
+
 def resolve_split_artifacts(
     *,
     smoke: bool,
@@ -497,6 +584,10 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
             "plan_runs: duplicate run dirs in the plan (repeated arm/seed "
             "or a variant name colliding with a core arm)"
         )
+    # QA-003 (R-013): every planned argv must round-trip through the real
+    # child parser BEFORE any child is launched.
+    for record in records:
+        _roundtrip_child_argv(record)
     return records
 
 
@@ -522,6 +613,13 @@ def build_child_argv(
     "supervised.checkpoint_dir=<run_dir>"]``; smoke adds ``--smoke`` and
     the positional override ``ppo.eval_interval=1`` and NEVER any
     ``ppo.save_interval`` override.
+
+    QA-003: bare ``key=value`` tokens in ``extra_flags`` are positional
+    config overrides for the child parser's trailing ``overrides`` group
+    and are kept CONTIGUOUS at the argv tail (immediately before the
+    checkpoint-dir override); interleaving them with later optional flags
+    splits argparse's positional groups and the real child exits 2. Flag
+    tokens (and their values) keep their given order in the flag zone.
     """
     if not hazard and (
         beta_terminal is not None or freeze_answer_head or ablation is not None
@@ -551,12 +649,50 @@ def build_child_argv(
             argv.append("--freeze-answer-head")
         if ablation is not None:
             argv += ["--hazard-ablation", str(ablation)]
-    if extra_flags:
-        argv += [str(token) for token in extra_flags]
+    flag_tokens: list[str] = []
+    positional_overrides: list[str] = []
+    for token in extra_flags or []:
+        token = str(token)
+        if "=" in token and not token.startswith("-"):
+            positional_overrides.append(token)
+        else:
+            flag_tokens.append(token)
+    argv += flag_tokens
     if smoke:
-        argv += _SMOKE_CHILD_FLAGS
+        argv.append("--smoke")
+    # Positional key=value overrides: contiguous tail, nothing after them
+    # but more positionals (QA-003).
+    argv += positional_overrides
+    if smoke:
+        argv.append("ppo.eval_interval=1")
     argv.append(f"supervised.checkpoint_dir={run_dir}")
     return argv
+
+
+def _roundtrip_child_argv(record: dict[str, Any]) -> None:
+    """Preflight-validate one planned argv against the REAL child parser.
+
+    QA-003 (R-013): orchestrators validate composed argvs against the
+    target's actual parser at plan time — a variant flag typo (or a
+    positional-grouping bug) must cost zero children, never the shared
+    supervised phase plus nine runs. Parses ``record["argv"]`` (minus the
+    ``[sys.executable, script]`` prefix) through
+    ``scripts.train_t5_policy.parse_args`` and raises ``PreflightError``
+    naming the run when argparse rejects it.
+    """
+    import scripts.train_t5_policy as train_t5_policy
+
+    child_argv = [str(token) for token in record["argv"][2:]]
+    stderr_capture = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(stderr_capture):
+            train_t5_policy.parse_args(argv=child_argv)
+    except SystemExit as exc:
+        raise PreflightError(
+            f"Planned child argv for run {_run_name(record)} is rejected by "
+            f"the real scripts/train_t5_policy.py parser (exit {exc.code}): "
+            f"{stderr_capture.getvalue().strip()}\n  argv: {child_argv}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -569,24 +705,31 @@ def _run_child(argv: list[str], log_path: Path) -> int:
 
     Single injectable seam: tests monkeypatch
     ``scripts.run_hazard_efficacy._run_child``. Returns the exit code.
+    The child's stderr is merged into stdout so BOTH streams land in the
+    log. QA-009: the Popen lifetime is bound to a context manager and a
+    tee-loop exception kills the child — a leaked child would keep
+    writing into the run dir after the harness moved on.
     """
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     argv = [str(token) for token in argv]
     with log_path.open("w", encoding="utf-8") as log_file:
-        proc = subprocess.Popen(  # noqa: S603 - fixed argv list, shell=False
+        with subprocess.Popen(  # noqa: S603 - fixed argv list, shell=False
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
-        )
-        assert proc.stdout is not None  # PIPE above guarantees a stream
-        for line in proc.stdout:
-            log_file.write(line)
-            sys.stdout.write(line)
-        proc.stdout.close()
-        return proc.wait()
+        ) as proc:
+            assert proc.stdout is not None  # PIPE above guarantees a stream
+            try:
+                for line in proc.stdout:
+                    log_file.write(line)
+                    sys.stdout.write(line)
+            except BaseException:
+                proc.kill()
+                raise
+            return proc.wait()
 
 
 def check_child_outputs(record: dict[str, Any]) -> None:
@@ -645,8 +788,71 @@ def _assert_split_source(record: dict[str, Any]) -> None:
         )
 
 
+def validate_resumed_run(
+    record: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    """QA-002: a resumed dir must match what THIS invocation would produce.
+
+    Resume must never settle for internal self-consistency alone. Two
+    checks against the CURRENT invocation, both raising
+    ``ProvenanceError`` naming the run with delete/--force remediation:
+
+    - ``expected["model_name"]`` (when given): the resumed
+      ``config_used.json`` model name must equal the model THIS
+      invocation's resolved config would train (catches a smoke t5-small
+      dir silently relabeled into a t5-base — or non-smoke — report).
+    - ``expected["artifact_qids"]`` (when given; ``{split: set(qids)}``):
+      every qid in the resumed ``split_manifest.json`` must exist in the
+      CURRENT persisted artifacts (catches dirs predating an artifact
+      rebuild).
+    """
+    run_dir = Path(record["run_dir"])
+    name = _run_name(record)
+
+    expected_model = expected.get("model_name")
+    if expected_model is not None:
+        config_used = _load_json_file(
+            run_dir / "ppo_t5" / "config_used.json", error_cls=ProvenanceError
+        )
+        actual_model = None
+        if isinstance(config_used, dict):
+            actual_model = config_used.get("model", {}).get("model_name")
+        if actual_model != expected_model:
+            raise ProvenanceError(
+                f"Resumed run {name} was trained with model_name="
+                f"{actual_model!r} but this invocation would train "
+                f"{expected_model!r}; a stale dir cannot join the "
+                "comparison. Delete the directory or pass --force to "
+                "re-run everything."
+            )
+
+    artifact_qids = expected.get("artifact_qids")
+    if artifact_qids:
+        manifest = _load_json_file(
+            run_dir / "ppo_t5" / "split_manifest.json", error_cls=ProvenanceError
+        )
+        for split in ("train", "val", "test"):
+            available = artifact_qids.get(split)
+            if available is None:
+                continue
+            available_set = set(available)
+            manifest_qids = manifest.get(f"{split}_qids") or []
+            missing = [q for q in manifest_qids if q not in available_set]
+            if missing:
+                raise ProvenanceError(
+                    f"Resumed run {name}: {len(missing)} {split} qid(s) in "
+                    f"its split_manifest.json are absent from the CURRENT "
+                    f"persisted artifacts (e.g. {missing[:5]}); the dir "
+                    "predates an artifact rebuild. Delete the directory or "
+                    "pass --force to re-run everything."
+                )
+
+
 def execute_plan(
-    records: list[dict[str, Any]], *, force: bool = False
+    records: list[dict[str, Any]],
+    *,
+    force: bool = False,
+    expected_run_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Execute (or resume) every planned run sequentially (R-011/R-013).
 
@@ -662,6 +868,20 @@ def execute_plan(
     elapsed run time in seconds measured around :func:`_run_child` —
     a float >= 0). Ends by running :func:`assert_arm_control` over
     all records (resumed dirs included). Returns updated records.
+
+    QA-001: before any child is (re-)launched into an EXISTING dir, the
+    stale ``RUN_COMPLETE.json`` and ``eval_result.json`` are unlinked
+    (invalidate-before-mutate) — a crash mid-child then leaves an honest
+    partial dir instead of a half-trained checkpoint masquerading as
+    complete under old provenance.
+
+    Parameters (additive)
+    ---------------------
+    expected_run_context : dict or None, keyword-only
+        When given, every RESUMED dir is additionally validated against
+        this invocation via :func:`validate_resumed_run` (QA-002; keys
+        ``model_name`` and/or ``artifact_qids``). Default ``None`` keeps
+        the pre-existing behavior for direct callers.
     """
     current_sha = _git_sha()
     total = len(records)
@@ -689,6 +909,8 @@ def execute_plan(
                     "(not fatal)."
                 )
             _assert_split_source(record)
+            if expected_run_context:
+                validate_resumed_run(record, expected_run_context)
             continue
 
         if state == "partial" and not force:
@@ -698,6 +920,15 @@ def execute_plan(
                 f"Delete the directory to re-run {name} fresh, or pass "
                 "--force to re-run everything."
             )
+
+        # QA-001: invalidate-before-mutate — stale completion/eval markers
+        # must never survive into (or beyond) a failed re-run of an
+        # existing dir.
+        if run_dir.exists():
+            for stale_name in (RUN_COMPLETE_MARKER, EVAL_RESULT_FILENAME):
+                stale = run_dir / stale_name
+                if stale.exists():
+                    stale.unlink()
 
         print(f"[{index}/{total}] arm={record['arm']} seed={record['seed']} started")
         start = time.monotonic()
@@ -1338,17 +1569,35 @@ def probe_and_write_hazard_dynamics(
     questions: list,
     hazard_history_path: Path,
     out_path: Path,
+    *,
+    before_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Load both checkpoints, probe them, and persist the R-010b block.
 
     Writes :func:`build_hazard_dynamics` output as JSON to ``out_path``
     (``<run_dir>/hazard_dynamics.json`` in the pipeline) and returns it.
+
+    Parameters (additive)
+    ---------------------
+    before_cache : dict or None, keyword-only
+        Optional cross-call memo (QA-007: shared-prefix work stops at the
+        branch point). When given, the supervised "before" probe is
+        computed once and stored under key ``"before"``; later calls with
+        the SAME dict reuse it instead of re-loading and re-probing the
+        supervised checkpoint (6x redundant across hazard runs). Callers
+        own cache validity: share one dict only across calls with the
+        same ``supervised_ckpt`` and ``questions``. Default ``None``
+        keeps the uncached behavior.
     """
     from models.t5_policy import T5PolicyModel  # heavy transformers import
 
-    supervised_model = T5PolicyModel.load_pretrained(str(supervised_ckpt))
-    before = stop_prob_probe(supervised_model, questions)
-    del supervised_model
+    before = None if before_cache is None else before_cache.get("before")
+    if before is None:
+        supervised_model = T5PolicyModel.load_pretrained(str(supervised_ckpt))
+        before = stop_prob_probe(supervised_model, questions)
+        del supervised_model
+        if before_cache is not None:
+            before_cache["before"] = before
 
     hazard_model = T5PolicyModel.load_pretrained(str(hazard_ckpt))
     after = stop_prob_probe(hazard_model, questions)
@@ -1374,6 +1623,13 @@ def prune_run_checkpoints(run_dir: Path) -> None:
     sidecars, ``history.json`` and ``eval_result.json``. When
     ``eval_result.json`` is absent it refuses (raises ``HarnessError``)
     without deleting anything.
+
+    QA-010: recursive deletes resolve-and-contain against the intended
+    root. The walk never follows directory symlinks (``pathlib.rglob``
+    on <=3.12 does, so a symlinked parent could alias content OUTSIDE
+    the run dir and cycles could loop the scan); symlink candidates are
+    skipped outright; and every candidate must resolve INSIDE
+    ``run_dir.resolve()`` before deletion.
     """
     run_dir = Path(run_dir)
     if not (run_dir / EVAL_RESULT_FILENAME).exists():
@@ -1383,17 +1639,38 @@ def prune_run_checkpoints(run_dir: Path) -> None:
             "the run first (nothing was deleted)."
         )
 
-    prunable_dirs = [
-        path
-        for pattern in ("iter_*", "epoch_*")
-        for path in run_dir.rglob(pattern)
-        if path.is_dir()
-    ]
+    root = run_dir.resolve()
+
+    def _contained(path: Path) -> bool:
+        resolved = path.resolve()
+        return resolved == root or resolved.is_relative_to(root)
+
+    prunable_dirs: list[Path] = []
+    state_files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in list(dirnames):
+            full = Path(dirpath) / name
+            if full.is_symlink():
+                # Never descend into — or delete through — a dir symlink.
+                dirnames.remove(name)
+                continue
+            if fnmatch.fnmatch(name, "iter_*") or fnmatch.fnmatch(name, "epoch_*"):
+                prunable_dirs.append(full)
+                # Its contents die with the rmtree below; don't walk in.
+                dirnames.remove(name)
+        for name in filenames:
+            if name == "training_state.pt":
+                state_files.append(Path(dirpath) / name)
+
     for path in prunable_dirs:
-        shutil.rmtree(path)
-    # Fresh scan after the tree deletions so already-removed files are gone.
-    for state_file in list(run_dir.rglob("training_state.pt")):
-        if state_file.is_file():
+        if not path.is_symlink() and path.is_dir() and _contained(path):
+            shutil.rmtree(path)
+    for state_file in state_files:
+        if (
+            not state_file.is_symlink()
+            and state_file.is_file()
+            and _contained(state_file)
+        ):
             state_file.unlink()
 
 
@@ -1657,6 +1934,37 @@ def _build_significance(
     )
 
 
+def _reconcile_seed_coverage(
+    eval_by_run: dict[tuple[str, int], dict[str, Any]],
+    run_records: list[dict[str, Any]],
+) -> list[str]:
+    """QA-011: aggregations reconcile against the PLAN, not surviving files.
+
+    ``_sq_by_seed_for_arm`` drops seeds whose eval payload carries no
+    per-question ``runs`` records; a paired CI could then silently pool
+    fewer seeds than planned. Returns one warning string per planned arm
+    contributing fewer seeds to the per-qid S_q pool than the plan says
+    (arms A/B feed the R-007 CI; the reconciliation covers every arm).
+    """
+    planned: dict[str, set[int]] = {}
+    for record in run_records:
+        planned.setdefault(record["arm"], set()).add(record["seed"])
+
+    warnings: list[str] = []
+    for arm in sorted(planned):
+        contributed = set(_sq_by_seed_for_arm(eval_by_run, arm))
+        missing = sorted(planned[arm] - contributed)
+        if missing:
+            warnings.append(
+                f"arm {arm} contributes {len(contributed)} of "
+                f"{len(planned[arm])} planned seeds to the per-question "
+                f"S_q pool; seeds {missing} have no per-question runs "
+                "records (QA-011: any A/B gap shrinks the paired "
+                "bootstrap CI's seed coverage)"
+            )
+    return warnings
+
+
 def _arm_metric_mean(
     eval_by_run: dict[tuple[str, int], dict[str, Any]], arm: str, key: str
 ) -> float | None:
@@ -1709,9 +2017,19 @@ def _read_hazard_artifacts(
     Returns ``(hazard_compute, hazard_dynamics)``. Both are best-effort: a
     plan without an arm B, or an arm B whose optional sidecars were never
     written, yields ``None`` fields rather than an error.
+
+    QA-006: report fields are sourced from the component they describe —
+    ``wall_clock_seconds`` is the HAZARD-PHASE wall clock read from arm
+    B's ``hazard_history.json`` (its producer times the hazard phase
+    itself), while the whole-child elapsed time (PPO-dominated) is
+    carried under the renamed ``child_total_wall_clock_seconds`` field,
+    read from arm B's ``RUN_COMPLETE.json`` marker. Both are single-point
+    values from the plan's first arm-B run (the paired design fixes the
+    hazard workload across seeds; noted, not averaged).
     """
     optimizer_steps: int | None = None
-    wall_clock_seconds: float | None = None
+    hazard_wall_clock_seconds: float | None = None
+    child_total_wall_clock_seconds: float | None = None
     hazard_dynamics: dict[str, Any] | None = None
 
     b_records = [rec for rec in run_records if rec["arm"] == "B"]
@@ -1722,16 +2040,20 @@ def _read_hazard_artifacts(
             steps = history.get("steps")
             if isinstance(steps, list):
                 optimizer_steps = len(steps)
+            raw = history.get("wall_clock_seconds")
+            if raw is not None:
+                hazard_wall_clock_seconds = float(raw)
         marker = _read_optional_json(b_dir / RUN_COMPLETE_MARKER)
         if marker is not None:
             raw = marker.get("wall_clock_seconds")
             if raw is not None:
-                wall_clock_seconds = float(raw)
+                child_total_wall_clock_seconds = float(raw)
         hazard_dynamics = _read_optional_json(b_dir / HAZARD_DYNAMICS_FILENAME)
 
     hazard_compute = {
         "optimizer_steps": optimizer_steps,
-        "wall_clock_seconds": wall_clock_seconds,
+        "wall_clock_seconds": hazard_wall_clock_seconds,
+        "child_total_wall_clock_seconds": child_total_wall_clock_seconds,
         "step_matching_note": _HAZARD_STEP_MATCHING_NOTE,
     }
     return hazard_compute, hazard_dynamics
@@ -1801,11 +2123,15 @@ def assemble_report(
     (``B_vs_A`` / ``C_vs_A`` side by side, each with ``mean_sq_delta`` +
     ``accuracy_delta``), ``hazard_compute`` (``optimizer_steps`` counted
     from arm B's ``hazard_history.json`` steps; ``wall_clock_seconds``
-    read from arm B's ``RUN_COMPLETE.json`` marker), ``hazard_dynamics``,
-    ``runs`` (per-run records incl. ``arm``, ``seed``, ``resumed``,
-    ``policy_buzz_rate``, ``forced_commit_rate``, ``ece``, ``brier``,
-    ``provenance``), and ``plot_path`` (relative
-    ``hazard_efficacy_plot.png``). Never contains any Expected Wins key.
+    is the HAZARD-PHASE wall clock from that same history file —
+    QA-006 — while ``child_total_wall_clock_seconds`` carries the
+    PPO-dominated child elapsed from arm B's ``RUN_COMPLETE.json``
+    marker), ``hazard_dynamics``, ``warnings`` (QA-011: plan-vs-pool seed
+    reconciliation; empty list when clean), ``runs`` (per-run records
+    incl. ``arm``, ``seed``, ``resumed``, ``policy_buzz_rate``,
+    ``forced_commit_rate``, ``ece``, ``brier``, ``provenance``), and
+    ``plot_path`` (relative ``hazard_efficacy_plot.png``). Never contains
+    any Expected Wins key.
     """
     out_dir = Path(out_dir)
     if not run_records:
@@ -1817,6 +2143,11 @@ def assemble_report(
     scale = _build_scale(first_config, first_manifest, out_dir)
     endpoint = _build_endpoint(eval_by_run)
     significance = _build_significance(eval_by_run)
+    # QA-011: reconcile per-arm seed coverage against the plan and surface
+    # any silent drop as a report warning (printed too, never swallowed).
+    warnings = _reconcile_seed_coverage(eval_by_run, run_records)
+    for warning in warnings:
+        print(f"WARNING: {warning}")
     arm_order = list(dict.fromkeys(rec["arm"] for rec in run_records))
     arm_deltas = _build_arm_deltas(eval_by_run, arm_order)
     hazard_compute, hazard_dynamics = _read_hazard_artifacts(run_records)
@@ -1835,6 +2166,7 @@ def assemble_report(
         "arm_deltas": arm_deltas,
         "hazard_compute": hazard_compute,
         "hazard_dynamics": hazard_dynamics,
+        "warnings": warnings,
         "runs": report_runs,
         "plot_path": PLOT_FILENAME,
     }
@@ -1914,15 +2246,69 @@ def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
     ``supervised.checkpoint_dir=<root>`` positional override, so the real
     trainer leaves the branched checkpoint at ``<root>/supervised/
     best_model`` — the exact ``--model-path`` every arm child receives.
-    An existing non-empty shared checkpoint is reused (idempotent resume).
+    QA-007: the child additionally receives ``--ppo-iterations 1`` — its
+    PPO phase is discarded (every arm re-runs PPO from the branch point),
+    so the shared-prefix job stops at the branch point instead of burning
+    a full PPO budget (hours at t5-base).
+
+    QA-002: a fresh build writes an identity marker
+    (``<root>/SHARED_SUPERVISED.json`` = ``{"config_hash", "git_sha",
+    "model_name"}``). An existing non-empty shared checkpoint is reused
+    ONLY when the marker exists and its ``config_hash``/``model_name``
+    match THIS invocation (``ProvenanceError`` otherwise — a t5-small
+    smoke checkpoint must never silently seed a t5-base comparison); a
+    ``git_sha`` drift warns without raising (R-013 policy). ``--force``
+    rebuilds the shared checkpoint unconditionally.
     """
     sup_root = shared_supervised_root(out_dir)
     shared_ckpt = shared_supervised_checkpoint(out_dir)
     sup_log = sup_root / TRAIN_LOG_FILENAME
+    marker_path = sup_root / SHARED_SUPERVISED_MARKER
+    identity = _shared_supervised_identity(args)
 
+    force = bool(getattr(args, "force", False))
     if shared_ckpt.is_dir() and any(shared_ckpt.iterdir()):
-        print(f"[supervised] resumed: shared checkpoint exists at {shared_ckpt}")
-        return shared_ckpt
+        if not force:
+            if not marker_path.exists():
+                raise ProvenanceError(
+                    f"Shared supervised checkpoint at {shared_ckpt} has no "
+                    f"identity marker ({SHARED_SUPERVISED_MARKER}); it cannot "
+                    "be validated against this invocation (QA-002). Delete "
+                    f"{sup_root} or pass --force to rebuild it."
+                )
+            marker = _load_json_file(marker_path, error_cls=ProvenanceError)
+            mismatched = [
+                key
+                for key in ("config_hash", "model_name")
+                if marker.get(key) != identity[key]
+            ]
+            if mismatched:
+                details = ", ".join(
+                    f"{key}: marker={marker.get(key)!r} != current="
+                    f"{identity[key]!r}"
+                    for key in mismatched
+                )
+                raise ProvenanceError(
+                    f"Shared supervised checkpoint at {shared_ckpt} was built "
+                    f"for a DIFFERENT invocation ({details}); reusing it would "
+                    "poison every arm (QA-002). Delete "
+                    f"{sup_root} or pass --force to rebuild it."
+                )
+            if marker.get("git_sha") != identity["git_sha"]:
+                print(
+                    "WARNING: shared supervised checkpoint was built at git "
+                    f"sha {marker.get('git_sha')!r} but the current checkout "
+                    f"is {identity['git_sha']!r}; reusing it (drift recorded, "
+                    "not fatal)."
+                )
+            print(f"[supervised] resumed: shared checkpoint exists at {shared_ckpt}")
+            return shared_ckpt
+        print("[supervised] --force: rebuilding the shared supervised checkpoint")
+
+    # QA-001 discipline: invalidate the identity marker BEFORE mutating the
+    # checkpoint so a crashed rebuild cannot pass validation next time.
+    if marker_path.exists():
+        marker_path.unlink()
 
     argv: list[str] = [
         sys.executable,
@@ -1931,6 +2317,10 @@ def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
         str(args.config),
         "--seed",
         str(int(args.seeds[0])),
+        # QA-007: the branched checkpoint is the SUPERVISED one; the child's
+        # own PPO phase is discarded, so stop it at the branch point.
+        "--ppo-iterations",
+        "1",
     ]
     if args.smoke:
         argv += _SMOKE_CHILD_FLAGS
@@ -1950,17 +2340,14 @@ def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
             f"Shared supervised run left no checkpoint at {shared_ckpt}; "
             f"inspect the child log: {sup_log}"
         )
+    save_json(marker_path, identity)
     print(f"[supervised] finished, elapsed {elapsed:.1f}s")
     return shared_ckpt
 
 
 def _load_yaml_config(config_path: str) -> dict[str, Any]:
     """Load the trainer YAML config for the eval context (fail-loud)."""
-    path = Path(config_path)
-    if not path.is_absolute() and not path.exists():
-        anchored = PROJECT_ROOT / path
-        if anchored.exists():
-            path = anchored
+    path = _resolve_config_path(str(config_path))
     if not path.exists():
         raise PreflightError(
             f"Config file not found: {config_path} (also tried anchoring to "
@@ -1973,27 +2360,81 @@ def _load_yaml_config(config_path: str) -> dict[str, Any]:
     return loaded
 
 
+def subset_questions_by_manifest(
+    questions: list, qids: list, *, split: str, manifest_path: Path
+) -> list:
+    """Select loaded artifact questions BY a child manifest's qids (QA-004).
+
+    R-005 literally: the harness's eval/probe/manifest question sets are
+    resolved FROM the split manifest a child actually trained against —
+    children honor ``data.max_questions``/scope while the raw artifacts do
+    not, so at capped scales the artifact lists are supersets. Returns the
+    subset in MANIFEST order and asserts harness-loaded/manifest agreement:
+    a manifest qid missing from the loaded artifacts raises
+    ``ProvenanceError`` (the run predates an artifact rebuild).
+    """
+    by_qid: dict[str, Any] = {}
+    for question in questions:
+        by_qid.setdefault(question.qid, question)
+    missing = [qid for qid in qids if qid not in by_qid]
+    if missing:
+        raise ProvenanceError(
+            f"{len(missing)} {split} qid(s) named by {manifest_path} are "
+            f"absent from the loaded persisted artifacts (e.g. "
+            f"{missing[:5]}); the harness cannot evaluate on the split the "
+            "children trained against. Rebuild the artifacts or delete the "
+            "stale run dirs."
+        )
+    return [by_qid[qid] for qid in qids]
+
+
 def main(argv: list[str] | None = None) -> None:
     """Harness entry point: preflight -> plan -> execute -> eval -> report.
 
     ``--dry-run`` stops after preflight+plan with zero children;
     ``--report-only`` performs zero training/eval calls (and no split
-    preflight) and reassembles report + plot from existing run dirs.
+    preflight) and reassembles report + plot from existing run dirs;
+    ``--report-only --dry-run`` is plan-print only — zero writes and zero
+    deletions, ``--prune-checkpoints`` included (QA-005).
     """
     args = parse_args(argv)
+    validate_flag_compatibility(args)
+    # QA-012: absolutize path-shaped CLI inputs ONCE at the boundary so the
+    # harness and its children (which inherit an arbitrary CWD) resolve the
+    # same config file and output tree regardless of invocation directory.
+    args.config = str(_resolve_config_path(str(args.config)))
+    args.out_dir = str(Path(args.out_dir).resolve())
     out_dir = Path(args.out_dir)
 
     if args.report_only:
         plan = plan_runs(args)
         records = [rec for rec in plan if Path(rec["run_dir"]).exists()]
+        if args.dry_run:
+            # QA-005: plan-print only under the zero-actions combination.
+            _print_plan(plan, None)
+            print(
+                "--report-only --dry-run: would reassemble the report from "
+                f"{len(records)} existing run dir(s) under {out_dir}; zero "
+                "children, zero writes, zero deletions."
+            )
+            return
         if not records:
             raise PreflightError(
                 f"--report-only found no existing run dirs under {out_dir} "
                 f"for the planned arms/seeds "
                 f"({[Path(r['run_dir']).name for r in plan]})"
             )
+        current_sha = _git_sha()
         for record in records:
             record["resumed"] = True
+            # QA-008: git-sha drift is read from each run's real marker —
+            # never unconditionally False (R-013 drift recording).
+            marker = _read_optional_json(
+                Path(record["run_dir"]) / RUN_COMPLETE_MARKER
+            )
+            record["git_sha_mismatch"] = (
+                marker is None or marker.get("git_sha") != current_sha
+            )
         assemble_report(out_dir, records, smoke=bool(args.smoke))
         if args.prune_checkpoints:
             _prune_all_runs(records)
@@ -2019,15 +2460,64 @@ def main(argv: list[str] | None = None) -> None:
             "rebuild them with scripts/build_mc_dataset.py"
         )
 
-    # Shared supervised warm-start: the FIRST child (R-003/R-008).
+    # Shared supervised warm-start: the FIRST child (R-003/R-008), identity-
+    # validated on reuse and rebuilt under --force (QA-002).
     shared_ckpt = _run_shared_supervised(args, out_dir)
+
+    # QA-002: resumed arm dirs must match what THIS invocation would produce
+    # (model identity + current-artifact split membership).
+    base_config = _resolved_child_base_config(str(args.config), bool(args.smoke))
+    expected_run_context = {
+        "model_name": base_config.get("model", {}).get("model_name"),
+        "artifact_qids": {
+            "train": {q.qid for q in train_questions},
+            "val": {q.qid for q in val_questions},
+            "test": {q.qid for q in test_questions},
+        },
+    }
+
+    # Arm children with resume/partial/force semantics + arm control.
+    records = execute_plan(
+        plan, force=bool(args.force), expected_run_context=expected_run_context
+    )
+
+    # QA-004 / R-005: single-source split resolution — the eval/probe/
+    # supervised-manifest question sets are subset from the loaded artifacts
+    # BY the first completed run's split manifest (children honor
+    # data.max_questions; the raw artifacts do not). assert_arm_control has
+    # already proven every run's manifest agrees with run 1's.
+    first_manifest_path = (
+        Path(records[0]["run_dir"]) / "ppo_t5" / "split_manifest.json"
+    )
+    first_manifest = _load_json_file(
+        first_manifest_path, error_cls=ProvenanceError
+    )
+    train_questions = subset_questions_by_manifest(
+        train_questions,
+        first_manifest.get("train_qids") or [],
+        split="train",
+        manifest_path=first_manifest_path,
+    )
+    val_questions = subset_questions_by_manifest(
+        val_questions,
+        first_manifest.get("val_qids") or [],
+        split="val",
+        manifest_path=first_manifest_path,
+    )
+    test_questions = subset_questions_by_manifest(
+        test_questions,
+        first_manifest.get("test_qids") or [],
+        split="test",
+        manifest_path=first_manifest_path,
+    )
+
+    # R-008: persist the supervised split manifest from the SAME resolved
+    # split every run trained/evaluated against (QA-004), asserting
+    # supervised-train/test disjointness.
     manifest = _manifest_from_artifacts(
         splits, train_questions, val_questions, test_questions
     )
     write_supervised_split_manifest(shared_ckpt, manifest)
-
-    # Arm children with resume/partial/force semantics + arm control.
-    records = execute_plan(plan, force=bool(args.force))
 
     # R-005/R-014: identical eval path per run on the TEST split, persisted
     # immediately per run.
@@ -2039,7 +2529,11 @@ def main(argv: list[str] | None = None) -> None:
     evaluate_all_runs(records, test_questions, eval_context)
 
     # R-010b: stop-probability probe per hazard run (supervised vs hazard).
+    # QA-007: the supervised "before" probe is identical across hazard runs
+    # (same shared checkpoint, same probe questions), so it is computed once
+    # via the shared cache and reused.
     probe_questions = select_probe_questions(train_questions)
+    probe_cache: dict[str, Any] = {}
     for record in records:
         if not record.get("hazard"):
             continue
@@ -2050,6 +2544,7 @@ def main(argv: list[str] | None = None) -> None:
             probe_questions,
             run_dir / "hazard" / "hazard_history.json",
             run_dir / HAZARD_DYNAMICS_FILENAME,
+            before_cache=probe_cache,
         )
 
     # R-009/R-014: report + plot, read exclusively from per-run files.

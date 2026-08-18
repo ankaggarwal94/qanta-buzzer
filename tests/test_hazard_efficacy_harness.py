@@ -12,7 +12,9 @@ RED-phase tests pinning the interface of ``scripts/run_hazard_efficacy.py``:
   scale block incl. disk usage, Device-2 caveat verbatim, structured
   verdict, plot path) for smoke and non-smoke inputs; per-run ece/brier
   surfaced under the REAL eval names; hazard_compute.wall_clock_seconds
-  sourced from arm B's RUN_COMPLETE.json marker.
+  sourced from arm B's hazard_history.json (the hazard-phase wall clock —
+  QA-006), with the PPO-dominated child total carried separately as
+  child_total_wall_clock_seconds from arm B's RUN_COMPLETE.json marker.
 - R-012: ``evaluate_t5_policy`` is the sole eval entry point; the harness
   module never touches ``TossupMCEnv``/``TextObservationWrapper``.
 
@@ -396,12 +398,62 @@ def test_r009_arm_deltas_and_hazard_compute(tmp_path: Path) -> None:
     hazard_compute = report["hazard_compute"]
     # B's fixture hazard_history.json has exactly 4 optimizer steps.
     assert hazard_compute["optimizer_steps"] == 4
-    # wall_clock_seconds has a pinned DATA SOURCE: arm B's
-    # RUN_COMPLETE.json marker (fixture 42.25) — not A's (3.0), not C's
-    # (7.5), not a sum or mean across arms.
+    # QA-006: wall_clock_seconds has a pinned HAZARD-PHASE data source —
+    # arm B's hazard_history.json (fixture 3.75). It is NEVER the child-
+    # total marker elapsed (B: 42.25), nor A's (3.0) or C's (7.5) markers,
+    # nor a sum or mean across arms.
     wall_clock = hazard_compute["wall_clock_seconds"]
     assert isinstance(wall_clock, float) and not isinstance(wall_clock, bool)
-    assert wall_clock == pytest.approx(_ASSEMBLY_WALL_CLOCKS["B"])
+    assert wall_clock == pytest.approx(3.75)
+    assert wall_clock != pytest.approx(_ASSEMBLY_WALL_CLOCKS["B"])
+    # The PPO-dominated child total keeps its own renamed field, still
+    # sourced from arm B's RUN_COMPLETE.json marker (fixture 42.25).
+    child_total = hazard_compute["child_total_wall_clock_seconds"]
+    assert isinstance(child_total, float) and not isinstance(child_total, bool)
+    assert child_total == pytest.approx(_ASSEMBLY_WALL_CLOCKS["B"])
+
+
+# Tests QA-011 [unit]: aggregations reconcile against the PLAN — an arm
+# contributing fewer seeds than planned to the per-qid S_q pool (missing or
+# empty per-question runs records) surfaces as a report warning, never a
+# silently smaller CI pool. A clean fixture yields zero warnings.
+def test_qa011_report_warns_when_arm_contributes_fewer_seeds(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "out"
+    records = []
+    for arm in ("A", "B"):
+        for seed in (1, 2):
+            # B seed 2's eval payload lost its per-question runs records.
+            eval_overrides = {"runs": []} if (arm, seed) == ("B", 2) else {}
+            run_dir = make_run_dir(
+                out, arm, seed,
+                eval_overrides=eval_overrides,
+                include_hazard_dynamics=(arm, seed) == ("B", 1),
+            )
+            records.append({"arm": arm, "seed": seed, "run_dir": run_dir,
+                            "hazard": arm != "A", "resumed": False})
+
+    report = harness.assemble_report(out, records, smoke=True)
+
+    warnings = report["warnings"]
+    assert isinstance(warnings, list) and warnings
+    assert any("B" in w and "[2]" in w for w in warnings), (
+        f"the dropped arm-B seed 2 must be named in the warnings: {warnings}"
+    )
+    assert not any("arm A" in w for w in warnings), "arm A is fully covered"
+
+    # A fully-covered plan carries an EMPTY warnings list.
+    clean_out = tmp_path / "clean"
+    clean_records = []
+    for arm in ("A", "B"):
+        run_dir = make_run_dir(
+            clean_out, arm, 1, include_hazard_dynamics=(arm == "B")
+        )
+        clean_records.append({"arm": arm, "seed": 1, "run_dir": run_dir,
+                              "hazard": arm != "A", "resumed": False})
+    clean_report = harness.assemble_report(clean_out, clean_records, smoke=True)
+    assert clean_report["warnings"] == []
 
 
 # Tests R-005/R-009 [unit]: Expected Wins is excluded from the default report.

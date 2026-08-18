@@ -77,8 +77,15 @@ def _seed_all_rngs(seed: int) -> None:
     torch.manual_seed(seed)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments.
+
+    Parameters
+    ----------
+    argv : list[str] or None, optional
+        Argument tokens to parse instead of ``sys.argv[1:]`` (QA-003:
+        lets orchestrators round-trip a composed child argv through THIS
+        parser at plan time). Default ``None`` keeps the CLI behavior.
 
     Returns
     -------
@@ -165,7 +172,7 @@ def parse_args() -> argparse.Namespace:
         nargs="*",
         help="Config overrides: key=value (e.g. model.model_name=t5-base)",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def load_config_with_overrides(args: argparse.Namespace) -> dict:

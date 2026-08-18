@@ -217,19 +217,30 @@ def test_r011_subprocess_used_and_no_shell_true() -> None:
 
 
 # Tests R-011 [integration]: the REAL _run_child (no monkeypatch) runs the
-# argv list via subprocess, tees the child's stdout into the given log path,
-# and returns the child's exit code verbatim.
+# argv list via subprocess, tees the child's stdout AND stderr into the
+# given log path (QA-008: the stderr half of the tee is asserted, not
+# assumed), and returns the child's exit code verbatim.
 def test_r011_real_run_child_tees_log_and_returns_exit_code(
     tmp_path: Path,
 ) -> None:
     log_path = tmp_path / "train.log"
-    argv = [sys.executable, "-c", "import sys; print('xmarker'); sys.exit(3)"]
+    argv = [
+        sys.executable,
+        "-c",
+        "import sys; print('xmarker'); "
+        "sys.stderr.write('emarker\\n'); sys.exit(3)",
+    ]
 
     returncode = harness._run_child(argv, log_path)
 
     assert returncode == 3
     assert log_path.exists(), "child output must be tee'd to the log path"
-    assert "xmarker" in log_path.read_text()
+    log_text = log_path.read_text()
+    assert "xmarker" in log_text
+    assert "emarker" in log_text, (
+        "the child's STDERR must land in the log too (a traceback-only "
+        "failure would otherwise leave an empty log)"
+    )
 
 
 # Tests R-011 [integration]: a missing <run_dir>/ppo_t5/best_model after a
@@ -1035,7 +1046,13 @@ def test_main_smoke_happy_path_composition(
 
     # The R-010b probe stage must route through probe_and_write_hazard_
     # dynamics (fabricated checkpoints are not loadable model weights).
+    # QA-008: the monkeypatched seam records its calls so the composition
+    # can assert the probe stage actually ran (a silently skipped stage
+    # would otherwise pass).
+    probe_calls: list = []
+
     def fake_probe(*args, **kwargs):
+        probe_calls.append((args, kwargs))
         out_path = Path(
             kwargs["out_path"] if "out_path" in kwargs else args[4]
         )
@@ -1103,3 +1120,548 @@ def test_main_smoke_happy_path_composition(
     assert (out / "hazard_efficacy_plot.png").exists()
     report = json.loads((out / "hazard_efficacy_report.json").read_text())
     assert {rec["arm"] for rec in report["runs"]} == {"A", "B", "C"}
+
+    # (iv) QA-008: the probe seam was invoked once per HAZARD run (arms B
+    # and C x seed 1) and the report's hazard_dynamics block is non-null.
+    assert len(probe_calls) == 2, (
+        "probe_and_write_hazard_dynamics must run once per hazard run; "
+        f"got {len(probe_calls)} call(s)"
+    )
+    assert isinstance(report["hazard_dynamics"], dict) and report[
+        "hazard_dynamics"
+    ], "the report must carry a non-null hazard_dynamics block"
+
+
+# ---------------------------------------------------------------------------
+# QA fix round 1 regressions (QA-001..QA-005, QA-007..QA-010, QA-012)
+# ---------------------------------------------------------------------------
+
+
+def _supervised_fabricating_runner(calls: list):
+    """Fake ``_run_child`` for direct ``_run_shared_supervised`` tests."""
+
+    def runner(argv, log_path):
+        argv = [str(token) for token in argv]
+        calls.append(argv)
+        log_path = Path(log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("supervised ok\n")
+        best = _sup_ckpt_root(argv) / "supervised" / "best_model"
+        best.mkdir(parents=True, exist_ok=True)
+        (best / "policy_head.pt").write_bytes(b"stub-weights")
+        return 0
+
+    return runner
+
+
+# Tests QA-001 [integration]: invalidate-before-mutate — force -> crash ->
+# resume must raise PartialRunError, never resume a half-trained dir under
+# the OLD completion marker.
+def test_qa001_force_crash_then_resume_raises_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = make_plan_record(tmp_path, "A", 1)
+    make_run_dir(tmp_path, "A", 1)  # complete: marker + eval_result on disk
+    run_dir = Path(record["run_dir"])
+    assert (run_dir / "RUN_COMPLETE.json").exists()
+    assert (run_dir / "eval_result.json").exists()
+
+    crash_runner, crash_calls = fabricating_runner([record], exit_code=3)
+    monkeypatch.setattr(harness, "_run_child", crash_runner)
+    with pytest.raises(harness.ChildRunError):
+        harness.execute_plan([record], force=True)
+    assert len(crash_calls) == 1
+    # The stale markers were unlinked BEFORE the child launched, so the
+    # crashed dir is an honest partial — not a fake complete.
+    assert not (run_dir / "RUN_COMPLETE.json").exists()
+    assert not (run_dir / "eval_result.json").exists()
+
+    ok_runner, ok_calls = fabricating_runner([record])
+    monkeypatch.setattr(harness, "_run_child", ok_runner)
+    with pytest.raises(harness.PartialRunError):
+        harness.execute_plan([record])  # resume WITHOUT --force
+    assert ok_calls == []
+
+
+# Tests QA-002 [integration]: resume answers "does this dir match what THIS
+# invocation would produce" — a stale model or artifact-orphaned split qids
+# fail loud; a matching dir resumes cleanly.
+def test_qa002_stale_resumed_dir_vs_current_invocation_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = {
+        "model_name": "t5-small",
+        "artifact_qids": {
+            split: set(qids) for split, qids in DEFAULT_SPLIT_QIDS.items()
+        },
+    }
+
+    # (a) stale model identity: dir trained for t5-base, invocation t5-small.
+    records = [make_plan_record(tmp_path / "a", "A", 1)]
+    make_run_dir(tmp_path / "a", "A", 1, model_name="t5-base")
+    runner, calls = fabricating_runner(records)
+    monkeypatch.setattr(harness, "_run_child", runner)
+    with pytest.raises(harness.ProvenanceError) as excinfo:
+        harness.execute_plan(records, expected_run_context=expected)
+    message = str(excinfo.value)
+    assert "t5-base" in message and "t5-small" in message
+    assert calls == []
+
+    # (b) split drift: the resumed manifest names a qid the CURRENT
+    # artifacts no longer contain (dir predates an artifact rebuild).
+    records = [make_plan_record(tmp_path / "b", "A", 1)]
+    make_run_dir(
+        tmp_path / "b", "A", 1,
+        split_qids={"train": ["OLD-qid"], "val": ["v1"], "test": ["q1"]},
+    )
+    runner, calls = fabricating_runner(records)
+    monkeypatch.setattr(harness, "_run_child", runner)
+    with pytest.raises(harness.ProvenanceError) as excinfo:
+        harness.execute_plan(records, expected_run_context=expected)
+    assert "OLD-qid" in str(excinfo.value)
+    assert calls == []
+
+    # (c) a dir matching the current invocation resumes with zero children.
+    records = [make_plan_record(tmp_path / "c", "A", 1)]
+    make_run_dir(tmp_path / "c", "A", 1)
+    runner, calls = fabricating_runner(records)
+    monkeypatch.setattr(harness, "_run_child", runner)
+    updated = harness.execute_plan(records, expected_run_context=expected)
+    assert calls == []
+    assert updated[0]["resumed"] is True
+
+
+# Tests QA-002 [integration]: the shared supervised checkpoint carries an
+# identity marker validated on every reuse — mismatch or absence fails loud.
+def test_qa002_shared_supervised_marker_mismatch_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(harness, "_run_child", _supervised_fabricating_runner(calls))
+    out = tmp_path / "out"
+    args = _namespace(out)
+
+    # Fresh build writes the identity marker beside the checkpoint root.
+    harness._run_shared_supervised(args, out)
+    assert len(calls) == 1
+    marker_path = (
+        harness.shared_supervised_root(out) / harness.SHARED_SUPERVISED_MARKER
+    )
+    assert marker_path.exists()
+    marker = json.loads(marker_path.read_text())
+    assert {"config_hash", "git_sha", "model_name"} <= set(marker)
+    assert marker["model_name"] == "t5-small"  # smoke resolution of the YAML
+    assert marker["git_sha"] == current_git_sha()
+
+    # Matching marker => reuse, zero further children.
+    harness._run_shared_supervised(args, out)
+    assert len(calls) == 1
+
+    # Doctored model_name => fail loud (a t5-base checkpoint must never
+    # silently seed a t5-small comparison or vice versa).
+    marker_path.write_text(json.dumps({**marker, "model_name": "t5-base"}))
+    with pytest.raises(harness.ProvenanceError) as excinfo:
+        harness._run_shared_supervised(args, out)
+    assert "t5-base" in str(excinfo.value)
+
+    # Doctored config hash => fail loud.
+    marker_path.write_text(json.dumps({**marker, "config_hash": "0" * 64}))
+    with pytest.raises(harness.ProvenanceError):
+        harness._run_shared_supervised(args, out)
+
+    # Missing marker on an existing checkpoint => unvalidatable => fail loud.
+    marker_path.unlink()
+    with pytest.raises(harness.ProvenanceError) as excinfo:
+        harness._run_shared_supervised(args, out)
+    assert "--force" in str(excinfo.value)
+    assert len(calls) == 1, "no silent rebuild on validation failure"
+
+
+# Tests QA-002 [integration]: --force rebuilds the shared supervised
+# checkpoint (and refreshes its identity marker) instead of reusing it.
+def test_qa002_force_rebuilds_shared_supervised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(harness, "_run_child", _supervised_fabricating_runner(calls))
+    out = tmp_path / "out"
+
+    harness._run_shared_supervised(_namespace(out), out)
+    assert len(calls) == 1
+
+    harness._run_shared_supervised(_namespace(out, force=True), out)
+    assert len(calls) == 2, "--force must re-run the shared supervised child"
+    marker_path = (
+        harness.shared_supervised_root(out) / harness.SHARED_SUPERVISED_MARKER
+    )
+    assert marker_path.exists(), "the rebuilt checkpoint gets a fresh marker"
+
+
+# Tests QA-003 [integration]: a config-override variant composes an argv the
+# REAL child parser accepts, with every positional key=value override
+# contiguous at the argv tail.
+def test_qa003_variant_positional_override_argv_parses_and_stays_tail(
+    tmp_path: Path,
+) -> None:
+    import scripts.train_t5_policy as train_t5_policy
+
+    out = tmp_path / "out"
+    plan = harness.plan_runs(
+        _namespace(out, seeds=[1], variant=["lr_sweep:ppo.lr=2e-5"])
+    )
+    variant = next(rec for rec in plan if rec["arm"] == "lr_sweep")
+    argv = variant["argv"]
+
+    positional = [t for t in argv[2:] if "=" in t and not t.startswith("-")]
+    assert positional == [
+        "ppo.lr=2e-5",
+        "ppo.eval_interval=1",
+        f"supervised.checkpoint_dir={out / 'lr_sweep_seed1'}",
+    ]
+    assert argv[-len(positional):] == positional, (
+        "positional overrides must be CONTIGUOUS at the argv tail; "
+        f"argv={argv}"
+    )
+
+    # The REAL parser accepts every planned argv and receives ALL the
+    # positional overrides in its trailing ``overrides`` group.
+    for rec in plan:
+        parsed = train_t5_policy.parse_args(
+            argv=[str(t) for t in rec["argv"][2:]]
+        )
+        assert f"supervised.checkpoint_dir={rec['run_dir']}" in parsed.overrides
+    parsed = train_t5_policy.parse_args(argv=[str(t) for t in argv[2:]])
+    assert "ppo.lr=2e-5" in parsed.overrides
+    assert "ppo.eval_interval=1" in parsed.overrides
+    assert parsed.smoke is True
+    assert parsed.hazard_pretrain is True
+
+
+# Tests QA-003 [integration]: plan_runs round-trips every argv through the
+# real child parser at preflight — a bad variant flag dies at PLAN time
+# (zero children), never after the shared supervised phase + nine runs.
+def test_qa003_preflight_rejects_argv_the_real_parser_rejects(
+    tmp_path: Path,
+) -> None:
+    args = _namespace(tmp_path / "out", variant=["bad:--no-such-flag"])
+    with pytest.raises(harness.PreflightError) as excinfo:
+        harness.plan_runs(args)
+    message = str(excinfo.value)
+    assert "bad_seed1" in message
+    assert "no-such-flag" in message
+
+
+# Tests QA-004 [integration]: with artifacts LARGER than the children's
+# data.max_questions-capped split, the harness selects eval/probe/manifest
+# questions BY the child split manifest (manifest order) — never the raw
+# artifact lists.
+def test_qa004_eval_probe_and_manifest_follow_child_split_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capped_qids = dict(DEFAULT_SPLIT_QIDS)  # what the children trained on
+    big_qids = {
+        "train": [f"t{i}" for i in range(1, 7)],  # t1..t6 (artifacts larger)
+        "val": ["v1", "v2"],
+        "test": [f"q{i}" for i in range(1, 6)],  # q1..q5
+    }
+    for split in ("train", "val", "test"):
+        assert set(capped_qids[split]) < set(big_qids[split])  # strict subset
+
+    out = tmp_path / "out"
+    split_paths = write_split_artifacts(tmp_path / "artifacts", split_qids=big_qids)
+    monkeypatch.setattr(
+        harness, "resolve_split_artifacts", lambda **kwargs: dict(split_paths)
+    )
+
+    def runner(argv, log_path):
+        argv = [str(token) for token in argv]
+        log_path = Path(log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("child ok\n")
+        root = _sup_ckpt_root(argv)
+        if "--skip-supervised" in argv:
+            arm, _, seed = root.name.rpartition("_seed")
+            make_run_dir(
+                root.parent, arm, int(seed),
+                hazard="--hazard-pretrain" in argv,
+                marker=False, write_eval_result=False,
+                split_qids=capped_qids,  # children honored the cap
+            )
+        else:
+            best = root / "supervised" / "best_model"
+            best.mkdir(parents=True, exist_ok=True)
+            (best / "policy_head.pt").write_bytes(b"stub-weights")
+        return 0
+
+    monkeypatch.setattr(harness, "_run_child", runner)
+
+    eval_calls: list = []
+    monkeypatch.setattr(
+        harness, "evaluate_t5_policy", _fake_eval_factory(eval_calls),
+        raising=False,
+    )
+
+    probe_calls: list = []
+
+    def fake_probe(*args, **kwargs):
+        probe_calls.append((args, kwargs))
+        out_path = Path(kwargs["out_path"] if "out_path" in kwargs else args[4])
+        block = make_hazard_dynamics()
+        write_json(out_path, block)
+        return block
+
+    monkeypatch.setattr(harness, "probe_and_write_hazard_dynamics", fake_probe)
+
+    harness.main(
+        ["--smoke", "--out-dir", str(out), "--config", CONFIG_PATH,
+         "--seeds", "1", "--arms", "A", "B"]
+    )
+
+    # Eval receives the CHILD manifest's capped test/train splits, in
+    # manifest order — never the larger raw artifact lists.
+    assert len(eval_calls) == 2
+    for _, kwargs in eval_calls:
+        got_test = [q.qid for q in kwargs["test_questions"]]
+        assert got_test == capped_qids["test"]
+        assert got_test != big_qids["test"]
+        got_ref = [q.qid for q in kwargs["reference_questions"]]
+        assert got_ref == capped_qids["train"]
+
+    # The probe sample is drawn from the capped train subset.
+    probe_args, probe_kwargs = probe_calls[0]
+    probe_questions = (
+        probe_kwargs["questions"] if "questions" in probe_kwargs else probe_args[2]
+    )
+    assert [q.qid for q in probe_questions] == capped_qids["train"]
+
+    # The supervised split manifest records the capped qids and counts.
+    sup_manifest = json.loads(
+        (harness.shared_supervised_checkpoint(out) / "split_manifest.json")
+        .read_text()
+    )
+    assert sup_manifest["train_qids"] == capped_qids["train"]
+    assert sup_manifest["test_qids"] == capped_qids["test"]
+    assert sup_manifest["test_count"] == len(capped_qids["test"])
+
+
+# Tests QA-005 [integration]: --report-only --dry-run --prune-checkpoints is
+# a ZERO-action combination — nothing written, nothing deleted, no children,
+# no evals.
+def test_qa005_report_only_dry_run_is_zero_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "out"
+    for arm in ("A", "B"):
+        make_run_dir(
+            out, arm, 1, include_prunables=True,
+            include_hazard_dynamics=(arm == "B"),
+        )
+
+    launches: list = []
+    evals: list = []
+    monkeypatch.setattr(
+        harness, "_run_child", lambda argv, log_path: launches.append(argv) or 0
+    )
+    monkeypatch.setattr(
+        harness, "evaluate_t5_policy",
+        lambda *a, **k: evals.append(1) or {}, raising=False,
+    )
+
+    snapshot_before = {str(p) for p in out.rglob("*")}
+    harness.main(
+        ["--report-only", "--dry-run", "--prune-checkpoints", "--smoke",
+         "--out-dir", str(out), "--arms", "A", "B", "--seeds", "1"]
+    )
+    snapshot_after = {str(p) for p in out.rglob("*")}
+
+    assert snapshot_after == snapshot_before, (
+        "--report-only --dry-run must neither write nor delete anything"
+    )
+    assert launches == [] and evals == []
+    assert not (out / "hazard_efficacy_report.json").exists()
+    assert not (out / "hazard_efficacy_plot.png").exists()
+    assert (out / "A_seed1" / "ppo_t5" / "iter_1").exists(), (
+        "--prune-checkpoints must delete NOTHING under --dry-run"
+    )
+    assert (out / "A_seed1" / "eval_result.json").exists()
+
+
+# Tests QA-005 [unit]: the central flag-compatibility matrix rejects the
+# contradictory --report-only --force combination right after parse.
+def test_qa005_report_only_force_rejected(tmp_path: Path) -> None:
+    with pytest.raises(harness.PreflightError):
+        harness.validate_flag_compatibility(
+            _namespace(tmp_path / "out", report_only=True, force=True)
+        )
+    # Allowed combination: report-only + dry-run (zero-action semantics).
+    harness.validate_flag_compatibility(
+        _namespace(tmp_path / "out", report_only=True, dry_run=True)
+    )
+    # main() applies the matrix before doing anything else.
+    with pytest.raises(harness.PreflightError):
+        harness.main(
+            ["--report-only", "--force", "--out-dir", str(tmp_path / "out")]
+        )
+
+
+# Tests QA-007 [integration]: the shared supervised child stops at the
+# branch point — its (discarded) PPO phase is capped via --ppo-iterations 1.
+def test_qa007_shared_supervised_child_stops_at_branch_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(harness, "_run_child", _supervised_fabricating_runner(calls))
+    out = tmp_path / "out"
+
+    shared = harness._run_shared_supervised(_namespace(out), out)
+
+    assert shared == harness.shared_supervised_checkpoint(out)
+    assert len(calls) == 1
+    argv = calls[0]
+    assert "--skip-supervised" not in argv
+    assert _flag_value(argv, "--ppo-iterations") == "1", (
+        "the shared child's PPO output is discarded (every arm re-runs PPO "
+        "from the branch point); a full PPO budget here is pure waste"
+    )
+
+
+# Tests QA-008 [integration]: --report-only reads each run's marker for the
+# REAL git-sha drift instead of recording False unconditionally.
+def test_qa008_report_only_reads_markers_for_git_sha_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "out"
+    make_run_dir(out, "A", 1)  # marker at the CURRENT sha
+    make_run_dir(out, "B", 1, marker_git_sha="0" * 40,
+                 include_hazard_dynamics=True)  # stale marker
+
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail("report-only must not train"),
+    )
+
+    harness.main(
+        ["--report-only", "--smoke", "--out-dir", str(out),
+         "--arms", "A", "B", "--seeds", "1"]
+    )
+
+    report = json.loads((out / "hazard_efficacy_report.json").read_text())
+    flags = {rec["arm"]: rec["git_sha_mismatch"] for rec in report["runs"]}
+    assert flags == {"A": False, "B": True}, (
+        "git_sha_mismatch must reflect each run's RUN_COMPLETE.json marker"
+    )
+
+
+# Tests QA-009 [integration]: a tee-loop exception KILLS the child (Popen
+# lifetime via context manager) instead of leaking it to keep writing into
+# the run dir.
+def test_qa009_run_child_kills_child_on_tee_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time as time_mod
+
+    heartbeat = tmp_path / "heartbeat.txt"
+    script = (
+        "import pathlib, time\n"
+        f"hb = pathlib.Path({str(heartbeat)!r})\n"
+        "print('first-line', flush=True)\n"
+        "for i in range(200):\n"
+        "    hb.write_text(str(i))\n"
+        "    time.sleep(0.05)\n"
+    )
+    argv = [sys.executable, "-u", "-c", script]
+
+    def boom(_text):
+        raise RuntimeError("tee sink failed")
+
+    monkeypatch.setattr(sys.stdout, "write", boom)
+    try:
+        with pytest.raises(RuntimeError, match="tee sink failed"):
+            harness._run_child(argv, tmp_path / "train.log")
+    finally:
+        monkeypatch.undo()
+
+    # A killed child stops heartbeating; a leaked one keeps writing for
+    # ~10s. Two spaced snapshots must be identical.
+    time_mod.sleep(0.4)
+    first = heartbeat.read_text() if heartbeat.exists() else "<never wrote>"
+    time_mod.sleep(0.6)
+    second = heartbeat.read_text() if heartbeat.exists() else "<never wrote>"
+    assert first == second, (
+        "the child must be KILLED when the tee loop raises — a leaked child "
+        "keeps writing into the run dir"
+    )
+
+
+# Tests QA-010 [integration]: prune skips symlinks, never descends through
+# symlinked dirs, resolve-and-contains every candidate under the run root,
+# and terminates on symlink cycles.
+def test_qa010_prune_never_deletes_through_symlinks(tmp_path: Path) -> None:
+    run_dir = make_run_dir(tmp_path, "A", 1, include_prunables=True)
+    ppo = run_dir / "ppo_t5"
+
+    outside = tmp_path / "outside"
+    victim_dir = outside / "iter_99"
+    victim_dir.mkdir(parents=True)
+    (victim_dir / "weights.pt").write_bytes(b"outside-weights")
+    victim_state = outside / "training_state.pt"
+    victim_state.write_bytes(b"outside-state")
+
+    # A dir symlink NAMED like a prunable, aliasing content outside run_dir.
+    (ppo / "iter_5").symlink_to(victim_dir, target_is_directory=True)
+    # A dir symlink into the outside tree (walk must not descend through it).
+    (ppo / "link_out").symlink_to(outside, target_is_directory=True)
+    # A file symlink named training_state.pt pointing outside.
+    escape = ppo / "escape"
+    escape.mkdir()
+    (escape / "training_state.pt").symlink_to(victim_state)
+    # A symlink CYCLE back to an ancestor (the walk must terminate).
+    (ppo / "loop").symlink_to(run_dir, target_is_directory=True)
+
+    harness.prune_run_checkpoints(run_dir)
+
+    # Real prunables inside the run dir are reclaimed.
+    assert not (ppo / "iter_1").exists()
+    assert not (ppo / "epoch_1").exists()
+    assert not (ppo / "best_model" / "training_state.pt").exists()
+    # NOTHING outside the run dir was touched.
+    assert victim_dir.exists()
+    assert (victim_dir / "weights.pt").exists()
+    assert victim_state.exists()
+    assert victim_state.read_bytes() == b"outside-state"
+
+
+# Tests QA-012 [integration]: relative --config/--out-dir are absolutized
+# ONCE at the CLI boundary, so child argvs carry CWD-independent paths.
+def test_qa012_relative_config_and_out_dir_absolutized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    Path("cfg.yaml").write_text("model:\n  model_name: t5-small\n")
+    artifacts = Path("arts")
+    artifacts.mkdir()
+    split_paths = {}
+    for split in ("train", "val", "test"):
+        p = artifacts / f"{split}_dataset.json"
+        p.write_text("[]")
+        split_paths[split] = p
+    monkeypatch.setattr(
+        harness, "resolve_split_artifacts", lambda **kwargs: dict(split_paths)
+    )
+    launches: list = []
+    monkeypatch.setattr(
+        harness, "_run_child", lambda argv, log_path: launches.append(argv) or 0
+    )
+
+    harness.main(
+        ["--smoke", "--dry-run", "--config", "cfg.yaml",
+         "--out-dir", "rel_out", "--seeds", "1", "--arms", "A"]
+    )
+
+    assert launches == []
+    output = capsys.readouterr().out
+    cfg_abs = str(Path("cfg.yaml").resolve())
+    out_abs = Path("rel_out").resolve()
+    assert cfg_abs in output, "--config must reach children as an ABSOLUTE path"
+    assert f"supervised.checkpoint_dir={out_abs / 'A_seed1'}" in output
+    assert "supervised.checkpoint_dir=rel_out" not in output

@@ -206,6 +206,65 @@ def test_r010b_build_hazard_dynamics_empty_inputs_raise() -> None:
         harness.build_hazard_dynamics([], [], make_hazard_history())
 
 
+# Tests QA-007 [integration]: with a shared before_cache the supervised
+# "before" probe is computed ONCE and reused across hazard runs (the shared
+# checkpoint and probe questions are loop-invariant); without a cache the
+# uncached per-call behavior is preserved.
+def test_qa007_before_probe_cached_across_hazard_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("transformers")
+    import torch
+
+    import models.t5_policy as t5_mod
+
+    class _StubModel:
+        training = False
+
+        def eval(self):
+            return self
+
+        def __call__(self, texts):
+            return torch.zeros(len(texts), 2), None, None
+
+    loads: list[str] = []
+
+    def fake_load(path, device=None):
+        loads.append(str(path))
+        return _StubModel()
+
+    monkeypatch.setattr(
+        t5_mod.T5PolicyModel, "load_pretrained", staticmethod(fake_load)
+    )
+
+    questions = [_make_mc_question("q_t3", prefixes=list(_PREFIXES_T3))]
+    history_path = write_json(
+        tmp_path / "hz" / "hazard_history.json", make_hazard_history()
+    )
+
+    cache: dict = {}
+    first = harness.probe_and_write_hazard_dynamics(
+        "sup", "hz1", questions, history_path, tmp_path / "d1.json",
+        before_cache=cache,
+    )
+    harness.probe_and_write_hazard_dynamics(
+        "sup", "hz2", questions, history_path, tmp_path / "d2.json",
+        before_cache=cache,
+    )
+    assert loads == ["sup", "hz1", "hz2"], (
+        "with a shared cache the supervised before-probe must load/probe "
+        f"exactly once; load order: {loads}"
+    )
+    assert (tmp_path / "d1.json").exists() and (tmp_path / "d2.json").exists()
+    assert first["expected_buzz_time_delta"] == pytest.approx(0.0)
+
+    # Back-compat: no cache => the supervised checkpoint is probed per call.
+    harness.probe_and_write_hazard_dynamics(
+        "sup", "hz3", questions, history_path, tmp_path / "d3.json"
+    )
+    assert loads == ["sup", "hz1", "hz2", "sup", "hz3"]
+
+
 # Tests R-010b [integration]: end-to-end probe over the REAL checkpoint
 # save/load path persists hazard_dynamics.json for report assembly.
 def test_r010b_probe_and_write_hazard_dynamics_real_checkpoints(
