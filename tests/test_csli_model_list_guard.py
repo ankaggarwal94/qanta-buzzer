@@ -33,22 +33,30 @@ import sys
 # fires whenever ``evaluation.controls`` is already in
 # ``sys.modules`` at our import time. Other test files transitively
 # load evaluation.controls via ``scripts/evaluate_all.py`` (line 49)
-# during pytest collection. Drop the offending module so the next
-# import sees a clean state. Local to this test file; does not
-# modify shared conftest.py. See test_bootstrap_ci_validation.py
-# for the same pattern with a longer note.
-sys.modules.pop("evaluation.controls", None)
+# during pytest collection. Evict the offending module just long
+# enough to import scripts.compute_csli with a clean state, then
+# restore the saved module object so identity pins bound from
+# evaluation.controls elsewhere survive (an unrestored eviction is
+# a test-isolation bug). Local to this test file; does not modify
+# shared conftest.py. See test_bootstrap_ci_validation.py for the
+# same pattern with a longer note.
+_saved_evaluation_controls = sys.modules.pop("evaluation.controls", None)
 sys.modules.pop("scripts.compute_csli", None)
 
 import pytest
 
-from scripts.compute_csli import (
-    DEFAULT_DATA_DIR,
-    PROJECT_ROOT,
-    _build_generation_provenance,
-    _sha256_file,
-    main as compute_csli_main,
-)
+try:
+    from scripts.compute_csli import (
+        DEFAULT_DATA_DIR,
+        PROJECT_ROOT,
+        _build_generation_provenance,
+        _sha256_file,
+        main as compute_csli_main,
+    )
+finally:
+    if _saved_evaluation_controls is not None:
+        sys.modules["evaluation.controls"] = _saved_evaluation_controls
+    del _saved_evaluation_controls
 
 
 # ---------------------------------------------------------------------------
