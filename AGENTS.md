@@ -104,6 +104,47 @@ python scripts/compare_policies.py --config configs/t5_policy.yaml
 Notes:
 `scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the hazard warm-start bridge (`training/hazard_pretrain.py::run_hazard_pretrain`). When `--hazard-pretrain` is set, the bridge slots between the supervised warm-start and PPO: it minimizes the survival/hazard expected-NLL loss over each question's `cumulative_prefixes` to teach the buzz/stop head *when to buzz*, then hands its checkpoint (`checkpoints/hazard/best_model`) to PPO. `--beta-terminal` weights the never-buzz survival penalty; `--freeze-answer-head` freezes the answer head only (answer-NLL gradient still reaches the shared encoder). `--hazard-ablation shuffled_nll` (requires `--hazard-pretrain`) runs a step-matched null-signal control that permutes each question's per-prefix NLL with a dedicated seeded RNG; `--seed <int>` re-seeds Python/NumPy/torch immediately before each training phase (supervised/hazard/PPO; separate from `data.seed`); the bridge also writes per-step losses to `checkpoints/hazard/hazard_history.json`. The bridge is **smoke-validated (plumbing only)** on CPU; training efficacy needs full-scale CUDA runs.
 
+### Hazard efficacy harness
+
+`scripts/run_hazard_efficacy.py` runs the controlled WITH/WITHOUT/compute-control
+comparison for the hazard bridge: one shared supervised checkpoint branches into
+arm A (control), arm B (`--hazard-pretrain`), arm C (`--hazard-ablation
+shuffled_nll`, step-matched null signal) × `--seeds`, plus optional
+`--variant NAME:FLAGS` knob arms, all evaluated through the same
+`evaluate_t5_policy` path on the same test split.
+
+```bash
+# Smoke (t5-small; measured: ~10 min child wall-clock across 18 runs, ~5 GB tree)
+python scripts/run_hazard_efficacy.py --smoke --config configs/t5_policy.yaml \
+    --out-dir results/hazard_efficacy_smoke --seeds 1 2 3 --arms A B C --prune-checkpoints
+
+# t5-base preliminary (measured: ~109 min child wall-clock across 12 runs, ~10.7 GB tree)
+python scripts/run_hazard_efficacy.py --config configs/t5_policy_base_prelim.yaml \
+    --out-dir results/hazard_efficacy_base --seeds 1 2 3 --arms A B C --prune-checkpoints \
+    --variant "beta_hi:--beta-terminal=2.0"
+```
+
+Output layout: `<out-dir>/hazard_efficacy_report.json` (schema_version 1: scale
+block, endpoint, scale-gated paired-bootstrap significance, arm deltas, hazard
+dynamics, per-run provenance) + `hazard_efficacy_plot.png`; per run dir:
+`ppo_t5/best_model` + sidecars (`config_used.json`, `split_manifest.json`),
+`eval_result.json` (per-question records, written immediately after each eval),
+`hazard/hazard_history.json` + `hazard_dynamics.json` (hazard arms),
+`train.log`, and the completion marker `RUN_COMPLETE.json`. Non-smoke split
+resolution prefers `artifacts/main/` — populate it (or run
+`build_mc_dataset.py`) or children silently fall back to `artifacts/smoke/`.
+
+Semantics: re-running the same command RESUMES — complete runs (marker +
+checkpoints + sidecars, identity-validated against the current invocation) are
+skipped, partial dirs fail loud with delete/`--force` instructions, `--force`
+re-runs everything including the shared checkpoint. `--report-only` reassembles
+report + plot from existing run dirs (no training/eval; same validation gates).
+`--prune-checkpoints` deletes `iter_*`/`epoch_*`/`training_state.pt` per run
+once its `eval_result.json` exists (report stays regenerable; `best_model` +
+sidecars kept). `--dry-run` prints the validated plan (including the shared
+supervised child and a disk estimate) and launches nothing. A stalled child is
+killed after `--stall-timeout-minutes` (default 120) without output.
+
 ## StopDFF v5 Pipeline (CS321M)
 
 Identity-bound, fail-closed StopDFF audit pipeline in `scripts/stopdff_v5/` with JSON Schemas in `schemas/`. Runs are create-once and content-addressed; the normative contracts are `ACCEPTANCE_CONTRACT.md` (acceptance gate), `SCIENTIFIC_CONTRACT.md` (scientific protocol), and `IDENTITY_AND_ARTIFACT_CONTRACT.md` (identity and artifact rules). Full local (CPU) and Modal reproduction steps: `docs/stopdff_v5/REPRODUCTION.md`.
