@@ -8,10 +8,23 @@ from pathlib import Path
 
 import numpy as np
 
-sys.modules.pop("evaluation.controls", None)
+# DATA-05 guard interaction (see WR-01): evict evaluation.controls
+# just long enough to import scripts.compute_csli with a clean
+# state (its module-level _assert_no_controls_import() fires if the
+# module is present at import time), then restore the saved module
+# object so identity pins bound from evaluation.controls elsewhere
+# survive (an unrestored eviction is a test-isolation bug). See
+# test_bootstrap_ci_validation.py for the long-form note.
+_saved_evaluation_controls = sys.modules.pop("evaluation.controls", None)
 sys.modules.pop("scripts.compute_csli", None)
 
-from scripts import compute_csli, compute_prefix_calibration
+try:
+    from scripts import compute_csli, compute_prefix_calibration
+finally:
+    if _saved_evaluation_controls is not None:
+        sys.modules["evaluation.controls"] = _saved_evaluation_controls
+    del _saved_evaluation_controls
+
 from scripts.compute_stopdff import (
     check_threshold_reachability,
     load_platt_coefficients,
