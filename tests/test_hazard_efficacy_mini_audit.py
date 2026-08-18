@@ -1120,3 +1120,186 @@ def test_ma018_shared_git_drift_wording_not_recorded(
     assert "WARNING" in warned
     assert "NOT persisted" in warned
     assert "drift recorded" not in warned
+
+
+# ---------------------------------------------------------------------------
+# Mini-audit-verify round (F1..F6)
+# ---------------------------------------------------------------------------
+
+
+# Tests F1 [unit+integration]: the weights fingerprint ignores
+# training_state.pt (optimizer state, not weight content), so a
+# --prune-checkpoints pass over the shared tree no longer breaks
+# shared-checkpoint reuse.
+def test_f1_fingerprint_ignores_training_state_and_reuse_survives_prune(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Unit: fingerprint invariant to optimizer-state presence.
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    (ckpt / "policy_head.pt").write_bytes(b"weights-v1")
+    (ckpt / "training_state.pt").write_bytes(b"optimizer-state")
+    with_state = harness._weights_fingerprint(ckpt)
+    (ckpt / "training_state.pt").unlink()
+    assert harness._weights_fingerprint(ckpt) == with_state
+
+    # Integration: marker built over a best_model CONTAINING
+    # training_state.pt; pruning deletes the state file; reuse succeeds
+    # (no MA-003 raise, no silent rebuild).
+    calls: list = []
+
+    def runner(argv, log_path):
+        argv = [str(token) for token in argv]
+        calls.append(argv)
+        log_path = Path(log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("supervised ok\n")
+        override = [
+            t for t in argv if t.startswith("supervised.checkpoint_dir=")
+        ][-1]
+        best = Path(override.split("=", 1)[1]) / "supervised" / "best_model"
+        best.mkdir(parents=True, exist_ok=True)
+        (best / "policy_head.pt").write_bytes(b"weights-v1")
+        (best / "training_state.pt").write_bytes(b"optimizer-state")
+        return 0
+
+    monkeypatch.setattr(harness, "_run_child", runner)
+    out = tmp_path / "out"
+    shared = harness._run_shared_supervised(_namespace(out), out)
+    assert len(calls) == 1
+    assert (Path(shared) / "training_state.pt").exists()
+
+    harness.prune_shared_supervised_checkpoints(out)
+    assert not (Path(shared) / "training_state.pt").exists()
+
+    harness._run_shared_supervised(_namespace(out), out)
+    assert len(calls) == 1, (
+        "pruned optimizer state must not read as a checkpoint mutation "
+        "(F1: reuse succeeds without a rebuild)"
+    )
+
+
+# Tests F2 [integration]: children launch UNBUFFERED (PYTHONUNBUFFERED=1 in
+# the Popen env) while the parent environment is still inherited.
+def test_f2_run_child_env_unbuffered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("F2_CANARY", "present")
+    script = (
+        "import os, sys\n"
+        "ok = (os.environ.get('PYTHONUNBUFFERED') == '1'\n"
+        "      and os.environ.get('F2_CANARY') == 'present')\n"
+        "print('env-checked', flush=True)\n"
+        "sys.exit(0 if ok else 7)\n"
+    )
+    log_path = tmp_path / "train.log"
+    assert harness._run_child([sys.executable, "-c", script], log_path) == 0
+    assert "env-checked" in log_path.read_text()
+
+
+# Tests F2 [unit]: the default stall budget is 120 minutes (raised from 60).
+def test_f2_stall_timeout_default_raised_to_120() -> None:
+    assert harness.DEFAULT_STALL_TIMEOUT_MINUTES == 120.0
+    assert harness.parse_args([]).stall_timeout_minutes == 120.0
+
+
+# Tests F3 [integration]: with allow_abbrev=False on the child parser, an
+# abbreviated identity flag smuggled through variant FLAGS dies at
+# preflight as unrecognized instead of silently rebinding --model-path.
+def test_f3_abbreviated_variant_flag_dies_at_preflight(tmp_path: Path) -> None:
+    args = _namespace(tmp_path / "out", variant=["X:--model-pat=/other"])
+    with pytest.raises(harness.PreflightError, match="unrecognized"):
+        harness.plan_runs(args)
+
+
+# Tests F3 [unit]: a doctored argv whose --model-path differs from the
+# planned shared checkpoint dies at the roundtrip identity check.
+def test_f3_doctored_model_path_dies_at_roundtrip(tmp_path: Path) -> None:
+    plan = harness.plan_runs(_namespace(tmp_path / "out", arms=["A"], seeds=[1]))
+    record = dict(plan[0])
+    argv = [str(token) for token in record["argv"]]
+    argv[argv.index("--model-path") + 1] = str(tmp_path / "evil" / "best_model")
+    record["argv"] = argv
+    with pytest.raises(harness.PreflightError, match="model-path"):
+        harness._roundtrip_child_argv(record)
+
+
+# Tests F4 [integration]: markers disagreeing on the MA-003 branch-point
+# fingerprint fail verify_run_records loud; agreeing markers pass with a
+# warning for legacy field-less ones.
+def test_f4_mismatched_shared_fingerprints_fail_verify(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    out = tmp_path / "out"
+    records = []
+    for arm, fingerprint in (("A", "a" * 64), ("B", "b" * 64)):
+        run_dir = make_run_dir(
+            out, arm, 1,
+            marker_extra={"shared_supervised_weights_sha256": fingerprint},
+            include_hazard_dynamics=(arm == "B"),
+        )
+        records.append({"arm": arm, "seed": 1, "run_dir": run_dir,
+                        "hazard": arm != "A"})
+    with pytest.raises(
+        harness.ProvenanceError, match="mini-audit-verify F4"
+    ) as excinfo:
+        harness.verify_run_records(records)
+    message = str(excinfo.value)
+    assert "A_seed1" in message and "B_seed1" in message
+
+    # One stamped + one legacy marker: passes with a legacy warning.
+    out2 = tmp_path / "out2"
+    records2 = []
+    for arm, extra in (
+        ("A", {"shared_supervised_weights_sha256": "c" * 64}),
+        ("B", {}),
+    ):
+        run_dir = make_run_dir(out2, arm, 1, marker_extra=extra,
+                               include_hazard_dynamics=(arm == "B"))
+        records2.append({"arm": arm, "seed": 1, "run_dir": run_dir,
+                         "hazard": arm != "A"})
+    capsys.readouterr()
+    harness.verify_run_records(records2)
+    printed = capsys.readouterr().out
+    assert "legacy markers" in printed and "B_seed1" in printed
+
+
+# Tests F5 [unit]: the =-joined knob form in variant FLAGS suppresses the
+# harness's knob injection — exactly one --beta-terminal occurrence, and
+# the recorded hazard identity reflects the variant's value.
+def test_f5_eq_form_knob_flag_suppresses_injection(tmp_path: Path) -> None:
+    plan = harness.plan_runs(
+        _namespace(
+            tmp_path / "out", seeds=[1], beta_terminal=2.5,
+            variant=["Bq:--beta-terminal=0.5"],
+        )
+    )
+    variant = next(rec for rec in plan if rec["arm"] == "variant:Bq")
+    knob_tokens = [
+        t for t in variant["argv"]
+        if str(t).split("=", 1)[0] == "--beta-terminal"
+    ]
+    assert knob_tokens == ["--beta-terminal=0.5"], variant["argv"]
+    assert variant["hazard_knobs"]["beta_terminal"] == pytest.approx(0.5)
+
+
+# Tests F6 [integration]: a child that closes its output stream (EOF on the
+# pipe) but never exits is killed after the stall budget instead of hanging
+# the harness in an unbounded wait; the tee'd output survives in the log.
+def test_f6_child_eof_without_exit_is_killed(tmp_path: Path) -> None:
+    script = (
+        "import os, sys, time\n"
+        "print('bye', flush=True)\n"
+        "os.close(1)\n"
+        "os.close(2)\n"
+        "time.sleep(60)\n"
+    )
+    log_path = tmp_path / "train.log"
+    start = time.monotonic()
+    with pytest.raises(harness.ChildRunError, match="did not exit"):
+        harness._run_child(
+            [sys.executable, "-c", script], log_path,
+            stall_timeout_seconds=0.5,
+        )
+    assert time.monotonic() - start < 20.0
+    assert "bye" in log_path.read_text()

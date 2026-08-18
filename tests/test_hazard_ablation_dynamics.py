@@ -693,3 +693,51 @@ def test_r004_main_threads_ablation_into_hazard_and_config(
     assert hazard_block["ablation"] == "shuffled_nll"
     assert hazard_block["beta_terminal"] == 2.0
     assert hazard_block["freeze_answer_head"] is False
+
+
+# ---------------------------------------------------------------------------
+# Mini-audit-verify F2: periodic progress output from the hazard loop
+# ---------------------------------------------------------------------------
+
+
+def test_f2_hazard_loop_prints_periodic_progress(
+    supervised_ckpt: str, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Tests mini-audit-verify F2 [integration]: periodic progress lines.
+
+    The hazard training loop prints one terse progress line every 25
+    optimizer steps (the efficacy harness's MA-006 output-staleness
+    watchdog needs periodic child output between phase banners) while
+    ``hazard_history.json`` keeps its pinned R-010a schema exactly.
+
+    25 epochs x 1 single-prefix question = 25 optimizer steps => exactly
+    one progress line, at step 25 (epoch 24, question 0).
+    """
+    pytest.importorskip("transformers")
+    hz = _hazard_module()
+    config = _hazard_config(tmp_path / "checkpoints", epochs=25, lr=1e-3)
+    questions = [_make_mc_question("q_t1", prefixes=["Who was the first"])]
+
+    out_path = hz.run_hazard_pretrain(
+        config=config,
+        train_questions=questions,
+        pretrained_model_path=supervised_ckpt,
+    )
+
+    printed = capsys.readouterr().out
+    progress_lines = [
+        line for line in printed.splitlines()
+        if line.startswith("[hazard] step ")
+    ]
+    assert len(progress_lines) == 1, printed
+    line = progress_lines[0]
+    assert line.startswith("[hazard] step 25 ")
+    assert "epoch 24" in line
+    assert "question 0" in line
+    assert "loss" in line
+
+    # R-010a: the pinned history schema is unchanged by the progress print.
+    history = _load_history(out_path)
+    assert set(history) == {"steps", "config", "wall_clock_seconds"}
+    assert len(history["steps"]) == 25
+    assert set(history["steps"][0]) == {"epoch", "question_index", "loss"}

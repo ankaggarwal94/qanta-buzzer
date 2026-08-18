@@ -99,7 +99,9 @@ SIGNIFICANCE_MIN_QUESTIONS = 50
 PROBE_MAX_QUESTIONS = 32
 # MA-006: default output-staleness watchdog for child runs (minutes without a
 # single output line before the child is killed); 0/negative disables.
-DEFAULT_STALL_TIMEOUT_MINUTES = 60.0
+# Mini-audit-verify F2: raised 60 -> 120 — full-scale supervised epochs and
+# PPO iterations can legitimately stay quiet for over an hour on Device-1.
+DEFAULT_STALL_TIMEOUT_MINUTES = 120.0
 
 _TRAIN_SCRIPT = PROJECT_ROOT / "scripts" / "train_t5_policy.py"
 _SHARED_SUPERVISED_DIRNAME = "shared_supervised"
@@ -418,12 +420,19 @@ def _read_run_marker(path: Path) -> dict[str, Any]:
     return payload
 
 
-# MA-003: files the HARNESS itself writes into the shared checkpoint dir
-# after the build (R-008 persists split_manifest.json next to the weights).
-# They are provenance sidecars, not weight content, so the fingerprint must
-# ignore them — otherwise the harness's own manifest write would read as a
-# checkpoint mutation on the very next reuse.
-_FINGERPRINT_EXCLUDED_FILES = frozenset({"split_manifest.json"})
+# MA-003: files that live inside a checkpoint dir but are NOT weight
+# content, so the fingerprint must ignore them:
+# - split_manifest.json: the HARNESS itself writes it into the shared
+#   checkpoint dir after the build (R-008) — otherwise the harness's own
+#   manifest write would read as a checkpoint mutation on the very next
+#   reuse.
+# - training_state.pt: optimizer state saved by the trainer beside the
+#   weights and legitimately deleted by --prune-checkpoints (mini-audit-
+#   verify F1) — hashing it would make a pruned-but-unchanged shared
+#   checkpoint read as mutated and break shared-checkpoint reuse.
+_FINGERPRINT_EXCLUDED_FILES = frozenset(
+    {"split_manifest.json", "training_state.pt"}
+)
 
 
 def _weights_fingerprint(model_dir: Path) -> str:
@@ -561,8 +570,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     list[str], default []).
 
     Additive flags (mini-audit fix round): ``--re-eval`` (flag, MA-012),
-    ``--stall-timeout-minutes`` (float, default 60, MA-006),
-    ``--child-timeout-minutes`` (float, default None, MA-006).
+    ``--stall-timeout-minutes`` (float, default 120 — raised from 60 in the
+    mini-audit-verify round, F2; MA-006), ``--child-timeout-minutes``
+    (float, default None, MA-006).
     """
     parser = argparse.ArgumentParser(
         description=(
@@ -817,6 +827,10 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
     (``{"pretrain", "beta_terminal", "freeze_answer_head", "ablation"}``),
     derived from round-tripping the composed argv through the REAL child
     parser, and is positively asserted at every consumption site.
+    ``expected_identity`` (additive, mini-audit-verify F3) is the
+    ``{"model_path", "config", "smoke"}`` identity surface the roundtrip
+    asserts against the parsed namespace (plus ``skip_supervised is True``
+    and ``mc_path is None``).
 
     ``--variant NAME:FLAGS`` (split on the FIRST colon; FLAGS
     whitespace-split) adds one extra hazard variant per seed with run dir
@@ -959,6 +973,16 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
                 "argv": argv,
                 "log_path": run_dir / TRAIN_LOG_FILENAME,
                 "variant": variant,
+                # Mini-audit-verify F3 (additive): the identity surface the
+                # roundtrip asserts the PARSED argv still matches — a
+                # doctored/smuggled token rebinding any of these dies at
+                # preflight (--skip-supervised True and --mc-path None are
+                # implied invariants of every arm child).
+                "expected_identity": {
+                    "model_path": str(shared_ckpt),
+                    "config": str(args.config),
+                    "smoke": bool(args.smoke),
+                },
             }
         )
 
@@ -980,11 +1004,15 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
     for name, flags in variants:
         # MA-008: variants INHERIT the invocation's hazard knobs; FLAGS
         # override them. An overridden knob is not re-injected, so the argv
-        # carries exactly ONE occurrence of each knob flag.
+        # carries exactly ONE occurrence of each knob flag. Mini-audit-verify
+        # F5: suppression matches on the flag BASE (token.split("=", 1)[0])
+        # so the =-joined form (--beta-terminal=0.5) suppresses the
+        # injection exactly like the two-token form (--beta-terminal 0.5).
         inherited: dict[str, Any] = dict(hazard_knobs)
-        if "--beta-terminal" in flags:
+        flag_bases = {token.split("=", 1)[0] for token in flags}
+        if "--beta-terminal" in flag_bases:
             inherited["beta_terminal"] = None
-        if "--freeze-answer-head" in flags:
+        if "--freeze-answer-head" in flag_bases:
             inherited["freeze_answer_head"] = False
         for seed in seeds:
             _add(
@@ -1107,8 +1135,12 @@ def _roundtrip_child_argv(record: dict[str, Any]) -> argparse.Namespace:
     namespace to the planned values — the parsed ``--seed`` must equal the
     record's seed (a smuggled last-wins ``--seed`` can never survive to a
     child), the parsed hazard flag must match the record's arm role, and a
-    non-finite parsed ``--beta-terminal`` is rejected (MA-018). Returns the
-    parsed namespace (MA-001: it is the run's expected recorded identity).
+    non-finite parsed ``--beta-terminal`` is rejected (MA-018).
+    Mini-audit-verify F3: when the record carries ``expected_identity``
+    (plan_runs records do), the parsed ``model_path``/``config``/``smoke``
+    must equal the planned values, ``skip_supervised`` must be True and
+    ``mc_path`` must be None. Returns the parsed namespace (MA-001: it is
+    the run's expected recorded identity).
     """
     import scripts.train_t5_policy as train_t5_policy
 
@@ -1145,6 +1177,29 @@ def _roundtrip_child_argv(record: dict[str, Any]) -> argparse.Namespace:
             "non-finite terminal penalty poisons the hazard loss (MA-018).\n"
             "  argv: " + str(child_argv)
         )
+    # Mini-audit-verify F3: the parsed IDENTITY SURFACE must match the plan
+    # — model path (the shared branch point), config path, smoke, the
+    # skip-supervised invariant, and the mc-path invariant. Records without
+    # the key (the shared supervised record, hand-built test records) skip
+    # this block.
+    expected_identity = record.get("expected_identity")
+    if expected_identity is not None:
+        identity_checks: list[tuple[str, Any, Any]] = [
+            ("--model-path", parsed.model_path, expected_identity["model_path"]),
+            ("--config", parsed.config, expected_identity["config"]),
+            ("--smoke", bool(parsed.smoke), bool(expected_identity["smoke"])),
+            ("--skip-supervised", bool(parsed.skip_supervised), True),
+            ("--mc-path", parsed.mc_path, None),
+        ]
+        for flag, actual, planned in identity_checks:
+            if actual != planned:
+                raise PreflightError(
+                    f"Planned child argv for run {_run_name(record)} parses "
+                    f"to {flag} = {actual!r} but the plan mandates "
+                    f"{planned!r}; the run identity surface has been "
+                    "rebound (MA-008 / mini-audit-verify F3).\n  argv: "
+                    + str(child_argv)
+                )
     return parsed
 
 
@@ -1172,7 +1227,7 @@ def _run_child(
     MA-006 (watchdog): the tee loop runs an output-staleness watchdog — a
     child that prints NO output line for ``stall_timeout_seconds`` (default:
     the module-level limit armed by ``main()`` from
-    ``--stall-timeout-minutes``; 60 min out of the box) is killed and
+    ``--stall-timeout-minutes``; 120 min out of the box) is killed and
     ``ChildRunError`` is raised naming the last-output age, so a wedged
     multi-hour child can never hang the harness silently forever.
     ``child_timeout_seconds`` (``--child-timeout-minutes``; default off)
@@ -1180,6 +1235,15 @@ def _run_child(
     parameters are additive; ``None`` defers to the module-level limits and
     ``<= 0`` disables. Lines are pumped by a daemon reader thread into a
     queue so the watchdog's clock never blocks on the pipe.
+
+    Mini-audit-verify F2/F6: the child runs with ``PYTHONUNBUFFERED=1`` so
+    the watchdog sees output lines as they are produced (never in
+    block-buffered bursts that read as a stall); after any watchdog kill
+    the already-pumped lines are drained into the log before the error
+    snapshots its tail; EOF on the pipe is followed by a ``proc.wait``
+    bounded by the stall budget (a child that closed its streams but never
+    exits is killed + ``ChildRunError``); and the pump thread tolerates
+    the kill-time close-race on the pipe.
     """
     stall_limit = (
         _ACTIVE_STALL_TIMEOUT_SECONDS
@@ -1210,6 +1274,11 @@ def _run_child(
             stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
+            # Mini-audit-verify F2: children run UNBUFFERED so the MA-006
+            # output-staleness watchdog sees lines as they are produced —
+            # a healthy child behind an 8KiB block buffer used to read as
+            # stalled.
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
         ) as proc:
             assert proc.stdout is not None  # PIPE above guarantees a stream
             lines: queue.SimpleQueue = queue.SimpleQueue()
@@ -1218,6 +1287,12 @@ def _run_child(
                 try:
                     for line in stream:
                         lines.put(line)
+                except ValueError:
+                    # Mini-audit-verify F6: close-race — the parent killed
+                    # the child and the Popen context closed the pipe while
+                    # the reader was blocked mid-readline. EOF semantics,
+                    # not an error.
+                    pass
                 finally:
                     lines.put(None)  # EOF sentinel
 
@@ -1225,6 +1300,26 @@ def _run_child(
                 target=_pump, args=(proc.stdout,), daemon=True
             )
             pump.start()
+
+            def _kill_and_drain() -> None:
+                # QA-009: killing an already-dead child is a safe no-op.
+                proc.kill()
+                proc.wait()
+                # Mini-audit-verify F6: whatever the pump already read must
+                # land in the log BEFORE the error snapshots its tail (the
+                # last lines are usually the ones naming the wedge). The
+                # child is dead, so the pump ends at pipe EOF promptly.
+                pump.join(timeout=1.0)
+                while True:
+                    try:
+                        pending = lines.get_nowait()
+                    except queue.Empty:
+                        break
+                    if pending is None:
+                        break
+                    log_file.write(pending)
+                    sys.stdout.write(pending)
+                log_file.flush()
 
             started = time.monotonic()
             last_output = started
@@ -1236,8 +1331,7 @@ def _run_child(
                         now = time.monotonic()
                         age = now - last_output
                         if stall_limit is not None and age > stall_limit:
-                            proc.kill()
-                            proc.wait()
+                            _kill_and_drain()
                             raise ChildRunError(
                                 f"Child stalled: no output line for "
                                 f"{age:.1f}s (stall timeout "
@@ -1250,8 +1344,7 @@ def _run_child(
                             total_limit is not None
                             and now - started > total_limit
                         ):
-                            proc.kill()
-                            proc.wait()
+                            _kill_and_drain()
                             raise ChildRunError(
                                 f"Child exceeded its total runtime cap of "
                                 f"{total_limit:.1f}s (--child-timeout-"
@@ -1269,8 +1362,7 @@ def _run_child(
                         total_limit is not None
                         and last_output - started > total_limit
                     ):
-                        proc.kill()
-                        proc.wait()
+                        _kill_and_drain()
                         raise ChildRunError(
                             f"Child exceeded its total runtime cap of "
                             f"{total_limit:.1f}s (--child-timeout-minutes) "
@@ -1282,7 +1374,22 @@ def _run_child(
                 # is a safe no-op.
                 proc.kill()
                 raise
-            return proc.wait()
+            # Mini-audit-verify F6: EOF on the merged pipe does not imply
+            # exit — a child that closed its streams but wedged before
+            # exiting must not hang the harness. The stall budget bounds
+            # the post-EOF wait (None keeps the unbounded wait when the
+            # watchdog is disabled).
+            try:
+                return proc.wait(timeout=stall_limit)
+            except subprocess.TimeoutExpired as exc:
+                _kill_and_drain()
+                raise ChildRunError(
+                    f"Child closed its output stream but did not exit "
+                    f"within the stall budget ({stall_limit:.1f}s — "
+                    "--stall-timeout-minutes); the child was killed "
+                    f"(MA-006 / mini-audit-verify F6). Log: {log_path}\n"
+                    f"--- log tail ---\n{_log_tail(log_path)}"
+                ) from exc
 
 
 def check_child_outputs(record: dict[str, Any]) -> None:
@@ -1516,7 +1623,15 @@ def verify_run_records(
     cross-run arm-control diff (R-003). ``expected_run_context`` (optional)
     additionally validates every record against the CURRENT invocation via
     :func:`validate_resumed_run` (QA-002).
+
+    Mini-audit-verify F4: every marker carrying the MA-003
+    ``shared_supervised_weights_sha256`` field must agree on ONE value —
+    descendants of two DIFFERENT shared supervised checkpoints must never
+    co-assemble into one report (``ProvenanceError`` otherwise); legacy
+    field-less markers warn (their branch point is unverifiable).
     """
+    shared_fps: dict[str, list[str]] = {}
+    legacy_fp_runs: list[str] = []
     for record in run_records:
         run_dir = Path(record["run_dir"])
         state = classify_run_dir(run_dir, hazard=bool(record.get("hazard")))
@@ -1531,8 +1646,34 @@ def verify_run_records(
         marker = _read_run_marker(run_dir / RUN_COMPLETE_MARKER)
         _assert_run_identity(record, marker=marker)
         _assert_split_source(record)
+        fingerprint = marker.get("shared_supervised_weights_sha256")
+        if fingerprint is None:
+            legacy_fp_runs.append(_run_name(record))
+        else:
+            shared_fps.setdefault(str(fingerprint), []).append(
+                _run_name(record)
+            )
         if expected_run_context:
             validate_resumed_run(record, expected_run_context)
+    if len(shared_fps) > 1:
+        detail = "; ".join(
+            f"{fp[:12]}…: {sorted(names)}"
+            for fp, names in sorted(shared_fps.items())
+        )
+        raise ProvenanceError(
+            "Run markers disagree on shared_supervised_weights_sha256 — "
+            "the runs branched from DIFFERENT shared supervised "
+            f"checkpoints and cannot enter one report ({detail}) "
+            "(MA-003 / mini-audit-verify F4). Delete the stale run dirs "
+            "or pass --force to re-run everything."
+        )
+    if legacy_fp_runs:
+        print(
+            "WARNING: run marker(s) without the MA-003 "
+            "shared_supervised_weights_sha256 field (legacy markers): "
+            f"{sorted(legacy_fp_runs)}; their branch-point identity cannot "
+            "be cross-checked (mini-audit-verify F4)."
+        )
     assert_arm_control(run_records)
 
 

@@ -20,6 +20,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # Known hazard-phase ablations (R-004). ``None`` means the real hazard loss.
 _VALID_ABLATIONS = ("shuffled_nll",)
 
+# Mini-audit-verify F2: the hazard loop prints one terse progress line every
+# this many optimizer steps. The efficacy harness's MA-006 output-staleness
+# watchdog kills children that go silent, and a full-scale hazard phase can
+# otherwise run for hours with zero output between phase banners; the print
+# is stdout-only — hazard_history.json stays exactly as pinned (R-010a).
+_PROGRESS_PRINT_EVERY_STEPS = 25
+
 # Fixed seed for the DEDICATED shuffled_nll permutation generator. The
 # ablation must never draw from the global torch/numpy/random streams (that
 # would desync otherwise-identical runs), so permutations come from a private
@@ -109,7 +116,11 @@ def run_hazard_pretrain(
     the HAZARD-PHASE wall clock covering checkpoint load, training loop, and
     checkpoint save — was added in QA fix round 1, QA-006; the whole-child
     elapsed time is PPO-dominated and lives in the harness's run marker, not
-    here); the returned checkpoint path and format are unchanged.
+    here); the returned checkpoint path and format are unchanged. The loop
+    also prints one terse progress line every 25 optimizer steps
+    (mini-audit-verify F2: the efficacy harness's MA-006 output-staleness
+    watchdog needs periodic child output; stdout-only —
+    ``hazard_history.json`` is unchanged).
 
     Parameters
     ----------
@@ -277,13 +288,24 @@ def run_hazard_pretrain(
                 torch.nn.utils.clip_grad_norm_(trainable_params, max_grad_norm)
             optimizer.step()
 
+            loss_value = float(loss.item())
             history_steps.append(
                 {
                     "epoch": int(epoch),
                     "question_index": int(question_index),
-                    "loss": float(loss.item()),
+                    "loss": loss_value,
                 }
             )
+            # Mini-audit-verify F2: terse periodic progress so the harness's
+            # MA-006 output-staleness watchdog sees a live child (flush so
+            # the line crosses the pipe immediately even if buffered).
+            step_count = len(history_steps)
+            if step_count % _PROGRESS_PRINT_EVERY_STEPS == 0:
+                print(
+                    f"[hazard] step {step_count} epoch {epoch} "
+                    f"question {question_index} loss {loss_value:.4f}",
+                    flush=True,
+                )
 
     save_dir = Path(config["checkpoint_dir"]) / "hazard" / "best_model"
     model.save(str(save_dir))

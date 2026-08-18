@@ -94,6 +94,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         description="Train T5 policy with supervised warm-start then PPO.",
+        # Mini-audit-verify F3: no flag abbreviations — an abbreviated
+        # identity flag (e.g. --model-pat=...) must die as unrecognized at
+        # the orchestrator's preflight roundtrip instead of silently
+        # rebinding --model-path via argparse prefix matching.
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--config",
