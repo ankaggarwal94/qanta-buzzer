@@ -1286,6 +1286,10 @@ def test_f5_eq_form_knob_flag_suppresses_injection(tmp_path: Path) -> None:
 # Tests F6 [integration]: a child that closes its output stream (EOF on the
 # pipe) but never exits is killed after the stall budget instead of hanging
 # the harness in an unbounded wait; the tee'd output survives in the log.
+# EXTENDED per PR #41 review r3806602901: the post-EOF wait is bounded by
+# the SMALLER of the stall budget and the REMAINING total budget — with the
+# stall watchdog DISABLED, --child-timeout-minutes alone still kills the
+# wedged child, and the error names whichever limit expired.
 def test_f6_child_eof_without_exit_is_killed(tmp_path: Path) -> None:
     script = (
         "import os, sys, time\n"
@@ -1296,10 +1300,29 @@ def test_f6_child_eof_without_exit_is_killed(tmp_path: Path) -> None:
     )
     log_path = tmp_path / "train.log"
     start = time.monotonic()
-    with pytest.raises(harness.ChildRunError, match="did not exit"):
+    with pytest.raises(harness.ChildRunError, match="did not exit") as excinfo:
         harness._run_child(
             [sys.executable, "-c", script], log_path,
             stall_timeout_seconds=0.5,
         )
     assert time.monotonic() - start < 20.0
+    assert "stall-timeout-minutes" in str(excinfo.value)
     assert "bye" in log_path.read_text()
+
+    # PR #41 r3806602901: total-cap-only configuration (stall watchdog
+    # disabled) — proc.wait(timeout=None) used to block forever here
+    # despite the configured hard runtime cap. The wait must be bounded by
+    # the remaining total budget and the error must name the total cap.
+    total_log = tmp_path / "train_total_cap.log"
+    start = time.monotonic()
+    with pytest.raises(harness.ChildRunError, match="did not exit") as excinfo:
+        harness._run_child(
+            [sys.executable, "-c", script], total_log,
+            stall_timeout_seconds=0,  # <= 0 disables the stall watchdog
+            child_timeout_seconds=1.0,
+        )
+    assert time.monotonic() - start < 20.0
+    message = str(excinfo.value)
+    assert "child-timeout-minutes" in message, message
+    assert "stall-timeout-minutes" not in message, message
+    assert "bye" in total_log.read_text()

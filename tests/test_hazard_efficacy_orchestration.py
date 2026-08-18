@@ -788,9 +788,15 @@ def test_r013_force_reruns_complete_dirs(
 
 # Tests R-013 [integration]: fresh dirs invoke one child each; the harness
 # (not the child) writes RUN_COMPLETE.json after exit 0 + checkpoint check.
+# EXTENDED per PR #41 review r3806602894: the marker additionally carries the
+# TRAINING-time provenance snapshot (git_dirty/torch_version/platform/device).
 def test_r013_fresh_runs_invoke_children_and_write_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import platform as platform_mod
+
+    import torch
+
     records = [make_plan_record(tmp_path, arm, 1) for arm in ("A", "B")]
     runner, calls = fabricating_runner(records)
     monkeypatch.setattr(harness, "_run_child", runner)
@@ -802,8 +808,9 @@ def test_r013_fresh_runs_invoke_children_and_write_marker(
         marker_path = Path(rec["run_dir"]) / "RUN_COMPLETE.json"
         assert marker_path.exists(), "harness writes the completion marker"
         marker = json.loads(marker_path.read_text())
-        assert {"git_sha", "arm", "seed", "wall_clock_seconds",
-                "smoke"} <= set(marker)
+        assert {"git_sha", "arm", "seed", "wall_clock_seconds", "smoke",
+                "git_dirty", "torch_version", "platform",
+                "device"} <= set(marker)
         assert marker["arm"] == rec["arm"]
         # QA-R2-2: the marker persists the invocation's smoke flag (the
         # direct-caller default here is False).
@@ -813,6 +820,14 @@ def test_r013_fresh_runs_invoke_children_and_write_marker(
         wall_clock = marker["wall_clock_seconds"]
         assert isinstance(wall_clock, float) and not isinstance(wall_clock, bool)
         assert wall_clock >= 0.0
+        # PR #41 r3806602894: the TRAINING-time provenance snapshot is
+        # captured at completion — real git dirty state, the training
+        # interpreter's torch, this machine's platform, and the child's
+        # RESOLVED device from its own config_used.json (fixture: "cpu").
+        assert isinstance(marker["git_dirty"], bool)
+        assert marker["torch_version"] == str(torch.__version__)
+        assert marker["platform"] == platform_mod.platform()
+        assert marker["device"] == "cpu"
 
 
 # Tests R-013 [integration]: the silent random-split fallback invalidates
@@ -1203,15 +1218,19 @@ def test_qa001_force_crash_then_resume_raises_partial(
 
 
 # Tests QA-002 [integration]: resume answers "does this dir match what THIS
-# invocation would produce" — a stale model or artifact-orphaned split qids
-# fail loud; a matching dir resumes cleanly.
+# invocation would produce" — a stale model or drifted split qids fail loud;
+# a matching dir resumes cleanly.
+# AMENDED per PR #41 review r3806602891: the split check is ORDERED EQUALITY
+# per split against the current invocation's own capped selection
+# (expected_run_context["split_qids"]), no longer membership in the raw
+# artifacts.
 def test_qa002_stale_resumed_dir_vs_current_invocation_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     expected = {
         "model_name": "t5-small",
-        "artifact_qids": {
-            split: set(qids) for split, qids in DEFAULT_SPLIT_QIDS.items()
+        "split_qids": {
+            split: list(qids) for split, qids in DEFAULT_SPLIT_QIDS.items()
         },
     }
 
@@ -1226,8 +1245,8 @@ def test_qa002_stale_resumed_dir_vs_current_invocation_raises(
     assert "t5-base" in message and "t5-small" in message
     assert calls == []
 
-    # (b) split drift: the resumed manifest names a qid the CURRENT
-    # artifacts no longer contain (dir predates an artifact rebuild).
+    # (b) split drift: the resumed manifest names a qid outside the split
+    # the CURRENT invocation would select (dir predates an artifact rebuild).
     records = [make_plan_record(tmp_path / "b", "A", 1)]
     make_run_dir(
         tmp_path / "b", "A", 1,
@@ -1248,6 +1267,39 @@ def test_qa002_stale_resumed_dir_vs_current_invocation_raises(
     updated = harness.execute_plan(records, expected_run_context=expected)
     assert calls == []
     assert updated[0]["resumed"] is True
+
+
+# Tests PR #41 review r3806602891 [integration]: a resumed manifest with the
+# SAME qid set as the current selection but a different order (rebuilt/
+# reordered artifacts; data.max_questions would select a different prefix)
+# is rejected with ProvenanceError — membership alone must never pass it.
+def test_pr41_resumed_manifest_same_set_different_order_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = {
+        "split_qids": {
+            split: list(qids) for split, qids in DEFAULT_SPLIT_QIDS.items()
+        },
+    }
+    reordered = {
+        "train": list(reversed(DEFAULT_SPLIT_QIDS["train"])),  # same SET
+        "val": list(DEFAULT_SPLIT_QIDS["val"]),
+        "test": list(DEFAULT_SPLIT_QIDS["test"]),
+    }
+    assert set(reordered["train"]) == set(DEFAULT_SPLIT_QIDS["train"])
+    assert reordered["train"] != DEFAULT_SPLIT_QIDS["train"]
+
+    records = [make_plan_record(tmp_path, "A", 1)]
+    make_run_dir(tmp_path, "A", 1, split_qids=reordered)
+    runner, calls = fabricating_runner(records)
+    monkeypatch.setattr(harness, "_run_child", runner)
+
+    with pytest.raises(harness.ProvenanceError) as excinfo:
+        harness.execute_plan(records, expected_run_context=expected)
+    message = str(excinfo.value)
+    assert "ORDER" in message, message
+    assert "A_seed1" in message
+    assert calls == [], "the stale dir must be rejected, never re-trained"
 
 
 # Tests QA-002 [integration]: the shared supervised checkpoint carries an
@@ -1379,9 +1431,18 @@ def test_qa003_preflight_rejects_argv_the_real_parser_rejects(
 # data.max_questions-capped split, the harness selects eval/probe/manifest
 # questions BY the child split manifest (manifest order) — never the raw
 # artifact lists.
+# AMENDED per PR #41 review r3806602891: the harness now resolves the capped
+# selection ITSELF through the child trainer's own loader and asserts the
+# first run's manifest EQUALS it (ordered) before subsetting — so the test
+# runs under a config whose cap really bites (max_questions=8 over 13
+# artifact questions; the real global-scope allocation of 6/2/5 at cap 8 is
+# exactly 4/1/3 = the fixture DEFAULT_SPLIT_QIDS) and asserts ordered
+# equality end to end.
 def test_qa004_eval_probe_and_manifest_follow_child_split_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import yaml
+
     capped_qids = dict(DEFAULT_SPLIT_QIDS)  # what the children trained on
     big_qids = {
         "train": [f"t{i}" for i in range(1, 7)],  # t1..t6 (artifacts larger)
@@ -1390,6 +1451,14 @@ def test_qa004_eval_probe_and_manifest_follow_child_split_manifest(
     }
     for split in ("train", "val", "test"):
         assert set(capped_qids[split]) < set(big_qids[split])  # strict subset
+
+    # A real config whose smoke cap bites on the 13-question artifacts: the
+    # trainer's global-scope allocation of (6, 2, 5) under max_questions=8
+    # is (4, 1, 3) — the exact capped_qids prefixes above.
+    config = yaml.safe_load(Path(CONFIG_PATH).read_text())
+    config["smoke"]["data"]["max_questions"] = 8
+    capped_config = tmp_path / "t5_policy_capped.yaml"
+    capped_config.write_text(yaml.safe_dump(config))
 
     out = tmp_path / "out"
     split_paths = write_split_artifacts(tmp_path / "artifacts", split_qids=big_qids)
@@ -1437,12 +1506,13 @@ def test_qa004_eval_probe_and_manifest_follow_child_split_manifest(
     monkeypatch.setattr(harness, "probe_and_write_hazard_dynamics", fake_probe)
 
     harness.main(
-        ["--smoke", "--out-dir", str(out), "--config", CONFIG_PATH,
+        ["--smoke", "--out-dir", str(out), "--config", str(capped_config),
          "--seeds", "1", "--arms", "A", "B"]
     )
 
     # Eval receives the CHILD manifest's capped test/train splits, in
-    # manifest order — never the larger raw artifact lists.
+    # manifest order (ORDERED list equality — PR #41 r3806602891) — never
+    # the larger raw artifact lists.
     assert len(eval_calls) == 2
     for _, kwargs in eval_calls:
         got_test = [q.qid for q in kwargs["test_questions"]]
@@ -1458,7 +1528,8 @@ def test_qa004_eval_probe_and_manifest_follow_child_split_manifest(
     )
     assert [q.qid for q in probe_questions] == capped_qids["train"]
 
-    # The supervised split manifest records the capped qids and counts.
+    # The supervised split manifest records the capped qids (ordered) and
+    # counts.
     sup_manifest = json.loads(
         (harness.shared_supervised_checkpoint(out) / "split_manifest.json")
         .read_text()
@@ -1466,6 +1537,66 @@ def test_qa004_eval_probe_and_manifest_follow_child_split_manifest(
     assert sup_manifest["train_qids"] == capped_qids["train"]
     assert sup_manifest["test_qids"] == capped_qids["test"]
     assert sup_manifest["test_count"] == len(capped_qids["test"])
+
+
+# Tests PR #41 review r3806602891 [integration]: the current invocation's
+# own capped selection — resolved via the trainer's loader — is the
+# authority the eval/probe subsetting checks against. Children whose
+# manifests carry the SAME qid set in a DIFFERENT order (the rebuilt/
+# reordered-artifact signature) fail loud before any eval, with no report.
+def test_pr41_child_manifest_order_drift_fails_before_subsetting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "out"
+    split_paths = write_split_artifacts(tmp_path / "artifacts")
+    monkeypatch.setattr(
+        harness, "resolve_split_artifacts", lambda **kwargs: dict(split_paths)
+    )
+
+    drifted_qids = {
+        "train": list(reversed(DEFAULT_SPLIT_QIDS["train"])),  # same SET
+        "val": list(DEFAULT_SPLIT_QIDS["val"]),
+        "test": list(DEFAULT_SPLIT_QIDS["test"]),
+    }
+
+    def runner(argv, log_path):
+        argv = [str(token) for token in argv]
+        log_path = Path(log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("child ok\n")
+        root = _sup_ckpt_root(argv)
+        if "--skip-supervised" in argv:
+            arm, _, seed = root.name.rpartition("_seed")
+            make_run_dir(
+                root.parent, arm, int(seed),
+                hazard="--hazard-pretrain" in argv,
+                marker=False, write_eval_result=False,
+                split_qids=drifted_qids,
+            )
+        else:
+            best = root / "supervised" / "best_model"
+            best.mkdir(parents=True, exist_ok=True)
+            (best / "policy_head.pt").write_bytes(b"stub-weights")
+        return 0
+
+    monkeypatch.setattr(harness, "_run_child", runner)
+
+    eval_calls: list = []
+    monkeypatch.setattr(
+        harness, "evaluate_t5_policy", _fake_eval_factory(eval_calls),
+        raising=False,
+    )
+
+    with pytest.raises(harness.ProvenanceError) as excinfo:
+        harness.main(
+            ["--smoke", "--out-dir", str(out), "--config", CONFIG_PATH,
+             "--seeds", "1", "--arms", "A"]
+        )
+    message = str(excinfo.value)
+    assert "ORDER" in message, message
+    assert "A_seed1" in message
+    assert eval_calls == [], "no eval may run on an unverified subsetting"
+    assert not (out / "hazard_efficacy_report.json").exists()
 
 
 # Tests QA-005 [integration]: --report-only --dry-run --prune-checkpoints is
@@ -1872,3 +2003,113 @@ def test_qa_r2_3_shared_supervised_seed_mismatch_warns_never_raises(
     assert json.loads(marker_path.read_text())[
         "shared_supervised_seed_mismatch"
     ] is True
+
+
+# ---------------------------------------------------------------------------
+# PR #41 review r3806602894 — training-time provenance sourced from markers
+# ---------------------------------------------------------------------------
+
+
+# Tests PR #41 r3806602894 [integration]: --report-only sources each row's
+# provenance (git_sha/git_dirty/torch_version/platform/device) from the
+# run's OWN RUN_COMPLETE.json training-time snapshot — never from the
+# report-generation process — and flags the source. git_sha_mismatch
+# semantics are unchanged (recorded, never fatal).
+def test_pr41_report_only_provenance_sourced_from_run_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import torch
+
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail("report-only must not train"),
+    )
+    out = tmp_path / "out"
+    stale_sha = "a" * 40  # training-time sha differs from the current HEAD
+    sentinel = {
+        "git_dirty": True,
+        "torch_version": "9.9.9-training-sentinel",
+        "platform": "TrainingOS-1.0-arm64",
+        "device": "mps",
+    }
+    for arm in ("A", "B"):
+        make_run_dir(
+            out, arm, 1,
+            marker_git_sha=stale_sha,
+            marker_extra=dict(sentinel),
+            include_hazard_dynamics=(arm == "B"),
+        )
+
+    harness.main(
+        ["--report-only", "--smoke", "--out-dir", str(out),
+         "--arms", "A", "B", "--seeds", "1"]
+    )
+
+    report = json.loads((out / "hazard_efficacy_report.json").read_text())
+    for row in report["runs"]:
+        prov = row["provenance"]
+        assert prov["provenance_source"] == "run_marker"
+        # Training-time values verbatim — NOT this process's torch/platform
+        # or the current checkout.
+        assert prov["torch_version"] == sentinel["torch_version"]
+        assert prov["torch_version"] != str(torch.__version__)
+        assert prov["platform"] == sentinel["platform"]
+        assert prov["git_dirty"] is True
+        assert prov["device"] == "mps"
+        assert prov["git_sha"] == stale_sha
+        assert prov["git_sha"] != current_git_sha()
+        # Existing drift semantics unchanged: recorded and non-fatal.
+        assert row["git_sha_mismatch"] is True
+    # No legacy warning — every marker carried the snapshot.
+    assert not any("report_time_legacy" in w for w in report["warnings"])
+
+
+# Tests PR #41 r3806602894 [integration]: legacy markers WITHOUT the
+# training-time snapshot fall back to report-time provenance, are flagged
+# provenance_source=report_time_legacy per run, and a report warning lists
+# them (printed too).
+def test_pr41_report_only_legacy_marker_falls_back_and_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    import torch
+
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail("report-only must not train"),
+    )
+    out = tmp_path / "out"
+    for arm in ("A", "B"):
+        run_dir = make_run_dir(
+            out, arm, 1, include_hazard_dynamics=(arm == "B")
+        )
+        # Rewrite the marker WITHOUT the snapshot fields (legacy marker
+        # predating PR #41 r3806602894).
+        marker_path = run_dir / "RUN_COMPLETE.json"
+        marker = json.loads(marker_path.read_text())
+        for field in ("git_dirty", "torch_version", "platform", "device"):
+            marker.pop(field, None)
+        marker_path.write_text(json.dumps(marker, indent=2))
+
+    capsys.readouterr()
+    harness.main(
+        ["--report-only", "--smoke", "--out-dir", str(out),
+         "--arms", "A", "B", "--seeds", "1"]
+    )
+
+    report = json.loads((out / "hazard_efficacy_report.json").read_text())
+    for row in report["runs"]:
+        prov = row["provenance"]
+        assert prov["provenance_source"] == "report_time_legacy"
+        # Report-time fallback values (the pre-existing behavior).
+        assert prov["torch_version"] == str(torch.__version__)
+        assert prov["git_sha"] == current_git_sha()
+        assert prov["device"] == "cpu"  # config_used.json fallback source
+    # The fallback is flagged in the report warnings AND printed.
+    legacy_warnings = [
+        w for w in report["warnings"] if "report_time_legacy" in w
+    ]
+    assert len(legacy_warnings) == 1
+    assert "A_seed1" in legacy_warnings[0]
+    assert "B_seed1" in legacy_warnings[0]
+    printed = capsys.readouterr().out
+    assert "report_time_legacy" in printed

@@ -21,7 +21,10 @@ producers byte-for-schema (AP-031 format pinning):
   (the child's elapsed seconds, recorded by ``execute_plan``) and
   ``smoke`` (the invocation's --smoke flag, additive QA-R2-2 field; the
   fixture default ``True`` matches the smoke-resolved config the other
-  sidecars replicate).
+  sidecars replicate), plus the additive TRAINING-time provenance
+  snapshot ``git_dirty``/``torch_version``/``platform``/``device``
+  (PR #41 r3806602894; deterministic fixture values so report rows
+  sourced from the marker are discriminable from report-time values).
 - Per-question eval ``runs`` records: R-002 field set.
 - MCQuestion JSON split artifacts: complete records deserializable by the
   real persisted-split loader (schema: ``qb_data/mc_builder.py``; writer
@@ -366,6 +369,17 @@ def make_run_dir(
             "completed_at": "2026-08-18T00:00:00Z",
             "wall_clock_seconds": marker_wall_clock_seconds,
             "smoke": marker_smoke,
+            # PR #41 r3806602894 (additive): the TRAINING-time provenance
+            # snapshot the real execute_plan persists at run completion.
+            # Deterministic fixture values, deliberately distinct from any
+            # report-time value so marker sourcing is discriminable; the
+            # device matches make_config_used's resolved "cpu". Tests that
+            # need a LEGACY (field-less) marker rewrite the JSON to drop
+            # these keys.
+            "git_dirty": False,
+            "torch_version": "0.0.0-fixture",
+            "platform": "fixture-platform",
+            "device": "cpu",
         }
         # marker_extra (additive, mini-audit round): extra/overriding marker
         # fields, e.g. MA-003's shared_supervised_weights_sha256 or MA-015's

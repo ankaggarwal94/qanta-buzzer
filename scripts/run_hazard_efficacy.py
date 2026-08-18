@@ -387,6 +387,13 @@ def _read_run_marker(path: Path) -> dict[str, Any]:
         ("completed_at", (str,), False),
         ("smoke", (bool,), False),
         ("shared_supervised_weights_sha256", (str,), False),
+        # PR #41 r3806602894: additive TRAINING-time provenance snapshot
+        # (optional — legacy markers predate the fields and fall back to
+        # report-time provenance with a report warning).
+        ("git_dirty", (bool,), False),
+        ("torch_version", (str,), False),
+        ("platform", (str,), False),
+        ("device", (str,), False),
     ]
     for field, allowed, required in type_specs:
         value = payload.get(field)
@@ -816,6 +823,71 @@ def resolve_split_artifacts(
     )
 
 
+def _expected_child_split_qids(
+    splits: dict[str, Path], base_config: dict[str, Any], *, smoke: bool
+) -> dict[str, list]:
+    """The CURRENT invocation's exact per-split qid selection, in order.
+
+    PR #41 review r3806602891: membership checks against the raw artifacts
+    cannot detect a rebuilt/reordered artifact set that retains the same
+    qids — ``data.max_questions`` then makes the children select a
+    DIFFERENT prefix of each split than a resumed run trained on. The
+    authoritative expectation is therefore resolved ONCE via the child
+    trainer's own loader
+    (``scripts.train_t5_policy.load_question_splits_with_metadata`` — never
+    a reimplementation of its cap/scope logic), anchored to the artifact
+    directory the harness preflighted (``mc_path`` anchoring; the harness
+    search order mirrors the child's, so the resolved directory is the one
+    every child of this invocation will use) and driven by the SAME
+    resolved base config the identity hash uses, so
+    ``data.max_questions``/``max_questions_scope`` apply exactly as they
+    will in every child.
+
+    Parameters
+    ----------
+    splits : dict
+        ``resolve_split_artifacts`` result (``{"train": Path, "val": Path,
+        "test": Path}``); the parent directory anchors the loader.
+    base_config : dict
+        This invocation's resolved child base config
+        (:func:`_resolved_child_base_config` output).
+    smoke : bool, keyword-only
+        The invocation's ``--smoke`` flag (namespace completeness only —
+        the ``mc_path`` anchor already fixes the artifact directory).
+
+    Returns
+    -------
+    dict
+        ``{"train": [qids...], "val": [...], "test": [...]}`` in the exact
+        (capped) order every child of this invocation trains against.
+        Raises ``PreflightError`` when the trainer's resolution would not
+        come from the persisted artifacts (the silent random-split
+        fallback invalidates split provenance for every child anyway).
+    """
+    import scripts.train_t5_policy as train_t5_policy
+
+    anchor = Path(splits["train"]).parent / "mc_dataset.json"
+    namespace = argparse.Namespace(mc_path=str(anchor), smoke=bool(smoke))
+    _train, _val, _test, manifest = (
+        train_t5_policy.load_question_splits_with_metadata(
+            namespace, base_config
+        )
+    )
+    source = manifest.get("source") if isinstance(manifest, dict) else None
+    if source != _PERSISTED_SOURCE:
+        raise PreflightError(
+            "The child trainer's split resolution did not come from the "
+            f"persisted artifacts (source={source!r}); every child of this "
+            "invocation would fall back to the provenance-invalidating "
+            "random split. Rebuild the artifacts with "
+            "scripts/build_mc_dataset.py."
+        )
+    return {
+        split: list(manifest.get(f"{split}_qids") or [])
+        for split in ("train", "val", "test")
+    }
+
+
 def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
     """Build the full arm x seed run plan up front (R-008 / R-013).
 
@@ -1241,9 +1313,12 @@ def _run_child(
     block-buffered bursts that read as a stall); after any watchdog kill
     the already-pumped lines are drained into the log before the error
     snapshots its tail; EOF on the pipe is followed by a ``proc.wait``
-    bounded by the stall budget (a child that closed its streams but never
-    exits is killed + ``ChildRunError``); and the pump thread tolerates
-    the kill-time close-race on the pipe.
+    bounded by the SMALLER of the stall budget and the REMAINING total
+    budget — PR #41 r3806602901: the total cap stays enforced after EOF
+    even with the stall watchdog disabled; unbounded only when NEITHER is
+    configured — and a child that closed its streams but never exits is
+    killed + ``ChildRunError`` naming whichever limit expired; the pump
+    thread tolerates the kill-time close-race on the pipe.
     """
     stall_limit = (
         _ACTIVE_STALL_TIMEOUT_SECONDS
@@ -1374,21 +1449,54 @@ def _run_child(
                 # is a safe no-op.
                 proc.kill()
                 raise
-            # Mini-audit-verify F6: EOF on the merged pipe does not imply
-            # exit — a child that closed its streams but wedged before
-            # exiting must not hang the harness. The stall budget bounds
-            # the post-EOF wait (None keeps the unbounded wait when the
-            # watchdog is disabled).
+            # Mini-audit-verify F6 + PR #41 r3806602901: EOF on the merged
+            # pipe does not imply exit — a child that closed its streams but
+            # wedged before exiting must not hang the harness, and the TOTAL
+            # runtime cap stays enforced after EOF too (the wait used to be
+            # bounded by the stall limit alone, so --child-timeout-minutes
+            # with the stall watchdog disabled degraded to an unbounded
+            # wait). The wait is bounded by the SMALLER of the stall budget
+            # and the REMAINING total budget; None (unbounded) only when
+            # NEITHER limit is configured. On expiry the error names
+            # whichever limit ran out.
+            wait_limits: list[tuple[float, str]] = []
+            if stall_limit is not None:
+                wait_limits.append(
+                    (
+                        stall_limit,
+                        f"stall budget ({stall_limit:.1f}s — "
+                        "--stall-timeout-minutes)",
+                    )
+                )
+            if total_limit is not None:
+                remaining_total = max(
+                    0.0, total_limit - (time.monotonic() - started)
+                )
+                wait_limits.append(
+                    (
+                        remaining_total,
+                        f"remaining total runtime budget "
+                        f"({remaining_total:.1f}s of the {total_limit:.1f}s "
+                        "--child-timeout-minutes cap)",
+                    )
+                )
+            if wait_limits:
+                post_eof_timeout, expired_limit = min(
+                    wait_limits, key=lambda entry: entry[0]
+                )
+            else:
+                post_eof_timeout, expired_limit = None, ""
             try:
-                return proc.wait(timeout=stall_limit)
+                return proc.wait(timeout=post_eof_timeout)
             except subprocess.TimeoutExpired as exc:
                 _kill_and_drain()
+                elapsed_total = time.monotonic() - started
                 raise ChildRunError(
                     f"Child closed its output stream but did not exit "
-                    f"within the stall budget ({stall_limit:.1f}s — "
-                    "--stall-timeout-minutes); the child was killed "
-                    f"(MA-006 / mini-audit-verify F6). Log: {log_path}\n"
-                    f"--- log tail ---\n{_log_tail(log_path)}"
+                    f"within the {expired_limit}; the child was killed "
+                    f"after {elapsed_total:.1f}s total (MA-006 / "
+                    "mini-audit-verify F6 / PR #41 r3806602901). Log: "
+                    f"{log_path}\n--- log tail ---\n{_log_tail(log_path)}"
                 ) from exc
 
 
@@ -1448,6 +1556,55 @@ def _assert_split_source(record: dict[str, Any]) -> None:
         )
 
 
+def _assert_manifest_matches_expected_splits(
+    manifest: dict[str, Any],
+    expected_split_qids: dict[str, Any],
+    *,
+    run_name: str,
+) -> None:
+    """Ordered per-split qid equality against THIS invocation (QA-002).
+
+    PR #41 review r3806602891: a membership-subset check accepts a stale
+    run whose artifacts were rebuilt/reordered while retaining the same
+    qids — ``data.max_questions`` then makes the current invocation select
+    a DIFFERENT prefix of each split. For every split named by
+    ``expected_split_qids`` (missing/None splits are skipped), the
+    manifest's ``<split>_qids`` must EQUAL the expected list — same qids,
+    same order — or ``ProvenanceError`` is raised naming the run with
+    delete/--force remediation.
+    """
+    for split in ("train", "val", "test"):
+        expected = expected_split_qids.get(split)
+        if expected is None:
+            continue
+        expected = list(expected)
+        actual = list(manifest.get(f"{split}_qids") or [])
+        if actual == expected:
+            continue
+        expected_set = set(expected)
+        actual_set = set(actual)
+        extra = [q for q in actual if q not in expected_set]
+        missing = [q for q in expected if q not in actual_set]
+        if not extra and not missing:
+            detail = "identical qid SET in a different ORDER"
+        else:
+            detail = (
+                f"{len(extra)} manifest qid(s) outside the current "
+                f"selection (e.g. {extra[:5]}), {len(missing)} expected "
+                f"qid(s) absent (e.g. {missing[:5]})"
+            )
+        raise ProvenanceError(
+            f"Run {run_name}: its split_manifest.json {split}_qids "
+            f"({len(actual)} qids) do not EQUAL the {split} split this "
+            f"invocation would select from the CURRENT persisted artifacts "
+            f"({len(expected)} qids; {detail}). Ordered equality is "
+            "required — rebuilt/reordered artifacts retaining the same "
+            "qids still change what data.max_questions selects (QA-002 / "
+            "PR #41 r3806602891). Delete the run directory or pass --force "
+            "to re-run everything."
+        )
+
+
 def validate_resumed_run(
     record: dict[str, Any], expected: dict[str, Any]
 ) -> None:
@@ -1461,10 +1618,14 @@ def validate_resumed_run(
       ``config_used.json`` model name must equal the model THIS
       invocation's resolved config would train (catches a smoke t5-small
       dir silently relabeled into a t5-base — or non-smoke — report).
-    - ``expected["artifact_qids"]`` (when given; ``{split: set(qids)}``):
-      every qid in the resumed ``split_manifest.json`` must exist in the
-      CURRENT persisted artifacts (catches dirs predating an artifact
-      rebuild).
+    - ``expected["split_qids"]`` (when given; ``{split: [ordered qids]}``
+      — :func:`_expected_child_split_qids` output): the resumed
+      ``split_manifest.json`` qids must EQUAL — same qids, same order —
+      the split THIS invocation's config would select (PR #41 review
+      r3806602891: the pre-fix membership-subset check accepted runs
+      predating an artifact rebuild/reorder that retained the same qids,
+      even though ``data.max_questions`` makes the current invocation
+      select a different prefix of each split).
     """
     run_dir = Path(record["run_dir"])
     name = _run_name(record)
@@ -1486,26 +1647,16 @@ def validate_resumed_run(
                 "re-run everything."
             )
 
-    artifact_qids = expected.get("artifact_qids")
-    if artifact_qids:
+    expected_split_qids = expected.get("split_qids")
+    if expected_split_qids:
         manifest = _load_json_file(
             run_dir / "ppo_t5" / "split_manifest.json", error_cls=ProvenanceError
         )
-        for split in ("train", "val", "test"):
-            available = artifact_qids.get(split)
-            if available is None:
-                continue
-            available_set = set(available)
-            manifest_qids = manifest.get(f"{split}_qids") or []
-            missing = [q for q in manifest_qids if q not in available_set]
-            if missing:
-                raise ProvenanceError(
-                    f"Resumed run {name}: {len(missing)} {split} qid(s) in "
-                    f"its split_manifest.json are absent from the CURRENT "
-                    f"persisted artifacts (e.g. {missing[:5]}); the dir "
-                    "predates an artifact rebuild. Delete the directory or "
-                    "pass --force to re-run everything."
-                )
+        _assert_manifest_matches_expected_splits(
+            manifest if isinstance(manifest, dict) else {},
+            expected_split_qids,
+            run_name=name,
+        )
 
 
 def _assert_run_identity(
@@ -1739,8 +1890,12 @@ def execute_plan(
     ``shared_supervised_weights_sha256`` — additive, MA-003 — records the
     branch point's content fingerprint when the caller supplies
     ``expected_run_context["shared_weights_sha256"]``, and is asserted on
-    resume; markers are written atomically via temp + ``os.replace`` —
-    MA-015).
+    resume; ``git_dirty``/``torch_version``/``platform``/``device`` —
+    additive, PR #41 r3806602894 — are the TRAINING-time provenance
+    snapshot captured at run completion by
+    :func:`_training_provenance_fields`, which report rows prefer over
+    report-time values; markers are written atomically via temp +
+    ``os.replace`` — MA-015).
     Ends by running :func:`assert_arm_control` over all records (resumed
     dirs included). Returns updated records.
 
@@ -1755,8 +1910,10 @@ def execute_plan(
     expected_run_context : dict or None, keyword-only
         When given, every RESUMED dir is additionally validated against
         this invocation via :func:`validate_resumed_run` (QA-002; keys
-        ``model_name`` and/or ``artifact_qids``). Default ``None`` keeps
-        the pre-existing behavior for direct callers.
+        ``model_name`` and/or ``split_qids`` — the latter enforcing
+        ORDERED per-split qid equality per PR #41 review r3806602891).
+        Default ``None`` keeps the pre-existing behavior for direct
+        callers.
     smoke : bool, keyword-only
         The invocation's ``--smoke`` flag, persisted verbatim into each
         fresh run's ``RUN_COMPLETE.json`` marker (QA-R2-2). Default
@@ -1849,6 +2006,12 @@ def execute_plan(
             # QA-R2-2: persist the invocation's smoke flag so --report-only
             # can label the report from the runs' real provenance.
             "smoke": bool(smoke),
+            # PR #41 r3806602894: TRAINING-time provenance snapshot
+            # (additive fields git_dirty/torch_version/platform/device) —
+            # report assembly prefers these over report-time values so a
+            # later --report-only on another machine/checkout cannot
+            # relabel the run.
+            **_training_provenance_fields(run_dir),
         }
         # MA-003: stamp the shared branch point's content identity into the
         # descendant's marker (when the caller supplied it).
@@ -1990,6 +2153,53 @@ def write_supervised_split_manifest(
     return out_path
 
 
+# PR #41 review r3806602894: the marker fields report assembly prefers over
+# report-time values — captured at run completion, so a --report-only under a
+# different checkout/machine cannot relabel the runs' provenance.
+_MARKER_PROVENANCE_FIELDS = ("git_dirty", "torch_version", "platform", "device")
+
+
+def _training_provenance_fields(run_dir: Path) -> dict[str, Any]:
+    """TRAINING-time provenance snapshot for ``RUN_COMPLETE.json``.
+
+    PR #41 review r3806602894 (same report-field-sourcing class as QA-006):
+    ``git_dirty``, ``torch_version`` and ``platform`` are captured by the
+    harness at child completion — same checkout, same interpreter (children
+    run ``sys.executable``), same machine as the training run — and
+    ``device`` is the child's RESOLVED training device read from its own
+    ``config_used.json``. Report assembly prefers these marker fields over
+    report-time values, so an old MPS run regenerated with ``--report-only``
+    on Linux can no longer acquire Linux/current-HEAD provenance. Raises
+    ``ProvenanceError`` when a source field is missing (R-008 fail-loud).
+    """
+    try:
+        import torch
+
+        torch_version = str(torch.__version__)
+    except ImportError as exc:  # pragma: no cover - torch is a core dep
+        raise ProvenanceError(f"torch is unavailable: {exc}") from exc
+    config_used = _load_json_file(
+        Path(run_dir) / "ppo_t5" / "config_used.json", error_cls=ProvenanceError
+    )
+    device = None
+    if isinstance(config_used, dict):
+        device = config_used.get("model", {}).get("device")
+    platform_str = platform.platform()
+    if not torch_version or not platform_str or not device:
+        raise ProvenanceError(
+            "training-time provenance is incomplete (torch_version="
+            f"{torch_version!r}, platform={platform_str!r}, device="
+            f"{device!r}); the completion marker must carry the full "
+            "snapshot (PR #41 r3806602894)."
+        )
+    return {
+        "git_dirty": _git_dirty(),
+        "torch_version": torch_version,
+        "platform": platform_str,
+        "device": str(device),
+    }
+
+
 def collect_provenance(config_used: dict[str, Any]) -> dict[str, Any]:
     """Assemble one run's provenance block (R-008), complete or fail-loud.
 
@@ -1997,6 +2207,11 @@ def collect_provenance(config_used: dict[str, Any]) -> dict[str, Any]:
     "torch_version", "platform"}`` using real ``git rev-parse HEAD`` /
     ``git status --porcelain``. A missing source field raises
     ``ProvenanceError`` (no report may be written).
+
+    PR #41 review r3806602894: these are REPORT-time values; report
+    assembly (:func:`_read_run_sidecars`) overrides them with the run's
+    own ``RUN_COMPLETE.json`` training-time snapshot when present and
+    flags the row ``provenance_source: "report_time_legacy"`` otherwise.
     """
     try:
         model_cfg = config_used["model"]
@@ -2946,6 +3161,16 @@ def _read_run_sidecars(
         (provenance included), and the FIRST run's ``config_used.json`` /
         ``split_manifest.json`` (the scale block's source; arm control has
         already proven every run agrees).
+
+    PR #41 review r3806602894: each row's provenance ``git_sha``,
+    ``git_dirty``, ``torch_version``, ``platform`` and ``device`` are
+    sourced from the run's own ``RUN_COMPLETE.json`` marker when it
+    carries the training-time snapshot (``provenance_source:
+    "run_marker"``); legacy markers without the fields fall back to
+    report-time values and are flagged ``provenance_source:
+    "report_time_legacy"`` (assemble_report additionally emits a report
+    warning listing them). The existing per-row ``git_sha_mismatch``
+    semantics are unchanged.
     """
     eval_by_run: dict[tuple[str, int], dict[str, Any]] = {}
     report_runs: list[dict[str, Any]] = []
@@ -2998,6 +3223,26 @@ def _read_run_sidecars(
             provenance = collect_provenance(config_used)
         except ProvenanceError as exc:
             raise ProvenanceError(f"Run {name}: {exc}") from exc
+
+        # PR #41 r3806602894: prefer the run's own TRAINING-time provenance
+        # snapshot (persisted into RUN_COMPLETE.json at completion) over the
+        # report-generation process's values; legacy markers without the
+        # fields fall back to report-time values and are flagged.
+        marker = _read_optional_json(run_dir / RUN_COMPLETE_MARKER)
+        marker = marker if isinstance(marker, dict) else {}
+        if all(
+            marker.get(field) is not None
+            for field in _MARKER_PROVENANCE_FIELDS
+        ):
+            provenance.update(
+                {field: marker[field] for field in _MARKER_PROVENANCE_FIELDS}
+            )
+            marker_sha = marker.get("git_sha")
+            if isinstance(marker_sha, str) and marker_sha:
+                provenance["git_sha"] = marker_sha
+            provenance["provenance_source"] = "run_marker"
+        else:
+            provenance["provenance_source"] = "report_time_legacy"
 
         eval_by_run[(record["arm"], record["seed"])] = eval_result
         report_runs.append(
@@ -3373,11 +3618,17 @@ def assemble_report(
     marker), ``hazard_dynamics``, ``warnings`` (QA-011: plan-vs-pool seed
     reconciliation; QA-R2-1: caller-supplied ``extra_warnings`` — e.g. the
     report-only branch's plan-vs-disk reconciliation — are PREPENDED and
-    printed with them; empty list when clean), ``runs`` (per-run records
-    incl. ``arm``, ``seed``, ``resumed``, ``policy_buzz_rate``,
-    ``forced_commit_rate``, ``ece``, ``brier``, ``provenance``), and
-    ``plot_path`` (relative ``hazard_efficacy_plot.png``). Never contains
-    any Expected Wins key.
+    printed with them; PR #41 r3806602894: one warning lists any runs
+    whose markers predate the training-time provenance snapshot; empty
+    list when clean), ``runs`` (per-run records incl. ``arm``, ``seed``,
+    ``resumed``, ``policy_buzz_rate``, ``forced_commit_rate``, ``ece``,
+    ``brier``, ``provenance`` — whose ``git_sha``/``git_dirty``/
+    ``torch_version``/``platform``/``device`` come from the run's own
+    ``RUN_COMPLETE.json`` when it carries them, flagged by the additive
+    ``provenance_source`` field: ``"run_marker"`` vs
+    ``"report_time_legacy"`` — PR #41 r3806602894), and ``plot_path``
+    (relative ``hazard_efficacy_plot.png``). Never contains any Expected
+    Wins key.
 
     Parameters (additive)
     ---------------------
@@ -3405,6 +3656,23 @@ def assemble_report(
     # reconciliation) are merged in ahead of them.
     warnings = list(extra_warnings or [])
     warnings += _reconcile_seed_coverage(eval_by_run, run_records)
+    # PR #41 r3806602894: legacy markers without the training-time
+    # provenance snapshot fall back to report-time values — name them so
+    # the fallback is never silent.
+    legacy_provenance_runs = sorted(
+        _run_name(record)
+        for record, row in zip(run_records, report_runs)
+        if row.get("provenance", {}).get("provenance_source")
+        == "report_time_legacy"
+    )
+    if legacy_provenance_runs:
+        warnings.append(
+            "run marker(s) predate the training-time provenance fields "
+            "(git_dirty/torch_version/platform/device — PR #41 "
+            f"r3806602894): {legacy_provenance_runs}; their report rows "
+            "carry REPORT-time provenance "
+            "(provenance_source=report_time_legacy)."
+        )
     for warning in warnings:
         print(f"WARNING: {warning}")
     arm_order = list(dict.fromkeys(rec["arm"] for rec in run_records))
@@ -4096,15 +4364,18 @@ def _main_execute(args: argparse.Namespace, out_dir: Path) -> None:
         )
 
     # QA-002: resumed arm dirs must match what THIS invocation would produce
-    # (model identity + current-artifact split membership).
+    # (model identity + the exact ordered split selection). PR #41 review
+    # r3806602891: the expected split is resolved ONCE through the child
+    # trainer's own loader (cap/scope applied — single source), so a
+    # rebuilt/reordered artifact set retaining the same qids can no longer
+    # smuggle a stale run past a membership check.
     base_config = _resolved_child_base_config(str(args.config), bool(args.smoke))
+    expected_split_qids = _expected_child_split_qids(
+        splits, base_config, smoke=bool(args.smoke)
+    )
     expected_run_context: dict[str, Any] = {
         "model_name": base_config.get("model", {}).get("model_name"),
-        "artifact_qids": {
-            "train": {q.qid for q in train_questions},
-            "val": {q.qid for q in val_questions},
-            "test": {q.qid for q in test_questions},
-        },
+        "split_qids": expected_split_qids,
     }
 
     # MA-013: resume state (partial dirs, resumed-dir validation) is decided
@@ -4148,12 +4419,21 @@ def _main_execute(args: argparse.Namespace, out_dir: Path) -> None:
     # supervised-manifest question sets are subset from the loaded artifacts
     # BY the first completed run's split manifest (children honor
     # data.max_questions; the raw artifacts do not). assert_arm_control has
-    # already proven every run's manifest agrees with run 1's.
+    # already proven every run's manifest agrees with run 1's, and PR #41
+    # review r3806602891 makes the CURRENT invocation's own resolution the
+    # authority: run 1's manifest must EQUAL (ordered, per split) the
+    # selection this invocation's config resolves, or the subsetting would
+    # report results for a run the current invocation would not produce.
     first_manifest_path = (
         Path(records[0]["run_dir"]) / "ppo_t5" / "split_manifest.json"
     )
     first_manifest = _load_json_file(
         first_manifest_path, error_cls=ProvenanceError
+    )
+    _assert_manifest_matches_expected_splits(
+        first_manifest if isinstance(first_manifest, dict) else {},
+        expected_split_qids,
+        run_name=_run_name(records[0]),
     )
     train_questions = subset_questions_by_manifest(
         train_questions,
