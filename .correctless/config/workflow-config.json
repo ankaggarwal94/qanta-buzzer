@@ -13,7 +13,7 @@
     "build": ""
   },
   "patterns": {
-    "test_file": "test_*.py|*_test.py|tests/**/*",
+    "test_file": "test_*.py|*_test.py|tests/**/*|tests/*",
     "source_file": "*.py",
     "test_fail_pattern": "FAILED|ERROR",
     "build_error_pattern": "SyntaxError|ImportError"

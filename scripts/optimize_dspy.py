@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -67,9 +68,21 @@ def _score_metric(example, prediction, _trace=None):
     try:
         pred_scores = json.loads(prediction.scores)
         target_scores = json.loads(example.scores)
-    except (json.JSONDecodeError, AttributeError):
+    except (json.JSONDecodeError, AttributeError, TypeError):
         return 0.0
-    if not pred_scores or not target_scores:
+    # Malformed predictions score 0.0 — never crash, never false-pass: both
+    # sides must be equal-length nonempty lists of finite numbers. A short,
+    # long, or non-numeric prediction could previously argmax-match
+    # independently and score 1.0, and a JSON object raised an uncaught
+    # KeyError (PR #31 external review).
+    if not isinstance(pred_scores, list) or not isinstance(target_scores, list):
+        return 0.0
+    if not pred_scores or len(pred_scores) != len(target_scores):
+        return 0.0
+    if not all(
+        isinstance(s, (int, float)) and not isinstance(s, bool) and math.isfinite(s)
+        for s in pred_scores + target_scores
+    ):
         return 0.0
     return 1.0 if (
         max(range(len(pred_scores)), key=lambda i: pred_scores[i])

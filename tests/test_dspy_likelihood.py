@@ -88,3 +88,49 @@ class TestDSPyLikelihood:
         from models.likelihoods import LikelihoodModel
         model = DSPyLikelihood(scorer=_fake_scorer)
         assert isinstance(model, LikelihoodModel)
+
+
+class TestScoreVectorValidation:
+    """PR #31 external review: fresh AND cached score vectors must fail loud.
+
+    Cached entries previously bypassed all validation (returned before the
+    shape check), and NaN/+inf were never rejected anywhere — downstream
+    softmax_belief deliberately collapses those to a uniform belief, which
+    would silently recreate the inert-uniform failure mode.
+    """
+
+    def test_cached_wrong_shape_fails_loud(self) -> None:
+        model = DSPyLikelihood(scorer=_fake_scorer)
+        key = _score_cache_key("clue", ["A", "B"], model.program_fingerprint)
+        model._score_cache[key] = np.array([0.9], dtype=np.float32)
+        with pytest.raises(ValueError, match="cached"):
+            model.score("clue", ["A", "B"])
+
+    def test_scorer_nan_fails_loud(self) -> None:
+        model = DSPyLikelihood(scorer=lambda c, o: [float("nan")] * len(o))
+        with pytest.raises(ValueError, match="NaN"):
+            model.score("clue", ["A", "B"])
+
+    def test_scorer_posinf_fails_loud(self) -> None:
+        model = DSPyLikelihood(scorer=lambda c, o: [float("inf"), 0.0])
+        with pytest.raises(ValueError, match=r"\+inf"):
+            model.score("clue", ["A", "B"])
+
+    def test_scorer_all_neginf_fails_loud(self) -> None:
+        model = DSPyLikelihood(scorer=lambda c, o: [float("-inf")] * len(o))
+        with pytest.raises(ValueError, match="finite"):
+            model.score("clue", ["A", "B"])
+
+    def test_mixed_neginf_allowed(self) -> None:
+        # Documented impossible-option semantics (agents._math.softmax_belief):
+        # finite + -inf mixes stay valid; -inf slots get zero mass downstream.
+        model = DSPyLikelihood(scorer=lambda c, o: [0.7, float("-inf")])
+        scores = model.score("clue", ["A", "B"])
+        assert scores.shape == (2,)
+
+    def test_load_cache_rejects_nan_entries(self, tmp_path) -> None:
+        bad = tmp_path / "bad_cache.npz"
+        np.savez_compressed(bad, somekey=np.array([np.nan, 0.5], dtype=np.float32))
+        model = DSPyLikelihood(scorer=_fake_scorer)
+        with pytest.raises(ValueError, match="NaN"):
+            model.load_cache(bad)

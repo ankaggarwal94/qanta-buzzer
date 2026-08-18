@@ -793,7 +793,8 @@ cp artifacts/main/ppo_model.zip results/ppo_model_expected_wins.zip
 Compile a DSPy-optimized scorer using the training split.
 Requires the `dspy` extra and an LM API key.
 
-> **Limitation:** `optimize_dspy.py` compiles and reports metrics, but does
+> **Limitation:** `optimize_dspy.py` compiles and prints compile metadata
+> (example count, optimizer, program fingerprint — no metric values), but does
 > not persist the compiled program in a way that `build_likelihood_from_config()`
 > can load it. Because no compiled program can be loaded from config,
 > `likelihood.model=dspy` now **fails loud** (`NotImplementedError`) rather than
@@ -817,7 +818,7 @@ Requires the `dspy` extra and an LM API key.
 pip install -e '.[dspy]'
 export OPENAI_API_KEY=...  # or configure another LM backend
 
-# Compile scorer against training split (reports metrics but does not persist)
+# Compile scorer against training split (prints compile metadata; does not persist)
 python scripts/optimize_dspy.py \
     --config configs/default.yaml \
     --max-examples 100

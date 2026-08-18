@@ -165,6 +165,11 @@ def main() -> None:
             mc_path = fallback
             dataset_split = "combined"
             mc_questions = load_mc_questions(mc_path)
+    if not mc_questions:
+        raise ValueError(
+            f"No MC questions loaded from {mc_path} — refusing to run and "
+            "write an empty baseline summary."
+        )
     print(f"Loaded {len(mc_questions)} MC questions")
 
     # Build TF-IDF from train split even when selecting thresholds on val/test.
