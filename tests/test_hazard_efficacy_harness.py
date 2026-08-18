@@ -273,21 +273,18 @@ def test_r007_empty_inputs_raise() -> None:
 
 # Tests R-007 [unit]: bootstrap reuse is MECHANICAL — the harness module
 # binds evaluation/controls.py::bootstrap_ci as a module attribute (same
-# reuse-pin idiom as the R-012 evaluate_t5_policy assert), so the
-# resampler cannot be silently reimplemented. Provenance is asserted via
-# __module__/__qualname__ rather than object identity: several unrelated
-# test modules pop "evaluation.controls" from sys.modules at collection
-# time, so under a full-suite run the module object is legitimately
-# re-created and an `is` pin false-fails (orchestrator TEST_BUG fix; the
-# reuse contract itself is unchanged).
+# identity-pin idiom as the R-012 evaluate_t5_policy assert), so the
+# resampler cannot be silently reimplemented. Strict object identity is
+# safe to assert again: the collection-time sys.modules eviction of
+# evaluation.controls that used to false-fail this pin under full-suite
+# runs is fixed (the CSLI test files now save/evict/restore the module
+# object around their guarded scripts.compute_csli imports).
 def test_r007_bootstrap_ci_imported_from_evaluation_controls() -> None:
-    bound = getattr(harness, "bootstrap_ci")
-    assert bound.__module__ == "evaluation.controls", (
+    from evaluation import controls
+
+    assert getattr(harness, "bootstrap_ci") is controls.bootstrap_ci, (
         "harness must import bootstrap_ci from evaluation.controls"
     )
-    assert bound.__qualname__ == "bootstrap_ci"
-    src = inspect.getsource(harness)
-    assert "from evaluation.controls import bootstrap_ci" in src
 
 
 # ---------------------------------------------------------------------------
