@@ -113,7 +113,11 @@ _read_spec_hash() {
   [ -f "$REPO_ROOT/$_spec_path" ] || return 1
 
   _spec_hash="$(sha256_hash_file "$REPO_ROOT/$_spec_path" 2>/dev/null || echo "")"
-  _spec_lines="$(wc -l < "$REPO_ROOT/$_spec_path" 2>/dev/null || echo "0")"
+  # BSD/macOS wc pads its output with spaces, which breaks jq's tonumber
+  # downstream — strip all whitespace (portable infra fix, same class as the
+  # bridge-session fix recorded in hazard-pretrain-bridge-verification.md).
+  _spec_lines="$(wc -l < "$REPO_ROOT/$_spec_path" 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$_spec_lines" ] || _spec_lines="0"
   [ -n "$_spec_hash" ] || return 1
 }
 
@@ -663,7 +667,8 @@ cmd_done() {
       if [ -n "$current_hash" ] && [ "$current_hash" != "$stored_hash" ]; then
         # R-002: Spec was modified after review approval
         local current_lines delta
-        current_lines="$(wc -l < "$REPO_ROOT/$spec_path" 2>/dev/null || echo "0")"
+        current_lines="$(wc -l < "$REPO_ROOT/$spec_path" 2>/dev/null | tr -d '[:space:]')"
+        [ -n "$current_lines" ] || current_lines="0"
         delta="$((current_lines - original_lines))"
         [ "$delta" -ge 0 ] && delta="+$delta"
         info "WARNING: Spec file was modified after review approval. ${delta} lines changed. The implementation may not match the reviewed spec. Consider re-running /creview-spec."
