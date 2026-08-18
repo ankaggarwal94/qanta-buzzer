@@ -1,0 +1,122 @@
+{
+  "installed_at": "2026-08-17T07:49:24Z",
+  "source_dir": "",
+  "files": {
+    "hooks/audit-trail.sh": {
+      "installed_hash": "ad8f6bf3db3367b1a7d3fae872deede6876f7a66cb859b8bec0ed8be16285fed",
+      "source_hash": "ad8f6bf3db3367b1a7d3fae872deede6876f7a66cb859b8bec0ed8be16285fed"
+    },
+    "hooks/auto-format.sh": {
+      "installed_hash": "c8bc471f1be9317b94a92b03b8669f7adaeabe319079b75d22f1e8725974a63a",
+      "source_hash": "c8bc471f1be9317b94a92b03b8669f7adaeabe319079b75d22f1e8725974a63a"
+    },
+    "hooks/sensitive-file-guard.sh": {
+      "installed_hash": "14de08c186674ad5c9d4a4d1ff22bb97c2f74f2f50af74a2a3190856958b537b",
+      "source_hash": "14de08c186674ad5c9d4a4d1ff22bb97c2f74f2f50af74a2a3190856958b537b"
+    },
+    "hooks/statusline.sh": {
+      "installed_hash": "0a62b8ef706161bc864493f5e6b37d21d1d104671da6fc4ffc2c6454dd33f5b0",
+      "source_hash": "0a62b8ef706161bc864493f5e6b37d21d1d104671da6fc4ffc2c6454dd33f5b0"
+    },
+    "hooks/token-tracking.sh": {
+      "installed_hash": "7751df5714b2e857b54c5d433488de93e5bd8d98d994d29e1a025e6e92e40966",
+      "source_hash": "7751df5714b2e857b54c5d433488de93e5bd8d98d994d29e1a025e6e92e40966"
+    },
+    "hooks/workflow-advance.sh": {
+      "installed_hash": "1323855103ac8966fbda6e9ac1d18ff14615b834b38d6149b9d5c89a6dd7bbf7",
+      "source_hash": "1323855103ac8966fbda6e9ac1d18ff14615b834b38d6149b9d5c89a6dd7bbf7"
+    },
+    "hooks/workflow-gate.sh": {
+      "installed_hash": "cb3e987b1e561915951d4da683d200da86787888c83f79d2f6243e0886553983",
+      "source_hash": "cb3e987b1e561915951d4da683d200da86787888c83f79d2f6243e0886553983"
+    },
+    "scripts/antipattern-scan.sh": {
+      "installed_hash": "68b16b3c568aada22cf18f9a06b229522094121468550127d21b53f41c6cdbaa",
+      "source_hash": "68b16b3c568aada22cf18f9a06b229522094121468550127d21b53f41c6cdbaa"
+    },
+    "scripts/audit-record.sh": {
+      "installed_hash": "2583bda04746e6726fbcd69c432c01f46c8941ad368856b1449ac9b1030ef591",
+      "source_hash": "2583bda04746e6726fbcd69c432c01f46c8941ad368856b1449ac9b1030ef591"
+    },
+    "scripts/auto-policy.sh": {
+      "installed_hash": "6be2f8cda27d108a7fb0657034706455fb4db3fb10c4f8c5a29b9b6666aa3026",
+      "source_hash": "6be2f8cda27d108a7fb0657034706455fb4db3fb10c4f8c5a29b9b6666aa3026"
+    },
+    "scripts/auto-report.sh": {
+      "installed_hash": "8ebf3ea7dd2751022629950ce31db926c92568da8957da49221579bc38b7b63b",
+      "source_hash": "8ebf3ea7dd2751022629950ce31db926c92568da8957da49221579bc38b7b63b"
+    },
+    "scripts/autonomous-decision-writer.sh": {
+      "installed_hash": "de3c93c652fca5dec496fb984fc168e390ec4e7636fc1c38c2ff180648c5936c",
+      "source_hash": "de3c93c652fca5dec496fb984fc168e390ec4e7636fc1c38c2ff180648c5936c"
+    },
+    "scripts/budget-check.sh": {
+      "installed_hash": "35e9c0d6e54e4db99678b122af54357dcf33a3f4b53d71c3b6fe895eea16a9fa",
+      "source_hash": "35e9c0d6e54e4db99678b122af54357dcf33a3f4b53d71c3b6fe895eea16a9fa"
+    },
+    "scripts/build-dashboard.sh": {
+      "installed_hash": "bbe3773085fa1e6a025523e27f15454106feac0d1fa17ad2ef338e7111fbaff2",
+      "source_hash": "bbe3773085fa1e6a025523e27f15454106feac0d1fa17ad2ef338e7111fbaff2"
+    },
+    "scripts/cauto-lock.sh": {
+      "installed_hash": "1d477ed6afbfaa8d8d1d06be25b6eb95ca75d1a01ccb43e49bade2659a2cabf8",
+      "source_hash": "1d477ed6afbfaa8d8d1d06be25b6eb95ca75d1a01ccb43e49bade2659a2cabf8"
+    },
+    "scripts/compute-session-cost.sh": {
+      "installed_hash": "1b7f5bbdaa13afa6f2cfc9161fae93179210045d653f068f6941c37133a8f42f",
+      "source_hash": "1b7f5bbdaa13afa6f2cfc9161fae93179210045d653f068f6941c37133a8f42f"
+    },
+    "scripts/decision-record.sh": {
+      "installed_hash": "06f8a4815dd17701e33d69c5dc91f3d58ab2a02c96879cea9e4733a19b63aa71",
+      "source_hash": "06f8a4815dd17701e33d69c5dc91f3d58ab2a02c96879cea9e4733a19b63aa71"
+    },
+    "scripts/decision-routing.sh": {
+      "installed_hash": "0121e1a076a268e2f2f290075e032c2377cc315cfa6f4d6df5dc745c01f5f958",
+      "source_hash": "0121e1a076a268e2f2f290075e032c2377cc315cfa6f4d6df5dc745c01f5f958"
+    },
+    "scripts/extract-entrypoints.sh": {
+      "installed_hash": "d2de9d640bd8fb80184821cfc627fde47b035d3abbcf677992c04e4e3fa096f9",
+      "source_hash": "d2de9d640bd8fb80184821cfc627fde47b035d3abbcf677992c04e4e3fa096f9"
+    },
+    "scripts/harness-fingerprint.sh": {
+      "installed_hash": "2ab405ce9c634c386be8d0edf1ce41b66d2e394e9b21e2c8da4be7735c83a317",
+      "source_hash": "2ab405ce9c634c386be8d0edf1ce41b66d2e394e9b21e2c8da4be7735c83a317"
+    },
+    "scripts/intent-hash.sh": {
+      "installed_hash": "4ef53f21df7a1b302633f53b09261c4c01db86cd68d0c7f3f79a8967041fade1",
+      "source_hash": "4ef53f21df7a1b302633f53b09261c4c01db86cd68d0c7f3f79a8967041fade1"
+    },
+    "scripts/lib.sh": {
+      "installed_hash": "1791d67ae80fb0aedc3cdf6eb9e8c36eacba1252efaf9b4c0bdc08fcb4e49c6b",
+      "source_hash": "1791d67ae80fb0aedc3cdf6eb9e8c36eacba1252efaf9b4c0bdc08fcb4e49c6b"
+    },
+    "scripts/override-crosscheck.sh": {
+      "installed_hash": "9b061b3a7470aab840c581c11cadde5b6c08b71d19a7afa67463ed81a78aa18f",
+      "source_hash": "9b061b3a7470aab840c581c11cadde5b6c08b71d19a7afa67463ed81a78aa18f"
+    },
+    "scripts/override-scrutiny.sh": {
+      "installed_hash": "833648abb9d198b638a82cadc3e90e359c5a4d7dbb60b40c322deb0af7c3f1fe",
+      "source_hash": "833648abb9d198b638a82cadc3e90e359c5a4d7dbb60b40c322deb0af7c3f1fe"
+    },
+    "scripts/review-triage.sh": {
+      "installed_hash": "bd97eac5fd1cde59ba6f1910d12d947905c167d8d6ef74a77399269a17ce65e7",
+      "source_hash": "bd97eac5fd1cde59ba6f1910d12d947905c167d8d6ef74a77399269a17ce65e7"
+    },
+    "scripts/security-scan.sh": {
+      "installed_hash": "35966ab61482a01a037fae56c4de07f51b24b4adbc0435fba5e222dd7bcda163",
+      "source_hash": "35966ab61482a01a037fae56c4de07f51b24b4adbc0435fba5e222dd7bcda163"
+    },
+    "scripts/supervisor-mandate.sh": {
+      "installed_hash": "750ceed38ac6609f1fa733f16a57e6d09ddbf00059cab29ee66f3424dcac6163",
+      "source_hash": "750ceed38ac6609f1fa733f16a57e6d09ddbf00059cab29ee66f3424dcac6163"
+    },
+    "scripts/sync-deferred-backlog.sh": {
+      "installed_hash": "3b81c6d9c2f72e438b1f3fa70fa6e1460f43929619ae0179ff1ca76f90cf5692",
+      "source_hash": "3b81c6d9c2f72e438b1f3fa70fa6e1460f43929619ae0179ff1ca76f90cf5692"
+    },
+    "scripts/workflow-state-ext.sh": {
+      "installed_hash": "3978f9473a6bc9d5d42811310ab95c27bfaecc8423d078a0f1eb5a1ad5b7adbe",
+      "source_hash": "3978f9473a6bc9d5d42811310ab95c27bfaecc8423d078a0f1eb5a1ad5b7adbe"
+    }
+  }
+}

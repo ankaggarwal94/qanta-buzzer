@@ -1,0 +1,5 @@
+# Generated Correctless runtime artifacts (token logs, workflow state, audit,
+# cost, dashboard outputs, checkpoints) — transient session data, not for
+# version control. Config, hooks, scripts, specs, and docs remain tracked.
+artifacts/
+dashboard/

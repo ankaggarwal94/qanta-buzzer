@@ -84,7 +84,10 @@ evaluation:
   prediction_dir: "results/predictions"
 
 # DSPy integration (optional, offline-first)
-# Activated by setting likelihood.model: dspy — no separate enable flag.
+# likelihood.model: dspy fails loud (NotImplementedError): no compiled scorer
+# can be loaded from config — inject DSPyLikelihood(scorer=...) in code. The
+# uniform-stub opt-in (dspy.allow_uniform_placeholder: true, literal boolean)
+# is unit-test-only and does not run through the CLI pipeline.
 dspy:
   model: "openai/gpt-4o-mini"  # DSPy LM identifier
   optimizer: "BootstrapFewShot"  # BootstrapFewShot | MIPROv2

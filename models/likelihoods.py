@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import warnings
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -692,6 +693,11 @@ def build_likelihood_from_config(
         - ``"openai"``: OpenAI embedding similarity
         - ``"t5"`` / ``"t5-small"`` / ``"t5-base"`` / ``"t5-large"``:
           T5 encoder semantic similarity
+        - ``"dspy"``: DSPy listwise LM scorer. Not production-wired — the
+          factory cannot build a real scorer from config, so this **fails loud**
+          (``NotImplementedError``) unless ``dspy.allow_uniform_placeholder`` is
+          the literal boolean ``true``. Inject ``DSPyLikelihood(scorer=...)``
+          directly for real use.
 
         Optional config keys:
         - ``"sbert_name"`` or ``"embedding_model"``: SentenceTransformer model
@@ -699,6 +705,13 @@ def build_likelihood_from_config(
         - ``"openai_model"``: OpenAI embedding model name
           (default: ``"text-embedding-3-small"``)
         - ``"t5_name"``: T5 model name (default: ``"t5-base"``)
+        - ``"dspy.allow_uniform_placeholder"``: must be the literal boolean
+          ``true`` (truthy strings/ints are rejected) to opt into an explicit,
+          *warned* uniform ``1/K`` stub for the ``"dspy"`` model. Unit-test-only:
+          the CLI pipeline cannot run it (``run_baselines.py`` pre-computes
+          embeddings, which the score-only ``DSPyLikelihood`` does not support),
+          and any configured ``dspy.cache_dir`` is ignored for the stub. Never
+          valid for experiments.
 
     corpus_texts : list[str] or None
         Text corpus for TF-IDF fitting. Required when ``model == "tfidf"``,
@@ -714,6 +727,11 @@ def build_likelihood_from_config(
     ValueError
         If ``model`` is ``"tfidf"`` and ``corpus_texts`` is None.
         If ``model`` is not a recognized model type.
+        If ``model`` is ``"dspy"`` and the ``dspy`` config is not a mapping.
+    NotImplementedError
+        If ``model`` is ``"dspy"`` without ``dspy.allow_uniform_placeholder``:
+        no compiled scorer can be built from config, so the factory fails loud
+        rather than returning an inert uniform stub.
 
     Examples
     --------
@@ -758,16 +776,51 @@ def build_likelihood_from_config(
                 "Install with: pip install -e '.[dspy]'"
             ) from exc
         dspy_cfg = config.get("dspy", {})
-        cache_dir = dspy_cfg.get("cache_dir")
+        if not isinstance(dspy_cfg, dict):
+            raise ValueError(
+                "likelihood 'dspy' config must be a mapping (e.g. "
+                "dspy: {allow_uniform_placeholder: true}); got "
+                f"{type(dspy_cfg).__name__}."
+            )
         fingerprint = dspy_cfg.get("program_fingerprint", "default")
+
+        # No compiled DSPy program can be loaded from config today:
+        # scripts/optimize_dspy.py compiles but does not persist a program, and
+        # this factory has no loader or dspy.Predict->callable adapter. Rather
+        # than silently return a UNIFORM (inert) scorer — which yields a flat
+        # belief and no buzz signal, invalidating any experiment that selects
+        # it — fail loud by default. A caller who wants a real scorer should
+        # inject DSPyLikelihood(scorer=...) directly; the uniform stub is
+        # available only as an explicit, warned opt-in for plumbing tests.
+        if dspy_cfg.get("allow_uniform_placeholder") is not True:
+            raise NotImplementedError(
+                "likelihood.model='dspy' has no compiled scorer to load: "
+                "scripts/optimize_dspy.py does not persist a program and the "
+                "factory cannot build a real DSPy scorer from config. Inject "
+                "DSPyLikelihood(scorer=...) directly, or set "
+                "dspy.allow_uniform_placeholder: true (literal boolean) to opt "
+                "into an explicit UNIFORM stub (unit-test-only)."
+            )
+
+        warnings.warn(
+            "DSPy likelihood is using a UNIFORM placeholder scorer (every "
+            "option scored 1/K); beliefs will not update from clues. "
+            "Unit-test stub only — not valid for experiments.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
         def _placeholder_scorer(clue: str, options: list[str]) -> list[float]:
             return [1.0 / max(1, len(options))] * len(options)
 
+        # Cache isolation: never wire the configured dspy.cache_dir into the
+        # placeholder — a pre-seeded persistent score cache would be returned
+        # by score() before the scorer runs, silently violating the "uniform"
+        # claim above (and placeholder runs must not pollute the shared cache).
         return DSPyLikelihood(
             scorer=_placeholder_scorer,
             program_fingerprint=fingerprint,
-            cache_dir=cache_dir,
+            cache_dir=None,
         )
 
     raise ValueError(f"Unknown likelihood model: {model_name}")

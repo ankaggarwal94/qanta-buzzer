@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "project": {
+    "name": "qanta-buzzer",
+    "language": "python",
+    "description": ""
+  },
+  "commands": {
+    "test": "$REPO_ROOT/.venv/bin/python -m pytest",
+    "test_verbose": "$REPO_ROOT/.venv/bin/python -m pytest -v",
+    "coverage": "$REPO_ROOT/.venv/bin/python -m pytest --cov",
+    "lint": "",
+    "build": ""
+  },
+  "patterns": {
+    "test_file": "test_*.py|*_test.py|tests/**/*|tests/*",
+    "source_file": "*.py",
+    "test_fail_pattern": "FAILED|ERROR",
+    "build_error_pattern": "SyntaxError|ImportError"
+  },
+  "is_monorepo": false,
+  "packages": {},
+  "workflow": {
+    "min_qa_rounds": 1,
+    "require_review": true,
+    "auto_update_antipatterns": true,
+    "git_trailers": false,
+    "git_notes": false
+  },
+  "setup": {
+    "architecture_state": "existing",
+    "agent_context_state": "existing"
+  },
+  "release": {
+    "version_file": "pyproject.toml",
+    "version_pattern": "version[[:space:]]*=[[:space:]]*\"[^\"]*\""
+  }
+}

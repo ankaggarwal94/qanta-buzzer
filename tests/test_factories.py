@@ -234,15 +234,69 @@ class TestMakeEnvFromConfig:
 class TestDSPyFactoryIntegration:
     """Factory dispatches to DSPyLikelihood when configured."""
 
-    def test_factory_returns_dspy_likelihood(self):
+    def test_dspy_without_scorer_config_fails_loud(self):
+        # No real scorer can be built from config (optimize_dspy.py does not
+        # persist a compiled program and the factory has no loader), so
+        # selecting dspy without the explicit opt-in must fail loud rather than
+        # silently return a uniform-scoring (inert) model.
+        config = {"likelihood": {"model": "dspy"}, "dspy": {}}
+        with pytest.raises((NotImplementedError, ValueError), match="(?i)dspy"):
+            build_likelihood_from_config(config)
+
+    def test_dspy_uniform_placeholder_is_opt_in_and_warns(self):
         from models.dspy_likelihood import DSPyLikelihood
 
         config = {
             "likelihood": {"model": "dspy"},
-            "dspy": {"cache_dir": None, "program_fingerprint": "test"},
+            "dspy": {
+                "cache_dir": None,
+                "program_fingerprint": "test",
+                "allow_uniform_placeholder": True,
+            },
         }
-        model = build_likelihood_from_config(config)
+        with pytest.warns(RuntimeWarning, match="(?i)uniform"):
+            model = build_likelihood_from_config(config)
         assert isinstance(model, DSPyLikelihood)
+        # T1: assert the stub's BEHAVIOR (inert uniform 1/K), not just its type —
+        # a non-uniform or unnormalized regression must fail here.
+        scores = model.score("some clue", ["a", "b", "c", "d"])
+        assert len(scores) == 4
+        assert abs(float(sum(scores)) - 1.0) < 1e-9
+        assert all(abs(float(s) - 0.25) < 1e-9 for s in scores)
+
+    def test_dspy_opt_in_requires_literal_true(self):
+        # The escape hatch must not be enabled by truthy non-booleans (e.g. a
+        # YAML-quoted "true"/"false" string, or an int) — literal boolean only.
+        for bad in ("true", "false", 1):
+            config = {
+                "likelihood": {"model": "dspy"},
+                "dspy": {"allow_uniform_placeholder": bad},
+            }
+            with pytest.raises((NotImplementedError, ValueError), match="(?i)dspy"):
+                build_likelihood_from_config(config)
+
+    def test_dspy_placeholder_ignores_configured_cache(self):
+        # Cache isolation: a configured dspy.cache_dir must NOT be wired into
+        # the placeholder — a pre-seeded persistent score cache would otherwise
+        # be returned by score() before the scorer runs, silently violating the
+        # "uniform" warning.
+        config = {
+            "likelihood": {"model": "dspy"},
+            "dspy": {"cache_dir": "cache/dspy", "allow_uniform_placeholder": True},
+        }
+        with pytest.warns(RuntimeWarning, match="(?i)uniform"):
+            model = build_likelihood_from_config(config)
+        assert model._cache_dir is None
+
+    def test_dspy_likelihood_module_imports_without_dspy_extra(self):
+        # T2 regression guard: the fail-loud path relies on models.dspy_likelihood
+        # importing WITHOUT the `dspy` package, so NotImplementedError (not
+        # ImportError) is the primary failure. A future top-level `import dspy`
+        # there would silently flip the failure mode and break the fail-loud test.
+        import importlib
+
+        mod = importlib.import_module("models.dspy_likelihood")
+        assert hasattr(mod, "DSPyLikelihood")
 
     def test_default_paths_unchanged(self, sample_corpus):
         config = {"likelihood": {"model": "tfidf"}}

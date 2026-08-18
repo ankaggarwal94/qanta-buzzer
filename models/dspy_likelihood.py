@@ -35,6 +35,37 @@ def _score_cache_key(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _validate_score_vector(
+    scores: np.ndarray,
+    expected_k: int | None = None,
+    context: str = "scorer output",
+) -> None:
+    """Fail loud on malformed score vectors (fresh or cached).
+
+    ``-inf`` entries are allowed (documented impossible-option semantics in
+    ``agents._math.softmax_belief``), but NaN, ``+inf``, empty/non-1-D
+    vectors, all-``-inf`` vectors, and — when ``expected_k`` is given —
+    length mismatches are rejected: downstream softmax deliberately collapses
+    NaN/+inf to a uniform belief, which would silently recreate the
+    inert-uniform failure mode this backend fails loud to prevent.
+    """
+    if scores.ndim != 1 or scores.size == 0:
+        raise ValueError(
+            f"DSPy {context}: expected a nonempty 1-D vector, "
+            f"got shape {scores.shape}"
+        )
+    if expected_k is not None and len(scores) != expected_k:
+        raise ValueError(
+            f"DSPy {context}: expected ({expected_k},), got shape {scores.shape}"
+        )
+    if np.isnan(scores).any():
+        raise ValueError(f"DSPy {context}: contains NaN")
+    if np.isposinf(scores).any():
+        raise ValueError(f"DSPy {context}: contains +inf")
+    if not np.isfinite(scores).any():
+        raise ValueError(f"DSPy {context}: no finite entries (all -inf)")
+
+
 class DSPyLikelihood(LikelihoodModel):
     """LikelihoodModel subclass backed by a DSPy program.
 
@@ -82,7 +113,15 @@ class DSPyLikelihood(LikelihoodModel):
         if cache_file.exists():
             with np.load(cache_file, allow_pickle=False) as data:
                 for key in data.files:
-                    self._score_cache[key] = data[key].astype(np.float32)
+                    entry = data[key].astype(np.float32)
+                    _validate_score_vector(
+                        entry,
+                        context=(
+                            f"persistent cache entry in {cache_file} "
+                            "(delete the file to recover)"
+                        ),
+                    )
+                    self._score_cache[key] = entry
 
     def _save_persistent_cache(self) -> None:
         if self._cache_dir is None or not self._score_cache:
@@ -100,16 +139,19 @@ class DSPyLikelihood(LikelihoodModel):
         """
         key = _score_cache_key(clue_prefix, option_profiles, self.program_fingerprint)
         if key in self._score_cache:
-            return self._score_cache[key].copy()
+            cached = self._score_cache[key]
+            _validate_score_vector(
+                cached,
+                expected_k=len(option_profiles),
+                context="cached score vector (delete the stale score cache file)",
+            )
+            return cached.copy()
 
         raw = self.scorer(clue_prefix, option_profiles)
         scores = np.array(raw, dtype=np.float32)
-        expected_k = len(option_profiles)
-        if scores.ndim != 1 or len(scores) != expected_k:
-            raise ValueError(
-                f"DSPy scorer returned shape {scores.shape}, "
-                f"expected ({expected_k},)"
-            )
+        _validate_score_vector(
+            scores, expected_k=len(option_profiles), context="scorer output"
+        )
         self._score_cache[key] = scores
         return scores.copy()
 
@@ -132,7 +174,12 @@ class DSPyLikelihood(LikelihoodModel):
         with np.load(p, allow_pickle=False) as data:
             for key in data.files:
                 if key not in self._score_cache:
-                    self._score_cache[key] = data[key].astype(np.float32)
+                    entry = data[key].astype(np.float32)
+                    _validate_score_vector(
+                        entry,
+                        context=f"cache entry in {p} (delete the file to recover)",
+                    )
+                    self._score_cache[key] = entry
                     loaded += 1
         return loaded
 

@@ -9,3 +9,14 @@ See **AGENTS.md** for the full repo contract: setup, architecture, testing, smok
 - Do not add dependencies unless required.
 - Seeds: use 1, 2, 3 for multi-seed runs.
 - NumPy/PyTorch vectorized operations over loops in ML code.
+- The `/c*` Correctless commands (listed under `## Correctless`) require the Correctless plugin installed locally; the hook/command wiring in `.claude/` is gitignored and not distributed with this repo, so a fresh clone won't have them until Correctless is installed.
+
+## Correctless
+
+This project uses Correctless for structured development.
+Read .correctless/AGENT_CONTEXT.md before starting any work.
+Do NOT Read AGENT_CONTEXT.md from the project root — it may be stale or absent.
+Available commands: /csetup, /cspec, /creview, /cmodel, /creview-spec, /ctdd, /cverify, /caudit, /cupdate-arch, /cdocs, /cpostmortem, /cdevadv, /credteam, /crefactor, /cpr-review, /ccontribute, /cmaintain, /cstatus, /csummary, /cmetrics, /cdebug, /chelp, /cwtf, /cquick, /crelease, /cexplain, /cauto, /carchitect, /cmodelupgrade
+
+## Correctless Learnings
+<!-- Auto-updated by Correctless workflow. Do not edit above this line. -->

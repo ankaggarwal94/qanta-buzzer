@@ -793,12 +793,20 @@ cp artifacts/main/ppo_model.zip results/ppo_model_expected_wins.zip
 Compile a DSPy-optimized scorer using the training split.
 Requires the `dspy` extra and an LM API key.
 
-> **Limitation:** `optimize_dspy.py` compiles and reports metrics, but does
+> **Limitation:** `optimize_dspy.py` compiles and prints compile metadata
+> (example count, optimizer, program fingerprint — no metric values), but does
 > not persist the compiled program in a way that `build_likelihood_from_config()`
-> can load it. Setting `likelihood.model=dspy` constructs `DSPyLikelihood`
-> with a placeholder uniform scorer, not the compiled program. This phase
-> is useful for validating the DSPy pipeline contract, but the evaluated
-> baselines below will use uniform scores — not the compiled model's.
+> can load it. Because no compiled program can be loaded from config,
+> `likelihood.model=dspy` now **fails loud** (`NotImplementedError`) rather than
+> silently constructing a uniform-scorer `DSPyLikelihood` — an inert 1/K belief
+> would invalidate any experiment that used it. This phase validates the DSPy
+> pipeline contract via compilation only; there is no meaningful end-to-end
+> evaluation to run until a real scorer is wired (inject
+> `DSPyLikelihood(scorer=...)` directly). The uniform stub remains reachable for
+> unit-level factory tests only, via the explicit
+> `dspy.allow_uniform_placeholder: true` opt-in (literal boolean); it cannot
+> run through the CLI pipeline (embedding pre-compute is unsupported by the
+> score-only model) and its inert scores must never be recorded as a baseline.
 >
 > **Data path caveat:** `optimize_dspy.py` prefers
 > `artifacts/smoke/train_dataset.json` over `artifacts/main/train_dataset.json`.
@@ -810,17 +818,18 @@ Requires the `dspy` extra and an LM API key.
 pip install -e '.[dspy]'
 export OPENAI_API_KEY=...  # or configure another LM backend
 
-# Compile scorer against training split (reports metrics but does not persist)
+# Compile scorer against training split (prints compile metadata; does not persist)
 python scripts/optimize_dspy.py \
     --config configs/default.yaml \
     --max-examples 100
 
-# Evaluate with DSPy scorer (NOTE: uses placeholder uniform scorer, not compiled)
-python scripts/run_baselines.py \
-    --config configs/default.yaml \
-    --mc-path artifacts/main/mc_dataset.json \
-    likelihood.model=dspy
-cp artifacts/main/baseline_summary.json results/baselines_dspy.json
+# There is no end-to-end dspy eval: likelihood.model=dspy fails loud
+# (NotImplementedError) because the factory cannot load a compiled scorer from
+# config. The uniform-stub opt-in (dspy.allow_uniform_placeholder) is
+# unit-test-only and does NOT run through this CLI either: run_baselines.py
+# pre-computes embeddings, which the score-only DSPyLikelihood does not
+# support, so the pipeline aborts before writing any output. Phase 12 ends at
+# compilation above.
 ```
 
 ---

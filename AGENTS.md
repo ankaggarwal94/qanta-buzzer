@@ -144,6 +144,10 @@ Old qb-rl import paths that still resolve:
 
 OpenAI support is opt-in only. Default local workflows stay offline-friendly and do not require the `openai` package or `OPENAI_API_KEY`.
 
+## Correctless (structured-development tooling)
+
+`.correctless/` vendors the Correctless dev-workflow framework (spec → review → TDD → verify gates). Its phase gates are **advisory, best-effort tooling — bypassable by construction — not an integrity or security boundary.** It is layered under GSD, which remains **canonical for planning and phase state** (`.planning/`). The owner's monorepo-level agent policy (a parent-directory `CLAUDE.md` maintained *outside* this repository) forbids running a second orchestration engine inside active GSD-managed execution; that rule is honored here: Correctless is used for structured review/TDD, not as a competing planning engine, and `.correctless/ARCHITECTURE.md` records the GSD-canonical-for-planning carve-out (adopted as a deliberate, consented decision). Its hook wiring (`.claude/settings.json`) is **gitignored**, so a plain checkout does not auto-run any gate. Update/remove: re-run `/csetup` to regenerate `.correctless/` from `.correctless/.install-manifest.json`, or `rm -rf .correctless/` (and delete the gitignored `.claude/` hook wiring) to uninstall. Correctless's hooks and scripts require **bash ≥ 4** (macOS `/bin/bash` is 3.2; the hooks run under `#!/usr/bin/env bash`, so a Homebrew bash 4+/5+ on PATH is required — the auto-run PreToolUse hooks degrade with a clear message on older bash, the helper scripts assume bash 4+). See `.correctless/AGENT_CONTEXT.md`.
+
 ## Conventions
 
 - NumPy-style docstrings with Parameters/Returns sections
