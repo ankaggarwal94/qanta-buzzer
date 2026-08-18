@@ -6,9 +6,9 @@
     "description": ""
   },
   "commands": {
-    "test": ".venv/bin/python -m pytest",
-    "test_verbose": ".venv/bin/python -m pytest -v",
-    "coverage": ".venv/bin/python -m pytest --cov",
+    "test": "$REPO_ROOT/.venv/bin/python -m pytest",
+    "test_verbose": "$REPO_ROOT/.venv/bin/python -m pytest -v",
+    "coverage": "$REPO_ROOT/.venv/bin/python -m pytest --cov",
     "lint": "",
     "build": ""
   },
