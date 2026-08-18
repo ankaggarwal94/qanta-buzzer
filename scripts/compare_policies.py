@@ -576,14 +576,15 @@ def evaluate_t5_policy(
             # the calibration aggregate and the R-002 run records so the two
             # can never disagree.
             policy_buzzed = bool(terminated) and bool(top_p_trace)
+            buzz_position = (step_count - 1) if policy_buzzed else None
+            buzz_confidence = float(top_p_trace[-1]) if policy_buzzed else None
 
             # Calibration: use top_p (max answer prob) for consistency
             # with belief-feature agents
             if policy_buzzed:
-                buzz_step = step_count - 1
-                confidences.append(top_p_trace[-1])
+                confidences.append(buzz_confidence)
                 outcomes.append(1 if policy_correct else 0)
-                buzz_positions.append(buzz_step)
+                buzz_positions.append(buzz_position)
 
             # R-002: per-question record (input order preserved). Only
             # collected into the payload when ``return_runs`` is True.
@@ -591,13 +592,11 @@ def evaluate_t5_policy(
                 {
                     "qid": question.qid,
                     "sq": float(sq),
-                    "buzz_position": (step_count - 1) if policy_buzzed else None,
+                    "buzz_position": buzz_position,
                     "buzzed": policy_buzzed,
                     "correct": policy_correct,
                     "forced_correct": forced_correct,
-                    "confidence": (
-                        float(top_p_trace[-1]) if policy_buzzed else None
-                    ),
+                    "confidence": buzz_confidence,
                     "episode_reward": float(episode_reward),
                     "n_steps": int(step_count),
                 }

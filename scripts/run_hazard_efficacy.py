@@ -88,6 +88,13 @@ _PERSISTED_SOURCE = "persisted_artifacts"
 _CORE_ARMS = frozenset(DEFAULT_ARMS)
 _LOG_TAIL_LINES = 20
 
+# R-011: the ONLY flags a smoke child receives, shared by the arm children and
+# the shared supervised child. The eval-interval override suffices (the first
+# validation writes best_model because best_val_reward starts at -inf); a
+# per-iteration ``ppo.save_interval`` would waste full model + optimizer-state
+# writes and is deliberately NOT injected.
+_SMOKE_CHILD_FLAGS = ("--smoke", "ppo.eval_interval=1")
+
 # Inclusive-threshold comparisons on IEEE-754 doubles: an intended exact tie
 # (e.g. accuracy 0.60 -> 0.59 against tolerance 0.01) can differ from the
 # written arithmetic by one ulp depending on the operand representations.
@@ -104,6 +111,10 @@ _HAZARD_STEP_MATCHING_NOTE = (
 _SMOKE_CAVEAT = (
     "Smoke-scale run: the test split is far below the significance gate, "
     "so metric deltas are plumbing/training-dynamics evidence only."
+)
+_PAIRED_DESIGN_CAVEAT = (
+    "The shared supervised checkpoint fixes the supervised-phase RNG; "
+    "seeds sample hazard/PPO variance only (paired design)."
 )
 
 ENDPOINT_DEFINITION = (
@@ -149,43 +160,49 @@ class ProvenanceError(HarnessError):
 # ---------------------------------------------------------------------------
 
 
-def _git_sha() -> str:
-    """Return the repo HEAD sha via real ``git rev-parse HEAD`` (R-008)."""
+def _git_output(*args: str) -> str:
+    """Run a read-only git command in ``PROJECT_ROOT``; return stripped stdout.
+
+    Parameters
+    ----------
+    *args : str
+        Arguments appended to ``git`` (e.g. ``"rev-parse", "HEAD"``).
+
+    Returns
+    -------
+    str
+        The command's stdout with surrounding whitespace stripped.
+
+    Raises
+    ------
+    ProvenanceError
+        If the git binary is unavailable or the command exits nonzero.
+    """
+    label = " ".join(("git", *args))
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
+            ["git", *args], cwd=PROJECT_ROOT, capture_output=True, text=True
         )
     except OSError as exc:  # pragma: no cover - git binary missing
-        raise ProvenanceError(f"git rev-parse HEAD failed: {exc}") from exc
-    sha = result.stdout.strip()
-    if result.returncode != 0 or not sha:
+        raise ProvenanceError(f"{label} failed: {exc}") from exc
+    if result.returncode != 0:
         raise ProvenanceError(
-            "git rev-parse HEAD failed "
-            f"(exit {result.returncode}): {result.stderr.strip()!r}"
+            f"{label} failed (exit {result.returncode}): {result.stderr.strip()!r}"
         )
+    return result.stdout.strip()
+
+
+def _git_sha() -> str:
+    """Return the repo HEAD sha via real ``git rev-parse HEAD`` (R-008)."""
+    sha = _git_output("rev-parse", "HEAD")
+    if not sha:
+        raise ProvenanceError("git rev-parse HEAD succeeded but printed no sha")
     return sha
 
 
 def _git_dirty() -> bool:
     """Return True when ``git status --porcelain`` is non-empty (R-008)."""
-    try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-        )
-    except OSError as exc:  # pragma: no cover - git binary missing
-        raise ProvenanceError(f"git status --porcelain failed: {exc}") from exc
-    if result.returncode != 0:
-        raise ProvenanceError(
-            "git status --porcelain failed "
-            f"(exit {result.returncode}): {result.stderr.strip()!r}"
-        )
-    return bool(result.stdout.strip())
+    return bool(_git_output("status", "--porcelain"))
 
 
 def _load_json_file(path: Path, *, error_cls: type = HarnessError) -> Any:
@@ -455,27 +472,20 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
             }
         )
 
+    # Arms B and C share every hazard knob; C additionally carries the
+    # step-matched null-signal ablation.
+    hazard_knobs: dict[str, Any] = {
+        "beta_terminal": args.beta_terminal,
+        "freeze_answer_head": bool(args.freeze_answer_head),
+    }
     for arm in arms:
         for seed in seeds:
             if arm == "A":
                 _add(arm, seed, hazard=False)
             elif arm == "B":
-                _add(
-                    arm,
-                    seed,
-                    hazard=True,
-                    beta_terminal=args.beta_terminal,
-                    freeze_answer_head=bool(args.freeze_answer_head),
-                )
+                _add(arm, seed, hazard=True, **hazard_knobs)
             else:  # arm == "C": step-matched null-signal compute control
-                _add(
-                    arm,
-                    seed,
-                    hazard=True,
-                    beta_terminal=args.beta_terminal,
-                    freeze_answer_head=bool(args.freeze_answer_head),
-                    ablation="shuffled_nll",
-                )
+                _add(arm, seed, hazard=True, ablation="shuffled_nll", **hazard_knobs)
 
     for name, flags in variants:
         for seed in seeds:
@@ -544,12 +554,7 @@ def build_child_argv(
     if extra_flags:
         argv += [str(token) for token in extra_flags]
     if smoke:
-        # R-011: only the eval-interval override is injected (first
-        # validation writes best_model since best_val_reward starts at
-        # -inf); a per-iteration save_interval would waste full model +
-        # optimizer-state writes and is deliberately NOT injected.
-        argv.append("--smoke")
-        argv.append("ppo.eval_interval=1")
+        argv += _SMOKE_CHILD_FLAGS
     argv.append(f"supervised.checkpoint_dir={run_dir}")
     return argv
 
@@ -597,7 +602,6 @@ def check_child_outputs(record: dict[str, Any]) -> None:
             f"seed={record['seed']}) left no PPO checkpoint at {best_model}; "
             f"inspect the child log: {record['log_path']}"
         )
-    return None
 
 
 def classify_run_dir(run_dir: Path, *, hazard: bool = False) -> str:
@@ -768,7 +772,7 @@ def assert_arm_control(records: list[dict[str, Any]]) -> None:
     ``ArmControlError`` naming the offending arm (and key).
     """
     if not records:
-        return None
+        return
 
     loaded: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
     for record in records:
@@ -819,7 +823,6 @@ def assert_arm_control(records: list[dict[str, Any]]) -> None:
                     f"from {ref_name}; all arms must train/evaluate on "
                     "identical splits"
                 )
-    return None
 
 
 def write_supervised_split_manifest(
@@ -959,12 +962,13 @@ def evaluate_run(
 
     n = len(runs)
     n_buzzed = sum(1 for r in runs if r.get("buzzed"))
+    correct_buzzes = [r for r in runs if r.get("buzzed") and r.get("correct")]
     correct_positions = [
-        r.get("buzz_position")
-        for r in runs
-        if r.get("buzzed") and r.get("correct") and r.get("buzz_position") is not None
+        r["buzz_position"]
+        for r in correct_buzzes
+        if r.get("buzz_position") is not None
     ]
-    n_correct = sum(1 for r in runs if r.get("buzzed") and r.get("correct"))
+    n_correct = len(correct_buzzes)
 
     enriched = dict(payload)
     enriched.update(
@@ -1159,10 +1163,10 @@ def compute_significance(
     deltas: list[float] = []
     for qid in qids:
         control_mean = float(
-            np.mean([control_sq_by_seed[s][qid] for s in control_sq_by_seed])
+            np.mean([qid_map[qid] for qid_map in control_sq_by_seed.values()])
         )
         treatment_mean = float(
-            np.mean([treatment_sq_by_seed[s][qid] for s in treatment_sq_by_seed])
+            np.mean([qid_map[qid] for qid_map in treatment_sq_by_seed.values()])
         )
         deltas.append(treatment_mean - control_mean)
 
@@ -1391,7 +1395,6 @@ def prune_run_checkpoints(run_dir: Path) -> None:
     for state_file in list(run_dir.rglob("training_state.pt")):
         if state_file.is_file():
             state_file.unlink()
-    return None
 
 
 def write_plot(report: dict[str, Any], out_dir: Path) -> Path:
@@ -1415,13 +1418,16 @@ def write_plot(report: dict[str, Any], out_dir: Path) -> Path:
     arms = sorted({run["arm"] for run in runs})
 
     def _arm_mean(arm: str, key: str) -> float:
-        values = [
-            run.get(key)
-            for run in runs
-            if run.get("arm") == arm
-            and isinstance(run.get(key), (int, float))
-            and not isinstance(run.get(key), bool)
-        ]
+        """Mean of one numeric report key over an arm's runs (0.0 if none)."""
+        values = []
+        for run in runs:
+            if run.get("arm") != arm:
+                continue
+            value = run.get(key)
+            # bool is an int subclass; a flag must never plot as 0/1.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            values.append(float(value))
         return float(np.mean(values)) if values else 0.0
 
     fig, (ax_pos, ax_acc) = plt.subplots(1, 2, figsize=(10.0, 4.0))
@@ -1453,6 +1459,15 @@ def write_plot(report: dict[str, Any], out_dir: Path) -> Path:
     return plot_path
 
 
+def _endpoint_arm_view(eval_result: dict[str, Any]) -> dict[str, Any]:
+    """The three eval fields :func:`compute_primary_endpoint` reads per arm."""
+    return {
+        "mean_correct_buzz_position": eval_result.get("mean_correct_buzz_position"),
+        "accuracy": eval_result.get("accuracy"),
+        "n_correct_policy_buzzes": eval_result.get("n_correct_policy_buzzes", 0),
+    }
+
+
 def _endpoint_pairs_from_evals(
     eval_by_run: dict[tuple[str, int], dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -1464,34 +1479,14 @@ def _endpoint_pairs_from_evals(
             if arm == "A" and ("B", seed) in eval_by_run
         }
     )
-    pairs: list[dict[str, Any]] = []
-    for seed in seeds:
-        control = eval_by_run[("A", seed)]
-        treatment = eval_by_run[("B", seed)]
-        pairs.append(
-            {
-                "seed": seed,
-                "control": {
-                    "mean_correct_buzz_position": control.get(
-                        "mean_correct_buzz_position"
-                    ),
-                    "accuracy": control.get("accuracy"),
-                    "n_correct_policy_buzzes": control.get(
-                        "n_correct_policy_buzzes", 0
-                    ),
-                },
-                "treatment": {
-                    "mean_correct_buzz_position": treatment.get(
-                        "mean_correct_buzz_position"
-                    ),
-                    "accuracy": treatment.get("accuracy"),
-                    "n_correct_policy_buzzes": treatment.get(
-                        "n_correct_policy_buzzes", 0
-                    ),
-                },
-            }
-        )
-    return pairs
+    return [
+        {
+            "seed": seed,
+            "control": _endpoint_arm_view(eval_by_run[("A", seed)]),
+            "treatment": _endpoint_arm_view(eval_by_run[("B", seed)]),
+        }
+        for seed in seeds
+    ]
 
 
 def _sq_by_seed_for_arm(
@@ -1526,6 +1521,265 @@ _UNEVALUABLE_SIGNIFICANCE: dict[str, Any] = {
 }
 
 
+def _read_optional_json(path: Path) -> Any:
+    """Load a sidecar that may legitimately be absent; ``None`` when missing."""
+    path = Path(path)
+    if not path.exists():
+        return None
+    return _load_json_file(path, error_cls=ProvenanceError)
+
+
+def _read_run_sidecars(
+    run_records: list[dict[str, Any]],
+) -> tuple[
+    dict[tuple[str, int], dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, Any],
+    dict[str, Any],
+]:
+    """Read every run's required sidecars into the report's raw inputs.
+
+    Parameters
+    ----------
+    run_records : list of dict
+        Plan records; ``arm``, ``seed``, ``run_dir``, ``resumed`` and
+        ``git_sha_mismatch`` are read. Must be non-empty.
+
+    Returns
+    -------
+    tuple
+        ``(eval_by_run, report_runs, first_config, first_manifest)`` — the
+        ``(arm, seed) -> eval payload`` index, the per-run report rows
+        (provenance included), and the FIRST run's ``config_used.json`` /
+        ``split_manifest.json`` (the scale block's source; arm control has
+        already proven every run agrees).
+    """
+    eval_by_run: dict[tuple[str, int], dict[str, Any]] = {}
+    report_runs: list[dict[str, Any]] = []
+    first_config: dict[str, Any] | None = None
+    first_manifest: dict[str, Any] | None = None
+
+    for record in run_records:
+        run_dir = Path(record["run_dir"])
+        config_used = _load_json_file(
+            run_dir / "ppo_t5" / "config_used.json", error_cls=ProvenanceError
+        )
+        manifest = _load_json_file(
+            run_dir / "ppo_t5" / "split_manifest.json", error_cls=ProvenanceError
+        )
+        eval_result = _load_json_file(
+            run_dir / EVAL_RESULT_FILENAME, error_cls=ProvenanceError
+        )
+        if first_config is None:
+            first_config, first_manifest = config_used, manifest
+
+        eval_by_run[(record["arm"], record["seed"])] = eval_result
+        report_runs.append(
+            {
+                "arm": record["arm"],
+                "seed": record["seed"],
+                "resumed": bool(record.get("resumed", False)),
+                "git_sha_mismatch": bool(record.get("git_sha_mismatch", False)),
+                "policy_buzz_rate": eval_result.get("policy_buzz_rate"),
+                "forced_commit_rate": eval_result.get("forced_commit_rate"),
+                "ece": eval_result.get("ece"),
+                "brier": eval_result.get("brier"),
+                "accuracy": eval_result.get("accuracy"),
+                "mean_sq": eval_result.get("mean_sq"),
+                "avg_buzz_pos": eval_result.get("avg_buzz_pos"),
+                "n_correct_policy_buzzes": eval_result.get("n_correct_policy_buzzes"),
+                "mean_correct_buzz_position": eval_result.get(
+                    "mean_correct_buzz_position"
+                ),
+                "n_questions": eval_result.get("n_questions"),
+                "provenance": collect_provenance(config_used),
+            }
+        )
+
+    assert first_config is not None and first_manifest is not None
+    return eval_by_run, report_runs, first_config, first_manifest
+
+
+def _build_scale(
+    config_used: dict[str, Any], manifest: dict[str, Any], out_dir: Path
+) -> dict[str, Any]:
+    """Scale block: model, split sizes, PPO iterations, on-disk footprint.
+
+    ``disk_usage_bytes`` is measured BEFORE the report and plot are written,
+    so it reflects the run tree the report describes.
+    """
+    try:
+        return {
+            "model_name": config_used["model"]["model_name"],
+            "n_train": manifest["train_count"],
+            "n_val": manifest["val_count"],
+            "n_test": manifest["test_count"],
+            "ppo_iterations": config_used["ppo"]["iterations"],
+            "device": config_used["model"]["device"],
+            "disk_usage_bytes": int(
+                sum(f.stat().st_size for f in Path(out_dir).rglob("*") if f.is_file())
+            ),
+        }
+    except (KeyError, TypeError) as exc:
+        raise ProvenanceError(
+            f"assemble_report: sidecars are missing a scale field: {exc}"
+        ) from exc
+
+
+def _build_endpoint(
+    eval_by_run: dict[tuple[str, int], dict[str, Any]],
+) -> dict[str, Any]:
+    """Primary endpoint (R-006): treatment arm B against control arm A."""
+    endpoint_pairs = _endpoint_pairs_from_evals(eval_by_run)
+    if not endpoint_pairs:
+        return {
+            "success": False,
+            "n_seeds": 0,
+            "n_seeds_replicated": 0,
+            "per_seed": [],
+            "note": "no paired A/B seeds available; endpoint not evaluable",
+        }
+    return compute_primary_endpoint(endpoint_pairs)
+
+
+def _build_significance(
+    eval_by_run: dict[tuple[str, int], dict[str, Any]],
+) -> dict[str, Any]:
+    """Significance (R-007): paired-by-qid bootstrap on B-vs-A S_q deltas."""
+    control_sq = _sq_by_seed_for_arm(eval_by_run, "A")
+    treatment_sq = _sq_by_seed_for_arm(eval_by_run, "B")
+    shared_seeds = sorted(set(control_sq) & set(treatment_sq))
+    if not shared_seeds:
+        return dict(_UNEVALUABLE_SIGNIFICANCE)
+    return compute_significance(
+        {seed: control_sq[seed] for seed in shared_seeds},
+        {seed: treatment_sq[seed] for seed in shared_seeds},
+    )
+
+
+def _arm_metric_mean(
+    eval_by_run: dict[tuple[str, int], dict[str, Any]], arm: str, key: str
+) -> float | None:
+    """Mean of one eval metric across an arm's seeds; ``None`` when absent."""
+    values = [
+        payload.get(key)
+        for (run_arm, _), payload in eval_by_run.items()
+        if run_arm == arm and payload.get(key) is not None
+    ]
+    return float(np.mean(values)) if values else None
+
+
+def _signed_delta(value: float | None, baseline: float | None) -> float | None:
+    """``value - baseline``, or ``None`` when either side is unavailable."""
+    if value is None or baseline is None:
+        return None
+    return value - baseline
+
+
+def _build_arm_deltas(
+    eval_by_run: dict[tuple[str, int], dict[str, Any]], arm_order: list[str]
+) -> dict[str, dict[str, float | None]]:
+    """Every non-control arm's mean_sq/accuracy delta vs arm A (R-004).
+
+    Empty when the plan carries no control arm A to difference against.
+    """
+    if "A" not in arm_order:
+        return {}
+    control_mean_sq = _arm_metric_mean(eval_by_run, "A", "mean_sq")
+    control_accuracy = _arm_metric_mean(eval_by_run, "A", "accuracy")
+    return {
+        f"{arm}_vs_A": {
+            "mean_sq_delta": _signed_delta(
+                _arm_metric_mean(eval_by_run, arm, "mean_sq"), control_mean_sq
+            ),
+            "accuracy_delta": _signed_delta(
+                _arm_metric_mean(eval_by_run, arm, "accuracy"), control_accuracy
+            ),
+        }
+        for arm in arm_order
+        if arm != "A"
+    }
+
+
+def _read_hazard_artifacts(
+    run_records: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Arm B's hazard compute block + dynamics block (R-004 / R-010b).
+
+    Returns ``(hazard_compute, hazard_dynamics)``. Both are best-effort: a
+    plan without an arm B, or an arm B whose optional sidecars were never
+    written, yields ``None`` fields rather than an error.
+    """
+    optimizer_steps: int | None = None
+    wall_clock_seconds: float | None = None
+    hazard_dynamics: dict[str, Any] | None = None
+
+    b_records = [rec for rec in run_records if rec["arm"] == "B"]
+    if b_records:
+        b_dir = Path(b_records[0]["run_dir"])
+        history = _read_optional_json(b_dir / "hazard" / "hazard_history.json")
+        if history is not None:
+            steps = history.get("steps")
+            if isinstance(steps, list):
+                optimizer_steps = len(steps)
+        marker = _read_optional_json(b_dir / RUN_COMPLETE_MARKER)
+        if marker is not None:
+            raw = marker.get("wall_clock_seconds")
+            if raw is not None:
+                wall_clock_seconds = float(raw)
+        hazard_dynamics = _read_optional_json(b_dir / HAZARD_DYNAMICS_FILENAME)
+
+    hazard_compute = {
+        "optimizer_steps": optimizer_steps,
+        "wall_clock_seconds": wall_clock_seconds,
+        "step_matching_note": _HAZARD_STEP_MATCHING_NOTE,
+    }
+    return hazard_compute, hazard_dynamics
+
+
+def _build_caveats(*, smoke: bool) -> list[str]:
+    """Scope caveats carried by every report (``DEVICE2_CAVEAT`` first)."""
+    caveats = [DEVICE2_CAVEAT, _HAZARD_STEP_MATCHING_NOTE]
+    if smoke:
+        caveats.append(_SMOKE_CAVEAT)
+    caveats.append(_PAIRED_DESIGN_CAVEAT)
+    return caveats
+
+
+def _build_verdict(
+    endpoint: dict[str, Any],
+    significance: dict[str, Any],
+    arm_deltas: dict[str, dict[str, float | None]],
+    scale: dict[str, Any],
+    *,
+    smoke: bool,
+) -> dict[str, Any]:
+    """Headline verdict plus the scope-limited evidence behind it (R-009)."""
+    if endpoint.get("n_seeds", 0) == 0:
+        verdict_label = "not_evaluable"
+    elif endpoint["success"]:
+        verdict_label = "endpoint_met_at_this_scale"
+    else:
+        verdict_label = "endpoint_not_met_at_this_scale"
+
+    scale_note = (
+        "smoke: plumbing/training-dynamics evidence only"
+        if smoke
+        else "preliminary Device-1 scale"
+    )
+    return {
+        "verdict": verdict_label,
+        "scope": f"{scale['model_name']} on n_test={scale['n_test']} ({scale_note})",
+        "evidence": {
+            "endpoint_success": endpoint.get("success"),
+            "n_seeds_replicated": endpoint.get("n_seeds_replicated"),
+            "n_seeds": endpoint.get("n_seeds"),
+            "significance": significance.get("significance"),
+            "mean_sq_delta_B_vs_A": arm_deltas.get("B_vs_A", {}).get("mean_sq_delta"),
+        },
+    }
+
+
 def assemble_report(
     out_dir: Path,
     run_records: list[dict[str, Any]],
@@ -1557,187 +1811,17 @@ def assemble_report(
     if not run_records:
         raise HarnessError("assemble_report: no run records to assemble")
 
-    eval_by_run: dict[tuple[str, int], dict[str, Any]] = {}
-    report_runs: list[dict[str, Any]] = []
-    first_config: dict[str, Any] | None = None
-    first_manifest: dict[str, Any] | None = None
-
-    for record in run_records:
-        run_dir = Path(record["run_dir"])
-        config_used = _load_json_file(
-            run_dir / "ppo_t5" / "config_used.json", error_cls=ProvenanceError
-        )
-        manifest = _load_json_file(
-            run_dir / "ppo_t5" / "split_manifest.json", error_cls=ProvenanceError
-        )
-        eval_result = _load_json_file(
-            run_dir / EVAL_RESULT_FILENAME, error_cls=ProvenanceError
-        )
-        if first_config is None:
-            first_config, first_manifest = config_used, manifest
-
-        eval_by_run[(record["arm"], record["seed"])] = eval_result
-        provenance = collect_provenance(config_used)
-        report_runs.append(
-            {
-                "arm": record["arm"],
-                "seed": record["seed"],
-                "resumed": bool(record.get("resumed", False)),
-                "git_sha_mismatch": bool(record.get("git_sha_mismatch", False)),
-                "policy_buzz_rate": eval_result.get("policy_buzz_rate"),
-                "forced_commit_rate": eval_result.get("forced_commit_rate"),
-                "ece": eval_result.get("ece"),
-                "brier": eval_result.get("brier"),
-                "accuracy": eval_result.get("accuracy"),
-                "mean_sq": eval_result.get("mean_sq"),
-                "avg_buzz_pos": eval_result.get("avg_buzz_pos"),
-                "n_correct_policy_buzzes": eval_result.get("n_correct_policy_buzzes"),
-                "mean_correct_buzz_position": eval_result.get(
-                    "mean_correct_buzz_position"
-                ),
-                "n_questions": eval_result.get("n_questions"),
-                "provenance": provenance,
-            }
-        )
-
-    assert first_config is not None and first_manifest is not None
-
-    try:
-        scale = {
-            "model_name": first_config["model"]["model_name"],
-            "n_train": first_manifest["train_count"],
-            "n_val": first_manifest["val_count"],
-            "n_test": first_manifest["test_count"],
-            "ppo_iterations": first_config["ppo"]["iterations"],
-            "device": first_config["model"]["device"],
-            "disk_usage_bytes": int(
-                sum(f.stat().st_size for f in out_dir.rglob("*") if f.is_file())
-            ),
-        }
-    except (KeyError, TypeError) as exc:
-        raise ProvenanceError(
-            f"assemble_report: sidecars are missing a scale field: {exc}"
-        ) from exc
-
-    # Primary endpoint (R-006): treatment = arm B vs control = arm A.
-    endpoint_pairs = _endpoint_pairs_from_evals(eval_by_run)
-    if endpoint_pairs:
-        endpoint = compute_primary_endpoint(endpoint_pairs)
-    else:
-        endpoint = {
-            "success": False,
-            "n_seeds": 0,
-            "n_seeds_replicated": 0,
-            "per_seed": [],
-            "note": "no paired A/B seeds available; endpoint not evaluable",
-        }
-
-    # Significance (R-007): paired-by-qid bootstrap on B-vs-A S_q deltas.
-    control_sq = _sq_by_seed_for_arm(eval_by_run, "A")
-    treatment_sq = _sq_by_seed_for_arm(eval_by_run, "B")
-    shared_seeds = sorted(set(control_sq) & set(treatment_sq))
-    if shared_seeds:
-        significance = compute_significance(
-            {s: control_sq[s] for s in shared_seeds},
-            {s: treatment_sq[s] for s in shared_seeds},
-        )
-    else:
-        significance = dict(_UNEVALUABLE_SIGNIFICANCE)
-
-    # Arm deltas (R-004 report side): treatment - control means per metric.
-    def _arm_metric_mean(arm: str, key: str) -> float | None:
-        values = [
-            payload.get(key)
-            for (run_arm, _), payload in eval_by_run.items()
-            if run_arm == arm and payload.get(key) is not None
-        ]
-        return float(np.mean(values)) if values else None
-
+    eval_by_run, report_runs, first_config, first_manifest = _read_run_sidecars(
+        run_records
+    )
+    scale = _build_scale(first_config, first_manifest, out_dir)
+    endpoint = _build_endpoint(eval_by_run)
+    significance = _build_significance(eval_by_run)
     arm_order = list(dict.fromkeys(rec["arm"] for rec in run_records))
-    arm_deltas: dict[str, dict[str, float | None]] = {}
-    if "A" in arm_order:
-        control_mean_sq = _arm_metric_mean("A", "mean_sq")
-        control_accuracy = _arm_metric_mean("A", "accuracy")
-        for arm in arm_order:
-            if arm == "A":
-                continue
-            arm_mean_sq = _arm_metric_mean(arm, "mean_sq")
-            arm_accuracy = _arm_metric_mean(arm, "accuracy")
-            arm_deltas[f"{arm}_vs_A"] = {
-                "mean_sq_delta": (
-                    arm_mean_sq - control_mean_sq
-                    if arm_mean_sq is not None and control_mean_sq is not None
-                    else None
-                ),
-                "accuracy_delta": (
-                    arm_accuracy - control_accuracy
-                    if arm_accuracy is not None and control_accuracy is not None
-                    else None
-                ),
-            }
-
-    # Hazard compute (R-004): arm B's optimizer steps + wall clock, sourced
-    # from B's hazard_history.json and B's RUN_COMPLETE.json marker.
-    optimizer_steps: int | None = None
-    wall_clock_seconds: float | None = None
-    hazard_dynamics: dict[str, Any] | None = None
-    b_records = [rec for rec in run_records if rec["arm"] == "B"]
-    if b_records:
-        b_dir = Path(b_records[0]["run_dir"])
-        history_path = b_dir / "hazard" / "hazard_history.json"
-        if history_path.exists():
-            history = _load_json_file(history_path, error_cls=ProvenanceError)
-            steps = history.get("steps")
-            if isinstance(steps, list):
-                optimizer_steps = len(steps)
-        marker_path = b_dir / RUN_COMPLETE_MARKER
-        if marker_path.exists():
-            marker = _load_json_file(marker_path, error_cls=ProvenanceError)
-            raw = marker.get("wall_clock_seconds")
-            if raw is not None:
-                wall_clock_seconds = float(raw)
-        dynamics_path = b_dir / HAZARD_DYNAMICS_FILENAME
-        if dynamics_path.exists():
-            hazard_dynamics = _load_json_file(
-                dynamics_path, error_cls=ProvenanceError
-            )
-    hazard_compute = {
-        "optimizer_steps": optimizer_steps,
-        "wall_clock_seconds": wall_clock_seconds,
-        "step_matching_note": _HAZARD_STEP_MATCHING_NOTE,
-    }
-
-    caveats = [DEVICE2_CAVEAT, _HAZARD_STEP_MATCHING_NOTE]
-    if smoke:
-        caveats.append(_SMOKE_CAVEAT)
-    caveats.append(
-        "The shared supervised checkpoint fixes the supervised-phase RNG; "
-        "seeds sample hazard/PPO variance only (paired design)."
-    )
-
-    if endpoint.get("n_seeds", 0) == 0:
-        verdict_label = "not_evaluable"
-    elif endpoint["success"]:
-        verdict_label = "endpoint_met_at_this_scale"
-    else:
-        verdict_label = "endpoint_not_met_at_this_scale"
-    scope = (
-        f"{scale['model_name']} on n_test={scale['n_test']} "
-        f"({'smoke: plumbing/training-dynamics evidence only' if smoke else 'preliminary Device-1 scale'})"
-    )
-    verdict = {
-        "verdict": verdict_label,
-        "scope": scope,
-        "evidence": {
-            "endpoint_success": endpoint.get("success"),
-            "n_seeds_replicated": endpoint.get("n_seeds_replicated"),
-            "n_seeds": endpoint.get("n_seeds"),
-            "significance": significance.get("significance"),
-            "mean_sq_delta_B_vs_A": (
-                arm_deltas.get("B_vs_A", {}).get("mean_sq_delta")
-            ),
-        },
-    }
+    arm_deltas = _build_arm_deltas(eval_by_run, arm_order)
+    hazard_compute, hazard_dynamics = _read_hazard_artifacts(run_records)
+    caveats = _build_caveats(smoke=smoke)
+    verdict = _build_verdict(endpoint, significance, arm_deltas, scale, smoke=smoke)
 
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -1763,6 +1847,12 @@ def assemble_report(
 # ---------------------------------------------------------------------------
 # main() composition
 # ---------------------------------------------------------------------------
+
+
+def _prune_all_runs(records: list[dict[str, Any]]) -> None:
+    """Reclaim disk across every evaluated run dir (``--prune-checkpoints``)."""
+    for record in records:
+        prune_run_checkpoints(Path(record["run_dir"]))
 
 
 def _print_plan(records: list[dict[str, Any]], splits: dict[str, Path] | None) -> None:
@@ -1843,8 +1933,7 @@ def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
         str(int(args.seeds[0])),
     ]
     if args.smoke:
-        argv.append("--smoke")
-        argv.append("ppo.eval_interval=1")
+        argv += _SMOKE_CHILD_FLAGS
     argv.append(f"supervised.checkpoint_dir={sup_root}")
 
     print("[supervised] shared warm-start started")
@@ -1907,8 +1996,7 @@ def main(argv: list[str] | None = None) -> None:
             record["resumed"] = True
         assemble_report(out_dir, records, smoke=bool(args.smoke))
         if args.prune_checkpoints:
-            for record in records:
-                prune_run_checkpoints(Path(record["run_dir"]))
+            _prune_all_runs(records)
         print(f"Report written to {out_dir / REPORT_FILENAME}")
         return
 
@@ -1968,8 +2056,7 @@ def main(argv: list[str] | None = None) -> None:
     assemble_report(out_dir, records, smoke=bool(args.smoke))
 
     if args.prune_checkpoints:
-        for record in records:
-            prune_run_checkpoints(Path(record["run_dir"]))
+        _prune_all_runs(records)
 
     print(f"Report written to {out_dir / REPORT_FILENAME}")
     print(f"Plot written to {out_dir / PLOT_FILENAME}")
