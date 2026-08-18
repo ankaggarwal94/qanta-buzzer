@@ -125,8 +125,24 @@ def _write_tiny_training_data(data_dir: Path) -> None:
     (data_dir / "test_dataset.json").write_text(json.dumps(test_qs), encoding="utf-8")
 
 
-def _run_smoke_training(tmp_path: Path, out_name: str) -> Path:
+def _run_smoke_training(
+    tmp_path: Path, out_name: str, monkeypatch: pytest.MonkeyPatch
+) -> Path:
     from scripts import train_stopdff_value_model
+
+    # The trainer is fail-closed on git provenance: any dirty working tree
+    # (untracked files included) aborts main() with rc=1. These tests cover
+    # training mechanics, not provenance, so inject a consistent synthetic
+    # host identity through the trainer's sanctioned MODAL_HOST_* seams;
+    # the guards themselves are covered by
+    # tests/test_stopdff_learned_value_provenance.py.
+    script_sha = train_stopdff_value_model.sha256_file(
+        train_stopdff_value_model.PROJECT_ROOT
+        / train_stopdff_value_model.PRODUCER_SCRIPT_PATH
+    )
+    monkeypatch.setenv("MODAL_HOST_GIT_COMMIT", "d" * 40)
+    monkeypatch.setenv("MODAL_HOST_GIT_STATUS", "")
+    monkeypatch.setenv("MODAL_HOST_PRODUCER_SCRIPT_SHA256", script_sha)
 
     data_dir = tmp_path / "data"
     _write_tiny_training_data(data_dir)
@@ -167,9 +183,11 @@ def test_no_test_split_leakage() -> None:
         dataframe_to_trajectories(df, fit=True)
 
 
-def test_seed_determinism_within_one_seed(tmp_path: Path) -> None:
-    out_a = _run_smoke_training(tmp_path / "run_a", "value_model")
-    out_b = _run_smoke_training(tmp_path / "run_b", "value_model")
+def test_seed_determinism_within_one_seed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_a = _run_smoke_training(tmp_path / "run_a", "value_model", monkeypatch)
+    out_b = _run_smoke_training(tmp_path / "run_b", "value_model", monkeypatch)
 
     ckpt_a = _load_checkpoint(out_a / "seed_1" / "best_model" / "best.ckpt")
     ckpt_b = _load_checkpoint(out_b / "seed_1" / "best_model" / "best.ckpt")
@@ -245,9 +263,11 @@ def test_dp_target_construction_matches_solve_trajectory() -> None:
     assert result.targets.tolist() == pytest.approx(expected.values)
 
 
-def test_smoke_training_runs_on_cpu_in_under_60s(tmp_path: Path) -> None:
+def test_smoke_training_runs_on_cpu_in_under_60s(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     started = time.monotonic()
-    out_dir = _run_smoke_training(tmp_path, "value_model")
+    out_dir = _run_smoke_training(tmp_path, "value_model", monkeypatch)
     elapsed = time.monotonic() - started
 
     assert (out_dir / "history.json").exists()
