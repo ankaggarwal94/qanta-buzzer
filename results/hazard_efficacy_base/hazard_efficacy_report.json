@@ -1,0 +1,498 @@
+{
+  "schema_version": 1,
+  "git_sha": "76fa95575344593553d106e6f689fc1c52d09684",
+  "endpoint_definition": "Primary endpoint (R-006): treatment mean correct-answer buzz position <= control mean correct-answer buzz position - 1.0 prefixes AND treatment accuracy >= control accuracy - 0.01 (absolute), replicated in >= 2 of 3 seeds (inclusive thresholds). A seed where either arm has zero correct policy buzzes is a non-success with undefined_position. Exact payload keys (MA-011): per arm x seed, position = eval_result.json['mean_correct_buzz_position'] \u2014 the mean of runs[].buzz_position over records with buzzed=true AND correct=true, where buzz_position is the 0-indexed prefix index at buzz time (step_count - 1) as emitted by scripts.compare_policies.evaluate_t5_policy; accuracy = eval_result.json['accuracy'] (policy-buzz answer accuracy over all evaluated questions); the zero-buzz guard reads eval_result.json['n_correct_policy_buzzes']. NOTE the report's hazard_dynamics block uses 1-indexed expected buzz positions (see its index_convention field) \u2014 the two blocks are NOT on the same index base.",
+  "scale": {
+    "model_name": "t5-base",
+    "n_train": 486,
+    "n_val": 104,
+    "n_test": 110,
+    "ppo_iterations": 25,
+    "device": "mps",
+    "disk_usage_bytes": 10652024131
+  },
+  "caveats": [
+    "Full-scale t5-large efficacy remains a Device-2 (RTX 5090) run.",
+    "Hazard optimizer steps are 1-per-question (B=1) and are NOT commensurable with supervised B=N optimizer steps; compare arm B against the step-matched arm C ablation, not against supervised step counts.",
+    "The shared supervised checkpoint fixes the supervised-phase RNG; seeds sample hazard/PPO variance only (paired design)."
+  ],
+  "verdict": {
+    "verdict": "endpoint_not_met_at_this_scale",
+    "scope": "t5-base on n_test=110 (preliminary Device-1 scale)",
+    "evidence": {
+      "endpoint_success": false,
+      "n_seeds_replicated": 0,
+      "n_seeds": 3,
+      "significance": "paired_bootstrap_ci",
+      "mean_sq_delta_B_vs_A": -0.2409186568246997
+    }
+  },
+  "endpoint": {
+    "success": false,
+    "n_seeds": 3,
+    "n_seeds_replicated": 0,
+    "per_seed": [
+      {
+        "seed": 1,
+        "seed_success": false,
+        "undefined_position": true,
+        "control_position": null,
+        "treatment_position": null,
+        "control_accuracy": 0.0,
+        "treatment_accuracy": 0.0
+      },
+      {
+        "seed": 2,
+        "seed_success": false,
+        "undefined_position": true,
+        "control_position": null,
+        "treatment_position": null,
+        "control_accuracy": 0.0,
+        "treatment_accuracy": 0.0
+      },
+      {
+        "seed": 3,
+        "seed_success": false,
+        "undefined_position": true,
+        "control_position": null,
+        "treatment_position": null,
+        "control_accuracy": 0.0,
+        "treatment_accuracy": 0.0
+      }
+    ]
+  },
+  "significance": {
+    "mean_delta": -0.24091865682469968,
+    "ci_low": -0.24519713029697274,
+    "ci_high": -0.23706124790291863,
+    "n_questions": 110,
+    "significance_evaluable": true,
+    "significance": "paired_bootstrap_ci"
+  },
+  "arm_deltas": {
+    "B_vs_A": {
+      "mean_sq_delta": -0.2409186568246997,
+      "accuracy_delta": 0.0
+    },
+    "C_vs_A": {
+      "mean_sq_delta": -0.2409298525068142,
+      "accuracy_delta": 0.0
+    },
+    "variant:beta_hi_vs_A": {
+      "mean_sq_delta": -0.0008262263346244803,
+      "accuracy_delta": 0.24545454545454545
+    }
+  },
+  "hazard_compute": {
+    "optimizer_steps": 486,
+    "wall_clock_seconds": 202.00230508297682,
+    "child_total_wall_clock_seconds": 758.8035660001915,
+    "source_arm": "B",
+    "source_seed": 1,
+    "step_matching_note": "Hazard optimizer steps are 1-per-question (B=1) and are NOT commensurable with supervised B=N optimizer steps; compare arm B against the step-matched arm C ablation, not against supervised step counts."
+  },
+  "hazard_dynamics": {
+    "per_position_mean_before": [
+      0.5018865969032049,
+      0.5038602696731687,
+      0.5051516285166144,
+      0.5055787332596318,
+      0.5063922380407652,
+      0.5053540004624261,
+      0.504573663075765
+    ],
+    "per_position_mean_after": [
+      3.557013483757032e-07,
+      3.324866941767368e-07,
+      3.9001668383775723e-07,
+      3.7571768847365385e-07,
+      3.9979208861969556e-07,
+      1.890392143069322e-07,
+      1.8969910324055186e-07
+    ],
+    "expected_buzz_time_before": 1.9189770678094693,
+    "expected_buzz_time_after": 5.093746259224801,
+    "expected_buzz_time_delta": 3.174769191415332,
+    "first_half_mean_loss": 1.032679381929798,
+    "second_half_mean_loss": 1.0000032181602447,
+    "index_convention": "per_position_mean_before/after: array index i is prefix position i+1 (positions are 1-indexed prefixes); expected_buzz_time_* are expected 1-indexed stop positions (forced commit at position T). NOTE eval_result runs[].buzz_position (the endpoint's source) is 0-indexed.",
+    "source_arm": "B",
+    "source_seed": 1
+  },
+  "warnings": [],
+  "runs": [
+    {
+      "arm": "A",
+      "seed": 1,
+      "hazard": {
+        "pretrain": false,
+        "beta_terminal": 1.0,
+        "freeze_answer_head": false,
+        "ablation": null
+      },
+      "resumed": false,
+      "git_sha_mismatch": false,
+      "policy_buzz_rate": 0.0,
+      "forced_commit_rate": 1.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "accuracy": 0.0,
+      "mean_sq": 0.2399264717505135,
+      "avg_buzz_pos": 0.0,
+      "n_correct_policy_buzzes": 0,
+      "mean_correct_buzz_position": null,
+      "n_questions": 110,
+      "provenance": {
+        "model_name": "t5-base",
+        "seed": 1,
+        "device": "mps",
+        "git_sha": "76fa95575344593553d106e6f689fc1c52d09684",
+        "git_dirty": true,
+        "torch_version": "2.12.0",
+        "platform": "macOS-26.4.1-arm64-arm-64bit"
+      }
+    },
+    {
+      "arm": "A",
+      "seed": 2,
+      "hazard": {
+        "pretrain": false,
+        "beta_terminal": 1.0,
+        "freeze_answer_head": false,
+        "ablation": null
+      },
+      "resumed": false,
+      "git_sha_mismatch": false,
+      "policy_buzz_rate": 0.0,
+      "forced_commit_rate": 1.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "accuracy": 0.0,
+      "mean_sq": 0.24052824983989865,
+      "avg_buzz_pos": 0.0,
+      "n_correct_policy_buzzes": 0,
+      "mean_correct_buzz_position": null,
+      "n_questions": 110,
+      "provenance": {
+        "model_name": "t5-base",
+        "seed": 2,
+        "device": "mps",
+        "git_sha": "76fa95575344593553d106e6f689fc1c52d09684",
+        "git_dirty": true,
+        "torch_version": "2.12.0",
+        "platform": "macOS-26.4.1-arm64-arm-64bit"
+      }
+    },
+    {
+      "arm": "A",
+      "seed": 3,
+      "hazard": {
+        "pretrain": false,
+        "beta_terminal": 1.0,
+        "freeze_answer_head": false,
+        "ablation": null
+      },
+      "resumed": false,
+      "git_sha_mismatch": false,
+      "policy_buzz_rate": 0.0,
+      "forced_commit_rate": 1.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "accuracy": 0.0,
+      "mean_sq": 0.24233930003063897,
+      "avg_buzz_pos": 0.0,
+      "n_correct_policy_buzzes": 0,
+      "mean_correct_buzz_position": null,
+      "n_questions": 110,
+      "provenance": {
+        "model_name": "t5-base",
+        "seed": 3,
+        "device": "mps",
+        "git_sha": "76fa95575344593553d106e6f689fc1c52d09684",
+        "git_dirty": true,
+        "torch_version": "2.12.0",
+        "platform": "macOS-26.4.1-arm64-arm-64bit"
+      }
+    },
+    {
+      "arm": "B",
+      "seed": 1,
+      "hazard": {
+        "pretrain": true,
+        "beta_terminal": 1.0,
+        "freeze_answer_head": false,
+        "ablation": null
+      },
+      "resumed": false,
+      "git_sha_mismatch": false,
+      "policy_buzz_rate": 0.0,
+      "forced_commit_rate": 1.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "accuracy": 0.0,
+      "mean_sq": 2.1474431524645533e-06,
+      "avg_buzz_pos": 0.0,
+      "n_correct_policy_buzzes": 0,
+      "mean_correct_buzz_position": null,
+      "n_questions": 110,
+      "provenance": {
+        "model_name": "t5-base",
+        "seed": 1,
+        "device": "mps",
+        "git_sha": "76fa95575344593553d106e6f689fc1c52d09684",
+        "git_dirty": true,
+        "torch_version": "2.12.0",
+        "platform": "macOS-26.4.1-arm64-arm-64bit"
+      }
+    },
+    {
+      "arm": "B",
+      "seed": 2,
+      "hazard": {
+        "pretrain": true,
+        "beta_terminal": 1.0,
+        "freeze_answer_head": false,
+        "ablation": null
+      },
+      "resumed": false,
+      "git_sha_mismatch": false,
+      "policy_buzz_rate": 0.0,
+      "forced_commit_rate": 1.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "accuracy": 0.0,
+      "mean_sq": 1.3467611948991877e-05,
+      "avg_buzz_pos": 0.0,
+      "n_correct_policy_buzzes": 0,
+      "mean_correct_buzz_position": null,
+      "n_questions": 110,
+      "provenance": {
+        "model_name": "t5-base",
+        "seed": 2,
+        "device": "mps",
+        "git_sha": "76fa95575344593553d106e6f689fc1c52d09684",
+        "git_dirty": true,
+        "torch_version": "2.12.0",
+        "platform": "macOS-26.4.1-arm64-arm-64bit"
+      }
+    },
+    {
+      "arm": "B",
+      "seed": 3,
+      "hazard": {
+        "pretrain": true,
+        "beta_terminal": 1.0,
+        "freeze_answer_head": false,
+        "ablation": null
+      },
+      "resumed": false,
+      "git_sha_mismatch": false,
+      "policy_buzz_rate": 0.0,
+      "forced_commit_rate": 1.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "accuracy": 0.0,
+      "mean_sq": 2.2436091850546913e-05,
+      "avg_buzz_pos": 0.0,
+      "n_correct_policy_buzzes": 0,
+      "mean_correct_buzz_position": null,
+      "n_questions": 110,
+      "provenance": {
+        "model_name": "t5-base",
+        "seed": 3,
+        "device": "mps",
+        "git_sha": "76fa95575344593553d106e6f689fc1c52d09684",
+        "git_dirty": true,
+        "torch_version": "2.12.0",
+        "platform": "macOS-26.4.1-arm64-arm-64bit"
+      }
+    },
+    {
+      "arm": "C",
+      "seed": 1,
+      "hazard": {
+        "pretrain": true,
+        "beta_terminal": 1.0,
+        "freeze_answer_head": false,
+        "ablation": "shuffled_nll"
+      },
+      "resumed": false,
+      "git_sha_mismatch": false,
+      "policy_buzz_rate": 0.0,
+      "forced_commit_rate": 1.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "accuracy": 0.0,
+      "mean_sq": 8.564869630599298e-07,
+      "avg_buzz_pos": 0.0,
+      "n_correct_policy_buzzes": 0,
+      "mean_correct_buzz_position": null,
+      "n_questions": 110,
+      "provenance": {
+        "model_name": "t5-base",
+        "seed": 1,
+        "device": "mps",
+        "git_sha": "76fa95575344593553d106e6f689fc1c52d09684",
+        "git_dirty": true,
+        "torch_version": "2.12.0",
+        "platform": "macOS-26.4.1-arm64-arm-64bit"
+      }
+    },
+    {
+      "arm": "C",
+      "seed": 2,
+      "hazard": {
+        "pretrain": true,
+        "beta_terminal": 1.0,
+        "freeze_answer_head": false,
+        "ablation": "shuffled_nll"
+      },
+      "resumed": false,
+      "git_sha_mismatch": false,
+      "policy_buzz_rate": 0.0,
+      "forced_commit_rate": 1.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "accuracy": 0.0,
+      "mean_sq": 8.553489131428577e-07,
+      "avg_buzz_pos": 0.0,
+      "n_correct_policy_buzzes": 0,
+      "mean_correct_buzz_position": null,
+      "n_questions": 110,
+      "provenance": {
+        "model_name": "t5-base",
+        "seed": 2,
+        "device": "mps",
+        "git_sha": "76fa95575344593553d106e6f689fc1c52d09684",
+        "git_dirty": true,
+        "torch_version": "2.12.0",
+        "platform": "macOS-26.4.1-arm64-arm-64bit"
+      }
+    },
+    {
+      "arm": "C",
+      "seed": 3,
+      "hazard": {
+        "pretrain": true,
+        "beta_terminal": 1.0,
+        "freeze_answer_head": false,
+        "ablation": "shuffled_nll"
+      },
+      "resumed": false,
+      "git_sha_mismatch": false,
+      "policy_buzz_rate": 0.0,
+      "forced_commit_rate": 1.0,
+      "ece": 0.0,
+      "brier": 0.0,
+      "accuracy": 0.0,
+      "mean_sq": 2.7522647323122276e-06,
+      "avg_buzz_pos": 0.0,
+      "n_correct_policy_buzzes": 0,
+      "mean_correct_buzz_position": null,
+      "n_questions": 110,
+      "provenance": {
+        "model_name": "t5-base",
+        "seed": 3,
+        "device": "mps",
+        "git_sha": "76fa95575344593553d106e6f689fc1c52d09684",
+        "git_dirty": true,
+        "torch_version": "2.12.0",
+        "platform": "macOS-26.4.1-arm64-arm-64bit"
+      }
+    },
+    {
+      "arm": "variant:beta_hi",
+      "seed": 1,
+      "hazard": {
+        "pretrain": true,
+        "beta_terminal": 2.0,
+        "freeze_answer_head": false,
+        "ablation": null
+      },
+      "resumed": false,
+      "git_sha_mismatch": false,
+      "policy_buzz_rate": 1.0,
+      "forced_commit_rate": 0.0,
+      "ece": 0.03961518650705165,
+      "brier": 0.21512037781959928,
+      "accuracy": 0.3090909090909091,
+      "mean_sq": 0.23425616326191953,
+      "avg_buzz_pos": 0.0,
+      "n_correct_policy_buzzes": 34,
+      "mean_correct_buzz_position": 0.0,
+      "n_questions": 110,
+      "provenance": {
+        "model_name": "t5-base",
+        "seed": 1,
+        "device": "mps",
+        "git_sha": "76fa95575344593553d106e6f689fc1c52d09684",
+        "git_dirty": true,
+        "torch_version": "2.12.0",
+        "platform": "macOS-26.4.1-arm64-arm-64bit"
+      }
+    },
+    {
+      "arm": "variant:beta_hi",
+      "seed": 2,
+      "hazard": {
+        "pretrain": true,
+        "beta_terminal": 2.0,
+        "freeze_answer_head": false,
+        "ablation": null
+      },
+      "resumed": false,
+      "git_sha_mismatch": false,
+      "policy_buzz_rate": 1.0,
+      "forced_commit_rate": 0.0,
+      "ece": 0.025300029732964274,
+      "brier": 0.18115916323022405,
+      "accuracy": 0.23636363636363636,
+      "mean_sq": 0.24119310204179967,
+      "avg_buzz_pos": 0.0,
+      "n_correct_policy_buzzes": 26,
+      "mean_correct_buzz_position": 0.0,
+      "n_questions": 110,
+      "provenance": {
+        "model_name": "t5-base",
+        "seed": 2,
+        "device": "mps",
+        "git_sha": "76fa95575344593553d106e6f689fc1c52d09684",
+        "git_dirty": true,
+        "torch_version": "2.12.0",
+        "platform": "macOS-26.4.1-arm64-arm-64bit"
+      }
+    },
+    {
+      "arm": "variant:beta_hi",
+      "seed": 3,
+      "hazard": {
+        "pretrain": true,
+        "beta_terminal": 2.0,
+        "freeze_answer_head": false,
+        "ablation": null
+      },
+      "resumed": false,
+      "git_sha_mismatch": false,
+      "policy_buzz_rate": 1.0,
+      "forced_commit_rate": 0.0,
+      "ece": 0.09084327518939972,
+      "brier": 0.1624384684778221,
+      "accuracy": 0.19090909090909092,
+      "mean_sq": 0.2448660773134584,
+      "avg_buzz_pos": 0.0,
+      "n_correct_policy_buzzes": 21,
+      "mean_correct_buzz_position": 0.0,
+      "n_questions": 110,
+      "provenance": {
+        "model_name": "t5-base",
+        "seed": 3,
+        "device": "mps",
+        "git_sha": "76fa95575344593553d106e6f689fc1c52d09684",
+        "git_dirty": true,
+        "torch_version": "2.12.0",
+        "platform": "macOS-26.4.1-arm64-arm-64bit"
+      }
+    }
+  ],
+  "plot_path": "hazard_efficacy_plot.png"
+}
