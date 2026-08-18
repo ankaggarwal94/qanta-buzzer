@@ -787,8 +787,12 @@ def test_r013_fresh_runs_invoke_children_and_write_marker(
         marker_path = Path(rec["run_dir"]) / "RUN_COMPLETE.json"
         assert marker_path.exists(), "harness writes the completion marker"
         marker = json.loads(marker_path.read_text())
-        assert {"git_sha", "arm", "seed", "wall_clock_seconds"} <= set(marker)
+        assert {"git_sha", "arm", "seed", "wall_clock_seconds",
+                "smoke"} <= set(marker)
         assert marker["arm"] == rec["arm"]
+        # QA-R2-2: the marker persists the invocation's smoke flag (the
+        # direct-caller default here is False).
+        assert marker["smoke"] is False
         # The marker records the child's MEASURED elapsed seconds — a real
         # float >= 0 (the fabricating runner returns near-instantly).
         wall_clock = marker["wall_clock_seconds"]
@@ -1249,9 +1253,12 @@ def test_qa002_shared_supervised_marker_mismatch_raises(
     )
     assert marker_path.exists()
     marker = json.loads(marker_path.read_text())
-    assert {"config_hash", "git_sha", "model_name"} <= set(marker)
+    assert {"config_hash", "git_sha", "model_name",
+            "supervised_seed"} <= set(marker)
     assert marker["model_name"] == "t5-small"  # smoke resolution of the YAML
     assert marker["git_sha"] == current_git_sha()
+    # QA-R2-3: the build seed (seeds[0]) is recorded in the identity marker.
+    assert marker["supervised_seed"] == 1
 
     # Matching marker => reuse, zero further children.
     harness._run_shared_supervised(args, out)
@@ -1665,3 +1672,186 @@ def test_qa012_relative_config_and_out_dir_absolutized(
     assert cfg_abs in output, "--config must reach children as an ABSOLUTE path"
     assert f"supervised.checkpoint_dir={out_abs / 'A_seed1'}" in output
     assert "supervised.checkpoint_dir=rel_out" not in output
+
+
+# ---------------------------------------------------------------------------
+# QA fix round 2 (QA-R2-1 .. QA-R2-3)
+# ---------------------------------------------------------------------------
+
+
+# Tests QA-R2-1 [integration]: --report-only reconciles the surviving dirs
+# against the FULL plan — a planned arm/seed whose run dir is wholly missing
+# becomes a printed report warning (QA-011 wording family), never a silent
+# drop; a fully-present plan keeps warnings == [].
+def test_qa_r2_1_report_only_reconciles_wholly_missing_planned_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail("report-only must not train"),
+    )
+
+    # Plan: arms A, B x seeds 1, 3 — B_seed3's dir is wholly absent.
+    out = tmp_path / "out"
+    make_run_dir(out, "A", 1)
+    make_run_dir(out, "A", 3)
+    make_run_dir(out, "B", 1, include_hazard_dynamics=True)
+
+    harness.main(
+        ["--report-only", "--smoke", "--out-dir", str(out),
+         "--arms", "A", "B", "--seeds", "1", "3"]
+    )
+
+    report = json.loads((out / "hazard_efficacy_report.json").read_text())
+    warnings = report["warnings"]
+    assert isinstance(warnings, list) and warnings
+    assert any("arm B" in w and "[3]" in w for w in warnings), (
+        f"the wholly-missing B_seed3 must be named in the warnings: {warnings}"
+    )
+    assert not any("arm A" in w for w in warnings), "arm A is fully present"
+    # The warning is printed too, never report-only-silent.
+    printed = capsys.readouterr().out
+    assert any(
+        "WARNING" in line and "arm B" in line and "[3]" in line
+        for line in printed.splitlines()
+    ), f"the plan-vs-disk warning must be printed: {printed!r}"
+    # The report still assembles from the three surviving dirs.
+    assert len(report["runs"]) == 3
+
+    # Clean case: every planned dir exists -> warnings unchanged ([]).
+    clean = tmp_path / "clean"
+    make_run_dir(clean, "A", 1)
+    make_run_dir(clean, "A", 3)
+    make_run_dir(clean, "B", 1, include_hazard_dynamics=True)
+    make_run_dir(clean, "B", 3)
+    harness.main(
+        ["--report-only", "--smoke", "--out-dir", str(clean),
+         "--arms", "A", "B", "--seeds", "1", "3"]
+    )
+    clean_report = json.loads(
+        (clean / "hazard_efficacy_report.json").read_text()
+    )
+    assert clean_report["warnings"] == []
+
+
+# Tests QA-R2-2 [integration]: --report-only derives the report's smoke
+# labeling (smoke caveat + verdict scale note) from the runs' persisted
+# RUN_COMPLETE.json "smoke" markers — never from the CURRENT invocation's
+# --smoke flag.
+def test_qa_r2_2_report_only_derives_smoke_label_from_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail("report-only must not train"),
+    )
+
+    # Smoke-trained dirs, report-only WITHOUT --smoke: the report must still
+    # carry the smoke caveat and the smoke-scoped verdict.
+    out = tmp_path / "out"
+    make_run_dir(out, "A", 1, marker_smoke=True)
+    make_run_dir(out, "B", 1, marker_smoke=True, include_hazard_dynamics=True)
+    harness.main(
+        ["--report-only", "--out-dir", str(out),
+         "--arms", "A", "B", "--seeds", "1"]
+    )
+    report = json.loads((out / "hazard_efficacy_report.json").read_text())
+    assert any(
+        "plumbing/training-dynamics" in caveat for caveat in report["caveats"]
+    ), f"smoke-trained dirs must keep the smoke caveat: {report['caveats']}"
+    scope = report["verdict"]["scope"]
+    assert "smoke" in scope and "plumbing/training-dynamics" in scope, (
+        f"the verdict must stay scoped to smoke evidence: {scope!r}"
+    )
+
+    # Control: non-smoke markers under the same flag-less invocation keep
+    # the non-smoke labeling (derivation, not a constant).
+    full = tmp_path / "full"
+    make_run_dir(full, "A", 1, marker_smoke=False)
+    make_run_dir(full, "B", 1, marker_smoke=False, include_hazard_dynamics=True)
+    harness.main(
+        ["--report-only", "--out-dir", str(full),
+         "--arms", "A", "B", "--seeds", "1"]
+    )
+    full_report = json.loads((full / "hazard_efficacy_report.json").read_text())
+    assert not any(
+        "plumbing/training-dynamics" in caveat
+        for caveat in full_report["caveats"]
+    )
+    assert "smoke" not in full_report["verdict"]["scope"]
+
+
+# Tests QA-R2-2 [integration]: mixed smoke provenance across the existing
+# markers fails loud — one report cannot honestly label both cohorts.
+def test_qa_r2_2_mixed_smoke_markers_fail_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail("report-only must not train"),
+    )
+    out = tmp_path / "out"
+    make_run_dir(out, "A", 1, marker_smoke=True)
+    make_run_dir(out, "B", 1, marker_smoke=False, include_hazard_dynamics=True)
+
+    with pytest.raises(harness.ProvenanceError) as excinfo:
+        harness.main(
+            ["--report-only", "--out-dir", str(out),
+             "--arms", "A", "B", "--seeds", "1"]
+        )
+    message = str(excinfo.value)
+    assert "smoke" in message
+    assert "A_seed1" in message and "B_seed1" in message
+    assert not (out / "hazard_efficacy_report.json").exists(), (
+        "no report may be written under mixed smoke provenance"
+    )
+
+
+# Tests QA-R2-3 [integration]: the shared supervised identity marker records
+# the build seed (seeds[0]); reuse under a different seeds[0] WARNS and
+# records shared_supervised_seed_mismatch — it never raises and never
+# rebuilds (any fixed shared prefix preserves the paired contrast).
+def test_qa_r2_3_shared_supervised_seed_mismatch_warns_never_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(harness, "_run_child", _supervised_fabricating_runner(calls))
+    out = tmp_path / "out"
+    marker_path = (
+        harness.shared_supervised_root(out) / harness.SHARED_SUPERVISED_MARKER
+    )
+
+    # Fresh build records the build seed; no mismatch flag yet.
+    harness._run_shared_supervised(_namespace(out, seeds=[1, 2, 3]), out)
+    assert len(calls) == 1
+    marker = json.loads(marker_path.read_text())
+    assert marker["supervised_seed"] == 1
+    assert "shared_supervised_seed_mismatch" not in marker
+
+    # Same-seed reuse: no warning, no flag.
+    capsys.readouterr()
+    harness._run_shared_supervised(_namespace(out, seeds=[1, 2, 3]), out)
+    assert len(calls) == 1
+    assert "WARNING" not in capsys.readouterr().out
+    assert "shared_supervised_seed_mismatch" not in json.loads(
+        marker_path.read_text()
+    )
+
+    # Different-seed reuse: WARN + record, never raise, never rebuild.
+    harness._run_shared_supervised(_namespace(out, seeds=[7, 8]), out)
+    assert len(calls) == 1, "seed drift must reuse, never rebuild or raise"
+    warned = capsys.readouterr().out
+    assert "WARNING" in warned and "seed" in warned
+    marker = json.loads(marker_path.read_text())
+    assert marker["shared_supervised_seed_mismatch"] is True
+    assert marker["supervised_seed"] == 1, "the BUILD seed stays recorded"
+    # Enforced identity fields survive the recorded-and-warn rewrite.
+    assert marker["model_name"] == "t5-small"
+
+    # The recorded mismatch is sticky provenance — a later matching-seed
+    # reuse keeps it.
+    harness._run_shared_supervised(_namespace(out, seeds=[1, 2, 3]), out)
+    assert len(calls) == 1
+    assert json.loads(marker_path.read_text())[
+        "shared_supervised_seed_mismatch"
+    ] is True

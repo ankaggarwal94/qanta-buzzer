@@ -75,8 +75,12 @@ SCHEMA_VERSION = 1
 DEVICE2_CAVEAT = "Full-scale t5-large efficacy remains a Device-2 (RTX 5090) run."
 RUN_COMPLETE_MARKER = "RUN_COMPLETE.json"
 # QA-002: identity marker written beside the shared supervised checkpoint
-# ({"config_hash", "git_sha", "model_name"}); validated on every reuse so a
-# stale checkpoint (different model/config) can never silently seed all arms.
+# ({"config_hash", "git_sha", "model_name", "supervised_seed"}); validated on
+# every reuse so a stale checkpoint (different model/config) can never
+# silently seed all arms. QA-R2-3: "supervised_seed" is RECORDED-AND-WARN
+# only (never enforced) — any fixed shared prefix preserves the paired
+# contrast, so a seed drift warns and records
+# "shared_supervised_seed_mismatch": true instead of raising.
 SHARED_SUPERVISED_MARKER = "SHARED_SUPERVISED.json"
 REPORT_FILENAME = "hazard_efficacy_report.json"
 PLOT_FILENAME = "hazard_efficacy_plot.png"
@@ -425,8 +429,12 @@ def _config_identity_hash(payload: Any) -> str:
 def _shared_supervised_identity(args: argparse.Namespace) -> dict[str, Any]:
     """Identity the shared supervised checkpoint must match (QA-002).
 
-    Returns ``{"config_hash", "git_sha", "model_name"}`` derived from THIS
-    invocation's resolved base config (YAML + smoke section) and checkout.
+    Returns ``{"config_hash", "git_sha", "model_name", "supervised_seed"}``
+    derived from THIS invocation's resolved base config (YAML + smoke
+    section), checkout, and build seed (``seeds[0]`` — the seed the shared
+    supervised child trains with). QA-R2-3: ``supervised_seed`` is
+    RECORDED-AND-WARN only, never enforced on reuse (see
+    :func:`_run_shared_supervised`).
     """
     base_config = _resolved_child_base_config(str(args.config), bool(args.smoke))
     return {
@@ -435,6 +443,7 @@ def _shared_supervised_identity(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "git_sha": _git_sha(),
         "model_name": base_config.get("model", {}).get("model_name"),
+        "supervised_seed": int(args.seeds[0]),
     }
 
 
@@ -853,6 +862,7 @@ def execute_plan(
     *,
     force: bool = False,
     expected_run_context: dict[str, Any] | None = None,
+    smoke: bool = False,
 ) -> list[dict[str, Any]]:
     """Execute (or resume) every planned run sequentially (R-011/R-013).
 
@@ -864,10 +874,14 @@ def execute_plan(
     log tail). After each run: checkpoint check, ``split_manifest.source
     == "persisted_artifacts"`` assertion, and the harness writes
     ``RUN_COMPLETE.json`` (``{"git_sha", "arm", "seed", "completed_at",
-    "wall_clock_seconds"}``; ``wall_clock_seconds`` is the child's
-    elapsed run time in seconds measured around :func:`_run_child` —
-    a float >= 0). Ends by running :func:`assert_arm_control` over
-    all records (resumed dirs included). Returns updated records.
+    "wall_clock_seconds", "smoke"}``; ``wall_clock_seconds`` is the
+    child's elapsed run time in seconds measured around
+    :func:`_run_child` — a float >= 0; ``smoke`` is the invocation's
+    ``--smoke`` flag, an additive marker field — QA-R2-2: ``--report-only``
+    rereads it so the report's smoke labeling comes from what the runs
+    were actually trained as, never from a later invocation's flag).
+    Ends by running :func:`assert_arm_control` over all records (resumed
+    dirs included). Returns updated records.
 
     QA-001: before any child is (re-)launched into an EXISTING dir, the
     stale ``RUN_COMPLETE.json`` and ``eval_result.json`` are unlinked
@@ -882,6 +896,10 @@ def execute_plan(
         this invocation via :func:`validate_resumed_run` (QA-002; keys
         ``model_name`` and/or ``artifact_qids``). Default ``None`` keeps
         the pre-existing behavior for direct callers.
+    smoke : bool, keyword-only
+        The invocation's ``--smoke`` flag, persisted verbatim into each
+        fresh run's ``RUN_COMPLETE.json`` marker (QA-R2-2). Default
+        ``False`` keeps the pre-existing behavior for direct callers.
     """
     current_sha = _git_sha()
     total = len(records)
@@ -956,6 +974,9 @@ def execute_plan(
             "seed": record["seed"],
             "completed_at": datetime.now(timezone.utc).isoformat(),
             "wall_clock_seconds": float(elapsed),
+            # QA-R2-2: persist the invocation's smoke flag so --report-only
+            # can label the report from the runs' real provenance.
+            "smoke": bool(smoke),
         }
         save_json(run_dir / RUN_COMPLETE_MARKER, marker)
         record["resumed"] = False
@@ -1965,6 +1986,43 @@ def _reconcile_seed_coverage(
     return warnings
 
 
+def _reconcile_planned_dirs(
+    plan: list[dict[str, Any]],
+    existing: list[dict[str, Any]],
+) -> list[str]:
+    """QA-R2-1 (QA-011 family): ``--report-only`` reconciles the FULL plan.
+
+    The report-only branch assembles from the run dirs that exist on disk;
+    a planned run whose dir is wholly missing would otherwise be silently
+    dropped BEFORE :func:`assemble_report`, bypassing
+    :func:`_reconcile_seed_coverage` (which only ever sees the surviving
+    records). Returns one warning string per planned arm with absent run
+    dir(s), in the QA-011 wording family; empty when every planned dir
+    exists.
+    """
+    planned: dict[str, set[int]] = {}
+    for record in plan:
+        planned.setdefault(record["arm"], set()).add(record["seed"])
+    present: dict[str, set[int]] = {}
+    for record in existing:
+        present.setdefault(record["arm"], set()).add(record["seed"])
+
+    warnings: list[str] = []
+    for arm in sorted(planned):
+        contributed = present.get(arm, set())
+        missing = sorted(planned[arm] - contributed)
+        if missing:
+            warnings.append(
+                f"arm {arm} contributes {len(contributed)} of "
+                f"{len(planned[arm])} planned run dirs to the report; "
+                f"seeds {missing} have no run dir on disk (QA-R2-1: "
+                "--report-only reconciles against the FULL plan — a "
+                "wholly missing dir must never be silently dropped from "
+                "the report)"
+            )
+    return warnings
+
+
 def _arm_metric_mean(
     eval_by_run: dict[tuple[str, int], dict[str, Any]], arm: str, key: str
 ) -> float | None:
@@ -2107,6 +2165,7 @@ def assemble_report(
     run_records: list[dict[str, Any]],
     *,
     smoke: bool = False,
+    extra_warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """Assemble + write the report EXCLUSIVELY from per-run files (R-009/R-014).
 
@@ -2127,11 +2186,20 @@ def assemble_report(
     QA-006 — while ``child_total_wall_clock_seconds`` carries the
     PPO-dominated child elapsed from arm B's ``RUN_COMPLETE.json``
     marker), ``hazard_dynamics``, ``warnings`` (QA-011: plan-vs-pool seed
-    reconciliation; empty list when clean), ``runs`` (per-run records
+    reconciliation; QA-R2-1: caller-supplied ``extra_warnings`` — e.g. the
+    report-only branch's plan-vs-disk reconciliation — are PREPENDED and
+    printed with them; empty list when clean), ``runs`` (per-run records
     incl. ``arm``, ``seed``, ``resumed``, ``policy_buzz_rate``,
     ``forced_commit_rate``, ``ece``, ``brier``, ``provenance``), and
     ``plot_path`` (relative ``hazard_efficacy_plot.png``). Never contains
     any Expected Wins key.
+
+    Parameters (additive)
+    ---------------------
+    extra_warnings : list of str or None, keyword-only
+        Caller-supplied warning strings merged (prepended) into the
+        report's ``warnings`` and printed alongside the QA-011 ones
+        (QA-R2-1). Default ``None`` keeps the pre-existing behavior.
     """
     out_dir = Path(out_dir)
     if not run_records:
@@ -2145,7 +2213,10 @@ def assemble_report(
     significance = _build_significance(eval_by_run)
     # QA-011: reconcile per-arm seed coverage against the plan and surface
     # any silent drop as a report warning (printed too, never swallowed).
-    warnings = _reconcile_seed_coverage(eval_by_run, run_records)
+    # QA-R2-1: caller-supplied warnings (report-only plan-vs-disk
+    # reconciliation) are merged in ahead of them.
+    warnings = list(extra_warnings or [])
+    warnings += _reconcile_seed_coverage(eval_by_run, run_records)
     for warning in warnings:
         print(f"WARNING: {warning}")
     arm_order = list(dict.fromkeys(rec["arm"] for rec in run_records))
@@ -2253,12 +2324,21 @@ def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
 
     QA-002: a fresh build writes an identity marker
     (``<root>/SHARED_SUPERVISED.json`` = ``{"config_hash", "git_sha",
-    "model_name"}``). An existing non-empty shared checkpoint is reused
-    ONLY when the marker exists and its ``config_hash``/``model_name``
-    match THIS invocation (``ProvenanceError`` otherwise — a t5-small
-    smoke checkpoint must never silently seed a t5-base comparison); a
-    ``git_sha`` drift warns without raising (R-013 policy). ``--force``
-    rebuilds the shared checkpoint unconditionally.
+    "model_name", "supervised_seed"}``). An existing non-empty shared
+    checkpoint is reused ONLY when the marker exists and its
+    ``config_hash``/``model_name`` match THIS invocation
+    (``ProvenanceError`` otherwise — a t5-small smoke checkpoint must
+    never silently seed a t5-base comparison); a ``git_sha`` drift warns
+    without raising (R-013 policy). ``--force`` rebuilds the shared
+    checkpoint unconditionally.
+
+    QA-R2-3: ``supervised_seed`` (the build's ``seeds[0]``) is
+    RECORDED-AND-WARN, never enforced: on reuse with a different
+    ``seeds[0]``, a warning is printed and
+    ``"shared_supervised_seed_mismatch": true`` is recorded into the
+    marker (durable provenance) — never a raise, because ANY fixed
+    shared prefix preserves the paired contrast (deliberate exemption,
+    now recorded).
     """
     sup_root = shared_supervised_root(out_dir)
     shared_ckpt = shared_supervised_checkpoint(out_dir)
@@ -2301,6 +2381,26 @@ def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
                     f"is {identity['git_sha']!r}; reusing it (drift recorded, "
                     "not fatal)."
                 )
+            # QA-R2-3: build-seed drift is RECORDED-AND-WARN, never enforced —
+            # any fixed shared prefix preserves the paired contrast.
+            marker_seed = marker.get("supervised_seed")
+            if (
+                marker_seed is not None
+                and marker_seed != identity["supervised_seed"]
+            ):
+                print(
+                    "WARNING: shared supervised checkpoint was built with "
+                    f"seed {marker_seed!r} but this invocation's build seed "
+                    f"(seeds[0]) is {identity['supervised_seed']!r}; reusing "
+                    "it (any fixed shared prefix preserves the paired "
+                    "contrast — recording shared_supervised_seed_mismatch, "
+                    "not fatal)."
+                )
+                if not marker.get("shared_supervised_seed_mismatch"):
+                    save_json(
+                        marker_path,
+                        {**marker, "shared_supervised_seed_mismatch": True},
+                    )
             print(f"[supervised] resumed: shared checkpoint exists at {shared_ckpt}")
             return shared_ckpt
         print("[supervised] --force: rebuilding the shared supervised checkpoint")
@@ -2393,9 +2493,14 @@ def main(argv: list[str] | None = None) -> None:
 
     ``--dry-run`` stops after preflight+plan with zero children;
     ``--report-only`` performs zero training/eval calls (and no split
-    preflight) and reassembles report + plot from existing run dirs;
-    ``--report-only --dry-run`` is plan-print only — zero writes and zero
-    deletions, ``--prune-checkpoints`` included (QA-005).
+    preflight) and reassembles report + plot from existing run dirs,
+    reconciling the surviving dirs against the FULL plan (QA-R2-1: a
+    wholly missing planned dir becomes a report warning, never a silent
+    drop) and deriving the report's smoke label from the runs'
+    ``RUN_COMPLETE.json`` markers (QA-R2-2: mixed smoke provenance raises
+    ``ProvenanceError``; markers predating the field fall back to
+    ``--smoke``); ``--report-only --dry-run`` is plan-print only — zero
+    writes and zero deletions, ``--prune-checkpoints`` included (QA-005).
     """
     args = parse_args(argv)
     validate_flag_compatibility(args)
@@ -2424,7 +2529,12 @@ def main(argv: list[str] | None = None) -> None:
                 f"for the planned arms/seeds "
                 f"({[Path(r['run_dir']).name for r in plan]})"
             )
+        # QA-R2-1: reconcile the surviving dirs against the FULL plan — a
+        # planned arm/seed whose dir is wholly missing becomes a printed
+        # report warning instead of a silent drop.
+        plan_warnings = _reconcile_planned_dirs(plan, records)
         current_sha = _git_sha()
+        marker_smoke_by_run: dict[str, bool] = {}
         for record in records:
             record["resumed"] = True
             # QA-008: git-sha drift is read from each run's real marker —
@@ -2435,7 +2545,36 @@ def main(argv: list[str] | None = None) -> None:
             record["git_sha_mismatch"] = (
                 marker is None or marker.get("git_sha") != current_sha
             )
-        assemble_report(out_dir, records, smoke=bool(args.smoke))
+            # QA-R2-2: collect each run's persisted smoke flag (additive
+            # marker field; markers predating it contribute nothing).
+            if marker is not None and marker.get("smoke") is not None:
+                marker_smoke_by_run[_run_name(record)] = bool(marker["smoke"])
+        smoke_values = set(marker_smoke_by_run.values())
+        if len(smoke_values) > 1:
+            smoke_runs = sorted(
+                name for name, value in marker_smoke_by_run.items() if value
+            )
+            full_runs = sorted(
+                name for name, value in marker_smoke_by_run.items() if not value
+            )
+            raise ProvenanceError(
+                f"--report-only found MIXED smoke provenance under {out_dir}: "
+                f"runs {smoke_runs} completed with --smoke while runs "
+                f"{full_runs} did not (their RUN_COMPLETE.json markers "
+                "disagree); one report cannot honestly label both cohorts "
+                "(QA-R2-2). Delete the stale run dirs or report on a single "
+                "cohort."
+            )
+        # QA-R2-2: the report's smoke labeling (verdict scale note + smoke
+        # caveat) comes from the runs' own provenance, not this
+        # invocation's flag; legacy markers without the field fall back to
+        # --smoke (the pre-existing behavior).
+        report_smoke = (
+            next(iter(smoke_values)) if smoke_values else bool(args.smoke)
+        )
+        assemble_report(
+            out_dir, records, smoke=report_smoke, extra_warnings=plan_warnings
+        )
         if args.prune_checkpoints:
             _prune_all_runs(records)
         print(f"Report written to {out_dir / REPORT_FILENAME}")
@@ -2477,8 +2616,13 @@ def main(argv: list[str] | None = None) -> None:
     }
 
     # Arm children with resume/partial/force semantics + arm control.
+    # QA-R2-2: the invocation's smoke flag is persisted into each fresh
+    # run's completion marker so --report-only can relabel honestly.
     records = execute_plan(
-        plan, force=bool(args.force), expected_run_context=expected_run_context
+        plan,
+        force=bool(args.force),
+        expected_run_context=expected_run_context,
+        smoke=bool(args.smoke),
     )
 
     # QA-004 / R-005: single-source split resolution — the eval/probe/

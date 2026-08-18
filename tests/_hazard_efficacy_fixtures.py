@@ -18,7 +18,10 @@ producers byte-for-schema (AP-031 format pinning):
   (``accuracy``, ``mean_sq``, ``ece``, ``brier``, ``avg_buzz_pos``,
   ``n_questions``, ``test_set_source``) plus the harness enrichment.
 - ``RUN_COMPLETE.json``: harness marker incl. ``wall_clock_seconds``
-  (the child's elapsed seconds, recorded by ``execute_plan``).
+  (the child's elapsed seconds, recorded by ``execute_plan``) and
+  ``smoke`` (the invocation's --smoke flag, additive QA-R2-2 field; the
+  fixture default ``True`` matches the smoke-resolved config the other
+  sidecars replicate).
 - Per-question eval ``runs`` records: R-002 field set.
 - MCQuestion JSON split artifacts: complete records deserializable by the
   real persisted-split loader (schema: ``qb_data/mc_builder.py``; writer
@@ -277,6 +280,7 @@ def make_run_dir(
     marker: bool = True,
     marker_git_sha: str | None = None,
     marker_wall_clock_seconds: float = 12.5,
+    marker_smoke: bool = True,
     model_name: str = "t5-small",
     ppo_checkpoint_dir: str = "checkpoints",
     split_source: str = "persisted_artifacts",
@@ -362,6 +366,7 @@ def make_run_dir(
                 "seed": seed,
                 "completed_at": "2026-08-18T00:00:00Z",
                 "wall_clock_seconds": marker_wall_clock_seconds,
+                "smoke": marker_smoke,
             },
         )
     return run_dir
