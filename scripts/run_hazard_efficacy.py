@@ -1,13 +1,12 @@
-# STUB:TDD
-"""Hazard-pretrain efficacy eval harness (RED-phase structural stub).
+#!/usr/bin/env python3
+"""Hazard-pretrain efficacy eval harness.
 
 Orchestrates the paired WITH/WITHOUT/compute-control comparison for the
 ``--hazard-pretrain`` warm-start bridge (spec: ``.correctless/specs/
 hazard-efficacy-eval.md``, Track B rules R-003, R-005..R-009, R-010b,
 R-011..R-014).
 
-Pipeline (GREEN implements; tests in ``tests/test_hazard_efficacy_*.py``
-pin the behavior):
+Pipeline:
 
 1. Preflight (R-013): resolve persisted split artifacts, plan every
    arm x seed run up front (distinct dirs ``<out>/<arm>_seed<k>``, full
@@ -16,7 +15,7 @@ pin the behavior):
    into every arm via ``--skip-supervised --model-path <shared>`` and a
    split manifest is persisted next to it (R-003 / R-008).
 3. Child training runs via ``scripts/train_t5_policy.py`` argv LISTS,
-   ``shell=False``, tee'd to ``<run_dir>/train.log`` (R-011); complete
+   shell=False, tee'd to ``<run_dir>/train.log`` (R-011); complete
    run dirs (RUN_COMPLETE.json marker + checkpoints + sidecars) are
    skipped/resumed, partial dirs fail loud unless ``--force`` (R-013).
 4. Arm-control sidecar assertions diff ``config_used.json`` /
@@ -28,24 +27,40 @@ pin the behavior):
    ``hazard_history.json`` loss halves -> ``hazard_dynamics`` (R-010b).
 7. Report assembly reads EXCLUSIVELY per-run files and writes
    ``hazard_efficacy_report.json`` + ``hazard_efficacy_plot.png``
-   (Agg backend, ``savefig`` never ``show``) (R-009 / R-014).
-
-Every public function below is a structural stub raising
-``NotImplementedError``; signatures, constants, exception types, and the
-documented record/report schemas are the pinned interface the GREEN
-phase must implement against.
+   (headless Agg backend, ``savefig`` only) (R-009 / R-014).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import platform
+import shutil
+import subprocess
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+import numpy as np
+import yaml
+
+# R-012: the harness reuses the shared eval entry point and bootstrap
+# resampler as module attributes (identity-pinned by the tests) — it never
+# reimplements episode rollouts or metric math.
+from evaluation.controls import bootstrap_ci
+from scripts._common import (
+    ARTIFACT_DIR,
+    PROCESSED_DIR,
+    load_mc_questions,
+    save_json,
+)
+from scripts.compare_policies import evaluate_t5_policy
 
 # ---------------------------------------------------------------------------
 # Pinned constants (interface — values are spec-mandated)
@@ -66,6 +81,38 @@ PRIMARY_MIN_POSITION_GAIN = 1.0
 PRIMARY_MAX_ACCURACY_DROP = 0.01
 SIGNIFICANCE_MIN_QUESTIONS = 50
 PROBE_MAX_QUESTIONS = 32
+
+_TRAIN_SCRIPT = PROJECT_ROOT / "scripts" / "train_t5_policy.py"
+_SHARED_SUPERVISED_DIRNAME = "shared_supervised"
+_PERSISTED_SOURCE = "persisted_artifacts"
+_CORE_ARMS = frozenset(DEFAULT_ARMS)
+_LOG_TAIL_LINES = 20
+
+# Inclusive-threshold comparisons on IEEE-754 doubles: an intended exact tie
+# (e.g. accuracy 0.60 -> 0.59 against tolerance 0.01) can differ from the
+# written arithmetic by one ulp depending on the operand representations.
+# The guard keeps R-006's inclusive boundaries inclusive without admitting
+# any materially sub-threshold value.
+_FLOAT_TOLERANCE = 1e-9
+
+_HAZARD_STEP_MATCHING_NOTE = (
+    "Hazard optimizer steps are 1-per-question (B=1) and are NOT "
+    "commensurable with supervised B=N optimizer steps; compare arm B "
+    "against the step-matched arm C ablation, not against supervised "
+    "step counts."
+)
+_SMOKE_CAVEAT = (
+    "Smoke-scale run: the test split is far below the significance gate, "
+    "so metric deltas are plumbing/training-dynamics evidence only."
+)
+
+ENDPOINT_DEFINITION = (
+    "Primary endpoint (R-006): treatment mean correct-answer buzz position "
+    "<= control mean correct-answer buzz position - 1.0 prefixes AND "
+    "treatment accuracy >= control accuracy - 0.01 (absolute), replicated "
+    "in >= 2 of 3 seeds (inclusive thresholds). A seed where either arm has "
+    "zero correct policy buzzes is a non-success with undefined_position."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +145,94 @@ class ProvenanceError(HarnessError):
 
 
 # ---------------------------------------------------------------------------
+# Small shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _git_sha() -> str:
+    """Return the repo HEAD sha via real ``git rev-parse HEAD`` (R-008)."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:  # pragma: no cover - git binary missing
+        raise ProvenanceError(f"git rev-parse HEAD failed: {exc}") from exc
+    sha = result.stdout.strip()
+    if result.returncode != 0 or not sha:
+        raise ProvenanceError(
+            "git rev-parse HEAD failed "
+            f"(exit {result.returncode}): {result.stderr.strip()!r}"
+        )
+    return sha
+
+
+def _git_dirty() -> bool:
+    """Return True when ``git status --porcelain`` is non-empty (R-008)."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:  # pragma: no cover - git binary missing
+        raise ProvenanceError(f"git status --porcelain failed: {exc}") from exc
+    if result.returncode != 0:
+        raise ProvenanceError(
+            "git status --porcelain failed "
+            f"(exit {result.returncode}): {result.stderr.strip()!r}"
+        )
+    return bool(result.stdout.strip())
+
+
+def _load_json_file(path: Path, *, error_cls: type = HarnessError) -> Any:
+    """Load a JSON sidecar, raising ``error_cls`` on absence/corruption."""
+    path = Path(path)
+    if not path.exists():
+        raise error_cls(f"required file is missing: {path}")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise error_cls(f"could not read {path}: {exc}") from exc
+
+
+def _log_tail(log_path: Path, n_lines: int = _LOG_TAIL_LINES) -> str:
+    """Return the last ``n_lines`` of a child log (empty-safe)."""
+    log_path = Path(log_path)
+    if not log_path.exists():
+        return "<no log written>"
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return f"<log unreadable: {exc}>"
+    return "\n".join(lines[-n_lines:]) if lines else "<log empty>"
+
+
+def _run_name(record: dict[str, Any]) -> str:
+    """Canonical ``<arm>_seed<k>`` display name for a plan record."""
+    return f"{record['arm']}_seed{record['seed']}"
+
+
+def shared_supervised_root(out_dir: Path) -> Path:
+    """Root dir the shared supervised child writes into (its override)."""
+    return Path(out_dir) / _SHARED_SUPERVISED_DIRNAME
+
+
+def shared_supervised_checkpoint(out_dir: Path) -> Path:
+    """The branched checkpoint every arm child receives as ``--model-path``.
+
+    The real trainer (``training/train_supervised_t5.py``) saves the best
+    supervised model under ``<checkpoint_dir>/supervised/best_model``, so
+    with ``supervised.checkpoint_dir=<root>`` the checkpoint lands at
+    ``<root>/supervised/best_model``.
+    """
+    return shared_supervised_root(out_dir) / "supervised" / "best_model"
+
+
+# ---------------------------------------------------------------------------
 # CLI / planning
 # ---------------------------------------------------------------------------
 
@@ -115,8 +250,88 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ``--variant`` (repeatable ``NAME:FLAGS``; ``args.variant`` is a
     list[str], default []).
     """
-    # STUB:TDD
-    raise NotImplementedError
+    parser = argparse.ArgumentParser(
+        description=(
+            "Paired WITH/WITHOUT/compute-control efficacy eval for the "
+            "--hazard-pretrain warm-start bridge."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/t5_policy.yaml",
+        help="Path to the trainer YAML config (default: configs/t5_policy.yaml).",
+    )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Smoke scale (t5-small); injects ppo.eval_interval=1 per child.",
+    )
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=list(DEFAULT_SEEDS),
+        help="Training seeds replicated per arm (default: 1 2 3).",
+    )
+    parser.add_argument(
+        "--arms",
+        type=str,
+        nargs="+",
+        default=list(DEFAULT_ARMS),
+        help="Core arms to run: A control, B treatment, C shuffled_nll ablation.",
+    )
+    parser.add_argument(
+        "--beta-terminal",
+        type=float,
+        default=1.0,
+        help="Hazard-bridge terminal survival penalty threaded to arms B/C.",
+    )
+    parser.add_argument(
+        "--freeze-answer-head",
+        action="store_true",
+        help="Freeze the answer head during the hazard phase (arms B/C).",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=str,
+        default=DEFAULT_OUT_DIR,
+        help=f"Output tree for run dirs, report, and plot (default: {DEFAULT_OUT_DIR}).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-run every planned run, complete and partial dirs included.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preflight + plan print only; zero children launched.",
+    )
+    parser.add_argument(
+        "--report-only",
+        action="store_true",
+        help="Reassemble report + plot from existing run dirs; zero train/eval.",
+    )
+    parser.add_argument(
+        "--prune-checkpoints",
+        action="store_true",
+        help="After eval, delete iter_*/epoch_*/training_state.pt per run.",
+    )
+    parser.add_argument(
+        "--variant",
+        action="append",
+        default=None,
+        help=(
+            "Extra hazard B-variant as NAME:FLAGS (repeatable); FLAGS are "
+            "whitespace-split and appended to a hazard-arm child argv."
+        ),
+    )
+    args = parser.parse_args(argv)
+    # ``action="append"`` with a shared mutable default would accumulate
+    # across parses; normalize the None sentinel to a fresh list instead.
+    args.variant = list(args.variant) if args.variant else []
+    return args
 
 
 def resolve_split_artifacts(
@@ -131,9 +346,38 @@ def resolve_split_artifacts(
     ``PreflightError`` naming the missing location and advising
     ``scripts/build_mc_dataset.py`` when the artifacts are absent.
     ``search_dirs`` overrides the standard artifact directories (tests).
+
+    The default search order mirrors the child trainer's own resolution
+    (``scripts/train_t5_policy.py::load_question_splits_with_metadata``)
+    so the harness preflights the same artifacts every child will use.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    if search_dirs is not None:
+        candidate_dirs = [Path(d) for d in search_dirs]
+    elif mc_path:
+        candidate_dirs = [Path(mc_path).parent]
+    elif smoke:
+        candidate_dirs = [ARTIFACT_DIR / "smoke", ARTIFACT_DIR / "main", PROCESSED_DIR]
+    else:
+        candidate_dirs = [ARTIFACT_DIR / "main", ARTIFACT_DIR / "smoke", PROCESSED_DIR]
+
+    if not candidate_dirs:
+        raise PreflightError("resolve_split_artifacts: no search directories given")
+
+    for base in candidate_dirs:
+        paths = {
+            split: Path(base) / f"{split}_dataset.json"
+            for split in ("train", "val", "test")
+        }
+        if all(p.exists() for p in paths.values()):
+            return paths
+
+    searched = ", ".join(str(d) for d in candidate_dirs)
+    build_cmd = "python scripts/build_mc_dataset.py" + (" --smoke" if smoke else "")
+    raise PreflightError(
+        "Persisted split artifacts (train/val/test *_dataset.json) not "
+        f"found. Searched: {searched}. Run `{build_cmd}` first to build "
+        "the persisted splits (scripts/build_mc_dataset.py)."
+    )
 
 
 def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -147,8 +391,103 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
     B-variant arm named NAME per seed. Variant names containing path
     separators or ``..`` raise ``PreflightError``.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    out_dir = Path(args.out_dir)
+    shared_ckpt = shared_supervised_checkpoint(out_dir)
+
+    arms = list(args.arms)
+    seeds = [int(s) for s in args.seeds]
+    if not arms or not seeds:
+        raise PreflightError("plan_runs: --arms and --seeds must be non-empty")
+
+    unknown = [arm for arm in arms if arm not in _CORE_ARMS]
+    if unknown:
+        raise PreflightError(
+            f"Unknown core arm(s) {unknown}; core arms are A (control), "
+            "B (hazard treatment), C (shuffled_nll ablation). Use "
+            "--variant NAME:FLAGS for extra hazard variants."
+        )
+
+    variants: list[tuple[str, list[str]]] = []
+    for spec in getattr(args, "variant", None) or []:
+        name, sep, flags_str = str(spec).partition(":")
+        name = name.strip()
+        if not sep or not name:
+            raise PreflightError(
+                f"--variant must be NAME:FLAGS with a non-empty name; got {spec!r}"
+            )
+        if "/" in name or "\\" in name or ".." in name:
+            raise PreflightError(
+                f"variant name {name!r} must not contain path separators or "
+                "'..' (it becomes the run-dir name <out>/<NAME>_seed<k>)"
+            )
+        variants.append((name, flags_str.split()))
+
+    records: list[dict[str, Any]] = []
+
+    def _add(
+        arm: str,
+        seed: int,
+        *,
+        hazard: bool,
+        variant: str | None = None,
+        **argv_kwargs: Any,
+    ) -> None:
+        run_dir = out_dir / f"{arm}_seed{seed}"
+        argv = build_child_argv(
+            arm=arm,
+            seed=seed,
+            run_dir=run_dir,
+            shared_supervised_path=shared_ckpt,
+            config_path=str(args.config),
+            smoke=bool(args.smoke),
+            hazard=hazard,
+            **argv_kwargs,
+        )
+        records.append(
+            {
+                "arm": arm,
+                "seed": seed,
+                "run_dir": run_dir,
+                "hazard": hazard,
+                "argv": argv,
+                "log_path": run_dir / TRAIN_LOG_FILENAME,
+                "variant": variant,
+            }
+        )
+
+    for arm in arms:
+        for seed in seeds:
+            if arm == "A":
+                _add(arm, seed, hazard=False)
+            elif arm == "B":
+                _add(
+                    arm,
+                    seed,
+                    hazard=True,
+                    beta_terminal=args.beta_terminal,
+                    freeze_answer_head=bool(args.freeze_answer_head),
+                )
+            else:  # arm == "C": step-matched null-signal compute control
+                _add(
+                    arm,
+                    seed,
+                    hazard=True,
+                    beta_terminal=args.beta_terminal,
+                    freeze_answer_head=bool(args.freeze_answer_head),
+                    ablation="shuffled_nll",
+                )
+
+    for name, flags in variants:
+        for seed in seeds:
+            _add(name, seed, hazard=True, variant=name, extra_flags=flags)
+
+    run_dirs = [rec["run_dir"] for rec in records]
+    if len(set(run_dirs)) != len(run_dirs):
+        raise PreflightError(
+            "plan_runs: duplicate run dirs in the plan (repeated arm/seed "
+            "or a variant name colliding with a core arm)"
+        )
+    return records
 
 
 def build_child_argv(
@@ -174,8 +513,45 @@ def build_child_argv(
     the positional override ``ppo.eval_interval=1`` and NEVER any
     ``ppo.save_interval`` override.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    if not hazard and (
+        beta_terminal is not None or freeze_answer_head or ablation is not None
+    ):
+        raise ValueError(
+            "build_child_argv: hazard knobs (beta_terminal / "
+            "freeze_answer_head / ablation) require hazard=True "
+            f"(arm={arm!r})"
+        )
+
+    argv: list[str] = [
+        sys.executable,
+        str(_TRAIN_SCRIPT),
+        "--config",
+        str(config_path),
+        "--skip-supervised",
+        "--model-path",
+        str(shared_supervised_path),
+        "--seed",
+        str(int(seed)),
+    ]
+    if hazard:
+        argv.append("--hazard-pretrain")
+        if beta_terminal is not None:
+            argv += ["--beta-terminal", str(beta_terminal)]
+        if freeze_answer_head:
+            argv.append("--freeze-answer-head")
+        if ablation is not None:
+            argv += ["--hazard-ablation", str(ablation)]
+    if extra_flags:
+        argv += [str(token) for token in extra_flags]
+    if smoke:
+        # R-011: only the eval-interval override is injected (first
+        # validation writes best_model since best_val_reward starts at
+        # -inf); a per-iteration save_interval would waste full model +
+        # optimizer-state writes and is deliberately NOT injected.
+        argv.append("--smoke")
+        argv.append("ppo.eval_interval=1")
+    argv.append(f"supervised.checkpoint_dir={run_dir}")
+    return argv
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +565,23 @@ def _run_child(argv: list[str], log_path: Path) -> int:
     Single injectable seam: tests monkeypatch
     ``scripts.run_hazard_efficacy._run_child``. Returns the exit code.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    log_path = Path(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    argv = [str(token) for token in argv]
+    with log_path.open("w", encoding="utf-8") as log_file:
+        proc = subprocess.Popen(  # noqa: S603 - fixed argv list, shell=False
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+        )
+        assert proc.stdout is not None  # PIPE above guarantees a stream
+        for line in proc.stdout:
+            log_file.write(line)
+            sys.stdout.write(line)
+        proc.stdout.close()
+        return proc.wait()
 
 
 def check_child_outputs(record: dict[str, Any]) -> None:
@@ -198,8 +589,15 @@ def check_child_outputs(record: dict[str, Any]) -> None:
 
     Raises ``ChildRunError`` naming the run (arm, seed) and the log path.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    run_dir = Path(record["run_dir"])
+    best_model = run_dir / "ppo_t5" / "best_model"
+    if not best_model.exists():
+        raise ChildRunError(
+            f"Run {_run_name(record)} (arm={record['arm']}, "
+            f"seed={record['seed']}) left no PPO checkpoint at {best_model}; "
+            f"inspect the child log: {record['log_path']}"
+        )
+    return None
 
 
 def classify_run_dir(run_dir: Path, *, hazard: bool = False) -> str:
@@ -210,8 +608,37 @@ def classify_run_dir(run_dir: Path, *, hazard: bool = False) -> str:
     hazard arms), ``"partial"`` (some outputs, incomplete), or
     ``"fresh"`` (absent/empty).
     """
-    # STUB:TDD
-    raise NotImplementedError
+    run_dir = Path(run_dir)
+    if not run_dir.exists():
+        return "fresh"
+    if not run_dir.is_dir():
+        return "partial"
+    if not any(run_dir.iterdir()):
+        return "fresh"
+
+    required = [
+        run_dir / RUN_COMPLETE_MARKER,
+        run_dir / "ppo_t5" / "best_model",
+        run_dir / "ppo_t5" / "config_used.json",
+        run_dir / "ppo_t5" / "split_manifest.json",
+    ]
+    if hazard:
+        required.append(run_dir / "hazard" / "best_model")
+    return "complete" if all(p.exists() for p in required) else "partial"
+
+
+def _assert_split_source(record: dict[str, Any]) -> None:
+    """R-013: ``split_manifest.source`` must be persisted_artifacts."""
+    manifest_path = Path(record["run_dir"]) / "ppo_t5" / "split_manifest.json"
+    manifest = _load_json_file(manifest_path, error_cls=ProvenanceError)
+    source = manifest.get("source") if isinstance(manifest, dict) else None
+    if source != _PERSISTED_SOURCE:
+        raise ProvenanceError(
+            f"Run {_run_name(record)}: split_manifest.source is {source!r} "
+            f"but must be '{_PERSISTED_SOURCE}'. The silent random-split "
+            "fallback invalidates split provenance; rebuild the persisted "
+            "artifacts and delete this run dir."
+        )
 
 
 def execute_plan(
@@ -232,13 +659,103 @@ def execute_plan(
     a float >= 0). Ends by running :func:`assert_arm_control` over
     all records (resumed dirs included). Returns updated records.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    current_sha = _git_sha()
+    total = len(records)
+
+    for index, record in enumerate(records, start=1):
+        run_dir = Path(record["run_dir"])
+        log_path = Path(record["log_path"])
+        name = _run_name(record)
+        state = classify_run_dir(run_dir, hazard=bool(record.get("hazard")))
+
+        if state == "complete" and not force:
+            print(f"[{index}/{total}] arm={record['arm']} seed={record['seed']} "
+                  "resumed (complete run dir found, skipping child)")
+            record["resumed"] = True
+            marker = _load_json_file(
+                run_dir / RUN_COMPLETE_MARKER, error_cls=PartialRunError
+            )
+            mismatch = marker.get("git_sha") != current_sha
+            record["git_sha_mismatch"] = bool(mismatch)
+            if mismatch:
+                print(
+                    f"WARNING: resumed run {name} was completed at git sha "
+                    f"{marker.get('git_sha')!r} but the current checkout is "
+                    f"{current_sha!r}; recording the drift in provenance "
+                    "(not fatal)."
+                )
+            _assert_split_source(record)
+            continue
+
+        if state == "partial" and not force:
+            raise PartialRunError(
+                f"Run dir {run_dir} has outputs but no valid completion "
+                f"state ({RUN_COMPLETE_MARKER} + checkpoints + sidecars). "
+                f"Delete the directory to re-run {name} fresh, or pass "
+                "--force to re-run everything."
+            )
+
+        print(f"[{index}/{total}] arm={record['arm']} seed={record['seed']} started")
+        start = time.monotonic()
+        exit_code = _run_child(record["argv"], log_path)
+        elapsed = time.monotonic() - start
+        if exit_code != 0:
+            raise ChildRunError(
+                f"Child run {name} (arm={record['arm']}, "
+                f"seed={record['seed']}) failed with exit code {exit_code}; "
+                f"log: {log_path}\n--- log tail ---\n{_log_tail(log_path)}"
+            )
+
+        check_child_outputs(record)
+        if record.get("hazard") and not (run_dir / "hazard" / "best_model").exists():
+            raise ChildRunError(
+                f"Hazard run {name} left no hazard checkpoint at "
+                f"{run_dir / 'hazard' / 'best_model'}; inspect the child "
+                f"log: {log_path}"
+            )
+        _assert_split_source(record)
+
+        marker = {
+            "git_sha": current_sha,
+            "arm": record["arm"],
+            "seed": record["seed"],
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "wall_clock_seconds": float(elapsed),
+        }
+        save_json(run_dir / RUN_COMPLETE_MARKER, marker)
+        record["resumed"] = False
+        record["git_sha_mismatch"] = False
+        print(
+            f"[{index}/{total}] arm={record['arm']} seed={record['seed']} "
+            f"finished, elapsed {elapsed:.1f}s"
+        )
+
+    assert_arm_control(records)
+    return records
 
 
 # ---------------------------------------------------------------------------
 # Arm control / provenance (R-003 / R-008)
 # ---------------------------------------------------------------------------
+
+
+def _flatten_dotted(obj: Any, prefix: str = "") -> dict[str, Any]:
+    """Flatten nested dicts into dotted-path leaves for key-wise diffing."""
+    flat: dict[str, Any] = {}
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if isinstance(value, dict):
+                flat.update(_flatten_dotted(value, path))
+            else:
+                flat[path] = value
+    return flat
+
+
+def _is_exempt_config_key(path: str) -> bool:
+    """R-003 exemptions: hazard block, top-level seed, *.checkpoint_dir."""
+    parts = path.split(".")
+    return path == "seed" or parts[0] == "hazard" or parts[-1] == "checkpoint_dir"
 
 
 def assert_arm_control(records: list[dict[str, Any]]) -> None:
@@ -250,8 +767,59 @@ def assert_arm_control(records: list[dict[str, Any]]) -> None:
     identical train/val/test qids. Any mismatch raises
     ``ArmControlError`` naming the offending arm (and key).
     """
-    # STUB:TDD
-    raise NotImplementedError
+    if not records:
+        return None
+
+    loaded: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    for record in records:
+        run_dir = Path(record["run_dir"])
+        config = _load_json_file(
+            run_dir / "ppo_t5" / "config_used.json", error_cls=ArmControlError
+        )
+        manifest = _load_json_file(
+            run_dir / "ppo_t5" / "split_manifest.json", error_cls=ArmControlError
+        )
+        flat = {
+            key: value
+            for key, value in _flatten_dotted(config).items()
+            if not _is_exempt_config_key(key)
+        }
+        loaded.append((record, flat, manifest))
+
+    ref_record, ref_flat, ref_manifest = loaded[0]
+    ref_name = _run_name(ref_record)
+
+    for record, flat, manifest in loaded[1:]:
+        name = _run_name(record)
+        for key in sorted(set(ref_flat) | set(flat)):
+            if key not in flat:
+                raise ArmControlError(
+                    f"Arm-control violation (R-003): run {name} (arm="
+                    f"{record['arm']}) config_used.json is missing key "
+                    f"'{key}' present in {ref_name}"
+                )
+            if key not in ref_flat:
+                raise ArmControlError(
+                    f"Arm-control violation (R-003): run {name} (arm="
+                    f"{record['arm']}) config_used.json has unexpected extra "
+                    f"key '{key}' absent from {ref_name}"
+                )
+            if flat[key] != ref_flat[key]:
+                raise ArmControlError(
+                    f"Arm-control violation (R-003): run {name} (arm="
+                    f"{record['arm']}) differs from {ref_name} at config key "
+                    f"'{key}': {flat[key]!r} != {ref_flat[key]!r}"
+                )
+        for split in ("train", "val", "test"):
+            key = f"{split}_qids"
+            if manifest.get(key) != ref_manifest.get(key):
+                raise ArmControlError(
+                    f"Arm-control violation (R-003): run {name} (arm="
+                    f"{record['arm']}) split_manifest.json {key} differ "
+                    f"from {ref_name}; all arms must train/evaluate on "
+                    "identical splits"
+                )
+    return None
 
 
 def write_supervised_split_manifest(
@@ -263,8 +831,30 @@ def write_supervised_split_manifest(
     (``ProvenanceError`` on overlap) and writes ``split_manifest.json``
     into ``supervised_ckpt_dir``. Returns the written path.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    if not isinstance(manifest, dict):
+        raise ProvenanceError(
+            "write_supervised_split_manifest: manifest must be a dict, got "
+            f"{type(manifest).__name__}"
+        )
+    train_qids = manifest.get("train_qids")
+    test_qids = manifest.get("test_qids")
+    if not isinstance(train_qids, list) or not isinstance(test_qids, list):
+        raise ProvenanceError(
+            "write_supervised_split_manifest: manifest must carry "
+            "train_qids and test_qids lists"
+        )
+    overlap = sorted(set(train_qids) & set(test_qids))
+    if overlap:
+        raise ProvenanceError(
+            "Supervised split manifest violates train/test disjointness "
+            f"(R-008): {len(overlap)} qid(s) appear in both, e.g. "
+            f"{overlap[:5]}; the supervised phase must never see test qids."
+        )
+    out_dir = Path(supervised_ckpt_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "split_manifest.json"
+    save_json(out_path, manifest)
+    return out_path
 
 
 def collect_provenance(config_used: dict[str, Any]) -> dict[str, Any]:
@@ -275,8 +865,42 @@ def collect_provenance(config_used: dict[str, Any]) -> dict[str, Any]:
     ``git status --porcelain``. A missing source field raises
     ``ProvenanceError`` (no report may be written).
     """
-    # STUB:TDD
-    raise NotImplementedError
+    try:
+        model_cfg = config_used["model"]
+        model_name = model_cfg["model_name"]
+        device = model_cfg["device"]
+        seed = config_used["seed"]
+    except (KeyError, TypeError) as exc:
+        raise ProvenanceError(
+            f"config_used.json is missing a required provenance field: {exc}"
+        ) from exc
+    if not model_name or not device or seed is None:
+        raise ProvenanceError(
+            "config_used.json carries an empty provenance field "
+            f"(model_name={model_name!r}, device={device!r}, seed={seed!r})"
+        )
+
+    try:
+        import torch
+
+        torch_version = str(torch.__version__)
+    except ImportError as exc:  # pragma: no cover - torch is a core dep
+        raise ProvenanceError(f"torch is unavailable: {exc}") from exc
+    platform_str = platform.platform()
+    if not torch_version or not platform_str:
+        raise ProvenanceError(
+            "provenance is incomplete: torch_version/platform resolved empty"
+        )
+
+    return {
+        "model_name": model_name,
+        "seed": seed,
+        "device": device,
+        "git_sha": _git_sha(),
+        "git_dirty": _git_dirty(),
+        "torch_version": torch_version,
+        "platform": platform_str,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -298,9 +922,66 @@ def evaluate_run(
     "n_correct_policy_buzzes", "mean_correct_buzz_position"}`` derived
     from the per-question ``runs`` records (R-014). Returns the enriched
     payload.
+
+    Parameters
+    ----------
+    record : dict
+        One plan record (``arm``, ``seed``, ``run_dir`` are read).
+    test_questions : list
+        The shared held-out test split (identical object across runs).
+    config : dict
+        Eval context. Optional keys threaded through to the shared eval
+        entry point: ``reference_questions`` (train-split corpus for the
+        env reward helper), ``test_set_source`` (provenance label,
+        default ``"persisted_artifacts"``), ``config`` (the loaded YAML
+        config dict). All other keys are ignored, so tests may pass a
+        bare ``{}``.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    run_dir = Path(record["run_dir"])
+    checkpoint_path = run_dir / "ppo_t5" / "best_model"
+    context = config if isinstance(config, dict) else {}
+
+    payload = evaluate_t5_policy(
+        checkpoint_path=str(checkpoint_path),
+        test_questions=test_questions,
+        reference_questions=context.get("reference_questions", []),
+        test_set_source=context.get("test_set_source", _PERSISTED_SOURCE),
+        config=context.get("config", {}),
+        return_runs=True,
+    )
+
+    runs = payload.get("runs") if isinstance(payload, dict) else None
+    if not isinstance(runs, list):
+        raise HarnessError(
+            f"evaluate_t5_policy returned no per-question 'runs' records for "
+            f"{_run_name(record)}; return_runs=True is required (R-002/R-005)"
+        )
+
+    n = len(runs)
+    n_buzzed = sum(1 for r in runs if r.get("buzzed"))
+    correct_positions = [
+        r.get("buzz_position")
+        for r in runs
+        if r.get("buzzed") and r.get("correct") and r.get("buzz_position") is not None
+    ]
+    n_correct = sum(1 for r in runs if r.get("buzzed") and r.get("correct"))
+
+    enriched = dict(payload)
+    enriched.update(
+        {
+            "arm": record["arm"],
+            "seed": record["seed"],
+            "policy_buzz_rate": (n_buzzed / n) if n else 0.0,
+            "forced_commit_rate": ((n - n_buzzed) / n) if n else 0.0,
+            "n_correct_policy_buzzes": int(n_correct),
+            "mean_correct_buzz_position": (
+                float(np.mean(correct_positions)) if correct_positions else None
+            ),
+        }
+    )
+    # R-014: persisted IMMEDIATELY, before any later run can fail.
+    save_json(run_dir / EVAL_RESULT_FILENAME, enriched)
+    return enriched
 
 
 def evaluate_all_runs(
@@ -310,8 +991,12 @@ def evaluate_all_runs(
     identical test split and kwargs (except checkpoint path) across calls.
     Per-run ``eval_result.json`` files already written are never deleted
     by a later failure (R-014)."""
-    # STUB:TDD
-    raise NotImplementedError
+    results: list[dict[str, Any]] = []
+    total = len(records)
+    for index, record in enumerate(records, start=1):
+        print(f"[eval {index}/{total}] arm={record['arm']} seed={record['seed']}")
+        results.append(evaluate_run(record, test_questions, config))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -343,8 +1028,95 @@ def compute_primary_endpoint(per_seed: list[dict[str, Any]]) -> dict[str, Any]:
         non-success with ``undefined_position: True``. Overall success
         iff >= 2 seeds replicate. Empty input raises ``ValueError``.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    if not per_seed:
+        raise ValueError("compute_primary_endpoint: per_seed is empty")
+
+    seed_records: list[dict[str, Any]] = []
+    for entry in per_seed:
+        try:
+            seed = entry["seed"]
+            control = entry["control"]
+            treatment = entry["treatment"]
+            control_pos = control["mean_correct_buzz_position"]
+            treatment_pos = treatment["mean_correct_buzz_position"]
+            control_acc = control["accuracy"]
+            treatment_acc = treatment["accuracy"]
+            control_n = control["n_correct_policy_buzzes"]
+            treatment_n = treatment["n_correct_policy_buzzes"]
+        except (KeyError, TypeError) as exc:
+            raise ValueError(
+                f"compute_primary_endpoint: malformed per-seed record: {exc}"
+            ) from exc
+
+        undefined = (
+            control_n == 0
+            or treatment_n == 0
+            or control_pos is None
+            or treatment_pos is None
+        )
+        if undefined:
+            seed_success = False
+        else:
+            # Inclusive thresholds; _FLOAT_TOLERANCE guards exact-tie
+            # boundaries against one-ulp representation error.
+            position_ok = (
+                treatment_pos
+                <= control_pos - PRIMARY_MIN_POSITION_GAIN + _FLOAT_TOLERANCE
+            )
+            accuracy_ok = (
+                treatment_acc
+                >= control_acc - PRIMARY_MAX_ACCURACY_DROP - _FLOAT_TOLERANCE
+            )
+            seed_success = bool(position_ok and accuracy_ok)
+
+        seed_records.append(
+            {
+                "seed": seed,
+                "seed_success": bool(seed_success),
+                "undefined_position": bool(undefined),
+                "control_position": control_pos,
+                "treatment_position": treatment_pos,
+                "control_accuracy": control_acc,
+                "treatment_accuracy": treatment_acc,
+            }
+        )
+
+    n_replicated = sum(1 for rec in seed_records if rec["seed_success"])
+    return {
+        "success": n_replicated >= 2,
+        "n_seeds": len(seed_records),
+        "n_seeds_replicated": n_replicated,
+        "per_seed": seed_records,
+    }
+
+
+def _validate_arm_qids(
+    sq_by_seed: dict[int, dict[str, float]], arm_label: str
+) -> set[str]:
+    """Return the arm's qid set; raise ValueError on per-seed drift."""
+    if not sq_by_seed:
+        raise ValueError(f"compute_significance: {arm_label} arm map is empty")
+    reference: set[str] | None = None
+    reference_seed: int | None = None
+    for seed, qid_map in sq_by_seed.items():
+        if not isinstance(qid_map, dict) or not qid_map:
+            raise ValueError(
+                f"compute_significance: {arm_label} arm seed {seed} carries "
+                "no per-qid S_q values"
+            )
+        qids = set(qid_map)
+        if reference is None:
+            reference, reference_seed = qids, seed
+        elif qids != reference:
+            missing = sorted(reference - qids)[:5]
+            extra = sorted(qids - reference)[:5]
+            raise ValueError(
+                f"compute_significance: {arm_label} arm qids differ across "
+                f"seeds ({seed} vs {reference_seed}); missing={missing}, "
+                f"extra={extra}"
+            )
+    assert reference is not None
+    return reference
 
 
 def compute_significance(
@@ -370,8 +1142,45 @@ def compute_significance(
     qids (across arms, or across seeds within an arm) raise
     ``ValueError``; empty input raises ``ValueError``.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    if not control_sq_by_seed or not treatment_sq_by_seed:
+        raise ValueError("compute_significance: empty per-seed S_q input")
+
+    control_qids = _validate_arm_qids(control_sq_by_seed, "control")
+    treatment_qids = _validate_arm_qids(treatment_sq_by_seed, "treatment")
+    if control_qids != treatment_qids:
+        missing = sorted(control_qids - treatment_qids)[:5]
+        extra = sorted(treatment_qids - control_qids)[:5]
+        raise ValueError(
+            "compute_significance: control/treatment qid sets differ; "
+            f"control-only={missing}, treatment-only={extra}"
+        )
+
+    qids = sorted(control_qids)
+    deltas: list[float] = []
+    for qid in qids:
+        control_mean = float(
+            np.mean([control_sq_by_seed[s][qid] for s in control_sq_by_seed])
+        )
+        treatment_mean = float(
+            np.mean([treatment_sq_by_seed[s][qid] for s in treatment_sq_by_seed])
+        )
+        deltas.append(treatment_mean - control_mean)
+
+    ci_low, ci_high = bootstrap_ci(
+        deltas, n_samples=n_bootstrap, alpha=alpha, seed=seed
+    )
+    n_questions = len(qids)
+    evaluable = n_questions >= SIGNIFICANCE_MIN_QUESTIONS
+    return {
+        "mean_delta": float(np.mean(deltas)),
+        "ci_low": float(ci_low),
+        "ci_high": float(ci_high),
+        "n_questions": n_questions,
+        "significance_evaluable": bool(evaluable),
+        "significance": (
+            "paired_bootstrap_ci" if evaluable else "not_evaluable_at_this_scale"
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -382,8 +1191,7 @@ def compute_significance(
 def select_probe_questions(train_questions: list) -> list:
     """Deterministic probe sample: first ``min(32, len(train))`` train
     questions in split order (R-010)."""
-    # STUB:TDD
-    raise NotImplementedError
+    return list(train_questions[:PROBE_MAX_QUESTIONS])
 
 
 def stop_prob_probe(model: Any, questions: list) -> list[list[float]]:
@@ -392,9 +1200,61 @@ def stop_prob_probe(model: Any, questions: list) -> list[list[float]]:
     Runs the model in ``eval()`` mode under ``torch.no_grad()`` (dropout
     off => deterministic). Returns one list per question of length
     ``T_q`` (its prefix count), each value a probability in [0, 1].
+
+    Each prefix is rendered in the canonical policy input format
+    ``"CLUES: <prefix> | CHOICES: (1) opt1 (2) opt2 ..."`` (the same
+    format used by the hazard phase — ``training/hazard_pretrain.py`` —
+    and the PPO text observations), and P(BUZZ) is the wait head's
+    softmax mass on the BUZZ column (index 1). Zero-prefix questions are
+    skipped, mirroring the hazard training loop.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    import torch
+
+    was_training = bool(getattr(model, "training", False))
+    model.eval()
+    per_question: list[list[float]] = []
+    try:
+        with torch.no_grad():
+            for question in questions:
+                prefixes = list(question.cumulative_prefixes)
+                if not prefixes:
+                    continue
+                choices_text = " ".join(
+                    f"({i + 1}) {opt}" for i, opt in enumerate(question.options)
+                )
+                texts = [
+                    f"CLUES: {prefix} | CHOICES: {choices_text}"
+                    for prefix in prefixes
+                ]
+                wait_logits, _, _ = model(texts)  # [T, 2]
+                buzz_probs = torch.softmax(wait_logits, dim=-1)[:, 1]
+                per_question.append(
+                    [float(p) for p in buzz_probs.detach().cpu().tolist()]
+                )
+    finally:
+        if was_training:
+            model.train()
+    return per_question
+
+
+def _expected_buzz_time(rows: list[list[float]]) -> float:
+    """Mean expected buzz position over questions (1-indexed positions).
+
+    Per question with stop probs ``p_1..p_T``: E[T] = sum_t t * p_t *
+    prod_{s<t}(1 - p_s) + T * prod_s(1 - p_s) — the never-buzz survival
+    mass commits at the final position (forced commit).
+    """
+    times: list[float] = []
+    for row in rows:
+        probs = np.asarray(row, dtype=np.float64)
+        stay = 1.0 - probs
+        # Probability of REACHING position t (before stopping there).
+        reach = np.concatenate(([1.0], np.cumprod(stay)[:-1]))
+        stop_mass = reach * probs
+        survive_all = float(np.prod(stay))
+        positions = np.arange(1, len(probs) + 1, dtype=np.float64)
+        times.append(float((positions * stop_mass).sum() + len(probs) * survive_all))
+    return float(np.mean(times))
 
 
 def build_hazard_dynamics(
@@ -413,8 +1273,59 @@ def build_hazard_dynamics(
     of the first and second halves of ``hazard_history["steps"][*]["loss"]``
     in step order. Empty probes or empty ``steps`` raise ``ValueError``.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    if not before or not after:
+        raise ValueError("build_hazard_dynamics: empty probe results")
+    if len(before) != len(after):
+        raise ValueError(
+            "build_hazard_dynamics: before/after probed different question "
+            f"counts ({len(before)} vs {len(after)})"
+        )
+    lengths = [len(row) for row in before]
+    if lengths != [len(row) for row in after]:
+        raise ValueError(
+            "build_hazard_dynamics: before/after per-question prefix counts "
+            "differ; both probes must cover the same questions"
+        )
+    if any(length == 0 for length in lengths):
+        raise ValueError("build_hazard_dynamics: a probed question has 0 prefixes")
+
+    steps = hazard_history.get("steps") if isinstance(hazard_history, dict) else None
+    if not steps:
+        raise ValueError(
+            "build_hazard_dynamics: hazard_history has no optimizer steps"
+        )
+    try:
+        losses = [float(step["loss"]) for step in steps]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(
+            f"build_hazard_dynamics: malformed hazard_history step: {exc}"
+        ) from exc
+
+    mid = len(losses) // 2
+    if mid == 0:  # single step: both halves are that step
+        first_half, second_half = losses, losses
+    else:
+        first_half, second_half = losses[:mid], losses[mid:]
+
+    max_t = max(lengths)
+
+    def _per_position_means(rows: list[list[float]]) -> list[float]:
+        return [
+            float(np.mean([row[t] for row in rows if len(row) > t]))
+            for t in range(max_t)
+        ]
+
+    time_before = _expected_buzz_time(before)
+    time_after = _expected_buzz_time(after)
+    return {
+        "per_position_mean_before": _per_position_means(before),
+        "per_position_mean_after": _per_position_means(after),
+        "expected_buzz_time_before": float(time_before),
+        "expected_buzz_time_after": float(time_after),
+        "expected_buzz_time_delta": float(time_after - time_before),
+        "first_half_mean_loss": float(np.mean(first_half)),
+        "second_half_mean_loss": float(np.mean(second_half)),
+    }
 
 
 def probe_and_write_hazard_dynamics(
@@ -429,8 +1340,20 @@ def probe_and_write_hazard_dynamics(
     Writes :func:`build_hazard_dynamics` output as JSON to ``out_path``
     (``<run_dir>/hazard_dynamics.json`` in the pipeline) and returns it.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    from models.t5_policy import T5PolicyModel  # heavy transformers import
+
+    supervised_model = T5PolicyModel.load_pretrained(str(supervised_ckpt))
+    before = stop_prob_probe(supervised_model, questions)
+    del supervised_model
+
+    hazard_model = T5PolicyModel.load_pretrained(str(hazard_ckpt))
+    after = stop_prob_probe(hazard_model, questions)
+    del hazard_model
+
+    history = _load_json_file(Path(hazard_history_path), error_cls=ProvenanceError)
+    block = build_hazard_dynamics(before, after, history)
+    save_json(Path(out_path), block)
+    return block
 
 
 # ---------------------------------------------------------------------------
@@ -448,15 +1371,159 @@ def prune_run_checkpoints(run_dir: Path) -> None:
     ``eval_result.json`` is absent it refuses (raises ``HarnessError``)
     without deleting anything.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    run_dir = Path(run_dir)
+    if not (run_dir / EVAL_RESULT_FILENAME).exists():
+        raise HarnessError(
+            f"Refusing to prune {run_dir}: {EVAL_RESULT_FILENAME} does not "
+            "exist yet, so the report would not be regenerable. Evaluate "
+            "the run first (nothing was deleted)."
+        )
+
+    prunable_dirs = [
+        path
+        for pattern in ("iter_*", "epoch_*")
+        for path in run_dir.rglob(pattern)
+        if path.is_dir()
+    ]
+    for path in prunable_dirs:
+        shutil.rmtree(path)
+    # Fresh scan after the tree deletions so already-removed files are gone.
+    for state_file in list(run_dir.rglob("training_state.pt")):
+        if state_file.is_file():
+            state_file.unlink()
+    return None
 
 
 def write_plot(report: dict[str, Any], out_dir: Path) -> Path:
-    """Write ``<out>/hazard_efficacy_plot.png`` via Agg + ``savefig``
-    (never ``show``); returns the plot path."""
-    # STUB:TDD
-    raise NotImplementedError
+    """Write ``<out>/hazard_efficacy_plot.png`` headlessly; returns the path.
+
+    Matplotlib is imported lazily inside this function with the Agg
+    backend selected before pyplot, and the figure is persisted via
+    ``savefig`` only.
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise HarnessError(
+            f"matplotlib is required to write the efficacy plot: {exc}"
+        ) from exc
+
+    runs = report.get("runs", []) or []
+    arms = sorted({run["arm"] for run in runs})
+
+    def _arm_mean(arm: str, key: str) -> float:
+        values = [
+            run.get(key)
+            for run in runs
+            if run.get("arm") == arm
+            and isinstance(run.get(key), (int, float))
+            and not isinstance(run.get(key), bool)
+        ]
+        return float(np.mean(values)) if values else 0.0
+
+    fig, (ax_pos, ax_acc) = plt.subplots(1, 2, figsize=(10.0, 4.0))
+
+    positions = [_arm_mean(arm, "mean_correct_buzz_position") for arm in arms]
+    ax_pos.bar(arms, positions, color="steelblue")
+    ax_pos.set_title("Mean correct-buzz position (lower = earlier)")
+    ax_pos.set_xlabel("arm")
+    ax_pos.set_ylabel("prefix position")
+
+    accuracies = [_arm_mean(arm, "accuracy") for arm in arms]
+    ax_acc.bar(arms, accuracies, color="darkorange")
+    ax_acc.set_title("Policy accuracy")
+    ax_acc.set_xlabel("arm")
+    ax_acc.set_ylabel("accuracy")
+    ax_acc.set_ylim(0.0, 1.0)
+
+    scale = report.get("scale", {})
+    fig.suptitle(
+        "Hazard-pretrain efficacy — "
+        f"{scale.get('model_name', '?')} (n_test={scale.get('n_test', '?')})"
+    )
+    fig.tight_layout()
+
+    plot_path = Path(out_dir) / PLOT_FILENAME
+    plot_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+    return plot_path
+
+
+def _endpoint_pairs_from_evals(
+    eval_by_run: dict[tuple[str, int], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build R-006 per-seed control(A)/treatment(B) pairs from eval files."""
+    seeds = sorted(
+        {
+            seed
+            for (arm, seed) in eval_by_run
+            if arm == "A" and ("B", seed) in eval_by_run
+        }
+    )
+    pairs: list[dict[str, Any]] = []
+    for seed in seeds:
+        control = eval_by_run[("A", seed)]
+        treatment = eval_by_run[("B", seed)]
+        pairs.append(
+            {
+                "seed": seed,
+                "control": {
+                    "mean_correct_buzz_position": control.get(
+                        "mean_correct_buzz_position"
+                    ),
+                    "accuracy": control.get("accuracy"),
+                    "n_correct_policy_buzzes": control.get(
+                        "n_correct_policy_buzzes", 0
+                    ),
+                },
+                "treatment": {
+                    "mean_correct_buzz_position": treatment.get(
+                        "mean_correct_buzz_position"
+                    ),
+                    "accuracy": treatment.get("accuracy"),
+                    "n_correct_policy_buzzes": treatment.get(
+                        "n_correct_policy_buzzes", 0
+                    ),
+                },
+            }
+        )
+    return pairs
+
+
+def _sq_by_seed_for_arm(
+    eval_by_run: dict[tuple[str, int], dict[str, Any]], arm: str
+) -> dict[int, dict[str, float]]:
+    """Per-seed {qid: S_q} maps for one arm from eval_result runs records."""
+    by_seed: dict[int, dict[str, float]] = {}
+    for (run_arm, seed), payload in eval_by_run.items():
+        if run_arm != arm:
+            continue
+        runs = payload.get("runs")
+        if not isinstance(runs, list) or not runs:
+            continue
+        qid_map: dict[str, float] = {}
+        for run in runs:
+            qid = run.get("qid")
+            sq = run.get("sq")
+            if qid is not None and sq is not None:
+                qid_map[str(qid)] = float(sq)
+        if qid_map:
+            by_seed[seed] = qid_map
+    return by_seed
+
+
+_UNEVALUABLE_SIGNIFICANCE: dict[str, Any] = {
+    "mean_delta": None,
+    "ci_low": None,
+    "ci_high": None,
+    "n_questions": 0,
+    "significance_evaluable": False,
+    "significance": "not_evaluable_at_this_scale",
+}
 
 
 def assemble_report(
@@ -486,8 +1553,335 @@ def assemble_report(
     ``provenance``), and ``plot_path`` (relative
     ``hazard_efficacy_plot.png``). Never contains any Expected Wins key.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    out_dir = Path(out_dir)
+    if not run_records:
+        raise HarnessError("assemble_report: no run records to assemble")
+
+    eval_by_run: dict[tuple[str, int], dict[str, Any]] = {}
+    report_runs: list[dict[str, Any]] = []
+    first_config: dict[str, Any] | None = None
+    first_manifest: dict[str, Any] | None = None
+
+    for record in run_records:
+        run_dir = Path(record["run_dir"])
+        config_used = _load_json_file(
+            run_dir / "ppo_t5" / "config_used.json", error_cls=ProvenanceError
+        )
+        manifest = _load_json_file(
+            run_dir / "ppo_t5" / "split_manifest.json", error_cls=ProvenanceError
+        )
+        eval_result = _load_json_file(
+            run_dir / EVAL_RESULT_FILENAME, error_cls=ProvenanceError
+        )
+        if first_config is None:
+            first_config, first_manifest = config_used, manifest
+
+        eval_by_run[(record["arm"], record["seed"])] = eval_result
+        provenance = collect_provenance(config_used)
+        report_runs.append(
+            {
+                "arm": record["arm"],
+                "seed": record["seed"],
+                "resumed": bool(record.get("resumed", False)),
+                "git_sha_mismatch": bool(record.get("git_sha_mismatch", False)),
+                "policy_buzz_rate": eval_result.get("policy_buzz_rate"),
+                "forced_commit_rate": eval_result.get("forced_commit_rate"),
+                "ece": eval_result.get("ece"),
+                "brier": eval_result.get("brier"),
+                "accuracy": eval_result.get("accuracy"),
+                "mean_sq": eval_result.get("mean_sq"),
+                "avg_buzz_pos": eval_result.get("avg_buzz_pos"),
+                "n_correct_policy_buzzes": eval_result.get("n_correct_policy_buzzes"),
+                "mean_correct_buzz_position": eval_result.get(
+                    "mean_correct_buzz_position"
+                ),
+                "n_questions": eval_result.get("n_questions"),
+                "provenance": provenance,
+            }
+        )
+
+    assert first_config is not None and first_manifest is not None
+
+    try:
+        scale = {
+            "model_name": first_config["model"]["model_name"],
+            "n_train": first_manifest["train_count"],
+            "n_val": first_manifest["val_count"],
+            "n_test": first_manifest["test_count"],
+            "ppo_iterations": first_config["ppo"]["iterations"],
+            "device": first_config["model"]["device"],
+            "disk_usage_bytes": int(
+                sum(f.stat().st_size for f in out_dir.rglob("*") if f.is_file())
+            ),
+        }
+    except (KeyError, TypeError) as exc:
+        raise ProvenanceError(
+            f"assemble_report: sidecars are missing a scale field: {exc}"
+        ) from exc
+
+    # Primary endpoint (R-006): treatment = arm B vs control = arm A.
+    endpoint_pairs = _endpoint_pairs_from_evals(eval_by_run)
+    if endpoint_pairs:
+        endpoint = compute_primary_endpoint(endpoint_pairs)
+    else:
+        endpoint = {
+            "success": False,
+            "n_seeds": 0,
+            "n_seeds_replicated": 0,
+            "per_seed": [],
+            "note": "no paired A/B seeds available; endpoint not evaluable",
+        }
+
+    # Significance (R-007): paired-by-qid bootstrap on B-vs-A S_q deltas.
+    control_sq = _sq_by_seed_for_arm(eval_by_run, "A")
+    treatment_sq = _sq_by_seed_for_arm(eval_by_run, "B")
+    shared_seeds = sorted(set(control_sq) & set(treatment_sq))
+    if shared_seeds:
+        significance = compute_significance(
+            {s: control_sq[s] for s in shared_seeds},
+            {s: treatment_sq[s] for s in shared_seeds},
+        )
+    else:
+        significance = dict(_UNEVALUABLE_SIGNIFICANCE)
+
+    # Arm deltas (R-004 report side): treatment - control means per metric.
+    def _arm_metric_mean(arm: str, key: str) -> float | None:
+        values = [
+            payload.get(key)
+            for (run_arm, _), payload in eval_by_run.items()
+            if run_arm == arm and payload.get(key) is not None
+        ]
+        return float(np.mean(values)) if values else None
+
+    arm_order = list(dict.fromkeys(rec["arm"] for rec in run_records))
+    arm_deltas: dict[str, dict[str, float | None]] = {}
+    if "A" in arm_order:
+        control_mean_sq = _arm_metric_mean("A", "mean_sq")
+        control_accuracy = _arm_metric_mean("A", "accuracy")
+        for arm in arm_order:
+            if arm == "A":
+                continue
+            arm_mean_sq = _arm_metric_mean(arm, "mean_sq")
+            arm_accuracy = _arm_metric_mean(arm, "accuracy")
+            arm_deltas[f"{arm}_vs_A"] = {
+                "mean_sq_delta": (
+                    arm_mean_sq - control_mean_sq
+                    if arm_mean_sq is not None and control_mean_sq is not None
+                    else None
+                ),
+                "accuracy_delta": (
+                    arm_accuracy - control_accuracy
+                    if arm_accuracy is not None and control_accuracy is not None
+                    else None
+                ),
+            }
+
+    # Hazard compute (R-004): arm B's optimizer steps + wall clock, sourced
+    # from B's hazard_history.json and B's RUN_COMPLETE.json marker.
+    optimizer_steps: int | None = None
+    wall_clock_seconds: float | None = None
+    hazard_dynamics: dict[str, Any] | None = None
+    b_records = [rec for rec in run_records if rec["arm"] == "B"]
+    if b_records:
+        b_dir = Path(b_records[0]["run_dir"])
+        history_path = b_dir / "hazard" / "hazard_history.json"
+        if history_path.exists():
+            history = _load_json_file(history_path, error_cls=ProvenanceError)
+            steps = history.get("steps")
+            if isinstance(steps, list):
+                optimizer_steps = len(steps)
+        marker_path = b_dir / RUN_COMPLETE_MARKER
+        if marker_path.exists():
+            marker = _load_json_file(marker_path, error_cls=ProvenanceError)
+            raw = marker.get("wall_clock_seconds")
+            if raw is not None:
+                wall_clock_seconds = float(raw)
+        dynamics_path = b_dir / HAZARD_DYNAMICS_FILENAME
+        if dynamics_path.exists():
+            hazard_dynamics = _load_json_file(
+                dynamics_path, error_cls=ProvenanceError
+            )
+    hazard_compute = {
+        "optimizer_steps": optimizer_steps,
+        "wall_clock_seconds": wall_clock_seconds,
+        "step_matching_note": _HAZARD_STEP_MATCHING_NOTE,
+    }
+
+    caveats = [DEVICE2_CAVEAT, _HAZARD_STEP_MATCHING_NOTE]
+    if smoke:
+        caveats.append(_SMOKE_CAVEAT)
+    caveats.append(
+        "The shared supervised checkpoint fixes the supervised-phase RNG; "
+        "seeds sample hazard/PPO variance only (paired design)."
+    )
+
+    if endpoint.get("n_seeds", 0) == 0:
+        verdict_label = "not_evaluable"
+    elif endpoint["success"]:
+        verdict_label = "endpoint_met_at_this_scale"
+    else:
+        verdict_label = "endpoint_not_met_at_this_scale"
+    scope = (
+        f"{scale['model_name']} on n_test={scale['n_test']} "
+        f"({'smoke: plumbing/training-dynamics evidence only' if smoke else 'preliminary Device-1 scale'})"
+    )
+    verdict = {
+        "verdict": verdict_label,
+        "scope": scope,
+        "evidence": {
+            "endpoint_success": endpoint.get("success"),
+            "n_seeds_replicated": endpoint.get("n_seeds_replicated"),
+            "n_seeds": endpoint.get("n_seeds"),
+            "significance": significance.get("significance"),
+            "mean_sq_delta_B_vs_A": (
+                arm_deltas.get("B_vs_A", {}).get("mean_sq_delta")
+            ),
+        },
+    }
+
+    report: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "git_sha": _git_sha(),
+        "endpoint_definition": ENDPOINT_DEFINITION,
+        "scale": scale,
+        "caveats": caveats,
+        "verdict": verdict,
+        "endpoint": endpoint,
+        "significance": significance,
+        "arm_deltas": arm_deltas,
+        "hazard_compute": hazard_compute,
+        "hazard_dynamics": hazard_dynamics,
+        "runs": report_runs,
+        "plot_path": PLOT_FILENAME,
+    }
+
+    write_plot(report, out_dir)
+    save_json(out_dir / REPORT_FILENAME, report)
+    return report
+
+
+# ---------------------------------------------------------------------------
+# main() composition
+# ---------------------------------------------------------------------------
+
+
+def _print_plan(records: list[dict[str, Any]], splits: dict[str, Path] | None) -> None:
+    """Print the full preflighted plan (R-013)."""
+    print("=" * 60)
+    print(f"HAZARD EFFICACY PLAN — {len(records)} run(s)")
+    if splits:
+        for split in ("train", "val", "test"):
+            if split in splits:
+                print(f"  split[{split}]: {splits[split]} (source: persisted artifacts)")
+    for index, record in enumerate(records, start=1):
+        print(
+            f"  [{index}/{len(records)}] {Path(record['run_dir']).name}  "
+            f"arm={record['arm']} seed={record['seed']} "
+            f"hazard={record['hazard']}"
+            + (f" variant={record['variant']}" if record.get("variant") else "")
+        )
+        print(f"      argv: {' '.join(record['argv'])}")
+    print("=" * 60)
+
+
+def _manifest_from_artifacts(
+    splits: dict[str, Path],
+    train_questions: list,
+    val_questions: list,
+    test_questions: list,
+) -> dict[str, Any]:
+    """Split manifest for the shared supervised checkpoint (R-008).
+
+    Field set pinned to ``scripts/train_t5_policy.py::_build_split_manifest``
+    (the spec's Format-pinning section) so downstream consumers see one
+    manifest schema everywhere.
+    """
+    mc_path = Path(splits["train"]).parent / "mc_dataset.json"
+    total = len(train_questions) + len(val_questions) + len(test_questions)
+    return {
+        "source": _PERSISTED_SOURCE,
+        "mc_path": str(mc_path) if mc_path.exists() else None,
+        "train_path": str(Path(splits["train"]).resolve()),
+        "val_path": str(Path(splits["val"]).resolve()),
+        "test_path": str(Path(splits["test"]).resolve()),
+        "train_qids": [q.qid for q in train_questions],
+        "val_qids": [q.qid for q in val_questions],
+        "test_qids": [q.qid for q in test_questions],
+        "train_count": len(train_questions),
+        "val_count": len(val_questions),
+        "test_count": len(test_questions),
+        "effective_train_ratio": len(train_questions) / max(1, total),
+        "effective_val_ratio": len(val_questions) / max(1, total),
+        "effective_test_ratio": len(test_questions) / max(1, total),
+    }
+
+
+def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
+    """Run the ONE shared supervised warm-start child (R-003/R-008).
+
+    The supervised child runs through :func:`_run_child` FIRST, with an
+    argv carrying NO ``--skip-supervised`` and a
+    ``supervised.checkpoint_dir=<root>`` positional override, so the real
+    trainer leaves the branched checkpoint at ``<root>/supervised/
+    best_model`` — the exact ``--model-path`` every arm child receives.
+    An existing non-empty shared checkpoint is reused (idempotent resume).
+    """
+    sup_root = shared_supervised_root(out_dir)
+    shared_ckpt = shared_supervised_checkpoint(out_dir)
+    sup_log = sup_root / TRAIN_LOG_FILENAME
+
+    if shared_ckpt.is_dir() and any(shared_ckpt.iterdir()):
+        print(f"[supervised] resumed: shared checkpoint exists at {shared_ckpt}")
+        return shared_ckpt
+
+    argv: list[str] = [
+        sys.executable,
+        str(_TRAIN_SCRIPT),
+        "--config",
+        str(args.config),
+        "--seed",
+        str(int(args.seeds[0])),
+    ]
+    if args.smoke:
+        argv.append("--smoke")
+        argv.append("ppo.eval_interval=1")
+    argv.append(f"supervised.checkpoint_dir={sup_root}")
+
+    print("[supervised] shared warm-start started")
+    start = time.monotonic()
+    exit_code = _run_child(argv, sup_log)
+    elapsed = time.monotonic() - start
+    if exit_code != 0:
+        raise ChildRunError(
+            f"Shared supervised run failed with exit code {exit_code}; "
+            f"log: {sup_log}\n--- log tail ---\n{_log_tail(sup_log)}"
+        )
+    if not shared_ckpt.is_dir():
+        raise ChildRunError(
+            f"Shared supervised run left no checkpoint at {shared_ckpt}; "
+            f"inspect the child log: {sup_log}"
+        )
+    print(f"[supervised] finished, elapsed {elapsed:.1f}s")
+    return shared_ckpt
+
+
+def _load_yaml_config(config_path: str) -> dict[str, Any]:
+    """Load the trainer YAML config for the eval context (fail-loud)."""
+    path = Path(config_path)
+    if not path.is_absolute() and not path.exists():
+        anchored = PROJECT_ROOT / path
+        if anchored.exists():
+            path = anchored
+    if not path.exists():
+        raise PreflightError(
+            f"Config file not found: {config_path} (also tried anchoring to "
+            f"{PROJECT_ROOT})"
+        )
+    with path.open(encoding="utf-8") as handle:
+        loaded = yaml.safe_load(handle)
+    if not isinstance(loaded, dict):
+        raise PreflightError(f"Config file {path} did not parse to a mapping")
+    return loaded
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -496,21 +1890,89 @@ def main(argv: list[str] | None = None) -> None:
     ``--dry-run`` stops after preflight+plan with zero children;
     ``--report-only`` performs zero training/eval calls (and no split
     preflight) and reassembles report + plot from existing run dirs.
-
-    Composition contract (pinned by the main() happy-path test): the
-    shared supervised warm-start phase itself runs through
-    :func:`_run_child` as the FIRST child; its argv carries NO
-    ``--skip-supervised`` and directs outputs via a
-    ``supervised.checkpoint_dir=<root>`` positional override, so the real
-    trainer leaves the branched checkpoint at
-    ``<root>/supervised/best_model`` (see
-    ``training/train_supervised_t5.py``) — the exact ``--model-path``
-    every arm child receives. Evaluation uses the TEST split questions
-    loaded from the persisted artifacts (never train's), via the
-    module-level ``evaluate_t5_policy``.
     """
-    # STUB:TDD
-    raise NotImplementedError
+    args = parse_args(argv)
+    out_dir = Path(args.out_dir)
+
+    if args.report_only:
+        plan = plan_runs(args)
+        records = [rec for rec in plan if Path(rec["run_dir"]).exists()]
+        if not records:
+            raise PreflightError(
+                f"--report-only found no existing run dirs under {out_dir} "
+                f"for the planned arms/seeds "
+                f"({[Path(r['run_dir']).name for r in plan]})"
+            )
+        for record in records:
+            record["resumed"] = True
+        assemble_report(out_dir, records, smoke=bool(args.smoke))
+        if args.prune_checkpoints:
+            for record in records:
+                prune_run_checkpoints(Path(record["run_dir"]))
+        print(f"Report written to {out_dir / REPORT_FILENAME}")
+        return
+
+    # R-013 preflight: split artifacts + full plan validation BEFORE any child.
+    splits = resolve_split_artifacts(smoke=bool(args.smoke))
+    plan = plan_runs(args)
+    _print_plan(plan, splits)
+    if args.dry_run:
+        print("--dry-run: stopping after preflight; zero children launched.")
+        return
+
+    yaml_config = _load_yaml_config(str(args.config))
+    train_questions = load_mc_questions(splits["train"])
+    val_questions = load_mc_questions(splits["val"])
+    test_questions = load_mc_questions(splits["test"])
+    if not train_questions or not test_questions:
+        raise PreflightError(
+            "Persisted split artifacts resolved but are empty "
+            f"(train={len(train_questions)}, test={len(test_questions)}); "
+            "rebuild them with scripts/build_mc_dataset.py"
+        )
+
+    # Shared supervised warm-start: the FIRST child (R-003/R-008).
+    shared_ckpt = _run_shared_supervised(args, out_dir)
+    manifest = _manifest_from_artifacts(
+        splits, train_questions, val_questions, test_questions
+    )
+    write_supervised_split_manifest(shared_ckpt, manifest)
+
+    # Arm children with resume/partial/force semantics + arm control.
+    records = execute_plan(plan, force=bool(args.force))
+
+    # R-005/R-014: identical eval path per run on the TEST split, persisted
+    # immediately per run.
+    eval_context = {
+        "config": yaml_config,
+        "reference_questions": train_questions,
+        "test_set_source": _PERSISTED_SOURCE,
+    }
+    evaluate_all_runs(records, test_questions, eval_context)
+
+    # R-010b: stop-probability probe per hazard run (supervised vs hazard).
+    probe_questions = select_probe_questions(train_questions)
+    for record in records:
+        if not record.get("hazard"):
+            continue
+        run_dir = Path(record["run_dir"])
+        probe_and_write_hazard_dynamics(
+            str(shared_ckpt),
+            str(run_dir / "hazard" / "best_model"),
+            probe_questions,
+            run_dir / "hazard" / "hazard_history.json",
+            run_dir / HAZARD_DYNAMICS_FILENAME,
+        )
+
+    # R-009/R-014: report + plot, read exclusively from per-run files.
+    assemble_report(out_dir, records, smoke=bool(args.smoke))
+
+    if args.prune_checkpoints:
+        for record in records:
+            prune_run_checkpoints(Path(record["run_dir"]))
+
+    print(f"Report written to {out_dir / REPORT_FILENAME}")
+    print(f"Plot written to {out_dir / PLOT_FILENAME}")
 
 
 if __name__ == "__main__":
