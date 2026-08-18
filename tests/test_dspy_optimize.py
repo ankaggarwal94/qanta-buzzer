@@ -104,3 +104,17 @@ class TestScoreMetricValidation:
     def test_valid_match_and_mismatch_unchanged(self) -> None:
         assert _score_metric(self._P("[0.1, 0.9]"), self._P("[0.2, 0.8]")) == 1.0
         assert _score_metric(self._P("[0.1, 0.9]"), self._P("[0.8, 0.2]")) == 0.0
+
+
+class TestScoreMetricOverflowSafety:
+    """PR #31 external review R3: an un-float-able big int (e.g. 400-digit LM
+    score) must score 0.0, not crash the metric via math.isfinite OverflowError."""
+
+    class _P:
+        def __init__(self, scores: str) -> None:
+            self.scores = scores
+
+    def test_oversized_integer_scores_zero_not_overflow(self) -> None:
+        huge = "1" + "0" * 400
+        assert _score_metric(self._P(f"[{huge}, 0]"), self._P("[1, 0]")) == 0.0
+        assert _score_metric(self._P("[1, 0]"), self._P(f"[{huge}, 0]")) == 0.0

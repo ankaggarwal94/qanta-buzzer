@@ -79,10 +79,19 @@ def _score_metric(example, prediction, _trace=None):
         return 0.0
     if not pred_scores or len(pred_scores) != len(target_scores):
         return 0.0
-    if not all(
-        isinstance(s, (int, float)) and not isinstance(s, bool) and math.isfinite(s)
-        for s in pred_scores + target_scores
-    ):
+
+    def _finite_number(s: Any) -> bool:
+        # math.isfinite raises OverflowError on an int too large to convert to
+        # float (e.g. a 400-digit LM score); such a pathological value is
+        # "malformed" for this metric — return False, never crash.
+        if isinstance(s, bool) or not isinstance(s, (int, float)):
+            return False
+        try:
+            return math.isfinite(s)
+        except OverflowError:
+            return False
+
+    if not all(_finite_number(s) for s in pred_scores + target_scores):
         return 0.0
     return 1.0 if (
         max(range(len(pred_scores)), key=lambda i: pred_scores[i])
