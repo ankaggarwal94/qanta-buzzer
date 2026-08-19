@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "comment": "R-010/R-015 golden parity values. Produced by the PINNED HISTORICAL implementation, never by the new implementation.",
+  "source": "scripts/stopdff_v5/bootstrap.py::build_bootstrap_plan + cell_bootstrap_stats (the repo's historical paired-summary estimator; per-item signed shift D_i = tau_MC - tau_QA from scripts/stopdff_v5/policy.py::signed_index_shift)",
+  "generated": {
+    "date": "2026-08-19",
+    "numpy_version": "2.4.6",
+    "bit_generator": "PCG64",
+    "note": "Generated once at RED-phase fixture creation by running the historical estimator on the record sets below; the parity test also cross-checks these values against the live historical estimator so drift is loud."
+  },
+  "all_finite_12": {
+    "trajectory_horizon": 8,
+    "stops": {
+      "itm-0001": {"mc": 1, "ref": 3},
+      "itm-0002": {"mc": 2, "ref": 2},
+      "itm-0003": {"mc": 5, "ref": 1},
+      "itm-0004": {"mc": 0, "ref": 7},
+      "itm-0005": {"mc": 4, "ref": 4},
+      "itm-0006": {"mc": 6, "ref": 2},
+      "itm-0007": {"mc": 3, "ref": 5},
+      "itm-0008": {"mc": 2, "ref": 6},
+      "itm-0009": {"mc": 7, "ref": 0},
+      "itm-0010": {"mc": 1, "ref": 1},
+      "itm-0011": {"mc": 5, "ref": 4},
+      "itm-0012": {"mc": 0, "ref": 2}
+    },
+    "bootstrap": {"replicates": 200, "seed": 1},
+    "point": {
+      "signed_index_mean": -0.08333333333333333,
+      "signed_index_median": 0.0,
+      "absolute_index_mean": 2.75,
+      "absolute_index_median": 2.0
+    },
+    "ci": {
+      "signed_index_mean": [-2.0041666666666664, 1.9187500000000006],
+      "signed_index_median": [-2.0, 2.5375000000000085],
+      "absolute_index_mean": [1.5791666666666666, 4.0],
+      "absolute_index_median": [0.0, 4.0]
+    }
+  },
+  "package_cell_3": {
+    "trajectory_horizon": 6,
+    "stops": {
+      "itm-0001": {"mc": 1, "ref": 3},
+      "itm-0002": {"mc": 2, "ref": 2},
+      "itm-0003": {"mc": 5, "ref": 1}
+    },
+    "bootstrap": {"replicates": 100, "seed": 1},
+    "point": {
+      "signed_index_mean": 0.6666666666666666,
+      "signed_index_median": 0.0,
+      "absolute_index_mean": 2.0,
+      "absolute_index_median": 2.0
+    },
+    "ci": {
+      "signed_index_mean": [-1.6833333333333331, 4.0],
+      "signed_index_median": [-2.0, 4.0],
+      "absolute_index_mean": [0.0, 4.0],
+      "absolute_index_median": [0.0, 4.0]
+    }
+  }
+}

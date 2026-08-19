@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "comment": "R-027 enforceable vocabulary core. Banned phrases must never appear in any renderer output, verdict string, or doc produced by reproducibility/colm_aims_2026; required qualifiers must appear in every rendered summary. Matching is case-insensitive substring except entries under banned_phrases_case_sensitive (ACM v1.1 third-party terms, matched as whole words).",
+  "banned_phrases": [
+    "qa effect",
+    "preserves the observed",
+    "preserves observed",
+    "observed stopping policy is preserved",
+    "observed decision preservation",
+    "decision preservation established",
+    "format effect established",
+    "would hide real shifts",
+    "camera-ready certified",
+    "certifies camera-ready"
+  ],
+  "banned_phrases_case_sensitive": [
+    "Reproduced",
+    "Replicated"
+  ],
+  "allowed_exceptions": [
+    "constructed qa reference effect"
+  ],
+  "required_qualifiers": [
+    "constructed qa reference"
+  ],
+  "sanctioned_observed_claim_output": "observed_paired_claim=OBSERVED_PAIRED_STUDY_REQUIRED"
+}

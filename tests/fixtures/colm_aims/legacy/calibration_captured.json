@@ -1,0 +1,136 @@
+{
+  "per_bucket": {
+    "early": {
+      "ece": 0.025933,
+      "n_samples": 2553,
+      "platt_coef": 1.08271,
+      "platt_intercept": -1.04211,
+      "platt_model_type": "logistic",
+      "platt_fallback_reason": null,
+      "platt_constant_probability": null
+    },
+    "mid": {
+      "ece": 0.005491,
+      "n_samples": 3316,
+      "platt_coef": 0.322094,
+      "platt_intercept": -0.683682,
+      "platt_model_type": "logistic",
+      "platt_fallback_reason": null,
+      "platt_constant_probability": null
+    },
+    "late": {
+      "ece": 0.026117,
+      "n_samples": 5255,
+      "platt_coef": 2.720828,
+      "platt_intercept": -1.212329,
+      "platt_model_type": "logistic",
+      "platt_fallback_reason": null,
+      "platt_constant_probability": null
+    }
+  },
+  "max_ece": 0.026117,
+  "threshold": 0.1,
+  "gate_verdict": "pass",
+  "gate_verdict_reason": "threshold_only",
+  "threshold_only_verdict": "pass",
+  "degenerate_buckets": {
+    "fallback": [],
+    "empty": []
+  },
+  "mc_coverage": {
+    "val": {
+      "target_qids": 2142,
+      "mc_questions_total": 14437,
+      "matched_questions": 2142,
+      "matched_qids": 2142,
+      "missing_qids": 0,
+      "coverage_rate": 1.0,
+      "threshold": 0.98,
+      "passed": true,
+      "overridden": false,
+      "override_flag": "--allow-incomplete-mc-coverage",
+      "split": "val"
+    },
+    "test": {
+      "target_qids": 2258,
+      "mc_questions_total": 14437,
+      "matched_questions": 2258,
+      "matched_qids": 2258,
+      "missing_qids": 0,
+      "coverage_rate": 1.0,
+      "threshold": 0.98,
+      "passed": true,
+      "overridden": false,
+      "override_flag": "--allow-incomplete-mc-coverage",
+      "split": "test"
+    }
+  },
+  "mc_retention_gate": {
+    "val": {
+      "applies": true,
+      "split": "val",
+      "threshold": 0.8,
+      "retention_rate": 0.7048371174728529,
+      "raw_count": 3039,
+      "retained_count": 2142,
+      "dropped_count": 897,
+      "passed": false,
+      "overridden": true,
+      "override_flag": "--allow-low-mc-retention"
+    },
+    "test": {
+      "applies": true,
+      "split": "test",
+      "threshold": 0.8,
+      "retention_rate": 0.7274484536082474,
+      "raw_count": 3104,
+      "retained_count": 2258,
+      "dropped_count": 846,
+      "passed": false,
+      "overridden": true,
+      "override_flag": "--allow-low-mc-retention"
+    }
+  },
+  "mc_build_metadata": {
+    "status": "loaded",
+    "source_path": "data/processed/build_metadata.json",
+    "source_sha256": "70871984390f252c0a06a5a2c9a2d3b4337f10ad48c87583ebec215d5c0c9c6e"
+  },
+  "metadata": {
+    "seed": 789685,
+    "n_val": 2142,
+    "n_test": 2258,
+    "n_fit": 2142,
+    "fit_split": "val",
+    "model": "all-MiniLM-L6-v2",
+    "n_bins": 10,
+    "platt_C": 1.0,
+    "bucket_boundaries": {
+      "early": "[0.0, 0.33)",
+      "mid": "[0.33, 0.66)",
+      "late": "[0.66, 1.0]"
+    },
+    "timestamp": "2026-05-28T04:48:44.347201+00:00",
+    "generation": {
+      "schema_version": 1,
+      "generated_at_utc": "2026-05-28T04:48:44.346399+00:00",
+      "command": [
+        "python",
+        "scripts/compute_prefix_calibration.py",
+        "--allow-low-mc-retention",
+        "--allow-incomplete-mc-coverage"
+      ],
+      "argv": [
+        "--allow-low-mc-retention",
+        "--allow-incomplete-mc-coverage"
+      ],
+      "cwd": ".",
+      "output_path": "paper_exports/calibration.json",
+      "script_path": "scripts/compute_prefix_calibration.py",
+      "script_sha256": "2a83a6252e3b94973d80b9d8d7ee031acd6a9c6c5dbe2b4985294a5891774994",
+      "git_commit": "4541bbc36af47c79e92d588d1f6bf945da0205dc",
+      "git_dirty": false,
+      "git_status_relevant_paths": ""
+    }
+  }
+}

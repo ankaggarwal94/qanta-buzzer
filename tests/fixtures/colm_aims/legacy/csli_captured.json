@@ -1,0 +1,143 @@
+{
+  "panel_csli": {
+    "mean": 0.003469,
+    "ci_lower": 0.0,
+    "ci_upper": 0.010778343666961914,
+    "mean_from_per_model_avg": 0.003469,
+    "definition": "max(0, acc_choices_only - 1/K) per model, averaged",
+    "K": 4,
+    "chance": 0.25
+  },
+  "panel_question_use_gap": {
+    "mean": 0.11366991437850603,
+    "ci_lower": 0.0994943903159138,
+    "ci_upper": 0.12607026867434307,
+    "mean_from_per_model_avg": 0.11367000000000001,
+    "definition": "acc_full - acc_choices_only per model, averaged"
+  },
+  "per_model": {
+    "tfidf": {
+      "acc_full": 0.258636,
+      "acc_choices_only": 0.260407,
+      "csli": 0.010407,
+      "question_use_gap": -0.001771,
+      "leakage_flag": false
+    },
+    "sbert": {
+      "acc_full": 0.490257,
+      "acc_choices_only": 0.244464,
+      "csli": 0.0,
+      "question_use_gap": 0.245793,
+      "leakage_flag": false
+    },
+    "t5-small": {
+      "acc_full": 0.310895,
+      "acc_choices_only": 0.213906,
+      "csli": 0.0,
+      "question_use_gap": 0.096988,
+      "leakage_flag": false
+    }
+  },
+  "metadata": {
+    "n_questions": 2258,
+    "n_models": 3,
+    "K": 4,
+    "chance": 0.25,
+    "choices_only_accuracy_threshold": 0.3,
+    "threshold_metric": "choices_only_accuracy",
+    "threshold_criterion": "acc_choices_only > choices_only_accuracy_threshold",
+    "threshold_direction": "warn_if_above",
+    "threshold_source": "threshold_manifest.json",
+    "threshold": 0.3,
+    "threshold_deprecated_note": "Deprecated alias for choices_only_accuracy_threshold; applies to per-model acc_choices_only, not to panel_csli.mean or per-model csli.",
+    "bootstrap_resamples": 1000,
+    "bootstrap_method": "percentile",
+    "bootstrap_seed": 789685,
+    "bootstrap_note": "Percentile-method bootstrap (not BCa). CI captures sampling variability over questions but not model selection uncertainty.",
+    "csli_definition": "Canonical CSLI = max(0, acc_choices_only - 1/K) (PAP-original choices-only excess over chance). question_use_gap = acc_full - acc_choices_only (in-flight manuscript's pre-rename CSLI). The frozen leakage gate is on per-model acc_choices_only > 1/K + 0.05 = 0.30 for K=4, independent of either flavor.",
+    "models": [
+      "tfidf",
+      "sbert",
+      "t5-small"
+    ],
+    "generation": {
+      "schema_version": 1,
+      "generated_at_utc": "2026-05-28T02:25:48.675689+00:00",
+      "command": [
+        "python",
+        "scripts/compute_csli.py",
+        "--models",
+        "tfidf,sbert,t5-small",
+        "--allow-low-mc-retention",
+        "--allow-incomplete-mc-coverage"
+      ],
+      "argv": [
+        "--models",
+        "tfidf,sbert,t5-small",
+        "--allow-low-mc-retention",
+        "--allow-incomplete-mc-coverage"
+      ],
+      "cwd": ".",
+      "output_path": "paper_exports/csli.json",
+      "script_path": "scripts/compute_csli.py",
+      "script_sha256": "0011170fbe3ca9224d1bb142a4c22fff27514cfef4af19d5ca4c23ad70d1ea81",
+      "git_commit": "77743dbf5909fedf8ec3d716fd283e728aabc72f",
+      "git_dirty": false,
+      "git_status_relevant_paths": ""
+    },
+    "mc_coverage": {
+      "target_qids": 2258,
+      "mc_questions_total": 14437,
+      "matched_questions": 2258,
+      "matched_qids": 2258,
+      "missing_qids": 0,
+      "coverage_rate": 1.0,
+      "threshold": 0.98,
+      "passed": true,
+      "overridden": false,
+      "override_flag": "--allow-incomplete-mc-coverage",
+      "split": "test"
+    },
+    "mc_build_metadata": {
+      "status": "loaded",
+      "source_path": "data/processed/build_metadata.json",
+      "source_sha256": "70871984390f252c0a06a5a2c9a2d3b4337f10ad48c87583ebec215d5c0c9c6e",
+      "test": {
+        "raw_count": 3104,
+        "retained_count": 2258,
+        "dropped_count": 846,
+        "retention_rate": 0.7274484536082474,
+        "drop_reasons": {
+          "length_ratio_guard": 291,
+          "question_overlap_guard": 553,
+          "unseen_gold_answer": 2
+        }
+      }
+    },
+    "mc_retention_gate": {
+      "applies": true,
+      "threshold": 0.8,
+      "passed": false,
+      "overridden": true,
+      "override_flag": "--allow-low-mc-retention"
+    },
+    "test_split_provenance_status": "verified",
+    "test_split_provenance_path": "PROJECT_WIKI/SPLIT_PROVENANCE.md",
+    "test_split_provenance_sha256": "7ef1ca96a4d1917779375a353217d35b4719b35654b7500f011327450339ca53",
+    "fresh_split_seed": 789685,
+    "fresh_split_created_at": "2026-05-26T07:49:26.645424+00:00",
+    "fresh_split_commit_sha": "a43be19733509c52e0820c44e322044b4304dc18",
+    "threshold_manifest_sha256": "6f8702acf885eea013645fc3225872a348055d315bdbcd5c481a037eccff3752",
+    "test_split_seed": 789685,
+    "test_split_provenance_note": "verified against PROJECT_WIKI/SPLIT_PROVENANCE.md and threshold_manifest.json",
+    "raw_test_questions": 3104,
+    "retained_mc_test_questions": 2258,
+    "dropped_test_questions": 846,
+    "mc_test_retention_rate": 0.7274484536082474,
+    "mc_test_drop_reasons": {
+      "length_ratio_guard": 291,
+      "question_overlap_guard": 553,
+      "unseen_gold_answer": 2
+    }
+  }
+}
