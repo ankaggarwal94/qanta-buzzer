@@ -3100,3 +3100,132 @@ def test_pr41_r5_truncated_eval_runs_subset_fails_report_assembly(
     report = harness.assemble_report(clean, clean_records, smoke=True)
     assert report["warnings"] == []
     assert (clean / "hazard_efficacy_report.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# PR #41 round-6 (r3810048951) — a PRESENT eval payload with absent/empty
+# runs records is MA-019's ProvenanceError at BOTH admission sites; the
+# QA-011 warning lane keeps covering genuinely MISSING seeds/dirs/eval files
+# ---------------------------------------------------------------------------
+
+
+# Tests PR #41 round-6 (r3810048951) [integration]: a resumed run admitted
+# via the MA-012 skip whose eval_result.json is PRESENT but carries an EMPTY
+# runs list used to bypass the MA-019 gate entirely (empty-runs early
+# return) while its top-level aggregates (accuracy/mean_sq/...) still fed
+# report rows and arm deltas. It now fails loud AT ADMISSION with the
+# MA-019 ProvenanceError, naming the run and the delete-or---re-eval
+# remediation; the clean sibling (arm A, untouched fixture) is admitted
+# first, and nothing recomputes.
+def test_pr41_r6_ma012_admission_rejects_present_empty_runs_eval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "out"
+    records = []
+    for arm in ("A", "B"):
+        run_dir = make_run_dir(out, arm, 1, include_hazard_dynamics=(arm == "B"))
+        records.append({"arm": arm, "seed": 1, "run_dir": run_dir,
+                        "hazard": arm != "A", "resumed": True,
+                        "log_path": run_dir / "train.log"})
+
+    # B's sidecar is present and self-identifying but substantiates nothing
+    # per-question: runs == [].
+    _doctor_eval_runs(records[1]["run_dir"], lambda runs: [])
+    monkeypatch.setattr(
+        harness, "evaluate_t5_policy",
+        lambda *a, **kw: pytest.fail("resumed eval must not recompute"),
+        raising=False,
+    )
+    questions = [SimpleNamespace(qid=q) for q in ("q1", "q2", "q3")]
+
+    with pytest.raises(harness.ProvenanceError, match="MA-019") as excinfo:
+        harness.evaluate_all_runs(records, questions, {})
+    message = str(excinfo.value)
+    assert "B_seed1" in message, f"the offending run must be named: {message}"
+    assert "empty" in message, (
+        f"the empty runs records must be named: {message}"
+    )
+    assert "--re-eval" in message, (
+        f"the execute-path remediation must offer --re-eval: {message}"
+    )
+
+
+# Tests PR #41 round-6 (r3810048951) [integration]: --report-only over a run
+# tree holding an eval_result.json WITHOUT any runs key fails loud at report
+# assembly with the MA-019 ProvenanceError — the payload's aggregates would
+# otherwise flow into report rows and arm deltas with unvalidated
+# per-question provenance. The remediation is report-only-aware, and no
+# report or plot is written.
+def test_pr41_r6_report_only_rejects_present_runs_key_absent_eval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail("report-only must not train"),
+    )
+    out = tmp_path / "out"
+    make_run_dir(out, "A", 1)
+    b_dir = make_run_dir(out, "B", 1, include_hazard_dynamics=True)
+
+    # B's sidecar keeps every aggregate field but the runs KEY is absent.
+    eval_path = b_dir / "eval_result.json"
+    payload = json.loads(eval_path.read_text())
+    del payload["runs"]
+    eval_path.write_text(json.dumps(payload))
+
+    with pytest.raises(harness.ProvenanceError, match="MA-019") as excinfo:
+        harness.main(
+            ["--report-only", "--smoke", "--out-dir", str(out),
+             "--arms", "A", "B", "--seeds", "1"]
+        )
+    message = str(excinfo.value)
+    assert "B_seed1" in message, f"the offending run must be named: {message}"
+    assert "absent" in message, (
+        f"the absent runs key must be named: {message}"
+    )
+    # Report-only-aware remediation (PR #41 round-2 [29]): --force/--re-eval
+    # are dead ends under --report-only; the wording steers around them.
+    assert "--report-only" in message
+    assert not (out / "hazard_efficacy_report.json").exists(), (
+        "no report may be written from an unsubstantiated eval payload"
+    )
+    assert not (out / "hazard_efficacy_plot.png").exists(), (
+        "no plot may be written from an unsubstantiated eval payload"
+    )
+
+
+# Tests PR #41 round-6 (r3810048951) [integration]: the QA-011 boundary —
+# a GENUINELY MISSING eval file (its whole run dir absent from disk, the
+# shape the reconciliation lane is designed for) stays a printed report
+# warning under --report-only, never a ProvenanceError: the report still
+# assembles from the surviving dirs and names the gap. Present-but-empty
+# payloads raise (the two tests above); missing ones warn — never the
+# other way around.
+def test_pr41_r6_qa011_missing_eval_file_still_warns_not_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail("report-only must not train"),
+    )
+    out = tmp_path / "out"
+    make_run_dir(out, "A", 1)
+    make_run_dir(out, "A", 2)
+    make_run_dir(out, "B", 1, include_hazard_dynamics=True)
+    # B_seed2's run dir — and with it its eval_result.json — is genuinely
+    # missing from disk.
+
+    harness.main(
+        ["--report-only", "--smoke", "--out-dir", str(out),
+         "--arms", "A", "B", "--seeds", "1", "2"]
+    )
+
+    report = json.loads((out / "hazard_efficacy_report.json").read_text())
+    warnings = report["warnings"]
+    assert isinstance(warnings, list) and warnings
+    assert any("arm B" in w and "[2]" in w for w in warnings), (
+        f"the missing B_seed2 must be named in the warnings: {warnings}"
+    )
+    assert not any("arm A" in w for w in warnings), "arm A is fully present"
+    # The report assembled from the three surviving dirs — warning, no raise.
+    assert len(report["runs"]) == 3

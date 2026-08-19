@@ -475,27 +475,41 @@ def test_r009_arm_deltas_and_hazard_compute(tmp_path: Path) -> None:
 
 
 # Tests QA-011 [unit]: aggregations reconcile against the PLAN — an arm
-# contributing fewer seeds than planned to the per-qid S_q pool (missing or
-# empty per-question runs records) surfaces as a report warning, never a
-# silently smaller CI pool. A clean fixture yields zero warnings.
+# contributing fewer seeds than planned surfaces as a report warning, never
+# a silently smaller CI pool. Boundary correction (PR #41 round-6,
+# r3810048951): the QA-011 warning lane covers GENUINELY MISSING
+# seeds/dirs/eval files, so the shortfall is modeled here as a wholly
+# missing B_seed2 run dir (its eval_result.json genuinely absent from
+# disk), reconciled plan-vs-disk the way --report-only wires it; the
+# fixture previously fabricated a PRESENT payload with `"runs": []`, which
+# is now MA-019's ProvenanceError (present-but-unsubstantiated), not this
+# lane's warning. A clean fixture yields zero warnings.
 def test_qa011_report_warns_when_arm_contributes_fewer_seeds(
     tmp_path: Path,
 ) -> None:
     out = tmp_path / "out"
+    plan = []
     records = []
     for arm in ("A", "B"):
         for seed in (1, 2):
-            # B seed 2's eval payload lost its per-question runs records.
-            eval_overrides = {"runs": []} if (arm, seed) == ("B", 2) else {}
+            plan.append({"arm": arm, "seed": seed})
+            if (arm, seed) == ("B", 2):
+                # B seed 2's run dir — and with it its eval file — is
+                # genuinely missing from disk (QA-011: missing, warn).
+                continue
             run_dir = make_run_dir(
                 out, arm, seed,
-                eval_overrides=eval_overrides,
                 include_hazard_dynamics=(arm, seed) == ("B", 1),
             )
             records.append({"arm": arm, "seed": seed, "run_dir": run_dir,
                             "hazard": arm != "A", "resumed": False})
 
-    report = harness.assemble_report(out, records, smoke=True)
+    # The --report-only wiring: surviving dirs assemble; the plan-vs-disk
+    # reconciliation feeds the QA-011 warning family via extra_warnings.
+    extra_warnings = harness._reconcile_planned_dirs(plan, records)
+    report = harness.assemble_report(
+        out, records, smoke=True, extra_warnings=extra_warnings
+    )
 
     warnings = report["warnings"]
     assert isinstance(warnings, list) and warnings

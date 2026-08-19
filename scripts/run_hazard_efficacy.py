@@ -635,18 +635,51 @@ def _assert_eval_matches_manifest_test_qids(
     SET must equal the manifest ``test_qids`` set AND the record count
     must equal ``len(test_qids)`` (a duplicated-record payload with full
     set coverage still fails on count). Qids are compared as strings on
-    both sides, matching ``_sq_by_seed_for_arm``'s keying. Payloads whose
-    ``runs`` records are absent or empty are NOT this gate's job: they
-    contribute nothing per-question and stay in the pinned QA-011 warning
-    lane (:func:`_reconcile_seed_coverage`). Raises ``ProvenanceError``
+    both sides, matching ``_sq_by_seed_for_arm``'s keying.
+
+    PR #41 round-6 (r3810048951, boundary correction): a PRESENT payload
+    whose ``runs`` records are absent/empty/non-list is ALSO this gate's
+    ``ProvenanceError`` — the old early-return let such a payload bypass
+    the gate entirely while its top-level aggregates (accuracy/mean_sq/
+    ...) still fed report rows and arm deltas, i.e. unvalidated
+    per-question provenance contributing aggregates. The QA-011 warning
+    lane (:func:`_reconcile_seed_coverage` /
+    :func:`_reconcile_planned_dirs`) covers genuinely MISSING
+    seeds/dirs/eval files (reconciliation warnings), never a
+    present-but-unsubstantiated payload. Raises ``ProvenanceError``
     naming the run and the delta, with delete-or-``--re-eval``
     remediation (report-only-aware via :func:`_remediation`).
     """
     runs_records = eval_result.get("runs")
     if not isinstance(runs_records, list) or not runs_records:
-        # QA-011 lane: missing/empty per-question records surface as the
-        # pinned seed-coverage warning, never a hard error here.
-        return
+        # PR #41 round-6 (r3810048951): a present payload that cannot
+        # substantiate its aggregates per-question fails HERE, at the same
+        # two admission sites as the qid-set check (MA-012 resume
+        # admission + report assembly). QA-011 keeps the warning lane for
+        # genuinely MISSING seeds/dirs/eval files only.
+        if "runs" not in eval_result:
+            detail = "the 'runs' key is absent"
+        elif isinstance(runs_records, list):
+            detail = "its 'runs' list is empty"
+        else:
+            detail = (
+                "its 'runs' field is not a list "
+                f"({type(runs_records).__name__})"
+            )
+        raise ProvenanceError(
+            f"Run {run_name}: {EVAL_RESULT_FILENAME} exists but {detail}, "
+            "so its aggregate metrics (accuracy/mean_sq/...) cannot be "
+            "verified against the run's own split_manifest.json test "
+            "split — a present eval payload must never claim aggregates "
+            "it cannot substantiate per-question (MA-019 / PR #41 "
+            "r3810048951). "
+            + _remediation(
+                f"Delete the {EVAL_RESULT_FILENAME} (or the run "
+                "directory) or pass --re-eval to recompute the eval from "
+                "the run's checkpoints.",
+                tag="MA-019",
+            )
+        )
     test_qids = (
         manifest.get("test_qids") if isinstance(manifest, dict) else None
     )
