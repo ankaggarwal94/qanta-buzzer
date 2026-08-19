@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .schema import ColmAimsError
+from .schema import ColmAimsError, is_commit_sha, is_sha256_hex
 
 
 class LedgerValidationError(ColmAimsError):
@@ -80,8 +80,13 @@ REQUIRED_LEDGER_FIELDS = (
     "rows",
 )
 
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+# R-023/R-026: the enumerated per-row fields whose values are closed sets.
+_ROW_ENUM_FIELDS = (
+    ("status", LEDGER_STATUSES, "R-023"),
+    ("provenance_class", PROVENANCE_CLASSES, "R-023"),
+    ("rights_status", RIGHTS_STATUSES, "R-026"),
+)
+
 # R-030: DOI-class archival identifiers — bare DOI or a doi.org URL. A
 # GitHub (or any other) URL does not qualify (ACM v1.1).
 _DOI_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/)?10\.\d{4,9}/\S+$")
@@ -106,23 +111,13 @@ def _validate_row(row: Any, index: int) -> None:
                 f"ledger row {label!r} missing required field {field!r}"
                 " (R-023)"
             )
+    for field, allowed, rule in _ROW_ENUM_FIELDS:
+        if row[field] not in allowed:
+            raise LedgerValidationError(
+                f"ledger row {label!r} {field} {row[field]!r} outside the"
+                f" closed enum {sorted(allowed)} ({rule})"
+            )
     status = row["status"]
-    if status not in LEDGER_STATUSES:
-        raise LedgerValidationError(
-            f"ledger row {label!r} status {status!r} outside the closed enum"
-            f" {sorted(LEDGER_STATUSES)} (R-023)"
-        )
-    if row["provenance_class"] not in PROVENANCE_CLASSES:
-        raise LedgerValidationError(
-            f"ledger row {label!r} provenance_class"
-            f" {row['provenance_class']!r} outside the closed set"
-            f" {sorted(PROVENANCE_CLASSES)} (R-023)"
-        )
-    if row["rights_status"] not in RIGHTS_STATUSES:
-        raise LedgerValidationError(
-            f"ledger row {label!r} rights_status {row['rights_status']!r}"
-            f" outside the enum {sorted(RIGHTS_STATUSES)} (R-026)"
-        )
 
     # R-023: PR #41 hazard reports may appear only if the exact manuscript
     # cites them.
@@ -138,9 +133,11 @@ def _validate_row(row: Any, index: int) -> None:
     # green tests never substitute for an EXTERNAL item.
     if _row_is_external_typed(row) and status == "PASS":
         attribution = row.get("human_attribution")
-        if not isinstance(attribution, dict) or not attribution.get(
-            "attributed_to"
-        ) or not attribution.get("date"):
+        if (
+            not isinstance(attribution, dict)
+            or not attribution.get("attributed_to")
+            or not attribution.get("date")
+        ):
             raise LedgerValidationError(
                 f"ledger row {label!r} moves an EXTERNAL item to PASS without"
                 " a human_attribution field (attributed_to + date) (R-024)"
@@ -173,6 +170,24 @@ def _validate_row(row: Any, index: int) -> None:
             )
 
 
+def _validate_availability_assertion(assertion: Any) -> None:
+    """R-030: an Available-grade assertion needs a DOI-class identifier."""
+    if not isinstance(assertion, dict):
+        raise LedgerValidationError(
+            "availability_assertion must be an object (R-030)"
+        )
+    grade = assertion.get("grade")
+    if not isinstance(grade, str) or "available" not in grade.lower():
+        return
+    doi = assertion.get("archival_doi")
+    if not isinstance(doi, str) or not _DOI_RE.fullmatch(doi):
+        raise LedgerValidationError(
+            f"availability_assertion grade {grade!r} requires a DOI-class"
+            f" archival identifier; {doi!r} does not qualify (a GitHub URL is"
+            " not archival, ACM v1.1) (R-030)"
+        )
+
+
 def validate_ledger(ledger: dict[str, Any]) -> None:
     """Validate the full claim ledger document; raise on any defect."""
     if not isinstance(ledger, dict):
@@ -191,13 +206,13 @@ def validate_ledger(ledger: dict[str, Any]) -> None:
             " ledger must pin manuscript identity (R-023)"
         )
     pdf_sha = manuscript["submission_pdf_sha256"]
-    if not isinstance(pdf_sha, str) or not _SHA256_RE.fullmatch(pdf_sha):
+    if not is_sha256_hex(pdf_sha):
         raise LedgerValidationError(
             f"ledger manuscript submission_pdf_sha256 {pdf_sha!r} is not a"
             " SHA-256 hex digest (R-023)"
         )
     commit = ledger["anchored_source_commit"]
-    if not isinstance(commit, str) or not _COMMIT_RE.fullmatch(commit):
+    if not is_commit_sha(commit):
         raise LedgerValidationError(
             f"ledger anchored_source_commit {commit!r} must be a full-length"
             " commit SHA (R-013)"
@@ -211,20 +226,7 @@ def validate_ledger(ledger: dict[str, Any]) -> None:
     # R-030: Available-grade assertions require a DOI-class identifier.
     assertion = ledger.get("availability_assertion")
     if assertion is not None:
-        if not isinstance(assertion, dict):
-            raise LedgerValidationError(
-                "availability_assertion must be an object (R-030)"
-            )
-        grade = assertion.get("grade")
-        if isinstance(grade, str) and "available" in grade.lower():
-            doi = assertion.get("archival_doi")
-            if not isinstance(doi, str) or not _DOI_RE.fullmatch(doi):
-                raise LedgerValidationError(
-                    f"availability_assertion grade {grade!r} requires a"
-                    f" DOI-class archival identifier; {doi!r} does not"
-                    " qualify (a GitHub URL is not archival, ACM v1.1)"
-                    " (R-030)"
-                )
+        _validate_availability_assertion(assertion)
 
 
 def validate_rights_inventory(rights: dict[str, Any]) -> None:

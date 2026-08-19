@@ -5,7 +5,6 @@ Spec: .correctless/specs/camera-ready-aims-evidence.md
 """
 from __future__ import annotations
 
-import json
 import time
 import uuid
 from pathlib import Path
@@ -13,7 +12,12 @@ from typing import Any
 
 from scripts.stopdff_v5 import fileio
 
-from .schema import ColmAimsError
+from .schema import (
+    ColmAimsError,
+    encode_json,
+    is_path_component,
+    resolves_inside,
+)
 
 RECEIPT_SCHEMA_VERSION = 1
 
@@ -41,22 +45,19 @@ def emit_receipt(
     verified_tree = Path(verified_tree)
     if run_id is None:
         run_id = _unique_run_id()
-    if not isinstance(run_id, str) or not run_id or Path(run_id).name != run_id:
+    if not is_path_component(run_id):
         raise ColmAimsError(
             f"receipt run_id {run_id!r} must be a single path component"
             " (R-036)"
         )
     path = receipts_dir / f"receipt-{run_id}.json"
-    resolved = path.resolve()
-    tree_resolved = verified_tree.resolve()
-    if resolved == tree_resolved or tree_resolved in resolved.parents:
+    if resolves_inside(path, verified_tree):
         raise ColmAimsError(
             "receipt path must be outside the verified artifact tree (R-036)"
         )
     payload = dict(report_payload)
     payload.setdefault("schema_version", RECEIPT_SCHEMA_VERSION)
-    data = (
-        json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    ).encode("utf-8")
-    fileio.create_once_bytes(path, data, exists_label="verification receipt")
+    fileio.create_once_bytes(
+        path, encode_json(payload), exists_label="verification receipt"
+    )
     return path

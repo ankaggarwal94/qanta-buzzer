@@ -38,18 +38,15 @@ def render_summary(report: Any) -> str:
     validated = list(getattr(report, "validated_artifacts", []) or [])
     classifications = dict(getattr(report, "classifications", {}) or {})
 
-    lines: list[str] = []
-    lines.append(
+    lines: list[str] = [
         "COLM AIMS 2026 evidence verifier — constructed QA reference"
-        " sensitivity diagnostic"
-    )
-    lines.append(f"mode: {mode}")
-    lines.append(f"verdict: {verdict}")
-    lines.append(
+        " sensitivity diagnostic",
+        f"mode: {mode}",
+        f"verdict: {verdict}",
         "scope: constructed QA reference sensitivity only (insensitivity to"
         " sub-threshold shifts within the constructed reference grid); no"
-        " observed open-ended stopping policy was measured."
-    )
+        " observed open-ended stopping policy was measured.",
+    ]
     checks = _RELEASE_CHECKS if mode == "release" else _SOURCE_CHECKS
     lines.append("checks performed: " + "; ".join(checks) + ".")
     if mode == "source":

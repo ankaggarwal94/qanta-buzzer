@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -64,8 +63,8 @@ _MANIFEST_KEYS = frozenset(
     {"schema_version", "artifacts", "allowlist_undeclared"}
 )
 
-_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+# R-012/R-014: the estimand-defining dependency-closure identities.
+_CLOSURE_IDENTITY_KEYS = ("calibration_identity", "continuation_identity")
 
 _EXPECTED_LAYOUT = (
     "profile.json (strict constructed-reference profile), records.jsonl"
@@ -105,22 +104,29 @@ def _tree_file_map(tree: Path) -> dict[str, Path]:
     }
 
 
-def _tree_digest(tree: Path) -> str:
-    """Pinned input-tree digest (R-036): sha256 over sorted
-    ``<posix relpath>:<file sha256>`` lines with a trailing newline."""
-    entries = {rel: _sha256_file(p) for rel, p in _tree_file_map(tree).items()}
-    lines = [f"{rel}:{sha}" for rel, sha in sorted(entries.items())]
+def _digest_over_lines(lines: list[str]) -> str:
+    """Pinned digest shape (R-036): sha256 over newline-joined
+    ``<posix relpath>:<sha256>`` lines with a trailing newline."""
     return hashlib.sha256(("\n".join(lines) + "\n").encode("utf-8")).hexdigest()
+
+
+def _tree_digest(tree: Path) -> str:
+    """Pinned input-tree digest (R-036) over every file in the tree."""
+    entries = {rel: _sha256_file(p) for rel, p in _tree_file_map(tree).items()}
+    return _digest_over_lines(
+        [f"{rel}:{sha}" for rel, sha in sorted(entries.items())]
+    )
 
 
 def _code_digest() -> str:
     """Pinned verifier-code digest (R-036) over the namespace's .py files."""
     namespace = Path(__file__).resolve().parent
-    lines = [
-        f"{p.relative_to(namespace).as_posix()}:{_sha256_file(p)}"
-        for p in sorted(namespace.glob("**/*.py"))
-    ]
-    return hashlib.sha256(("\n".join(lines) + "\n").encode("utf-8")).hexdigest()
+    return _digest_over_lines(
+        [
+            f"{p.relative_to(namespace).as_posix()}:{_sha256_file(p)}"
+            for p in sorted(namespace.glob("**/*.py"))
+        ]
+    )
 
 
 def _pass(leg_id: str) -> dict[str, Any]:
@@ -143,6 +149,35 @@ def _fail(
     }
 
 
+def _record_leg(
+    legs: list[dict[str, Any]],
+    leg_id: str,
+    passed: bool,
+    *,
+    expected: Any,
+    observed: Any,
+    remediation: str = "ARTIFACT_DEFECT",
+) -> None:
+    """Append one PASS leg, or one FAIL leg carrying expected/observed."""
+    if passed:
+        legs.append(_pass(leg_id))
+    else:
+        legs.append(
+            _fail(
+                leg_id,
+                expected=expected,
+                observed=observed,
+                remediation=remediation,
+            )
+        )
+
+
+def _is_resolved_identity(value: Any) -> bool:
+    """A closure identity is resolved when it is a non-empty string other than
+    the explicit ``UNRESOLVED`` marker (R-012/R-014)."""
+    return isinstance(value, str) and bool(value) and value != "UNRESOLVED"
+
+
 def classify_certifiability(profile: dict[str, Any]) -> str:
     """CERTIFIABLE vs HISTORICAL_NONCERTIFYING closure classification (R-014).
 
@@ -158,9 +193,8 @@ def classify_certifiability(profile: dict[str, Any]) -> str:
         return HISTORICAL_NONCERTIFYING
     if "superseded_by_producer_sha256" in prov:
         return HISTORICAL_NONCERTIFYING
-    for name in ("calibration_identity", "continuation_identity"):
-        value = prov.get(name)
-        if not isinstance(value, str) or not value or value == "UNRESOLVED":
+    for name in _CLOSURE_IDENTITY_KEYS:
+        if not _is_resolved_identity(prov.get(name)):
             return HISTORICAL_NONCERTIFYING
     return CERTIFIABLE
 
@@ -309,6 +343,52 @@ def _git_object_exists(commit: str) -> bool | None:
 # ---------------------------------------------------------------------------
 
 
+def _classify_legacy_artifacts(
+    files: dict[str, Path]
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Classify known historical artifact families from captured bytes (R-014).
+
+    Returns the parsed legacy artifacts keyed by tree-relative path, plus
+    their human-readable classifications. A file that is not a known legacy
+    family is left to the other gates — never refused merely for predating
+    the strict schema.
+    """
+    parsed_by_rel: dict[str, dict[str, Any]] = {}
+    classifications: dict[str, str] = {}
+    for rel in sorted(files):
+        if rel in ("profile.json", "presentation_manifest.json"):
+            continue
+        if not rel.endswith(".json"):
+            continue
+        try:
+            parsed = parse_legacy_profile(files[rel].read_bytes())
+        except ColmAimsError:
+            continue  # not a known legacy family; other gates govern it
+        parsed_by_rel[rel] = parsed
+        classifications[rel] = (
+            f"legacy_{parsed['legacy_family']}_aggregate"
+            " (historical, aggregate-only)"
+        )
+    return parsed_by_rel, classifications
+
+
+def _reject_empty_evaluation(cells: Any) -> None:
+    """R-006/R-012: an explicitly empty evaluation errors before any report."""
+    if not isinstance(cells, list):
+        return
+    for cell in cells:
+        if (
+            isinstance(cell, dict)
+            and isinstance(cell.get("counts"), dict)
+            and cell["counts"].get("n_pairing_population") == 0
+        ):
+            raise schema.EmptyEvaluationError(
+                f"cell {cell.get('cell_id')!r} declares an explicitly empty"
+                " evaluation (n_pairing_population == 0); refused before any"
+                " report is emitted (R-006/R-012)"
+            )
+
+
 def run_verifier(
     tree: Path,
     *,
@@ -342,8 +422,7 @@ def run_verifier(
                 " file located outside the verified artifact tree (R-013)"
             )
         expectations_path = Path(expectations)
-        resolved = expectations_path.resolve()
-        if resolved == tree_resolved or tree_resolved in resolved.parents:
+        if schema.resolves_inside(expectations_path, tree):
             raise ContainmentError(
                 "expectations file resolves inside the verified artifact"
                 " tree — self-attestation is refused; containment decisions"
@@ -361,23 +440,10 @@ def run_verifier(
             files["records.jsonl"], tree_root=tree
         )["records"]
 
-    # R-006/R-012: an explicitly empty evaluation errors before any report.
     cells = profile.get("cells")
-    if isinstance(cells, list):
-        for cell in cells:
-            if (
-                isinstance(cell, dict)
-                and isinstance(cell.get("counts"), dict)
-                and cell["counts"].get("n_pairing_population") == 0
-            ):
-                raise schema.EmptyEvaluationError(
-                    f"cell {cell.get('cell_id')!r} declares an explicitly"
-                    " empty evaluation (n_pairing_population == 0); refused"
-                    " before any report is emitted (R-006/R-012)"
-                )
+    _reject_empty_evaluation(cells)
 
     legs: list[dict[str, Any]] = []
-    classifications: dict[str, str] = {}
     validated: list[str] = []
 
     # ---- shared (source minimum positive set) --------------------------
@@ -428,7 +494,9 @@ def run_verifier(
             records_valid = True
 
     cells_valid = True
-    if records is not None and isinstance(cells, list):
+    if records is None:
+        cells_valid = False
+    elif isinstance(cells, list):
         for cell in cells:
             cell_id = (
                 cell.get("cell_id", "unnamed")
@@ -452,27 +520,8 @@ def run_verifier(
                         observed=str(exc),
                     )
                 )
-    elif records is None:
-        cells_valid = False
 
-    # Legacy artifact classification (R-014): parse known historical
-    # families from captured bytes; never refuse merely for predating the
-    # strict schema.
-    legacy_parsed: dict[str, dict[str, Any]] = {}
-    for rel in sorted(files):
-        if rel in ("profile.json", "presentation_manifest.json"):
-            continue
-        if not rel.endswith(".json"):
-            continue
-        try:
-            parsed = parse_legacy_profile(files[rel].read_bytes())
-        except ColmAimsError:
-            continue  # not a known legacy family; other gates govern it
-        legacy_parsed[rel] = parsed
-        classifications[rel] = (
-            f"legacy_{parsed['legacy_family']}_aggregate"
-            " (historical, aggregate-only)"
-        )
+    legacy_parsed, classifications = _classify_legacy_artifacts(files)
 
     try:
         closure = classify_certifiability(profile)
@@ -491,7 +540,6 @@ def run_verifier(
         assert expectations_obj is not None and expectations_path is not None
         _release_legs(
             legs,
-            classifications,
             expectations_obj,
             expectations_path,
             files,
@@ -547,7 +595,6 @@ def run_verifier(
 
 def _release_legs(
     legs: list[dict[str, Any]],
-    classifications: dict[str, str],
     exp: dict[str, Any],
     expectations_path: Path,
     files: dict[str, Path],
@@ -557,12 +604,55 @@ def _release_legs(
     closure: str,
     artifacts_valid: bool,
 ) -> None:
+    """Append every release-only leg, in the pinned order.
+
+    Each section owns one gate family; a section that cannot even reach its
+    inputs records the failure and returns rather than skipping silently.
+    """
     prov = profile.get("provenance") or {}
     base = expectations_path.parent
 
-    # -- anchor cross-check before consuming expectations (R-013) --------
+    ledger_doc = _anchor_legs(legs, exp, base, prov)
+    _tree_file_legs(legs, exp, files)
+    _binding_legs(legs, exp, files, profile, prov)
+
+    dirty_state = prov.get("dirty_state") or {}
+    _record_leg(
+        legs,
+        "dirty_state_clean",
+        dirty_state.get("git_dirty") is False,
+        expected={"git_dirty": False},
+        observed={"git_dirty": dirty_state.get("git_dirty")},
+    )
+    _identity_resolution_legs(legs, prov)
+    _model_legs(legs, prov)
+    _splits_legs(legs, prov, records)
+    _mc_build_legs(legs, prov)
+    _record_leg(
+        legs,
+        "closure_certifiability",
+        closure == CERTIFIABLE,
+        expected=CERTIFIABLE,
+        observed=closure,
+    )
+
+    _rights_legs(legs, exp, base, files)
+    _manifest_legs(legs, files)
+    _ledger_legs(legs, ledger_doc, files, legacy_parsed, artifacts_valid)
+
+
+def _anchor_legs(
+    legs: list[dict[str, Any]],
+    exp: dict[str, Any],
+    base: Path,
+    prov: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Anchor cross-check before any expectation is consumed (R-013).
+
+    Returns the frozen claim ledger document when one was reachable and
+    parseable, else ``None``.
+    """
     anchor = exp.get("anchor")
-    ledger_doc: dict[str, Any] | None = None
     if not isinstance(anchor, dict):
         legs.append(
             _fail(
@@ -573,78 +663,78 @@ def _release_legs(
                 remediation="MISSING_EXPECTATION",
             )
         )
+        return None
+
+    ledger_doc: dict[str, Any] | None = None
+    ledger_rel = anchor.get("ledger_path", "ledger.json")
+    ledger_path = base / str(ledger_rel)
+    anchor_ledger_sha = anchor.get("ledger_sha256")
+    if not ledger_path.is_file():
+        legs.append(
+            _fail(
+                "anchor_ledger",
+                expected=anchor_ledger_sha,
+                observed=f"frozen ledger {ledger_rel!r} absent",
+                remediation="MISSING_EXPECTATION",
+            )
+        )
     else:
-        ledger_rel = anchor.get("ledger_path", "ledger.json")
-        ledger_path = base / str(ledger_rel)
-        anchor_ledger_sha = anchor.get("ledger_sha256")
-        if not ledger_path.is_file():
+        actual_ledger_sha = _sha256_file(ledger_path)
+        _record_leg(
+            legs,
+            "anchor_ledger",
+            actual_ledger_sha == anchor_ledger_sha,
+            expected=anchor_ledger_sha,
+            observed=actual_ledger_sha,
+        )
+        ledger_doc, ledger_err = _load_json_lenient(ledger_path)
+        if ledger_err is not None:
             legs.append(
                 _fail(
-                    "anchor_ledger",
-                    expected=anchor_ledger_sha,
-                    observed=f"frozen ledger {ledger_rel!r} absent",
-                    remediation="MISSING_EXPECTATION",
+                    "ledger_parse",
+                    expected="parseable frozen claim ledger",
+                    observed=ledger_err,
                 )
             )
-        else:
-            actual_ledger_sha = _sha256_file(ledger_path)
-            if actual_ledger_sha != anchor_ledger_sha:
-                legs.append(
-                    _fail(
-                        "anchor_ledger",
-                        expected=anchor_ledger_sha,
-                        observed=actual_ledger_sha,
-                    )
-                )
-            else:
-                legs.append(_pass("anchor_ledger"))
-            ledger_doc, ledger_err = _load_json_lenient(ledger_path)
-            if ledger_err is not None:
-                legs.append(
-                    _fail(
-                        "ledger_parse",
-                        expected="parseable frozen claim ledger",
-                        observed=ledger_err,
-                    )
-                )
 
-        anchor_commit = anchor.get("source_commit")
-        observed_commit = (prov.get("dirty_state") or {}).get("source_commit")
-        if not isinstance(anchor_commit, str) or not _COMMIT_RE.fullmatch(
-            anchor_commit
-        ):
-            legs.append(
-                _fail(
-                    "anchor_source_commit",
-                    expected="full-length reviewed source commit SHA (R-013)",
-                    observed=anchor_commit,
-                    remediation="MISSING_EXPECTATION",
-                )
+    anchor_commit = anchor.get("source_commit")
+    observed_commit = (prov.get("dirty_state") or {}).get("source_commit")
+    if not schema.is_commit_sha(anchor_commit):
+        legs.append(
+            _fail(
+                "anchor_source_commit",
+                expected="full-length reviewed source commit SHA (R-013)",
+                observed=anchor_commit,
+                remediation="MISSING_EXPECTATION",
             )
-        elif anchor_commit != observed_commit:
-            # String-exact identity comparison; works without a git checkout.
-            legs.append(
-                _fail(
-                    "anchor_source_commit",
-                    expected=anchor_commit,
-                    observed=observed_commit,
-                )
+        )
+    elif anchor_commit != observed_commit:
+        # String-exact identity comparison; works without a git checkout.
+        legs.append(
+            _fail(
+                "anchor_source_commit",
+                expected=anchor_commit,
+                observed=observed_commit,
             )
-        else:
-            exists = _git_object_exists(anchor_commit)
-            if exists is False:
-                legs.append(
-                    _fail(
-                        "anchor_source_commit_object",
-                        expected=f"commit {anchor_commit} present in the"
-                        " available repository (R-013)",
-                        observed="object not found",
-                    )
-                )
-            else:
-                legs.append(_pass("anchor_source_commit"))
+        )
+    elif _git_object_exists(anchor_commit) is False:
+        legs.append(
+            _fail(
+                "anchor_source_commit_object",
+                expected=f"commit {anchor_commit} present in the"
+                " available repository (R-013)",
+                observed="object not found",
+            )
+        )
+    else:
+        legs.append(_pass("anchor_source_commit"))
+    return ledger_doc
 
-    # -- tree byte bindings ----------------------------------------------
+
+def _tree_file_legs(
+    legs: list[dict[str, Any]], exp: dict[str, Any], files: dict[str, Path]
+) -> None:
+    """Artifact-tree byte identity against the anchored hash map (R-014)."""
     declared_tree = exp.get("tree_files")
     if not isinstance(declared_tree, dict):
         legs.append(
@@ -655,29 +745,35 @@ def _release_legs(
                 remediation="MISSING_EXPECTATION",
             )
         )
-    else:
-        problems: list[str] = []
-        actual = {rel: _sha256_file(path) for rel, path in files.items()}
-        for rel, sha in sorted(declared_tree.items()):
-            if rel not in actual:
-                problems.append(f"declared-but-absent {rel!r}")
-            elif actual[rel] != sha:
-                problems.append(f"byte-hash mismatch {rel!r}")
-        for rel in sorted(set(actual) - set(declared_tree)):
-            problems.append(f"present-but-unanchored {rel!r}")
-        if problems:
-            legs.append(
-                _fail(
-                    "tree_files",
-                    expected="artifact tree byte-identical to the anchored"
-                    " hash map (R-014)",
-                    observed="; ".join(problems),
-                )
-            )
-        else:
-            legs.append(_pass("tree_files"))
+        return
 
-    # -- the thirteen binding legs (R-012) --------------------------------
+    problems: list[str] = []
+    actual = {rel: _sha256_file(path) for rel, path in files.items()}
+    for rel, sha in sorted(declared_tree.items()):
+        if rel not in actual:
+            problems.append(f"declared-but-absent {rel!r}")
+        elif actual[rel] != sha:
+            problems.append(f"byte-hash mismatch {rel!r}")
+    for rel in sorted(set(actual) - set(declared_tree)):
+        problems.append(f"present-but-unanchored {rel!r}")
+    _record_leg(
+        legs,
+        "tree_files",
+        not problems,
+        expected="artifact tree byte-identical to the anchored hash map"
+        " (R-014)",
+        observed="; ".join(problems),
+    )
+
+
+def _binding_legs(
+    legs: list[dict[str, Any]],
+    exp: dict[str, Any],
+    files: dict[str, Path],
+    profile: dict[str, Any],
+    prov: dict[str, Any],
+) -> None:
+    """The thirteen independently anchored binding legs (R-012)."""
     observed_bindings: dict[str, Any] = {
         "schema_profile": {
             "profile_id": profile.get("profile_id"),
@@ -744,160 +840,131 @@ def _release_legs(
                 continue
         legs.append(_pass(leg_id))
 
-    # -- gate legs beyond byte/value equality ------------------------------
-    dirty_state = prov.get("dirty_state") or {}
-    if dirty_state.get("git_dirty") is False:
-        legs.append(_pass("dirty_state_clean"))
-    else:
-        legs.append(
-            _fail(
-                "dirty_state_clean",
-                expected={"git_dirty": False},
-                observed={"git_dirty": dirty_state.get("git_dirty")},
-            )
+
+def _identity_resolution_legs(
+    legs: list[dict[str, Any]], prov: dict[str, Any]
+) -> None:
+    """Closure identities must be resolved, never left UNRESOLVED (R-012)."""
+    for name in _CLOSURE_IDENTITY_KEYS:
+        value = prov.get(name)
+        _record_leg(
+            legs,
+            f"binding_{name}_resolved",
+            _is_resolved_identity(value),
+            expected=f"resolved {name}",
+            observed=value,
+            remediation="AUTHOR_DECISION_REQUIRED",
         )
 
-    for name in ("calibration_identity", "continuation_identity"):
-        value = prov.get(name)
-        leg_id = f"binding_{name}_resolved"
-        if isinstance(value, str) and value and value != "UNRESOLVED":
-            legs.append(_pass(leg_id))
-        else:
-            legs.append(
-                _fail(
-                    leg_id,
-                    expected=f"resolved {name}",
-                    observed=value,
-                    remediation="AUTHOR_DECISION_REQUIRED",
-                )
-            )
 
+def _model_legs(legs: list[dict[str, Any]], prov: dict[str, Any]) -> None:
+    """Immutable model revision identity + weights content hash (R-012)."""
     model = prov.get("model") or {}
     revision = model.get("revision")
     digest_manifest = model.get("byte_digest_manifest")
     if revision is not None:
-        if isinstance(revision, str) and _COMMIT_RE.fullmatch(revision):
-            legs.append(_pass("model_revision_immutability"))
-        else:
-            # Short hashes, tags, branch names, and bare repo ids are
-            # rejected — repo ids are reassignable (R-012).
-            legs.append(
-                _fail(
-                    "model_revision_immutability",
-                    expected="immutable full-length 40-hex commit SHA, or a"
-                    " complete canonical byte-digest manifest",
-                    observed={"revision": revision},
-                )
-            )
-    elif (
-        isinstance(digest_manifest, dict)
-        and digest_manifest
-        and all(
-            isinstance(v, str) and _SHA256_RE.fullmatch(v)
-            for v in digest_manifest.values()
+        # Short hashes, tags, branch names, and bare repo ids are rejected —
+        # repo ids are reassignable (R-012).
+        _record_leg(
+            legs,
+            "model_revision_immutability",
+            schema.is_commit_sha(revision),
+            expected="immutable full-length 40-hex commit SHA, or a"
+            " complete canonical byte-digest manifest",
+            observed={"revision": revision},
         )
-    ):
-        legs.append(_pass("model_revision_immutability"))
     else:
-        legs.append(
-            _fail(
-                "model_revision_immutability",
-                expected="immutable full-length commit SHA or complete"
-                " canonical byte-digest manifest",
-                observed={
-                    "revision": None,
-                    "byte_digest_manifest": digest_manifest,
-                },
+        complete_manifest = (
+            isinstance(digest_manifest, dict)
+            and bool(digest_manifest)
+            and all(
+                schema.is_sha256_hex(v) for v in digest_manifest.values()
             )
+        )
+        _record_leg(
+            legs,
+            "model_revision_immutability",
+            complete_manifest,
+            expected="immutable full-length commit SHA or complete"
+            " canonical byte-digest manifest",
+            observed={
+                "revision": None,
+                "byte_digest_manifest": digest_manifest,
+            },
         )
     weights_sha = model.get("weights_sha256")
-    if isinstance(weights_sha, str) and _SHA256_RE.fullmatch(weights_sha):
-        legs.append(_pass("model_weights_hash"))
-    else:
-        legs.append(
-            _fail(
-                "model_weights_hash",
-                expected="content-level sha256 of the loaded weights file",
-                observed=weights_sha,
-            )
-        )
+    _record_leg(
+        legs,
+        "model_weights_hash",
+        schema.is_sha256_hex(weights_sha),
+        expected="content-level sha256 of the loaded weights file",
+        observed=weights_sha,
+    )
 
+
+def _splits_legs(
+    legs: list[dict[str, Any]],
+    prov: dict[str, Any],
+    records: list[dict[str, Any]] | None,
+) -> None:
+    """Split disjointness + eval-split key-set recomputation (R-012)."""
     splits = prov.get("splits") or {}
-    if splits.get("zero_overlap") is True:
-        legs.append(_pass("splits_zero_overlap"))
-    else:
-        legs.append(
-            _fail(
-                "splits_zero_overlap",
-                expected={"zero_overlap": True},
-                observed={"zero_overlap": splits.get("zero_overlap")},
-            )
-        )
-    if records is not None:
-        eval_split = splits.get("eval") or {}
-        keys = [
-            r.get("item_key")
-            for r in records
-            if isinstance(r.get("item_key"), str)
-        ]
-        recomputed_hash = _keyset_sha256(keys)
-        declared_hash = eval_split.get("keyset_sha256")
-        declared_count = eval_split.get("count")
-        if declared_hash == recomputed_hash and declared_count == len(keys):
-            legs.append(_pass("splits_eval_recompute"))
-        else:
-            legs.append(
-                _fail(
-                    "splits_eval_recompute",
-                    expected={
-                        "keyset_sha256": declared_hash,
-                        "count": declared_count,
-                    },
-                    observed={
-                        "keyset_sha256": recomputed_hash,
-                        "count": len(keys),
-                    },
-                )
-            )
+    _record_leg(
+        legs,
+        "splits_zero_overlap",
+        splits.get("zero_overlap") is True,
+        expected={"zero_overlap": True},
+        observed={"zero_overlap": splits.get("zero_overlap")},
+    )
+    if records is None:
+        return
+    eval_split = splits.get("eval") or {}
+    keys = [
+        r.get("item_key") for r in records if isinstance(r.get("item_key"), str)
+    ]
+    recomputed_hash = _keyset_sha256(keys)
+    declared_hash = eval_split.get("keyset_sha256")
+    declared_count = eval_split.get("count")
+    _record_leg(
+        legs,
+        "splits_eval_recompute",
+        declared_hash == recomputed_hash and declared_count == len(keys),
+        expected={"keyset_sha256": declared_hash, "count": declared_count},
+        observed={"keyset_sha256": recomputed_hash, "count": len(keys)},
+    )
 
+
+def _mc_build_legs(legs: list[dict[str, Any]], prov: dict[str, Any]) -> None:
+    """MC-build freshness + coverage/retention recording (R-012)."""
     mc_build = prov.get("mc_build") or {}
-    if mc_build.get("built_after_split") is True:
-        legs.append(_pass("mc_build_freshness"))
-    else:
-        legs.append(
-            _fail(
-                "mc_build_freshness",
-                expected={"built_after_split": True},
-                observed={"built_after_split": mc_build.get("built_after_split")},
-            )
-        )
-    if (
+    _record_leg(
+        legs,
+        "mc_build_freshness",
+        mc_build.get("built_after_split") is True,
+        expected={"built_after_split": True},
+        observed={"built_after_split": mc_build.get("built_after_split")},
+    )
+    coverage_recorded = (
         isinstance(mc_build.get("coverage_rate"), (int, float))
         and isinstance(mc_build.get("retention_policy"), str)
         and isinstance(mc_build.get("retained_count"), int)
-    ):
-        legs.append(_pass("mc_build_coverage_retention"))
-    else:
-        legs.append(
-            _fail(
-                "mc_build_coverage_retention",
-                expected="coverage rate + retention policy/counts recorded",
-                observed=mc_build,
-            )
-        )
+    )
+    _record_leg(
+        legs,
+        "mc_build_coverage_retention",
+        coverage_recorded,
+        expected="coverage rate + retention policy/counts recorded",
+        observed=mc_build,
+    )
 
-    if closure == CERTIFIABLE:
-        legs.append(_pass("closure_certifiability"))
-    else:
-        legs.append(
-            _fail(
-                "closure_certifiability",
-                expected=CERTIFIABLE,
-                observed=closure,
-            )
-        )
 
-    # -- rights inventory (R-026) -----------------------------------------
+def _rights_legs(
+    legs: list[dict[str, Any]],
+    exp: dict[str, Any],
+    base: Path,
+    files: dict[str, Path],
+) -> None:
+    """Rights inventory binding + release clearance (R-026/R-035)."""
     rights_decl = exp.get("rights_inventory")
     if not isinstance(rights_decl, dict):
         legs.append(
@@ -909,45 +976,48 @@ def _release_legs(
                 remediation="MISSING_EXPECTATION",
             )
         )
-    else:
-        rights_path = base / str(rights_decl.get("path", "rights.json"))
-        rights_obj, rights_err = _load_json_lenient(rights_path)
-        if rights_err is not None:
-            legs.append(
-                _fail(
-                    "rights_inventory",
-                    expected="parseable rights inventory",
-                    observed=rights_err,
-                )
-            )
-        else:
-            actual_sha = _sha256_file(rights_path)
-            if actual_sha != rights_decl.get("sha256"):
-                legs.append(
-                    _fail(
-                        "rights_inventory_hash",
-                        expected=rights_decl.get("sha256"),
-                        observed=actual_sha,
-                    )
-                )
-            else:
-                legs.append(_pass("rights_inventory_hash"))
-            try:
-                # R-035: rights cover every file FOUND, not merely declared.
-                ledger_mod.check_rights_release(rights_obj, sorted(files))
-                legs.append(_pass("rights_release"))
-            except ledger_mod.RightsError as exc:
-                legs.append(
-                    _fail(
-                        "rights_release",
-                        expected="every included path VERIFIED_ALLOWED and"
-                        " inventoried (R-026)",
-                        observed=str(exc),
-                        remediation="AUTHOR_DECISION_REQUIRED",
-                    )
-                )
+        return
 
-    # -- presentation manifest reconciliation (R-035) ----------------------
+    rights_path = base / str(rights_decl.get("path", "rights.json"))
+    rights_obj, rights_err = _load_json_lenient(rights_path)
+    if rights_err is not None:
+        legs.append(
+            _fail(
+                "rights_inventory",
+                expected="parseable rights inventory",
+                observed=rights_err,
+            )
+        )
+        return
+
+    actual_sha = _sha256_file(rights_path)
+    _record_leg(
+        legs,
+        "rights_inventory_hash",
+        actual_sha == rights_decl.get("sha256"),
+        expected=rights_decl.get("sha256"),
+        observed=actual_sha,
+    )
+    try:
+        # R-035: rights cover every file FOUND, not merely declared.
+        ledger_mod.check_rights_release(rights_obj, sorted(files))
+        legs.append(_pass("rights_release"))
+    except ledger_mod.RightsError as exc:
+        legs.append(
+            _fail(
+                "rights_release",
+                expected="every included path VERIFIED_ALLOWED and"
+                " inventoried (R-026)",
+                observed=str(exc),
+                remediation="AUTHOR_DECISION_REQUIRED",
+            )
+        )
+
+
+def _manifest_legs(
+    legs: list[dict[str, Any]], files: dict[str, Path]
+) -> None:
+    """Presentation manifest reconciliation (R-033/R-035)."""
     if "presentation_manifest.json" not in files:
         legs.append(
             _fail(
@@ -956,76 +1026,75 @@ def _release_legs(
                 observed="absent",
             )
         )
-    else:
-        manifest_obj, manifest_err = _load_json_lenient(
-            files["presentation_manifest.json"]
-        )
-        unknown_manifest_keys = (
-            sorted(set(manifest_obj) - _MANIFEST_KEYS)
-            if manifest_obj is not None
-            else []
-        )
-        if manifest_err is not None or unknown_manifest_keys:
-            legs.append(
-                _fail(
-                    "presentation_manifest_parse",
-                    expected="typed presentation manifest",
-                    observed=manifest_err
-                    or f"unknown manifest key(s) {unknown_manifest_keys}",
-                )
-            )
-        else:
-            declared = [
-                a.get("path")
-                for a in manifest_obj.get("artifacts", [])
-                if isinstance(a, dict) and isinstance(a.get("path"), str)
-            ]
-            allowlist = [
-                p
-                for p in manifest_obj.get("allowlist_undeclared", [])
-                if isinstance(p, str)
-            ]
-            if not declared:
-                legs.append(
-                    _fail(
-                        "manifest_nonempty",
-                        expected=">=1 manifest-declared artifact (R-033)",
-                        observed="0 declared artifacts",
-                    )
-                )
-            else:
-                legs.append(_pass("manifest_nonempty"))
-            ghosts = sorted(p for p in declared if p not in files)
-            if ghosts:
-                legs.append(
-                    _fail(
-                        "manifest_declared_absent",
-                        expected="every manifest-declared artifact present",
-                        observed=ghosts,
-                    )
-                )
-            else:
-                legs.append(_pass("manifest_declared_absent"))
-            undeclared = sorted(
-                rel
-                for rel in files
-                if rel not in declared
-                and rel not in allowlist
-                and rel != "presentation_manifest.json"
-            )
-            if undeclared:
-                legs.append(
-                    _fail(
-                        "manifest_undeclared_present",
-                        expected="no present-but-undeclared file without an"
-                        " explicit per-file allowlist entry (R-035)",
-                        observed=undeclared,
-                    )
-                )
-            else:
-                legs.append(_pass("manifest_undeclared_present"))
+        return
 
-    # -- claim ledger (R-012 recompute + R-033 nonempty) -------------------
+    manifest_obj, manifest_err = _load_json_lenient(
+        files["presentation_manifest.json"]
+    )
+    if manifest_err is None:
+        unknown_keys = sorted(set(manifest_obj) - _MANIFEST_KEYS)
+        if unknown_keys:
+            manifest_err = f"unknown manifest key(s) {unknown_keys}"
+    if manifest_err is not None:
+        legs.append(
+            _fail(
+                "presentation_manifest_parse",
+                expected="typed presentation manifest",
+                observed=manifest_err,
+            )
+        )
+        return
+
+    declared = [
+        a.get("path")
+        for a in manifest_obj.get("artifacts", [])
+        if isinstance(a, dict) and isinstance(a.get("path"), str)
+    ]
+    allowlist = [
+        p
+        for p in manifest_obj.get("allowlist_undeclared", [])
+        if isinstance(p, str)
+    ]
+    _record_leg(
+        legs,
+        "manifest_nonempty",
+        bool(declared),
+        expected=">=1 manifest-declared artifact (R-033)",
+        observed="0 declared artifacts",
+    )
+    ghosts = sorted(p for p in declared if p not in files)
+    _record_leg(
+        legs,
+        "manifest_declared_absent",
+        not ghosts,
+        expected="every manifest-declared artifact present",
+        observed=ghosts,
+    )
+    undeclared = sorted(
+        rel
+        for rel in files
+        if rel not in declared
+        and rel not in allowlist
+        and rel != "presentation_manifest.json"
+    )
+    _record_leg(
+        legs,
+        "manifest_undeclared_present",
+        not undeclared,
+        expected="no present-but-undeclared file without an explicit"
+        " per-file allowlist entry (R-035)",
+        observed=undeclared,
+    )
+
+
+def _ledger_legs(
+    legs: list[dict[str, Any]],
+    ledger_doc: dict[str, Any] | None,
+    files: dict[str, Path],
+    legacy_parsed: dict[str, dict[str, Any]],
+    artifacts_valid: bool,
+) -> None:
+    """Claim-ledger validation + per-row status recomputation (R-012/R-033)."""
     if ledger_doc is None:
         legs.append(
             _fail(
@@ -1049,17 +1118,13 @@ def _release_legs(
             )
         )
     rows = ledger_doc.get("rows") or []
-    if not rows:
-        legs.append(
-            _fail(
-                "ledger_nonempty",
-                expected=">=1 retained claim-ledger row (R-033)",
-                observed="empty ledger rows",
-            )
-        )
-        rows = []
-    else:
-        legs.append(_pass("ledger_nonempty"))
+    _record_leg(
+        legs,
+        "ledger_nonempty",
+        bool(rows),
+        expected=">=1 retained claim-ledger row (R-033)",
+        observed="empty ledger rows",
+    )
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -1070,21 +1135,18 @@ def _release_legs(
         recomputed = _recompute_row_status(
             row, files, legacy_parsed, artifacts_valid
         )
-        if _STATUS_STRENGTH.get(status, 0) > _STATUS_STRENGTH[recomputed]:
-            legs.append(
-                _fail(
-                    f"ledger_row_{claim_id}_recompute",
-                    expected=f"recorded status no stronger than the"
-                    f" recomputed status {recomputed!r} (R-012)",
-                    observed={
-                        "claim_id": claim_id,
-                        "recorded": status,
-                        "recomputed": recomputed,
-                    },
-                )
-            )
-        else:
-            legs.append(_pass(f"ledger_row_{claim_id}_recompute"))
+        _record_leg(
+            legs,
+            f"ledger_row_{claim_id}_recompute",
+            _STATUS_STRENGTH.get(status, 0) <= _STATUS_STRENGTH[recomputed],
+            expected="recorded status no stronger than the recomputed"
+            f" status {recomputed!r} (R-012)",
+            observed={
+                "claim_id": claim_id,
+                "recorded": status,
+                "recomputed": recomputed,
+            },
+        )
 
 
 def _recompute_row_status(

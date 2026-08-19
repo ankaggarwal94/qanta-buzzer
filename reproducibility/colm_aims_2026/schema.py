@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -135,13 +136,15 @@ CELL_REQUIRED_KEYS = (
     "pairing_population_keyset_sha256",
 )
 
-INTERVAL_REQUIRED_KEYS = (
+# R-015: the recorded interval identity (everything but the interval itself);
+# a cell that carries an interval must also carry its `ci`.
+INTERVAL_IDENTITY_KEYS = (
     "procedure",
     "draw_count",
     "resampling_seeds",
     "statistic",
-    "ci",
 )
+INTERVAL_REQUIRED_KEYS = INTERVAL_IDENTITY_KEYS + ("ci",)
 
 # R-031: the enumerated identifier allowlist — the ONLY string-valued field
 # a per-item record may carry is its opaque item key; every other allowed
@@ -168,24 +171,69 @@ RECORD_ALLOWED_FIELDS = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Shared value predicates (used across this namespace's validators)
+# ---------------------------------------------------------------------------
+
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def is_number(value: Any) -> bool:
+    """True for a real int/float; ``bool`` never counts as a number here."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def is_sha256_hex(value: Any) -> bool:
+    """True for a full-length lowercase sha256 hex digest."""
+    return isinstance(value, str) and _SHA256_HEX_RE.fullmatch(value) is not None
+
+
+def is_commit_sha(value: Any) -> bool:
+    """True for a full-length 40-hex commit SHA.
+
+    Short hashes, tags, and branch names never qualify — they are
+    reassignable and cannot pin an immutable source identity (R-012/R-013).
+    """
+    return isinstance(value, str) and _COMMIT_SHA_RE.fullmatch(value) is not None
+
+
+def is_admissible_tolerance(value: Any) -> bool:
+    """R-032: a declared tolerance is admissible when it is a real number in
+    ``(0, MAX_ADMISSIBLE_TOLERANCE]``; non-finite values never qualify."""
+    return is_number(value) and 0 < float(value) <= MAX_ADMISSIBLE_TOLERANCE
+
+
+def is_path_component(value: Any) -> bool:
+    """True for a non-empty single path component (no separators/traversal)."""
+    return isinstance(value, str) and bool(value) and Path(value).name == value
+
+
+def resolves_inside(path: Path, root: Path) -> bool:
+    """True when ``path`` resolves to ``root`` itself or anything beneath it.
+
+    Containment decisions use fully resolved, symlink-free paths
+    (R-013 expectations containment, R-036 receipt placement).
+    """
+    resolved = Path(path).resolve()
+    root_resolved = Path(root).resolve()
+    return resolved == root_resolved or root_resolved in resolved.parents
+
+
 def canonical_estimand_digest(estimand: dict[str, Any]) -> str:
     """R-011 pinned digest: sha256 over canonical compact JSON of the block."""
     payload = json.dumps(estimand, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
 def _check_tolerance(tolerance: Any, where: str) -> None:
     """R-032: declared tolerance must be finite, positive, and at most the
     pinned MAX_ADMISSIBLE_TOLERANCE."""
-    if not _is_number(tolerance) or not math.isfinite(float(tolerance)):
+    if not is_number(tolerance) or not math.isfinite(float(tolerance)):
         raise SchemaValidationError(
             f"{where}: declared numerical_tolerance must be a finite number"
         )
-    if not (0 < float(tolerance) <= MAX_ADMISSIBLE_TOLERANCE):
+    if not is_admissible_tolerance(tolerance):
         raise SchemaValidationError(
             f"{where}: declared numerical_tolerance {tolerance!r} outside the"
             f" admissible range (0, {MAX_ADMISSIBLE_TOLERANCE}] —"
@@ -406,7 +454,7 @@ def validate_record(record: dict[str, Any]) -> None:
                     " categoricals (R-031)"
                 )
         else:  # numeric fields
-            if value is not None and not _is_number(value):
+            if value is not None and not is_number(value):
                 raise RecordValidationError(
                     f"record field {field!r} must be numeric or null —"
                     " string values outside the identifier allowlist are"
@@ -414,11 +462,20 @@ def validate_record(record: dict[str, Any]) -> None:
                 )
 
 
+def encode_json(payload: Any) -> bytes:
+    """Canonical JSON bytes: sorted keys, 2-space indent, trailing newline.
+
+    ``allow_nan=False`` rejects non-finite floats at encode time, before any
+    filesystem effect (R-004).
+    """
+    return (
+        json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    ).encode("utf-8")
+
+
 def encode_profile(profile: dict[str, Any]) -> bytes:
     """Encode a profile to canonical bytes (allow_nan=False semantics, R-004)."""
-    return (
-        json.dumps(profile, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    ).encode("utf-8")
+    return encode_json(profile)
 
 
 def _reject_nonfinite_constant(token: str) -> Any:
@@ -427,12 +484,21 @@ def _reject_nonfinite_constant(token: str) -> Any:
     )
 
 
+def _parse_json_bytes(data: bytes) -> Any:
+    """utf-8 + JSON parse with non-finite constants rejected (R-004).
+
+    Raises ``UnicodeDecodeError``/``json.JSONDecodeError``; each caller wraps
+    them in the typed error carrying its own artifact identification.
+    """
+    return json.loads(
+        data.decode("utf-8"), parse_constant=_reject_nonfinite_constant
+    )
+
+
 def decode_profile(data: bytes) -> dict[str, Any]:
     """Decode canonical profile bytes back to an equal value (R-004)."""
     try:
-        return json.loads(
-            data.decode("utf-8"), parse_constant=_reject_nonfinite_constant
-        )
+        return _parse_json_bytes(data)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise TypedIngressError(f"malformed profile bytes: {exc}") from exc
 
@@ -456,20 +522,40 @@ def _check_schema_version(obj: dict[str, Any], rel: str) -> None:
             f"{rel}: missing required field 'schema_version' (R-020)"
         )
     version = obj["schema_version"]
-    if (
-        not isinstance(version, int)
-        or isinstance(version, bool)
-        or not (
-            SUPPORTED_SCHEMA_VERSION_MIN
-            <= version
-            <= SUPPORTED_SCHEMA_VERSION_MAX
-        )
-    ):
+    supported = (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and SUPPORTED_SCHEMA_VERSION_MIN
+        <= version
+        <= SUPPORTED_SCHEMA_VERSION_MAX
+    )
+    if not supported:
         raise TypedIngressError(
             f"{rel}: unsupported schema_version {version!r}; supported range"
             f" {SUPPORTED_SCHEMA_VERSION_MIN}..{SUPPORTED_SCHEMA_VERSION_MAX};"
             f" verifier revision {VERIFIER_REVISION} (R-020)"
         )
+
+
+def _load_records(data: bytes, rel: str) -> dict[str, Any]:
+    """Typed ingress for a ``*.jsonl`` record file (R-020)."""
+    records: list[dict[str, Any]] = []
+    text = data.decode("utf-8", errors="strict") if data else ""
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line, parse_constant=_reject_nonfinite_constant)
+        except json.JSONDecodeError as exc:
+            raise TypedIngressError(
+                f"{rel}: line {lineno}: malformed JSON record: {exc} (R-020)"
+            ) from exc
+        if not isinstance(obj, dict):
+            raise TypedIngressError(
+                f"{rel}: line {lineno}: record must be an object (R-020)"
+            )
+        records.append(obj)
+    return {"kind": "records", "records": records}
 
 
 def load_artifact(path: Path, *, tree_root: Path | None = None) -> dict[str, Any]:
@@ -489,31 +575,10 @@ def load_artifact(path: Path, *, tree_root: Path | None = None) -> dict[str, Any
         ) from exc
 
     if path.suffix == ".jsonl":
-        records: list[dict[str, Any]] = []
-        text = data.decode("utf-8", errors="strict") if data else ""
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            if not line.strip():
-                continue
-            try:
-                obj = json.loads(
-                    line, parse_constant=_reject_nonfinite_constant
-                )
-            except json.JSONDecodeError as exc:
-                raise TypedIngressError(
-                    f"{rel}: line {lineno}: malformed JSON record: {exc}"
-                    " (R-020)"
-                ) from exc
-            if not isinstance(obj, dict):
-                raise TypedIngressError(
-                    f"{rel}: line {lineno}: record must be an object (R-020)"
-                )
-            records.append(obj)
-        return {"kind": "records", "records": records}
+        return _load_records(data, rel)
 
     try:
-        obj = json.loads(
-            data.decode("utf-8"), parse_constant=_reject_nonfinite_constant
-        )
+        obj = _parse_json_bytes(data)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise TypedIngressError(f"{rel}: malformed JSON: {exc} (R-020)") from exc
     if not isinstance(obj, dict):
@@ -547,11 +612,10 @@ def publish_evidence_package(staged: Path, runs_root: Path, run_id: str) -> Path
     """Publish a staged evidence package into a run-scoped create-once dir (R-039)."""
     staged = Path(staged)
     runs_root = Path(runs_root)
-    if not isinstance(run_id, str) or not run_id:
-        raise ColmAimsError("run_id must be a non-empty string (R-039)")
-    if Path(run_id).name != run_id:
+    if not is_path_component(run_id):
         raise ColmAimsError(
-            f"run_id {run_id!r} must be a single path component (R-039)"
+            f"run_id {run_id!r} must be a non-empty single path component"
+            " (R-039)"
         )
     if not staged.is_dir():
         raise ColmAimsError("staged evidence package must be a directory")

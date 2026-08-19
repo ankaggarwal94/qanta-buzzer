@@ -14,11 +14,14 @@ import numpy as np
 
 from .schema import (
     EXCLUSION_REASONS,
-    MAX_ADMISSIBLE_TOLERANCE,
+    INTERVAL_IDENTITY_KEYS,
+    INTERVAL_REQUIRED_KEYS,
     ColmAimsError,
     EmptyEvaluationError,
     SchemaValidationError,
     canonical_estimand_digest,
+    is_admissible_tolerance,
+    is_number,
 )
 
 JOINT_CLASSES = (
@@ -27,6 +30,14 @@ JOINT_CLASSES = (
     "mc_timeout_ref_finite",
     "both_timeout",
 )
+
+# R-007: the joint class of a complete pair, keyed by (mc kind, ref kind).
+_JOINT_CLASS_BY_KINDS = {
+    ("finite", "finite"): "both_finite",
+    ("finite", "timeout"): "mc_finite_ref_timeout",
+    ("timeout", "finite"): "mc_timeout_ref_finite",
+    ("timeout", "timeout"): "both_timeout",
+}
 
 RATE_KEYS = (
     "rate_both_finite",
@@ -59,13 +70,19 @@ class EstimandMismatchError(ColmAimsError):
     """Pooling or comparing cells with differing estimand digests (R-011)."""
 
 
+def _is_int(value: Any) -> bool:
+    """True for a real int; ``bool`` never counts as an integer here."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _is_valid_stop(value: Any) -> bool:
     """A well-formed stop is a non-negative zero-indexed integer (R-007)."""
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return _is_int(value) and value >= 0
 
 
 def _is_valid_horizon(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+    """A well-formed trajectory horizon is a positive integer (R-007)."""
+    return _is_int(value) and value > 0
 
 
 def classify_stop(stop_step: Any, trajectory_horizon: int) -> str:
@@ -87,51 +104,48 @@ def classify_stop(stop_step: Any, trajectory_horizon: int) -> str:
     return "finite" if stop_step < trajectory_horizon else "timeout"
 
 
+def _excluded(item_key: Any, reason: str) -> dict[str, Any]:
+    """One excluded-unit classification carrying its primary reason (R-008)."""
+    return {
+        "item_key": item_key,
+        "status": "excluded",
+        "exclusion_reason": reason,
+        "joint_class": None,
+    }
+
+
 def classify_record(record: dict[str, Any]) -> dict[str, Any]:
     """Classify one per-item record into joint class or exclusion (R-007/R-008)."""
     key = record.get("item_key")
-    result: dict[str, Any] = {"item_key": key}
-
-    def _excluded(reason: str) -> dict[str, Any]:
-        result["status"] = "excluded"
-        result["exclusion_reason"] = reason
-        result["joint_class"] = None
-        return result
 
     if record.get("excluded") is True:
         declared = record.get("exclusion_reason")
         if isinstance(declared, str) and declared in EXCLUSION_REASONS:
-            return _excluded(declared)
+            return _excluded(key, declared)
         # Missing/undeclared reasons are recorded, never guessed (R-008).
-        return _excluded("UNKNOWN_NOT_INFERRED")
+        return _excluded(key, "UNKNOWN_NOT_INFERRED")
 
     shared = record.get("trajectory_horizon")
     mc_horizon = record.get("mc_trajectory_horizon", shared)
     ref_horizon = record.get("ref_trajectory_horizon", shared)
     if not _is_valid_horizon(mc_horizon) or not _is_valid_horizon(ref_horizon):
-        return _excluded("MALFORMED_STOP")
+        return _excluded(key, "MALFORMED_STOP")
     if mc_horizon != ref_horizon:
         # MC/reference grid mismatches are exclusions with reason (R-007).
-        return _excluded("GRID_MISMATCH")
+        return _excluded(key, "GRID_MISMATCH")
 
     mc_stop = record.get("mc_stop_step")
     ref_stop = record.get("ref_stop_step")
     if not _is_valid_stop(mc_stop) or not _is_valid_stop(ref_stop):
-        return _excluded("MALFORMED_STOP")
+        return _excluded(key, "MALFORMED_STOP")
 
     mc_kind = classify_stop(mc_stop, mc_horizon)
     ref_kind = classify_stop(ref_stop, ref_horizon)
-    if mc_kind == "finite" and ref_kind == "finite":
-        joint = "both_finite"
-    elif mc_kind == "finite":
-        joint = "mc_finite_ref_timeout"
-    elif ref_kind == "finite":
-        joint = "mc_timeout_ref_finite"
-    else:
-        joint = "both_timeout"
-    result["status"] = "complete"
-    result["joint_class"] = joint
-    return result
+    return {
+        "item_key": key,
+        "status": "complete",
+        "joint_class": _JOINT_CLASS_BY_KINDS[(mc_kind, ref_kind)],
+    }
 
 
 def _check_duplicate_keys(records: list[dict[str, Any]]) -> None:
@@ -227,11 +241,7 @@ def compute_rates(counts: dict[str, Any]) -> dict[str, Any]:
 def _declared_tolerance(cell: dict[str, Any]) -> float:
     estimand = cell.get("estimand") or {}
     tolerance = estimand.get("numerical_tolerance")
-    if (
-        not isinstance(tolerance, (int, float))
-        or isinstance(tolerance, bool)
-        or not (0 < float(tolerance) <= MAX_ADMISSIBLE_TOLERANCE)
-    ):
+    if not is_admissible_tolerance(tolerance):
         raise SchemaValidationError(
             "cell declares no admissible numerical_tolerance (R-032)"
         )
@@ -257,9 +267,7 @@ def check_rates(cell: dict[str, Any]) -> None:
         return
     for key in RATE_KEYS:
         value = recorded[key]
-        if value is None or isinstance(value, bool) or not isinstance(
-            value, (int, float)
-        ):
+        if not is_number(value):
             raise RateError(f"rate {key!r} must be numeric (R-006)")
         if abs(float(value) - expected[key]) > tolerance:
             raise RateError(
@@ -280,8 +288,9 @@ def _both_finite_shifts(records: list[dict[str, Any]]) -> dict[str, int]:
     shifts: dict[str, int] = {}
     for record in records:
         outcome = classify_record(record)
-        if outcome["status"] == "complete" and outcome["joint_class"] == (
-            "both_finite"
+        if (
+            outcome["status"] == "complete"
+            and outcome["joint_class"] == "both_finite"
         ):
             shifts[record["item_key"]] = (
                 record["mc_stop_step"] - record["ref_stop_step"]
@@ -299,8 +308,7 @@ def finite_only_timing_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     """
     _check_duplicate_keys(records)
     shifts = _both_finite_shifts(records)
-    ordered = [float(shifts[key]) for key in sorted(shifts)]
-    d = np.array(ordered, dtype=np.float64)
+    d = np.array([shifts[key] for key in sorted(shifts)], dtype=np.float64)
     if d.size == 0:
         raise EmptyEvaluationError(
             "finite-only timing summary over zero both-finite pairs refused"
@@ -341,7 +349,7 @@ def recompute_interval(
     records: list[dict[str, Any]], interval_spec: dict[str, Any]
 ) -> dict[str, Any]:
     """Deterministically re-run the recorded interval procedure (R-015)."""
-    for key in ("procedure", "draw_count", "resampling_seeds", "statistic"):
+    for key in INTERVAL_IDENTITY_KEYS:
         if key not in interval_spec:
             raise SchemaValidationError(
                 f"interval spec missing recorded identity field {key!r} —"
@@ -359,9 +367,7 @@ def recompute_interval(
             f"unknown interval statistic {statistic!r} (R-015)"
         )
     draw_count = interval_spec["draw_count"]
-    if not isinstance(draw_count, int) or isinstance(draw_count, bool) or (
-        draw_count <= 0
-    ):
+    if not _is_int(draw_count) or draw_count <= 0:
         raise SchemaValidationError(
             f"interval draw_count must be a positive integer, got"
             f" {draw_count!r} (R-015)"
@@ -481,10 +487,10 @@ def check_poolable(cell_a: dict[str, Any], cell_b: dict[str, Any]) -> None:
         )
 
 
-def _check_timing_summaries(
+def _check_finite_only_summary(
     cell: dict[str, Any], records: list[dict[str, Any]], tolerance: float
 ) -> None:
-    """Recompute both timing summaries from records (R-006/R-010/R-015)."""
+    """Recompute the finite-only timing summary from records (R-006/R-010/R-015)."""
     recorded = cell["timing_summary_finite_only"]
     if "convention" in recorded:
         raise SchemaValidationError(
@@ -505,9 +511,7 @@ def _check_timing_summaries(
         )
     for statistic in TIMING_STATISTICS:
         value = recorded.get(statistic)
-        if value is None or isinstance(value, bool) or not isinstance(
-            value, (int, float)
-        ):
+        if not is_number(value):
             raise RateError(
                 f"finite-only timing summary missing statistic"
                 f" {statistic!r} (R-015)"
@@ -520,6 +524,11 @@ def _check_timing_summaries(
                 f" declared tolerance {tolerance!r}) (R-015)"
             )
 
+
+def _check_sentinel_coded_summary(
+    cell: dict[str, Any], records: list[dict[str, Any]], tolerance: float
+) -> None:
+    """Recompute the retained sentinel-coded historical summary (R-006/R-015)."""
     sentinel = cell["timing_summary_sentinel_coded_historical"]
     if sentinel.get("convention") != "timeout_coded_as_horizon":
         raise SchemaValidationError(
@@ -537,9 +546,7 @@ def _check_timing_summaries(
         expected_value = expected_sentinel[statistic]
         if expected_value is None:
             continue
-        if value is None or isinstance(value, bool) or not isinstance(
-            value, (int, float)
-        ):
+        if not is_number(value):
             raise RateError(
                 f"sentinel-coded summary missing statistic {statistic!r}"
             )
@@ -557,7 +564,7 @@ def _check_interval(
     interval = cell.get("interval")
     if interval is None:
         return
-    for key in ("procedure", "draw_count", "resampling_seeds", "statistic", "ci"):
+    for key in INTERVAL_REQUIRED_KEYS:
         if key not in interval:
             raise SchemaValidationError(
                 f"interval-bearing cell missing recorded identity field"
@@ -589,15 +596,11 @@ def validate_cell(cell: dict[str, Any], records: list[dict[str, Any]]) -> None:
             " — an empty evaluation is a typed error, never a"
             " trivially-passing cell (R-006/R-012)"
         )
-    recorded = cell.get("estimand_digest")
-    if recorded != estimand_digest(cell.get("estimand") or {}):
-        raise EstimandMismatchError(
-            f"cell {cell.get('cell_id')!r} recorded estimand_digest does not"
-            " match the recomputed digest (R-011)"
-        )
+    _cell_digest_checked(cell)
     tolerance = _declared_tolerance(cell)
     check_count_identities(counts, records)
     check_key_sets(cell, records)
     check_rates(cell)
-    _check_timing_summaries(cell, records, tolerance)
+    _check_finite_only_summary(cell, records, tolerance)
+    _check_sentinel_coded_summary(cell, records, tolerance)
     _check_interval(cell, records, tolerance)
