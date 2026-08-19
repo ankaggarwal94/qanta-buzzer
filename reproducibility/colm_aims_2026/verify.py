@@ -23,6 +23,7 @@ if __package__ in (None, ""):  # pragma: no cover - exercised via subprocess
         sys.path.insert(0, _REPO_ROOT)
 
 import argparse
+import re
 
 from reproducibility.colm_aims_2026 import render, schema
 from reproducibility.colm_aims_2026 import verifier as verifier_mod
@@ -32,6 +33,11 @@ EXIT_PASS = 0
 EXIT_GATE_FAIL = 1
 EXIT_USAGE_ERROR = 2
 EXIT_INGRESS_ERROR = 3
+# QA-019: internal (non-ingress) defects get their own pinned code so they
+# can never be mistaken for a typed-ingress refusal or a gate FAIL.
+EXIT_INTERNAL_ERROR = 4
+
+_ABSOLUTE_PATH_TOKEN = re.compile(r"(?:/[^\s'\":,;]+)+")
 
 _PASS_VERDICTS = (
     verifier_mod.VERDICT_SOURCE_PASS,
@@ -78,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point; returns the pinned exit code."""
     parser = _build_parser()
     args = parser.parse_args(argv)  # usage errors exit EXIT_USAGE_ERROR (2)
+    supplied_paths = [
+        p for p in (args.tree, args.receipts_dir, args.expectations) if p
+    ]
     try:
         report = verifier_mod.run_verifier(
             Path(args.tree),
@@ -86,10 +95,6 @@ def main(argv: list[str] | None = None) -> int:
             expectations=(
                 Path(args.expectations) if args.expectations else None
             ),
-        )
-        summary = render.render_summary(report)
-        exit_code = (
-            EXIT_PASS if report.verdict in _PASS_VERDICTS else EXIT_GATE_FAIL
         )
     except (
         verifier_mod.VacuousInputError,
@@ -103,19 +108,48 @@ def main(argv: list[str] | None = None) -> int:
         # errors (exit 2) — unknown config keys included.
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE_ERROR
-    except Exception as exc:  # noqa: BLE001 - QA-006 last-resort handler
-        # QA-006: no ingest path may leak a traceback, a local absolute
-        # path, or collide with the gate-FAIL exit code. Only the exception
-        # CLASS is emitted — never its message, which could carry paths or
-        # restricted content.
+    except Exception as exc:  # noqa: BLE001 - QA-006/QA-019 last resort
+        # QA-006/QA-019: an internal (non-ingress) defect gets its own
+        # pinned exit code, a traceback-free line, and the exception message
+        # scrubbed of every supplied/resolved path form (tree-relative
+        # basenames only) — diagnostics without leakage.
         print(
             f"error: unexpected {exc.__class__.__name__} during"
-            " verification; no verdict was reached (typed-ingress exit)",
+            " verification; no verdict was reached:"
+            f" {_scrub_paths(str(exc), supplied_paths)}",
             file=sys.stderr,
         )
-        return EXIT_INGRESS_ERROR
-    print(summary)
+        return EXIT_INTERNAL_ERROR
+
+    # QA-019: the verdict is reached — rendering happens OUTSIDE the
+    # verification try so a render defect can never convert a gate result
+    # into another exit code.
+    exit_code = (
+        EXIT_PASS if report.verdict in _PASS_VERDICTS else EXIT_GATE_FAIL
+    )
+    try:
+        print(render.render_summary(report))
+    except Exception:  # noqa: BLE001 - render must never mask the verdict
+        print(f"verdict: {report.verdict}")
     return exit_code
+
+
+def _scrub_paths(message: str, supplied: list[str]) -> str:
+    """QA-019: scrub every supplied path (and its resolved form) down to its
+    basename, then collapse any residual absolute-path token (R-026)."""
+    for raw in supplied:
+        basename = Path(raw).name or "<path>"
+        forms = {raw}
+        try:
+            forms.add(str(Path(raw).resolve()))
+        except OSError:  # pragma: no cover - resolution never load-bearing
+            pass
+        for form in sorted(forms, key=len, reverse=True):
+            if form and form in message:
+                message = message.replace(form, basename)
+    return _ABSOLUTE_PATH_TOKEN.sub(
+        lambda match: Path(match.group(0)).name, message
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised via subprocess tests

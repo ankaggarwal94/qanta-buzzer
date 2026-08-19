@@ -119,8 +119,14 @@ def test_non_utf8_records_is_typed_at_the_api(tmp_path: Path):
 def test_last_resort_handler_pins_exit_and_leaks_nothing(tmp_path: Path):
     # QA-006 class fix [R-037/R-026]: an unexpected exception on the ingest
     # path (receipts-dir pointing at a regular FILE trips an uncaught
-    # OS-level error) hits the last-resort handler: pinned ingress exit code,
-    # exception CLASS only, no traceback, no absolute paths.
+    # OS-level error) hits the last-resort handler: pinned INTERNAL exit
+    # code, path-scrubbed diagnostic message, no traceback, no absolute
+    # paths.
+    # QA-019 (fix round 2, coordinator-authorized update): internal defects
+    # exit EXIT_INTERNAL_ERROR (4), distinct from typed ingress (3), and the
+    # scrubbed exception message is emitted for diagnostics.
+    from reproducibility.colm_aims_2026 import verify
+
     pkg = build_package(tmp_path)
     receipts_file = tmp_path / "receipts-as-file"
     receipts_file.write_text("not a directory", encoding="utf-8")
@@ -132,13 +138,16 @@ def test_last_resort_handler_pins_exit_and_leaks_nothing(tmp_path: Path):
         "--receipts-dir",
         str(receipts_file),
     )
-    assert proc.returncode == EXIT_INGRESS_ERROR, (
+    assert proc.returncode == verify.EXIT_INTERNAL_ERROR, (
         proc.returncode,
         proc.stderr[-300:],
     )
     assert "Traceback" not in proc.stderr
     assert str(tmp_path) not in proc.stderr
     assert "no verdict was reached" in proc.stderr
+    # QA-019: diagnostics survive the scrub — the message names the defect
+    # class and the basename of the offending path, never its absolute form.
+    assert "receipts-as-file" in proc.stderr
 
 
 # ---------------------------------------------------------------------------

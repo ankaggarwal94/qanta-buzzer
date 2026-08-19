@@ -131,7 +131,35 @@ def _row_is_external_typed(row: dict[str, Any]) -> bool:
     return row.get("verifier_oracle") == "human" or external_producer
 
 
-def _validate_row(row: Any, index: int) -> None:
+# QA-015: EXTERNAL-kind markers a laundering edit is unlikely to flip
+# consistently — the widened fallback heuristic when no anchored
+# external_claim_ids list is supplied.
+_EXTERNAL_KIND_CLAIM_KINDS = frozenset({"venue_rule", "external_fact"})
+
+
+def _row_is_external_kind(row: dict[str, Any]) -> bool:
+    """Widened EXTERNAL-kind heuristic (QA-015, R-024): a manuscript-identity
+    or venue/external-fact row is external-kind regardless of the flippable
+    oracle/producer fields."""
+    return (
+        _row_is_external_typed(row)
+        or row.get("provenance_class") == "manuscript_identity"
+        or row.get("claim_kind") in _EXTERNAL_KIND_CLAIM_KINDS
+    )
+
+
+def _has_human_attribution(row: dict[str, Any]) -> bool:
+    attribution = row.get("human_attribution")
+    return (
+        isinstance(attribution, dict)
+        and bool(attribution.get("attributed_to"))
+        and bool(attribution.get("date"))
+    )
+
+
+def _validate_row(
+    row: Any, index: int, external_claim_ids: list[str] | None = None
+) -> None:
     if not isinstance(row, dict):
         raise LedgerValidationError(f"rows[{index}] must be an object (R-023)")
     label = row.get("claim_id", f"rows[{index}]")
@@ -167,15 +195,34 @@ def _validate_row(row: Any, index: int) -> None:
     # R-024: EXTERNAL -> PASS requires a human-attribution field; repository
     # green tests never substitute for an EXTERNAL item.
     if _row_is_external_typed(row) and status == "PASS":
-        attribution = row.get("human_attribution")
-        if (
-            not isinstance(attribution, dict)
-            or not attribution.get("attributed_to")
-            or not attribution.get("date")
-        ):
+        if not _has_human_attribution(row):
             raise LedgerValidationError(
                 f"ledger row {label!r} moves an EXTERNAL item to PASS without"
                 " a human_attribution field (attributed_to + date) (R-024)"
+            )
+
+    # QA-015 (R-024): the EXTERNAL predicate at the surface the rule names.
+    # With an anchored external_claim_ids list supplied, MEMBERSHIP is the
+    # predicate — a listed row not recorded EXTERNAL requires human
+    # attribution regardless of what its flippable fields now say. Without
+    # the list, the widened kind heuristic (manuscript-identity provenance,
+    # venue/external-fact claim kinds) fires, so the three-field laundering
+    # (status + verifier_oracle + producer_entrypoint) still fails standalone.
+    anchored_external = (
+        external_claim_ids is not None and row.get("claim_id") in (
+            external_claim_ids
+        )
+    )
+    if (anchored_external or _row_is_external_kind(row)) and (
+        status != "EXTERNAL"
+    ):
+        if not _has_human_attribution(row):
+            raise LedgerValidationError(
+                f"ledger row {label!r} is an EXTERNAL-kind claim"
+                f" ({'anchored' if anchored_external else 'kind-typed'})"
+                " recorded with a non-EXTERNAL status and no"
+                " human_attribution — laundering an EXTERNAL row fails"
+                " ledger validation (R-024/QA-015)"
             )
 
     # R-024: venue-rule rows record only officially published facts with
@@ -223,8 +270,18 @@ def _validate_availability_assertion(assertion: Any) -> None:
         )
 
 
-def validate_ledger(ledger: dict[str, Any]) -> None:
-    """Validate the full claim ledger document; raise on any defect."""
+def validate_ledger(
+    ledger: dict[str, Any],
+    *,
+    external_claim_ids: list[str] | None = None,
+) -> None:
+    """Validate the full claim ledger document; raise on any defect.
+
+    ``external_claim_ids`` (QA-015): the independently anchored EXTERNAL
+    claim-id list from the expectations anchor. When supplied, membership is
+    the EXTERNAL predicate for the R-024 laundering gate; when omitted, the
+    widened kind heuristic applies.
+    """
     if not isinstance(ledger, dict):
         raise LedgerValidationError("ledger must be an object (R-023)")
     for field in REQUIRED_LEDGER_FIELDS:
@@ -256,7 +313,7 @@ def validate_ledger(ledger: dict[str, Any]) -> None:
     if not isinstance(rows, list):
         raise LedgerValidationError("ledger rows must be a list (R-023)")
     for index, row in enumerate(rows):
-        _validate_row(row, index)
+        _validate_row(row, index, external_claim_ids)
 
     # R-030: Available-grade assertions require a DOI-class identifier.
     assertion = ledger.get("availability_assertion")

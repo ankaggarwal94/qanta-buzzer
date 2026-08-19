@@ -167,17 +167,21 @@ def _readme_exit_code_rows() -> dict[int, str]:
 def test_readme_exit_code_table_matches_pinned_constants():
     # QA-008 class fix [R-037/R-038]: the documented table is parsed and
     # checked against the real constants — the doc cannot drift silently.
+    # QA-019 (fix round 2, coordinator-authorized update): the table now
+    # also documents EXIT_INTERNAL_ERROR (4).
     codes = _readme_exit_code_rows()
     assert set(codes) == {
         verify.EXIT_PASS,
         verify.EXIT_GATE_FAIL,
         verify.EXIT_USAGE_ERROR,
         verify.EXIT_INGRESS_ERROR,
+        verify.EXIT_INTERNAL_ERROR,
     }
     assert "pass" in codes[verify.EXIT_PASS].lower()
     assert "fail" in codes[verify.EXIT_GATE_FAIL].lower()
     assert "usage" in codes[verify.EXIT_USAGE_ERROR].lower()
     assert "ingress" in codes[verify.EXIT_INGRESS_ERROR].lower()
+    assert "internal" in codes[verify.EXIT_INTERNAL_ERROR].lower()
 
 
 def test_readme_pass_row_drives_the_real_cli(tmp_path: Path):

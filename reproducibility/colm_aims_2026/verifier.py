@@ -234,11 +234,16 @@ def _valid_schema_profile(value: Any) -> str | None:
 
 
 def _valid_producer(value: Any) -> str | None:
-    problem = _admissible_value(value, "producer")
+    # QA-017: field-wise admissibility — helper_sha256s may be an honest
+    # EMPTY map (a helperless producer); its entries, when present, must be
+    # sha256 digests. Everything else stays recursively admissible.
+    if not isinstance(value, dict) or not value:
+        return "producer must be a non-empty object"
+    problem = _admissible_value(
+        value.get("entrypoint"), "producer.entrypoint"
+    )
     if problem is not None:
         return problem
-    if not isinstance(value, dict):
-        return "producer must be an object"
     if not isinstance(value.get("entrypoint"), str):
         return "producer.entrypoint must be a string"
     if not schema.is_sha256_hex(value.get("sha256")):
@@ -247,6 +252,8 @@ def _valid_producer(value: Any) -> str | None:
     if not isinstance(helpers, dict):
         return "producer.helper_sha256s must be an object"
     for name, sha in helpers.items():
+        if not isinstance(name, str) or not name:
+            return "producer.helper_sha256s keys must be non-empty strings"
         if not schema.is_sha256_hex(sha):
             return f"producer.helper_sha256s[{name!r}] is not a sha256 digest"
     return None
@@ -431,6 +438,18 @@ _FIELD_PREDICATES: dict[str, Callable[[Any], bool]] = {
         isinstance(k, str) and k and schema.is_sha256_hex(x)
         for k, x in v.items()
     ),
+    # QA-017: an honest helperless producer records an EMPTY helper map;
+    # entries, when present, must still be sha256 digests.
+    "sha256_map_allow_empty": lambda v: isinstance(v, dict)
+    and all(
+        isinstance(k, str) and k and schema.is_sha256_hex(x)
+        for k, x in v.items()
+    ),
+    # QA-018: a coverage rate is a proportion — the tightest predicate the
+    # noun admits is the closed unit interval.
+    "unit_interval": lambda v: schema.is_number(v)
+    and math.isfinite(float(v))
+    and 0.0 <= float(v) <= 1.0,
     "nonempty_str_map": lambda v: isinstance(v, dict)
     and bool(v)
     and all(
@@ -451,7 +470,7 @@ _FIELD_PREDICATES: dict[str, Callable[[Any], bool]] = {
 REQUIRED_PROVENANCE_FIELDS: tuple[tuple[str, str, str, str], ...] = (
     ("producer_entrypoint", "nonempty_str", "producer_recorded", "ARTIFACT_DEFECT"),
     ("producer_sha256", "sha256_hex", "producer_recorded", "ARTIFACT_DEFECT"),
-    ("helper_sha256s", "sha256_map", "producer_recorded", "ARTIFACT_DEFECT"),
+    ("helper_sha256s", "sha256_map_allow_empty", "producer_recorded", "ARTIFACT_DEFECT"),
     ("semantic_command", "nonempty_str_list", "semantic_command_recorded", "ARTIFACT_DEFECT"),
     ("seeds", "nonempty_int_list", "seeds_recorded", "ARTIFACT_DEFECT"),
     ("dirty_state.git_dirty", "is_false", "dirty_state_clean", "ARTIFACT_DEFECT"),
@@ -468,7 +487,7 @@ REQUIRED_PROVENANCE_FIELDS: tuple[tuple[str, str, str, str], ...] = (
     ("input_sha256", "sha256_map", "input_hashes_recorded", "ARTIFACT_DEFECT"),
     ("split_metadata_sha256", "sha256_hex", "split_metadata_recorded", "ARTIFACT_DEFECT"),
     ("mc_build.built_after_split", "is_true", "mc_build_freshness", "ARTIFACT_DEFECT"),
-    ("mc_build.coverage_rate", "finite_number", "mc_build_coverage_retention", "ARTIFACT_DEFECT"),
+    ("mc_build.coverage_rate", "unit_interval", "mc_build_coverage_retention", "ARTIFACT_DEFECT"),
     ("mc_build.retention_policy", "nonempty_str", "mc_build_coverage_retention", "ARTIFACT_DEFECT"),
     ("mc_build.retained_count", "nonneg_int", "mc_build_coverage_retention", "ARTIFACT_DEFECT"),
     ("model.repository_namespace", "nonempty_str", "model_identity_completeness", "ARTIFACT_DEFECT"),
@@ -990,6 +1009,7 @@ def _release_legs(
     # QA-002: table-driven per-noun admissibility legs (replaces the former
     # scattered inline gates; leg ids preserved).
     _provenance_table_legs(legs, prov)
+    _mc_build_consistency_leg(legs, prov)
     _model_revision_leg(legs, prov)
     _splits_recompute_leg(legs, prov, records)
     _record_leg(
@@ -1266,6 +1286,59 @@ def _check_binding(
     legs.append(_pass(leg_id))
 
 
+def _mc_build_consistency_leg(
+    legs: list[dict[str, Any]], prov: dict[str, Any]
+) -> None:
+    """QA-018 (R-012): mc_build values must be internally consistent, not
+    merely recorded — retained_count > 0 iff coverage_rate > 0, and the
+    retained count squares with the eval-split size under the declared
+    retention policy."""
+    mc_build = prov.get("mc_build") or {}
+    coverage = mc_build.get("coverage_rate")
+    retained = mc_build.get("retained_count")
+    policy = mc_build.get("retention_policy")
+    eval_count = ((prov.get("splits") or {}).get("eval") or {}).get("count")
+
+    problems: list[str] = []
+    if schema.is_number(coverage) and isinstance(retained, int) and not (
+        isinstance(retained, bool)
+    ):
+        if (retained > 0) != (float(coverage) > 0.0):
+            problems.append(
+                f"retained_count {retained!r} inconsistent with"
+                f" coverage_rate {coverage!r} (retained_count > 0 iff"
+                " coverage_rate > 0)"
+            )
+        if (
+            isinstance(eval_count, int)
+            and not isinstance(eval_count, bool)
+            and eval_count > 0
+        ):
+            if retained > eval_count:
+                problems.append(
+                    f"retained_count {retained!r} exceeds splits.eval.count"
+                    f" {eval_count!r}"
+                )
+            if (
+                policy == "retain_all"
+                and float(coverage) == 1.0
+                and retained != eval_count
+            ):
+                problems.append(
+                    f"retention_policy 'retain_all' with full coverage must"
+                    f" retain the whole eval split ({eval_count!r}), recorded"
+                    f" {retained!r}"
+                )
+    _record_leg(
+        legs,
+        "mc_build_internal_consistency",
+        not problems,
+        expected="mc_build coverage/retention internally consistent with"
+        " the eval split (R-012/QA-018)",
+        observed="; ".join(problems),
+    )
+
+
 def _model_revision_leg(
     legs: list[dict[str, Any]], prov: dict[str, Any]
 ) -> None:
@@ -1483,7 +1556,11 @@ def _ledger_legs(
         )
         return
     try:
-        ledger_mod.validate_ledger(ledger_doc)
+        # QA-015: the anchored EXTERNAL predicate reaches the rule-named
+        # surface too — validate_ledger enforces membership itself.
+        ledger_mod.validate_ledger(
+            ledger_doc, external_claim_ids=external_ids
+        )
         legs.append(_pass("ledger_validation"))
     except ledger_mod.LedgerValidationError as exc:
         legs.append(
@@ -1613,19 +1690,37 @@ def _recompute_row_status(
     split_names.discard(None)
     if row.get("split_identity") not in split_names:
         return "UNVERIFIED"
-    # DECISION: model identity cross-check is namespace-scoped
-    # ("<namespace>@<revision-or-digest>"); the revision itself is already
-    # bound by the model_revision_immutability leg and the byte-digest
-    # alternative, so the row check pins the namespace part.
+    # QA-016 (R-012): no partial-string identity comparisons — the row's
+    # model identity is decomposed into namespace@revision and EVERY
+    # component is cross-checked against the verified provenance. Short
+    # hashes, tags, branch names, and bare repo ids are exactly the mutable
+    # forms R-012 rejects.
     model = prov.get("model") or {}
     namespace = model.get("repository_namespace")
     model_identity = row.get("model_identity")
-    if not (
-        isinstance(model_identity, str)
-        and isinstance(namespace, str)
-        and model_identity.split("@", 1)[0] == namespace
-    ):
+    if not isinstance(model_identity, str) or "@" not in model_identity:
+        return "UNVERIFIED"  # bare repo id: reassignable, never an identity
+    row_namespace, row_revision = model_identity.split("@", 1)
+    if not isinstance(namespace, str) or row_namespace != namespace:
         return "UNVERIFIED"
+    if not row_revision:
+        return "UNVERIFIED"
+    prov_revision = model.get("revision")
+    if prov_revision is not None:
+        # The row's claimed revision must be an immutable full-length commit
+        # SHA AND equal the verified provenance's revision.
+        if not schema.is_commit_sha(row_revision):
+            return "UNVERIFIED"
+        if row_revision != prov_revision:
+            return "UNVERIFIED"
+    else:
+        # Byte-digest alternative: the row's revision part must name one of
+        # the anchored canonical byte digests.
+        digest_values = set(
+            (model.get("byte_digest_manifest") or {}).values()
+        )
+        if row_revision not in digest_values:
+            return "UNVERIFIED"
     # DECISION: input_identity must be a member of the verified provenance's
     # content-hash identity closure.
     if row.get("input_identity") not in _provenance_identity_closure(prov):

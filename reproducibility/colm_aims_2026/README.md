@@ -80,6 +80,7 @@ Source mode's verdict vocabulary is the closed enum
 | 1         | Gate FAIL (verdict `FAIL`)                               |
 | 2         | Usage/config error (unknown flag/key, containment)       |
 | 3         | Typed ingress error (malformed/vacuous/empty inputs)     |
+| 4         | Internal error (unexpected non-ingress defect; no verdict reached; message path-scrubbed) |
 
 ## Receipts
 

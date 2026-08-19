@@ -210,6 +210,11 @@ def test_model_leg_reports_expected_and_observed_values(tmp_path: Path):
 def test_release_accepts_byte_digest_manifest_alternative(tmp_path: Path):
     # Tests R-012 [integration]: a complete canonical byte-digest manifest is
     # the accepted alternative to an immutable revision.
+    # QA-016 fix-round-2 builder update: the ledger row's model identity is
+    # part of the consistency set — under a digest-pinned model the row's
+    # revision part names one of the anchored canonical byte digests (the
+    # recompute gate now decomposes namespace@revision and cross-checks every
+    # component). Assertions untouched; edit logged for QA re-review.
     def mutate(profile):
         model = profile["provenance"]["model"]
         del model["revision"]
@@ -219,7 +224,14 @@ def test_release_accepts_byte_digest_manifest_alternative(tmp_path: Path):
             "config.json": "c" * 64,
         }
 
-    pkg = build_package(tmp_path, profile_mutator=mutate)
+    def digest_row(ledger):
+        ledger["rows"][0]["model_identity"] = (
+            "example-org/tiny-scorer@" + "a" * 64
+        )
+
+    pkg = build_package(
+        tmp_path, profile_mutator=mutate, ledger_mutator=digest_row
+    )
     report = _run_release(pkg)
     assert report.verdict == VERDICT_RELEASE_PASS
 
@@ -874,10 +886,17 @@ def _sib_pristine(tmp_path):
 def _sib_consistent_alt_revision(tmp_path):
     # hash/model/split mismatch twin: the same binding knob moved to a
     # DIFFERENT valid immutable revision, consistently on both sides.
+    # QA-016 fix-round-2 builder update: "consistently" includes the ledger
+    # row's model identity — the recompute gate now decomposes
+    # namespace@revision and requires the row's revision to equal the
+    # verified provenance revision. Assertions untouched; edit logged.
     return build_package(
         tmp_path,
         profile_mutator=lambda p: p["provenance"]["model"].update(
             revision="9" * 40
+        ),
+        ledger_mutator=lambda l: l["rows"][0].update(
+            model_identity="example-org/tiny-scorer@" + "9" * 40
         ),
     )
 
