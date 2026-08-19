@@ -612,6 +612,91 @@ def assert_unique_qids(
         )
 
 
+def _assert_eval_matches_manifest_test_qids(
+    eval_result: dict[str, Any], manifest: Any, *, run_name: str
+) -> None:
+    """MA-019 (PR #41 round-5, r3809937501): an EXISTING eval sidecar's
+    per-question qid set must equal the run's OWN manifest test split.
+
+    MA-001 proves ``eval_result.json`` names the right arm/seed and MA-016
+    proves its qids are unique, but neither proves the payload evaluated
+    the QUESTIONS this run's ``split_manifest.json`` says it holds out —
+    a stale/copied sidecar admitted on resume (the MA-012 skip) or under
+    ``--report-only`` could silently feed a different question set into
+    the endpoint and significance (the QA-002 manifest-capping check only
+    protects FRESH evals). This is the ONE gate for every admission path
+    that accepts an already-written eval payload: the MA-012 resume-skip
+    acceptance (:func:`evaluate_all_runs`) and report assembly
+    (:func:`_read_run_sidecars`, reached by BOTH the execute path and
+    ``--report-only``).
+
+    Ordered equality is NOT required — downstream consumers key per qid
+    (``_sq_by_seed_for_arm``; the paired bootstrap sorts) — but the qid
+    SET must equal the manifest ``test_qids`` set AND the record count
+    must equal ``len(test_qids)`` (a duplicated-record payload with full
+    set coverage still fails on count). Qids are compared as strings on
+    both sides, matching ``_sq_by_seed_for_arm``'s keying. Payloads whose
+    ``runs`` records are absent or empty are NOT this gate's job: they
+    contribute nothing per-question and stay in the pinned QA-011 warning
+    lane (:func:`_reconcile_seed_coverage`). Raises ``ProvenanceError``
+    naming the run and the delta, with delete-or-``--re-eval``
+    remediation (report-only-aware via :func:`_remediation`).
+    """
+    runs_records = eval_result.get("runs")
+    if not isinstance(runs_records, list) or not runs_records:
+        # QA-011 lane: missing/empty per-question records surface as the
+        # pinned seed-coverage warning, never a hard error here.
+        return
+    test_qids = (
+        manifest.get("test_qids") if isinstance(manifest, dict) else None
+    )
+    if not isinstance(test_qids, list):
+        raise ProvenanceError(
+            f"Run {run_name}: split_manifest.json carries no test_qids "
+            f"list, so {EVAL_RESULT_FILENAME}'s question coverage cannot "
+            "be verified (MA-019 / PR #41 r3809937501). "
+            + _remediation(
+                "Delete the run directory or pass --force to re-run "
+                "everything.",
+                tag="MA-019",
+            )
+        )
+    payload_qids = [
+        str(r.get("qid")) for r in runs_records if isinstance(r, dict)
+    ]
+    expected_qids = [str(qid) for qid in test_qids]
+    payload_set, expected_set = set(payload_qids), set(expected_qids)
+    if payload_set == expected_set and len(payload_qids) == len(expected_qids):
+        return
+    missing = sorted(expected_set - payload_set)
+    extra = sorted(payload_set - expected_set)
+    if not missing and not extra:
+        detail = (
+            "identical qid SET but mismatched record count — duplicate "
+            "records"
+        )
+    else:
+        detail = (
+            f"{len(missing)} manifest test qid(s) absent from the payload "
+            f"(e.g. {missing[:5]}), {len(extra)} payload qid(s) outside "
+            f"the manifest test split (e.g. {extra[:5]})"
+        )
+    raise ProvenanceError(
+        f"Run {run_name}: {EVAL_RESULT_FILENAME} carries per-question runs "
+        f"records for {len(payload_qids)} qid(s) but the run's own "
+        f"split_manifest.json test split holds {len(expected_qids)} qid(s); "
+        f"{detail}. A stale or copied eval sidecar must never feed a "
+        "different question set into the endpoint and significance "
+        "(MA-019 / PR #41 r3809937501). "
+        + _remediation(
+            f"Delete the stale {EVAL_RESULT_FILENAME} (or the run "
+            "directory) or pass --re-eval to recompute the eval from the "
+            "run's checkpoints.",
+            tag="MA-019",
+        )
+    )
+
+
 def _validated_metric(value: Any, *, key: str, where: str) -> float | None:
     """MA-018: metric-float validator for eval-payload consumers.
 
@@ -2852,9 +2937,11 @@ def evaluate_all_runs(
     re_eval : bool, keyword-only
         MA-012 (read-before-recompute): a RESUMED run whose
         ``eval_result.json`` already exists is loaded instead of
-        re-evaluated (with an "eval resumed" print and an MA-001 identity
-        check on the loaded payload) unless ``re_eval`` forces a recompute.
-        Default ``False``.
+        re-evaluated (with an "eval resumed" print, an MA-001 identity
+        check on the loaded payload, and the MA-019 gate — PR #41 round-5
+        r3809937501 — asserting the payload's per-question qid set equals
+        the run's own ``split_manifest.json`` test split) unless
+        ``re_eval`` forces a recompute. Default ``False``.
     """
     results: list[dict[str, Any]] = []
     total = len(records)
@@ -2881,6 +2968,17 @@ def evaluate_all_runs(
                     f"seed={record['seed']!r} (MA-001). Delete the stale run "
                     "dir or pass --re-eval."
                 )
+            # MA-019 (PR #41 round-5, r3809937501): the admitted payload's
+            # per-question qid set must equal the run's OWN manifest test
+            # split BEFORE acceptance — and before any prune reclaims the
+            # checkpoints the --re-eval remediation needs.
+            manifest = _load_json_file(
+                run_dir / "ppo_t5" / "split_manifest.json",
+                error_cls=ProvenanceError,
+            )
+            _assert_eval_matches_manifest_test_qids(
+                payload, manifest, run_name=_run_name(record)
+            )
             results.append(payload)
         else:
             print(
@@ -3700,6 +3798,13 @@ def _read_run_sidecars(
     "report_time_legacy"`` (assemble_report additionally emits a report
     warning listing them). The existing per-row ``git_sha_mismatch``
     semantics are unchanged.
+
+    PR #41 round-5 (r3809937501): each payload's per-question runs qid
+    set is additionally asserted equal to the run's OWN
+    ``split_manifest.json`` test split (MA-019,
+    :func:`_assert_eval_matches_manifest_test_qids`) — this is the
+    load-bearing admission gate for BOTH the execute path and
+    ``--report-only``.
     """
     eval_by_run: dict[tuple[str, int], dict[str, Any]] = {}
     report_runs: list[dict[str, Any]] = []
@@ -3746,6 +3851,13 @@ def _read_run_sidecars(
                 [r.get("qid") for r in runs_records if isinstance(r, dict)],
                 where=f"run {name} {EVAL_RESULT_FILENAME} runs records",
             )
+        # MA-019 (PR #41 round-5, r3809937501): the payload's per-question
+        # qid set must equal THIS run's own manifest test split — a stale/
+        # copied sidecar admitted on resume (MA-012) or under --report-only
+        # must fail HERE, never feed the endpoint/significance.
+        _assert_eval_matches_manifest_test_qids(
+            eval_result, manifest, run_name=name
+        )
         if first_config is None:
             first_config, first_manifest = config_used, manifest
 

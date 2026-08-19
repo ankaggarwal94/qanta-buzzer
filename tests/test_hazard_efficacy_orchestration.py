@@ -2965,3 +2965,138 @@ def test_pr41_r4_incomplete_seed_coverage_never_claims_endpoint(
     assert full_report["endpoint"]["endpoint_definition_denominator"] == 3
     assert full_report["verdict"]["verdict"] == "endpoint_met_at_this_scale"
     assert "incomplete seed coverage" not in full_report["verdict"]["scope"]
+
+
+# ---------------------------------------------------------------------------
+# PR #41 round-5 (r3809937501) — eval sidecar qids must equal the run's own
+# split_manifest.json test split (MA-019)
+# ---------------------------------------------------------------------------
+
+
+def _doctor_eval_runs(run_dir: Path, mutate) -> None:
+    """Rewrite ``<run_dir>/eval_result.json`` runs records via ``mutate``."""
+    eval_path = Path(run_dir) / "eval_result.json"
+    payload = json.loads(eval_path.read_text())
+    payload["runs"] = mutate(payload["runs"])
+    eval_path.write_text(json.dumps(payload))
+
+
+# Tests PR #41 round-5 (r3809937501) [integration]: a stale/copied
+# eval_result.json admitted on resume (the MA-012 skip) whose runs records
+# cover a DIFFERENT question set than the run's own split_manifest.json test
+# split fails loud AT ADMISSION — before acceptance and before any prune —
+# naming the run, the foreign/missing qids and the --re-eval remediation. It
+# must never feed the endpoint or the significance pool. The clean sibling
+# (arm A, untouched fixture) is admitted first, pinning the clean skip path.
+def test_pr41_r5_ma012_admission_rejects_foreign_qid_eval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "out"
+    records = []
+    for arm in ("A", "B"):
+        run_dir = make_run_dir(out, arm, 1, include_hazard_dynamics=(arm == "B"))
+        records.append({"arm": arm, "seed": 1, "run_dir": run_dir,
+                        "hazard": arm != "A", "resumed": True,
+                        "log_path": run_dir / "train.log"})
+
+    # B's sidecar evaluated a foreign question: q3 -> STALE-qid.
+    def swap_last(runs):
+        runs[-1]["qid"] = "STALE-qid"
+        return runs
+
+    _doctor_eval_runs(records[1]["run_dir"], swap_last)
+    monkeypatch.setattr(
+        harness, "evaluate_t5_policy",
+        lambda *a, **kw: pytest.fail("resumed eval must not recompute"),
+        raising=False,
+    )
+    questions = [SimpleNamespace(qid=q) for q in ("q1", "q2", "q3")]
+
+    with pytest.raises(harness.ProvenanceError, match="MA-019") as excinfo:
+        harness.evaluate_all_runs(records, questions, {})
+    message = str(excinfo.value)
+    assert "B_seed1" in message, f"the offending run must be named: {message}"
+    assert "STALE-qid" in message and "q3" in message, (
+        f"the qid delta (extra + missing) must be named: {message}"
+    )
+    assert "--re-eval" in message, (
+        f"the execute-path remediation must offer --re-eval: {message}"
+    )
+
+
+# Tests PR #41 round-5 (r3809937501) [integration]: --report-only over a run
+# tree holding a stale/copied eval sidecar fails loud at report time, naming
+# the run and the qid delta with the report-only-aware remediation (round-2
+# _remediation helper) — no report or plot is written.
+def test_pr41_r5_report_only_rejects_foreign_qid_eval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail("report-only must not train"),
+    )
+    out = tmp_path / "out"
+    make_run_dir(out, "A", 1)
+    b_dir = make_run_dir(out, "B", 1, include_hazard_dynamics=True)
+
+    def swap_last(runs):
+        runs[-1]["qid"] = "STALE-qid"
+        return runs
+
+    _doctor_eval_runs(b_dir, swap_last)
+
+    with pytest.raises(harness.ProvenanceError, match="MA-019") as excinfo:
+        harness.main(
+            ["--report-only", "--smoke", "--out-dir", str(out),
+             "--arms", "A", "B", "--seeds", "1"]
+        )
+    message = str(excinfo.value)
+    assert "B_seed1" in message, f"the offending run must be named: {message}"
+    assert "STALE-qid" in message and "q3" in message
+    # Report-only-aware remediation (PR #41 round-2 [29]): --force/--re-eval
+    # are dead ends under --report-only; the wording steers around them.
+    assert "--report-only" in message
+    assert not (out / "hazard_efficacy_report.json").exists(), (
+        "no report may be written from a mismatched question set"
+    )
+
+
+# Tests PR #41 round-5 (r3809937501) [unit]: a TRUNCATED runs list — a strict
+# subset of the manifest test split — is caught at report assembly (the gate
+# shared by the execute path and --report-only), naming the counts and the
+# missing qid; the identical undoctored fixture assembles cleanly with zero
+# warnings (clean path unchanged).
+def test_pr41_r5_truncated_eval_runs_subset_fails_report_assembly(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "out"
+    records = []
+    for arm in ("A", "B"):
+        run_dir = make_run_dir(out, arm, 1, include_hazard_dynamics=(arm == "B"))
+        records.append({"arm": arm, "seed": 1, "run_dir": run_dir,
+                        "hazard": arm != "A", "resumed": False})
+    # B's payload covers only 2 of the manifest's 3 test qids.
+    _doctor_eval_runs(records[1]["run_dir"], lambda runs: runs[:2])
+
+    with pytest.raises(harness.ProvenanceError, match="MA-019") as excinfo:
+        harness.assemble_report(out, records, smoke=True)
+    message = str(excinfo.value)
+    assert "B_seed1" in message
+    assert "q3" in message, f"the missing test qid must be named: {message}"
+    assert "2 qid(s)" in message and "3 qid(s)" in message, (
+        f"the truncated counts must be named: {message}"
+    )
+
+    # Control: the SAME fixture without doctoring assembles cleanly — the
+    # gate admits payloads that cover the manifest test split exactly.
+    clean = tmp_path / "clean"
+    clean_records = []
+    for arm in ("A", "B"):
+        run_dir = make_run_dir(
+            clean, arm, 1, include_hazard_dynamics=(arm == "B")
+        )
+        clean_records.append({"arm": arm, "seed": 1, "run_dir": run_dir,
+                              "hazard": arm != "A", "resumed": False})
+    report = harness.assemble_report(clean, clean_records, smoke=True)
+    assert report["warnings"] == []
+    assert (clean / "hazard_efficacy_report.json").exists()
