@@ -555,6 +555,10 @@ def test_ma007_disk_preflight_prints_estimate_and_warns(
 # arm-control NON-exempt keys ([3] — guaranteed post-training
 # ArmControlError), and silently-overwritten seed=/hazard.* overrides
 # (P3 [14]) are all rejected at plan time too.
+# EXTENDED in PR #41 round-3 resolve: known FLAGS whose config effect lands
+# on a non-exempt key (R2-3 / codex r3809591787 — --ppo-iterations writes
+# ppo.iterations) and ANY *.checkpoint_dir= override (R2-4 — exempt but
+# INERT in the child: a silent duplicate-of-B variant) are rejected too.
 @pytest.mark.parametrize(
     ("flags", "needle"),
     [
@@ -576,6 +580,15 @@ def test_ma007_disk_preflight_prints_estimate_and_warns(
         # PR #41 round-2 P3 [14]: silently-overwritten overrides.
         ("seed=5", "OVERWRITTEN"),
         ("hazard.beta_terminal=9.0", "OVERWRITTEN"),
+        # PR #41 round-3 R2-3 (codex r3809591787): flag-form config writes
+        # onto non-exempt keys (two-token and =-joined spellings).
+        ("--ppo-iterations 3", "NOT exempt"),
+        ("--ppo-iterations=3", "NOT exempt"),
+        # PR #41 round-3 R2-4: *.checkpoint_dir= overrides are inert in the
+        # child (flatten_config reads supervised.checkpoint_dir only).
+        ("ppo.checkpoint_dir=elsewhere", "DUPLICATE"),
+        ("data.checkpoint_dir=elsewhere", "DUPLICATE"),
+        ("checkpoint_dir=elsewhere", "DUPLICATE"),
     ],
 )
 def test_ma008_variant_reserved_and_bare_tokens_rejected(
@@ -632,6 +645,81 @@ def test_ma008_variant_inherits_hazard_knobs_flags_override(
     override = next(rec for rec in plan2 if rec["arm"] == "variant:Bo")
     assert override["argv"].count("--beta-terminal") == 1
     assert override["hazard_knobs"]["beta_terminal"] == pytest.approx(9.0)
+
+
+# Tests PR #41 round-3 R2-3 (codex r3809591787) [unit]: a variant FLAGS
+# token that is a KNOWN child flag but whose config effect lands on an
+# arm-control non-exempt key (--ppo-iterations -> ppo.iterations) dies at
+# PLAN time with an error naming the flag, the effect key, and the variant
+# — zero children. It used to pass the known-flag gate AND the parser
+# roundtrip, then abort hours later at the post-children arm-control diff
+# (the child writes ppo.iterations into config_used.json).
+def test_pr41_r3_variant_flag_config_effect_rejected_at_plan_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail(
+            "the rejection must cost ZERO children"
+        ),
+    )
+    with pytest.raises(harness.PreflightError) as excinfo:
+        harness.plan_runs(
+            _namespace(tmp_path / "out", variant=["it3:--ppo-iterations 3"])
+        )
+    message = str(excinfo.value)
+    assert "--ppo-iterations" in message, message
+    assert "'it3'" in message, "the error must name the variant"
+    assert "ppo.iterations" in message, "the error must name the effect key"
+    assert "NOT exempt" in message, message
+
+
+# Tests PR #41 round-3 R2-5 [unit]: the _CHILD_KNOWN_FLAGS /
+# _CHILD_VALUE_FLAGS mirrors stay in lockstep with the REAL child parser
+# (MA-018 tuple-parity precedent: mirror sets are asserted against their
+# source of truth, here scripts.train_t5_policy.parse_args's parser
+# introspected via parser._actions) — a new child flag that is not
+# mirrored would otherwise be silently unplannable (known-flags) or
+# mis-classified as a bare positional (value-flags).
+def test_pr41_r3_child_flag_mirrors_parity_with_real_parser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.train_t5_policy as train_t5_policy
+
+    captured: dict = {}
+    real_parse_args = argparse.ArgumentParser.parse_args
+
+    def capture(self, args=None, namespace=None):
+        captured.setdefault("parser", self)
+        return real_parse_args(self, args, namespace)
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", capture)
+    train_t5_policy.parse_args(argv=["--skip-supervised"])
+    parser = captured["parser"]
+
+    known: set[str] = set()
+    value_taking: set[str] = set()
+    for action in parser._actions:
+        if not action.option_strings:
+            continue  # the trailing positional ``overrides`` group
+        if "--help" in action.option_strings:
+            continue
+        known.update(action.option_strings)
+        if action.nargs != 0:  # store_true actions have nargs == 0
+            value_taking.update(action.option_strings)
+
+    assert known == set(harness._CHILD_KNOWN_FLAGS), (
+        "_CHILD_KNOWN_FLAGS must equal the real child parser's full option "
+        f"surface; parser={sorted(known)} "
+        f"mirror={sorted(harness._CHILD_KNOWN_FLAGS)}"
+    )
+    assert value_taking == set(harness._CHILD_VALUE_FLAGS), (
+        "_CHILD_VALUE_FLAGS must equal the real child parser's value-taking "
+        f"options; parser={sorted(value_taking)} "
+        f"mirror={sorted(harness._CHILD_VALUE_FLAGS)}"
+    )
+    # Structural sanity: every flag with a config effect is a known flag.
+    assert set(harness._CHILD_FLAG_CONFIG_EFFECTS) <= known
 
 
 # ---------------------------------------------------------------------------
@@ -1355,41 +1443,64 @@ def test_f6_child_eof_without_exit_is_killed(tmp_path: Path) -> None:
 
 
 # Tests PR #41 round-2 P3 [24] [integration]: the post-EOF wait with BOTH
-# limits configured is bounded by the SMALLER of the stall budget and the
-# REMAINING total budget, and the error names whichever limit expired (the
-# stall-only and total-only legs live in test_f6_child_eof_without_exit_is_
-# killed; this pins the previously-untested both-configured min() branch).
+# limits configured is bounded by the smaller of the two REMAINING budgets,
+# and the error names whichever limit expired (the stall-only and
+# total-only legs live in test_f6_child_eof_without_exit_is_killed).
+# REWRITTEN in PR #41 round-3 resolve (R2-6 / codex r3809591780) to pin the
+# documented CONTRACT, not the implementation: the stall limit is ONE
+# CONTINUOUS no-output window — a child that goes silent and THEN EOFs must
+# die when the continuous-silence window (measured from the last output
+# line) crosses stall_limit, NOT stall_limit after EOF. The old
+# implementation granted a FRESH full stall budget at EOF, stretching the
+# silence window to silence-before-EOF + stall_limit.
 def test_pr41_post_eof_wait_bounded_by_smaller_of_both_limits(
     tmp_path: Path,
 ) -> None:
+    # (a) CONTRACT leg: 'bye', then ~2.0s of silence, then EOF, then a wedge
+    # (never exits). stall=3.0s => ~1.0s of the silence window remains at
+    # EOF, so the kill lands ~3s after the last output line. A fresh
+    # post-EOF budget (the R2-6 bug) would let it live ~2.0 + 3.0 = ~5s.
     script = (
+        "import os, sys, time\n"
+        "print('bye', flush=True)\n"
+        "time.sleep(2.0)\n"
+        "os.close(1)\n"
+        "os.close(2)\n"
+        "time.sleep(60)\n"
+    )
+    start = time.monotonic()
+    with pytest.raises(harness.ChildRunError, match="did not exit") as excinfo:
+        harness._run_child(
+            [sys.executable, "-c", script], tmp_path / "stall_smaller.log",
+            stall_timeout_seconds=3.0,
+            child_timeout_seconds=60.0,
+        )
+    elapsed = time.monotonic() - start
+    assert elapsed >= 2.0, "the wait must reach the child's late EOF first"
+    assert elapsed < 4.5, (
+        "a continuous-silence window of 3.0s must kill ~3s after the last "
+        "output line — a fresh post-EOF stall budget (R2-6) would stretch "
+        f"it to ~5s; elapsed={elapsed:.2f}s"
+    )
+    message = str(excinfo.value)
+    assert "stall-timeout-minutes" in message, message
+    assert "child-timeout-minutes" not in message, message
+
+    # (b) remaining total budget < remaining stall budget => the total cap
+    # expires and is the one named (immediate-EOF child, so the stall
+    # window is still nearly whole).
+    eof_now_script = (
         "import os, sys, time\n"
         "print('bye', flush=True)\n"
         "os.close(1)\n"
         "os.close(2)\n"
         "time.sleep(60)\n"
     )
-
-    # (a) stall budget < remaining total budget => the stall limit expires
-    # and is the one named.
     start = time.monotonic()
     with pytest.raises(harness.ChildRunError, match="did not exit") as excinfo:
         harness._run_child(
-            [sys.executable, "-c", script], tmp_path / "stall_smaller.log",
-            stall_timeout_seconds=0.5,
-            child_timeout_seconds=60.0,
-        )
-    assert time.monotonic() - start < 20.0
-    message = str(excinfo.value)
-    assert "stall-timeout-minutes" in message, message
-    assert "child-timeout-minutes" not in message, message
-
-    # (b) remaining total budget < stall budget => the total cap expires
-    # and is the one named.
-    start = time.monotonic()
-    with pytest.raises(harness.ChildRunError, match="did not exit") as excinfo:
-        harness._run_child(
-            [sys.executable, "-c", script], tmp_path / "total_smaller.log",
+            [sys.executable, "-c", eof_now_script],
+            tmp_path / "total_smaller.log",
             stall_timeout_seconds=60.0,
             child_timeout_seconds=1.0,
         )

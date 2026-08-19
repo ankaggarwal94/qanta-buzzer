@@ -149,6 +149,12 @@ _STALE_RUN_TREES = ("ppo_t5", "hazard")
 # a pid probe cannot see an invocation on another machine writing into the
 # same synced tree (e.g. Dropbox on a second device).
 _LOCK_FILENAME = "harness.lock"
+# PR #41 round-3 (R2-2): stale-lock RECLAIMS are serialized through a second
+# O_EXCL guard file <lock>.reclaim — two waiters that both observed the same
+# provably-dead holder used to race unlink + O_EXCL create, and the slower
+# one could unlink the winner's FRESH lock (both invocations then believed
+# they held it).
+_LOCK_RECLAIM_SUFFIX = ".reclaim"
 
 # MA-008: the variant namespace is DISTINCT from the role-bearing core-arm
 # literals: run dirs are ``variant_<NAME>_seed<k>`` and the arm label is
@@ -197,6 +203,22 @@ _CHILD_KNOWN_FLAGS = frozenset(
         "--skip-test-eval",
     }
 )
+
+# PR #41 round-3 r3809591787: flag-form knobs that WRITE a config key when
+# the child applies them (scripts/train_t5_policy.py::
+# load_config_with_overrides / main). A known child flag whose config effect
+# lands on an arm-control NON-exempt key is exactly as fatal as the
+# equivalent key=value override — the child records the changed key into
+# config_used.json and the post-children R-003 diff is a GUARANTEED
+# ArmControlError hours late — so plan_runs rejects it by the same rule.
+# Audit of the rest of _CHILD_KNOWN_FLAGS: --config/--model-path/--mc-path/
+# --seed/--smoke/--skip-supervised are already reserved
+# (_RESERVED_VARIANT_FLAGS); --hazard-pretrain/--beta-terminal/
+# --freeze-answer-head/--hazard-ablation write only the exempt hazard
+# block; --skip-test-eval writes no config key.
+_CHILD_FLAG_CONFIG_EFFECTS: dict[str, str] = {
+    "--ppo-iterations": "ppo.iterations",
+}
 
 # MA-007: per-checkpoint disk estimates (bytes) used by the preflight disk
 # budget when no shared checkpoint exists yet to measure.
@@ -1038,10 +1060,18 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
     ``--smoke``), reserved overrides (``supervised.checkpoint_dir=`` /
     ``ppo.eval_interval=``), dash tokens whose base is not a known child
     flag (PR #41 round-2 [5]: negative-number-shaped tokens like ``-3``
-    passed the dash test and became silent positional no-ops), ``key=value``
+    passed the dash test and became silent positional no-ops), known FLAGS
+    whose config effect lands on an arm-control NON-exempt key (PR #41
+    round-3 r3809591787: ``--ppo-iterations`` writes ``ppo.iterations``
+    into ``config_used.json`` — a guaranteed post-children
+    ``ArmControlError``; see ``_CHILD_FLAG_CONFIG_EFFECTS``), ``key=value``
     overrides of arm-control NON-exempt keys (PR #41 round-2 [3]: guaranteed
     post-training ``ArmControlError`` — R-003 demands every non-exempt key
-    equal across runs), ``seed=``/``hazard.*=`` overrides (PR #41 round-2
+    equal across runs), ANY ``*.checkpoint_dir=`` override (PR #41 round-3
+    R2-4: exempt from arm control but INERT — the child resolves its
+    checkpoint root from the harness-injected ``supervised.checkpoint_dir=``
+    only, so the variant would silently duplicate arm B),
+    ``seed=``/``hazard.*=`` overrides (PR #41 round-2
     P3 [14]: the child re-records both from its CLI flags after applying
     overrides, so they are silent no-ops — use the hazard CLI flags), and
     bare ``=``-less non-flag tokens (silent positional no-ops in the
@@ -1131,6 +1161,25 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
                         "child parser as silent positional no-ops (MA-008 / "
                         "PR #41 round-2)."
                     )
+                effect = _CHILD_FLAG_CONFIG_EFFECTS.get(base)
+                if effect is not None and not _is_exempt_config_key(effect):
+                    # PR #41 round-3 r3809591787: a known child FLAG can
+                    # smuggle a config write past the key=value gate — the
+                    # child maps it onto a config key and records it into
+                    # config_used.json, so a non-exempt effect is a
+                    # guaranteed post-children ArmControlError hours late.
+                    raise PreflightError(
+                        f"variant {name!r}: FLAGS token {token!r} writes "
+                        f"config key {effect!r} into the child's "
+                        "config_used.json (scripts/train_t5_policy.py maps "
+                        f"{base} onto it), and {effect!r} is NOT exempt "
+                        "from arm control (R-003 exemptions: top-level "
+                        "seed, the hazard block). Every non-exempt key must "
+                        "be EQUAL across runs, so this variant would be "
+                        "guaranteed to abort at the post-children "
+                        "arm-control diff — rejected at plan time (PR #41 "
+                        "round-3)."
+                    )
                 if base in _CHILD_VALUE_FLAGS and "=" not in token:
                     # The next token is this flag's VALUE, not a bare
                     # positional; the roundtrip still validates it.
@@ -1142,6 +1191,27 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
                         f"variant {name!r}: override {token!r} is reserved — "
                         "supervised.checkpoint_dir= and ppo.eval_interval= "
                         "are injected by the harness itself (MA-008)."
+                    )
+                if base.split(".")[-1] == "checkpoint_dir":
+                    # PR #41 round-3 (R2-4): *.checkpoint_dir keys are
+                    # arm-control EXEMPT, so an override here used to sail
+                    # through — but the harness owns every run directory
+                    # (it injects supervised.checkpoint_dir=<run_dir>
+                    # itself) and the child reads NO other checkpoint_dir
+                    # key (scripts/train_t5_policy.py::flatten_config
+                    # resolves the checkpoint root from
+                    # supervised.checkpoint_dir only). The override would
+                    # be an INERT no-op: the variant trains as an exact
+                    # duplicate of arm B while claiming to differ.
+                    raise PreflightError(
+                        f"variant {name!r}: config override {token!r} "
+                        "targets a *.checkpoint_dir key — the harness owns "
+                        "every run directory and the child never reads any "
+                        "other checkpoint_dir override, so this variant "
+                        "would silently train as a DUPLICATE of arm B. Use "
+                        "the hazard CLI flags (--beta-terminal / "
+                        "--freeze-answer-head / --hazard-ablation) to "
+                        "differentiate variants (PR #41 round-3)."
                     )
                 if base == "seed" or base.split(".")[0] == "hazard":
                     # PR #41 round-2 P3 [14]: the child trainer re-records
@@ -1490,12 +1560,15 @@ def _run_child(
     block-buffered bursts that read as a stall); after any watchdog kill
     the already-pumped lines are drained into the log before the error
     snapshots its tail; EOF on the pipe is followed by a ``proc.wait``
-    bounded by the SMALLER of the stall budget and the REMAINING total
-    budget — PR #41 r3806602901: the total cap stays enforced after EOF
-    even with the stall watchdog disabled; unbounded only when NEITHER is
-    configured — and a child that closed its streams but never exits is
-    killed + ``ChildRunError`` naming whichever limit expired; the pump
-    thread tolerates the kill-time close-race on the pipe.
+    bounded by the SMALLER of the REMAINING stall window and the REMAINING
+    total budget — PR #41 r3806602901: the total cap stays enforced after
+    EOF even with the stall watchdog disabled; PR #41 round-3 r3809591780:
+    the stall contract is one CONTINUOUS no-output window, so EOF never
+    refills it (the post-EOF wait gets ``stall_limit`` minus the silence
+    already accrued since the last output line, floored at zero); unbounded
+    only when NEITHER is configured — and a child that closed its streams
+    but never exits is killed + ``ChildRunError`` naming whichever limit
+    expired; the pump thread tolerates the kill-time close-race on the pipe.
     """
     stall_limit = (
         _ACTIVE_STALL_TIMEOUT_SECONDS
@@ -1632,17 +1705,25 @@ def _run_child(
             # runtime cap stays enforced after EOF too (the wait used to be
             # bounded by the stall limit alone, so --child-timeout-minutes
             # with the stall watchdog disabled degraded to an unbounded
-            # wait). The wait is bounded by the SMALLER of the stall budget
-            # and the REMAINING total budget; None (unbounded) only when
-            # NEITHER limit is configured. On expiry the error names
-            # whichever limit ran out.
+            # wait). PR #41 round-3 r3809591780: the stall contract is ONE
+            # CONTINUOUS no-output window — EOF does not refill it. The
+            # post-EOF wait therefore gets only what is LEFT of the window
+            # that started at the last output line (floored at zero: a
+            # child already past the window is killed immediately unless it
+            # has in fact exited), min'd with the REMAINING total budget;
+            # None (unbounded) only when NEITHER limit is configured. On
+            # expiry the error names whichever limit ran out.
             wait_limits: list[tuple[float, str]] = []
             if stall_limit is not None:
+                remaining_stall = max(
+                    0.0, stall_limit - (time.monotonic() - last_output)
+                )
                 wait_limits.append(
                     (
-                        stall_limit,
-                        f"stall budget ({stall_limit:.1f}s — "
-                        "--stall-timeout-minutes)",
+                        remaining_stall,
+                        f"remaining stall budget ({remaining_stall:.1f}s of "
+                        f"the {stall_limit:.1f}s --stall-timeout-minutes "
+                        "window, measured from the last output line)",
                     )
                 )
             if total_limit is not None:
@@ -2215,7 +2296,11 @@ def execute_plan(
     ``shared_supervised_weights_sha256`` — additive, MA-003 — records the
     branch point's content fingerprint when the caller supplies
     ``expected_run_context["shared_weights_sha256"]``, and is asserted on
-    resume; ``git_dirty``/``torch_version``/``platform``/``device`` —
+    resume; ``shared_supervised_seed_mismatch`` — additive, PR #41 round-3
+    (round-1 P3 disposition) — copied from the shared branch point's
+    QA-R2-3 marker flag at run completion when TRUE (omitted otherwise), so
+    the R-014 per-run-files-only report can surface the drift per row;
+    ``git_dirty``/``torch_version``/``platform``/``device`` —
     additive, PR #41 r3806602894 — are the TRAINING-time provenance
     snapshot captured at run completion by
     :func:`_training_provenance_fields`, which report rows prefer over
@@ -2360,6 +2445,18 @@ def execute_plan(
         shared_fp = (expected_run_context or {}).get("shared_weights_sha256")
         if shared_fp:
             marker["shared_supervised_weights_sha256"] = str(shared_fp)
+        # PR #41 round-3 (round-1 P3 disposition): the branch point's
+        # recorded QA-R2-3 seed-mismatch flag is copied into every run
+        # completed under it (additive field, written only when true) —
+        # the report reads per-run files EXCLUSIVELY (R-014), so without
+        # the copy the mismatch could never surface in a report row.
+        shared_marker = _read_optional_json(
+            run_dir.parent / _SHARED_SUPERVISED_DIRNAME / SHARED_SUPERVISED_MARKER
+        )
+        if isinstance(shared_marker, dict) and shared_marker.get(
+            "shared_supervised_seed_mismatch"
+        ):
+            marker["shared_supervised_seed_mismatch"] = True
         # MA-015: markers are written atomically (temp + os.replace).
         _atomic_save_json(run_dir / RUN_COMPLETE_MARKER, marker)
         record["resumed"] = False
@@ -3648,6 +3745,13 @@ def _read_run_sidecars(
                 else None,
                 "resumed": bool(record.get("resumed", False)),
                 "git_sha_mismatch": bool(record.get("git_sha_mismatch", False)),
+                # PR #41 round-3 (round-1 P3 disposition, additive): the
+                # shared branch point's QA-R2-3 seed-mismatch flag, sourced
+                # from THIS run's own marker (execute_plan copies it at run
+                # completion — R-014: report rows read per-run files only).
+                "shared_supervised_seed_mismatch": bool(
+                    marker.get("shared_supervised_seed_mismatch", False)
+                ),
                 "policy_buzz_rate": eval_result.get("policy_buzz_rate"),
                 "forced_commit_rate": eval_result.get("forced_commit_rate"),
                 "ece": eval_result.get("ece"),
@@ -4080,7 +4184,10 @@ def assemble_report(
     printed with them; PR #41 r3806602894: one warning lists any runs
     whose markers predate the training-time provenance snapshot; empty
     list when clean), ``runs`` (per-run records incl. ``arm``, ``seed``,
-    ``resumed``, ``policy_buzz_rate``, ``forced_commit_rate``, ``ece``,
+    ``resumed``, ``shared_supervised_seed_mismatch`` — additive, PR #41
+    round-3: the branch point's QA-R2-3 seed-drift flag as copied into the
+    run's own marker at completion — ``policy_buzz_rate``,
+    ``forced_commit_rate``, ``ece``,
     ``brier``, ``provenance`` — whose ``git_sha``/``git_dirty``/
     ``torch_version``/``platform``/``device`` come from the run's own
     ``RUN_COMPLETE.json`` when it carries them, flagged by the additive
@@ -4740,6 +4847,105 @@ def _lock_holder_is_stale(holder: dict[str, Any] | None) -> bool:
     return False
 
 
+def _lock_owned_by_self(holder: dict[str, Any] | None) -> bool:
+    """True iff the lock record names THIS process (pid + host) as holder."""
+    return (
+        isinstance(holder, dict)
+        and holder.get("pid") == os.getpid()
+        and holder.get("host") == platform.node()
+    )
+
+
+def _reclaim_stale_lock(
+    lock_path: Path, stale_holder: dict[str, Any]
+) -> None:
+    """Serialized takeover of a provably-stale out-dir lock (PR #41 round-3).
+
+    R2-2: two waiters that both observed the same provably-dead holder used
+    to race a bare ``unlink`` + ``O_EXCL`` create — the slower waiter's
+    unlink could remove the WINNER'S fresh lock, after which both
+    invocations believed they held it (and the winner's by-path release
+    would later delete the loser's lock too). The takeover is now
+    serialized through a second ``O_EXCL`` guard file
+    (``<lock>.reclaim``): only the guard holder may unlink the main lock,
+    and it does so ONLY after re-reading the lock under the guard and
+    confirming it is still byte-for-record the SAME stale holder the
+    staleness decision was made on (and still provably dead — a reused
+    pid that came back alive refuses). Any drift refuses with
+    ``PreflightError`` — there is no second unlink path. A guard whose own
+    recorded same-host pid is provably dead (a reclaimer crashed
+    mid-takeover) is itself removed once before retrying.
+
+    Raises ``PreflightError`` when the guard is held by a live reclaimer
+    or the lock changed hands mid-takeover; returns after unlinking the
+    stale lock (the caller retries its ``O_EXCL`` create, which stays the
+    single create path).
+    """
+    guard_path = lock_path.with_name(lock_path.name + _LOCK_RECLAIM_SUFFIX)
+    guard_payload = json.dumps(
+        {
+            "pid": os.getpid(),
+            "host": platform.node(),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        },
+        indent=2,
+    )
+    guard_fd: int | None = None
+    for guard_attempt in (1, 2):
+        try:
+            guard_fd = os.open(
+                str(guard_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY
+            )
+            break
+        except FileExistsError:
+            guard_holder = _read_lock_holder(guard_path)
+            if guard_attempt == 1 and _lock_holder_is_stale(guard_holder):
+                # A reclaimer crashed between guard create and release;
+                # clear the dead guard and retry the O_EXCL once.
+                with contextlib.suppress(FileNotFoundError, OSError):
+                    guard_path.unlink()
+                continue
+            raise PreflightError(
+                f"Another invocation is concurrently reclaiming the stale "
+                f"out-dir lock {lock_path} (reclaim guard {guard_path} is "
+                "held); refusing to race the takeover — re-run once the "
+                "other invocation finishes (PR #41 round-3)."
+            )
+    if guard_fd is None:  # pragma: no cover - two guard O_EXCL losses
+        raise PreflightError(
+            f"Could not acquire the reclaim guard {guard_path}; another "
+            "invocation grabbed it concurrently."
+        )
+    try:
+        with os.fdopen(guard_fd, "w", encoding="utf-8") as handle:
+            handle.write(guard_payload)
+        # Under the guard: the lock must STILL be the exact stale record
+        # the staleness decision was made on. A fresh record here means
+        # another waiter already completed the takeover — its lock is LIVE
+        # and must not be unlinked.
+        current = _read_lock_holder(lock_path)
+        if current is not None and (
+            current != stale_holder or not _lock_holder_is_stale(current)
+        ):
+            raise PreflightError(
+                f"The out-dir lock {lock_path} changed while preparing to "
+                "reclaim it (another invocation won the takeover and is "
+                "now running); refusing to unlink a live lock (PR #41 "
+                "round-3)."
+            )
+        print(
+            f"[lock] reclaiming stale out-dir lock {lock_path} "
+            f"(recorded pid {stale_holder.get('pid')!r} is no longer "
+            "alive on this host)."
+        )
+        if current is not None:
+            with contextlib.suppress(FileNotFoundError, OSError):
+                lock_path.unlink()
+    finally:
+        with contextlib.suppress(FileNotFoundError, OSError):
+            guard_path.unlink()
+
+
 def _acquire_out_dir_lock(out_dir: Path) -> Path:
     """PR #41 round-2 [9] (adv M-V1-4): single-invocation out_dir lock.
 
@@ -4749,9 +4955,14 @@ def _acquire_out_dir_lock(out_dir: Path) -> Path:
     old failure mode let the last finisher's atomic marker bless a
     co-written dir, and the PartialRunError remediation steered the second
     operator toward ``--force`` against a LIVE run. A lock whose recorded
-    same-host pid is no longer alive is reclaimed once (stale-pid
-    detection); everything else refuses with a ``PreflightError`` that
-    names the holder and never recommends ``--force``.
+    same-host pid is no longer alive is reclaimed once via the SERIALIZED
+    takeover in :func:`_reclaim_stale_lock` (PR #41 round-3 R2-2: a bare
+    unlink raced a concurrent reclaimer into a double acquisition);
+    everything else refuses with a ``PreflightError`` that names the
+    holder and never recommends ``--force``. After the ``O_EXCL`` create
+    the lock is RE-READ and must record this process (verify-after-create
+    backstop: an interleaved taker can never leave both sides believing
+    they hold it).
 
     NOTE (documented in the error, per the review's Dropbox-two-device
     caveat): the lock is PER-HOST — ``os.kill(pid, 0)`` cannot probe a pid
@@ -4777,13 +4988,10 @@ def _acquire_out_dir_lock(out_dir: Path) -> Path:
         except FileExistsError:
             holder = _read_lock_holder(lock_path)
             if attempt == 1 and _lock_holder_is_stale(holder):
-                print(
-                    f"[lock] reclaiming stale out-dir lock {lock_path} "
-                    f"(recorded pid {holder.get('pid') if holder else '?'} "
-                    "is no longer alive on this host)."
-                )
-                with contextlib.suppress(FileNotFoundError, OSError):
-                    lock_path.unlink()
+                # PR #41 round-3 (R2-2): serialized takeover — only ONE
+                # waiter may unlink the stale lock, and only after
+                # re-verifying it under the reclaim guard.
+                _reclaim_stale_lock(lock_path, holder)
                 continue
             described = (
                 f"pid {holder.get('pid')!r} on host {holder.get('host')!r} "
@@ -4805,6 +5013,17 @@ def _acquire_out_dir_lock(out_dir: Path) -> Path:
             )
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(payload)
+        # PR #41 round-3 (R2-2) verify-after-create: only proceed when the
+        # lock on disk records THIS process — a racing reclaimer that
+        # mis-tore our fresh lock out from under us must leave exactly ONE
+        # invocation believing it holds the lock, never two.
+        if not _lock_owned_by_self(_read_lock_holder(lock_path)):
+            raise PreflightError(
+                f"Lost the acquisition race for the out-dir lock "
+                f"{lock_path}: it no longer records this process after "
+                "creation (a concurrent invocation took it over); refusing "
+                "to run without the lock (PR #41 round-3)."
+            )
         return lock_path
     raise PreflightError(  # pragma: no cover - two O_EXCL losses in a row
         f"Could not acquire the out-dir lock {lock_path} after reclaiming "
@@ -4813,8 +5032,17 @@ def _acquire_out_dir_lock(out_dir: Path) -> Path:
 
 
 def _release_out_dir_lock(lock_path: Path | None) -> None:
-    """Remove the invocation's own out-dir lock (missing-safe)."""
+    """Remove the invocation's OWN out-dir lock (missing-safe).
+
+    PR #41 round-3 (R2-2): release is by-OWNERSHIP, not by-path — the lock
+    content must record this process (pid + host) or the release refuses
+    to unlink. A lock lost to a takeover race would otherwise let this
+    invocation delete the CURRENT holder's lock on exit, re-opening the
+    concurrent-writes door the lock exists to close.
+    """
     if lock_path is None:
+        return
+    if not _lock_owned_by_self(_read_lock_holder(lock_path)):
         return
     with contextlib.suppress(FileNotFoundError, OSError):
         Path(lock_path).unlink()
@@ -4869,11 +5097,6 @@ def main(argv: list[str] | None = None) -> None:
         else None
     )
 
-    # PR #41 round-2 [29]: arm the mode-aware remediation wording (reset in
-    # the finally below so direct in-process callers never inherit it).
-    global _ACTIVE_REPORT_ONLY
-    _ACTIVE_REPORT_ONLY = bool(args.report_only)
-
     # PR #41 round-2 [9]: one invocation per out_dir at a time
     # (--report-only included — it writes the report/plot and may prune).
     # --dry-run stays lock-free: it performs zero writes and zero deletions
@@ -4883,7 +5106,14 @@ def main(argv: list[str] | None = None) -> None:
     if not args.dry_run:
         lock_path = _acquire_out_dir_lock(out_dir)
 
+    # PR #41 round-2 [29] / round-3 (R2-1): arm the mode-aware remediation
+    # wording only AFTER lock acquisition and INSIDE the try whose finally
+    # resets it — arming before the lock leaked the flag process-wide on a
+    # lock-refused --report-only invocation (every later in-process caller
+    # then saw report-only remediation wording; test-order coupling).
+    global _ACTIVE_REPORT_ONLY
     try:
+        _ACTIVE_REPORT_ONLY = bool(args.report_only)
         if args.report_only:
             _main_report_only(args, out_dir)
             return

@@ -1374,16 +1374,19 @@ def test_qa002_force_rebuilds_shared_supervised(
     assert marker_path.exists(), "the rebuilt checkpoint gets a fresh marker"
 
 
-# Tests QA-003 [integration]: a config-override variant composes an argv the
-# REAL child parser accepts, with every positional key=value override
-# contiguous at the argv tail.
+# Tests QA-003 [integration]: variant argvs compose argvs the REAL child
+# parser accepts, with every positional key=value override contiguous at the
+# argv tail.
 # AMENDED in mini-audit fix round (MA-008): variant run dirs/arm labels moved
 # to the distinct variant_<NAME>_seed<k> / variant:<NAME> namespace.
 # AMENDED in PR #41 round-2 resolve [3]: variants may only override
-# arm-control-EXEMPT keys now (non-exempt overrides like ppo.lr= are
-# rejected at plan time — they were guaranteed post-training
-# ArmControlErrors), so the contiguity pin uses the exempt
-# ppo.checkpoint_dir= carrier.
+# arm-control-EXEMPT keys (non-exempt overrides are plan-time rejections).
+# AMENDED in PR #41 round-3 resolve (R2-4): the last admittable key=value
+# door (*.checkpoint_dir= — exempt but INERT in the child) is closed too, so
+# variant FLAGS can no longer carry ANY bare key=value override. The
+# plan-level leg pins the harness-injected positional tail (which must keep
+# working); the build_child_argv leg pins the function-level contiguity
+# contract for extra_flags mixing flags with key=value tokens.
 def test_qa003_variant_positional_override_argv_parses_and_stays_tail(
     tmp_path: Path,
 ) -> None:
@@ -1391,20 +1394,25 @@ def test_qa003_variant_positional_override_argv_parses_and_stays_tail(
 
     out = tmp_path / "out"
     plan = harness.plan_runs(
-        _namespace(out, seeds=[1], variant=["ckpt_probe:ppo.checkpoint_dir=ppo_t5"])
+        _namespace(out, seeds=[1], variant=["ckpt_probe:--freeze-answer-head"])
     )
     variant = next(rec for rec in plan if rec["arm"] == "variant:ckpt_probe")
     argv = variant["argv"]
 
+    # PR #41 round-3 (R2-4): the harness's OWN injected overrides keep
+    # working — the ban is on variant-supplied *.checkpoint_dir= only.
     positional = [t for t in argv[2:] if "=" in t and not t.startswith("-")]
     assert positional == [
-        "ppo.checkpoint_dir=ppo_t5",
         "ppo.eval_interval=1",
         f"supervised.checkpoint_dir={out / 'variant_ckpt_probe_seed1'}",
     ]
     assert argv[-len(positional):] == positional, (
         "positional overrides must be CONTIGUOUS at the argv tail; "
         f"argv={argv}"
+    )
+    assert "--freeze-answer-head" in argv[: -len(positional)], (
+        "variant flag tokens must stay in the flag zone ahead of the "
+        f"positional tail; argv={argv}"
     )
 
     # The REAL parser accepts every planned argv and receives ALL the
@@ -1415,10 +1423,40 @@ def test_qa003_variant_positional_override_argv_parses_and_stays_tail(
         )
         assert f"supervised.checkpoint_dir={rec['run_dir']}" in parsed.overrides
     parsed = train_t5_policy.parse_args(argv=[str(t) for t in argv[2:]])
-    assert "ppo.checkpoint_dir=ppo_t5" in parsed.overrides
     assert "ppo.eval_interval=1" in parsed.overrides
     assert parsed.smoke is True
     assert parsed.hazard_pretrain is True
+    assert parsed.freeze_answer_head is True
+
+    # Function-level QA-003 contract: build_child_argv keeps key=value
+    # extra_flags contiguous at the tail even when a FLAG token follows
+    # them in the given list (interleaving positionals with later flags
+    # splits argparse's positional groups and the real child exits 2).
+    run_dir = out / "direct_probe"
+    direct = harness.build_child_argv(
+        arm="B",
+        seed=1,
+        run_dir=run_dir,
+        shared_supervised_path=out / "shared_supervised" / "best_model",
+        config_path=CONFIG_PATH,
+        smoke=True,
+        hazard=True,
+        extra_flags=["ppo.checkpoint_dir=ppo_t5", "--freeze-answer-head"],
+    )
+    direct_positional = [
+        t for t in direct[2:] if "=" in t and not t.startswith("-")
+    ]
+    assert direct_positional == [
+        "ppo.checkpoint_dir=ppo_t5",
+        "ppo.eval_interval=1",
+        f"supervised.checkpoint_dir={run_dir}",
+    ]
+    assert direct[-len(direct_positional):] == direct_positional
+    direct_parsed = train_t5_policy.parse_args(
+        argv=[str(t) for t in direct[2:]]
+    )
+    assert "ppo.checkpoint_dir=ppo_t5" in direct_parsed.overrides
+    assert direct_parsed.freeze_answer_head is True
 
 
 # Tests QA-003 [integration]: plan_runs round-trips every argv through the
@@ -1428,17 +1466,21 @@ def test_qa003_variant_positional_override_argv_parses_and_stays_tail(
 # earlier, at the variant token classifier (naming the variant); the
 # roundtrip leg is exercised with a known flag carrying a parser-rejected
 # VALUE, which only the real parser can reject.
+# AMENDED in PR #41 round-3 resolve (R2-3): the old roundtrip carrier
+# --ppo-iterations is now itself a plan-time rejection (its config effect
+# ppo.iterations is arm-control non-exempt), so the parser-rejected-VALUE
+# leg rides the still-admitted --beta-terminal instead.
 def test_qa003_preflight_rejects_argv_the_real_parser_rejects(
     tmp_path: Path,
 ) -> None:
     args = _namespace(
-        tmp_path / "out", variant=["bad:--ppo-iterations notanint"]
+        tmp_path / "out", variant=["bad:--beta-terminal notafloat"]
     )
     with pytest.raises(harness.PreflightError) as excinfo:
         harness.plan_runs(args)
     message = str(excinfo.value)
     assert "bad_seed1" in message
-    assert "notanint" in message
+    assert "notafloat" in message
 
     # The unknown-flag-base case dies at the classifier, naming the variant.
     with pytest.raises(harness.PreflightError, match="unrecognized") as excinfo:
@@ -2476,6 +2518,265 @@ def test_pr41_out_dir_lock_refuses_concurrent_and_reclaims_stale(
     harness.main(report_only_argv)
     assert (out / "hazard_efficacy_report.json").exists()
     assert not lock.exists(), "the invocation must release its own lock"
+
+
+# ---------------------------------------------------------------------------
+# PR #41 round-3 resolve — mode-flag leak (R2-1), stale-lock reclaim TOCTOU
+# (R2-2), shared seed-mismatch surfaced per run (round-1 P3 disposition)
+# ---------------------------------------------------------------------------
+
+
+# Tests PR #41 round-3 R2-1 [integration]: a lock-REFUSED --report-only
+# invocation must not leak the armed _ACTIVE_REPORT_ONLY mode flag
+# process-wide — arming now happens AFTER lock acquisition, inside the
+# try whose finally resets it. The leak made every later in-process
+# _remediation() caller emit report-only wording (test-order coupling).
+def test_pr41_r3_lock_refused_report_only_does_not_leak_mode_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "out"
+    make_run_dir(out, "A", 1)
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail("report-only must not train"),
+    )
+    lock = out / "harness.lock"
+    lock.write_text(json.dumps({
+        "pid": 12345,
+        "host": "another-machine.local",
+        "started_at": "2026-08-18T00:00:00+00:00",
+    }))
+
+    assert harness._ACTIVE_REPORT_ONLY is False  # precondition
+    with pytest.raises(
+        harness.PreflightError, match="Another harness invocation"
+    ):
+        harness.main(
+            ["--report-only", "--smoke", "--out-dir", str(out),
+             "--arms", "A", "--seeds", "1"]
+        )
+    assert harness._ACTIVE_REPORT_ONLY is False, (
+        "a lock-refused --report-only invocation must not leak the armed "
+        "mode flag process-wide (R2-1)"
+    )
+    # Subsequent remediation wording is the execute-path DEFAULT again.
+    sentinel = "EXECUTE-DEFAULT-WORDING"
+    assert harness._remediation(sentinel, tag="R2-1") == sentinel
+
+
+# Tests PR #41 round-3 R2-2 [integration]: DOUBLE-RECLAIM of one stale lock
+# — a second waiter completes a FULL acquire (reclaim + create) between the
+# first waiter's staleness verdict and its takeover. Exactly ONE invocation
+# may win: the interloper keeps the lock and the first waiter refuses with
+# PreflightError. Under the old bare unlink + O_EXCL race BOTH returned
+# success (the slower waiter unlinked the winner's fresh lock).
+def test_pr41_r3_double_reclaim_has_exactly_one_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import platform as platform_mod
+    import subprocess as subprocess_mod
+
+    out = tmp_path / "out"
+    out.mkdir()
+    lock = out / "harness.lock"
+    guard = out / "harness.lock.reclaim"
+    proc = subprocess_mod.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    stale_record = {
+        "pid": proc.pid,
+        "host": platform_mod.node(),
+        "started_at": "2026-08-18T00:00:00+00:00",
+    }
+    lock.write_text(json.dumps(stale_record))
+
+    real_is_stale = harness._lock_holder_is_stale
+    state = {"interleaved": False}
+
+    def interleaving_is_stale(holder):
+        verdict = real_is_stale(holder)
+        if verdict and not state["interleaved"]:
+            # Waiter B swoops in and completes a FULL acquire while waiter
+            # A is still acting on ITS read of the stale holder.
+            state["interleaved"] = True
+            assert harness._acquire_out_dir_lock(out) == lock
+        return verdict
+
+    monkeypatch.setattr(
+        harness, "_lock_holder_is_stale", interleaving_is_stale
+    )
+    with pytest.raises(harness.PreflightError) as excinfo:
+        harness._acquire_out_dir_lock(out)  # waiter A must LOSE
+    message = str(excinfo.value)
+    assert "won the takeover" in message, message
+
+    # Exactly one winner: waiter B's live lock survives, untouched by A.
+    assert lock.exists(), "the loser must never unlink the winner's lock"
+    surviving = json.loads(lock.read_text())
+    assert surviving["pid"] == os.getpid()
+    assert surviving != stale_record
+    assert not guard.exists(), "the reclaim guard must never be left behind"
+
+    # The winner's release still works (it owns the lock).
+    harness._release_out_dir_lock(lock)
+    assert not lock.exists()
+
+
+# Tests PR #41 round-3 R2-2 [unit]: release is by-OWNERSHIP — a lock whose
+# record names another process (or is unreadable) survives release; only
+# the invocation's own record is unlinked.
+def test_pr41_r3_release_refuses_lock_it_does_not_own(tmp_path: Path) -> None:
+    import os
+    import platform as platform_mod
+
+    lock = tmp_path / "harness.lock"
+    foreign = {
+        "pid": 12345,
+        "host": "another-machine.local",
+        "started_at": "2026-08-18T00:00:00+00:00",
+    }
+    lock.write_text(json.dumps(foreign))
+    harness._release_out_dir_lock(lock)
+    assert lock.exists(), "release must refuse a lock it does not own"
+    assert json.loads(lock.read_text()) == foreign
+
+    # Unreadable/corrupt record: never provably ours — refuse too.
+    lock.write_text("not-json")
+    harness._release_out_dir_lock(lock)
+    assert lock.exists()
+
+    # The invocation's OWN record is released.
+    lock.write_text(json.dumps({
+        "pid": os.getpid(),
+        "host": platform_mod.node(),
+        "started_at": "2026-08-18T00:00:00+00:00",
+    }))
+    harness._release_out_dir_lock(lock)
+    assert not lock.exists()
+
+
+# Tests PR #41 round-3 R2-2 [integration]: reclaims are SERIALIZED through
+# the O_EXCL reclaim guard — (a) a guard held by a live same-host reclaimer
+# refuses the second reclaimer and leaves both files untouched; (b) a guard
+# whose recorded pid is provably dead (a reclaimer crashed mid-takeover) is
+# cleared once and the reclaim proceeds to a full acquire.
+def test_pr41_r3_reclaim_guard_serializes_and_clears_stale_guard(
+    tmp_path: Path,
+) -> None:
+    import os
+    import platform as platform_mod
+    import subprocess as subprocess_mod
+
+    out = tmp_path / "out"
+    out.mkdir()
+    lock = out / "harness.lock"
+    guard = out / "harness.lock.reclaim"
+    proc = subprocess_mod.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    stale_record = {
+        "pid": proc.pid,
+        "host": platform_mod.node(),
+        "started_at": "2026-08-18T00:00:00+00:00",
+    }
+
+    # (a) live guard holder => the second reclaimer refuses; the stale lock
+    # and the held guard both survive.
+    lock.write_text(json.dumps(stale_record))
+    guard.write_text(json.dumps({
+        "pid": os.getpid(),
+        "host": platform_mod.node(),
+        "started_at": "2026-08-18T00:00:00+00:00",
+    }))
+    with pytest.raises(
+        harness.PreflightError, match="concurrently reclaiming"
+    ):
+        harness._acquire_out_dir_lock(out)
+    assert json.loads(lock.read_text()) == stale_record
+    assert guard.exists(), "a HELD guard must never be removed by a loser"
+
+    # (b) dead guard holder (crashed reclaimer) => cleared once, then the
+    # takeover completes and the invocation holds the lock.
+    guard.write_text(json.dumps({
+        "pid": proc.pid,
+        "host": platform_mod.node(),
+        "started_at": "2026-08-18T00:00:00+00:00",
+    }))
+    assert harness._acquire_out_dir_lock(out) == lock
+    assert json.loads(lock.read_text())["pid"] == os.getpid()
+    assert not guard.exists()
+    harness._release_out_dir_lock(lock)
+
+
+# Tests PR #41 round-3 (round-1 P3 disposition) [integration]: at run
+# completion execute_plan copies the shared branch point's recorded
+# QA-R2-3 shared_supervised_seed_mismatch flag (when TRUE) into that run's
+# RUN_COMPLETE.json — the report reads per-run files exclusively (R-014),
+# so the copy is what lets report rows surface the drift.
+def test_pr41_r3_seed_mismatch_flag_copied_into_run_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "out"
+    # Doctored shared marker: the recorded-and-warn flag is TRUE.
+    write_json(
+        harness.shared_supervised_root(out) / harness.SHARED_SUPERVISED_MARKER,
+        {"config_hash": "h", "git_sha": "s", "model_name": "t5-small",
+         "supervised_seed": 1, "shared_supervised_seed_mismatch": True},
+    )
+    records = [make_plan_record(out, arm, 1) for arm in ("A", "B")]
+    runner, calls = fabricating_runner(records)
+    monkeypatch.setattr(harness, "_run_child", runner)
+
+    updated = harness.execute_plan(records)
+    assert len(calls) == 2
+    for rec in updated:
+        marker = json.loads(
+            (Path(rec["run_dir"]) / "RUN_COMPLETE.json").read_text()
+        )
+        assert marker["shared_supervised_seed_mismatch"] is True
+
+    # Control: with NO recorded mismatch the additive field stays absent.
+    clean_out = tmp_path / "clean_out"
+    write_json(
+        harness.shared_supervised_root(clean_out)
+        / harness.SHARED_SUPERVISED_MARKER,
+        {"config_hash": "h", "git_sha": "s", "model_name": "t5-small",
+         "supervised_seed": 1},
+    )
+    clean_records = [make_plan_record(clean_out, "A", 1)]
+    clean_runner, _ = fabricating_runner(clean_records)
+    monkeypatch.setattr(harness, "_run_child", clean_runner)
+    for rec in harness.execute_plan(clean_records):
+        marker = json.loads(
+            (Path(rec["run_dir"]) / "RUN_COMPLETE.json").read_text()
+        )
+        assert "shared_supervised_seed_mismatch" not in marker
+
+
+# Tests PR #41 round-3 (round-1 P3 disposition) [unit]: report rows surface
+# the additive shared_supervised_seed_mismatch marker field per run — True
+# where the run's own marker recorded it, False elsewhere (legacy markers
+# included).
+def test_pr41_r3_report_rows_surface_seed_mismatch_flag(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "out"
+    records = []
+    for arm, extra in (
+        ("A", None),
+        ("B", {"shared_supervised_seed_mismatch": True}),
+    ):
+        run_dir = make_run_dir(
+            out, arm, 1,
+            include_hazard_dynamics=(arm == "B"),
+            marker_extra=extra,
+        )
+        records.append({"arm": arm, "seed": 1, "run_dir": run_dir,
+                        "hazard": arm != "A", "resumed": False})
+
+    report = harness.assemble_report(out, records, smoke=True)
+    rows = {row["arm"]: row for row in report["runs"]}
+    assert rows["B"]["shared_supervised_seed_mismatch"] is True
+    assert rows["A"]["shared_supervised_seed_mismatch"] is False
 
 
 # Tests PR #41 round-2 P3 [28] [integration]: --dry-run prints the MA-013
