@@ -427,6 +427,8 @@ def evaluate_t5_policy(
     test_set_source: str,
     config: dict,
     reference_source: str | None = None,
+    *,
+    return_runs: bool = False,
 ) -> dict[str, Any]:
     """Evaluate Phase 6 T5 end-to-end policy on text observations.
 
@@ -442,12 +444,25 @@ def evaluate_t5_policy(
         List of MCQuestion instances to evaluate on.
     config : dict
         YAML config dict.
+    return_runs : bool, keyword-only
+        When True, the returned dict additionally carries ``"runs"`` (R-002):
+        one record per evaluated question, in input order, with fields
+        ``{qid, sq, buzz_position (int | None — non-None iff the policy
+        buzzed; forced/truncated episodes record None), buzzed (bool —
+        policy buzz), correct (bool — policy-buzz correctness), forced_correct
+        (bool), confidence (float | None — top answer probability at the
+        buzz decision, None without a policy buzz), episode_reward (float),
+        n_steps (int)}``. Default False leaves the payload unchanged.
 
     Returns
     -------
     dict[str, Any]
         Evaluation results including policy-only accuracy, forced outcome
-        diagnostics, and test-set provenance.
+        diagnostics, and test-set provenance. Aggregates are consistent with
+        the per-question records: ``mean_sq``/``accuracy``/
+        ``forced_correct_rate`` are means over ``runs``, and ``avg_buzz_pos``
+        is the mean of the non-None ``buzz_position`` values (0.0 when the
+        policy never buzzed).
     """
     import torch
     from models.t5_policy import T5PolicyModel
@@ -494,6 +509,7 @@ def evaluate_t5_policy(
     outcomes = []
     buzz_positions = []
     total_reward = 0.0
+    run_records: list[dict[str, Any]] = []
 
     with torch.no_grad():
         for question in test_questions:
@@ -555,13 +571,36 @@ def evaluate_t5_policy(
                 forced_correct_count += 1
             total_count += 1
 
+            # Single source of truth for "the POLICY buzzed" (terminated
+            # episode; truncated = forced answer at the horizon). Shared by
+            # the calibration aggregate and the R-002 run records so the two
+            # can never disagree.
+            policy_buzzed = bool(terminated) and bool(top_p_trace)
+            buzz_position = (step_count - 1) if policy_buzzed else None
+            buzz_confidence = float(top_p_trace[-1]) if policy_buzzed else None
+
             # Calibration: use top_p (max answer prob) for consistency
             # with belief-feature agents
-            if terminated and top_p_trace:
-                buzz_step = step_count - 1
-                confidences.append(top_p_trace[-1])
+            if policy_buzzed:
+                confidences.append(buzz_confidence)
                 outcomes.append(1 if policy_correct else 0)
-                buzz_positions.append(buzz_step)
+                buzz_positions.append(buzz_position)
+
+            # R-002: per-question record (input order preserved). Only
+            # collected into the payload when ``return_runs`` is True.
+            run_records.append(
+                {
+                    "qid": question.qid,
+                    "sq": float(sq),
+                    "buzz_position": buzz_position,
+                    "buzzed": policy_buzzed,
+                    "correct": policy_correct,
+                    "forced_correct": forced_correct,
+                    "confidence": buzz_confidence,
+                    "episode_reward": float(episode_reward),
+                    "n_steps": int(step_count),
+                }
+            )
 
     accuracy = correct_count / max(1, total_count)
     mean_sq = float(np.mean(sq_scores)) if sq_scores else 0.0
@@ -594,6 +633,9 @@ def evaluate_t5_policy(
         )
     else:
         out["effective_reference_source"] = reference_source or "unspecified"
+    if return_runs:
+        # R-002: additive only — the default payload is unchanged.
+        out["runs"] = run_records
     return out
 
 

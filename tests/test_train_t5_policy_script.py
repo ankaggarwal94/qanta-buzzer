@@ -170,6 +170,71 @@ def test_main_writes_t5_config_and_split_manifest(
     assert (checkpoint_dir / "split_manifest.json").exists()
 
 
+def test_ma017_skip_test_eval_flag_threads_none_to_ppo(
+    tmp_path, monkeypatch
+) -> None:
+    """MA-017: ``--skip-test-eval`` parses (default False) and threads
+    ``test_questions=None`` into ``run_ppo_training`` so the unconditional
+    test-eval tail is skipped for discarded PPO phases."""
+    import sys
+    import training.train_ppo_t5 as ppo_t5_mod
+
+    assert train_t5_policy.parse_args([]).skip_test_eval is False
+    assert train_t5_policy.parse_args(["--skip-test-eval"]).skip_test_eval is True
+
+    fake_question = type("Q", (), {"qid": "q1"})()
+    fake_manifest = {
+        "source": "persisted_artifacts",
+        "mc_path": None,
+        "train_path": "/tmp/train_dataset.json",
+        "val_path": "/tmp/val_dataset.json",
+        "test_path": "/tmp/test_dataset.json",
+        "train_qids": ["q1"],
+        "val_qids": ["q1"],
+        "test_qids": ["q1"],
+    }
+    checkpoint_dir = tmp_path / "ppo_t5"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    class FakeTrainer:
+        def __init__(self, checkpoint_dir):
+            self.checkpoint_dir = checkpoint_dir
+
+    captured_kwargs: list[dict] = []
+
+    def fake_run_ppo_training(**kwargs):
+        captured_kwargs.append(dict(kwargs))
+        return object(), FakeTrainer(checkpoint_dir)
+
+    monkeypatch.setattr(
+        train_t5_policy,
+        "load_question_splits_with_metadata",
+        lambda _args, _config: (
+            [fake_question], [fake_question], [fake_question], fake_manifest
+        ),
+    )
+    monkeypatch.setattr(ppo_t5_mod, "run_ppo_training", fake_run_ppo_training)
+
+    base_argv = [
+        "train_t5_policy.py",
+        "--config",
+        str(train_t5_policy.PROJECT_ROOT / "configs" / "t5_policy.yaml"),
+        "--skip-supervised",
+        "--model-path",
+        str(tmp_path / "pretrained"),
+    ]
+    monkeypatch.setattr(sys, "argv", base_argv + ["--skip-test-eval"])
+    train_t5_policy.main()
+    assert captured_kwargs[-1]["test_questions"] is None, (
+        "--skip-test-eval must thread test_questions=None into PPO"
+    )
+
+    # Control: without the flag the test questions pass through unchanged.
+    monkeypatch.setattr(sys, "argv", list(base_argv))
+    train_t5_policy.main()
+    assert captured_kwargs[-1]["test_questions"] == [fake_question]
+
+
 def test_apply_max_questions_global_raises_when_max_q_below_num_splits():
     """Global mode must refuse to silently empty held-out splits.
 

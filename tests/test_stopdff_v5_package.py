@@ -305,7 +305,10 @@ def test_checksum_inventory_rejects_special_entries_without_hashing(
             if not hasattr(socket, "AF_UNIX"):
                 pytest.skip("AF_UNIX unsupported on this platform")
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.bind(str(special))
+            # AF_UNIX sun_path is capped (~104 bytes on macOS) and pytest
+            # tmp paths exceed it, so bind via a cwd-relative name.
+            monkeypatch.chdir(root)
+            sock.bind(entry_kind)
         original = checker_package.sha256_file
 
         def guarded_sha256(path):

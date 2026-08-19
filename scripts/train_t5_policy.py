@@ -47,9 +47,45 @@ from scripts._common import (
     save_json,
 )
 
+# Known hazard-phase ablations (R-004). Mirrors
+# ``training.hazard_pretrain._VALID_ABLATIONS`` — kept as a local literal so
+# argparse never triggers the heavy lazy import of the training module.
+KNOWN_HAZARD_ABLATIONS = ("shuffled_nll",)
 
-def parse_args() -> argparse.Namespace:
+
+def _seed_all_rngs(seed: int) -> None:
+    """Seed the Python, NumPy, and torch global RNGs (R-001).
+
+    Called immediately before each training phase (supervised / hazard / PPO)
+    when ``--seed`` is set, so every phase starts from the same reproducible
+    RNG state regardless of how much randomness earlier phases consumed.
+    Never called when ``--seed`` is absent (the global RNGs stay untouched).
+
+    Parameters
+    ----------
+    seed : int
+        Seed applied to ``random.seed``, ``numpy.random.seed``, and
+        ``torch.manual_seed`` (the latter also seeds all CUDA devices).
+    """
+    import random
+
+    import numpy as np
+    import torch
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments.
+
+    Parameters
+    ----------
+    argv : list[str] or None, optional
+        Argument tokens to parse instead of ``sys.argv[1:]`` (QA-003:
+        lets orchestrators round-trip a composed child argv through THIS
+        parser at plan time). Default ``None`` keeps the CLI behavior.
 
     Returns
     -------
@@ -58,6 +94,11 @@ def parse_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         description="Train T5 policy with supervised warm-start then PPO.",
+        # Mini-audit-verify F3: no flag abbreviations — an abbreviated
+        # identity flag (e.g. --model-pat=...) must die as unrecognized at
+        # the orchestrator's preflight roundtrip instead of silently
+        # rebinding --model-path via argparse prefix matching.
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--config",
@@ -110,11 +151,43 @@ def parse_args() -> argparse.Namespace:
         help="Freeze the answer head during the hazard bridge phase.",
     )
     parser.add_argument(
+        "--hazard-ablation",
+        type=str,
+        default=None,
+        choices=list(KNOWN_HAZARD_ABLATIONS),
+        help=(
+            "Step-matched null-signal hazard ablation (requires "
+            "--hazard-pretrain). 'shuffled_nll' permutes each question's "
+            "per-prefix NLL vector before the loss."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Training seed. When set, seeds Python random, NumPy, and torch "
+            "immediately before each training phase (supervised / hazard / "
+            "PPO). Default None keeps the unseeded behavior. Separate from "
+            "data.seed, which drives only the split."
+        ),
+    )
+    parser.add_argument(
+        "--skip-test-eval",
+        action="store_true",
+        help=(
+            "Skip the final test-set evaluation after PPO (MA-017). Used by "
+            "orchestrators whose PPO phase is discarded (e.g. the hazard-"
+            "efficacy shared supervised child) so the unconditional test-"
+            "eval tail is not paid for a throwaway checkpoint."
+        ),
+    )
+    parser.add_argument(
         "overrides",
         nargs="*",
         help="Config overrides: key=value (e.g. model.model_name=t5-base)",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def load_config_with_overrides(args: argparse.Namespace) -> dict:
@@ -507,6 +580,21 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.skip_supervised and args.model_path is None:
         print("ERROR: --model-path is required when using --skip-supervised")
         sys.exit(1)
+    # ``getattr`` keeps hand-built namespaces from older callers valid; the
+    # real parse_args always sets the attribute (default None).
+    hazard_ablation = getattr(args, "hazard_ablation", None)
+    if hazard_ablation is not None:
+        if not getattr(args, "hazard_pretrain", False):
+            print("ERROR: --hazard-ablation requires --hazard-pretrain")
+            sys.exit(1)
+        if hazard_ablation not in KNOWN_HAZARD_ABLATIONS:
+            # Defense-in-depth behind argparse ``choices`` for callers that
+            # build namespaces directly (R-004: unknown values fail loud).
+            print(
+                f"ERROR: unknown --hazard-ablation value {hazard_ablation!r}; "
+                f"expected one of {list(KNOWN_HAZARD_ABLATIONS)}"
+            )
+            sys.exit(1)
 
 
 def split_questions(questions: list, config: dict) -> tuple:
@@ -576,6 +664,12 @@ def main() -> None:
         print("PHASE 1: SUPERVISED WARM-START")
         print("=" * 60)
 
+        # R-001: re-seed immediately before EACH phase (not once at the top of
+        # main) so every phase starts from a reproducible RNG state no matter
+        # how much randomness earlier phases consumed. Never touch the global
+        # RNGs when --seed is unset.
+        if args.seed is not None:
+            _seed_all_rngs(args.seed)
         model, trainer = run_supervised_training(
             config=flat_config,
             train_questions=train_questions,
@@ -598,12 +692,24 @@ def main() -> None:
         print("=" * 60)
         from training.hazard_pretrain import run_hazard_pretrain
 
+        # R-001: re-seed immediately before the hazard phase.
+        if args.seed is not None:
+            _seed_all_rngs(args.seed)
+        # DECISION: thread ``ablation`` only when set. The parameter is
+        # additive (keyword-only, default None), and the pre-feature call
+        # shape — no ablation kwarg at all — is pinned by
+        # tests/test_hazard_pretrain.py::test_main_wires_hazard_between_supervised_and_ppo,
+        # so omitting it when None keeps both contracts satisfied.
+        hazard_kwargs: dict[str, Any] = {}
+        if args.hazard_ablation is not None:
+            hazard_kwargs["ablation"] = args.hazard_ablation
         supervised_model_path = run_hazard_pretrain(
             config=flat_config,
             train_questions=train_questions,
             pretrained_model_path=supervised_model_path,
             beta_terminal=args.beta_terminal,
             freeze_answer_head=args.freeze_answer_head,
+            **hazard_kwargs,
         )
         print(f"Hazard-bridge model saved to: {supervised_model_path}")
 
@@ -612,11 +718,22 @@ def main() -> None:
     print("PHASE 2: PPO FINE-TUNING (T5 Policy)")
     print("=" * 60)
 
+    # R-001: re-seed immediately before the PPO phase.
+    if args.seed is not None:
+        _seed_all_rngs(args.seed)
+    # MA-017: --skip-test-eval threads test_questions=None so run_ppo_training
+    # skips its final test-eval tail (getattr keeps hand-built namespaces
+    # from older callers valid; the real parse_args always sets the flag).
+    if getattr(args, "skip_test_eval", False):
+        print("Skipping final test-set evaluation (--skip-test-eval).")
+        ppo_test_questions = None
+    else:
+        ppo_test_questions = test_questions
     model, trainer = run_ppo_training(
         config=flat_config,
         train_questions=train_questions,
         val_questions=val_questions,
-        test_questions=test_questions,
+        test_questions=ppo_test_questions,
         pretrained_model_path=supervised_model_path,
     )
 
@@ -627,6 +744,17 @@ def main() -> None:
     resolved_config.setdefault("model", {})
     resolved_config["model"]["device"] = flat_config["device"]
     resolved_config["model"]["num_choices"] = flat_config["num_choices"]
+    # R-001 + R-003 producer contract: every run dir is self-describing. The
+    # top-level seed (null when unset) and the four-key hazard block are
+    # written on EVERY run — control arms included — so the efficacy harness
+    # can diff arms on a stable key set.
+    resolved_config["seed"] = args.seed
+    resolved_config["hazard"] = {
+        "pretrain": bool(args.hazard_pretrain),
+        "beta_terminal": float(args.beta_terminal),
+        "freeze_answer_head": bool(args.freeze_answer_head),
+        "ablation": args.hazard_ablation,
+    }
     save_json(trainer.checkpoint_dir / "config_used.json", resolved_config)
     save_json(trainer.checkpoint_dir / "split_manifest.json", split_manifest)
 

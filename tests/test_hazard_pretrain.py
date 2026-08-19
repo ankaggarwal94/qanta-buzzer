@@ -609,3 +609,121 @@ def test_main_skips_hazard_when_flag_absent(
     train_mod.main()
 
     assert calls["ppo"]["pretrained_model_path"] == supervised_path
+
+
+# ---------------------------------------------------------------------------
+# QA-013: supervised save-best gate (the shared warm-start every hazard/PPO
+# arm branches from is produced by this trainer)
+# ---------------------------------------------------------------------------
+
+
+def test_qa013_supervised_best_gate_saves_on_zero_val_accuracy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QA-013: save-best gates initialize to -inf, not a reachable value.
+
+    With the old ``best_val_acc = 0.0`` init and the strict ``>`` gate, a
+    run whose validation accuracy is exactly 0.0 (plausible for fresh
+    t5-small heads on a tiny smoke split) never wrote
+    ``supervised/best_model`` and the efficacy harness died loud on the
+    missing shared checkpoint. Epoch 1 must ALWAYS save (mirrors
+    ``PPOTrainer.best_val_reward = -inf``).
+    """
+    pytest.importorskip("transformers")
+    import training.train_supervised_t5 as sup_mod
+
+    class _StubModel:
+        device = "cpu"
+
+        def parameters(self):
+            return iter([torch.nn.Parameter(torch.zeros(1))])
+
+    trainer = sup_mod.SupervisedTrainer(
+        model=_StubModel(),
+        train_questions=[],
+        val_questions=[],
+        config={
+            "supervised_epochs": 1,
+            "checkpoint_dir": str(tmp_path / "ckpt"),
+        },
+    )
+    assert trainer.best_val_acc == -float("inf"), (
+        "the save-best gate must initialize to -inf, never to a reachable "
+        "metric value (QA-013)"
+    )
+
+    saves: list[bool] = []
+    monkeypatch.setattr(trainer, "train_epoch", lambda: (1.0, 0.0))
+    monkeypatch.setattr(trainer, "validate", lambda: (1.0, 0.0))  # 0.0 acc
+    monkeypatch.setattr(
+        trainer,
+        "save_checkpoint",
+        lambda is_best=False: saves.append(is_best) or (tmp_path / "ckpt"),
+    )
+    monkeypatch.setattr(trainer, "save_history", lambda: tmp_path / "h.json")
+
+    summary = trainer.train()
+
+    assert True in saves, (
+        "a 0.0-validation-accuracy epoch must still write best_model "
+        "(epoch 1 always saves under the -inf init)"
+    )
+    assert summary["best_val_acc"] == pytest.approx(0.0)
+
+
+# Tests MA-018 [unit]: the ablation parameter is keyword-only (a positional
+# caller could silently bind it to another slot), and the CLI's mirrored
+# ablation tuple stays in lockstep with the training module's.
+def test_ma018_ablation_keyword_only_and_tuple_parity() -> None:
+    import inspect
+
+    import scripts.train_t5_policy as train_t5_policy
+    import training.hazard_pretrain as hazard_pretrain
+
+    signature = inspect.signature(hazard_pretrain.run_hazard_pretrain)
+    assert (
+        signature.parameters["ablation"].kind
+        is inspect.Parameter.KEYWORD_ONLY
+    ), "run_hazard_pretrain's ablation must stay keyword-only (MA-018)"
+
+    assert tuple(train_t5_policy.KNOWN_HAZARD_ABLATIONS) == tuple(
+        hazard_pretrain._VALID_ABLATIONS
+    ), (
+        "the CLI mirror KNOWN_HAZARD_ABLATIONS must equal the training "
+        "module's _VALID_ABLATIONS (MA-018 ablation-tuple parity)"
+    )
+
+
+# Tests PR #41 round-2 resolve (P3 [2]) [unit]: the hazard_history.json
+# writer is MA-017-strict — a non-finite loss (NaN/inf blow-up) must die at
+# the writer as ValueError, never serialize as a strict-invalid JSON token
+# every downstream reader (harness dynamics, step parity, report compute)
+# then chokes on. Source-level pin (repo precedent: R-012's source pins) on
+# the exact write call, plus a behavioral replica of the writer idiom.
+def test_pr41_hazard_history_writer_rejects_non_finite(tmp_path: Path) -> None:
+    import inspect
+    import json
+
+    import training.hazard_pretrain as hazard_pretrain
+
+    source = inspect.getsource(hazard_pretrain.run_hazard_pretrain)
+    write_stmt = next(
+        (
+            chunk
+            for chunk in source.split("history_path.write_text")
+            if chunk.lstrip().startswith("(")
+        ),
+        "",
+    )
+    assert "allow_nan=False" in write_stmt, (
+        "hazard_history.json must be written with json.dumps(...,"
+        " allow_nan=False) (MA-017 parity — PR #41 round-2)"
+    )
+
+    # Behavioral leg (writer idiom): a NaN loss dies loud at serialization.
+    history = {"steps": [{"epoch": 0, "question_index": 0,
+                          "loss": float("nan")}]}
+    with pytest.raises(ValueError):
+        (tmp_path / "hazard_history.json").write_text(
+            json.dumps(history, indent=2, allow_nan=False), encoding="utf-8"
+        )

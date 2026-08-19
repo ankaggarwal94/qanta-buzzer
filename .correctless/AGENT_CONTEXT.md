@@ -19,6 +19,7 @@ sub-project; not a deployed service.
 | DSPy likelihood | `models/dspy_likelihood.py` | Wraps a real `scorer(clue, options)->list[float]`; importable without the `dspy` extra |
 | Buzzer env | `qb_env/tossup_env.py` | belief = `softmax(scores, beta)` |
 | StopDFF v5 | `scripts/stopdff_v5/`, `scripts/run_stopdff_v5_local.py` | fail-closed, create-once audit pipeline |
+| Hazard efficacy harness | `scripts/run_hazard_efficacy.py` | Controlled A/B/C(+variants) comparison for the hazard bridge: shared supervised branch point, identity-validated resume, scale-gated paired-bootstrap significance, `hazard_efficacy_report.json` |
 
 ## Design Patterns
 
@@ -38,6 +39,14 @@ sub-project; not a deployed service.
 - **StopDFF v5** artifacts are create-once; never publish via a bare
   `os.replace`/`Path.replace` (use `scripts/stopdff_v5/fileio.py` no-replace
   primitives).
+- **Non-smoke split resolution prefers `artifacts/main/` and silently falls
+  back to `artifacts/smoke/`** (then `data/processed/`). Populate
+  `artifacts/main/` before any non-smoke T5 training/eval or children train on
+  the 44-question smoke split while claiming full scale.
+- **The hazard bridge's `--beta-terminal` sits on a threshold against the
+  answer head's NLL scale** (~ln K at chance): β below it teaches never-buzz
+  (S_q collapse PPO does not recover from), β above teaches immediate-buzz.
+  Neither corner is timing. Efficacy verdict: `docs/hazard-efficacy-report.md`.
 
 ## Quick Reference
 

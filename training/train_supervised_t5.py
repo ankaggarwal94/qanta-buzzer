@@ -117,7 +117,8 @@ class SupervisedTrainer:
     criterion : nn.CrossEntropyLoss
         Loss function for answer classification.
     best_val_acc : float
-        Best validation accuracy seen so far.
+        Best validation accuracy seen so far. Initialized to ``-inf`` so
+        the first validation always saves ``best_model`` (QA-013).
     train_history : list[dict]
         Per-epoch training metrics.
     val_history : list[dict]
@@ -159,7 +160,13 @@ class SupervisedTrainer:
 
         # Training state
         self.current_epoch = 0
-        self.best_val_acc = 0.0
+        # QA-013: save-best gates initialize to -inf (mirrors
+        # PPOTrainer.best_val_reward), never to a reachable metric value —
+        # a run whose validation accuracy is exactly 0.0 (plausible for
+        # fresh t5-small heads on tiny smoke splits) must still write
+        # supervised/best_model on epoch 1 instead of leaving no
+        # checkpoint for downstream consumers.
+        self.best_val_acc = -float("inf")
         self.train_history: List[Dict[str, Any]] = []
         self.val_history: List[Dict[str, Any]] = []
 

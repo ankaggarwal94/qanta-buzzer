@@ -583,3 +583,34 @@ class TestEvaluationSemantics:
 
         trainer._build_reward_likelihood()
         assert len(captured["corpus"]) == 2 * len(sample_mc_question.option_profiles)
+
+
+# Tests MA-017 [unit]: test_results.json must never carry strict-invalid
+# JSON — non-finite floats (e.g. the -inf best_val_reward of a run whose
+# validation never improved) are clamped to null before the dump.
+def test_ma017_json_finite_clamps_non_finite_floats() -> None:
+    from training.train_ppo_t5 import _json_finite
+
+    payload = {
+        "test_metrics": {"accuracy": 0.5, "nan_metric": float("nan")},
+        "training_summary": {
+            "best_val_reward": float("-inf"),
+            "iterations": 5,
+            "flag": True,
+            "np_inf": np.float32("inf"),
+            "nested": [1.0, float("inf"), "text"],
+        },
+    }
+    cleaned = _json_finite(payload)
+    assert cleaned["test_metrics"]["accuracy"] == 0.5
+    assert cleaned["test_metrics"]["nan_metric"] is None
+    assert cleaned["training_summary"]["best_val_reward"] is None
+    assert cleaned["training_summary"]["iterations"] == 5
+    assert cleaned["training_summary"]["flag"] is True
+    assert cleaned["training_summary"]["np_inf"] is None
+    assert cleaned["training_summary"]["nested"] == [1.0, None, "text"]
+
+    import json as json_mod
+
+    text = json_mod.dumps(cleaned, default=float, allow_nan=False)
+    assert "Infinity" not in text and "NaN" not in text

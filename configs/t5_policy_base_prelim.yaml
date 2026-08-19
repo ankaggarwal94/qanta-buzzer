@@ -1,0 +1,64 @@
+# T5-base preliminary efficacy configuration (Device 1 / M3 Max / MPS).
+# Derived from configs/t5_policy.yaml for the hazard-efficacy preliminary run:
+# t5-base instead of t5-large, a data.max_questions cap sized so the held-out
+# test split lands at ~108 questions (>= 50 opens the R-007 paired-bootstrap
+# significance gate), and a reduced PPO budget feasible on MPS overnight.
+# Full-scale t5-large remains a Device-2 (RTX 5090) run.
+
+model:
+  model_name: t5-base
+  device: auto  # cuda > mps > cpu
+  max_input_length: 512
+  num_choices: 4
+
+supervised:
+  lr: 3.0e-4
+  epochs: 5
+  batch_size: 8
+  grad_accum_steps: 2  # Effective batch = 16
+  max_grad_norm: 1.0
+  weight_decay: 0.01
+  checkpoint_dir: checkpoints
+
+ppo:
+  lr: 1.0e-5
+  iterations: 25
+  batch_size: 8
+  epochs_per_iter: 4
+  clip_ratio: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  max_grad_norm: 0.5
+  gamma: 0.99
+  gae_lambda: 0.95
+  target_kl: 0.03
+  eval_interval: 5
+  save_interval: 100  # no periodic full-model dumps; best_model via eval_interval
+  checkpoint_dir: checkpoints
+
+data:
+  csv_path: "questions.csv"
+  K: 4
+  train_size: 0.7
+  val_size: 0.15
+  test_size: 0.15
+  seed: 42  # split seed — identical to the canonical config
+  max_questions: 700
+  max_questions_scope: global  # proportional: ~486 train / ~104 val / ~108 test
+
+# Smoke overrides retained for parity with the canonical config
+smoke:
+  model:
+    model_name: t5-small
+    max_input_length: 128
+  supervised:
+    epochs: 2
+    batch_size: 4
+    grad_accum_steps: 1
+  ppo:
+    iterations: 5
+    batch_size: 4
+    epochs_per_iter: 2
+  data:
+    max_questions: 50
+    max_questions_scope: global
