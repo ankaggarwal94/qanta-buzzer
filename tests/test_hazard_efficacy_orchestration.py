@@ -2885,3 +2885,83 @@ def test_pr41_force_shared_rebuild_removes_stale_shared_tree(
     )
     assert (sup_root / "supervised" / "best_model" / "policy_head.pt").exists()
     assert (sup_root / harness.SHARED_SUPERVISED_MARKER).exists()
+
+
+# ---------------------------------------------------------------------------
+# PR #41 round-4 (r3809814764) — endpoint seed-coverage denominator
+# ---------------------------------------------------------------------------
+
+
+# Tests PR #41 round-4 (r3809814764) [integration]: the R-006 endpoint's
+# "2 of 3" denominator is the PLAN's seed count — a --report-only over
+# --seeds 1 2 3 with one planned arm-B run dir wholly missing pairs only 2
+# seeds; even when BOTH surviving pairs replicate (the exact pre-fix
+# false-success shape), the report can never claim
+# endpoint_met_at_this_scale. The endpoint block carries the additive
+# coverage fields, the verdict names the gap, and the pre-existing QA-R2-1
+# plan-vs-disk warning is still emitted.
+def test_pr41_r4_incomplete_seed_coverage_never_claims_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail("report-only must not train"),
+    )
+
+    # Treatment metrics that REPLICATE per seed (B buzzes >= 1.0 prefix
+    # earlier than A's fixture 4.0 at equal accuracy).
+    treatment_overrides = {"mean_correct_buzz_position": 2.0}
+
+    out = tmp_path / "out"
+    for seed in (1, 2, 3):
+        make_run_dir(out, "A", seed)
+    make_run_dir(out, "B", 1, eval_overrides=treatment_overrides,
+                 include_hazard_dynamics=True)
+    make_run_dir(out, "B", 2, eval_overrides=treatment_overrides)
+    # B_seed3 is wholly absent from a 3-seed plan.
+
+    harness.main(
+        ["--report-only", "--smoke", "--out-dir", str(out),
+         "--arms", "A", "B", "--seeds", "1", "2", "3"]
+    )
+
+    report = json.loads((out / "hazard_efficacy_report.json").read_text())
+    endpoint = report["endpoint"]
+    assert endpoint["n_seeds"] == 2
+    assert endpoint["n_seeds_replicated"] == 2  # both pairs DO replicate
+    assert endpoint["success"] is False
+    assert endpoint["incomplete_seed_coverage"] is True
+    assert endpoint["n_seeds_planned"] == 3
+    assert endpoint["endpoint_definition_denominator"] == 3
+    assert report["verdict"]["verdict"] == "endpoint_not_met_at_this_scale"
+    scope = report["verdict"]["scope"]
+    assert "2 of 3" in scope, (
+        f"the verdict scope must name the coverage gap: {scope!r}"
+    )
+    # The pre-existing QA-R2-1 plan-vs-disk warning survives alongside.
+    assert any(
+        "arm B" in w and "[3]" in w for w in report["warnings"]
+    ), f"the QA-R2-1 warning must still be present: {report['warnings']}"
+
+    # Control: the SAME plan with full coverage keeps the endpoint claim
+    # (the denominator gate blocks partial coverage, not legitimate wins).
+    full = tmp_path / "full"
+    for seed in (1, 2, 3):
+        make_run_dir(full, "A", seed)
+        make_run_dir(
+            full, "B", seed,
+            eval_overrides=treatment_overrides,
+            include_hazard_dynamics=(seed == 1),
+        )
+    harness.main(
+        ["--report-only", "--smoke", "--out-dir", str(full),
+         "--arms", "A", "B", "--seeds", "1", "2", "3"]
+    )
+    full_report = json.loads(
+        (full / "hazard_efficacy_report.json").read_text()
+    )
+    assert full_report["endpoint"]["success"] is True
+    assert full_report["endpoint"]["incomplete_seed_coverage"] is False
+    assert full_report["endpoint"]["endpoint_definition_denominator"] == 3
+    assert full_report["verdict"]["verdict"] == "endpoint_met_at_this_scale"
+    assert "incomplete seed coverage" not in full_report["verdict"]["scope"]

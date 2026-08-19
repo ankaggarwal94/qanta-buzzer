@@ -177,6 +177,70 @@ def test_r006_empty_input_raises() -> None:
         harness.compute_primary_endpoint([])
 
 
+# Tests R-006 [unit] (PR #41 round-4, r3809814764): the endpoint's "2 of 3"
+# has a DENOMINATOR — with n_seeds_planned=3, a 2-of-2 paired input (e.g.
+# --seeds 1 2, or a planned run dir wholly missing under --report-only,
+# intersected away by _endpoint_pairs_from_evals) is success=False with the
+# additive coverage fields, even though BOTH surviving pairs replicate.
+def test_r006_incomplete_seed_coverage_never_succeeds() -> None:
+    per_seed = [
+        _seed_record(1, control_pos=5.0, treatment_pos=3.5),
+        _seed_record(2, control_pos=5.0, treatment_pos=3.5),
+    ]
+    result = harness.compute_primary_endpoint(per_seed, n_seeds_planned=3)
+    assert result["success"] is False
+    assert result["incomplete_seed_coverage"] is True
+    assert result["n_seeds_planned"] == 3
+    assert result["endpoint_definition_denominator"] == 3
+    # The replication threshold itself is unchanged (>= 2): both pairs DID
+    # replicate — coverage, not replication, is what failed.
+    assert result["n_seeds"] == 2
+    assert result["n_seeds_replicated"] == 2
+
+
+# Tests R-006 [unit] (PR #41 round-4): full planned coverage keeps the
+# pre-existing 2-of-3 success semantics and records the denominator.
+def test_r006_full_planned_coverage_keeps_two_of_three_semantics() -> None:
+    per_seed = [
+        _seed_record(1, control_pos=5.0, treatment_pos=3.5),
+        _seed_record(2, control_pos=5.0, treatment_pos=3.9),
+        _seed_record(3, control_pos=5.0, treatment_pos=5.0),  # no gain
+    ]
+    result = harness.compute_primary_endpoint(per_seed, n_seeds_planned=3)
+    assert result["success"] is True
+    assert result["incomplete_seed_coverage"] is False
+    assert result["n_seeds_planned"] == 3
+    assert result["endpoint_definition_denominator"] == 3
+    assert result["n_seeds"] == 3
+    assert result["n_seeds_replicated"] == 2
+
+
+# Tests R-006 [unit] (PR #41 round-4): omitting n_seeds_planned (legacy
+# callers) preserves the PRIOR payload exactly — same success semantics,
+# no coverage keys (additive-only signature change).
+def test_r006_legacy_no_planned_denominator_keeps_prior_payload() -> None:
+    per_seed = [
+        _seed_record(1, control_pos=5.0, treatment_pos=3.5),
+        _seed_record(2, control_pos=5.0, treatment_pos=3.5),
+    ]
+    result = harness.compute_primary_endpoint(per_seed)
+    assert result["success"] is True  # prior behavior: >= 2 replicate
+    assert set(result) == {
+        "success", "n_seeds", "n_seeds_replicated", "per_seed"
+    }
+
+
+# Tests R-006 [unit] (PR #41 round-4): defensive — a non-positive, bool, or
+# non-int planned count fails loud (a vacuous denominator would defeat the
+# coverage requirement).
+@pytest.mark.parametrize("bad", [0, -1, True, 2.0])
+def test_r006_invalid_n_seeds_planned_raises(bad) -> None:
+    with pytest.raises(ValueError, match="n_seeds_planned"):
+        harness.compute_primary_endpoint(
+            [_seed_record(1)], n_seeds_planned=bad
+        )
+
+
 # ---------------------------------------------------------------------------
 # R-007 significance
 # ---------------------------------------------------------------------------

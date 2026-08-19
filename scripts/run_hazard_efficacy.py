@@ -2900,7 +2900,11 @@ def evaluate_all_runs(
 # ---------------------------------------------------------------------------
 
 
-def compute_primary_endpoint(per_seed: list[dict[str, Any]]) -> dict[str, Any]:
+def compute_primary_endpoint(
+    per_seed: list[dict[str, Any]],
+    *,
+    n_seeds_planned: int | None = None,
+) -> dict[str, Any]:
     """Compute the pre-committed primary endpoint (R-006).
 
     Parameters
@@ -2911,6 +2915,20 @@ def compute_primary_endpoint(per_seed: list[dict[str, Any]]) -> dict[str, Any]:
                          "accuracy": float,
                          "n_correct_policy_buzzes": int},
             "treatment": {same keys}}]``
+    n_seeds_planned : int or None, keyword-only (additive)
+        The invocation PLAN's seed count — the R-006 endpoint's
+        denominator ("replicated in >= 2 of 3 seeds"). PR #41 round-4
+        (r3809814764): ``_endpoint_pairs_from_evals`` silently intersects
+        A∩B seed coverage, so ``--seeds 1 2`` (or a wholly-missing planned
+        run dir under ``--report-only``) used to claim the 2-of-3 endpoint
+        from 2 surviving pairs. When provided, overall success
+        ADDITIONALLY requires full planned coverage
+        (``n_seeds == n_seeds_planned``) — the >= 2 replication threshold
+        itself is unchanged — and the payload gains the additive fields
+        ``n_seeds_planned``, ``endpoint_definition_denominator`` (== the
+        planned count) and ``incomplete_seed_coverage``. Must be a
+        positive int when provided. ``None`` (default) preserves the
+        legacy payload and semantics exactly.
 
     Returns
     -------
@@ -2922,10 +2940,23 @@ def compute_primary_endpoint(per_seed: list[dict[str, Any]]) -> dict[str, Any]:
         <= control - 1.0 AND treatment accuracy >= control - 0.01
         (inclusive thresholds); a zero-correct-buzz arm makes the seed a
         non-success with ``undefined_position: True``. Overall success
-        iff >= 2 seeds replicate. Empty input raises ``ValueError``.
+        iff >= 2 seeds replicate — AND, when ``n_seeds_planned`` is
+        provided, every planned seed contributed a pair (see above).
+        Empty input raises ``ValueError``.
     """
     if not per_seed:
         raise ValueError("compute_primary_endpoint: per_seed is empty")
+    if n_seeds_planned is not None and (
+        isinstance(n_seeds_planned, bool)
+        or not isinstance(n_seeds_planned, int)
+        or n_seeds_planned < 1
+    ):
+        # PR #41 round-4 (r3809814764): a non-positive/non-int denominator
+        # would make the coverage requirement vacuous — fail loud.
+        raise ValueError(
+            "compute_primary_endpoint: n_seeds_planned must be a positive "
+            f"int when provided, got {n_seeds_planned!r}"
+        )
 
     seed_records: list[dict[str, Any]] = []
     for entry in per_seed:
@@ -2978,12 +3009,24 @@ def compute_primary_endpoint(per_seed: list[dict[str, Any]]) -> dict[str, Any]:
         )
 
     n_replicated = sum(1 for rec in seed_records if rec["seed_success"])
-    return {
+    result: dict[str, Any] = {
         "success": n_replicated >= 2,
         "n_seeds": len(seed_records),
         "n_seeds_replicated": n_replicated,
         "per_seed": seed_records,
     }
+    if n_seeds_planned is not None:
+        # PR #41 round-4 (r3809814764): the pre-committed "2 of 3" endpoint
+        # has a DENOMINATOR — success requires full planned seed coverage,
+        # or a partial run (--seeds 1 2; a wholly-missing planned dir under
+        # --report-only) could claim it from the surviving pairs alone.
+        incomplete = len(seed_records) != n_seeds_planned
+        result["n_seeds_planned"] = int(n_seeds_planned)
+        result["endpoint_definition_denominator"] = int(n_seeds_planned)
+        result["incomplete_seed_coverage"] = bool(incomplete)
+        if incomplete:
+            result["success"] = False
+    return result
 
 
 def _validate_arm_qids(
@@ -3809,8 +3852,16 @@ def _build_scale(
 
 def _build_endpoint(
     eval_by_run: dict[tuple[str, int], dict[str, Any]],
+    *,
+    n_seeds_planned: int | None = None,
 ) -> dict[str, Any]:
-    """Primary endpoint (R-006): treatment arm B against control arm A."""
+    """Primary endpoint (R-006): treatment arm B against control arm A.
+
+    ``n_seeds_planned`` (additive, PR #41 round-4 r3809814764) is the
+    invocation plan's seed count, threaded to
+    :func:`compute_primary_endpoint` as the endpoint's denominator so a
+    partial A∩B intersection can never claim the 2-of-3 endpoint.
+    """
     endpoint_pairs = _endpoint_pairs_from_evals(eval_by_run)
     if not endpoint_pairs:
         return {
@@ -3820,7 +3871,9 @@ def _build_endpoint(
             "per_seed": [],
             "note": "no paired A/B seeds available; endpoint not evaluable",
         }
-    return compute_primary_endpoint(endpoint_pairs)
+    return compute_primary_endpoint(
+        endpoint_pairs, n_seeds_planned=n_seeds_planned
+    )
 
 
 def _build_significance(
@@ -4126,6 +4179,12 @@ def _build_verdict(
     """Headline verdict plus the scope-limited evidence behind it (R-009)."""
     if endpoint.get("n_seeds", 0) == 0:
         verdict_label = "not_evaluable"
+    elif endpoint.get("incomplete_seed_coverage", False):
+        # PR #41 round-4 (r3809814764): incomplete planned-seed coverage
+        # can NEVER be "met" — compute_primary_endpoint already forces
+        # success False; this branch keeps the invariant explicit even if
+        # a future payload change decoupled the two.
+        verdict_label = "endpoint_not_met_at_this_scale"
     elif endpoint["success"]:
         verdict_label = "endpoint_met_at_this_scale"
     else:
@@ -4136,9 +4195,18 @@ def _build_verdict(
         if smoke
         else "preliminary Device-1 scale"
     )
+    scope = f"{scale['model_name']} on n_test={scale['n_test']} ({scale_note})"
+    if endpoint.get("incomplete_seed_coverage", False):
+        # PR #41 round-4 (r3809814764): the verdict scope names the
+        # coverage gap so a partial-coverage report is never mistaken for
+        # the full pre-committed 2-of-3 evaluation.
+        scope += (
+            f"; incomplete seed coverage: {endpoint.get('n_seeds')} of "
+            f"{endpoint.get('n_seeds_planned')} planned seeds paired"
+        )
     return {
         "verdict": verdict_label,
-        "scope": f"{scale['model_name']} on n_test={scale['n_test']} ({scale_note})",
+        "scope": scope,
         "evidence": {
             "endpoint_success": endpoint.get("success"),
             "n_seeds_replicated": endpoint.get("n_seeds_replicated"),
@@ -4155,6 +4223,7 @@ def assemble_report(
     *,
     smoke: bool = False,
     extra_warnings: list[str] | None = None,
+    n_seeds_planned: int | None = None,
 ) -> dict[str, Any]:
     """Assemble + write the report EXCLUSIVELY from per-run files (R-009/R-014).
 
@@ -4202,6 +4271,14 @@ def assemble_report(
         Caller-supplied warning strings merged (prepended) into the
         report's ``warnings`` and printed alongside the QA-011 ones
         (QA-R2-1). Default ``None`` keeps the pre-existing behavior.
+    n_seeds_planned : int or None, keyword-only
+        PR #41 round-4 (r3809814764): the invocation PLAN's seed count,
+        threaded to the R-006 endpoint as its "2 of 3" denominator —
+        endpoint success then additionally requires full planned seed
+        coverage, and the endpoint block gains ``n_seeds_planned``,
+        ``endpoint_definition_denominator`` and
+        ``incomplete_seed_coverage`` (the verdict names any gap in its
+        scope). Default ``None`` keeps the pre-existing behavior.
     """
     out_dir = Path(out_dir)
     if not run_records:
@@ -4214,7 +4291,7 @@ def assemble_report(
     # artifacts at report time, before any block is built from them.
     _assert_hazard_step_parity(run_records)
     scale = _build_scale(first_config, first_manifest, out_dir)
-    endpoint = _build_endpoint(eval_by_run)
+    endpoint = _build_endpoint(eval_by_run, n_seeds_planned=n_seeds_planned)
     significance = _build_significance(eval_by_run)
     # QA-011: reconcile per-arm seed coverage against the plan and surface
     # any silent drop as a report warning (printed too, never swallowed).
@@ -5211,7 +5288,16 @@ def _main_report_only(args: argparse.Namespace, out_dir: Path) -> None:
         next(iter(smoke_values)) if smoke_values else bool(args.smoke)
     )
     report = assemble_report(
-        out_dir, records, smoke=report_smoke, extra_warnings=plan_warnings
+        out_dir,
+        records,
+        smoke=report_smoke,
+        extra_warnings=plan_warnings,
+        # PR #41 round-4 (r3809814764): --report-only threads the CURRENT
+        # invocation's planned seed count as the R-006 denominator —
+        # consistent with the QA-R2-1 plan-vs-disk reconciliation above —
+        # so a wholly-missing planned run dir can never shrink the
+        # endpoint's "2 of 3" into a claimable 2-of-2.
+        n_seeds_planned=len({rec["seed"] for rec in plan}),
     )
     pruned = False
     if args.prune_checkpoints:
@@ -5442,7 +5528,18 @@ def _main_execute(args: argparse.Namespace, out_dir: Path) -> None:
     )
 
     # R-009/R-014: report + plot, read exclusively from per-run files.
-    report = assemble_report(out_dir, records, smoke=bool(args.smoke))
+    # PR #41 round-4 (r3809814764): the R-006 endpoint's denominator is
+    # the PLAN's seed count — a --seeds 1 2 invocation records
+    # endpoint_definition_denominator=2 (its success is an explicit
+    # 2-of-2 claim, never a masqueraded 2-of-3), and any planned seed
+    # whose A/B pair went missing blocks success via
+    # incomplete_seed_coverage.
+    report = assemble_report(
+        out_dir,
+        records,
+        smoke=bool(args.smoke),
+        n_seeds_planned=len({rec["seed"] for rec in plan}),
+    )
 
     pruned = False
     if args.prune_checkpoints:
