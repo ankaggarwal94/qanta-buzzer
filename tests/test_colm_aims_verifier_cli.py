@@ -295,12 +295,16 @@ def test_no_environment_door_disables_a_release_gate(tmp_path: Path):
 def test_unknown_expectations_key_fails_closed(tmp_path: Path):
     # Tests R-022/R-020 [unit]: an unknown key in the config surface
     # (expectations file) errors — it is never a silent no-op.
+    # QA-009 (fix round 1, coordinator-authorized edit): the either-code
+    # membership assertion is tightened to EQUALITY on the documented
+    # usage/config exit code — exit-code assertions are equality, never
+    # set-membership.
     pkg = build_package(
         tmp_path,
         expectations_mutator=lambda exp: exp.update(bypass_gates=True),
     )
     proc = run_cli(*cli_args_for(pkg, "release"))
-    assert proc.returncode in (EXIT_GATE_FAIL, EXIT_INGRESS_ERROR)
+    assert proc.returncode == EXIT_USAGE_ERROR, (proc.returncode, proc.stderr)
     assert proc.returncode != EXIT_PASS
     assert "bypass_gates" in (proc.stdout + proc.stderr)
 

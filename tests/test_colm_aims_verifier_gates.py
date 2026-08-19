@@ -953,13 +953,21 @@ def _sib_single_record(tmp_path):
 def _sib_rebound_calibration(tmp_path):
     # unbound-calibration twin: the same knob explicitly bound to a different
     # RESOLVED identity (provenance + estimand + digest kept consistent).
+    # QA-003 fix-round-1 builder update: the ledger row's calibration
+    # identity is part of the same consistency set — the recompute gate now
+    # RE-DERIVES row identities from the verified provenance, so the minimal
+    # compliant variant rebinds all three sites of the one knob together.
+    # (Assertions untouched; edit logged for QA round 2.)
     def mut(profile):
         profile["provenance"]["calibration_identity"] = "cal-0002"
         est = profile["cells"][0]["estimand"]
         est["calibration_identity"] = "cal-0002"
         profile["cells"][0]["estimand_digest"] = expected_estimand_digest(est)
 
-    return build_package(tmp_path, profile_mutator=mut)
+    def rebind_row(ledger):
+        ledger["rows"][0]["calibration_identity"] = "cal-0002"
+
+    return build_package(tmp_path, profile_mutator=mut, ledger_mutator=rebind_row)
 
 
 def _sib_verified_rights_explicit(tmp_path):

@@ -50,8 +50,32 @@ RANDOM_K_DISPOSITIONS = frozenset(
     {"historical_nonconfirmatory", "predeclared_multidraw_family"}
 )
 
+# QA-004 (R-014/R-023): closed claim-kind enum — the discriminant the
+# recompute gate reads. Free-text estimand string-matching is banned for
+# semantic gate decisions; `aggregate` vs `per_item_paired` decides what a
+# legacy aggregate-only artifact may certify; `venue_rule`/`external_fact`
+# mark EXTERNAL fact rows.
+CLAIM_KINDS = frozenset(
+    {"aggregate", "per_item_paired", "venue_rule", "external_fact"}
+)
+
+# QA-004 class fix: artifact_family is a validated closed discriminant too —
+# a row omitting or renaming it is rejected, never routed to a permissive
+# branch (the hazard-citation and Random-K gates key off it).
+ARTIFACT_FAMILIES = frozenset(
+    {
+        "constructed_reference_profile",
+        "manuscript",
+        "venue_rule",
+        "random_k",
+        "pr41_hazard_report",
+        "legacy_aggregate",
+    }
+)
+
 REQUIRED_ROW_FIELDS = (
     "claim_id",
+    "claim_kind",
     "manuscript_location",
     "manuscript_wording",
     "estimand",
@@ -63,12 +87,14 @@ REQUIRED_ROW_FIELDS = (
     "model_identity",
     "calibration_identity",
     "artifact_id",
+    "artifact_family",
     "renderer_id",
     "verifier_oracle",
     "rights_status",
     "status",
     "blocking_task",
     "provenance_class",
+    "headline_eligible",
 )
 
 REQUIRED_LEDGER_FIELDS = (
@@ -80,11 +106,15 @@ REQUIRED_LEDGER_FIELDS = (
     "rows",
 )
 
-# R-023/R-026: the enumerated per-row fields whose values are closed sets.
+# R-023/R-026 (+ QA-004): the enumerated per-row fields whose values are
+# closed sets — every semantic gate decision keys off one of these validated
+# discriminants, never off free-text string equality.
 _ROW_ENUM_FIELDS = (
     ("status", LEDGER_STATUSES, "R-023"),
     ("provenance_class", PROVENANCE_CLASSES, "R-023"),
     ("rights_status", RIGHTS_STATUSES, "R-026"),
+    ("claim_kind", CLAIM_KINDS, "R-014/QA-004"),
+    ("artifact_family", ARTIFACT_FAMILIES, "R-023/QA-004"),
 )
 
 # R-030: DOI-class archival identifiers — bare DOI or a doi.org URL. A
@@ -117,6 +147,11 @@ def _validate_row(row: Any, index: int) -> None:
                 f"ledger row {label!r} {field} {row[field]!r} outside the"
                 f" closed enum {sorted(allowed)} ({rule})"
             )
+    if not isinstance(row["headline_eligible"], bool):
+        raise LedgerValidationError(
+            f"ledger row {label!r} headline_eligible must be a boolean"
+            " discriminant (R-025/QA-004)"
+        )
     status = row["status"]
 
     # R-023: PR #41 hazard reports may appear only if the exact manuscript

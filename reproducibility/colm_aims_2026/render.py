@@ -10,19 +10,54 @@ from __future__ import annotations
 import json
 from typing import Any
 
-_SOURCE_CHECKS = (
-    "typed ingress (R-020)",
-    "profile validation (R-001..R-011)",
-    "pair/censoring identity recomputation (R-005..R-010)",
-    "receipt emission (R-036)",
+# QA-014: the rendered "checks performed" list is DERIVED from the legs
+# actually present in the report (plus the emitted receipt) — a hardcoded
+# constant could claim checks that never ran. Order: (check name, predicate
+# over the leg-id list).
+_CHECK_DERIVATIONS: tuple[tuple[str, Any], ...] = (
+    (
+        "typed ingress (R-020)",
+        lambda ids: "typed_ingress" in ids,
+    ),
+    (
+        "profile validation (R-001..R-011)",
+        lambda ids: "profile_validation" in ids,
+    ),
+    (
+        "pair/censoring identity recomputation (R-005..R-010)",
+        lambda ids: any(
+            i.startswith(("cell_", "records_")) for i in ids
+        ),
+    ),
+    (
+        "anchored expectation bindings (R-012/R-013)",
+        lambda ids: any(
+            i.startswith(("binding_", "anchor", "tree_files")) for i in ids
+        ),
+    ),
+    (
+        "rights inventory (R-026)",
+        lambda ids: any(i.startswith("rights") for i in ids),
+    ),
+    (
+        "presentation manifest reconciliation (R-035)",
+        lambda ids: any(
+            i.startswith(("manifest", "presentation_manifest")) for i in ids
+        ),
+    ),
+    (
+        "claim-ledger status recomputation (R-012)",
+        lambda ids: any(i.startswith("ledger") for i in ids),
+    ),
 )
 
-_RELEASE_CHECKS = _SOURCE_CHECKS + (
-    "anchored expectation bindings (R-012/R-013)",
-    "rights inventory (R-026)",
-    "presentation manifest reconciliation (R-035)",
-    "claim-ledger status recomputation (R-012)",
-)
+
+def _derived_checks(report: Any, legs: list[dict[str, Any]]) -> list[str]:
+    ids = [str(leg.get("leg_id", "")) for leg in legs]
+    checks = [name for name, present in _CHECK_DERIVATIONS if present(ids)]
+    if getattr(report, "receipt_path", None) is not None:
+        checks.append("receipt emission (R-036)")
+    return checks
 
 
 def render_summary(report: Any) -> str:
@@ -47,8 +82,9 @@ def render_summary(report: Any) -> str:
         " sub-threshold shifts within the constructed reference grid); no"
         " observed open-ended stopping policy was measured.",
     ]
-    checks = _RELEASE_CHECKS if mode == "release" else _SOURCE_CHECKS
-    lines.append("checks performed: " + "; ".join(checks) + ".")
+    checks = _derived_checks(report, legs)
+    if checks:
+        lines.append("checks performed: " + "; ".join(checks) + ".")
     if mode == "source":
         lines.append(
             "source-only verification does NOT certify: release bindings,"

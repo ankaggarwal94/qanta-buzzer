@@ -87,6 +87,23 @@ Every verifier run emits a schema-versioned JSON receipt — mode, verdict,
 per-leg outcomes, input-tree hash, expectations-anchor hash, verifier code
 hash, timestamp — into `--receipts-dir` (outside the verified tree),
 published create-once under run-scoped unique names. An interrupted publish
-leaves no parseable partial receipt; staging debris is auto-reclaimed by the
-`scripts/stopdff_v5/fileio.py` create-once primitives this namespace routes
-all final-path publications through.
+leaves no parseable partial receipt.
+
+## Staging-debris and crash-relic policy
+
+All final-path publications route through the `scripts/stopdff_v5/fileio.py`
+create-once primitives. The reclaim policy differs by publish shape:
+
+- **File publishes** (profiles, receipts): staging temp files are
+  auto-reclaimed by `create_once_bytes` — an interrupt plus retry yields
+  exactly one artifact and no debris.
+- **Directory publishes** (evidence-package runs): a crash between the run
+  slot's `mkdir` claim and the filling `rename` leaves an EMPTY run-slot
+  relic that fails closed on every plain retry. Recovery is explicit:
+  `publish_evidence_package(..., reclaim_crashed_relic=True)` reclaims the
+  empty relic before re-claiming — call it only on a genuine single-owner
+  recovery path (see `fileio.reclaim_empty_relic`). A plain publish never
+  reclaims, so a pre-claimed slot always fails closed.
+- **Canonical selection** rejects an empty run directory as a dangling
+  pointer — a crash relic is never mistaken for a published evidence
+  package.

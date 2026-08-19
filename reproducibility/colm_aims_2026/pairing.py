@@ -310,10 +310,18 @@ def finite_only_timing_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     shifts = _both_finite_shifts(records)
     d = np.array([shifts[key] for key in sorted(shifts)], dtype=np.float64)
     if d.size == 0:
-        raise EmptyEvaluationError(
-            "finite-only timing summary over zero both-finite pairs refused"
-            " (R-006)"
-        )
+        # QA-007: zero both-finite pairs over a NONEMPTY population is an
+        # honest degenerate summary (null statistics), never an abort —
+        # EmptyEvaluationError is reserved for n_pairing_population == 0.
+        return {
+            "conditional_on": "n_both_finite",
+            "estimand": "signed_index_shift_mc_minus_ref",
+            "n": 0,
+            "signed_index_mean": None,
+            "signed_index_median": None,
+            "absolute_index_mean": None,
+            "absolute_index_median": None,
+        }
     absd = np.abs(d)
     return {
         "conditional_on": "n_both_finite",
@@ -380,9 +388,13 @@ def recompute_interval(
 
     shifts = _both_finite_shifts(records)
     if not shifts:
-        raise EmptyEvaluationError(
-            "interval recomputation over zero both-finite pairs refused"
-            " (R-015)"
+        # QA-007: a leg-grade defect, not an abort — an interval cannot be
+        # recomputed over zero both-finite pairs, so an interval-bearing cell
+        # in that state fails its leg while verification continues.
+        raise RateError(
+            "interval recomputation over zero both-finite pairs is"
+            " undefined; a zero-both-finite cell must not carry an interval"
+            " (R-006/R-015)"
         )
     # The pinned historical estimator (same plan, same resample indices).
     from scripts.stopdff_v5 import bootstrap as historical_bootstrap
@@ -511,16 +523,28 @@ def _check_finite_only_summary(
         )
     for statistic in TIMING_STATISTICS:
         value = recorded.get(statistic)
+        expected_value = expected[statistic]
+        if expected_value is None:
+            # QA-007: zero both-finite pairs — the recorded degenerate
+            # summary must declare null statistics, validated as a leg.
+            if value is not None:
+                raise RateError(
+                    f"finite-only timing summary statistic {statistic!r}"
+                    f" recorded {value!r} but zero both-finite pairs exist;"
+                    " a degenerate summary must record null statistics"
+                    " (R-006)"
+                )
+            continue
         if not is_number(value):
             raise RateError(
                 f"finite-only timing summary missing statistic"
                 f" {statistic!r} (R-015)"
             )
-        if abs(float(value) - expected[statistic]) > tolerance:
+        if abs(float(value) - expected_value) > tolerance:
             raise RateError(
                 f"finite-only timing summary statistic {statistic!r}"
                 f" recorded {value!r} does not recompute from retained"
-                f" per-item records (expected {expected[statistic]!r},"
+                f" per-item records (expected {expected_value!r},"
                 f" declared tolerance {tolerance!r}) (R-015)"
             )
 
@@ -545,6 +569,16 @@ def _check_sentinel_coded_summary(
         value = sentinel.get(statistic)
         expected_value = expected_sentinel[statistic]
         if expected_value is None:
+            # QA-007: zero complete pairs — the recorded sentinel-coded
+            # summary must record null statistics too (validated, not
+            # skipped).
+            if value is not None:
+                raise RateError(
+                    f"sentinel-coded summary statistic {statistic!r}"
+                    f" recorded {value!r} but zero complete pairs exist;"
+                    " a degenerate summary must record null statistics"
+                    " (R-006)"
+                )
             continue
         if not is_number(value):
             raise RateError(

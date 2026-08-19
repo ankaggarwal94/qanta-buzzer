@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -513,8 +514,12 @@ def _dump(obj: Any) -> bytes:
 
 
 def make_ledger_row(**overrides: Any) -> dict[str, Any]:
+    # QA-004 (fix round 1): rows carry an explicit closed-enum claim_kind
+    # discriminant; the recompute gate reads it instead of free-text
+    # estimand string-matching.
     row: dict[str, Any] = {
         "claim_id": "clm-0001",
+        "claim_kind": "per_item_paired",
         "manuscript_location": "Section 4.1, paragraph 2",
         "manuscript_wording": (
             "Constructed QA reference sensitivity diagnostic over matched"
@@ -545,6 +550,7 @@ def make_ledger_row(**overrides: Any) -> dict[str, Any]:
 def make_external_row(**overrides: Any) -> dict[str, Any]:
     row = make_ledger_row(
         claim_id="clm-ext-0001",
+        claim_kind="external_fact",
         manuscript_location="Title page",
         manuscript_wording="Manuscript identity (submission PDF).",
         estimand="manuscript_identity",
@@ -617,6 +623,7 @@ def build_package(
     *,
     records: list[dict[str, Any]] | None = None,
     profile_mutator: Callable[[dict[str, Any]], None] | None = None,
+    binding_mutator: Callable[[dict[str, Any]], None] | None = None,
     ledger_mutator: Callable[[dict[str, Any]], None] | None = None,
     rights_mutator: Callable[[dict[str, Any]], None] | None = None,
     manifest_mutator: Callable[[dict[str, Any]], None] | None = None,
@@ -658,6 +665,11 @@ def build_package(
     profile = make_profile(records, records_sha=records_sha, source_commit=commit)
     if profile_mutator is not None:
         profile_mutator(profile)
+    if binding_mutator is not None:
+        # QA-001 (fix round 1): artifact-side binding mutation hook — runs
+        # pre-hash, so the expectations mirror the mutated provenance and
+        # ONLY a value-admissibility predicate can catch the defect.
+        binding_mutator(profile["provenance"])
     profile_path = tree / "profile.json"
     profile_path.write_bytes(_dump(profile))
 
@@ -706,6 +718,14 @@ def build_package(
             "source_commit": commit,
             "ledger_path": "ledger.json",
             "ledger_sha256": sha256_file(ledger_path),
+            # QA-005 (fix round 1): the EXTERNAL predicate lives in the
+            # independently anchored expectations file, not in row fields the
+            # ledger editor can flip in the same document.
+            "external_claim_ids": sorted(
+                r["claim_id"]
+                for r in ledger.get("rows", [])
+                if isinstance(r, dict) and r.get("status") == "EXTERNAL"
+            ),
         },
         "rights_inventory": {
             "path": "rights.json",
@@ -779,6 +799,28 @@ def wipe(path: Path) -> None:
 
 CLI_MODULE = "reproducibility.colm_aims_2026.verify"
 
+# QA-011 (fix round 1): env-triggered socket guard for subprocess CLI runs —
+# the shim's sitecustomize.py installs the R-028 no-network guard in every
+# child interpreter when COLM_AIMS_TEST_NO_NET=1, so the primary gate covers
+# the ~16 subprocess CLI runs, not just the parent pytest process.
+NO_NET_SHIM_DIR = FIXTURES_DIR / "no_net_shim"
+
+
+def cli_subprocess_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["COLM_AIMS_TEST_NO_NET"] = "1"
+    # Keep children from writing __pycache__ bytecode into the fixtures tree
+    # (the shim lives under tests/fixtures/, which the tiny-and-synthetic
+    # scan sweeps byte-for-byte).
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        f"{NO_NET_SHIM_DIR}{os.pathsep}{existing}"
+        if existing
+        else str(NO_NET_SHIM_DIR)
+    )
+    return env
+
 
 def run_cli(*args: str, cwd: Path = REPO_ROOT) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -787,6 +829,7 @@ def run_cli(*args: str, cwd: Path = REPO_ROOT) -> subprocess.CompletedProcess[st
         capture_output=True,
         text=True,
         check=False,
+        env=cli_subprocess_env(),
     )
 
 

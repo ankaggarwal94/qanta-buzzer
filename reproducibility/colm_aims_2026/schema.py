@@ -32,8 +32,19 @@ class TypedIngressError(ColmAimsError):
     """Artifact bytes failed typed validation at the load boundary (R-020)."""
 
 
+class ConfigSurfaceError(ColmAimsError):
+    """Unknown key/flag on the config surface — usage error, never a no-op
+    (R-022/R-037; QA-009)."""
+
+
 class EmptyEvaluationError(ColmAimsError):
-    """Explicitly empty evaluation population refused (R-006, R-012)."""
+    """Explicitly empty evaluation population refused (R-006, R-012).
+
+    QA-007: reserved strictly for ``n_pairing_population == 0`` — the one
+    condition the rule text names as a typed error. Every other degenerate
+    shape (all-timeout, all-excluded, zero both-finite) is a leg, never an
+    abort.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +551,16 @@ def _check_schema_version(obj: dict[str, Any], rel: str) -> None:
 def _load_records(data: bytes, rel: str) -> dict[str, Any]:
     """Typed ingress for a ``*.jsonl`` record file (R-020)."""
     records: list[dict[str, Any]] = []
-    text = data.decode("utf-8", errors="strict") if data else ""
+    line_numbers: list[int] = []
+    try:
+        # QA-006: non-UTF-8 bytes are a typed ingress error naming the file —
+        # never a bare UnicodeDecodeError escaping untyped (exit-code 1
+        # collision + traceback leak at the CLI).
+        text = data.decode("utf-8", errors="strict") if data else ""
+    except UnicodeDecodeError as exc:
+        raise TypedIngressError(
+            f"{rel}: invalid UTF-8 bytes at byte offset {exc.start} (R-020)"
+        ) from exc
     for lineno, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
@@ -555,7 +575,10 @@ def _load_records(data: bytes, rel: str) -> dict[str, Any]:
                 f"{rel}: line {lineno}: record must be an object (R-020)"
             )
         records.append(obj)
-    return {"kind": "records", "records": records}
+        line_numbers.append(lineno)
+    # QA-014: source line numbers ride along so per-record validation errors
+    # can name file + line ("records.jsonl: line 3: ...").
+    return {"kind": "records", "records": records, "line_numbers": line_numbers}
 
 
 def load_artifact(path: Path, *, tree_root: Path | None = None) -> dict[str, Any]:
@@ -608,8 +631,25 @@ def write_profile(path: Path, profile: dict[str, Any]) -> None:
     )
 
 
-def publish_evidence_package(staged: Path, runs_root: Path, run_id: str) -> Path:
-    """Publish a staged evidence package into a run-scoped create-once dir (R-039)."""
+def publish_evidence_package(
+    staged: Path,
+    runs_root: Path,
+    run_id: str,
+    *,
+    reclaim_crashed_relic: bool = False,
+) -> Path:
+    """Publish a staged evidence package into a run-scoped create-once dir (R-039).
+
+    QA-008: a crash between the destination's ``mkdir`` claim and the filling
+    ``rename`` leaves an EMPTY run-slot relic that fails closed on every
+    retry. ``reclaim_crashed_relic=True`` is the explicit recovery path: it
+    calls ``fileio.reclaim_empty_relic`` on the destination before
+    re-claiming. Callers must honor the single-owner precondition documented
+    on ``reclaim_empty_relic`` — invoke it only on a genuine recovery/resume
+    path where no concurrent publisher of the same slot can exist. The
+    default (False) never reclaims, so a pre-existing empty slot fails
+    closed exactly as before.
+    """
     staged = Path(staged)
     runs_root = Path(runs_root)
     if not is_path_component(run_id):
@@ -620,6 +660,10 @@ def publish_evidence_package(staged: Path, runs_root: Path, run_id: str) -> Path
     if not staged.is_dir():
         raise ColmAimsError("staged evidence package must be a directory")
     dest = runs_root / run_id
+    if reclaim_crashed_relic:
+        # Removes ONLY an empty relic (refuses files/symlinks/non-empty
+        # dirs); historical bytes can never be destroyed by this call.
+        fileio.reclaim_empty_relic(dest)
     fileio.publish_dir_create_once(
         staged, dest, exists_label="evidence package run slot"
     )

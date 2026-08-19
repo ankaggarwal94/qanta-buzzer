@@ -87,6 +87,10 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.expectations) if args.expectations else None
             ),
         )
+        summary = render.render_summary(report)
+        exit_code = (
+            EXIT_PASS if report.verdict in _PASS_VERDICTS else EXIT_GATE_FAIL
+        )
     except (
         verifier_mod.VacuousInputError,
         schema.TypedIngressError,
@@ -94,12 +98,24 @@ def main(argv: list[str] | None = None) -> int:
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_INGRESS_ERROR
-    except schema.ColmAimsError as exc:
-        # Containment/config violations (R-013/R-022) are usage errors.
+    except (schema.ConfigSurfaceError, schema.ColmAimsError) as exc:
+        # Containment/config violations (R-013/R-022, QA-009) are usage
+        # errors (exit 2) — unknown config keys included.
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE_ERROR
-    print(render.render_summary(report))
-    return EXIT_PASS if report.verdict in _PASS_VERDICTS else EXIT_GATE_FAIL
+    except Exception as exc:  # noqa: BLE001 - QA-006 last-resort handler
+        # QA-006: no ingest path may leak a traceback, a local absolute
+        # path, or collide with the gate-FAIL exit code. Only the exception
+        # CLASS is emitted — never its message, which could carry paths or
+        # restricted content.
+        print(
+            f"error: unexpected {exc.__class__.__name__} during"
+            " verification; no verdict was reached (typed-ingress exit)",
+            file=sys.stderr,
+        )
+        return EXIT_INGRESS_ERROR
+    print(summary)
+    return exit_code
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised via subprocess tests

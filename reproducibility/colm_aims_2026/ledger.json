@@ -15,6 +15,7 @@
   "rows": [
     {
       "claim_id": "clm-manuscript-identity",
+      "claim_kind": "external_fact",
       "manuscript_location": "Title page",
       "manuscript_wording": "Submission PDF identity (SHA-256 pinned in this ledger's manuscript block).",
       "estimand": "manuscript_identity",
@@ -62,6 +63,7 @@
     },
     {
       "claim_id": "clm-randomk-disposition",
+      "claim_kind": "per_item_paired",
       "manuscript_location": "Section 5 (Random-K analysis, submitted version)",
       "manuscript_wording": "Historical Random-K/v5 result; failed to reproduce under a new draw. Disposition (historical/nonconfirmatory vs predeclared multi-draw family) explicitly deferred by the author on 2026-08-19 (OQ-001).",
       "estimand": "random_k_draw_sensitivity",
@@ -84,6 +86,7 @@
     },
     {
       "claim_id": "clm-evidence-flow-source-contract",
+      "claim_kind": "per_item_paired",
       "manuscript_location": "Camera-ready evidence appendix (planned)",
       "manuscript_wording": "The constructed QA reference sensitivity diagnostic is independently checkable via the two-mode verifier in reproducibility/colm_aims_2026/ (source-contract ceiling PASS_SOURCE_ONLY; release mode fails closed without anchored expectations and verified rights).",
       "estimand": "signed_index_shift_mc_minus_ref",
