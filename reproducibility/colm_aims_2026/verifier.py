@@ -680,6 +680,15 @@ def resolve_canonical_package(runs_root: Path, ledger: dict[str, Any]) -> Path:
             " selection happens only via the ledger/expectations pointer,"
             " never newest-wins (R-039)"
         )
+    # CX-4 (R-039): the pointer is a NAME inside the runs root, never a path —
+    # `../escape` or an absolute value must not select a directory outside
+    # the runs root.
+    if not schema.is_path_component(run_id):
+        raise ColmAimsError(
+            f"canonical run pointer {run_id!r} must be a single path"
+            " component inside the runs root — path traversal and absolute"
+            " pointers are refused (R-039)"
+        )
     path = Path(runs_root) / run_id
     if not path.is_dir():
         raise ColmAimsError(
@@ -755,18 +764,6 @@ def _load_json_bytes_lenient(
     if not isinstance(obj, dict):
         return None, f"{name}: must be a JSON object"
     return obj, None
-
-
-def _load_json_lenient(path: Path) -> tuple[dict[str, Any] | None, str | None]:
-    """Collect-don't-halt sidecar load via the bounded reader (MA-HI-001)."""
-    name = Path(path).name
-    try:
-        data = schema.read_regular_file_bytes(path)
-    except schema.TypedIngressError as exc:
-        # A FIFO/device/symlink/missing sidecar is a collected leg failure,
-        # not a hang.
-        return None, str(exc)
-    return _load_json_bytes_lenient(data, name)
 
 
 def _git_object_exists(commit: str) -> bool | None:
@@ -1222,23 +1219,40 @@ def _anchor_legs(
             )
         )
     else:
-        actual_ledger_sha = _sha256_file(ledger_path)
-        _record_leg(
-            legs,
-            "anchor_ledger",
-            actual_ledger_sha == anchor_ledger_sha,
-            expected=anchor_ledger_sha,
-            observed=actual_ledger_sha,
-        )
-        ledger_doc, ledger_err = _load_json_lenient(ledger_path)
-        if ledger_err is not None:
+        # CX-6: ONE bounded, regular-file-only read feeds both the anchor
+        # hash and the parse — an oversized/irregular ledger is a typed leg
+        # refusal, never an unbounded read_bytes() memory exhaustion, and
+        # hash/parse can never desync (no double read).
+        try:
+            ledger_bytes = schema.read_regular_file_bytes(ledger_path)
+        except schema.TypedIngressError as exc:
             legs.append(
                 _fail(
-                    "ledger_parse",
-                    expected="parseable frozen claim ledger",
-                    observed=ledger_err,
+                    "anchor_ledger",
+                    expected=anchor_ledger_sha,
+                    observed=str(exc),
                 )
             )
+        else:
+            actual_ledger_sha = hashlib.sha256(ledger_bytes).hexdigest()
+            _record_leg(
+                legs,
+                "anchor_ledger",
+                actual_ledger_sha == anchor_ledger_sha,
+                expected=anchor_ledger_sha,
+                observed=actual_ledger_sha,
+            )
+            ledger_doc, ledger_err = _load_json_bytes_lenient(
+                ledger_bytes, ledger_path.name
+            )
+            if ledger_err is not None:
+                legs.append(
+                    _fail(
+                        "ledger_parse",
+                        expected="parseable frozen claim ledger",
+                        observed=ledger_err,
+                    )
+                )
 
     anchor_commit = anchor.get("source_commit")
     observed_commit = (prov.get("dirty_state") or {}).get("source_commit")
@@ -1605,12 +1619,23 @@ def _estimand_reconciliation_leg(
         if isinstance(arm, dict)
     }
     # The horizon actually applied to the records (the authoritative source
-    # for timeout_parameters.trajectory_horizon).
-    record_horizons = {
-        r.get("trajectory_horizon")
-        for r in (records or [])
-        if isinstance(r, dict) and schema.is_number(r.get("trajectory_horizon"))
-    }
+    # for timeout_parameters.trajectory_horizon). CX-3: records may carry the
+    # horizon as a shared ``trajectory_horizon`` OR as (equal) per-arm
+    # ``mc_trajectory_horizon``/``ref_trajectory_horizon`` fields — both
+    # forms feed the authoritative set, so a per-arm-horizon package cannot
+    # produce an EMPTY set and skip the comparison. Distinct per-arm values
+    # widen the set and (correctly) fail an estimand claiming one horizon.
+    record_horizons: set[Any] = set()
+    for r in records or []:
+        if not isinstance(r, dict):
+            continue
+        shared = r.get("trajectory_horizon")
+        for h in (
+            r.get("mc_trajectory_horizon", shared),
+            r.get("ref_trajectory_horizon", shared),
+        ):
+            if schema.is_number(h):
+                record_horizons.add(h)
     authorized_draws = _authorized_random_k_draws(ledger_doc)
 
     problems: list[str] = []
@@ -1703,7 +1728,21 @@ def _rights_legs(
             )
         )
         return
-    rights_obj, rights_err = _load_json_lenient(rights_path)
+    # CX-6 (sibling site): one bounded read feeds the rights hash + parse.
+    try:
+        rights_bytes = schema.read_regular_file_bytes(rights_path)
+    except schema.TypedIngressError as exc:
+        legs.append(
+            _fail(
+                "rights_inventory",
+                expected="readable, bounded, regular-file rights inventory",
+                observed=str(exc),
+            )
+        )
+        return
+    rights_obj, rights_err = _load_json_bytes_lenient(
+        rights_bytes, rights_path.name
+    )
     if rights_err is not None:
         legs.append(
             _fail(
@@ -1714,7 +1753,7 @@ def _rights_legs(
         )
         return
 
-    actual_sha = _sha256_file(rights_path)
+    actual_sha = hashlib.sha256(rights_bytes).hexdigest()
     _record_leg(
         legs,
         "rights_inventory_hash",

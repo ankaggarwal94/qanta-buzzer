@@ -322,12 +322,19 @@ def validate_ledger(
 
 
 def validate_rights_inventory(rights: dict[str, Any]) -> None:
-    """Validate the rights inventory document (enum + terms basis, R-026)."""
+    """Validate the rights inventory document (enum + terms basis, R-026).
+
+    CX-1: duplicate ``path`` rows fail closed — a later row must never
+    shadow an earlier (e.g. RESTRICTED-then-ALLOWED) row for the same file.
+    Uniqueness at every ingestion boundary is the suite convention (qids,
+    cell ids, pair keys).
+    """
     if not isinstance(rights, dict):
         raise RightsError("rights inventory must be an object (R-026)")
     paths = rights.get("paths")
     if not isinstance(paths, list):
         raise RightsError("rights inventory missing paths list (R-026)")
+    seen_paths: set[str] = set()
     for index, row in enumerate(paths):
         if not isinstance(row, dict) or not isinstance(row.get("path"), str):
             raise RightsError(
@@ -335,6 +342,13 @@ def validate_rights_inventory(rights: dict[str, Any]) -> None:
                 " (R-026)"
             )
         label = row["path"]
+        if label in seen_paths:
+            raise RightsError(
+                f"rights inventory carries duplicate rows for path"
+                f" {label!r} — duplicate path rows fail closed; a later row"
+                " must never shadow an earlier status (R-026/CX-1)"
+            )
+        seen_paths.add(label)
         status = row.get("status")
         if status not in RIGHTS_STATUSES:
             raise RightsError(

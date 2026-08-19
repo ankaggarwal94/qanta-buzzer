@@ -339,13 +339,26 @@ def finite_only_timing_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
 def _sentinel_coded_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Retained sentinel-coded historical summary: timeouts coded as the
     horizon value; complete pairs only; separately named, never pooled
-    (R-006)."""
+    (R-006).
+
+    CX-2: each stop is coded as ``min(stop, horizon)`` per side — the
+    recorded ``timeout_coded_as_horizon`` convention. A raw over-horizon
+    stop (e.g. stop=9 at horizon 6) must enter the statistic as the horizon
+    (6), never as 9. Complete pairs guarantee valid integer stops and a
+    common valid horizon (grid mismatches are exclusions), so the per-side
+    horizon lookup below is total.
+    """
     shifts: list[float] = []
     for record in records:
         outcome = classify_record(record)
         if outcome["status"] != "complete":
             continue
-        shifts.append(float(record["mc_stop_step"] - record["ref_stop_step"]))
+        shared = record.get("trajectory_horizon")
+        mc_horizon = record.get("mc_trajectory_horizon", shared)
+        ref_horizon = record.get("ref_trajectory_horizon", shared)
+        mc_coded = min(record["mc_stop_step"], mc_horizon)
+        ref_coded = min(record["ref_stop_step"], ref_horizon)
+        shifts.append(float(mc_coded - ref_coded))
     d = np.array(sorted(shifts), dtype=np.float64)
     return {
         "convention": "timeout_coded_as_horizon",

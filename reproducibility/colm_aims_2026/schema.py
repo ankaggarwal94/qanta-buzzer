@@ -239,8 +239,18 @@ def is_admissible_tolerance(value: Any) -> bool:
 
 
 def is_path_component(value: Any) -> bool:
-    """True for a non-empty single path component (no separators/traversal)."""
-    return isinstance(value, str) and bool(value) and Path(value).name == value
+    """True for a non-empty single path component (no separators/traversal).
+
+    CX-4: bare ``..`` satisfies ``Path(value).name == value`` yet traverses
+    out of any root it is joined onto — ``.`` and ``..`` are excluded
+    explicitly.
+    """
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value not in (".", "..")
+        and Path(value).name == value
+    )
 
 
 def resolves_inside(path: Path, root: Path) -> bool:
@@ -403,9 +413,19 @@ def _validate_cell_shape(cell: Any, index: int, seen_ids: set[str]) -> None:
 
 
 def validate_profile(profile: dict[str, Any]) -> None:
-    """Validate a strict constructed-reference profile dict; raise on defect."""
+    """Validate a strict constructed-reference profile dict; raise on defect.
+
+    CX-5 (R-020): ``schema_version`` is gated against the supported range
+    FIRST — so ``write_profile`` refuses an unsupported version BEFORE the
+    create-once publish, instead of publishing an immutable artifact this
+    package's own loader then refuses.
+    """
     if not isinstance(profile, dict):
         raise SchemaValidationError("profile must be an object")
+    try:
+        _check_schema_version(profile, "profile")
+    except TypedIngressError as exc:
+        raise SchemaValidationError(str(exc)) from exc
     missing = sorted(PROFILE_TOP_LEVEL_KEYS - set(profile))
     if missing:
         raise SchemaValidationError(
