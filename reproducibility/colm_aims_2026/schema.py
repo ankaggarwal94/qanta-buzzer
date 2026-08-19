@@ -6,10 +6,13 @@ Spec: .correctless/specs/camera-ready-aims-evidence.md
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import math
+import os
 import re
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +69,26 @@ RESERVED_OBSERVED_PROFILE_ID = "colm_aims_observed_paired_v1"
 # R-032: pinned maximum admissible numerical tolerance. DECISION: 1e-3 —
 # joint-class rates must sum to 1; anything looser is meaningless.
 MAX_ADMISSIBLE_TOLERANCE = 1e-3
+
+# MA-RB-001 / MA-HI-001 class fix: a pinned MAX_* admissibility table for
+# every artifact-derived integer/size that sizes an allocation, a loop, or a
+# read. Values above the ceiling are refused as a typed error BEFORE any
+# allocation happens — fail-closed must never mean fail-hung / OOM.
+#   MAX_ARTIFACT_BYTES   — largest untrusted file this namespace will read
+#                          into memory (fixtures are tiny; a real evidence
+#                          artifact is well under this).
+#   MAX_BOOTSTRAP_DRAWS  — largest interval draw_count (replicates) the
+#                          recompute will honor (R-015 / pairing).
+#   MAX_BOOTSTRAP_CELLS  — cap on the resample matrix cells (draws x items).
+MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+MAX_BOOTSTRAP_DRAWS = 200_000
+MAX_BOOTSTRAP_CELLS = 200_000_000
+
+MAX_ADMISSIBLE_INTS: dict[str, int] = {
+    "artifact_bytes": MAX_ARTIFACT_BYTES,
+    "bootstrap_draws": MAX_BOOTSTRAP_DRAWS,
+    "bootstrap_cells": MAX_BOOTSTRAP_CELLS,
+}
 
 # R-001: the pinned semantic block, verbatim from handoff §8 (AP-031).
 SEMANTIC_BLOCK: dict[str, Any] = {
@@ -581,25 +604,92 @@ def _load_records(data: bytes, rel: str) -> dict[str, Any]:
     return {"kind": "records", "records": records, "line_numbers": line_numbers}
 
 
-def load_artifact(path: Path, *, tree_root: Path | None = None) -> dict[str, Any]:
-    """Typed ingress: validate artifact bytes into typed records (R-020).
+def read_regular_file_bytes(
+    path: Path,
+    *,
+    tree_root: Path | None = None,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
+) -> bytes:
+    """Bounded, symlink-free read of an untrusted path (MA-HI-001, R-020).
 
-    ``*.jsonl`` files load as ``{"kind": "records", "records": [...]}``;
-    other files load as strict-profile-shaped objects. Errors are typed and
-    identify files by tree-relative path only.
+    The single reader every untrusted-path ingress goes through: it opens with
+    ``O_NOFOLLOW`` (a symlink at ``path`` fails, never followed), fstats the
+    open descriptor and refuses anything that is not a regular file
+    (``stat.S_ISREG``) — so a FIFO, ``/dev/stdin``, ``/dev/zero``, a device,
+    or a socket is rejected FAST instead of hanging or OOM-ing the run — and
+    caps the read at ``max_bytes`` so an oversized artifact cannot exhaust
+    memory. Errors are typed and identify the file by basename/tree-relative
+    path only (never a local absolute path, R-026).
     """
     path = Path(path)
     rel = _relative_name(path, tree_root)
-    try:
-        data = path.read_bytes()
-    except OSError as exc:
+    if path.is_symlink():
         raise TypedIngressError(
-            f"{rel}: unreadable artifact ({exc.__class__.__name__})"
+            f"{rel}: refusing to read a symlink (R-020/R-013)"
+        )
+    # O_NOFOLLOW: a symlink at ``path`` fails instead of being followed.
+    # O_NONBLOCK: opening a FIFO/device for read returns IMMEDIATELY instead
+    # of blocking on an absent writer — so the S_ISREG fstat below can reject
+    # it fast (MA-HI-001). O_NONBLOCK is a no-op for regular files.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.EMLINK):
+            raise TypedIngressError(
+                f"{rel}: refusing to read a symlink (R-020/R-013)"
+            ) from exc
+        raise TypedIngressError(
+            f"{rel}: unreadable artifact ({exc.__class__.__name__}) (R-020)"
         ) from exc
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise TypedIngressError(
+                f"{rel}: not a regular file — refusing to read a FIFO,"
+                " device, or socket (R-020)"
+            )
+        # Regular files never return EAGAIN; clear O_NONBLOCK defensively so
+        # the read loop below behaves identically to a blocking read.
+        if hasattr(os, "O_NONBLOCK") and hasattr(os, "get_blocking"):
+            os.set_blocking(fd, True)
+        if st.st_size > max_bytes:
+            raise TypedIngressError(
+                f"{rel}: artifact size {st.st_size} exceeds the maximum"
+                f" admissible {max_bytes} bytes (R-020)"
+            )
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(1 << 20, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > max_bytes:
+            raise TypedIngressError(
+                f"{rel}: artifact exceeds the maximum admissible"
+                f" {max_bytes} bytes (R-020)"
+            )
+        return data
+    finally:
+        os.close(fd)
 
-    if path.suffix == ".jsonl":
+
+def load_artifact_bytes(data: bytes, rel: str) -> dict[str, Any]:
+    """Typed ingress over already-snapshotted bytes (MA-HI-004, R-020).
+
+    Shared by ``load_artifact`` (path form) and the verifier's single tree
+    snapshot, so content-validation, every binding/tree-file hash, and the
+    receipt digest attest exactly the same bytes.
+    """
+    if rel.endswith(".jsonl"):
         return _load_records(data, rel)
-
     try:
         obj = _parse_json_bytes(data)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -614,6 +704,20 @@ def load_artifact(path: Path, *, tree_root: Path | None = None) -> dict[str, Any
             " key-dropping (R-020)"
         )
     return obj
+
+
+def load_artifact(path: Path, *, tree_root: Path | None = None) -> dict[str, Any]:
+    """Typed ingress: validate artifact bytes into typed records (R-020).
+
+    ``*.jsonl`` files load as ``{"kind": "records", "records": [...]}``;
+    other files load as strict-profile-shaped objects. Errors are typed and
+    identify files by tree-relative path only. The read is bounded and
+    symlink-free (MA-HI-001).
+    """
+    path = Path(path)
+    rel = _relative_name(path, tree_root)
+    data = read_regular_file_bytes(path, tree_root=tree_root)
+    return load_artifact_bytes(data, rel)
 
 
 def write_profile(path: Path, profile: dict[str, Any]) -> None:
@@ -649,6 +753,16 @@ def publish_evidence_package(
     path where no concurrent publisher of the same slot can exist. The
     default (False) never reclaims, so a pre-existing empty slot fails
     closed exactly as before.
+
+    MA-CC-3: ``staged`` must sit on the SAME filesystem as ``runs_root`` so
+    the create-once publish's internal ``os.rename`` is an atomic
+    same-filesystem move that can never ``EXDEV`` AFTER the ``mkdir`` claim
+    (a deterministic, permanent empty relic). Same-device is asserted BEFORE
+    the claim; and should the rename still fail cross-device (e.g. a raced
+    remount), the empty relic is reclaimed so ``runs_root`` is left clean and
+    the caller gets a typed error rather than a poisoned slot. A genuine
+    mid-publish crash (a non-EXDEV OSError) still leaves the relic for the
+    explicit recovery path (QA-008).
     """
     staged = Path(staged)
     runs_root = Path(runs_root)
@@ -659,12 +773,41 @@ def publish_evidence_package(
         )
     if not staged.is_dir():
         raise ColmAimsError("staged evidence package must be a directory")
+    runs_root.mkdir(parents=True, exist_ok=True)
     dest = runs_root / run_id
+    # MA-CC-3: same-filesystem precondition, checked BEFORE any mkdir claim.
+    try:
+        if os.stat(staged).st_dev != os.stat(runs_root).st_dev:
+            raise ColmAimsError(
+                "staged evidence package must reside on the same filesystem"
+                " as the runs root so the create-once publish is atomic"
+                " (cross-device publish would leave a permanent empty relic)"
+                " (R-016/R-039)"
+            )
+    except OSError as exc:
+        raise ColmAimsError(
+            f"cannot stat staged/runs-root for the same-filesystem check:"
+            f" {exc.__class__.__name__} (R-016)"
+        ) from exc
     if reclaim_crashed_relic:
         # Removes ONLY an empty relic (refuses files/symlinks/non-empty
         # dirs); historical bytes can never be destroyed by this call.
         fileio.reclaim_empty_relic(dest)
-    fileio.publish_dir_create_once(
-        staged, dest, exists_label="evidence package run slot"
-    )
+    try:
+        fileio.publish_dir_create_once(
+            staged, dest, exists_label="evidence package run slot"
+        )
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        if getattr(exc, "errno", None) == errno.EXDEV:
+            # Deterministic cross-device failure after the mkdir claim:
+            # reclaim the empty relic so runs_root stays clean, surface a
+            # typed error (never a poisoned slot).
+            fileio.reclaim_empty_relic(dest)
+            raise ColmAimsError(
+                "cross-device publish (EXDEV) — staged package is not on the"
+                " runs-root filesystem; reclaimed the empty slot (R-016/R-039)"
+            ) from exc
+        raise
     return dest

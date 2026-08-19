@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -20,6 +21,23 @@ from . import ledger as ledger_mod
 from . import receipt as receipt_mod
 from . import pairing, schema
 from .schema import ColmAimsError
+
+# MA-CC-5: the object-existence check binds to THIS repository explicitly —
+# never ambient cwd/.git — so no cwd move or GIT_* env var can flip the gate.
+_SOURCE_REPO = Path(__file__).resolve().parents[2]
+# Git env vars that redirect which repository/worktree/objects git consults.
+_GIT_ENV_DENYLIST = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_INDEX_FILE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_NAMESPACE",
+    }
+)
 
 
 class VacuousInputError(ColmAimsError):
@@ -105,17 +123,52 @@ def _tree_file_map(tree: Path) -> dict[str, Path]:
     }
 
 
+def _read_tree_snapshot(tree: Path) -> dict[str, bytes]:
+    """Read every tree member's bytes ONCE, symlink-free (MA-HI-002/MA-HI-004).
+
+    The single content-addressed load that drives content-validation, every
+    binding/tree-file hash, and the receipt's ``input_tree_sha256`` — so the
+    receipt provably attests exactly the bytes the gates saw (no TOCTOU
+    desync). A symlink member (or a member resolving outside the tree) is
+    refused with a typed containment error rather than followed, read, and
+    hashed into the receipt. Each read is bounded and regular-file-only
+    (MA-HI-001).
+    """
+    tree = Path(tree)
+    snapshot: dict[str, bytes] = {}
+    for p in sorted(tree.rglob("*")):
+        if p.is_symlink():
+            rel = p.relative_to(tree).as_posix()
+            raise ContainmentError(
+                f"tree member {rel!r} is a symlink — refusing to follow, read,"
+                " or hash bytes outside the verified tree (R-036/R-013)"
+            )
+        if p.is_dir():
+            continue
+        rel = p.relative_to(tree).as_posix()
+        if not schema.resolves_inside(p, tree):
+            raise ContainmentError(
+                f"tree member {rel!r} resolves outside the verified tree"
+                " (R-036/R-013)"
+            )
+        snapshot[rel] = schema.read_regular_file_bytes(p, tree_root=tree)
+    return snapshot
+
+
+def _sha_map(snapshot: dict[str, bytes]) -> dict[str, str]:
+    return {rel: hashlib.sha256(data).hexdigest() for rel, data in snapshot.items()}
+
+
 def _digest_over_lines(lines: list[str]) -> str:
     """Pinned digest shape (R-036): sha256 over newline-joined
     ``<posix relpath>:<sha256>`` lines with a trailing newline."""
     return hashlib.sha256(("\n".join(lines) + "\n").encode("utf-8")).hexdigest()
 
 
-def _tree_digest(tree: Path) -> str:
-    """Pinned input-tree digest (R-036) over every file in the tree."""
-    entries = {rel: _sha256_file(p) for rel, p in _tree_file_map(tree).items()}
+def _tree_digest_from_shas(sha_by_rel: dict[str, str]) -> str:
+    """Pinned input-tree digest (R-036) over the one-shot snapshot hashes."""
     return _digest_over_lines(
-        [f"{rel}:{sha}" for rel, sha in sorted(entries.items())]
+        [f"{rel}:{sha}" for rel, sha in sorted(sha_by_rel.items())]
     )
 
 
@@ -148,6 +201,13 @@ def _fail(
         "observed": observed,
         "remediation_class": remediation,
     }
+
+
+def _skipped(leg_id: str, *, reason: str) -> dict[str, Any]:
+    """A leg that could not run because a required capability is unavailable
+    (MA-CC-5). SKIPPED never fails the verdict but is rendered and receipted
+    so the gap is on the record."""
+    return {"leg_id": leg_id, "outcome": "SKIPPED", "reason": reason}
 
 
 def _record_leg(
@@ -644,15 +704,14 @@ def resolve_canonical_package(runs_root: Path, ledger: dict[str, Any]) -> Path:
 
 
 def _load_expectations(path: Path) -> tuple[dict[str, Any], bytes]:
-    """Typed, fail-closed load of the anchored expectations file (R-022)."""
+    """Typed, fail-closed load of the anchored expectations file (R-022).
+
+    Uses the bounded, symlink-free, regular-file-only reader (MA-HI-001) so a
+    FIFO / device / oversized file at ``--expectations`` is rejected fast
+    instead of hanging or OOM-ing the run.
+    """
     name = Path(path).name
-    try:
-        data = Path(path).read_bytes()
-    except OSError as exc:
-        raise schema.TypedIngressError(
-            f"{name}: unreadable expectations file"
-            f" ({exc.__class__.__name__}) (R-020)"
-        ) from exc
+    data = schema.read_regular_file_bytes(path)
     try:
         obj = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -685,13 +744,12 @@ def _load_expectations(path: Path) -> tuple[dict[str, Any], bytes]:
     return obj, data
 
 
-def _load_json_lenient(path: Path) -> tuple[dict[str, Any] | None, str | None]:
-    """Collect-don't-halt sidecar load: (object, error-description)."""
-    name = Path(path).name
-    if not Path(path).is_file():
-        return None, f"{name}: absent"
+def _load_json_bytes_lenient(
+    data: bytes, name: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Collect-don't-halt parse of already-read bytes: (object, error)."""
     try:
-        obj = json.loads(Path(path).read_bytes().decode("utf-8"))
+        obj = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         return None, f"{name}: malformed JSON: {exc}"
     if not isinstance(obj, dict):
@@ -699,18 +757,45 @@ def _load_json_lenient(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     return obj, None
 
 
+def _load_json_lenient(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """Collect-don't-halt sidecar load via the bounded reader (MA-HI-001)."""
+    name = Path(path).name
+    try:
+        data = schema.read_regular_file_bytes(path)
+    except schema.TypedIngressError as exc:
+        # A FIFO/device/symlink/missing sidecar is a collected leg failure,
+        # not a hang.
+        return None, str(exc)
+    return _load_json_bytes_lenient(data, name)
+
+
 def _git_object_exists(commit: str) -> bool | None:
-    """Optional anchor object-existence check when a repository is available
-    (R-013). Returns None when no repository/git is reachable from cwd."""
-    if not (Path.cwd() / ".git").exists():
+    """Anchor object-existence check bound to THIS repository (MA-CC-5, R-013).
+
+    Returns ``True``/``False`` when the source repository is available and git
+    answers, ``None`` when the object-existence check cannot run (no ``.git``,
+    git missing, or a timeout). Never consults ambient ``cwd``/``.git`` and
+    scrubs every ``GIT_*`` redirection variable from the child environment, so
+    no cwd move or environment door (R-022) can flip the gate. The subprocess
+    is bounded (``timeout``), non-interactive (``GIT_TERMINAL_PROMPT=0``,
+    ``stdin=DEVNULL``) so a stalled ``.git`` cannot hang the run (MA-RB-002).
+    """
+    repo = _SOURCE_REPO
+    if not (repo / ".git").exists():
         return None
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_DENYLIST}
+    env["GIT_TERMINAL_PROMPT"] = "0"
     try:
         proc = subprocess.run(
             ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+            cwd=str(repo),
+            env=env,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             check=False,
+            timeout=10,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     return proc.returncode == 0
 
@@ -721,9 +806,10 @@ def _git_object_exists(commit: str) -> bool | None:
 
 
 def _classify_legacy_artifacts(
-    files: dict[str, Path]
+    snapshot: dict[str, bytes]
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
-    """Classify known historical artifact families from captured bytes (R-014).
+    """Classify known historical artifact families from the tree snapshot
+    (R-014, MA-HI-004).
 
     Returns the parsed legacy artifacts keyed by tree-relative path, plus
     their human-readable classifications. A file that is not a known legacy
@@ -732,13 +818,13 @@ def _classify_legacy_artifacts(
     """
     parsed_by_rel: dict[str, dict[str, Any]] = {}
     classifications: dict[str, str] = {}
-    for rel in sorted(files):
+    for rel in sorted(snapshot):
         if rel in ("profile.json", "presentation_manifest.json"):
             continue
         if not rel.endswith(".json"):
             continue
         try:
-            parsed = parse_legacy_profile(files[rel].read_bytes())
+            parsed = parse_legacy_profile(snapshot[rel])
         except ColmAimsError:
             continue  # not a known legacy family; other gates govern it
         parsed_by_rel[rel] = parsed
@@ -780,10 +866,13 @@ def run_verifier(
         )
     tree = Path(tree)
     receipts_dir = Path(receipts_dir)
-    tree_resolved = tree.resolve()
 
-    files = _tree_file_map(tree) if tree.is_dir() else {}
-    if not files or "profile.json" not in files:
+    # MA-HI-004/MA-HI-002: one symlink-free, bounded snapshot of every tree
+    # member, read ONCE. Every gate hash and the receipt digest derive from
+    # it, so nothing can desync gate-validated bytes from receipt-attested
+    # bytes. sha_by_rel is the single hash source of truth.
+    snapshot = _read_tree_snapshot(tree) if tree.is_dir() else {}
+    if not snapshot or "profile.json" not in snapshot:
         # QA-013: name the tree path exactly as supplied on the command line
         # (R-033 requires naming the path; R-026 forbids amplifying it into a
         # resolved local absolute form the caller never supplied).
@@ -791,6 +880,7 @@ def run_verifier(
             f"zero candidate artifacts under {tree}; expected"
             f" layout: {_EXPECTED_LAYOUT} (R-033)"
         )
+    sha_by_rel = _sha_map(snapshot)
 
     expectations_obj: dict[str, Any] | None = None
     expectations_bytes: bytes | None = None
@@ -812,13 +902,13 @@ def run_verifier(
             expectations_path
         )
 
-    # Typed ingress (R-020) — unreadable/malformed inputs halt here.
-    profile = schema.load_artifact(files["profile.json"], tree_root=tree)
+    # Typed ingress (R-020) — from the snapshot bytes, not a re-read (MA-HI-004).
+    profile = schema.load_artifact_bytes(snapshot["profile.json"], "profile.json")
     records: list[dict[str, Any]] | None = None
     record_lines: list[int] = []
-    if "records.jsonl" in files:
-        loaded_records = schema.load_artifact(
-            files["records.jsonl"], tree_root=tree
+    if "records.jsonl" in snapshot:
+        loaded_records = schema.load_artifact_bytes(
+            snapshot["records.jsonl"], "records.jsonl"
         )
         records = loaded_records["records"]
         record_lines = loaded_records.get("line_numbers") or []
@@ -912,7 +1002,7 @@ def run_verifier(
                     )
                 )
 
-    legacy_parsed, classifications = _classify_legacy_artifacts(files)
+    legacy_parsed, classifications = _classify_legacy_artifacts(snapshot)
 
     try:
         closure = classify_certifiability(profile)
@@ -933,7 +1023,9 @@ def run_verifier(
             legs,
             expectations_obj,
             expectations_path,
-            files,
+            tree,
+            snapshot,
+            sha_by_rel,
             profile,
             records,
             legacy_parsed,
@@ -964,7 +1056,7 @@ def run_verifier(
         "legs": legs,
         "validated_artifacts": validated,
         "classifications": classifications,
-        "input_tree_sha256": _tree_digest(tree),
+        "input_tree_sha256": _tree_digest_from_shas(sha_by_rel),
         "expectations_anchor_sha256": (
             hashlib.sha256(expectations_bytes).hexdigest()
             if expectations_bytes is not None
@@ -988,7 +1080,9 @@ def _release_legs(
     legs: list[dict[str, Any]],
     exp: dict[str, Any],
     expectations_path: Path,
-    files: dict[str, Path],
+    tree: Path,
+    snapshot: dict[str, bytes],
+    sha_by_rel: dict[str, str],
     profile: dict[str, Any],
     records: list[dict[str, Any]] | None,
     legacy_parsed: dict[str, dict[str, Any]],
@@ -999,19 +1093,23 @@ def _release_legs(
 
     Each section owns one gate family; a section that cannot even reach its
     inputs records the failure and returns rather than skipping silently.
+    ``snapshot``/``sha_by_rel`` are the one-shot tree bytes/hashes (MA-HI-004).
     """
     prov = profile.get("provenance") or {}
     base = expectations_path.parent
 
-    ledger_doc, external_ids = _anchor_legs(legs, exp, base, prov)
-    _tree_file_legs(legs, exp, files)
-    _binding_legs(legs, exp, files, profile, prov)
+    ledger_doc, external_ids = _anchor_legs(legs, exp, base, tree, prov)
+    _tree_file_legs(legs, exp, sha_by_rel)
+    _binding_legs(legs, exp, sha_by_rel, profile, prov)
     # QA-002: table-driven per-noun admissibility legs (replaces the former
     # scattered inline gates; leg ids preserved).
     _provenance_table_legs(legs, prov)
     _mc_build_consistency_leg(legs, prov)
     _model_revision_leg(legs, prov)
     _splits_recompute_leg(legs, prov, records)
+    # MA-HAI-001: reconcile each cell estimand identity field against its
+    # authoritative source (never a self-recomputed unanchored digest).
+    _estimand_reconciliation_leg(legs, profile, prov, records, ledger_doc)
     _record_leg(
         legs,
         "closure_certifiability",
@@ -1020,8 +1118,8 @@ def _release_legs(
         observed=closure,
     )
 
-    _rights_legs(legs, exp, base, files)
-    _manifest_legs(legs, files)
+    _rights_legs(legs, exp, base, tree, snapshot)
+    _manifest_legs(legs, snapshot)
     # QA-003: the profile estimand set is the source of truth a row's
     # declared estimand must re-derive against.
     profile_estimands = {
@@ -1033,7 +1131,7 @@ def _release_legs(
     _ledger_legs(
         legs,
         ledger_doc,
-        files,
+        snapshot,
         legacy_parsed,
         artifacts_valid,
         prov,
@@ -1042,10 +1140,38 @@ def _release_legs(
     )
 
 
+def _contained_reference(base: Path, rel: Any, tree: Path) -> Path | None:
+    """Resolve an anchor/expectations-referenced sidecar path safely (MA-PI-001).
+
+    Returns the joined path only when ``rel`` is a plain relative path that
+    resolves (symlink-free) UNDER ``base`` and does NOT collapse INTO the
+    verified ``tree`` — the containment that keeps the frozen ledger and
+    rights inventory genuine out-of-tree anchors. Any absolute path, ``..``
+    escape, symlink redirect out of base, or in-tree collapse returns None.
+    """
+    if not isinstance(rel, str) or not rel:
+        return None
+    candidate = Path(rel)
+    if candidate.is_absolute():
+        return None
+    joined = base / candidate
+    try:
+        resolved = joined.resolve()
+    except OSError:
+        return None
+    base_resolved = base.resolve()
+    if not (resolved == base_resolved or base_resolved in resolved.parents):
+        return None  # escapes base (via .. or a symlink redirect)
+    if schema.resolves_inside(joined, tree):
+        return None  # collapsed into the verified tree (self-attestation)
+    return joined
+
+
 def _anchor_legs(
     legs: list[dict[str, Any]],
     exp: dict[str, Any],
     base: Path,
+    tree: Path,
     prov: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, list[str] | None]:
     """Anchor cross-check before any expectation is consumed (R-013).
@@ -1069,9 +1195,24 @@ def _anchor_legs(
 
     ledger_doc: dict[str, Any] | None = None
     ledger_rel = anchor.get("ledger_path", "ledger.json")
-    ledger_path = base / str(ledger_rel)
     anchor_ledger_sha = anchor.get("ledger_sha256")
-    if not ledger_path.is_file():
+    # MA-PI-001 (R-013): the frozen-ledger reference must be a plain relative
+    # sibling under the expectations base — never an absolute path, a `..`
+    # escape, a symlink redirect, or a path that collapses INTO the verified
+    # tree. A contained-and-out-of-tree anchor is what makes third-party
+    # re-verification meaningful.
+    ledger_path = _contained_reference(base, ledger_rel, tree)
+    if ledger_path is None:
+        legs.append(
+            _fail(
+                "anchor_ledger",
+                expected="frozen ledger at a relative sibling path under the"
+                " expectations base, outside the verified tree (R-013)",
+                observed=f"non-contained ledger_path {ledger_rel!r}",
+                remediation="ARTIFACT_DEFECT",
+            )
+        )
+    elif not ledger_path.is_file():
         legs.append(
             _fail(
                 "anchor_ledger",
@@ -1119,17 +1260,32 @@ def _anchor_legs(
                 observed=observed_commit,
             )
         )
-    elif _git_object_exists(anchor_commit) is False:
-        legs.append(
-            _fail(
-                "anchor_source_commit_object",
-                expected=f"commit {anchor_commit} present in the"
-                " available repository (R-013)",
-                observed="object not found",
-            )
-        )
     else:
         legs.append(_pass("anchor_source_commit"))
+        # MA-CC-5: the object-existence check is a SEPARATE leg bound to this
+        # repository. False (repo available, object missing) FAILs; None (no
+        # git available) is SKIPPED-with-reason — never silently passed.
+        exists = _git_object_exists(anchor_commit)
+        if exists is False:
+            legs.append(
+                _fail(
+                    "anchor_source_commit_object",
+                    expected=f"commit {anchor_commit} present in the"
+                    " source repository (R-013)",
+                    observed="object not found",
+                )
+            )
+        elif exists is None:
+            legs.append(
+                _skipped(
+                    "anchor_source_commit_object",
+                    reason="source git repository unavailable for the"
+                    " object-existence check (string-exact anchor still"
+                    " enforced) (R-013)",
+                )
+            )
+        else:
+            legs.append(_pass("anchor_source_commit_object"))
 
     # QA-005: the EXTERNAL predicate is anchored membership — a list the
     # ledger editor cannot reach from inside the ledger document.
@@ -1152,9 +1308,13 @@ def _anchor_legs(
 
 
 def _tree_file_legs(
-    legs: list[dict[str, Any]], exp: dict[str, Any], files: dict[str, Path]
+    legs: list[dict[str, Any]], exp: dict[str, Any], sha_by_rel: dict[str, str]
 ) -> None:
-    """Artifact-tree byte identity against the anchored hash map (R-014)."""
+    """Artifact-tree byte identity against the anchored hash map (R-014).
+
+    Hashes come from the one-shot snapshot (MA-HI-004), so this leg and the
+    receipt digest attest identical bytes.
+    """
     declared_tree = exp.get("tree_files")
     if not isinstance(declared_tree, dict):
         legs.append(
@@ -1168,7 +1328,7 @@ def _tree_file_legs(
         return
 
     problems: list[str] = []
-    actual = {rel: _sha256_file(path) for rel, path in files.items()}
+    actual = dict(sha_by_rel)
     for rel, sha in sorted(declared_tree.items()):
         if rel not in actual:
             problems.append(f"declared-but-absent {rel!r}")
@@ -1189,16 +1349,19 @@ def _tree_file_legs(
 def _binding_legs(
     legs: list[dict[str, Any]],
     exp: dict[str, Any],
-    files: dict[str, Path],
+    sha_by_rel: dict[str, str],
     profile: dict[str, Any],
     prov: dict[str, Any],
 ) -> None:
-    """The thirteen independently anchored binding legs (R-012)."""
+    """The thirteen independently anchored binding legs (R-012).
+
+    File hashes come from the one-shot snapshot (MA-HI-004).
+    """
     observed_bindings: dict[str, Any] = {
         "schema_profile": {
             "profile_id": profile.get("profile_id"),
             "schema_version": profile.get("schema_version"),
-            "profile_sha256": _sha256_file(files["profile.json"]),
+            "profile_sha256": sha_by_rel.get("profile.json"),
         },
         "producer": {
             "entrypoint": prov.get("producer_entrypoint"),
@@ -1229,7 +1392,7 @@ def _binding_legs(
         )
         bindings = {}
     for key in BINDING_KEYS:
-        _check_binding(legs, key, observed_bindings[key], bindings, files)
+        _check_binding(legs, key, observed_bindings[key], bindings, sha_by_rel)
 
 
 def _check_binding(
@@ -1237,7 +1400,7 @@ def _check_binding(
     key: str,
     observed: Any,
     bindings: dict[str, Any],
-    files: dict[str, Path],
+    sha_by_rel: dict[str, str],
 ) -> None:
     """One binding leg = two obligations (QA-001): the observed value must be
     admissible in its own right AND must match the anchored expectation.
@@ -1275,9 +1438,7 @@ def _check_binding(
     if key == "input_hashes" and isinstance(expected, dict):
         mismatched: dict[str, Any] = {}
         for fname, sha in expected.items():
-            actual_sha = (
-                _sha256_file(files[fname]) if fname in files else "absent"
-            )
+            actual_sha = sha_by_rel.get(fname, "absent")
             if actual_sha != sha:
                 mismatched[fname] = actual_sha
         if mismatched:
@@ -1401,11 +1562,118 @@ def _splits_recompute_leg(
     )
 
 
+def _authorized_random_k_draws(ledger_doc: dict[str, Any] | None) -> set[str]:
+    """Draw ids the frozen ledger authorizes via a sanctioned Random-K
+    disposition (R-025). Any other draw id in a cell estimand is unanchored
+    and must be refused (MA-HAI-001)."""
+    authorized: set[str] = {"draw-none"}  # the explicit no-draw sentinel
+    if not isinstance(ledger_doc, dict):
+        return authorized
+    for row in ledger_doc.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        if row.get("artifact_family") != "random_k":
+            continue
+        if row.get("author_decision") not in ledger_mod.RANDOM_K_DISPOSITIONS:
+            continue
+        draw = row.get("random_k_draw_id")
+        if isinstance(draw, str) and draw:
+            authorized.add(draw)
+    return authorized
+
+
+def _estimand_reconciliation_leg(
+    legs: list[dict[str, Any]],
+    profile: dict[str, Any],
+    prov: dict[str, Any],
+    records: list[dict[str, Any]] | None,
+    ledger_doc: dict[str, Any] | None,
+) -> None:
+    """Reconcile every cell estimand identity field against its authoritative
+    source (MA-HAI-001, R-011/R-025).
+
+    The estimand digest is self-recomputed from the estimand block, so a
+    FABRICATED estimand (a mismatched calibration/continuation identity, a
+    wrong timeout horizon, a non-``n_complete`` denominator, an arm id absent
+    from the profile, or a substituted favorable Random-K draw) yields a
+    self-consistent digest and would otherwise reach PASS_RELEASE. This leg
+    binds each estimand-defining field to an independently verified value.
+    """
+    arm_ids = {
+        arm.get("arm_id")
+        for arm in (profile.get("arms") or [])
+        if isinstance(arm, dict)
+    }
+    # The horizon actually applied to the records (the authoritative source
+    # for timeout_parameters.trajectory_horizon).
+    record_horizons = {
+        r.get("trajectory_horizon")
+        for r in (records or [])
+        if isinstance(r, dict) and schema.is_number(r.get("trajectory_horizon"))
+    }
+    authorized_draws = _authorized_random_k_draws(ledger_doc)
+
+    problems: list[str] = []
+    for cell in profile.get("cells") or []:
+        if not isinstance(cell, dict):
+            continue
+        cid = cell.get("cell_id", "unnamed")
+        est = cell.get("estimand") or {}
+        if est.get("calibration_identity") != prov.get("calibration_identity"):
+            problems.append(
+                f"{cid}: estimand.calibration_identity"
+                f" {est.get('calibration_identity')!r} != provenance"
+                f" {prov.get('calibration_identity')!r}"
+            )
+        if est.get("continuation_identity") != prov.get("continuation_identity"):
+            problems.append(
+                f"{cid}: estimand.continuation_identity"
+                f" {est.get('continuation_identity')!r} != provenance"
+                f" {prov.get('continuation_identity')!r}"
+            )
+        if est.get("denominator_policy") != "n_complete":
+            problems.append(
+                f"{cid}: estimand.denominator_policy"
+                f" {est.get('denominator_policy')!r} != 'n_complete'"
+            )
+        est_horizon = (est.get("timeout_parameters") or {}).get(
+            "trajectory_horizon"
+        )
+        if record_horizons and {est_horizon} != record_horizons:
+            problems.append(
+                f"{cid}: estimand timeout horizon {est_horizon!r} !="
+                f" the horizon applied to records {sorted(record_horizons)}"
+            )
+        for role in ("arm_mc", "arm_ref"):
+            if est.get(role) not in arm_ids:
+                problems.append(
+                    f"{cid}: estimand.{role} {est.get(role)!r} not among the"
+                    f" profile arms {sorted(a for a in arm_ids if a)}"
+                )
+        draw = est.get("random_k_draw_id")
+        if draw not in authorized_draws:
+            problems.append(
+                f"{cid}: estimand.random_k_draw_id {draw!r} is not authorized"
+                " by a sanctioned Random-K disposition in the frozen ledger"
+                " (a substituted favorable draw is refused)"
+            )
+    _record_leg(
+        legs,
+        "estimand_reconciliation",
+        not problems,
+        expected="every cell estimand identity field reconciles with its"
+        " authoritative source (provenance/records/arms/ledger)"
+        " (R-011/R-025/MA-HAI-001)",
+        observed="; ".join(problems),
+    )
+
+
 def _rights_legs(
     legs: list[dict[str, Any]],
     exp: dict[str, Any],
     base: Path,
-    files: dict[str, Path],
+    tree: Path,
+    snapshot: dict[str, bytes],
 ) -> None:
     """Rights inventory binding + release clearance (R-026/R-035)."""
     rights_decl = exp.get("rights_inventory")
@@ -1421,7 +1689,20 @@ def _rights_legs(
         )
         return
 
-    rights_path = base / str(rights_decl.get("path", "rights.json"))
+    # MA-PI-001 (R-013): the rights inventory reference is contained the same
+    # way the frozen ledger is — relative, under base, out of the tree.
+    rights_rel = rights_decl.get("path", "rights.json")
+    rights_path = _contained_reference(base, rights_rel, tree)
+    if rights_path is None:
+        legs.append(
+            _fail(
+                "rights_inventory",
+                expected="rights inventory at a relative sibling path under"
+                " the expectations base, outside the verified tree (R-013)",
+                observed=f"non-contained rights path {rights_rel!r}",
+            )
+        )
+        return
     rights_obj, rights_err = _load_json_lenient(rights_path)
     if rights_err is not None:
         legs.append(
@@ -1443,7 +1724,7 @@ def _rights_legs(
     )
     try:
         # R-035: rights cover every file FOUND, not merely declared.
-        ledger_mod.check_rights_release(rights_obj, sorted(files))
+        ledger_mod.check_rights_release(rights_obj, sorted(snapshot))
         legs.append(_pass("rights_release"))
     except ledger_mod.RightsError as exc:
         legs.append(
@@ -1458,10 +1739,15 @@ def _rights_legs(
 
 
 def _manifest_legs(
-    legs: list[dict[str, Any]], files: dict[str, Path]
+    legs: list[dict[str, Any]], snapshot: dict[str, bytes]
 ) -> None:
-    """Presentation manifest reconciliation (R-033/R-035)."""
-    if "presentation_manifest.json" not in files:
+    """Presentation manifest reconciliation (R-033/R-035).
+
+    The manifest is a TREE member, so it is read from the one-shot snapshot
+    (MA-HI-004) — never re-read from disk.
+    """
+    files = snapshot
+    if "presentation_manifest.json" not in snapshot:
         legs.append(
             _fail(
                 "presentation_manifest_present",
@@ -1471,8 +1757,8 @@ def _manifest_legs(
         )
         return
 
-    manifest_obj, manifest_err = _load_json_lenient(
-        files["presentation_manifest.json"]
+    manifest_obj, manifest_err = _load_json_bytes_lenient(
+        snapshot["presentation_manifest.json"], "presentation_manifest.json"
     )
     if manifest_err is None:
         unknown_keys = sorted(set(manifest_obj) - _MANIFEST_KEYS)
@@ -1533,7 +1819,7 @@ def _manifest_legs(
 def _ledger_legs(
     legs: list[dict[str, Any]],
     ledger_doc: dict[str, Any] | None,
-    files: dict[str, Path],
+    snapshot: dict[str, bytes],
     legacy_parsed: dict[str, dict[str, Any]],
     artifacts_valid: bool,
     prov: dict[str, Any],
@@ -1624,7 +1910,8 @@ def _ledger_legs(
             )
             continue
         recomputed = _recompute_row_status(
-            row, files, legacy_parsed, artifacts_valid, prov, profile_estimands
+            row, snapshot, legacy_parsed, artifacts_valid, prov,
+            profile_estimands,
         )
         _record_leg(
             legs,
@@ -1661,7 +1948,7 @@ def _provenance_identity_closure(prov: dict[str, Any]) -> set[str]:
 
 def _recompute_row_status(
     row: dict[str, Any],
-    files: dict[str, Path],
+    snapshot: dict[str, bytes],
     legacy_parsed: dict[str, dict[str, Any]],
     artifacts_valid: bool,
     prov: dict[str, Any],
@@ -1675,7 +1962,7 @@ def _recompute_row_status(
     if row.get("rights_status") != "VERIFIED_ALLOWED":
         return "UNVERIFIED"
     artifact = row.get("artifact_id")
-    if not isinstance(artifact, str) or artifact not in files:
+    if not isinstance(artifact, str) or artifact not in snapshot:
         return "UNVERIFIED"
     # QA-003: identity cross-checks against the verified provenance.
     if row.get("producer_entrypoint") != prov.get("producer_entrypoint"):

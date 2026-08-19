@@ -13,14 +13,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Direct-path invocation bootstraps the repo root onto sys.path (repo
-# convention: standalone entrypoints force the repo root to sys.path[0]),
-# so `python reproducibility/colm_aims_2026/verify.py` behaves identically
-# to the documented module-run form (R-037).
+# Direct-path invocation force-fronts the repo root on sys.path so the gate
+# code (which the receipt SHA-stamps) always resolves from THIS repository
+# (MA-CC-1, R-037). A membership guard (`if _REPO_ROOT not in sys.path`) is
+# the PR#30 anti-pattern: when the repo root is already present but NOT first
+# — e.g. a stale checkout ahead of it on PYTHONPATH — the skip lets the stale
+# tree supply the imported modules. Dedupe then insert-at-front makes the
+# repo root sys.path[0] exactly once, unconditionally.
 if __package__ in (None, ""):  # pragma: no cover - exercised via subprocess
     _REPO_ROOT = str(Path(__file__).resolve().parents[2])
-    if _REPO_ROOT not in sys.path:
-        sys.path.insert(0, _REPO_ROOT)
+    sys.path[:] = [entry for entry in sys.path if entry != _REPO_ROOT]
+    sys.path.insert(0, _REPO_ROOT)
 
 import argparse
 import re

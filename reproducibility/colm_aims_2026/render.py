@@ -114,6 +114,19 @@ def render_summary(report: Any) -> str:
                 f" observed={observed}"
                 f" remediation={leg.get('remediation_class')}"
             )
+    # MA-CC-5: SKIPPED legs (a required capability was unavailable, e.g. no
+    # source git for the object-existence check) are surfaced with their
+    # reason so the gap is on the record, not silently passed.
+    skipped = [leg for leg in legs if leg.get("outcome") == "SKIPPED"]
+    if skipped:
+        lines.append("skipped legs:")
+        for leg in skipped:
+            lines.append(
+                f"  - {leg.get('leg_id')}: {leg.get('reason')}"
+            )
     passed = sum(1 for leg in legs if leg.get("outcome") == "PASS")
-    lines.append(f"legs: {passed} passed, {len(failing)} failed.")
+    lines.append(
+        f"legs: {passed} passed, {len(failing)} failed,"
+        f" {len(skipped)} skipped."
+    )
     return "\n".join(lines)

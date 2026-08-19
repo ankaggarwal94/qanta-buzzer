@@ -16,6 +16,8 @@ from .schema import (
     EXCLUSION_REASONS,
     INTERVAL_IDENTITY_KEYS,
     INTERVAL_REQUIRED_KEYS,
+    MAX_BOOTSTRAP_CELLS,
+    MAX_BOOTSTRAP_DRAWS,
     ColmAimsError,
     EmptyEvaluationError,
     SchemaValidationError,
@@ -380,6 +382,16 @@ def recompute_interval(
             f"interval draw_count must be a positive integer, got"
             f" {draw_count!r} (R-015)"
         )
+    # MA-RB-001 (R-015): draw_count is attacker-controlled and sizes the
+    # resample matrix (draws x items). Refuse an oversized count BEFORE
+    # build_bootstrap_plan allocates it — fail-closed must not mean fail-hung
+    # / OOM. draw_count is not a digest field, so this ceiling is enforced
+    # here, not via the estimand digest.
+    if draw_count > MAX_BOOTSTRAP_DRAWS:
+        raise SchemaValidationError(
+            f"interval draw_count {draw_count} exceeds the maximum admissible"
+            f" {MAX_BOOTSTRAP_DRAWS} bootstrap draws (R-015)"
+        )
     seeds = interval_spec["resampling_seeds"]
     if not isinstance(seeds, list) or not seeds:
         raise SchemaValidationError(
@@ -395,6 +407,12 @@ def recompute_interval(
             "interval recomputation over zero both-finite pairs is"
             " undefined; a zero-both-finite cell must not carry an interval"
             " (R-006/R-015)"
+        )
+    # MA-RB-001: also cap the total resample matrix cells (draws x items).
+    if draw_count * len(shifts) > MAX_BOOTSTRAP_CELLS:
+        raise SchemaValidationError(
+            f"interval resample matrix {draw_count} x {len(shifts)} exceeds"
+            f" the maximum admissible {MAX_BOOTSTRAP_CELLS} cells (R-015)"
         )
     # The pinned historical estimator (same plan, same resample indices).
     from scripts.stopdff_v5 import bootstrap as historical_bootstrap

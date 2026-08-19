@@ -43,4 +43,5 @@ testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "pipeline: subprocess-based pipeline entrypoint smoke tests",
+    "containment: R-018 namespace-containment guards that consult git repo state (kept collected by default; deselect with '-m \"not containment\"' in shallow-clone CI)",
 ]

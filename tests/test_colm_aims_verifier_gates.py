@@ -393,7 +393,16 @@ def test_anchor_check_is_string_exact_and_works_without_git(
     # Tests R-013 [integration]: the anchor check is a string-exact
     # comparison of recorded commit/ledger identities that works without a
     # git checkout (fake 40-hex commit, cwd outside any repo).
+    # MA-CC-5 (fix round 3, additive setup): the object-existence check now
+    # binds to an EXPLICIT source repo (never ambient cwd), so making git
+    # genuinely unavailable — the scenario this test exercises — means
+    # pointing that binding at a non-repo dir. The chdir is kept and a
+    # non-git _SOURCE_REPO is set so the object leg is SKIPPED (not a False
+    # FAIL) and the string-exact anchor alone governs. The RELEASE_PASS
+    # assertion below is preserved verbatim.
     monkeypatch.chdir(tmp_path)
+    from reproducibility.colm_aims_2026 import verifier as _verifier
+    monkeypatch.setattr(_verifier, "_SOURCE_REPO", tmp_path)
     pkg = build_package(tmp_path, source_commit=FAKE_COMMIT)
     report = _run_release(pkg)
     assert report.verdict == VERDICT_RELEASE_PASS
