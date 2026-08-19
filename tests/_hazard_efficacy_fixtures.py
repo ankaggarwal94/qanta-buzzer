@@ -35,7 +35,6 @@ Underscore-prefixed module: never collected by pytest.
 
 from __future__ import annotations
 
-import copy
 import json
 import subprocess
 import sys
@@ -540,10 +539,3 @@ def deep_key_scan(obj: Any, needle: str) -> list[str]:
         for item in obj:
             found.extend(deep_key_scan(item, needle))
     return found
-
-
-def copy_with(obj: dict, **kwargs: Any) -> dict:
-    """Deep-copy a dict and update top-level keys."""
-    out = copy.deepcopy(obj)
-    out.update(kwargs)
-    return out

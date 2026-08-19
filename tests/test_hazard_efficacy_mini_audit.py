@@ -550,6 +550,11 @@ def test_ma007_disk_preflight_prints_estimate_and_warns(
 
 # Tests MA-008 [unit]: reserved FLAGS tokens, reserved overrides, and bare
 # no-op tokens are all rejected at plan time.
+# EXTENDED in PR #41 round-2 resolve: negative-number-shaped tokens and
+# unknown flag bases ([5] — they parsed as silent positionals), overrides of
+# arm-control NON-exempt keys ([3] — guaranteed post-training
+# ArmControlError), and silently-overwritten seed=/hazard.* overrides
+# (P3 [14]) are all rejected at plan time too.
 @pytest.mark.parametrize(
     ("flags", "needle"),
     [
@@ -560,6 +565,17 @@ def test_ma007_disk_preflight_prints_estimate_and_warns(
         ("supervised.checkpoint_dir=/tmp/x", "reserved"),
         ("ppo.eval_interval=5", "reserved"),
         ("lr2e-5", "bare token"),
+        # PR #41 round-2 [5]: negative-number-shaped / unknown flag bases.
+        ("-3", "unrecognized"),
+        ("-0.5", "unrecognized"),
+        ("--no-such-flag", "unrecognized"),
+        # PR #41 round-2 [3]: arm-control non-exempt config overrides.
+        ("ppo.lr=2e-5", "NOT exempt"),
+        ("data.max_questions=5", "NOT exempt"),
+        ("model.model_name=t5-large", "NOT exempt"),
+        # PR #41 round-2 P3 [14]: silently-overwritten overrides.
+        ("seed=5", "OVERWRITTEN"),
+        ("hazard.beta_terminal=9.0", "OVERWRITTEN"),
     ],
 )
 def test_ma008_variant_reserved_and_bare_tokens_rejected(
@@ -586,11 +602,14 @@ def test_ma008_variant_shadowing_core_arm_rejected(tmp_path: Path) -> None:
 def test_ma008_variant_inherits_hazard_knobs_flags_override(
     tmp_path: Path,
 ) -> None:
+    # AMENDED in PR #41 round-2 resolve [3]: the carrier variant is now
+    # FLAGS-free (pure knob inheritance) — its old ppo.lr= override targets
+    # an arm-control non-exempt key and is rejected at plan time.
     out = tmp_path / "out"
     plan = harness.plan_runs(
         _namespace(
             out, seeds=[1], beta_terminal=2.5, freeze_answer_head=True,
-            variant=["Bv:ppo.lr=2e-5"],
+            variant=["Bv:"],
         )
     )
     variant = next(rec for rec in plan if rec["arm"] == "variant:Bv")
@@ -1037,7 +1056,14 @@ def test_ma017_save_json_allow_nan_false_rejects_non_finite(
 
     with pytest.raises(ValueError):
         save_json(tmp_path / "x.json", {"v": float("-inf")}, allow_nan=False)
-    assert not (tmp_path / "x.json").exists() or True  # write may be partial
+    # PR #41 round-2 resolve (P3 [23]): the old `... or True` here asserted
+    # nothing. The real invariant: whatever the aborted strict write left
+    # behind (nothing, or a truncated prefix) must NOT be a loadable JSON
+    # document — no reader can mistake it for a complete artifact.
+    strict_path = tmp_path / "x.json"
+    if strict_path.exists():
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(strict_path.read_text())
 
     legacy = save_json(tmp_path / "y.json", {"v": float("-inf")})
     assert "-Infinity" in legacy.read_text()
@@ -1326,3 +1352,48 @@ def test_f6_child_eof_without_exit_is_killed(tmp_path: Path) -> None:
     assert "child-timeout-minutes" in message, message
     assert "stall-timeout-minutes" not in message, message
     assert "bye" in total_log.read_text()
+
+
+# Tests PR #41 round-2 P3 [24] [integration]: the post-EOF wait with BOTH
+# limits configured is bounded by the SMALLER of the stall budget and the
+# REMAINING total budget, and the error names whichever limit expired (the
+# stall-only and total-only legs live in test_f6_child_eof_without_exit_is_
+# killed; this pins the previously-untested both-configured min() branch).
+def test_pr41_post_eof_wait_bounded_by_smaller_of_both_limits(
+    tmp_path: Path,
+) -> None:
+    script = (
+        "import os, sys, time\n"
+        "print('bye', flush=True)\n"
+        "os.close(1)\n"
+        "os.close(2)\n"
+        "time.sleep(60)\n"
+    )
+
+    # (a) stall budget < remaining total budget => the stall limit expires
+    # and is the one named.
+    start = time.monotonic()
+    with pytest.raises(harness.ChildRunError, match="did not exit") as excinfo:
+        harness._run_child(
+            [sys.executable, "-c", script], tmp_path / "stall_smaller.log",
+            stall_timeout_seconds=0.5,
+            child_timeout_seconds=60.0,
+        )
+    assert time.monotonic() - start < 20.0
+    message = str(excinfo.value)
+    assert "stall-timeout-minutes" in message, message
+    assert "child-timeout-minutes" not in message, message
+
+    # (b) remaining total budget < stall budget => the total cap expires
+    # and is the one named.
+    start = time.monotonic()
+    with pytest.raises(harness.ChildRunError, match="did not exit") as excinfo:
+        harness._run_child(
+            [sys.executable, "-c", script], tmp_path / "total_smaller.log",
+            stall_timeout_seconds=60.0,
+            child_timeout_seconds=1.0,
+        )
+    assert time.monotonic() - start < 20.0
+    message = str(excinfo.value)
+    assert "child-timeout-minutes" in message, message
+    assert "stall-timeout-minutes" not in message, message

@@ -985,11 +985,14 @@ def test_r014_prune_reclaims_only_regenerable_state(tmp_path: Path) -> None:
 
 # Tests R-014 [integration]: prune refuses (deletes nothing) while
 # eval_result.json is absent — the report must stay regenerable.
+# AMENDED in PR #41 round-2 resolve (P3 [22]): the refusal is a CONTRACT —
+# it must RAISE (contextlib.suppress half-pinned it: a silently-returning
+# prune would have passed).
 def test_r014_prune_refuses_without_eval_result(tmp_path: Path) -> None:
     run_dir = make_run_dir(
         tmp_path, "B", 1, include_prunables=True, write_eval_result=False
     )
-    with contextlib.suppress(harness.HarnessError):
+    with pytest.raises(harness.HarnessError, match="Refusing to prune"):
         harness.prune_run_checkpoints(run_dir)
     assert (run_dir / "ppo_t5" / "iter_1").exists(), (
         "nothing may be deleted before eval_result.json exists"
@@ -1376,6 +1379,11 @@ def test_qa002_force_rebuilds_shared_supervised(
 # contiguous at the argv tail.
 # AMENDED in mini-audit fix round (MA-008): variant run dirs/arm labels moved
 # to the distinct variant_<NAME>_seed<k> / variant:<NAME> namespace.
+# AMENDED in PR #41 round-2 resolve [3]: variants may only override
+# arm-control-EXEMPT keys now (non-exempt overrides like ppo.lr= are
+# rejected at plan time — they were guaranteed post-training
+# ArmControlErrors), so the contiguity pin uses the exempt
+# ppo.checkpoint_dir= carrier.
 def test_qa003_variant_positional_override_argv_parses_and_stays_tail(
     tmp_path: Path,
 ) -> None:
@@ -1383,16 +1391,16 @@ def test_qa003_variant_positional_override_argv_parses_and_stays_tail(
 
     out = tmp_path / "out"
     plan = harness.plan_runs(
-        _namespace(out, seeds=[1], variant=["lr_sweep:ppo.lr=2e-5"])
+        _namespace(out, seeds=[1], variant=["ckpt_probe:ppo.checkpoint_dir=ppo_t5"])
     )
-    variant = next(rec for rec in plan if rec["arm"] == "variant:lr_sweep")
+    variant = next(rec for rec in plan if rec["arm"] == "variant:ckpt_probe")
     argv = variant["argv"]
 
     positional = [t for t in argv[2:] if "=" in t and not t.startswith("-")]
     assert positional == [
-        "ppo.lr=2e-5",
+        "ppo.checkpoint_dir=ppo_t5",
         "ppo.eval_interval=1",
-        f"supervised.checkpoint_dir={out / 'variant_lr_sweep_seed1'}",
+        f"supervised.checkpoint_dir={out / 'variant_ckpt_probe_seed1'}",
     ]
     assert argv[-len(positional):] == positional, (
         "positional overrides must be CONTIGUOUS at the argv tail; "
@@ -1407,7 +1415,7 @@ def test_qa003_variant_positional_override_argv_parses_and_stays_tail(
         )
         assert f"supervised.checkpoint_dir={rec['run_dir']}" in parsed.overrides
     parsed = train_t5_policy.parse_args(argv=[str(t) for t in argv[2:]])
-    assert "ppo.lr=2e-5" in parsed.overrides
+    assert "ppo.checkpoint_dir=ppo_t5" in parsed.overrides
     assert "ppo.eval_interval=1" in parsed.overrides
     assert parsed.smoke is True
     assert parsed.hazard_pretrain is True
@@ -1416,15 +1424,28 @@ def test_qa003_variant_positional_override_argv_parses_and_stays_tail(
 # Tests QA-003 [integration]: plan_runs round-trips every argv through the
 # real child parser at preflight — a bad variant flag dies at PLAN time
 # (zero children), never after the shared supervised phase + nine runs.
+# AMENDED in PR #41 round-2 resolve [5]: an unknown flag BASE now dies even
+# earlier, at the variant token classifier (naming the variant); the
+# roundtrip leg is exercised with a known flag carrying a parser-rejected
+# VALUE, which only the real parser can reject.
 def test_qa003_preflight_rejects_argv_the_real_parser_rejects(
     tmp_path: Path,
 ) -> None:
-    args = _namespace(tmp_path / "out", variant=["bad:--no-such-flag"])
+    args = _namespace(
+        tmp_path / "out", variant=["bad:--ppo-iterations notanint"]
+    )
     with pytest.raises(harness.PreflightError) as excinfo:
         harness.plan_runs(args)
     message = str(excinfo.value)
     assert "bad_seed1" in message
-    assert "no-such-flag" in message
+    assert "notanint" in message
+
+    # The unknown-flag-base case dies at the classifier, naming the variant.
+    with pytest.raises(harness.PreflightError, match="unrecognized") as excinfo:
+        harness.plan_runs(
+            _namespace(tmp_path / "out", variant=["bad:--no-such-flag"])
+        )
+    assert "no-such-flag" in str(excinfo.value)
 
 
 # Tests QA-004 [integration]: with artifacts LARGER than the children's
@@ -2113,3 +2134,453 @@ def test_pr41_report_only_legacy_marker_falls_back_and_warns(
     assert "B_seed1" in legacy_warnings[0]
     printed = capsys.readouterr().out
     assert "report_time_legacy" in printed
+
+
+# ---------------------------------------------------------------------------
+# PR #41 round-2 resolve — reuse split identity [1], stale checkpoint trees
+# [2], shared-root cross-dependency preflight [4], smoke-tier guard [7],
+# out_dir lock [9], dry-run resume states (P3 [28]), report-only
+# remediation (P3 [29])
+# ---------------------------------------------------------------------------
+
+
+# Tests PR #41 r3807989137 [unit]: shared-checkpoint reuse validates the
+# producer's ORDERED train/val qids against the CURRENT capped selection
+# (the r3806602891 machinery's sibling site) and rejects a producer whose
+# VAL split (best-model selection) overlaps the current test split.
+def test_pr41_shared_reuse_producer_ordered_split_and_val_leak(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "out"
+    producer_path = (
+        harness.shared_supervised_root(out) / "ppo_t5" / "split_manifest.json"
+    )
+    expected = {
+        split: list(qids) for split, qids in DEFAULT_SPLIT_QIDS.items()
+    }
+
+    # (a) Ordered train drift: same SET, different ORDER (the rebuilt/
+    # reordered-artifact signature) fails loud naming the branch point.
+    drifted = make_split_manifest(
+        split_qids={
+            "train": list(reversed(DEFAULT_SPLIT_QIDS["train"])),
+            "val": list(DEFAULT_SPLIT_QIDS["val"]),
+            "test": list(DEFAULT_SPLIT_QIDS["test"]),
+        }
+    )
+    write_json(producer_path, drifted)
+    with pytest.raises(harness.ProvenanceError) as excinfo:
+        harness.shared_manifest_for_reuse(
+            out, ["q1", "q2", "q3"], expected_split_qids=expected
+        )
+    message = str(excinfo.value)
+    assert "ORDER" in message
+    assert "shared_supervised" in message
+
+    # (b) Producer VAL ∩ current test: the branch point's best_model was
+    # SELECTED on test questions — train/test disjointness alone missed it.
+    leaking = make_split_manifest(
+        split_qids={
+            "train": list(DEFAULT_SPLIT_QIDS["train"]),
+            "val": ["q1"],  # a CURRENT test qid
+            "test": list(DEFAULT_SPLIT_QIDS["test"]),
+        }
+    )
+    write_json(producer_path, leaking)
+    with pytest.raises(harness.ProvenanceError, match="VALIDATION"):
+        harness.shared_manifest_for_reuse(out, ["q1", "q2", "q3"])
+
+    # (c) A clean producer matching the current selection is returned (and
+    # becomes the persisted manifest); the additive keyword defaults to the
+    # pre-existing behavior when omitted.
+    clean = make_split_manifest()
+    write_json(producer_path, clean)
+    got = harness.shared_manifest_for_reuse(
+        out, ["q1", "q2", "q3"], expected_split_qids=expected
+    )
+    assert got is not None
+    assert got["train_qids"] == clean["train_qids"]
+
+
+# Tests PR #41 r3807989137 [integration]: the reuse validation is THREADED
+# through main() — a second invocation over a reused shared checkpoint whose
+# producer manifest carries an order-drifted train split dies loud, with no
+# report.
+def test_pr41_reuse_validates_producer_manifest_against_current_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "out"
+    split_paths = write_split_artifacts(tmp_path / "artifacts")
+    monkeypatch.setattr(
+        harness, "resolve_split_artifacts", lambda **kwargs: dict(split_paths)
+    )
+    calls: list = []
+    monkeypatch.setattr(harness, "_run_child", _composition_runner(calls))
+    eval_calls: list = []
+    monkeypatch.setattr(
+        harness, "evaluate_t5_policy", _fake_eval_factory(eval_calls),
+        raising=False,
+    )
+
+    def fake_probe(*args, **kwargs):
+        out_path = Path(kwargs["out_path"] if "out_path" in kwargs else args[4])
+        block = make_hazard_dynamics()
+        write_json(out_path, block)
+        return block
+
+    monkeypatch.setattr(harness, "probe_and_write_hazard_dynamics", fake_probe)
+
+    argv = [
+        "--smoke", "--out-dir", str(out), "--config", CONFIG_PATH,
+        "--seeds", "1", "--arms", "A", "B",
+    ]
+    harness.main(argv)
+    assert (out / "hazard_efficacy_report.json").exists()
+
+    # Doctor the shared checkpoint's producer manifest into an order-drifted
+    # train split (what a rebuilt/reordered artifact set leaves behind).
+    producer_path = (
+        harness.shared_supervised_root(out) / "ppo_t5" / "split_manifest.json"
+    )
+    drifted = make_split_manifest(
+        split_qids={
+            "train": list(reversed(DEFAULT_SPLIT_QIDS["train"])),
+            "val": list(DEFAULT_SPLIT_QIDS["val"]),
+            "test": list(DEFAULT_SPLIT_QIDS["test"]),
+        }
+    )
+    write_json(producer_path, drifted)
+
+    with pytest.raises(harness.ProvenanceError) as excinfo:
+        harness.main(argv)
+    message = str(excinfo.value)
+    assert "ORDER" in message
+    assert "shared_supervised" in message
+
+
+# Tests PR #41 r3807989140 [integration]: a forced relaunch into an existing
+# dir removes the stale checkpoint TREES (ppo_t5/, hazard/) — an eval-less
+# child (exit 0, no validation pass, no fresh best_model) then fails the
+# checkpoint check instead of getting the STALE best_model blessed.
+def test_pr41_force_relaunch_removes_stale_checkpoint_trees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = make_plan_record(tmp_path, "B", 1)
+    run_dir = make_run_dir(tmp_path, "B", 1, include_hazard_dynamics=True)
+    stale_best = run_dir / "ppo_t5" / "best_model" / "policy_head.pt"
+    stale_hazard = run_dir / "hazard" / "best_model" / "policy_head.pt"
+    assert stale_best.exists() and stale_hazard.exists()
+
+    def evalless_runner(argv, log_path):
+        # Exit 0 WITHOUT writing any checkpoint — the iterations <
+        # eval_interval shape the review names.
+        log_path = Path(log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("child ok; no validation pass ran\n")
+        return 0
+
+    monkeypatch.setattr(harness, "_run_child", evalless_runner)
+    with pytest.raises(harness.ChildRunError, match="left no PPO checkpoint"):
+        harness.execute_plan([record], force=True)
+
+    assert not stale_best.exists(), (
+        "the stale ppo_t5/ tree must be removed before the relaunch"
+    )
+    assert not stale_hazard.exists(), (
+        "the stale hazard/ tree must be removed before the relaunch"
+    )
+    assert not (run_dir / "RUN_COMPLETE.json").exists(), (
+        "no completion marker may bless the eval-less relaunch"
+    )
+
+
+# Tests PR #41 r3807989140 [integration]: the healthy force path still
+# completes — and the blessed best_model is the FRESH child's own output,
+# never the pre-force bytes.
+def test_pr41_force_relaunch_blesses_only_fresh_checkpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = make_plan_record(tmp_path, "A", 1)
+    run_dir = make_run_dir(tmp_path, "A", 1)
+    stale = run_dir / "ppo_t5" / "best_model" / "policy_head.pt"
+    stale.write_bytes(b"STALE-PRE-FORCE-WEIGHTS")
+
+    runner, calls = fabricating_runner([record])
+    monkeypatch.setattr(harness, "_run_child", runner)
+    updated = harness.execute_plan([record], force=True)
+
+    assert len(calls) == 1
+    assert updated[0]["resumed"] is False
+    fresh = run_dir / "ppo_t5" / "best_model" / "policy_head.pt"
+    assert fresh.exists()
+    assert fresh.read_bytes() != b"STALE-PRE-FORCE-WEIGHTS", (
+        "the post-force best_model must be the fresh child's output"
+    )
+    assert (run_dir / "RUN_COMPLETE.json").exists()
+
+
+# Tests PR #41 round-2 [4] [integration]: kept complete arm dirs whose
+# markers reference a shared branch-point fingerprint fail at PREFLIGHT —
+# zero children — when the shared root is ABSENT (deleted) or hashes to a
+# DIFFERENT fingerprint (rebuilt), instead of after the hours-long rebuild.
+def test_pr41_preflight_fails_fast_on_deleted_or_rebuilt_shared_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    split_paths = write_split_artifacts(tmp_path / "artifacts")
+    monkeypatch.setattr(
+        harness, "resolve_split_artifacts", lambda **kwargs: dict(split_paths)
+    )
+    launches: list = []
+    monkeypatch.setattr(
+        harness, "_run_child", lambda argv, log_path: launches.append(argv) or 0
+    )
+
+    # (a) Shared root DELETED since the kept arm trained.
+    out = tmp_path / "out_deleted"
+    make_run_dir(
+        out, "A", 1,
+        marker_extra={"shared_supervised_weights_sha256": "a" * 64},
+    )
+    with pytest.raises(harness.PreflightError, match="ABSENT") as excinfo:
+        harness.main(
+            ["--smoke", "--out-dir", str(out), "--config", CONFIG_PATH,
+             "--seeds", "1", "--arms", "A"]
+        )
+    message = str(excinfo.value)
+    assert "A_seed1" in message
+    assert "cross-dependency" in message
+    assert launches == [], "must fail BEFORE any child (incl. the rebuild)"
+
+    # (b) Shared root REBUILT: present but hashing differently than the
+    # kept marker records.
+    out2 = tmp_path / "out_rebuilt"
+    make_run_dir(
+        out2, "A", 1,
+        marker_extra={"shared_supervised_weights_sha256": "b" * 64},
+    )
+    best = harness.shared_supervised_checkpoint(out2)
+    best.mkdir(parents=True)
+    (best / "policy_head.pt").write_bytes(b"rebuilt-weights")
+    with pytest.raises(harness.PreflightError) as excinfo:
+        harness.main(
+            ["--smoke", "--out-dir", str(out2), "--config", CONFIG_PATH,
+             "--seeds", "1", "--arms", "A"]
+        )
+    message = str(excinfo.value)
+    assert "DIFFERENT shared" in message
+    assert "cross-dependency" in message
+    assert launches == []
+
+    # (c) --force short-circuits the check (everything re-runs anyway):
+    # same tree as (a), but the invocation proceeds to the children.
+    eval_calls: list = []
+    monkeypatch.setattr(
+        harness, "evaluate_t5_policy", _fake_eval_factory(eval_calls),
+        raising=False,
+    )
+    monkeypatch.setattr(harness, "_run_child", _composition_runner(launches))
+    harness.main(
+        ["--smoke", "--force", "--out-dir", str(out), "--config", CONFIG_PATH,
+         "--seeds", "1", "--arms", "A"]
+    )
+    assert launches, "--force must proceed to re-run everything"
+
+
+# Tests PR #41 round-2 [7] [integration]: a NON-smoke default resolution
+# that would land on the artifacts/smoke tier fails loud with populate-
+# artifacts/main guidance (build_mc_dataset.py never writes artifacts/main);
+# smoke resolution and a populated artifacts/main stay untouched.
+def test_pr41_non_smoke_resolution_rejects_smoke_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    art = tmp_path / "artifacts"
+    processed = tmp_path / "processed"
+    monkeypatch.setattr(harness, "ARTIFACT_DIR", art)
+    monkeypatch.setattr(harness, "PROCESSED_DIR", processed)
+    smoke_dir = art / "smoke"
+    smoke_dir.mkdir(parents=True)
+    for name in ("train_dataset.json", "val_dataset.json", "test_dataset.json"):
+        (smoke_dir / name).write_text("[]")
+
+    # Smoke resolution: unchanged.
+    got = harness.resolve_split_artifacts(smoke=True)
+    assert got["train"] == smoke_dir / "train_dataset.json"
+
+    # Non-smoke with artifacts/main absent: fails loud, names the fix.
+    with pytest.raises(harness.PreflightError) as excinfo:
+        harness.resolve_split_artifacts(smoke=False)
+    message = str(excinfo.value)
+    assert str(art / "main") in message
+    assert str(processed) in message
+    assert "build_mc_dataset.py" in message
+
+    # Populated artifacts/main: non-smoke resolves to it.
+    main_dir = art / "main"
+    main_dir.mkdir()
+    for name in ("train_dataset.json", "val_dataset.json", "test_dataset.json"):
+        (main_dir / name).write_text("[]")
+    got = harness.resolve_split_artifacts(smoke=False)
+    assert got["train"] == main_dir / "train_dataset.json"
+
+
+# Tests PR #41 round-2 [9] [integration]: the O_EXCL out_dir lock refuses a
+# second invocation while a holder record exists (--report-only included),
+# documents the per-host limitation, never steers toward --force, reclaims
+# a stale same-host pid, and releases its own lock on exit.
+def test_pr41_out_dir_lock_refuses_concurrent_and_reclaims_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import platform as platform_mod
+    import subprocess as subprocess_mod
+
+    out = tmp_path / "out"
+    for arm in ("A", "B"):
+        make_run_dir(out, arm, 1, include_hazard_dynamics=(arm == "B"))
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail("report-only must not train"),
+    )
+    report_only_argv = [
+        "--report-only", "--smoke", "--out-dir", str(out),
+        "--arms", "A", "B", "--seeds", "1",
+    ]
+
+    # (a) A held lock (foreign host: unprobeable pid => held) refuses the
+    # invocation, names the holder + the per-host caveat, and never
+    # recommends --force.
+    lock = out / "harness.lock"
+    lock.write_text(json.dumps({
+        "pid": 12345,
+        "host": "another-machine.local",
+        "started_at": "2026-08-18T00:00:00+00:00",
+    }))
+    with pytest.raises(harness.PreflightError) as excinfo:
+        harness.main(report_only_argv)
+    message = str(excinfo.value)
+    assert "12345" in message and "another-machine.local" in message
+    assert "PER-HOST" in message
+    assert "Dropbox" in message
+    assert "pass --force" not in message
+    assert lock.exists(), "the loser must never delete a held lock"
+    assert not (out / "hazard_efficacy_report.json").exists()
+
+    # (b) A stale SAME-host lock (recorded pid provably dead) is reclaimed;
+    # the invocation runs and releases its own lock afterward.
+    proc = subprocess_mod.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    lock.write_text(json.dumps({
+        "pid": proc.pid,
+        "host": platform_mod.node(),
+        "started_at": "2026-08-18T00:00:00+00:00",
+    }))
+    harness.main(report_only_argv)
+    assert (out / "hazard_efficacy_report.json").exists()
+    assert not lock.exists(), "the invocation must release its own lock"
+
+
+# Tests PR #41 round-2 P3 [28] [integration]: --dry-run prints the MA-013
+# resume classification per planned dir (complete / partial / fresh) —
+# informational, never a raise.
+def test_pr41_dry_run_prints_resume_state_classification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    out = tmp_path / "out"
+    make_run_dir(out, "A", 1)                # complete
+    make_run_dir(out, "B", 1, marker=False)  # partial
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    split_paths = {}
+    for split in ("train", "val", "test"):
+        p = artifacts / f"{split}_dataset.json"
+        p.write_text("[]")
+        split_paths[split] = p
+    monkeypatch.setattr(
+        harness, "resolve_split_artifacts", lambda **kwargs: dict(split_paths)
+    )
+    launches: list = []
+    monkeypatch.setattr(
+        harness, "_run_child", lambda argv, log_path: launches.append(argv) or 0
+    )
+
+    harness.main(
+        ["--smoke", "--dry-run", "--out-dir", str(out),
+         "--seeds", "1", "--arms", "A", "B", "C"]
+    )
+
+    assert launches == []
+    printed = capsys.readouterr().out
+    assert "A_seed1: complete" in printed
+    assert "B_seed1: partial" in printed
+    assert "C_seed1: fresh" in printed
+
+
+# Tests PR #41 round-2 P3 [29] [integration]: under --report-only the
+# partial-dir remediation no longer recommends the dead-end "pass --force"
+# (QA-005 rejects --report-only --force); it steers to deleting the dir or
+# re-running WITHOUT --report-only.
+def test_pr41_report_only_remediation_never_recommends_force(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "out"
+    make_run_dir(out, "A", 1)
+    make_run_dir(out, "B", 1, write_checkpoints=False,
+                 include_hazard_dynamics=True)  # partial
+    monkeypatch.setattr(
+        harness, "_run_child",
+        lambda argv, log_path: pytest.fail("report-only must not train"),
+    )
+
+    with pytest.raises(harness.PartialRunError) as excinfo:
+        harness.main(
+            ["--report-only", "--smoke", "--out-dir", str(out),
+             "--arms", "A", "B", "--seeds", "1"]
+        )
+    message = str(excinfo.value)
+    assert "pass --force" not in message, message
+    assert "WITHOUT --report-only" in message
+    assert "incompatible" in message
+
+    # Control: outside report-only mode (direct call; the module flag is
+    # reset by main()'s finally) the same gate keeps its verbatim
+    # --force-recommending wording — the fix is mode-aware, not a rewrite.
+    with pytest.raises(harness.PartialRunError) as excinfo:
+        harness.verify_run_records(
+            [{"arm": "B", "seed": 1, "run_dir": out / "B_seed1",
+              "hazard": True}]
+        )
+    assert "--force" in str(excinfo.value)
+    assert "WITHOUT --report-only" not in str(excinfo.value)
+
+
+# Tests PR #41 r3807989140 (sibling site) [integration]: a forced shared
+# rebuild removes the STALE shared tree first — leftover checkpoint files
+# and the previous build's ppo_t5 producer manifest (the MA-004 reuse
+# authority) can never survive into the rebuilt branch point.
+def test_pr41_force_shared_rebuild_removes_stale_shared_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        harness, "_run_child", _supervised_fabricating_runner(calls)
+    )
+    out = tmp_path / "out"
+    harness._run_shared_supervised(_namespace(out), out)
+    sup_root = harness.shared_supervised_root(out)
+    stale_extra = (
+        sup_root / "supervised" / "best_model" / "stale_extra_shard.bin"
+    )
+    stale_extra.write_bytes(b"stale-leftover")
+    stale_producer = sup_root / "ppo_t5" / "split_manifest.json"
+    write_json(stale_producer, make_split_manifest())
+
+    harness._run_shared_supervised(_namespace(out, force=True), out)
+
+    assert len(calls) == 2, "--force must re-run the shared child"
+    assert not stale_extra.exists(), (
+        "stale checkpoint files must not mix into the rebuilt branch point"
+    )
+    assert not stale_producer.exists(), (
+        "the stale MA-004 producer manifest must not survive a rebuild"
+    )
+    assert (sup_root / "supervised" / "best_model" / "policy_head.pt").exists()
+    assert (sup_root / harness.SHARED_SUPERVISED_MARKER).exists()

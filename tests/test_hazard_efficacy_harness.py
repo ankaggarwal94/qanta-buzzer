@@ -538,3 +538,140 @@ def test_r012_eval_stage_calls_entrypoint_exactly_once(
     monkeypatch.setattr(harness, "evaluate_t5_policy", fake_eval, raising=False)
     harness.evaluate_run(record, questions, {})
     assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# PR #41 round-2 resolve — real-producer scale mirror [8], R-005
+# buzz-position histogram (P3 [27]), _arm_metric_mean guard (P3 [6])
+# ---------------------------------------------------------------------------
+
+
+# Tests PR #41 round-2 [8] [unit]: the report scale block's manifest count
+# fields are pinned against the REAL producer — _build_scale consumes a
+# manifest built by scripts/train_t5_policy.py::_build_split_manifest itself
+# (not a fixture replica), so a producer field rename can never ship behind
+# fixture-only green.
+def test_pr41_scale_block_consumes_real_producer_manifest_counts(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    from scripts.train_t5_policy import _build_split_manifest
+
+    train = [SimpleNamespace(qid=f"t{i}") for i in range(4)]
+    val = [SimpleNamespace(qid="v0")]
+    test = [SimpleNamespace(qid=f"q{i}") for i in range(3)]
+    manifest = _build_split_manifest(
+        source="persisted_artifacts",
+        mc_path=None,
+        train_questions=train,
+        val_questions=val,
+        test_questions=test,
+    )
+    # The REAL producer emits the exact count fields the scale block reads.
+    assert manifest["train_count"] == 4
+    assert manifest["val_count"] == 1
+    assert manifest["test_count"] == 3
+
+    config_used = {
+        "model": {"model_name": "t5-small", "device": "cpu"},
+        "ppo": {"iterations": 5},
+    }
+    scale = harness._build_scale(config_used, manifest, tmp_path)
+    assert scale["n_train"] == 4
+    assert scale["n_val"] == 1
+    assert scale["n_test"] == 3
+    assert scale["ppo_iterations"] == 5
+    assert scale["device"] == "cpu"
+
+
+# Tests PR #41 round-2 P3 [27] / R-005 [unit]: the buzz-position histogram
+# helper counts ONLY real policy buzzes (0-indexed positions as string keys)
+# and ignores forced commits, null/bool/non-finite positions.
+def test_pr41_r005_buzz_position_histogram_helper() -> None:
+    runs = [
+        {"qid": "q1", "buzzed": True, "buzz_position": 2},
+        {"qid": "q2", "buzzed": True, "buzz_position": 2},
+        {"qid": "q3", "buzzed": True, "buzz_position": 4},
+        {"qid": "q4", "buzzed": False, "buzz_position": None},  # forced
+        {"qid": "q5", "buzzed": True, "buzz_position": None},   # degenerate
+        {"qid": "q6", "buzzed": True, "buzz_position": True},   # bool guard
+        {"qid": "q7", "buzzed": True, "buzz_position": float("nan")},
+    ]
+    assert harness._buzz_position_histogram(runs) == {"2": 2, "4": 1}
+    assert harness._buzz_position_histogram([]) == {}
+
+
+# Tests PR #41 round-2 P3 [27] / R-005 [unit]: the report carries the
+# per-ARM buzz-position histograms (aggregated across seeds from the runs
+# records) and each per-run row carries its own histogram — both additive.
+def test_pr41_r005_report_carries_buzz_position_histograms(
+    tmp_path: Path,
+) -> None:
+    out, records = _assembly_fixture(tmp_path)
+    report = harness.assemble_report(out, records, smoke=True)
+
+    # Fixture eval runs per arm: one buzz at position 4 (correct), one at
+    # position 2 (incorrect), one forced commit.
+    assert set(report["buzz_position_histograms"]) == {"A", "B", "C"}
+    for arm in ("A", "B", "C"):
+        assert report["buzz_position_histograms"][arm] == {"2": 1, "4": 1}
+    for row in report["runs"]:
+        assert row["buzz_position_histogram"] == {"2": 1, "4": 1}
+
+    # The persisted report carries them too.
+    on_disk = json.loads((out / "hazard_efficacy_report.json").read_text())
+    assert on_disk["buzz_position_histograms"]["A"] == {"2": 1, "4": 1}
+
+
+# Tests PR #41 round-2 P3 [27] / R-005 [unit]: evaluate_run enriches (and
+# persists) the per-run buzz_position_histogram alongside the correct-buzz
+# mean.
+def test_pr41_r005_evaluate_run_persists_histogram(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    run_dir = make_run_dir(tmp_path, "A", 1, write_eval_result=False)
+    record = {"arm": "A", "seed": 1, "run_dir": run_dir, "hazard": False,
+              "log_path": run_dir / "train.log"}
+    questions = [SimpleNamespace(qid=q) for q in ("q1", "q2", "q3")]
+
+    def fake_eval(*args, **kwargs):
+        return {
+            "accuracy": 0.5,
+            "mean_sq": 0.1,
+            "runs": [
+                {"qid": "q1", "sq": 0.1, "buzz_position": 2, "buzzed": True,
+                 "correct": True, "forced_correct": False, "confidence": 0.9,
+                 "episode_reward": 1.0, "n_steps": 2},
+                {"qid": "q2", "sq": 0.1, "buzz_position": 2, "buzzed": True,
+                 "correct": False, "forced_correct": False, "confidence": 0.5,
+                 "episode_reward": -1.0, "n_steps": 2},
+                {"qid": "q3", "sq": 0.1, "buzz_position": None,
+                 "buzzed": False, "correct": False, "forced_correct": True,
+                 "confidence": None, "episode_reward": 0.5, "n_steps": 6},
+            ],
+        }
+
+    monkeypatch.setattr(harness, "evaluate_t5_policy", fake_eval, raising=False)
+    enriched = harness.evaluate_run(record, questions, {})
+    assert enriched["buzz_position_histogram"] == {"2": 2}
+    on_disk = json.loads((run_dir / "eval_result.json").read_text())
+    assert on_disk["buzz_position_histogram"] == {"2": 2}
+
+
+# Tests PR #41 round-2 P3 [6] [unit]: _arm_metric_mean mirrors the plot
+# helper's guard — bools never average as 0/1 and non-finite values never
+# poison an arm delta.
+def test_pr41_arm_metric_mean_excludes_bools_and_non_finite() -> None:
+    eval_by_run = {
+        ("A", 1): {"mean_sq": 0.2},
+        ("A", 2): {"mean_sq": True},          # bool: int subclass, excluded
+        ("A", 3): {"mean_sq": float("nan")},  # non-finite: excluded
+        ("B", 1): {"mean_sq": 0.4},
+    }
+    assert harness._arm_metric_mean(eval_by_run, "A", "mean_sq") == pytest.approx(0.2)
+    assert harness._arm_metric_mean(eval_by_run, "B", "mean_sq") == pytest.approx(0.4)
+    only_junk = {("A", 1): {"mean_sq": True}, ("A", 2): {"mean_sq": float("inf")}}
+    assert harness._arm_metric_mean(only_junk, "A", "mean_sq") is None

@@ -115,14 +115,40 @@ _LOG_TAIL_LINES = 20
 _ACTIVE_STALL_TIMEOUT_SECONDS: float | None = DEFAULT_STALL_TIMEOUT_MINUTES * 60.0
 _ACTIVE_CHILD_TIMEOUT_SECONDS: float | None = None
 
+# PR #41 round-2 [29] (UNCLEAR-V1-3): remediation strings recommend --force
+# only when it is actually usable — under --report-only the QA-005 flag
+# matrix rejects --force, so "pass --force" is a dead end there. Armed by
+# main() (module-level like the MA-006 watchdog limits, so pinned function
+# signatures survive) and reset in its finally block.
+_ACTIVE_REPORT_ONLY: bool = False
+
 # MA-005 / QA-001: ONE atomic invalidation set for all per-run derived
-# artifacts — every file here is unlinked before a child is (re-)launched
-# into an existing dir, so no stale derived artifact can outlive its run.
+# artifact FILES — every file here is unlinked before a child is
+# (re-)launched into an existing dir. PR #41 r3807989140: files alone are
+# NOT the whole invalidation surface — the stale checkpoint TREES
+# (_STALE_RUN_TREES below) are removed alongside them, so no stale artifact
+# of either kind can outlive its run.
 _STALE_RUN_ARTIFACTS = (
     RUN_COMPLETE_MARKER,
     EVAL_RESULT_FILENAME,
     HAZARD_DYNAMICS_FILENAME,
 )
+
+# PR #41 r3807989140: stale checkpoint TREES removed (rmtree) before any
+# child is (re-)launched into an existing dir. Unlinking only the sidecar
+# files left the previous run's ppo_t5/best_model in place, and a relaunched
+# child that never reaches a validation pass (ppo.iterations <
+# ppo.eval_interval writes no fresh best_model) would exit 0 with the STALE
+# best_model still on disk — check_child_outputs then blessed old weights
+# under fresh provenance.
+_STALE_RUN_TREES = ("ppo_t5", "hazard")
+
+# PR #41 round-2 [9] (adv M-V1-4): single-invocation O_EXCL pid lockfile
+# under <out_dir>, held for the whole invocation (--report-only included;
+# --dry-run excluded — it performs zero writes). NOTE the lock is PER-HOST:
+# a pid probe cannot see an invocation on another machine writing into the
+# same synced tree (e.g. Dropbox on a second device).
+_LOCK_FILENAME = "harness.lock"
 
 # MA-008: the variant namespace is DISTINCT from the role-bearing core-arm
 # literals: run dirs are ``variant_<NAME>_seed<k>`` and the arm label is
@@ -153,6 +179,25 @@ _CHILD_VALUE_FLAGS = frozenset(
      "--beta-terminal", "--hazard-ablation", "--seed"}
 )
 
+# MA-008 / PR #41 round-2 [5]: the COMPLETE child flag surface (base forms)
+# of scripts/train_t5_policy.py — the value-taking flags above plus its
+# store_true flags. A variant FLAGS token starting with "-" whose base is
+# not in this set is rejected at plan time: argparse treats negative-number-
+# shaped tokens ("-3", "-0.5") as POSITIONALS, so they used to sail through
+# the dash test AND the parser roundtrip as silent positional no-ops. (The
+# roundtrip through the real parser remains the authority for every token
+# this mirror admits.)
+_CHILD_KNOWN_FLAGS = frozenset(
+    _CHILD_VALUE_FLAGS
+    | {
+        "--hazard-pretrain",
+        "--freeze-answer-head",
+        "--smoke",
+        "--skip-supervised",
+        "--skip-test-eval",
+    }
+)
+
 # MA-007: per-checkpoint disk estimates (bytes) used by the preflight disk
 # budget when no shared checkpoint exists yet to measure.
 _MODEL_SIZE_ESTIMATE_BYTES: dict[str, float] = {
@@ -168,11 +213,14 @@ _RESUME_GUIDANCE = (
     "same command resumes from them (partial dirs need deletion or --force)."
 )
 
-# R-011: the ONLY flags a smoke child receives, shared by the arm children and
-# the shared supervised child. The eval-interval override suffices (the first
-# validation writes best_model because best_val_reward starts at -inf); a
-# per-iteration ``ppo.save_interval`` would waste full model + optimizer-state
-# writes and is deliberately NOT injected.
+# R-011: the smoke tokens injected into the SHARED SUPERVISED child's argv
+# (consumed by build_shared_supervised_argv only — PR #41 round-2 P3 [9]:
+# the arm children re-spell the same two tokens inline in build_child_argv,
+# where positional-override placement rules force the split). The
+# eval-interval override suffices (the first validation writes best_model
+# because best_val_reward starts at -inf); a per-iteration
+# ``ppo.save_interval`` would waste full model + optimizer-state writes and
+# is deliberately NOT injected — for the shared child or any arm child.
 _SMOKE_CHILD_FLAGS = ("--smoke", "ppo.eval_interval=1")
 
 # Inclusive-threshold comparisons on IEEE-754 doubles: an intended exact tie
@@ -293,9 +341,50 @@ def _git_sha() -> str:
     return sha
 
 
+def _remediation(default: str, *, tag: str) -> str:
+    """Mode-aware delete/--force remediation sentence (PR #41 round-2 [29]).
+
+    Parameters
+    ----------
+    default : str
+        The site's normal remediation sentence (recommends ``--force``);
+        returned VERBATIM outside ``--report-only`` mode so every pinned
+        message stays byte-identical.
+    tag : str, keyword-only
+        The finding tag (e.g. ``"MA-001"``) echoed into the report-only
+        variant.
+
+    Returns
+    -------
+    str
+        Under ``--report-only`` (``_ACTIVE_REPORT_ONLY`` armed by
+        ``main()``), ``--force`` is rejected by the QA-005 flag matrix, so
+        recommending it is a dead end (UNCLEAR-V1-3); the report-only
+        variant steers to deleting the offending dir or re-running the full
+        harness WITHOUT ``--report-only`` instead.
+    """
+    if _ACTIVE_REPORT_ONLY:
+        return (
+            "Delete the offending run directory and re-run --report-only, "
+            "or re-run the full harness WITHOUT --report-only (adding "
+            "--force there if a rebuild is intended) — --force is "
+            f"incompatible with --report-only ({tag})."
+        )
+    return default
+
+
 def _git_dirty() -> bool:
-    """Return True when ``git status --porcelain`` is non-empty (R-008)."""
-    return bool(_git_output("status", "--porcelain"))
+    """True when ``git status --porcelain --untracked-files=no`` is non-empty.
+
+    R-008 provenance bit, scoped to TRACKED files (PR #41 round-2 P3 [1]:
+    the unscoped porcelain read ``True`` in 30/30 committed rows because
+    results trees and scratch files are untracked-but-present, degenerating
+    the bit into a constant). Tradeoff: an untracked-but-influential file
+    (e.g. an uncommitted new module imported by the run) no longer flips the
+    bit — the scoped bit answers "do the TRACKED sources match the recorded
+    git_sha", which is the reproducibility question the report row asks.
+    """
+    return bool(_git_output("status", "--porcelain", "--untracked-files=no"))
 
 
 def _load_json_file(path: Path, *, error_cls: type = HarnessError) -> Any:
@@ -362,9 +451,10 @@ def _read_run_marker(path: Path) -> dict[str, Any]:
     never silently skew the cohort/compute blocks).
     """
     path = Path(path)
-    remediation = (
+    remediation = _remediation(
         "Delete the run directory to re-run it fresh, or pass --force to "
-        "re-run everything (MA-015)."
+        "re-run everything (MA-015).",
+        tag="MA-015",
     )
     if not path.exists():
         raise PartialRunError(f"run marker is missing: {path}. {remediation}")
@@ -586,6 +676,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Paired WITH/WITHOUT/compute-control efficacy eval for the "
             "--hazard-pretrain warm-start bridge."
         ),
+        # PR #41 round-2 P3 [11] (adv L-V1-1): no flag abbreviations on the
+        # HARNESS parser either (mini-audit-verify F3 hardened only the
+        # child) — an abbreviated flag (--rep, --forc) must die as
+        # unrecognized instead of silently binding via argparse prefix
+        # matching.
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--config",
@@ -793,6 +889,14 @@ def resolve_split_artifacts(
     The default search order mirrors the child trainer's own resolution
     (``scripts/train_t5_policy.py::load_question_splits_with_metadata``)
     so the harness preflights the same artifacts every child will use.
+
+    PR #41 round-2 [7] (learn M-V1-1): a NON-smoke default resolution that
+    lands on the ``artifacts/smoke`` tier fails loud instead of silently
+    training every child on the tiny smoke split while the report claims
+    full scale. The guard applies only to the default search order — an
+    explicit ``mc_path`` or ``search_dirs`` is the caller's own choice (and
+    the child's search order stays untouched: the harness refuses to
+    launch, it does not re-order the tiers under the children).
     """
     if search_dirs is not None:
         candidate_dirs = [Path(d) for d in search_dirs]
@@ -812,6 +916,25 @@ def resolve_split_artifacts(
             for split in ("train", "val", "test")
         }
         if all(p.exists() for p in paths.values()):
+            if (
+                not smoke
+                and search_dirs is None
+                and not mc_path
+                and Path(base) == ARTIFACT_DIR / "smoke"
+            ):
+                raise PreflightError(
+                    "Non-smoke split resolution landed on the SMOKE "
+                    f"artifact tier ({ARTIFACT_DIR / 'smoke'}): "
+                    f"{ARTIFACT_DIR / 'main'} has no persisted splits, and "
+                    "every child of a full-scale invocation would silently "
+                    "train/evaluate on the tiny smoke split while the "
+                    "report claims full scale (PR #41 round-2). Populate "
+                    f"{ARTIFACT_DIR / 'main'} first — copy the full-scale "
+                    f"*_dataset.json splits from {PROCESSED_DIR} (`python "
+                    "scripts/build_mc_dataset.py` writes data/processed/ "
+                    "and artifacts/smoke/ only; nothing populates "
+                    "artifacts/main/ automatically)."
+                )
             return paths
 
     searched = ", ".join(str(d) for d in candidate_dirs)
@@ -913,8 +1036,16 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
     names shadowing core arms A/B/C, reserved FLAGS tokens (``--seed``,
     ``--model-path``, ``--config``, ``--skip-supervised``, ``--mc-path``,
     ``--smoke``), reserved overrides (``supervised.checkpoint_dir=`` /
-    ``ppo.eval_interval=``), and bare ``=``-less non-flag tokens (silent
-    positional no-ops in the child).
+    ``ppo.eval_interval=``), dash tokens whose base is not a known child
+    flag (PR #41 round-2 [5]: negative-number-shaped tokens like ``-3``
+    passed the dash test and became silent positional no-ops), ``key=value``
+    overrides of arm-control NON-exempt keys (PR #41 round-2 [3]: guaranteed
+    post-training ``ArmControlError`` — R-003 demands every non-exempt key
+    equal across runs), ``seed=``/``hazard.*=`` overrides (PR #41 round-2
+    P3 [14]: the child re-records both from its CLI flags after applying
+    overrides, so they are silent no-ops — use the hazard CLI flags), and
+    bare ``=``-less non-flag tokens (silent positional no-ops in the
+    child).
 
     MA-018 preflight domain checks: every seed must satisfy
     ``0 <= seed < 2**32`` (NumPy seeding constraint) and
@@ -986,6 +1117,20 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
                         "last-wins duplicate would smuggle a different run "
                         "identity past it (MA-008)."
                     )
+                if base not in _CHILD_KNOWN_FLAGS:
+                    # PR #41 round-2 [5]: argparse treats negative-number-
+                    # shaped tokens ("-3", "-0.5") as POSITIONALS, so they
+                    # used to pass the dash test AND the parser roundtrip as
+                    # silent positional no-ops.
+                    raise PreflightError(
+                        f"variant {name!r}: FLAGS token {token!r} is "
+                        f"unrecognized — its base {base!r} is not a known "
+                        "child flag of scripts/train_t5_policy.py (known: "
+                        f"{sorted(_CHILD_KNOWN_FLAGS)}). Negative-number-"
+                        "shaped tokens would otherwise be swallowed by the "
+                        "child parser as silent positional no-ops (MA-008 / "
+                        "PR #41 round-2)."
+                    )
                 if base in _CHILD_VALUE_FLAGS and "=" not in token:
                     # The next token is this flag's VALUE, not a bare
                     # positional; the roundtrip still validates it.
@@ -997,6 +1142,38 @@ def plan_runs(args: argparse.Namespace) -> list[dict[str, Any]]:
                         f"variant {name!r}: override {token!r} is reserved — "
                         "supervised.checkpoint_dir= and ppo.eval_interval= "
                         "are injected by the harness itself (MA-008)."
+                    )
+                if base == "seed" or base.split(".")[0] == "hazard":
+                    # PR #41 round-2 P3 [14]: the child trainer re-records
+                    # top-level seed and the WHOLE hazard block from its CLI
+                    # flags AFTER applying positional overrides
+                    # (scripts/train_t5_policy.py), so these overrides are
+                    # silent no-ops (worse for hazard.*: training could
+                    # drift with no recorded trace).
+                    raise PreflightError(
+                        f"variant {name!r}: config override {token!r} is "
+                        "silently OVERWRITTEN by the child trainer, which "
+                        "re-records top-level seed and the hazard block "
+                        "from its CLI flags after applying overrides. Use "
+                        "the hazard CLI flags (--beta-terminal / "
+                        "--freeze-answer-head / --hazard-ablation) instead "
+                        "(PR #41 round-2)."
+                    )
+                if not _is_exempt_config_key(base):
+                    # PR #41 round-2 [3]: R-003 arm control demands every
+                    # NON-exempt config key equal across runs, so this
+                    # variant is guaranteed to die at the post-training
+                    # arm-control diff (ArmControlError) after hours of
+                    # child work — fail at plan time instead.
+                    raise PreflightError(
+                        f"variant {name!r}: config override {token!r} "
+                        f"targets key {base!r}, which is NOT exempt from "
+                        "arm control (R-003 exemptions: top-level seed, the "
+                        "hazard block, *.checkpoint_dir). Every non-exempt "
+                        "key must be EQUAL across runs, so this variant "
+                        "would be guaranteed to abort at the post-training "
+                        "arm-control diff — rejected at plan time (PR #41 "
+                        "round-2)."
                     )
             else:
                 raise PreflightError(
@@ -1504,6 +1681,13 @@ def check_child_outputs(record: dict[str, Any]) -> None:
     """Fail loud when ``<run_dir>/ppo_t5/best_model`` is missing (R-011).
 
     Raises ``ChildRunError`` naming the run (arm, seed) and the log path.
+
+    PR #41 r3807989140: this check is only honest because
+    :func:`execute_plan` deletes the stale ``_STALE_RUN_TREES`` checkpoint
+    trees before (re-)launching a child into an existing dir — the
+    ``best_model`` found here is therefore always the JUST-FINISHED child's
+    own output, never a leftover a validation-less child failed to
+    overwrite.
     """
     run_dir = Path(record["run_dir"])
     best_model = run_dir / "ppo_t5" / "best_model"
@@ -1600,8 +1784,12 @@ def _assert_manifest_matches_expected_splits(
             f"({len(expected)} qids; {detail}). Ordered equality is "
             "required — rebuilt/reordered artifacts retaining the same "
             "qids still change what data.max_questions selects (QA-002 / "
-            "PR #41 r3806602891). Delete the run directory or pass --force "
-            "to re-run everything."
+            "PR #41 r3806602891). "
+            + _remediation(
+                "Delete the run directory or pass --force to re-run "
+                "everything.",
+                tag="QA-002",
+            )
         )
 
 
@@ -1643,8 +1831,12 @@ def validate_resumed_run(
                 f"Resumed run {name} was trained with model_name="
                 f"{actual_model!r} but this invocation would train "
                 f"{expected_model!r}; a stale dir cannot join the "
-                "comparison. Delete the directory or pass --force to "
-                "re-run everything."
+                "comparison. "
+                + _remediation(
+                    "Delete the directory or pass --force to re-run "
+                    "everything.",
+                    tag="QA-002",
+                )
             )
 
     expected_split_qids = expected.get("split_qids")
@@ -1681,8 +1873,9 @@ def _assert_run_identity(
     """
     run_dir = Path(record["run_dir"])
     name = _run_name(record)
-    remediation = (
-        "Delete the directory or pass --force to re-run everything (MA-001)."
+    remediation = _remediation(
+        "Delete the directory or pass --force to re-run everything (MA-001).",
+        tag="MA-001",
     )
 
     config_used = _load_json_file(
@@ -1759,6 +1952,53 @@ def _assert_shared_fingerprint(
         )
 
 
+def _validate_complete_run(
+    record: dict[str, Any],
+    *,
+    expected_run_context: dict[str, Any] | None = None,
+    check_shared_fingerprint: bool = False,
+) -> dict[str, Any]:
+    """The ONE complete-run validation motif (PR #41 round-2 [6]).
+
+    Shared verbatim by ALL THREE complete-run consumers —
+    :func:`preflight_resume_states`, :func:`execute_plan`'s resume branch,
+    and :func:`verify_run_records` — so a validation added for one site can
+    never silently miss its siblings (the r3806602891 / r3807989140 bug
+    family was exactly sibling-site drift of this motif). Performs, in
+    order: typed marker read (MA-015), positive run identity against the
+    plan slot (MA-001), split-source assertion (R-013), current-invocation
+    match (QA-002, when ``expected_run_context`` is given), and — when
+    requested — the MA-003 branch-point fingerprint assertion.
+
+    Parameters
+    ----------
+    record : dict
+        One plan record (``run_dir``, ``arm``, ``seed`` are read).
+    expected_run_context : dict or None, keyword-only
+        QA-002 context (keys ``model_name`` / ``split_qids`` /
+        ``shared_weights_sha256``); ``None``/empty skips the
+        current-invocation checks.
+    check_shared_fingerprint : bool, keyword-only
+        When True (the execute-path resume branch), additionally assert the
+        marker's recorded ``shared_supervised_weights_sha256`` against
+        ``expected_run_context["shared_weights_sha256"]`` (MA-003).
+
+    Returns
+    -------
+    dict
+        The parsed ``RUN_COMPLETE.json`` marker (callers reuse it for
+        git-sha drift recording and fingerprint bookkeeping).
+    """
+    marker = _read_run_marker(Path(record["run_dir"]) / RUN_COMPLETE_MARKER)
+    _assert_run_identity(record, marker=marker)
+    _assert_split_source(record)
+    if expected_run_context:
+        validate_resumed_run(record, expected_run_context)
+        if check_shared_fingerprint:
+            _assert_shared_fingerprint(record, marker, expected_run_context)
+    return marker
+
+
 def verify_run_records(
     run_records: list[dict[str, Any]],
     *,
@@ -1790,13 +2030,18 @@ def verify_run_records(
             raise PartialRunError(
                 f"Run {_run_name(record)} dir {run_dir} is {state}, not "
                 f"complete ({RUN_COMPLETE_MARKER} + checkpoints + sidecars "
-                "required); it cannot enter a report (MA-002). Delete the "
-                "directory, or re-run the harness (with --force if needed) "
-                "to rebuild it."
+                "required); it cannot enter a report (MA-002). "
+                + _remediation(
+                    "Delete the directory, or re-run the harness (with "
+                    "--force if needed) to rebuild it.",
+                    tag="MA-002",
+                )
             )
-        marker = _read_run_marker(run_dir / RUN_COMPLETE_MARKER)
-        _assert_run_identity(record, marker=marker)
-        _assert_split_source(record)
+        # PR #41 round-2 [6]: the shared complete-run validation motif —
+        # typed marker + MA-001 identity + split source + QA-002 match.
+        marker = _validate_complete_run(
+            record, expected_run_context=expected_run_context
+        )
         fingerprint = marker.get("shared_supervised_weights_sha256")
         if fingerprint is None:
             legacy_fp_runs.append(_run_name(record))
@@ -1804,8 +2049,6 @@ def verify_run_records(
             shared_fps.setdefault(str(fingerprint), []).append(
                 _run_name(record)
             )
-        if expected_run_context:
-            validate_resumed_run(record, expected_run_context)
     if len(shared_fps) > 1:
         detail = "; ".join(
             f"{fp[:12]}…: {sorted(names)}"
@@ -1815,8 +2058,12 @@ def verify_run_records(
             "Run markers disagree on shared_supervised_weights_sha256 — "
             "the runs branched from DIFFERENT shared supervised "
             f"checkpoints and cannot enter one report ({detail}) "
-            "(MA-003 / mini-audit-verify F4). Delete the stale run dirs "
-            "or pass --force to re-run everything."
+            "(MA-003 / mini-audit-verify F4). "
+            + _remediation(
+                "Delete the stale run dirs or pass --force to re-run "
+                "everything.",
+                tag="MA-003 / F4",
+            )
         )
     if legacy_fp_runs:
         print(
@@ -1854,14 +2101,92 @@ def preflight_resume_states(
                 f"state ({RUN_COMPLETE_MARKER} + checkpoints + sidecars). "
                 f"Delete the directory to re-run {_run_name(record)} fresh, "
                 "or pass --force to re-run everything. (MA-013: decided at "
-                "preflight, before any child ran.)"
+                "preflight, before any child ran. PR #41 round-2: the "
+                "out-dir lock excludes a concurrent same-host invocation, "
+                "but if this tree syncs to another machine — e.g. Dropbox — "
+                "confirm that machine is idle before --force.)"
             )
         if state == "complete":
-            marker = _read_run_marker(run_dir / RUN_COMPLETE_MARKER)
-            _assert_run_identity(record, marker=marker)
-            _assert_split_source(record)
-            if expected_run_context:
-                validate_resumed_run(record, expected_run_context)
+            # PR #41 round-2 [6]: the shared complete-run validation motif.
+            _validate_complete_run(
+                record, expected_run_context=expected_run_context
+            )
+
+
+def preflight_shared_fingerprint_dependency(
+    plan: list[dict[str, Any]], out_dir: Path, *, force: bool = False
+) -> None:
+    """PR #41 round-2 [4] (reli M-V1-3): kept-arms ↔ shared-root dependency
+    is checked at PREFLIGHT, before the hours-long rebuild.
+
+    Complete (kept) arm dirs whose markers record an MA-003 branch-point
+    fingerprint depend on the shared supervised checkpoint still BEING that
+    branch point. When the shared root was deleted or rebuilt since they
+    trained, the old flow only discovered it AFTER ``_run_shared_supervised``
+    re-built the checkpoint (hours at scale) — the first resumed run then
+    died loud at MA-003. This sweep fails fast instead:
+
+    - shared checkpoint ABSENT/empty while kept complete dirs carry a
+      fingerprint → ``PreflightError`` (the rebuild would produce a
+      different branch point and every kept arm would die post-rebuild);
+    - shared checkpoint PRESENT but hashing to a different fingerprint
+      than any kept marker records → ``PreflightError`` naming the runs.
+
+    Legacy markers without the fingerprint field are skipped (their branch
+    point is unverifiable — the later legacy warning covers them), and
+    ``force`` short-circuits (everything re-runs anyway). Remediation in
+    both errors: delete the kept arm dirs, or pass ``--force``.
+    """
+    if force:
+        return
+    referencing: dict[str, list[str]] = {}
+    for record in plan:
+        run_dir = Path(record["run_dir"])
+        state = classify_run_dir(run_dir, hazard=bool(record.get("hazard")))
+        if state != "complete":
+            continue
+        marker = _read_run_marker(run_dir / RUN_COMPLETE_MARKER)
+        fingerprint = marker.get("shared_supervised_weights_sha256")
+        if fingerprint:
+            referencing.setdefault(str(fingerprint), []).append(
+                _run_name(record)
+            )
+    if not referencing:
+        return
+    shared_ckpt = shared_supervised_checkpoint(Path(out_dir))
+    names = sorted(name for group in referencing.values() for name in group)
+    if not (shared_ckpt.is_dir() and any(shared_ckpt.iterdir())):
+        raise PreflightError(
+            f"{len(names)} kept complete run dir(s) ({names}) record a "
+            "shared-supervised branch-point fingerprint, but the shared "
+            f"checkpoint at {shared_ckpt} is ABSENT — it was deleted since "
+            "those runs trained. Rebuilding it now would produce a "
+            "DIFFERENT branch point, and every kept run would die at "
+            "MA-003 only AFTER the hours-long rebuild. Delete the kept arm "
+            "run dirs (to re-train them against the rebuilt checkpoint), "
+            "or pass --force to re-run everything (PR #41 round-2 "
+            "preflight cross-dependency check)."
+        )
+    current_fp = _weights_fingerprint(shared_ckpt)
+    mismatched = {
+        fingerprint: group
+        for fingerprint, group in referencing.items()
+        if fingerprint != current_fp
+    }
+    if mismatched:
+        detail = "; ".join(
+            f"{fingerprint[:12]}…: {sorted(group)}"
+            for fingerprint, group in sorted(mismatched.items())
+        )
+        raise PreflightError(
+            "Kept complete run dir(s) branched from a DIFFERENT shared "
+            "supervised checkpoint than the one on disk (current "
+            f"{current_fp[:12]}…; markers: {detail}); the shared root was "
+            "rebuilt since those runs trained, so resuming them cannot "
+            "produce one coherent comparison (MA-003). Delete the stale "
+            "arm run dirs or pass --force to re-run everything (PR #41 "
+            "round-2 preflight cross-dependency check)."
+        )
 
 
 def execute_plan(
@@ -1899,11 +2224,15 @@ def execute_plan(
     Ends by running :func:`assert_arm_control` over all records (resumed
     dirs included). Returns updated records.
 
-    QA-001: before any child is (re-)launched into an EXISTING dir, the
-    stale ``RUN_COMPLETE.json`` and ``eval_result.json`` are unlinked
-    (invalidate-before-mutate) — a crash mid-child then leaves an honest
-    partial dir instead of a half-trained checkpoint masquerading as
-    complete under old provenance.
+    QA-001 / MA-005 / PR #41 r3807989140: before any child is (re-)launched
+    into an EXISTING dir, the FULL stale invalidation set is removed — the
+    ``_STALE_RUN_ARTIFACTS`` files (``RUN_COMPLETE.json``,
+    ``eval_result.json``, ``hazard_dynamics.json``) are unlinked AND the
+    ``_STALE_RUN_TREES`` checkpoint trees (``ppo_t5/``, ``hazard/``) are
+    deleted (invalidate-before-mutate) — a crash mid-child then leaves an
+    honest partial dir, and an eval-less relaunched child (``iterations <
+    eval_interval``) can never get a stale ``best_model`` blessed as its
+    own output.
 
     Parameters (additive)
     ---------------------
@@ -1932,11 +2261,15 @@ def execute_plan(
             print(f"[{index}/{total}] arm={record['arm']} seed={record['seed']} "
                   "resumed (complete run dir found, skipping child)")
             record["resumed"] = True
-            # MA-015: typed, remediation-carrying marker read.
-            marker = _read_run_marker(run_dir / RUN_COMPLETE_MARKER)
-            # MA-001: the resumed dir must positively identify as THIS plan
-            # slot (config seed + hazard block + marker arm/seed).
-            _assert_run_identity(record, marker=marker)
+            # PR #41 round-2 [6]: the shared complete-run validation motif
+            # (MA-015 typed marker + MA-001 identity + R-013 split source +
+            # QA-002 current-invocation match + MA-003 branch-point
+            # fingerprint).
+            marker = _validate_complete_run(
+                record,
+                expected_run_context=expected_run_context,
+                check_shared_fingerprint=True,
+            )
             mismatch = marker.get("git_sha") != current_sha
             record["git_sha_mismatch"] = bool(mismatch)
             if mismatch:
@@ -1946,12 +2279,6 @@ def execute_plan(
                     f"{current_sha!r}; recording the drift in provenance "
                     "(not fatal)."
                 )
-            _assert_split_source(record)
-            if expected_run_context:
-                validate_resumed_run(record, expected_run_context)
-                # MA-003: the run must have branched from the CURRENT
-                # shared checkpoint content.
-                _assert_shared_fingerprint(record, marker, expected_run_context)
             continue
 
         if state == "partial" and not force:
@@ -1959,18 +2286,33 @@ def execute_plan(
                 f"Run dir {run_dir} has outputs but no valid completion "
                 f"state ({RUN_COMPLETE_MARKER} + checkpoints + sidecars). "
                 f"Delete the directory to re-run {name} fresh, or pass "
-                "--force to re-run everything."
+                "--force to re-run everything. (PR #41 round-2: the out-dir "
+                "lock excludes a concurrent same-host invocation, but if "
+                "this tree syncs to another machine — e.g. Dropbox — "
+                "confirm that machine is idle before --force.)"
             )
 
-        # QA-001 + MA-005: invalidate-before-mutate — the FULL per-run
-        # derived-artifact set (completion marker, eval result, hazard
-        # dynamics) is unlinked before any child is (re-)launched into an
-        # existing dir, so no stale derived artifact can outlive its run.
+        # QA-001 + MA-005 + PR #41 r3807989140: invalidate-before-mutate —
+        # the FULL per-run derived-artifact set (completion marker, eval
+        # result, hazard dynamics) AND the stale checkpoint TREES (ppo_t5/,
+        # hazard/) are removed before any child is (re-)launched into an
+        # existing dir. Sidecar unlinking alone left the previous run's
+        # ppo_t5/best_model in place; a relaunched child that never reaches
+        # a validation pass (iterations < eval_interval) writes no fresh
+        # best_model, so check_child_outputs would have blessed the STALE
+        # checkpoint under fresh provenance.
         if run_dir.exists():
             for stale_name in _STALE_RUN_ARTIFACTS:
                 stale = run_dir / stale_name
                 if stale.exists():
                     stale.unlink()
+            for tree_name in _STALE_RUN_TREES:
+                tree = run_dir / tree_name
+                if tree.is_symlink():
+                    # QA-010 discipline: never delete THROUGH a symlink.
+                    tree.unlink()
+                elif tree.is_dir():
+                    shutil.rmtree(tree)
 
         print(f"[{index}/{total}] arm={record['arm']} seed={record['seed']} started")
         start = time.monotonic()
@@ -2256,6 +2598,45 @@ def collect_provenance(config_used: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _buzz_position_histogram(runs: list) -> dict[str, int]:
+    """R-005 buzz-position histogram from per-question ``runs`` records.
+
+    PR #41 round-2 P3 [27] (UNCLEAR-V1-1): the spec mandates "buzz-position
+    mean + histogram" per run; the mean shipped, the histogram did not.
+
+    Parameters
+    ----------
+    runs : list
+        Per-question eval records (``evaluate_t5_policy(return_runs=True)``
+        shape); records with ``buzzed=true`` and a finite, non-null
+        ``buzz_position`` are counted.
+
+    Returns
+    -------
+    dict
+        ``{str(position): count}`` over ALL policy buzzes (correct and
+        incorrect — the companion mean, ``mean_correct_buzz_position``,
+        conditions on correct buzzes; the histogram's job is diagnosing
+        degenerate always-buzz/never-buzz timing shapes). Positions are the
+        0-indexed prefix indices as STRING keys (JSON object keys), sorted
+        numerically; empty when no record buzzed.
+    """
+    counts: dict[int, int] = {}
+    for run in runs:
+        if not isinstance(run, dict) or not run.get("buzzed"):
+            continue
+        position = run.get("buzz_position")
+        if (
+            position is None
+            or isinstance(position, bool)
+            or not isinstance(position, (int, float))
+            or not math.isfinite(float(position))
+        ):
+            continue
+        counts[int(position)] = counts.get(int(position), 0) + 1
+    return {str(position): counts[position] for position in sorted(counts)}
+
+
 def evaluate_run(
     record: dict[str, Any], test_questions: list, config: dict[str, Any]
 ) -> dict[str, Any]:
@@ -2267,8 +2648,10 @@ def evaluate_run(
     ``test_questions``, and ``return_runs=True``. Writes
     ``<run_dir>/eval_result.json`` = the eval payload passed through
     PLUS ``{"arm", "seed", "policy_buzz_rate", "forced_commit_rate",
-    "n_correct_policy_buzzes", "mean_correct_buzz_position"}`` derived
-    from the per-question ``runs`` records (R-014). Returns the enriched
+    "n_correct_policy_buzzes", "mean_correct_buzz_position",
+    "buzz_position_histogram"}`` derived from the per-question ``runs``
+    records (R-014; the histogram field is additive — PR #41 round-2,
+    R-005's mandated buzz-position histogram). Returns the enriched
     payload.
 
     Parameters
@@ -2334,6 +2717,9 @@ def evaluate_run(
             "mean_correct_buzz_position": (
                 float(np.mean(correct_positions)) if correct_positions else None
             ),
+            # R-005 (PR #41 round-2, additive): buzz-position histogram over
+            # ALL policy buzzes, alongside the correct-buzz mean above.
+            "buzz_position_histogram": _buzz_position_histogram(runs),
         }
     )
     # R-014: persisted IMMEDIATELY, before any later run can fail.
@@ -2350,10 +2736,13 @@ def evaluate_all_runs(
     prune: bool = False,
     re_eval: bool = False,
 ) -> list[dict[str, Any]]:
-    """Evaluate every run: exactly one ``evaluate_t5_policy`` call each,
-    identical test split and kwargs (except checkpoint path) across calls.
-    Per-run ``eval_result.json`` files already written are never deleted
-    by a later failure (R-014).
+    """Evaluate every run: at most one ``evaluate_t5_policy`` call each —
+    identical test split and kwargs (except checkpoint path) across the
+    calls that happen; a RESUMED run whose ``eval_result.json`` exists is
+    read instead of recomputed unless ``re_eval`` (MA-012 — PR #41 round-2
+    P3 [4]: the old "exactly one call each" wording predated the
+    read-before-recompute path). Per-run ``eval_result.json`` files already
+    written are never deleted by a later failure (R-014).
 
     Parameters (additive)
     ---------------------
@@ -3204,8 +3593,11 @@ def _read_run_sidecars(
                 f"arm={eval_result.get('arm')!r} "
                 f"seed={eval_result.get('seed')!r} but the plan slot is "
                 f"arm={record['arm']!r} seed={record['seed']!r} (MA-001). "
-                "Delete the stale run dir or pass --force to re-run "
-                "everything."
+                + _remediation(
+                    "Delete the stale run dir or pass --force to re-run "
+                    "everything.",
+                    tag="MA-001",
+                )
             )
         # MA-016: uniqueness asserted at the report's ingestion boundary.
         runs_records = eval_result.get("runs")
@@ -3266,6 +3658,15 @@ def _read_run_sidecars(
                 "n_correct_policy_buzzes": eval_result.get("n_correct_policy_buzzes"),
                 "mean_correct_buzz_position": eval_result.get(
                     "mean_correct_buzz_position"
+                ),
+                # R-005 (PR #41 round-2, additive): per-run buzz-position
+                # histogram, recomputed from the runs records so legacy
+                # eval_result.json files (predating the enrichment field)
+                # still get a row histogram.
+                "buzz_position_histogram": (
+                    _buzz_position_histogram(runs_records)
+                    if isinstance(runs_records, list)
+                    else None
                 ),
                 "n_questions": eval_result.get("n_questions"),
                 "provenance": provenance,
@@ -3404,12 +3805,22 @@ def _reconcile_planned_dirs(
 def _arm_metric_mean(
     eval_by_run: dict[tuple[str, int], dict[str, Any]], arm: str, key: str
 ) -> float | None:
-    """Mean of one eval metric across an arm's seeds; ``None`` when absent."""
-    values = [
-        payload.get(key)
-        for (run_arm, _), payload in eval_by_run.items()
-        if run_arm == arm and payload.get(key) is not None
-    ]
+    """Mean of one eval metric across an arm's seeds; ``None`` when absent.
+
+    PR #41 round-2 P3 [6]: mirrors :func:`_plot_arm_mean`'s type guard —
+    bool is an int subclass (a flag must never average as 0/1) and a
+    non-finite value must never poison an arm delta (MA-018 class).
+    """
+    values = []
+    for (run_arm, _), payload in eval_by_run.items():
+        if run_arm != arm:
+            continue
+        value = payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if not math.isfinite(float(value)):
+            continue
+        values.append(float(value))
     return float(np.mean(values)) if values else None
 
 
@@ -3442,6 +3853,39 @@ def _build_arm_deltas(
         }
         for arm in arm_order
         if arm != "A"
+    }
+
+
+def _build_buzz_position_histograms(
+    eval_by_run: dict[tuple[str, int], dict[str, Any]],
+) -> dict[str, dict[str, int]]:
+    """Per-ARM buzz-position histograms aggregated across seeds (R-005).
+
+    PR #41 round-2 P3 [27]: counts are summed over each arm's seeds from
+    the per-question ``runs`` records (recomputed here rather than read
+    from the additive per-run ``buzz_position_histogram`` field, so legacy
+    ``eval_result.json`` files predating that field still aggregate).
+
+    Returns
+    -------
+    dict
+        ``{arm: {str(0-indexed position): count}}``; positions sorted
+        numerically; an arm with no ``runs`` records maps to ``{}``.
+    """
+    by_arm: dict[str, dict[str, int]] = {}
+    for (arm, _seed), payload in eval_by_run.items():
+        merged = by_arm.setdefault(arm, {})
+        runs = payload.get("runs") if isinstance(payload, dict) else None
+        if not isinstance(runs, list):
+            continue
+        for position, count in _buzz_position_histogram(runs).items():
+            merged[position] = merged.get(position, 0) + count
+    return {
+        arm: {
+            position: histogram[position]
+            for position in sorted(histogram, key=int)
+        }
+        for arm, histogram in sorted(by_arm.items())
     }
 
 
@@ -3514,10 +3958,13 @@ def _assert_hazard_step_parity(run_records: list[dict[str, Any]]) -> None:
     exactly as many hazard optimizer steps as arm B. For every seed where
     BOTH arms' ``hazard_history.json`` files exist, their step counts must
     be equal; a mismatch raises ``ProvenanceError`` naming the seed and
-    counts. Missing histories are skipped (the blocks they feed are
-    best-effort), never silently compared.
+    counts. Missing histories are skipped with a printed WARNING naming the
+    unverified runs (PR #41 round-2 P3 [13]: the skip — e.g. a pruned/legacy
+    tree under ``--report-only`` — used to be silent), never silently
+    compared.
     """
     steps_by: dict[tuple[str, int], int | None] = {}
+    skipped: list[str] = []
     for record in run_records:
         if record["arm"] not in ("B", "C"):
             continue
@@ -3525,10 +3972,18 @@ def _assert_hazard_step_parity(run_records: list[dict[str, Any]]) -> None:
             Path(record["run_dir"]) / "hazard" / "hazard_history.json"
         )
         if history is None:
+            skipped.append(_run_name(record))
             continue
         steps = history.get("steps") if isinstance(history, dict) else None
         steps_by[(record["arm"], record["seed"])] = (
             len(steps) if isinstance(steps, list) else None
+        )
+    if skipped:
+        print(
+            "WARNING: MA-010 B-vs-C step-parity check skipped for "
+            f"{sorted(skipped)}: hazard_history.json is absent (best-effort "
+            "block); the step-matching invariant is UNVERIFIED for those "
+            "runs (PR #41 round-2)."
         )
 
     shared_seeds = {seed for (arm, seed) in steps_by if arm == "B"} & {
@@ -3610,7 +4065,11 @@ def assemble_report(
     ``DEVICE2_CAVEAT`` verbatim), ``verdict`` (``{"verdict", "scope",
     "evidence"}``), ``endpoint``, ``significance``, ``arm_deltas``
     (``B_vs_A`` / ``C_vs_A`` side by side, each with ``mean_sq_delta`` +
-    ``accuracy_delta``), ``hazard_compute`` (``optimizer_steps`` counted
+    ``accuracy_delta``), ``buzz_position_histograms`` (additive, PR #41
+    round-2 — R-005's per-arm buzz-position histogram: ``{arm:
+    {str(0-indexed position): count}}`` aggregated across seeds from the
+    per-question runs records; per-run rows carry the additive
+    ``buzz_position_histogram`` sibling), ``hazard_compute`` (``optimizer_steps`` counted
     from arm B's ``hazard_history.json`` steps; ``wall_clock_seconds``
     is the HAZARD-PHASE wall clock from that same history file —
     QA-006 — while ``child_total_wall_clock_seconds`` carries the
@@ -3691,6 +4150,10 @@ def assemble_report(
         "endpoint": endpoint,
         "significance": significance,
         "arm_deltas": arm_deltas,
+        # R-005 (PR #41 round-2, additive): per-arm buzz-position histogram.
+        "buzz_position_histograms": _build_buzz_position_histograms(
+            eval_by_run
+        ),
         "hazard_compute": hazard_compute,
         "hazard_dynamics": hazard_dynamics,
         "warnings": warnings,
@@ -3747,6 +4210,24 @@ def _print_plan(
     print("=" * 60)
 
 
+def _print_resume_states(plan: list[dict[str, Any]]) -> None:
+    """PR #41 round-2 P3 [28] (UNCLEAR-V1-2): --dry-run shows the MA-013
+    resume classification per planned dir.
+
+    ``--dry-run`` returns before :func:`preflight_resume_states`, so a
+    partial/stale dir that would abort the real invocation was invisible to
+    it. This is the INFORMATIONAL leg only — classification is printed
+    (complete / partial / fresh), never raised, so a dry run over a partial
+    tree still prints the full plan.
+    """
+    print("  resume states (MA-013 classification — informational):")
+    for record in plan:
+        state = classify_run_dir(
+            Path(record["run_dir"]), hazard=bool(record.get("hazard"))
+        )
+        print(f"    {_run_name(record)}: {state}")
+
+
 def _free_disk_bytes(path: Path) -> int:
     """Free bytes on the filesystem holding ``path`` (nearest existing
     ancestor when the path itself does not exist yet)."""
@@ -3791,7 +4272,8 @@ def _print_disk_preflight(
     print(
         f"  disk preflight: ~{n_ckpt_dirs} checkpoint dir(s) x "
         f"{per_ckpt / 1e9:.2f} GB ({source}) ≈ {estimate / 1e9:.2f} GB; "
-        f"free: {free / 1e9:.2f} GB"
+        f"free: {free / 1e9:.2f} GB (estimate excludes periodic "
+        "iter_*/epoch_* dumps — bound those with --prune-checkpoints)"
     )
     if estimate > free * 0.8:
         print(
@@ -3923,20 +4405,40 @@ def build_shared_supervised_argv(
 
 
 def shared_manifest_for_reuse(
-    out_dir: Path, test_qids: list
+    out_dir: Path,
+    test_qids: list,
+    *,
+    expected_split_qids: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """MA-004: on reuse, the disjointness proof comes from the PRODUCER.
 
     Reads the shared supervised child's OWN recorded split
     (``<shared_root>/ppo_t5/split_manifest.json``, written by the real
-    trainer's PPO phase) and asserts ITS ``train_qids`` are disjoint from
-    the CURRENT invocation's test qids — a reused checkpoint after an
-    artifact rebuild must never ship a disjointness proof computed from
-    artifacts it never saw. Returns the producer manifest (the persisted
-    supervised manifest is then derived from it), or ``None`` when the
-    producer manifest does not exist (fresh build / legacy tree — the
-    caller falls back to the current-invocation manifest, which IS the
-    producer's input in the fresh case).
+    trainer's PPO phase) and asserts, against the CURRENT invocation:
+
+    - ITS ``train_qids`` are disjoint from the current test qids (MA-004 /
+      R-008 — the supervised phase must never have SEEN test questions);
+    - ITS ``val_qids`` are disjoint from the current test qids (PR #41
+      r3807989137, val∩test leg: the producer's val split drove
+      best-model SELECTION of the branch point, so a test qid in it leaks
+      model selection into the held-out evaluation);
+    - when ``expected_split_qids`` is given (additive keyword, PR #41
+      r3807989137 — the sibling site of the r3806602891 fix), its ORDERED
+      ``train``/``val`` qid lists must EQUAL the selection THIS
+      invocation's config resolves from the CURRENT artifacts, via the
+      same :func:`_assert_manifest_matches_expected_splits` machinery the
+      arm-dir resume path uses — set-membership disjointness alone cannot
+      detect a rebuilt/reordered artifact set that makes
+      ``data.max_questions`` select a different prefix than the reused
+      checkpoint actually trained on.
+
+    A reused checkpoint after an artifact rebuild must never ship a
+    provenance proof computed from artifacts it never saw. Returns the
+    producer manifest (the persisted supervised manifest is then derived
+    from it), or ``None`` when the producer manifest does not exist (fresh
+    build / legacy tree — the caller falls back to the current-invocation
+    manifest, which IS the producer's input in the fresh case, and warns
+    on the legacy-reuse case).
     """
     producer_path = (
         shared_supervised_root(Path(out_dir)) / "ppo_t5" / "split_manifest.json"
@@ -3960,6 +4462,28 @@ def shared_manifest_for_reuse(
             "supervised phase has seen test questions (MA-004 / R-008). "
             "Rebuild the shared checkpoint with --force or rebuild the "
             "artifacts."
+        )
+    val_overlap = sorted(
+        set(producer.get("val_qids") or []) & set(test_qids)
+    )
+    if val_overlap:
+        raise ProvenanceError(
+            f"The reused shared supervised checkpoint's OWN recorded split "
+            f"({producer_path}) used {len(val_overlap)} qid(s) for "
+            f"VALIDATION that are in the CURRENT test split (e.g. "
+            f"{val_overlap[:5]}); the branch point's best_model was "
+            "SELECTED on test questions (PR #41 r3807989137 / R-008). "
+            "Rebuild the shared checkpoint with --force or rebuild the "
+            "artifacts."
+        )
+    if expected_split_qids:
+        _assert_manifest_matches_expected_splits(
+            producer,
+            {
+                "train": expected_split_qids.get("train"),
+                "val": expected_split_qids.get("val"),
+            },
+            run_name="shared_supervised (reused branch point)",
         )
     return producer
 
@@ -3988,7 +4512,12 @@ def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
     silently mutated/rebuilt checkpoint must never seed the comparison); a
     ``git_sha`` drift warns without raising (R-013 policy; the drift is not
     persisted — MA-018 wording). ``--force`` rebuilds the shared checkpoint
-    unconditionally.
+    unconditionally. PR #41 r3807989140: every rebuild path (forced, or
+    fresh after a crashed build) first REMOVES the stale shared tree
+    (marker, checkpoint files, and the discarded PPO phase's ``ppo_t5``
+    producer manifest), so leftover files can never mix into the new save
+    and a later reuse can never validate against a split the rebuilt
+    checkpoint did not train on.
 
     QA-R2-3: ``supervised_seed`` (the build's ``seeds[0]``) is
     RECORDED-AND-WARN, never enforced: on reuse with a different
@@ -4089,6 +4618,16 @@ def _run_shared_supervised(args: argparse.Namespace, out_dir: Path) -> Path:
     # checkpoint so a crashed rebuild cannot pass validation next time.
     if marker_path.exists():
         marker_path.unlink()
+    # PR #41 r3807989140 (sibling site): a rebuild into an EXISTING shared
+    # root must remove the stale tree first — leftover checkpoint files
+    # from the previous build could otherwise mix into the new save, and a
+    # stale ppo_t5/split_manifest.json (the MA-004 producer manifest) would
+    # make a LATER reuse validate against a split the new checkpoint never
+    # trained on.
+    if sup_root.is_symlink():
+        sup_root.unlink()  # QA-010: never delete THROUGH a symlink
+    elif sup_root.is_dir():
+        shutil.rmtree(sup_root)
 
     argv = build_shared_supervised_argv(args, out_dir)
 
@@ -4164,6 +4703,123 @@ def subset_questions_by_manifest(
     return [by_qid[qid] for qid in qids]
 
 
+def _read_lock_holder(lock_path: Path) -> dict[str, Any] | None:
+    """Best-effort read of an existing lock's holder record.
+
+    Returns the ``{"pid", "host", "started_at"}`` payload, or ``None`` when
+    the lock is unreadable/corrupt/vanished (an unreadable lock is treated
+    as HELD — never provably stale).
+    """
+    try:
+        payload = json.loads(Path(lock_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _lock_holder_is_stale(holder: dict[str, Any] | None) -> bool:
+    """True iff the lock holder is provably dead ON THIS HOST.
+
+    A foreign-host holder is never stale (the pid probe cannot cross
+    machines — the lock is per-host); an unreadable/typeless record is
+    never stale; a same-host pid is probed with ``os.kill(pid, 0)``
+    (``ProcessLookupError`` ⇒ dead ⇒ stale; ``PermissionError`` ⇒ alive
+    under another user ⇒ held).
+    """
+    if not holder or holder.get("host") != platform.node():
+        return False
+    pid = holder.get("pid")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
+def _acquire_out_dir_lock(out_dir: Path) -> Path:
+    """PR #41 round-2 [9] (adv M-V1-4): single-invocation out_dir lock.
+
+    Creates ``<out_dir>/harness.lock`` with ``O_CREAT | O_EXCL`` (atomic
+    create-once) carrying ``{"pid", "host", "started_at"}``, so two
+    invocations can never interleave writes into the same run tree — the
+    old failure mode let the last finisher's atomic marker bless a
+    co-written dir, and the PartialRunError remediation steered the second
+    operator toward ``--force`` against a LIVE run. A lock whose recorded
+    same-host pid is no longer alive is reclaimed once (stale-pid
+    detection); everything else refuses with a ``PreflightError`` that
+    names the holder and never recommends ``--force``.
+
+    NOTE (documented in the error, per the review's Dropbox-two-device
+    caveat): the lock is PER-HOST — ``os.kill(pid, 0)`` cannot probe a pid
+    on another machine, so an invocation running on a second device against
+    a synced copy of this tree is invisible to it.
+
+    Returns the lock path (the caller releases it in a ``finally``).
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = out_dir / _LOCK_FILENAME
+    payload = json.dumps(
+        {
+            "pid": os.getpid(),
+            "host": platform.node(),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        },
+        indent=2,
+    )
+    for attempt in (1, 2):
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            holder = _read_lock_holder(lock_path)
+            if attempt == 1 and _lock_holder_is_stale(holder):
+                print(
+                    f"[lock] reclaiming stale out-dir lock {lock_path} "
+                    f"(recorded pid {holder.get('pid') if holder else '?'} "
+                    "is no longer alive on this host)."
+                )
+                with contextlib.suppress(FileNotFoundError, OSError):
+                    lock_path.unlink()
+                continue
+            described = (
+                f"pid {holder.get('pid')!r} on host {holder.get('host')!r} "
+                f"since {holder.get('started_at')!r}"
+                if holder
+                else "an unreadable holder record"
+            )
+            raise PreflightError(
+                f"Another harness invocation appears to be running into "
+                f"{out_dir} (lock {lock_path}: {described}). Concurrent "
+                "invocations interleave writes into the same run dirs and "
+                "the last finisher's marker would bless a co-written tree "
+                "— NEVER break the tie with --force while the other "
+                "invocation may still be live. NOTE the lock is PER-HOST: "
+                "a pid probe cannot see an invocation on ANOTHER machine "
+                "(e.g. this tree synced via Dropbox to a second device), "
+                "so confirm no other host is mid-run before deleting the "
+                "lock file by hand (PR #41 round-2)."
+            )
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        return lock_path
+    raise PreflightError(  # pragma: no cover - two O_EXCL losses in a row
+        f"Could not acquire the out-dir lock {lock_path} after reclaiming "
+        "a stale one; another invocation grabbed it concurrently."
+    )
+
+
+def _release_out_dir_lock(lock_path: Path | None) -> None:
+    """Remove the invocation's own out-dir lock (missing-safe)."""
+    if lock_path is None:
+        return
+    with contextlib.suppress(FileNotFoundError, OSError):
+        Path(lock_path).unlink()
+
+
 def main(argv: list[str] | None = None) -> None:
     """Harness entry point: preflight -> plan -> execute -> eval -> report.
 
@@ -4181,7 +4837,11 @@ def main(argv: list[str] | None = None) -> None:
     zero writes and zero deletions, ``--prune-checkpoints`` included
     (QA-005). MA-006: ``--stall-timeout-minutes`` /
     ``--child-timeout-minutes`` arm the child watchdog. MA-014: a SIGINT
-    abort prints the resume affordance before re-raising.
+    abort prints the resume affordance before re-raising. PR #41 round-2
+    [9]: every non-dry invocation holds an O_EXCL pid lockfile
+    (``<out_dir>/harness.lock``, per-host, stale-pid reclaimed) for its
+    whole lifetime — ``--report-only`` included — so two invocations can
+    never interleave writes into one run tree.
     """
     args = parse_args(argv)
     validate_flag_compatibility(args)
@@ -4209,16 +4869,34 @@ def main(argv: list[str] | None = None) -> None:
         else None
     )
 
-    if args.report_only:
-        _main_report_only(args, out_dir)
-        return
+    # PR #41 round-2 [29]: arm the mode-aware remediation wording (reset in
+    # the finally below so direct in-process callers never inherit it).
+    global _ACTIVE_REPORT_ONLY
+    _ACTIVE_REPORT_ONLY = bool(args.report_only)
+
+    # PR #41 round-2 [9]: one invocation per out_dir at a time
+    # (--report-only included — it writes the report/plot and may prune).
+    # --dry-run stays lock-free: it performs zero writes and zero deletions
+    # (QA-005 pins the --report-only --dry-run combination to zero actions,
+    # and creating a lock file IS a write).
+    lock_path: Path | None = None
+    if not args.dry_run:
+        lock_path = _acquire_out_dir_lock(out_dir)
 
     try:
-        _main_execute(args, out_dir)
-    except KeyboardInterrupt:
-        # MA-014: abort messages state the resume invariant.
-        print(f"\nInterrupted (SIGINT). {_RESUME_GUIDANCE}")
-        raise
+        if args.report_only:
+            _main_report_only(args, out_dir)
+            return
+
+        try:
+            _main_execute(args, out_dir)
+        except KeyboardInterrupt:
+            # MA-014: abort messages state the resume invariant.
+            print(f"\nInterrupted (SIGINT). {_RESUME_GUIDANCE}")
+            raise
+    finally:
+        _release_out_dir_lock(lock_path)
+        _ACTIVE_REPORT_ONLY = False
 
 
 def _main_report_only(args: argparse.Namespace, out_dir: Path) -> None:
@@ -4339,6 +5017,9 @@ def _main_execute(args: argparse.Namespace, out_dir: Path) -> None:
     # MA-007: byte budget at preflight (plan print + warn, never fail).
     _print_disk_preflight(args, plan, out_dir)
     if args.dry_run:
+        # PR #41 round-2 P3 [28]: the dry run shows what the real
+        # invocation's MA-013 preflight would decide per planned dir.
+        _print_resume_states(plan)
         print("--dry-run: stopping after preflight; zero children launched.")
         return
 
@@ -4382,6 +5063,12 @@ def _main_execute(args: argparse.Namespace, out_dir: Path) -> None:
     # NOW — before the shared supervised child burns hours.
     preflight_resume_states(
         plan, force=bool(args.force), expected_run_context=expected_run_context
+    )
+    # PR #41 round-2 [4]: kept complete arm dirs referencing an absent or
+    # rebuilt shared branch point fail HERE, not after the hours-long
+    # shared rebuild.
+    preflight_shared_fingerprint_dependency(
+        plan, out_dir, force=bool(args.force)
     )
 
     # MA-004: remember whether the shared checkpoint pre-existed (reuse) —
@@ -4460,9 +5147,27 @@ def _main_execute(args: argparse.Namespace, out_dir: Path) -> None:
     # producer's own recorded split, never from artifacts it never saw.
     manifest: dict[str, Any] | None = None
     if shared_reused:
+        # PR #41 r3807989137: the producer's ORDERED train/val selection is
+        # additionally validated against THIS invocation's own capped
+        # resolution, and its val split must be disjoint from the current
+        # test split (best-model selection leakage).
         manifest = shared_manifest_for_reuse(
-            out_dir, [q.qid for q in test_questions]
+            out_dir,
+            [q.qid for q in test_questions],
+            expected_split_qids=expected_split_qids,
         )
+        if manifest is None:
+            # PR #41 round-2 P3 [15] (corr L-V1-2): the legacy-tree
+            # fallback persists a CURRENT-artifacts manifest as the shared
+            # checkpoint's provenance — say so instead of doing it
+            # silently.
+            print(
+                "WARNING: the reused shared supervised checkpoint has no "
+                "producer split manifest (legacy tree predating MA-004); "
+                "the persisted supervised manifest is derived from the "
+                "CURRENT artifacts, not from the split the checkpoint "
+                "actually trained on (PR #41 round-2)."
+            )
     if manifest is None:
         manifest = _manifest_from_artifacts(
             splits, train_questions, val_questions, test_questions

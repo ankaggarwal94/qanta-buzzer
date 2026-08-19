@@ -114,7 +114,9 @@ shuffled_nll`, step-matched null signal) × `--seeds`, plus optional
 `evaluate_t5_policy` path on the same test split.
 
 ```bash
-# Smoke (t5-small; measured: ~10 min child wall-clock across 18 runs, ~5 GB tree)
+# Smoke (t5-small). Cost datum: ~10 min child wall-clock / ~5 GB tree, measured
+# on an 18-run invocation (A/B/C plus three --variant arms x 3 seeds); the
+# 9-run command below is proportionally cheaper.
 python scripts/run_hazard_efficacy.py --smoke --config configs/t5_policy.yaml \
     --out-dir results/hazard_efficacy_smoke --seeds 1 2 3 --arms A B C --prune-checkpoints
 
@@ -131,8 +133,11 @@ dynamics, per-run provenance) + `hazard_efficacy_plot.png`; per run dir:
 `eval_result.json` (per-question records, written immediately after each eval),
 `hazard/hazard_history.json` + `hazard_dynamics.json` (hazard arms),
 `train.log`, and the completion marker `RUN_COMPLETE.json`. Non-smoke split
-resolution prefers `artifacts/main/` — populate it (or run
-`build_mc_dataset.py`) or children silently fall back to `artifacts/smoke/`.
+resolution prefers `artifacts/main/`, and the harness preflight fails loud if a
+non-smoke invocation would land on the smoke tier. Populate `artifacts/main/`
+by copying the full-scale `*_dataset.json` splits from `data/processed/`
+(`python scripts/build_mc_dataset.py` writes `data/processed/` and
+`artifacts/smoke/` only — nothing populates `artifacts/main/` automatically).
 
 Semantics: re-running the same command RESUMES — complete runs (marker +
 checkpoints + sidecars, identity-validated against the current invocation) are
@@ -142,8 +147,12 @@ report + plot from existing run dirs (no training/eval; same validation gates).
 `--prune-checkpoints` deletes `iter_*`/`epoch_*`/`training_state.pt` per run
 once its `eval_result.json` exists (report stays regenerable; `best_model` +
 sidecars kept). `--dry-run` prints the validated plan (including the shared
-supervised child and a disk estimate) and launches nothing. A stalled child is
-killed after `--stall-timeout-minutes` (default 120) without output.
+supervised child, a disk estimate, and each planned dir's resume-state
+classification) and launches nothing. A stalled child is killed after
+`--stall-timeout-minutes` (default 120) without output. Every non-dry
+invocation holds a single-invocation pid lockfile (`<out-dir>/harness.lock`,
+per-host — a second machine syncing the same tree, e.g. via Dropbox, is not
+visible to it) so concurrent invocations into one tree refuse to start.
 
 ## StopDFF v5 Pipeline (CS321M)
 

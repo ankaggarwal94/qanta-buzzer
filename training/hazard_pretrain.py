@@ -24,7 +24,7 @@ _VALID_ABLATIONS = ("shuffled_nll",)
 # this many optimizer steps. The efficacy harness's MA-006 output-staleness
 # watchdog kills children that go silent, and a full-scale hazard phase can
 # otherwise run for hours with zero output between phase banners; the print
-# is stdout-only — hazard_history.json stays exactly as pinned (R-010a).
+# is stdout-only — hazard_history.json stays exactly as pinned (R-010).
 _PROGRESS_PRINT_EVERY_STEPS = 25
 
 # Fixed seed for the DEDICATED shuffled_nll permutation generator. The
@@ -108,7 +108,7 @@ def run_hazard_pretrain(
     question (no padding/mask path).
 
     Each optimizer step is additionally recorded to
-    ``<checkpoint_dir>/hazard/hazard_history.json`` (R-010a) with the pinned
+    ``<checkpoint_dir>/hazard/hazard_history.json`` (R-010) with the pinned
     schema ``{"steps": [{"epoch": int, "question_index": int, "loss": float}],
     "config": {"beta_terminal": float, "freeze_answer_head": bool,
     "ablation": str|null, "lr": float, "epochs": int},
@@ -167,7 +167,7 @@ def run_hazard_pretrain(
         Path to the saved hazard checkpoint
         (``<checkpoint_dir>/hazard/best_model``), re-loadable via
         :meth:`T5PolicyModel.load_pretrained` (contains ``policy_head.pt``).
-        The parent dir additionally carries ``hazard_history.json`` (R-010a).
+        The parent dir additionally carries ``hazard_history.json`` (R-010).
 
     Raises
     ------
@@ -234,7 +234,7 @@ def run_hazard_pretrain(
         ablation_rng = torch.Generator()
         ablation_rng.manual_seed(_ABLATION_RNG_SEED)
 
-    # R-010a: one record per optimizer step, written to hazard_history.json.
+    # R-010: one record per optimizer step, written to hazard_history.json.
     history_steps: List[Dict[str, Any]] = []
 
     model.train()
@@ -310,7 +310,7 @@ def run_hazard_pretrain(
     save_dir = Path(config["checkpoint_dir"]) / "hazard" / "best_model"
     model.save(str(save_dir))
 
-    # R-010a: persist per-step training dynamics next to the checkpoint with
+    # R-010: persist per-step training dynamics next to the checkpoint with
     # the pinned schema (see the Format-pinning section of the hazard spec).
     # Written even for the empty-questions no-op (steps: []) so the harness
     # read path never crashes on a degenerate run.
@@ -328,6 +328,12 @@ def run_hazard_pretrain(
     }
     history_path = save_dir.parent / "hazard_history.json"
     history_path.parent.mkdir(parents=True, exist_ok=True)
-    history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+    # MA-017 parity (PR #41 round-2 P3 [2]): strict JSON — a non-finite loss
+    # (NaN/inf training blow-up) must fail loud at the writer, never land as
+    # a strict-invalid token that every downstream reader (harness dynamics,
+    # step parity, report compute block) then chokes on or misparses.
+    history_path.write_text(
+        json.dumps(history, indent=2, allow_nan=False), encoding="utf-8"
+    )
 
     return str(save_dir)

@@ -692,3 +692,38 @@ def test_ma018_ablation_keyword_only_and_tuple_parity() -> None:
         "the CLI mirror KNOWN_HAZARD_ABLATIONS must equal the training "
         "module's _VALID_ABLATIONS (MA-018 ablation-tuple parity)"
     )
+
+
+# Tests PR #41 round-2 resolve (P3 [2]) [unit]: the hazard_history.json
+# writer is MA-017-strict — a non-finite loss (NaN/inf blow-up) must die at
+# the writer as ValueError, never serialize as a strict-invalid JSON token
+# every downstream reader (harness dynamics, step parity, report compute)
+# then chokes on. Source-level pin (repo precedent: R-012's source pins) on
+# the exact write call, plus a behavioral replica of the writer idiom.
+def test_pr41_hazard_history_writer_rejects_non_finite(tmp_path: Path) -> None:
+    import inspect
+    import json
+
+    import training.hazard_pretrain as hazard_pretrain
+
+    source = inspect.getsource(hazard_pretrain.run_hazard_pretrain)
+    write_stmt = next(
+        (
+            chunk
+            for chunk in source.split("history_path.write_text")
+            if chunk.lstrip().startswith("(")
+        ),
+        "",
+    )
+    assert "allow_nan=False" in write_stmt, (
+        "hazard_history.json must be written with json.dumps(...,"
+        " allow_nan=False) (MA-017 parity — PR #41 round-2)"
+    )
+
+    # Behavioral leg (writer idiom): a NaN loss dies loud at serialization.
+    history = {"steps": [{"epoch": 0, "question_index": 0,
+                          "loss": float("nan")}]}
+    with pytest.raises(ValueError):
+        (tmp_path / "hazard_history.json").write_text(
+            json.dumps(history, indent=2, allow_nan=False), encoding="utf-8"
+        )

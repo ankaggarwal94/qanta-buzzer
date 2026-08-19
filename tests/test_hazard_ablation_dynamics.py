@@ -1,4 +1,4 @@
-"""RED tests for R-004 (shuffled_nll ablation) and R-010a (hazard_history.json).
+"""RED tests for R-004 (shuffled_nll ablation) and R-010 (hazard_history.json).
 
 Covers the hazard-efficacy-eval spec, instrumentation half only:
 
@@ -9,7 +9,7 @@ Covers the hazard-efficacy-eval spec, instrumentation half only:
   exposes ``--hazard-ablation shuffled_nll`` (requires ``--hazard-pretrain``;
   unknown values rejected), threads it into ``run_hazard_pretrain`` and records
   it in the ``config_used.json`` hazard block.
-- R-010a [integration] (producer contract ONLY — the harness-side stop-prob
+- R-010 [integration] (producer contract ONLY — the harness-side stop-prob
   probe is out of scope here): ``run_hazard_pretrain`` writes
   ``hazard_history.json`` into the hazard checkpoint parent dir
   (``<checkpoint_dir>/hazard/``) with the PINNED schema
@@ -146,7 +146,7 @@ def _load_history(returned_ckpt_path: str) -> dict:
     """Read hazard_history.json from the hazard checkpoint PARENT dir."""
     hist_path = Path(returned_ckpt_path).parent / "hazard_history.json"
     assert hist_path.is_file(), (
-        "R-010a: run_hazard_pretrain must write hazard_history.json into the "
+        "R-010: run_hazard_pretrain must write hazard_history.json into the "
         f"hazard checkpoint parent dir; missing at {hist_path}"
     )
     return json.loads(hist_path.read_text(encoding="utf-8"))
@@ -184,14 +184,14 @@ _Q_T4 = [
 
 
 # ---------------------------------------------------------------------------
-# R-010a: hazard_history.json producer contract (pinned schema)
+# R-010: hazard_history.json producer contract (pinned schema)
 # ---------------------------------------------------------------------------
 
 
 def test_r010a_history_written_with_pinned_schema_and_step_count(
     supervised_ckpt: str, tmp_path: Path
 ) -> None:
-    """Tests R-010a [integration]: history file, pinned schema, step count.
+    """Tests R-010 [integration]: history file, pinned schema, step count.
 
     2 epochs over [T=0 (skipped), T=3, T=2] questions ⇒ exactly
     ``2 epochs × 2 trainable questions = 4`` optimizer steps recorded.  The
@@ -289,7 +289,7 @@ def test_r010a_history_written_with_pinned_schema_and_step_count(
 def test_r010a_empty_run_still_writes_history(
     supervised_ckpt: str, tmp_path: Path
 ) -> None:
-    """Tests R-010a [integration]: the R-008 empty no-op still writes history.
+    """Tests R-010 [integration]: the R-008 empty no-op still writes history.
 
     ``train_questions=[]`` saves an unchanged checkpoint (existing contract);
     the history must exist with ``steps: []`` and a complete config block
@@ -334,7 +334,7 @@ def test_r004_shuffled_nll_step_matched_but_losses_diverge(
     Two runs from the IDENTICAL checkpoint, questions ([T=4, T=3]), epochs and
     global seed on CPU — one with ``ablation=None``, one with
     ``ablation="shuffled_nll"``.  Verified via each run's hazard_history.json
-    (R-010a instrumentation):
+    (R-010 instrumentation):
 
     - identical optimizer-step counts (the compute-matching contract),
     - all losses finite in both runs,
@@ -708,7 +708,7 @@ def test_f2_hazard_loop_prints_periodic_progress(
     The hazard training loop prints one terse progress line every 25
     optimizer steps (the efficacy harness's MA-006 output-staleness
     watchdog needs periodic child output between phase banners) while
-    ``hazard_history.json`` keeps its pinned R-010a schema exactly.
+    ``hazard_history.json`` keeps its pinned R-010 schema exactly.
 
     25 epochs x 1 single-prefix question = 25 optimizer steps => exactly
     one progress line, at step 25 (epoch 24, question 0).
@@ -736,7 +736,7 @@ def test_f2_hazard_loop_prints_periodic_progress(
     assert "question 0" in line
     assert "loss" in line
 
-    # R-010a: the pinned history schema is unchanged by the progress print.
+    # R-010: the pinned history schema is unchanged by the progress print.
     history = _load_history(out_path)
     assert set(history) == {"steps", "config", "wall_clock_seconds"}
     assert len(history["steps"]) == 25
