@@ -1,6 +1,6 @@
 # Agent Context — qanta-buzzer
 
-> Last updated: 2026-08-14
+> Last updated: 2026-08-19
 > Companion to `AGENTS.md` (canonical full contract) and `.planning/` (GSD state).
 
 ## What This Project Does
@@ -20,6 +20,7 @@ sub-project; not a deployed service.
 | Buzzer env | `qb_env/tossup_env.py` | belief = `softmax(scores, beta)` |
 | StopDFF v5 | `scripts/stopdff_v5/`, `scripts/run_stopdff_v5_local.py` | fail-closed, create-once audit pipeline |
 | Hazard efficacy harness | `scripts/run_hazard_efficacy.py` | Controlled A/B/C(+variants) comparison for the hazard bridge: shared supervised branch point, identity-validated resume, scale-gated paired-bootstrap significance, `hazard_efficacy_report.json` |
+| COLM AIMS evidence verifier | `reproducibility/colm_aims_2026/` (`verify.py` CLI, `verifier.py`, `schema.py`, `pairing.py`, `ledger.py`, `receipt.py`, `render.py`) | Fail-closed two-mode verifier for the constructed-QA-reference sensitivity diagnostic backing the COLM 2026 AIMS paper: strict schema-versioned profile, pair/censoring count identities, release-mode per-leg binding matrix vs independently-anchored expectations, claim ledger + rights inventory, create-once receipts. Ceiling in source mode is `PASS_SOURCE_ONLY`. Spec: `.correctless/specs/camera-ready-aims-evidence.md`; usage: the namespace `README.md` |
 
 ## Design Patterns
 
@@ -47,6 +48,19 @@ sub-project; not a deployed service.
   answer head's NLL scale** (~ln K at chance): β below it teaches never-buzz
   (S_q collapse PPO does not recover from), β above teaches immediate-buzz.
   Neither corner is timing. Efficacy verdict: `docs/hazard-efficacy-report.md`.
+- **COLM AIMS verifier certifies constructed references ONLY.** No verdict
+  from `reproducibility/colm_aims_2026/` asserts anything about an observed
+  open-ended stopping policy (the semantic layer pins
+  `does_not_support: actual_decision_preservation_or_format_effect`); an
+  observed paired claim must surface `OBSERVED_PAIRED_STUDY_REQUIRED`, never a
+  release token. Release mode is fail-closed and self-attestation-proof:
+  expectations must resolve symlink-free OUTSIDE the verified tree and anchor
+  to a reviewed commit + frozen ledger — an artifact plus its own generated
+  manifest tops out at `PASS_SOURCE_ONLY`. It never mutates input bytes, is
+  JSON-only (no pickle/torch.load/yaml/network), and is distinct from the
+  byte-pinned legacy `scripts/verify_audit_release.py`. `.correctless/specs/`
+  is untracked in this repo, so the shipped R-0xx citations only resolve when
+  the spec is committed alongside.
 
 ## Quick Reference
 
