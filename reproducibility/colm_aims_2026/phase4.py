@@ -1502,11 +1502,29 @@ def gather_certificate_components(
 
     # Repo identity: runner-sourced, verbatim native git object ids
     # (40-hex SHA-1 or 64-hex SHA-256 — SPEC_ISSUE-1 adjudication).
-    status_output = run(["git", "status", "--porcelain"])
-    dirty = bool(str(status_output).strip())
+    # Clean-state proof is the TRACKED tree (untracked evidence artifacts —
+    # the certificate itself, suite receipts, staged inputs, shuttle
+    # documents — are unavoidable by construction and are DISCLOSED by
+    # list instead; adjudicated amendment 2026-08-22). Code identity is
+    # already bound by commit+tree, which untracked files cannot alter.
+    tracked_status = run(
+        ["git", "status", "--porcelain", "--untracked-files=no"]
+    )
+    dirty = bool(str(tracked_status).strip())
+    full_status = run(["git", "status", "--porcelain"])
+    untracked = sorted(
+        line[3:]
+        for line in str(full_status).splitlines()
+        if line.startswith("??")
+    )
     commit = str(run(["git", "rev-parse", "HEAD"])).strip()
     tree = str(run(["git", "rev-parse", "HEAD^{tree}"])).strip()
-    repo = {"commit": commit, "tree_sha256": tree, "dirty": dirty}
+    repo = {
+        "commit": commit,
+        "tree_sha256": tree,
+        "dirty": dirty,
+        "untracked_disclosure": untracked,
+    }
 
     content_hashes = {
         str(key): _recompute_file_sha256(path)

@@ -858,7 +858,12 @@ analysis over retained per-item records — permitted; model execution is not.
   AND tree with clean-state proof (both bind the repository's NATIVE git
   object ids, runner-sourced from `git rev-parse`; 40-hex SHA-1 and 64-hex
   SHA-256 object formats are both admissible, lowercase hex, fixed length —
-  SPEC_ISSUE-1 adjudication 2026-08-22); producer/verifier/spec content hashes;
+  SPEC_ISSUE-1 adjudication 2026-08-22; the clean-state proof is the
+  TRACKED tree — `git status --porcelain --untracked-files=no` empty —
+  because untracked evidence artifacts (the certificate itself, receipts,
+  staged inputs) are unavoidable by construction and cannot alter the
+  commit/tree identity; they are DISCLOSED as a recorded list in the repo
+  component — amendment 2026-08-22); producer/verifier/spec content hashes;
   the R-074 eligibility digest; the R-073 horizon-map digest; both R-075
   snapshot manifests + revision hashes + offline flags; every R-076 staged
   input with expected+observed SHA-256; focused and full suite receipts

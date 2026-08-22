@@ -72,8 +72,10 @@ API CONTRACT PINNED FOR GREEN
     pure gatherer feeding ``assemble_certificate``. ``run`` is an
     injectable command-runner ``run(cmd: list[str]) -> str`` (stdout;
     defaults to subprocess). Repo dirty state comes from the RUNNER's
-    ``git status --porcelain`` output (empty == clean, anything else ==
-    dirty — never a caller assertion); commit from ``git rev-parse HEAD``;
+    ``git status --porcelain --untracked-files=no`` output (empty ==
+    tracked-clean, anything else == dirty — never a caller assertion;
+    untracked evidence artifacts are disclosed by list, adjudicated
+    amendment 2026-08-22); commit from ``git rev-parse HEAD``;
     tree from ``git rev-parse HEAD^{tree}``. Every staged-plan input is
     REHASHED from file bytes into ``observed_sha256`` (never copied from
     the expectation). Content hashes are computed by hashing the files at
