@@ -158,6 +158,10 @@ TERMINAL_IMPUTATIONS = frozenset({IMPUTATION_NONE, IMPUTATION_FINAL_PREFIX})
 
 # R-047: spec-pinned new exclusion-reason enum member joins the carried set.
 AMBIGUOUS_TERMINAL_SENTINEL = "AMBIGUOUS_TERMINAL_SENTINEL"
+# R-074 (PRE-1): pre-package exclusion reason for items whose trajectory has
+# fewer than two cumulative prefixes (the frozen eligibility artifact's nine
+# excluded qids all carry this reason).
+SINGLE_PREFIX_TRAJECTORY = "SINGLE_PREFIX_TRAJECTORY"
 EXCLUSION_REASONS = frozenset(
     {
         "MALFORMED_STOP",
@@ -165,6 +169,7 @@ EXCLUSION_REASONS = frozenset(
         "GRID_MISMATCH",
         "UNKNOWN_NOT_INFERRED",
         AMBIGUOUS_TERMINAL_SENTINEL,
+        SINGLE_PREFIX_TRAJECTORY,
     }
 )
 
@@ -249,6 +254,61 @@ GRID_KEYS = frozenset(
 )
 HELD_FIXED_KEYS = frozenset({"mc_trajectory_identity", "horizon_identity"})
 
+
+def horizon_map_sha256(mapping: dict[str, int]) -> str:
+    """R-073 canonical per-item horizon-map digest.
+
+    Serialization is pinned: a JSON object mapping item key -> positive
+    integer horizon, keys sorted ascending by UTF-8 byte order, compact
+    separators, UTF-8 encoded; digest is lowercase-hex SHA-256 of those
+    bytes. This one function is the shared source of truth for the
+    producer-side freeze artifact, the verifier's recompute legs, and the
+    held-fixed ``horizon_identity`` (R-043) — reimplementations are
+    forbidden so the three surfaces cannot drift.
+
+    DECISION-4 fail-closed domain guards (Phase-4 PRE, 2026-08-22): the
+    digest domain is EXACTLY ``str -> positive real int``. Non-string keys
+    are never stringified, bools are never digested as 0/1, floats
+    (including integer-valued ones like 2.0) are never truncated or
+    coerced, non-positive horizons are refused, and the empty map is a
+    defect, never a valid digestible identity (vacuously-empty
+    authoritative sets — seed catalog).
+    """
+    if not isinstance(mapping, dict):
+        raise SchemaValidationError(
+            "horizon map must be a JSON object mapping item keys to"
+            " positive integer horizons (R-073)"
+        )
+    if not mapping:
+        raise SchemaValidationError(
+            "horizon map is empty — a vacuously-empty horizon map is a"
+            " defect, never a valid digestible identity (R-073)"
+        )
+    for key, value in mapping.items():
+        if not isinstance(key, str) or not key:
+            raise SchemaValidationError(
+                "horizon map key is not a non-empty string — item keys are"
+                " never silently stringified into the digest domain (R-073)"
+            )
+        if not is_real_int(value):
+            raise SchemaValidationError(
+                f"horizon map value for a key is {value!r} — the digest"
+                " domain is positive real int; bools and floats (including"
+                " integer-valued floats) are never coerced (R-073/R-061)"
+            )
+        if value <= 0:
+            raise SchemaValidationError(
+                f"horizon map value {value!r} is not a positive integer"
+                " (R-073)"
+            )
+    canonical = json.dumps(
+        mapping,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
 INFERENCE_KEYS = frozenset(
     {
         "analysis_provenance",
@@ -313,7 +373,9 @@ ESTIMAND_KEYS = frozenset(
         "random_k_draw_id",
     }
 )
-TIMEOUT_PARAMETER_KEYS = frozenset({"trajectory_horizon", "rule"})
+# R-073 (PRE-2): the scalar ``trajectory_horizon`` member is RETIRED — the
+# declaration is the canonical per-item horizon-map digest.
+TIMEOUT_PARAMETER_KEYS = frozenset({"horizon_map_sha256", "rule"})
 EVENT_REPRESENTATION_KEYS = frozenset(
     {
         "index_base",

@@ -339,6 +339,16 @@ def expected_estimand_digest(estimand: dict[str, Any]) -> str:
     return sha256_bytes(payload.encode("utf-8"))
 
 
+def horizon_map_sha256(horizon_map: dict[str, int]) -> str:
+    """Test-side independent R-073 horizon-map digest (keys sorted ascending
+    by UTF-8 byte order, compact separators, UTF-8 bytes, lowercase-hex
+    sha256) — deliberately NOT imported from the production namespace."""
+    payload = json.dumps(
+        horizon_map, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    return sha256_bytes(payload.encode("utf-8"))
+
+
 def tree_hashes(root: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     for path in sorted(Path(root).rglob("*")):
@@ -503,6 +513,17 @@ def canonical_item_keys() -> list[str]:
     )
 
 
+@functools.lru_cache(maxsize=1)
+def canonical_horizon_identity() -> str:
+    """R-073/R-043 (amended by PRE-2): the canonical package's held-fixed
+    horizon identity IS the per-item horizon-map digest — for the uniform
+    canonical fixture, the digest of {key: TRAJECTORY_HORIZON} over the
+    2,249 canonical item keys."""
+    return horizon_map_sha256(
+        {key: TRAJECTORY_HORIZON for key in canonical_item_keys()}
+    )
+
+
 def _raw_stops(cell_id: str) -> tuple[np.ndarray, np.ndarray]:
     ref_id, cal_id = cell_id.split("__", 1)
     r_i = REFERENCE_IDS.index(ref_id)
@@ -661,7 +682,7 @@ def make_event_representation(**overrides: Any) -> dict[str, Any]:
     """R-045 record-set bindings (cell-level, inside the estimand)."""
     block: dict[str, Any] = {
         "index_base": 0,
-        "horizon_identity": "hz-0006",
+        "horizon_identity": canonical_horizon_identity(),
         "mc_trajectory_identity": "traj-mc-v2-0001",
         "historical_sentinel_convention": SENTINEL_CONVENTION,
         "terminal_imputation_policy": IMPUTATION_FINAL_PREFIX,
@@ -684,8 +705,10 @@ def make_estimand(cell_id: str, **overrides: Any) -> dict[str, Any]:
         "reference_id": ref_id,
         "calibration_id": cal_id,
         "pairing_definition": "matched_item_prefix_grid",
+        # R-073 (PRE-2): the scalar trajectory_horizon declaration is
+        # RETIRED — the declaration is the per-item horizon-map digest.
         "timeout_parameters": {
-            "trajectory_horizon": TRAJECTORY_HORIZON,
+            "horizon_map_sha256": canonical_horizon_identity(),
             "rule": "zero_indexed_stop_ge_horizon_is_timeout",
         },
         "event_representation": make_event_representation(),
@@ -810,7 +833,7 @@ def make_grid_block(**overrides: Any) -> dict[str, Any]:
         "item_keys_sha256": data["keyset_digest"],
         "held_fixed": {
             "mc_trajectory_identity": "traj-mc-v2-0001",
-            "horizon_identity": "hz-0006",
+            "horizon_identity": canonical_horizon_identity(),
         },
     }
     block.update(overrides)
@@ -1327,6 +1350,22 @@ def build_package_v2(
     rights_path.write_bytes(_dump(rights))
 
     ledger = make_ledger(source_commit=commit)
+    # Keep the DEFAULT ledger's Holm row consistent with the (possibly
+    # mutated) profile's inference block: this builder's contract is that a
+    # semantic defect introduced by ONE mutator is the ONLY defect.
+    # ``ledger_mutator`` runs AFTER this sync, so ledger-side mutations
+    # remain authoritative for cross-document mismatch fixtures.
+    profile_inference = profile.get("inference")
+    if isinstance(profile_inference, dict):
+        package_rejected = profile_inference.get("rejected_cell_ids")
+        if isinstance(package_rejected, list):
+            for row in ledger.get("rows", []):
+                if (
+                    isinstance(row, dict)
+                    and row.get("artifact_family") == "inference_block"
+                    and "rejected_cell_ids" in row
+                ):
+                    row["rejected_cell_ids"] = list(package_rejected)
     if ledger_mutator is not None:
         ledger_mutator(ledger)
     ledger_path = root / "ledger.json"
@@ -1381,7 +1420,7 @@ def build_package_v2(
                 "item_keys_sha256": data["keyset_digest"],
                 "held_fixed": {
                     "mc_trajectory_identity": "traj-mc-v2-0001",
-                    "horizon_identity": "hz-0006",
+                    "horizon_identity": canonical_horizon_identity(),
                 },
             },
             # R-052(b)/R-053: inference identities pinned out-of-tree.

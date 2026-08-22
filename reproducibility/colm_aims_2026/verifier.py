@@ -69,6 +69,9 @@ LEG_RECORD_FILE_BIJECTION = "grid_record_file_bijection"
 LEG_ITEM_KEY_SET = "grid_item_key_set_equality"
 LEG_HELD_FIXED = "grid_held_fixed_identities"
 LEG_MC_STOP_WITHIN_CAL = "grid_mc_stop_within_calibration"
+# R-073 (PRE-2): recompute-vs-declaration and cross-cell horizon-map legs.
+LEG_HORIZON_DECLARATION = "horizon_map_declaration"
+LEG_HORIZON_CROSS_CELL = "horizon_map_cross_cell"
 LEG_EVENT_REPRESENTATION = "event_representation"
 LEG_COUNTS = "counts_identities"
 LEG_RATES = "rates"
@@ -867,10 +870,146 @@ def _item_key_set_leg(
     return shared_keys, shared_digest
 
 
+def _horizon_map_declaration_leg(
+    legs: list[dict[str, Any]],
+    cells: list[dict[str, Any]],
+    records_by_cell: dict[str, list[dict[str, Any]]],
+) -> dict[str, str]:
+    """R-073: RECOMPUTE each cell's per-item horizon map from its records —
+    never trust the declaration — and require the recomputed digest to
+    equal ``estimand.timeout_parameters.horizon_map_sha256``. The receipt
+    carries the RECOMPUTED digest (mirror-equality catcher). Returns the
+    per-cell recomputed digests for the held-fixed and cross-cell legs."""
+    problems: list[str] = []
+    recomputed_by_cell: dict[str, str] = {}
+    for cell in cells:
+        cell_id = cell.get("cell_id", "unnamed")
+        records = records_by_cell.get(
+            cell_id if isinstance(cell_id, str) else ""
+        )
+        if records is None:
+            problems.append(
+                f"cell {cell_id!r}: record file unavailable for horizon-map"
+                " recompute"
+            )
+            continue
+        horizon_map: dict[str, int] = {}
+        map_problems: list[str] = []
+        for record in records:
+            rec = _as_dict(record)
+            key = rec.get("item_key")
+            if not isinstance(key, str) or not key:
+                map_problems.append("record without an opaque item_key")
+                break
+            horizon = rec.get("trajectory_horizon")
+            if not schema.is_real_int(horizon) or horizon <= 0:
+                # Bool-safe int-domain gate BEFORE inclusion: True is a
+                # typed int-domain failure, never laundered into the digest
+                # as 1 (R-061/R-073).
+                map_problems.append(
+                    f"record {key!r} trajectory_horizon {horizon!r} is"
+                    " outside the positive-int domain — bools never satisfy"
+                    " an integer domain (R-061/R-073)"
+                )
+                break
+            if key in horizon_map:
+                map_problems.append(
+                    f"duplicate item key {key!r} in the horizon map (R-008)"
+                )
+                break
+            horizon_map[key] = horizon
+        if not map_problems and not horizon_map:
+            map_problems.append(
+                "no records available to recompute the horizon map —"
+                " a vacuously-empty horizon map is a defect (R-073)"
+            )
+        if map_problems:
+            problems.append(f"cell {cell_id!r}: {'; '.join(map_problems)}")
+            continue
+        try:
+            recomputed = schema.horizon_map_sha256(horizon_map)
+        except _LEG_CATCH as exc:
+            problems.append(
+                f"cell {cell_id!r}: horizon-map digest recompute failed:"
+                f" {exc}"
+            )
+            continue
+        recomputed_by_cell[cell_id] = recomputed
+        declared = _as_dict(
+            _as_dict(cell.get("estimand")).get("timeout_parameters")
+        ).get("horizon_map_sha256")
+        if declared != recomputed:
+            problems.append(
+                f"cell {cell_id!r}: recomputed per-item horizon-map digest"
+                f" {recomputed} != declared"
+                f" timeout_parameters.horizon_map_sha256 {declared!r}"
+            )
+    _record_leg(
+        legs,
+        LEG_HORIZON_DECLARATION,
+        not problems,
+        expected="per-cell horizon-map digest RECOMPUTED from the records"
+        " equals the declared estimand.timeout_parameters.horizon_map_sha256"
+        " (R-073)",
+        observed="; ".join(problems),
+    )
+    return recomputed_by_cell
+
+
+def _horizon_cross_cell_leg(
+    legs: list[dict[str, Any]],
+    cells: list[dict[str, Any]],
+    recomputed_by_cell: dict[str, str],
+) -> None:
+    """R-073: the recomputed per-item horizon-map digest is one shared grid
+    identity — equal across all ten cells."""
+    problems: list[str] = []
+    declared_cells = [
+        cell.get("cell_id")
+        for cell in cells
+        if isinstance(cell.get("cell_id"), str)
+    ]
+    if not declared_cells:
+        problems.append("no declared cells to compare")
+    missing = sorted(
+        cell_id
+        for cell_id in declared_cells
+        if cell_id not in recomputed_by_cell
+    )
+    if missing:
+        problems.append(
+            f"no recomputed horizon-map digest available for cell(s)"
+            f" {missing}"
+        )
+    by_digest: dict[str, list[str]] = {}
+    for cell_id in declared_cells:
+        digest = recomputed_by_cell.get(cell_id)
+        if digest is not None:
+            by_digest.setdefault(digest, []).append(cell_id)
+    if len(by_digest) > 1:
+        parts = [
+            f"{digest}: {sorted(cell_ids)}"
+            for digest, cell_ids in sorted(by_digest.items())
+        ]
+        problems.append(
+            "recomputed horizon-map digests differ across cells — "
+            + "; ".join(parts)
+        )
+    _record_leg(
+        legs,
+        LEG_HORIZON_CROSS_CELL,
+        not problems,
+        expected="the recomputed per-item horizon-map digest is identical"
+        " across all ten cells (R-073)",
+        observed="; ".join(problems),
+    )
+
+
 def _held_fixed_leg(
     legs: list[dict[str, Any]],
     grid: dict[str, Any],
     cells: list[dict[str, Any]],
+    recomputed_by_cell: dict[str, str],
 ) -> None:
     problems: list[str] = []
     held = _as_dict(grid.get("held_fixed"))
@@ -895,12 +1034,31 @@ def _held_fixed_leg(
                 f" {er.get('horizon_identity')!r} != held-fixed"
                 f" {expected_hz!r}"
             )
+        # R-073/R-043 (amended by PRE-2): the held-fixed horizon identity IS
+        # the canonical per-item horizon-map digest — compared against the
+        # digest RECOMPUTED from this cell's records, never
+        # declaration-vs-declaration (mirror-equality is the known
+        # false-pass class). Absent recomputed digests are surfaced by the
+        # horizon_map_declaration leg.
+        recomputed = (
+            recomputed_by_cell.get(cell_id)
+            if isinstance(cell_id, str)
+            else None
+        )
+        if recomputed is not None and recomputed != expected_hz:
+            problems.append(
+                f"cell {cell_id!r} recomputed horizon-map digest"
+                f" {recomputed} != held-fixed horizon_identity"
+                f" {expected_hz!r} (R-073)"
+            )
     _record_leg(
         legs,
         LEG_HELD_FIXED,
         not problems,
         expected="the same raw MC trajectory identity and horizon identity"
-        " wherever the contract declares them held fixed (R-043)",
+        " wherever the contract declares them held fixed; the horizon"
+        " identity is the recomputed per-item horizon-map digest"
+        " (R-043/R-073)",
         observed="; ".join(problems),
     )
 
@@ -961,7 +1119,6 @@ def _mc_stop_within_calibration_leg(
 def _event_representation_leg(
     legs: list[dict[str, Any]],
     cells: list[dict[str, Any]],
-    complete_by_cell: dict[str, dict[str, dict[str, Any]]],
 ) -> None:
     problems: list[str] = []
     for cell in cells:
@@ -1040,18 +1197,10 @@ def _event_representation_leg(
                 f"cell {cell_id!r} estimand axes disagree with the cell's"
                 " declared axes"
             )
-        records = complete_by_cell.get(cell_id)
-        if records:
-            horizons = {
-                rec.get("trajectory_horizon") for rec in records.values()
-            }
-            declared_horizon = timeout.get("trajectory_horizon")
-            if horizons != {declared_horizon}:
-                problems.append(
-                    f"cell {cell_id!r} estimand timeout horizon"
-                    f" {declared_horizon!r} != the horizon applied to"
-                    f" records {sorted(map(str, horizons))}"
-                )
+        # R-073 (PRE-2): the scalar trajectory_horizon declaration is
+        # RETIRED — the per-item horizon-map digest comparison lives on the
+        # horizon_map_declaration / grid_held_fixed_identities /
+        # horizon_map_cross_cell legs.
     _record_leg(
         legs,
         LEG_EVENT_REPRESENTATION,
@@ -1787,7 +1936,33 @@ def run_verifier(
         complete_by_cell,
         default=(None, None),
     )
-    _guarded(legs, LEG_HELD_FIXED, _held_fixed_leg, legs, grid, cells)
+    # R-073: recompute the per-item horizon map from each cell's records
+    # FIRST; the held-fixed and cross-cell legs consume the recomputed
+    # digests (recompute-vs-declaration, never mirror-equality).
+    recomputed_horizons = (
+        _guarded(
+            legs,
+            LEG_HORIZON_DECLARATION,
+            _horizon_map_declaration_leg,
+            legs,
+            cells,
+            records_by_cell,
+            default={},
+        )
+        or {}
+    )
+    _guarded(
+        legs, LEG_HELD_FIXED, _held_fixed_leg, legs, grid, cells,
+        recomputed_horizons,
+    )
+    _guarded(
+        legs,
+        LEG_HORIZON_CROSS_CELL,
+        _horizon_cross_cell_leg,
+        legs,
+        cells,
+        recomputed_horizons,
+    )
     _guarded(
         legs,
         LEG_MC_STOP_WITHIN_CAL,
@@ -1802,7 +1977,6 @@ def run_verifier(
         _event_representation_leg,
         legs,
         cells,
-        complete_by_cell,
     )
     _guarded(legs, LEG_COUNTS, _counts_and_rates_legs, legs, cells, records_by_cell)
     _guarded(legs, LEG_ESTIMAND_LABELS, _estimand_label_leg, legs, cells)
@@ -1828,7 +2002,9 @@ def run_verifier(
     cells_valid = not any(
         leg["status"] == "FAIL"
         for leg in legs
-        if str(leg.get("leg_id", "")).startswith(("grid_", "counts", "rates"))
+        if str(leg.get("leg_id", "")).startswith(
+            ("grid_", "counts", "rates", "horizon_map")
+        )
     )
     artifacts_valid = profile_valid and records_valid and cells_valid
     if profile_valid and cells_valid:

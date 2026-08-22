@@ -185,10 +185,13 @@ analysis over retained per-item records — permitted; model execution is not.
   there is no partial-population escape hatch. Enforcement: per-cell count +
   cross-cell set-equality legs; ±1 and one-key-swapped fixtures FAIL.
   (Sign-off §2.1; carries the v1 R-008 key-set discipline.)
-- **R-043** [unit]: Held-fixed identities: the same raw MC trajectory
-  identity and horizon identity wherever the contract declares them held
-  fixed; `mc_stop_step` equality across the five references WITHIN each
-  calibration ID only. There is NO requirement that MC stops match between
+- **R-043** [unit] *(amended by PRE-2, 2026-08-22)*: Held-fixed identities:
+  the same raw MC trajectory identity and horizon identity wherever the
+  contract declares them held fixed; the horizon identity IS the canonical
+  per-item horizon-map digest defined by R-073 (a scalar-horizon
+  representation is defective — the real retained trajectories are
+  heterogeneous, eligible horizons 2–10); `mc_stop_step` equality across the
+  five references WITHIN each calibration ID only. There is NO requirement that MC stops match between
   `shared` and `format_specific` — those conditions use separately fitted MC
   calibrators, and a verifier that enforces cross-calibration MC-stop
   equality is itself defective. Enforcement: within-calibration equality
@@ -211,7 +214,10 @@ analysis over retained per-item records — permitted; model execution is not.
   finite integer `stop_step` (domain R-061); `NEVER_STOPPED` carries
   `stop_step = null` and `terminal_imputation = FINAL_PREFIX_IF_NEVER` where
   a reporting imputation applies. Each record set additionally binds:
-  trajectory horizon; zero-based index convention (`index_base = 0`);
+  the PER-RECORD trajectory horizon (`trajectory_horizon`, a positive
+  integer owned by each record; heterogeneity across records is legal and
+  expected, and both arms of one record share that record's horizon —
+  amended by PRE-2, 2026-08-22); zero-based index convention (`index_base = 0`);
   producer/profile identity; original encoded value where historical data are
   imported; the historical sentinel convention; and the terminal-imputation
   policy. Enforcement: schema validation of every combination —
@@ -760,6 +766,127 @@ analysis over retained per-item records — permitted; model execution is not.
 
 ### Receipts and suite evidence (A′-F4; plan v3 §5.12)
 
+### Phase-4 PRE-run repairs (ChatGPT Phase-4 adjudication accepted 2026-08-22; source-only, no model execution anywhere in this section's implementation or tests)
+
+- **R-073** [unit] *(PRE-2)*: Canonical per-item horizon map: the JSON object
+  mapping each of the 2,249 item keys to that item's positive-integer
+  trajectory horizon, serialized with keys sorted ascending by UTF-8 byte
+  order, compact separators (`","`, `":"`), UTF-8 encoded with ASCII
+  escaping (`ensure_ascii`; inert for the all-ASCII qid keys, pinned to kill
+  reimplementation ambiguity); its digest is the lowercase-hex SHA-256 of
+  those bytes. `estimand.timeout_parameters` is the
+  closed key set `{horizon_map_sha256, rule}` (the scalar
+  `trajectory_horizon` member is RETIRED). The verifier RECOMPUTES the map
+  from the cell's records (never trusts the declaration) and requires:
+  recomputed digest == `timeout_parameters.horizon_map_sha256` == the
+  held-fixed `horizon_identity` (R-043), equal across all ten cells, and — in
+  release mode — equal to the expectations pin (extends R-044's semantic
+  pin set). Enforcement: heterogeneous fixtures (horizons spanning 2–10)
+  PASS; a single-item horizon mutation changes the recomputed digest and
+  FAILS all three comparison legs; an all-equal-horizons nearest-true
+  fixture PASSes; a genuine `FINITE_STOP` at the final prefix of a
+  short-horizon record (e.g. horizon 2) PASSes R-046 unchanged.
+- **R-074** [unit] *(PRE-1)*: Frozen pairing eligibility: the committed
+  artifact `reproducibility/colm_aims_2026/frozen/pairing_eligibility_v2.json`
+  pins the 2,249 sorted eligible item keys; the 9 excluded qids
+  (`103295, 119618, 190798, 191687, 196619, 197040, 206660, 207981, 209745`),
+  each with enumerated reason `SINGLE_PREFIX_TRAJECTORY` (new member of the
+  exclusion-reason enum); the eligible-keyset SHA-256 computed by EXACTLY
+  `pairing.keyset_sha256` (sorted, newline-joined — this digest is the
+  D7(b) seed input `pairing_population_keyset_sha256`); and derivation
+  provenance (`test_dataset.json` SHA-256
+  `638a4df978b77a12655ea72d56daad7fa70851ae486ddb4365d9b060549e34f1`,
+  two-party pinned by the item-10 Appendix-B balance file). The producer
+  consumes the frozen set explicitly; a cell-specific eligibility failure at
+  production time raises fatally — silent exclusion and crash-by-default are
+  both defects. Enforcement: artifact-schema validation; digest recompute
+  test; producer-unit fatality test on a synthetic ineligible item.
+- **R-075** [unit] *(PRE-3)*: Role-keyed model identity pins: the committed
+  manifest binds `primary_scorer` (`all-MiniLM-L6-v2`) and
+  `disjoint_selector` (`all-mpnet-base-v2`) each to an immutable local
+  snapshot — HF revision hash plus the complete per-file SHA-256 manifest of
+  weights/tokenizer/pooling/config — and binds the TF-IDF configuration
+  (vectorizer parameters) separately. In pinned mode the producer loads ONLY
+  from the snapshot paths with offline flags set (`HF_HUB_OFFLINE=1`,
+  `TRANSFORMERS_OFFLINE=1`). Tests operate on manifests and path/flag
+  plumbing exclusively — no model load, no network (R-028 carries).
+  Enforcement: manifest schema + digest tests; a snapshot-file mutation or
+  absence fails the pre-load gate.
+- **R-076** [unit] *(PRE-4)*: Staged-input gates: every fit/eval input is
+  hash-verified fail-closed BEFORE any model load — `calibration_train.json`
+  expected `745bd67597278bd9d24d41c1dea53bf3a7c56cd6334cfc07ea62bccbdcf44259`
+  (staged read-only from the archival copy; absent from the primary tree by
+  historical accident), `test_dataset.json` expected `638a4df9…` (R-074),
+  plus the val split and every other consumed input, each with recorded
+  expected+observed SHA-256. The run receipt captures fitted Platt
+  coefficients and the continuation-estimator digest per calibration mode.
+  Enforcement: gate-ordering test (gates run before any loader is invoked;
+  a mismatched or missing input aborts with a typed error naming the file
+  and both hashes); receipt-field presence tests.
+- **R-077** [unit] *(PRE-6)*: Materialized parity comparator: the committed
+  anchor artifact is derived from Export A
+  (`stopdff_fair_qa.json`, SHA-256
+  `59e1c1a74e5fc0cf4f09f8befca87cfc81516684dca2e88dd275c952b28893ff`) and
+  freezes the field allowlist — all 160 nonrandom point fields (8 nonrandom
+  cells × {dp, myopic} × 10 point fields) and all 32 nonrandom CI arrays,
+  plus the population identity fields (`n`, `n_eval`, `n_fit`) — with
+  stored-precision comparison (the producer's own `round(x, 4)` path; parsed
+  JSON value equality AT THE SAME JSON TYPE — an int drifting to a float,
+  a bool, a string-encoded number, or a non-finite value all FAIL; no
+  cross-type numeric laundering). The comparator refuses a truncated anchor:
+  the loaded anchor must carry exactly 8 nonrandom cells × 2 policies × 10
+  point fields × 2 CI fields, and a comparison that checks fewer than the
+  full allowlist can never emit PASS. The comparator emits a machine-readable per-field
+  PASS/FAIL report; ANY mismatch, including any CI-array element, is a
+  blocking FAIL. The two Random-K cells are exempt from historical parity
+  and reported informationally with `archived_rng_pinned=false` /
+  `fresh_rng_pinned=true`. Export B (`ba784741…`) is corroborative, never
+  the anchor. Enforcement: comparator-unit tests with exact-match,
+  single-field-mutated, and CI-element-mutated payloads; allowlist
+  completeness test (160 + 32 + identity fields, no more, no fewer).
+- **R-078** [unit] *(PRE-7)*: QA-012 compatibility fixtures: committed
+  exact-byte excerpt fixtures (first records, verbatim line bytes) for each
+  of the four hit files, with each FULL file bound by its SHA-256
+  (`32ecda09…`, `8f38ef3f…`, `c3aa6308…`, `f7dcb43b…`), plus a demonstration
+  test that the v2 record ingestion REJECTS these shapes (they carry
+  `{item_id, format, prefix_fractions, p_calibrated}` — no `item_key`, no
+  event statuses, no stop steps, no horizon): they cannot substitute for the
+  required ten-cell semantic block. Enforcement: fixture-bytes digest test +
+  loader-rejection test naming the missing required fields.
+- **R-079** [integration] *(PRE-5/§5)*: `PRE_RUN_READY` certificate: a
+  checked-in generator emits one machine-readable JSON binding — repo commit
+  AND tree with clean-state proof (both bind the repository's NATIVE git
+  object ids, runner-sourced from `git rev-parse`; 40-hex SHA-1 and 64-hex
+  SHA-256 object formats are both admissible, lowercase hex, fixed length —
+  SPEC_ISSUE-1 adjudication 2026-08-22); producer/verifier/spec content hashes;
+  the R-074 eligibility digest; the R-073 horizon-map digest; both R-075
+  snapshot manifests + revision hashes + offline flags; every R-076 staged
+  input with expected+observed SHA-256; focused and full suite receipts
+  (R-070 shape); the R-077 comparator identity + anchor hash; the R-072 rev2
+  manifest hash; interpreter realpath, OS/arch/CPU, BLAS, thread settings,
+  environment-lock hash, exact command, seeds, `PYTHONHASHSEED`, and the
+  rng-pinned flags. Every component check is fail-closed: any dirty tree,
+  hash mismatch, missing snapshot, or suite failure yields a certificate
+  with `ready: false` and the named failing checks — never a partial pass.
+  The author's single-run exception activation references the certificate's
+  SHA-256. Enforcement: generator-unit tests for field completeness and for
+  fail-closed behavior on each induced defect class.
+- **R-080** [unit] *(records export)*: The producer emits
+  `records/<cell_id>.jsonl` for all ten cells in the v2 record schema, with
+  the historical `performat` label mapped to `format_specific` at the export
+  boundary (provenance-noted). The v2 record loader is the oracle: exported
+  rows for a synthetic scored frame must load cleanly under
+  `reproducibility.colm_aims_2026` ingestion, with canonical events
+  (`FINITE_STOP` iff the DP stop is strictly below that item's horizon;
+  `stop == horizon` is the sentinel and becomes `NEVER_STOPPED` with
+  `stop_step = null`, `terminal_imputation = FINAL_PREFIX_IF_NEVER`;
+  `stop > horizon` is unreachable from the DP and is REFUSED as frame
+  corruption, never absorbed into the weaker bucket) and the derived
+  reporting encoding kept distinct (R-046). The export stage is testable
+  WITHOUT models (it consumes scored frames). Enforcement: producer-unit
+  export tests on synthetic frames covering finite, never-stopped, and
+  final-prefix-crossing items at heterogeneous horizons.
+
 - **R-070** [integration]: Any suite-execution claim made for this feature —
   and the successor PR's CI evidence in particular — is accompanied by a
   machine-readable receipt binding: dependency lockfile or
@@ -791,8 +918,19 @@ analysis over retained per-item records — permitted; model execution is not.
   `NOT_YET_SATISFIED`. Enforcement: closed inventory file + per-row gate;
   fixtures for a satisfied-except-Holm inventory (FAIL) and a
   main.tex-only closure binding (FAIL).
-- **R-072** [integration]: QA-012 is `UNVERIFIED, non-blocking for source
-  reconstruction, blocking for final CAMERA_READY_CLOSURE`. Closure requires
+- **R-072** [integration] *(amended by PRE-7, 2026-08-22)*: QA-012 state:
+  rev1 inventory (46 files, zero hits) was VOID for scope omission; rev2 at
+  corrected scope (67 files including the item-10
+  `reachable_comparator_prototype` bundle, `data/processed/*.json`, and the
+  successor suite transcripts) found **4,556 hits** in the four
+  `per_prefix_scores*` JSONLs — manifest
+  `qa012_inventory_2026-08-22_rev2.json`, SHA-256 `52ac2902…`. QA-012 is
+  therefore `HITS_PRESENT, non-blocking for source reconstruction, blocking
+  for final CAMERA_READY_CLOSURE` until the R-078 fixtures land. Executing
+  this rule's inventory REQUIRES a per-prong disposition: every enumerated
+  scope prong is recorded as located/scanned or UNLOCATABLE-escalate — a
+  zero-hit verdict over an incompletely-located scope is a false vacuity and
+  is itself a defect. Closure requires
   the inventory procedure of sign-off §8 executed over: the complete D6
   checksum closure; historical `paper_exports` copies outside the GitHub
   repository; supplied source/export bundles used by the paper; any external

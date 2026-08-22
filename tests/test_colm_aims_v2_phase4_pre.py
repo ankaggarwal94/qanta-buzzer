@@ -1,0 +1,2776 @@
+"""Phase-4 PRE-run repairs: R-073..R-080 plus the amended R-043/R-045/R-072.
+
+RED-phase contract module (2026-08-22). Spec:
+`.correctless/specs/camera-ready-aims-evidence-2.md` section "Phase-4 PRE-run
+repairs"; intent: `phase4_pre_run_reconciliation_2026-08-22.md` sections 4-5.
+
+Source-only discipline: NO model load, NO network (autouse R-028 guard), NO
+reads of `data/processed/` — only committed frozen artifacts, committed
+excerpt fixtures, and tiny synthetic trees under tmp_path.
+
+API CONTRACT PINNED FOR GREEN
+=============================
+``reproducibility.colm_aims_2026.phase4`` (new module):
+  - ``load_pairing_eligibility(path) -> dict``: strict-parse + closed-key
+    schema validation of the frozen eligibility artifact; version-first
+    (bool-safe schema_version check precedes everything else); RECOMPUTES
+    both digests via ``pairing.keyset_sha256(eligible_keys)`` and
+    ``schema.horizon_map_sha256(horizon_map)`` and compares to the declared
+    values; raises a ``schema.TypedIngressError`` subclass on ANY
+    mismatch/malformation (unsorted keys, count drift, non-enum reason,
+    bool/sub-2 horizons, unknown/missing keys, substituted digests).
+  - ``staged_input_gate(staged: list[dict]) -> list[dict]``: items are
+    ``{"path": Path, "expected_sha256": str, "label": str}``; hashes EVERY
+    file and returns entries carrying ``observed_sha256`` == expected only
+    when ALL match; on the FIRST (list-order) mismatch or missing file raises
+    a ``schema.TypedIngressError`` subclass naming the file, the expected and
+    the observed sha256; an EMPTY staged list raises (vacuously-empty
+    authoritative sets are a defect); a malformed expected digest raises.
+  - ``load_model_snapshot_manifest(path) -> dict``: strict load of the
+    frozen role-keyed manifest; roles exactly
+    ``{"primary_scorer", "disjoint_selector"}``; typed error otherwise.
+  - ``verify_snapshot_dir(manifest_role_entry: dict, snapshot_dir: Path)
+    -> None``: per-file sha256 AND size, no extra + no missing files,
+    file_count consistency; raises a ``schema.ColmAimsError`` subclass
+    naming the offending relative path on any deviation.
+  - ``compare_parity(anchor: dict, regenerated_export: dict) -> dict``:
+    regenerated export is producer-payload-shaped (identity fields at
+    ``regenerated["metadata"]["n_eval"/"n_fit"]``; per-cell values at
+    ``regenerated["results"][<historical cell label>][<policy>][<field>]``).
+    Exact parsed-JSON-value equality AT THE SAME JSON TYPE (amended R-077:
+    int drifting to float, bool, string-encoded number, non-finite — all
+    FAIL; no cross-type numeric laundering) over the anchor allowlist: 160
+    point fields + 32 CI arrays (every element) + the 2 identity fields
+    (n_eval, n_fit) => ``checked == 194``. A TRUNCATED anchor (fewer than
+    8 nonrandom cells x 2 policies x 10 point fields x 2 CI fields) is
+    refused or FAILs — a comparison checking fewer than the full allowlist
+    can never emit PASS, so ``verdict == "PASS"`` implies
+    ``checked == 194``. Returns
+    ``{"verdict": "PASS"|"FAIL", "checked": int, "failures": [
+    {"cell","policy","field","expected","observed"}...],
+    "random_k_informational": {...}}``. Identity-field failure rows carry
+    ``cell=None, policy=None``. Bool observed vs numeric expected is a
+    MISMATCH (no True==1/False==0 laundering). Missing cells/policies/fields
+    become failure rows, never exceptions (guarded builder). The two
+    Random-K cells are NEVER blocking and are reported informationally.
+  - ``required_staged_coverage(consumed, staged_entries) -> list[dict]``
+    (F-1): ``consumed`` is the producer's ordered enumeration of every
+    fit/eval input as ``{"label": str, "path": Path, "frozen_sha256":
+    str | None}``; ``staged_entries`` are the operator's ``--staged-input``
+    triples ``{"label", "path", "expected_sha256"}``. Returns the fully
+    resolved gate plan: one entry per consumed input, in consumed order,
+    each ``{"label", "path", "expected_sha256"}`` with the expected digest
+    filled from the frozen pin when present, else from the operator entry
+    covering the same path. Raises a ``schema.TypedIngressError`` subclass
+    when (a) any consumed input has neither a frozen pin nor an operator
+    digest (uncovered input, named), (b) an operator digest CONTRADICTS a
+    frozen pin (error names the file and BOTH digests), or (c) an operator
+    entry names a path outside the consumed set (unknown staged input).
+    The eval-split frozen pin is wired from
+    ``eligibility["derived_from"]["test_dataset_sha256"]``.
+  - ``gather_certificate_components(config, run=None) -> dict`` (F-4):
+    pure gatherer feeding ``assemble_certificate``. ``run`` is an
+    injectable command-runner ``run(cmd: list[str]) -> str`` (stdout;
+    defaults to subprocess). Repo dirty state comes from the RUNNER's
+    ``git status --porcelain`` output (empty == clean, anything else ==
+    dirty — never a caller assertion); commit from ``git rev-parse HEAD``;
+    tree from ``git rev-parse HEAD^{tree}``. Every staged-plan input is
+    REHASHED from file bytes into ``observed_sha256`` (never copied from
+    the expectation). Content hashes are computed by hashing the files at
+    ``config["content_hash_paths"]``; the parity anchor and qa012 manifest
+    hashes are recomputed from their files. Snapshot dirs are verified via
+    ``verify_snapshot_dir`` and recorded as ``verified`` True/False (check
+    failures are RECORDED, not raised — ``assemble_certificate`` decides).
+    Suite receipts are ingested from the receipt FILES at
+    ``config["suite_receipt_paths"]`` and must carry the R-070 fields
+    (see below). config keys: ``repo_root``, ``eligibility_path``,
+    ``snapshot_manifest_path``, ``snapshot_dirs`` (role -> Path),
+    ``parity_anchor_path``, ``qa012_manifest_path``, ``staged_plan``,
+    ``suite_receipt_paths`` ({"focused","full"} -> Path),
+    ``content_hash_paths``, ``environment``, ``offline_flags``.
+  - ``assemble_certificate(components: dict) -> dict``: pure core of the
+    PRE_RUN_READY generator. Required component keys:
+    {"repo","content_hashes","eligibility","snapshots","offline_flags",
+    "staged_inputs","suite_receipts","parity","qa012","environment"}.
+    Emits ``{"schema_version": 2, "ready": <bool>, "failing_checks":
+    [<str>...], "components": <the components>}`` (extra keys allowed).
+    ``ready`` is True (identity) ONLY when every check passes:
+    repo.dirty is exactly False; every staged input observed==expected
+    (present, hex-equal); every snapshot entry verified is exactly True;
+    both suite receipts exit_code exactly int 0 (False/True rejected);
+    offline_flags == the two required flags; every required component and
+    every required environment field present. Any defect => ``ready`` is
+    False and ``failing_checks`` names EVERY failing component (substring:
+    the component key appears in at least one failing-check string) —
+    never a partial pass, never an exception.
+
+``reproducibility.colm_aims_2026.phase4_records`` (new module):
+  - ``map_calibration_label(label) -> str``: "performat"->"format_specific";
+    "shared"->"shared"; "format_specific"->"format_specific"; anything else
+    raises.
+  - ``export_records(scored_items: list[dict], cell_id: str, out_dir: Path)
+    -> Path``: writes ``out_dir / "records" / f"{cell_id}.jsonl"``. Input
+    items are EXACTLY ``{"item_key", "horizon", "mc_stop", "ref_stop"}``
+    (unknown/missing keys refuse). ``stop == horizon`` (exactly) is the DP
+    sentinel (``timeout_coded_as_horizon``): emit ``NEVER_STOPPED`` with
+    ``stop_step=None`` and ``terminal_imputation="FINAL_PREFIX_IF_NEVER"``;
+    a stop < horizon emits ``FINITE_STOP`` with the integer stop and
+    imputation ``NONE`` (R-046 keeps the derived scalar distinct — it is
+    recomputable via ``pairing.sentinel_coded_stop`` and never stored);
+    ``stop > horizon`` is UNREACHABLE from the DP and is REFUSED as frame
+    corruption (amended R-080 — never absorbed into the weaker
+    NEVER_STOPPED bucket). Refusals (typed error): any cell_id containing
+    the legacy "performat" label or the legacy "+" separator (the error
+    message names "format_specific"); duplicate item keys;
+    bool/float/negative stops; bool horizons; horizon < 2; stop > horizon.
+    Output rows are sorted ascending by UTF-8 item_key and byte-identical
+    under input permutation.
+
+``scripts.stopdff_fair_qa_retest`` (producer, F-2/F-6 seams):
+  - ``run_phase4_gates(args_like, sentinels=None)``: the gate-ordering
+    seam. With ``sentinels`` given (a dict keyed EXACTLY
+    {"staged_gate", "eligibility_load", "snapshot_verify", "dataset_load",
+    "model_construct"}), the injected callables REPLACE the stage
+    implementations and are invoked in exactly that order; a stage callable
+    raising aborts the run BEFORE any later stage fires (fail-closed gate
+    ordering, R-076).
+  - ``phase4_metadata_block(...)``: pure builder for the phase4 metadata
+    block; keyword args ``interpreter_realpath``, ``os_name``, ``arch``,
+    ``device``, ``pythonhashseed``, ``seeds``, ``offline_flags_set``,
+    ``fitted_platt_digests``, ``continuation_estimator_digests``, optional
+    ``staged_receipt`` and ``eligibility``. Output carries verbatim
+    ``fitted_platt_digests`` + ``continuation_estimator_digests`` keys plus
+    the environment/rng fields (``archived_rng_pinned`` is False,
+    ``fresh_rng_pinned`` is True), ``staged_inputs`` when a receipt is
+    given, and the two eligibility digests when the artifact is given.
+  - ``--records-out`` REQUIRES ``--eligibility`` at ARGUMENT validation
+    (SystemExit 2 before any gate or load) — records regenerated outside
+    the frozen paired population are unusable (F-6 flag coupling).
+
+R-070 suite receipts (assemble_certificate + gatherer): each receipt must
+carry ``exit_code`` (exact int 0), ``command``, ``environment_lock_sha256``
+(64-hex), ``workflow_sha256``, ``interpreter_realpath``, ``counts``, and
+``skip_identities`` — a receipt missing ``environment_lock_sha256`` is a
+failing suite_receipts component.
+
+Verifier-side (R-073, existing modules):
+  - ``schema.TIMEOUT_PARAMETER_KEYS == {"horizon_map_sha256", "rule"}``
+    (scalar ``trajectory_horizon`` RETIRED).
+  - ``schema.horizon_map_sha256`` gains domain guards: non-string keys,
+    bool/non-int/non-positive values, and the empty map all raise.
+  - ``"SINGLE_PREFIX_TRAJECTORY" in schema.EXCLUSION_REASONS`` (R-074).
+  - New verifier legs (ids pinned here): ``horizon_map_declaration``
+    (recomputed per-cell records digest == timeout_parameters pin) and
+    ``horizon_map_cross_cell`` (recomputed digest equal across all ten
+    cells); the recompute-vs-held-fixed comparison stays on the existing
+    ``grid_held_fixed_identities`` leg. In release mode the held-fixed
+    horizon_identity is additionally pinned by expectations
+    (``anchored_grid_held_fixed``, existing R-044 leg).
+"""
+from __future__ import annotations
+
+import functools
+import hashlib
+import json
+import sys
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from reproducibility.colm_aims_2026 import pairing, schema
+
+from tests._colm_aims_v2_helpers import (
+    CALIBRATION_IDS,
+    CELL_IDS,
+    EVENT_FINITE,
+    EVENT_NEVER,
+    FINITE_ONLY_ESTIMAND_LABEL,
+    IMPUTATION_FINAL_PREFIX,
+    IMPUTATION_NONE,
+    N_ITEMS,
+    POPULATION_FINITE,
+    REFERENCE_IDS,
+    REPO_ROOT,
+    TRAJECTORY_HORIZON,
+    VERDICT_FAIL,
+    VERDICT_RELEASE_PASS,
+    VERDICT_SOURCE_PASS,
+    assert_failing_leg,
+    assert_passing_report,
+    build_package_v2,
+    canonical_data,
+    colm_no_network,  # noqa: F401 - autouse fixture
+    d7b_holm,
+    d7b_interval,
+    d7b_p_value,
+    d7b_resample_matrix,
+    expected_estimand_digest,
+    failing_leg_ids,
+    leg_by_id,
+    make_record_v2,
+    release_report,
+    sha256_bytes,
+    sha256_file,
+    source_report,
+)
+
+# ---------------------------------------------------------------------------
+# Pinned constants (frozen artifacts + adjudicated hashes)
+# ---------------------------------------------------------------------------
+
+FROZEN_DIR = REPO_ROOT / "reproducibility" / "colm_aims_2026" / "frozen"
+ELIGIBILITY_PATH = FROZEN_DIR / "pairing_eligibility_v2.json"
+MODEL_MANIFEST_PATH = FROZEN_DIR / "model_snapshot_manifests.json"
+PARITY_ANCHOR_PATH = FROZEN_DIR / "parity_anchor_export_a.json"
+QA012_FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "qa012_item10"
+QA012_BINDINGS_PATH = QA012_FIXTURE_DIR / "bindings.json"
+QA012_REV2_MANIFEST_PATH = REPO_ROOT / "qa012_inventory_2026-08-22_rev2.json"
+
+# R-074 (PRE-1): two-party pinned test-dataset digest.
+TEST_DATASET_SHA = (
+    "638a4df978b77a12655ea72d56daad7fa70851ae486ddb4365d9b060549e34f1"
+)
+# R-076 (PRE-4): archival calibration_train.json digest.
+CALIB_TRAIN_SHA = (
+    "745bd67597278bd9d24d41c1dea53bf3a7c56cd6334cfc07ea62bccbdcf44259"
+)
+# R-077 (PRE-6): Export A anchor / Export B corroborative digests.
+EXPORT_A_SHA = (
+    "59e1c1a74e5fc0cf4f09f8befca87cfc81516684dca2e88dd275c952b28893ff"
+)
+EXPORT_B_SHA = (
+    "ba784741ea5f472db50bea7cf24de5ee8eb567e4690c0f73a5e056fb0691a5f9"
+)
+# R-072 (amended): QA-012 rev2 manifest + superseded rev1 digests.
+QA012_REV2_SHA = (
+    "52ac29026beb77a93aae3ce7694c2f8ae0b60bd8a3ad2f97aa505f167e28e06c"
+)
+QA012_REV1_SHA = (
+    "149fe39cfe99a0ee69ea844ca2712bb79069bb65215ec7faca240fff41240187"
+)
+# R-078 (PRE-7): the four full hit files, bound by SHA-256.
+QA012_FULL_FILE_SHAS = frozenset(
+    {
+        "32ecda092990c8672ee31ebcc743af446486fc58a2d8679bee38d76a0a99c8da",
+        "8f38ef3f93f9caaa6889bdb1b247594bad7570e60bfbb6e60007998a70fef7f8",
+        "c3aa63085ad991bfd243a240f0255737cec213d99b1afc9652bd02e96da896ea",
+        "f7dcb43bd1a3599062d9ad05cfe0c0d4b5d2745b4b3807fe14c2932aa85b07a3",
+    }
+)
+# R-074: the 9 excluded qids, each SINGLE_PREFIX_TRAJECTORY.
+EXCLUDED_QIDS = (
+    "103295",
+    "119618",
+    "190798",
+    "191687",
+    "196619",
+    "197040",
+    "206660",
+    "207981",
+    "209745",
+)
+# R-075 (PRE-3): role-keyed model identities.
+PRIMARY_SCORER_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+DISJOINT_SELECTOR_NAME = "sentence-transformers/all-mpnet-base-v2"
+OFFLINE_FLAGS = ["HF_HUB_OFFLINE=1", "TRANSFORMERS_OFFLINE=1"]
+TFIDF_CONFIG = {
+    "analyzer": "char_wb",
+    "ngram_range": [2, 4],
+    "fit_corpus": "answer pool",
+}
+
+RULE_TOKEN = "zero_indexed_stop_ge_horizon_is_timeout"
+
+# New/existing verifier leg ids exercised here (see module docstring).
+LEG_HORIZON_DECLARATION = "horizon_map_declaration"
+LEG_HORIZON_CROSS_CELL = "horizon_map_cross_cell"
+LEG_HELD_FIXED = "grid_held_fixed_identities"
+LEG_RECORD_VALIDATION = "record_validation"
+ANCHORED_GRID_HELD_FIXED = "anchored_grid_held_fixed"
+
+# assemble_certificate required component keys (contract, module docstring).
+CERT_COMPONENT_KEYS = frozenset(
+    {
+        "repo",
+        "content_hashes",
+        "eligibility",
+        "snapshots",
+        "offline_flags",
+        "staged_inputs",
+        "suite_receipts",
+        "parity",
+        "qa012",
+        "environment",
+    }
+)
+CERT_ENVIRONMENT_KEYS = frozenset(
+    {
+        "interpreter_realpath",
+        "os",
+        "arch",
+        "cpu",
+        "blas",
+        "thread_settings",
+        "environment_lock_sha256",
+        "command",
+        "seeds",
+        "pythonhashseed",
+        "archived_rng_pinned",
+        "fresh_rng_pinned",
+    }
+)
+
+# Digest-function guard failures may be any typed family member (GREEN picks
+# the concrete class; a silent coerced digest is the defect under test).
+DIGEST_GUARD_ERRORS = (schema.ColmAimsError, TypeError, ValueError)
+
+
+# ---------------------------------------------------------------------------
+# Lazy imports for the GREEN modules (ImportError == correct RED failure;
+# module-level import would wrongly kill the artifact-pin tests too).
+# ---------------------------------------------------------------------------
+
+
+def _phase4():
+    from reproducibility.colm_aims_2026 import phase4
+
+    return phase4
+
+
+def _phase4_records():
+    from reproducibility.colm_aims_2026 import phase4_records
+
+    return phase4_records
+
+
+def _load_json(path):
+    return json.loads(path.read_text("utf-8"))
+
+
+def _copy(obj):
+    return json.loads(json.dumps(obj))
+
+
+# ===========================================================================
+# R-073: canonical horizon-map digest + retired scalar horizon
+# ===========================================================================
+
+
+class TestR073DigestFunction:
+    def test_known_answer_digest(self):
+        # Tests R-073 [unit]: hand-computed KAT — sorted keys, compact
+        # separators, UTF-8, lowercase-hex sha256.
+        expected = hashlib.sha256(b'{"a":2,"b":10}').hexdigest()
+        assert schema.horizon_map_sha256({"a": 2, "b": 10}) == expected
+
+    def test_key_insertion_order_is_irrelevant(self):
+        # Tests R-073 [unit]: serialization sorts keys ascending by UTF-8
+        # byte order — insertion order must not leak into the digest.
+        assert schema.horizon_map_sha256(
+            {"b": 10, "a": 2}
+        ) == schema.horizon_map_sha256({"a": 2, "b": 10})
+
+    def test_frozen_artifact_digest_reproduces(self):
+        # Tests R-073/R-074 [unit]: the committed artifact's declared digest
+        # is exactly the canonical function over its own horizon_map.
+        # Source: reproducibility/colm_aims_2026/frozen/pairing_eligibility_v2.json
+        art = _load_json(ELIGIBILITY_PATH)
+        assert (
+            schema.horizon_map_sha256(art["horizon_map"])
+            == art["horizon_map_sha256"]
+        )
+
+    def test_bool_horizon_value_raises_not_laundered(self):
+        # Tests R-073 [unit]: True must never be digested as 1 (bool
+        # laundering — seed catalog).
+        with pytest.raises(DIGEST_GUARD_ERRORS):
+            schema.horizon_map_sha256({"a": True})
+
+    def test_non_integer_horizon_value_raises_not_truncated(self):
+        # Tests R-073 [unit]: 2.5 must never be coerced/truncated to 2
+        # (coercion-inside-comparison laundering — seed catalog).
+        with pytest.raises(DIGEST_GUARD_ERRORS):
+            schema.horizon_map_sha256({"a": 2.5})
+
+    def test_integer_valued_float_raises(self):
+        # Tests R-073 [unit]: the domain is positive INT — 2.0 is not in it.
+        with pytest.raises(DIGEST_GUARD_ERRORS):
+            schema.horizon_map_sha256({"a": 2.0})
+
+    def test_non_positive_horizon_raises(self):
+        # Tests R-073 [unit]: horizons are positive integers.
+        with pytest.raises(DIGEST_GUARD_ERRORS):
+            schema.horizon_map_sha256({"a": 0})
+
+    def test_non_string_key_raises_not_stringified(self):
+        # Tests R-073 [unit]: item keys are strings; int keys must not be
+        # silently str()-ed into the digest domain.
+        with pytest.raises(DIGEST_GUARD_ERRORS):
+            schema.horizon_map_sha256({1: 2})
+
+    def test_empty_map_raises(self):
+        # Tests R-073 [unit]: a vacuously-empty horizon map is a defect,
+        # never a valid digestible identity (seed catalog: vacuously-empty
+        # authoritative sets).
+        with pytest.raises(DIGEST_GUARD_ERRORS):
+            schema.horizon_map_sha256({})
+
+    def test_timeout_parameter_keys_closed_set(self):
+        # Tests R-073 [unit]: scalar trajectory_horizon is RETIRED from the
+        # closed estimand.timeout_parameters key set.
+        assert schema.TIMEOUT_PARAMETER_KEYS == frozenset(
+            {"horizon_map_sha256", "rule"}
+        )
+
+
+# ---------------------------------------------------------------------------
+# R-073 heterogeneous-horizon package fixtures (local builders ONLY — the
+# shared helpers keep their uniform-scalar builder; we override via the
+# documented build_package_v2 mutator hooks).
+#
+# Generative arithmetic (i = ascending-UTF-8 rank of the item key):
+#   h(i)                 = 2 + ((i * 7) % 9)             -> spans 2..10
+#   item 0 (h = 2)       : mc FINITE stop 1 (== h-1, genuine final-prefix
+#                          crossing), ref FINITE stop 0, in EVERY cell
+#   mc_never(i, c)       = ((i + 11c) % 17) == 5          (i >= 1)
+#   ref_never(i, r, c)   = ((i + 3r + 13c) % 19) == 7     (i >= 1)
+#   mc_stop(i, c)        = (7i + 3 + 11c) % h(i)          < h(i)
+#   ref_stop(i, r, c)    = (5i + 1 + 3r + 13c) % h(i)     < h(i)
+# MC events depend only on (item, calibration): the R-043 within-calibration
+# equality holds while calibrations differ (nearest-true control carries).
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=1)
+def _hetero_data():
+    base = canonical_data()
+    keys = base["keys"]
+    indices = d7b_resample_matrix(base["seed"])
+    idx = np.arange(N_ITEMS, dtype=np.int64)
+    h = 2 + ((idx * 7) % 9)
+    horizon_of = {key: int(h[i]) for i, key in enumerate(keys)}
+    # Fixture-integrity guards: full 2..10 span, item 0 at the minimum.
+    assert set(horizon_of.values()) == set(range(2, 11))
+    assert horizon_of[keys[0]] == 2
+    digest = schema.horizon_map_sha256(horizon_of)
+
+    cells: dict[str, dict] = {}
+    raw_p: dict[str, float] = {}
+    for cell_id in CELL_IDS:
+        ref_id, cal_id = cell_id.split("__", 1)
+        r = REFERENCE_IDS.index(ref_id)
+        c = CALIBRATION_IDS.index(cal_id)
+        mc_never = ((idx + 11 * c) % 17) == 5
+        ref_never = ((idx + 3 * r + 13 * c) % 19) == 7
+        mc_stop = (7 * idx + 3 + 11 * c) % h
+        ref_stop = (5 * idx + 1 + 3 * r + 13 * c) % h
+        # Item 0: deterministic final-prefix crossing at horizon 2.
+        mc_never[0] = False
+        ref_never[0] = False
+        mc_stop[0] = 1
+        ref_stop[0] = 0
+        mc_fin = ~mc_never
+        ref_fin = ~ref_never
+        assert bool(np.any(~mc_fin)) and bool(np.any(~ref_fin)), (
+            "hetero fixture must exercise NEVER_STOPPED sentinel coding"
+        )
+        s_mc = np.where(mc_fin, mc_stop, h)
+        s_ref = np.where(ref_fin, ref_stop, h)
+        d = (s_mc - s_ref).astype(np.int64)
+        n_bf = int(np.sum(mc_fin & ref_fin))
+        assert n_bf > 0
+        counts = {
+            "n_both_finite": n_bf,
+            "n_mc_finite_ref_timeout": int(np.sum(mc_fin & ~ref_fin)),
+            "n_mc_timeout_ref_finite": int(np.sum(~mc_fin & ref_fin)),
+            "n_both_timeout": int(np.sum(~mc_fin & ~ref_fin)),
+            "n_complete": N_ITEMS,
+            "n_excluded_or_unpaired": 0,
+            "exclusion_reason_counts": {},
+            "n_pairing_population": N_ITEMS,
+            "n_mc_timeout": int(np.sum(~mc_fin)),
+            "n_ref_timeout": int(np.sum(~ref_fin)),
+        }
+        rates = {
+            "rate_both_finite": counts["n_both_finite"] / N_ITEMS,
+            "rate_mc_finite_ref_timeout": (
+                counts["n_mc_finite_ref_timeout"] / N_ITEMS
+            ),
+            "rate_mc_timeout_ref_finite": (
+                counts["n_mc_timeout_ref_finite"] / N_ITEMS
+            ),
+            "rate_both_timeout": counts["n_both_timeout"] / N_ITEMS,
+        }
+        d_bf = (s_mc - s_ref)[mc_fin & ref_fin].astype(np.float64)
+        finite_only = {
+            "n": n_bf,
+            "signed_index_mean": float(np.mean(d_bf)),
+            "signed_index_median": float(np.median(d_bf)),
+            "absolute_index_mean": float(np.mean(np.abs(d_bf))),
+            "absolute_index_median": float(np.median(np.abs(d_bf))),
+        }
+        df = d.astype(np.float64)
+        records = [
+            make_record_v2(
+                key,
+                int(mc_stop[i]) if mc_fin[i] else None,
+                int(ref_stop[i]) if ref_fin[i] else None,
+                trajectory_horizon=int(h[i]),
+            )
+            for i, key in enumerate(keys)
+        ]
+        raw_p[cell_id] = d7b_p_value(df, indices)
+        cells[cell_id] = {
+            "records": records,
+            "counts": counts,
+            "rates": rates,
+            "headline_mean": float(np.mean(df)),
+            "finite_only": finite_only,
+            "ci": d7b_interval(df, indices),
+            "raw_p": raw_p[cell_id],
+        }
+    return {
+        "keys": keys,
+        "horizon_of": horizon_of,
+        "digest": digest,
+        "cells": cells,
+        "holm": d7b_holm(raw_p),
+    }
+
+
+def _records_blob(records) -> bytes:
+    return (
+        "\n".join(json.dumps(r, sort_keys=True) for r in records) + "\n"
+    ).encode("utf-8")
+
+
+def _horizon_profile_mutator(digest, cells_numeric=None, holm=None):
+    def mutate(profile):
+        profile["grid"]["held_fixed"]["horizon_identity"] = digest
+        if holm is not None:
+            profile["inference"]["ordered_family"] = list(
+                holm["ordered_family"]
+            )
+            profile["inference"]["rejected_cell_ids"] = list(
+                holm["rejected_cell_ids"]
+            )
+        for cell in profile["cells"]:
+            cid = cell["cell_id"]
+            est = cell["estimand"]
+            est["timeout_parameters"] = {
+                "horizon_map_sha256": digest,
+                "rule": RULE_TOKEN,
+            }
+            est["event_representation"]["horizon_identity"] = digest
+            cell["estimand_digest"] = expected_estimand_digest(est)
+            if cells_numeric is None:
+                continue
+            num = cells_numeric[cid]
+            cell["counts"] = dict(num["counts"])
+            cell["rates"] = dict(num["rates"])
+            cell["headline_summary"]["n"] = num["counts"]["n_complete"]
+            cell["headline_summary"]["mean_signed_shift"] = num[
+                "headline_mean"
+            ]
+            cell["finite_only_summary"] = {
+                "estimand_label": FINITE_ONLY_ESTIMAND_LABEL,
+                "population": POPULATION_FINITE,
+                **num["finite_only"],
+            }
+            cell["interval"]["ci"] = [num["ci"][0], num["ci"][1]]
+            cell["raw_p_value"] = num["raw_p"]
+            hc = holm["per_cell"][cid]
+            cell["holm_rank"] = hc["holm_rank"]
+            cell["holm_adjusted_p_value"] = hc["holm_adjusted_p_value"]
+            cell["holm_rejected"] = hc["holm_rejected"]
+
+    return mutate
+
+
+def _build_hetero_package(tmp_path, *, override=None, expectations_pin=None):
+    """Full-size hetero-horizon package; ``override`` mutates ONE record in
+    ONE cell pre-serialization: (cell_id, item_index, field, value)."""
+    data = _hetero_data()
+    raw: dict[str, bytes] = {}
+    for cid in CELL_IDS:
+        records = [dict(r) for r in data["cells"][cid]["records"]]
+        if override is not None and override[0] == cid:
+            _, item_index, field, value = override
+            records[item_index][field] = value
+        raw[cid] = _records_blob(records)
+    digest = data["digest"]
+    pin = expectations_pin if expectations_pin is not None else digest
+
+    def expectations_mutator(exp):
+        exp["bindings"]["grid"]["held_fixed"]["horizon_identity"] = pin
+
+    return build_package_v2(
+        tmp_path,
+        raw_records_bytes=raw,
+        profile_mutator=_horizon_profile_mutator(
+            digest, data["cells"], data["holm"]
+        ),
+        expectations_mutator=expectations_mutator,
+    )
+
+
+def _build_uniform_map_package(tmp_path):
+    """Nearest-true: canonical uniform horizons (all 6) declared through the
+    NEW horizon-map contract — numeric blocks stay canonical."""
+    keys = canonical_data()["keys"]
+    digest = schema.horizon_map_sha256(
+        {key: TRAJECTORY_HORIZON for key in keys}
+    )
+
+    def expectations_mutator(exp):
+        exp["bindings"]["grid"]["held_fixed"]["horizon_identity"] = digest
+
+    return build_package_v2(
+        tmp_path,
+        profile_mutator=_horizon_profile_mutator(digest),
+        expectations_mutator=expectations_mutator,
+    )
+
+
+class TestR073HorizonLegs:
+    def test_heterogeneous_horizons_pass_source_mode(self, tmp_path):
+        # Tests R-073/R-043/R-045 [integration]: horizons spanning 2..10,
+        # per-record ownership, digest declared in timeout_parameters and
+        # held fixed as horizon_identity => PASS.
+        pkg = _build_hetero_package(tmp_path)
+        report = source_report(pkg)
+        assert_passing_report(report, VERDICT_SOURCE_PASS)
+
+    def test_uniform_horizons_nearest_true_passes(self, tmp_path):
+        # Tests R-073 [integration]: an all-equal-horizons package under the
+        # SAME map contract passes — heterogeneity is legal, not mandatory.
+        pkg = _build_uniform_map_package(tmp_path)
+        report = source_report(pkg)
+        assert_passing_report(report, VERDICT_SOURCE_PASS)
+
+    def test_retired_scalar_horizon_declaration_fails(self, tmp_path):
+        # Tests R-073 [integration]: the OLD scalar timeout_parameters shape
+        # ({trajectory_horizon, rule}) is no longer a valid declaration —
+        # forced explicitly here so the fixture stays a scalar-shape package
+        # even after the shared helpers migrate to the map contract.
+        def mutate(profile):
+            for cell in profile["cells"]:
+                est = cell["estimand"]
+                est["timeout_parameters"] = {
+                    "trajectory_horizon": TRAJECTORY_HORIZON,
+                    "rule": RULE_TOKEN,
+                }
+                cell["estimand_digest"] = expected_estimand_digest(est)
+
+        pkg = build_package_v2(tmp_path, profile_mutator=mutate)
+        report = source_report(pkg)
+        assert report.verdict == VERDICT_FAIL
+
+    def test_single_item_horizon_mutation_fails_all_three_legs(
+        self, tmp_path
+    ):
+        # Tests R-073 [integration] (substitution-negative): ONE item's
+        # horizon in ONE cell changed to a DIFFERENT VALID value that leaves
+        # classification and every derived number unchanged (both arms
+        # finite, stops < both horizons) — the recomputed digest is the ONLY
+        # discriminant, and all three comparison legs must fire.
+        data = _hetero_data()
+        keys = data["keys"]
+        victim_cell = "khard__shared"
+        rec = data["cells"][victim_cell]["records"][1]
+        assert rec["mc_event_status"] == EVENT_FINITE
+        assert rec["ref_event_status"] == EVENT_FINITE
+        assert rec["trajectory_horizon"] == 9
+        assert rec["mc_stop_step"] < 10 and rec["ref_stop_step"] < 10
+        pkg = _build_hetero_package(
+            tmp_path, override=(victim_cell, 1, "trajectory_horizon", 10)
+        )
+        report = source_report(pkg)
+        assert report.verdict == VERDICT_FAIL
+        assert set(failing_leg_ids(report)) == {
+            LEG_HORIZON_DECLARATION,
+            LEG_HELD_FIXED,
+            LEG_HORIZON_CROSS_CELL,
+        }
+        # Receipt discipline: the declaration leg carries the RECOMPUTED
+        # digest of the mutated map (recompute-from-records, never an echo
+        # of the declaration — mirror-equality catcher).
+        mutated_digest = schema.horizon_map_sha256(
+            {**data["horizon_of"], keys[1]: 10}
+        )
+        leg = leg_by_id(report, LEG_HORIZON_DECLARATION)
+        assert mutated_digest in json.dumps(leg)
+
+    def test_bool_horizon_record_fails_int_domain_never_one(self, tmp_path):
+        # Tests R-073/R-061 [integration]: trajectory_horizon=True in one
+        # record is a typed int-domain rejection — never laundered as 1,
+        # never an unhandled crash (guarded legs).
+        pkg = _build_hetero_package(
+            tmp_path,
+            override=("khard__shared", 1, "trajectory_horizon", True),
+        )
+        report = source_report(pkg)
+        assert report.verdict == VERDICT_FAIL
+        leg = assert_failing_leg(report, LEG_RECORD_VALIDATION)
+        assert "R-061" in json.dumps(leg)
+        decl = leg_by_id(report, LEG_HORIZON_DECLARATION)
+        assert decl is None or decl.get("status") != "PASS"
+
+    def test_release_mode_pins_horizon_identity(self, tmp_path):
+        # Tests R-073/R-044 [integration]: the hetero package passes release
+        # mode when the expectations pin equals the canonical digest.
+        pkg = _build_hetero_package(tmp_path)
+        report = release_report(pkg)
+        assert_passing_report(report, VERDICT_RELEASE_PASS)
+
+    def test_release_expectations_pin_substitution_fails(self, tmp_path):
+        # Tests R-073/R-044 [integration] (substitution-negative): the
+        # expectations horizon pin replaced by a DIFFERENT VALID digest must
+        # fail the anchored held-fixed leg.
+        data = _hetero_data()
+        other = schema.horizon_map_sha256(
+            {**data["horizon_of"], data["keys"][0]: 3}
+        )
+        assert other != data["digest"]
+        pkg = _build_hetero_package(tmp_path, expectations_pin=other)
+        report = release_report(pkg)
+        assert_failing_leg(report, ANCHORED_GRID_HELD_FIXED)
+
+
+class TestR046FinalPrefixShortHorizon:
+    # R-046 carried behavior at the NEW short horizons (unit pins — these
+    # pass today and must keep passing after the R-073 rewiring).
+
+    def test_finite_stop_at_final_prefix_of_horizon_two_validates(self):
+        # Tests R-046 [unit]: a genuine crossing at stop == horizon-1 == 1
+        # is FINITE_STOP, legal, and classifies as a complete both-finite
+        # pair.
+        rec = make_record_v2("itm-final", 1, 0, trajectory_horizon=2)
+        schema.validate_record(rec)
+        outcome = pairing.classify_record(rec)
+        assert outcome["status"] == "complete"
+        assert outcome["joint_class"] == "both_finite"
+        assert pairing.sentinel_coded_stop(rec, "mc") == 1
+
+    def test_never_stopped_at_horizon_two_sentinel_codes_to_two(self):
+        # Tests R-046 [unit]: the DERIVED scalar for NEVER at horizon 2 is
+        # the horizon (2) while the canonical stop stays null — distinct
+        # encodings.
+        rec = make_record_v2("itm-nvr", None, 0, trajectory_horizon=2)
+        schema.validate_record(rec)
+        assert rec["mc_stop_step"] is None
+        assert pairing.sentinel_coded_stop(rec, "mc") == 2
+
+    def test_finite_stop_at_horizon_is_still_rejected(self):
+        # Tests R-045/R-061 [unit]: stop == horizon remains the old sentinel
+        # coding and is illegal in the canonical representation.
+        rec = make_record_v2("itm-bad", 2, 0, trajectory_horizon=2)
+        with pytest.raises(schema.RecordValidationError):
+            schema.validate_record(rec)
+
+
+# ===========================================================================
+# R-074: frozen pairing eligibility — artifact pins + typed loader
+# ===========================================================================
+
+
+class TestR074EligibilityArtifact:
+    # Direct pins over the COMMITTED artifact (these must pass at RED time).
+    # Source: reproducibility/colm_aims_2026/frozen/pairing_eligibility_v2.json
+
+    @pytest.fixture(scope="class")
+    def art(self):
+        return _load_json(ELIGIBILITY_PATH)
+
+    def test_counts(self, art):
+        assert art["eligible_count"] == 2249
+        assert art["excluded_count"] == 9
+        assert len(art["eligible_keys"]) == 2249
+        assert len(art["excluded"]) == 9
+
+    def test_exact_excluded_qids_and_reason(self, art):
+        assert [e["item_key"] for e in art["excluded"]] == list(EXCLUDED_QIDS)
+        assert all(
+            e["reason"] == "SINGLE_PREFIX_TRAJECTORY" for e in art["excluded"]
+        )
+
+    def test_single_prefix_trajectory_is_enum_member(self):
+        # Tests R-074 [unit]: the reason is a spec-pinned NEW member of the
+        # closed exclusion-reason enum.
+        assert "SINGLE_PREFIX_TRAJECTORY" in schema.EXCLUSION_REASONS
+
+    def test_keyset_digest_recomputes_via_pairing_keyset_sha256(self, art):
+        # Tests R-074 [unit]: the D7(b) seed input digest is EXACTLY
+        # pairing.keyset_sha256 over the eligible keys (sorted,
+        # newline-joined) — recompute, never trust.
+        assert (
+            pairing.keyset_sha256(art["eligible_keys"])
+            == art["pairing_population_keyset_sha256"]
+        )
+
+    def test_eligible_keys_sorted_and_duplicate_free(self, art):
+        keys = art["eligible_keys"]
+        assert keys == sorted(keys)
+        assert len(set(keys)) == len(keys)
+        assert not (set(keys) & {e["item_key"] for e in art["excluded"]})
+
+    def test_horizon_map_covers_exactly_the_eligible_keys(self, art):
+        assert set(art["horizon_map"]) == set(art["eligible_keys"])
+
+    def test_horizon_values_are_real_ints_in_2_to_10(self, art):
+        for value in art["horizon_map"].values():
+            assert isinstance(value, int) and not isinstance(value, bool)
+            assert 2 <= value <= 10
+
+    def test_horizon_map_digest_recomputes(self, art):
+        assert (
+            schema.horizon_map_sha256(art["horizon_map"])
+            == art["horizon_map_sha256"]
+        )
+
+    def test_derivation_provenance_pins_test_dataset(self, art):
+        assert (
+            art["derived_from"]["test_dataset_sha256"] == TEST_DATASET_SHA
+        )
+
+
+class TestR074LoadPairingEligibility:
+    # Typed loader contract (GREEN: phase4.load_pairing_eligibility).
+
+    def _tampered(self, tmp_path, mutate):
+        art = _load_json(ELIGIBILITY_PATH)
+        mutate(art)
+        path = tmp_path / "pairing_eligibility_v2.json"
+        path.write_text(json.dumps(art), encoding="utf-8")
+        return path
+
+    def test_happy_path_returns_validated_artifact(self):
+        loaded = _phase4().load_pairing_eligibility(ELIGIBILITY_PATH)
+        assert loaded["eligible_count"] == 2249
+        assert loaded["horizon_map_sha256"] == schema.horizon_map_sha256(
+            loaded["horizon_map"]
+        )
+
+    def test_dropped_eligible_key_raises(self, tmp_path):
+        # Digest recompute over records-side truth: removing one key (counts
+        # left stale) must raise.
+        def mutate(art):
+            art["eligible_keys"] = art["eligible_keys"][:-1]
+
+        path = self._tampered(tmp_path, mutate)
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().load_pairing_eligibility(path)
+
+    def test_mutated_horizon_value_raises(self, tmp_path):
+        # Substitution-negative: 5 -> 6 is a VALID horizon; the recomputed
+        # map digest no longer matches the declaration => typed error.
+        def mutate(art):
+            key = art["eligible_keys"][0]
+            art["horizon_map"][key] = (
+                6 if art["horizon_map"][key] != 6 else 5
+            )
+
+        path = self._tampered(tmp_path, mutate)
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().load_pairing_eligibility(path)
+
+    def test_substituted_horizon_digest_raises(self, tmp_path):
+        # Substitution-negative on the declaration side: a DIFFERENT valid
+        # 64-hex digest must not pass shape checks.
+        def mutate(art):
+            art["horizon_map_sha256"] = "0" * 64
+
+        path = self._tampered(tmp_path, mutate)
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().load_pairing_eligibility(path)
+
+    def test_substituted_keyset_digest_raises(self, tmp_path):
+        def mutate(art):
+            art["pairing_population_keyset_sha256"] = "1" * 64
+
+        path = self._tampered(tmp_path, mutate)
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().load_pairing_eligibility(path)
+
+    def test_unsorted_eligible_keys_raise(self, tmp_path):
+        # keyset_sha256 sorts internally, so an out-of-order artifact would
+        # still digest-match — sortedness needs its OWN check.
+        def mutate(art):
+            keys = art["eligible_keys"]
+            keys[0], keys[1] = keys[1], keys[0]
+
+        path = self._tampered(tmp_path, mutate)
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().load_pairing_eligibility(path)
+
+    def test_non_enum_exclusion_reason_raises(self, tmp_path):
+        def mutate(art):
+            art["excluded"][0]["reason"] = "OTHER"
+
+        path = self._tampered(tmp_path, mutate)
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().load_pairing_eligibility(path)
+
+    def test_bool_horizon_value_raises(self, tmp_path):
+        def mutate(art):
+            art["horizon_map"][art["eligible_keys"][0]] = True
+
+        path = self._tampered(tmp_path, mutate)
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().load_pairing_eligibility(path)
+
+    def test_horizon_below_two_raises(self, tmp_path):
+        # DECISION: horizon 1 contradicts the SINGLE_PREFIX_TRAJECTORY
+        # exclusion rule that produced this artifact — loader refuses.
+        def mutate(art):
+            key = art["eligible_keys"][0]
+            art["horizon_map"][key] = 1
+            art["horizon_map_sha256"] = schema.horizon_map_sha256(
+                {**art["horizon_map"], key: 1}
+            )
+
+        path = self._tampered(tmp_path, mutate)
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().load_pairing_eligibility(path)
+
+    def test_count_drift_raises(self, tmp_path):
+        def mutate(art):
+            art["eligible_count"] = 2250
+
+        path = self._tampered(tmp_path, mutate)
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().load_pairing_eligibility(path)
+
+    def test_unknown_top_level_key_raises(self, tmp_path):
+        def mutate(art):
+            art["extra_block"] = {"smuggled": 1}
+
+        path = self._tampered(tmp_path, mutate)
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().load_pairing_eligibility(path)
+
+    def test_missing_required_key_raises(self, tmp_path):
+        def mutate(art):
+            del art["excluded"]
+
+        path = self._tampered(tmp_path, mutate)
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().load_pairing_eligibility(path)
+
+    def test_version_first_bool_schema_version(self, tmp_path):
+        # Version-first + bool-safe (seed catalog): schema_version=True must
+        # fail AS a version error even with other fields intact.
+        def mutate(art):
+            art["schema_version"] = True
+
+        path = self._tampered(tmp_path, mutate)
+        with pytest.raises(schema.TypedIngressError) as excinfo:
+            _phase4().load_pairing_eligibility(path)
+        assert "version" in str(excinfo.value).lower()
+
+    def test_version_checked_before_digests(self, tmp_path):
+        # Version-first ordering: wrong version + corrupted digest must
+        # surface the VERSION error, not the digest error.
+        def mutate(art):
+            art["schema_version"] = 1
+            art["horizon_map_sha256"] = "f" * 64
+
+        path = self._tampered(tmp_path, mutate)
+        with pytest.raises(schema.TypedIngressError) as excinfo:
+            _phase4().load_pairing_eligibility(path)
+        assert "version" in str(excinfo.value).lower()
+
+    def test_non_object_artifact_raises(self, tmp_path):
+        path = tmp_path / "pairing_eligibility_v2.json"
+        path.write_text("[1, 2, 3]", encoding="utf-8")
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().load_pairing_eligibility(path)
+
+
+# ===========================================================================
+# R-075: role-keyed model identity pins + snapshot verification gate
+# ===========================================================================
+
+
+class TestR075ManifestArtifact:
+    # Direct pins over the COMMITTED manifest (pass at RED time).
+    # Source: reproducibility/colm_aims_2026/frozen/model_snapshot_manifests.json
+
+    @pytest.fixture(scope="class")
+    def art(self):
+        return _load_json(MODEL_MANIFEST_PATH)
+
+    def test_roles_exactly_primary_and_disjoint(self, art):
+        assert set(art["roles"]) == {"primary_scorer", "disjoint_selector"}
+
+    def test_model_names(self, art):
+        assert (
+            art["roles"]["primary_scorer"]["model_name"]
+            == PRIMARY_SCORER_NAME
+        )
+        assert (
+            art["roles"]["disjoint_selector"]["model_name"]
+            == DISJOINT_SELECTOR_NAME
+        )
+
+    def test_per_file_manifests_nonempty_and_well_formed(self, art):
+        for role, entry in art["roles"].items():
+            files = entry["files"]
+            assert files, f"role {role} has an empty file manifest"
+            assert entry["file_count"] == len(files)
+            assert schema.is_sha256_hex(entry["hf_revision"]) or (
+                isinstance(entry["hf_revision"], str)
+                and len(entry["hf_revision"]) == 40
+            )
+            for rel, meta in files.items():
+                assert schema.is_sha256_hex(meta["sha256"]), (role, rel)
+                assert isinstance(meta["size"], int) and not isinstance(
+                    meta["size"], bool
+                )
+                assert meta["size"] > 0
+
+    def test_offline_flags_exact(self, art):
+        assert art["offline_flags_required"] == OFFLINE_FLAGS
+
+    def test_tfidf_config_exact(self, art):
+        assert art["tfidf_config"] == TFIDF_CONFIG
+
+
+class TestR075SnapshotGate:
+    # GREEN: phase4.load_model_snapshot_manifest / phase4.verify_snapshot_dir.
+
+    def _make_snapshot(self, tmp_path):
+        snap = tmp_path / "snapshot"
+        (snap / "1_Pooling").mkdir(parents=True)
+        blobs = {
+            "config.json": b'{"hidden_size": 384}\n',
+            "1_Pooling/config.json": b'{"pooling_mode_mean_tokens": true}\n',
+            "vocab.txt": b"alpha\nbeta\ngamma\n",
+        }
+        for rel, blob in blobs.items():
+            (snap / rel).write_bytes(blob)
+        entry = {
+            "model_name": PRIMARY_SCORER_NAME,
+            "hf_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+            "file_count": len(blobs),
+            "files": {
+                rel: {"sha256": sha256_bytes(blob), "size": len(blob)}
+                for rel, blob in blobs.items()
+            },
+        }
+        return snap, entry
+
+    def test_load_manifest_happy_path(self):
+        loaded = _phase4().load_model_snapshot_manifest(MODEL_MANIFEST_PATH)
+        assert set(loaded["roles"]) == {
+            "primary_scorer",
+            "disjoint_selector",
+        }
+
+    def test_load_manifest_rejects_extra_role(self, tmp_path):
+        art = _load_json(MODEL_MANIFEST_PATH)
+        art["roles"]["shadow_scorer"] = _copy(
+            art["roles"]["primary_scorer"]
+        )
+        path = tmp_path / "model_snapshot_manifests.json"
+        path.write_text(json.dumps(art), encoding="utf-8")
+        with pytest.raises(schema.ColmAimsError):
+            _phase4().load_model_snapshot_manifest(path)
+
+    def test_load_manifest_rejects_missing_offline_flags(self, tmp_path):
+        art = _load_json(MODEL_MANIFEST_PATH)
+        art["offline_flags_required"] = ["HF_HUB_OFFLINE=1"]
+        path = tmp_path / "model_snapshot_manifests.json"
+        path.write_text(json.dumps(art), encoding="utf-8")
+        with pytest.raises(schema.ColmAimsError):
+            _phase4().load_model_snapshot_manifest(path)
+
+    def test_verify_snapshot_dir_match_is_ok(self, tmp_path):
+        snap, entry = self._make_snapshot(tmp_path)
+        assert _phase4().verify_snapshot_dir(entry, snap) is None
+
+    def test_mutated_file_bytes_fail_naming_the_file(self, tmp_path):
+        snap, entry = self._make_snapshot(tmp_path)
+        (snap / "vocab.txt").write_bytes(b"alpha\nbeta\ngamma\ndelta\n")
+        with pytest.raises(schema.ColmAimsError) as excinfo:
+            _phase4().verify_snapshot_dir(entry, snap)
+        assert "vocab.txt" in str(excinfo.value)
+
+    def test_extra_file_fails(self, tmp_path):
+        # Artifact-side mutation (seed catalog): an UNDECLARED extra file in
+        # the snapshot is a mismatch even though every declared file checks.
+        snap, entry = self._make_snapshot(tmp_path)
+        (snap / "smuggled.bin").write_bytes(b"\x00\x01")
+        with pytest.raises(schema.ColmAimsError) as excinfo:
+            _phase4().verify_snapshot_dir(entry, snap)
+        assert "smuggled.bin" in str(excinfo.value)
+
+    def test_missing_file_fails(self, tmp_path):
+        snap, entry = self._make_snapshot(tmp_path)
+        (snap / "1_Pooling/config.json").unlink()
+        with pytest.raises(schema.ColmAimsError) as excinfo:
+            _phase4().verify_snapshot_dir(entry, snap)
+        assert "1_Pooling/config.json" in str(excinfo.value)
+
+    def test_size_is_independently_checked(self, tmp_path):
+        # A manifest entry with the CORRECT sha but a wrong declared size
+        # must still fail — size is a real check, not sha-shadowed.
+        snap, entry = self._make_snapshot(tmp_path)
+        entry["files"]["config.json"]["size"] += 1
+        with pytest.raises(schema.ColmAimsError):
+            _phase4().verify_snapshot_dir(entry, snap)
+
+    def test_file_count_consistency_checked(self, tmp_path):
+        snap, entry = self._make_snapshot(tmp_path)
+        entry["file_count"] = 2
+        with pytest.raises(schema.ColmAimsError):
+            _phase4().verify_snapshot_dir(entry, snap)
+
+
+# ===========================================================================
+# R-076: staged-input hash gates (fail-closed, before any loader)
+# ===========================================================================
+
+
+class TestR076StagedInputGate:
+    def _staged(self, tmp_path):
+        a = tmp_path / "calibration_train.json"
+        b = tmp_path / "test_dataset.json"
+        a.write_bytes(b'{"rows": [1, 2]}\n')
+        b.write_bytes(b'{"rows": [3]}\n')
+        return [
+            {
+                "path": a,
+                "expected_sha256": sha256_file(a),
+                "label": "calibration_train",
+            },
+            {
+                "path": b,
+                "expected_sha256": sha256_file(b),
+                "label": "test_dataset",
+            },
+        ]
+
+    def test_all_match_returns_observed_hashes_in_order(self, tmp_path):
+        staged = self._staged(tmp_path)
+        out = _phase4().staged_input_gate(staged)
+        assert [e["label"] for e in out] == [
+            "calibration_train",
+            "test_dataset",
+        ]
+        for given, got in zip(staged, out):
+            assert got["expected_sha256"] == given["expected_sha256"]
+            assert got["observed_sha256"] == given["expected_sha256"]
+
+    def test_mismatch_raises_naming_file_expected_and_observed(
+        self, tmp_path
+    ):
+        staged = self._staged(tmp_path)
+        real_bytes = staged[1]["path"].read_bytes()
+        staged[1]["path"].write_bytes(b'{"rows": [3, 4]}\n')
+        observed = sha256_bytes(staged[1]["path"].read_bytes())
+        with pytest.raises(schema.TypedIngressError) as excinfo:
+            _phase4().staged_input_gate(staged)
+        message = str(excinfo.value)
+        assert "test_dataset.json" in message
+        assert staged[1]["expected_sha256"] in message
+        assert observed in message
+        assert observed != sha256_bytes(real_bytes)
+
+    def test_missing_file_raises_naming_it(self, tmp_path):
+        staged = self._staged(tmp_path)
+        staged[0]["path"].unlink()
+        with pytest.raises(schema.TypedIngressError) as excinfo:
+            _phase4().staged_input_gate(staged)
+        assert "calibration_train.json" in str(excinfo.value)
+
+    def test_first_mismatch_in_list_order_is_named(self, tmp_path):
+        staged = self._staged(tmp_path)
+        staged[0]["path"].write_bytes(b"tampered-a")
+        staged[1]["path"].write_bytes(b"tampered-b")
+        with pytest.raises(schema.TypedIngressError) as excinfo:
+            _phase4().staged_input_gate(staged)
+        assert "calibration_train.json" in str(excinfo.value)
+
+    def test_empty_staged_list_raises(self):
+        # DECISION: a gate over ZERO inputs is a defect (vacuously-empty
+        # authoritative set), not a trivially-passing gate.
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().staged_input_gate([])
+
+    def test_malformed_expected_digest_raises(self, tmp_path):
+        staged = self._staged(tmp_path)
+        staged[0]["expected_sha256"] = "not-a-sha"
+        with pytest.raises(schema.TypedIngressError):
+            _phase4().staged_input_gate(staged)
+
+
+# ===========================================================================
+# R-077: materialized parity comparator
+# ===========================================================================
+
+
+def _anchor():
+    # Source: reproducibility/colm_aims_2026/frozen/parity_anchor_export_a.json
+    return _load_json(PARITY_ANCHOR_PATH)
+
+
+def _regen_from_anchor(anchor):
+    """A producer-shaped export whose values come FROM the anchor (exact
+    match), with the two Random-K cells filled from the informational
+    archived values."""
+    results = {}
+    for cell, policies in anchor["expected"].items():
+        results[cell] = {p: _copy(v) for p, v in policies.items()}
+    informational = anchor["random_k"]["informational_archived_values"]
+    for cell, policies in informational.items():
+        results[cell] = {p: _copy(v) for p, v in policies.items()}
+    return {
+        "metadata": {
+            "n_eval": anchor["identity_fields"]["n_eval"],
+            "n_fit": anchor["identity_fields"]["n_fit"],
+        },
+        "results": results,
+    }
+
+
+class TestR077AnchorArtifact:
+    # Direct pins over the COMMITTED anchor (pass at RED time).
+
+    @pytest.fixture(scope="class")
+    def art(self):
+        return _anchor()
+
+    def test_field_counts(self, art):
+        assert art["field_count"] == {"point": 160, "ci_arrays": 32}
+
+    def test_allowlist_completeness_is_arithmetically_exact(self, art):
+        # 8 nonrandom cells x 2 policies x 10 point fields == 160;
+        # 8 x 2 x 2 CI arrays == 32 — no more, no fewer.
+        assert len(art["point_fields"]) == 10
+        assert len(art["ci_fields"]) == 2
+        assert len(art["nonrandom_cells"]) == 8
+        assert len(art["policies"]) == 2
+        assert 8 * 2 * 10 == art["field_count"]["point"]
+        assert 8 * 2 * 2 == art["field_count"]["ci_arrays"]
+        expected_keys = sorted(art["point_fields"] + art["ci_fields"])
+        for cell in art["nonrandom_cells"]:
+            for policy in art["policies"]:
+                assert (
+                    sorted(art["expected"][cell][policy]) == expected_keys
+                ), (cell, policy)
+
+    def test_nonrandom_cells_exact_set(self, art):
+        assert set(art["nonrandom_cells"]) == {
+            f"{ref}+{cal}"
+            for ref in ("idealized", "khard", "kdisjoint", "klex")
+            for cal in ("shared", "performat")
+        }
+
+    def test_source_is_export_a(self, art):
+        assert art["source"]["sha256"] == EXPORT_A_SHA
+        assert art["source"]["basename"] == "stopdff_fair_qa.json"
+
+    def test_export_b_is_corroborative_never_anchor(self, art):
+        assert art["corroborative"]["sha256"] == EXPORT_B_SHA
+        assert "corroborative" in art["corroborative"]["role"]
+
+    def test_random_k_flags(self, art):
+        rk = art["random_k"]
+        assert rk["exempt_from_historical_parity"] is True
+        assert rk["archived_rng_pinned"] is False
+        assert rk["fresh_rng_pinned"] is True
+        assert set(rk["cells"]) == {"krandom+shared", "krandom+performat"}
+
+    def test_identity_fields(self, art):
+        assert art["identity_fields"] == {
+            "n_eval": 2258,
+            "n_fit": 2142,
+            "per_cell_n": 2249,
+        }
+
+    def test_per_cell_n_uniformly_2249(self, art):
+        for cell in art["nonrandom_cells"]:
+            for policy in art["policies"]:
+                assert art["expected"][cell][policy]["n"] == 2249
+
+    def test_label_mapping_performat_to_format_specific(self, art):
+        assert art["label_mapping"] == {"performat": "format_specific"}
+
+    def test_comparison_rules_blocking(self, art):
+        assert art["comparison_rules"]["any_mismatch_blocking"] is True
+        assert art["comparison_rules"]["ci_arrays_blocking"] is True
+
+
+class TestR077CompareParity:
+    # GREEN: phase4.compare_parity.
+
+    def test_exact_match_passes_with_full_checked_count(self):
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "PASS"
+        assert result["failures"] == []
+        # DECISION: checked == 160 point + 32 CI arrays + 2 identity fields
+        # (n_eval, n_fit); the per-cell n sits INSIDE the 160.
+        assert result["checked"] == 160 + 32 + 2
+
+    def test_single_point_field_mutation_fails_naming_it(self):
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        regen["results"]["khard+shared"]["myopic"]["abs_mean"] += 0.0001
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "FAIL"
+        rows = [
+            f
+            for f in result["failures"]
+            if f["cell"] == "khard+shared"
+            and f["policy"] == "myopic"
+            and f["field"] == "abs_mean"
+        ]
+        assert len(rows) == 1
+        assert set(rows[0]) == {
+            "cell",
+            "policy",
+            "field",
+            "expected",
+            "observed",
+        }
+
+    def test_single_ci_element_mutation_is_blocking(self):
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        regen["results"]["klex+performat"]["dp"]["signed_mean_ci"][1] += (
+            0.0001
+        )
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "FAIL"
+        assert any(
+            f["cell"] == "klex+performat"
+            and f["policy"] == "dp"
+            and f["field"] == "signed_mean_ci"
+            for f in result["failures"]
+        )
+
+    def test_identity_field_mutation_fails(self):
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        regen["metadata"]["n_eval"] = 2257
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "FAIL"
+        rows = [f for f in result["failures"] if f["field"] == "n_eval"]
+        assert rows and rows[0]["cell"] is None
+        assert rows[0]["policy"] is None
+
+    def test_random_k_divergence_is_informational_never_blocking(self):
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        for policy in ("dp", "myopic"):
+            regen["results"]["krandom+shared"][policy]["signed_mean"] = 99.0
+            regen["results"]["krandom+performat"][policy]["abs_mean"] = 42.0
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "PASS"
+        assert result["failures"] == []
+        info = result["random_k_informational"]
+        assert "krandom+shared" in json.dumps(info)
+
+    def test_bool_observed_is_never_numeric_equal(self):
+        # Bool-laundering (seed catalog): expected 1.0 vs observed True and
+        # expected 0.0 vs observed False are Python-== equal — the
+        # comparator must still FAIL both.
+        anchor = _anchor()
+        assert anchor["expected"]["idealized+shared"]["dp"][
+            "abs_median"
+        ] == 1.0
+        assert anchor["expected"]["idealized+shared"]["dp"][
+            "signed_median"
+        ] == 0.0
+        regen = _regen_from_anchor(anchor)
+        regen["results"]["idealized+shared"]["dp"]["abs_median"] = True
+        regen["results"]["idealized+shared"]["dp"]["signed_median"] = False
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "FAIL"
+        failed_fields = {
+            f["field"]
+            for f in result["failures"]
+            if f["cell"] == "idealized+shared" and f["policy"] == "dp"
+        }
+        assert {"abs_median", "signed_median"} <= failed_fields
+
+    def test_missing_cell_becomes_failures_not_exception(self):
+        # Guarded builder (seed catalog): absence is a FAIL with receipts,
+        # never a KeyError escape.
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        del regen["results"]["khard+shared"]
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "FAIL"
+        assert any(
+            f["cell"] == "khard+shared" for f in result["failures"]
+        )
+
+    def test_missing_point_field_becomes_failure_row(self):
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        del regen["results"]["idealized+performat"]["myopic"]["same_step"]
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "FAIL"
+        assert any(
+            f["cell"] == "idealized+performat"
+            and f["policy"] == "myopic"
+            and f["field"] == "same_step"
+            for f in result["failures"]
+        )
+
+
+# ===========================================================================
+# R-078: QA-012 compatibility fixtures — bytes-bound, loader-rejected
+# ===========================================================================
+
+
+class TestR078Qa012Fixtures:
+    # Source: tests/fixtures/qa012_item10/bindings.json (+ four committed
+    # first-2-line excerpt fixtures beside it), binding the item-10 bundle
+    # per_prefix_scores*.jsonl hit files by SHA-256.
+
+    @pytest.fixture(scope="class")
+    def bindings(self):
+        return _load_json(QA012_BINDINGS_PATH)
+
+    def test_bindings_cover_exactly_four_files(self, bindings):
+        assert len(bindings["files"]) == 4
+        assert {
+            meta["full_file_sha256"] for meta in bindings["files"].values()
+        } == set(QA012_FULL_FILE_SHAS)
+
+    def test_excerpt_fixture_bytes_hash_to_bindings(self, bindings):
+        for name, meta in bindings["files"].items():
+            fixture = QA012_FIXTURE_DIR / meta["excerpt_fixture"]
+            blob = fixture.read_bytes()
+            assert sha256_bytes(blob) == meta["excerpt_sha256"], name
+            lines = [
+                line
+                for line in blob.decode("utf-8").splitlines()
+                if line.strip()
+            ]
+            assert len(lines) == meta["excerpt_lines"] == 2, name
+
+    def test_first_record_shape_is_the_incompatible_quad(self, bindings):
+        for name, meta in bindings["files"].items():
+            fixture = QA012_FIXTURE_DIR / meta["excerpt_fixture"]
+            first = json.loads(
+                fixture.read_text("utf-8").splitlines()[0]
+            )
+            assert set(first) == {
+                "item_id",
+                "format",
+                "prefix_fractions",
+                "p_calibrated",
+            }, name
+            assert first["format"] in {"MC", "QA"}
+
+    def test_v2_ingestion_rejects_the_prototype_shape(self, bindings):
+        # The cannot-substitute demonstration: these rows carry no item_key,
+        # no event statuses, no stop steps, no horizon — the v2 record
+        # loader must refuse each one, naming a missing required field.
+        for name, meta in bindings["files"].items():
+            fixture = QA012_FIXTURE_DIR / meta["excerpt_fixture"]
+            loaded = schema.load_records_bytes(
+                fixture.read_bytes(), f"records/{name}"
+            )
+            assert loaded["kind"] == "records"
+            for record in loaded["records"]:
+                with pytest.raises(
+                    schema.RecordValidationError
+                ) as excinfo:
+                    schema.validate_record(record)
+                assert "item_key" in str(excinfo.value)
+
+
+# ===========================================================================
+# R-079: PRE_RUN_READY certificate assembly (pure core)
+# ===========================================================================
+
+
+# R-070 (F-4): the required suite-receipt field set. A receipt missing
+# environment_lock_sha256 is a failing suite_receipts component.
+R070_RECEIPT_KEYS = frozenset(
+    {
+        "exit_code",
+        "command",
+        "environment_lock_sha256",
+        "workflow_sha256",
+        "interpreter_realpath",
+        "counts",
+        "skip_identities",
+    }
+)
+
+
+def _r070_receipt(command, *, exit_code=0):
+    return {
+        "exit_code": exit_code,
+        "command": command,
+        "environment_lock_sha256": "6" * 64,
+        "workflow_sha256": "7" * 64,
+        "interpreter_realpath": "/repo/.venv/bin/python3.11",
+        "counts": {"passed": 125, "failed": 0},
+        "skip_identities": [],
+    }
+
+
+def _good_components():
+    eligibility = _load_json(ELIGIBILITY_PATH)
+    return {
+        "repo": {
+            "commit": "f" * 40,
+            "tree_sha256": "1" * 64,
+            "dirty": False,
+        },
+        "content_hashes": {
+            "producer_sha256": "2" * 64,
+            "verifier_sha256": "3" * 64,
+            "spec_sha256": "4" * 64,
+        },
+        "eligibility": {
+            "digest": eligibility["pairing_population_keyset_sha256"],
+            "horizon_map_sha256": eligibility["horizon_map_sha256"],
+        },
+        "snapshots": {
+            "primary_scorer": {
+                "verified": True,
+                "model_name": PRIMARY_SCORER_NAME,
+                "hf_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+            },
+            "disjoint_selector": {
+                "verified": True,
+                "model_name": DISJOINT_SELECTOR_NAME,
+                "hf_revision": "e8c3b32edf5434bc2275fc9bab85f82640a19130",
+            },
+        },
+        "offline_flags": list(OFFLINE_FLAGS),
+        "staged_inputs": [
+            {
+                "path": "staged/calibration_train.json",
+                "label": "calibration_train",
+                "expected_sha256": CALIB_TRAIN_SHA,
+                "observed_sha256": CALIB_TRAIN_SHA,
+            },
+            {
+                "path": "data/processed/test_dataset.json",
+                "label": "test_dataset",
+                "expected_sha256": TEST_DATASET_SHA,
+                "observed_sha256": TEST_DATASET_SHA,
+            },
+        ],
+        # AMENDED (F-4/R-070 forward-compat): receipts carry the full R-070
+        # field set; the current checker ignores the extras, the F-4 round
+        # makes them REQUIRED (see TestR070ReceiptFieldsInAssemble).
+        "suite_receipts": {
+            "focused": _r070_receipt(
+                ".venv/bin/python -m pytest -q"
+                " tests/test_colm_aims_v2_phase4_pre.py"
+            ),
+            "full": _r070_receipt(".venv/bin/python -m pytest -q"),
+        },
+        "parity": {
+            "comparator_identity": (
+                "reproducibility.colm_aims_2026.phase4.compare_parity"
+            ),
+            "anchor_sha256": EXPORT_A_SHA,
+        },
+        "qa012": {"rev2_manifest_sha256": QA012_REV2_SHA},
+        "environment": {
+            "interpreter_realpath": "/repo/.venv/bin/python3.11",
+            "os": "Darwin",
+            "arch": "arm64",
+            "cpu": "Apple M3 Max",
+            "blas": "accelerate",
+            "thread_settings": {"OMP_NUM_THREADS": "1"},
+            "environment_lock_sha256": "5" * 64,
+            "command": [
+                "python",
+                "scripts/stopdff_fair_qa_retest.py",
+                "--seed",
+                "1",
+            ],
+            "seeds": [1],
+            "pythonhashseed": "0",
+            "archived_rng_pinned": False,
+            "fresh_rng_pinned": True,
+        },
+    }
+
+
+class TestR079AssembleCertificate:
+    def test_all_good_is_ready_true(self):
+        cert = _phase4().assemble_certificate(_good_components())
+        assert cert["ready"] is True
+        assert cert["failing_checks"] == []
+        assert cert["schema_version"] == 2
+
+    def test_certificate_embeds_the_component_bindings(self):
+        components = _good_components()
+        cert = _phase4().assemble_certificate(components)
+        blob = json.dumps(cert)
+        assert components["eligibility"]["digest"] in blob
+        assert components["eligibility"]["horizon_map_sha256"] in blob
+        assert QA012_REV2_SHA in blob
+        assert EXPORT_A_SHA in blob
+        assert CALIB_TRAIN_SHA in blob
+
+    def test_dirty_tree_fails_closed(self):
+        components = _good_components()
+        components["repo"]["dirty"] = True
+        cert = _phase4().assemble_certificate(components)
+        assert cert["ready"] is False
+        assert any("repo" in check for check in cert["failing_checks"])
+
+    def test_stringly_typed_dirty_flag_is_not_clean(self):
+        # Bool-guard: only the exact False means clean; "false" is a defect.
+        components = _good_components()
+        components["repo"]["dirty"] = "false"
+        cert = _phase4().assemble_certificate(components)
+        assert cert["ready"] is False
+
+    def test_staged_input_hash_mismatch_fails(self):
+        components = _good_components()
+        components["staged_inputs"][1]["observed_sha256"] = "9" * 64
+        cert = _phase4().assemble_certificate(components)
+        assert cert["ready"] is False
+        assert any(
+            "staged_inputs" in check for check in cert["failing_checks"]
+        )
+
+    def test_missing_observation_is_not_a_pass(self):
+        components = _good_components()
+        components["staged_inputs"][0]["observed_sha256"] = None
+        cert = _phase4().assemble_certificate(components)
+        assert cert["ready"] is False
+
+    def test_snapshot_mismatch_fails(self):
+        components = _good_components()
+        components["snapshots"]["primary_scorer"]["verified"] = False
+        cert = _phase4().assemble_certificate(components)
+        assert cert["ready"] is False
+        assert any(
+            "snapshot" in check for check in cert["failing_checks"]
+        )
+
+    def test_suite_failure_fails(self):
+        components = _good_components()
+        components["suite_receipts"]["full"]["exit_code"] = 1
+        cert = _phase4().assemble_certificate(components)
+        assert cert["ready"] is False
+        assert any("suite" in check for check in cert["failing_checks"])
+
+    def test_bool_exit_code_is_rejected_not_laundered(self):
+        # False == 0 in Python; a bool exit code must NOT read as success.
+        components = _good_components()
+        components["suite_receipts"]["focused"]["exit_code"] = False
+        cert = _phase4().assemble_certificate(components)
+        assert cert["ready"] is False
+
+    def test_missing_component_fails_and_is_named(self):
+        components = _good_components()
+        del components["environment"]
+        cert = _phase4().assemble_certificate(components)
+        assert cert["ready"] is False
+        assert any(
+            "environment" in check for check in cert["failing_checks"]
+        )
+
+    def test_missing_environment_field_fails(self):
+        components = _good_components()
+        del components["environment"]["pythonhashseed"]
+        cert = _phase4().assemble_certificate(components)
+        assert cert["ready"] is False
+
+    def test_wrong_offline_flags_fail(self):
+        components = _good_components()
+        components["offline_flags"] = ["HF_HUB_OFFLINE=1"]
+        cert = _phase4().assemble_certificate(components)
+        assert cert["ready"] is False
+        assert any(
+            "offline" in check for check in cert["failing_checks"]
+        )
+
+    def test_two_defects_are_both_named_never_partial(self):
+        components = _good_components()
+        components["repo"]["dirty"] = True
+        components["staged_inputs"][0]["observed_sha256"] = "8" * 64
+        cert = _phase4().assemble_certificate(components)
+        assert cert["ready"] is False
+        assert any("repo" in check for check in cert["failing_checks"])
+        assert any(
+            "staged_inputs" in check for check in cert["failing_checks"]
+        )
+
+    def test_required_component_key_universe_is_pinned(self):
+        # Contract guard: the good fixture covers exactly the required set.
+        components = _good_components()
+        assert set(components) == set(CERT_COMPONENT_KEYS)
+        assert set(components["environment"]) == set(CERT_ENVIRONMENT_KEYS)
+
+
+# ===========================================================================
+# R-080: records export (producer boundary, model-free)
+# ===========================================================================
+
+
+def _scored_items():
+    # AMENDED (F-7, adjudicated R-080 tightening 2026-08-22): the DP sentinel
+    # is EXACTLY stop == horizon; stop > horizon is frame corruption and is
+    # refused (see TestF7OvershootRefusal). itm-a's ref overshoot (5 > 2)
+    # became ref_stop == 2 and itm-d's mc overshoot (12 > 7) became
+    # mc_stop == 7 — both previously asserted the absorbed-overshoot
+    # behavior this round retires.
+    return [
+        # mc at the sentinel (stop == horizon) => NEVER; ref finite.
+        {"item_key": "itm-b", "horizon": 4, "mc_stop": 4, "ref_stop": 1},
+        # mc genuine final-prefix crossing at horizon 2; ref sentinel (==).
+        {"item_key": "itm-a", "horizon": 2, "mc_stop": 1, "ref_stop": 2},
+        # both finite; ref crosses at the final prefix of horizon 10.
+        {"item_key": "itm-c", "horizon": 10, "mc_stop": 0, "ref_stop": 9},
+        # both at the exact sentinel (7 == 7).
+        {"item_key": "itm-d", "horizon": 7, "mc_stop": 7, "ref_stop": 7},
+    ]
+
+
+class TestR080MapCalibrationLabel:
+    def test_performat_maps_to_format_specific(self):
+        mod = _phase4_records()
+        assert mod.map_calibration_label("performat") == "format_specific"
+
+    def test_shared_is_identity(self):
+        assert _phase4_records().map_calibration_label("shared") == "shared"
+
+    def test_format_specific_is_idempotent(self):
+        assert (
+            _phase4_records().map_calibration_label("format_specific")
+            == "format_specific"
+        )
+
+    def test_unknown_label_raises(self):
+        with pytest.raises((schema.ColmAimsError, ValueError)):
+            _phase4_records().map_calibration_label("perfmt")
+
+
+class TestR080ExportRecords:
+    def test_writes_records_path_under_out_dir(self, tmp_path):
+        out = _phase4_records().export_records(
+            _scored_items(), "khard__format_specific", tmp_path
+        )
+        assert out == tmp_path / "records" / "khard__format_specific.jsonl"
+        assert out.is_file()
+
+    def test_exported_rows_load_under_the_v2_oracle(self, tmp_path):
+        # The EXISTING v2 ingestion is the oracle: typed jsonl ingress +
+        # per-record validation + complete classification.
+        out = _phase4_records().export_records(
+            _scored_items(), "khard__format_specific", tmp_path
+        )
+        loaded = schema.load_records_bytes(
+            out.read_bytes(), "records/khard__format_specific.jsonl"
+        )
+        records = loaded["records"]
+        assert len(records) == 4
+        for record in records:
+            schema.validate_record(record)
+            assert pairing.classify_record(record)["status"] == "complete"
+
+    def test_rows_sorted_by_item_key(self, tmp_path):
+        out = _phase4_records().export_records(
+            _scored_items(), "khard__format_specific", tmp_path
+        )
+        keys = [
+            json.loads(line)["item_key"]
+            for line in out.read_text("utf-8").splitlines()
+            if line.strip()
+        ]
+        assert keys == ["itm-a", "itm-b", "itm-c", "itm-d"]
+
+    def test_canonical_events_and_field_set(self, tmp_path):
+        out = _phase4_records().export_records(
+            _scored_items(), "khard__format_specific", tmp_path
+        )
+        by_key = {
+            r["item_key"]: r
+            for r in (
+                json.loads(line)
+                for line in out.read_text("utf-8").splitlines()
+                if line.strip()
+            )
+        }
+        expected_fields = {
+            "item_key",
+            "trajectory_horizon",
+            "mc_event_status",
+            "mc_stop_step",
+            "mc_terminal_imputation",
+            "ref_event_status",
+            "ref_stop_step",
+            "ref_terminal_imputation",
+        }
+        for record in by_key.values():
+            assert set(record) == expected_fields
+        # Sentinel (stop == horizon) => NEVER_STOPPED, null stop, imputed.
+        b = by_key["itm-b"]
+        assert b["mc_event_status"] == EVENT_NEVER
+        assert b["mc_stop_step"] is None
+        assert b["mc_terminal_imputation"] == IMPUTATION_FINAL_PREFIX
+        assert b["ref_event_status"] == EVENT_FINITE
+        assert b["ref_stop_step"] == 1
+        assert b["ref_terminal_imputation"] == IMPUTATION_NONE
+        assert b["trajectory_horizon"] == 4
+        # Final-prefix crossing at horizon 2 stays FINITE (R-046).
+        a = by_key["itm-a"]
+        assert a["mc_event_status"] == EVENT_FINITE
+        assert a["mc_stop_step"] == 1
+        assert a["trajectory_horizon"] == 2
+        assert a["ref_event_status"] == EVENT_NEVER
+        assert a["ref_stop_step"] is None
+        # Exact sentinel (7 == 7) on both arms codes as NEVER (F-7: the
+        # former overshoot leg of this assertion moved to refusal tests).
+        d = by_key["itm-d"]
+        assert d["mc_event_status"] == EVENT_NEVER
+        assert d["ref_event_status"] == EVENT_NEVER
+        # Final-prefix crossing at horizon 10.
+        c = by_key["itm-c"]
+        assert c["ref_event_status"] == EVENT_FINITE
+        assert c["ref_stop_step"] == 9
+
+    def test_derived_reporting_encoding_stays_distinct(self, tmp_path):
+        # R-046: the DP scalar is recomputable from the canonical record via
+        # pairing.sentinel_coded_stop — never stored into stop_step.
+        out = _phase4_records().export_records(
+            _scored_items(), "khard__format_specific", tmp_path
+        )
+        by_key = {
+            r["item_key"]: r
+            for r in (
+                json.loads(line)
+                for line in out.read_text("utf-8").splitlines()
+                if line.strip()
+            )
+        }
+        assert pairing.sentinel_coded_stop(by_key["itm-b"], "mc") == 4
+        assert pairing.sentinel_coded_stop(by_key["itm-d"], "mc") == 7
+        assert pairing.sentinel_coded_stop(by_key["itm-d"], "ref") == 7
+        assert pairing.sentinel_coded_stop(by_key["itm-c"], "ref") == 9
+
+    def test_export_is_deterministic_under_input_permutation(self, tmp_path):
+        mod = _phase4_records()
+        out1 = mod.export_records(
+            _scored_items(), "khard__format_specific", tmp_path / "one"
+        )
+        shuffled = list(reversed(_scored_items()))
+        out2 = mod.export_records(
+            shuffled, "khard__format_specific", tmp_path / "two"
+        )
+        assert out1.read_bytes() == out2.read_bytes()
+
+    def test_legacy_performat_cell_id_is_refused(self, tmp_path):
+        # The boundary translation is explicit: a performat-labelled cell id
+        # is refused with guidance toward format_specific, in BOTH the
+        # legacy "+" spelling and a smuggled "__" spelling.
+        mod = _phase4_records()
+        for bad in ("khard+performat", "khard__performat"):
+            with pytest.raises(
+                (schema.ColmAimsError, ValueError)
+            ) as excinfo:
+                mod.export_records(_scored_items(), bad, tmp_path)
+            assert "format_specific" in str(excinfo.value)
+
+    def test_duplicate_item_key_is_refused(self, tmp_path):
+        items = _scored_items()
+        items.append(dict(items[0]))
+        with pytest.raises((schema.ColmAimsError, ValueError)):
+            _phase4_records().export_records(
+                items, "khard__format_specific", tmp_path
+            )
+
+    def test_bool_stop_is_refused_not_laundered(self, tmp_path):
+        items = _scored_items()
+        items[0]["mc_stop"] = True
+        with pytest.raises((schema.ColmAimsError, ValueError)):
+            _phase4_records().export_records(
+                items, "khard__format_specific", tmp_path
+            )
+
+    def test_bool_horizon_is_refused(self, tmp_path):
+        items = _scored_items()
+        items[0]["horizon"] = True
+        with pytest.raises((schema.ColmAimsError, ValueError)):
+            _phase4_records().export_records(
+                items, "khard__format_specific", tmp_path
+            )
+
+    def test_float_stop_is_refused(self, tmp_path):
+        items = _scored_items()
+        items[0]["mc_stop"] = 2.5
+        with pytest.raises((schema.ColmAimsError, ValueError)):
+            _phase4_records().export_records(
+                items, "khard__format_specific", tmp_path
+            )
+
+    def test_negative_stop_is_refused(self, tmp_path):
+        items = _scored_items()
+        items[0]["ref_stop"] = -1
+        with pytest.raises((schema.ColmAimsError, ValueError)):
+            _phase4_records().export_records(
+                items, "khard__format_specific", tmp_path
+            )
+
+    def test_horizon_below_two_is_refused(self, tmp_path):
+        # DECISION: eligible horizons are >= 2 (single-prefix items are
+        # excluded upstream by the frozen eligibility artifact).
+        items = _scored_items()
+        items[0]["horizon"] = 1
+        items[0]["mc_stop"] = 0
+        items[0]["ref_stop"] = 0
+        with pytest.raises((schema.ColmAimsError, ValueError)):
+            _phase4_records().export_records(
+                items, "khard__format_specific", tmp_path
+            )
+
+    def test_unknown_item_field_is_refused(self, tmp_path):
+        # Closed input contract: callers project scored frames down to
+        # exactly {item_key, horizon, mc_stop, ref_stop}.
+        items = _scored_items()
+        items[0]["p_calibrated"] = [0.5]
+        with pytest.raises((schema.ColmAimsError, ValueError)):
+            _phase4_records().export_records(
+                items, "khard__format_specific", tmp_path
+            )
+
+    def test_missing_item_field_is_refused(self, tmp_path):
+        items = _scored_items()
+        del items[0]["ref_stop"]
+        with pytest.raises((schema.ColmAimsError, ValueError)):
+            _phase4_records().export_records(
+                items, "khard__format_specific", tmp_path
+            )
+
+
+# ===========================================================================
+# R-072 (amended): QA-012 rev2 manifest pins
+# ===========================================================================
+
+
+class TestR072Rev2Manifest:
+    # Source: qa012_inventory_2026-08-22_rev2.json (repo root; adjudicated
+    # 2026-08-22, supersedes the VOID rev1).
+
+    @pytest.fixture(scope="class")
+    def manifest(self):
+        return _load_json(QA012_REV2_MANIFEST_PATH)
+
+    def test_manifest_bytes_hash_to_the_adjudicated_sha(self):
+        assert sha256_file(QA012_REV2_MANIFEST_PATH) == QA012_REV2_SHA
+
+    def test_verdict_hits_present_not_vacuous(self, manifest):
+        assert manifest["verdict"] == "HITS_PRESENT_NOT_VACUOUS"
+
+    def test_total_hits_4556(self, manifest):
+        assert manifest["total_format_qa_hits"] == 4556
+
+    def test_hits_by_file_sums_to_total_over_four_files(self, manifest):
+        hits = manifest["hits_by_file"]
+        assert len(hits) == 4
+        assert sum(hits.values()) == 4556
+
+    def test_supersedes_names_rev1_by_sha(self, manifest):
+        supersedes = manifest["supersedes"]
+        assert supersedes["sha256"] == QA012_REV1_SHA
+        assert supersedes["file"] == "qa012_inventory_2026-08-21.json"
+
+    def test_corrected_scope_and_revision(self, manifest):
+        assert manifest["revision"] == 2
+        assert manifest["files_scanned"] == 67
+        assert manifest["parse_failures"] == []
+
+
+# ===========================================================================
+# FIX ROUND (adversarial critic, 2026-08-22): F-1..F-7 exploit tests.
+# Written RED-first against the GREEN implementation; current-behavior
+# probes for F-3/F-5/F-7 confirmed the defects live before pinning.
+# ===========================================================================
+
+
+def _producer():
+    from scripts import stopdff_fair_qa_retest as producer
+
+    return producer
+
+
+GATE_SENTINEL_NAMES = (
+    "staged_gate",
+    "eligibility_load",
+    "snapshot_verify",
+    "dataset_load",
+    "model_construct",
+)
+
+
+def _gate_args(**overrides):
+    """Minimal argparse-shaped namespace for the run_phase4_gates seam."""
+    base = {
+        "eligibility": str(ELIGIBILITY_PATH),
+        "records_out": None,
+        "staged_input": [],
+        "primary_model_path": None,
+        "disjoint_model_path": None,
+        "snapshot_manifest": None,
+        "calibration": "paper_exports/calibration_train.json",
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+# ---------------------------------------------------------------------------
+# F-1: staged-input sibling coverage (required_staged_coverage)
+# ---------------------------------------------------------------------------
+
+
+class TestF1RequiredStagedCoverage:
+    def _consumed(self, tmp_path):
+        return [
+            {
+                "label": "calibration_train",
+                "path": tmp_path / "calibration_train.json",
+                "frozen_sha256": CALIB_TRAIN_SHA,
+            },
+            {
+                "label": "eval_split",
+                "path": tmp_path / "test_dataset.json",
+                "frozen_sha256": TEST_DATASET_SHA,
+            },
+            {
+                "label": "fit_split",
+                "path": tmp_path / "val_dataset.json",
+                "frozen_sha256": None,
+            },
+            {
+                "label": "mc_dataset",
+                "path": tmp_path / "mc_dataset.json",
+                "frozen_sha256": None,
+            },
+        ]
+
+    def _operator(self, consumed, index, digest):
+        return {
+            "label": f"op_{consumed[index]['label']}",
+            "path": consumed[index]["path"],
+            "expected_sha256": digest,
+        }
+
+    def test_full_coverage_resolves_in_consumed_order(self, tmp_path):
+        consumed = self._consumed(tmp_path)
+        staged = [
+            self._operator(consumed, 2, "a" * 64),
+            self._operator(consumed, 3, "b" * 64),
+        ]
+        plan = _phase4().required_staged_coverage(consumed, staged)
+        assert [entry["label"] for entry in plan] == [
+            "calibration_train",
+            "eval_split",
+            "fit_split",
+            "mc_dataset",
+        ]
+        expected = [CALIB_TRAIN_SHA, TEST_DATASET_SHA, "a" * 64, "b" * 64]
+        assert [entry["expected_sha256"] for entry in plan] == expected
+
+    def test_eval_split_frozen_pin_comes_from_eligibility_artifact(
+        self, tmp_path
+    ):
+        # The wiring pin: the eval-split frozen digest IS the eligibility
+        # artifact's derived_from.test_dataset_sha256 (two-party pinned).
+        eligibility = _load_json(ELIGIBILITY_PATH)
+        consumed = [
+            {
+                "label": "eval_split",
+                "path": tmp_path / "test_dataset.json",
+                "frozen_sha256": eligibility["derived_from"][
+                    "test_dataset_sha256"
+                ],
+            }
+        ]
+        plan = _phase4().required_staged_coverage(consumed, [])
+        assert plan[0]["expected_sha256"] == TEST_DATASET_SHA
+
+    def test_operator_entry_agreeing_with_frozen_pin_is_fine(self, tmp_path):
+        consumed = self._consumed(tmp_path)[:2]
+        staged = [self._operator(consumed, 0, CALIB_TRAIN_SHA)]
+        plan = _phase4().required_staged_coverage(consumed, staged)
+        assert plan[0]["expected_sha256"] == CALIB_TRAIN_SHA
+
+    def test_uncovered_input_raises_naming_it(self, tmp_path):
+        # (a) fit_split has no frozen pin and no operator digest.
+        consumed = self._consumed(tmp_path)
+        staged = [self._operator(consumed, 3, "b" * 64)]
+        with pytest.raises(schema.TypedIngressError) as excinfo:
+            _phase4().required_staged_coverage(consumed, staged)
+        assert "val_dataset.json" in str(excinfo.value)
+
+    def test_operator_digest_contradicting_frozen_pin_raises_both(
+        self, tmp_path
+    ):
+        # (b) substitution-negative: a DIFFERENT valid digest for a
+        # frozen-pinned file must refuse, naming the file and BOTH digests.
+        consumed = self._consumed(tmp_path)[:2]
+        contradicting = "9" * 64
+        staged = [self._operator(consumed, 0, contradicting)]
+        with pytest.raises(schema.TypedIngressError) as excinfo:
+            _phase4().required_staged_coverage(consumed, staged)
+        message = str(excinfo.value)
+        assert "calibration_train.json" in message
+        assert CALIB_TRAIN_SHA in message
+        assert contradicting in message
+
+    def test_unknown_operator_path_raises(self, tmp_path):
+        # (c) an operator entry outside the consumed set is a defect, not
+        # silently ignored coverage.
+        consumed = self._consumed(tmp_path)[:2]
+        staged = [
+            {
+                "label": "mystery",
+                "path": tmp_path / "not_consumed.json",
+                "expected_sha256": "c" * 64,
+            }
+        ]
+        with pytest.raises(schema.TypedIngressError) as excinfo:
+            _phase4().required_staged_coverage(consumed, staged)
+        assert "not_consumed.json" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# F-2a: gate-ordering seam (run_phase4_gates)
+# ---------------------------------------------------------------------------
+
+
+class TestF2GateOrdering:
+    def _recording_sentinels(self, calls, raising=None):
+        sentinels = {}
+        for name in GATE_SENTINEL_NAMES:
+            if raising is not None and name == raising[0]:
+                exc = raising[1]
+
+                def _raiser(*args, _name=name, _exc=exc, **kwargs):
+                    calls.append(_name)
+                    raise _exc
+
+                sentinels[name] = _raiser
+            else:
+
+                def _recorder(*args, _name=name, **kwargs):
+                    calls.append(_name)
+
+                sentinels[name] = _recorder
+        return sentinels
+
+    def test_gates_run_strictly_before_dataset_and_model(self):
+        producer = _producer()
+        calls: list[str] = []
+        producer.run_phase4_gates(
+            _gate_args(), sentinels=self._recording_sentinels(calls)
+        )
+        assert calls == list(GATE_SENTINEL_NAMES)
+
+    def test_staged_gate_failure_aborts_before_any_later_stage(self):
+        producer = _producer()
+        phase4 = _phase4()
+        calls: list[str] = []
+        sentinels = self._recording_sentinels(
+            calls,
+            raising=(
+                "staged_gate",
+                phase4.StagedInputError("staged gate failed (test)"),
+            ),
+        )
+        with pytest.raises(schema.TypedIngressError):
+            producer.run_phase4_gates(_gate_args(), sentinels=sentinels)
+        assert calls == ["staged_gate"]
+
+
+# ---------------------------------------------------------------------------
+# F-2b: producer fatality helpers (exist since GREEN; coverage was missing)
+# ---------------------------------------------------------------------------
+
+
+class TestF2ProducerFatalityHelpers:
+    def test_paired_population_equal_is_silent(self):
+        _producer()._require_frozen_paired_population(
+            cell="khard+shared",
+            paired_ids={"1", "2", "3"},
+            eligible=frozenset({"1", "2", "3"}),
+        )
+
+    def test_silent_exclusion_is_refused(self):
+        with pytest.raises(ValueError) as excinfo:
+            _producer()._require_frozen_paired_population(
+                cell="khard+shared",
+                paired_ids={"1", "2"},
+                eligible=frozenset({"1", "2", "3"}),
+            )
+        assert "3" in str(excinfo.value)
+
+    def test_silent_inclusion_is_refused(self):
+        # The other direction: an item OUTSIDE the frozen set sneaking into
+        # the paired population is equally fatal.
+        with pytest.raises(ValueError) as excinfo:
+            _producer()._require_frozen_paired_population(
+                cell="khard+shared",
+                paired_ids={"1", "2", "3", "99"},
+                eligible=frozenset({"1", "2", "3"}),
+            )
+        assert "99" in str(excinfo.value)
+
+    def test_consistent_horizons_are_silent(self):
+        _producer()._require_consistent_item_horizons(
+            cell="khard+shared",
+            stops={"7": {"mc_horizon": 4, "ref_horizon": 4}},
+            horizon_map={"7": 4},
+        )
+
+    def test_mc_vs_qa_horizon_mismatch_is_refused(self):
+        with pytest.raises(ValueError) as excinfo:
+            _producer()._require_consistent_item_horizons(
+                cell="khard+shared",
+                stops={"7": {"mc_horizon": 4, "ref_horizon": 5}},
+                horizon_map=None,
+            )
+        assert "7" in str(excinfo.value)
+
+    def test_observed_horizon_differing_from_frozen_is_refused(self):
+        # Substitution-negative: 5 is a VALID horizon, just not the frozen
+        # one for this qid.
+        with pytest.raises(ValueError) as excinfo:
+            _producer()._require_consistent_item_horizons(
+                cell="khard+shared",
+                stops={"7": {"mc_horizon": 5, "ref_horizon": 5}},
+                horizon_map={"7": 4},
+            )
+        assert "R-073" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# F-2c: phase4 metadata block (pure builder)
+# ---------------------------------------------------------------------------
+
+
+class TestF2Phase4MetadataBlock:
+    def _block(self):
+        return _producer().phase4_metadata_block(
+            interpreter_realpath="/repo/.venv/bin/python3.11",
+            os_name="Darwin",
+            arch="arm64",
+            device="cpu",
+            pythonhashseed="0",
+            seeds=[1],
+            offline_flags_set=True,
+            fitted_platt_digests={"shared": "a" * 64},
+            continuation_estimator_digests={"idealized+shared": "b" * 64},
+            staged_receipt=[
+                {
+                    "label": "calibration_train",
+                    "path": "paper_exports/calibration_train.json",
+                    "expected_sha256": CALIB_TRAIN_SHA,
+                    "observed_sha256": CALIB_TRAIN_SHA,
+                }
+            ],
+            eligibility={
+                "pairing_population_keyset_sha256": "d" * 64,
+                "horizon_map_sha256": "e" * 64,
+            },
+        )
+
+    def test_receipt_carries_fit_digests_verbatim(self):
+        block = self._block()
+        assert block["fitted_platt_digests"] == {"shared": "a" * 64}
+        assert block["continuation_estimator_digests"] == {
+            "idealized+shared": "b" * 64
+        }
+
+    def test_receipt_field_presence_and_rng_flags(self):
+        block = self._block()
+        for key in (
+            "interpreter_realpath",
+            "os",
+            "arch",
+            "device",
+            "pythonhashseed",
+            "seeds",
+            "offline_flags_set",
+            "fitted_platt_digests",
+            "continuation_estimator_digests",
+            "staged_inputs",
+            "eligibility_keyset_sha256",
+            "eligibility_horizon_map_sha256",
+        ):
+            assert key in block, key
+        assert block["archived_rng_pinned"] is False
+        assert block["fresh_rng_pinned"] is True
+        assert block["staged_inputs"][0]["observed_sha256"] == CALIB_TRAIN_SHA
+        assert block["eligibility_horizon_map_sha256"] == "e" * 64
+
+
+# ---------------------------------------------------------------------------
+# F-3: comparator must refuse a truncated anchor (never a vacuous PASS)
+# ---------------------------------------------------------------------------
+
+
+class TestF3TruncatedAnchor:
+    def _not_pass(self, anchor, regen):
+        """Contract freedom: typed refusal at anchor validation OR a FAIL
+        verdict — but NEVER PASS over a sub-allowlist comparison."""
+        try:
+            result = _phase4().compare_parity(anchor, regen)
+        except schema.ColmAimsError:
+            return
+        assert result["verdict"] != "PASS", (
+            f"truncated anchor produced PASS with checked="
+            f"{result.get('checked')!r} — a comparison over fewer than the"
+            " full 194-field allowlist can never PASS (amended R-077)"
+        )
+
+    def test_cell_truncated_anchor_cannot_pass(self):
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        truncated = _copy(anchor)
+        for cell in ("klex+shared", "klex+performat"):
+            truncated["nonrandom_cells"].remove(cell)
+            del truncated["expected"][cell]
+        self._not_pass(truncated, regen)
+
+    def test_point_field_truncated_anchor_cannot_pass(self):
+        # Sibling site: same exploit through the FIELD axis instead of the
+        # cell axis.
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        truncated = _copy(anchor)
+        dropped = truncated["point_fields"].pop()
+        for cell in truncated["nonrandom_cells"]:
+            for policy in truncated["policies"]:
+                truncated["expected"][cell][policy].pop(dropped, None)
+        self._not_pass(truncated, regen)
+
+    def test_ci_field_truncated_anchor_cannot_pass(self):
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        truncated = _copy(anchor)
+        dropped = truncated["ci_fields"].pop()
+        for cell in truncated["nonrandom_cells"]:
+            for policy in truncated["policies"]:
+                truncated["expected"][cell][policy].pop(dropped, None)
+        self._not_pass(truncated, regen)
+
+
+# ---------------------------------------------------------------------------
+# F-5: cross-type numeric laundering in the comparator
+# ---------------------------------------------------------------------------
+
+
+class TestF5CrossTypeParity:
+    def test_int_field_drifted_to_float_fails(self):
+        # 2249 == 2249.0 in Python — the amended R-077 same-JSON-type rule
+        # must still flag the drift (int is not float).
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        assert isinstance(
+            anchor["expected"]["idealized+shared"]["dp"]["n"], int
+        )
+        regen["results"]["idealized+shared"]["dp"]["n"] = 2249.0
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "FAIL"
+        assert any(
+            f["cell"] == "idealized+shared"
+            and f["policy"] == "dp"
+            and f["field"] == "n"
+            for f in result["failures"]
+        )
+
+    def test_identity_field_drifted_to_float_fails(self):
+        # Sibling site: the identity leg must apply the same type rule.
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        regen["metadata"]["n_eval"] = 2258.0
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "FAIL"
+        assert any(f["field"] == "n_eval" for f in result["failures"])
+
+    def test_string_encoded_number_fails(self):
+        # Regression pin (already correct in GREEN): "0.8528" is a string,
+        # never numeric-equal.
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        expected = anchor["expected"]["idealized+shared"]["dp"]["signed_mean"]
+        regen["results"]["idealized+shared"]["dp"]["signed_mean"] = str(
+            expected
+        )
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "FAIL"
+        assert any(
+            f["field"] == "signed_mean" for f in result["failures"]
+        )
+
+
+# ---------------------------------------------------------------------------
+# F-6: flag coupling — --records-out requires --eligibility at parse time
+# ---------------------------------------------------------------------------
+
+
+class TestF6FlagCoupling:
+    def test_records_out_without_eligibility_exits_2_before_gates(
+        self, tmp_path, monkeypatch
+    ):
+        # Records regenerated outside the frozen paired population are
+        # unusable — refuse at ARGUMENT validation (SystemExit 2), before
+        # any staged gate, artifact load, or dataset read fires.
+        producer = _producer()
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "stopdff_fair_qa_retest.py",
+                "--records-out",
+                str(tmp_path / "records"),
+                "--calibration",
+                str(tmp_path / "missing_calibration.json"),
+                "--data-dir",
+                str(tmp_path / "nodata"),
+                "--out",
+                str(tmp_path / "out.json"),
+            ],
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            producer.main()
+        assert excinfo.value.code == 2
+
+    def test_records_out_with_eligibility_passes_argument_validation(
+        self, tmp_path, monkeypatch
+    ):
+        # Control (guards against over-broad coupling): WITH --eligibility
+        # the run proceeds past parsing and dies at the staged-input gate on
+        # the missing calibration file — a typed gate error, not exit 2.
+        producer = _producer()
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "stopdff_fair_qa_retest.py",
+                "--records-out",
+                str(tmp_path / "records"),
+                "--eligibility",
+                str(ELIGIBILITY_PATH),
+                "--calibration",
+                str(tmp_path / "missing_calibration.json"),
+                "--data-dir",
+                str(tmp_path / "nodata"),
+                "--out",
+                str(tmp_path / "out.json"),
+            ],
+        )
+        with pytest.raises(schema.TypedIngressError):
+            producer.main()
+
+
+# ---------------------------------------------------------------------------
+# F-7: stop > horizon is frame corruption, never absorbed (amended R-080)
+# ---------------------------------------------------------------------------
+
+
+class TestF7OvershootRefusal:
+    def test_mc_stop_one_past_horizon_is_refused_as_corruption(
+        self, tmp_path
+    ):
+        items = _scored_items()
+        items[0]["mc_stop"] = items[0]["horizon"] + 1
+        with pytest.raises(
+            (schema.ColmAimsError, ValueError)
+        ) as excinfo:
+            _phase4_records().export_records(
+                items, "khard__format_specific", tmp_path
+            )
+        assert "corrupt" in str(excinfo.value).lower()
+
+    def test_ref_overshoot_is_refused_on_the_sibling_arm(self, tmp_path):
+        items = _scored_items()
+        items[2]["ref_stop"] = items[2]["horizon"] + 3
+        with pytest.raises(
+            (schema.ColmAimsError, ValueError)
+        ) as excinfo:
+            _phase4_records().export_records(
+                items, "khard__format_specific", tmp_path
+            )
+        assert "corrupt" in str(excinfo.value).lower()
+
+    def test_exact_sentinel_still_exports_never_stopped(self, tmp_path):
+        # Nearest-true control: the tightening must not break the exact
+        # sentinel (stop == horizon).
+        out = _phase4_records().export_records(
+            _scored_items(), "khard__format_specific", tmp_path
+        )
+        rows = [
+            json.loads(line)
+            for line in out.read_text("utf-8").splitlines()
+            if line.strip()
+        ]
+        d = next(r for r in rows if r["item_key"] == "itm-d")
+        assert d["mc_event_status"] == EVENT_NEVER
+        assert d["mc_stop_step"] is None
+
+
+# ---------------------------------------------------------------------------
+# F-4 companion: assemble_certificate requires the R-070 receipt fields
+# ---------------------------------------------------------------------------
+
+
+class TestR070ReceiptFieldsInAssemble:
+    def test_receipt_missing_environment_lock_hash_fails(self):
+        components = _good_components()
+        del components["suite_receipts"]["focused"]["environment_lock_sha256"]
+        cert = _phase4().assemble_certificate(components)
+        assert cert["ready"] is False
+        assert any("suite" in check for check in cert["failing_checks"])
+
+    def test_receipt_missing_counts_fails(self):
+        components = _good_components()
+        del components["suite_receipts"]["full"]["counts"]
+        cert = _phase4().assemble_certificate(components)
+        assert cert["ready"] is False
+        assert any("suite" in check for check in cert["failing_checks"])
+
+
+# ---------------------------------------------------------------------------
+# F-4: gather_certificate_components (runner-injectable gatherer)
+# ---------------------------------------------------------------------------
+
+FAKE_COMMIT = "a1" * 20
+FAKE_TREE = "b2" * 32
+
+
+def _fake_git_runner(*, commit=FAKE_COMMIT, tree=FAKE_TREE, status=""):
+    """run(cmd) -> stdout. Git identities come from HERE, never from caller
+    assertions. The fake tree id is 64-hex (sha256-object-format repos); see
+    the CONTRACT_DEFECT note in TestF4GatherCertificateComponents."""
+    calls: list[list[str]] = []
+
+    def run(cmd):
+        cmd_list = [str(part) for part in cmd]
+        calls.append(cmd_list)
+        joined = " ".join(cmd_list)
+        assert "git" in joined, f"unexpected non-git command: {cmd_list}"
+        if "status" in joined:
+            return status
+        if "HEAD^{tree}" in joined or "tree" in joined:
+            return tree + "\n"
+        if "rev-parse" in joined:
+            return commit + "\n"
+        raise AssertionError(f"unexpected git command: {cmd_list}")
+
+    run.calls = calls
+    return run
+
+
+class TestF4GatherCertificateComponents:
+    # CONTRACT_DEFECT R-079 (escalate, do not silently absorb): the existing
+    # assemble_certificate._check_repo demands a 64-hex repo tree_sha256,
+    # but `git rev-parse HEAD^{tree}` on a SHA-1-format repository (this
+    # one) emits a 40-hex object id — the two constraints cannot both be
+    # satisfied verbatim on this repo. These tests inject a 64-hex tree id
+    # (valid for sha256-object-format git) and additionally pin only that
+    # the gathered tree value is RUNNER-SOURCED (changing the runner output
+    # changes the component). GREEN/spec must reconcile the real-repo form
+    # (e.g. a declared tree_object_id -> tree_sha256 derivation) — flagged
+    # in the RED report as SPEC_ISSUE-1.
+
+    def _config(self, tmp_path):
+        staged_dir = tmp_path / "staged"
+        staged_dir.mkdir()
+        cal = staged_dir / "calibration_train.json"
+        cal.write_bytes(b'{"calibration": [1, 2]}\n')
+        dataset = staged_dir / "test_dataset.json"
+        dataset.write_bytes(b'{"dataset": [3]}\n')
+        staged_plan = [
+            {
+                "label": "calibration_train",
+                "path": cal,
+                "expected_sha256": sha256_file(cal),
+            },
+            {
+                "label": "test_dataset",
+                "path": dataset,
+                "expected_sha256": sha256_file(dataset),
+            },
+        ]
+        manifest = _load_json(MODEL_MANIFEST_PATH)
+        snapshot_dirs = {}
+        for role in ("primary_scorer", "disjoint_selector"):
+            snap = tmp_path / f"snap_{role}"
+            (snap / "1_Pooling").mkdir(parents=True)
+            blobs = {
+                "config.json": json.dumps({"role": role}).encode() + b"\n",
+                "1_Pooling/config.json": b'{"pooling": "mean"}\n',
+            }
+            for rel, blob in blobs.items():
+                (snap / rel).write_bytes(blob)
+            manifest["roles"][role]["files"] = {
+                rel: {"sha256": sha256_bytes(blob), "size": len(blob)}
+                for rel, blob in blobs.items()
+            }
+            manifest["roles"][role]["file_count"] = len(blobs)
+            snapshot_dirs[role] = snap
+        manifest_path = tmp_path / "model_snapshot_manifests.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        receipt_paths = {}
+        for name in ("focused", "full"):
+            path = tmp_path / f"suite_receipt_{name}.json"
+            path.write_text(
+                json.dumps(_r070_receipt(f"pytest --suite {name}")),
+                encoding="utf-8",
+            )
+            receipt_paths[name] = path
+        content_paths = {}
+        for key, blob in (
+            ("producer_sha256", b"producer-source-bytes\n"),
+            ("verifier_sha256", b"verifier-source-bytes\n"),
+            ("spec_sha256", b"spec-source-bytes\n"),
+        ):
+            path = tmp_path / f"{key}.txt"
+            path.write_bytes(blob)
+            content_paths[key] = path
+        return {
+            "repo_root": tmp_path,
+            "eligibility_path": ELIGIBILITY_PATH,
+            "snapshot_manifest_path": manifest_path,
+            "snapshot_dirs": snapshot_dirs,
+            "parity_anchor_path": PARITY_ANCHOR_PATH,
+            "qa012_manifest_path": QA012_REV2_MANIFEST_PATH,
+            "staged_plan": staged_plan,
+            "suite_receipt_paths": receipt_paths,
+            "content_hash_paths": content_paths,
+            "environment": _copy(_good_components()["environment"]),
+            "offline_flags": list(OFFLINE_FLAGS),
+        }
+
+    def test_good_config_gathers_ready_true(self, tmp_path):
+        phase4 = _phase4()
+        config = self._config(tmp_path)
+        run = _fake_git_runner()
+        components = phase4.gather_certificate_components(config, run=run)
+        cert = phase4.assemble_certificate(components)
+        assert cert["ready"] is True, cert["failing_checks"]
+
+    def test_repo_identity_is_runner_sourced(self, tmp_path):
+        phase4 = _phase4()
+        config = self._config(tmp_path)
+        components = phase4.gather_certificate_components(
+            config, run=_fake_git_runner()
+        )
+        repo = components["repo"]
+        assert repo["commit"] == FAKE_COMMIT
+        assert repo["dirty"] is False
+        # Runner-sourcing pin without over-pinning the derivation: the same
+        # tree output reproduces the same component; a DIFFERENT tree output
+        # must change it (substitution-negative).
+        other = phase4.gather_certificate_components(
+            config, run=_fake_git_runner(tree="c3" * 32)
+        )
+        again = phase4.gather_certificate_components(
+            config, run=_fake_git_runner()
+        )
+        assert repo["tree_sha256"] == again["repo"]["tree_sha256"]
+        assert repo["tree_sha256"] != other["repo"]["tree_sha256"]
+
+    def test_git_commands_actually_flow_through_the_runner(self, tmp_path):
+        phase4 = _phase4()
+        run = _fake_git_runner()
+        phase4.gather_certificate_components(self._config(tmp_path), run=run)
+        joined = [" ".join(call) for call in run.calls]
+        assert any("status" in call for call in joined)
+        assert any("rev-parse" in call for call in joined)
+
+    def test_dirty_git_status_output_flips_ready_false(self, tmp_path):
+        phase4 = _phase4()
+        components = phase4.gather_certificate_components(
+            self._config(tmp_path),
+            run=_fake_git_runner(status=" M scripts/stopdff_fair_qa_retest.py\n"),
+        )
+        assert components["repo"]["dirty"] is True
+        cert = phase4.assemble_certificate(components)
+        assert cert["ready"] is False
+        assert any("repo" in check for check in cert["failing_checks"])
+
+    def test_staged_inputs_are_rehashed_from_bytes(self, tmp_path):
+        # Mirror-equality catcher: observed must be recomputed from the
+        # file bytes, never copied from the expectation.
+        phase4 = _phase4()
+        config = self._config(tmp_path)
+        real_hash = config["staged_plan"][1]["expected_sha256"]
+        config["staged_plan"][1]["expected_sha256"] = "9" * 64
+        components = phase4.gather_certificate_components(
+            config, run=_fake_git_runner()
+        )
+        entry = components["staged_inputs"][1]
+        assert entry["observed_sha256"] == real_hash
+        assert entry["expected_sha256"] == "9" * 64
+        cert = phase4.assemble_certificate(components)
+        assert cert["ready"] is False
+        assert any(
+            "staged_inputs" in check for check in cert["failing_checks"]
+        )
+
+    def test_content_and_artifact_hashes_are_recomputed(self, tmp_path):
+        phase4 = _phase4()
+        config = self._config(tmp_path)
+        components = phase4.gather_certificate_components(
+            config, run=_fake_git_runner()
+        )
+        for key, path in config["content_hash_paths"].items():
+            assert components["content_hashes"][key] == sha256_file(path)
+        assert components["parity"]["anchor_sha256"] == sha256_file(
+            PARITY_ANCHOR_PATH
+        )
+        assert (
+            components["qa012"]["rev2_manifest_sha256"] == QA012_REV2_SHA
+        )
+        eligibility = _load_json(ELIGIBILITY_PATH)
+        assert (
+            components["eligibility"]["digest"]
+            == eligibility["pairing_population_keyset_sha256"]
+        )
+        assert (
+            components["eligibility"]["horizon_map_sha256"]
+            == eligibility["horizon_map_sha256"]
+        )
+
+    def test_mutated_snapshot_is_recorded_not_raised(self, tmp_path):
+        # Gather RECORDS check failures; assemble decides (guarded builder).
+        phase4 = _phase4()
+        config = self._config(tmp_path)
+        victim = config["snapshot_dirs"]["primary_scorer"] / "config.json"
+        victim.write_bytes(victim.read_bytes() + b"tamper\n")
+        components = phase4.gather_certificate_components(
+            config, run=_fake_git_runner()
+        )
+        assert components["snapshots"]["primary_scorer"]["verified"] is False
+        cert = phase4.assemble_certificate(components)
+        assert cert["ready"] is False
+        assert any("snapshot" in check for check in cert["failing_checks"])
+
+    def test_receipt_file_missing_environment_lock_fails(self, tmp_path):
+        phase4 = _phase4()
+        config = self._config(tmp_path)
+        receipt = _r070_receipt("pytest --suite focused")
+        del receipt["environment_lock_sha256"]
+        config["suite_receipt_paths"]["focused"].write_text(
+            json.dumps(receipt), encoding="utf-8"
+        )
+        components = phase4.gather_certificate_components(
+            config, run=_fake_git_runner()
+        )
+        cert = phase4.assemble_certificate(components)
+        assert cert["ready"] is False
+        assert any("suite" in check for check in cert["failing_checks"])
