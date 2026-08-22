@@ -873,8 +873,7 @@ def _held_fixed_leg(
     cells: list[dict[str, Any]],
 ) -> None:
     problems: list[str] = []
-    held = grid.get("held_fixed")
-    held = held if isinstance(held, dict) else {}
+    held = _as_dict(grid.get("held_fixed"))
     expected_mc = held.get("mc_trajectory_identity")
     expected_hz = held.get("horizon_identity")
     if not _is_resolved_identity(expected_mc) or not _is_resolved_identity(
@@ -883,7 +882,7 @@ def _held_fixed_leg(
         problems.append("grid.held_fixed identities missing or unresolved")
     for cell in cells:
         cell_id = cell.get("cell_id", "unnamed")
-        er = _as_dict(_as_dict((cell.get("estimand"))).get("event_representation"))
+        er = _as_dict(_as_dict(cell.get("estimand")).get("event_representation"))
         if er.get("mc_trajectory_identity") != expected_mc:
             problems.append(
                 f"cell {cell_id!r} mc_trajectory_identity"
@@ -1209,7 +1208,7 @@ def _cell_comparability_leg(
     def residual(cell: dict[str, Any]) -> dict[str, Any]:
         est = {
             key: value
-            for key, value in _as_dict((cell.get("estimand"))).items()
+            for key, value in _as_dict(cell.get("estimand")).items()
             if key not in _ESTIMAND_AXIS_FIELDS
         }
         return {
@@ -1249,8 +1248,7 @@ def _inference_legs(
     shared_keys: list[str] | None,
     shared_digest: str | None,
 ) -> None:
-    inference = profile.get("inference")
-    inference = inference if isinstance(inference, dict) else {}
+    inference = _as_dict(profile.get("inference"))
 
     # ---- inference_seed_derivation (R-052 triple bind) -----------------
     seed_problems: list[str] = []
@@ -1361,10 +1359,7 @@ def _inference_legs(
             matrix_problems.append(f"matrix regeneration failed: {exc}")
     if matrix is not None and order_digest is not None:
         computed = pairing.d7b_matrix_digest_record(matrix, order_digest)
-        recorded_digest = inference.get("resample_matrix_digest")
-        recorded_digest = (
-            recorded_digest if isinstance(recorded_digest, dict) else {}
-        )
+        recorded_digest = _as_dict(inference.get("resample_matrix_digest"))
         for field_name in sorted(schema.MATRIX_DIGEST_KEYS):
             if field_name not in recorded_digest:
                 matrix_problems.append(
@@ -1746,13 +1741,11 @@ def run_verifier(
         observed="; ".join(record_errors[:5]),
     )
 
-    grid = profile.get("grid")
-    grid = grid if isinstance(grid, dict) else {}
+    grid = _as_dict(profile.get("grid"))
     cells = [c for c in (cells_raw or []) if isinstance(c, dict)]
 
     # Records keyed per declared cell (mapping first, naming fallback).
-    mapping = grid.get("record_files")
-    mapping = mapping if isinstance(mapping, dict) else {}
+    mapping = _as_dict(grid.get("record_files"))
     records_by_cell: dict[str, list[dict[str, Any]]] = {}
     complete_by_cell: dict[str, dict[str, dict[str, Any]]] = {}
     for cell in cells:
@@ -2155,7 +2148,7 @@ def _anchor_legs(
         )
 
     anchor_commit = anchor["source_commit"]
-    observed_commit = _as_dict((prov.get("dirty_state"))).get("source_commit")
+    observed_commit = _as_dict(prov.get("dirty_state")).get("source_commit")
     if not schema.is_commit_sha(anchor_commit):
         legs.append(
             _fail(
@@ -2603,11 +2596,9 @@ def _anchored_grid_legs(
     """R-044: the out-of-tree expectations pin the grid identity
     SEMANTICALLY, field by field — the in-package grid block is never its
     own release oracle."""
-    bindings = exp.get("bindings")
-    bindings = bindings if isinstance(bindings, dict) else {}
+    bindings = _as_dict(exp.get("bindings"))
     grid_pins = bindings.get("grid")
-    package_grid = profile.get("grid")
-    package_grid = package_grid if isinstance(package_grid, dict) else {}
+    package_grid = _as_dict(profile.get("grid"))
     if not isinstance(grid_pins, dict):
         for field_name in ANCHORED_GRID_FIELDS:
             legs.append(
@@ -2645,13 +2636,9 @@ def _anchored_inference_legs(
     """R-052(b)/R-053: expectations pin the inference identities; the
     release additionally re-derives the seed from the expectations-pinned
     key-set digest and requires equality with the recorded integer."""
-    bindings = exp.get("bindings")
-    bindings = bindings if isinstance(bindings, dict) else {}
+    bindings = _as_dict(exp.get("bindings"))
     inference_pins = bindings.get("inference")
-    package_inference = profile.get("inference")
-    package_inference = (
-        package_inference if isinstance(package_inference, dict) else {}
-    )
+    package_inference = _as_dict(profile.get("inference"))
     if not isinstance(inference_pins, dict):
         for field_name in ANCHORED_INFERENCE_FIELDS:
             legs.append(
@@ -2950,10 +2937,7 @@ def _estimand_reconciliation_leg(
         for arm in (profile.get("arms") or [])
         if isinstance(arm, dict)
     }
-    calibration_map = prov.get("calibration_identity")
-    calibration_map = (
-        calibration_map if isinstance(calibration_map, dict) else {}
-    )
+    calibration_map = _as_dict(prov.get("calibration_identity"))
     authorized_draws = _authorized_random_k_draws(ledger_doc)
     problems: list[str] = []
     for cell in profile.get("cells") or []:
@@ -3187,7 +3171,7 @@ def _ledger_legs(
         expected=">=1 retained claim-ledger row (R-033)",
         observed="empty ledger rows",
     )
-    package_rejected = _as_dict((profile.get("inference"))).get(
+    package_rejected = _as_dict(profile.get("inference")).get(
         "rejected_cell_ids"
     )
     profile_estimands = _profile_estimand_set(profile)
@@ -3273,10 +3257,9 @@ def _recompute_row_status(
         return "UNVERIFIED"
     if row.get("producer_entrypoint") != prov.get("producer_entrypoint"):
         return "UNVERIFIED"
-    calibration_map = prov.get("calibration_identity")
     calibration_values = {
         v
-        for v in _as_dict(calibration_map).values()
+        for v in _as_dict(prov.get("calibration_identity")).values()
         if isinstance(v, str)
     }
     row_calibration = row.get("calibration_identity")
@@ -3286,8 +3269,8 @@ def _recompute_row_status(
         return "UNVERIFIED"
     splits = _as_dict(prov.get("splits"))
     split_names = {
-        _as_dict((splits.get("fit"))).get("name"),
-        _as_dict((splits.get("eval"))).get("name"),
+        _as_dict(splits.get("fit")).get("name"),
+        _as_dict(splits.get("eval")).get("name"),
     }
     split_names.discard(None)
     row_split = row.get("split_identity")
@@ -3310,7 +3293,7 @@ def _recompute_row_status(
         if row_revision != prov_revision:
             return "UNVERIFIED"
     else:
-        digest_values = set(_as_dict((model.get("byte_digest_manifest"))).values())
+        digest_values = set(_as_dict(model.get("byte_digest_manifest")).values())
         if row_revision not in digest_values:
             return "UNVERIFIED"
     row_input = row.get("input_identity")

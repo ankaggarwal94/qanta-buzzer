@@ -69,7 +69,7 @@ def load_legacy_v1_document(data: bytes) -> dict[str, Any]:
             " csli/calibration/audit_card/v1-profile historical formats"
             " (R-014/R-060)"
         )
-    if family in ("csli", "calibration", "audit_card") and "metadata" not in obj:
+    if family in AGGREGATE_CERTIFYING_FAMILIES and "metadata" not in obj:
         raise schema.SchemaValidationError(
             f"legacy {family} artifact is missing the named invariant"
             " 'metadata' (generation/provenance block) — refusal requires a"

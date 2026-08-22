@@ -37,6 +37,12 @@ _QA012_SATISFIED_STATUSES = frozenset(
 )
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Shape coercion for an inventory-controlled block: ``{}`` for ANY
+    non-dict, so a malformed block fails its duties instead of crashing."""
+    return value if isinstance(value, dict) else {}
+
+
 def evaluate_closure(inventory: dict[str, Any]) -> dict[str, Any]:
     """Evaluate the frozen CAMERA_READY_CLOSURE inventory, fail-closed.
 
@@ -46,8 +52,7 @@ def evaluate_closure(inventory: dict[str, Any]) -> dict[str, Any]:
     """
     failing: list[str] = []
 
-    baseline = inventory.get("d6_baseline")
-    baseline = baseline if isinstance(baseline, dict) else {}
+    baseline = _as_dict(inventory.get("d6_baseline"))
     if baseline.get("main_tex_sha256") != D6_MAIN_TEX_SHA256:
         failing.append(
             "d6 baseline main.tex hash drifted from the two-party-verified"
@@ -63,8 +68,7 @@ def evaluate_closure(inventory: dict[str, Any]) -> dict[str, Any]:
             "d6 baseline missing the FINAL_CHECKSUMS.sha256 manifest hash —"
             " closure binds the COMPLETE checksum closure"
         )
-    entries = baseline.get("final_checksums_entries")
-    entries = entries if isinstance(entries, dict) else {}
+    entries = _as_dict(baseline.get("final_checksums_entries"))
     if entries.get("main.tex") != D6_MAIN_TEX_SHA256:
         failing.append(
             "FINAL_CHECKSUMS entries do not pin main.tex at the designated"
@@ -95,8 +99,7 @@ def evaluate_closure(inventory: dict[str, Any]) -> dict[str, Any]:
 
     # The Holm/inference row is satisfied ONLY by the D7(b) regenerated
     # outputs — until they exist the gate fails on that row by construction.
-    holm_row = inventory.get("holm_row")
-    holm_row = holm_row if isinstance(holm_row, dict) else {}
+    holm_row = _as_dict(inventory.get("holm_row"))
     if holm_row.get("satisfied_by") != ANALYSIS_PROVENANCE_D7B:
         failing.append(
             "holm/inference row unsatisfied: only the D7(b) regenerated"
@@ -105,8 +108,7 @@ def evaluate_closure(inventory: dict[str, Any]) -> dict[str, Any]:
         )
 
     # QA-012 (R-072) is blocking for closure.
-    qa012 = inventory.get("qa012")
-    qa012 = qa012 if isinstance(qa012, dict) else {}
+    qa012 = _as_dict(inventory.get("qa012"))
     qa012_status = qa012.get("status")
     if qa012_status not in _QA012_SATISFIED_STATUSES or not is_sha256_hex(
         qa012.get("inventory_sha256")

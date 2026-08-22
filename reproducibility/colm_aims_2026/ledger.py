@@ -195,6 +195,9 @@ def _validate_random_k_row(row: dict[str, Any], label: str) -> None:
             f"ledger row {label!r} must retain its disclosure marker"
             " (dagger disclosure) (R-025)"
         )
+    # A non-headline row may carry 'predeclared_multidraw_family': that
+    # disposition is structurally valid but INACTIVE for this paper, so it
+    # imposes no further duty unless the row is also headline-eligible.
     headline = row.get("headline_eligible")
     if headline:
         # F1 consistency: the PAIR is validated jointly — headline
@@ -221,9 +224,6 @@ def _validate_random_k_row(row: dict[str, Any], label: str) -> None:
                     " no selective omission, aggregation rule, sensitivity"
                     " analysis, and multiplicity treatment (R-025)"
                 )
-    elif decision == "predeclared_multidraw_family":
-        # Structurally valid but INACTIVE for this paper — nothing further.
-        pass
 
 
 def _validate_inference_row(row: dict[str, Any], label: str) -> None:
@@ -295,21 +295,27 @@ def _validate_row(
 
     # R-023: PR #41 hazard reports may appear only if the exact manuscript
     # cites them.
-    if row.get("artifact_family") == "pr41_hazard_report":
-        if row.get("manuscript_cites") is not True:
-            raise LedgerValidationError(
-                f"ledger row {label!r} references a PR #41 hazard report the"
-                " exact manuscript does not cite (R-023)"
-            )
+    artifact_family = row.get("artifact_family")
+    if (
+        artifact_family == "pr41_hazard_report"
+        and row.get("manuscript_cites") is not True
+    ):
+        raise LedgerValidationError(
+            f"ledger row {label!r} references a PR #41 hazard report the"
+            " exact manuscript does not cite (R-023)"
+        )
 
     # R-024: EXTERNAL -> PASS requires a human-attribution field; repository
     # green tests never substitute for an EXTERNAL item.
-    if _row_is_external_typed(row) and status == "PASS":
-        if not _has_human_attribution(row):
-            raise LedgerValidationError(
-                f"ledger row {label!r} moves an EXTERNAL item to PASS without"
-                " a human_attribution field (attributed_to + as_of) (R-024)"
-            )
+    if (
+        _row_is_external_typed(row)
+        and status == "PASS"
+        and not _has_human_attribution(row)
+    ):
+        raise LedgerValidationError(
+            f"ledger row {label!r} moves an EXTERNAL item to PASS without"
+            " a human_attribution field (attributed_to + as_of) (R-024)"
+        )
 
     anchored_external = (
         external_claim_ids is not None
@@ -327,16 +333,17 @@ def _validate_row(
 
     # R-024: venue-rule rows record only officially published facts with
     # source and as-of date.
-    if row.get("claim_kind") == "venue_rule":
-        if not row.get("source") or not row.get("as_of"):
-            raise LedgerValidationError(
-                f"ledger row {label!r} is a venue-rule row without a"
-                " published source and as_of date (R-024)"
-            )
+    if row.get("claim_kind") == "venue_rule" and (
+        not row.get("source") or not row.get("as_of")
+    ):
+        raise LedgerValidationError(
+            f"ledger row {label!r} is a venue-rule row without a"
+            " published source and as_of date (R-024)"
+        )
 
-    if row.get("artifact_family") == "random_k":
+    if artifact_family == "random_k":
         _validate_random_k_row(row, label)
-    if row.get("artifact_family") == "inference_block":
+    if artifact_family == "inference_block":
         _validate_inference_row(row, label)
 
 

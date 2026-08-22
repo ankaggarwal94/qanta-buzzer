@@ -552,6 +552,11 @@ def _length_guarded_parse_int(token: str) -> int:
     return int(token)
 
 
+# NOTE: both parse entrypoints below spell the three protective hooks out as
+# literal keyword arguments. This duplication is REQUIRED, not drift: the
+# R-067/R-062 suite AST-walks this module and asserts every ``json.loads``
+# call site names parse_constant/parse_float/parse_int directly, so a shared
+# ``**hooks`` mapping would defeat the check.
 def _parse_json_bytes(data: bytes) -> Any:
     """utf-8 + JSON parse with every non-finite form rejected (R-067) and
     overlong integer tokens refused pre-conversion (R-062).
@@ -742,10 +747,7 @@ def load_records_bytes(data: bytes, rel: str) -> dict[str, Any]:
     for lineno, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
-        try:
-            obj = parse_json_text_strict(line, f"{rel}: line {lineno}")
-        except TypedIngressError:
-            raise
+        obj = parse_json_text_strict(line, f"{rel}: line {lineno}")
         if not isinstance(obj, dict):
             raise TypedIngressError(
                 f"{rel}: line {lineno}: record must be an object (R-020)"
@@ -937,7 +939,7 @@ def validate_record(record: dict[str, Any]) -> None:
 
 
 def _check_tolerance(tolerance: Any, where: str) -> None:
-    if not is_number(tolerance) or not math.isfinite(float(tolerance)):
+    if not is_native_finite_number(tolerance):
         raise SchemaValidationError(
             f"{where}: declared numerical_tolerance must be a finite number"
         )
@@ -1146,12 +1148,12 @@ def _validate_grid_block(grid: Any) -> None:
         raise SchemaValidationError(
             "grid.item_keys_sha256 must be a sha256 digest (R-042)"
         )
+    held_fixed = grid["held_fixed"]
     _validate_closed_map(
-        grid["held_fixed"], HELD_FIXED_KEYS, HELD_FIXED_KEYS,
-        "grid.held_fixed",
+        held_fixed, HELD_FIXED_KEYS, HELD_FIXED_KEYS, "grid.held_fixed"
     )
     for key in HELD_FIXED_KEYS:
-        value = grid["held_fixed"][key]
+        value = held_fixed[key]
         if not isinstance(value, str) or not value:
             raise SchemaValidationError(
                 f"grid.held_fixed.{key} must be a non-empty identity string"
@@ -1177,9 +1179,8 @@ def _validate_inference_block(inference: Any) -> None:
             " unsigned 64-bit domain [0, 2**64); bools are rejected"
             " (R-052/R-061)"
         )
-    if not isinstance(inference["seed_derivation"], str) or not inference[
-        "seed_derivation"
-    ]:
+    seed_derivation = inference["seed_derivation"]
+    if not isinstance(seed_derivation, str) or not seed_derivation:
         raise SchemaValidationError(
             "inference.seed_derivation must record the derivation string"
             " beside the derived integer seed (R-052)"

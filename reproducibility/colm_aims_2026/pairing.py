@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import sys
 import unicodedata
 from typing import Any
 
@@ -314,6 +315,24 @@ def finite_only_timing_summary(
 # ---------------------------------------------------------------------------
 
 
+def _normalized_finite(value: int) -> dict[str, Any]:
+    """One normalized FINITE_STOP outcome (fresh dict per call)."""
+    return {
+        "event_status": EVENT_FINITE,
+        "stop_step": value,
+        "terminal_imputation": "NONE",
+    }
+
+
+def _normalized_never() -> dict[str, Any]:
+    """One normalized NEVER_STOPPED outcome (fresh dict per call)."""
+    return {
+        "event_status": EVENT_NEVER,
+        "stop_step": None,
+        "terminal_imputation": IMPUTATION_FINAL_PREFIX,
+    }
+
+
 def normalize_legacy_terminal(
     value: int,
     *,
@@ -340,51 +359,25 @@ def normalize_legacy_terminal(
             f" {value!r} (R-047)"
         )
     if crossing_indicator is not None:
-        if crossing_indicator:
-            return {
-                "event_status": EVENT_FINITE,
-                "stop_step": value,
-                "terminal_imputation": "NONE",
-            }
-        return {
-            "event_status": EVENT_NEVER,
-            "stop_step": None,
-            "terminal_imputation": IMPUTATION_FINAL_PREFIX,
-        }
+        return (
+            _normalized_finite(value)
+            if crossing_indicator
+            else _normalized_never()
+        )
     if authenticated_convention == SENTINEL_CONVENTION:
         # Under timeout_coded_as_horizon, only the horizon value encodes a
         # timeout; T−1 is an ordinary in-range finite stop.
         if value >= horizon:
-            return {
-                "event_status": EVENT_NEVER,
-                "stop_step": None,
-                "terminal_imputation": IMPUTATION_FINAL_PREFIX,
-            }
-        return {
-            "event_status": EVENT_FINITE,
-            "stop_step": value,
-            "terminal_imputation": "NONE",
-        }
+            return _normalized_never()
+        return _normalized_finite(value)
     if authenticated_convention == "timeout_coded_as_final_index":
         if value == horizon - 1:
-            return {
-                "event_status": EVENT_NEVER,
-                "stop_step": None,
-                "terminal_imputation": IMPUTATION_FINAL_PREFIX,
-            }
+            return _normalized_never()
         if 0 <= value < horizon:
-            return {
-                "event_status": EVENT_FINITE,
-                "stop_step": value,
-                "terminal_imputation": "NONE",
-            }
+            return _normalized_finite(value)
     if authenticated_convention is None and 0 <= value < horizon - 1:
         # Unambiguously in-range: an ordinary finite stop.
-        return {
-            "event_status": EVENT_FINITE,
-            "stop_step": value,
-            "terminal_imputation": "NONE",
-        }
+        return _normalized_finite(value)
     # Ambiguous terminal (T−1 or beyond) without an authenticated convention
     # or crossing indicator: refuse to promote; exclude with the named
     # reason; keep the legacy representation.
@@ -517,13 +510,11 @@ def d7b_matrix_digest_record(
 ) -> dict[str, Any]:
     """R-053: digest over the exact resample-index bytes + the four covering
     fields (dtype, shape, byte order, item-order digest)."""
-    import sys as _sys
-
     return {
         "sha256": hashlib.sha256(indices.tobytes()).hexdigest(),
         "dtype": str(indices.dtype),
         "shape": list(indices.shape),
-        "byte_order": _sys.byteorder,
+        "byte_order": sys.byteorder,
         "canonical_item_order_digest": canonical_item_order_digest,
     }
 
