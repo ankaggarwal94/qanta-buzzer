@@ -1,5 +1,11 @@
 # CS321M Claim Surface
 
+> **Scope note (R-038):** stopping-shift evidence in this repository concerns
+> constructed QA reference trajectories — a constructed-reference sensitivity
+> diagnostic. It does not assert observed open-ended decision preservation;
+> the authoritative claim ledger lives under `reproducibility/colm_aims_2026/`.
+
+
 The final CS321M code package supports a narrow benchmark-translation audit.
 
 ## Supported headline claims

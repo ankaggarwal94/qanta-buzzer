@@ -1,5 +1,11 @@
 # Does the Proxy Preserve the Decision? -- Code Package
 
+> **Scope note (R-038):** stopping-shift evidence in this repository concerns
+> constructed QA reference trajectories — a constructed-reference sensitivity
+> diagnostic. It does not assert observed open-ended decision preservation;
+> the authoritative claim ledger lives under `reproducibility/colm_aims_2026/`.
+
+
 CS321M (AI Measurement Science) final project code repository. This project audits whether multiple-choice reformulations of incremental AI benchmarks (quizbowl tossups) preserve decision-relevant psychometric properties. The audit uses three metrics:
 
 1. **CSLI** (Choice-Set Leakage Index) -- quantifies information leakage from answer choices
