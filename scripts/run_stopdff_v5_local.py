@@ -12,7 +12,6 @@ all-MiniLM-L6-v2 runs on CPU (slower). See --help for options.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import importlib.metadata as im
 import json
 import os
@@ -57,6 +56,7 @@ from scripts.stopdff_v5.identity import (  # noqa: E402
     sha256_bytes,
     sha256_file,
 )
+from scripts.stopdff_v5.locking import acquire_process_lock  # noqa: E402
 from scripts.stopdff_v5.manifests import (  # noqa: E402
     ENVIRONMENT_PACKAGES,
     FVI_PRODUCER_FILES,
@@ -257,7 +257,7 @@ _LIFECYCLE_LOCK_FDS: dict[str, int] = {}
 
 
 def _acquire_lifecycle_lock(out: Path) -> None:
-    """Serialize local drivers per workspace with an advisory flock.
+    """Serialize local drivers per workspace with an advisory process lock.
 
     The lifecycle checkpoint (``local_lifecycle.json``) is mutated by
     read-modify-write with last-writer-wins replace semantics; two concurrent
@@ -266,21 +266,11 @@ def _acquire_lifecycle_lock(out: Path) -> None:
     already create-once, so this guards only the local audit journal.
     """
     lock_path = Path(out) / f"{_LOCAL_LIFECYCLE_FILE}.lock"
-    # Key the re-entrancy map on the resolved path (os.path.realpath) so distinct
-    # spellings of one lock file (symlinks, /var vs /private/var) share a slot and
-    # cannot double-acquire — mirrors _CONTROL_LOCK_FDS in stopdff_v5_control_plane.
-    key = os.path.realpath(lock_path)
-    if key in _LIFECYCLE_LOCK_FDS:
-        return
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as exc:
-        os.close(fd)
-        raise RuntimeError(
-            f"another local StopDFF driver holds {lock_path}"
-        ) from exc
-    _LIFECYCLE_LOCK_FDS[key] = fd
+    acquire_process_lock(
+        lock_path,
+        _LIFECYCLE_LOCK_FDS,
+        busy_label="another local StopDFF driver holds",
+    )
 
 
 def _atomic_write_json(path: Path, value: dict) -> None:
@@ -508,7 +498,6 @@ def _fsync_staged_tree(root: Path) -> None:
     if root.is_symlink() or not root.is_dir():
         raise ValueError("local stage builder did not produce a canonical directory")
     nofollow = getattr(os, "O_NOFOLLOW", 0)
-    directory_flag = getattr(os, "O_DIRECTORY", 0)
     for directory_name, child_directories, filenames in os.walk(
         root,
         topdown=False,
@@ -523,7 +512,11 @@ def _fsync_staged_tree(root: Path) -> None:
             path = directory / name
             if path.is_symlink() or not path.is_file():
                 raise ValueError(f"local stage contains a non-file: {path}")
-            descriptor = os.open(path, os.O_RDONLY | nofollow)
+            # Windows' CRT rejects fsync on read-only descriptors.  These are
+            # newly staged files, so open them read/write there while leaving
+            # the historical POSIX read-only + O_NOFOLLOW path unchanged.
+            access_flag = os.O_RDWR if os.name == "nt" else os.O_RDONLY
+            descriptor = os.open(path, access_flag | nofollow)
             try:
                 if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                     raise ValueError(
@@ -532,14 +525,7 @@ def _fsync_staged_tree(root: Path) -> None:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
-        descriptor = os.open(
-            directory,
-            os.O_RDONLY | directory_flag | nofollow,
-        )
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        fileio.fsync_directory(directory)
 
 
 def _publish_stage_directory(

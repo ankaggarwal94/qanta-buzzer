@@ -260,6 +260,12 @@ def test_checksum_writers_reject_line_breaking_path_names(tmp_path):
         "a" * 64 + "  evidence/name with space.txt"
     )
 
+    if os.name == "nt":
+        # Windows rejects line breaks in a filename before the writer can
+        # exercise its directory-inventory guard.  The pure guard above is
+        # still platform independent.
+        return
+
     root = tmp_path / "package"
     root.mkdir()
     (root / "bound\nname.txt").write_text("bound", encoding="utf-8")

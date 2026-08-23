@@ -10,6 +10,7 @@ import pytest
 
 from scripts.stopdff_v5 import fvi_study, profile, sweep
 from scripts.stopdff_v5.attempt_history import canonical_attempt_line
+from scripts.stopdff_v5.fileio import dumps_json_bytes
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -248,10 +249,7 @@ def test_resume_preflight_recomputes_only_cached_cells(
         )
     )
     expected = {"cell_key": "cached"}
-    (cells_dir / "cached.json").write_text(
-        json.dumps(expected, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    (cells_dir / "cached.json").write_bytes(dumps_json_bytes(expected))
     calls: list[str] = []
     prepare_calls: list[int] = []
 

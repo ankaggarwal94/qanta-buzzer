@@ -79,12 +79,6 @@ from sklearn.metrics.pairwise import cosine_similarity  # noqa: E402
 
 BUCKETS = ["early", "mid", "late"]
 PRODUCER_SCRIPT_PATH = "scripts/stopdff_fair_qa_retest.py"
-# R-076 (PRE-4): two-party frozen archival digest of calibration_train.json.
-# Whenever the Phase-4 gates are engaged, the calibration input MUST hash to
-# this pin (staged read-only from the archival copy).
-CALIBRATION_TRAIN_SHA256 = (
-    "745bd67597278bd9d24d41c1dea53bf3a7c56cd6334cfc07ea62bccbdcf44259"
-)
 
 
 def _qids(path: Path) -> list[str]:
@@ -592,10 +586,14 @@ def _enumerate_consumed_inputs(args_like, eligibility) -> list[dict]:
     ``calibration_train`` carries the frozen R-076 pin; the eval split's
     pin is wired from the eligibility artifact's
     ``derived_from.test_dataset_sha256`` (two-party pinned) when the
-    artifact is given; the fit split, ``mc_dataset.json``, and
-    ``answer_profiles.json`` have no frozen pins — operator digests via
-    ``--staged-input`` are REQUIRED (uncovered = refusal).
+    artifact is given; the fit split, ``mc_dataset.json``,
+    ``answer_profiles.json``, and ``build_metadata.json`` have no frozen
+    pins — operator digests via ``--staged-input`` are REQUIRED (uncovered
+    = refusal).  ``build_metadata.json`` is included because output
+    provenance reads it after scoring; gating it here prevents a late
+    provenance failure from consuming the one-shot exception.
     """
+    phase4, _ = _phase4_modules()
     data = Path(args_like.data_dir)
     eval_pin = None
     if eligibility is not None:
@@ -604,7 +602,7 @@ def _enumerate_consumed_inputs(args_like, eligibility) -> list[dict]:
         {
             "label": "calibration_train",
             "path": Path(args_like.calibration),
-            "frozen_sha256": CALIBRATION_TRAIN_SHA256,
+            "frozen_sha256": phase4.CALIBRATION_TRAIN_SHA256,
         },
         {
             "label": "eval_split",
@@ -624,6 +622,11 @@ def _enumerate_consumed_inputs(args_like, eligibility) -> list[dict]:
         {
             "label": "answer_profiles",
             "path": data / "answer_profiles.json",
+            "frozen_sha256": None,
+        },
+        {
+            "label": "build_metadata",
+            "path": data / "build_metadata.json",
             "frozen_sha256": None,
         },
     ]
@@ -930,12 +933,12 @@ def main():
     ap.add_argument("--staged-input", action="append", default=[],
                     metavar="LABEL=PATH:EXPECTED_SHA256",
                     help="repeatable staged-input hash gate entry (R-076). "
-                         "Phase-4 mode gates exactly five consumed inputs: "
+                         "Phase-4 mode gates exactly six consumed inputs: "
                          "calibration_train (frozen pin) and eval_split (pin "
                          "from the eligibility artifact) are auto-covered; "
-                         "fit_split, mc_dataset, and answer_profiles REQUIRE "
-                         "operator digests here; any staged path outside "
-                         "that closed set is refused")
+                         "fit_split, mc_dataset, answer_profiles, and "
+                         "build_metadata REQUIRE operator digests here; any "
+                         "staged path outside that closed set is refused")
     ap.add_argument("--certificate-digest", default=None,
                     help="PRE_RUN_READY activation digest (R-081); recorded "
                          "verbatim into metadata.phase4.certificate_digest")
@@ -1161,7 +1164,10 @@ def main():
                 items, export_cell_id, records_root
             )
             exported_records[export_cell_id] = {
-                "path": _display_path(record_path),
+                # Artifact-relative so the metadata remains valid after the
+                # launcher's atomic quarantine -> final-directory promotion.
+                # Absolute quarantine paths would become stale immediately.
+                "path": f"records/{export_cell_id}.jsonl",
                 "sha256": sha256_file(record_path),
                 "n_items": len(items),
                 "historical_cell": cell_key,

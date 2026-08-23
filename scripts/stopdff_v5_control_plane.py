@@ -17,7 +17,6 @@ here as explicit parameters.
 """
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -26,6 +25,7 @@ from pathlib import Path, PurePosixPath
 
 from scripts.stopdff_v5.fileio import create_once_bytes, publish_bytes
 from scripts.stopdff_v5.identity import is_sha256_hex, loads_no_duplicate_keys
+from scripts.stopdff_v5.locking import acquire_process_lock
 
 # Advisory control-plane locks this process holds, keyed by the resolved
 # lock-file path (os.path.realpath) so distinct spellings of one file share a
@@ -37,7 +37,7 @@ _CONTROL_LOCK_FDS: dict[str, int] = {}
 
 
 def _acquire_control_plane_lock(state_path: Path) -> None:
-    """Serialize control-plane drivers per state path with an advisory flock.
+    """Serialize control-plane drivers per state path with an advisory lock.
 
     The checkpoint (``_write_control_state``) and the event journal
     (``_append_control_event``) are both mutated by read-modify-write with
@@ -50,22 +50,11 @@ def _acquire_control_plane_lock(state_path: Path) -> None:
     """
     state_path = Path(state_path)
     lock_path = state_path.with_name(state_path.name + ".lock")
-    # Resolve symlinks and redundant components so two textual spellings of the
-    # same lock file map to one entry; a second in-process acquire then reuses
-    # the held fd instead of opening a descriptor that self-conflicts on flock.
-    key = os.path.realpath(lock_path)
-    if key in _CONTROL_LOCK_FDS:
-        return
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as exc:
-        os.close(fd)
-        raise RuntimeError(
-            f"another control-plane driver holds {lock_path}"
-        ) from exc
-    _CONTROL_LOCK_FDS[key] = fd
+    acquire_process_lock(
+        lock_path,
+        _CONTROL_LOCK_FDS,
+        busy_label="another control-plane driver holds",
+    )
 
 
 _ADAPTER_COMPONENT_MAX_BYTES = 255

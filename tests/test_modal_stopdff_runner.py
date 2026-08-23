@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import os
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,9 @@ RUNNER = PROJECT_ROOT / "scripts" / "modal_stopdff_runner.py"
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows does not expose repository POSIX execute bits"
+)
 def test_runner_file_exists_and_is_executable() -> None:
     assert RUNNER.exists(), f"{RUNNER} missing"
     # The runner is part of an operator workflow; check the +x bit so a

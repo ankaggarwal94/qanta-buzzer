@@ -25,7 +25,12 @@ from .bootstrap import (
     plan_identity,
 )
 from .cellcompute import CellInputs, compute_cell, prepare_cell_inputs
-from .fileio import dumps_json_bytes, publish_bytes, publish_dir_create_once
+from .fileio import (
+    dumps_json_bytes,
+    fsync_directory,
+    publish_bytes,
+    publish_dir_create_once,
+)
 from .attempt_history import (
     ATTEMPT_FIELDS,
     canonical_attempt_line,
@@ -606,11 +611,7 @@ def _publish_fresh_initialization(
         for name, value in _run_identity_files(ctx):
             write_bound_json(staged / name, value, resume=False)
         _append_attempt(staged / "attempts.jsonl", started_attempt)
-        staged_fd = os.open(staged, os.O_RDONLY)
-        try:
-            os.fsync(staged_fd)
-        finally:
-            os.close(staged_fd)
+        fsync_directory(staged)
         publish_dir_create_once(
             staged, output_dir, exists_label="fresh run destination"
         )

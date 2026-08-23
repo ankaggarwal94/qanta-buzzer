@@ -1327,6 +1327,13 @@ runner._verified_local_source_execution(reviewed, manifest)
     assert "does not originate from the executing repository" not in result.stderr
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason=(
+        "Windows chmod/stat does not expose the POSIX executable-bit drift "
+        "this regression injects"
+    ),
+)
 def test_local_source_rehash_rejects_runtime_executable_mode_drift(tmp_path):
     reviewed = tmp_path / "reviewed"
     shutil.copytree(REPO / "scripts", reviewed / "scripts")

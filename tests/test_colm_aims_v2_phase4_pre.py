@@ -270,6 +270,7 @@ import functools
 import hashlib
 import json
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -417,6 +418,9 @@ CERT_ENVIRONMENT_KEYS = frozenset(
         "pythonhashseed",
         "archived_rng_pinned",
         "fresh_rng_pinned",
+        "quarantine_dir",
+        "promote_to",
+        "exception_ledger_path",
     }
 )
 
@@ -1611,6 +1615,79 @@ R070_RECEIPT_KEYS = frozenset(
     }
 )
 
+_PHASE4_STAGED_FILENAMES = {
+    "calibration_train": "calibration_train.json",
+    "eval_split": "test_dataset.json",
+    "fit_split": "val_dataset.json",
+    "mc_dataset": "mc_dataset.json",
+    "answer_profiles": "answer_profiles.json",
+    "build_metadata": "build_metadata.json",
+}
+_PHASE4_OPERATOR_DIGEST_LABELS = (
+    "fit_split",
+    "mc_dataset",
+    "answer_profiles",
+    "build_metadata",
+)
+
+
+def _staging_command_args(
+    staged_dir, digest_by_label, eligibility_path=ELIGIBILITY_PATH
+):
+    staged_dir = Path(staged_dir)
+    args = [
+        "--data-dir",
+        str(staged_dir),
+        "--calibration",
+        str(staged_dir / _PHASE4_STAGED_FILENAMES["calibration_train"]),
+        "--eligibility",
+        str(Path(eligibility_path).resolve()),
+        "--fit-split",
+        "val",
+        "--eval-split",
+        "test",
+    ]
+    for label in _PHASE4_OPERATOR_DIGEST_LABELS:
+        path = staged_dir / _PHASE4_STAGED_FILENAMES[label]
+        args.extend(
+            ["--staged-input", f"{label}={path}:{digest_by_label[label]}"]
+        )
+    return args
+
+
+def _experiment_command_args():
+    return [
+        "--reward-schedule",
+        "power_mark",
+        "--qa-arms",
+        "idealized,krandom,khard,kdisjoint,klex",
+        "--calibrations",
+        "shared,performat",
+        "--num-bootstrap",
+        "1000",
+        "--n-test",
+        "0",
+        "--n-val",
+        "0",
+        "--seed",
+        "1",
+    ]
+
+
+def _snapshot_output_command_args(manifest_path, snapshot_dirs):
+    return [
+        "--snapshot-manifest",
+        str(manifest_path),
+        "--primary-model-path",
+        str(snapshot_dirs["primary_scorer"]),
+        "--disjoint-model-path",
+        str(snapshot_dirs["disjoint_selector"]),
+        "--records-out",
+        "phase4_run_output",
+        "--out",
+        "phase4_run_output/stopdff_fair_qa_regenerated.json",
+    ]
+
 
 def _r070_receipt(
     command,
@@ -1619,18 +1696,47 @@ def _r070_receipt(
     commit="f" * 40,
     tree_sha256="1" * 64,
     dirty=False,
+    interpreter_realpath="/repo/.venv/bin/python3.11",
+    environment_lock_sha256="6" * 64,
 ):
     # AMENDED (R-082 forward-compat, same trick as the F-4 round): receipts
     # carry the head bindings; defaults match _good_components()["repo"] so
     # the original R-079 suite stays green once the checker tightens.
+    if isinstance(command, list):
+        rendered_command = list(command)
+    else:
+        suite_name = "full" if "full" in str(command).lower() else "focused"
+        phase4 = _phase4()
+        selection = (
+            phase4.FULL_SUITE_SELECTION
+            if suite_name == "full"
+            else phase4.FOCUSED_SUITE_SELECTION
+        )
+        rendered_command = [
+            interpreter_realpath,
+            "-m",
+            "pytest",
+            *selection,
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            f"--junitxml={Path(tempfile.gettempdir()).resolve() / (suite_name + '_suite.xml')}",
+        ]
     return {
         "exit_code": exit_code,
-        "command": command,
-        "environment_lock_sha256": "6" * 64,
+        "command": rendered_command,
+        "environment_lock_sha256": environment_lock_sha256,
         "workflow_sha256": "7" * 64,
-        "interpreter_realpath": "/repo/.venv/bin/python3.11",
-        "counts": {"passed": 125, "failures": 0, "errors": 0},
+        "interpreter_realpath": interpreter_realpath,
+        "counts": {
+            "tests": 125,
+            "failures": 0,
+            "errors": 0,
+            "skipped": 0,
+        },
         "skip_identities": [],
+        "junit_sha256": "c" * 64,
+        "transcript_sha256": "d" * 64,
         "commit": commit,
         "tree_sha256": tree_sha256,
         "dirty": dirty,
@@ -1639,22 +1745,42 @@ def _r070_receipt(
 
 def _good_components():
     eligibility = _load_json(ELIGIBILITY_PATH)
+    phase4 = _phase4()
+    fixture_interpreter = str(Path(sys.executable).resolve())
+    fixture_base = Path(tempfile.gettempdir()).resolve()
+    fixture_repo = REPO_ROOT.resolve()
+    fixture_staging = (
+        fixture_base / "qanta_phase4_certificate_staging_fixture"
+    )
+    fixture_launch = fixture_base / "qanta_phase4_certificate_launch_fixture"
+    staged_digests = dict(phase4.R082_STAGED_INPUT_SHA256)
     return {
         "repo": {
             "commit": "f" * 40,
             "tree_sha256": "1" * 64,
             "dirty": False,
+            "untracked_disclosure": [],
+            "root_realpath": str(fixture_repo),
         },
         "content_hashes": {
-            "producer_sha256": "2" * 64,
-            "verifier_sha256": "3" * 64,
-            "spec_sha256": "4" * 64,
+            key: {
+                "artifact_path": str((fixture_repo / relpath).resolve()),
+                "sha256": sha256_file(fixture_repo / relpath),
+            }
+            for key, relpath in phase4.CONTENT_HASH_RELPATHS.items()
         },
         "eligibility": {
             "digest": eligibility["pairing_population_keyset_sha256"],
             "horizon_map_sha256": eligibility["horizon_map_sha256"],
+            "artifact_path": str(ELIGIBILITY_PATH.resolve()),
+            "artifact_sha256": sha256_file(ELIGIBILITY_PATH),
+            "test_dataset_sha256": eligibility["derived_from"][
+                "test_dataset_sha256"
+            ],
         },
         "snapshots": {
+            "artifact_path": str(MODEL_MANIFEST_PATH.resolve()),
+            "artifact_sha256": sha256_file(MODEL_MANIFEST_PATH),
             "primary_scorer": {
                 "verified": True,
                 "model_name": PRIMARY_SCORER_NAME,
@@ -1669,53 +1795,79 @@ def _good_components():
         "offline_flags": list(OFFLINE_FLAGS),
         "staged_inputs": [
             {
-                "path": "staged/calibration_train.json",
-                "label": "calibration_train",
-                "expected_sha256": CALIB_TRAIN_SHA,
-                "observed_sha256": CALIB_TRAIN_SHA,
-            },
-            {
-                "path": "data/processed/test_dataset.json",
-                "label": "test_dataset",
-                "expected_sha256": TEST_DATASET_SHA,
-                "observed_sha256": TEST_DATASET_SHA,
-            },
+                "path": str(fixture_staging / filename),
+                "label": label,
+                "expected_sha256": staged_digests[label],
+                "observed_sha256": staged_digests[label],
+            }
+            for label, filename in _PHASE4_STAGED_FILENAMES.items()
         ],
         # AMENDED (F-4/R-070 forward-compat): receipts carry the full R-070
         # field set; the current checker ignores the extras, the F-4 round
         # makes them REQUIRED (see TestR070ReceiptFieldsInAssemble).
         "suite_receipts": {
             "focused": _r070_receipt(
-                ".venv/bin/python -m pytest -q"
-                " tests/test_colm_aims_v2_phase4_pre.py"
+                "focused",
+                interpreter_realpath=fixture_interpreter,
             ),
-            "full": _r070_receipt(".venv/bin/python -m pytest -q"),
+            "full": _r070_receipt(
+                "full",
+                interpreter_realpath=fixture_interpreter,
+            ),
         },
         "parity": {
             "comparator_identity": (
                 "reproducibility.colm_aims_2026.phase4.compare_parity"
             ),
-            "anchor_sha256": EXPORT_A_SHA,
+            "artifact_path": str(PARITY_ANCHOR_PATH.resolve()),
+            "anchor_sha256": phase4.PARITY_ANCHOR_SHA256,
+            "source_export_a_sha256": phase4.PARITY_SOURCE_EXPORT_A_SHA256,
         },
-        "qa012": {"manifest_sha256": QA012_REV2_SHA},
+        "qa012": {
+            "artifact_path": str(QA012_REV3_MANIFEST_PATH.resolve()),
+            "manifest_sha256": phase4.QA012_MANIFEST_SHA256,
+            "manifest_type": "qa012_format_qa_inventory",
+            "revision": 3,
+            "conventions": {
+                "content_hash": (
+                    "Dropbox content hash: sha256 over concatenated"
+                    " per-4MiB-block sha256 digests, hex"
+                ),
+                "sha256": "sha256 over the raw file bytes, hex",
+                "jsonl_line_numbers": "1-based",
+            },
+        },
         "environment": {
-            "interpreter_realpath": "/repo/.venv/bin/python3.11",
+            "interpreter_realpath": fixture_interpreter,
             "os": "Darwin",
             "arch": "arm64",
             "cpu": "Apple M3 Max",
             "blas": "accelerate",
-            "thread_settings": {"OMP_NUM_THREADS": "1"},
-            "environment_lock_sha256": "5" * 64,
-            "command": [
-                "python",
-                "scripts/stopdff_fair_qa_retest.py",
-                "--seed",
-                "1",
-            ],
+            "thread_settings": dict(phase4.PHASE4_THREAD_SETTINGS),
+            "environment_lock_sha256": "6" * 64,
+            "command": (
+                [fixture_interpreter, "scripts/stopdff_fair_qa_retest.py"]
+                + _staging_command_args(fixture_staging, staged_digests)
+                + _experiment_command_args()
+                + _snapshot_output_command_args(
+                    MODEL_MANIFEST_PATH.resolve(),
+                    {
+                        "primary_scorer": fixture_staging
+                        / "snap_primary_scorer",
+                        "disjoint_selector": fixture_staging
+                        / "snap_disjoint_selector",
+                    },
+                )
+            ),
             "seeds": [1],
             "pythonhashseed": "0",
             "archived_rng_pinned": False,
             "fresh_rng_pinned": True,
+            "quarantine_dir": str(fixture_launch / "quarantine"),
+            "promote_to": str(fixture_launch / "promoted"),
+            "exception_ledger_path": str(
+                fixture_launch / "exception-ledger.json"
+            ),
         },
     }
 
@@ -1733,7 +1885,7 @@ class TestR079AssembleCertificate:
         blob = json.dumps(cert)
         assert components["eligibility"]["digest"] in blob
         assert components["eligibility"]["horizon_map_sha256"] in blob
-        assert QA012_REV2_SHA in blob
+        assert _phase4().QA012_MANIFEST_SHA256 in blob
         assert EXPORT_A_SHA in blob
         assert CALIB_TRAIN_SHA in blob
 
@@ -2668,7 +2820,13 @@ FAKE_COMMIT = "a1" * 20
 FAKE_TREE = "b2" * 32
 
 
-def _fake_git_runner(*, commit=FAKE_COMMIT, tree=FAKE_TREE, status=""):
+def _fake_git_runner(
+    *,
+    commit=FAKE_COMMIT,
+    tree=FAKE_TREE,
+    status="",
+    untracked_status="",
+):
     """run(cmd) -> stdout. Git identities come from HERE, never from caller
     assertions. The fake tree id is 64-hex (sha256-object-format repos); see
     the CONTRACT_DEFECT note in TestF4GatherCertificateComponents."""
@@ -2679,6 +2837,8 @@ def _fake_git_runner(*, commit=FAKE_COMMIT, tree=FAKE_TREE, status=""):
         calls.append(cmd_list)
         joined = " ".join(cmd_list)
         assert "git" in joined, f"unexpected non-git command: {cmd_list}"
+        if "status" in joined and "--untracked-files=all" in cmd_list:
+            return untracked_status
         if "status" in joined:
             return status
         if "HEAD^{tree}" in joined or "tree" in joined:
@@ -2703,24 +2863,65 @@ class TestF4GatherCertificateComponents:
     # (e.g. a declared tree_object_id -> tree_sha256 derivation) — flagged
     # in the RED report as SPEC_ISSUE-1.
 
+    @pytest.fixture(autouse=True)
+    def _synthetic_calibration_pin(self, monkeypatch):
+        # This gatherer unit uses tiny synthetic bytes. Pin those bytes only
+        # within this class; dedicated R-082 tests retain the archival pin.
+        blob = json.dumps({"calibration_train": [1]}).encode("utf-8") + b"\n"
+        monkeypatch.setattr(
+            _phase4(), "CALIBRATION_TRAIN_SHA256", sha256_bytes(blob)
+        )
+        self._phase4_monkeypatch = monkeypatch
+
     def _config(self, tmp_path):
+        fixture_interpreter = str(Path(sys.executable).resolve())
+        phase4 = _phase4()
+        repo_root = REPO_ROOT.resolve()
         staged_dir = tmp_path / "staged"
         staged_dir.mkdir()
-        cal = staged_dir / "calibration_train.json"
-        cal.write_bytes(b'{"calibration": [1, 2]}\n')
-        dataset = staged_dir / "test_dataset.json"
-        dataset.write_bytes(b'{"dataset": [3]}\n')
+        staged_blobs = {
+            label: json.dumps({label: [index]}).encode("utf-8") + b"\n"
+            for index, label in enumerate(_PHASE4_STAGED_FILENAMES, start=1)
+        }
+        for label, filename in _PHASE4_STAGED_FILENAMES.items():
+            (staged_dir / filename).write_bytes(staged_blobs[label])
+        staged_digests = {
+            label: sha256_file(staged_dir / filename)
+            for label, filename in _PHASE4_STAGED_FILENAMES.items()
+        }
+        self._phase4_monkeypatch.setattr(
+            phase4, "R082_STAGED_INPUT_SHA256", dict(staged_digests)
+        )
+        eligibility = _load_json(ELIGIBILITY_PATH)
+        eligibility["derived_from"]["test_dataset_sha256"] = staged_digests[
+            "eval_split"
+        ]
+        eligibility_path = tmp_path / "pairing_eligibility_v2.json"
+        eligibility_path.write_text(
+            json.dumps(eligibility), encoding="utf-8"
+        )
+        self._phase4_monkeypatch.setattr(
+            phase4,
+            "ELIGIBILITY_ARTIFACT_RELPATH",
+            str(eligibility_path.resolve()),
+        )
+        self._phase4_monkeypatch.setattr(
+            phase4,
+            "ELIGIBILITY_ARTIFACT_SHA256",
+            sha256_file(eligibility_path),
+        )
+        self._phase4_monkeypatch.setattr(
+            phase4,
+            "ELIGIBILITY_TEST_DATASET_SHA256",
+            staged_digests["eval_split"],
+        )
         staged_plan = [
             {
-                "label": "calibration_train",
-                "path": cal,
-                "expected_sha256": sha256_file(cal),
-            },
-            {
-                "label": "test_dataset",
-                "path": dataset,
-                "expected_sha256": sha256_file(dataset),
-            },
+                "label": label,
+                "path": staged_dir / filename,
+                "expected_sha256": staged_digests[label],
+            }
+            for label, filename in _PHASE4_STAGED_FILENAMES.items()
         ]
         manifest = _load_json(MODEL_MANIFEST_PATH)
         snapshot_dirs = {}
@@ -2741,6 +2942,16 @@ class TestF4GatherCertificateComponents:
             snapshot_dirs[role] = snap
         manifest_path = tmp_path / "model_snapshot_manifests.json"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        self._phase4_monkeypatch.setattr(
+            phase4,
+            "SNAPSHOT_MANIFEST_RELPATH",
+            str(manifest_path.resolve()),
+        )
+        self._phase4_monkeypatch.setattr(
+            phase4,
+            "SNAPSHOT_MANIFEST_SHA256",
+            sha256_file(manifest_path),
+        )
         receipt_paths = {}
         for name in ("focused", "full"):
             path = tmp_path / f"suite_receipt_{name}.json"
@@ -2752,31 +2963,36 @@ class TestF4GatherCertificateComponents:
                         f"pytest --suite {name}",
                         commit=FAKE_COMMIT,
                         tree_sha256=FAKE_TREE,
+                        interpreter_realpath=fixture_interpreter,
                     )
                 ),
                 encoding="utf-8",
             )
             receipt_paths[name] = path
-        content_paths = {}
-        for key, blob in (
-            ("producer_sha256", b"producer-source-bytes\n"),
-            ("verifier_sha256", b"verifier-source-bytes\n"),
-            ("spec_sha256", b"spec-source-bytes\n"),
-        ):
-            path = tmp_path / f"{key}.txt"
-            path.write_bytes(blob)
-            content_paths[key] = path
+        content_paths = {
+            key: repo_root / relpath
+            for key, relpath in phase4.CONTENT_HASH_RELPATHS.items()
+        }
+        environment = _copy(_good_components()["environment"])
+        environment["command"] = (
+            [fixture_interpreter, "scripts/stopdff_fair_qa_retest.py"]
+            + _staging_command_args(
+                staged_dir, staged_digests, eligibility_path
+            )
+            + _experiment_command_args()
+            + _snapshot_output_command_args(manifest_path, snapshot_dirs)
+        )
         return {
-            "repo_root": tmp_path,
-            "eligibility_path": ELIGIBILITY_PATH,
+            "repo_root": repo_root,
+            "eligibility_path": eligibility_path,
             "snapshot_manifest_path": manifest_path,
             "snapshot_dirs": snapshot_dirs,
             "parity_anchor_path": PARITY_ANCHOR_PATH,
-            "qa012_manifest_path": QA012_REV2_MANIFEST_PATH,
+            "qa012_manifest_path": QA012_REV3_MANIFEST_PATH,
             "staged_plan": staged_plan,
             "suite_receipt_paths": receipt_paths,
             "content_hash_paths": content_paths,
-            "environment": _copy(_good_components()["environment"]),
+            "environment": environment,
             "offline_flags": list(OFFLINE_FLAGS),
         }
 
@@ -2854,12 +3070,15 @@ class TestF4GatherCertificateComponents:
             config, run=_fake_git_runner()
         )
         for key, path in config["content_hash_paths"].items():
-            assert components["content_hashes"][key] == sha256_file(path)
+            assert components["content_hashes"][key] == {
+                "artifact_path": str(path.resolve()),
+                "sha256": sha256_file(path),
+            }
         assert components["parity"]["anchor_sha256"] == sha256_file(
             PARITY_ANCHOR_PATH
         )
-        assert (
-            components["qa012"]["manifest_sha256"] == QA012_REV2_SHA
+        assert components["qa012"]["manifest_sha256"] == (
+            phase4.QA012_MANIFEST_SHA256
         )
         eligibility = _load_json(ELIGIBILITY_PATH)
         assert (
@@ -3149,44 +3368,48 @@ LAUNCHER_ENV_PINS = {
 def _staged_outside_dir(tmp_path):
     staged = tmp_path / "staged_outside"
     staged.mkdir(parents=True, exist_ok=True)
-    calibration = staged / "calibration_train.json"
-    if not calibration.exists():
-        calibration.write_bytes(b'{"calibration": "staged-out-of-repo"}\n')
+    for label, filename in _PHASE4_STAGED_FILENAMES.items():
+        path = staged / filename
+        if not path.exists():
+            path.write_bytes(
+                json.dumps({label: "staged-out-of-repo"}).encode("utf-8")
+                + b"\n"
+            )
     return staged
 
 
-def _cert_command(staged_dir):
+def _cert_command(
+    staged_dir,
+    manifest_path,
+    snapshot_dirs,
+    eligibility_path=ELIGIBILITY_PATH,
+):
     """The certificate-recorded producer command: outputs repo-relative
     (remapped into quarantine by the launcher), staged inputs ABSOLUTE and
     out-of-repo (R-082)."""
+    staged_digests = {
+        label: sha256_file(staged_dir / filename)
+        for label, filename in _PHASE4_STAGED_FILENAMES.items()
+    }
     return [
-        "/usr/bin/python3",
+        str(Path(sys.executable).resolve()),
         "scripts/stopdff_fair_qa_retest.py",
-        "--seed",
-        "1",
-        "--calibration",
-        str(staged_dir / "calibration_train.json"),
-        "--out",
-        "paper_exports/stopdff_fair_qa.json",
-        "--records-out",
-        "paper_exports",
-    ]
+    ] + _staging_command_args(
+        staged_dir, staged_digests, eligibility_path
+    ) + _experiment_command_args() + _snapshot_output_command_args(
+        manifest_path, snapshot_dirs
+    )
 
 
 def _staged_component_entries(staged_dir):
     return [
         {
-            "path": str(staged_dir / "calibration_train.json"),
-            "label": "calibration_train",
-            "expected_sha256": CALIB_TRAIN_SHA,
-            "observed_sha256": CALIB_TRAIN_SHA,
-        },
-        {
-            "path": str(staged_dir / "test_dataset.json"),
-            "label": "test_dataset",
-            "expected_sha256": TEST_DATASET_SHA,
-            "observed_sha256": TEST_DATASET_SHA,
-        },
+            "path": str(staged_dir / filename),
+            "label": label,
+            "expected_sha256": sha256_file(staged_dir / filename),
+            "observed_sha256": sha256_file(staged_dir / filename),
+        }
+        for label, filename in _PHASE4_STAGED_FILENAMES.items()
     ]
 
 
@@ -3237,7 +3460,13 @@ class _LaunchRecorder:
         return self.exit_code
 
 
-def _launcher_fixture(tmp_path, monkeypatch, *, mutate_components=None):
+def _launcher_fixture(
+    tmp_path,
+    monkeypatch,
+    *,
+    mutate_components=None,
+    force_ready_after_mutation=False,
+):
     """Build a READY certificate + launcher config with injectable fakes.
 
     Returns (launcher_module, config, digest). MODAL_HOST_* ambient
@@ -3251,6 +3480,8 @@ def _launcher_fixture(tmp_path, monkeypatch, *, mutate_components=None):
         "commit": FAKE_COMMIT,
         "tree_sha256": FAKE_TREE,
         "dirty": False,
+        "untracked_disclosure": [],
+        "root_realpath": str(REPO_ROOT.resolve()),
     }
     components["suite_receipts"] = {
         "focused": _r070_receipt(
@@ -3267,29 +3498,147 @@ def _launcher_fixture(tmp_path, monkeypatch, *, mutate_components=None):
     # R-082: absolute out-of-repo staged paths in BOTH launcher-checked
     # sources (the recorded command and the staged_inputs component).
     staged_dir = _staged_outside_dir(tmp_path)
-    components["environment"]["command"] = _cert_command(staged_dir)
+    staged_digests = {
+        label: sha256_file(staged_dir / filename)
+        for label, filename in _PHASE4_STAGED_FILENAMES.items()
+    }
+    monkeypatch.setattr(
+        phase4, "R082_STAGED_INPUT_SHA256", dict(staged_digests)
+    )
+    monkeypatch.setattr(
+        phase4,
+        "CALIBRATION_TRAIN_SHA256",
+        staged_digests["calibration_train"],
+    )
+    synthetic_eligibility = _load_json(ELIGIBILITY_PATH)
+    synthetic_eligibility["derived_from"]["test_dataset_sha256"] = (
+        staged_digests["eval_split"]
+    )
+    eligibility_path = tmp_path / "pairing_eligibility_v2.json"
+    eligibility_path.write_text(
+        json.dumps(synthetic_eligibility), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        phase4,
+        "ELIGIBILITY_ARTIFACT_RELPATH",
+        str(eligibility_path.resolve()),
+    )
+    monkeypatch.setattr(
+        phase4,
+        "ELIGIBILITY_ARTIFACT_SHA256",
+        sha256_file(eligibility_path),
+    )
+    monkeypatch.setattr(
+        phase4,
+        "ELIGIBILITY_TEST_DATASET_SHA256",
+        staged_digests["eval_split"],
+    )
+    components["eligibility"].update(
+        {
+            "artifact_path": str(eligibility_path.resolve()),
+            "artifact_sha256": sha256_file(eligibility_path),
+            "test_dataset_sha256": staged_digests["eval_split"],
+        }
+    )
+    manifest_path, snapshot_dirs = _launcher_snapshots(tmp_path)
+    monkeypatch.setattr(
+        phase4,
+        "SNAPSHOT_MANIFEST_RELPATH",
+        str(manifest_path.resolve()),
+    )
+    monkeypatch.setattr(
+        phase4,
+        "SNAPSHOT_MANIFEST_SHA256",
+        sha256_file(manifest_path),
+    )
+    components["snapshots"]["artifact_path"] = str(manifest_path.resolve())
+    components["snapshots"]["artifact_sha256"] = sha256_file(manifest_path)
+    fixture_lock = b"fixture-package==1\n"
+    fixture_interpreter = Path(sys.executable).resolve()
+    fixture_quarantine = tmp_path / "quarantine"
+    fixture_promote = tmp_path / "promoted"
+    fixture_ledger = tmp_path / "exception_ledger.json"
+    components["environment"].update(
+        {
+            "command": _cert_command(
+                staged_dir,
+                manifest_path,
+                snapshot_dirs,
+                eligibility_path,
+            ),
+            "interpreter_realpath": str(fixture_interpreter),
+            "os": "FixtureOS 1 ()",
+            "arch": "fixture-arch",
+            "environment_lock_sha256": sha256_bytes(fixture_lock),
+            "quarantine_dir": str(fixture_quarantine),
+            "promote_to": str(fixture_promote),
+            "exception_ledger_path": str(fixture_ledger),
+        }
+    )
+    for name, receipt in components["suite_receipts"].items():
+        receipt["interpreter_realpath"] = str(fixture_interpreter)
+        receipt["environment_lock_sha256"] = sha256_bytes(fixture_lock)
+        selection = (
+            phase4.FOCUSED_SUITE_SELECTION
+            if name == "focused"
+            else phase4.FULL_SUITE_SELECTION
+        )
+        receipt["command"] = [
+            str(fixture_interpreter),
+            "-m",
+            "pytest",
+            *selection,
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            f"--junitxml={tmp_path / (name + '_suite.xml')}",
+        ]
+    components["parity"]["anchor_sha256"] = sha256_file(
+        PARITY_ANCHOR_PATH
+    )
     components["staged_inputs"] = _staged_component_entries(staged_dir)
     if mutate_components is not None:
         mutate_components(components)
     cert = phase4.assemble_certificate(components)
+    if force_ready_after_mutation:
+        # Defense-in-depth launcher tests deliberately hand-craft a
+        # malicious ready:true certificate that the repaired assembler
+        # itself would now reject. The launcher must still refuse it.
+        cert["ready"] = True
+        cert["failing_checks"] = []
     cert_bytes = (json.dumps(cert, indent=2, sort_keys=True) + "\n").encode(
         "utf-8"
     )
     cert_path = tmp_path / "pre_run_ready_certificate.json"
     cert_path.write_bytes(cert_bytes)
     digest = sha256_bytes(cert_bytes)
-    manifest_path, snapshot_dirs = _launcher_snapshots(tmp_path)
     config = {
         "certificate_path": cert_path,
         "activation_digest": digest,
-        "quarantine_dir": tmp_path / "quarantine",
-        "promote_to": tmp_path / "promoted",
-        "ledger_path": tmp_path / "exception_ledger.json",
+        "quarantine_dir": fixture_quarantine,
+        "promote_to": fixture_promote,
+        "ledger_path": fixture_ledger,
         "snapshot_manifest_path": manifest_path,
         "snapshot_dirs": snapshot_dirs,
         "anchor_path": PARITY_ANCHOR_PATH,
     }
-    return _phase4_launcher(), config, digest
+    launcher = _phase4_launcher()
+    monkeypatch.setattr(
+        launcher,
+        "_default_resolve_executable",
+        lambda _token: fixture_interpreter,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_default_host_identity",
+        lambda: {"os": "FixtureOS 1 ()", "arch": "fixture-arch"},
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_default_probe_environment_lock",
+        lambda _interpreter: fixture_lock,
+    )
+    return launcher, config, digest
 
 
 def _pass_compare(_quarantine):
@@ -3327,9 +3676,13 @@ class TestR081LauncherRefusals:
         run_git_kwargs=None,
         pre=None,
         expect_ledger_absent=True,
+        force_ready_after_mutation=False,
     ):
         launcher, config, digest = _launcher_fixture(
-            tmp_path, monkeypatch, mutate_components=mutate_components
+            tmp_path,
+            monkeypatch,
+            mutate_components=mutate_components,
+            force_ready_after_mutation=force_ready_after_mutation,
         )
         if config_mutate is not None:
             config_mutate(config)
@@ -3535,8 +3888,9 @@ class TestR081LauncherRefusals:
             monkeypatch,
             token="R-082",
             mutate_components=mutate,
+            force_ready_after_mutation=True,
         )
-        assert "data/processed/val_dataset.json" in str(excinfo.value)
+        assert "val_dataset.json" in str(excinfo.value)
 
     def test_r082_absolute_in_repo_staged_command_path_refuses(
         self, tmp_path, monkeypatch
@@ -3551,7 +3905,11 @@ class TestR081LauncherRefusals:
             components["environment"]["command"] = command
 
         self._refusal(
-            tmp_path, monkeypatch, token="R-082", mutate_components=mutate
+            tmp_path,
+            monkeypatch,
+            token="R-082",
+            mutate_components=mutate,
+            force_ready_after_mutation=True,
         )
 
     def test_r082_component_only_in_repo_staged_path_refuses(
@@ -3565,7 +3923,11 @@ class TestR081LauncherRefusals:
             )
 
         self._refusal(
-            tmp_path, monkeypatch, token="R-082", mutate_components=mutate
+            tmp_path,
+            monkeypatch,
+            token="R-082",
+            mutate_components=mutate,
+            force_ready_after_mutation=True,
         )
 
     def test_r082_staged_input_flag_in_repo_path_refuses(
@@ -3583,7 +3945,11 @@ class TestR081LauncherRefusals:
             ]
 
         self._refusal(
-            tmp_path, monkeypatch, token="R-082", mutate_components=mutate
+            tmp_path,
+            monkeypatch,
+            token="R-082",
+            mutate_components=mutate,
+            force_ready_after_mutation=True,
         )
 
 
@@ -3610,20 +3976,20 @@ class TestR081LauncherRun:
         # R-082) --calibration value passes through VERBATIM.
         quarantine = Path(config["quarantine_dir"])
         staged_dir = _staged_outside_dir(tmp_path)
-        assert argv == [
-            "/usr/bin/python3",
-            "scripts/stopdff_fair_qa_retest.py",
-            "--seed",
-            "1",
-            "--calibration",
-            str(staged_dir / "calibration_train.json"),
-            "--out",
-            str(quarantine / "stopdff_fair_qa.json"),
-            "--records-out",
-            str(quarantine),
-            "--certificate-digest",
-            digest,
-        ]
+        expected_argv = _cert_command(
+            staged_dir,
+            config["snapshot_manifest_path"],
+            config["snapshot_dirs"],
+            tmp_path / "pairing_eligibility_v2.json",
+        )
+        expected_argv[expected_argv.index("--out") + 1] = str(
+            quarantine / "stopdff_fair_qa_regenerated.json"
+        )
+        expected_argv[expected_argv.index("--records-out") + 1] = str(
+            quarantine
+        )
+        expected_argv.extend(["--certificate-digest", digest])
+        assert argv == expected_argv
         # Ledger consumed (content binds the digest; written pre-launch —
         # asserted inside the recorder).
         assert digest in Path(config["ledger_path"]).read_text("utf-8")
@@ -3639,12 +4005,25 @@ class TestR081LauncherRun:
         # Nearest-true control (tracked-clean + untracked-disclosure, the
         # signed PRE convention): "?? ..." porcelain lines alone must not
         # block the launch.
-        launcher, config, digest = _launcher_fixture(tmp_path, monkeypatch)
+        disclosed = [
+            "phase4_pre_receipts/focused.xml",
+            "untracked_note.md",
+        ]
+        launcher, config, digest = _launcher_fixture(
+            tmp_path,
+            monkeypatch,
+            mutate_components=lambda components: components["repo"].update(
+                {"untracked_disclosure": disclosed}
+            ),
+        )
         launch = _LaunchRecorder(config, digest, exit_code=0)
         launcher.validate_and_launch(
             config,
             run_git=_fake_git_runner(
-                status="?? phase4_pre_receipts/\n?? untracked_note.md\n"
+                untracked_status=(
+                    "?? phase4_pre_receipts/focused.xml\x00"
+                    "?? untracked_note.md\x00"
+                )
             ),
             launch=launch,
             compare=_pass_compare,
@@ -3674,9 +4053,8 @@ class TestR081LauncherRun:
     def test_single_use_fresh_workspace_same_ledger_refuses_on_ledger(
         self, tmp_path, monkeypatch
     ):
-        # Isolate the ledger as the single-use mechanism: second call gets
-        # fresh quarantine/promote paths, keeps the ledger — the refusal
-        # must be the LEDGER class, before launch.
+        # Isolate the ledger as the single-use mechanism while retaining the
+        # exact certificate-owned workspace strings.
         launcher, config, digest = _launcher_fixture(tmp_path, monkeypatch)
         launch = _LaunchRecorder(config, digest, exit_code=0)
         launcher.validate_and_launch(
@@ -3685,13 +4063,11 @@ class TestR081LauncherRun:
             launch=launch,
             compare=_pass_compare,
         )
-        config2 = dict(config)
-        config2["quarantine_dir"] = tmp_path / "quarantine2"
-        config2["promote_to"] = tmp_path / "promoted2"
-        launch2 = _LaunchRecorder(config2, digest, exit_code=0)
+        Path(config["promote_to"]).rename(tmp_path / "first_promoted")
+        launch2 = _LaunchRecorder(config, digest, exit_code=0)
         with pytest.raises(launcher.LaunchRefusal) as excinfo:
             launcher.validate_and_launch(
-                config2,
+                config,
                 run_git=_fake_git_runner(),
                 launch=launch2,
                 compare=_pass_compare,
@@ -3700,7 +4076,7 @@ class TestR081LauncherRun:
         assert launch2.calls == []
         # F-2: the consumed-ledger refusal is side-effect-free — the
         # quarantine it just created for this attempt is removed again.
-        assert not (tmp_path / "quarantine2").exists()
+        assert not Path(config["quarantine_dir"]).exists()
 
     def test_nonzero_exit_leaves_quarantine_and_stop_report(
         self, tmp_path, monkeypatch
@@ -3794,31 +4170,24 @@ class TestR081LauncherRun:
         assert (quarantine / "marker.txt").is_file(), "quarantine intact"
         assert not Path(config["promote_to"]).exists()
 
-    # -- F-4 pin: relative workspace paths resolve at entry --------------
+    # -- F-4 pin: workspace paths are exact certificate bindings ----------
 
-    def test_relative_workspace_paths_resolve_at_entry(
+    def test_relative_workspace_paths_refuse_as_unsigned_substitutions(
         self, tmp_path, monkeypatch
     ):
-        # A relative quarantine/promote/ledger must not split between the
-        # launcher's cwd and the child's cwd: resolved ONCE, at entry,
-        # against the launcher's cwd (chdir'd to tmp_path — hermetic).
+        # Relative replacements cannot redirect the one-shot run.
         monkeypatch.chdir(tmp_path)
         launcher, config, digest = _launcher_fixture(tmp_path, monkeypatch)
         config["quarantine_dir"] = Path("quarantine_rel")
         config["promote_to"] = Path("promoted_rel")
         config["ledger_path"] = Path("ledger_rel.json")
         launch = _LaunchRecorder(config, digest, exit_code=0)
-        result = launcher.validate_and_launch(
-            config,
-            run_git=_fake_git_runner(),
-            launch=launch,
-            compare=_pass_compare,
-        )
-        promoted = tmp_path / "promoted_rel"
-        assert result["promoted_to"] == str(promoted)
-        assert (promoted / "marker.txt").read_text("utf-8") == "ran"
-        assert not (tmp_path / "quarantine_rel").exists()
-        assert digest in (tmp_path / "ledger_rel.json").read_text("utf-8")
-        # The argv handed to the child carries the RESOLVED quarantine.
-        argv, _ = launch.calls[0]
-        assert str(tmp_path / "quarantine_rel") in argv
+        with pytest.raises(launcher.LaunchRefusal, match="exactly match"):
+            launcher.validate_and_launch(
+                config,
+                run_git=_fake_git_runner(),
+                launch=launch,
+                compare=_pass_compare,
+            )
+        assert launch.calls == []
+        assert not (tmp_path / "ledger_rel.json").exists()

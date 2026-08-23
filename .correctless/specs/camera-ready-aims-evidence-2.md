@@ -802,7 +802,10 @@ analysis over retained per-item records — permitted; model execution is not.
   both defects. Enforcement: artifact-schema validation; digest recompute
   test; producer-unit fatality test on a synthetic ineligible item.
 - **R-075** [unit] *(PRE-3)*: Role-keyed model identity pins: the committed
-  manifest binds `primary_scorer` (`all-MiniLM-L6-v2`) and
+  manifest's canonical artifact path and raw-byte SHA-256 are certificate
+  bindings (a same-role/revision replacement manifest cannot authorize new
+  snapshot-file hashes). The manifest binds `primary_scorer`
+  (`all-MiniLM-L6-v2`) and
   `disjoint_selector` (`all-mpnet-base-v2`) each to an immutable local
   snapshot — HF revision hash plus the complete per-file SHA-256 manifest of
   weights/tokenizer/pooling/config — and binds the TF-IDF configuration
@@ -817,7 +820,9 @@ analysis over retained per-item records — permitted; model execution is not.
   expected `745bd67597278bd9d24d41c1dea53bf3a7c56cd6334cfc07ea62bccbdcf44259`
   (staged read-only from the archival copy; absent from the primary tree by
   historical accident), `test_dataset.json` expected `638a4df9…` (R-074),
-  plus the val split and every other consumed input, each with recorded
+  `val_dataset.json` expected `9b7a131b…`, `mc_dataset.json` expected
+  `3dbebf8e…`, `answer_profiles.json` expected `63558639…`, and
+  `build_metadata.json` expected `70871984…`; every entry records equal
   expected+observed SHA-256. The run receipt captures fitted Platt
   coefficients and the continuation-estimator digest per calibration mode.
   Enforcement: gate-ordering test (gates run before any loader is invoked;
@@ -868,13 +873,27 @@ analysis over retained per-item records — permitted; model execution is not.
   staged inputs) are unavoidable by construction and cannot alter the
   commit/tree identity; they are DISCLOSED as a recorded list in the repo
   component — amendment 2026-08-22); producer/verifier/spec content hashes;
-  the R-074 eligibility digest; the R-073 horizon-map digest; both R-075
-  snapshot manifests + revision hashes + offline flags; every R-076 staged
+  the R-074 eligibility digest, canonical artifact path + raw-byte SHA-256,
+  frozen source-test SHA-256, and the R-073 horizon-map digest; the R-075
+  snapshot-manifest artifact path + raw-byte hash, both role revisions/file
+  manifests, and offline flags; every R-076 staged
   input with expected+observed SHA-256; focused and full suite receipts
-  (R-070 shape); the R-077 comparator identity + anchor hash; the R-072 rev2
-  manifest hash; interpreter realpath, OS/arch/CPU, BLAS, thread settings,
+  (R-070 shape); the R-077 canonical comparator identity + anchor path/raw
+  hash + embedded Export-A source hash; the canonical R-072 rev3 manifest
+  path and raw hash (rev2 is retired); interpreter realpath, OS/arch/CPU, BLAS, thread settings,
   environment-lock hash, exact command, seeds, `PYTHONHASHSEED`, and the
-  rng-pinned flags. Every component check is fail-closed: any dirty tree,
+  rng-pinned flags. The environment also signs the absolute external
+  quarantine, promotion, and create-once exception-ledger paths. Both suite
+  receipts must bind the SAME interpreter realpath and dependency-lock hash
+  as that environment, in addition to the certified commit/tree/clean state.
+  The command is not merely recorded: it must be the audited producer entry
+  point with no unknown, abbreviated, underscore-alias, positional, or
+  duplicate arguments; it pins `fit=val`, `eval=test`, seed 1, the full five
+  reference arms × two calibration modes, 1,000 bootstraps, all rows, the
+  frozen eligibility/snapshots, `--records-out phase4_run_output`,
+  `--out phase4_run_output/stopdff_fair_qa_regenerated.json`, and contains no
+  caller-supplied certificate digest. Every component check is fail-closed:
+  any dirty tree,
   hash mismatch, missing snapshot, or suite failure yields a certificate
   with `ready: false` and the named failing checks — never a partial pass.
   The author's single-run exception activation references the certificate's
@@ -896,30 +915,75 @@ analysis over retained per-item records — permitted; model execution is not.
   export tests on synthetic frames covering finite, never-stopped, and
   final-prefix-crossing items at heterogeneous horizons. `--records-out`
   receives the PARENT directory; the exporter owns the `records/` path
-  segment (doubled-segment invocations were the P1-6 defect).
+  segment (doubled-segment invocations were the P1-6 defect). Each
+  `metadata.phase4.exported_records[*].path` is the exact artifact-relative
+  `records/<cell_id>.jsonl`, never an absolute quarantine path, so it remains
+  valid after the launcher's atomic directory promotion.
 - **R-081** [integration] *(operational rejection repair, 2026-08-22)*: The
   single authorized run is executable ONLY through the checked-in
-  single-use launcher. Before any model construction the launcher must:
-  (1) read the certificate bytes and require sha256 == the activation
+  single-use launcher. The module is an executable interface, not an
+  import-only shim: `python -m
+  reproducibility.colm_aims_2026.phase4_launcher --config <CONFIG.json>`
+  hardened-parses exactly one strict, closed-key JSON config and exits
+  nonzero on every config, preflight, run, comparison, or promotion defect.
+  A successful import/no-op exit is a blocking defect. Before any model
+  construction the launcher must:
+  (1) read the certificate bytes in binary mode (including Windows
+  `O_BINARY`) and require sha256 == the activation
   digest, hardened-parse it, and require `ready is True` (bool-safe);
   (2) require LIVE `git rev-parse HEAD` == certificate commit, LIVE
   `rev-parse HEAD^{tree}` == certificate tree, and a live tracked-clean
   check; (3) REJECT ambient provenance overrides (`MODAL_HOST_GIT_STATUS`,
   `MODAL_HOST_GIT_COMMIT` set at all = refusal) and launch the producer as
   a SUBPROCESS whose environment sets, before interpreter start:
-  `PYTHONHASHSEED=0`, `OMP_NUM_THREADS=1`, `VECLIB_MAXIMUM_THREADS=1`, and
-  the offline flags; (4) re-verify both model snapshots against the frozen
-  manifests; (5) consume the exception via a CREATE-ONCE ledger file
-  (O_CREAT|O_EXCL) recording the certificate digest BEFORE launching — a
+  `PYTHONHASHSEED=0`, `OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`,
+  `MKL_NUM_THREADS=1`, `NUMEXPR_NUM_THREADS=1`,
+  `VECLIB_MAXIMUM_THREADS=1`, and the offline flags; require the live OS,
+  architecture, and resolved child
+  interpreter to equal the certificate environment binding, and recompute
+  the child interpreter's `pip freeze` bytes to require the recorded
+  `environment_lock_sha256`; require the exact command shape, seed/thread
+  cross-bindings, and audited producer entry point again at launch; (4)
+  re-verify the snapshot manifest's raw bytes against its certified artifact
+  path/hash, then both model snapshots against that frozen manifest; require the configured
+  manifest and role snapshot directories to resolve to the corresponding
+  certificate-command arguments, and require the configured parity anchor's
+  SHA-256 to equal the certificate parity binding; rehash every certified
+  staged input and require live == expected == certificate-observed, and
+  raw-byte verify + hardened-load the frozen eligibility artifact against
+  its artifact/keyset/horizon/source-test pins, BEFORE the ledger; (5)
+  require the config's quarantine, promotion, and ledger strings to match
+  the signed certificate values exactly; all three are absolute, outside
+  the repository, mutually safe/disjoint (neither workspace nested in the
+  other and the ledger neither inside nor an ancestor of either workspace),
+  fresh where applicable, with existing writable parents and same-device
+  promotion; then consume the exception
+  via a CREATE-ONCE ledger file
+  (`O_CREAT|O_EXCL`, plus binary mode where required) recording the
+  certificate digest BEFORE launching. The launcher loops until every ledger
+  byte is written, fsyncs the file and, where supported, its parent directory;
+  a partial/zero write, close, fsync, or publication failure is an irrevocable
+  consumed STOP with the partial ledger and quarantine preserved and NO child
+  launch. A
   pre-existing ledger refuses (no second run without a new recorded
   amendment); (6) write all outputs into a FRESH quarantine directory
   (pre-existing quarantine or promote destination = refusal), compose the
   producer argv FROM the certificate's recorded command (remapping only
   output paths into quarantine, appending `--certificate-digest`);
   (7) after a zero exit, MANDATORILY run the parity comparator and the
-  structure checks; atomically promote (single rename) only on PASS;
-  on any crash, nonzero exit, or comparator failure leave the quarantine
-  in place, write a STOP report, and exit nonzero. The producer records
+  structure checks: the main export must bind the exact activation digest,
+  metadata must declare exactly the ten expected record cells, and each
+  declared record path/hash/count/historical-cell/policy must bind a real
+  `records/<cell_id>.jsonl` whose strict rows equal the frozen eligible
+  population and horizon map. Atomically promote with strict no-replace
+  semantics only on PASS (a racing destination must refuse, never be replaced);
+  if the rename commit point succeeds but the subsequent durability sync
+  fails, report STOP at the destination that now owns the outputs and describe
+  that committed-but-not-certified state truthfully — never recreate an empty
+  quarantine or claim that promotion rolled back;
+  on any crash, nonzero exit, comparator failure, or promotion failure leave
+  the quarantine in place, write a STOP report, and exit nonzero. The
+  producer records
   the certificate digest in its output metadata. Enforcement: launcher
   unit tests with injectable runners/launchers for every refusal class and
   the single-use ledger; no test loads a model.
@@ -930,7 +994,26 @@ analysis over retained per-item records — permitted; model execution is not.
   the staged calibration path, and an in-repo untracked staged file aborts
   the run AFTER scoring (the P0-1 trap). The launcher and certificate
   orchestration must stage under an out-of-repo directory and the
-  certificate records those absolute staged paths. Suite receipts must be
+  certificate records those absolute staged paths. This applies to ALL six
+  consumed/provenance inputs, not calibration alone: calibration, fit, eval,
+  MC dataset, answer profiles, and `build_metadata.json`. The command's
+  `--data-dir`, `--calibration`, and every `--staged-input` path must resolve
+  outside the repository. The certificate requires exactly one component for
+  each of the six labels; pins `calibration_train` to the archival digest
+  `745bd67597278bd9d24d41c1dea53bf3a7c56cd6334cfc07ea62bccbdcf44259`
+  (a caller cannot substitute a self-consistent path+digest pair); binds
+  `calibration_train` to `--calibration`; binds
+  the other five paths to the explicit `--data-dir` plus the exactly-once
+  `--fit-split`/`--eval-split` selectors; and requires exactly one matching
+  path+digest `--staged-input` for `fit_split`, `mc_dataset`,
+  `answer_profiles`, and `build_metadata`. The certificate gathering path
+  evaluates the same
+  containment policy and emits `ready:false` with a named path-policy
+  failure; runtime enforcement alone is insufficient because an
+  operationally impossible certificate must never advertise `ready:true`.
+  The eligibility path is mandatory and binds exactly to the R-074 artifact;
+  its raw-byte digest and embedded test-dataset provenance are independently
+  certified. Suite receipts must be
   produced by EXECUTING the suites at the certified head (never ingesting
   pre-existing receipt files from earlier heads): each receipt binds
   `commit`, `tree_sha256`, and `dirty` matching the repo component, real
@@ -946,7 +1029,13 @@ analysis over retained per-item records — permitted; model execution is not.
   interpreter realpath; repository commit AND tree; dirty state; the exact
   command; exit code (plan v3 §5.12 — subsumed by, and a harmless superset
   of, the sign-off A′-F4 machine-readable-output item); JUnit or equivalent
-  machine-readable test output; skip identities; artifact hashes. Local transcripts remain trust-required
+  machine-readable test output; skip identities; artifact hashes. A receipt
+  includes valid JUnit and transcript SHA-256 digests; its counts map is
+  closed to `{tests, failures, errors, skipped}`, uses real nonnegative ints,
+  has `tests > skipped`, and has zero failures/errors. The focused and full
+  receipt commands must select the certificate's exact focused file set and
+  `tests/`, respectively, under the certified interpreter; a zero-test,
+  all-skipped, or arbitrary no-op command is never evidence. Local transcripts remain trust-required
   evidence; exact-head CI on the successor PR is the durable form.
   Enforcement: receipt-schema validation test + a fixture rejecting the
   A′-F4 defect shape (`environment_digest` as an object instead of a hash).

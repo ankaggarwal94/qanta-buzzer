@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -27,6 +28,9 @@ BUILD_SCRIPT = PROJECT_ROOT / "scripts" / "build_mc_dataset.py"
 DEMO_SCRIPT = PROJECT_ROOT / "scripts" / "test_mc_builder.py"
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows does not expose repository POSIX execute bits"
+)
 def test_build_script_remains_executable() -> None:
     """The shebang entrypoint must retain its executable repository mode."""
     assert BUILD_SCRIPT.stat().st_mode & 0o111

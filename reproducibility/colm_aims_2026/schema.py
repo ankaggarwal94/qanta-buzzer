@@ -748,6 +748,10 @@ def read_regular_file_bytes(
         os.O_RDONLY
         | getattr(os, "O_NOFOLLOW", 0)
         | getattr(os, "O_NONBLOCK", 0)
+        # Windows otherwise opens the descriptor in CRT text mode: CRLF is
+        # translated and Ctrl-Z truncates the stream.  Every digest and
+        # strict parser above this boundary requires the literal file bytes.
+        | getattr(os, "O_BINARY", 0)
     )
     try:
         fd = os.open(path, flags)

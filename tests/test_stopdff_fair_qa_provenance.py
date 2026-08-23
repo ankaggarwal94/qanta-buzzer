@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -124,6 +126,14 @@ def test_fair_qa_output_provenance_hashes_inputs_and_coverage_dependencies(
             "scripts/stopdff_dp/dp_solver.py": "e" * 64,
         },
     )
+    monkeypatch.setattr(
+        fair_qa,
+        "coverage_helper_paths",
+        lambda: [
+            fair_qa._REPO / "scripts" / "stopdff_dp" / "diagnostics.py",
+            fair_qa._REPO / "scripts" / "stopdff_dp" / "dp_solver.py",
+        ],
+    )
 
     out = tmp_path / "stopdff_fair_qa.json"
     calibration = tmp_path / "calibration.json"
@@ -145,7 +155,10 @@ def test_fair_qa_output_provenance_hashes_inputs_and_coverage_dependencies(
     extras = {str(path) for path in captured["extra_paths"]}
     assert str(calibration) in extras
     assert {str(path) for path in inputs}.issubset(extras)
-    assert any(path.endswith("scripts/stopdff_dp/diagnostics.py") for path in extras)
+    assert any(
+        Path(path).as_posix().endswith("scripts/stopdff_dp/diagnostics.py")
+        for path in extras
+    )
     original_hashes = dict(actual["input_sha256s"])
     assert set(original_hashes) == {
         str(calibration),

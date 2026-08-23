@@ -905,6 +905,9 @@ def test_publish_fresh_initialization_fails_closed_on_racing_empty_run_root(
         sweep._publish_fresh_initialization(ctx, started_attempt={"attempt": 1})
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows does not expose repository POSIX execute bits"
+)
 def test_source_executable_mode_is_bound_and_rechecked_at_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

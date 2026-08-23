@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import subprocess
 import warnings
@@ -29,6 +30,10 @@ def _initialize_repo(repo: Path) -> None:
     _git(repo, "init", "-q")
     _git(repo, "config", "user.name", "Source Snapshot Test")
     _git(repo, "config", "user.email", "snapshot-test@example.invalid")
+    # Exact source-snapshot bytes must not depend on the workstation's global
+    # checkout conversion settings.
+    _git(repo, "config", "core.autocrlf", "false")
+    _git(repo, "config", "core.eol", "lf")
 
 
 def test_build_source_snapshot_uses_committed_archive_bytes_and_inventory(
@@ -48,6 +53,9 @@ def test_build_source_snapshot_uses_committed_archive_bytes_and_inventory(
         path.write_bytes(data)
     (repo / "bin" / "run.sh").chmod(0o755)
     _git(repo, "add", ".")
+    # Git for Windows cannot infer a POSIX executable bit from NTFS, so bind
+    # the intended tree mode directly in the index on every platform.
+    _git(repo, "update-index", "--chmod=+x", "bin/run.sh")
     _git(repo, "commit", "-q", "-m", "snapshot fixture")
     run_sha = _git(repo, "rev-parse", "HEAD")
 
@@ -77,7 +85,8 @@ def test_build_source_snapshot_uses_committed_archive_bytes_and_inventory(
         )
         for relative_path, data in committed_bytes.items()
     }
-    assert stat.S_IMODE((source / "bin" / "run.sh").stat().st_mode) & 0o111
+    if os.name != "nt":
+        assert stat.S_IMODE((source / "bin" / "run.sh").stat().st_mode) & 0o111
     assert not (
         stat.S_IMODE((source / "pyproject.toml").stat().st_mode) & 0o111
     )
@@ -116,6 +125,7 @@ def test_build_source_snapshot_extraction_pins_tar_filter_semantics(
     (repo / "tool.sh").chmod(0o755)
     (repo / "data.txt").write_bytes(b"plain\n")
     _git(repo, "add", ".")
+    _git(repo, "update-index", "--chmod=+x", "tool.sh")
     _git(repo, "commit", "-q", "-m", "filter fixture")
     run_sha = _git(repo, "rev-parse", "HEAD")
 
@@ -126,14 +136,22 @@ def test_build_source_snapshot_extraction_pins_tar_filter_semantics(
 
     source = output / "source"
     assert (source / "data.txt").read_bytes() == b"plain\n"
-    assert stat.S_IMODE((source / "tool.sh").stat().st_mode) & 0o100
-    assert not (stat.S_IMODE((source / "data.txt").stat().st_mode) & 0o111)
+    if os.name != "nt":
+        assert stat.S_IMODE((source / "tool.sh").stat().st_mode) & 0o100
+        assert not (stat.S_IMODE((source / "data.txt").stat().st_mode) & 0o111)
+    modes = {
+        entry["path"]: entry["mode"] for entry in manifest["identity"]["files"]
+    }
+    assert modes == {"data.txt": "100644", "tool.sh": "100755"}
     assert [entry["path"] for entry in manifest["identity"]["files"]] == [
         "data.txt",
         "tool.sh",
     ]
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason='Windows filenames cannot contain the embedded quote fixture'
+)
 def test_build_source_snapshot_inventories_c_quoted_paths(tmp_path: Path) -> None:
     """Names git C-quotes in porcelain listings (unicode, embedded quotes)
     must resolve to their extracted files instead of silently dropping out."""

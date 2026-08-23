@@ -10,7 +10,10 @@ import subprocess
 import pytest
 
 _BASH = shutil.which("bash")
-pytestmark = pytest.mark.skipif(_BASH is None, reason="bash not available")
+pytestmark = pytest.mark.skipif(
+    _BASH is None or os.name == "nt",
+    reason="POSIX wrapper semantics require a native POSIX shell",
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
