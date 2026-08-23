@@ -1407,8 +1407,8 @@ def _check_qa012(qa012: Any, fail: Any) -> None:
     if not isinstance(qa012, dict):
         fail("qa012: component must be an object")
         return
-    if not schema.is_sha256_hex(qa012.get("rev2_manifest_sha256")):
-        fail("qa012: rev2_manifest_sha256 is not a sha256 hex digest")
+    if not schema.is_sha256_hex(qa012.get("manifest_sha256")):
+        fail("qa012: manifest_sha256 is not a sha256 hex digest")
 
 
 def _check_environment(env: Any, fail: Any) -> None:
@@ -1727,7 +1727,7 @@ def gather_certificate_components(
             ),
         },
         "qa012": {
-            "rev2_manifest_sha256": _recompute_file_sha256(
+            "manifest_sha256": _recompute_file_sha256(
                 config["qa012_manifest_path"]
             ),
         },

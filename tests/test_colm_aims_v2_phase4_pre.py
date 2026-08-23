@@ -1697,7 +1697,7 @@ def _good_components():
             ),
             "anchor_sha256": EXPORT_A_SHA,
         },
-        "qa012": {"rev2_manifest_sha256": QA012_REV2_SHA},
+        "qa012": {"manifest_sha256": QA012_REV2_SHA},
         "environment": {
             "interpreter_realpath": "/repo/.venv/bin/python3.11",
             "os": "Darwin",
@@ -2859,7 +2859,7 @@ class TestF4GatherCertificateComponents:
             PARITY_ANCHOR_PATH
         )
         assert (
-            components["qa012"]["rev2_manifest_sha256"] == QA012_REV2_SHA
+            components["qa012"]["manifest_sha256"] == QA012_REV2_SHA
         )
         eligibility = _load_json(ELIGIBILITY_PATH)
         assert (
