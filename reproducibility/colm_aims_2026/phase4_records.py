@@ -139,8 +139,22 @@ def export_records(
     Input items are EXACTLY ``{item_key, horizon, mc_stop, ref_stop}``;
     unknown or missing keys refuse. Output rows are sorted ascending by
     UTF-8 ``item_key`` and are byte-identical under input permutation.
+
+    ``out_dir`` is the PARENT directory — this exporter owns the
+    ``records/`` segment (amended R-080). An ``out_dir`` whose final
+    component is exactly ``records`` is refused fail-loud (the P1-6
+    doubled-segment argv class would otherwise silently write
+    ``.../records/records/<cell>.jsonl``).
     """
     cell_id = _validate_cell_id(cell_id)
+    out_dir = Path(out_dir)
+    if out_dir.name == "records":
+        raise RecordsExportError(
+            f"out_dir {str(out_dir)!r} ends in a 'records' component —"
+            " out_dir is the PARENT directory and the exporter appends the"
+            " 'records/' segment itself; passing '.../records' would write"
+            " a doubled '.../records/records/' tree (amended R-080)"
+        )
     if not isinstance(scored_items, list) or not scored_items:
         raise RecordsExportError(
             f"cell {cell_id!r}: scored_items must be a non-empty list —"

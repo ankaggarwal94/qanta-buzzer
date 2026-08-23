@@ -936,9 +936,18 @@ def main():
                          "fit_split, mc_dataset, and answer_profiles REQUIRE "
                          "operator digests here; any staged path outside "
                          "that closed set is refused")
+    ap.add_argument("--certificate-digest", default=None,
+                    help="PRE_RUN_READY activation digest (R-081); recorded "
+                         "verbatim into metadata.phase4.certificate_digest")
     args = ap.parse_args()
     if args.num_bootstrap <= 0:
         ap.error("--num-bootstrap must be positive")
+    if args.certificate_digest is not None and not (
+        len(args.certificate_digest) == 64
+        and all(c in "0123456789abcdef" for c in args.certificate_digest)
+    ):
+        ap.error("--certificate-digest must be a lowercase 64-hex sha256"
+                 " digest")
 
     data = Path(args.data_dir)
     arms_req = [a.strip() for a in args.qa_arms.split(",") if a.strip()]
@@ -968,6 +977,7 @@ def main():
         or args.primary_model_path
         or args.disjoint_model_path
         or args.snapshot_manifest
+        or args.certificate_digest
     )
     pinned_models = bool(args.primary_model_path or args.disjoint_model_path)
     if pinned_models:
@@ -1230,6 +1240,9 @@ def main():
         )
         if exported_records is not None:
             phase4_meta["exported_records"] = exported_records
+        if args.certificate_digest is not None:
+            # R-081: the producer records the activation digest it ran under.
+            phase4_meta["certificate_digest"] = args.certificate_digest
         payload["metadata"]["phase4"] = phase4_meta
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")

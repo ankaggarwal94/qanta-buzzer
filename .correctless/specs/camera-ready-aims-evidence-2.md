@@ -840,8 +840,12 @@ analysis over retained per-item records — permitted; model execution is not.
   PASS/FAIL report; ANY mismatch, including any CI-array element, is a
   blocking FAIL. The two Random-K cells are exempt from historical parity
   and reported informationally with `archived_rng_pinned=false` /
-  `fresh_rng_pinned=true`. Export B (`ba784741…`) is corroborative, never
-  the anchor. Enforcement: comparator-unit tests with exact-match,
+  `fresh_rng_pinned=true` — but their STRUCTURE is required: both Random-K
+  cells must be present in the regenerated export with the full point and
+  CI field set (a missing Random-K cell or field is a blocking structural
+  failure; only the numeric VALUES are exempt from historical parity —
+  operational-rejection repair 2026-08-22). Export B (`ba784741…`) is
+  corroborative, never the anchor. Enforcement: comparator-unit tests with exact-match,
   single-field-mutated, and CI-element-mutated payloads; allowlist
   completeness test (160 + 32 + identity fields, no more, no fewer).
 - **R-078** [unit] *(PRE-7)*: QA-012 compatibility fixtures: committed
@@ -890,7 +894,50 @@ analysis over retained per-item records — permitted; model execution is not.
   reporting encoding kept distinct (R-046). The export stage is testable
   WITHOUT models (it consumes scored frames). Enforcement: producer-unit
   export tests on synthetic frames covering finite, never-stopped, and
-  final-prefix-crossing items at heterogeneous horizons.
+  final-prefix-crossing items at heterogeneous horizons. `--records-out`
+  receives the PARENT directory; the exporter owns the `records/` path
+  segment (doubled-segment invocations were the P1-6 defect).
+- **R-081** [integration] *(operational rejection repair, 2026-08-22)*: The
+  single authorized run is executable ONLY through the checked-in
+  single-use launcher. Before any model construction the launcher must:
+  (1) read the certificate bytes and require sha256 == the activation
+  digest, hardened-parse it, and require `ready is True` (bool-safe);
+  (2) require LIVE `git rev-parse HEAD` == certificate commit, LIVE
+  `rev-parse HEAD^{tree}` == certificate tree, and a live tracked-clean
+  check; (3) REJECT ambient provenance overrides (`MODAL_HOST_GIT_STATUS`,
+  `MODAL_HOST_GIT_COMMIT` set at all = refusal) and launch the producer as
+  a SUBPROCESS whose environment sets, before interpreter start:
+  `PYTHONHASHSEED=0`, `OMP_NUM_THREADS=1`, `VECLIB_MAXIMUM_THREADS=1`, and
+  the offline flags; (4) re-verify both model snapshots against the frozen
+  manifests; (5) consume the exception via a CREATE-ONCE ledger file
+  (O_CREAT|O_EXCL) recording the certificate digest BEFORE launching — a
+  pre-existing ledger refuses (no second run without a new recorded
+  amendment); (6) write all outputs into a FRESH quarantine directory
+  (pre-existing quarantine or promote destination = refusal), compose the
+  producer argv FROM the certificate's recorded command (remapping only
+  output paths into quarantine, appending `--certificate-digest`);
+  (7) after a zero exit, MANDATORILY run the parity comparator and the
+  structure checks; atomically promote (single rename) only on PASS;
+  on any crash, nonzero exit, or comparator failure leave the quarantine
+  in place, write a STOP report, and exit nonzero. The producer records
+  the certificate digest in its output metadata. Enforcement: launcher
+  unit tests with injectable runners/launchers for every refusal class and
+  the single-use ledger; no test loads a model.
+- **R-082** [unit] *(operational rejection repair, 2026-08-22)*: Staged
+  inputs live OUTSIDE the repository tree — identity is carried by the
+  hash gates (R-076), never by location — because the producer's
+  committed-writer guard computes `git status` over a pathspec including
+  the staged calibration path, and an in-repo untracked staged file aborts
+  the run AFTER scoring (the P0-1 trap). The launcher and certificate
+  orchestration must stage under an out-of-repo directory and the
+  certificate records those absolute staged paths. Suite receipts must be
+  produced by EXECUTING the suites at the certified head (never ingesting
+  pre-existing receipt files from earlier heads): each receipt binds
+  `commit`, `tree_sha256`, and `dirty` matching the repo component, real
+  captured exit codes, and `failures == 0`/`errors == 0`; the certificate
+  checker refuses receipts missing or mismatching any of these.
+  Enforcement: receipt-checker tests (head mismatch, nonzero failures,
+  missing binding all flip ready:false).
 
 - **R-070** [integration]: Any suite-execution claim made for this feature —
   and the successor PR's CI evidence in particular — is accompanied by a
@@ -929,9 +976,16 @@ analysis over retained per-item records — permitted; model execution is not.
   `reachable_comparator_prototype` bundle, `data/processed/*.json`, and the
   successor suite transcripts) found **4,556 hits** in the four
   `per_prefix_scores*` JSONLs — manifest
-  `qa012_inventory_2026-08-22_rev2.json`, SHA-256 `52ac2902…`. QA-012 is
-  therefore `HITS_PRESENT, non-blocking for source reconstruction, blocking
-  for final CAMERA_READY_CLOSURE` until the R-078 fixtures land. Executing
+  `qa012_inventory_2026-08-22_rev2.json`, SHA-256 `52ac2902…`. Rev2 was
+  itself found defective at readback (operational rejection 2026-08-22):
+  entries carried SHA-256 only — §8 requires BOTH a content hash (the
+  Dropbox content hash, 4 MiB-block sha256-of-block-sha256s, for
+  Dropbox-resident evidence) AND SHA-256 — and the 4,556 JSONL hit
+  pointers were 0-based where 1-based line numbers are required. Rev3
+  corrects both over the same 67-file scope (supersession chain recorded
+  in-manifest). QA-012 is `HITS_PRESENT, non-blocking for source
+  reconstruction, blocking for final CAMERA_READY_CLOSURE` until the
+  R-078 fixtures land. Executing
   this rule's inventory REQUIRES a per-prong disposition: every enumerated
   scope prong is recorded as located/scanned or UNLOCATABLE-escalate — a
   zero-hit verdict over an incompletely-located scope is a false vacuity and

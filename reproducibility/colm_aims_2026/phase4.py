@@ -139,7 +139,8 @@ CERT_COMPONENT_KEYS = (
 )
 CONTENT_HASH_KEYS = ("producer_sha256", "verifier_sha256", "spec_sha256")
 SUITE_RECEIPT_NAMES = ("focused", "full")
-# R-070: every suite receipt must carry the full machine-readable binding —
+# R-070/R-082: every suite receipt must carry the full machine-readable
+# binding — including the R-082 head bindings (commit/tree_sha256/dirty) —
 # a receipt missing any of these is a failing suite_receipts component.
 R070_RECEIPT_FIELDS = (
     "exit_code",
@@ -149,6 +150,9 @@ R070_RECEIPT_FIELDS = (
     "interpreter_realpath",
     "counts",
     "skip_identities",
+    "commit",
+    "tree_sha256",
+    "dirty",
 )
 CERT_ENVIRONMENT_KEYS = (
     "interpreter_realpath",
@@ -1064,8 +1068,44 @@ def compare_parity(
                         }
                     )
 
-    # Random-K cells: NEVER blocking; informational report only (R-077).
+    # Random-K cells (amended R-077, operational-rejection repair): the
+    # STRUCTURE is blocking — both krandom cells must be present with the
+    # full point + CI field set (a missing cell/field is a structural
+    # failure row; a whole missing cell reports field "<cell>") — while the
+    # numeric VALUES stay exempt (never compared, informational only).
+    # Structural rows do NOT increment ``checked``: PASS still implies
+    # exactly the 194 blocking value comparisons.
     rk = _as_dict(anchor["random_k"])
+    for cell in rk.get("cells", []):
+        observed_cell = results.get(cell)
+        if not isinstance(observed_cell, dict):
+            failures.append(
+                {
+                    "cell": cell,
+                    "policy": None,
+                    "field": "<cell>",
+                    "expected": "present",
+                    "observed": None,
+                }
+            )
+            continue
+        for policy in anchor["policies"]:
+            observed_values = observed_cell.get(policy)
+            if not isinstance(observed_values, dict):
+                observed_values = {}
+            for field in point_fields + ci_fields:
+                if field not in observed_values:
+                    failures.append(
+                        {
+                            "cell": cell,
+                            "policy": policy,
+                            "field": field,
+                            "expected": "present",
+                            "observed": None,
+                        }
+                    )
+
+    # Random-K VALUES: NEVER blocking; informational report only (R-077).
     archived = _as_dict(rk.get("informational_archived_values"))
     divergences: list[dict[str, Any]] = []
     rk_compared = 0
@@ -1248,7 +1288,8 @@ def _check_staged_inputs(staged: Any, fail: Any) -> None:
             fail(f"staged_inputs: {name}: path missing")
 
 
-def _check_suite_receipts(receipts: Any, fail: Any) -> None:
+def _check_suite_receipts(receipts: Any, fail: Any, repo: Any = None) -> None:
+    repo = repo if isinstance(repo, dict) else {}
     if not isinstance(receipts, dict):
         fail("suite_receipts: component must be an object")
         return
@@ -1257,13 +1298,14 @@ def _check_suite_receipts(receipts: Any, fail: Any) -> None:
         if not isinstance(receipt, dict):
             fail(f"suite_receipts: {name} receipt missing or malformed")
             continue
-        # R-070: the full machine-readable receipt binding is REQUIRED —
-        # a receipt missing any field is a failing suite_receipts component.
+        # R-070/R-082: the full machine-readable receipt binding is REQUIRED
+        # — a receipt missing any field is a failing suite_receipts
+        # component.
         for field in R070_RECEIPT_FIELDS:
             if field not in receipt:
                 fail(
-                    f"suite_receipts: {name} receipt is missing the R-070"
-                    f" field {field!r}"
+                    f"suite_receipts: {name} receipt is missing the"
+                    f" R-070/R-082 field {field!r}"
                 )
         exit_code = receipt.get("exit_code")
         # Bool-guard: False == 0 in Python; only the exact int 0 is success.
@@ -1297,17 +1339,56 @@ def _check_suite_receipts(receipts: Any, fail: Any) -> None:
                 f"suite_receipts: {name} interpreter_realpath must be a"
                 " non-empty string (R-070)"
             )
-        if "counts" in receipt and not isinstance(receipt["counts"], dict):
+        counts = receipt.get("counts")
+        if "counts" in receipt and not isinstance(counts, dict):
             fail(
                 f"suite_receipts: {name} counts must be a machine-readable"
                 " object (R-070)"
             )
+        elif isinstance(counts, dict):
+            # R-082: real captured failure/error tallies, exactly int 0 —
+            # bools rejected (False == 0 laundering).
+            for tally in ("failures", "errors"):
+                value = counts.get(tally, _MISSING)
+                if value is _MISSING:
+                    fail(
+                        f"suite_receipts: {name} counts.{tally} missing"
+                        " (R-082)"
+                    )
+                elif type(value) is not int or value != 0:
+                    fail(
+                        f"suite_receipts: {name} counts.{tally} must be"
+                        f" exactly int 0; found {value!r} (R-082)"
+                    )
         if "skip_identities" in receipt and not isinstance(
             receipt["skip_identities"], list
         ):
             fail(
                 f"suite_receipts: {name} skip_identities must be a list"
                 " (R-070)"
+            )
+        # R-082 head bindings: receipts must come from EXECUTING the suites
+        # at the certified head — commit/tree must EQUAL the runner-sourced
+        # repo component and dirty must be identically False. A stale
+        # receipt ingested from an earlier head mismatches here.
+        if "commit" in receipt and receipt["commit"] != repo.get("commit"):
+            fail(
+                f"suite_receipts: {name} receipt commit"
+                f" {receipt['commit']!r} != certified repo commit"
+                f" {repo.get('commit')!r} (R-082 head binding)"
+            )
+        if "tree_sha256" in receipt and receipt["tree_sha256"] != repo.get(
+            "tree_sha256"
+        ):
+            fail(
+                f"suite_receipts: {name} receipt tree_sha256"
+                f" {receipt['tree_sha256']!r} != certified repo tree"
+                f" {repo.get('tree_sha256')!r} (R-082 head binding)"
+            )
+        if "dirty" in receipt and receipt["dirty"] is not False:
+            fail(
+                f"suite_receipts: {name} receipt dirty must be identically"
+                f" False; found {receipt['dirty']!r} (R-082 head binding)"
             )
 
 
@@ -1410,7 +1491,14 @@ def assemble_certificate(components: dict[str, Any]) -> dict[str, Any]:
             continue
         checker = _COMPONENT_CHECKERS[key]
         try:
-            checker(components[key], fail)
+            if key == "suite_receipts":
+                # R-082: the receipt head bindings compare against the
+                # runner-sourced repo component (cross-component check).
+                checker(
+                    components[key], fail, repo=components.get("repo")
+                )
+            else:
+                checker(components[key], fail)
         except Exception as exc:  # noqa: BLE001 - the never-raise contract
             fail(
                 f"{key}: check evaluation failed"
@@ -1597,8 +1685,11 @@ def gather_certificate_components(
             observed = None
         staged_inputs.append(
             {
+                # R-082: staged inputs live OUTSIDE the repository tree —
+                # the certificate records their ABSOLUTE paths (identity is
+                # carried by the hash gates, never by location).
                 "label": label,
-                "path": str(path),
+                "path": str(Path(path).resolve()),
                 "expected_sha256": entry.get("expected_sha256"),
                 "observed_sha256": observed,
             }

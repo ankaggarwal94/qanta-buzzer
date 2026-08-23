@@ -149,11 +149,106 @@ API CONTRACT PINNED FOR GREEN
     (SystemExit 2 before any gate or load) — records regenerated outside
     the frozen paired population are unusable (F-6 flag coupling).
 
-R-070 suite receipts (assemble_certificate + gatherer): each receipt must
-carry ``exit_code`` (exact int 0), ``command``, ``environment_lock_sha256``
-(64-hex), ``workflow_sha256``, ``interpreter_realpath``, ``counts``, and
-``skip_identities`` — a receipt missing ``environment_lock_sha256`` is a
-failing suite_receipts component.
+R-070/R-082 suite receipts (assemble_certificate + gatherer): each receipt
+must carry ``exit_code`` (exact int 0), ``command``,
+``environment_lock_sha256`` (64-hex), ``workflow_sha256``,
+``interpreter_realpath``, ``counts``, ``skip_identities`` — and, per the
+R-082 operational-rejection repair, HEAD BINDINGS: ``commit`` ==
+repo.commit, ``tree_sha256`` == repo.tree_sha256, ``dirty`` identically
+False, plus ``counts.failures`` and ``counts.errors`` each exactly int 0
+(bools rejected). Any missing or mismatching binding is a named failing
+suite_receipts component (receipts must come from EXECUTING the suites at
+the certified head, never from pre-existing files — the head binding is
+what makes stale ingestion detectable). The gatherer records staged-input
+paths as ABSOLUTE strings (out-of-repo staging, R-082).
+
+Amended R-077 (Random-K STRUCTURE, operational-rejection repair): both
+krandom cells must be PRESENT in the regenerated export with the full
+10-point + 2-CI field set. A missing krandom cell (failure row field
+``"<cell>"``) or a missing krandom field is a blocking STRUCTURAL failure
+row; only the numeric VALUES stay exempt (never compared, reported
+informationally). Structural checks do NOT increment ``checked`` — a PASS
+still carries exactly ``checked == 194``.
+
+Amended R-080 path discipline: ``export_records``'s ``out_dir`` is the
+PARENT directory — the exporter owns the ``records/`` segment. An
+``out_dir`` whose final path component is exactly ``records`` is REFUSED
+(fail-loud; the P1-6 doubled-segment argv class), naming the doubled
+segment; names merely containing "records" (e.g. ``records_v2``) are fine.
+
+R-072 rev3: rev2 (`52ac2902…`) was found defective at readback (sha256-only
+entries; 0-based hit pointers). The rev3 manifest at repo root
+``qa012_inventory_2026-08-22_rev3.json`` (landed mid-round; the REAL
+artifact's field names govern) corrects both over the same 67-file scope:
+every entry carries BOTH ``dropbox_content_hash`` (4 MiB-block convention)
+AND ``sha256``; ``conventions.jsonl_line_numbers == "1-based"`` declared
+top-level (no ``line 0:`` pointer anywhere); ``revision == 3``; the
+in-manifest ``supersession_chain`` names BOTH rev1's and rev2's SHA-256
+with defect notes; totals unchanged (67 scanned / 4,556 hits).
+
+``reproducibility.colm_aims_2026.phase4_launcher`` (new module, R-081):
+  - ``LaunchRefusal`` / ``RunFailed``: ``schema.ColmAimsError`` subclasses
+    (pre-launch refusals vs post-launch failures).
+  - ``validate_and_launch(config, *, run_git=None, launch=None,
+    compare=None, now=None)``: single-use launcher. ``run_git(cmd)->stdout``
+    and ``launch(argv, env)->exit_code`` are injectable; ``compare`` is the
+    injectable comparator hook ``compare(quarantine_dir) -> dict``
+    returning a compare_parity-shaped result (the default loads the anchor
+    from ``config["anchor_path"]`` and the regenerated export from the
+    quarantine). config keys: ``certificate_path``, ``activation_digest``,
+    ``quarantine_dir``, ``promote_to``, ``ledger_path``,
+    ``snapshot_manifest_path``, ``snapshot_dirs``, ``anchor_path``.
+    Pre-launch refusal classes (each a ``LaunchRefusal`` whose message
+    names the class; ``launch`` is NEVER invoked and the ledger is NEVER
+    newly created on any refusal — refusals are side-effect-free):
+    (1) certificate bytes sha256 != activation_digest — checked FIRST,
+    before parsing/ready; (2) ``ready`` not identically True (bool-safe:
+    ``1`` refuses); (3) live ``git rev-parse HEAD`` != certificate commit;
+    (4) live ``rev-parse HEAD^{tree}`` != certificate tree; (5) live
+    TRACKED-dirty status (untracked-only ``?? ...`` porcelain lines do NOT
+    refuse — the tracked-clean + untracked-disclosure convention);
+    (6) ``MODAL_HOST_GIT_STATUS`` or ``MODAL_HOST_GIT_COMMIT`` present in
+    os.environ AT ALL (even empty) — ambient provenance laundering;
+    (7) snapshot re-verification failure against the frozen manifest;
+    (R-082/F-1, PRE-LEDGER) any staged path — from BOTH the certificate's
+    ``staged_inputs`` component AND the composed argv (``--staged-input``
+    values, the ``--calibration`` value; relative forms resolved against
+    the repo root) — that ``schema.resolves_inside`` the repository tree
+    refuses, naming R-082/P0-1 (an in-repo untracked staged file would
+    burn the ledger post-scoring — rejected certificate 8731ad00's
+    defect); (9-then-8, F-2 ordering) the WORKSPACE is materialized before
+    the ledger: pre-existing ``promote_to``, missing promote parent,
+    pre-existing ``quarantine_dir`` (mkdir exist_ok=False doubles as the
+    staleness check), unwritable quarantine, and cross-device
+    quarantine/promote (os.rename cannot be atomic) all refuse
+    PRE-LEDGER; only then is the ledger consumed via O_CREAT|O_EXCL
+    (recording the activation digest BEFORE launch), and a
+    ledger-already-exists refusal rmdirs the just-created quarantine so
+    the refusal leaves no workspace behind. The three workspace config
+    paths (``quarantine_dir``, ``promote_to``, ``ledger_path``) are
+    ``.resolve()``d at entry (F-4: a relative path must not split between
+    the launcher cwd and the child cwd). Success path: ``launch`` called
+    EXACTLY once; env carries ``PYTHONHASHSEED=0``, ``OMP_NUM_THREADS=1``,
+    ``VECLIB_MAXIMUM_THREADS=1``, ``HF_HUB_OFFLINE=1``,
+    ``TRANSFORMERS_OFFLINE=1`` and NO ``MODAL_HOST_*`` key; argv is
+    composed FROM the certificate's recorded command
+    (components.environment.command) with ONLY output paths remapped —
+    ``--out`` value to ``quarantine_dir/<basename>``, ``--records-out``
+    value to ``quarantine_dir`` itself (the R-080 parent) — plus an
+    appended ``--certificate-digest <activation_digest>``; all other
+    tokens (including ``--calibration``/``--staged-input`` values, which
+    must point OUTSIDE the repo) are preserved verbatim. Post-launch
+    (F-3: the ledger is consumed, so the triage artifact must exist on
+    the messiest failures): nonzero exit -> ``RunFailed`` + STOP report
+    at ``quarantine_dir / "STOP_REPORT.json"`` (reason ``nonzero_exit``,
+    contains the activation digest), quarantine intact, ``promote_to``
+    absent; a CRASH inside ``launch``/``compare`` -> ``RunFailed`` + STOP
+    report with reason ``launch_crash``/``comparator_crash``; zero exit
+    -> comparator invoked MANDATORILY; PASS -> single atomic rename
+    quarantine -> promote_to (quarantine gone, contents preserved);
+    comparator FAIL -> ``RunFailed`` + STOP report (reason
+    ``parity_comparator_fail``) + quarantine intact + ``promote_to``
+    absent.
 
 Verifier-side (R-073, existing modules):
   - ``schema.TIMEOUT_PARAMETER_KEYS == {"horizon_map_sha256", "rule"}``
@@ -175,6 +270,7 @@ import functools
 import hashlib
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -228,6 +324,7 @@ PARITY_ANCHOR_PATH = FROZEN_DIR / "parity_anchor_export_a.json"
 QA012_FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "qa012_item10"
 QA012_BINDINGS_PATH = QA012_FIXTURE_DIR / "bindings.json"
 QA012_REV2_MANIFEST_PATH = REPO_ROOT / "qa012_inventory_2026-08-22_rev2.json"
+QA012_REV3_MANIFEST_PATH = REPO_ROOT / "qa012_inventory_2026-08-22_rev3.json"
 
 # R-074 (PRE-1): two-party pinned test-dataset digest.
 TEST_DATASET_SHA = (
@@ -1495,8 +1592,10 @@ class TestR078Qa012Fixtures:
 # ===========================================================================
 
 
-# R-070 (F-4): the required suite-receipt field set. A receipt missing
-# environment_lock_sha256 is a failing suite_receipts component.
+# R-070/R-082 (F-4 + operational rejection): the required suite-receipt
+# field set. A receipt missing environment_lock_sha256 — or, per R-082, the
+# head bindings commit/tree_sha256/dirty — is a failing suite_receipts
+# component.
 R070_RECEIPT_KEYS = frozenset(
     {
         "exit_code",
@@ -1506,19 +1605,35 @@ R070_RECEIPT_KEYS = frozenset(
         "interpreter_realpath",
         "counts",
         "skip_identities",
+        "commit",
+        "tree_sha256",
+        "dirty",
     }
 )
 
 
-def _r070_receipt(command, *, exit_code=0):
+def _r070_receipt(
+    command,
+    *,
+    exit_code=0,
+    commit="f" * 40,
+    tree_sha256="1" * 64,
+    dirty=False,
+):
+    # AMENDED (R-082 forward-compat, same trick as the F-4 round): receipts
+    # carry the head bindings; defaults match _good_components()["repo"] so
+    # the original R-079 suite stays green once the checker tightens.
     return {
         "exit_code": exit_code,
         "command": command,
         "environment_lock_sha256": "6" * 64,
         "workflow_sha256": "7" * 64,
         "interpreter_realpath": "/repo/.venv/bin/python3.11",
-        "counts": {"passed": 125, "failed": 0},
+        "counts": {"passed": 125, "failures": 0, "errors": 0},
         "skip_identities": [],
+        "commit": commit,
+        "tree_sha256": tree_sha256,
+        "dirty": dirty,
     }
 
 
@@ -2629,8 +2744,16 @@ class TestF4GatherCertificateComponents:
         receipt_paths = {}
         for name in ("focused", "full"):
             path = tmp_path / f"suite_receipt_{name}.json"
+            # R-082: receipt head bindings must match the RUNNER-sourced
+            # repo component (FAKE_COMMIT/FAKE_TREE), or assemble refuses.
             path.write_text(
-                json.dumps(_r070_receipt(f"pytest --suite {name}")),
+                json.dumps(
+                    _r070_receipt(
+                        f"pytest --suite {name}",
+                        commit=FAKE_COMMIT,
+                        tree_sha256=FAKE_TREE,
+                    )
+                ),
                 encoding="utf-8",
             )
             receipt_paths[name] = path
@@ -2747,6 +2870,10 @@ class TestF4GatherCertificateComponents:
             components["eligibility"]["horizon_map_sha256"]
             == eligibility["horizon_map_sha256"]
         )
+        # R-082: staged paths recorded ABSOLUTE (out-of-repo staging —
+        # identity via hash gates, location outside the tracked tree).
+        for entry in components["staged_inputs"]:
+            assert Path(str(entry["path"])).is_absolute()
 
     def test_mutated_snapshot_is_recorded_not_raised(self, tmp_path):
         # Gather RECORDS check failures; assemble decides (guarded builder).
@@ -2765,7 +2892,11 @@ class TestF4GatherCertificateComponents:
     def test_receipt_file_missing_environment_lock_fails(self, tmp_path):
         phase4 = _phase4()
         config = self._config(tmp_path)
-        receipt = _r070_receipt("pytest --suite focused")
+        receipt = _r070_receipt(
+            "pytest --suite focused",
+            commit=FAKE_COMMIT,
+            tree_sha256=FAKE_TREE,
+        )
         del receipt["environment_lock_sha256"]
         config["suite_receipt_paths"]["focused"].write_text(
             json.dumps(receipt), encoding="utf-8"
@@ -2776,3 +2907,918 @@ class TestF4GatherCertificateComponents:
         cert = phase4.assemble_certificate(components)
         assert cert["ready"] is False
         assert any("suite" in check for check in cert["failing_checks"])
+
+
+# ===========================================================================
+# OPERATIONAL-REJECTION ROUND (ChatGPT FALSE_READY readback, 2026-08-22):
+# R-081 launcher, R-082 head-bound receipts, amended R-077 Random-K
+# structure, amended R-080 parent-dir, R-072 rev3. RED-first; current
+# behavior probed before pinning (missing-krandom => PASS, doubled
+# records/records segment written silently, receipts head-blind).
+# ===========================================================================
+
+
+def _phase4_launcher():
+    from reproducibility.colm_aims_2026 import phase4_launcher
+
+    return phase4_launcher
+
+
+# ---------------------------------------------------------------------------
+# Amended R-077: Random-K STRUCTURE is required (values stay exempt)
+# ---------------------------------------------------------------------------
+
+
+class TestR077RandomKStructure:
+    def test_missing_both_krandom_cells_is_a_blocking_structural_fail(self):
+        # Probe-confirmed current defect: deleting BOTH krandom cells still
+        # returns PASS. Structure is now blocking; whole-cell rows carry
+        # field "<cell>".
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        del regen["results"]["krandom+shared"]
+        del regen["results"]["krandom+performat"]
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "FAIL"
+        for cell in ("krandom+shared", "krandom+performat"):
+            rows = [f for f in result["failures"] if f["cell"] == cell]
+            assert rows, f"no structural failure row for missing {cell}"
+            assert any(f["field"] == "<cell>" for f in rows)
+
+    def test_missing_krandom_point_field_is_structural_fail(self):
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        del regen["results"]["krandom+performat"]["dp"]["n"]
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "FAIL"
+        assert any(
+            f["cell"] == "krandom+performat" and f["field"] == "n"
+            for f in result["failures"]
+        )
+
+    def test_missing_krandom_ci_field_is_structural_fail(self):
+        # Sibling site: the CI-field axis of the same structural check.
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        del regen["results"]["krandom+shared"]["myopic"]["signed_mean_ci"]
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "FAIL"
+        assert any(
+            f["cell"] == "krandom+shared"
+            and f["field"] == "signed_mean_ci"
+            for f in result["failures"]
+        )
+
+    def test_structural_checks_do_not_inflate_checked(self):
+        # The 194 blocking VALUE comparisons stay the PASS invariant;
+        # structure rides in failures only. (Complete-structure wild-value
+        # exemption is pinned by test_random_k_divergence_is_informational
+        # _never_blocking above.)
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        result = _phase4().compare_parity(anchor, regen)
+        assert result["verdict"] == "PASS"
+        assert result["checked"] == 194
+
+
+# ---------------------------------------------------------------------------
+# R-082: head-bound suite receipts (assemble path)
+# ---------------------------------------------------------------------------
+
+
+class TestR082ReceiptHeadBinding:
+    def _cert(self, mutate):
+        components = _good_components()
+        mutate(components["suite_receipts"])
+        cert = _phase4().assemble_certificate(components)
+        return cert
+
+    def _assert_suite_fail(self, mutate):
+        cert = self._cert(mutate)
+        assert cert["ready"] is False
+        assert any("suite" in check for check in cert["failing_checks"])
+
+    def test_missing_commit_binding_fails(self):
+        self._assert_suite_fail(lambda r: r["focused"].pop("commit"))
+
+    def test_missing_tree_binding_fails(self):
+        self._assert_suite_fail(lambda r: r["full"].pop("tree_sha256"))
+
+    def test_missing_dirty_binding_fails(self):
+        self._assert_suite_fail(lambda r: r["focused"].pop("dirty"))
+
+    def test_head_mismatched_commit_fails(self):
+        # Substitution-negative: a DIFFERENT valid 40-hex commit is exactly
+        # the stale-receipt-ingestion signature.
+        def mutate(receipts):
+            receipts["full"]["commit"] = "d4" * 20
+
+        self._assert_suite_fail(mutate)
+
+    def test_head_mismatched_tree_fails(self):
+        def mutate(receipts):
+            receipts["focused"]["tree_sha256"] = "e5" * 32
+
+        self._assert_suite_fail(mutate)
+
+    def test_dirty_receipt_fails_bool_exact(self):
+        self._assert_suite_fail(
+            lambda r: r["focused"].__setitem__("dirty", True)
+        )
+        # Stringly-typed "false" is not clean either.
+        self._assert_suite_fail(
+            lambda r: r["full"].__setitem__("dirty", "false")
+        )
+
+    def test_nonzero_failures_or_errors_fail(self):
+        self._assert_suite_fail(
+            lambda r: r["focused"]["counts"].__setitem__("failures", 2)
+        )
+        self._assert_suite_fail(
+            lambda r: r["full"]["counts"].__setitem__("errors", 1)
+        )
+
+    def test_bool_zero_failures_is_rejected_not_laundered(self):
+        # False == 0 in Python; counts must be exact ints (seed catalog).
+        self._assert_suite_fail(
+            lambda r: r["focused"]["counts"].__setitem__("failures", False)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Amended R-080: --records-out/out_dir is the PARENT; doubled segment refused
+# ---------------------------------------------------------------------------
+
+
+class TestR080ParentDirRefusal:
+    def test_out_dir_ending_in_records_is_refused(self, tmp_path):
+        # Probe-confirmed current defect: out_dir=".../records" silently
+        # writes ".../records/records/<cell>.jsonl" (the P1-6 argv class).
+        # Fail-loud refusal adjudicated over silent dedup.
+        with pytest.raises(
+            (schema.ColmAimsError, ValueError)
+        ) as excinfo:
+            _phase4_records().export_records(
+                _scored_items(),
+                "khard__format_specific",
+                tmp_path / "records",
+            )
+        message = str(excinfo.value)
+        assert "records" in message
+        assert "parent" in message.lower() or "doubled" in message.lower()
+
+    def test_out_dir_merely_containing_records_is_fine(self, tmp_path):
+        # Nearest-true control: only a FINAL component exactly "records"
+        # is the doubled-segment class.
+        out = _phase4_records().export_records(
+            _scored_items(),
+            "khard__format_specific",
+            tmp_path / "records_v2",
+        )
+        assert out == (
+            tmp_path / "records_v2" / "records"
+            / "khard__format_specific.jsonl"
+        )
+        assert out.is_file()
+
+
+# ---------------------------------------------------------------------------
+# R-072 rev3: dual-hash entries + 1-based pointers over the same scope
+# ---------------------------------------------------------------------------
+
+
+class TestR072Rev3Manifest:
+    # Source: qa012_inventory_2026-08-22_rev3.json (repo root; landed
+    # 2026-08-22 21:53 — a real artifact, so its field names govern over
+    # the shapes this round initially sketched).
+
+    def test_rev3_exists_and_corrects_the_rev2_defects(self):
+        manifest = _load_json(QA012_REV3_MANIFEST_PATH)
+        assert manifest["revision"] == 3
+        assert manifest["verdict"] == "HITS_PRESENT_NOT_VACUOUS"
+        assert manifest["total_format_qa_hits"] == 4556
+        assert manifest["files_scanned"] == 67
+        assert manifest["parse_failures"] == []
+        # Correction 1 (0-based pointers): 1-based declared, and no
+        # pointer anywhere says "line 0:".
+        assert manifest["conventions"]["jsonl_line_numbers"] == "1-based"
+        pointers = json.dumps(
+            [entry["format_qa_hits"] for entry in manifest["entries"]]
+        )
+        assert "line 0:" not in pointers
+        # Correction 2 (sha256-only entries): dual hash on EVERY entry.
+        for entry in manifest["entries"]:
+            assert schema.is_sha256_hex(entry["sha256"]), entry["path"]
+            assert (
+                isinstance(entry["dropbox_content_hash"], str)
+                and len(entry["dropbox_content_hash"]) == 64
+            ), entry["path"]
+        # Per-entry hit pointers recount to the manifest total.
+        assert (
+            sum(len(entry["format_qa_hits"]) for entry in manifest["entries"])
+            == 4556
+        )
+
+    def test_rev3_supersession_chain_names_rev1_and_rev2(self):
+        manifest = _load_json(QA012_REV3_MANIFEST_PATH)
+        chain = manifest["supersession_chain"]
+        shas = [link["sha256"] for link in chain]
+        assert QA012_REV1_SHA in shas
+        assert QA012_REV2_SHA in shas
+        assert all(link.get("defect") for link in chain)
+
+
+# ---------------------------------------------------------------------------
+# R-081: single-use launcher
+# ---------------------------------------------------------------------------
+
+
+LAUNCHER_ENV_PINS = {
+    "PYTHONHASHSEED": "0",
+    "OMP_NUM_THREADS": "1",
+    "VECLIB_MAXIMUM_THREADS": "1",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+}
+# MIGRATED (R-082/F-1, 2026-08-22): staged inputs live OUTSIDE the repo —
+# the certificate command and staged_inputs component now carry ABSOLUTE
+# tmp_path locations (the old repo-relative `staged/...` forms are the
+# refusal class the launcher's new pre-ledger gate exists to catch).
+
+
+def _staged_outside_dir(tmp_path):
+    staged = tmp_path / "staged_outside"
+    staged.mkdir(parents=True, exist_ok=True)
+    calibration = staged / "calibration_train.json"
+    if not calibration.exists():
+        calibration.write_bytes(b'{"calibration": "staged-out-of-repo"}\n')
+    return staged
+
+
+def _cert_command(staged_dir):
+    """The certificate-recorded producer command: outputs repo-relative
+    (remapped into quarantine by the launcher), staged inputs ABSOLUTE and
+    out-of-repo (R-082)."""
+    return [
+        "/usr/bin/python3",
+        "scripts/stopdff_fair_qa_retest.py",
+        "--seed",
+        "1",
+        "--calibration",
+        str(staged_dir / "calibration_train.json"),
+        "--out",
+        "paper_exports/stopdff_fair_qa.json",
+        "--records-out",
+        "paper_exports",
+    ]
+
+
+def _staged_component_entries(staged_dir):
+    return [
+        {
+            "path": str(staged_dir / "calibration_train.json"),
+            "label": "calibration_train",
+            "expected_sha256": CALIB_TRAIN_SHA,
+            "observed_sha256": CALIB_TRAIN_SHA,
+        },
+        {
+            "path": str(staged_dir / "test_dataset.json"),
+            "label": "test_dataset",
+            "expected_sha256": TEST_DATASET_SHA,
+            "observed_sha256": TEST_DATASET_SHA,
+        },
+    ]
+
+
+def _launcher_snapshots(tmp_path):
+    """Synthetic role snapshots + a matching manifest file (frozen shape,
+    tmp-file digests)."""
+    manifest = _load_json(MODEL_MANIFEST_PATH)
+    snapshot_dirs = {}
+    for role in ("primary_scorer", "disjoint_selector"):
+        snap = tmp_path / f"launcher_snap_{role}"
+        (snap / "1_Pooling").mkdir(parents=True)
+        blobs = {
+            "config.json": json.dumps({"role": role}).encode() + b"\n",
+            "1_Pooling/config.json": b'{"pooling": "mean"}\n',
+        }
+        for rel, blob in blobs.items():
+            (snap / rel).write_bytes(blob)
+        manifest["roles"][role]["files"] = {
+            rel: {"sha256": sha256_bytes(blob), "size": len(blob)}
+            for rel, blob in blobs.items()
+        }
+        manifest["roles"][role]["file_count"] = len(blobs)
+        snapshot_dirs[role] = snap
+    manifest_path = tmp_path / "launcher_snapshot_manifests.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest_path, snapshot_dirs
+
+
+class _LaunchRecorder:
+    """Injectable launch(argv, env) -> exit_code with full capture; also
+    proves the ledger is written BEFORE launch and drops a marker file into
+    the quarantine so promotion can be content-checked."""
+
+    def __init__(self, config, digest, exit_code=0):
+        self.config = config
+        self.digest = digest
+        self.exit_code = exit_code
+        self.calls = []
+
+    def __call__(self, argv, env):
+        ledger = Path(self.config["ledger_path"])
+        assert ledger.is_file(), "ledger must be written BEFORE launch"
+        assert self.digest in ledger.read_text("utf-8")
+        quarantine = Path(self.config["quarantine_dir"])
+        assert quarantine.is_dir(), "quarantine must exist at launch time"
+        (quarantine / "marker.txt").write_text("ran", encoding="utf-8")
+        self.calls.append((list(argv), dict(env)))
+        return self.exit_code
+
+
+def _launcher_fixture(tmp_path, monkeypatch, *, mutate_components=None):
+    """Build a READY certificate + launcher config with injectable fakes.
+
+    Returns (launcher_module, config, digest). MODAL_HOST_* ambient
+    overrides are cleared (the ambient-refusal test sets them back).
+    """
+    monkeypatch.delenv("MODAL_HOST_GIT_STATUS", raising=False)
+    monkeypatch.delenv("MODAL_HOST_GIT_COMMIT", raising=False)
+    phase4 = _phase4()
+    components = _good_components()
+    components["repo"] = {
+        "commit": FAKE_COMMIT,
+        "tree_sha256": FAKE_TREE,
+        "dirty": False,
+    }
+    components["suite_receipts"] = {
+        "focused": _r070_receipt(
+            "pytest --suite focused",
+            commit=FAKE_COMMIT,
+            tree_sha256=FAKE_TREE,
+        ),
+        "full": _r070_receipt(
+            "pytest --suite full",
+            commit=FAKE_COMMIT,
+            tree_sha256=FAKE_TREE,
+        ),
+    }
+    # R-082: absolute out-of-repo staged paths in BOTH launcher-checked
+    # sources (the recorded command and the staged_inputs component).
+    staged_dir = _staged_outside_dir(tmp_path)
+    components["environment"]["command"] = _cert_command(staged_dir)
+    components["staged_inputs"] = _staged_component_entries(staged_dir)
+    if mutate_components is not None:
+        mutate_components(components)
+    cert = phase4.assemble_certificate(components)
+    cert_bytes = (json.dumps(cert, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    cert_path = tmp_path / "pre_run_ready_certificate.json"
+    cert_path.write_bytes(cert_bytes)
+    digest = sha256_bytes(cert_bytes)
+    manifest_path, snapshot_dirs = _launcher_snapshots(tmp_path)
+    config = {
+        "certificate_path": cert_path,
+        "activation_digest": digest,
+        "quarantine_dir": tmp_path / "quarantine",
+        "promote_to": tmp_path / "promoted",
+        "ledger_path": tmp_path / "exception_ledger.json",
+        "snapshot_manifest_path": manifest_path,
+        "snapshot_dirs": snapshot_dirs,
+        "anchor_path": PARITY_ANCHOR_PATH,
+    }
+    return _phase4_launcher(), config, digest
+
+
+def _pass_compare(_quarantine):
+    return {"verdict": "PASS", "checked": 194, "failures": []}
+
+
+def _fail_compare(_quarantine):
+    return {
+        "verdict": "FAIL",
+        "checked": 194,
+        "failures": [
+            {
+                "cell": "khard+shared",
+                "policy": "dp",
+                "field": "signed_mean",
+                "expected": 0.1,
+                "observed": 0.2,
+            }
+        ],
+    }
+
+
+class TestR081LauncherRefusals:
+    """Every pre-launch refusal class: typed LaunchRefusal naming the class,
+    and launch NEVER invoked."""
+
+    def _refusal(
+        self,
+        tmp_path,
+        monkeypatch,
+        *,
+        token,
+        config_mutate=None,
+        mutate_components=None,
+        run_git_kwargs=None,
+        pre=None,
+        expect_ledger_absent=True,
+    ):
+        launcher, config, digest = _launcher_fixture(
+            tmp_path, monkeypatch, mutate_components=mutate_components
+        )
+        if config_mutate is not None:
+            config_mutate(config)
+        if pre is not None:
+            pre(config)
+        launch = _LaunchRecorder(config, config["activation_digest"])
+        run_git = _fake_git_runner(**(run_git_kwargs or {}))
+        with pytest.raises(launcher.LaunchRefusal) as excinfo:
+            launcher.validate_and_launch(
+                config,
+                run_git=run_git,
+                launch=launch,
+                compare=_pass_compare,
+            )
+        assert token in str(excinfo.value), (
+            f"refusal must name its class; wanted {token!r} in"
+            f" {excinfo.value}"
+        )
+        assert launch.calls == [], "launch must NEVER fire on a refusal"
+        if expect_ledger_absent:
+            # F-2: refusals never consume the single-use exception.
+            assert not Path(config["ledger_path"]).exists(), (
+                "a refusal must not create the exception ledger"
+            )
+        return excinfo
+
+    def test_1_certificate_digest_mismatch_refuses(
+        self, tmp_path, monkeypatch
+    ):
+        self._refusal(
+            tmp_path,
+            monkeypatch,
+            token="digest",
+            config_mutate=lambda c: c.__setitem__(
+                "activation_digest", "0" * 64
+            ),
+        )
+
+    def test_1b_digest_is_checked_before_ready(self, tmp_path, monkeypatch):
+        # Ordering pin: a cert that is BOTH not-ready and digest-mismatched
+        # must refuse on the DIGEST (bytes first, semantics second).
+        excinfo = self._refusal(
+            tmp_path,
+            monkeypatch,
+            token="digest",
+            mutate_components=lambda comps: comps["repo"].__setitem__(
+                "dirty", True
+            ),
+            config_mutate=lambda c: c.__setitem__(
+                "activation_digest", "0" * 64
+            ),
+        )
+        assert "ready" not in str(excinfo.value).lower()
+
+    def test_2_not_ready_certificate_refuses(self, tmp_path, monkeypatch):
+        # ready:false cert, CORRECT digest (fixture recomputes it).
+        self._refusal(
+            tmp_path,
+            monkeypatch,
+            token="ready",
+            mutate_components=lambda comps: comps["repo"].__setitem__(
+                "dirty", True
+            ),
+        )
+
+    def test_2b_ready_laundered_as_one_refuses(self, tmp_path, monkeypatch):
+        # Bool-safe: tamper the WRITTEN cert to ready=1 and re-point the
+        # activation digest at the tampered bytes — class (2) must fire.
+        def tamper(config):
+            cert = json.loads(
+                Path(config["certificate_path"]).read_text("utf-8")
+            )
+            cert["ready"] = 1
+            blob = (json.dumps(cert, indent=2, sort_keys=True) + "\n").encode(
+                "utf-8"
+            )
+            Path(config["certificate_path"]).write_bytes(blob)
+            config["activation_digest"] = sha256_bytes(blob)
+
+        self._refusal(tmp_path, monkeypatch, token="ready", pre=tamper)
+
+    def test_3_live_commit_mismatch_refuses(self, tmp_path, monkeypatch):
+        self._refusal(
+            tmp_path,
+            monkeypatch,
+            token="commit",
+            run_git_kwargs={"commit": "d4" * 20},
+        )
+
+    def test_4_live_tree_mismatch_refuses(self, tmp_path, monkeypatch):
+        self._refusal(
+            tmp_path,
+            monkeypatch,
+            token="tree",
+            run_git_kwargs={"tree": "c3" * 32},
+        )
+
+    def test_5_live_tracked_dirty_refuses(self, tmp_path, monkeypatch):
+        self._refusal(
+            tmp_path,
+            monkeypatch,
+            token="dirty",
+            run_git_kwargs={"status": " M scripts/stopdff_fair_qa_retest.py\n"},
+        )
+
+    def test_6_ambient_modal_host_overrides_refuse(
+        self, tmp_path, monkeypatch
+    ):
+        # The laundering trap: an ambient EMPTY status would fake-clean the
+        # committed-writer guard — PRESENCE at all refuses, value ignored.
+        launcher, config, _ = _launcher_fixture(tmp_path, monkeypatch)
+        for var in ("MODAL_HOST_GIT_STATUS", "MODAL_HOST_GIT_COMMIT"):
+            monkeypatch.setenv(var, "")
+            launch = _LaunchRecorder(config, config["activation_digest"])
+            with pytest.raises(launcher.LaunchRefusal) as excinfo:
+                launcher.validate_and_launch(
+                    config,
+                    run_git=_fake_git_runner(),
+                    launch=launch,
+                    compare=_pass_compare,
+                )
+            assert "MODAL_HOST" in str(excinfo.value)
+            assert launch.calls == []
+            monkeypatch.delenv(var)
+
+    def test_7_snapshot_mismatch_refuses(self, tmp_path, monkeypatch):
+        def tamper(config):
+            victim = config["snapshot_dirs"]["primary_scorer"] / "config.json"
+            victim.write_bytes(victim.read_bytes() + b"tamper\n")
+
+        self._refusal(tmp_path, monkeypatch, token="snapshot", pre=tamper)
+
+    def test_8_preexisting_ledger_refuses(self, tmp_path, monkeypatch):
+        def pre(config):
+            Path(config["ledger_path"]).write_text(
+                '{"consumed": true}', encoding="utf-8"
+            )
+
+        self._refusal(
+            tmp_path,
+            monkeypatch,
+            token="ledger",
+            pre=pre,
+            expect_ledger_absent=False,
+        )
+        # The pre-existing ledger is untouched (create-once, never rewrite)
+        # and the refusal leaves no quarantine behind (F-2 rmdir).
+        assert (
+            (tmp_path / "exception_ledger.json").read_text("utf-8")
+            == '{"consumed": true}'
+        )
+        assert not (tmp_path / "quarantine").exists()
+
+    def test_9_preexisting_quarantine_refuses(self, tmp_path, monkeypatch):
+        def pre(config):
+            Path(config["quarantine_dir"]).mkdir(parents=True)
+
+        # F-2 strengthening: workspace refusals fire PRE-LEDGER.
+        self._refusal(tmp_path, monkeypatch, token="quarantine", pre=pre)
+
+    def test_9b_preexisting_promote_destination_refuses(
+        self, tmp_path, monkeypatch
+    ):
+        def pre(config):
+            Path(config["promote_to"]).mkdir(parents=True)
+
+        self._refusal(tmp_path, monkeypatch, token="promote", pre=pre)
+        # Promote staleness is checked before the quarantine mkdir: the
+        # refusal materializes NO workspace at all.
+        assert not (tmp_path / "quarantine").exists()
+
+    def test_9c_missing_promote_parent_refuses_pre_ledger(
+        self, tmp_path, monkeypatch
+    ):
+        # F-2 pin: a promote destination whose PARENT is absent refuses
+        # up front (a PASS must always be able to promote), pre-ledger,
+        # leaving no workspace.
+        def mutate(config):
+            config["promote_to"] = tmp_path / "no_such_parent" / "promoted"
+
+        self._refusal(
+            tmp_path, monkeypatch, token="promote", config_mutate=mutate
+        )
+        assert not (tmp_path / "quarantine").exists()
+
+    # -- R-082/F-1 staged-location refusals (regression pins; the exact
+    # rejected-certificate-8731ad00 class) --------------------------------
+
+    def test_r082_relative_in_repo_staged_command_path_refuses(
+        self, tmp_path, monkeypatch
+    ):
+        # A repo-RELATIVE --calibration value resolves against the child's
+        # cwd (the repo root) => inside the tree => pre-ledger refusal.
+        def mutate(components):
+            command = list(components["environment"]["command"])
+            command[command.index("--calibration") + 1] = (
+                "data/processed/val_dataset.json"
+            )
+            components["environment"]["command"] = command
+
+        excinfo = self._refusal(
+            tmp_path,
+            monkeypatch,
+            token="R-082",
+            mutate_components=mutate,
+        )
+        assert "data/processed/val_dataset.json" in str(excinfo.value)
+
+    def test_r082_absolute_in_repo_staged_command_path_refuses(
+        self, tmp_path, monkeypatch
+    ):
+        # Sibling form: an ABSOLUTE path under the repo root is the same
+        # class (location, not spelling).
+        in_repo = str(REPO_ROOT / "staged" / "calibration_train.json")
+
+        def mutate(components):
+            command = list(components["environment"]["command"])
+            command[command.index("--calibration") + 1] = in_repo
+            components["environment"]["command"] = command
+
+        self._refusal(
+            tmp_path, monkeypatch, token="R-082", mutate_components=mutate
+        )
+
+    def test_r082_component_only_in_repo_staged_path_refuses(
+        self, tmp_path, monkeypatch
+    ):
+        # Command clean; the certificate's staged_inputs COMPONENT alone
+        # carries an in-repo path (the second checked source).
+        def mutate(components):
+            components["staged_inputs"][1]["path"] = (
+                "data/processed/test_dataset.json"
+            )
+
+        self._refusal(
+            tmp_path, monkeypatch, token="R-082", mutate_components=mutate
+        )
+
+    def test_r082_staged_input_flag_in_repo_path_refuses(
+        self, tmp_path, monkeypatch
+    ):
+        # The --staged-input LABEL=PATH:SHA argv form is the third checked
+        # source; an in-repo PATH inside the triple refuses.
+        def mutate(components):
+            components["environment"]["command"] = list(
+                components["environment"]["command"]
+            ) + [
+                "--staged-input",
+                f"calibration_train=staged/calibration_train.json:"
+                f"{CALIB_TRAIN_SHA}",
+            ]
+
+        self._refusal(
+            tmp_path, monkeypatch, token="R-082", mutate_components=mutate
+        )
+
+
+class TestR081LauncherRun:
+    def test_success_path_launch_env_argv_ledger_promote(
+        self, tmp_path, monkeypatch
+    ):
+        launcher, config, digest = _launcher_fixture(tmp_path, monkeypatch)
+        launch = _LaunchRecorder(config, digest, exit_code=0)
+        launcher.validate_and_launch(
+            config,
+            run_git=_fake_git_runner(),
+            launch=launch,
+            compare=_pass_compare,
+        )
+        assert len(launch.calls) == 1, "launch fires EXACTLY once"
+        argv, env = launch.calls[0]
+        # Env pins + no ambient-override keys survive into the child.
+        for key, value in LAUNCHER_ENV_PINS.items():
+            assert env.get(key) == value, key
+        assert not any(k.startswith("MODAL_HOST") for k in env)
+        # Argv composed FROM the certificate command: only output paths
+        # remapped into quarantine, digest appended; the (out-of-repo,
+        # R-082) --calibration value passes through VERBATIM.
+        quarantine = Path(config["quarantine_dir"])
+        staged_dir = _staged_outside_dir(tmp_path)
+        assert argv == [
+            "/usr/bin/python3",
+            "scripts/stopdff_fair_qa_retest.py",
+            "--seed",
+            "1",
+            "--calibration",
+            str(staged_dir / "calibration_train.json"),
+            "--out",
+            str(quarantine / "stopdff_fair_qa.json"),
+            "--records-out",
+            str(quarantine),
+            "--certificate-digest",
+            digest,
+        ]
+        # Ledger consumed (content binds the digest; written pre-launch —
+        # asserted inside the recorder).
+        assert digest in Path(config["ledger_path"]).read_text("utf-8")
+        # Atomic promote: quarantine gone, contents preserved at promote_to.
+        promote_to = Path(config["promote_to"])
+        assert promote_to.is_dir()
+        assert (promote_to / "marker.txt").read_text("utf-8") == "ran"
+        assert not quarantine.exists()
+
+    def test_untracked_only_status_is_not_a_refusal(
+        self, tmp_path, monkeypatch
+    ):
+        # Nearest-true control (tracked-clean + untracked-disclosure, the
+        # signed PRE convention): "?? ..." porcelain lines alone must not
+        # block the launch.
+        launcher, config, digest = _launcher_fixture(tmp_path, monkeypatch)
+        launch = _LaunchRecorder(config, digest, exit_code=0)
+        launcher.validate_and_launch(
+            config,
+            run_git=_fake_git_runner(
+                status="?? phase4_pre_receipts/\n?? untracked_note.md\n"
+            ),
+            launch=launch,
+            compare=_pass_compare,
+        )
+        assert len(launch.calls) == 1
+
+    def test_single_use_second_call_with_same_config_refuses(
+        self, tmp_path, monkeypatch
+    ):
+        launcher, config, digest = _launcher_fixture(tmp_path, monkeypatch)
+        launch = _LaunchRecorder(config, digest, exit_code=0)
+        launcher.validate_and_launch(
+            config,
+            run_git=_fake_git_runner(),
+            launch=launch,
+            compare=_pass_compare,
+        )
+        with pytest.raises(schema.ColmAimsError):
+            launcher.validate_and_launch(
+                config,
+                run_git=_fake_git_runner(),
+                launch=launch,
+                compare=_pass_compare,
+            )
+        assert len(launch.calls) == 1, "at most ONE launch across both calls"
+
+    def test_single_use_fresh_workspace_same_ledger_refuses_on_ledger(
+        self, tmp_path, monkeypatch
+    ):
+        # Isolate the ledger as the single-use mechanism: second call gets
+        # fresh quarantine/promote paths, keeps the ledger — the refusal
+        # must be the LEDGER class, before launch.
+        launcher, config, digest = _launcher_fixture(tmp_path, monkeypatch)
+        launch = _LaunchRecorder(config, digest, exit_code=0)
+        launcher.validate_and_launch(
+            config,
+            run_git=_fake_git_runner(),
+            launch=launch,
+            compare=_pass_compare,
+        )
+        config2 = dict(config)
+        config2["quarantine_dir"] = tmp_path / "quarantine2"
+        config2["promote_to"] = tmp_path / "promoted2"
+        launch2 = _LaunchRecorder(config2, digest, exit_code=0)
+        with pytest.raises(launcher.LaunchRefusal) as excinfo:
+            launcher.validate_and_launch(
+                config2,
+                run_git=_fake_git_runner(),
+                launch=launch2,
+                compare=_pass_compare,
+            )
+        assert "ledger" in str(excinfo.value).lower()
+        assert launch2.calls == []
+        # F-2: the consumed-ledger refusal is side-effect-free — the
+        # quarantine it just created for this attempt is removed again.
+        assert not (tmp_path / "quarantine2").exists()
+
+    def test_nonzero_exit_leaves_quarantine_and_stop_report(
+        self, tmp_path, monkeypatch
+    ):
+        launcher, config, digest = _launcher_fixture(tmp_path, monkeypatch)
+        launch = _LaunchRecorder(config, digest, exit_code=3)
+        with pytest.raises(launcher.RunFailed):
+            launcher.validate_and_launch(
+                config,
+                run_git=_fake_git_runner(),
+                launch=launch,
+                compare=_pass_compare,
+            )
+        quarantine = Path(config["quarantine_dir"])
+        assert (quarantine / "marker.txt").is_file(), "quarantine intact"
+        assert not Path(config["promote_to"]).exists()
+        stop = quarantine / "STOP_REPORT.json"
+        assert stop.is_file()
+        assert digest in stop.read_text("utf-8")
+
+    def test_comparator_fail_blocks_promotion_with_stop_report(
+        self, tmp_path, monkeypatch
+    ):
+        launcher, config, digest = _launcher_fixture(tmp_path, monkeypatch)
+        launch = _LaunchRecorder(config, digest, exit_code=0)
+        with pytest.raises(launcher.RunFailed):
+            launcher.validate_and_launch(
+                config,
+                run_git=_fake_git_runner(),
+                launch=launch,
+                compare=_fail_compare,
+            )
+        assert len(launch.calls) == 1
+        quarantine = Path(config["quarantine_dir"])
+        assert (quarantine / "marker.txt").is_file()
+        assert not Path(config["promote_to"]).exists()
+        assert (quarantine / "STOP_REPORT.json").is_file()
+
+    # -- F-3 crash pins: the ledger is consumed, so the triage artifact
+    # must exist on the messiest failures -------------------------------
+
+    def test_launch_crash_writes_stop_report_and_keeps_ledger(
+        self, tmp_path, monkeypatch
+    ):
+        launcher, config, digest = _launcher_fixture(tmp_path, monkeypatch)
+
+        def crashing_launch(argv, env):
+            raise RuntimeError("child never started")
+
+        with pytest.raises(launcher.RunFailed):
+            launcher.validate_and_launch(
+                config,
+                run_git=_fake_git_runner(),
+                launch=crashing_launch,
+                compare=_pass_compare,
+            )
+        quarantine = Path(config["quarantine_dir"])
+        assert quarantine.is_dir(), "quarantine intact after a crash"
+        report = json.loads(
+            (quarantine / "STOP_REPORT.json").read_text("utf-8")
+        )
+        assert report["reason"] == "launch_crash"
+        assert report["activation_digest"] == digest
+        # Honest accounting: the exception WAS consumed (ledger present).
+        assert digest in Path(config["ledger_path"]).read_text("utf-8")
+        assert not Path(config["promote_to"]).exists()
+
+    def test_comparator_crash_writes_stop_report(
+        self, tmp_path, monkeypatch
+    ):
+        launcher, config, digest = _launcher_fixture(tmp_path, monkeypatch)
+        launch = _LaunchRecorder(config, digest, exit_code=0)
+
+        def crashing_compare(quarantine_dir):
+            raise RuntimeError("comparator exploded")
+
+        with pytest.raises(launcher.RunFailed):
+            launcher.validate_and_launch(
+                config,
+                run_git=_fake_git_runner(),
+                launch=launch,
+                compare=crashing_compare,
+            )
+        assert len(launch.calls) == 1
+        quarantine = Path(config["quarantine_dir"])
+        report = json.loads(
+            (quarantine / "STOP_REPORT.json").read_text("utf-8")
+        )
+        assert report["reason"] == "comparator_crash"
+        assert report["activation_digest"] == digest
+        assert (quarantine / "marker.txt").is_file(), "quarantine intact"
+        assert not Path(config["promote_to"]).exists()
+
+    # -- F-4 pin: relative workspace paths resolve at entry --------------
+
+    def test_relative_workspace_paths_resolve_at_entry(
+        self, tmp_path, monkeypatch
+    ):
+        # A relative quarantine/promote/ledger must not split between the
+        # launcher's cwd and the child's cwd: resolved ONCE, at entry,
+        # against the launcher's cwd (chdir'd to tmp_path — hermetic).
+        monkeypatch.chdir(tmp_path)
+        launcher, config, digest = _launcher_fixture(tmp_path, monkeypatch)
+        config["quarantine_dir"] = Path("quarantine_rel")
+        config["promote_to"] = Path("promoted_rel")
+        config["ledger_path"] = Path("ledger_rel.json")
+        launch = _LaunchRecorder(config, digest, exit_code=0)
+        result = launcher.validate_and_launch(
+            config,
+            run_git=_fake_git_runner(),
+            launch=launch,
+            compare=_pass_compare,
+        )
+        promoted = tmp_path / "promoted_rel"
+        assert result["promoted_to"] == str(promoted)
+        assert (promoted / "marker.txt").read_text("utf-8") == "ran"
+        assert not (tmp_path / "quarantine_rel").exists()
+        assert digest in (tmp_path / "ledger_rel.json").read_text("utf-8")
+        # The argv handed to the child carries the RESOLVED quarantine.
+        argv, _ = launch.calls[0]
+        assert str(tmp_path / "quarantine_rel") in argv
