@@ -2,10 +2,14 @@
 
 GREENFIELD successor (spec `.correctless/specs/camera-ready-aims-evidence-2.md`,
 71 active rules, governed by `contract_freeze_signoff_2026-08-20.md`). The
-production namespace `reproducibility/colm_aims_2026/` does NOT exist on this
-branch; this module never imports it at module scope, so it is importable at
-head. Test modules other than `test_colm_aims_v2_inference_d7b.py` import the
-namespace at module scope and are EXPECTED to fail collection until GREEN.
+production namespace `reproducibility/colm_aims_2026/` now EXISTS; the profile /
+inference / grid / closure shapers here delegate to its production assemblers
+(`phase4_assemble_d7b.assemble_profile` / `assemble_inference_block` /
+`assemble_cell` / `assemble_grid_block` / `assemble_closure_inventory`) via
+LAZY imports inside the builder functions, so this module stays importable
+WITHOUT loading the namespace at import time — preserving the early-signal
+independence of `test_colm_aims_v2_inference_d7b.py` (which encodes the pure
+D7(b) arithmetic with hashlib/NumPy only and imports NO production namespace).
 
 Everything here is synthetic and tiny in *content* (opaque `itm-<hex>` keys,
 no raw quizbowl text, no network, no absolute paths inside artifacts) while
@@ -776,95 +780,87 @@ def make_arms() -> list[dict[str, Any]]:
     return arms
 
 
-def make_cell_v2(cell_id: str, **overrides: Any) -> dict[str, Any]:
+def _inference_result_from_canonical() -> Any:
+    """Adapt the cached test-oracle ``canonical_data()`` into the production
+    ``InferenceResult`` dataclass so the promoted shapers can be driven from
+    the pure fixture WITHOUT recomputing the bootstrap (the oracle already
+    cached every leg). Lazy-imports the namespace so this module stays
+    importable without loading production (R-050..R-056 independence)."""
+    from reproducibility.colm_aims_2026.phase4_assemble_d7b import (
+        CellInference,
+        InferenceResult,
+    )
+
     data = canonical_data()
-    cd: CellData = data["cells"][cell_id]
-    holm_cell = data["holm"]["per_cell"][cell_id]
+    per_cell: dict[str, Any] = {}
+    for cell_id in CELL_IDS:
+        cd: CellData = data["cells"][cell_id]
+        holm_cell = data["holm"]["per_cell"][cell_id]
+        per_cell[cell_id] = CellInference(
+            counts=dict(cd.counts),
+            rates=dict(cd.rates),
+            headline_summary={
+                "estimand_label": HEADLINE_ESTIMAND_LABEL,
+                "population": POPULATION_ALL,
+                "n": N_ITEMS,
+                "mean_signed_shift": cd.headline_mean,
+                "convention": SENTINEL_CONVENTION,
+            },
+            finite_only_summary={
+                "estimand_label": FINITE_ONLY_ESTIMAND_LABEL,
+                "population": POPULATION_FINITE,
+                **cd.finite_only,
+            },
+            ci=(cd.ci[0], cd.ci[1]),
+            raw_p_value=cd.raw_p_value,
+            holm_rank=holm_cell["holm_rank"],
+            holm_adjusted_p_value=holm_cell["holm_adjusted_p_value"],
+            holm_rejected=holm_cell["holm_rejected"],
+        )
+    return InferenceResult(
+        keyset_digest=data["keyset_digest"],
+        order_digest=data["order_digest"],
+        seed=data["seed"],
+        matrix_digest=dict(data["matrix_digest"]),
+        per_cell=per_cell,
+        holm=data["holm"],
+    )
+
+
+def make_cell_v2(cell_id: str, **overrides: Any) -> dict[str, Any]:
+    """Promoted to production: delegates to ``assemble_cell`` (R-005/R-015)."""
+    from reproducibility.colm_aims_2026.phase4_assemble_d7b import assemble_cell
+
     estimand = overrides.pop("estimand", make_estimand(cell_id))
-    cell: dict[str, Any] = {
-        "cell_id": cell_id,
-        "reference_id": cd.reference_id,
-        "calibration_id": cd.calibration_id,
-        "estimand": estimand,
-        "estimand_digest": expected_estimand_digest(estimand),
-        "records_file": f"records/{cell_id}.jsonl",
-        "counts": dict(cd.counts),
-        "rates": dict(cd.rates),
-        "headline_summary": {
-            "estimand_label": HEADLINE_ESTIMAND_LABEL,
-            "population": POPULATION_ALL,
-            "n": N_ITEMS,
-            "mean_signed_shift": cd.headline_mean,
-            "convention": SENTINEL_CONVENTION,
-        },
-        "finite_only_summary": {
-            "estimand_label": FINITE_ONLY_ESTIMAND_LABEL,
-            "population": POPULATION_FINITE,
-            **cd.finite_only,
-        },
-        "interval": {
-            "procedure": "d7b_shared_percentile_bootstrap",
-            "draw_count": 1000,
-            "seed": data["seed"],
-            "seed_derivation": SEED_DERIVATION_STRING,
-            "statistic": "mean_signed_shift",
-            "population": POPULATION_ALL,
-            "quantile_method": "linear",
-            "ci": [cd.ci[0], cd.ci[1]],
-        },
-        "raw_p_value": cd.raw_p_value,
-        "holm_rank": holm_cell["holm_rank"],
-        "holm_adjusted_p_value": holm_cell["holm_adjusted_p_value"],
-        "holm_rejected": holm_cell["holm_rejected"],
-        "excluded_keys": [],
-        "pairing_population_keyset_sha256": data["keyset_digest"],
-    }
+    cell = assemble_cell(cell_id, _inference_result_from_canonical(), estimand)
     cell.update(overrides)
     return cell
 
 
 def make_grid_block(**overrides: Any) -> dict[str, Any]:
-    data = canonical_data()
-    block: dict[str, Any] = {
-        "reference_ids": sorted(REFERENCE_IDS),
-        "calibration_ids": sorted(CALIBRATION_IDS),
-        "cell_ids": list(CELL_IDS),
-        "record_files": {c: f"records/{c}.jsonl" for c in CELL_IDS},
-        "item_keys_sha256": data["keyset_digest"],
-        "held_fixed": {
+    """Promoted to production: delegates to ``assemble_grid_block`` (R-040)."""
+    from reproducibility.colm_aims_2026.phase4_assemble_d7b import (
+        assemble_grid_block,
+    )
+
+    block = assemble_grid_block(
+        _inference_result_from_canonical(),
+        held_fixed={
             "mc_trajectory_identity": "traj-mc-v2-0001",
             "horizon_identity": canonical_horizon_identity(),
         },
-    }
+    )
     block.update(overrides)
     return block
 
 
 def make_inference_block(**overrides: Any) -> dict[str, Any]:
-    data = canonical_data()
-    block: dict[str, Any] = {
-        "analysis_provenance": ANALYSIS_PROVENANCE_D7B,
-        "numpy_version": "2.4.6",
-        "bit_generator": "PCG64",
-        "generator_construction": (
-            "numpy.random.Generator(numpy.random.PCG64(seed))"
-        ),
-        "draw_count": 1000,
-        "sample_size": N_ITEMS,
-        "resampling_unit": "item_tossup_clustered_all_prefixes_both_arms",
-        "with_replacement": True,
-        "dtype": "int64",
-        "endpoint": False,
-        "seed": data["seed"],
-        "seed_derivation": SEED_DERIVATION_STRING,
-        "pairing_population_keyset_sha256": data["keyset_digest"],
-        "canonical_item_order_digest": data["order_digest"],
-        "resample_matrix_digest": dict(data["matrix_digest"]),
-        "familywise_alpha": 0.05,
-        "family_size": 10,
-        "ordered_family": list(data["holm"]["ordered_family"]),
-        "rejected_cell_ids": list(data["holm"]["rejected_cell_ids"]),
-    }
+    """Promoted to production: delegates to ``assemble_inference_block``."""
+    from reproducibility.colm_aims_2026.phase4_assemble_d7b import (
+        assemble_inference_block,
+    )
+
+    block = assemble_inference_block(_inference_result_from_canonical())
     block.update(overrides)
     return block
 
@@ -948,27 +944,24 @@ def make_profile_v2(
     input_sha256: dict[str, str] | None = None,
     **overrides: Any,
 ) -> dict[str, Any]:
-    """A complete, internally consistent strict v2 ten-cell profile (R-001)."""
-    profile: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
-        "profile_id": STRICT_PROFILE_ID,
-        "semantic": dict(SEMANTIC_BLOCK),
-        "llm_involvement": make_llm_involvement(),
-        "numerical_tolerance": 1e-9,
-        "item_key_derivation": {
-            "hash": "sha256",
-            "text_normalization": "NFC",
-            "prefix": "itm-",
-            "hex_digits": 16,
-        },
-        "arms": make_arms(),
-        "provenance": make_provenance(
+    """A complete, internally consistent strict v2 ten-cell profile (R-001).
+
+    Promoted to production: delegates to ``assemble_profile`` (which builds the
+    inference block, all ten cells, and the pinned identity layer); mutators/
+    overrides are applied to the returned dict so the byte shape is unchanged.
+    """
+    from reproducibility.colm_aims_2026.phase4_assemble_d7b import assemble_profile
+
+    profile = assemble_profile(
+        _inference_result_from_canonical(),
+        arms=make_arms(),
+        provenance=make_provenance(
             source_commit=source_commit, input_sha256=input_sha256
         ),
-        "grid": make_grid_block(),
-        "inference": make_inference_block(),
-        "cells": [make_cell_v2(cell_id) for cell_id in CELL_IDS],
-    }
+        grid=make_grid_block(),
+        llm_involvement=make_llm_involvement(),
+        estimands={cell_id: make_estimand(cell_id) for cell_id in CELL_IDS},
+    )
     profile.update(overrides)
     return profile
 
@@ -1178,10 +1171,16 @@ def make_suite_receipt(**overrides: Any) -> dict[str, Any]:
 
 
 def make_closure_inventory(**overrides: Any) -> dict[str, Any]:
-    """R-071/R-072 canonical CAMERA_READY_CLOSURE inventory (satisfied form)."""
-    inventory: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
-        "d6_baseline": {
+    """R-071/R-072 canonical CAMERA_READY_CLOSURE inventory (satisfied form).
+
+    Promoted to production: delegates to ``assemble_closure_inventory``.
+    """
+    from reproducibility.colm_aims_2026.phase4_assemble_d7b import (
+        assemble_closure_inventory,
+    )
+
+    inventory = assemble_closure_inventory(
+        d6_baseline={
             "main_tex_sha256": D6_MAIN_TEX_SHA256,
             "main_pdf_sha256": D6_MAIN_PDF_SHA256,
             "final_checksums_sha256": FAKE_SHA_A,
@@ -1192,24 +1191,11 @@ def make_closure_inventory(**overrides: Any) -> dict[str, Any]:
                 "references.bib": FAKE_SHA_C,
             },
         },
-        "rows": [
-            {
-                "item": "table-1-headline-shifts",
-                "status": "SATISFIED",
-                "evidence": "profile.json ten-cell package",
-            },
-            {
-                "item": "manuscript-identity",
-                "status": "EXTERNAL",
-                "evidence": "D6 two-party hash verification",
-            },
-        ],
-        "holm_row": {"satisfied_by": ANALYSIS_PROVENANCE_D7B},
-        "qa012": {
+        qa012={
             "status": "VERIFIED_VACUOUS",
             "inventory_sha256": FAKE_SHA_B,
         },
-    }
+    )
     inventory.update(overrides)
     return inventory
 
