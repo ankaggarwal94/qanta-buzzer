@@ -160,6 +160,25 @@ def test_windows_directory_publish_translates_atomic_collision(
     (destination / "incumbent.bin").write_bytes(b"keep")
     monkeypatch.setattr(fileio, "_IS_WINDOWS", True)
 
+    # The production Windows branch depends on ``os.rename`` refusing to
+    # replace an existing destination (Win32 raises ``FileExistsError``). On
+    # POSIX the real ``os.rename`` instead raises ``OSError(ENOTEMPTY)`` for a
+    # non-empty directory, which is NOT a ``FileExistsError`` — so emulate the
+    # Windows no-replace contract to exercise the branch faithfully on POSIX CI.
+    real_rename = os.rename
+
+    def emulate_windows_rename(source, target):
+        assert Path(source) == staged
+        assert Path(target) == destination
+        if Path(target).exists():
+            raise FileExistsError(
+                "emulated Windows no-replace rename onto existing"
+                f" destination: {target}"
+            )
+        real_rename(source, target)
+
+    monkeypatch.setattr(fileio.os, "rename", emulate_windows_rename)
+
     with pytest.raises(
         FileExistsError, match="Windows slot already exists"
     ):
