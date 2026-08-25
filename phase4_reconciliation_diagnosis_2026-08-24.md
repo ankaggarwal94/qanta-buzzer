@@ -117,12 +117,21 @@ where `v := mc_stop_step − ref_stop_step`.
   `summarize` are AST-identical. Identical source logic on the exercised path + identical pinned
   config/seeds + identical eligible population (n=2249), yet different deterministic DP output ⇒ the
   residual difference enters through a **non-source input**, i.e. the execution environment / library
-  stack (the pinned run is a bleeding-edge 2026 Windows stack: numpy 2.4.6, scipy 1.17.1,
-  scikit-learn 1.8.0, sentence-transformers 5.5.1, transformers 5.9.0, torch 2.12.0). numpy
-  summary/bootstrap is platform-stable (the Verifier reproduced the Windows-produced CI **exactly** on
+  stack (a bleeding-edge 2026 library stack: numpy 2.4.6, scipy 1.17.1,
+  scikit-learn 1.8.0, sentence-transformers 5.5.1, transformers 5.9.0, torch 2.12.0 — the only in-repo
+  successor certificate, `pre_run_ready_certificate_2026-08-22.json`, records env **macOS arm64 / Apple
+  M3 Max** (Darwin, cpython-3.11.15-macos-aarch64) and binds via `environment_lock_sha256` a pip-freeze
+  (`phase4_pre_receipts/environment_lock_pip_freeze.txt`) whose versions match this exact list; the
+  actual v3/retry1 runtime OS is **not** established from in-repo bytes — those runs' certs `a9dd121c…` /
+  `cbf0e2aa…` live in the transport bundle and were not inspected). numpy
+  summary/bootstrap is platform-stable (the Verifier reproduced the runs' CI **exactly** on
   macOS numpy 2.4.6) → aggregation is not the channel; the drift is upstream in record generation. **This
   is an INFERENCE, not byte-proof** — Export-A's environment is absent from the evidence and the model
-  cannot be re-run here (see §5).
+  cannot be re-run here (see §5). *(corrected 2026-08-24: prior "Windows stack" / "Windows-produced"
+  wording was imprecise for persisted evidence — the only in-repo successor cert
+  `pre_run_ready_certificate_2026-08-22.json` records macOS arm64 / Apple M3 Max with a version list
+  matching the one cited (via hash-bound `environment_lock_pip_freeze.txt`); the v3/retry1 runtime OS is
+  not established from in-repo bytes, as their transport-bundle certs were not inspected.)*
 - **F6 — determinism within the pinned environment.** Byte-identical records across the two runs isolate
   the problem to the {records + current producer} vs {anchor} axis, not runtime randomness.
 

@@ -187,15 +187,23 @@ KNOWN_DIVERGENCES = {
 }
 ```
 
-If it is, route the mismatch to a new informational report
+If it is **and** the field is present with a diverging value (`observed_value is
+not _MISSING`), route the mismatch to a new informational report
 (`known_divergence_informational`, shaped like `random_k_informational` at lines
 2694–2701: `{"exempt_from_historical_parity": True, "scope": "field",
 "compared": ..., "divergences": [{cell, policy, field, expected, observed}, ...]}`)
-instead of `failures`. The field is **still counted in `checked`** (so the 194
+instead of `failures`. Structure is **never** carved out: a MISSING carve-out field
+(or any structural failure) on one of the six still routes to `failures` and BLOCKS,
+exactly as today. The field is **still counted in `checked`** (so the 194
 cardinality and the `checked == EXPECTED_PARITY_CHECKED` verdict gate at line 2708
 are untouched). The verdict formula (line 2706–2710) needs no change: because
-these six no longer enter `failures`, `not failures` can now be true for a run
-that diverges only on them.
+these six no longer enter `failures` on a present-but-diverging value, `not failures`
+can now be true for a run that diverges only on them.
+*(corrected 2026-08-24: the original sketch implied unconditional informational
+routing; per validated integration-diff probe S3, routing is gated on field presence
+(`observed_value is not _MISSING`) and a missing-field/structural failure for any of
+the six still BLOCKS — structural failures are never carved out, and `checked` still
+counts all six (194 preserved).)*
 
 **4b. Spec (`camera-ready-aims-evidence-2.md`, R-077).** Append the §3 amendment
 prose and the four enforcement bullets.
