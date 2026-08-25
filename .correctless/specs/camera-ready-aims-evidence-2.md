@@ -828,7 +828,7 @@ analysis over retained per-item records — permitted; model execution is not.
   Enforcement: gate-ordering test (gates run before any loader is invoked;
   a mismatched or missing input aborts with a typed error naming the file
   and both hashes); receipt-field presence tests.
-- **R-077** [unit] *(PRE-6)*: Materialized parity comparator: the committed
+- **R-077** [unit] *(PRE-6; amended by Repair-A, 2026-08-24 — idealized+performat·dp six-field known-divergence)*: Materialized parity comparator: the committed
   anchor artifact is derived from Export A
   (`stopdff_fair_qa.json`, SHA-256
   `59e1c1a74e5fc0cf4f09f8befca87cfc81516684dca2e88dd275c952b28893ff`) and
@@ -849,10 +849,38 @@ analysis over retained per-item records — permitted; model execution is not.
   cells must be present in the regenerated export with the full point and
   CI field set (a missing Random-K cell or field is a blocking structural
   failure; only the numeric VALUES are exempt from historical parity —
-  operational-rejection repair 2026-08-22). Export B (`ba784741…`) is
+  operational-rejection repair 2026-08-22). In addition to the Random-K value
+  exemption, exactly six fields of the single cell/policy
+  `idealized+performat` · `dp` — `signed_mean`, `abs_mean`, `mc_earlier`,
+  `qa_earlier`, `same_step`, `signed_mean_ci` — are a declared
+  known-divergence: they are still compared against the frozen anchor and
+  still counted in `checked` (the 194-field cardinality is unchanged), but a
+  VALUE mismatch on any of these six is recorded as an informational
+  divergence, never a blocking failure, and can never flip the verdict to
+  FAIL — the same treatment R-077 already gives Random-K numeric values,
+  narrowed from whole-cell to a named six-field allowlist. STRUCTURE stays
+  blocking for this cell (the cell and its full point + CI field set must be
+  present; a missing cell or field is still a blocking structural failure).
+  The other six fields of this same `dp` block (`n`, `signed_median`,
+  `abs_median`, `mc_never_buzz`, `qa_never_buzz`, `signed_median_ci`), this
+  cell's `myopic` block, and every other nonrandom cell/policy remain fully
+  blocking; the Random-K policy is unchanged. The frozen anchor's historical
+  values for these six fields are preserved byte-for-byte — the anchor
+  (`parity_anchor_export_a.json`, SHA-256 `2efff657…973eee`) is NOT re-frozen
+  or overwritten. Basis and provenance: the cross-verified reconciliation in
+  `phase4_reconciliation_diagnosis_2026-08-24.md` and
+  `phase4_reconciliation_verification_2026-08-24.md`, folded from
+  `phase4_reconciliation_amendment_proposal_A_2026-08-24.md` (scoped
+  known-divergence repair 2026-08-24). Export B (`ba784741…`) is
   corroborative, never the anchor. Enforcement: comparator-unit tests with exact-match,
   single-field-mutated, and CI-element-mutated payloads; allowlist
-  completeness test (160 + 32 + identity fields, no more, no fewer).
+  completeness test (160 + 32 + identity fields, no more, no fewer); a
+  single-field VALUE mutation on each of the six known-divergence fields
+  yields `verdict == "PASS"` with the mutation surfaced in the
+  known-divergence informational report; a VALUE mutation on any of the other
+  six `dp` fields, on this cell's `myopic` block, or on any other cell still
+  FAILs; a missing `idealized+performat` cell or any of its fields still
+  FAILs structurally; `checked == 194` on PASS is preserved.
 - **R-078** [unit] *(PRE-7)*: QA-012 compatibility fixtures: committed
   exact-byte excerpt fixtures (first records, verbatim line bytes) for each
   of the four hit files, with each FULL file bound by its SHA-256

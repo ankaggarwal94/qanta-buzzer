@@ -189,6 +189,32 @@ PARITY_ANCHOR_CARDINALITIES = (
 # 8 cells x 2 policies x (10 point + 2 CI) fields + 2 identity fields.
 EXPECTED_PARITY_CHECKED = 8 * 2 * (10 + 2) + len(IDENTITY_FIELDS)
 
+# Amended R-077 (scoped known-divergence, 2026-08-24): exactly SIX fields of
+# the single cell/policy idealized+performat.dp are a declared known-divergence
+# — still compared and still counted in ``checked`` (the 194-field cardinality
+# is unchanged), but a VALUE mismatch on any of these six is routed to an
+# informational report instead of the blocking ``failures`` list (mirrors the
+# Random-K VALUES-never-blocking path below). STRUCTURE stays blocking (a
+# missing cell/field is still a structural failure); the frozen anchor values
+# are preserved byte-for-byte (not re-frozen); every other field/cell and the
+# Random-K policy are unchanged. Provenance:
+# phase4_reconciliation_amendment_proposal_A_2026-08-24.md +
+# phase4_reconciliation_{diagnosis,verification}_2026-08-24.md.
+KNOWN_DIVERGENCE_CELL = "idealized+performat"
+KNOWN_DIVERGENCE_POLICY = "dp"
+KNOWN_DIVERGENCE_FIELDS = (
+    "signed_mean",
+    "abs_mean",
+    "mc_earlier",
+    "qa_earlier",
+    "same_step",
+    "signed_mean_ci",
+)
+KNOWN_DIVERGENCES = frozenset(
+    (KNOWN_DIVERGENCE_CELL, KNOWN_DIVERGENCE_POLICY, _field)
+    for _field in KNOWN_DIVERGENCE_FIELDS
+)
+
 CERT_SCHEMA_VERSION = 2
 CERT_COMPONENT_KEYS = (
     "repo",
@@ -2563,6 +2589,8 @@ def compare_parity(
     results = _as_dict(regenerated.get("results"))
 
     failures: list[dict[str, Any]] = []
+    known_divergences: list[dict[str, Any]] = []
+    kd_compared = 0
     checked = 0
 
     # Identity fields (failure rows carry cell=None, policy=None).
@@ -2604,23 +2632,34 @@ def compare_parity(
                         f" missing allowlisted field {field!r} — the anchor"
                         " allowlist must be complete (R-077)"
                     )
+                # Amended R-077 (scoped known-divergence, 2026-08-24): the six
+                # idealized+performat.dp fields in KNOWN_DIVERGENCES are still
+                # compared and still counted in ``checked`` above, but a VALUE
+                # mismatch routes to the informational known-divergence report
+                # instead of ``failures``. A MISSING field stays a blocking
+                # structural failure (structure is never carved out).
+                is_known_divergence = (cell, policy, field) in KNOWN_DIVERGENCES
+                if is_known_divergence:
+                    kd_compared += 1
                 observed_value = observed_values.get(field, _MISSING)
                 if observed_value is _MISSING or not _values_equal(
                     expected_value, observed_value
                 ):
-                    failures.append(
-                        {
-                            "cell": cell,
-                            "policy": policy,
-                            "field": field,
-                            "expected": expected_value,
-                            "observed": (
-                                None
-                                if observed_value is _MISSING
-                                else observed_value
-                            ),
-                        }
-                    )
+                    row = {
+                        "cell": cell,
+                        "policy": policy,
+                        "field": field,
+                        "expected": expected_value,
+                        "observed": (
+                            None
+                            if observed_value is _MISSING
+                            else observed_value
+                        ),
+                    }
+                    if is_known_divergence and observed_value is not _MISSING:
+                        known_divergences.append(row)
+                    else:
+                        failures.append(row)
 
     # Random-K cells (amended R-077, operational-rejection repair): the
     # STRUCTURE is blocking — both krandom cells must be present with the
@@ -2700,6 +2739,21 @@ def compare_parity(
         "divergences": divergences,
     }
 
+    # Amended R-077 (scoped known-divergence, 2026-08-24): the six
+    # idealized+performat.dp value divergences are reported informationally
+    # (shaped like ``random_k_informational``); they never enter ``failures``
+    # and so can never flip the verdict. ``compared`` counts all six (matching
+    # or divergent); ``divergences`` lists only the ones that diverged.
+    known_divergence_informational = {
+        "cells": [KNOWN_DIVERGENCE_CELL],
+        "policies": [KNOWN_DIVERGENCE_POLICY],
+        "scope": "field",
+        "exempt_from_historical_parity": True,
+        "fields": list(KNOWN_DIVERGENCE_FIELDS),
+        "compared": kd_compared,
+        "divergences": known_divergences,
+    }
+
     # Amended R-077 (F-3): PASS additionally requires the full 194-field
     # allowlist to have been checked — belt-and-braces behind the anchor
     # cardinality pins; a sub-allowlist comparison can never PASS.
@@ -2713,6 +2767,7 @@ def compare_parity(
         "checked": checked,
         "failures": failures,
         "random_k_informational": random_k_informational,
+        "known_divergence_informational": known_divergence_informational,
     }
 
 
