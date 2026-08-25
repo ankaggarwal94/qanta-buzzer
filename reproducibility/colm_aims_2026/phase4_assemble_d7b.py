@@ -1,0 +1,628 @@
+"""Phase-4 D7(b) evidence-package assembler (source-only; loads no models).
+
+The FIRST production code that assembles the regenerated D7(b) ten-cell
+evidence package from per-cell record files:
+
+  * ``profile.json`` — the strict v2 ten-cell constructed-reference profile
+    (grid + inference in-profile), with per-cell shared-percentile-bootstrap
+    intervals and the ten-cell Holm family (m=10, alpha 0.05).
+  * the published evidence package (create-once, content-addressed).
+  * the satisfied ``CAMERA_READY_CLOSURE`` inventory.
+
+Responsibilities are split into PURE builders (``compute_inference`` and the
+``assemble_*`` shapers) and a create-once orchestrator/CLI
+(``build_evidence_package`` / ``main``). The D7(b) arithmetic is delegated to
+``pairing`` (never reimplemented here); artifact writes go through the
+``schema`` create-once primitives (``write_profile`` /
+``publish_evidence_package``), which consume the ``scripts/stopdff_v5`` fileio
+primitives rather than forking them (R-016/R-018/R-039).
+
+The pure shapers are the import target for ``tests/_colm_aims_v2_helpers``:
+the existing contract suite drives production ``assemble_*`` through the test
+identity builders, so a shape drift is caught by the full suite.
+
+Spec rules exercised: R-050..R-058 (D7(b) inference), R-001..R-011 (profile
+shape), R-071/R-072 (closure), R-016/R-039 (create-once publish).
+Spec: .correctless/specs/camera-ready-aims-evidence-2.md
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from reproducibility.colm_aims_2026 import (  # noqa: E402
+    closure,
+    pairing,
+    qa012,
+    schema,
+)
+
+# Exit-code contract (mirrors ``verify.py``): 0 pass, 2 usage, 3 ingress,
+# 4 internal.
+EXIT_PASS = 0
+EXIT_USAGE_ERROR = 2
+EXIT_INGRESS_ERROR = 3
+EXIT_INTERNAL_ERROR = 4
+
+# QA-012 build result -> closure status (closure.py:35-37; qa012.py:97).
+_QA012_STATUS_BY_RESULT = {
+    "zero_hit": "VERIFIED_VACUOUS",
+    "hits": "VERIFIED_WITH_FIXTURES",
+}
+
+
+# ---------------------------------------------------------------------------
+# Result dataclasses
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CellInference:
+    """The recomputed D7(b) inference for one cell (R-005/R-006/R-048..R-055)."""
+
+    counts: dict[str, Any]
+    rates: dict[str, Any]
+    headline_summary: dict[str, Any]
+    finite_only_summary: dict[str, Any]
+    ci: tuple[float, float]
+    raw_p_value: float
+    holm_rank: int
+    holm_adjusted_p_value: float
+    holm_rejected: bool
+
+
+@dataclass(frozen=True)
+class InferenceResult:
+    """The collection-level D7(b) inference over all ten cells (R-050..R-056)."""
+
+    keyset_digest: str
+    order_digest: str
+    seed: int
+    matrix_digest: dict[str, Any]
+    per_cell: dict[str, CellInference]
+    holm: dict[str, Any]
+
+
+@dataclass
+class BuildResult:
+    """Outputs of a single create-once ``build_evidence_package`` call."""
+
+    published_tree: Path
+    profile_path: Path
+    closure_inventory_path: Path
+    profile: dict[str, Any]
+    closure_inventory: dict[str, Any]
+    inference: InferenceResult
+    input_sha256: dict[str, str] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Record ingress
+# ---------------------------------------------------------------------------
+
+
+def load_complete_by_cell(
+    records_root: Path,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Load ``records_root/<cell_id>.jsonl`` into the in-memory
+    ``{cell_id: {item_key: record}}`` map (R-041).
+
+    Every file is parsed through the hardened loader (R-067); a missing or
+    unreadable per-cell file is a typed ingress refusal, never a silent skip.
+    """
+    records_root = Path(records_root)
+    complete: dict[str, dict[str, dict[str, Any]]] = {}
+    for cell_id in schema.CELL_IDS:
+        rel = f"records/{cell_id}.jsonl"
+        path = records_root / f"{cell_id}.jsonl"
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise schema.TypedIngressError(
+                f"{rel}: per-cell record file is missing or unreadable"
+                f" ({exc.__class__.__name__}) (R-041)"
+            ) from exc
+        loaded = schema.load_records_bytes(raw, rel)
+        by_key: dict[str, dict[str, Any]] = {}
+        for record in loaded["records"]:
+            by_key[record["item_key"]] = record
+        complete[cell_id] = by_key
+    return complete
+
+
+# ---------------------------------------------------------------------------
+# Inference (delegates all arithmetic to ``pairing``)
+# ---------------------------------------------------------------------------
+
+
+def compute_inference(
+    complete_by_cell: dict[str, dict[str, dict[str, Any]]],
+) -> InferenceResult:
+    """Recompute the frozen D7(b) inference from the ten complete-pair cells.
+
+    The shared item key set (identical across all ten cells, R-050) fixes the
+    seed and the one resample matrix; each cell's interval/p-value/summaries
+    are recomputed over the canonical item order, then the ten raw p-values
+    feed the m=10 Holm family (R-056).
+    """
+    present = set(complete_by_cell)
+    expected = set(schema.CELL_IDS)
+    if present != expected:
+        raise schema.ColmAimsError(
+            "complete_by_cell must carry exactly the ten-cell 5x2 grid;"
+            f" missing {sorted(expected - present)} /"
+            f" unexpected {sorted(present - expected)} (R-040)"
+        )
+
+    reference_keys: frozenset[str] | None = None
+    for cell_id in schema.CELL_IDS:
+        keys = frozenset(complete_by_cell[cell_id])
+        if len(keys) != schema.EXPECTED_COMPLETE_PAIRS:
+            raise schema.ColmAimsError(
+                f"cell {cell_id!r} carries {len(keys)} complete pairs;"
+                f" exactly {schema.EXPECTED_COMPLETE_PAIRS} required (R-042)"
+            )
+        if reference_keys is None:
+            reference_keys = keys
+        elif keys != reference_keys:
+            raise schema.ColmAimsError(
+                f"cell {cell_id!r} item key set differs from the shared"
+                " pairing population; all ten cells share ONE key set (R-050)"
+            )
+    assert reference_keys is not None  # ten cells guaranteed above
+
+    ordered_keys = pairing.canonical_item_order(list(reference_keys))
+    keyset_digest = pairing.keyset_sha256(ordered_keys)
+    order_digest = pairing.item_order_sha256(ordered_keys)
+    seed = pairing.d7b_seed(keyset_digest)
+    matrix = pairing.d7b_resample_matrix(seed)
+    matrix_digest = pairing.d7b_matrix_digest_record(matrix, order_digest)
+
+    per_cell: dict[str, CellInference] = {}
+    raw_p_by_cell: dict[str, float] = {}
+    for cell_id in schema.CELL_IDS:
+        records_map = complete_by_cell[cell_id]
+        ordered = pairing.canonical_item_order(list(records_map))
+        ordered_records = [records_map[key] for key in ordered]
+        # ``sentinel_coded_shift_vector`` already returns float64 over the
+        # canonical item order — the exact vector the interval/p-value legs
+        # consume (R-050/R-054/R-055).
+        d = pairing.sentinel_coded_shift_vector(records_map, ordered)
+        lo, hi = pairing.d7b_interval(d, matrix)
+        p = pairing.d7b_p_value(d, matrix)
+        raw_p_by_cell[cell_id] = p
+        counts = pairing.recompute_counts(ordered_records)
+        per_cell[cell_id] = CellInference(
+            counts=counts,
+            rates=pairing.compute_rates(counts),
+            headline_summary=pairing.sentinel_coded_headline_summary(
+                ordered_records
+            ),
+            finite_only_summary=pairing.finite_only_timing_summary(
+                ordered_records
+            ),
+            ci=(lo, hi),
+            raw_p_value=p,
+            holm_rank=0,
+            holm_adjusted_p_value=0.0,
+            holm_rejected=False,
+        )
+
+    holm = pairing.d7b_holm(raw_p_by_cell)
+    for cell_id in schema.CELL_IDS:
+        cell_holm = holm["per_cell"][cell_id]
+        base = per_cell[cell_id]
+        per_cell[cell_id] = CellInference(
+            counts=base.counts,
+            rates=base.rates,
+            headline_summary=base.headline_summary,
+            finite_only_summary=base.finite_only_summary,
+            ci=base.ci,
+            raw_p_value=base.raw_p_value,
+            holm_rank=cell_holm["holm_rank"],
+            holm_adjusted_p_value=cell_holm["holm_adjusted_p_value"],
+            holm_rejected=cell_holm["holm_rejected"],
+        )
+
+    return InferenceResult(
+        keyset_digest=keyset_digest,
+        order_digest=order_digest,
+        seed=seed,
+        matrix_digest=matrix_digest,
+        per_cell=per_cell,
+        holm=holm,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pure profile shapers
+# ---------------------------------------------------------------------------
+
+
+def assemble_inference_block(result: InferenceResult) -> dict[str, Any]:
+    """The in-profile inference identity block (INFERENCE_KEYS, R-052/R-057).
+
+    ``numpy_version`` is pulled from the live interpreter so the recorded
+    plan token can never drift from the pinned runtime (R-051).
+    """
+    return {
+        "analysis_provenance": schema.ANALYSIS_PROVENANCE_D7B,
+        "numpy_version": np.__version__,
+        "bit_generator": "PCG64",
+        "generator_construction": schema.GENERATOR_CONSTRUCTION,
+        "draw_count": schema.BOOTSTRAP_DRAW_COUNT,
+        "sample_size": schema.EXPECTED_COMPLETE_PAIRS,
+        "resampling_unit": schema.RESAMPLING_UNIT,
+        "with_replacement": True,
+        "dtype": "int64",
+        "endpoint": False,
+        "seed": result.seed,
+        "seed_derivation": schema.SEED_DERIVATION_STRING,
+        "pairing_population_keyset_sha256": result.keyset_digest,
+        "canonical_item_order_digest": result.order_digest,
+        "resample_matrix_digest": dict(result.matrix_digest),
+        "familywise_alpha": 0.05,
+        "family_size": 10,
+        "ordered_family": list(result.holm["ordered_family"]),
+        "rejected_cell_ids": list(result.holm["rejected_cell_ids"]),
+    }
+
+
+def assemble_cell(
+    cell_id: str, result: InferenceResult, estimand: dict[str, Any]
+) -> dict[str, Any]:
+    """One assembled cell block (CELL_REQUIRED_KEYS, R-005/R-006/R-015)."""
+    cell = result.per_cell[cell_id]
+    reference_id, calibration_id = cell_id.split("__", 1)
+    return {
+        "cell_id": cell_id,
+        "reference_id": reference_id,
+        "calibration_id": calibration_id,
+        "estimand": estimand,
+        "estimand_digest": pairing.estimand_digest(estimand),
+        "records_file": f"records/{cell_id}.jsonl",
+        "counts": dict(cell.counts),
+        "rates": dict(cell.rates),
+        "headline_summary": dict(cell.headline_summary),
+        "finite_only_summary": dict(cell.finite_only_summary),
+        "interval": {
+            "procedure": schema.INTERVAL_PROCEDURE,
+            "draw_count": schema.BOOTSTRAP_DRAW_COUNT,
+            "seed": result.seed,
+            "seed_derivation": schema.SEED_DERIVATION_STRING,
+            "statistic": schema.INTERVAL_STATISTIC,
+            "population": schema.POPULATION_ALL,
+            "quantile_method": schema.QUANTILE_METHOD,
+            "ci": [cell.ci[0], cell.ci[1]],
+        },
+        "raw_p_value": cell.raw_p_value,
+        "holm_rank": cell.holm_rank,
+        "holm_adjusted_p_value": cell.holm_adjusted_p_value,
+        "holm_rejected": cell.holm_rejected,
+        "excluded_keys": [],
+        "pairing_population_keyset_sha256": result.keyset_digest,
+    }
+
+
+def assemble_grid_block(
+    result: InferenceResult, *, held_fixed: dict[str, Any]
+) -> dict[str, Any]:
+    """The in-profile grid identity block (GRID_KEYS, R-040/R-044)."""
+    return {
+        "reference_ids": sorted(schema.REFERENCE_IDS),
+        "calibration_ids": sorted(schema.CALIBRATION_IDS),
+        "cell_ids": list(schema.CELL_IDS),
+        "record_files": {
+            cell_id: f"records/{cell_id}.jsonl" for cell_id in schema.CELL_IDS
+        },
+        "item_keys_sha256": result.keyset_digest,
+        "held_fixed": dict(held_fixed),
+    }
+
+
+def assemble_profile(
+    result: InferenceResult,
+    *,
+    arms: list[dict[str, Any]],
+    provenance: dict[str, Any],
+    grid: dict[str, Any],
+    llm_involvement: dict[str, Any],
+    estimands: dict[str, dict[str, Any]],
+    numerical_tolerance: float = 1e-9,
+) -> dict[str, Any]:
+    """Combine the fixed profile identities with the recomputed D7(b)
+    inference into a strict v2 ten-cell profile (PROFILE_TOP_LEVEL_KEYS).
+
+    The caller supplies the identity blocks (``arms``/``provenance``/``grid``/
+    ``llm_involvement``/``estimands``); the pinned identities
+    (``schema_version``/``profile_id``/``semantic``/``item_key_derivation``)
+    come from the ``schema`` constants so the two surfaces cannot drift.
+    """
+    return {
+        "schema_version": schema.SCHEMA_VERSION,
+        "profile_id": schema.STRICT_PROFILE_ID,
+        "semantic": dict(schema.SEMANTIC_BLOCK),
+        "llm_involvement": dict(llm_involvement),
+        "numerical_tolerance": numerical_tolerance,
+        "item_key_derivation": dict(schema.ITEM_KEY_DERIVATION),
+        "arms": arms,
+        "provenance": provenance,
+        "grid": grid,
+        "inference": assemble_inference_block(result),
+        "cells": [
+            assemble_cell(cell_id, result, estimands[cell_id])
+            for cell_id in schema.CELL_IDS
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Closure inventory
+# ---------------------------------------------------------------------------
+
+
+def qa012_status_block(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Map a ``qa012.build_inventory_manifest`` result to the closure
+    ``qa012`` block (closure.py:35-37/110-120)."""
+    result = manifest["result"]
+    if result not in _QA012_STATUS_BY_RESULT:
+        raise schema.ColmAimsError(
+            f"unrecognised QA-012 inventory result {result!r};"
+            " expected 'zero_hit' or 'hits' (R-072)"
+        )
+    return {
+        "status": _QA012_STATUS_BY_RESULT[result],
+        "inventory_sha256": manifest["inventory_sha256"],
+    }
+
+
+def assemble_closure_inventory(
+    *,
+    d6_baseline: dict[str, Any],
+    qa012: dict[str, Any],
+    holm_satisfied_by: str | None = schema.ANALYSIS_PROVENANCE_D7B,
+) -> dict[str, Any]:
+    """The satisfied ``CAMERA_READY_CLOSURE`` inventory (R-071/R-072).
+
+    ``d6_baseline`` (the two-party-verified manuscript baseline + complete
+    FINAL_CHECKSUMS closure) stays PARAMETERIZED so the real run binds the
+    final manuscript hashes; the Holm/inference row is satisfiable only by the
+    D7(b) regenerated outputs (closure.py:100-108).
+    """
+    return {
+        "schema_version": schema.SCHEMA_VERSION,
+        "d6_baseline": dict(d6_baseline),
+        "rows": [
+            {
+                "item": "table-1-headline-shifts",
+                "status": "SATISFIED",
+                "evidence": "profile.json ten-cell package",
+            },
+            {
+                "item": "manuscript-identity",
+                "status": "EXTERNAL",
+                "evidence": "D6 two-party hash verification",
+            },
+        ],
+        "holm_row": {"satisfied_by": holm_satisfied_by},
+        "qa012": dict(qa012),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Create-once orchestrator
+# ---------------------------------------------------------------------------
+
+
+def _presentation_manifest() -> dict[str, Any]:
+    artifacts: list[dict[str, str]] = [
+        {"path": "profile.json", "role": "strict_profile"}
+    ]
+    for rel in sorted(f"records/{cell_id}.jsonl" for cell_id in schema.CELL_IDS):
+        artifacts.append({"path": rel, "role": "per_item_records"})
+    return {
+        "schema_version": schema.SCHEMA_VERSION,
+        "artifacts": artifacts,
+        "allowlist_undeclared": [],
+    }
+
+
+def _dump_json_bytes(obj: dict[str, Any]) -> bytes:
+    return (json.dumps(obj, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def build_evidence_package(
+    records_root: Path,
+    out_dir: Path,
+    *,
+    source_commit: str,
+    arms: list[dict[str, Any]],
+    provenance: dict[str, Any],
+    grid: dict[str, Any],
+    llm_involvement: dict[str, Any],
+    estimands: dict[str, dict[str, Any]],
+    d6_baseline: dict[str, Any],
+    qa012: dict[str, Any],
+    run_id: str = "run-0001",
+    reclaim_crashed_relic: bool = False,
+) -> BuildResult:
+    """Assemble and create-once-publish the D7(b) evidence package.
+
+    Records are staged byte-for-byte from ``records_root`` and their on-disk
+    hashes are bound into ``provenance.input_sha256`` (content-addressed
+    provenance). The staged tree is published into ``out_dir/runs/<run_id>``
+    via the create-once primitive; a second publish to the same slot fails
+    closed, and ``reclaim_crashed_relic`` is the explicit recovery path for a
+    crashed publish that left an empty relic (R-016/R-039).
+    """
+    records_root = Path(records_root)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    runs_root = out_dir / "runs"
+
+    complete_by_cell = load_complete_by_cell(records_root)
+    result = compute_inference(complete_by_cell)
+
+    # Stage into a fresh, same-filesystem directory so the publish rename is
+    # atomic and repeated calls never collide on a leftover staging tree.
+    staged = Path(tempfile.mkdtemp(prefix="staged-", dir=out_dir))
+    (staged / "records").mkdir()
+    input_sha256: dict[str, str] = {}
+    for cell_id in schema.CELL_IDS:
+        rel = f"records/{cell_id}.jsonl"
+        blob = (records_root / f"{cell_id}.jsonl").read_bytes()
+        (staged / rel).write_bytes(blob)
+        input_sha256[rel] = hashlib.sha256(blob).hexdigest()
+
+    bound_provenance = dict(provenance)
+    bound_provenance["input_sha256"] = dict(input_sha256)
+    dirty_state = (
+        dict(bound_provenance["dirty_state"])
+        if "dirty_state" in bound_provenance
+        else {}
+    )
+    dirty_state["source_commit"] = source_commit
+    bound_provenance["dirty_state"] = dirty_state
+    profile = assemble_profile(
+        result,
+        arms=arms,
+        provenance=bound_provenance,
+        grid=grid,
+        llm_involvement=llm_involvement,
+        estimands=estimands,
+    )
+    schema.write_profile(staged / "profile.json", profile)
+    (staged / "presentation_manifest.json").write_bytes(
+        _dump_json_bytes(_presentation_manifest())
+    )
+
+    published = schema.publish_evidence_package(
+        staged, runs_root, run_id, reclaim_crashed_relic=reclaim_crashed_relic
+    )
+
+    inventory = assemble_closure_inventory(
+        d6_baseline=d6_baseline, qa012=qa012
+    )
+    closure_path = out_dir / "closure_inventory.json"
+    closure_path.write_bytes(_dump_json_bytes(inventory))
+
+    return BuildResult(
+        published_tree=published,
+        profile_path=published / "profile.json",
+        closure_inventory_path=closure_path,
+        profile=profile,
+        closure_inventory=inventory,
+        inference=result,
+        input_sha256=input_sha256,
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m reproducibility.colm_aims_2026.phase4_assemble_d7b",
+        description=(
+            "Recompute and summarise the D7(b) ten-cell inference from"
+            " per-cell record files (source-only)."
+        ),
+        allow_abbrev=False,
+    )
+    parser.add_argument("--records-root", required=True)
+    parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--frozen-dir", default=None)
+    parser.add_argument("--d6-checksums", default=None)
+    parser.add_argument("--qa012-root", action="append", default=None)
+    parser.add_argument("--runs-root", default=None)
+    parser.add_argument("--run-id", default="run-0001")
+    return parser
+
+
+def _inference_summary(
+    result: InferenceResult, *, source_commit: str, records_root: Path
+) -> dict[str, Any]:
+    return {
+        "schema_version": schema.SCHEMA_VERSION,
+        "analysis_provenance": schema.ANALYSIS_PROVENANCE_D7B,
+        "source_commit": source_commit,
+        "records_root_basename": Path(records_root).name,
+        "seed": result.seed,
+        "seed_derivation": schema.SEED_DERIVATION_STRING,
+        "pairing_population_keyset_sha256": result.keyset_digest,
+        "canonical_item_order_digest": result.order_digest,
+        "resample_matrix_digest": dict(result.matrix_digest),
+        "rejected_cell_ids": list(result.holm["rejected_cell_ids"]),
+        "ordered_family": list(result.holm["ordered_family"]),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point; returns the pinned exit code (0/2/3/4).
+
+    Computes the D7(b) inference from ``--records-root`` and writes an
+    inference summary to ``--out-dir/inference_summary.json``. Full-profile
+    assembly + create-once publish is exposed as the ``build_evidence_package``
+    Python API (the producer-side identity blocks are supplied by the caller).
+    """
+    parser = _build_parser()
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:  # argparse usage error -> pinned exit 2
+        code = exc.code
+        return code if isinstance(code, int) else EXIT_USAGE_ERROR
+
+    try:
+        records_root = Path(args.records_root)
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        complete_by_cell = load_complete_by_cell(records_root)
+        result = compute_inference(complete_by_cell)
+        summary = _inference_summary(
+            result,
+            source_commit=args.source_commit,
+            records_root=records_root,
+        )
+        (out_dir / "inference_summary.json").write_bytes(
+            _dump_json_bytes(summary)
+        )
+    except (
+        schema.TypedIngressError,
+        schema.EmptyEvaluationError,
+    ) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_INGRESS_ERROR
+    except (schema.ConfigSurfaceError, schema.ColmAimsError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+    except Exception as exc:  # noqa: BLE001 - pinned internal-error code
+        print(
+            f"error: unexpected {exc.__class__.__name__} during assembly",
+            file=sys.stderr,
+        )
+        return EXIT_INTERNAL_ERROR
+
+    print(
+        f"[assemble] D7(b) inference computed: seed={result.seed}"
+        f" keyset={result.keyset_digest[:12]}..."
+    )
+    return EXIT_PASS
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised via subprocess
+    raise SystemExit(main())
