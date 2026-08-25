@@ -36,7 +36,10 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from scripts.stopdff_v5.fileio import publish_dir_create_once
+from scripts.stopdff_v5.fileio import (
+    publish_dir_create_once,
+    reclaim_empty_relic,
+)
 
 from . import phase4, schema
 
@@ -2396,6 +2399,15 @@ def validate_and_launch(
                     f" output remains at {promote_to} with a STOP report and"
                     " is not an accepted PASS (R-081)"
                 ) from exc
+            # Nothing was promoted and the quarantine is intact. When OUR own
+            # create-once claim (POSIX ``os.mkdir``) succeeded but the ensuing
+            # rename failed, an EMPTY ``promote_to`` relic is left behind that
+            # contradicts this path's "nothing promoted" contract — reclaim it.
+            # A ``FileExistsError`` instead means the destination pre-existed (a
+            # peer's incumbent claim we do not own): never remove that.
+            # ``reclaim_empty_relic`` is itself empty-only and best-effort safe.
+            if not isinstance(exc, FileExistsError):
+                reclaim_empty_relic(promote_to)
             raise RunFailed(
                 f"atomic promotion failed ({exc.__class__.__name__}) —"
                 f" quarantine left intact at {quarantine_dir} with a STOP"
