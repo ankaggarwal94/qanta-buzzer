@@ -1527,6 +1527,203 @@ class TestR077CompareParity:
         )
 
 
+def _perturb(value):
+    """Return a value of the SAME JSON type as ``value`` that is guaranteed
+    to be ``!= value`` under ``phase4._values_equal`` (no cross-type
+    laundering). Used to force a VALUE mismatch on the regenerated side while
+    keeping the JSON type identical, so the divergence exercises the
+    value-routing path rather than the structural (missing/type) path."""
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, int):
+        return value + 1
+    if isinstance(value, float):
+        return value + 1.0
+    if isinstance(value, list):
+        if not value:
+            return [0]
+        return [_perturb(value[0])] + [_copy(v) for v in value[1:]]
+    if isinstance(value, str):
+        return value + "_x"
+    return value
+
+
+class TestR077KnownDivergenceCarveOut:
+    """Phase-4 Option-A scoped known-divergence carve-out (amended R-077,
+    2026-08-24). Locks the six-field carve-out: exactly the six fields
+    ``{signed_mean, abs_mean, mc_earlier, qa_earlier, same_step,
+    signed_mean_ci}`` of the SINGLE cell/policy ``idealized+performat``·``dp``
+    route a VALUE mismatch to the non-blocking
+    ``known_divergence_informational`` bucket, while (a) STRUCTURE stays
+    blocking, (b) ``checked`` stays 194, and (c) any VALUE mismatch outside
+    that {cell x six-field} set stays a blocking FAILURE. Mirrors the
+    pre-existing R-077 Random-K informational-only treatment, narrowed from
+    whole-cell to a six-field allowlist.
+
+    Source: reproducibility/colm_aims_2026/phase4.py — KNOWN_DIVERGENCE_CELL/
+    _POLICY/_FIELDS/KNOWN_DIVERGENCES (L203-216), compare_parity value routing
+    (L2635-2662), known_divergence_informational bucket (L2742-2755);
+    phase4_reconciliation_amendment_proposal_A_2026-08-24.md.
+    Reuses the module-level ``_anchor`` / ``_regen_from_anchor`` / ``_phase4``
+    parity fixtures (frozen anchor loaded read-only; the regenerated side is
+    synthetic — no model load, no trajectory records).
+    """
+
+    CELL = "idealized+performat"
+    POLICY = "dp"
+    SIX_FIELDS = (
+        "signed_mean",
+        "abs_mean",
+        "mc_earlier",
+        "qa_earlier",
+        "same_step",
+        "signed_mean_ci",
+    )
+
+    def test_carveout_constants_match_spec(self):
+        # Pin the carve-out identity so a silent widening/renaming of the
+        # allowlist is caught here rather than only via behavior.
+        phase4 = _phase4()
+        assert phase4.KNOWN_DIVERGENCE_CELL == self.CELL
+        assert phase4.KNOWN_DIVERGENCE_POLICY == self.POLICY
+        assert tuple(phase4.KNOWN_DIVERGENCE_FIELDS) == self.SIX_FIELDS
+        assert phase4.KNOWN_DIVERGENCES == frozenset(
+            (self.CELL, self.POLICY, f) for f in self.SIX_FIELDS
+        )
+        assert phase4.EXPECTED_PARITY_CHECKED == 194
+
+    def test_s1_six_field_value_divergence_is_informational_pass(self):
+        # S1 (carve-out active): diverge ONLY the six fields for the
+        # idealized+performat·dp cell => PASS, exactly 6 informational
+        # entries, checked == 194, blocking failures empty.
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        cell = regen["results"][self.CELL][self.POLICY]
+        for field in self.SIX_FIELDS:
+            perturbed = _perturb(cell[field])
+            # guard against a vacuous test: the mismatch must be real
+            # (``_perturb`` preserves JSON type, so a plain ``!=`` suffices).
+            assert perturbed != cell[field]
+            cell[field] = perturbed
+        result = _phase4().compare_parity(anchor, regen)
+
+        assert result["verdict"] == "PASS"
+        assert result["failures"] == []
+        assert result["checked"] == 194
+
+        info = result["known_divergence_informational"]
+        assert info["cells"] == [self.CELL]
+        assert info["policies"] == [self.POLICY]
+        assert info["exempt_from_historical_parity"] is True
+        assert info["compared"] == 6
+        assert len(info["divergences"]) == 6
+        diverged = {
+            (d["cell"], d["policy"], d["field"]) for d in info["divergences"]
+        }
+        assert diverged == {
+            (self.CELL, self.POLICY, f) for f in self.SIX_FIELDS
+        }
+        # none of the six leaked into the blocking failures list
+        assert not any(
+            f["cell"] == self.CELL and f["policy"] == self.POLICY
+            for f in result["failures"]
+        )
+
+    def test_s2a_seventh_field_in_carveout_cell_stays_blocking(self):
+        # S2 (must stay blocking): a 7th, NON-carve-out field VALUE mismatch
+        # in the SAME idealized+performat·dp cell => FAIL, not routed to
+        # informational.
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        seventh = next(
+            f for f in anchor["point_fields"] if f not in self.SIX_FIELDS
+        )
+        cell = regen["results"][self.CELL][self.POLICY]
+        cell[seventh] = _perturb(cell[seventh])
+        result = _phase4().compare_parity(anchor, regen)
+
+        assert result["verdict"] == "FAIL"
+        assert result["checked"] == 194
+        assert any(
+            f["cell"] == self.CELL
+            and f["policy"] == self.POLICY
+            and f["field"] == seventh
+            for f in result["failures"]
+        )
+        assert result["known_divergence_informational"]["divergences"] == []
+
+    def test_s2b_carveout_fieldname_other_cell_stays_blocking(self):
+        # S2 (must stay blocking): one of the six field-names mismatched in a
+        # DIFFERENT cell => FAIL (carve-out is cell/policy-scoped).
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        other_cell = next(
+            c for c in anchor["nonrandom_cells"] if c != self.CELL
+        )
+        target = regen["results"][other_cell][self.POLICY]
+        target["signed_mean"] = _perturb(target["signed_mean"])
+        result = _phase4().compare_parity(anchor, regen)
+
+        assert result["verdict"] == "FAIL"
+        assert result["checked"] == 194
+        assert any(
+            f["cell"] == other_cell
+            and f["policy"] == self.POLICY
+            and f["field"] == "signed_mean"
+            for f in result["failures"]
+        )
+        # the other cell's divergence is NOT laundered into informational
+        assert result["known_divergence_informational"]["divergences"] == []
+
+    def test_s2c_carveout_fieldname_other_policy_stays_blocking(self):
+        # S2 (must stay blocking): a carve-out field-name mismatched under the
+        # non-carve-out policy (myopic) of the SAME cell => FAIL.
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        other_policy = next(
+            p for p in anchor["policies"] if p != self.POLICY
+        )
+        target = regen["results"][self.CELL][other_policy]
+        target["signed_mean"] = _perturb(target["signed_mean"])
+        result = _phase4().compare_parity(anchor, regen)
+
+        assert result["verdict"] == "FAIL"
+        assert result["checked"] == 194
+        assert any(
+            f["cell"] == self.CELL
+            and f["policy"] == other_policy
+            and f["field"] == "signed_mean"
+            for f in result["failures"]
+        )
+        assert result["known_divergence_informational"]["divergences"] == []
+
+    def test_s3_missing_carveout_field_stays_structural_blocking(self):
+        # S3 (structural stays blocking): a MISSING (removed) carve-out field
+        # is structural, not a value divergence => blocking FAIL, and it is
+        # NOT laundered into the informational bucket (routing is gated on
+        # ``observed_value is not _MISSING``).
+        anchor = _anchor()
+        regen = _regen_from_anchor(anchor)
+        del regen["results"][self.CELL][self.POLICY]["signed_mean"]
+        result = _phase4().compare_parity(anchor, regen)
+
+        assert result["verdict"] == "FAIL"
+        assert result["checked"] == 194
+        rows = [
+            f
+            for f in result["failures"]
+            if f["cell"] == self.CELL
+            and f["policy"] == self.POLICY
+            and f["field"] == "signed_mean"
+        ]
+        assert len(rows) == 1
+        assert rows[0]["observed"] is None
+        assert all(
+            d["field"] != "signed_mean"
+            for d in result["known_divergence_informational"]["divergences"]
+        )
+
+
 # ===========================================================================
 # R-078: QA-012 compatibility fixtures — bytes-bound, loader-rejected
 # ===========================================================================
