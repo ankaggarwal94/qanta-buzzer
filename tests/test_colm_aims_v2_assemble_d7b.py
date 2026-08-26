@@ -212,6 +212,17 @@ def test_load_complete_by_cell_roundtrips(tmp_path):
     assert result.seed == CANONICAL_SEED
 
 
+def test_load_complete_by_cell_rejects_duplicate_physical_item_key(tmp_path):
+    root = tmp_path / "records"
+    _write_records_root(root)
+    victim = root / f"{CELL_IDS[0]}.jsonl"
+    lines = victim.read_bytes().splitlines(keepends=True)
+    victim.write_bytes(b"".join(lines + [lines[0]]))
+
+    with pytest.raises(schema.TypedIngressError, match="duplicate item_key"):
+        assembler.load_complete_by_cell(root)
+
+
 # ---------------------------------------------------------------------------
 # assemble_profile — validates + byte-identical to the oracle profile
 # ---------------------------------------------------------------------------
@@ -332,10 +343,47 @@ def _build(tmp_path, *, run_id="run-0001", reclaim_crashed_relic=False):
 
 
 class TestBuildEvidencePackage:
+    def test_caller_snapshot_tampering_is_rejected_before_publish(
+        self, tmp_path
+    ):
+        records_root = tmp_path / "records"
+        _write_records_root(records_root)
+        snapshot = assembler.load_record_snapshot(records_root)
+        victim_cell = CELL_IDS[0]
+        victim_record = next(
+            iter(snapshot.complete_by_cell[victim_cell].values())
+        )
+        victim_record["trajectory_horizon"] += 1
+
+        with pytest.raises(
+            schema.TypedIngressError, match="do not match its parsed records"
+        ):
+            assembler.build_evidence_package(
+                records_root,
+                tmp_path / "out",
+                source_commit="d" * 40,
+                arms=make_arms(),
+                provenance=make_provenance(source_commit="d" * 40),
+                grid=make_grid_block(),
+                llm_involvement=make_llm_involvement(),
+                estimands=_estimands(),
+                d6_baseline=_d6_baseline(),
+                qa012=_qa012(),
+                record_snapshot=snapshot,
+            )
+
+        assert not (tmp_path / "out" / "runs" / "run-0001").exists()
+
     def test_published_profile_validates(self, tmp_path):
         built = _build(tmp_path)
         assert built.published_tree.is_dir()
         assert (built.published_tree / "profile.json").is_file()
+        assert built.published_tree.name == "tree"
+        assert built.closure_inventory_path == (
+            built.published_tree.parent / "closure" / "closure_inventory.json"
+        )
+        assert built.closure_inventory_path.is_file()
+        assert not (tmp_path / "out" / "closure_inventory.json").exists()
         schema.validate_profile(built.profile)
         for cell_id in CELL_IDS:
             rel = f"records/{cell_id}.jsonl"
@@ -344,6 +392,43 @@ class TestBuildEvidencePackage:
     def test_closure_inventory_satisfied(self, tmp_path):
         built = _build(tmp_path)
         assert closure.evaluate_closure(built.closure_inventory)["satisfied"]
+
+    def test_publishes_the_same_record_bytes_that_were_validated(
+        self, tmp_path, monkeypatch
+    ):
+        records_root = tmp_path / "records"
+        hashes = _write_records_root(records_root)
+        victim_rel = f"records/{CELL_IDS[0]}.jsonl"
+        victim = records_root / f"{CELL_IDS[0]}.jsonl"
+        original = victim.read_bytes()
+        real_reader = schema.read_regular_file_bytes
+        mutated = False
+
+        def mutate_after_capture(path, **kwargs):
+            nonlocal mutated
+            data = real_reader(path, **kwargs)
+            if path == victim and not mutated:
+                victim.write_bytes(b'{"tampered":true}\n')
+                mutated = True
+            return data
+
+        monkeypatch.setattr(schema, "read_regular_file_bytes", mutate_after_capture)
+        built = assembler.build_evidence_package(
+            records_root,
+            tmp_path / "out",
+            source_commit="d" * 40,
+            arms=make_arms(),
+            provenance=make_provenance(source_commit="d" * 40),
+            grid=make_grid_block(),
+            llm_involvement=make_llm_involvement(),
+            estimands=_estimands(),
+            d6_baseline=_d6_baseline(),
+            qa012=_qa012(),
+        )
+
+        assert mutated
+        assert (built.published_tree / victim_rel).read_bytes() == original
+        assert built.input_sha256[victim_rel] == hashes[victim_rel]
 
     def test_source_verify_passes(self, tmp_path):
         built = _build(tmp_path)
@@ -374,6 +459,7 @@ class TestBuildEvidencePackage:
             tmp_path, run_id="run-0002", reclaim_crashed_relic=True
         )
         assert (rebuilt.published_tree / "profile.json").is_file()
+        assert rebuilt.closure_inventory_path.is_file()
 
 
 # ---------------------------------------------------------------------------

@@ -108,38 +108,130 @@ class BuildResult:
     input_sha256: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class RecordSnapshot:
+    """One validated byte snapshot of all ten record files."""
+
+    records_root: Path
+    complete_by_cell: dict[str, dict[str, dict[str, Any]]]
+    bytes_by_rel: dict[str, bytes]
+
+
 # ---------------------------------------------------------------------------
 # Record ingress
 # ---------------------------------------------------------------------------
 
 
-def load_complete_by_cell(
-    records_root: Path,
-) -> dict[str, dict[str, dict[str, Any]]]:
-    """Load ``records_root/<cell_id>.jsonl`` into the in-memory
-    ``{cell_id: {item_key: record}}`` map (R-041).
+def _record_snapshot_from_bytes(
+    records_root: Path, bytes_by_rel: dict[str, bytes]
+) -> RecordSnapshot:
+    """Validate retained bytes and derive their complete-pair map."""
+    expected_rels = {
+        f"records/{cell_id}.jsonl" for cell_id in schema.CELL_IDS
+    }
+    if set(bytes_by_rel) != expected_rels:
+        raise schema.TypedIngressError(
+            "record snapshot must carry exactly the ten canonical record"
+            " paths"
+        )
 
-    Every file is parsed through the hardened loader (R-067); a missing or
-    unreadable per-cell file is a typed ingress refusal, never a silent skip.
-    """
-    records_root = Path(records_root)
     complete: dict[str, dict[str, dict[str, Any]]] = {}
+    captured_bytes: dict[str, bytes] = {}
+    for cell_id in schema.CELL_IDS:
+        rel = f"records/{cell_id}.jsonl"
+        raw = bytes_by_rel[rel]
+        if type(raw) is not bytes:
+            raise schema.TypedIngressError(
+                f"{rel}: retained record snapshot must contain bytes"
+            )
+        loaded = schema.load_records_bytes(raw, rel)
+        by_key: dict[str, dict[str, Any]] = {}
+        first_line_by_key: dict[str, int] = {}
+        for record, lineno in zip(
+            loaded["records"], loaded["line_numbers"], strict=True
+        ):
+            try:
+                schema.validate_record(record)
+            except schema.SchemaValidationError as exc:
+                raise schema.TypedIngressError(
+                    f"{rel}: line {lineno}: invalid record: {exc}"
+                ) from exc
+            if pairing.classify_record(record)["status"] != "complete":
+                raise schema.TypedIngressError(
+                    f"{rel}: line {lineno}: excluded or incomplete record"
+                    " is not admissible in the D7(b) complete-pair corpus"
+                    " (R-041/R-042)"
+                )
+            item_key = record["item_key"]
+            if item_key in by_key:
+                raise schema.TypedIngressError(
+                    f"{rel}: line {lineno}: duplicate item_key; first seen"
+                    f" on line {first_line_by_key[item_key]} (R-041)"
+                )
+            by_key[item_key] = record
+            first_line_by_key[item_key] = lineno
+        if len(loaded["records"]) != schema.EXPECTED_COMPLETE_PAIRS:
+            raise schema.TypedIngressError(
+                f"{rel}: carries {len(loaded['records'])} physical records;"
+                f" exactly {schema.EXPECTED_COMPLETE_PAIRS} required (R-042)"
+            )
+        if len(by_key) != schema.EXPECTED_COMPLETE_PAIRS:
+            raise schema.TypedIngressError(
+                f"{rel}: carries {len(by_key)} unique complete pairs;"
+                f" exactly {schema.EXPECTED_COMPLETE_PAIRS} required (R-042)"
+            )
+        complete[cell_id] = by_key
+        captured_bytes[rel] = raw
+    return RecordSnapshot(
+        records_root=records_root,
+        complete_by_cell=complete,
+        bytes_by_rel=captured_bytes,
+    )
+
+
+def load_record_snapshot(records_root: Path) -> RecordSnapshot:
+    """Read, validate, and retain every physical record exactly once.
+
+    Duplicate item keys are rejected before dictionary insertion. The same
+    captured bytes drive validation, inference, hashing, and publication, so a
+    later pathname substitution cannot change the assembled package.
+    """
+    records_root = Path(records_root).absolute()
+    bytes_by_rel: dict[str, bytes] = {}
     for cell_id in schema.CELL_IDS:
         rel = f"records/{cell_id}.jsonl"
         path = records_root / f"{cell_id}.jsonl"
-        try:
-            raw = path.read_bytes()
-        except OSError as exc:
-            raise schema.TypedIngressError(
-                f"{rel}: per-cell record file is missing or unreadable"
-                f" ({exc.__class__.__name__}) (R-041)"
-            ) from exc
-        loaded = schema.load_records_bytes(raw, rel)
-        by_key: dict[str, dict[str, Any]] = {}
-        for record in loaded["records"]:
-            by_key[record["item_key"]] = record
-        complete[cell_id] = by_key
-    return complete
+        bytes_by_rel[rel] = schema.read_regular_file_bytes(
+            path, tree_root=records_root
+        )
+    return _record_snapshot_from_bytes(records_root, bytes_by_rel)
+
+
+def _revalidate_record_snapshot(
+    record_snapshot: RecordSnapshot, records_root: Path
+) -> RecordSnapshot:
+    """Copy and revalidate a caller-retained snapshot before publication."""
+    if not isinstance(record_snapshot, RecordSnapshot):
+        raise schema.ConfigSurfaceError("record_snapshot has the wrong type")
+    if record_snapshot.records_root != records_root:
+        raise schema.ConfigSurfaceError(
+            "record snapshot root does not match records_root"
+        )
+    validated = _record_snapshot_from_bytes(
+        records_root, dict(record_snapshot.bytes_by_rel)
+    )
+    if record_snapshot.complete_by_cell != validated.complete_by_cell:
+        raise schema.TypedIngressError(
+            "retained record snapshot bytes do not match its parsed records"
+        )
+    return validated
+
+
+def load_complete_by_cell(
+    records_root: Path,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Load the validated one-read record snapshot into the cell/key map."""
+    return load_record_snapshot(records_root).complete_by_cell
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +532,9 @@ def _presentation_manifest() -> dict[str, Any]:
 
 
 def _dump_json_bytes(obj: dict[str, Any]) -> bytes:
-    return (json.dumps(obj, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    return (
+        json.dumps(obj, allow_nan=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
 
 
 def build_evidence_package(
@@ -457,33 +551,46 @@ def build_evidence_package(
     qa012: dict[str, Any],
     run_id: str = "run-0001",
     reclaim_crashed_relic: bool = False,
+    record_snapshot: RecordSnapshot | None = None,
 ) -> BuildResult:
     """Assemble and create-once-publish the D7(b) evidence package.
 
-    Records are staged byte-for-byte from ``records_root`` and their on-disk
-    hashes are bound into ``provenance.input_sha256`` (content-addressed
-    provenance). The staged tree is published into ``out_dir/runs/<run_id>``
-    via the create-once primitive; a second publish to the same slot fails
-    closed, and ``reclaim_crashed_relic`` is the explicit recovery path for a
-    crashed publish that left an empty relic (R-016/R-039).
+    Records are staged byte-for-byte from one validated snapshot and their
+    hashes are bound into ``provenance.input_sha256``. One complete run
+    envelope is published at ``out_dir/runs/<run_id>``: artifact bytes live
+    under ``tree/`` and their closure evidence under ``closure/``. Nothing is
+    written to the run after the create-once publish (R-016/R-039).
     """
-    records_root = Path(records_root)
+    records_root = Path(records_root).absolute()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     runs_root = out_dir / "runs"
 
-    complete_by_cell = load_complete_by_cell(records_root)
-    result = compute_inference(complete_by_cell)
+    if record_snapshot is None:
+        record_snapshot = load_record_snapshot(records_root)
+    else:
+        record_snapshot = _revalidate_record_snapshot(
+            record_snapshot, records_root
+        )
+    result = compute_inference(record_snapshot.complete_by_cell)
+    inventory = assemble_closure_inventory(
+        d6_baseline=d6_baseline, qa012=qa012
+    )
+    # Fail before staging or create-once publication. An invalid closure
+    # envelope must never consume an immutable run identifier.
+    closure.validate_closure_inventory(inventory)
 
-    # Stage into a fresh, same-filesystem directory so the publish rename is
-    # atomic and repeated calls never collide on a leftover staging tree.
-    staged = Path(tempfile.mkdtemp(prefix="staged-", dir=out_dir))
-    (staged / "records").mkdir()
+    # Build the complete run envelope before its single atomic publication.
+    staged_run = Path(tempfile.mkdtemp(prefix="staged-", dir=out_dir))
+    staged_tree = staged_run / "tree"
+    staged_closure = staged_run / "closure"
+    (staged_tree / "records").mkdir(parents=True)
+    staged_closure.mkdir()
     input_sha256: dict[str, str] = {}
     for cell_id in schema.CELL_IDS:
         rel = f"records/{cell_id}.jsonl"
-        blob = (records_root / f"{cell_id}.jsonl").read_bytes()
-        (staged / rel).write_bytes(blob)
+        blob = record_snapshot.bytes_by_rel[rel]
+        (staged_tree / rel).write_bytes(blob)
         input_sha256[rel] = hashlib.sha256(blob).hexdigest()
 
     bound_provenance = dict(provenance)
@@ -503,24 +610,27 @@ def build_evidence_package(
         llm_involvement=llm_involvement,
         estimands=estimands,
     )
-    schema.write_profile(staged / "profile.json", profile)
-    (staged / "presentation_manifest.json").write_bytes(
+    schema.write_profile(staged_tree / "profile.json", profile)
+    (staged_tree / "presentation_manifest.json").write_bytes(
         _dump_json_bytes(_presentation_manifest())
     )
 
-    published = schema.publish_evidence_package(
-        staged, runs_root, run_id, reclaim_crashed_relic=reclaim_crashed_relic
+    (staged_closure / "closure_inventory.json").write_bytes(
+        _dump_json_bytes(inventory)
     )
 
-    inventory = assemble_closure_inventory(
-        d6_baseline=d6_baseline, qa012=qa012
+    published_run = schema.publish_evidence_package(
+        staged_run,
+        runs_root,
+        run_id,
+        reclaim_crashed_relic=reclaim_crashed_relic,
     )
-    closure_path = out_dir / "closure_inventory.json"
-    closure_path.write_bytes(_dump_json_bytes(inventory))
+    published_tree = published_run / "tree"
+    closure_path = published_run / "closure" / "closure_inventory.json"
 
     return BuildResult(
-        published_tree=published,
-        profile_path=published / "profile.json",
+        published_tree=published_tree,
+        profile_path=published_tree / "profile.json",
         closure_inventory_path=closure_path,
         profile=profile,
         closure_inventory=inventory,

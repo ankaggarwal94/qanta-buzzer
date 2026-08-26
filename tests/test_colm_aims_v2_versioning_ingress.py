@@ -431,7 +431,7 @@ class TestNativeFiniteInterval:
     def test_every_json_parse_site_routes_through_hardened_loader(self):
         # AST enumeration: json.loads/json.load may appear ONLY in schema.py
         # (the hardened loader home), and every schema.py json.loads carries
-        # all three protective hooks.
+        # every protective hook, including duplicate-member rejection.
         for path in namespace_py_files():
             tree = ast.parse(path.read_text("utf-8"))
             for node in ast.walk(tree):
@@ -452,11 +452,12 @@ class TestNativeFiniteInterval:
                 )
                 kwarg_names = {kw.arg for kw in node.keywords}
                 assert {
+                    "object_pairs_hook",
                     "parse_constant",
                     "parse_float",
                     "parse_int",
                 } <= kwarg_names, (
-                    f"schema.py:{node.lineno} json parse without all three"
+                    f"schema.py:{node.lineno} json parse without all"
                     " protective hooks (R-067/R-062)"
                 )
 

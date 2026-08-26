@@ -2325,7 +2325,7 @@ def _anchor_legs(
 
     anchor_commit = anchor["source_commit"]
     observed_commit = _as_dict(prov.get("dirty_state")).get("source_commit")
-    if not schema.is_commit_sha(anchor_commit):
+    if not schema.is_git_object_id(anchor_commit):
         legs.append(
             _fail(
                 LEG_ANCHOR_COMMIT,
@@ -2345,7 +2345,7 @@ def _anchor_legs(
     else:
         legs.append(_pass(LEG_ANCHOR_COMMIT))
 
-    if schema.is_commit_sha(anchor_commit):
+    if schema.is_git_object_id(anchor_commit):
         # R-066: a SEPARATE release leg bound to the source repository.
         # False (repo available, object missing) FAILs; None (git
         # unavailable) is ALSO a FAILING leg — PASS_RELEASE cannot be
@@ -2537,7 +2537,7 @@ def _valid_dirty_state(value: Any) -> str | None:
         return "dirty_state must be an object"
     if value.get("git_dirty") is not False:
         return "dirty_state.git_dirty must be exactly false for release"
-    if not schema.is_commit_sha(value.get("source_commit")):
+    if not schema.is_git_object_id(value.get("source_commit")):
         return "dirty_state.source_commit is not a full-length commit SHA"
     return None
 
@@ -2865,6 +2865,7 @@ _FIELD_PREDICATES: dict[str, Callable[[Any], bool]] = {
     "resolved_identity": _is_resolved_identity,
     "sha256_hex": schema.is_sha256_hex,
     "commit_sha": schema.is_commit_sha,
+    "git_object_id": schema.is_git_object_id,
     "is_false": lambda v: v is False,
     "is_true": lambda v: v is True,
     "positive_int": lambda v: schema.is_real_int(v) and v > 0,
@@ -2906,7 +2907,12 @@ REQUIRED_PROVENANCE_FIELDS: tuple[tuple[str, str, str, str], ...] = (
     ("semantic_command", "nonempty_str_list", "semantic_command_recorded", "ARTIFACT_DEFECT"),
     ("seeds", "nonempty_int_list", "seeds_recorded", "ARTIFACT_DEFECT"),
     ("dirty_state.git_dirty", "is_false", "dirty_state_clean", "ARTIFACT_DEFECT"),
-    ("dirty_state.source_commit", "commit_sha", "dirty_state_identity", "ARTIFACT_DEFECT"),
+    (
+        "dirty_state.source_commit",
+        "git_object_id",
+        "dirty_state_identity",
+        "ARTIFACT_DEFECT",
+    ),
     ("splits.fit.name", "nonempty_str", "splits_fit_recorded", "ARTIFACT_DEFECT"),
     ("splits.fit.count", "positive_int", "splits_fit_recorded", "ARTIFACT_DEFECT"),
     ("splits.fit.keyset_sha256", "sha256_hex", "splits_fit_recorded", "ARTIFACT_DEFECT"),

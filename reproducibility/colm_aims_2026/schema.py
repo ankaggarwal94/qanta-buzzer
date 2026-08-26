@@ -450,6 +450,7 @@ RECORD_REQUIRED_FIELDS = (
 
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_GIT_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 
 def is_number(value: Any) -> bool:
@@ -471,10 +472,22 @@ def is_sha256_hex(value: Any) -> bool:
 def is_commit_sha(value: Any) -> bool:
     """True for a full-length 40-hex commit SHA.
 
-    Short hashes, tags, and branch names never qualify — they are
-    reassignable and cannot pin an immutable source identity (R-012/R-013).
+    This narrower predicate remains available for external model revision
+    domains that explicitly require SHA-1.
     """
     return isinstance(value, str) and _COMMIT_SHA_RE.fullmatch(value) is not None
+
+
+def is_git_object_id(value: Any) -> bool:
+    """True for a native SHA-1 or SHA-256 Git object identifier.
+
+    Repository identities may be 40 or 64 lowercase hexadecimal characters.
+    Short hashes, tags, and branch names never qualify (R-012/R-013).
+    """
+    return (
+        isinstance(value, str)
+        and _GIT_OBJECT_ID_RE.fullmatch(value) is not None
+    )
 
 
 def is_uint64(value: Any) -> bool:
@@ -571,7 +584,7 @@ def check_schema_version(obj: dict[str, Any], rel: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Hardened JSON ingress (R-062/R-067: three protective hooks everywhere)
+# Hardened JSON ingress (R-062/R-067: protective hooks everywhere)
 # ---------------------------------------------------------------------------
 
 
@@ -614,11 +627,31 @@ def _length_guarded_parse_int(token: str) -> int:
     return int(token)
 
 
-# NOTE: both parse entrypoints below spell the three protective hooks out as
+def _reject_duplicate_object_members(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    """Build one JSON object while rejecting repeated member names.
+
+    CPython's default decoder silently keeps the final value for a duplicate
+    name. Identity, configuration, and record objects are security-relevant
+    inputs here, so ambiguity is a typed ingress refusal before any schema or
+    semantic interpretation occurs.
+    """
+    result: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in result:
+            raise TypedIngressError(
+                f"duplicate JSON object member {name!r} rejected (R-067)"
+            )
+        result[name] = value
+    return result
+
+
+# NOTE: both parse entrypoints below spell the protective hooks out as
 # literal keyword arguments. This duplication is REQUIRED, not drift: the
 # R-067/R-062 suite AST-walks this module and asserts every ``json.loads``
-# call site names parse_constant/parse_float/parse_int directly, so a shared
-# ``**hooks`` mapping would defeat the check.
+# call site names object_pairs_hook/parse_constant/parse_float/parse_int
+# directly, so a shared ``**hooks`` mapping would defeat the check.
 def _parse_json_bytes(data: bytes) -> Any:
     """utf-8 + JSON parse with every non-finite form rejected (R-067) and
     overlong integer tokens refused pre-conversion (R-062).
@@ -630,6 +663,7 @@ def _parse_json_bytes(data: bytes) -> Any:
     try:
         return json.loads(
             data.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_object_members,
             parse_constant=_reject_nonfinite_constant,
             parse_float=_reject_nonfinite_float,
             parse_int=_length_guarded_parse_int,
@@ -662,6 +696,7 @@ def parse_json_text_strict(text: str, rel: str) -> Any:
     try:
         return json.loads(
             text,
+            object_pairs_hook=_reject_duplicate_object_members,
             parse_constant=_reject_nonfinite_constant,
             parse_float=_reject_nonfinite_float,
             parse_int=_length_guarded_parse_int,

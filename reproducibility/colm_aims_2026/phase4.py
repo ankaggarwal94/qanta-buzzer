@@ -2781,11 +2781,7 @@ def _is_git_object_id(value: Any) -> bool:
     bind the repository's NATIVE git object ids — 40-hex SHA-1 and 64-hex
     SHA-256 object formats are both admissible, lowercase hex, fixed
     length."""
-    return (
-        isinstance(value, str)
-        and len(value) in (40, 64)
-        and all(char in "0123456789abcdef" for char in value)
-    )
+    return schema.is_git_object_id(value)
 
 
 def untracked_disclosure_failures(value: Any) -> list[str]:

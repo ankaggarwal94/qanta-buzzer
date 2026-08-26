@@ -18,7 +18,7 @@ from .schema import (
     ColmAimsError,
     check_schema_version,
     encode_json,
-    is_commit_sha,
+    is_git_object_id,
     is_path_component,
     is_real_int,
     is_sha256_hex,
@@ -127,10 +127,10 @@ def validate_suite_receipt(receipt: dict[str, Any]) -> None:
             " (R-070)"
         )
     for field in ("commit", "tree"):
-        if not is_commit_sha(receipt[field]):
+        if not is_git_object_id(receipt[field]):
             raise SuiteReceiptError(
-                f"suite receipt {field} must be a full-length 40-hex object"
-                " id (R-070)"
+                f"suite receipt {field} must be a full-length native Git"
+                " object id (40- or 64-hex; R-070)"
             )
     if not isinstance(receipt["dirty"], bool):
         raise SuiteReceiptError(

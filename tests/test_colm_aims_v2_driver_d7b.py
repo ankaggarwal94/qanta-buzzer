@@ -21,6 +21,7 @@ pinned to the currently designated ``main.tex``/``main.pdf`` hashes.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -278,7 +279,8 @@ class TestD6Baseline:
             d6_baseline=baseline,
             qa012={"status": "VERIFIED_VACUOUS", "inventory_sha256": "b" * 64},
         )
-        assert closure.evaluate_closure(inv)["satisfied"] is False
+        with pytest.raises(schema.SchemaValidationError):
+            closure.evaluate_closure(inv)
 
     def test_explicit_hash_overrides(self, tmp_path):
         path = tmp_path / "FINAL_CHECKSUMS.json"
@@ -342,6 +344,39 @@ def _run_driver(tmp_path, *, run_id="run-0001", reclaim_crashed_relic=False):
 
 
 class TestRunDriver:
+    def test_each_record_file_is_read_once(self, tmp_path, monkeypatch):
+        records_root = _write_records_root(tmp_path / "records").absolute()
+        out_dir = tmp_path / "out"
+        checksums = tmp_path / "FINAL_CHECKSUMS.json"
+        _write_final_checksums_json(checksums)
+        qa_corpus = _write_qa012_corpus(tmp_path / "qa012")
+
+        original_read = driver.assembler.schema.read_regular_file_bytes
+        record_reads: list[str] = []
+
+        def _counting_read(path, *, tree_root=None, max_bytes=schema.MAX_ARTIFACT_BYTES):
+            if tree_root is not None and Path(tree_root).absolute() == records_root:
+                record_reads.append(Path(path).name)
+            return original_read(path, tree_root=tree_root, max_bytes=max_bytes)
+
+        monkeypatch.setattr(
+            driver.assembler.schema,
+            "read_regular_file_bytes",
+            _counting_read,
+        )
+        driver.run_driver(
+            records_root,
+            out_dir,
+            FROZEN_DIR,
+            source_commit="d" * 40,
+            d6_checksums=checksums,
+            qa012_roots=[qa_corpus],
+        )
+
+        assert sorted(record_reads) == sorted(
+            f"{cell_id}.jsonl" for cell_id in CELL_IDS
+        )
+
     def test_published_profile_validates(self, tmp_path):
         built = _run_driver(tmp_path)
         assert built.published_tree.is_dir()
@@ -390,6 +425,42 @@ class TestRunDriver:
         with pytest.raises(schema.ColmAimsError):
             _run_driver(tmp_path, run_id="run-0001")
 
+    def test_invalid_closure_does_not_consume_run_slot(self, tmp_path):
+        records_root = _write_records_root(tmp_path / "records")
+        qa_corpus = _write_qa012_corpus(tmp_path / "qa012")
+        out_dir = tmp_path / "out"
+
+        with pytest.raises(schema.SchemaValidationError):
+            driver.run_driver(
+                records_root,
+                out_dir,
+                FROZEN_DIR,
+                source_commit="d" * 40,
+                qa012_roots=[qa_corpus],
+            )
+
+        assert not (out_dir / "runs" / "run-0001").exists()
+
+    def test_non_json_closure_scalar_does_not_consume_run_slot(self, tmp_path):
+        records_root = _write_records_root(tmp_path / "records")
+        checksums = tmp_path / "FINAL_CHECKSUMS.json"
+        _write_final_checksums_json(checksums)
+        qa_corpus = _write_qa012_corpus(tmp_path / "qa012")
+        out_dir = tmp_path / "out"
+
+        with pytest.raises(schema.SchemaValidationError):
+            driver.run_driver(
+                records_root,
+                out_dir,
+                FROZEN_DIR,
+                source_commit="d" * 40,
+                d6_checksums=checksums,
+                d6_main_tex_sha256=float("nan"),
+                qa012_roots=[qa_corpus],
+            )
+
+        assert not (out_dir / "runs" / "run-0001").exists()
+
 
 # ---------------------------------------------------------------------------
 # CLI — exit codes mirror verify.py / the assembler (0 / 2 / 3 / 4)
@@ -426,7 +497,7 @@ class TestCli:
             ]
         )
         assert rc == EXIT_PASS
-        published_tree = out_dir / "runs" / "run-0001"
+        published_tree = out_dir / "runs" / "run-0001" / "tree"
         receipts = tmp_path / "receipts"
         proc = run_cli(
             "--mode",

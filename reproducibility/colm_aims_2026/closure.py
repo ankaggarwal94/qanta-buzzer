@@ -13,6 +13,9 @@ from typing import Any
 
 from .schema import (
     ANALYSIS_PROVENANCE_D7B,
+    SCHEMA_VERSION,
+    SchemaValidationError,
+    check_schema_version,
     is_sha256_hex,
 )
 
@@ -36,11 +39,141 @@ _QA012_SATISFIED_STATUSES = frozenset(
     {"VERIFIED_VACUOUS", "VERIFIED_WITH_FIXTURES"}
 )
 
+_CLOSURE_TOP_LEVEL_KEYS = frozenset(
+    {"schema_version", "d6_baseline", "rows", "holm_row", "qa012"}
+)
+_D6_BASELINE_KEYS = frozenset(
+    {
+        "main_tex_sha256",
+        "main_pdf_sha256",
+        "final_checksums_sha256",
+        "final_checksums_entries",
+    }
+)
+_ROW_KEYS = frozenset({"item", "status", "evidence"})
+_HOLM_KEYS = frozenset({"satisfied_by"})
+_QA012_KEYS = frozenset({"status", "inventory_sha256"})
+
 
 def _as_dict(value: Any) -> dict[str, Any]:
     """Shape coercion for an inventory-controlled block: ``{}`` for ANY
     non-dict, so a malformed block fails its duties instead of crashing."""
     return value if isinstance(value, dict) else {}
+
+
+def _require_exact_keys(
+    value: Any, expected: frozenset[str], where: str
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise SchemaValidationError(f"{where} must be an object")
+    missing = sorted(expected - set(value))
+    unknown = sorted(set(value) - expected)
+    if missing or unknown:
+        raise SchemaValidationError(
+            f"{where} key set is not closed; missing={missing},"
+            f" unknown={unknown}"
+        )
+    return value
+
+
+def validate_closure_inventory(inventory: Any) -> None:
+    """Validate the closed, versioned closure container before semantics."""
+    if not isinstance(inventory, dict):
+        raise SchemaValidationError("closure inventory must be an object")
+    check_schema_version(inventory, "closure inventory")
+    if inventory["schema_version"] != SCHEMA_VERSION:
+        raise SchemaValidationError(
+            "closure inventory schema version does not match this verifier"
+        )
+    _require_exact_keys(inventory, _CLOSURE_TOP_LEVEL_KEYS, "closure inventory")
+    baseline = _require_exact_keys(
+        inventory["d6_baseline"], _D6_BASELINE_KEYS, "closure d6_baseline"
+    )
+    for field in (
+        "main_tex_sha256",
+        "main_pdf_sha256",
+        "final_checksums_sha256",
+    ):
+        if not is_sha256_hex(baseline[field]):
+            raise SchemaValidationError(
+                f"closure d6_baseline.{field} must be a SHA-256 value"
+            )
+    entries = baseline["final_checksums_entries"]
+    if not isinstance(entries, dict) or not entries:
+        raise SchemaValidationError(
+            "closure d6_baseline.final_checksums_entries must be a non-empty"
+            " path-to-SHA-256 map"
+        )
+    for rel, digest in entries.items():
+        if (
+            not isinstance(rel, str)
+            or not rel
+            or "\\" in rel
+            or rel.startswith("/")
+            or any(part in ("", ".", "..") for part in rel.split("/"))
+            or not is_sha256_hex(digest)
+        ):
+            raise SchemaValidationError(
+                "closure FINAL_CHECKSUMS entries must use safe POSIX-relative"
+                " paths and SHA-256 values"
+            )
+    rows = inventory["rows"]
+    if not isinstance(rows, list) or not rows:
+        raise SchemaValidationError(
+            "closure inventory rows must be a non-empty list"
+        )
+    seen_items: set[str] = set()
+    for index, row_value in enumerate(rows):
+        row = _require_exact_keys(
+            row_value, _ROW_KEYS, f"closure rows[{index}]"
+        )
+        item = row["item"]
+        if not isinstance(item, str) or not item:
+            raise SchemaValidationError(
+                f"closure rows[{index}].item must be a non-empty string"
+            )
+        if item in seen_items:
+            raise SchemaValidationError(
+                f"closure inventory carries duplicate row item {item!r}"
+            )
+        seen_items.add(item)
+        status = row["status"]
+        evidence = row["evidence"]
+        if not isinstance(status, str) or not status:
+            raise SchemaValidationError(
+                f"closure rows[{index}].status must be a non-empty string"
+            )
+        if evidence is not None and not isinstance(evidence, str):
+            raise SchemaValidationError(
+                f"closure rows[{index}].evidence must be a string or null"
+            )
+        if status in _NON_BLOCKING_ROW_STATUSES and not evidence:
+            raise SchemaValidationError(
+                f"closure rows[{index}] with status {status!r} must bind"
+                " non-empty evidence"
+            )
+    holm_row = _require_exact_keys(
+        inventory["holm_row"], _HOLM_KEYS, "closure holm_row"
+    )
+    satisfied_by = holm_row["satisfied_by"]
+    if satisfied_by is not None and (
+        not isinstance(satisfied_by, str) or not satisfied_by
+    ):
+        raise SchemaValidationError(
+            "closure holm_row.satisfied_by must be a non-empty string or null"
+        )
+    qa012 = _require_exact_keys(
+        inventory["qa012"], _QA012_KEYS, "closure qa012"
+    )
+    if not isinstance(qa012["status"], str) or not qa012["status"]:
+        raise SchemaValidationError(
+            "closure qa012.status must be a non-empty string"
+        )
+    inventory_sha256 = qa012["inventory_sha256"]
+    if inventory_sha256 is not None and not is_sha256_hex(inventory_sha256):
+        raise SchemaValidationError(
+            "closure qa012.inventory_sha256 must be a SHA-256 value or null"
+        )
 
 
 def evaluate_closure(inventory: dict[str, Any]) -> dict[str, Any]:
@@ -50,6 +183,7 @@ def evaluate_closure(inventory: dict[str, Any]) -> dict[str, Any]:
     "failing_rows": [...]}`` — every unsatisfied duty appears as a failing
     row; the gate is satisfied only when none remain.
     """
+    validate_closure_inventory(inventory)
     failing: list[str] = []
 
     baseline = _as_dict(inventory.get("d6_baseline"))

@@ -13,7 +13,7 @@ from .schema import (
     ANALYSIS_PROVENANCE_D7B,
     ColmAimsError,
     check_schema_version,
-    is_commit_sha,
+    is_git_object_id,
     is_sha256_hex,
 )
 
@@ -401,10 +401,10 @@ def validate_ledger(
                 " (R-023)"
             )
     commit = ledger["anchored_source_commit"]
-    if not is_commit_sha(commit):
+    if not is_git_object_id(commit):
         raise LedgerValidationError(
             f"ledger anchored_source_commit {commit!r} must be a full-length"
-            " commit SHA (R-023/R-065)"
+            " native Git object id (R-023/R-065)"
         )
     if not isinstance(ledger["documents"], list):
         raise LedgerValidationError("ledger documents must be a list (R-023)")

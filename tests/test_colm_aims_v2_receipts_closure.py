@@ -91,6 +91,11 @@ class TestSuiteReceipt:
         with pytest.raises(schema.ColmAimsError):
             receipt_mod.validate_suite_receipt(make_suite_receipt(tree="HEAD"))
 
+    def test_sha256_repository_commit_and_tree_ids_validate(self):
+        receipt_mod.validate_suite_receipt(
+            make_suite_receipt(commit="a" * 64, tree="b" * 64)
+        )
+
     def test_skip_identities_must_be_a_list(self):
         doc = make_suite_receipt(skip_identities="none")
         with pytest.raises(schema.ColmAimsError):
@@ -122,6 +127,38 @@ class TestClosureGate:
     def test_d6_baseline_constants_pinned(self):
         assert closure.D6_MAIN_TEX_SHA256 == D6_MAIN_TEX_SHA256
         assert closure.D6_MAIN_PDF_SHA256 == D6_MAIN_PDF_SHA256
+
+    @pytest.mark.parametrize("version", [None, True, 1, 3, "2"])
+    def test_closure_schema_version_is_required_and_exact(self, version):
+        inventory = make_closure_inventory()
+        if version is None:
+            del inventory["schema_version"]
+        else:
+            inventory["schema_version"] = version
+        with pytest.raises(schema.ColmAimsError):
+            closure.evaluate_closure(inventory)
+
+    @pytest.mark.parametrize(
+        "block",
+        ["top", "d6_baseline", "row", "holm_row", "qa012"],
+    )
+    def test_closure_nested_key_sets_are_closed(self, block):
+        inventory = make_closure_inventory()
+        if block == "top":
+            target = inventory
+        elif block == "row":
+            target = inventory["rows"][0]
+        else:
+            target = inventory[block]
+        target["unexpected"] = "value"
+        with pytest.raises(schema.SchemaValidationError):
+            closure.evaluate_closure(inventory)
+
+    def test_duplicate_closure_row_ids_are_rejected(self):
+        inventory = make_closure_inventory()
+        inventory["rows"].append(dict(inventory["rows"][0]))
+        with pytest.raises(schema.SchemaValidationError, match="duplicate row"):
+            closure.evaluate_closure(inventory)
 
     def test_fully_satisfied_inventory_passes(self):
         inventory = make_closure_inventory()

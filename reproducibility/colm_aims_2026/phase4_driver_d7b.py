@@ -549,7 +549,8 @@ def run_driver(
     surface (config -> 2), then the create-once publish.
     """
     records_root = Path(records_root)
-    complete_by_cell = assembler.load_complete_by_cell(records_root)
+    record_snapshot = assembler.load_record_snapshot(records_root)
+    complete_by_cell = record_snapshot.complete_by_cell
     horizon_identity = record_horizon_identity(complete_by_cell)
     keyset_digest = record_keyset_digest(complete_by_cell)
 
@@ -586,6 +587,7 @@ def run_driver(
         qa012=qa012_block,
         run_id=run_id,
         reclaim_crashed_relic=reclaim_crashed_relic,
+        record_snapshot=record_snapshot,
     )
 
 

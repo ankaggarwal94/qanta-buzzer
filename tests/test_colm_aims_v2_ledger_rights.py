@@ -91,6 +91,11 @@ class TestLedgerRows:
         with pytest.raises(ledger_mod.LedgerValidationError):
             ledger_mod.validate_ledger(doc)
 
+    def test_sha256_repository_commit_id_validates(self):
+        doc = _valid_ledger()
+        doc["anchored_source_commit"] = "a" * 64
+        ledger_mod.validate_ledger(doc)
+
     def test_unverified_row_requires_genuine_blocking_task(self):
         # D3: a genuinely-open row must name a real remaining task.
         doc = _valid_ledger(
