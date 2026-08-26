@@ -25,14 +25,19 @@ from tests._colm_aims_v2_helpers import (
     LEG_RATES,
     LEG_RECORD_FILE_BIJECTION,
     N_ITEMS,
+    TRAJECTORY_HORIZON,
     VERDICT_SOURCE_PASS,
     assert_failing_leg,
     assert_passing_report,
     build_package_v2,
     canonical_data,
+    canonical_item_keys,
     colm_no_network,  # noqa: F401 - autouse fixture
     expected_item_key,
+    expected_estimand_digest,
+    horizon_map_sha256,
     make_record_v2,
+    release_report,
     source_report,
 )
 
@@ -251,6 +256,59 @@ class TestItemKeySetEquality:
         pkg = build_package_v2(tmp_path, records_mutator=exclude_one)
         report = source_report(pkg)
         assert report.verdict != VERDICT_SOURCE_PASS
+
+    @pytest.mark.parametrize("reporter", [source_report, release_report])
+    def test_extra_excluded_rows_fail_with_complete_population_intact(
+        self, tmp_path, reporter
+    ):
+        extra_key = expected_item_key("extra-excluded-item")
+        horizon_identity = horizon_map_sha256(
+            {
+                **{
+                    key: TRAJECTORY_HORIZON
+                    for key in canonical_item_keys()
+                },
+                extra_key: TRAJECTORY_HORIZON,
+            }
+        )
+
+        def add_excluded(_cell_id, records):
+            return records + [
+                dict(
+                    make_record_v2(extra_key, 0, 0),
+                    excluded=True,
+                    exclusion_reason=AMBIGUOUS_TERMINAL_SENTINEL,
+                )
+            ]
+
+        def bind_matching_declarations(profile):
+            profile["grid"]["held_fixed"]["horizon_identity"] = (
+                horizon_identity
+            )
+            for cell in profile["cells"]:
+                counts = cell["counts"]
+                counts["n_excluded_or_unpaired"] = 1
+                counts["exclusion_reason_counts"] = {
+                    AMBIGUOUS_TERMINAL_SENTINEL: 1
+                }
+                counts["n_pairing_population"] = N_ITEMS + 1
+                estimand = cell["estimand"]
+                estimand["timeout_parameters"]["horizon_map_sha256"] = (
+                    horizon_identity
+                )
+                estimand["event_representation"]["horizon_identity"] = (
+                    horizon_identity
+                )
+                cell["estimand_digest"] = expected_estimand_digest(estimand)
+
+        pkg = build_package_v2(
+            tmp_path,
+            records_mutator=add_excluded,
+            profile_mutator=bind_matching_declarations,
+        )
+        assert all(not cell["excluded_keys"] for cell in pkg.profile["cells"])
+        report = reporter(pkg)
+        assert_failing_leg(report, "record_validation")
 
     def test_duplicate_pair_keys_fail_closed(self, tmp_path):
         def duplicate_key(cell_id, records):

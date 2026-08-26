@@ -751,7 +751,7 @@ def _reject_empty_evaluation(cells: Any) -> None:
 def _complete_key_map(
     records: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """Complete records keyed by item key (excluded/malformed skipped)."""
+    """Complete records keyed by item key after record-validation refusal."""
     out: dict[str, dict[str, Any]] = {}
     for record in records:
         outcome = pairing.classify_record(record)
@@ -1979,6 +1979,14 @@ def _run_verifier_impl(
         for index, record in enumerate(records_by_rel[rel]):
             try:
                 schema.validate_record(record)
+                outcome = pairing.classify_record(record)
+                if outcome["status"] != "complete":
+                    raise schema.RecordValidationError(
+                        "frozen v2 package permits zero record-derived"
+                        " in-package exclusions; upstream-unpaired items"
+                        " belong only in pre-package retention provenance"
+                        " (R-042/R-052)"
+                    )
             except schema.RecordValidationError as exc:
                 lineno = lines[index] if index < len(lines) else "?"
                 if len(record_errors) < MAX_RECORDED_VALIDATION_ERRORS:
@@ -3603,6 +3611,21 @@ def _recompute_row_status(
     if not isinstance(artifact, str) or artifact not in snapshot:
         return "UNVERIFIED"
     if row.get("producer_entrypoint") != prov.get("producer_entrypoint"):
+        return "UNVERIFIED"
+    producer_entrypoint = prov.get("producer_entrypoint")
+    helper_sha256s = prov.get("helper_sha256s")
+    if not isinstance(producer_entrypoint, str) or not isinstance(
+        helper_sha256s, dict
+    ):
+        return "UNVERIFIED"
+    helper_paths = list(helper_sha256s)
+    if not all(isinstance(path, str) for path in helper_paths):
+        return "UNVERIFIED"
+    expected_dependency_closure = [
+        producer_entrypoint,
+        *sorted(helper_paths),
+    ]
+    if row.get("dependency_closure") != expected_dependency_closure:
         return "UNVERIFIED"
     calibration_values = {
         v

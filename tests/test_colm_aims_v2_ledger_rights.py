@@ -400,3 +400,34 @@ class TestRights:
         pkg = build_package_v2(tmp_path, ledger_mutator=mutate)
         report = release_report(pkg)
         assert report.verdict != VERDICT_RELEASE_PASS
+
+    @pytest.mark.parametrize(
+        "dependency_closure",
+        [
+            [],
+            "scripts/fake_producer.py",
+            ["scripts/fake_producer.py"],
+            [
+                "scripts/fake_producer.py",
+                "scripts/fake_helper.py",
+                "scripts/extra.py",
+            ],
+            ["scripts/fake_helper.py", "scripts/fake_producer.py"],
+            [
+                "scripts/fake_producer.py",
+                "scripts/fake_helper.py",
+                "scripts/fake_helper.py",
+            ],
+        ],
+    )
+    def test_pass_row_requires_exact_dependency_closure(
+        self, tmp_path, dependency_closure
+    ):
+        def mutate(ledger):
+            for row in ledger["rows"]:
+                if row["claim_id"] == "clm-0001":
+                    row["dependency_closure"] = dependency_closure
+
+        pkg = build_package_v2(tmp_path, ledger_mutator=mutate)
+        report = release_report(pkg)
+        assert report.verdict != VERDICT_RELEASE_PASS
