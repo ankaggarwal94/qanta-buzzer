@@ -213,6 +213,7 @@ def test_r070_git_identity_is_bound_to_repository_root(
 def test_r070_main_rejects_missing_or_malformed_junit(
     tmp_path, monkeypatch, junit_bytes
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     workflow = tmp_path / "workflow.yml"
     workflow.write_text("name: test\n", encoding="utf-8")
     output_dir = tmp_path / "evidence"
@@ -226,7 +227,8 @@ def test_r070_main_rejects_missing_or_malformed_junit(
             return ""
         raise AssertionError(args)
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, **kwargs):
+        assert Path(kwargs["cwd"]).resolve() == REPO.resolve()
         junit_arg = next(
             part for part in command if part.startswith("--junitxml=")
         )

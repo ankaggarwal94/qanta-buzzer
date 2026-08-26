@@ -110,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         check=False,
+        cwd=_REPO_ROOT,
     )
     fileio.create_once_bytes(
         transcript_path, completed.stdout, exists_label="suite transcript"
