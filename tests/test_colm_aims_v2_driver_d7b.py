@@ -178,14 +178,37 @@ def _write_records_root(root):
             for cell_id in CELL_IDS
         },
     }
-    (root.parent / driver.LAUNCH_RECEIPT_NAME).write_bytes(
-        schema.encode_json(receipt)
+    receipt_bytes = schema.encode_json(receipt)
+    (root.parent / driver.LAUNCH_RECEIPT_NAME).write_bytes(receipt_bytes)
+    (root.parent / driver.ACCEPTANCE_MARKER_NAME).write_bytes(
+        schema.encode_json(
+            {
+                "schema_version": schema.SCHEMA_VERSION,
+                "marker_type": "phase4_launch_accepted",
+                "activation_digest": activation_digest,
+                "launch_receipt_sha256": sha256_bytes(receipt_bytes),
+            }
+        )
     )
     return root
 
 
 def _launch_receipt(records_root: Path) -> Path:
     return Path(records_root).parent / driver.LAUNCH_RECEIPT_NAME
+
+
+def _acceptance_marker(records_root: Path) -> Path:
+    return Path(records_root).parent / driver.ACCEPTANCE_MARKER_NAME
+
+
+def _rewrite_acceptance_marker(records_root: Path) -> None:
+    receipt_bytes = _launch_receipt(records_root).read_bytes()
+    marker = json.loads(_acceptance_marker(records_root).read_text("utf-8"))
+    marker["activation_digest"] = json.loads(
+        receipt_bytes.decode("utf-8")
+    )["activation_digest"]
+    marker["launch_receipt_sha256"] = sha256_bytes(receipt_bytes)
+    _acceptance_marker(records_root).write_bytes(schema.encode_json(marker))
 
 
 def _launch_ledger(records_root: Path) -> Path:
@@ -221,6 +244,7 @@ def _resign_transaction_chain(
     receipt["activation_digest"] = activation_digest
     receipt["ledger_sha256"] = sha256_bytes(ledger_path.read_bytes())
     receipt_path.write_bytes(schema.encode_json(receipt))
+    _rewrite_acceptance_marker(records_root)
     return activation_digest
 
 
@@ -553,6 +577,115 @@ def _run_driver(
 
 
 class TestRunDriver:
+    def _validate_transaction(self, records_root: Path):
+        return driver.validate_launch_receipt(
+            records_root,
+            _launch_receipt(records_root),
+            _launch_ledger(records_root),
+            _activation_digest(records_root),
+            TEST_SOURCE_COMMIT,
+        )
+
+    def test_receipt_only_tree_without_positive_marker_refuses(self, tmp_path):
+        records_root = _write_records_root(tmp_path / "records")
+        _acceptance_marker(records_root).unlink()
+
+        with pytest.raises(schema.TypedIngressError, match="LAUNCH_ACCEPTED"):
+            self._validate_transaction(records_root)
+
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            "wrong_hash",
+            "wrong_activation",
+            "wrong_type",
+            "wrong_version",
+            "extra_key",
+            "missing_key",
+            "malformed",
+            "duplicate_key",
+            "noncanonical",
+            "directory",
+            "wrong_filename",
+        ],
+    )
+    def test_acceptance_marker_is_closed_canonical_and_bound(
+        self, tmp_path, mutation
+    ):
+        records_root = _write_records_root(tmp_path / "records")
+        marker_path = _acceptance_marker(records_root)
+        marker = json.loads(marker_path.read_text("utf-8"))
+        if mutation == "wrong_hash":
+            marker["launch_receipt_sha256"] = "f" * 64
+        elif mutation == "wrong_activation":
+            marker["activation_digest"] = "f" * 64
+        elif mutation == "wrong_type":
+            marker["marker_type"] = "phase4_launch_pending"
+        elif mutation == "wrong_version":
+            marker["schema_version"] = 99
+        elif mutation == "extra_key":
+            marker["accepted"] = True
+        elif mutation == "missing_key":
+            marker.pop("launch_receipt_sha256")
+        elif mutation == "malformed":
+            marker_path.write_bytes(b"{not-json\n")
+        elif mutation == "duplicate_key":
+            marker_path.write_bytes(
+                b'{"schema_version":2,"schema_version":2}\n'
+            )
+        elif mutation == "noncanonical":
+            marker_path.write_text(json.dumps(marker), encoding="utf-8")
+        elif mutation == "directory":
+            marker_path.unlink()
+            marker_path.mkdir()
+        elif mutation == "wrong_filename":
+            marker_path.rename(marker_path.with_name("ACCEPTED.json"))
+        if mutation in {
+            "wrong_hash",
+            "wrong_activation",
+            "wrong_type",
+            "wrong_version",
+            "extra_key",
+            "missing_key",
+        }:
+            marker_path.write_bytes(schema.encode_json(marker))
+
+        with pytest.raises(schema.ColmAimsError):
+            self._validate_transaction(records_root)
+
+    def test_symlinked_acceptance_marker_refuses(self, tmp_path):
+        records_root = _write_records_root(tmp_path / "records")
+        marker_path = _acceptance_marker(records_root)
+        target = marker_path.with_name("marker-target.json")
+        marker_path.rename(target)
+        try:
+            marker_path.symlink_to(target)
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+
+        with pytest.raises(schema.TypedIngressError, match="symlink|reparse"):
+            self._validate_transaction(records_root)
+
+    def test_marker_hashes_the_single_receipt_read(
+        self, tmp_path, monkeypatch
+    ):
+        records_root = _write_records_root(tmp_path / "records")
+        receipt_path = _launch_receipt(records_root).absolute()
+        original_read = driver.schema.read_regular_file_bytes
+        reads = []
+
+        def counted_read(path, **kwargs):
+            if Path(path).absolute() == receipt_path:
+                reads.append(Path(path))
+            return original_read(path, **kwargs)
+
+        monkeypatch.setattr(
+            driver.schema, "read_regular_file_bytes", counted_read
+        )
+        self._validate_transaction(records_root)
+
+        assert reads == [receipt_path]
+
     @pytest.mark.parametrize("mutation", ["missing", "different"])
     def test_launch_receipt_requires_exact_process_trust_model(
         self, tmp_path, mutation

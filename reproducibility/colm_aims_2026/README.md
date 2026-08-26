@@ -91,3 +91,10 @@ rejects a missing or different process-trust token. If this operator
 precondition is unavailable, do not run the ceremony: provision a separately
 approved OS isolation boundary first. No verifier or closure verdict proves
 hostile-process provenance or tamper resistance.
+
+`LAUNCH_RECEIPT.json` records pre-acceptance comparator and byte bindings; it
+does not accept a launch. The launcher creates `LAUNCH_ACCEPTED.json` only
+after promotion durability and producer-quarantine cleanup complete, and the
+D7(b) driver requires that marker to bind the exact receipt bytes and
+activation digest. A missing marker fails closed regardless of whether a
+diagnostic `STOP_REPORT.json` could be written.

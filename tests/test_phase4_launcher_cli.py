@@ -1592,6 +1592,42 @@ def test_interrupt_after_ledger_claim_writes_stop_report(
     assert not Path(config["promote_to"]).exists()
 
 
+@pytest.mark.parametrize("stage", ["launch", "comparator"])
+def test_preacceptance_stop_failure_never_masks_primary_runfailed(
+    tmp_path, monkeypatch, stage
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+
+    def primary_failure(*_args):
+        raise OSError(f"synthetic {stage} failure")
+
+    monkeypatch.setattr(
+        launcher,
+        "_write_stop_report",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("synthetic STOP failure")
+        ),
+    )
+    kwargs = (
+        {"launch": primary_failure}
+        if stage == "launch"
+        else {"compare": primary_failure}
+    )
+    with pytest.raises(
+        launcher.RunFailed, match="STOP report publication failed"
+    ) as caught:
+        _call_launcher(config, probes, **kwargs)
+
+    assert isinstance(caught.value.__cause__, OSError)
+    assert str(caught.value.__cause__) == f"synthetic {stage} failure"
+    assert not Path(config["promote_to"]).exists()
+    assert not (
+        Path(config["quarantine_dir"]) / launcher.ACCEPTANCE_MARKER_NAME
+    ).exists()
+
+
 def test_partial_ledger_writes_are_completed_and_fsynced(
     tmp_path, monkeypatch
 ):
@@ -1965,7 +2001,19 @@ def test_publish_uses_private_snapshot_when_original_output_mutates(
     assert receipt["records_sha256"][first_cell] == _sha256(
         observed["validated"]
     )
+    marker = json.loads(
+        (promote_to / launcher.ACCEPTANCE_MARKER_NAME).read_text("utf-8")
+    )
+    assert marker == {
+        "schema_version": launcher.schema.SCHEMA_VERSION,
+        "marker_type": "phase4_launch_accepted",
+        "activation_digest": config["activation_digest"],
+        "launch_receipt_sha256": _sha256(
+            (promote_to / launcher.LAUNCH_RECEIPT_NAME).read_bytes()
+        ),
+    }
     assert {child.name for child in promote_to.iterdir()} == {
+        launcher.ACCEPTANCE_MARKER_NAME,
         launcher.CAPTURED_INPUTS_DIRNAME,
         launcher.LAUNCH_RECEIPT_NAME,
         "records",
@@ -2101,6 +2149,7 @@ def test_post_rename_sync_failure_records_truthful_committed_state(
     assert report["reason"] == "promotion_durability_failure"
     assert report["promotion_committed"] is True
     assert report["activation_digest"] == config["activation_digest"]
+    assert not (promote_to / launcher.ACCEPTANCE_MARKER_NAME).exists()
 
 
 def test_postcommit_quarantine_cleanup_failure_never_returns_pass(
@@ -2132,3 +2181,162 @@ def test_postcommit_quarantine_cleanup_failure_never_returns_pass(
     assert report["reason"] == "post_promotion_cleanup_failure"
     assert report["promotion_committed"] is True
     assert "original-quarantine cleanup failure" in report["error"]
+    assert not (promote_to / launcher.ACCEPTANCE_MARKER_NAME).exists()
+
+
+def test_cleanup_and_stop_write_failures_still_leave_no_acceptance(
+    tmp_path, monkeypatch
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    quarantine = Path(config["quarantine_dir"])
+    promote_to = Path(config["promote_to"])
+    real_rmtree = launcher.shutil.rmtree
+
+    def fail_original_cleanup(path, *args, **kwargs):
+        if Path(path) == quarantine:
+            raise OSError("synthetic cleanup EIO")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(launcher.shutil, "rmtree", fail_original_cleanup)
+    monkeypatch.setattr(
+        launcher,
+        "_write_stop_report",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("synthetic STOP ENOSPC")
+        ),
+    )
+    with pytest.raises(
+        launcher.RunFailed, match="STOP report publication also failed"
+    ):
+        _call_launcher(config, probes)
+
+    assert promote_to.is_dir()
+    assert (promote_to / launcher.LAUNCH_RECEIPT_NAME).is_file()
+    assert not (promote_to / launcher.ACCEPTANCE_MARKER_NAME).exists()
+    assert not (promote_to / launcher.STOP_REPORT_NAME).exists()
+
+
+def test_quarantine_parent_sync_failure_precedes_acceptance_marker(
+    tmp_path, monkeypatch
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    quarantine = Path(config["quarantine_dir"])
+    promote_to = Path(config["promote_to"])
+    real_sync = launcher.fileio.fsync_directory
+
+    def fail_post_cleanup_sync(path):
+        if Path(path) == quarantine.parent and not quarantine.exists():
+            raise OSError("synthetic quarantine-parent sync failure")
+        return real_sync(path)
+
+    monkeypatch.setattr(
+        launcher.fileio, "fsync_directory", fail_post_cleanup_sync
+    )
+    with pytest.raises(launcher.RunFailed, match="durability"):
+        _call_launcher(config, probes)
+
+    assert promote_to.is_dir()
+    assert not (promote_to / launcher.ACCEPTANCE_MARKER_NAME).exists()
+    report = json.loads(
+        (promote_to / launcher.STOP_REPORT_NAME).read_text("utf-8")
+    )
+    assert report["reason"] == "post_promotion_cleanup_failure"
+
+
+def test_acceptance_marker_failure_and_stop_failure_remain_rejected(
+    tmp_path, monkeypatch
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    quarantine = Path(config["quarantine_dir"])
+    promote_to = Path(config["promote_to"])
+    monkeypatch.setattr(
+        launcher,
+        "_write_acceptance_marker",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("synthetic marker EIO")
+        ),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_write_stop_report",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("synthetic STOP ENOSPC")
+        ),
+    )
+    with pytest.raises(
+        launcher.RunFailed, match="acceptance-marker.*STOP report"
+    ):
+        _call_launcher(config, probes)
+
+    assert not quarantine.exists()
+    assert promote_to.is_dir()
+    assert (promote_to / launcher.LAUNCH_RECEIPT_NAME).is_file()
+    assert not (promote_to / launcher.ACCEPTANCE_MARKER_NAME).exists()
+    assert not (promote_to / launcher.STOP_REPORT_NAME).exists()
+
+
+def test_exact_marker_visible_after_create_once_exception_is_committed(
+    tmp_path, monkeypatch
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    promote_to = Path(config["promote_to"])
+    real_create_once = launcher.create_once_bytes
+    real_read = launcher.schema.read_regular_file_bytes
+
+    def publish_marker_then_raise(path, data, **kwargs):
+        real_create_once(path, data, **kwargs)
+        if Path(path).name == launcher.ACCEPTANCE_MARKER_NAME:
+            raise OSError("synthetic post-link directory sync uncertainty")
+
+    def fail_marker_reread(path, **kwargs):
+        if Path(path).name == launcher.ACCEPTANCE_MARKER_NAME:
+            raise OSError("synthetic marker reread EIO")
+        return real_read(path, **kwargs)
+
+    monkeypatch.setattr(launcher, "create_once_bytes", publish_marker_then_raise)
+    monkeypatch.setattr(
+        launcher.schema, "read_regular_file_bytes", fail_marker_reread
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_write_stop_report",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("STOP must not run after marker commit")
+        ),
+    )
+    result = _call_launcher(config, probes)
+
+    assert result["verdict"] == "PASS"
+    assert (promote_to / launcher.ACCEPTANCE_MARKER_NAME).is_file()
+    assert not (promote_to / launcher.STOP_REPORT_NAME).exists()
+
+
+def test_acceptance_marker_is_written_only_after_quarantine_cleanup(
+    tmp_path, monkeypatch
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    quarantine = Path(config["quarantine_dir"])
+    real_write_marker = launcher._write_acceptance_marker
+    observed = {}
+
+    def assert_cleanup_then_mark(promote_to, **kwargs):
+        observed["quarantine_exists"] = quarantine.exists()
+        return real_write_marker(promote_to, **kwargs)
+
+    monkeypatch.setattr(
+        launcher, "_write_acceptance_marker", assert_cleanup_then_mark
+    )
+    result = _call_launcher(config, probes)
+
+    assert result["verdict"] == "PASS"
+    assert observed == {"quarantine_exists": False}

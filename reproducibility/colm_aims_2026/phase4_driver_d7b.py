@@ -36,9 +36,10 @@ Exit codes mirror ``verify.py`` / ``phase4_assemble_d7b`` (0 pass, 2 usage,
 3 ingress, 4 internal). Spec rules: R-001..R-011 (profile shape), R-040/R-043
 (grid/held-fixed), R-052 (retention), R-071/R-072 (closure), R-074/R-075
 (frozen loaders), R-016/R-039 (create-once publish).
-The launch receipt authenticates the exact ten record hashes and activation
-digest before any evidence is assembled and binds the R-081 process/host
-trust boundary under which those bytes were published. Spec:
+The pre-acceptance launch receipt authenticates the exact ten record hashes
+and activation digest and binds the R-081 process/host trust boundary. The
+separate canonical ``LAUNCH_ACCEPTED.json`` marker must bind those exact
+receipt bytes before any evidence is assembled. Spec:
 .correctless/specs/camera-ready-aims-evidence-2.md
 """
 from __future__ import annotations
@@ -127,7 +128,16 @@ RANDOM_K_DRAW_ID = "draw-archived-0001"
 NO_DRAW_ID = "draw-none"
 PRODUCER_ENTRYPOINT = "reproducibility/colm_aims_2026/phase4_driver_d7b.py"
 LAUNCH_RECEIPT_NAME = "LAUNCH_RECEIPT.json"
+ACCEPTANCE_MARKER_NAME = "LAUNCH_ACCEPTED.json"
 STOP_REPORT_NAME = "STOP_REPORT.json"
+ACCEPTANCE_MARKER_KEYS = frozenset(
+    {
+        "schema_version",
+        "marker_type",
+        "activation_digest",
+        "launch_receipt_sha256",
+    }
+)
 LAUNCH_RECEIPT_KEYS = frozenset(
     {
         "schema_version",
@@ -820,6 +830,35 @@ def validate_launch_receipt(
         raise schema.TypedIngressError(
             "certified promotion carries a STOP_REPORT.json and is not an"
             " accepted launch transaction"
+        )
+    marker_raw = schema.read_regular_file_bytes(
+        records_root.parent / ACCEPTANCE_MARKER_NAME,
+        tree_root=records_root.parent,
+    )
+    try:
+        marker = schema.parse_json_bytes_strict(marker_raw)
+    except (UnicodeError, ValueError) as exc:
+        raise schema.TypedIngressError(
+            "Phase-4 acceptance marker is not strict JSON"
+        ) from exc
+    if (
+        not isinstance(marker, dict)
+        or set(marker) != ACCEPTANCE_MARKER_KEYS
+        or schema.encode_json(marker) != marker_raw
+    ):
+        raise schema.TypedIngressError(
+            "Phase-4 acceptance marker has a non-closed or noncanonical shape"
+        )
+    schema.check_schema_version(marker, "Phase-4 acceptance marker")
+    if (
+        marker["marker_type"] != "phase4_launch_accepted"
+        or marker["activation_digest"] != expected_activation_digest
+        or not schema.is_sha256_hex(marker["launch_receipt_sha256"])
+        or marker["launch_receipt_sha256"]
+        != hashlib.sha256(raw).hexdigest()
+    ):
+        raise schema.TypedIngressError(
+            "Phase-4 acceptance marker does not bind the launch transaction"
         )
     export_bytes = schema.read_regular_file_bytes(
         records_root.parent / doc["export_basename"],

@@ -163,6 +163,7 @@ def create_once_bytes(
     data: bytes,
     *,
     exists_label: str = "create-once artifact",
+    commit_created: Callable[[], None] | None = None,
 ) -> None:
     """Durably publish a new regular file, failing closed if ``path`` exists.
 
@@ -180,6 +181,11 @@ def create_once_bytes(
     exists_label
         Artifact description used in the ``FileExistsError`` message, so
         callers keep their historical error wording.
+    commit_created
+        Optional no-I/O callback invoked immediately after the create-once
+        hard link commits and before any fallible temp cleanup or directory
+        sync. Callers may use it to distinguish a committed artifact from a
+        pre-commit failure; the callback must not raise.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -198,6 +204,8 @@ def create_once_bytes(
             raise FileExistsError(
                 f"{exists_label} already exists: {path}"
             ) from exc
+        if commit_created is not None:
+            commit_created()
         os.unlink(temporary)
         temporary = ""
         _fsync_directory(path.parent, published_file=path)

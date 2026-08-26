@@ -4407,6 +4407,7 @@ class TestR081LauncherRun:
             promote_to / launcher.CAPTURED_INPUTS_DIRNAME
         ).is_dir()
         assert (promote_to / launcher.LAUNCH_RECEIPT_NAME).is_file()
+        assert (promote_to / launcher.ACCEPTANCE_MARKER_NAME).is_file()
         assert not quarantine.exists()
 
     def test_untracked_only_status_is_not_a_refusal(

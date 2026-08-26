@@ -75,6 +75,28 @@ def test_create_once_bytes_windows_uses_the_same_fallback(tmp_path, monkeypatch)
     assert destination in opened
 
 
+def test_create_once_commit_callback_precedes_post_link_sync_failure(
+    tmp_path, monkeypatch
+):
+    destination = tmp_path / "committed-before-sync.bin"
+    committed = []
+
+    def fail_directory_sync(_directory, published_file=None):
+        assert published_file == destination
+        raise OSError(errno.EIO, "synthetic post-link sync failure")
+
+    monkeypatch.setattr(fileio, "_fsync_directory", fail_directory_sync)
+    with pytest.raises(OSError, match="post-link sync failure"):
+        fileio.create_once_bytes(
+            destination,
+            b"committed",
+            commit_created=lambda: committed.append(True),
+        )
+
+    assert committed == [True]
+    assert destination.read_bytes() == b"committed"
+
+
 def test_directory_open_permission_error_remains_fatal_off_windows(
     tmp_path, monkeypatch
 ):

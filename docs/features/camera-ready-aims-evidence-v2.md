@@ -135,7 +135,11 @@ failing leg names the leg id, expected vs observed, and a remediation class
   publication rejects another boundary. If the operator cannot establish
   this precondition, the ceremony must not run without a separately approved
   OS isolation backend. No PASS or closure verdict proves hostile-process
-  provenance or tamper resistance.
+  provenance or tamper resistance. `LAUNCH_RECEIPT.json` is only a
+  pre-acceptance byte binding; the D7(b) driver also requires the canonical
+  `LAUNCH_ACCEPTED.json` marker written after promotion durability and
+  producer-quarantine cleanup. Missing positive acceptance rejects even if a
+  diagnostic STOP report could not be persisted.
 - **Source ceiling.** `--mode source` tops out at `PASS_SOURCE_ONLY` —
   in-package consistency only. It certifies no release binding, no anchored
   expectation, no rights clearance, no archival identity, and (like every

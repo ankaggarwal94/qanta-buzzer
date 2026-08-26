@@ -24,8 +24,10 @@ Spec: .correctless/specs/camera-ready-aims-evidence-2.md R-081/R-082
 
 Error taxonomy: every PRE-launch defect raises ``LaunchRefusal`` (the run
 never started; the message names the refusal class); POST-claim defects
-raise ``RunFailed`` with a truthful STOP report beside the retained output
-state. Both are ``schema.ColmAimsError`` subclasses.
+raise ``RunFailed`` and attempt a truthful diagnostic STOP report beside the
+retained output state. STOP publication failure never supplies acceptance;
+only the terminal positive marker does. Both typed outcomes are
+``schema.ColmAimsError`` subclasses.
 """
 from __future__ import annotations
 
@@ -112,6 +114,7 @@ LAUNCHER_CONFIG_KEYS = (
 
 STOP_REPORT_NAME = "STOP_REPORT.json"
 LAUNCH_RECEIPT_NAME = "LAUNCH_RECEIPT.json"
+ACCEPTANCE_MARKER_NAME = "LAUNCH_ACCEPTED.json"
 CAPTURED_INPUTS_DIRNAME = ".certified_inputs"
 PRIVATE_PROMOTION_PREFIX = ".phase4-accepted-"
 
@@ -2367,6 +2370,17 @@ def _write_stop_report(quarantine_dir: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def _attempt_stop_report(
+    retained_dir: Path, payload: dict[str, Any]
+) -> str:
+    """Best-effort diagnostic that never masks the primary run failure."""
+    try:
+        _write_stop_report(retained_dir, payload)
+    except BaseException as exc:
+        return f"STOP report publication failed ({exc.__class__.__name__})"
+    return "STOP report written"
+
+
 def _write_launch_receipt(
     quarantine_dir: Path,
     *,
@@ -2376,7 +2390,7 @@ def _write_launch_receipt(
     comparator_result: dict[str, Any],
     comparator_output_snapshot: dict[str, bytes],
 ) -> None:
-    """Bind the accepted export and record bytes before atomic promotion."""
+    """Bind comparator-approved bytes before promotion, without accepting."""
     _require_comparator_outputs_unchanged(
         quarantine_dir, out_basename, comparator_output_snapshot
     )
@@ -2410,6 +2424,51 @@ def _write_launch_receipt(
         schema.encode_json(payload),
         exists_label="Phase-4 launch receipt",
     )
+
+
+def _write_acceptance_marker(
+    promote_to: Path, *, activation_digest: str
+) -> None:
+    """Make post-cleanup acceptance explicit at one terminal commit point.
+
+    ``create_once_bytes`` publishes by hard link before its final cleanup and
+    directory-sync work.  If a later operation raises, exact marker bytes are
+    already the authoritative commit; downgrading that state to STOP would
+    recreate the receipt-only ambiguity this marker closes.  A pre-existing
+    destination is never adopted.
+    """
+    promote_to = Path(promote_to)
+    receipt_bytes = schema.read_regular_file_bytes(
+        promote_to / LAUNCH_RECEIPT_NAME, tree_root=promote_to
+    )
+    marker_bytes = schema.encode_json(
+        {
+            "schema_version": schema.SCHEMA_VERSION,
+            "marker_type": "phase4_launch_accepted",
+            "activation_digest": activation_digest,
+            "launch_receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+        }
+    )
+    marker_path = promote_to / ACCEPTANCE_MARKER_NAME
+    marker_committed = False
+
+    def _mark_committed() -> None:
+        nonlocal marker_committed
+        marker_committed = True
+
+    try:
+        create_once_bytes(
+            marker_path,
+            marker_bytes,
+            exists_label="Phase-4 acceptance marker",
+            commit_created=_mark_committed,
+        )
+    except BaseException:
+        if not marker_committed:
+            raise
+        # The exact marker became visible after every launch prerequisite.
+        # Treat that commit as PASS; a crash that loses the entry is a safe
+        # false negative because downstream then refuses the absent marker.
 
 
 def _default_sync_parent_directory(parent: Path) -> None:
@@ -2895,7 +2954,7 @@ def validate_and_launch(
         # prefix (or zero bytes) reached disk.  Never unlink/retry: preserve
         # the claimed ledger and quarantine as forensic evidence and stop
         # before launch.
-        _write_stop_report(
+        stop_detail = _attempt_stop_report(
             quarantine_dir,
             {
                 "reason": "ledger_write_failure",
@@ -2909,7 +2968,7 @@ def validate_and_launch(
             "exception ledger was claimed but could not be durably written"
             f" ({exc.__class__.__name__}) — launch blocked; partial ledger"
             f" preserved at {ledger_path}, quarantine left intact at"
-            f" {quarantine_dir} with a STOP report (R-081)"
+            f" {quarantine_dir}; {stop_detail} (R-081)"
         ) from exc
 
     # Launch EXACTLY once. A crash inside the launch callable still gets a
@@ -2918,7 +2977,7 @@ def validate_and_launch(
     try:
         exit_code = launch(list(argv), dict(child_env))
     except BaseException as exc:
-        _write_stop_report(
+        stop_detail = _attempt_stop_report(
             quarantine_dir,
             {
                 "reason": "launch_crash",
@@ -2930,11 +2989,11 @@ def validate_and_launch(
         )
         raise RunFailed(
             f"producer launch crashed ({exc.__class__.__name__}) —"
-            f" quarantine left intact at {quarantine_dir}, STOP report"
-            " written, nothing promoted (R-081)"
+            f" quarantine left intact at {quarantine_dir}; {stop_detail};"
+            " nothing promoted (R-081)"
         ) from exc
     if type(exit_code) is not int or exit_code != 0:
-        _write_stop_report(
+        stop_detail = _attempt_stop_report(
             quarantine_dir,
             {
                 "reason": "nonzero_exit",
@@ -2946,7 +3005,7 @@ def validate_and_launch(
         )
         raise RunFailed(
             f"producer run exited nonzero ({exit_code!r}) — quarantine left"
-            f" intact at {quarantine_dir}, STOP report written, nothing"
+            f" intact at {quarantine_dir}; {stop_detail}; nothing"
             " promoted (R-081)"
         )
 
@@ -2956,7 +3015,7 @@ def validate_and_launch(
     try:
         _verify_captured_inputs(captured_inputs)
     except BaseException as exc:
-        _write_stop_report(
+        stop_detail = _attempt_stop_report(
             quarantine_dir,
             {
                 "reason": "captured_input_drift",
@@ -2967,8 +3026,8 @@ def validate_and_launch(
         )
         raise RunFailed(
             "captured producer inputs changed during execution — promotion"
-            f" blocked; quarantine left intact at {quarantine_dir} with a"
-            " STOP report (R-075/R-081/R-082)"
+            f" blocked; quarantine left intact at {quarantine_dir};"
+            f" {stop_detail} (R-075/R-081/R-082)"
         ) from exc
 
     # Mandatory comparator on a zero exit. A comparator crash gets a STOP
@@ -2986,7 +3045,7 @@ def validate_and_launch(
             quarantine_dir, out_basename, comparator_output_snapshot
         )
     except BaseException as exc:
-        _write_stop_report(
+        stop_detail = _attempt_stop_report(
             quarantine_dir,
             {
                 "reason": "comparator_crash",
@@ -2998,7 +3057,7 @@ def validate_and_launch(
         raise RunFailed(
             f"parity comparator crashed ({exc.__class__.__name__}) —"
             f" promotion blocked; quarantine left intact at"
-            f" {quarantine_dir} with a STOP report (R-081)"
+            f" {quarantine_dir}; {stop_detail} (R-081)"
         ) from exc
     result = result if isinstance(result, dict) else {}
     if result.get("verdict") == "PASS":
@@ -3010,6 +3069,14 @@ def validate_and_launch(
         promotion_claim_owned = False
         promotion_candidate: Path | None = None
         publication_returned = False
+        cleanup_completed = False
+        pass_result = {
+            "promoted_to": str(promote_to),
+            "activation_digest": activation_digest,
+            "exit_code": 0,
+            "verdict": "PASS",
+            "argv": argv,
+        }
 
         def _mark_promotion_claim_owned() -> None:
             nonlocal promotion_claim_owned
@@ -3039,6 +3106,13 @@ def validate_and_launch(
             _release_captured_inputs_for_durable_sync(captured_inputs)
             shutil.rmtree(quarantine_dir)
             fileio.fsync_directory(quarantine_dir.parent)
+            cleanup_completed = True
+            # LAUNCH_RECEIPT.json is a pre-acceptance byte binding.  Only this
+            # terminal, post-cleanup positive marker makes the launch usable.
+            # No scientific or filesystem prerequisite may follow it.
+            _write_acceptance_marker(
+                promote_to, activation_digest=activation_digest
+            )
         except BaseException as exc:
             # The shared primitive's commit point is the directory rename;
             # parent-directory fsync happens afterward.  If that durability
@@ -3051,31 +3125,53 @@ def validate_and_launch(
                 and _path_lexists(promote_to)
             )
             report_dir = promote_to if promotion_committed else quarantine_dir
+            stop_report_error: BaseException | None = None
+            stop_report_written = False
             if report_dir.is_dir() and not report_dir.is_symlink():
-                _write_stop_report(
-                    report_dir,
-                    {
-                        "reason": (
-                            "post_promotion_cleanup_failure"
-                            if promotion_committed and publication_returned
-                            else (
-                                "promotion_durability_failure"
-                                if promotion_committed
-                                else "promotion_crash"
-                            )
-                        ),
-                        "error": f"{exc.__class__.__name__}: {exc}",
-                        "activation_digest": activation_digest,
-                        "promotion_committed": promotion_committed,
-                        "stopped_at": now(),
-                    },
+                try:
+                    _write_stop_report(
+                        report_dir,
+                        {
+                            "reason": (
+                                "acceptance_marker_failure"
+                                if promotion_committed and cleanup_completed
+                                else (
+                                    "post_promotion_cleanup_failure"
+                                    if promotion_committed
+                                    and publication_returned
+                                    else (
+                                        "promotion_durability_failure"
+                                        if promotion_committed
+                                        else "promotion_crash"
+                                    )
+                                )
+                            ),
+                            "error": f"{exc.__class__.__name__}: {exc}",
+                            "activation_digest": activation_digest,
+                            "promotion_committed": promotion_committed,
+                            "stopped_at": now(),
+                        },
+                    )
+                    stop_report_written = True
+                except BaseException as report_exc:
+                    stop_report_error = report_exc
+            stop_detail = (
+                "; STOP report publication also failed"
+                f" ({stop_report_error.__class__.__name__})"
+                if stop_report_error is not None
+                else (
+                    "; STOP report written"
+                    if stop_report_written
+                    else "; STOP report directory unavailable"
                 )
+            )
             if promotion_committed:
                 raise RunFailed(
                     "atomic private promotion committed, but destination"
-                    " durability or producer-quarantine cleanup failed"
+                    " durability or producer-quarantine cleanup failed, or"
+                    " terminal acceptance-marker publication failed"
                     f" ({exc.__class__.__name__}) —"
-                    f" output remains at {promote_to} with a STOP report and"
+                    f" output remains at {promote_to}{stop_detail} and"
                     " is not an accepted PASS (R-081)"
                 ) from exc
             if promotion_candidate is not None:
@@ -3097,17 +3193,11 @@ def validate_and_launch(
                 reclaim_empty_relic(promote_to)
             raise RunFailed(
                 f"atomic promotion failed ({exc.__class__.__name__}) —"
-                f" quarantine left intact at {quarantine_dir} with a STOP"
-                " report; nothing promoted (R-081)"
+                f" quarantine left intact at {quarantine_dir}{stop_detail};"
+                " nothing promoted (R-081)"
             ) from exc
-        return {
-            "promoted_to": str(promote_to),
-            "activation_digest": activation_digest,
-            "exit_code": 0,
-            "verdict": "PASS",
-            "argv": argv,
-        }
-    _write_stop_report(
+        return pass_result
+    stop_detail = _attempt_stop_report(
         quarantine_dir,
         {
             "reason": "parity_comparator_fail",
@@ -3120,8 +3210,8 @@ def validate_and_launch(
     )
     raise RunFailed(
         f"parity comparator verdict {result.get('verdict')!r} — promotion"
-        f" blocked; quarantine left intact at {quarantine_dir} with a STOP"
-        " report (R-081)"
+        f" blocked; quarantine left intact at {quarantine_dir}; {stop_detail}"
+        " (R-081)"
     )
 
 

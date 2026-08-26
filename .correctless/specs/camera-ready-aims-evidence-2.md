@@ -1012,12 +1012,24 @@ analysis over retained per-item records — permitted; model execution is not.
   `records/<cell_id>.jsonl` whose strict rows equal the frozen eligible
   population and horizon map. Atomically promote with strict no-replace
   semantics only on PASS (a racing destination must refuse, never be replaced);
+  `LAUNCH_RECEIPT.json` is a pre-acceptance comparator/byte binding and is
+  never sufficient by itself. Only after promotion durability succeeds, all
+  retained handles are released, the producer quarantine is removed, and its
+  parent is synced may the launcher create the canonical, create-once
+  `LAUNCH_ACCEPTED.json` positive marker. That terminal marker binds the exact
+  activation digest and SHA-256 of the raw sibling launch-receipt bytes. The
+  D7(b) driver must require its exact closed canonical shape; a missing,
+  malformed, aliased, or mismatched marker rejects even when no STOP report
+  exists. Marker commitment is the terminal acceptance linearization point:
+  no fallible scientific or cleanup prerequisite follows it;
   if the rename commit point succeeds but the subsequent durability sync
   fails, report STOP at the destination that now owns the outputs and describe
   that committed-but-not-certified state truthfully — never recreate an empty
   quarantine or claim that promotion rolled back;
   on any crash, nonzero exit, comparator failure, or promotion failure leave
-  the quarantine in place, write a STOP report, and exit nonzero. The
+  the quarantine in place, attempt a STOP report, and exit nonzero. STOP is
+  diagnostic defense in depth, not the acceptance oracle: inability to persist
+  it cannot upgrade a marker-absent failed transaction. The
   producer records
   the certificate digest in its output metadata. Enforcement: launcher
   unit tests with injectable runners/launchers for every refusal class and
