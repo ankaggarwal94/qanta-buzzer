@@ -115,6 +115,7 @@ LAUNCHER_CONFIG_KEYS = (
 STOP_REPORT_NAME = "STOP_REPORT.json"
 LAUNCH_RECEIPT_NAME = "LAUNCH_RECEIPT.json"
 ACCEPTANCE_MARKER_NAME = "LAUNCH_ACCEPTED.json"
+ACCEPTANCE_PENDING_NAME = "LAUNCH_ACCEPTANCE_PENDING.json"
 CAPTURED_INPUTS_DIRNAME = ".certified_inputs"
 PRIVATE_PROMOTION_PREFIX = ".phase4-accepted-"
 
@@ -2510,11 +2511,13 @@ def _write_acceptance_marker(
 ) -> None:
     """Make post-cleanup acceptance explicit at one terminal commit point.
 
-    ``create_once_bytes`` publishes by hard link before its final cleanup and
-    directory-sync work.  If a later operation raises, exact marker bytes are
-    already the authoritative commit; downgrading that state to STOP would
-    recreate the receipt-only ambiguity this marker closes.  A pre-existing
-    destination is never adopted.
+    A durable negative guard precedes marker publication. The driver rejects
+    any tree where that guard exists, even if exact marker bytes are visible.
+    Marker temporary-link cleanup and the host's durability barrier therefore
+    complete while the tree remains unaccepted. Removing the guard is the
+    final linearization point and no fallible operation follows it; a crash
+    that resurrects the deleted guard is a safe false negative. Any exception
+    propagates to the caller. A pre-existing destination is never adopted.
     """
     promote_to = Path(promote_to)
     receipt_bytes = schema.read_regular_file_bytes(
@@ -2528,26 +2531,25 @@ def _write_acceptance_marker(
             "launch_receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
         }
     )
+    pending_path = promote_to / ACCEPTANCE_PENDING_NAME
     marker_path = promote_to / ACCEPTANCE_MARKER_NAME
-    marker_committed = False
-
-    def _mark_committed() -> None:
-        nonlocal marker_committed
-        marker_committed = True
-
-    try:
-        create_once_bytes(
-            marker_path,
-            marker_bytes,
-            exists_label="Phase-4 acceptance marker",
-            commit_created=_mark_committed,
-        )
-    except BaseException:
-        if not marker_committed:
-            raise
-        # The exact marker became visible after every launch prerequisite.
-        # Treat that commit as PASS; a crash that loses the entry is a safe
-        # false negative because downstream then refuses the absent marker.
+    create_once_bytes(
+        pending_path,
+        schema.encode_json(
+            {
+                "schema_version": schema.SCHEMA_VERSION,
+                "marker_type": "phase4_launch_acceptance_pending",
+                "activation_digest": activation_digest,
+            }
+        ),
+        exists_label="Phase-4 acceptance pending guard",
+    )
+    create_once_bytes(
+        marker_path,
+        marker_bytes,
+        exists_label="Phase-4 acceptance marker",
+    )
+    os.unlink(pending_path)
 
 
 def _default_sync_parent_directory(parent: Path) -> None:

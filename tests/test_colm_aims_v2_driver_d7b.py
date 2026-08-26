@@ -593,6 +593,17 @@ class TestRunDriver:
         with pytest.raises(schema.TypedIngressError, match="LAUNCH_ACCEPTED"):
             self._validate_transaction(records_root)
 
+    def test_acceptance_pending_guard_refuses_even_with_valid_marker(
+        self, tmp_path
+    ):
+        records_root = _write_records_root(tmp_path / "records")
+        (records_root.parent / driver.ACCEPTANCE_PENDING_NAME).write_bytes(
+            b"pending\n"
+        )
+
+        with pytest.raises(schema.TypedIngressError, match="pending guard"):
+            self._validate_transaction(records_root)
+
     @pytest.mark.parametrize(
         "mutation",
         [

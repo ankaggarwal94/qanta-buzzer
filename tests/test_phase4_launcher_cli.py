@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from reproducibility.colm_aims_2026 import phase4_launcher as launcher
+from reproducibility.colm_aims_2026 import phase4_driver_d7b as driver
 
 
 HOST_IDENTITY = {"os": "SyntheticOS 1.0 ()", "arch": "synthetic64"}
@@ -110,6 +111,12 @@ def test_cli_and_contract_disclose_exact_process_trust_boundary():
     ).read_text("utf-8")
     assert "staged immutable envelope" not in closure_source
     assert "not an OS-level immutability" in closure_source
+
+
+def test_launcher_and_driver_share_the_pending_guard_name():
+    assert (
+        launcher.ACCEPTANCE_PENDING_NAME == driver.ACCEPTANCE_PENDING_NAME
+    )
 
 
 def test_config_loader_closes_snapshot_roles_and_path_types(tmp_path):
@@ -2437,7 +2444,7 @@ def test_acceptance_marker_failure_and_stop_failure_remain_rejected(
     assert not (promote_to / launcher.STOP_REPORT_NAME).exists()
 
 
-def test_exact_marker_visible_after_create_once_exception_is_committed(
+def test_exact_marker_visible_after_create_once_exception_still_fails_closed(
     tmp_path, monkeypatch
 ):
     config, _certificate, _staged_path, probes = _runtime_fixture(
@@ -2445,34 +2452,119 @@ def test_exact_marker_visible_after_create_once_exception_is_committed(
     )
     promote_to = Path(config["promote_to"])
     real_create_once = launcher.create_once_bytes
-    real_read = launcher.schema.read_regular_file_bytes
 
     def publish_marker_then_raise(path, data, **kwargs):
         real_create_once(path, data, **kwargs)
         if Path(path).name == launcher.ACCEPTANCE_MARKER_NAME:
             raise OSError("synthetic post-link directory sync uncertainty")
 
-    def fail_marker_reread(path, **kwargs):
-        if Path(path).name == launcher.ACCEPTANCE_MARKER_NAME:
-            raise OSError("synthetic marker reread EIO")
-        return real_read(path, **kwargs)
-
     monkeypatch.setattr(launcher, "create_once_bytes", publish_marker_then_raise)
-    monkeypatch.setattr(
-        launcher.schema, "read_regular_file_bytes", fail_marker_reread
-    )
-    monkeypatch.setattr(
-        launcher,
-        "_write_stop_report",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            OSError("STOP must not run after marker commit")
-        ),
-    )
-    result = _call_launcher(config, probes)
+    with pytest.raises(launcher.RunFailed, match="acceptance-marker"):
+        _call_launcher(config, probes)
 
-    assert result["verdict"] == "PASS"
     assert (promote_to / launcher.ACCEPTANCE_MARKER_NAME).is_file()
-    assert not (promote_to / launcher.STOP_REPORT_NAME).exists()
+    assert (promote_to / launcher.ACCEPTANCE_PENDING_NAME).is_file()
+    assert (promote_to / launcher.STOP_REPORT_NAME).is_file()
+
+
+@pytest.mark.parametrize("fault", ["temporary_cleanup", "directory_sync"])
+@pytest.mark.parametrize("stop_report_fails", [False, True])
+def test_acceptance_marker_cleanup_and_durability_failures_stop(
+    tmp_path, monkeypatch, fault, stop_report_fails
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    promote_to = Path(config["promote_to"])
+    marker_path = promote_to / launcher.ACCEPTANCE_MARKER_NAME
+
+    if fault == "temporary_cleanup":
+        real_unlink = launcher.fileio.os.unlink
+
+        def fail_marker_temporary_cleanup(path, *args, **kwargs):
+            candidate = Path(path)
+            if (
+                candidate.parent == promote_to
+                and candidate.name.startswith(f".{marker_path.name}.")
+            ):
+                raise OSError("synthetic marker temporary cleanup failure")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(
+            launcher.fileio.os, "unlink", fail_marker_temporary_cleanup
+        )
+    else:
+        real_sync = launcher.fileio._fsync_directory
+
+        def fail_marker_directory_sync(directory, published_file=None):
+            if (
+                published_file is not None
+                and Path(published_file) == marker_path
+            ):
+                raise OSError("synthetic marker directory sync failure")
+            return real_sync(directory, published_file=published_file)
+
+        monkeypatch.setattr(
+            launcher.fileio, "_fsync_directory", fail_marker_directory_sync
+        )
+
+    if stop_report_fails:
+        monkeypatch.setattr(
+            launcher,
+            "_write_stop_report",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("synthetic STOP publication failure")
+            ),
+        )
+
+    with pytest.raises(launcher.RunFailed, match="acceptance-marker"):
+        _call_launcher(config, probes)
+
+    assert marker_path.is_file()
+    assert (promote_to / launcher.ACCEPTANCE_PENDING_NAME).is_file()
+    assert (promote_to / launcher.STOP_REPORT_NAME).exists() is (
+        not stop_report_fails
+    )
+    if fault == "temporary_cleanup":
+        assert list(promote_to.glob(f".{marker_path.name}.*"))
+    else:
+        assert not list(promote_to.glob(f".{marker_path.name}.*"))
+
+
+@pytest.mark.parametrize("stop_report_fails", [False, True])
+def test_acceptance_pending_guard_unlink_failure_never_accepts(
+    tmp_path, monkeypatch, stop_report_fails
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    promote_to = Path(config["promote_to"])
+    pending_path = promote_to / launcher.ACCEPTANCE_PENDING_NAME
+    real_unlink = launcher.os.unlink
+
+    def fail_pending_guard_unlink(path, *args, **kwargs):
+        if Path(path) == pending_path:
+            raise OSError("synthetic pending-guard unlink failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(launcher.os, "unlink", fail_pending_guard_unlink)
+    if stop_report_fails:
+        monkeypatch.setattr(
+            launcher,
+            "_write_stop_report",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("synthetic STOP publication failure")
+            ),
+        )
+
+    with pytest.raises(launcher.RunFailed, match="acceptance-marker"):
+        _call_launcher(config, probes)
+
+    assert pending_path.is_file()
+    assert (promote_to / launcher.ACCEPTANCE_MARKER_NAME).is_file()
+    assert (promote_to / launcher.STOP_REPORT_NAME).exists() is (
+        not stop_report_fails
+    )
 
 
 def test_acceptance_marker_is_written_only_after_quarantine_cleanup(
@@ -2496,3 +2588,6 @@ def test_acceptance_marker_is_written_only_after_quarantine_cleanup(
 
     assert result["verdict"] == "PASS"
     assert observed == {"quarantine_exists": False}
+    assert not (
+        Path(config["promote_to"]) / launcher.ACCEPTANCE_PENDING_NAME
+    ).exists()

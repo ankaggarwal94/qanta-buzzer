@@ -93,8 +93,11 @@ approved OS isolation boundary first. No verifier or closure verdict proves
 hostile-process provenance or tamper resistance.
 
 `LAUNCH_RECEIPT.json` records pre-acceptance comparator and byte bindings; it
-does not accept a launch. The launcher creates `LAUNCH_ACCEPTED.json` only
-after promotion durability and producer-quarantine cleanup complete, and the
-D7(b) driver requires that marker to bind the exact receipt bytes and
-activation digest. A missing marker fails closed regardless of whether a
-diagnostic `STOP_REPORT.json` could be written.
+does not accept a launch. After promotion durability and producer-quarantine
+cleanup complete, the launcher durably creates
+`LAUNCH_ACCEPTANCE_PENDING.json`, publishes `LAUNCH_ACCEPTED.json` completely,
+and then removes the pending guard as its terminal operation. The D7(b) driver
+rejects any surviving pending guard before requiring the acceptance marker to
+bind the exact receipt bytes and activation digest. A missing marker or a
+surviving guard fails closed regardless of whether a diagnostic
+`STOP_REPORT.json` could be written.

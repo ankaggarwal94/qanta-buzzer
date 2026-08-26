@@ -129,6 +129,7 @@ NO_DRAW_ID = "draw-none"
 PRODUCER_ENTRYPOINT = "reproducibility/colm_aims_2026/phase4_driver_d7b.py"
 LAUNCH_RECEIPT_NAME = "LAUNCH_RECEIPT.json"
 ACCEPTANCE_MARKER_NAME = "LAUNCH_ACCEPTED.json"
+ACCEPTANCE_PENDING_NAME = "LAUNCH_ACCEPTANCE_PENDING.json"
 STOP_REPORT_NAME = "STOP_REPORT.json"
 ACCEPTANCE_MARKER_KEYS = frozenset(
     {
@@ -825,6 +826,11 @@ def validate_launch_receipt(
     if supplied_promotion != certified_promotion:
         raise schema.TypedIngressError(
             "records parent does not equal the certified promote_to path"
+        )
+    if os.path.lexists(records_root.parent / ACCEPTANCE_PENDING_NAME):
+        raise schema.TypedIngressError(
+            "certified promotion carries a Phase-4 acceptance pending guard"
+            " and is not an accepted launch transaction"
         )
     if os.path.lexists(records_root.parent / STOP_REPORT_NAME):
         raise schema.TypedIngressError(

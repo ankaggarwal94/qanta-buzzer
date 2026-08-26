@@ -1015,13 +1015,18 @@ analysis over retained per-item records — permitted; model execution is not.
   `LAUNCH_RECEIPT.json` is a pre-acceptance comparator/byte binding and is
   never sufficient by itself. Only after promotion durability succeeds, all
   retained handles are released, the producer quarantine is removed, and its
-  parent is synced may the launcher create the canonical, create-once
-  `LAUNCH_ACCEPTED.json` positive marker. That terminal marker binds the exact
-  activation digest and SHA-256 of the raw sibling launch-receipt bytes. The
-  D7(b) driver must require its exact closed canonical shape; a missing,
-  malformed, aliased, or mismatched marker rejects even when no STOP report
-  exists. Marker commitment is the terminal acceptance linearization point:
-  no fallible scientific or cleanup prerequisite follows it;
+  parent is synced may the launcher durably create the canonical, create-once
+  `LAUNCH_ACCEPTANCE_PENDING.json` negative guard. While that guard exists,
+  the launcher may create and fully publish `LAUNCH_ACCEPTED.json`, including
+  temporary-link cleanup and the host's publication durability barrier. The
+  positive marker binds the exact activation digest and SHA-256 of the raw
+  sibling launch-receipt bytes. The D7(b) driver must reject any surviving
+  pending guard before it requires the marker's exact closed canonical shape;
+  a surviving guard or missing, malformed, aliased, or mismatched marker
+  rejects even when no STOP report exists. Removing the pending guard is the
+  terminal acceptance linearization point: no fallible scientific,
+  durability, diagnostic, or cleanup operation follows it. A crash that
+  resurrects the deleted guard is a safe false negative;
   if the rename commit point succeeds but the subsequent durability sync
   fails, report STOP at the destination that now owns the outputs and describe
   that committed-but-not-certified state truthfully — never recreate an empty
@@ -1029,7 +1034,7 @@ analysis over retained per-item records — permitted; model execution is not.
   on any crash, nonzero exit, comparator failure, or promotion failure leave
   the quarantine in place, attempt a STOP report, and exit nonzero. STOP is
   diagnostic defense in depth, not the acceptance oracle: inability to persist
-  it cannot upgrade a marker-absent failed transaction. The
+  it cannot upgrade a guard-present or marker-absent failed transaction. The
   producer records
   the certificate digest in its output metadata. Enforcement: launcher
   unit tests with injectable runners/launchers for every refusal class and
