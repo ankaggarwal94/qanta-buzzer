@@ -2390,34 +2390,88 @@ def verify_snapshot_dir(
         manifest_role_entry, "snapshot manifest entry", SnapshotManifestError
     )
     snapshot_dir = Path(snapshot_dir)
-    if snapshot_dir.is_symlink():
+
+    def nofollow_info(path: Path, label: str) -> os.stat_result:
+        try:
+            info = os.stat(path, follow_symlinks=False)
+        except OSError as exc:
+            raise SnapshotMismatchError(
+                f"{label} is missing or unreadable"
+                f" ({exc.__class__.__name__}) (R-075)"
+            ) from exc
+        if stat.S_ISLNK(info.st_mode) or bool(
+            getattr(info, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        ):
+            raise SnapshotMismatchError(
+                f"{label} is a symlink or reparse point — refusing"
+                " (R-075/R-013)"
+            )
+        return info
+
+    root_info = nofollow_info(
+        snapshot_dir, f"snapshot directory {snapshot_dir.name!r}"
+    )
+    if not stat.S_ISDIR(root_info.st_mode):
         raise SnapshotMismatchError(
-            f"snapshot directory {snapshot_dir.name!r} is a symlink —"
-            " refusing (R-075/R-013)"
-        )
-    if not snapshot_dir.is_dir():
-        raise SnapshotMismatchError(
-            f"snapshot directory {snapshot_dir.name!r} does not exist or is"
-            " not a directory (R-075)"
+            f"snapshot directory {snapshot_dir.name!r} is not a directory"
+            " (R-075)"
         )
     declared: dict[str, dict[str, Any]] = entry["files"]
     observed: dict[str, Path] = {}
-    for member in sorted(snapshot_dir.rglob("*")):
-        rel_name = member.relative_to(snapshot_dir).as_posix()
-        if member.is_symlink():
-            # Symlinked tree members hash bytes from OUTSIDE the tree —
-            # refuse (seed catalog: DoS/containment trio).
+
+    def raise_walk_error(error: OSError) -> None:
+        raise SnapshotMismatchError(
+            "snapshot traversal failed"
+            f" ({error.__class__.__name__}) (R-075/R-020)"
+        ) from error
+
+    for directory_name, child_directories, filenames in os.walk(
+        snapshot_dir,
+        topdown=True,
+        onerror=raise_walk_error,
+        followlinks=False,
+    ):
+        directory = Path(directory_name)
+        directory_rel = directory.relative_to(snapshot_dir).as_posix()
+        directory_label = (
+            f"snapshot directory {snapshot_dir.name!r}"
+            if directory == snapshot_dir
+            else f"snapshot member {directory_rel!r}"
+        )
+        directory_info = nofollow_info(directory, directory_label)
+        if not stat.S_ISDIR(directory_info.st_mode):
             raise SnapshotMismatchError(
-                f"snapshot member {rel_name!r} is a symlink — refusing"
-                " (R-075/R-013)"
+                f"{directory_label} is not a directory (R-075/R-020)"
             )
-        if member.is_dir():
-            continue
-        if not member.is_file():
-            raise SnapshotMismatchError(
-                f"snapshot member {rel_name!r} is not a regular file (R-020)"
+        for name in list(child_directories):
+            child = directory / name
+            child_rel = child.relative_to(snapshot_dir).as_posix()
+            try:
+                child_info = nofollow_info(
+                    child, f"snapshot member {child_rel!r}"
+                )
+            except SnapshotMismatchError:
+                child_directories.remove(name)
+                raise
+            if not stat.S_ISDIR(child_info.st_mode):
+                child_directories.remove(name)
+                raise SnapshotMismatchError(
+                    f"snapshot member {child_rel!r} is not a directory"
+                    " (R-075/R-020)"
+                )
+        for name in filenames:
+            member = directory / name
+            rel_name = member.relative_to(snapshot_dir).as_posix()
+            member_info = nofollow_info(
+                member, f"snapshot member {rel_name!r}"
             )
-        observed[rel_name] = member
+            if not stat.S_ISREG(member_info.st_mode):
+                raise SnapshotMismatchError(
+                    f"snapshot member {rel_name!r} is not a regular file"
+                    " (R-020)"
+                )
+            observed[rel_name] = member
     extra = sorted(set(observed) - set(declared))
     if extra:
         raise SnapshotMismatchError(

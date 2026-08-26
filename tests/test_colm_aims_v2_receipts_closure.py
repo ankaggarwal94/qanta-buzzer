@@ -658,7 +658,11 @@ class TestQa012Inventory:
             doc["result"] = "hits"
         else:
             doc["inventory_sha256"] = "0" * 64
-        with pytest.raises(schema.SchemaValidationError):
+        expected_message = {
+            "duplicate_file": "duplicate prong/path",
+            "file_order": "canonical prong/path order",
+        }.get(mutation)
+        with pytest.raises(schema.SchemaValidationError, match=expected_message):
             qa012.validate_inventory_manifest(doc)
 
     @pytest.mark.parametrize(
@@ -684,6 +688,49 @@ class TestQa012Inventory:
         monkeypatch.setattr(qa012, "MAX_QA_FILES", 1)
         with pytest.raises(schema.SchemaValidationError, match="file-count"):
             qa012.validate_inventory_manifest(manifest)
+
+    def test_manifest_duplicate_detection_is_set_bounded(self, tmp_path):
+        manifest = qa012.build_inventory_manifest(
+            self._scope_roots(tmp_path, with_hit=False)
+        )
+
+        class CountingStr(str):
+            equality_calls = 0
+
+            def __eq__(self, other):
+                type(self).equality_calls += 1
+                return super().__eq__(other)
+
+            __hash__ = str.__hash__
+
+        files = []
+        expected_counts = {}
+        for prong_index, prong in enumerate(qa012.REQUIRED_SCOPE_PRONGS):
+            count = 256 if prong_index == 0 else 1
+            expected_counts[prong] = count
+            template = next(
+                entry
+                for entry in manifest["files"]
+                if entry["scope_prong"] == prong
+            )
+            for index in range(count):
+                entry = copy.deepcopy(template)
+                entry["path"] = CountingStr(f"file-{index:05d}.json")
+                entry["hits"] = []
+                files.append(entry)
+        files.sort(key=lambda entry: (entry["scope_prong"], entry["path"]))
+        manifest["files"] = files
+        for prong in manifest["scope_prongs"]:
+            prong["file_count"] = expected_counts[prong["name"]]
+        manifest["result"] = "zero_hit"
+        manifest["inventory_sha256"] = qa012._inventory_digest(
+            manifest["scope_prongs"], manifest["files"]
+        )
+
+        CountingStr.equality_calls = 0
+        qa012.validate_inventory_manifest(manifest)
+
+        assert CountingStr.equality_calls < len(files) * 8
 
     def test_resource_limits_are_enforced(self, tmp_path, monkeypatch):
         roots = self._scope_roots(tmp_path, with_hit=False)

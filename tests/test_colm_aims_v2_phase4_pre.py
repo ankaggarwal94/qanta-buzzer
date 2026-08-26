@@ -269,6 +269,9 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import os
+import stat
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -1229,6 +1232,110 @@ class TestR075SnapshotGate:
         entry["file_count"] = 2
         with pytest.raises(schema.ColmAimsError):
             _phase4().verify_snapshot_dir(entry, snap)
+
+    @pytest.mark.parametrize("reparse_at", ["root", "child", "file"])
+    def test_reparse_entry_is_rejected_before_walk_or_open(
+        self, tmp_path, monkeypatch, reparse_at
+    ):
+        phase4 = _phase4()
+        snap, entry = self._make_snapshot(tmp_path)
+        child = snap / "1_Pooling"
+        file_entry = snap / "config.json"
+        target = {"root": snap, "child": child, "file": file_entry}[
+            reparse_at
+        ]
+        real_stat = os.stat
+        nofollow_targets = []
+
+        class StatWithFileAttributes:
+            def __init__(self, original):
+                self._original = original
+                self.st_file_attributes = getattr(
+                    original, "st_file_attributes", 0
+                ) | getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+
+            def __getattr__(self, name):
+                return getattr(self._original, name)
+
+        def mark_child(path, *args, **kwargs):
+            observed = real_stat(path, *args, **kwargs)
+            if Path(path) == target and kwargs.get("follow_symlinks") is False:
+                nofollow_targets.append(Path(path))
+                return StatWithFileAttributes(observed)
+            return observed
+
+        monkeypatch.setattr(phase4.os, "stat", mark_child)
+        if reparse_at == "root":
+
+            def reject_walk(*args, **kwargs):
+                pytest.fail("snapshot verifier walked a reparse root")
+
+            monkeypatch.setattr(phase4.os, "walk", reject_walk)
+        else:
+
+            def guarded_walk(path, *, topdown, onerror, followlinks):
+                assert Path(path) == snap
+                assert topdown is True
+                assert followlinks is False
+                yield str(snap), [child.name], ["config.json", "vocab.txt"]
+                pytest.fail("snapshot verifier resumed after a reparse entry")
+
+            monkeypatch.setattr(phase4.os, "walk", guarded_walk)
+        with pytest.raises(schema.ColmAimsError, match="reparse"):
+            phase4.verify_snapshot_dir(entry, snap)
+        assert nofollow_targets == [target]
+
+    @pytest.mark.skipif(os.name != "nt", reason="requires a real NTFS junction")
+    @pytest.mark.parametrize("junction_at", ["root", "child"])
+    def test_real_windows_junction_is_never_scanned(
+        self, tmp_path, monkeypatch, junction_at
+    ):
+        phase4 = _phase4()
+        snap, entry = self._make_snapshot(tmp_path)
+        external = tmp_path / "external"
+        if junction_at == "root":
+            snap.rename(external)
+            junction = snap
+        else:
+            junction = snap / "1_Pooling"
+            external.mkdir()
+            (external / "config.json").write_bytes(
+                (junction / "config.json").read_bytes()
+            )
+            (junction / "config.json").unlink()
+            junction.rmdir()
+
+        completed = subprocess.run(
+            [
+                os.environ.get("COMSPEC", "cmd.exe"),
+                "/d",
+                "/c",
+                "mklink",
+                "/J",
+                str(junction),
+                str(external),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            pytest.skip(f"junction creation unavailable: {completed.stderr}")
+
+        real_scandir = os.scandir
+        scanned = []
+
+        def record_scandir(path):
+            scanned.append(Path(path))
+            return real_scandir(path)
+
+        monkeypatch.setattr(phase4.os, "scandir", record_scandir)
+        try:
+            with pytest.raises(schema.ColmAimsError, match="reparse"):
+                phase4.verify_snapshot_dir(entry, snap)
+            assert junction not in scanned
+        finally:
+            os.rmdir(junction)
 
 
 # ===========================================================================

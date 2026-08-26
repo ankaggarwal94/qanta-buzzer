@@ -1934,6 +1934,162 @@ def test_staged_tree_sync_failure_prevents_promotion(tmp_path, monkeypatch):
     )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires a real NTFS junction")
+@pytest.mark.parametrize("junction_at", ["root", "child"])
+def test_captured_input_snapshot_never_scans_windows_junction(
+    tmp_path, monkeypatch, junction_at
+):
+    root = tmp_path / "captured"
+    root.mkdir()
+    (root / "local.bin").write_bytes(b"local")
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "outside.bin").write_bytes(b"outside")
+    if junction_at == "root":
+        (root / "local.bin").unlink()
+        root.rmdir()
+        junction = root
+    else:
+        junction = root / "junction"
+    completed = subprocess.run(
+        [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            str(junction),
+            str(external),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {completed.stderr}")
+
+    real_scandir = os.scandir
+    scanned = []
+
+    def record_scandir(path):
+        scanned.append(Path(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(launcher.os, "scandir", record_scandir)
+    try:
+        with pytest.raises(launcher.LaunchRefusal, match="reparse"):
+            launcher._captured_input_snapshot(root)
+        assert junction not in scanned
+    finally:
+        os.rmdir(junction)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires a real NTFS junction")
+def test_private_cleanup_never_scans_or_chmods_through_windows_junction(
+    tmp_path, monkeypatch
+):
+    quarantine = tmp_path / "quarantine"
+    candidate = quarantine / f"{launcher.PRIVATE_PROMOTION_PREFIX}candidate"
+    candidate.mkdir(parents=True)
+    (candidate / "local.bin").write_bytes(b"local")
+    external = tmp_path / "external"
+    external.mkdir()
+    external_file = external / "outside.bin"
+    external_file.write_bytes(b"outside")
+    junction = candidate / "junction"
+    completed = subprocess.run(
+        [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            str(junction),
+            str(external),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {completed.stderr}")
+
+    real_scandir = os.scandir
+    real_chmod = Path.chmod
+    scanned = []
+    chmodded = []
+
+    def record_scandir(path):
+        scanned.append(Path(path))
+        return real_scandir(path)
+
+    def record_chmod(path, mode, *args, **kwargs):
+        chmodded.append(Path(path))
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(launcher.os, "scandir", record_scandir)
+    monkeypatch.setattr(Path, "chmod", record_chmod)
+    try:
+        launcher._remove_private_promotion_tree(candidate, quarantine)
+        assert candidate.is_dir()
+        assert junction not in scanned
+        assert chmodded == []
+    finally:
+        os.rmdir(junction)
+
+
+def test_private_cleanup_defect_never_masks_materialization_failure(
+    tmp_path, monkeypatch
+):
+    quarantine = tmp_path / "quarantine"
+    quarantine.mkdir()
+    source = tmp_path / "source"
+    source.mkdir()
+    out_basename = "export.json"
+    output_snapshot = {out_basename: b"{}\n"}
+    output_snapshot.update(
+        {
+            f"records/{cell_id}.jsonl": b"{}\n"
+            for cell_id in launcher.schema.CELL_IDS
+        }
+    )
+
+    monkeypatch.setattr(
+        launcher,
+        "_capture_regular_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("primary materialization failure")
+        ),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_closed_tree_regular_files",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("cleanup failure")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="primary materialization failure"):
+        launcher._materialize_private_promotion_tree(
+            quarantine,
+            captured_inputs={
+                "root": source,
+                "snapshot": {
+                    "input.bin": {"size": 1, "sha256": "a" * 64}
+                },
+            },
+            activation_digest="b" * 64,
+            ledger_path=tmp_path / "ledger.json",
+            out_basename=out_basename,
+            comparator_result={
+                "verdict": "PASS",
+                "checked": 194,
+                "failures": [],
+            },
+            comparator_output_snapshot=output_snapshot,
+        )
+
+
 def test_publish_uses_private_snapshot_when_original_output_mutates(
     tmp_path, monkeypatch
 ):

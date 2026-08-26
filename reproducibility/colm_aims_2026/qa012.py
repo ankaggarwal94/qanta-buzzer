@@ -316,6 +316,7 @@ def validate_inventory_manifest(manifest: Any) -> None:
 
     any_hits = False
     file_identities: list[tuple[str, str]] = []
+    seen_file_identities: set[tuple[str, str]] = set()
     total_bytes = 0
     total_hits = 0
     for entry in files:
@@ -350,10 +351,11 @@ def validate_inventory_manifest(manifest: Any) -> None:
                 "QA-012 file path must be a safe JSON/JSONL relative path"
             )
         identity = (prong, path)
-        if identity in file_identities:
+        if identity in seen_file_identities:
             raise schema.SchemaValidationError(
                 "QA-012 file inventory contains a duplicate prong/path"
             )
+        seen_file_identities.add(identity)
         file_identities.append(identity)
         if not schema.is_real_int(entry["size"]) or entry["size"] < 0:
             raise schema.SchemaValidationError(

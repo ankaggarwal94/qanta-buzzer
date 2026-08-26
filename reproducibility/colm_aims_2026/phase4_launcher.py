@@ -1690,21 +1690,14 @@ def _captured_input_snapshot(root: Path) -> dict[str, dict[str, Any]]:
     """Hash the complete private input tree without following aliases."""
     root = Path(root)
     snapshot: dict[str, dict[str, Any]] = {}
-    for path in sorted(root.rglob("*")):
+    for path in _closed_tree_regular_files(
+        root,
+        context="captured input",
+        error_cls=LaunchRefusal,
+    ):
         rel = path.relative_to(root).as_posix()
-        if path.is_symlink() or schema.is_filesystem_link(path):
-            raise LaunchRefusal(
-                f"captured input {rel!r} is a symlink or reparse point"
-                " (R-075/R-082)"
-            )
-        if path.is_dir():
-            continue
-        if not path.is_file():
-            raise LaunchRefusal(
-                f"captured input {rel!r} is not a regular file (R-075/R-082)"
-            )
         snapshot[rel] = {
-            "size": path.stat().st_size,
+            "size": os.stat(path, follow_symlinks=False).st_size,
             "sha256": _sha256_regular_file(
                 path, label=f"captured input {rel!r}"
             ),
@@ -1712,6 +1705,88 @@ def _captured_input_snapshot(root: Path) -> dict[str, dict[str, Any]]:
     if not snapshot:
         raise LaunchRefusal("captured input tree is empty (R-075/R-082)")
     return snapshot
+
+
+def _closed_tree_regular_files(
+    root: Path,
+    *,
+    context: str,
+    error_cls: type[schema.ColmAimsError],
+) -> list[Path]:
+    """Return regular files after rejecting aliases before tree descent."""
+    root = Path(root)
+
+    def nofollow_info(path: Path, label: str) -> os.stat_result:
+        try:
+            info = os.stat(path, follow_symlinks=False)
+        except OSError as exc:
+            raise error_cls(
+                f"{label} is missing or unreadable"
+                f" ({exc.__class__.__name__}) (R-075/R-082)"
+            ) from exc
+        if stat.S_ISLNK(info.st_mode) or bool(
+            getattr(info, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        ):
+            raise error_cls(
+                f"{label} is a symlink or reparse point (R-075/R-082)"
+            )
+        return info
+
+    root_info = nofollow_info(root, f"{context} root")
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise error_cls(f"{context} root is not a directory (R-075/R-082)")
+
+    files: list[Path] = []
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error_cls(
+            f"{context} tree traversal failed"
+            f" ({error.__class__.__name__}) (R-075/R-082)"
+        ) from error
+
+    for directory_name, child_directories, filenames in os.walk(
+        root,
+        topdown=True,
+        onerror=raise_walk_error,
+        followlinks=False,
+    ):
+        directory = Path(directory_name)
+        directory_rel = directory.relative_to(root).as_posix()
+        directory_label = (
+            f"{context} root"
+            if directory == root
+            else f"{context} {directory_rel!r}"
+        )
+        directory_info = nofollow_info(directory, directory_label)
+        if not stat.S_ISDIR(directory_info.st_mode):
+            raise error_cls(
+                f"{directory_label} is not a directory (R-075/R-082)"
+            )
+        for name in list(child_directories):
+            child = directory / name
+            rel = child.relative_to(root).as_posix()
+            try:
+                child_info = nofollow_info(child, f"{context} {rel!r}")
+            except schema.ColmAimsError:
+                child_directories.remove(name)
+                raise
+            if not stat.S_ISDIR(child_info.st_mode):
+                child_directories.remove(name)
+                raise error_cls(
+                    f"{context} {rel!r} is not a directory (R-075/R-082)"
+                )
+        for name in filenames:
+            path = directory / name
+            rel = path.relative_to(root).as_posix()
+            path_info = nofollow_info(path, f"{context} {rel!r}")
+            if not stat.S_ISREG(path_info.st_mode):
+                raise error_cls(
+                    f"{context} {rel!r} is not a regular file"
+                    " (R-075/R-082)"
+                )
+            files.append(path)
+    return sorted(files, key=lambda path: path.relative_to(root).as_posix())
 
 
 def _verify_captured_inputs(captured: dict[str, Any]) -> None:
@@ -2258,12 +2333,16 @@ def _remove_private_promotion_tree(
             or not candidate.is_dir()
         ):
             return
+        files = _closed_tree_regular_files(
+            candidate,
+            context="private promotion cleanup",
+            error_cls=LaunchRefusal,
+        )
         if os.name == "nt":
-            for path in sorted(candidate.rglob("*"), reverse=True):
-                if path.is_file() and not path.is_symlink():
-                    path.chmod(stat.S_IREAD | stat.S_IWRITE)
+            for path in files:
+                path.chmod(stat.S_IREAD | stat.S_IWRITE)
         shutil.rmtree(candidate)
-    except OSError:
+    except BaseException:
         # Never mask the primary post-ledger failure. Any residue remains
         # inside the already-stale quarantine and is covered by its STOP.
         return
