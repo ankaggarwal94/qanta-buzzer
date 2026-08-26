@@ -514,6 +514,21 @@ TRUSTED_BLOCK_KEYS = {
 
 class TestClosedMaps:
     @pytest.mark.parametrize(
+        ("key", "derivation", "expected"),
+        [
+            ("itm-0123456789abcdef", schema.ITEM_KEY_DERIVATION, True),
+            ("itm-0123", schema.ITEM_KEY_DERIVATION, False),
+            ("10015", schema.PHASE4_ITEM_KEY_DERIVATION, True),
+            ("010015", schema.PHASE4_ITEM_KEY_DERIVATION, False),
+            ("itm-0123456789abcdef", schema.PHASE4_ITEM_KEY_DERIVATION, False),
+        ],
+    )
+    def test_item_keys_conform_to_exact_declared_scheme(
+        self, key, derivation, expected
+    ):
+        assert schema.item_key_conforms_to_derivation(key, derivation) is expected
+
+    @pytest.mark.parametrize(
         "block_path",
         [
             ("item_key_derivation",),

@@ -270,10 +270,12 @@ analysis over retained per-item records — permitted; model execution is not.
   pairing-population key set and hash. Duplicate pair keys fail closed. Each
   excluded unit carries exactly one primary exclusion reason; missing reasons
   are `UNKNOWN_NOT_INFERRED`, never guessed; secondary diagnostics are not
-  counted in `exclusion_reason_counts`. The stable item-key derivation (hash
-  + text normalization) stays pinned in the profile for third-party
-  re-derivation; keys compare byte-exact; duplicate fixtures include Unicode
-  normalization-variant near-duplicates.
+  counted in `exclusion_reason_counts`. The profile pins one of two exact,
+  closed item-key schemes: the generic NFC/SHA-256 opaque-text derivation, or
+  the Phase-4 canonical unsigned-decimal dataset-QID identity required by the
+  frozen R-074 population. The verifier validates every record key against the
+  declared scheme; keys compare byte-exact; generic-scheme duplicate fixtures
+  include Unicode normalization-variant near-duplicates.
 - **R-009** [unit] *(carried)*: Arm reversal leaves the diagonal joint
   classes unchanged, exchanges the two off-diagonal classes and the two
   timeout totals, and flips a timing-summary sign only when that summary's
@@ -930,7 +932,12 @@ analysis over retained per-item records — permitted; model execution is not.
 - **R-080** [unit] *(records export)*: The producer emits
   `records/<cell_id>.jsonl` for all ten cells in the v2 record schema, with
   the historical `performat` label mapped to `format_specific` at the export
-  boundary (provenance-noted). The v2 record loader is the oracle: exported
+  boundary (provenance-noted). Each record key is the canonical unsigned-
+  decimal dataset QID and the emitted profile declares the exact Phase-4 QID
+  scheme; noncanonical or non-QID keys fail at export, and the verifier checks
+  record keys against that declaration. This preserves the R-074 keyset and
+  D7(b) seed rather than falsely claiming the QIDs were outputs of the generic
+  NFC/SHA-256 text-key scheme. The v2 record loader is the oracle: exported
   rows for a synthetic scored frame must load cleanly under
   `reproducibility.colm_aims_2026` ingestion, with canonical events
   (`FINITE_STOP` iff the DP stop is strictly below that item's horizon;

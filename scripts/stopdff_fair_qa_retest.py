@@ -1153,6 +1153,8 @@ def main():
             )
             items = [
                 {
+                    # R-008/R-080: the exporter validates this against the
+                    # profile-declared canonical dataset-QID scheme.
                     "item_key": qid,
                     "horizon": rec["mc_horizon"],
                     "mc_stop": rec["mc_stop"],

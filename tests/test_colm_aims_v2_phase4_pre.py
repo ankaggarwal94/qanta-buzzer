@@ -2188,19 +2188,19 @@ class TestR079AssembleCertificate:
 def _scored_items():
     # AMENDED (F-7, adjudicated R-080 tightening 2026-08-22): the DP sentinel
     # is EXACTLY stop == horizon; stop > horizon is frame corruption and is
-    # refused (see TestF7OvershootRefusal). itm-a's ref overshoot (5 > 2)
-    # became ref_stop == 2 and itm-d's mc overshoot (12 > 7) became
+    # refused (see TestF7OvershootRefusal). QID 1's ref overshoot (5 > 2)
+    # became ref_stop == 2 and QID 4's mc overshoot (12 > 7) became
     # mc_stop == 7 — both previously asserted the absorbed-overshoot
     # behavior this round retires.
     return [
         # mc at the sentinel (stop == horizon) => NEVER; ref finite.
-        {"item_key": "itm-b", "horizon": 4, "mc_stop": 4, "ref_stop": 1},
+        {"item_key": "2", "horizon": 4, "mc_stop": 4, "ref_stop": 1},
         # mc genuine final-prefix crossing at horizon 2; ref sentinel (==).
-        {"item_key": "itm-a", "horizon": 2, "mc_stop": 1, "ref_stop": 2},
+        {"item_key": "1", "horizon": 2, "mc_stop": 1, "ref_stop": 2},
         # both finite; ref crosses at the final prefix of horizon 10.
-        {"item_key": "itm-c", "horizon": 10, "mc_stop": 0, "ref_stop": 9},
+        {"item_key": "3", "horizon": 10, "mc_stop": 0, "ref_stop": 9},
         # both at the exact sentinel (7 == 7).
-        {"item_key": "itm-d", "horizon": 7, "mc_stop": 7, "ref_stop": 7},
+        {"item_key": "4", "horizon": 7, "mc_stop": 7, "ref_stop": 7},
     ]
 
 
@@ -2255,7 +2255,24 @@ class TestR080ExportRecords:
             for line in out.read_text("utf-8").splitlines()
             if line.strip()
         ]
-        assert keys == ["itm-a", "itm-b", "itm-c", "itm-d"]
+        assert keys == ["1", "2", "3", "4"]
+
+    def test_output_keys_follow_the_profile_declared_derivation(self, tmp_path):
+        out = _phase4_records().export_records(
+            _scored_items(), "khard__format_specific", tmp_path
+        )
+        observed = {
+            json.loads(line)["item_key"]
+            for line in out.read_text("utf-8").splitlines()
+            if line.strip()
+        }
+        assert observed == {item["item_key"] for item in _scored_items()}
+        assert all(
+            schema.item_key_conforms_to_derivation(
+                key, schema.PHASE4_ITEM_KEY_DERIVATION
+            )
+            for key in observed
+        )
 
     def test_canonical_events_and_field_set(self, tmp_path):
         out = _phase4_records().export_records(
@@ -2282,7 +2299,7 @@ class TestR080ExportRecords:
         for record in by_key.values():
             assert set(record) == expected_fields
         # Sentinel (stop == horizon) => NEVER_STOPPED, null stop, imputed.
-        b = by_key["itm-b"]
+        b = by_key["2"]
         assert b["mc_event_status"] == EVENT_NEVER
         assert b["mc_stop_step"] is None
         assert b["mc_terminal_imputation"] == IMPUTATION_FINAL_PREFIX
@@ -2291,7 +2308,7 @@ class TestR080ExportRecords:
         assert b["ref_terminal_imputation"] == IMPUTATION_NONE
         assert b["trajectory_horizon"] == 4
         # Final-prefix crossing at horizon 2 stays FINITE (R-046).
-        a = by_key["itm-a"]
+        a = by_key["1"]
         assert a["mc_event_status"] == EVENT_FINITE
         assert a["mc_stop_step"] == 1
         assert a["trajectory_horizon"] == 2
@@ -2299,11 +2316,11 @@ class TestR080ExportRecords:
         assert a["ref_stop_step"] is None
         # Exact sentinel (7 == 7) on both arms codes as NEVER (F-7: the
         # former overshoot leg of this assertion moved to refusal tests).
-        d = by_key["itm-d"]
+        d = by_key["4"]
         assert d["mc_event_status"] == EVENT_NEVER
         assert d["ref_event_status"] == EVENT_NEVER
         # Final-prefix crossing at horizon 10.
-        c = by_key["itm-c"]
+        c = by_key["3"]
         assert c["ref_event_status"] == EVENT_FINITE
         assert c["ref_stop_step"] == 9
 
@@ -2321,10 +2338,18 @@ class TestR080ExportRecords:
                 if line.strip()
             )
         }
-        assert pairing.sentinel_coded_stop(by_key["itm-b"], "mc") == 4
-        assert pairing.sentinel_coded_stop(by_key["itm-d"], "mc") == 7
-        assert pairing.sentinel_coded_stop(by_key["itm-d"], "ref") == 7
-        assert pairing.sentinel_coded_stop(by_key["itm-c"], "ref") == 9
+        assert pairing.sentinel_coded_stop(
+            by_key["2"], "mc"
+        ) == 4
+        assert pairing.sentinel_coded_stop(
+            by_key["4"], "mc"
+        ) == 7
+        assert pairing.sentinel_coded_stop(
+            by_key["4"], "ref"
+        ) == 7
+        assert pairing.sentinel_coded_stop(
+            by_key["3"], "ref"
+        ) == 9
 
     def test_export_is_deterministic_under_input_permutation(self, tmp_path):
         mod = _phase4_records()
@@ -2353,6 +2378,15 @@ class TestR080ExportRecords:
         items = _scored_items()
         items.append(dict(items[0]))
         with pytest.raises((schema.ColmAimsError, ValueError)):
+            _phase4_records().export_records(
+                items, "khard__format_specific", tmp_path
+            )
+
+    @pytest.mark.parametrize("bad_key", ["01", "-1", "1.0", "caf\u00e9"])
+    def test_noncanonical_qid_is_refused(self, tmp_path, bad_key):
+        items = _scored_items()
+        items[0]["item_key"] = bad_key
+        with pytest.raises(schema.ColmAimsError, match="canonical unsigned"):
             _phase4_records().export_records(
                 items, "khard__format_specific", tmp_path
             )
@@ -2983,7 +3017,7 @@ class TestF7OvershootRefusal:
             for line in out.read_text("utf-8").splitlines()
             if line.strip()
         ]
-        d = next(r for r in rows if r["item_key"] == "itm-d")
+        d = next(r for r in rows if r["item_key"] == "4")
         assert d["mc_event_status"] == EVENT_NEVER
         assert d["mc_stop_step"] is None
 

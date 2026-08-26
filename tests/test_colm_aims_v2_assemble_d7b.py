@@ -19,7 +19,7 @@ import json
 import numpy as np
 import pytest
 
-from reproducibility.colm_aims_2026 import closure, schema
+from reproducibility.colm_aims_2026 import closure, schema, verifier
 
 from reproducibility.colm_aims_2026 import phase4_assemble_d7b as assembler
 
@@ -116,6 +116,12 @@ def _d6_baseline() -> dict:
     }
 
 
+def _d6_expected_entries_sha256() -> str:
+    return closure.checksum_entries_sha256(
+        _d6_baseline()["final_checksums_entries"]
+    )
+
+
 def _qa012() -> dict:
     return {"status": "VERIFIED_VACUOUS", "inventory_sha256": FAKE_SHA_B}
 
@@ -195,6 +201,32 @@ class TestComputeInference:
         with pytest.raises(schema.ColmAimsError):
             assembler.compute_inference(complete)
 
+    def test_rejects_mc_stop_drift_across_references_within_calibration(self):
+        complete = _complete_by_cell()
+        calibration_id = schema.CALIBRATION_IDS[0]
+        victim = f"{schema.REFERENCE_IDS[1]}__{calibration_id}"
+        for record in complete[victim].values():
+            stop = record["mc_stop_step"]
+            if stop is not None and stop < record["trajectory_horizon"]:
+                record["mc_stop_step"] = stop + 1
+                break
+        else:  # pragma: no cover - canonical fixture has mutable finite stops
+            raise AssertionError("canonical fixture has no mutable MC stop")
+
+        with pytest.raises(schema.ColmAimsError, match="hold raw MC"):
+            assembler.compute_inference(complete)
+
+    def test_verifier_rejects_keys_outside_declared_qid_scheme(self):
+        legs = []
+        verifier._item_key_set_leg(
+            legs,
+            {"item_keys_sha256": CANONICAL_KEYSET_SHA256},
+            schema.PHASE4_ITEM_KEY_DERIVATION,
+            _complete_by_cell(),
+        )
+        assert legs[-1]["status"] == "FAIL"
+        assert "declared derivation" in legs[-1]["observed"]
+
 
 # ---------------------------------------------------------------------------
 # load_complete_by_cell — reads records/<cell>.jsonl from disk
@@ -252,6 +284,13 @@ class TestAssembleProfile:
         )
         assert set(profile) == set(schema.PROFILE_TOP_LEVEL_KEYS)
         assert len(profile["cells"]) == 10
+
+    def test_phase4_qid_derivation_is_an_exact_supported_profile_scheme(self):
+        profile = self._assemble(source_commit="a" * 40, input_sha256={})
+        profile["item_key_derivation"] = dict(
+            schema.PHASE4_ITEM_KEY_DERIVATION
+        )
+        schema.validate_profile(profile)
 
     def test_bytes_match_canonical_oracle_profile(self):
         # Production compute + assemble must be byte-identical to the pure
@@ -367,6 +406,9 @@ def _build(tmp_path, *, run_id="run-0001", reclaim_crashed_relic=False):
         llm_involvement=make_llm_involvement(),
         estimands=_estimands(),
         d6_baseline=_d6_baseline(),
+        expected_final_checksums_entries_sha256=(
+            _d6_expected_entries_sha256()
+        ),
         qa012=_qa012(),
         run_id=run_id,
         reclaim_crashed_relic=reclaim_crashed_relic,
@@ -399,6 +441,9 @@ class TestBuildEvidencePackage:
                 llm_involvement=make_llm_involvement(),
                 estimands=_estimands(),
                 d6_baseline=_d6_baseline(),
+                expected_final_checksums_entries_sha256=(
+                    _d6_expected_entries_sha256()
+                ),
                 qa012=_qa012(),
                 record_snapshot=snapshot,
             )
@@ -460,12 +505,37 @@ class TestBuildEvidencePackage:
             llm_involvement=make_llm_involvement(),
             estimands=_estimands(),
             d6_baseline=_d6_baseline(),
+            expected_final_checksums_entries_sha256=(
+                _d6_expected_entries_sha256()
+            ),
             qa012=_qa012(),
         )
 
         assert mutated
         assert (built.published_tree / victim_rel).read_bytes() == original
         assert built.input_sha256[victim_rel] == hashes[victim_rel]
+
+    def test_unsatisfied_closure_does_not_consume_run_slot(self, tmp_path):
+        records_root = tmp_path / "records"
+        _write_records_root(records_root)
+        out_dir = tmp_path / "out"
+
+        with pytest.raises(schema.ConfigSurfaceError, match="unsatisfied"):
+            assembler.build_evidence_package(
+                records_root,
+                out_dir,
+                source_commit="d" * 40,
+                arms=make_arms(),
+                provenance=make_provenance(source_commit="d" * 40),
+                grid=make_grid_block(),
+                llm_involvement=make_llm_involvement(),
+                estimands=_estimands(),
+                d6_baseline=_d6_baseline(),
+                expected_final_checksums_entries_sha256="f" * 64,
+                qa012=_qa012(),
+            )
+
+        assert not (out_dir / "runs" / "run-0001").exists()
 
     def test_source_verify_passes(self, tmp_path):
         built = _build(tmp_path)

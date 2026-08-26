@@ -20,6 +20,7 @@ record.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -136,9 +137,11 @@ def export_records(
     """Write ``out_dir / "records" / f"{cell_id}.jsonl"`` in the canonical
     v2 record schema (R-080).
 
-    Input items are EXACTLY ``{item_key, horizon, mc_stop, ref_stop}``;
-    unknown or missing keys refuse. Output rows are sorted ascending by
-    UTF-8 ``item_key`` and are byte-identical under input permutation.
+    Input items are EXACTLY ``{item_key, horizon, mc_stop, ref_stop}``. In the
+    frozen Phase-4 path, ``item_key`` is the dataset QID and must be a canonical
+    unsigned decimal string, matching ``schema.PHASE4_ITEM_KEY_DERIVATION``.
+    Unknown or missing keys refuse. Output rows are sorted ascending by UTF-8
+    ``item_key`` and are byte-identical under input permutation.
 
     ``out_dir`` is the PARENT directory — this exporter owns the
     ``records/`` segment (amended R-080). An ``out_dir`` whose final
@@ -178,10 +181,12 @@ def export_records(
                 f"{where}: missing required field(s) {missing} (R-080)"
             )
         item_key = item["item_key"]
-        if not isinstance(item_key, str) or not item_key:
+        if not isinstance(item_key, str) or re.fullmatch(
+            r"(?:0|[1-9][0-9]*)", item_key
+        ) is None:
             raise RecordsExportError(
-                f"{where}: item_key must be a non-empty opaque string"
-                " (R-031/R-080)"
+                f"{where}: item_key must be a canonical unsigned decimal QID"
+                " string under the Phase-4 item-key scheme (R-008/R-080)"
             )
         if item_key in seen_keys:
             raise RecordsExportError(

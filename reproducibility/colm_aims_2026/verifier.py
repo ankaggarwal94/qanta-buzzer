@@ -819,6 +819,7 @@ def _record_file_bijection_leg(
 def _item_key_set_leg(
     legs: list[dict[str, Any]],
     grid: dict[str, Any],
+    item_key_derivation: Any,
     complete_by_cell: dict[str, dict[str, dict[str, Any]]],
 ) -> tuple[list[str] | None, str | None]:
     """Returns ``(shared_sorted_keys, shared_keyset_digest)`` when the
@@ -828,6 +829,19 @@ def _item_key_set_leg(
     reference_cell: str | None = None
     for cell_id in sorted(complete_by_cell):
         keys = set(complete_by_cell[cell_id])
+        invalid_keys = sorted(
+            key
+            for key in keys
+            if not schema.item_key_conforms_to_derivation(
+                key, item_key_derivation
+            )
+        )
+        if invalid_keys:
+            problems.append(
+                f"cell {cell_id!r} carries {len(invalid_keys)} item key(s)"
+                " that do not conform to the profile-declared derivation;"
+                f" first={invalid_keys[0]!r}"
+            )
         if len(keys) != schema.EXPECTED_COMPLETE_PAIRS:
             problems.append(
                 f"cell {cell_id!r} carries {len(keys)} complete paired item"
@@ -863,7 +877,8 @@ def _item_key_set_leg(
         LEG_ITEM_KEY_SET,
         not problems,
         expected=f"exactly {schema.EXPECTED_COMPLETE_PAIRS} complete paired"
-        " item keys per cell, byte-exact identical across all ten cells"
+        " item keys per cell conforming to item_key_derivation, byte-exact"
+        " identical across all ten cells"
         " (R-042/R-008)",
         observed="; ".join(problems),
     )
@@ -1933,6 +1948,7 @@ def run_verifier(
         _item_key_set_leg,
         legs,
         grid,
+        profile.get("item_key_derivation"),
         complete_by_cell,
         default=(None, None),
     )

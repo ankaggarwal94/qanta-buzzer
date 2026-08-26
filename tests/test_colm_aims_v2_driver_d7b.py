@@ -67,8 +67,12 @@ PRIMARY_SCORER_TOKENIZER_CONFIG_SHA256 = (
 # frozen/pairing_eligibility_v2.json declared counts (2,249 eligible + 9 excluded).
 FROZEN_ELIGIBLE_COUNT = 2249
 FROZEN_EXCLUDED_COUNT = 9
-
-
+FROZEN_KEYSET_SHA256 = (
+    "d0ebac8f300f936f10298e2186532dfc1efd0fee6f400c1a1d8696cf86dd00f1"
+)
+FROZEN_HORIZON_SHA256 = (
+    "b0514b6cbe6dfffad0ce225869d20b306377d5baff1e1aca4b9cc9904a95486d"
+)
 # ---------------------------------------------------------------------------
 # Fixtures — records root / frozen D6 checksums / QA-012 corpus
 # ---------------------------------------------------------------------------
@@ -122,6 +126,30 @@ def _write_final_checksums_text(path) -> dict[str, str]:
     lines = [f"{sha}  {rel}" for rel, sha in sorted(entries.items())]
     path.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
     return entries
+
+
+def _expected_final_checksums_entries_sha256() -> str:
+    return closure.checksum_entries_sha256(_final_checksums_entries())
+
+
+def _bind_synthetic_records_to_frozen(monkeypatch) -> None:
+    """Keep synthetic driver tests explicit about their noncanonical records."""
+    eligibility = driver.phase4.load_pairing_eligibility(
+        FROZEN_DIR / "pairing_eligibility_v2.json"
+    )
+    synthetic = dict(eligibility)
+    synthetic["pairing_population_keyset_sha256"] = CANONICAL_KEYSET_SHA256
+    synthetic["horizon_map_sha256"] = canonical_horizon_identity()
+    monkeypatch.setattr(
+        driver.phase4,
+        "load_pairing_eligibility",
+        lambda _path: synthetic,
+    )
+    # The shared canonical test fixture uses the generic opaque-hash scheme,
+    # not the production Phase-4 dataset-QID scheme.
+    monkeypatch.setattr(
+        schema, "PHASE4_ITEM_KEY_DERIVATION", schema.ITEM_KEY_DERIVATION
+    )
 
 
 def _write_qa012_corpus(root):
@@ -189,7 +217,9 @@ class TestIdentityBlocks:
 class TestProvenanceFromFrozen:
     def _prov(self):
         return driver.build_provenance_from_frozen(
-            FROZEN_DIR, keyset_digest=CANONICAL_KEYSET_SHA256
+            FROZEN_DIR,
+            keyset_digest=FROZEN_KEYSET_SHA256,
+            horizon_identity=FROZEN_HORIZON_SHA256,
         )
 
     def test_model_maps_primary_scorer(self):
@@ -213,12 +243,30 @@ class TestProvenanceFromFrozen:
     def test_eval_split_carries_record_keyset(self):
         splits = self._prov()["splits"]
         assert splits["eval"]["count"] == FROZEN_ELIGIBLE_COUNT
-        assert splits["eval"]["keyset_sha256"] == CANONICAL_KEYSET_SHA256
+        assert splits["eval"]["keyset_sha256"] == FROZEN_KEYSET_SHA256
 
     def test_missing_frozen_dir_is_typed_ingress(self, tmp_path):
         with pytest.raises(schema.TypedIngressError):
             driver.build_provenance_from_frozen(
-                tmp_path / "nope", keyset_digest=CANONICAL_KEYSET_SHA256
+                tmp_path / "nope",
+                keyset_digest=FROZEN_KEYSET_SHA256,
+                horizon_identity=FROZEN_HORIZON_SHA256,
+            )
+
+    def test_rejects_record_keyset_that_differs_from_frozen_pin(self):
+        with pytest.raises(schema.TypedIngressError, match="keyset digest"):
+            driver.build_provenance_from_frozen(
+                FROZEN_DIR,
+                keyset_digest=CANONICAL_KEYSET_SHA256,
+                horizon_identity=FROZEN_HORIZON_SHA256,
+            )
+
+    def test_rejects_record_horizon_that_differs_from_frozen_pin(self):
+        with pytest.raises(schema.TypedIngressError, match="horizon identity"):
+            driver.build_provenance_from_frozen(
+                FROZEN_DIR,
+                keyset_digest=FROZEN_KEYSET_SHA256,
+                horizon_identity=canonical_horizon_identity(),
             )
 
 
@@ -340,7 +388,10 @@ class TestQa012Block:
 # ---------------------------------------------------------------------------
 
 
-def _run_driver(tmp_path, *, run_id="run-0001", reclaim_crashed_relic=False):
+def _run_driver(
+    tmp_path, monkeypatch, *, run_id="run-0001", reclaim_crashed_relic=False
+):
+    _bind_synthetic_records_to_frozen(monkeypatch)
     records_root = _write_records_root(tmp_path / "records")
     out_dir = tmp_path / "out"
     checksums = tmp_path / "FINAL_CHECKSUMS.json"
@@ -352,6 +403,9 @@ def _run_driver(tmp_path, *, run_id="run-0001", reclaim_crashed_relic=False):
         FROZEN_DIR,
         source_commit="d" * 40,
         d6_checksums=checksums,
+        d6_expected_entries_sha256=(
+            _expected_final_checksums_entries_sha256()
+        ),
         qa012_roots=[qa_corpus],
         run_id=run_id,
         reclaim_crashed_relic=reclaim_crashed_relic,
@@ -360,6 +414,7 @@ def _run_driver(tmp_path, *, run_id="run-0001", reclaim_crashed_relic=False):
 
 class TestRunDriver:
     def test_each_record_file_is_read_once(self, tmp_path, monkeypatch):
+        _bind_synthetic_records_to_frozen(monkeypatch)
         records_root = _write_records_root(tmp_path / "records").absolute()
         out_dir = tmp_path / "out"
         checksums = tmp_path / "FINAL_CHECKSUMS.json"
@@ -385,6 +440,9 @@ class TestRunDriver:
             FROZEN_DIR,
             source_commit="d" * 40,
             d6_checksums=checksums,
+            d6_expected_entries_sha256=(
+                _expected_final_checksums_entries_sha256()
+            ),
             qa012_roots=[qa_corpus],
         )
 
@@ -392,8 +450,8 @@ class TestRunDriver:
             f"{cell_id}.jsonl" for cell_id in CELL_IDS
         )
 
-    def test_published_profile_validates(self, tmp_path):
-        built = _run_driver(tmp_path)
+    def test_published_profile_validates(self, tmp_path, monkeypatch):
+        built = _run_driver(tmp_path, monkeypatch)
         assert built.published_tree.is_dir()
         assert (built.published_tree / "profile.json").is_file()
         schema.validate_profile(built.profile)
@@ -406,8 +464,10 @@ class TestRunDriver:
             == PRIMARY_SCORER_MODEL
         )
 
-    def test_non_provenance_profile_matches_canonical_oracle(self, tmp_path):
-        built = _run_driver(tmp_path)
+    def test_non_provenance_profile_matches_canonical_oracle(
+        self, tmp_path, monkeypatch
+    ):
+        built = _run_driver(tmp_path, monkeypatch)
         oracle = make_profile_v2(source_commit="d" * 40)
         for key in schema.PROFILE_TOP_LEVEL_KEYS:
             if key == "provenance":
@@ -416,8 +476,8 @@ class TestRunDriver:
                 oracle[key], sort_keys=True
             ), f"profile[{key!r}] diverged from the canonical study oracle"
 
-    def test_closure_inventory_satisfied(self, tmp_path):
-        built = _run_driver(tmp_path)
+    def test_closure_inventory_satisfied(self, tmp_path, monkeypatch):
+        built = _run_driver(tmp_path, monkeypatch)
         result = closure.evaluate_closure(built.closure_inventory)
         assert result["satisfied"] is False
         result = closure.evaluate_closure(
@@ -428,8 +488,8 @@ class TestRunDriver:
         )
         assert result["satisfied"] is True, result["failing_rows"]
 
-    def test_source_verify_passes(self, tmp_path):
-        built = _run_driver(tmp_path)
+    def test_source_verify_passes(self, tmp_path, monkeypatch):
+        built = _run_driver(tmp_path, monkeypatch)
         receipts = tmp_path / "receipts"
         proc = run_cli(
             "--mode",
@@ -442,12 +502,17 @@ class TestRunDriver:
         assert proc.returncode == EXIT_PASS, proc.stderr
         assert VERDICT_SOURCE_PASS in proc.stdout
 
-    def test_second_publish_same_run_id_fails_closed(self, tmp_path):
-        _run_driver(tmp_path)
+    def test_second_publish_same_run_id_fails_closed(self, tmp_path, monkeypatch):
+        _run_driver(tmp_path, monkeypatch)
         with pytest.raises(schema.ColmAimsError):
-            _run_driver(tmp_path, run_id="run-0001")
+            _run_driver(tmp_path, monkeypatch, run_id="run-0001")
 
-    def test_invalid_closure_does_not_consume_run_slot(self, tmp_path):
+    def test_invalid_closure_does_not_consume_run_slot(
+        self, tmp_path, monkeypatch
+    ):
+        # No D6 manifest means the closure cannot satisfy its final checksum row.
+        # Bind only the synthetic record identities so execution reaches closure.
+        _bind_synthetic_records_to_frozen(monkeypatch)
         records_root = _write_records_root(tmp_path / "records")
         qa_corpus = _write_qa012_corpus(tmp_path / "qa012")
         out_dir = tmp_path / "out"
@@ -463,7 +528,10 @@ class TestRunDriver:
 
         assert not (out_dir / "runs" / "run-0001").exists()
 
-    def test_non_json_closure_scalar_does_not_consume_run_slot(self, tmp_path):
+    def test_non_json_closure_scalar_does_not_consume_run_slot(
+        self, tmp_path, monkeypatch
+    ):
+        _bind_synthetic_records_to_frozen(monkeypatch)
         records_root = _write_records_root(tmp_path / "records")
         checksums = tmp_path / "FINAL_CHECKSUMS.json"
         _write_final_checksums_json(checksums)
@@ -477,6 +545,9 @@ class TestRunDriver:
                 FROZEN_DIR,
                 source_commit="d" * 40,
                 d6_checksums=checksums,
+                d6_expected_entries_sha256=(
+                    _expected_final_checksums_entries_sha256()
+                ),
                 d6_main_tex_sha256=float("nan"),
                 qa012_roots=[qa_corpus],
             )
@@ -496,7 +567,8 @@ class TestCli:
         assert driver.EXIT_INGRESS_ERROR == 3
         assert driver.EXIT_INTERNAL_ERROR == 4
 
-    def test_main_end_to_end_source_pass(self, tmp_path):
+    def test_main_end_to_end_source_pass(self, tmp_path, monkeypatch):
+        _bind_synthetic_records_to_frozen(monkeypatch)
         records_root = _write_records_root(tmp_path / "records")
         out_dir = tmp_path / "out"
         checksums = tmp_path / "FINAL_CHECKSUMS.json"
@@ -514,6 +586,8 @@ class TestCli:
                 "d" * 40,
                 "--d6-checksums",
                 str(checksums),
+                "--d6-expected-entries-sha256",
+                _expected_final_checksums_entries_sha256(),
                 "--qa012-root",
                 str(qa_corpus),
             ]
@@ -580,7 +654,8 @@ class TestCli:
         )
         assert rc == EXIT_INGRESS_ERROR
 
-    def test_missing_qa012_input_is_usage_error(self, tmp_path):
+    def test_missing_qa012_input_is_usage_error(self, tmp_path, monkeypatch):
+        _bind_synthetic_records_to_frozen(monkeypatch)
         records_root = _write_records_root(tmp_path / "records")
         checksums = tmp_path / "FINAL_CHECKSUMS.json"
         _write_final_checksums_json(checksums)

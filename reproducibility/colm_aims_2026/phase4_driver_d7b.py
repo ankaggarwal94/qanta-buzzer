@@ -329,6 +329,7 @@ def build_provenance_from_frozen(
     frozen_dir: Path,
     *,
     keyset_digest: str,
+    horizon_identity: str,
     source_commit: str | None = None,
     git_dirty: bool = False,
 ) -> dict[str, Any]:
@@ -337,10 +338,12 @@ def build_provenance_from_frozen(
     ``model`` is bound from the ``primary_scorer`` role of the frozen snapshot
     manifest; ``pre_package_retention`` and the eval split count come from the
     frozen pairing-eligibility artifact; the eval keyset is the record-derived
-    ``keyset_digest``. Both frozen artifacts are consumed through the strict,
-    digest-recomputing ``phase4`` loaders (R-074/R-075), so a malformed or
-    missing frozen input is a typed ingress refusal. ``input_sha256`` and
-    ``dirty_state.source_commit`` are (re)bound by ``build_evidence_package``.
+    ``keyset_digest``. The record-derived keyset and horizon identities must
+    equal the eligibility artifact's frozen pins. Both frozen artifacts are
+    consumed through the strict, digest-recomputing ``phase4`` loaders
+    (R-074/R-075), so a malformed, missing, or mismatched frozen input is a
+    typed ingress refusal. ``input_sha256`` and ``dirty_state.source_commit``
+    are (re)bound by ``build_evidence_package``.
     """
     frozen_dir = Path(frozen_dir)
     eligibility = phase4.load_pairing_eligibility(
@@ -349,6 +352,20 @@ def build_provenance_from_frozen(
     manifest = phase4.load_model_snapshot_manifest(
         frozen_dir / _FROZEN_MANIFEST_BASENAME
     )
+
+    frozen_keyset = eligibility["pairing_population_keyset_sha256"]
+    if keyset_digest != frozen_keyset:
+        raise schema.TypedIngressError(
+            "record-derived keyset digest does not match the frozen pairing"
+            f" population: {keyset_digest} != {frozen_keyset} (R-052/R-074)"
+        )
+    frozen_horizon = eligibility["horizon_map_sha256"]
+    if horizon_identity != frozen_horizon:
+        raise schema.TypedIngressError(
+            "record-derived horizon identity does not match the frozen"
+            f" eligibility horizon map: {horizon_identity} !="
+            f" {frozen_horizon} (R-043/R-073/R-074)"
+        )
 
     role = manifest["roles"][_PRIMARY_SCORER_ROLE]
     files = role["files"]
@@ -546,6 +563,7 @@ def run_driver(
     d6_checksums: Path | None = None,
     d6_main_tex_sha256: str | None = None,
     d6_main_pdf_sha256: str | None = None,
+    d6_expected_entries_sha256: str | None = None,
     qa012_roots: list[Path] | None = None,
     qa012_status: str | None = None,
     qa012_inventory_sha256: str | None = None,
@@ -572,7 +590,10 @@ def run_driver(
     )
     estimands = build_estimands(horizon_identity=horizon_identity)
     provenance = build_provenance_from_frozen(
-        frozen_dir, keyset_digest=keyset_digest, source_commit=source_commit
+        frozen_dir,
+        keyset_digest=keyset_digest,
+        horizon_identity=horizon_identity,
+        source_commit=source_commit,
     )
     d6_baseline = build_d6_baseline(
         checksums_path=d6_checksums,
@@ -595,7 +616,9 @@ def run_driver(
         llm_involvement=llm_involvement,
         estimands=estimands,
         d6_baseline=d6_baseline,
+        expected_final_checksums_entries_sha256=d6_expected_entries_sha256,
         qa012=qa012_block,
+        item_key_derivation=schema.PHASE4_ITEM_KEY_DERIVATION,
         run_id=run_id,
         reclaim_crashed_relic=reclaim_crashed_relic,
         record_snapshot=record_snapshot,
@@ -624,6 +647,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--d6-checksums", default=None)
     parser.add_argument("--d6-main-tex-sha256", default=None)
     parser.add_argument("--d6-main-pdf-sha256", default=None)
+    parser.add_argument("--d6-expected-entries-sha256", default=None)
     parser.add_argument(
         "--qa012-root", action="append", default=None, dest="qa012_roots"
     )
@@ -656,6 +680,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             d6_main_tex_sha256=args.d6_main_tex_sha256,
             d6_main_pdf_sha256=args.d6_main_pdf_sha256,
+            d6_expected_entries_sha256=args.d6_expected_entries_sha256,
             qa012_roots=args.qa012_roots,
             qa012_status=args.qa012_status,
             qa012_inventory_sha256=args.qa012_inventory_sha256,
@@ -675,7 +700,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return EXIT_INTERNAL_ERROR
 
-    inventory_result = closure.evaluate_closure(result.closure_inventory)
+    inventory_result = closure.evaluate_closure(
+        result.closure_inventory,
+        expected_final_checksums_entries_sha256=(
+            args.d6_expected_entries_sha256
+        ),
+    )
     closure_state = (
         "SATISFIED" if inventory_result["satisfied"] else "UNSATISFIED"
     )

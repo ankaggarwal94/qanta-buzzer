@@ -274,6 +274,35 @@ def compute_inference(
             )
     assert reference_keys is not None  # ten cells guaranteed above
 
+    # R-043: reference construction may change the REF arm only. The raw MC
+    # trajectory stop is held fixed across all five references within each
+    # calibration condition. Enforce this before any inferential arithmetic.
+    for calibration_id in schema.CALIBRATION_IDS:
+        baseline_cell = f"{schema.REFERENCE_IDS[0]}__{calibration_id}"
+        baseline = {
+            key: (record.get("mc_event_status"), record.get("mc_stop_step"))
+            for key, record in complete_by_cell[baseline_cell].items()
+        }
+        for reference_id in schema.REFERENCE_IDS[1:]:
+            cell_id = f"{reference_id}__{calibration_id}"
+            observed = {
+                key: (
+                    record.get("mc_event_status"),
+                    record.get("mc_stop_step"),
+                )
+                for key, record in complete_by_cell[cell_id].items()
+            }
+            if observed != baseline:
+                differing = sum(
+                    observed.get(key) != baseline[key] for key in baseline
+                )
+                raise schema.ColmAimsError(
+                    f"cell {cell_id!r} MC stops differ from"
+                    f" {baseline_cell!r} on {differing} item(s); the five"
+                    " references within each calibration must hold raw MC"
+                    " trajectory stops fixed (R-043)"
+                )
+
     ordered_keys = pairing.canonical_item_order(list(reference_keys))
     keyset_digest = pairing.keyset_sha256(ordered_keys)
     order_digest = pairing.item_order_sha256(ordered_keys)
@@ -431,23 +460,26 @@ def assemble_profile(
     grid: dict[str, Any],
     llm_involvement: dict[str, Any],
     estimands: dict[str, dict[str, Any]],
+    item_key_derivation: dict[str, Any] | None = None,
     numerical_tolerance: float = 1e-9,
 ) -> dict[str, Any]:
     """Combine the fixed profile identities with the recomputed D7(b)
     inference into a strict v2 ten-cell profile (PROFILE_TOP_LEVEL_KEYS).
 
     The caller supplies the identity blocks (``arms``/``provenance``/``grid``/
-    ``llm_involvement``/``estimands``); the pinned identities
-    (``schema_version``/``profile_id``/``semantic``/``item_key_derivation``)
-    come from the ``schema`` constants so the two surfaces cannot drift.
+    ``llm_involvement``/``estimands``). The fixed profile identities come from
+    ``schema``; ``item_key_derivation`` selects one of schema's two exact
+    schemes and defaults to the generic opaque-hash scheme.
     """
+    if item_key_derivation is None:
+        item_key_derivation = schema.ITEM_KEY_DERIVATION
     return {
         "schema_version": schema.SCHEMA_VERSION,
         "profile_id": schema.STRICT_PROFILE_ID,
         "semantic": dict(schema.SEMANTIC_BLOCK),
         "llm_involvement": dict(llm_involvement),
         "numerical_tolerance": numerical_tolerance,
-        "item_key_derivation": dict(schema.ITEM_KEY_DERIVATION),
+        "item_key_derivation": dict(item_key_derivation),
         "arms": arms,
         "provenance": provenance,
         "grid": grid,
@@ -562,7 +594,9 @@ def build_evidence_package(
     llm_involvement: dict[str, Any],
     estimands: dict[str, dict[str, Any]],
     d6_baseline: dict[str, Any],
+    expected_final_checksums_entries_sha256: str | None,
     qa012: dict[str, Any],
+    item_key_derivation: dict[str, Any] | None = None,
     run_id: str = "run-0001",
     reclaim_crashed_relic: bool = False,
     record_snapshot: RecordSnapshot | None = None,
@@ -590,9 +624,20 @@ def build_evidence_package(
     inventory = assemble_closure_inventory(
         d6_baseline=d6_baseline, qa012=qa012
     )
-    # Fail before staging or create-once publication. An invalid closure
-    # envelope must never consume an immutable run identifier.
-    closure.validate_closure_inventory(inventory)
+    # Fail before staging or create-once publication. A structurally valid but
+    # semantically unsatisfied closure must never consume an immutable run ID.
+    closure_result = closure.evaluate_closure(
+        inventory,
+        expected_final_checksums_entries_sha256=(
+            expected_final_checksums_entries_sha256
+        ),
+    )
+    if not closure_result["satisfied"]:
+        failing_rows = ", ".join(closure_result["failing_rows"])
+        raise schema.ConfigSurfaceError(
+            "closure is unsatisfied; refusing immutable publication; failing"
+            f" rows: {failing_rows}"
+        )
 
     # Build the complete run envelope before its single atomic publication.
     staged_run = Path(tempfile.mkdtemp(prefix="staged-", dir=out_dir))
@@ -623,6 +668,7 @@ def build_evidence_package(
         grid=grid,
         llm_involvement=llm_involvement,
         estimands=estimands,
+        item_key_derivation=item_key_derivation,
     )
     schema.write_profile(staged_tree / "profile.json", profile)
     (staged_tree / "presentation_manifest.json").write_bytes(

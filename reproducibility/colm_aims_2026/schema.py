@@ -112,6 +112,31 @@ ITEM_KEY_DERIVATION: dict[str, Any] = {
     "prefix": "itm-",
     "hex_digits": 16,
 }
+# The frozen Phase-4 eligibility/seed authority predates the generic opaque
+# text-hash scheme and is explicitly keyed by canonical dataset QID strings.
+# Keep this as a second closed, named scheme rather than falsely claiming that
+# decimal QIDs are outputs of ITEM_KEY_DERIVATION.
+PHASE4_ITEM_KEY_DERIVATION: dict[str, Any] = {
+    "source_field": "qid",
+    "normalization": "canonical_unsigned_decimal_string",
+}
+ITEM_KEY_DERIVATION_SCHEMES = (
+    ITEM_KEY_DERIVATION,
+    PHASE4_ITEM_KEY_DERIVATION,
+)
+
+
+def item_key_conforms_to_derivation(
+    item_key: Any, derivation: Any
+) -> bool:
+    """Return whether one key conforms to an exact declared key scheme."""
+    if not isinstance(item_key, str):
+        return False
+    if derivation == ITEM_KEY_DERIVATION:
+        return re.fullmatch(r"itm-[0-9a-f]{16}", item_key) is not None
+    if derivation == PHASE4_ITEM_KEY_DERIVATION:
+        return re.fullmatch(r"(?:0|[1-9][0-9]*)", item_key) is not None
+    return False
 
 # R-029: contribution axes; `none` is an explicit value, never absent.
 LLM_INVOLVEMENT_AXES = (
@@ -1490,10 +1515,10 @@ def validate_profile(profile: dict[str, Any]) -> None:
     _validate_semantic_block(profile["semantic"])
     _validate_llm_involvement(profile["llm_involvement"])
     _check_tolerance(profile["numerical_tolerance"], "profile")
-    if profile["item_key_derivation"] != ITEM_KEY_DERIVATION:
+    if profile["item_key_derivation"] not in ITEM_KEY_DERIVATION_SCHEMES:
         raise SchemaValidationError(
-            "item_key_derivation must pin exactly the re-derivable scheme"
-            f" {ITEM_KEY_DERIVATION} (R-008/R-063)"
+            "item_key_derivation must pin exactly one supported re-derivable"
+            f" scheme from {ITEM_KEY_DERIVATION_SCHEMES} (R-008/R-063/R-080)"
         )
     arms = profile["arms"]
     if not isinstance(arms, list) or not arms:
