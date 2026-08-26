@@ -2513,11 +2513,13 @@ def _write_acceptance_marker(
 
     A durable negative guard precedes marker publication. The driver rejects
     any tree where that guard exists, even if exact marker bytes are visible.
-    Marker temporary-link cleanup and the host's durability barrier therefore
-    complete while the tree remains unaccepted. Removing the guard is the
-    final linearization point and no fallible operation follows it; a crash
-    that resurrects the deleted guard is a safe false negative. Any exception
-    propagates to the caller. A pre-existing destination is never adopted.
+    Marker temporary-link cleanup and its first durability barrier therefore
+    complete while the tree remains unaccepted. Removing the guard and then
+    syncing the promotion directory is the final linearization sequence; PASS
+    is returned only after the deletion is durable on hosts that support
+    directory fsync. Any exception propagates to the caller, whose STOP report
+    keeps the destination unusable. A pre-existing destination is never
+    adopted.
     """
     promote_to = Path(promote_to)
     receipt_bytes = schema.read_regular_file_bytes(
@@ -2550,6 +2552,7 @@ def _write_acceptance_marker(
         exists_label="Phase-4 acceptance marker",
     )
     os.unlink(pending_path)
+    fileio.fsync_directory(promote_to)
 
 
 def _default_sync_parent_directory(parent: Path) -> None:

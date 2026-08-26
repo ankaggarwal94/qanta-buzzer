@@ -1037,10 +1037,14 @@ analysis over retained per-item records — permitted; model execution is not.
   sibling launch-receipt bytes. The D7(b) driver must reject any surviving
   pending guard before it requires the marker's exact closed canonical shape;
   a surviving guard or missing, malformed, aliased, or mismatched marker
-  rejects even when no STOP report exists. Removing the pending guard is the
-  terminal acceptance linearization point: no fallible scientific,
-  durability, diagnostic, or cleanup operation follows it. A crash that
-  resurrects the deleted guard is a safe false negative;
+  rejects even when no STOP report exists. Removing the pending guard and
+  then syncing the promotion directory is the terminal acceptance
+  linearization sequence: PASS is returned only after the deletion is durable
+  where directory fsync is supported, and no fallible scientific,
+  durability, diagnostic, or cleanup operation follows that sync. A crash
+  before the sync may resurrect the guard as a safe false negative; a sync
+  failure propagates and publishes a destination STOP rather than returning
+  PASS;
   if the rename commit point succeeds but the subsequent durability sync
   fails, report STOP at the destination that now owns the outputs and describe
   that committed-but-not-certified state truthfully — never recreate an empty

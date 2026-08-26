@@ -2570,6 +2570,66 @@ def test_acceptance_pending_guard_unlink_failure_never_accepts(
     )
 
 
+def test_acceptance_guard_removal_is_synced_before_pass(tmp_path, monkeypatch):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    promote_to = Path(config["promote_to"])
+    pending_path = promote_to / launcher.ACCEPTANCE_PENDING_NAME
+    marker_path = promote_to / launcher.ACCEPTANCE_MARKER_NAME
+    real_sync = launcher.fileio.fsync_directory
+    terminal_syncs = []
+
+    def observe_terminal_sync(path):
+        path = Path(path)
+        if path == promote_to and marker_path.is_file():
+            assert not pending_path.exists()
+            terminal_syncs.append(path)
+        return real_sync(path)
+
+    monkeypatch.setattr(
+        launcher.fileio, "fsync_directory", observe_terminal_sync
+    )
+
+    result = _call_launcher(config, probes)
+
+    assert result["verdict"] == "PASS"
+    assert terminal_syncs == [promote_to]
+
+
+def test_acceptance_guard_removal_sync_failure_never_accepts(
+    tmp_path, monkeypatch
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    promote_to = Path(config["promote_to"])
+    pending_path = promote_to / launcher.ACCEPTANCE_PENDING_NAME
+    marker_path = promote_to / launcher.ACCEPTANCE_MARKER_NAME
+    real_sync = launcher.fileio.fsync_directory
+
+    def fail_terminal_sync(path):
+        path = Path(path)
+        if (
+            path == promote_to
+            and marker_path.is_file()
+            and not pending_path.exists()
+        ):
+            raise OSError("synthetic acceptance-guard removal sync failure")
+        return real_sync(path)
+
+    monkeypatch.setattr(
+        launcher.fileio, "fsync_directory", fail_terminal_sync
+    )
+
+    with pytest.raises(launcher.RunFailed, match="acceptance-marker"):
+        _call_launcher(config, probes)
+
+    assert marker_path.is_file()
+    assert not pending_path.exists()
+    assert (promote_to / launcher.STOP_REPORT_NAME).is_file()
+
+
 def test_acceptance_marker_is_written_only_after_quarantine_cleanup(
     tmp_path, monkeypatch
 ):
