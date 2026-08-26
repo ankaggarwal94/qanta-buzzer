@@ -15,8 +15,8 @@ Generates the committed frozen artifacts required by the PRE-run contract
     cache's ``refs/main``, per-file SHA-256; TF-IDF configuration pin), and
     the immutable snapshot copies themselves (symlinks resolved) under an
     OUT-OF-REPO directory supplied by ``--snapshots-out``.
-  * ``tests/fixtures/qa012_item10/``        — R-078 (exact-byte excerpt
-    fixtures for the four hit files + full-file SHA-256 bindings).
+  * ``tests/fixtures/qa012_item10/``        — R-078 (exact-byte full-file
+    and excerpt fixtures for the four hit files + rev3-authority bindings).
 
 Every input is taken from an explicit CLI path (no hard-coded absolute
 paths; committed artifacts record basenames and hashes only) and every
@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -40,7 +41,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from reproducibility.colm_aims_2026 import pairing, schema  # noqa: E402
+from reproducibility.colm_aims_2026 import pairing, qa012, schema  # noqa: E402
 
 EXPORT_A_SHA256 = (
     "59e1c1a74e5fc0cf4f09f8befca87cfc81516684dca2e88dd275c952b28893ff"
@@ -301,8 +302,10 @@ def generate_model_snapshots(
 
 def generate_qa012_fixtures(item10_dir: Path, fixtures_out: Path) -> None:
     fixtures_out.mkdir(parents=True, exist_ok=True)
+    authority = qa012.load_authority_manifest()
+    hit_entries = [entry for entry in authority["entries"] if entry["format_qa_hits"]]
     bindings: dict[str, dict] = {}
-    for basename, expected in QA012_HIT_FILES.items():
+    for basename, expected in sorted(QA012_HIT_FILES.items()):
         matches = [p for p in item10_dir.rglob(basename) if p.is_file()]
         if len(matches) != 1:
             raise SystemExit(
@@ -312,25 +315,74 @@ def generate_qa012_fixtures(item10_dir: Path, fixtures_out: Path) -> None:
         raw = _require_hash(matches[0], expected, basename)
         lines = raw.split(b"\n")
         excerpt = b"\n".join(lines[:EXCERPT_LINES]) + b"\n"
+        full_fixture = fixtures_out / basename
         fixture = fixtures_out / f"{basename}.first{EXCERPT_LINES}.jsonl"
+        full_fixture.write_bytes(raw)
         fixture.write_bytes(excerpt)
+
+        authority_matches = [
+            entry
+            for entry in hit_entries
+            if entry["sha256"] == expected
+            and Path(entry["path"].partition(":")[2].strip()).name == basename
+        ]
+        if len(authority_matches) != 1:
+            raise SystemExit(
+                f"freeze: expected exactly one rev3 authority entry for {basename},"
+                f" found {len(authority_matches)}"
+            )
+        authority_entry = authority_matches[0]
+        scope_prong, relative_path = qa012._authority_prong_relative_path(
+            authority_entry["path"]
+        )
+        normalized_hits = []
+        for hit in authority_entry["format_qa_hits"]:
+            match = re.fullmatch(r"line ([1-9][0-9]*): (/.*/?format|/format)", hit)
+            if match is None:
+                raise SystemExit(
+                    f"freeze: malformed rev3 authority hit for {basename}: {hit}"
+                )
+            normalized_hits.append(
+                {"line": int(match.group(1)), "pointer": match.group(2)}
+            )
+        hits_sha256 = hashlib.sha256(
+            json.dumps(
+                normalized_hits, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+        content_hash = qa012.dropbox_content_hash(raw)
+        if (
+            authority_entry["size"] != len(raw)
+            or authority_entry["dropbox_content_hash"] != content_hash
+        ):
+            raise SystemExit(
+                f"freeze: rev3 authority size/content hash mismatch for {basename}"
+            )
         bindings[basename] = {
-            "full_file_sha256": expected,
-            "full_file_size": len(raw),
+            "scope_prong": scope_prong,
+            "relative_path": relative_path,
+            "full_fixture": full_fixture.name,
             "excerpt_fixture": fixture.name,
             "excerpt_lines": EXCERPT_LINES,
             "excerpt_sha256": hashlib.sha256(excerpt).hexdigest(),
+            "dropbox_content_hash": content_hash,
+            "hit_count": len(normalized_hits),
+            "hits_sha256": hits_sha256,
+            "full_file_sha256": expected,
+            "full_file_size": len(raw),
         }
-        print(f"[freeze] wrote {fixture}")
-    _write_artifact(
-        fixtures_out / "bindings.json",
-        {
-            "schema_version": schema.SCHEMA_VERSION,
-            "artifact_type": "qa012_compatibility_fixture_bindings",
-            "source_bundle": "item10_reachable_comparator_prototype",
-            "files": bindings,
-        },
-    )
+        print(f"[freeze] wrote {full_fixture} and {fixture}")
+    # Preserve the deliberately pinned insertion order as well as the values:
+    # qa012 verifies the complete raw bindings artifact, not merely parsed JSON.
+    payload = {
+        "artifact_type": "qa012_compatibility_fixture_bindings",
+        "files": bindings,
+        "schema_version": schema.SCHEMA_VERSION,
+        "source_bundle": "item10_reachable_comparator_prototype",
+    }
+    bindings_path = fixtures_out / "bindings.json"
+    bindings_path.write_bytes((json.dumps(payload, indent=1) + "\n").encode("utf-8"))
+    print(f"[freeze] wrote {bindings_path} ({bindings_path.stat().st_size} bytes)")
 
 
 def main(argv: list[str] | None = None) -> int:
