@@ -476,6 +476,44 @@ class TestVacuousInputs:
 
 
 class TestCanonicalSelection:
+    def test_parse_error_cannot_write_receipt_beneath_runs_root(self, tmp_path):
+        runs_root = tmp_path / "runs"
+        receipts = runs_root / "receipts"
+        runs_root.mkdir()
+
+        proc = run_cli(
+            "--mode",
+            "release",
+            "--runs-root",
+            str(runs_root),
+            "--receipts-dir",
+            str(receipts),
+            "--unknown-release-option",
+        )
+
+        assert proc.returncode == EXIT_USAGE_ERROR
+        assert not list(receipts.glob("receipt-*.json"))
+
+    def test_parse_error_still_receipts_outside_runs_root(self, tmp_path):
+        runs_root = tmp_path / "runs"
+        receipts = tmp_path / "receipts"
+        runs_root.mkdir()
+
+        proc = run_cli(
+            "--mode",
+            "release",
+            "--runs-root",
+            str(runs_root),
+            "--receipts-dir",
+            str(receipts),
+            "--unknown-release-option",
+        )
+
+        assert proc.returncode == EXIT_USAGE_ERROR
+        receipt = latest_receipt(receipts)
+        assert receipt["mode"] == "release"
+        assert receipt["verdict"] == VERDICT_FAIL
+
     def test_runs_site_baseline_passes_through_pointer(self, tmp_path):
         site = build_runs_site(tmp_path)
         proc = run_cli(*cli_args_for_runs_site(site))

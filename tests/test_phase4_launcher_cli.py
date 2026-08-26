@@ -1804,6 +1804,47 @@ def test_promotion_oserror_writes_stop_report_and_raises_runfailed(
     assert not Path(config["promote_to"]).exists()
 
 
+def test_staged_tree_sync_failure_prevents_promotion(tmp_path, monkeypatch):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    quarantine = Path(config["quarantine_dir"])
+    promote_to = Path(config["promote_to"])
+
+    def fail_sync(root):
+        root = Path(root)
+        assert root == quarantine
+        receipt_path = root / launcher.LAUNCH_RECEIPT_NAME
+        receipt = json.loads(receipt_path.read_text("utf-8"))
+        assert (root / receipt["export_basename"]).is_file()
+        assert all(
+            (root / "records" / f"{cell_id}.jsonl").is_file()
+            for cell_id in launcher.schema.CELL_IDS
+        )
+        raise OSError("synthetic staged fsync failure")
+
+    monkeypatch.setattr(launcher.fileio, "fsync_tree", fail_sync)
+    monkeypatch.setattr(
+        launcher,
+        "publish_dir_create_once",
+        lambda *_args, **_kwargs: pytest.fail(
+            "publication must not run after staged sync failure"
+        ),
+    )
+
+    with pytest.raises(launcher.RunFailed, match="atomic promotion failed"):
+        _call_launcher(config, probes)
+
+    assert quarantine.is_dir()
+    assert not promote_to.exists()
+    report = json.loads(
+        (quarantine / launcher.STOP_REPORT_NAME).read_text("utf-8")
+    )
+    assert report["reason"] == "promotion_crash"
+    assert report["promotion_committed"] is False
+    assert "synthetic staged fsync failure" in report["error"]
+
+
 def test_promotion_destination_race_never_replaces_empty_incumbent(
     tmp_path, monkeypatch
 ):

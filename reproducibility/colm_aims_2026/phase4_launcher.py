@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from scripts.stopdff_v5 import fileio
 from scripts.stopdff_v5.fileio import (
     create_once_bytes,
     publish_dir_create_once,
@@ -1711,6 +1712,23 @@ def _verify_captured_inputs(captured: dict[str, Any]) -> None:
         )
 
 
+def _release_captured_inputs_for_durable_sync(captured: dict[str, Any]) -> None:
+    """Make verified private copies syncable by the shared Windows barrier.
+
+    Captured inputs stay read-only throughout child execution.  After their
+    post-child byte/membership verification, that permission is no longer an
+    integrity boundary.  The shared ``fileio.fsync_tree`` implementation must
+    open regular files read/write on Windows because the CRT rejects fsync on
+    read-only descriptors, so release only the already-verified captured
+    files immediately before the complete-tree durability barrier.
+    """
+    if os.name != "nt":
+        return
+    root = Path(captured["root"])
+    for relative in sorted(captured["snapshot"]):
+        (root / PurePosixPath(relative)).chmod(stat.S_IREAD | stat.S_IWRITE)
+
+
 def _rewrite_argv_for_captured_inputs(
     argv: list[str], captured: dict[str, Any]
 ) -> list[str]:
@@ -2815,6 +2833,13 @@ def validate_and_launch(
                 out_basename=out_basename,
                 comparator_result=result,
             )
+            _release_captured_inputs_for_durable_sync(captured_inputs)
+            # Make the complete accepted tree durable before its create-once
+            # name is published. The producer writes the export and records
+            # with ordinary file operations, so syncing only the receipt and
+            # destination parent would leave a crash window where the rename
+            # survives but the scientific evidence bytes do not.
+            fileio.fsync_tree(quarantine_dir)
             publish_dir_create_once(
                 quarantine_dir,
                 promote_to,

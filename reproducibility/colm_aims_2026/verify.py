@@ -66,13 +66,35 @@ def _argv_option(argv: list[str], name: str) -> str | None:
 
 
 def _emit_cli_failure(
-    *, mode: str | None, tree: str | None, receipts_dir: str | None, observed: str
+    *,
+    mode: str | None,
+    tree: str | None,
+    runs_root: str | None,
+    receipts_dir: str | None,
+    observed: str,
 ) -> None:
     """Best-effort create-once failure evidence when a receipt path is known."""
     if not receipts_dir:
         return
     receipts = Path(receipts_dir)
-    verified_tree = Path(tree) if tree else receipts.parent / ".no-verified-tree"
+    containment_roots = [Path(value) for value in (tree, runs_root) if value]
+    try:
+        if any(
+            schema.resolves_inside(receipts, root) for root in containment_roots
+        ):
+            # Parsing/configuration never grants authority to mutate either a
+            # candidate tree or a canonical runs site.  If a supplied receipt
+            # destination resolves inside either one, retain the usage exit
+            # code without emitting best-effort evidence there.
+            return
+    except (OSError, RuntimeError, ValueError):
+        # A containment root that cannot be resolved is not authority to write.
+        return
+    verified_tree = (
+        containment_roots[0]
+        if containment_roots
+        else receipts.parent / ".no-verified-tree"
+    )
     payload = {
         "schema_version": schema.SCHEMA_VERSION,
         "mode": mode if mode in {"source", "release"} else "unknown",
@@ -158,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             _emit_cli_failure(
                 mode=_argv_option(raw_argv, "--mode"),
                 tree=_argv_option(raw_argv, "--tree"),
+                runs_root=_argv_option(raw_argv, "--runs-root"),
                 receipts_dir=_argv_option(raw_argv, "--receipts-dir"),
                 observed="CLI argument parsing failed",
             )
@@ -179,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
             _emit_cli_failure(
                 mode=args.mode,
                 tree=args.tree,
+                runs_root=args.runs_root,
                 receipts_dir=args.receipts_dir,
                 observed=observed,
             )
