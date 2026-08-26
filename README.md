@@ -1,5 +1,11 @@
 # Does the Proxy Preserve the Decision? -- Code Package
 
+> **Scope note (R-038):** stopping-shift evidence in this repository concerns
+> constructed QA reference trajectories — a constructed-reference sensitivity
+> diagnostic. It does not assert observed open-ended decision preservation;
+> the authoritative claim ledger lives under `reproducibility/colm_aims_2026/`.
+
+
 CS321M (AI Measurement Science) final project code repository. This project audits whether multiple-choice reformulations of incremental AI benchmarks (quizbowl tossups) preserve decision-relevant psychometric properties. The audit uses three metrics:
 
 1. **CSLI** (Choice-Set Leakage Index) -- quantifies information leakage from answer choices
@@ -65,6 +71,17 @@ These are the novel scripts implementing the three-metric audit framework:
 | `scripts/verify_stopdff_v5_modal_assurance.py` | Offline verifier for the recovery-assurance receipts | PASS verdict JSON |
 | `scripts/validate_stopdff_bucketed_sweep.py` | StopDFF v5 standalone acceptance-gate checker (see `ACCEPTANCE_CONTRACT.md`) | `PASS`/`FAIL` verdict (`--json` report) |
 
+### COLM AIMS 2026 evidence verifier (v2)
+
+`reproducibility/colm_aims_2026/` hosts a two-mode fail-closed verifier for
+the constructed QA reference sensitivity evidence package (`--mode source`
+tops out at `PASS_SOURCE_ONLY`; `--mode release` requires independently
+anchored expectations). It is distinct from `scripts/verify_audit_release.py`
+(the legacy audit-release checker). Usage, input layout, verdicts, and exit
+codes: `reproducibility/colm_aims_2026/README.md`. Contract:
+`.correctless/specs/camera-ready-aims-evidence-2.md` (71 rules); feature
+overview: `docs/features/camera-ready-aims-evidence-v2.md`.
+
 ## Pre-computed Artifacts
 
 The `paper_exports/` directory contains all pre-computed results referenced in the manuscript:
@@ -121,6 +138,7 @@ qanta-buzzer/
 +-- training/             [CS234] T5 policy trainers (supervised + PPO)
 +-- configs/              [CS234] YAML configuration files
 +-- schemas/              [CS321M] JSON Schemas for StopDFF v5 artifacts
++-- reproducibility/      [CS321M] COLM AIMS 2026 evidence verifier (v2) + source-to-claim map
 +-- tests/                [CS234] unit + regression test suite (run via `pytest`)
 +-- paper_exports/        [CS321M] Pre-computed audit results and figures
 +-- artifacts/            Generated pipeline outputs (smoke/ and main/)

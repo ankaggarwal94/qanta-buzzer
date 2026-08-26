@@ -32,18 +32,32 @@ import sys
 # during pytest collection -- ``tests/test_pipeline_split_contracts.py``
 # is the specific path in the focused-test suite. Pytest collects
 # test files in CLI / alphabetical order, so the contamination
-# depends on what was collected before us. Drop the offending
-# module (it will be re-imported lazily on next use by anything
-# that needs it) and any stale ``scripts.compute_csli`` cache so
-# the next import sees a clean state. Local to this test file;
-# does not modify shared conftest.py.
-sys.modules.pop("evaluation.controls", None)
+# depends on what was collected before us. Evict the offending
+# module just long enough to import scripts.compute_csli against a
+# clean state, then restore the SAVED module object in the
+# ``finally`` below (the save/evict/restore idiom of
+# tests/test_verify_audit_release.py's provenance-hash test).
+# Leaving the eviction unrestored is a test-isolation bug: the next
+# import re-creates evaluation.controls as a NEW module object, so
+# functions bound from it by other modules at their import time stop
+# being identity-equal to the module's attributes (this false-failed
+# the hazard-efficacy harness's bootstrap_ci reuse pin under
+# full-suite collection order). The stale ``scripts.compute_csli``
+# cache is still dropped unconditionally so this file exercises a
+# fresh import (module-level guard + clean lazy caches). Local to
+# this test file; does not modify shared conftest.py.
+_saved_evaluation_controls = sys.modules.pop("evaluation.controls", None)
 sys.modules.pop("scripts.compute_csli", None)
 
 import numpy as np
 import pytest
 
-from scripts.compute_csli import bootstrap_ci
+try:
+    from scripts.compute_csli import bootstrap_ci
+finally:
+    if _saved_evaluation_controls is not None:
+        sys.modules["evaluation.controls"] = _saved_evaluation_controls
+    del _saved_evaluation_controls
 
 
 # ---------------------------------------------------------------------------

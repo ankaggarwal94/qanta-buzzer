@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from scripts import run_stopdff_v5_local as local_runner
-from scripts.stopdff_v5 import checker, selftest, writers
+from scripts.stopdff_v5 import checker, locking, selftest, writers
 from tests.harness_control_plane import (
     _fake_control_api,
     _load_modal_runner,
@@ -412,6 +412,8 @@ def test_stage_tree_is_fsynced_before_directory_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import os
+
     out = tmp_path / "out"
     out.mkdir()
     events: list[tuple[str, str]] = []
@@ -468,8 +470,14 @@ def test_stage_tree_is_fsynced_before_directory_publication(
     after = events[publish_index + 1:]
     assert any("payload.bin" in path for kind, path in before if kind == "fsync")
     assert any("nested" in path for kind, path in before if kind == "fsync")
-    assert any(kind == "fsync" for kind, _path in after)
-    assert (out / "source" / "nested" / "payload.bin").read_bytes() == b"durable payload"
+    # POSIX exposes the parent-directory descriptor and retains the historical
+    # post-rename fsync.  Python on Windows rejects directory os.open; the
+    # platform helper returns only for that unsupported operation.
+    if os.name != "nt":
+        assert any(kind == "fsync" for kind, _path in after)
+    assert (
+        out / "source" / "nested" / "payload.bin"
+    ).read_bytes() == b"durable payload"
 
 
 def test_publish_stage_directory_fails_closed_when_peer_wins_empty_slot(
@@ -653,25 +661,28 @@ def test_lifecycle_lock_fails_fast_when_another_driver_holds_it(
     tmp_path, monkeypatch
 ):
     """The local driver refuses to race another process for the journal."""
-    import fcntl
     import os
 
     monkeypatch.setattr(local_runner, "_LIFECYCLE_LOCK_FDS", {})
     out = tmp_path / "workspace"
     out.mkdir()
     lock_path = out / "local_lifecycle.json.lock"
-    # An independent open-file-description stands in for a second driver
-    # process: flock treats each open() independently even in one process.
-    foreign_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    # A separate owner map opens an independent descriptor, just as another
+    # process would, through the host's canonical lock backend.
+    foreign_locks: dict[str, int] = {}
     try:
-        fcntl.flock(foreign_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        locking.acquire_process_lock(
+            lock_path,
+            foreign_locks,
+            busy_label="foreign lifecycle owner",
+        )
         with pytest.raises(
             RuntimeError, match="another local StopDFF driver holds"
         ):
             local_runner._acquire_lifecycle_lock(out)
         assert local_runner._LIFECYCLE_LOCK_FDS == {}
     finally:
-        os.close(foreign_fd)
+        os.close(foreign_locks.pop(os.path.realpath(lock_path)))
 
     local_runner._acquire_lifecycle_lock(out)
     assert os.path.realpath(lock_path) in local_runner._LIFECYCLE_LOCK_FDS
@@ -683,7 +694,6 @@ def test_lifecycle_lock_fails_fast_when_another_driver_holds_it(
 def test_lifecycle_journal_creation_is_guarded_by_the_driver_lock(
     tmp_path, monkeypatch
 ):
-    import fcntl
     import os
     import types
 
@@ -698,9 +708,13 @@ def test_lifecycle_journal_creation_is_guarded_by_the_driver_lock(
         allow_low_mc_retention=False,
     )
     lock_path = out / "local_lifecycle.json.lock"
-    foreign_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    foreign_locks: dict[str, int] = {}
     try:
-        fcntl.flock(foreign_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        locking.acquire_process_lock(
+            lock_path,
+            foreign_locks,
+            busy_label="foreign lifecycle owner",
+        )
         with pytest.raises(
             RuntimeError, match="another local StopDFF driver holds"
         ):
@@ -710,7 +724,7 @@ def test_lifecycle_journal_creation_is_guarded_by_the_driver_lock(
         # Fail-fast happens before any journal byte exists.
         assert not (out / "local_lifecycle.json").exists()
     finally:
-        os.close(foreign_fd)
+        os.close(foreign_locks.pop(os.path.realpath(lock_path)))
 
     state = local_runner._load_or_create_lifecycle(
         out=out, args=args, run_sha="a" * 40, resume=False

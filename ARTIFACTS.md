@@ -1,5 +1,11 @@
 # Artifact Policy
 
+> **Scope note (R-038):** stopping-shift evidence in this repository concerns
+> constructed QA reference trajectories — a constructed-reference sensitivity
+> diagnostic. It does not assert observed open-ended decision preservation;
+> the authoritative claim ledger lives under `reproducibility/colm_aims_2026/`.
+
+
 This repository contains both source code and generated CS321M audit artifacts.
 This file defines which artifacts are canonical, how they are regenerated, and
 how provenance is checked.

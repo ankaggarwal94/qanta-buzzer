@@ -1,0 +1,2136 @@
+"""Strict schema-versioned v2 constructed-reference profile: types, ingress.
+
+Spec rules owned here: R-001..R-004, R-016 (writer side), R-020, R-029,
+R-031, R-032, R-039 (publish side), R-045..R-047 (record contract), R-058,
+R-059 (single bool-safe version checker), R-061 (record-level integer
+domains), R-062/R-067 (hardened parse hooks), R-063 (closed trusted maps).
+Spec: .correctless/specs/camera-ready-aims-evidence-2.md
+"""
+from __future__ import annotations
+
+import errno
+import hashlib
+import io
+import json
+import math
+import os
+import re
+import stat
+from pathlib import Path
+from typing import Any
+
+from scripts.stopdff_v5 import fileio, locking
+
+
+_PUBLICATION_LOCK_FDS: dict[str, int] = {}
+
+
+class ColmAimsError(Exception):
+    """Base class for every typed error raised by this namespace."""
+
+
+class SchemaValidationError(ColmAimsError):
+    """Strict-profile semantic/schema violation (R-001..R-003, R-029, R-032)."""
+
+
+class RecordValidationError(SchemaValidationError):
+    """Per-item record violates the non-reversible record contract
+    (R-031/R-045/R-061)."""
+
+
+class TypedIngressError(ColmAimsError):
+    """Artifact bytes failed typed validation at the load boundary (R-020)."""
+
+
+class SchemaVersionError(TypedIngressError):
+    """Unsupported/missing/mistyped ``schema_version`` on a versioned surface
+    (R-059). The ONE bool-safe version-defect type raised by the single
+    shared checker on every versioned surface."""
+
+
+class ConfigSurfaceError(ColmAimsError):
+    """Unknown key/flag on the config surface — usage error, never a no-op
+    (R-022/R-037/R-063)."""
+
+
+class EmptyEvaluationError(ColmAimsError):
+    """Explicitly empty evaluation population refused (R-006, R-012).
+
+    Reserved strictly for ``n_pairing_population == 0`` — the one condition
+    the rule text names as a typed error.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Pinned constants (R-058: ONE canonical revision constant set)
+# ---------------------------------------------------------------------------
+
+SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSION_MIN = 2
+SUPPORTED_SCHEMA_VERSION_MAX = 2
+VERIFIER_REVISION = "reproducibility.colm_aims_2026:r2"
+
+STRICT_PROFILE_ID = "colm_aims_constructed_reference_v2"
+# R-002: reserved identifier for genuinely observed future studies. The
+# constructed-reference validator never accepts it; no code path converts
+# one profile into the other.
+RESERVED_OBSERVED_PROFILE_ID = "colm_aims_observed_paired_v1"
+
+# Handoff sanctioned output when the intended headline becomes actual
+# preservation/change (R-027).
+OBSERVED_PAIRED_CLAIM_OUTPUT = (
+    "observed_paired_claim=OBSERVED_PAIRED_STUDY_REQUIRED"
+)
+
+# R-032: pinned maximum admissible numerical tolerance.
+MAX_ADMISSIBLE_TOLERANCE = 1e-3
+
+# Operational allocation safeguards (R-061: safeguards, never construct
+# definitions).
+MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+MAX_JSONL_RECORDS = 100_000
+MAX_BOOTSTRAP_DRAWS = 200_000
+MAX_BOOTSTRAP_CELLS = 200_000_000
+
+# R-062 (Track A' R5, D8): NON-SEMANTIC token-length crash guard applied
+# lexically BEFORE int() conversion. This cap must stay well below ~300
+# digits so every ingress-parsed int stays below float-max and unguarded
+# float() coercions at gate predicates can never overflow.
+MAX_JSON_INT_TOKEN_DIGITS = 100
+
+# R-001: the pinned semantic block, verbatim from handoff §8.
+SEMANTIC_BLOCK: dict[str, Any] = {
+    "trajectory_source": "constructed_reference",
+    "observed_open_ended": False,
+    "observed_open_ended_answers": False,
+    "observed_open_ended_stopping_actions": False,
+    "pairing_unit": "matched_item_prefix_grid",
+    "pairing_is_observed_sessions": False,
+    "supports": "reference_sensitivity_diagnostic",
+    "does_not_support": "actual_decision_preservation_or_format_effect",
+}
+
+# R-008: pinned item-key derivation, re-derivable by third parties.
+ITEM_KEY_DERIVATION: dict[str, Any] = {
+    "hash": "sha256",
+    "text_normalization": "NFC",
+    "prefix": "itm-",
+    "hex_digits": 16,
+}
+# The frozen Phase-4 eligibility/seed authority predates the generic opaque
+# text-hash scheme and is explicitly keyed by canonical dataset QID strings.
+# Keep this as a second closed, named scheme rather than falsely claiming that
+# decimal QIDs are outputs of ITEM_KEY_DERIVATION.
+PHASE4_ITEM_KEY_DERIVATION: dict[str, Any] = {
+    "source_field": "qid",
+    "normalization": "canonical_unsigned_decimal_string",
+}
+PHASE4_PRODUCER_ENTRYPOINT = "scripts/stopdff_fair_qa_retest.py"
+ITEM_KEY_DERIVATION_SCHEMES = (
+    ITEM_KEY_DERIVATION,
+    PHASE4_ITEM_KEY_DERIVATION,
+)
+
+
+def item_key_conforms_to_derivation(
+    item_key: Any, derivation: Any
+) -> bool:
+    """Return whether one key conforms to an exact declared key scheme."""
+    if not isinstance(item_key, str):
+        return False
+    if derivation == ITEM_KEY_DERIVATION:
+        return re.fullmatch(r"itm-[0-9a-f]{16}", item_key) is not None
+    if derivation == PHASE4_ITEM_KEY_DERIVATION:
+        return re.fullmatch(r"(?:0|[1-9][0-9]*)", item_key) is not None
+    return False
+
+# R-029: contribution axes; `none` is an explicit value, never absent.
+LLM_INVOLVEMENT_AXES = (
+    "reference_construction",
+    "data_plot_creation",
+    "evaluation",
+)
+
+# R-003: per-arm identification fields (v2 adds arm_id/family/stop_semantics
+# to the carried v1 set).
+ARM_REQUIRED_FIELDS = (
+    "arm_id",
+    "family",
+    "stop_semantics",
+    "construction",
+    "cardinality",
+    "selector",
+    "scorer",
+    "candidate_pool_role",
+    "correctness_assignment",
+    "calibration_role",
+    "continuation_role",
+    "seed_contract",
+    "reporting_eligibility",
+)
+ARM_KEYS = frozenset(ARM_REQUIRED_FIELDS)
+SEED_CONTRACT_KEYS = frozenset({"seeds"})
+ARM_CARDINALITIES = ("scalar", "k_way")
+
+# R-003: closed per-family stop-semantics vocabularies — no overloaded
+# global stop integer across families.
+FAMILY_STOP_VOCAB: dict[str, str] = {
+    "constructed_reference": "reference_threshold_crossing",
+    "fixed_threshold": "fixed_threshold_crossing",
+    "myopic": "myopic_one_step_stop",
+    "learned_continuation": "learned_value_stop",
+}
+
+# R-045: closed canonical event vocabulary + terminal-imputation enum.
+EVENT_FINITE = "FINITE_STOP"
+EVENT_NEVER = "NEVER_STOPPED"
+EVENT_STATUSES = frozenset({EVENT_FINITE, EVENT_NEVER})
+IMPUTATION_NONE = "NONE"
+IMPUTATION_FINAL_PREFIX = "FINAL_PREFIX_IF_NEVER"
+TERMINAL_IMPUTATIONS = frozenset({IMPUTATION_NONE, IMPUTATION_FINAL_PREFIX})
+
+# R-047: spec-pinned new exclusion-reason enum member joins the carried set.
+AMBIGUOUS_TERMINAL_SENTINEL = "AMBIGUOUS_TERMINAL_SENTINEL"
+# R-074 (PRE-1): pre-package exclusion reason for items whose trajectory has
+# fewer than two cumulative prefixes (the frozen eligibility artifact's nine
+# excluded qids all carry this reason).
+SINGLE_PREFIX_TRAJECTORY = "SINGLE_PREFIX_TRAJECTORY"
+EXCLUSION_REASONS = frozenset(
+    {
+        "MALFORMED_STOP",
+        "MISSING_STOP",
+        "GRID_MISMATCH",
+        "UNKNOWN_NOT_INFERRED",
+        AMBIGUOUS_TERMINAL_SENTINEL,
+        SINGLE_PREFIX_TRAJECTORY,
+    }
+)
+
+# R-046/R-010: the preserved fair-QA producer's derived-scalar convention.
+SENTINEL_CONVENTION = "timeout_coded_as_horizon"
+
+# R-057: exact analysis-provenance discriminator token for D7(b) outputs.
+ANALYSIS_PROVENANCE_D7B = "d7b_regenerated_2026"
+
+# R-054: closed population enum for estimand/interval identities.
+POPULATION_ALL = "all_complete_pairs_terminal_imputed"
+POPULATION_FINITE = "both_finite_only"
+POPULATIONS = frozenset({POPULATION_ALL, POPULATION_FINITE})
+
+# R-048/R-049: closed estimand labels for the two named estimands.
+HEADLINE_ESTIMAND_LABEL = (
+    "mean_signed_shift_mc_minus_ref_all_complete_pairs_terminal_imputed"
+)
+FINITE_ONLY_ESTIMAND_LABEL = "mean_signed_shift_mc_minus_ref_both_finite_only"
+ESTIMAND_LABELS = frozenset(
+    {HEADLINE_ESTIMAND_LABEL, FINITE_ONLY_ESTIMAND_LABEL}
+)
+
+# Frozen 5x2 grid identity (R-040/R-061: cardinalities 10/5/2).
+REFERENCE_IDS = ("idealized", "kdisjoint", "khard", "klex", "krandom")
+CALIBRATION_IDS = ("format_specific", "shared")
+CELL_IDS = tuple(
+    sorted(f"{r}__{c}" for r in REFERENCE_IDS for c in CALIBRATION_IDS)
+)
+EXPECTED_COMPLETE_PAIRS = 2249  # R-042: exactly 2,249 complete pairs per cell
+BOOTSTRAP_DRAW_COUNT = 1000  # R-051/R-061: exactly B=1000 for this profile
+
+# R-052: the recorded seed-derivation string (exact).
+SEED_DERIVATION_STRING = (
+    'sha256(b"colm_aims_2026/v2/bootstrap_holm\\0"'
+    " + bytes.fromhex(pairing_population_keyset_sha256)).digest()[:8]"
+    " big-endian unsigned"
+)
+
+# R-051: pinned resample-plan tokens.
+GENERATOR_CONSTRUCTION = "numpy.random.Generator(numpy.random.PCG64(seed))"
+RESAMPLING_UNIT = "item_tossup_clustered_all_prefixes_both_arms"
+INTERVAL_PROCEDURE = "d7b_shared_percentile_bootstrap"
+INTERVAL_STATISTIC = "mean_signed_shift"
+QUANTILE_METHOD = "linear"
+
+# R-011: closed legal-value vocabularies for the 7B/M3 surface.
+PAIRING_DEFINITIONS = frozenset({"matched_item_prefix_grid"})
+TIMEOUT_RULES = frozenset({"zero_indexed_stop_ge_horizon_is_timeout"})
+# The rule vocabulary each pairing definition reconciles with (R-011).
+PAIRING_RULE_RECONCILIATION: dict[str, frozenset[str]] = {
+    "matched_item_prefix_grid": frozenset(
+        {"zero_indexed_stop_ge_horizon_is_timeout"}
+    ),
+}
+
+PROFILE_TOP_LEVEL_KEYS = frozenset(
+    {
+        "schema_version",
+        "profile_id",
+        "semantic",
+        "llm_involvement",
+        "numerical_tolerance",
+        "item_key_derivation",
+        "arms",
+        "provenance",
+        "grid",
+        "inference",
+        "cells",
+    }
+)
+
+GRID_KEYS = frozenset(
+    {
+        "reference_ids",
+        "calibration_ids",
+        "cell_ids",
+        "record_files",
+        "item_keys_sha256",
+        "held_fixed",
+    }
+)
+HELD_FIXED_KEYS = frozenset({"mc_trajectory_identity", "horizon_identity"})
+PROVENANCE_KEYS = frozenset(
+    {
+        "producer_entrypoint",
+        "producer_sha256",
+        "helper_sha256s",
+        "semantic_command",
+        "seeds",
+        "dirty_state",
+        "splits",
+        "calibration_identity",
+        "continuation_identity",
+        "input_sha256",
+        "split_metadata_sha256",
+        "mc_build",
+        "pre_package_retention",
+        "model",
+        "runtime_packages",
+    }
+)
+PROVENANCE_REQUIRED_KEYS = frozenset(
+    {
+        "producer_entrypoint",
+        "dirty_state",
+        "splits",
+        "calibration_identity",
+        "continuation_identity",
+        "input_sha256",
+        "pre_package_retention",
+        "model",
+        "runtime_packages",
+    }
+)
+DIRTY_STATE_KEYS = frozenset({"git_dirty", "source_commit"})
+SPLITS_KEYS = frozenset({"fit", "eval", "zero_overlap"})
+SPLITS_REQUIRED_KEYS = frozenset({"eval"})
+SPLIT_ENTRY_KEYS = frozenset({"name", "count", "keyset_sha256"})
+MC_BUILD_KEYS = frozenset(
+    {"built_after_split", "coverage_rate", "retention_policy", "retained_count"}
+)
+PRE_PACKAGE_RETENTION_KEYS = frozenset(
+    {"retained_count", "paired_count", "upstream_unpaired_count"}
+)
+MODEL_KEYS = frozenset(
+    {
+        "repository_namespace",
+        "revision",
+        "weights_sha256",
+        "tokenizer_config_sha256",
+        "dtype",
+        "device_class",
+        "numerical_settings",
+        "byte_digest_manifest",
+    }
+)
+NUMERICAL_SETTINGS_KEYS = frozenset({"deterministic"})
+
+
+def horizon_map_sha256(mapping: dict[str, int]) -> str:
+    """R-073 canonical per-item horizon-map digest.
+
+    Serialization is pinned: a JSON object mapping item key -> positive
+    integer horizon, keys sorted ascending by UTF-8 byte order, compact
+    separators, UTF-8 encoded; digest is lowercase-hex SHA-256 of those
+    bytes. This one function is the shared source of truth for the
+    producer-side freeze artifact, the verifier's recompute legs, and the
+    held-fixed ``horizon_identity`` (R-043) — reimplementations are
+    forbidden so the three surfaces cannot drift.
+
+    DECISION-4 fail-closed domain guards (Phase-4 PRE, 2026-08-22): the
+    digest domain is EXACTLY ``str -> positive real int``. Non-string keys
+    are never stringified, bools are never digested as 0/1, floats
+    (including integer-valued ones like 2.0) are never truncated or
+    coerced, non-positive horizons are refused, and the empty map is a
+    defect, never a valid digestible identity (vacuously-empty
+    authoritative sets — seed catalog).
+    """
+    if not isinstance(mapping, dict):
+        raise SchemaValidationError(
+            "horizon map must be a JSON object mapping item keys to"
+            " positive integer horizons (R-073)"
+        )
+    if not mapping:
+        raise SchemaValidationError(
+            "horizon map is empty — a vacuously-empty horizon map is a"
+            " defect, never a valid digestible identity (R-073)"
+        )
+    for key, value in mapping.items():
+        if not isinstance(key, str) or not key:
+            raise SchemaValidationError(
+                "horizon map key is not a non-empty string — item keys are"
+                " never silently stringified into the digest domain (R-073)"
+            )
+        if not is_real_int(value):
+            raise SchemaValidationError(
+                f"horizon map value for a key is {value!r} — the digest"
+                " domain is positive real int; bools and floats (including"
+                " integer-valued floats) are never coerced (R-073/R-061)"
+            )
+        if value <= 0:
+            raise SchemaValidationError(
+                f"horizon map value {value!r} is not a positive integer"
+                " (R-073)"
+            )
+    canonical = json.dumps(
+        mapping,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+INFERENCE_KEYS = frozenset(
+    {
+        "analysis_provenance",
+        "numpy_version",
+        "bit_generator",
+        "generator_construction",
+        "draw_count",
+        "sample_size",
+        "resampling_unit",
+        "with_replacement",
+        "dtype",
+        "endpoint",
+        "seed",
+        "seed_derivation",
+        "pairing_population_keyset_sha256",
+        "canonical_item_order_digest",
+        "resample_matrix_digest",
+        "familywise_alpha",
+        "family_size",
+        "ordered_family",
+        "rejected_cell_ids",
+    }
+)
+MATRIX_DIGEST_KEYS = frozenset(
+    {"sha256", "dtype", "shape", "byte_order", "canonical_item_order_digest"}
+)
+
+CELL_REQUIRED_KEYS = (
+    "cell_id",
+    "reference_id",
+    "calibration_id",
+    "estimand",
+    "estimand_digest",
+    "records_file",
+    "counts",
+    "rates",
+    "headline_summary",
+    "finite_only_summary",
+    "interval",
+    "raw_p_value",
+    "holm_rank",
+    "holm_adjusted_p_value",
+    "holm_rejected",
+    "excluded_keys",
+    "pairing_population_keyset_sha256",
+)
+CELL_KEYS = frozenset(CELL_REQUIRED_KEYS)
+COUNT_KEYS = frozenset(
+    {
+        "n_both_finite",
+        "n_mc_finite_ref_timeout",
+        "n_mc_timeout_ref_finite",
+        "n_both_timeout",
+        "n_complete",
+        "n_excluded_or_unpaired",
+        "exclusion_reason_counts",
+        "n_pairing_population",
+        "n_mc_timeout",
+        "n_ref_timeout",
+    }
+)
+RATE_KEYS = frozenset(
+    {
+        "rate_both_finite",
+        "rate_mc_finite_ref_timeout",
+        "rate_mc_timeout_ref_finite",
+        "rate_both_timeout",
+    }
+)
+HEADLINE_SUMMARY_KEYS = frozenset(
+    {"estimand_label", "population", "n", "mean_signed_shift", "convention"}
+)
+FINITE_ONLY_SUMMARY_KEYS = frozenset(
+    {
+        "estimand_label",
+        "population",
+        "n",
+        "signed_index_mean",
+        "signed_index_median",
+        "absolute_index_mean",
+        "absolute_index_median",
+    }
+)
+
+ESTIMAND_KEYS = frozenset(
+    {
+        "arm_mc",
+        "arm_ref",
+        "reference_id",
+        "calibration_id",
+        "pairing_definition",
+        "timeout_parameters",
+        "event_representation",
+        "population",
+        "denominator_policy",
+        "numerical_tolerance",
+        "calibration_identity",
+        "continuation_identity",
+        "random_k_draw_id",
+    }
+)
+# R-073 (PRE-2): the scalar ``trajectory_horizon`` member is RETIRED — the
+# declaration is the canonical per-item horizon-map digest.
+TIMEOUT_PARAMETER_KEYS = frozenset({"horizon_map_sha256", "rule"})
+EVENT_REPRESENTATION_KEYS = frozenset(
+    {
+        "index_base",
+        "horizon_identity",
+        "mc_trajectory_identity",
+        "historical_sentinel_convention",
+        "terminal_imputation_policy",
+        "producer_profile_identity",
+    }
+)
+
+# R-015: recorded interval identity (everything but the interval itself).
+INTERVAL_IDENTITY_KEYS = (
+    "procedure",
+    "draw_count",
+    "seed",
+    "seed_derivation",
+    "statistic",
+    "population",
+)
+INTERVAL_REQUIRED_KEYS = INTERVAL_IDENTITY_KEYS + ("quantile_method", "ci")
+
+# D1: calibration identity is a MAP with exactly one entry per calibration.
+CALIBRATION_IDENTITY_KEYS = frozenset({"format_specific", "shared"})
+
+# R-031 (v2): the enumerated record field set — the ONLY string-valued field
+# a per-item record may carry outside enumerated categoricals is its opaque
+# item key.
+RECORD_IDENTIFIER_FIELDS = frozenset({"item_key"})
+RECORD_EVENT_STATUS_FIELDS = frozenset({"mc_event_status", "ref_event_status"})
+RECORD_STOP_FIELDS = frozenset({"mc_stop_step", "ref_stop_step"})
+RECORD_IMPUTATION_FIELDS = frozenset(
+    {"mc_terminal_imputation", "ref_terminal_imputation"}
+)
+RECORD_NUMERIC_FIELDS = frozenset(
+    {
+        "trajectory_horizon",
+        "mc_original_encoded_stop",
+        "ref_original_encoded_stop",
+    }
+)
+RECORD_BOOL_FIELDS = frozenset(
+    {"excluded", "mc_crossing_indicator", "ref_crossing_indicator"}
+)
+RECORD_CATEGORICAL_FIELDS = frozenset({"exclusion_reason"})
+RECORD_CATEGORICAL_LIST_FIELDS = frozenset({"secondary_diagnostics"})
+RECORD_ALLOWED_FIELDS = (
+    RECORD_IDENTIFIER_FIELDS
+    | RECORD_EVENT_STATUS_FIELDS
+    | RECORD_STOP_FIELDS
+    | RECORD_IMPUTATION_FIELDS
+    | RECORD_NUMERIC_FIELDS
+    | RECORD_BOOL_FIELDS
+    | RECORD_CATEGORICAL_FIELDS
+    | RECORD_CATEGORICAL_LIST_FIELDS
+)
+RECORD_REQUIRED_FIELDS = (
+    "item_key",
+    "trajectory_horizon",
+    "mc_event_status",
+    "mc_stop_step",
+    "mc_terminal_imputation",
+    "ref_event_status",
+    "ref_stop_step",
+    "ref_terminal_imputation",
+)
+
+
+# ---------------------------------------------------------------------------
+# Shared value predicates
+# ---------------------------------------------------------------------------
+
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_GIT_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+
+def is_number(value: Any) -> bool:
+    """True for a real int/float; ``bool`` never counts as a number here."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def is_real_int(value: Any) -> bool:
+    """True for a real int; ``bool`` never satisfies an integer domain
+    (R-061)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def is_sha256_hex(value: Any) -> bool:
+    """True for a full-length lowercase sha256 hex digest."""
+    return isinstance(value, str) and _SHA256_HEX_RE.fullmatch(value) is not None
+
+
+def is_commit_sha(value: Any) -> bool:
+    """True for a full-length 40-hex commit SHA.
+
+    This narrower predicate remains available for external model revision
+    domains that explicitly require SHA-1.
+    """
+    return isinstance(value, str) and _COMMIT_SHA_RE.fullmatch(value) is not None
+
+
+def is_git_object_id(value: Any) -> bool:
+    """True for a native SHA-1 or SHA-256 Git object identifier.
+
+    Repository identities may be 40 or 64 lowercase hexadecimal characters.
+    Short hashes, tags, and branch names never qualify (R-012/R-013).
+    """
+    return (
+        isinstance(value, str)
+        and _GIT_OBJECT_ID_RE.fullmatch(value) is not None
+    )
+
+
+def is_uint64(value: Any) -> bool:
+    """True for a real int in the unsigned 64-bit domain (R-052/R-061)."""
+    return is_real_int(value) and 0 <= value < 2**64
+
+
+def is_admissible_tolerance(value: Any) -> bool:
+    """R-032: a declared tolerance is admissible when it is a real number in
+    ``(0, MAX_ADMISSIBLE_TOLERANCE]``; non-finite values never qualify."""
+    if not is_number(value):
+        return False
+    as_float = float(value)
+    return math.isfinite(as_float) and 0 < as_float <= MAX_ADMISSIBLE_TOLERANCE
+
+
+def is_native_finite_number(value: Any) -> bool:
+    """Native finite JSON number, gated BEFORE any float() coercion (R-067).
+
+    str/bool are rejected outright. Parsed integers are bounded by the
+    R-062 token-length guard (100 digits, well under float-max), so the
+    float() below can never overflow on ingress-parsed values.
+    """
+    if not is_number(value):
+        return False
+    return math.isfinite(float(value))
+
+
+def is_path_component(value: Any) -> bool:
+    """True for a non-empty single path component (no separators/traversal).
+
+    Bare ``.`` and ``..`` are excluded explicitly — ``..`` satisfies
+    ``Path(value).name == value`` yet traverses out of any joined root.
+    """
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value not in (".", "..")
+        and Path(value).name == value
+    )
+
+
+def resolves_inside(path: Path, root: Path) -> bool:
+    """True when ``path`` resolves to ``root`` itself or anything beneath it.
+
+    Containment decisions use fully resolved, symlink-free paths (R-013).
+    """
+    resolved = Path(path).resolve()
+    root_resolved = Path(root).resolve()
+    return resolved == root_resolved or root_resolved in resolved.parents
+
+
+def is_filesystem_link(path: Path) -> bool:
+    """Return whether ``path`` is a symlink or Windows reparse point.
+
+    ``Path.is_symlink`` does not recognize every Windows junction.  Trust
+    boundaries use the no-follow stat view and reject the reparse attribute as
+    well, so a directory alias is never treated as an ordinary directory.
+    """
+    try:
+        info = os.stat(Path(path), follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def _identity_tuple(info: os.stat_result) -> tuple[int, int, int]:
+    """Stable-enough cross-platform identity for a no-follow path component."""
+    return (
+        int(info.st_dev),
+        int(info.st_ino),
+        int(info.st_mode),
+    )
+
+
+def stable_directory_chain(
+    path: Path, root: Path
+) -> tuple[tuple[str, tuple[int, int, int]], ...]:
+    """Capture a lexical root-to-directory chain without following aliases.
+
+    Every component, including ``root`` itself, must exist as an ordinary
+    directory and must not be a symlink or Windows reparse point.  Callers
+    capture the chain before an operation and compare it afterward to detect a
+    component swap during traversal/read (R-013/R-020).
+    """
+    root_abs = Path(os.path.abspath(root))
+    path_abs = Path(os.path.abspath(path))
+    try:
+        relative = path_abs.relative_to(root_abs)
+    except ValueError as exc:
+        raise TypedIngressError(
+            "path escapes the declared tree root (R-013/R-020)"
+        ) from exc
+    # Include the full lexical ancestry of the declared root. Otherwise an
+    # ordinary leaf reached through an ancestor junction/symlink would erase
+    # the alias from the trust decision.
+    anchor = Path(root_abs.anchor)
+    components = [anchor]
+    current = anchor
+    for part in root_abs.parts[1:]:
+        current = current / part
+        components.append(current)
+    for part in relative.parts:
+        current = current / part
+        components.append(current)
+    captured: list[tuple[str, tuple[int, int, int]]] = []
+    for component in components:
+        try:
+            info = os.stat(component, follow_symlinks=False)
+        except OSError as exc:
+            raise TypedIngressError(
+                "tree directory component is missing or unreadable"
+                f" ({exc.__class__.__name__}) (R-013/R-020)"
+            ) from exc
+        if stat.S_ISLNK(info.st_mode) or bool(
+            getattr(info, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        ):
+            raise TypedIngressError(
+                "tree directory component is a symlink or reparse point —"
+                " refusing alias traversal (R-013/R-020)"
+            )
+        if not stat.S_ISDIR(info.st_mode):
+            raise TypedIngressError(
+                "tree directory component is not a directory (R-013/R-020)"
+            )
+        captured.append((os.path.normcase(str(component)), _identity_tuple(info)))
+    return tuple(captured)
+
+
+def canonical_estimand_digest(estimand: dict[str, Any]) -> str:
+    """R-011 pinned digest: sha256 over canonical compact JSON of the block."""
+    payload = json.dumps(estimand, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# R-059: the ONE bool-safe version checker for EVERY versioned surface
+# ---------------------------------------------------------------------------
+
+
+def check_schema_version(obj: dict[str, Any], rel: str) -> None:
+    """Single shared bool-safe schema-version gate (R-058/R-059).
+
+    Admissibility is exactly ``type(version) is int and
+    min_supported <= version <= max_supported`` — a JSON Boolean is not an
+    integer version. Every version error names the observed version, the
+    supported range, and the canonical verifier revision.
+    """
+    supported_range = (
+        f"{SUPPORTED_SCHEMA_VERSION_MIN}..{SUPPORTED_SCHEMA_VERSION_MAX}"
+    )
+    if "schema_version" not in obj:
+        raise SchemaVersionError(
+            f"{rel}: missing required field 'schema_version'; supported"
+            f" range {supported_range}; verifier revision"
+            f" {VERIFIER_REVISION} (R-059)"
+        )
+    version = obj["schema_version"]
+    admissible = (
+        type(version) is int
+        and SUPPORTED_SCHEMA_VERSION_MIN
+        <= version
+        <= SUPPORTED_SCHEMA_VERSION_MAX
+    )
+    if not admissible:
+        raise SchemaVersionError(
+            f"{rel}: unsupported schema_version {version!r}; supported"
+            f" range {supported_range}; verifier revision"
+            f" {VERIFIER_REVISION} (R-059)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Hardened JSON ingress (R-062/R-067: protective hooks everywhere)
+# ---------------------------------------------------------------------------
+
+
+def _reject_nonfinite_constant(token: str) -> Any:
+    raise TypedIngressError(
+        f"non-finite JSON constant {token!r} rejected (R-067)"
+    )
+
+
+def _reject_nonfinite_float(token: str) -> float:
+    """``parse_constant`` never sees a huge-exponent numeric literal
+    (``1e999`` parses straight to float infinity), so every parsed float is
+    finiteness-checked at the token level too (R-067)."""
+    value = float(token)
+    if not math.isfinite(value):
+        raise TypedIngressError(
+            f"non-finite JSON number {token!r} rejected (R-067)"
+        )
+    return value
+
+
+def _length_guarded_parse_int(token: str) -> int:
+    """Length-bounded integer token parse (R-062, D8).
+
+    A NON-SEMANTIC crash guard, not a domain rule: tokens longer than
+    ``MAX_JSON_INT_TOKEN_DIGITS`` digits (sign excluded) are refused with a
+    typed error BEFORE ``int()`` runs (CPython's int-str conversion limit
+    would otherwise raise a bare ValueError). The global ±2^53 parser
+    ceiling is REMOVED and never revived (D8/Track A' R4): legitimate
+    beyond-float-exact integers (uint64 seeds, ns timestamps) parse.
+    """
+    digits = len(token) - (1 if token.startswith("-") else 0)
+    if digits > MAX_JSON_INT_TOKEN_DIGITS:
+        shown = token if len(token) <= 32 else token[:32] + "…"
+        raise TypedIngressError(
+            f"JSON integer token {shown!r} exceeds the maximum admissible"
+            f" token length of {MAX_JSON_INT_TOKEN_DIGITS} digits"
+            " (non-semantic crash guard, R-062)"
+        )
+    return int(token)
+
+
+def _reject_duplicate_object_members(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    """Build one JSON object while rejecting repeated member names.
+
+    CPython's default decoder silently keeps the final value for a duplicate
+    name. Identity, configuration, and record objects are security-relevant
+    inputs here, so ambiguity is a typed ingress refusal before any schema or
+    semantic interpretation occurs.
+    """
+    result: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in result:
+            raise TypedIngressError(
+                f"duplicate JSON object member {name!r} rejected (R-067)"
+            )
+        result[name] = value
+    return result
+
+
+# NOTE: both parse entrypoints below spell the protective hooks out as
+# literal keyword arguments. This duplication is REQUIRED, not drift: the
+# R-067/R-062 suite AST-walks this module and asserts every ``json.loads``
+# call site names object_pairs_hook/parse_constant/parse_float/parse_int
+# directly, so a shared ``**hooks`` mapping would defeat the check.
+def _parse_json_bytes(data: bytes) -> Any:
+    """utf-8 + JSON parse with every non-finite form rejected (R-067) and
+    overlong integer tokens refused pre-conversion (R-062).
+
+    Raises ``UnicodeDecodeError``/``json.JSONDecodeError``; each caller wraps
+    them in the typed error carrying its own artifact identification.
+    ``TypedIngressError`` from the hooks propagates as-is.
+    """
+    try:
+        return json.loads(
+            data.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_object_members,
+            parse_constant=_reject_nonfinite_constant,
+            parse_float=_reject_nonfinite_float,
+            parse_int=_length_guarded_parse_int,
+        )
+    except RecursionError:
+        # QA2-001: deeply-nested hostile JSON must be a MALFORMED-INPUT
+        # refusal (typed, file-named by each call site's existing wrapper),
+        # never a run-aborting internal error. Sibling of the overlong-int
+        # token guard: a non-semantic crash bound at the parse boundary.
+        raise json.JSONDecodeError(
+            "JSON nesting depth exceeds the admissible bound"
+            " (non-semantic crash guard, R-062)",
+            "",
+            0,
+        ) from None
+
+
+def parse_json_bytes_strict(data: bytes) -> Any:
+    """Public strict ingress parse shared across this namespace (R-067).
+
+    EVERY JSON parse site in reproducibility/colm_aims_2026/ routes through
+    this module's hooked loaders — sibling modules never call raw
+    ``json.loads``.
+    """
+    return _parse_json_bytes(data)
+
+
+def parse_json_text_strict(text: str, rel: str) -> Any:
+    """Hooked parse of one already-decoded JSON text (record lines, R-067)."""
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_object_members,
+            parse_constant=_reject_nonfinite_constant,
+            parse_float=_reject_nonfinite_float,
+            parse_int=_length_guarded_parse_int,
+        )
+    except json.JSONDecodeError as exc:
+        raise TypedIngressError(
+            f"{rel}: malformed JSON: {exc} (R-020)"
+        ) from exc
+    except RecursionError:
+        # QA2-001 twin for the text-line parser (records lines).
+        raise TypedIngressError(
+            f"{rel}: malformed JSON: nesting depth exceeds the admissible"
+            " bound (non-semantic crash guard, R-062/R-020)"
+        ) from None
+
+
+# ---------------------------------------------------------------------------
+# Canonical encode/decode (R-004)
+# ---------------------------------------------------------------------------
+
+
+def encode_json(payload: Any) -> bytes:
+    """Canonical JSON bytes: sorted keys, 2-space indent, trailing newline.
+
+    ``allow_nan=False`` rejects non-finite floats at encode time, before any
+    filesystem effect (R-004).
+    """
+    return (
+        json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    ).encode("utf-8")
+
+
+def encode_profile(profile: dict[str, Any]) -> bytes:
+    """Encode a profile to canonical bytes (allow_nan=False semantics)."""
+    return encode_json(profile)
+
+
+def decode_profile(data: bytes) -> dict[str, Any]:
+    """Decode canonical profile bytes back to an equal value (R-004)."""
+    try:
+        return _parse_json_bytes(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TypedIngressError(f"malformed profile bytes: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Bounded, symlink-free untrusted reads (R-020)
+# ---------------------------------------------------------------------------
+
+
+def _relative_name(path: Path, tree_root: Path | None) -> str:
+    """Repo-/tree-relative identification for error messages (R-020/R-026)."""
+    if tree_root is not None:
+        try:
+            return Path(os.path.abspath(path)).relative_to(
+                Path(os.path.abspath(tree_root))
+            ).as_posix()
+        except ValueError:
+            pass
+    return Path(path).name
+
+
+def read_regular_file_bytes(
+    path: Path,
+    *,
+    tree_root: Path | None = None,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
+) -> bytes:
+    """Bounded, symlink-free read of an untrusted path (R-020).
+
+    Opens with ``O_NOFOLLOW`` (a symlink at ``path`` fails, never followed),
+    fstats the open descriptor and refuses anything that is not a regular
+    file, and caps the read at ``max_bytes``. Errors are typed and identify
+    the file by basename/tree-relative path only (never a local absolute
+    path, R-026).
+    """
+    path = Path(path)
+    rel = _relative_name(path, tree_root)
+    parent_chain = None
+    if tree_root is not None:
+        parent_chain = stable_directory_chain(path.parent, Path(tree_root))
+    try:
+        path_info = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise TypedIngressError(
+            f"{rel}: unreadable artifact ({exc.__class__.__name__}) (R-020)"
+        ) from exc
+    if stat.S_ISLNK(path_info.st_mode) or bool(
+        getattr(path_info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    ):
+        raise TypedIngressError(
+            f"{rel}: refusing to read a symlink or reparse point"
+            " (R-020/R-013)"
+        )
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        # Windows otherwise opens the descriptor in CRT text mode: CRLF is
+        # translated and Ctrl-Z truncates the stream.  Every digest and
+        # strict parser above this boundary requires the literal file bytes.
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.EMLINK):
+            raise TypedIngressError(
+                f"{rel}: refusing to read a symlink (R-020/R-013)"
+            ) from exc
+        raise TypedIngressError(
+            f"{rel}: unreadable artifact ({exc.__class__.__name__}) (R-020)"
+        ) from exc
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise TypedIngressError(
+                f"{rel}: not a regular file — refusing to read a FIFO,"
+                " device, or socket (R-020)"
+            )
+        if _identity_tuple(st) != _identity_tuple(path_info):
+            raise TypedIngressError(
+                f"{rel}: path identity changed between no-follow stat and"
+                " open — refusing component swap (R-013/R-020)"
+            )
+        if hasattr(os, "O_NONBLOCK") and hasattr(os, "get_blocking"):
+            os.set_blocking(fd, True)
+        if st.st_size > max_bytes:
+            raise TypedIngressError(
+                f"{rel}: artifact size {st.st_size} exceeds the maximum"
+                f" admissible {max_bytes} bytes (R-020)"
+            )
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(1 << 20, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > max_bytes:
+            raise TypedIngressError(
+                f"{rel}: artifact exceeds the maximum admissible"
+                f" {max_bytes} bytes (R-020)"
+            )
+        if tree_root is not None:
+            after_chain = stable_directory_chain(path.parent, Path(tree_root))
+            if after_chain != parent_chain:
+                raise TypedIngressError(
+                    f"{rel}: directory identity changed during read —"
+                    " refusing component swap (R-013/R-020)"
+                )
+            try:
+                after_info = os.stat(path, follow_symlinks=False)
+            except OSError as exc:
+                raise TypedIngressError(
+                    f"{rel}: path disappeared during read"
+                    f" ({exc.__class__.__name__}) (R-013/R-020)"
+                ) from exc
+            if _identity_tuple(after_info) != _identity_tuple(st):
+                raise TypedIngressError(
+                    f"{rel}: file identity changed during read — refusing"
+                    " replacement race (R-013/R-020)"
+                )
+        return data
+    finally:
+        os.close(fd)
+
+
+def load_records_bytes(data: bytes, rel: str) -> dict[str, Any]:
+    """Typed ingress for a ``*.jsonl`` per-cell record file (R-020).
+
+    Record lines carry NO envelope version (OQ-V2-003 decision); a smuggled
+    ``schema_version`` key is an unknown record field caught downstream.
+    """
+    records: list[dict[str, Any]] = []
+    line_numbers: list[int] = []
+    try:
+        text = data.decode("utf-8", errors="strict") if data else ""
+    except UnicodeDecodeError as exc:
+        raise TypedIngressError(
+            f"{rel}: invalid UTF-8 bytes at byte offset {exc.start} (R-020)"
+        ) from exc
+    for lineno, line in enumerate(io.StringIO(text), start=1):
+        if not line.strip():
+            continue
+        obj = parse_json_text_strict(line, f"{rel}: line {lineno}")
+        if not isinstance(obj, dict):
+            raise TypedIngressError(
+                f"{rel}: line {lineno}: record must be an object (R-020)"
+            )
+        records.append(obj)
+        line_numbers.append(lineno)
+        if len(records) > MAX_JSONL_RECORDS:
+            raise TypedIngressError(
+                f"{rel}: record count exceeds the admissible"
+                f" {MAX_JSONL_RECORDS} row limit (R-020)"
+            )
+    return {"kind": "records", "records": records, "line_numbers": line_numbers}
+
+
+def load_artifact_bytes(data: bytes, rel: str) -> dict[str, Any]:
+    """Typed ingress over already-snapshotted bytes (R-020).
+
+    Validation order: container shape → schema_version (R-059, the shared
+    bool-safe checker) → all other key checks. ``*.jsonl`` names load as
+    record sets.
+    """
+    if rel.endswith(".jsonl"):
+        return load_records_bytes(data, rel)
+    try:
+        obj = _parse_json_bytes(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TypedIngressError(f"{rel}: malformed JSON: {exc} (R-020)") from exc
+    if not isinstance(obj, dict):
+        raise TypedIngressError(
+            f"{rel}: artifact must be a JSON object (R-020)"
+        )
+    check_schema_version(obj, rel)
+    unknown = sorted(set(obj) - PROFILE_TOP_LEVEL_KEYS)
+    if unknown:
+        raise TypedIngressError(
+            f"{rel}: unknown top-level field(s) {unknown} — no silent"
+            " key-dropping (R-020)"
+        )
+    return obj
+
+
+def load_artifact(path: Path, *, tree_root: Path | None = None) -> dict[str, Any]:
+    """Typed ingress: validate artifact bytes into typed records (R-020)."""
+    path = Path(path)
+    rel = _relative_name(path, tree_root)
+    data = read_regular_file_bytes(path, tree_root=tree_root)
+    return load_artifact_bytes(data, rel)
+
+
+# ---------------------------------------------------------------------------
+# Per-item record validation (R-031/R-045/R-046/R-061)
+# ---------------------------------------------------------------------------
+
+
+def _validate_arm_event(record: dict[str, Any], prefix: str, horizon: Any) -> None:
+    status = record[f"{prefix}_event_status"]
+    if status not in EVENT_STATUSES:
+        raise RecordValidationError(
+            f"record field {prefix}_event_status is outside the closed event"
+            f" vocabulary {sorted(EVENT_STATUSES)} (R-045)"
+        )
+    stop = record[f"{prefix}_stop_step"]
+    imputation = record[f"{prefix}_terminal_imputation"]
+    if imputation not in TERMINAL_IMPUTATIONS:
+        raise RecordValidationError(
+            f"record field {prefix}_terminal_imputation is outside the"
+            f" closed enum {sorted(TERMINAL_IMPUTATIONS)} (R-045)"
+        )
+    crossing = record.get(f"{prefix}_crossing_indicator")
+    if status == EVENT_FINITE:
+        if not is_real_int(stop):
+            raise RecordValidationError(
+                f"{prefix}_event_status FINITE_STOP requires a real finite"
+                f" integer {prefix}_stop_step; null/bool/missing values are"
+                " rejected (R-045/R-061)"
+            )
+        if not is_real_int(horizon) or horizon <= 0:
+            raise RecordValidationError(
+                "record trajectory_horizon must be a positive real integer"
+                " (R-061)"
+            )
+        if not 0 <= stop < horizon:
+            raise RecordValidationError(
+                f"{prefix}_stop_step is outside the finite-stop domain"
+                " 0 <= stop_step < horizon — a finite stop AT the horizon is"
+                " the old sentinel coding, illegal in the canonical"
+                " representation (R-061)"
+            )
+        if imputation != IMPUTATION_NONE:
+            raise RecordValidationError(
+                f"FINITE_STOP {prefix} arm must carry terminal_imputation"
+                f" {IMPUTATION_NONE!r} — an imputation marker on a finite"
+                " stop is rejected (R-045)"
+            )
+        if crossing is False:
+            raise RecordValidationError(
+                f"{prefix} arm declares no crossing with FINITE_STOP — an"
+                " explicit false crossing indicator denotes NEVER_STOPPED"
+                " in the imported legacy representation (R-046)"
+            )
+    else:  # NEVER_STOPPED
+        if stop is not None:
+            raise RecordValidationError(
+                f"NEVER_STOPPED {prefix} arm must carry stop_step exactly"
+                " null — a numeric stop on NEVER_STOPPED is the"
+                " derived-scalar overwrite signature (R-045/R-046)"
+            )
+        if imputation != IMPUTATION_FINAL_PREFIX:
+            raise RecordValidationError(
+                f"NEVER_STOPPED {prefix} arm must carry terminal_imputation"
+                f" {IMPUTATION_FINAL_PREFIX!r} (R-045)"
+            )
+        if crossing is True:
+            raise RecordValidationError(
+                f"{prefix} arm declares an explicit crossing indicator with"
+                " NEVER_STOPPED — the crossing happened; a genuine"
+                " final-prefix crossing is FINITE_STOP (R-046)"
+            )
+
+
+def validate_record(record: dict[str, Any]) -> None:
+    """Validate one per-item record against the non-reversible v2 contract.
+
+    Error messages reference records by opaque key/field name and never echo
+    string values (R-026 sentinel-leak discipline).
+    """
+    if not isinstance(record, dict):
+        raise RecordValidationError("record must be an object (R-031)")
+    key = record.get("item_key")
+    if not isinstance(key, str) or not key:
+        raise RecordValidationError("record missing opaque item_key (R-031)")
+    for field in record:
+        if field not in RECORD_ALLOWED_FIELDS:
+            raise RecordValidationError(
+                f"record field {field!r} is outside the enumerated record"
+                " field set — per-item records are non-reversible and carry"
+                " no free text (R-031)"
+            )
+    for field in RECORD_REQUIRED_FIELDS:
+        if field not in record:
+            raise RecordValidationError(
+                f"record missing required canonical-event field {field!r}"
+                " (R-045)"
+            )
+    horizon = record["trajectory_horizon"]
+    if not is_real_int(horizon) or horizon <= 0:
+        raise RecordValidationError(
+            "record trajectory_horizon must be a positive real integer —"
+            " bools never satisfy an integer domain (R-061)"
+        )
+    for field, value in record.items():
+        if field in RECORD_IDENTIFIER_FIELDS:
+            continue
+        if field in RECORD_BOOL_FIELDS:
+            if not isinstance(value, bool):
+                raise RecordValidationError(
+                    f"record field {field!r} must be a boolean (R-031)"
+                )
+        elif field in RECORD_CATEGORICAL_FIELDS:
+            if value not in EXCLUSION_REASONS:
+                raise RecordValidationError(
+                    f"record field {field!r} must be an enumerated"
+                    " categorical, not free text (R-031)"
+                )
+        elif field in RECORD_CATEGORICAL_LIST_FIELDS:
+            if not isinstance(value, list) or any(
+                v not in EXCLUSION_REASONS for v in value
+            ):
+                raise RecordValidationError(
+                    f"record field {field!r} must be a list of enumerated"
+                    " categoricals (R-031)"
+                )
+        elif field in RECORD_NUMERIC_FIELDS:
+            if value is not None and not is_number(value):
+                raise RecordValidationError(
+                    f"record field {field!r} must be numeric or null —"
+                    " string values outside the identifier allowlist are"
+                    " rejected (R-031)"
+                )
+        elif field in RECORD_STOP_FIELDS:
+            if value is not None and not is_real_int(value):
+                raise RecordValidationError(
+                    f"record field {field!r} must be a real integer or"
+                    " exactly null — bools never satisfy an integer domain"
+                    " (R-061)"
+                )
+        elif field in RECORD_EVENT_STATUS_FIELDS | RECORD_IMPUTATION_FIELDS:
+            if not isinstance(value, str):
+                raise RecordValidationError(
+                    f"record field {field!r} must be an enumerated"
+                    " categorical string (R-045)"
+                )
+    _validate_arm_event(record, "mc", horizon)
+    _validate_arm_event(record, "ref", horizon)
+
+
+# ---------------------------------------------------------------------------
+# Strict v2 profile validation (R-001..R-003, R-029, R-031, R-032, R-063)
+# ---------------------------------------------------------------------------
+
+
+def _check_tolerance(tolerance: Any, where: str) -> None:
+    if not is_native_finite_number(tolerance):
+        raise SchemaValidationError(
+            f"{where}: declared numerical_tolerance must be a finite number"
+        )
+    if not is_admissible_tolerance(tolerance):
+        raise SchemaValidationError(
+            f"{where}: declared numerical_tolerance {tolerance!r} outside"
+            f" the admissible range (0, {MAX_ADMISSIBLE_TOLERANCE}] (R-032)"
+        )
+
+
+def _validate_semantic_block(semantic: Any) -> None:
+    if not isinstance(semantic, dict):
+        raise SchemaValidationError("semantic block must be an object (R-001)")
+    expected_keys = set(SEMANTIC_BLOCK)
+    got_keys = set(semantic)
+    missing = sorted(expected_keys - got_keys)
+    if missing:
+        raise SchemaValidationError(
+            f"semantic block missing pinned field(s): {missing} (R-001)"
+        )
+    unknown = sorted(got_keys - expected_keys)
+    if unknown:
+        raise SchemaValidationError(
+            f"semantic block carries unknown field(s): {unknown} (R-001)"
+        )
+    for key, pinned in SEMANTIC_BLOCK.items():
+        if semantic[key] != pinned:
+            raise SchemaValidationError(
+                f"semantic field {key!r} must be {pinned!r}, found"
+                f" {semantic[key]!r} — a constructed-reference artifact may"
+                " not alter the pinned semantic layer (R-001/R-002)"
+            )
+
+
+def _validate_llm_involvement(block: Any) -> None:
+    if not isinstance(block, dict):
+        raise SchemaValidationError(
+            "llm_involvement block missing or malformed (R-029)"
+        )
+    for axis in LLM_INVOLVEMENT_AXES:
+        if axis not in block:
+            raise SchemaValidationError(
+                f"llm_involvement missing axis {axis!r} — `none` is an"
+                " explicit value, never an absent field (R-029)"
+            )
+        if not isinstance(block[axis], str) or not block[axis]:
+            raise SchemaValidationError(
+                f"llm_involvement axis {axis!r} must be a non-empty string"
+            )
+    unknown = sorted(
+        set(block) - set(LLM_INVOLVEMENT_AXES) - {"tool_version_note"}
+    )
+    if unknown:
+        raise SchemaValidationError(
+            f"llm_involvement carries unknown field(s): {unknown} (R-029)"
+        )
+    non_none = [axis for axis in LLM_INVOLVEMENT_AXES if block[axis] != "none"]
+    if non_none:
+        note = block.get("tool_version_note")
+        if not isinstance(note, str) or not note.strip():
+            raise SchemaValidationError(
+                "llm_involvement declares non-none axis(es)"
+                f" {non_none} but carries no tool_version_note (R-029)"
+            )
+
+
+def _validate_arm(arm: Any, index: int, seen_arm_ids: set[str]) -> None:
+    if not isinstance(arm, dict):
+        raise SchemaValidationError(f"arms[{index}] must be an object (R-003)")
+    unknown = sorted(set(arm) - ARM_KEYS)
+    if unknown:
+        raise SchemaValidationError(
+            f"arms[{index}] carries unknown field(s) {unknown} — arm identity"
+            " objects are closed (R-003/R-063)"
+        )
+    for field in ARM_REQUIRED_FIELDS:
+        if field not in arm:
+            raise SchemaValidationError(
+                f"arms[{index}] missing identification field {field!r}"
+                " (R-003)"
+            )
+    arm_id = arm["arm_id"]
+    if not isinstance(arm_id, str) or not arm_id:
+        raise SchemaValidationError(f"arms[{index}] arm_id must be a string")
+    if arm_id in seen_arm_ids:
+        raise SchemaValidationError(
+            f"duplicate arm identifier {arm_id!r} (R-003)"
+        )
+    seen_arm_ids.add(arm_id)
+    for field in ARM_KEYS - {"seed_contract"}:
+        if not isinstance(arm[field], str) or not arm[field]:
+            raise SchemaValidationError(
+                f"arms[{index}].{field} must be a non-empty string (R-003)"
+            )
+    seed_contract = arm["seed_contract"]
+    _validate_closed_map(
+        seed_contract,
+        SEED_CONTRACT_KEYS,
+        SEED_CONTRACT_KEYS,
+        f"arms[{index}].seed_contract",
+    )
+    seeds = seed_contract["seeds"]
+    if (
+        not isinstance(seeds, list)
+        or seeds != [1, 2, 3]
+        or not all(is_real_int(seed) for seed in seeds)
+    ):
+        raise SchemaValidationError(
+            f"arms[{index}].seed_contract.seeds must be exactly [1, 2, 3]"
+            " (R-003/R-061)"
+        )
+    family = arm["family"]
+    if family not in FAMILY_STOP_VOCAB:
+        raise SchemaValidationError(
+            f"arm {arm_id!r} family {family!r} is outside the closed family"
+            f" set {sorted(FAMILY_STOP_VOCAB)} (R-003)"
+        )
+    if arm["stop_semantics"] != FAMILY_STOP_VOCAB[family]:
+        raise SchemaValidationError(
+            f"arm {arm_id!r} stop_semantics {arm['stop_semantics']!r} is not"
+            f" the {family!r} family's qualified closed vocabulary"
+            f" {FAMILY_STOP_VOCAB[family]!r} — no overloaded global stop"
+            " integer across families (R-003)"
+        )
+    if arm["cardinality"] not in ARM_CARDINALITIES:
+        raise SchemaValidationError(
+            f"arm {arm_id!r} cardinality must be one of"
+            f" {list(ARM_CARDINALITIES)} (R-003)"
+        )
+    if arm["construction"] == "idealized":
+        if arm["cardinality"] != "scalar":
+            raise SchemaValidationError(
+                f"arm {arm_id!r} is idealized (scalar prefix-to-gold cosine)"
+                f" but declares cardinality={arm['cardinality']!r};"
+                " idealized arms are scalar (R-003)"
+            )
+        if arm["correctness_assignment"] != "oracle_gold":
+            raise SchemaValidationError(
+                f"arm {arm_id!r} is idealized but declares"
+                f" correctness_assignment={arm['correctness_assignment']!r};"
+                " idealized correctness is oracle-assigned (R-003)"
+            )
+
+
+def _validate_closed_map(
+    block: Any, allowed: frozenset[str], required: frozenset[str], where: str
+) -> None:
+    """R-063: closed trusted block — unknown nested keys are typed errors."""
+    if not isinstance(block, dict):
+        raise SchemaValidationError(f"{where} must be an object (R-063)")
+    unknown = sorted(set(block) - allowed)
+    if unknown:
+        raise SchemaValidationError(
+            f"{where} carries unknown key(s) {unknown} — trusted"
+            " configuration objects use closed key sets (R-063)"
+        )
+    missing = sorted(required - set(block))
+    if missing:
+        raise SchemaValidationError(
+            f"{where} missing required key(s) {missing} (R-063)"
+        )
+
+
+def _validate_provenance(prov: Any) -> None:
+    _validate_closed_map(
+        prov, PROVENANCE_KEYS, PROVENANCE_REQUIRED_KEYS, "provenance"
+    )
+    for field in (
+        "producer_entrypoint",
+        "continuation_identity",
+    ):
+        if not isinstance(prov[field], str) or not prov[field]:
+            raise SchemaValidationError(
+                f"provenance.{field} must be a non-empty string (R-012)"
+            )
+    for field in ("producer_sha256", "split_metadata_sha256"):
+        if field in prov and not is_sha256_hex(prov[field]):
+            raise SchemaValidationError(
+                f"provenance.{field} must be lowercase SHA-256 (R-012)"
+            )
+    for field in ("helper_sha256s", "input_sha256"):
+        if field not in prov:
+            continue
+        mapping = prov[field]
+        if not isinstance(mapping, dict) or any(
+            not isinstance(path, str)
+            or not path
+            or not is_sha256_hex(digest)
+            for path, digest in mapping.items()
+        ):
+            raise SchemaValidationError(
+                f"provenance.{field} must map non-empty paths to SHA-256"
+            )
+    if "semantic_command" in prov:
+        command = prov["semantic_command"]
+        if not isinstance(command, list) or not command or any(
+            not isinstance(token, str) or not token for token in command
+        ):
+            raise SchemaValidationError(
+                "provenance.semantic_command must be a non-empty argv string list"
+            )
+    # ``arms[*].seed_contract`` declares the frozen study design.  This
+    # field records seeds that the named producer actually executed.  The
+    # certified Phase-4 producer is a one-seed ceremony; generic producers
+    # retain the three-seed provenance contract.
+    expected_seeds = (
+        [1]
+        if prov.get("producer_entrypoint") == PHASE4_PRODUCER_ENTRYPOINT
+        else [1, 2, 3]
+    )
+    if "seeds" in prov and (
+        prov["seeds"] != expected_seeds
+        or not all(is_real_int(seed) for seed in prov["seeds"])
+    ):
+        raise SchemaValidationError(
+            f"provenance.seeds must be exactly {expected_seeds!r} for this"
+            " producer"
+        )
+    dirty = prov["dirty_state"]
+    _validate_closed_map(
+        dirty, DIRTY_STATE_KEYS, DIRTY_STATE_KEYS, "provenance.dirty_state"
+    )
+    if not isinstance(dirty["git_dirty"], bool) or not is_git_object_id(
+        dirty["source_commit"]
+    ):
+        raise SchemaValidationError(
+            "provenance.dirty_state requires bool git_dirty and native"
+            " 40/64-hex source_commit"
+        )
+    splits = prov["splits"]
+    _validate_closed_map(
+        splits, SPLITS_KEYS, SPLITS_REQUIRED_KEYS, "provenance.splits"
+    )
+    if "zero_overlap" in splits and not isinstance(splits["zero_overlap"], bool):
+        raise SchemaValidationError("provenance.splits.zero_overlap must be bool")
+    for split_name in ("fit", "eval"):
+        if split_name not in splits:
+            continue
+        split = splits[split_name]
+        _validate_closed_map(
+            split,
+            SPLIT_ENTRY_KEYS,
+            SPLIT_ENTRY_KEYS,
+            f"provenance.splits.{split_name}",
+        )
+        if not isinstance(split["name"], str) or not split["name"]:
+            raise SchemaValidationError("provenance split name must be non-empty")
+        if not is_real_int(split["count"]) or split["count"] < 0:
+            raise SchemaValidationError("provenance split count must be nonnegative")
+        if not is_sha256_hex(split["keyset_sha256"]):
+            raise SchemaValidationError("provenance split keyset must be SHA-256")
+    calibration = prov.get("calibration_identity")
+    if not isinstance(calibration, dict):
+        raise SchemaValidationError(
+            "provenance calibration_identity must be a MAP with one entry"
+            " per calibration ID — the v1 scalar shape is rejected (R-001/D1)"
+        )
+    got = set(calibration)
+    if got != CALIBRATION_IDENTITY_KEYS:
+        raise SchemaValidationError(
+            "provenance calibration_identity map keys"
+            f" {sorted(got)} must be exactly"
+            f" {sorted(CALIBRATION_IDENTITY_KEYS)} (R-001/D1)"
+        )
+    for cal_id, value in calibration.items():
+        if not isinstance(value, str) or not value:
+            raise SchemaValidationError(
+                f"provenance calibration_identity[{cal_id!r}] must be a"
+                " non-empty identity string (R-001)"
+            )
+    retention = prov.get("pre_package_retention")
+    _validate_closed_map(
+        retention,
+        PRE_PACKAGE_RETENTION_KEYS,
+        PRE_PACKAGE_RETENTION_KEYS,
+        "provenance.pre_package_retention",
+    )
+    retained = retention.get("retained_count")
+    paired = retention.get("paired_count")
+    unpaired = retention.get("upstream_unpaired_count")
+    for name, value in (
+        ("retained_count", retained),
+        ("paired_count", paired),
+        ("upstream_unpaired_count", unpaired),
+    ):
+        if not is_real_int(value) or value < 0:
+            raise SchemaValidationError(
+                f"pre_package_retention.{name} must be a nonnegative real"
+                " integer (R-052/R-061)"
+            )
+    if retained - paired != unpaired:
+        raise SchemaValidationError(
+            f"pre_package_retention arithmetic does not hold:"
+            f" retained_count {retained} - paired_count {paired} !="
+            f" upstream_unpaired_count {unpaired} (R-052)"
+        )
+    if "mc_build" in prov:
+        mc_build = prov["mc_build"]
+        _validate_closed_map(
+            mc_build, MC_BUILD_KEYS, MC_BUILD_KEYS, "provenance.mc_build"
+        )
+        if not isinstance(mc_build["built_after_split"], bool):
+            raise SchemaValidationError(
+                "provenance.mc_build built_after_split is bool"
+            )
+        if (
+            not is_native_finite_number(mc_build["coverage_rate"])
+            or not 0 <= float(mc_build["coverage_rate"]) <= 1
+            or not is_real_int(mc_build["retained_count"])
+            or mc_build["retained_count"] < 0
+            or not isinstance(mc_build["retention_policy"], str)
+            or not mc_build["retention_policy"]
+        ):
+            raise SchemaValidationError(
+                "provenance.mc_build has invalid closed values"
+            )
+    model = prov["model"]
+    if not isinstance(model, dict):
+        raise SchemaValidationError("provenance.model must be an object")
+    required_model_keys = MODEL_KEYS - {"byte_digest_manifest"}
+    if not is_commit_sha(model.get("revision")):
+        required_model_keys = required_model_keys - {"revision"} | {
+            "byte_digest_manifest"
+        }
+    _validate_closed_map(
+        model, MODEL_KEYS, required_model_keys, "provenance.model"
+    )
+    for field in ("repository_namespace", "dtype", "device_class"):
+        if not isinstance(model[field], str) or not model[field]:
+            raise SchemaValidationError(f"provenance.model.{field} is malformed")
+    for field in ("weights_sha256", "tokenizer_config_sha256"):
+        if not is_sha256_hex(model[field]):
+            raise SchemaValidationError(f"provenance.model.{field} is not SHA-256")
+    revision = model.get("revision")
+    if revision is not None and not is_commit_sha(revision):
+        raise SchemaValidationError("provenance.model.revision is not immutable")
+    digest_manifest = model.get("byte_digest_manifest")
+    if digest_manifest is not None and (
+        not isinstance(digest_manifest, dict)
+        or not digest_manifest
+        or any(
+            not isinstance(path, str)
+            or not path
+            or not is_sha256_hex(digest)
+            for path, digest in digest_manifest.items()
+        )
+    ):
+        raise SchemaValidationError(
+            "provenance.model.byte_digest_manifest is malformed"
+        )
+    _validate_closed_map(
+        model["numerical_settings"],
+        NUMERICAL_SETTINGS_KEYS,
+        NUMERICAL_SETTINGS_KEYS,
+        "provenance.model.numerical_settings",
+    )
+    if not isinstance(model["numerical_settings"]["deterministic"], bool):
+        raise SchemaValidationError("model numerical deterministic must be bool")
+    runtime = prov["runtime_packages"]
+    if not isinstance(runtime, dict) or not runtime or any(
+        not isinstance(name, str)
+        or not name
+        or not isinstance(value, str)
+        or not value
+        for name, value in runtime.items()
+    ):
+        raise SchemaValidationError("runtime package versions must be strings")
+
+
+def _validate_grid_block(grid: Any) -> None:
+    _validate_closed_map(grid, GRID_KEYS, GRID_KEYS, "grid block")
+    for axis in ("reference_ids", "calibration_ids", "cell_ids"):
+        values = grid[axis]
+        if not isinstance(values, list) or not all(
+            isinstance(v, str) and v for v in values
+        ):
+            raise SchemaValidationError(
+                f"grid.{axis} must be a list of non-empty strings (R-040)"
+            )
+    record_files = grid["record_files"]
+    if not isinstance(record_files, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) and v
+        for k, v in record_files.items()
+    ):
+        raise SchemaValidationError(
+            "grid.record_files must map cell ids to record-file paths"
+            " (R-041)"
+        )
+    if not is_sha256_hex(grid["item_keys_sha256"]):
+        raise SchemaValidationError(
+            "grid.item_keys_sha256 must be a sha256 digest (R-042)"
+        )
+    held_fixed = grid["held_fixed"]
+    _validate_closed_map(
+        held_fixed, HELD_FIXED_KEYS, HELD_FIXED_KEYS, "grid.held_fixed"
+    )
+    for key in HELD_FIXED_KEYS:
+        value = held_fixed[key]
+        if not isinstance(value, str) or not value:
+            raise SchemaValidationError(
+                f"grid.held_fixed.{key} must be a non-empty identity string"
+                " (R-043)"
+            )
+
+
+def _validate_inference_block(inference: Any) -> None:
+    _validate_closed_map(
+        inference, INFERENCE_KEYS, INFERENCE_KEYS, "inference block"
+    )
+    if inference["analysis_provenance"] != ANALYSIS_PROVENANCE_D7B:
+        raise SchemaValidationError(
+            "inference.analysis_provenance"
+            f" {inference['analysis_provenance']!r} is not the pinned new-"
+            f"analysis discriminator {ANALYSIS_PROVENANCE_D7B!r} — the D7(b)"
+            " outputs are a NEW analysis (R-057)"
+        )
+    seed = inference["seed"]
+    if not is_uint64(seed):
+        raise SchemaValidationError(
+            f"inference.seed must be exactly one real integer in the"
+            " unsigned 64-bit domain [0, 2**64); bools are rejected"
+            " (R-052/R-061)"
+        )
+    seed_derivation = inference["seed_derivation"]
+    if not isinstance(seed_derivation, str) or not seed_derivation:
+        raise SchemaValidationError(
+            "inference.seed_derivation must record the derivation string"
+            " beside the derived integer seed (R-052)"
+        )
+    if not is_sha256_hex(inference["pairing_population_keyset_sha256"]):
+        raise SchemaValidationError(
+            "inference.pairing_population_keyset_sha256 must be a sha256"
+            " digest (R-052)"
+        )
+    if not is_sha256_hex(inference["canonical_item_order_digest"]):
+        raise SchemaValidationError(
+            "inference.canonical_item_order_digest must be a sha256 digest"
+            " (R-050)"
+        )
+    _validate_closed_map(
+        inference["resample_matrix_digest"],
+        MATRIX_DIGEST_KEYS,
+        MATRIX_DIGEST_KEYS,
+        "inference.resample_matrix_digest",
+    )
+    for name in ("draw_count", "sample_size", "family_size"):
+        if not is_real_int(inference[name]):
+            raise SchemaValidationError(
+                f"inference.{name} must be a real integer (R-061)"
+            )
+    for name in ("with_replacement", "endpoint"):
+        if not isinstance(inference[name], bool):
+            raise SchemaValidationError(
+                f"inference.{name} must be a boolean (R-051)"
+            )
+    for name in ("ordered_family", "rejected_cell_ids"):
+        if not isinstance(inference[name], list) or not all(
+            isinstance(v, str) for v in inference[name]
+        ):
+            raise SchemaValidationError(
+                f"inference.{name} must be a list of cell ids (R-056)"
+            )
+
+
+def _validate_estimand(cell_id: str, estimand: Any) -> None:
+    _validate_closed_map(
+        estimand, ESTIMAND_KEYS, ESTIMAND_KEYS, f"cell {cell_id!r} estimand"
+    )
+    _check_tolerance(
+        estimand["numerical_tolerance"], f"cell {cell_id!r} estimand"
+    )
+    _validate_closed_map(
+        estimand["timeout_parameters"],
+        TIMEOUT_PARAMETER_KEYS,
+        TIMEOUT_PARAMETER_KEYS,
+        f"cell {cell_id!r} estimand.timeout_parameters",
+    )
+    _validate_closed_map(
+        estimand["event_representation"],
+        EVENT_REPRESENTATION_KEYS,
+        EVENT_REPRESENTATION_KEYS,
+        f"cell {cell_id!r} estimand.event_representation",
+    )
+
+
+def _validate_cell_shape(cell: Any, index: int, seen_ids: set[str]) -> None:
+    if not isinstance(cell, dict):
+        raise SchemaValidationError(f"cells[{index}] must be an object")
+    unknown = sorted(set(cell) - CELL_KEYS)
+    if unknown:
+        raise SchemaValidationError(
+            f"cells[{index}] carries unknown field(s) {unknown} — cell"
+            " objects are closed (R-063)"
+        )
+    for key in CELL_REQUIRED_KEYS:
+        if key not in cell:
+            raise SchemaValidationError(
+                f"cells[{index}] missing required field {key!r}"
+            )
+    cell_id = cell["cell_id"]
+    if not isinstance(cell_id, str) or not cell_id:
+        raise SchemaValidationError(f"cells[{index}] cell_id must be a string")
+    if cell_id in seen_ids:
+        raise SchemaValidationError(
+            f"duplicate cell identifier {cell_id!r} — cell identifiers are"
+            " unique per artifact and duplicates fail closed (R-011)"
+        )
+    seen_ids.add(cell_id)
+    estimand = cell["estimand"]
+    _validate_estimand(cell_id, estimand)
+    recomputed = canonical_estimand_digest(estimand)
+    if cell["estimand_digest"] != recomputed:
+        raise SchemaValidationError(
+            f"cell {cell_id!r} recorded estimand_digest does not match the"
+            " digest recomputed over all estimand-defining fields (R-011)"
+        )
+    counts = cell["counts"]
+    _validate_closed_map(counts, COUNT_KEYS, COUNT_KEYS, f"cell {cell_id!r} counts")
+    for name, value in counts.items():
+        if name == "exclusion_reason_counts":
+            if not isinstance(value, dict):
+                raise SchemaValidationError(
+                    f"cell {cell_id!r} counts.exclusion_reason_counts must"
+                    " be an object (R-008)"
+                )
+            for reason, reason_count in value.items():
+                if reason not in EXCLUSION_REASONS or (
+                    not is_real_int(reason_count) or reason_count < 0
+                ):
+                    raise SchemaValidationError(
+                        f"cell {cell_id!r} exclusion reason counts must map"
+                        " the closed reason vocabulary to nonnegative real"
+                        " integers (R-008/R-061)"
+                    )
+            continue
+        if not is_real_int(value) or value < 0:
+            raise SchemaValidationError(
+                f"cell {cell_id!r} count {name!r} must be a nonnegative real"
+                " integer — bools never satisfy an integer domain (R-061)"
+            )
+    rates = cell["rates"]
+    _validate_closed_map(rates, RATE_KEYS, RATE_KEYS, f"cell {cell_id!r} rates")
+    for name, value in rates.items():
+        if value is not None and (
+            not is_native_finite_number(value) or not 0 <= float(value) <= 1
+        ):
+            raise SchemaValidationError(
+                f"cell {cell_id!r} rate {name!r} must be null or a native"
+                " finite number in [0, 1] (R-006/R-067)"
+            )
+    excluded_keys = cell["excluded_keys"]
+    if not isinstance(excluded_keys, list):
+        raise SchemaValidationError(
+            f"cell {cell_id!r} excluded_keys must be a list (R-008)"
+        )
+    if excluded_keys:
+        raise SchemaValidationError(
+            f"cell {cell_id!r} carries nonempty in-package excluded_keys —"
+            " the frozen v2 package has ZERO in-package exclusions; the"
+            " upstream-unpaired items are pre-package retention"
+            " documentation in provenance (R-052)"
+        )
+    if not is_sha256_hex(cell["pairing_population_keyset_sha256"]):
+        raise SchemaValidationError(
+            f"cell {cell_id!r} pairing_population_keyset_sha256 must be a"
+            " sha256 digest (R-052)"
+        )
+    if not isinstance(cell["records_file"], str) or not cell["records_file"]:
+        raise SchemaValidationError(
+            f"cell {cell_id!r} records_file must be a path string (R-041)"
+        )
+    for summary_key in ("headline_summary", "finite_only_summary"):
+        summary = cell[summary_key]
+        expected_summary_keys = (
+            HEADLINE_SUMMARY_KEYS
+            if summary_key == "headline_summary"
+            else FINITE_ONLY_SUMMARY_KEYS
+        )
+        _validate_closed_map(
+            summary,
+            expected_summary_keys,
+            expected_summary_keys,
+            f"cell {cell_id!r} {summary_key}",
+        )
+        if not is_real_int(summary["n"]) or summary["n"] < 0:
+            raise SchemaValidationError(
+                f"cell {cell_id!r} {summary_key}.n must be a nonnegative"
+                " real integer (R-048/R-049/R-061)"
+            )
+        expected_label = (
+            HEADLINE_ESTIMAND_LABEL
+            if summary_key == "headline_summary"
+            else FINITE_ONLY_ESTIMAND_LABEL
+        )
+        expected_population = (
+            POPULATION_ALL
+            if summary_key == "headline_summary"
+            else POPULATION_FINITE
+        )
+        if summary["estimand_label"] != expected_label:
+            raise SchemaValidationError(
+                f"cell {cell_id!r} {summary_key}.estimand_label is not the"
+                " pinned estimand identity"
+            )
+        if summary["population"] != expected_population:
+            raise SchemaValidationError(
+                f"cell {cell_id!r} {summary_key}.population is not the"
+                " pinned population identity"
+            )
+        if summary_key == "headline_summary" and summary["convention"] != (
+            SENTINEL_CONVENTION
+        ):
+            raise SchemaValidationError(
+                f"cell {cell_id!r} headline convention is not pinned"
+            )
+        numeric_fields = expected_summary_keys - {
+            "estimand_label",
+            "population",
+            "n",
+            "convention",
+        }
+        for field in numeric_fields:
+            value = summary[field]
+            if value is not None and not is_native_finite_number(value):
+                raise SchemaValidationError(
+                    f"cell {cell_id!r} {summary_key}.{field} must be null or"
+                    " a native finite number (R-048/R-049/R-067)"
+                )
+    interval = cell["interval"]
+    interval_keys = frozenset(INTERVAL_REQUIRED_KEYS)
+    _validate_closed_map(
+        interval, interval_keys, interval_keys, f"cell {cell_id!r} interval"
+    )
+    ci = interval["ci"]
+    # R-067: exactly 2 NATIVE finite numbers, ordered, gated BEFORE float().
+    if (
+        not isinstance(ci, list)
+        or len(ci) != 2
+        or not all(is_native_finite_number(v) for v in ci)
+    ):
+        raise SchemaValidationError(
+            f"cell {cell_id!r} interval ci must be exactly two native finite"
+            " numbers — string/bool/null/non-finite endpoints are rejected"
+            " before any float conversion (R-067)"
+        )
+    if float(ci[0]) > float(ci[1]):
+        raise SchemaValidationError(
+            f"cell {cell_id!r} interval ci is not ordered (lo <= hi) (R-067)"
+        )
+    seed = interval["seed"]
+    if not is_uint64(seed):
+        raise SchemaValidationError(
+            f"cell {cell_id!r} interval seed must be a real integer in the"
+            " unsigned 64-bit domain (R-052/R-061)"
+        )
+    expected_interval_values = {
+        "procedure": INTERVAL_PROCEDURE,
+        "draw_count": BOOTSTRAP_DRAW_COUNT,
+        "seed_derivation": SEED_DERIVATION_STRING,
+        "statistic": INTERVAL_STATISTIC,
+        "population": POPULATION_ALL,
+        "quantile_method": QUANTILE_METHOD,
+    }
+    for field, expected in expected_interval_values.items():
+        if interval[field] != expected:
+            raise SchemaValidationError(
+                f"cell {cell_id!r} interval.{field} must be {expected!r}"
+                " (R-015/R-051)"
+            )
+    for field in ("raw_p_value", "holm_adjusted_p_value"):
+        value = cell[field]
+        if not is_native_finite_number(value) or not 0 <= float(value) <= 1:
+            raise SchemaValidationError(
+                f"cell {cell_id!r} {field} must be a native finite number in"
+                " [0, 1] (R-056/R-067)"
+            )
+    if not is_real_int(cell["holm_rank"]) or not 1 <= cell["holm_rank"] <= 10:
+        raise SchemaValidationError(
+            f"cell {cell_id!r} holm_rank must be a real integer in [1, 10]"
+            " (R-056/R-061)"
+        )
+    if not isinstance(cell["holm_rejected"], bool):
+        raise SchemaValidationError(
+            f"cell {cell_id!r} holm_rejected must be a boolean (R-056)"
+        )
+
+
+def validate_profile(profile: dict[str, Any]) -> None:
+    """Validate a strict v2 constructed-reference profile dict.
+
+    Validation order: container shape → schema_version (shared bool-safe
+    checker; R-059) → every other key and semantic check.
+    """
+    if not isinstance(profile, dict):
+        raise SchemaValidationError("profile must be an object")
+    check_schema_version(profile, "profile")
+    missing = sorted(PROFILE_TOP_LEVEL_KEYS - set(profile))
+    if missing:
+        raise SchemaValidationError(
+            f"profile missing required field(s): {missing}"
+        )
+    unknown = sorted(set(profile) - PROFILE_TOP_LEVEL_KEYS)
+    if unknown:
+        raise SchemaValidationError(
+            f"profile carries unknown top-level field(s): {unknown} —"
+            " historical identifiers never substitute for the semantic"
+            " layer (R-001)"
+        )
+    profile_id = profile["profile_id"]
+    if profile_id == RESERVED_OBSERVED_PROFILE_ID:
+        raise SchemaValidationError(
+            f"profile_id {profile_id!r} is the reserved observed-study"
+            " identifier; the constructed-reference validator never accepts"
+            " it (R-002)"
+        )
+    if profile_id != STRICT_PROFILE_ID:
+        raise SchemaValidationError(
+            f"profile_id {profile_id!r} is not the strict constructed-"
+            f"reference identifier {STRICT_PROFILE_ID!r} (R-001)"
+        )
+    _validate_semantic_block(profile["semantic"])
+    _validate_llm_involvement(profile["llm_involvement"])
+    _check_tolerance(profile["numerical_tolerance"], "profile")
+    if profile["item_key_derivation"] not in ITEM_KEY_DERIVATION_SCHEMES:
+        raise SchemaValidationError(
+            "item_key_derivation must pin exactly one supported re-derivable"
+            f" scheme from {ITEM_KEY_DERIVATION_SCHEMES} (R-008/R-063/R-080)"
+        )
+    arms = profile["arms"]
+    if not isinstance(arms, list) or not arms:
+        raise SchemaValidationError("arms must be a non-empty list (R-003)")
+    seen_arm_ids: set[str] = set()
+    for index, arm in enumerate(arms):
+        _validate_arm(arm, index, seen_arm_ids)
+    _validate_provenance(profile["provenance"])
+    _validate_grid_block(profile["grid"])
+    _validate_inference_block(profile["inference"])
+    cells = profile["cells"]
+    if not isinstance(cells, list) or not cells:
+        raise SchemaValidationError("cells must be a non-empty list")
+    seen_ids: set[str] = set()
+    for index, cell in enumerate(cells):
+        _validate_cell_shape(cell, index, seen_ids)
+
+
+# ---------------------------------------------------------------------------
+# Create-once publish (R-016/R-039: primitives consumed, not forked)
+# ---------------------------------------------------------------------------
+
+
+def write_profile(path: Path, profile: dict[str, Any]) -> None:
+    """Create-once strict-profile writer (R-001, R-004, R-016)."""
+    data = encode_profile(profile)
+    validate_profile(profile)
+    fileio.create_once_bytes(
+        Path(path), data, exists_label="strict profile artifact"
+    )
+
+
+def publish_evidence_package(
+    staged: Path,
+    runs_root: Path,
+    run_id: str,
+    *,
+    reclaim_crashed_relic: bool = False,
+) -> Path:
+    """Publish a staged evidence package into a run-scoped create-once dir
+    (R-016/R-039).
+
+    A crash between the destination's ``mkdir`` claim and the filling
+    ``rename`` leaves an EMPTY run-slot relic that fails closed on every
+    retry; ``reclaim_crashed_relic=True`` is the explicit recovery path.
+    Every failure surfaces as a typed ``ColmAimsError`` (a pre-existing slot
+    included), never a bare ``FileExistsError``.
+    """
+    staged = Path(staged)
+    runs_root = Path(runs_root)
+    if not is_path_component(run_id):
+        raise ColmAimsError(
+            f"run_id {run_id!r} must be a non-empty single path component"
+            " (R-039)"
+        )
+    if not staged.is_dir():
+        raise ColmAimsError("staged evidence package must be a directory")
+    runs_root.mkdir(parents=True, exist_ok=True)
+    dest = runs_root / run_id
+    try:
+        if os.stat(staged).st_dev != os.stat(runs_root).st_dev:
+            raise ColmAimsError(
+                "staged evidence package must reside on the same filesystem"
+                " as the runs root so the create-once publish is atomic"
+                " (R-016/R-039)"
+            )
+    except OSError as exc:
+        raise ColmAimsError(
+            f"cannot stat staged/runs-root for the same-filesystem check:"
+            f" {exc.__class__.__name__} (R-016)"
+        ) from exc
+    lock_path = runs_root.parent / ".publication-locks" / f"{run_id}.lock"
+    try:
+        locking.acquire_process_lock(
+            lock_path,
+            _PUBLICATION_LOCK_FDS,
+            busy_label="evidence package run publication is already active:",
+        )
+    except RuntimeError as exc:
+        raise ColmAimsError(
+            f"evidence package run publication lock is busy for run_id"
+            f" {run_id!r}; recovery/publish refused while a peer is active"
+            " (R-016/R-039)"
+        ) from exc
+    if reclaim_crashed_relic:
+        fileio.reclaim_empty_relic(dest)
+    try:
+        fileio.publish_dir_create_once(
+            staged, dest, exists_label="evidence package run slot"
+        )
+    except fileio.DirectoryPublicationCommittedError:
+        # The atomic rename is the create-once commit point. A failed parent
+        # fsync cannot safely roll that visible immutable directory back; report
+        # the truthful committed state rather than consuming the run ID while
+        # returning failure. Callers that require a stronger barrier (the
+        # Phase-4 launcher) handle this typed post-commit outcome separately.
+        return dest
+    except FileExistsError as exc:
+        raise ColmAimsError(
+            f"evidence package run slot already exists: run_id {run_id!r} —"
+            " second publish to an existing path fails closed (R-016/R-039)"
+        ) from exc
+    except OSError as exc:
+        if getattr(exc, "errno", None) == errno.EXDEV:
+            fileio.reclaim_empty_relic(dest)
+            raise ColmAimsError(
+                "cross-device publish (EXDEV) — staged package is not on the"
+                " runs-root filesystem; reclaimed the empty slot"
+                " (R-016/R-039)"
+            ) from exc
+        raise
+    return dest

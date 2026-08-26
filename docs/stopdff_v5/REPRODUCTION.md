@@ -1,5 +1,11 @@
 # StopDFF v5 bucketed-DP paired audit — corrected source & reproduction
 
+> **Scope note (R-038):** stopping-shift evidence in this repository concerns
+> constructed QA reference trajectories — a constructed-reference sensitivity
+> diagnostic. It does not assert observed open-ended decision preservation;
+> the authoritative claim ledger lives under `reproducibility/colm_aims_2026/`.
+
+
 This documents the **v5 "Does the Proxy Preserve the Decision?" StopDFF audit**
 (`profile_name: stopdff_bucketed_dp_paired_v2`) implemented under `scripts/stopdff_v5/`,
 and how to produce a new identity-bound run **on any machine (CPU)** or **on Modal**.

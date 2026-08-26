@@ -19,6 +19,20 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Verify merge-ref checkout
+      if: github.event_name == 'pull_request'
+      env:
+        EXPECTED_SHA: ${{ github.sha }}
+      run: |
+        actual_sha="$(git rev-parse HEAD)"
+        test "$actual_sha" = "$EXPECTED_SHA"
+        case "$GITHUB_REF" in
+          refs/pull/*/merge) ;;
+          *) echo "unexpected pull-request ref: $GITHUB_REF" >&2; exit 1 ;;
+        esac
+        echo "verified_merge_ref_sha=$actual_sha"
     - name: Set up Python 3.11
       uses: actions/setup-python@v3
       with:
@@ -34,6 +48,65 @@ jobs:
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.venv,_legacy,artifacts,checkpoints,results,cache,repomix
         # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics --exclude=.venv,_legacy,artifacts,checkpoints,results,cache,repomix
-    - name: Test with pytest
+    - name: Focused Phase-4 suite with R-070 receipt
       run: |
-        pytest tests/ -q --tb=short
+        python scripts/run_ci_suite_with_receipt.py --workflow .github/workflows/python-app.yml --output-dir ci-evidence --name focused -- pytest tests/test_colm_aims_v2_phase4_pre.py tests/test_colm_aims_v2_schema_raw_bytes.py tests/test_phase4_build_metadata_staging.py tests/test_phase4_certificate_external_staging.py tests/test_phase4_launcher_cli.py tests/test_stopdff_v5_fileio_windows.py tests/test_stopdff_v5_windows_control_plane.py -q -p no:cacheprovider
+    - name: Full suite with R-070 receipt
+      run: |
+        python scripts/run_ci_suite_with_receipt.py --workflow .github/workflows/python-app.yml --output-dir ci-evidence --name full -- pytest tests/ -q -p no:cacheprovider
+    - name: Retain suite evidence
+      if: always() && github.event_name == 'pull_request'
+      uses: actions/upload-artifact@v4
+      with:
+        name: python-merge-ref-evidence-${{ github.sha }}
+        path: ci-evidence/
+    - name: Retain direct-head suite evidence
+      if: always() && github.event_name != 'pull_request'
+      uses: actions/upload-artifact@v4
+      with:
+        name: python-direct-head-evidence-${{ github.sha }}
+        path: ci-evidence/
+
+  literal-head:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        persist-credentials: false
+    - name: Verify literal-head checkout
+      env:
+        EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        actual_sha="$(git rev-parse HEAD)"
+        test "$actual_sha" = "$EXPECTED_SHA"
+        echo "verified_literal_head_sha=$actual_sha"
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v3
+      with:
+        python-version: "3.11"
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8
+        pip install -e '.[dev]'
+    - name: Lint with flake8
+      run: |
+        # stop the build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.venv,_legacy,artifacts,checkpoints,results,cache,repomix
+        # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics --exclude=.venv,_legacy,artifacts,checkpoints,results,cache,repomix
+    - name: Focused Phase-4 suite with R-070 receipt
+      run: |
+        python scripts/run_ci_suite_with_receipt.py --workflow .github/workflows/python-app.yml --output-dir ci-evidence --name focused -- pytest tests/test_colm_aims_v2_phase4_pre.py tests/test_colm_aims_v2_schema_raw_bytes.py tests/test_phase4_build_metadata_staging.py tests/test_phase4_certificate_external_staging.py tests/test_phase4_launcher_cli.py tests/test_stopdff_v5_fileio_windows.py tests/test_stopdff_v5_windows_control_plane.py -q -p no:cacheprovider
+    - name: Full suite with R-070 receipt
+      run: |
+        python scripts/run_ci_suite_with_receipt.py --workflow .github/workflows/python-app.yml --output-dir ci-evidence --name full -- pytest tests/ -q -p no:cacheprovider
+    - name: Retain suite evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: python-literal-head-evidence-${{ github.event.pull_request.head.sha }}
+        path: ci-evidence/

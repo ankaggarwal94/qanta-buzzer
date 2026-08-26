@@ -1,5 +1,15 @@
 # Source-to-Claim Traceability Map
 
+> **Historical scope (2026-08-19):** this document is a
+> historical-submission-artifact map for the submitted `final_project.tex`
+> manuscript (submission PDF SHA-256 `6de23119…dabf10a`). It predates the
+> camera-ready evidence contract and is retained unchanged as provenance.
+> The authoritative claim ledger for the constructed QA reference evidence
+> flow now lives at `reproducibility/colm_aims_2026/ledger.json` (see
+> `reproducibility/colm_aims_2026/README.md`), which records this file as a
+> historical submission artifact.
+
+
 Maps every substantive claim in `final_project.tex` to its backing artifact and verification command.
 
 **Generated:** 2026-05-26

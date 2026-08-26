@@ -2,7 +2,9 @@
 
 Single package-wide implementation of the atomic publish discipline: write to a
 same-directory temp file, flush + fsync the file, ``os.replace`` onto the
-destination, then fsync the directory so the published name survives a crash.
+destination, then fsync the directory so the published name survives a crash
+where the host exposes directory descriptors. On Windows, where Python rejects
+directory ``os.open``, regular-file publishers re-sync the live file instead.
 Callers own their byte encodings (adapter rows, control records, manifests);
 this module owns only the write mechanics, so durability fixes land in exactly
 one place. Artifact bytes are hash-attested downstream — routing a writer
@@ -12,13 +14,166 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+
+_IS_WINDOWS = os.name == "nt"
+
+
+class DirectoryPublicationCommittedError(OSError):
+    """Directory rename committed, but its parent durability sync failed."""
+
+    def __init__(self, destination: Path, cause: OSError):
+        self.destination = Path(destination)
+        self.cause = cause
+        super().__init__(
+            f"directory publication committed at {self.destination}, but"
+            f" parent sync failed: {cause}"
+        )
+
+
+def _fsync_directory(
+    directory: Path,
+    *,
+    published_file: Path | None = None,
+) -> None:
+    """Sync a published directory entry where the host supports doing so.
+
+    POSIX permits opening a directory read-only and passing that descriptor to
+    ``fsync``. Python's Windows ``os.open`` rejects directory paths with
+    ``PermissionError`` even when the caller has access to the directory. In
+    that one platform-specific case, re-open and sync a published regular file
+    when one is available; this preserves a post-publication flush without
+    pretending that Windows exposed a directory descriptor. Directory
+    publications have no regular-file fallback and therefore return after the
+    unsupported operation.
+
+    Every other open or sync error propagates. In particular, POSIX permission
+    failures, non-permission Windows failures, and regular-file sync failures
+    remain fail-closed.
+    """
+    directory = Path(directory)
+    try:
+        directory_fd = os.open(directory, os.O_RDONLY)
+    except PermissionError:
+        if not _IS_WINDOWS or not directory.is_dir():
+            raise
+        if published_file is None:
+            return
+        # Windows requires a writable CRT descriptor for ``os.fsync`` even
+        # though no bytes are changed by the flush.
+        published_fd = os.open(Path(published_file), os.O_RDWR)
+        try:
+            os.fsync(published_fd)
+        finally:
+            os.close(published_fd)
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def fsync_directory(directory: Path) -> None:
+    """Apply the host's strongest supported sync to an existing directory.
+
+    This is the public entry point for staged-tree callers.  Unsupported
+    Windows directory descriptors use the narrowly-scoped platform fallback
+    in ``_fsync_directory``; all other open and sync failures still propagate.
+    """
+    _fsync_directory(Path(directory))
+
+
+def _nofollow_entry_stat(path: Path) -> os.stat_result:
+    """Return no-follow metadata for one staged-tree entry."""
+    return os.stat(Path(path), follow_symlinks=False)
+
+
+def _is_filesystem_link(info: os.stat_result) -> bool:
+    """Recognize POSIX symlinks and Windows reparse-point aliases."""
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def fsync_tree(root: Path) -> None:
+    """Sync every regular file and directory in a closed staged tree.
+
+    Traversal validates child directories top-down before ``os.walk`` can
+    descend, then syncs the collected directories bottom-up after every file.
+    POSIX symlinks, Windows reparse points (including junctions), and
+    non-regular files are rejected rather than followed: a staged evidence
+    envelope is a closed tree of ordinary files and directories, and
+    publication must not depend on external state.
+    """
+    root = Path(root)
+    root_info = _nofollow_entry_stat(root)
+    if _is_filesystem_link(root_info) or not stat.S_ISDIR(root_info.st_mode):
+        raise ValueError(f"staged tree is not a canonical directory: {root}")
+
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directories_to_sync: list[Path] = []
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    for directory_name, child_directories, filenames in os.walk(
+        root,
+        topdown=True,
+        onerror=raise_walk_error,
+        followlinks=False,
+    ):
+        directory = Path(directory_name)
+        directory_info = _nofollow_entry_stat(directory)
+        if _is_filesystem_link(directory_info) or not stat.S_ISDIR(
+            directory_info.st_mode
+        ):
+            raise ValueError(
+                f"staged tree contains an aliased directory: {directory}"
+            )
+        directories_to_sync.append(directory)
+        for name in child_directories:
+            child = directory / name
+            child_info = _nofollow_entry_stat(child)
+            if _is_filesystem_link(child_info) or not stat.S_ISDIR(
+                child_info.st_mode
+            ):
+                raise ValueError(
+                    "staged tree contains a symlink, junction, reparse point,"
+                    f" or non-directory child: {child}"
+                )
+        for name in filenames:
+            path = directory / name
+            path_info = _nofollow_entry_stat(path)
+            if _is_filesystem_link(path_info) or not stat.S_ISREG(
+                path_info.st_mode
+            ):
+                raise ValueError(
+                    "staged tree contains a symlink, reparse point, or"
+                    f" non-regular file: {path}"
+                )
+            # Windows' CRT requires a writable descriptor for ``os.fsync``.
+            access_flag = os.O_RDWR if _IS_WINDOWS else os.O_RDONLY
+            descriptor = os.open(path, access_flag | nofollow)
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise ValueError(
+                        f"staged tree contains a non-regular file: {path}"
+                    )
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+
+    for directory in reversed(directories_to_sync):
+        fsync_directory(directory)
 
 
 def publish_bytes(path: Path, data: bytes) -> None:
-    """Atomically replace a regular file and durably publish its directory entry."""
+    """Atomically replace a file and apply the host's strongest publish sync."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if (path.exists() or path.is_symlink()) and (
@@ -32,11 +187,7 @@ def publish_bytes(path: Path, data: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        _fsync_directory(path.parent, published_file=path)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
@@ -47,11 +198,12 @@ def create_once_bytes(
     data: bytes,
     *,
     exists_label: str = "create-once artifact",
+    commit_created: Callable[[], None] | None = None,
 ) -> None:
     """Durably publish a new regular file, failing closed if ``path`` exists.
 
     Same fsync discipline as ``publish_bytes`` (same-directory temp, flush +
-    file fsync before publication, directory fsync after) but with create-once
+    file fsync before publication, host publish sync after) but with create-once
     semantics: the temp file is ``os.link``-ed onto the destination, so an
     existing ``path`` raises ``FileExistsError`` instead of being replaced.
 
@@ -64,6 +216,11 @@ def create_once_bytes(
     exists_label
         Artifact description used in the ``FileExistsError`` message, so
         callers keep their historical error wording.
+    commit_created
+        Optional no-I/O callback invoked immediately after the create-once
+        hard link commits and before any fallible temp cleanup or directory
+        sync. Callers may use it to distinguish a committed artifact from a
+        pre-commit failure; the callback must not raise.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -82,13 +239,11 @@ def create_once_bytes(
             raise FileExistsError(
                 f"{exists_label} already exists: {path}"
             ) from exc
+        if commit_created is not None:
+            commit_created()
         os.unlink(temporary)
         temporary = ""
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        _fsync_directory(path.parent, published_file=path)
     finally:
         if temporary and os.path.exists(temporary):
             os.unlink(temporary)
@@ -99,34 +254,31 @@ def publish_dir_create_once(
     dest: Path,
     *,
     exists_label: str = "create-once directory",
+    claim_created: Callable[[], None] | None = None,
 ) -> None:
     """Atomically publish a staged directory into a create-once slot.
 
     Directory analogue of ``create_once_bytes`` (``os.link`` has no directory
-    form): publication happens in two steps that fail closed on ANY
-    pre-existing ``dest`` — empty directory, non-empty directory, file, or
-    symlink alike.
+    form). Both platform paths fail closed on ANY pre-existing ``dest`` — empty
+    directory, non-empty directory, file, or symlink alike:
 
-    1. Claim ``dest`` with ``os.mkdir``. ``mkdir`` is atomic and raises
-       ``FileExistsError`` whenever the name already exists, so exactly one
-       concurrent caller can create it. A pre-existing *empty* directory
-       therefore fails closed here instead of being silently replaced — the
-       hole a bare ``os.rename`` leaves, since ``rename`` onto an empty
-       directory replaces it.
-    2. Fill the freshly-claimed empty slot with ``os.rename(staged, dest)``.
-       The claimant is the sole actor past the ``mkdir`` gate, so ``dest`` is
-       still the empty directory it just created and the rename installs
-       ``staged``'s complete contents under the live name in one step; no peer
-       can rename into ``dest`` because no peer won the claim.
+    * POSIX ``rename`` may replace an existing empty directory. Preserve the
+      original two-step discipline there: atomically claim ``dest`` with
+      ``os.mkdir``, then rename the fully-materialized ``staged`` directory
+      into that exclusively-owned empty slot.
+    * Windows ``rename`` already refuses every existing destination, while it
+      cannot rename onto the empty directory created by the POSIX claim. Use
+      its direct no-replace rename as the single atomic create-once operation.
 
-    The published directory entry is made durable by fsync-ing ``dest``'s
-    parent after the rename, so the live name survives a crash. This changes
-    only publish mechanics: the bytes inside ``staged`` are published
-    unchanged.
+    After publication, sync the parent directory where the host exposes a
+    directory descriptor. Windows does not expose one through ``os.open``;
+    the direct same-volume rename is its best available atomic publication.
+    The bytes inside ``staged`` are unchanged on both paths.
 
     ``staged`` is owned by the caller: on ``FileExistsError`` (the slot was
-    already claimed) ``staged`` is left untouched for the caller's existing
-    cleanup path, and no exception is masked.
+    already claimed on POSIX or the Windows rename lost the destination race)
+    ``staged`` is left untouched for the caller's existing cleanup path, and
+    no exception is masked.
 
     Parameters
     ----------
@@ -139,32 +291,47 @@ def publish_dir_create_once(
     exists_label
         Description used in the ``FileExistsError`` message so callers keep
         their historical error wording.
+    claim_created
+        Optional ownership callback invoked only after this POSIX invocation
+        successfully creates the empty destination claim. It is never invoked
+        for a peer-owned/pre-existing slot or on Windows' direct rename path.
     """
     staged = Path(staged)
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    if _IS_WINDOWS:
+        try:
+            os.rename(staged, dest)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"{exists_label} already exists: {dest}"
+            ) from exc
+    else:
+        try:
+            os.mkdir(dest)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"{exists_label} already exists: {dest}"
+            ) from exc
+        if claim_created is not None:
+            claim_created()
+        os.rename(staged, dest)
     try:
-        os.mkdir(dest)
-    except FileExistsError as exc:
-        raise FileExistsError(f"{exists_label} already exists: {dest}") from exc
-    os.rename(staged, dest)
-    directory_fd = os.open(dest.parent, os.O_RDONLY)
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
+        _fsync_directory(dest.parent)
+    except OSError as exc:
+        raise DirectoryPublicationCommittedError(dest, exc) from exc
 
 
 def reclaim_empty_relic(dest: Path) -> bool:
     """Reclaim an empty create-once directory relic left by a crashed publish.
 
-    Best-effort *recovery* companion to ``publish_dir_create_once``. That
-    publisher claims ``dest`` with ``os.mkdir`` and then fills it with
-    ``os.rename``; a crash in the window between those two steps leaves an
-    EMPTY ``dest`` directory that thereafter fails closed on every retry
-    (``os.mkdir`` cannot re-claim a name that already exists). This helper
-    removes ONLY that empty relic so a deliberate recovery/resume can re-claim
-    the slot.
+    Best-effort *recovery* companion to ``publish_dir_create_once``. Its POSIX
+    path claims ``dest`` with ``os.mkdir`` and then fills it with ``os.rename``;
+    a crash in the window between those two steps leaves an EMPTY ``dest``
+    directory that thereafter fails closed on every retry. This helper removes
+    ONLY that empty relic so a deliberate recovery/resume can re-claim the
+    slot. The Windows path is one direct no-replace rename and creates no such
+    claim relic, though recovery may still encounter one from an older writer.
 
     It can never destroy a real artifact: it refuses a symlink, a regular file,
     and any non-empty directory, and it reclaims solely via ``os.rmdir`` — which
