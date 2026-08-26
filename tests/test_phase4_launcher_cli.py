@@ -1834,6 +1834,35 @@ def test_promotion_destination_race_never_replaces_empty_incumbent(
     assert report["promotion_committed"] is False
 
 
+def test_receipt_failure_never_reclaims_peer_destination_claim(
+    tmp_path, monkeypatch
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    promote_to = Path(config["promote_to"])
+
+    def peer_claim_then_receipt_failure(*_args, **_kwargs):
+        promote_to.mkdir()
+        raise OSError("synthetic receipt failure after peer claim")
+
+    monkeypatch.setattr(
+        launcher, "_write_launch_receipt", peer_claim_then_receipt_failure
+    )
+    with pytest.raises(launcher.RunFailed, match="nothing promoted"):
+        _call_launcher(config, probes)
+
+    assert promote_to.is_dir()
+    assert list(promote_to.iterdir()) == []
+    quarantine = Path(config["quarantine_dir"])
+    assert quarantine.is_dir()
+    report = json.loads(
+        (quarantine / launcher.STOP_REPORT_NAME).read_text("utf-8")
+    )
+    assert report["reason"] == "promotion_crash"
+    assert report["promotion_committed"] is False
+
+
 def test_post_rename_sync_failure_records_truthful_committed_state(
     tmp_path, monkeypatch
 ):

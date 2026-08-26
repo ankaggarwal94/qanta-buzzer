@@ -600,6 +600,21 @@ class TestRunDriver:
                 TEST_SOURCE_COMMIT,
             )
 
+    def test_promoted_stop_report_refuses_transaction(self, tmp_path):
+        records_root = _write_records_root(tmp_path / "records")
+        (records_root.parent / driver.STOP_REPORT_NAME).write_bytes(
+            b'{"reason":"promotion_durability_failure"}\n'
+        )
+
+        with pytest.raises(schema.TypedIngressError, match="STOP_REPORT"):
+            driver.validate_launch_receipt(
+                records_root,
+                _launch_receipt(records_root),
+                _launch_ledger(records_root),
+                _activation_digest(records_root),
+                TEST_SOURCE_COMMIT,
+            )
+
     def test_missing_referenced_certificate_refuses(self, tmp_path):
         records_root = _write_records_root(tmp_path / "records")
         activation_digest = _activation_digest(records_root)

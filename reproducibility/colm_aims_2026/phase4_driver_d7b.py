@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -125,6 +126,7 @@ RANDOM_K_DRAW_ID = "draw-archived-0001"
 NO_DRAW_ID = "draw-none"
 PRODUCER_ENTRYPOINT = "reproducibility/colm_aims_2026/phase4_driver_d7b.py"
 LAUNCH_RECEIPT_NAME = "LAUNCH_RECEIPT.json"
+STOP_REPORT_NAME = "STOP_REPORT.json"
 LAUNCH_RECEIPT_KEYS = frozenset(
     {
         "schema_version",
@@ -806,6 +808,11 @@ def validate_launch_receipt(
     if supplied_promotion != certified_promotion:
         raise schema.TypedIngressError(
             "records parent does not equal the certified promote_to path"
+        )
+    if os.path.lexists(records_root.parent / STOP_REPORT_NAME):
+        raise schema.TypedIngressError(
+            "certified promotion carries a STOP_REPORT.json and is not an"
+            " accepted launch transaction"
         )
     export_bytes = schema.read_regular_file_bytes(
         records_root.parent / doc["export_basename"],

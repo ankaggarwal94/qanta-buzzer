@@ -2799,6 +2799,12 @@ def validate_and_launch(
         # exists-check race window.  The shared primitive first atomically
         # claims that slot on POSIX and uses Windows' direct no-replace rename,
         # so every incumbent destination fails closed.
+        promotion_claim_owned = False
+
+        def _mark_promotion_claim_owned() -> None:
+            nonlocal promotion_claim_owned
+            promotion_claim_owned = True
+
         try:
             if out_basename is None:
                 raise RunFailed("accepted launch has no bound export basename")
@@ -2813,6 +2819,7 @@ def validate_and_launch(
                 quarantine_dir,
                 promote_to,
                 exists_label="Phase-4 promotion destination",
+                claim_created=_mark_promotion_claim_owned,
             )
         except BaseException as exc:
             # The shared primitive's commit point is the directory rename;
@@ -2853,8 +2860,10 @@ def validate_and_launch(
             # A ``FileExistsError`` instead means the destination pre-existed (a
             # peer's incumbent claim we do not own): never remove that.
             # ``reclaim_empty_relic`` is itself empty-only and best-effort safe.
-            if isinstance(exc, OSError) and not isinstance(
-                exc, FileExistsError
+            if (
+                promotion_claim_owned
+                and isinstance(exc, OSError)
+                and not isinstance(exc, FileExistsError)
             ):
                 reclaim_empty_relic(promote_to)
             raise RunFailed(

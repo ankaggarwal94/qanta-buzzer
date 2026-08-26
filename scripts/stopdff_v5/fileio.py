@@ -16,7 +16,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 _IS_WINDOWS = os.name == "nt"
@@ -148,6 +148,7 @@ def publish_dir_create_once(
     dest: Path,
     *,
     exists_label: str = "create-once directory",
+    claim_created: Callable[[], None] | None = None,
 ) -> None:
     """Atomically publish a staged directory into a create-once slot.
 
@@ -184,6 +185,10 @@ def publish_dir_create_once(
     exists_label
         Description used in the ``FileExistsError`` message so callers keep
         their historical error wording.
+    claim_created
+        Optional ownership callback invoked only after this POSIX invocation
+        successfully creates the empty destination claim. It is never invoked
+        for a peer-owned/pre-existing slot or on Windows' direct rename path.
     """
     staged = Path(staged)
     dest = Path(dest)
@@ -202,6 +207,8 @@ def publish_dir_create_once(
             raise FileExistsError(
                 f"{exists_label} already exists: {dest}"
             ) from exc
+        if claim_created is not None:
+            claim_created()
         os.rename(staged, dest)
     _fsync_directory(dest.parent)
 
