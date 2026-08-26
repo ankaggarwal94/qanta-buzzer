@@ -2955,12 +2955,11 @@ class TestF6FlagCoupling:
             producer.main()
         assert excinfo.value.code == 2
 
-    def test_records_out_with_eligibility_passes_argument_validation(
+    def test_records_out_with_eligibility_but_no_snapshots_exits_2(
         self, tmp_path, monkeypatch
     ):
-        # Control (guards against over-broad coupling): WITH --eligibility
-        # the run proceeds past parsing and dies at the staged-input gate on
-        # the missing calibration file — a typed gate error, not exit 2.
+        # Eligibility alone cannot authorize identity-bearing record bytes:
+        # both models must come from verified local snapshots.
         producer = _producer()
         monkeypatch.setattr(
             sys,
@@ -2979,8 +2978,75 @@ class TestF6FlagCoupling:
                 str(tmp_path / "out.json"),
             ],
         )
+        with pytest.raises(SystemExit) as excinfo:
+            producer.main()
+        assert excinfo.value.code == 2
+
+    def test_records_out_with_complete_snapshot_flags_passes_validation(
+        self, tmp_path, monkeypatch
+    ):
+        # Control: once all authority flags are present, argument validation
+        # succeeds and the missing staged calibration is a typed gate error.
+        producer = _producer()
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "stopdff_fair_qa_retest.py",
+                "--records-out",
+                str(tmp_path / "records"),
+                "--eligibility",
+                str(ELIGIBILITY_PATH),
+                "--snapshot-manifest",
+                str(tmp_path / "model_snapshot_manifests.json"),
+                "--primary-model-path",
+                str(tmp_path / "primary"),
+                "--disjoint-model-path",
+                str(tmp_path / "disjoint"),
+                "--calibration",
+                str(tmp_path / "missing_calibration.json"),
+                "--data-dir",
+                str(tmp_path / "nodata"),
+                "--out",
+                str(tmp_path / "out.json"),
+            ],
+        )
         with pytest.raises(schema.TypedIngressError):
             producer.main()
+
+    @pytest.mark.parametrize(
+        "present_flags",
+        [
+            ("--snapshot-manifest",),
+            ("--primary-model-path",),
+            ("--disjoint-model-path",),
+            ("--snapshot-manifest", "--primary-model-path"),
+            ("--snapshot-manifest", "--disjoint-model-path"),
+            ("--primary-model-path", "--disjoint-model-path"),
+        ],
+    )
+    def test_records_out_refuses_each_incomplete_snapshot_binding(
+        self, tmp_path, monkeypatch, present_flags
+    ):
+        argv = [
+            "stopdff_fair_qa_retest.py",
+            "--records-out",
+            str(tmp_path / "records"),
+            "--eligibility",
+            str(ELIGIBILITY_PATH),
+        ]
+        values = {
+            "--snapshot-manifest": tmp_path / "manifest.json",
+            "--primary-model-path": tmp_path / "primary",
+            "--disjoint-model-path": tmp_path / "disjoint",
+        }
+        for flag in present_flags:
+            argv.extend((flag, str(values[flag])))
+        monkeypatch.setattr(sys, "argv", argv)
+
+        with pytest.raises(SystemExit) as excinfo:
+            _producer().main()
+        assert excinfo.value.code == 2
 
 
 # ---------------------------------------------------------------------------

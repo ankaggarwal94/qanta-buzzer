@@ -923,7 +923,8 @@ def main():
                          "population is restricted to and asserted against its keys")
     ap.add_argument("--records-out", default=None,
                     help="directory for the v2 per-cell records export (R-080); "
-                         "requires the full ten-cell grid")
+                         "requires eligibility, pinned model snapshots, and "
+                         "the full ten-cell grid")
     ap.add_argument("--primary-model-path", default=None,
                     help="pinned local snapshot dir for the primary scorer (R-075)")
     ap.add_argument("--disjoint-model-path", default=None,
@@ -1005,6 +1006,21 @@ def main():
         # are unusable.
         ap.error("--records-out requires --eligibility (records regenerated "
                  "outside the frozen paired population are unusable)")
+    if args.records_out and not all(
+        (
+            args.snapshot_manifest,
+            args.primary_model_path,
+            args.disjoint_model_path,
+        )
+    ):
+        # An exported Phase-4 record set is identity-bearing evidence.  Never
+        # let its primary or disjoint scores come from a caller-selected hub
+        # name or ambient cache; both local snapshots must be verified against
+        # the frozen role manifest before either model is constructed.
+        ap.error(
+            "--records-out requires --snapshot-manifest, "
+            "--primary-model-path, and --disjoint-model-path"
+        )
     if args.records_out and (
         set(arms_req) != valid_arms or set(cals_req) != {"shared", "performat"}
     ):
