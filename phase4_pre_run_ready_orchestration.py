@@ -1,6 +1,6 @@
 """Generate Windows-host Phase-4 retry certificate #1.
 
-This checked-in Windows-host orchestrator is source-only: it verifies the six
+This checked-in Windows-host orchestrator is source-only: it verifies the seven
 external inputs and two materialized snapshot trees, executes the focused and
 full test suites at one clean committed HEAD, writes head-bound receipts, and
 assembles a replacement certificate. It never constructs or runs a model.
@@ -75,6 +75,10 @@ EXPECTED_STAGED = {
     "build_metadata": (
         "build_metadata.json",
         "70871984390f252c0a06a5a2c9a2d3b4337f10ad48c87583ebec215d5c0c9c6e",
+    ),
+    "split_metadata": (
+        "split_metadata.json",
+        "b67bcdbb937411c7e14f9a3bfa9fd1ab0f7ed6956458978da0d148e65c246b39",
     ),
 }
 
@@ -340,6 +344,11 @@ def producer_command(
         (
             f"build_metadata={staged['build_metadata']['path']}:"
             f"{staged['build_metadata']['expected_sha256']}"
+        ),
+        "--staged-input",
+        (
+            f"split_metadata={staged['split_metadata']['path']}:"
+            f"{staged['split_metadata']['expected_sha256']}"
         ),
         "--out",
         "phase4_run_output/stopdff_fair_qa_regenerated.json",

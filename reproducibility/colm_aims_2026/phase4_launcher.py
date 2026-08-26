@@ -765,7 +765,7 @@ def _validate_staged_coverage(
     components: dict[str, Any],
     command: list[str],
 ) -> None:
-    """Re-prove the canonical six-input command/component coverage contract."""
+    """Re-prove the canonical seven-input command/component coverage contract."""
     repo_root = repo.get(phase4.R082_REPO_ROOT_FIELD)
     try:
         failures = phase4.staged_coverage_failures(
@@ -2744,7 +2744,7 @@ def validate_and_launch(
     )
 
     # Defense in depth for a hand-crafted ``ready: true`` certificate: the
-    # pure certificate assembler normally enforces this exact six-input
+    # pure certificate assembler normally enforces this exact seven-input
     # contract, but the single-use launcher re-proves it independently so an
     # omitted label/operator binding or split-selector drift cannot burn the
     # ledger in the producer's own pre-model gate.

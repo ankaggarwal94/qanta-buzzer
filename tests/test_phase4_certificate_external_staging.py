@@ -25,12 +25,14 @@ _STAGED_LABELS = (
     "mc_dataset",
     "answer_profiles",
     "build_metadata",
+    "split_metadata",
 )
 _OPERATOR_LABELS = (
     "fit_split",
     "mc_dataset",
     "answer_profiles",
     "build_metadata",
+    "split_metadata",
 )
 _DATA_FILENAMES = {
     "eval_split": "test_dataset.json",
@@ -38,6 +40,7 @@ _DATA_FILENAMES = {
     "mc_dataset": "mc_dataset.json",
     "answer_profiles": "answer_profiles.json",
     "build_metadata": "build_metadata.json",
+    "split_metadata": "split_metadata.json",
 }
 
 
@@ -536,7 +539,7 @@ def test_untracked_porcelain_parser_rejects_collapsed_or_mixed_status(
 
 
 @pytest.mark.parametrize("joined", [False, True])
-def test_exact_six_external_bindings_are_ready(
+def test_exact_seven_external_bindings_are_ready(
     tmp_path: Path, joined: bool
 ) -> None:
     components = _valid_external_components(tmp_path, joined=joined)

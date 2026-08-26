@@ -21,7 +21,9 @@ pinned to the currently designated ``main.tex``/``main.pdf`` hashes.
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -40,9 +42,13 @@ from tests._colm_aims_v2_helpers import (
     EXIT_PASS,
     EXIT_USAGE_ERROR,
     NAMESPACE_DIR,
+    VERDICT_RELEASE_PASS,
     VERDICT_SOURCE_PASS,
+    assert_passing_report,
+    build_package_v2,
     canonical_data,
     canonical_horizon_identity,
+    canonical_item_keys,
     colm_no_network,  # noqa: F401 - autouse fixture
     make_arms,
     make_closure_profile_bytes,
@@ -50,6 +56,7 @@ from tests._colm_aims_v2_helpers import (
     make_grid_block,
     make_llm_involvement,
     make_profile_v2,
+    release_report,
     run_cli,
     sha256_bytes,
 )
@@ -59,11 +66,17 @@ FROZEN_DIR = NAMESPACE_DIR / "frozen"
 TEST_SOURCE_COMMIT = "d" * 40
 TEST_SOURCE_TREE = "e" * 40
 PLACEHOLDER_ACTIVATION_DIGEST = "9" * 64
+_REAL_READ_CAPTURED_INPUTS = driver._read_captured_provenance_inputs
 
 
 @pytest.fixture(autouse=True)
 def _bind_live_driver_checkout(monkeypatch):
     """Synthetic transaction fixtures bind a synthetic clean Git identity."""
+    monkeypatch.setattr(
+        driver,
+        "_read_captured_provenance_inputs",
+        lambda _records_root, _components: _synthetic_provenance_inputs(),
+    )
     monkeypatch.setattr(
         driver,
         "_live_repo_identity",
@@ -73,6 +86,57 @@ def _bind_live_driver_checkout(monkeypatch):
             "dirty": False,
         },
     )
+
+
+def _json_bytes(value) -> bytes:
+    return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _synthetic_provenance_inputs() -> dict[str, bytes]:
+    eval_keys = canonical_item_keys()
+    fit_keys = [
+        "itm-" + hashlib.sha256(f"fit-{index}".encode()).hexdigest()[:16]
+        for index in range(6)
+    ]
+
+    def dataset(keys):
+        return [{"qid": key, "category": "Synthetic"} for key in keys]
+
+    split_metadata = {
+        "train": {"count": 0, "categories": {}},
+        "val": {"count": len(fit_keys), "categories": {"Synthetic": len(fit_keys)}},
+        "test": {"count": len(eval_keys), "categories": {"Synthetic": len(eval_keys)}},
+        "total_questions": len(fit_keys) + len(eval_keys),
+        "split_ratios": [
+            0.0,
+            len(fit_keys) / (len(fit_keys) + len(eval_keys)),
+            len(eval_keys) / (len(fit_keys) + len(eval_keys)),
+        ],
+    }
+    build_metadata = {
+        "split_reference": "train_dataset.json is the canonical reference corpus for all splits",
+        "retention_thresholds": {"smoke": 0.5, "full": 0.8},
+        "splits": {
+            "val": {
+                "raw_count": len(fit_keys),
+                "retained_count": len(fit_keys),
+                "dropped_count": 0,
+                "retention_rate": 1.0,
+            },
+            "test": {
+                "raw_count": len(eval_keys),
+                "retained_count": len(eval_keys),
+                "dropped_count": 0,
+                "retention_rate": 1.0,
+            },
+        },
+    }
+    return {
+        "fit_split": _json_bytes(dataset(fit_keys)),
+        "eval_split": _json_bytes(dataset(eval_keys)),
+        "build_metadata": _json_bytes(build_metadata),
+        "split_metadata": _json_bytes(split_metadata),
+    }
 
 # Frozen model manifest primary-scorer facts (frozen/model_snapshot_manifests.json).
 PRIMARY_SCORER_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -113,7 +177,12 @@ def _complete_by_cell() -> dict[str, dict[str, dict]]:
     return complete
 
 
-def _write_records_root(root):
+def _write_records_root(
+    root,
+    *,
+    source_commit=TEST_SOURCE_COMMIT,
+    source_tree=TEST_SOURCE_TREE,
+):
     # Mirror the real launcher topology: the promoted create-once directory
     # owns records/export/receipt, while certificate and ledger remain siblings.
     root = Path(root)
@@ -123,6 +192,15 @@ def _write_records_root(root):
     for cell_id in CELL_IDS:
         (root / f"{cell_id}.jsonl").write_bytes(
             data["cells"][cell_id].records_bytes
+        )
+    captured_data = (
+        root.parent / driver.CAPTURED_INPUTS_DIRNAME / "data"
+    )
+    captured_data.mkdir(parents=True, exist_ok=True)
+    provenance_inputs = _synthetic_provenance_inputs()
+    for label, blob in provenance_inputs.items():
+        (captured_data / driver.phase4.R082_DATA_FILENAMES[label]).write_bytes(
+            blob
         )
     # Reuse the independently exercised full certificate-component builder;
     # this transaction fixture must carry a genuinely reproducible ready
@@ -139,11 +217,11 @@ def _write_records_root(root):
     components["environment"]["exception_ledger_path"] = str(
         ledger_path.resolve()
     )
-    components["repo"]["commit"] = TEST_SOURCE_COMMIT
-    components["repo"]["tree_sha256"] = TEST_SOURCE_TREE
+    components["repo"]["commit"] = source_commit
+    components["repo"]["tree_sha256"] = source_tree
     for suite_receipt in components["suite_receipts"].values():
-        suite_receipt["commit"] = TEST_SOURCE_COMMIT
-        suite_receipt["tree_sha256"] = TEST_SOURCE_TREE
+        suite_receipt["commit"] = source_commit
+        suite_receipt["tree_sha256"] = source_tree
     certificate = driver.phase4.assemble_certificate(components)
     assert certificate["ready"] is True, certificate["failing_checks"]
     certificate_path = transaction_root / "certificate.json"
@@ -153,15 +231,29 @@ def _write_records_root(root):
     ledger = {
         "activation_digest": activation_digest,
         "certificate_path": str(certificate_path.absolute()),
-        "certificate_commit": TEST_SOURCE_COMMIT,
-        "certificate_tree": TEST_SOURCE_TREE,
+        "certificate_commit": source_commit,
+        "certificate_tree": source_tree,
         "argv": ["python", "producer.py"],
         "consumed_at": "2026-08-26T00:00:00+00:00",
     }
     ledger_path.write_bytes(schema.encode_json(ledger))
     export_basename = "stopdff_fair_qa_regenerated.json"
     export_path = root.parent / export_basename
-    export_path.write_bytes(b'{"verdict":"PASS"}\n')
+    export_path.write_bytes(
+        _json_bytes(
+            {
+                "metadata": {
+                    "fit_split": "val",
+                    "eval_split": "test",
+                    "n_fit": 6,
+                    "n_eval": len(canonical_item_keys()),
+                    "seed": 1,
+                    "phase4": {"seeds": [1]},
+                },
+                "verdict": "PASS",
+            }
+        )
+    )
     receipt = {
         "schema_version": schema.SCHEMA_VERSION,
         "receipt_type": "phase4_launch",
@@ -221,6 +313,22 @@ def _launch_certificate(records_root: Path) -> Path:
 
 def _activation_digest(records_root: Path) -> str:
     return sha256_bytes(_launch_certificate(records_root).read_bytes())
+
+
+def _certificate_components_with_synthetic_capture(
+    records_root: Path,
+) -> dict:
+    certificate = json.loads(_launch_certificate(records_root).read_text("utf-8"))
+    components = certificate["components"]
+    captured = _synthetic_provenance_inputs()
+    entries = {
+        entry["label"]: entry for entry in components["staged_inputs"]
+    }
+    for label, raw in captured.items():
+        digest = sha256_bytes(raw)
+        entries[label]["expected_sha256"] = digest
+        entries[label]["observed_sha256"] = digest
+    return components
 
 
 def _resign_transaction_chain(
@@ -554,10 +662,20 @@ class TestQa012Block:
 
 
 def _run_driver(
-    tmp_path, monkeypatch, *, run_id="run-0001", reclaim_crashed_relic=False
+    tmp_path,
+    monkeypatch,
+    *,
+    run_id="run-0001",
+    reclaim_crashed_relic=False,
+    source_commit=TEST_SOURCE_COMMIT,
+    source_tree=TEST_SOURCE_TREE,
 ):
     _bind_synthetic_records_to_frozen(monkeypatch)
-    records_root = _write_records_root(tmp_path / "records")
+    records_root = _write_records_root(
+        tmp_path / "records",
+        source_commit=source_commit,
+        source_tree=source_tree,
+    )
     out_dir = tmp_path / "out"
     checksums = tmp_path / "FINAL_CHECKSUMS.json"
     _write_final_checksums_json(checksums)
@@ -565,7 +683,7 @@ def _run_driver(
         records_root,
         out_dir,
         FROZEN_DIR,
-        source_commit=TEST_SOURCE_COMMIT,
+        source_commit=source_commit,
         launch_receipt=_launch_receipt(records_root),
         launch_ledger=_launch_ledger(records_root),
         activation_digest=_activation_digest(records_root),
@@ -603,6 +721,34 @@ class TestRunDriver:
 
         with pytest.raises(schema.TypedIngressError, match="pending guard"):
             self._validate_transaction(records_root)
+
+    def test_captured_provenance_inputs_are_rehashed_from_authenticated_bytes(
+        self, tmp_path
+    ):
+        records_root = _write_records_root(tmp_path / "records")
+        components = _certificate_components_with_synthetic_capture(
+            records_root
+        )
+
+        observed = _REAL_READ_CAPTURED_INPUTS(records_root, components)
+
+        assert observed == _synthetic_provenance_inputs()
+
+    def test_captured_provenance_input_mutation_refuses(self, tmp_path):
+        records_root = _write_records_root(tmp_path / "records")
+        components = _certificate_components_with_synthetic_capture(
+            records_root
+        )
+        captured = (
+            records_root.parent
+            / driver.CAPTURED_INPUTS_DIRNAME
+            / "data"
+            / driver.phase4.R082_DATA_FILENAMES["split_metadata"]
+        )
+        captured.write_bytes(captured.read_bytes() + b" ")
+
+        with pytest.raises(schema.TypedIngressError, match="certificate hash"):
+            _REAL_READ_CAPTURED_INPUTS(records_root, components)
 
     @pytest.mark.parametrize(
         "mutation",
@@ -978,6 +1124,84 @@ class TestRunDriver:
         )
         assert proc.returncode == EXIT_PASS, proc.stderr
         assert VERDICT_SOURCE_PASS in proc.stdout
+
+    def test_real_driver_profile_passes_release_verifier(
+        self, tmp_path, monkeypatch
+    ):
+        source_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=driver._REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        source_tree = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"],
+            cwd=driver._REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        monkeypatch.setattr(
+            driver,
+            "_live_repo_identity",
+            lambda: {
+                "commit": source_commit,
+                "tree_sha256": source_tree,
+                "dirty": False,
+            },
+        )
+        built = _run_driver(
+            tmp_path / "driver",
+            monkeypatch,
+            source_commit=source_commit,
+            source_tree=source_tree,
+        )
+        raw_records = {
+            cell_id: (
+                built.published_tree / "records" / f"{cell_id}.jsonl"
+            ).read_bytes()
+            for cell_id in CELL_IDS
+        }
+
+        def use_driver_profile(profile):
+            profile.clear()
+            profile.update(json.loads(json.dumps(built.profile)))
+
+        provenance = built.profile["provenance"]
+
+        def bind_ledger(ledger):
+            model = provenance["model"]
+            model_identity = (
+                f"{model['repository_namespace']}@{model['revision']}"
+            )
+            dependency_closure = [
+                provenance["producer_entrypoint"],
+                *sorted(provenance["helper_sha256s"]),
+            ]
+            for row in ledger["rows"]:
+                if row.get("provenance_class") != "current_source":
+                    continue
+                row["producer_entrypoint"] = provenance["producer_entrypoint"]
+                row["dependency_closure"] = dependency_closure
+                row["input_identity"] = provenance["producer_sha256"]
+                row["split_identity"] = provenance["splits"]["eval"]["name"]
+                row["model_identity"] = model_identity
+                row["calibration_identity"] = provenance[
+                    "calibration_identity"
+                ]["shared"]
+
+        package = build_package_v2(
+            tmp_path / "release",
+            profile_mutator=use_driver_profile,
+            ledger_mutator=bind_ledger,
+            raw_records_bytes=raw_records,
+            source_commit=source_commit,
+        )
+
+        report = release_report(package)
+
+        assert_passing_report(report, VERDICT_RELEASE_PASS)
 
     def test_second_publish_same_run_id_fails_closed(self, tmp_path, monkeypatch):
         _run_driver(tmp_path, monkeypatch)

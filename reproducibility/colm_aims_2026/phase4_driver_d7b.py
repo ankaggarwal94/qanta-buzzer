@@ -47,10 +47,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -126,11 +128,12 @@ TIMEOUT_RULE = "zero_indexed_stop_ge_horizon_is_timeout"
 RANDOM_K_REFERENCE = "krandom"
 RANDOM_K_DRAW_ID = "draw-archived-0001"
 NO_DRAW_ID = "draw-none"
-PRODUCER_ENTRYPOINT = "reproducibility/colm_aims_2026/phase4_driver_d7b.py"
+PRODUCER_ENTRYPOINT = phase4.CONTENT_HASH_RELPATHS["producer_sha256"]
 LAUNCH_RECEIPT_NAME = "LAUNCH_RECEIPT.json"
 ACCEPTANCE_MARKER_NAME = "LAUNCH_ACCEPTED.json"
 ACCEPTANCE_PENDING_NAME = "LAUNCH_ACCEPTANCE_PENDING.json"
 STOP_REPORT_NAME = "STOP_REPORT.json"
+CAPTURED_INPUTS_DIRNAME = ".certified_inputs"
 ACCEPTANCE_MARKER_KEYS = frozenset(
     {
         "schema_version",
@@ -170,6 +173,16 @@ _FROZEN_ELIGIBILITY_BASENAME = "pairing_eligibility_v2.json"
 _FROZEN_MANIFEST_BASENAME = "model_snapshot_manifests.json"
 
 _SHA256SUM_LINE = re.compile(r"^([0-9a-f]{64})[ \t]+(.+)$")
+
+
+@dataclass(frozen=True)
+class ValidatedLaunch:
+    """Single-read facts from an authenticated Phase-4 launch transaction."""
+
+    record_bytes: dict[str, bytes]
+    certificate_components: dict[str, Any]
+    captured_staged_bytes: dict[str, bytes]
+    producer_export: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -475,6 +488,278 @@ def build_provenance_from_frozen(
     }
 
 
+def _strict_json_document(raw: bytes, label: str) -> Any:
+    try:
+        return schema.parse_json_bytes_strict(raw)
+    except (UnicodeError, ValueError) as exc:
+        raise schema.TypedIngressError(
+            f"authenticated {label} is not strict JSON"
+        ) from exc
+
+
+def _dataset_qids(raw: bytes, label: str) -> list[str]:
+    document = _strict_json_document(raw, label)
+    records = (
+        document.get("questions")
+        if isinstance(document, dict) and "questions" in document
+        else document
+    )
+    if not isinstance(records, list) or not records:
+        raise schema.TypedIngressError(
+            f"authenticated {label} must contain a non-empty question list"
+        )
+    qids: list[str] = []
+    seen: set[str] = set()
+    for index, record in enumerate(records):
+        qid = record.get("qid") if isinstance(record, dict) else None
+        if not schema.item_key_conforms_to_derivation(
+            qid, schema.PHASE4_ITEM_KEY_DERIVATION
+        ):
+            raise schema.TypedIngressError(
+                f"authenticated {label} record {index} has a noncanonical qid"
+            )
+        if qid in seen:
+            raise schema.TypedIngressError(
+                f"authenticated {label} duplicates qid {qid!r}"
+            )
+        seen.add(qid)
+        qids.append(qid)
+    return qids
+
+
+def _command_value(options: dict[str, Any], key: str) -> str:
+    values = options.get(key)
+    if not isinstance(values, list) or len(values) != 1:
+        raise schema.TypedIngressError(
+            f"authenticated launch command has no unique {key} binding"
+        )
+    value = values[0][1]
+    if not isinstance(value, str) or not value:
+        raise schema.TypedIngressError(
+            f"authenticated launch command has a malformed {key} binding"
+        )
+    return value
+
+
+def _metadata_split_count(
+    document: Any, split_name: str, expected_count: int, label: str
+) -> dict[str, Any]:
+    if not isinstance(document, dict):
+        raise schema.TypedIngressError(
+            f"authenticated {label} must be a JSON object"
+        )
+    splits = document.get("splits")
+    if not isinstance(splits, dict):
+        raise schema.TypedIngressError(
+            f"authenticated {label} has no splits object"
+        )
+    block = splits.get(split_name)
+    if not isinstance(block, dict):
+        raise schema.TypedIngressError(
+            f"authenticated {label} has no {split_name!r} split block"
+        )
+    retained = block.get("retained_count")
+    if not schema.is_real_int(retained) or retained != expected_count:
+        raise schema.TypedIngressError(
+            f"authenticated {label} {split_name!r} retained_count does not"
+            " match the captured dataset"
+        )
+    return block
+
+
+def bind_release_provenance(
+    provenance: dict[str, Any],
+    *,
+    certificate_components: dict[str, Any],
+    captured_staged_bytes: dict[str, bytes],
+    producer_export: dict[str, Any],
+    paired_keys: frozenset[str],
+) -> dict[str, Any]:
+    """Bind every R-012 release noun to authenticated launch/input facts."""
+    content_hashes = certificate_components.get("content_hashes")
+    environment = certificate_components.get("environment")
+    repo = certificate_components.get("repo")
+    if not all(isinstance(value, dict) for value in (content_hashes, environment, repo)):
+        raise schema.TypedIngressError(
+            "authenticated certificate lacks provenance-bearing components"
+        )
+
+    command = environment.get("command")
+    seeds = environment.get("seeds")
+    if not isinstance(command, list) or not all(
+        isinstance(token, str) and token for token in command
+    ):
+        raise schema.TypedIngressError(
+            "authenticated certificate command is malformed"
+        )
+    if not isinstance(seeds, list) or not seeds or not all(
+        schema.is_real_int(seed) for seed in seeds
+    ):
+        raise schema.TypedIngressError(
+            "authenticated certificate seeds are malformed"
+        )
+    options, _, command_failures = phase4._r082_command_bindings(command)
+    if command_failures:
+        raise schema.TypedIngressError(
+            "authenticated certificate command cannot be re-parsed: "
+            + "; ".join(command_failures)
+        )
+    fit_name = _command_value(options, "fit_split_name")
+    eval_name = _command_value(options, "eval_split_name")
+
+    required_captures = {
+        "fit_split",
+        "eval_split",
+        "build_metadata",
+        "split_metadata",
+    }
+    if set(captured_staged_bytes) != required_captures:
+        raise schema.TypedIngressError(
+            "authenticated captured provenance inputs have wrong membership"
+        )
+    fit_keys = _dataset_qids(captured_staged_bytes["fit_split"], "fit split")
+    eval_keys = _dataset_qids(captured_staged_bytes["eval_split"], "eval split")
+    fit_set = frozenset(fit_keys)
+    eval_set = frozenset(eval_keys)
+    overlap = fit_set & eval_set
+    if overlap:
+        raise schema.TypedIngressError(
+            "authenticated fit/eval datasets overlap; zero-overlap provenance"
+            " cannot be asserted"
+        )
+    if not paired_keys.issubset(eval_set):
+        raise schema.TypedIngressError(
+            "record-derived paired population is not contained in the"
+            " authenticated evaluation split"
+        )
+
+    split_metadata = _strict_json_document(
+        captured_staged_bytes["split_metadata"], "split metadata"
+    )
+    if not isinstance(split_metadata, dict):
+        raise schema.TypedIngressError(
+            "authenticated split metadata must be a JSON object"
+        )
+    for split_name, expected_count in (
+        (fit_name, len(fit_keys)),
+        (eval_name, len(eval_keys)),
+    ):
+        block = split_metadata.get(split_name)
+        if (
+            not isinstance(block, dict)
+            or not schema.is_real_int(block.get("count"))
+            or block["count"] != expected_count
+        ):
+            raise schema.TypedIngressError(
+                f"authenticated split metadata {split_name!r} count does not"
+                " match the captured dataset"
+            )
+
+    build_metadata = _strict_json_document(
+        captured_staged_bytes["build_metadata"], "build metadata"
+    )
+    build_block = _metadata_split_count(
+        build_metadata, eval_name, len(eval_keys), "build metadata"
+    )
+    raw_count = build_block.get("raw_count")
+    retention_rate = build_block.get("retention_rate")
+    if (
+        not schema.is_real_int(raw_count)
+        or raw_count < len(eval_keys)
+        or isinstance(retention_rate, bool)
+        or not isinstance(retention_rate, (int, float))
+        or not math.isfinite(float(retention_rate))
+        or not math.isclose(
+            float(retention_rate),
+            len(eval_keys) / raw_count,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+    ):
+        raise schema.TypedIngressError(
+            "authenticated build metadata retention values do not reconcile"
+            " with the captured evaluation split"
+        )
+
+    export_metadata = producer_export.get("metadata")
+    phase4_metadata = (
+        export_metadata.get("phase4")
+        if isinstance(export_metadata, dict)
+        else None
+    )
+    if (
+        not isinstance(export_metadata, dict)
+        or export_metadata.get("fit_split") != fit_name
+        or export_metadata.get("eval_split") != eval_name
+        or export_metadata.get("n_fit") != len(fit_keys)
+        or export_metadata.get("n_eval") != len(eval_keys)
+        or export_metadata.get("seed") not in seeds
+        or not isinstance(phase4_metadata, dict)
+        or phase4_metadata.get("seeds") != seeds
+    ):
+        raise schema.TypedIngressError(
+            "authenticated producer export disagrees with the certificate or"
+            " captured split identities"
+        )
+
+    producer_entry = content_hashes.get("producer_sha256")
+    if not isinstance(producer_entry, dict) or not schema.is_sha256_hex(
+        producer_entry.get("sha256")
+    ):
+        raise schema.TypedIngressError(
+            "authenticated certificate lacks the producer source hash"
+        )
+    helpers: dict[str, str] = {}
+    for key, relpath in phase4.CONTENT_HASH_RELPATHS.items():
+        if key == "producer_sha256":
+            continue
+        entry = content_hashes.get(key)
+        digest = entry.get("sha256") if isinstance(entry, dict) else None
+        if not schema.is_sha256_hex(digest):
+            raise schema.TypedIngressError(
+                f"authenticated certificate lacks helper hash {key!r}"
+            )
+        helpers[relpath] = digest
+
+    bound = dict(provenance)
+    bound["producer_entrypoint"] = PRODUCER_ENTRYPOINT
+    bound["producer_sha256"] = producer_entry["sha256"]
+    bound["helper_sha256s"] = helpers
+    bound["semantic_command"] = list(command)
+    bound["seeds"] = list(seeds)
+    bound["dirty_state"] = {
+        "git_dirty": repo.get("dirty"),
+        "source_commit": repo.get("commit"),
+    }
+    bound["splits"] = {
+        "fit": {
+            "name": fit_name,
+            "count": len(fit_keys),
+            "keyset_sha256": pairing.keyset_sha256(
+                pairing.canonical_item_order(fit_keys)
+            ),
+        },
+        "eval": {
+            "name": eval_name,
+            "count": len(eval_keys),
+            "keyset_sha256": pairing.keyset_sha256(
+                pairing.canonical_item_order(eval_keys)
+            ),
+        },
+        "zero_overlap": True,
+    }
+    bound["split_metadata_sha256"] = hashlib.sha256(
+        captured_staged_bytes["split_metadata"]
+    ).hexdigest()
+    bound["mc_build"] = {
+        "built_after_split": True,
+        "coverage_rate": float(retention_rate),
+        "retention_policy": "retained_mc_after_raw_split",
+        "retained_count": len(eval_keys),
+    }
+    return bound
+
+
 # ---------------------------------------------------------------------------
 # D6 baseline (parameterized FINAL_CHECKSUMS closure) + QA-012 block
 # ---------------------------------------------------------------------------
@@ -650,13 +935,59 @@ def build_qa012_block(
 # ---------------------------------------------------------------------------
 
 
-def validate_launch_receipt(
+def _read_captured_provenance_inputs(
+    records_root: Path, certificate_components: dict[str, Any]
+) -> dict[str, bytes]:
+    """Read once and rehash the four captured inputs used by provenance."""
+    entries = certificate_components.get("staged_inputs")
+    if not isinstance(entries, list):
+        raise schema.TypedIngressError(
+            "ready certificate staged_inputs component is malformed"
+        )
+    by_label: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        label = entry.get("label") if isinstance(entry, dict) else None
+        if not isinstance(label, str) or label in by_label:
+            raise schema.TypedIngressError(
+                "ready certificate staged_inputs labels are malformed"
+            )
+        by_label[label] = entry
+    if set(by_label) != set(phase4.R082_STAGED_INPUT_LABELS):
+        raise schema.TypedIngressError(
+            "ready certificate staged_inputs membership is incomplete"
+        )
+
+    capture_root = records_root.parent / CAPTURED_INPUTS_DIRNAME
+    result: dict[str, bytes] = {}
+    for label in (
+        "fit_split",
+        "eval_split",
+        "build_metadata",
+        "split_metadata",
+    ):
+        path = capture_root / "data" / phase4.R082_DATA_FILENAMES[label]
+        raw = schema.read_regular_file_bytes(path, tree_root=capture_root)
+        digest = hashlib.sha256(raw).hexdigest()
+        entry = by_label[label]
+        if (
+            digest != entry.get("expected_sha256")
+            or digest != entry.get("observed_sha256")
+        ):
+            raise schema.TypedIngressError(
+                f"captured staged input {label!r} does not match the"
+                " authenticated certificate hash"
+            )
+        result[label] = raw
+    return result
+
+
+def _validated_launch(
     records_root: Path,
     receipt_path: Path,
     ledger_path: Path,
     expected_activation_digest: str,
     expected_source_commit: str,
-) -> dict[str, bytes]:
+) -> ValidatedLaunch:
     """Authenticate the certificate-to-ledger-to-record transaction chain."""
     records_root = Path(records_root).absolute()
     receipt_path = Path(receipt_path).absolute()
@@ -874,6 +1205,16 @@ def validate_launch_receipt(
         raise schema.TypedIngressError(
             "launch receipt does not authenticate the promoted export"
         )
+    producer_export = _strict_json_document(
+        export_bytes, "promoted producer export"
+    )
+    if not isinstance(producer_export, dict):
+        raise schema.TypedIngressError(
+            "authenticated promoted producer export must be a JSON object"
+        )
+    captured_staged_bytes = _read_captured_provenance_inputs(
+        records_root, certificate["components"]
+    )
     bytes_by_rel = {
         f"records/{cell_id}.jsonl": schema.read_regular_file_bytes(
             records_root / f"{cell_id}.jsonl", tree_root=records_root
@@ -890,7 +1231,29 @@ def validate_launch_receipt(
         raise schema.TypedIngressError(
             "launch receipt record hashes do not match the supplied records"
         )
-    return bytes_by_rel
+    return ValidatedLaunch(
+        record_bytes=bytes_by_rel,
+        certificate_components=certificate["components"],
+        captured_staged_bytes=captured_staged_bytes,
+        producer_export=producer_export,
+    )
+
+
+def validate_launch_receipt(
+    records_root: Path,
+    receipt_path: Path,
+    ledger_path: Path,
+    expected_activation_digest: str,
+    expected_source_commit: str,
+) -> dict[str, bytes]:
+    """Authenticate the transaction and return its immutable record bytes."""
+    return _validated_launch(
+        records_root,
+        receipt_path,
+        ledger_path,
+        expected_activation_digest,
+        expected_source_commit,
+    ).record_bytes
 
 
 def run_driver(
@@ -917,7 +1280,7 @@ def run_driver(
     surface (config -> 2), then the create-once publish.
     """
     records_root = Path(records_root)
-    record_bytes = validate_launch_receipt(
+    launch = _validated_launch(
         records_root,
         launch_receipt,
         launch_ledger,
@@ -925,7 +1288,7 @@ def run_driver(
         source_commit,
     )
     record_snapshot = assembler._record_snapshot_from_bytes(
-        records_root.absolute(), record_bytes
+        records_root.absolute(), launch.record_bytes
     )
     complete_by_cell = record_snapshot.complete_by_cell
     horizon_identity = record_horizon_identity(complete_by_cell)
@@ -942,6 +1305,14 @@ def run_driver(
         keyset_digest=keyset_digest,
         horizon_identity=horizon_identity,
         source_commit=source_commit,
+    )
+    reference_keys = frozenset(next(iter(complete_by_cell.values())))
+    provenance = bind_release_provenance(
+        provenance,
+        certificate_components=launch.certificate_components,
+        captured_staged_bytes=launch.captured_staged_bytes,
+        producer_export=launch.producer_export,
+        paired_keys=reference_keys,
     )
     d6_baseline = build_d6_baseline(
         checksums_path=d6_checksums,

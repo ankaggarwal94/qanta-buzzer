@@ -1,9 +1,10 @@
-"""Regression tests for the Phase-4 build-metadata ledger-burn gap.
+"""Regression tests for the Phase-4 metadata ledger-burn gap.
 
-The producer hashes ``build_metadata.json`` while writing provenance after
-scoring.  Pinned mode therefore has to include it in the pre-model staged
-coverage gate; otherwise a missing or changed file can consume the one-shot
-exception and fail only after model work has completed.
+The producer and release driver hash ``build_metadata.json`` and
+``split_metadata.json`` while writing provenance after scoring. Pinned mode
+therefore has to include both in the pre-model staged coverage gate; otherwise
+a missing or changed file can consume the one-shot exception and fail only
+after model work has completed.
 """
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ def _eligibility():
     return {"derived_from": {"test_dataset_sha256": "1" * 64}}
 
 
-def test_consumed_input_inventory_includes_build_metadata(tmp_path):
+def test_consumed_input_inventory_includes_both_metadata_files(tmp_path):
     consumed = producer._enumerate_consumed_inputs(_args(tmp_path), _eligibility())
 
     assert [entry["label"] for entry in consumed] == [
@@ -38,12 +39,18 @@ def test_consumed_input_inventory_includes_build_metadata(tmp_path):
         "mc_dataset",
         "answer_profiles",
         "build_metadata",
+        "split_metadata",
     ]
-    assert consumed[-1]["path"] == tmp_path / "staged_data" / "build_metadata.json"
+    assert consumed[-2]["path"] == tmp_path / "staged_data" / "build_metadata.json"
+    assert consumed[-1]["path"] == tmp_path / "staged_data" / "split_metadata.json"
+    assert consumed[-2]["frozen_sha256"] is None
     assert consumed[-1]["frozen_sha256"] is None
 
 
-def test_build_metadata_requires_operator_digest_before_model_work(tmp_path):
+@pytest.mark.parametrize("missing_label", ["build_metadata", "split_metadata"])
+def test_metadata_requires_operator_digest_before_model_work(
+    tmp_path, missing_label
+):
     consumed = producer._enumerate_consumed_inputs(_args(tmp_path), _eligibility())
     staged = [
         {
@@ -52,10 +59,10 @@ def test_build_metadata_requires_operator_digest_before_model_work(tmp_path):
             "expected_sha256": str(index + 2) * 64,
         }
         for index, entry in enumerate(consumed)
-        if entry["frozen_sha256"] is None and entry["label"] != "build_metadata"
+        if entry["frozen_sha256"] is None and entry["label"] != missing_label
     ]
 
     with pytest.raises(schema.TypedIngressError) as excinfo:
         phase4.required_staged_coverage(consumed, staged)
 
-    assert "build_metadata.json" in str(excinfo.value)
+    assert f"{missing_label}.json" in str(excinfo.value)

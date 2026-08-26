@@ -125,6 +125,7 @@ PHASE4_ITEM_KEY_DERIVATION: dict[str, Any] = {
     "source_field": "qid",
     "normalization": "canonical_unsigned_decimal_string",
 }
+PHASE4_PRODUCER_ENTRYPOINT = "scripts/stopdff_fair_qa_retest.py"
 ITEM_KEY_DERIVATION_SCHEMES = (
     ITEM_KEY_DERIVATION,
     PHASE4_ITEM_KEY_DERIVATION,
@@ -1489,11 +1490,23 @@ def _validate_provenance(prov: Any) -> None:
             raise SchemaValidationError(
                 "provenance.semantic_command must be a non-empty argv string list"
             )
+    # ``arms[*].seed_contract`` declares the frozen study design.  This
+    # field records seeds that the named producer actually executed.  The
+    # certified Phase-4 producer is a one-seed ceremony; generic producers
+    # retain the three-seed provenance contract.
+    expected_seeds = (
+        [1]
+        if prov.get("producer_entrypoint") == PHASE4_PRODUCER_ENTRYPOINT
+        else [1, 2, 3]
+    )
     if "seeds" in prov and (
-        prov["seeds"] != [1, 2, 3]
+        prov["seeds"] != expected_seeds
         or not all(is_real_int(seed) for seed in prov["seeds"])
     ):
-        raise SchemaValidationError("provenance.seeds must be exactly [1, 2, 3]")
+        raise SchemaValidationError(
+            f"provenance.seeds must be exactly {expected_seeds!r} for this"
+            " producer"
+        )
     dirty = prov["dirty_state"]
     _validate_closed_map(
         dirty, DIRTY_STATE_KEYS, DIRTY_STATE_KEYS, "provenance.dirty_state"

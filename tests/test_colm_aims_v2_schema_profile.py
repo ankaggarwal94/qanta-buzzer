@@ -196,6 +196,48 @@ class TestStrictProfile:
 
 
 # ---------------------------------------------------------------------------
+# R-003/R-012: study-design seeds versus producer execution seeds
+# ---------------------------------------------------------------------------
+
+
+class TestProvenanceSeedSemantics:
+    def test_certified_phase4_producer_records_actual_single_seed(self):
+        profile = make_profile_v2()
+        profile["provenance"]["producer_entrypoint"] = (
+            schema.PHASE4_PRODUCER_ENTRYPOINT
+        )
+        profile["provenance"]["seeds"] = [1]
+
+        schema.validate_profile(profile)
+
+    @pytest.mark.parametrize("seeds", [[1, 2, 3], [True], [1.0]])
+    def test_certified_phase4_producer_rejects_nonexact_execution_seeds(
+        self, seeds
+    ):
+        profile = make_profile_v2()
+        profile["provenance"]["producer_entrypoint"] = (
+            schema.PHASE4_PRODUCER_ENTRYPOINT
+        )
+        profile["provenance"]["seeds"] = seeds
+
+        with pytest.raises(schema.SchemaValidationError, match="seeds"):
+            schema.validate_profile(profile)
+
+    def test_generic_producer_cannot_claim_phase4_single_seed_contract(self):
+        profile = make_profile_v2()
+        profile["provenance"]["seeds"] = [1]
+
+        with pytest.raises(schema.SchemaValidationError, match="seeds"):
+            schema.validate_profile(profile)
+
+    def test_item_key_scheme_does_not_rewrite_actual_execution_seeds(self):
+        profile = make_profile_v2()
+        profile["item_key_derivation"] = schema.PHASE4_ITEM_KEY_DERIVATION
+
+        schema.validate_profile(profile)
+
+
+# ---------------------------------------------------------------------------
 # R-002: observed-profile firewall
 # ---------------------------------------------------------------------------
 

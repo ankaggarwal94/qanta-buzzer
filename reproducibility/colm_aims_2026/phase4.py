@@ -367,6 +367,7 @@ R082_STAGED_INPUT_LABELS = (
     "mc_dataset",
     "answer_profiles",
     "build_metadata",
+    "split_metadata",
 )
 R082_STAGED_INPUT_SHA256 = {
     "calibration_train": CALIBRATION_TRAIN_SHA256,
@@ -383,12 +384,16 @@ R082_STAGED_INPUT_SHA256 = {
     "build_metadata": (
         "70871984390f252c0a06a5a2c9a2d3b4337f10ad48c87583ebec215d5c0c9c6e"
     ),
+    "split_metadata": (
+        "b67bcdbb937411c7e14f9a3bfa9fd1ab0f7ed6956458978da0d148e65c246b39"
+    ),
 }
 R082_OPERATOR_DIGEST_LABELS = (
     "fit_split",
     "mc_dataset",
     "answer_profiles",
     "build_metadata",
+    "split_metadata",
 )
 R082_DATA_FILENAMES = {
     "eval_split": "test_dataset.json",
@@ -396,6 +401,7 @@ R082_DATA_FILENAMES = {
     "mc_dataset": "mc_dataset.json",
     "answer_profiles": "answer_profiles.json",
     "build_metadata": "build_metadata.json",
+    "split_metadata": "split_metadata.json",
 }
 
 _MISSING = object()
@@ -1468,10 +1474,10 @@ def _r082_resolve_bound_path(
 def staged_coverage_failures(
     repo_root: Any, staged_inputs: Any, eligibility: Any, command: Any
 ) -> list[str]:
-    """Validate the exact six-input certificate/command coverage contract.
+    """Validate the exact seven-input certificate/command coverage contract.
 
     The component owns one entry for each consumed input.  The exact command
-    independently owns the calibration path, data directory, and four
+    independently owns the calibration path, data directory, and five
     operator-supplied path+digest bindings.  Comparing both representations
     here prevents a syntactically ready certificate from deferring an
     uncovered-input refusal until after the one-shot ledger is consumed.
@@ -3410,7 +3416,7 @@ def _check_external_staging(components: dict[str, Any], fail: Any) -> None:
 
 
 def _check_staged_coverage(components: dict[str, Any], fail: Any) -> None:
-    """Cross-bind the exact command to the six staged certificate entries."""
+    """Cross-bind the exact command to the seven staged certificate entries."""
     repo = _as_dict(components.get("repo"))
     environment = _as_dict(components.get("environment"))
     for failure in staged_coverage_failures(

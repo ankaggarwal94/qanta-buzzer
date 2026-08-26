@@ -1932,12 +1932,14 @@ _PHASE4_STAGED_FILENAMES = {
     "mc_dataset": "mc_dataset.json",
     "answer_profiles": "answer_profiles.json",
     "build_metadata": "build_metadata.json",
+    "split_metadata": "split_metadata.json",
 }
 _PHASE4_OPERATOR_DIGEST_LABELS = (
     "fit_split",
     "mc_dataset",
     "answer_profiles",
     "build_metadata",
+    "split_metadata",
 )
 
 

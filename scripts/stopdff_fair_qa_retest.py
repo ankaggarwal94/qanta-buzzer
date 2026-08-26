@@ -587,11 +587,12 @@ def _enumerate_consumed_inputs(args_like, eligibility) -> list[dict]:
     pin is wired from the eligibility artifact's
     ``derived_from.test_dataset_sha256`` (two-party pinned) when the
     artifact is given; the fit split, ``mc_dataset.json``,
-    ``answer_profiles.json``, and ``build_metadata.json`` have no frozen
-    pins — operator digests via ``--staged-input`` are REQUIRED (uncovered
-    = refusal).  ``build_metadata.json`` is included because output
-    provenance reads it after scoring; gating it here prevents a late
-    provenance failure from consuming the one-shot exception.
+    ``answer_profiles.json``, ``build_metadata.json``, and
+    ``split_metadata.json`` have no frozen pins — operator digests via
+    ``--staged-input`` are REQUIRED (uncovered = refusal). The two metadata
+    files are included because output and release provenance read them after
+    scoring; gating them here prevents a late provenance failure from
+    consuming the one-shot exception.
     """
     phase4, _ = _phase4_modules()
     data = Path(args_like.data_dir)
@@ -627,6 +628,11 @@ def _enumerate_consumed_inputs(args_like, eligibility) -> list[dict]:
         {
             "label": "build_metadata",
             "path": data / "build_metadata.json",
+            "frozen_sha256": None,
+        },
+        {
+            "label": "split_metadata",
+            "path": data / "split_metadata.json",
             "frozen_sha256": None,
         },
     ]
@@ -934,11 +940,12 @@ def main():
     ap.add_argument("--staged-input", action="append", default=[],
                     metavar="LABEL=PATH:EXPECTED_SHA256",
                     help="repeatable staged-input hash gate entry (R-076). "
-                         "Phase-4 mode gates exactly six consumed inputs: "
+                         "Phase-4 mode gates exactly seven consumed inputs: "
                          "calibration_train (frozen pin) and eval_split (pin "
                          "from the eligibility artifact) are auto-covered; "
-                         "fit_split, mc_dataset, answer_profiles, and "
-                         "build_metadata REQUIRE operator digests here; any "
+                         "fit_split, mc_dataset, answer_profiles, "
+                         "build_metadata, and split_metadata REQUIRE operator "
+                         "digests here; any "
                          "staged path outside that closed set is refused")
     ap.add_argument("--certificate-digest", default=None,
                     help="PRE_RUN_READY activation digest (R-081); recorded "
@@ -1201,6 +1208,7 @@ def main():
         data / f"{args.fit_split}_dataset.json",
         data / f"{args.eval_split}_dataset.json",
         data / "build_metadata.json",
+        data / "split_metadata.json",
     ]
     # Phase-4 consumed artifacts join the hashed-input provenance (additive;
     # legacy invocations hash exactly the historical list).

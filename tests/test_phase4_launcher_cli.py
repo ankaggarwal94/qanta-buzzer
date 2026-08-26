@@ -23,12 +23,14 @@ STAGED_DATA_FILES = {
     "mc_dataset": "mc_dataset.json",
     "answer_profiles": "answer_profiles.json",
     "build_metadata": "build_metadata.json",
+    "split_metadata": "split_metadata.json",
 }
 OPERATOR_STAGED_LABELS = (
     "fit_split",
     "mc_dataset",
     "answer_profiles",
     "build_metadata",
+    "split_metadata",
 )
 
 
@@ -442,6 +444,7 @@ def _runtime_fixture(
                     "mc_dataset",
                     "answer_profiles",
                     "build_metadata",
+                    "split_metadata",
                 )
             ],
         },

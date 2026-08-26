@@ -137,8 +137,10 @@ analysis over retained per-item records — permitted; model execution is not.
   all arms K-way while containing an idealized arm fails. The
   constructed-reference, fixed-threshold, myopic, and learned-continuation
   families each carry a qualified CLOSED vocabulary — no overloaded global
-  stop integer across families. Enforcement: per-family enum constants +
-  cross-family confusion fixtures.
+  stop integer across families. Each arm's `[1, 2, 3]` `seed_contract`
+  declares the frozen study design; it does not claim all three seeds were
+  executed by every evidence producer. Enforcement: per-family enum constants
+  + cross-family confusion fixtures.
 - **R-004** [unit] *(carried)*: encode→decode roundtrip of a strict-profile
   artifact is lossless (equal value); writers reject non-finite floats at
   write time (`allow_nan=False` semantics).
@@ -567,6 +569,10 @@ analysis over retained per-item records — permitted; model execution is not.
   non-EXTERNAL claim-ledger row's status from current verification, failing
   on any row whose recorded status is stronger than the recomputed one
   (EXTERNAL rows stay R-024-immune).
+  `provenance.seeds` records actual executions rather than the arm-level study
+  design: it is exactly `[1]` for the certified Phase-4 producer
+  `scripts/stopdff_fair_qa_retest.py`, and remains exactly `[1, 2, 3]` for
+  generic producers. Neither producer class accepts the other list.
 - **R-013** [integration] *(amended by sign-off §2.1)*: No self-attestation:
   certification requires an expectations file outside the artifact tree,
   anchored to a reviewed source commit and the frozen claim ledger, with the
@@ -829,7 +835,8 @@ analysis over retained per-item records — permitted; model execution is not.
   historical accident), `test_dataset.json` expected `638a4df9…` (R-074),
   `val_dataset.json` expected `9b7a131b…`, `mc_dataset.json` expected
   `3dbebf8e…`, `answer_profiles.json` expected `63558639…`, and
-  `build_metadata.json` expected `70871984…`; every entry records equal
+  `build_metadata.json` expected `70871984…`, and the retained-split
+  `split_metadata.json` expected `b67bcdbb…`; every entry records equal
   expected+observed SHA-256. The run receipt captures fitted Platt
   coefficients and the continuation-estimator digest per calibration mode.
   Enforcement: gate-ordering test (gates run before any loader is invoked;
@@ -1079,19 +1086,21 @@ analysis over retained per-item records — permitted; model execution is not.
   the staged calibration path, and an in-repo untracked staged file aborts
   the run AFTER scoring (the P0-1 trap). The launcher and certificate
   orchestration must stage under an out-of-repo directory and the
-  certificate records those absolute staged paths. This applies to ALL six
+  certificate records those absolute staged paths. This applies to ALL seven
   consumed/provenance inputs, not calibration alone: calibration, fit, eval,
-  MC dataset, answer profiles, and `build_metadata.json`. The command's
+  MC dataset, answer profiles, `build_metadata.json`, and
+  `split_metadata.json`. The command's
   `--data-dir`, `--calibration`, and every `--staged-input` path must resolve
   outside the repository. The certificate requires exactly one component for
-  each of the six labels; pins `calibration_train` to the archival digest
+  each of the seven labels; pins `calibration_train` to the archival digest
   `745bd67597278bd9d24d41c1dea53bf3a7c56cd6334cfc07ea62bccbdcf44259`
   (a caller cannot substitute a self-consistent path+digest pair); binds
   `calibration_train` to `--calibration`; binds
-  the other five paths to the explicit `--data-dir` plus the exactly-once
+  the other six paths to the explicit `--data-dir` plus the exactly-once
   `--fit-split`/`--eval-split` selectors; and requires exactly one matching
   path+digest `--staged-input` for `fit_split`, `mc_dataset`,
-  `answer_profiles`, and `build_metadata`. The certificate gathering path
+  `answer_profiles`, `build_metadata`, and `split_metadata`. The certificate
+  gathering path
   evaluates the same
   containment policy and emits `ready:false` with a named path-policy
   failure; runtime enforcement alone is insufficient because an
