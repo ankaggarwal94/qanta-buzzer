@@ -50,6 +50,7 @@ from reproducibility.colm_aims_2026 import (  # noqa: E402
     schema,
     verifier,
 )
+from scripts.stopdff_v5 import fileio  # noqa: E402
 
 # Exit-code contract (mirrors ``verify.py``): 0 pass, 2 usage, 3 ingress,
 # 4 internal.
@@ -812,6 +813,11 @@ def build_evidence_package(
                 "staged envelope changed during semantic verification;"
                 " refusing immutable publication"
             )
+
+        # The final rename publishes a durable name, so first make every byte
+        # and directory entry in the closed candidate durable.  Otherwise a
+        # crash after rename could expose a correctly named but truncated run.
+        fileio.fsync_tree(staged_run)
 
         published_run = schema.publish_evidence_package(
             staged_run,

@@ -9,6 +9,7 @@ lifetime.
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import MutableMapping
 from pathlib import Path
 
@@ -16,6 +17,10 @@ if os.name == "nt":  # pragma: no cover - selected by the host at import time
     import msvcrt
 else:  # pragma: no cover - selected by the host at import time
     import fcntl
+
+
+_OWNER_GUARD = threading.RLock()
+_LOCK_OWNERS: dict[tuple[int, str], tuple[int, threading.Thread, int]] = {}
 
 
 def _lock_descriptor(fd: int) -> None:
@@ -54,14 +59,43 @@ def acquire_process_lock(
     """
     lock_path = Path(lock_path)
     key = os.path.realpath(lock_path)
-    if key in held_fds:
-        return
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0)
-    fd = os.open(lock_path, flags, 0o644)
-    try:
-        _lock_descriptor(fd)
-    except OSError as exc:
-        os.close(fd)
-        raise RuntimeError(f"{busy_label} {lock_path}") from exc
-    held_fds[key] = fd
+    owner_key = (id(held_fds), key)
+    current_pid = os.getpid()
+    current_thread = threading.current_thread()
+
+    # OS advisory locks alone do not distinguish two threads that share the
+    # same caller-owned descriptor map.  Serialize acquisition and record the
+    # actual owning thread so only a genuine nested call may re-enter.
+    with _OWNER_GUARD:
+        owner = _LOCK_OWNERS.get(owner_key)
+        if key in held_fds:
+            held_fd = held_fds[key]
+            if owner == (current_pid, current_thread, held_fd):
+                return
+            if owner is not None and owner[0] != current_pid:
+                # A forked child inherited both the descriptor and Python map,
+                # but it is a distinct process owner.  Drop the inherited copy
+                # and contend for the lock independently.
+                try:
+                    os.close(held_fd)
+                except OSError:
+                    pass
+                del held_fds[key]
+                _LOCK_OWNERS.pop(owner_key, None)
+            else:
+                raise RuntimeError(f"{busy_label} {lock_path}")
+        else:
+            # The caller explicitly released/cleared this map since its last
+            # acquisition; discard the corresponding in-process metadata.
+            _LOCK_OWNERS.pop(owner_key, None)
+
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0)
+        fd = os.open(lock_path, flags, 0o644)
+        try:
+            _lock_descriptor(fd)
+        except OSError as exc:
+            os.close(fd)
+            raise RuntimeError(f"{busy_label} {lock_path}") from exc
+        held_fds[key] = fd
+        _LOCK_OWNERS[owner_key] = (current_pid, current_thread, fd)

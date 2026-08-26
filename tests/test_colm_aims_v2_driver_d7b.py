@@ -876,6 +876,35 @@ class TestCli:
         assert driver.EXIT_INGRESS_ERROR == 3
         assert driver.EXIT_INTERNAL_ERROR == 4
 
+    def test_qa012_cli_surface_is_authority_only(self, tmp_path):
+        help_text = driver._build_parser().format_help()
+        assert "--qa012-authority" in help_text
+        assert "--qa012-root" not in help_text
+
+        rc = driver.main(
+            [
+                "--records-root",
+                str(tmp_path / "records"),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--frozen-dir",
+                str(FROZEN_DIR),
+                "--source-commit",
+                TEST_SOURCE_COMMIT,
+                "--launch-receipt",
+                str(tmp_path / driver.LAUNCH_RECEIPT_NAME),
+                "--launch-ledger",
+                str(tmp_path / "ledger.json"),
+                "--activation-digest",
+                PLACEHOLDER_ACTIVATION_DIGEST,
+                "--qa012-authority",
+                str(qa012.CANONICAL_AUTHORITY_PATH),
+                "--qa012-root",
+                f"d6_checksum_closure={tmp_path}",
+            ]
+        )
+        assert rc == EXIT_USAGE_ERROR
+
     def test_main_end_to_end_source_pass(self, tmp_path, monkeypatch):
         _bind_synthetic_records_to_frozen(monkeypatch)
         records_root = _write_records_root(tmp_path / "records")

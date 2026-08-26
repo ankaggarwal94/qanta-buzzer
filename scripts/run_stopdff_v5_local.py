@@ -15,7 +15,6 @@ import argparse
 import importlib.metadata as im
 import json
 import os
-import stat
 import subprocess
 import sys
 import tempfile
@@ -494,38 +493,7 @@ def _variant_run_candidates(out: Path, variant: str) -> list[Path]:
 
 def _fsync_staged_tree(root: Path) -> None:
     """Make a closed staged tree durable before publishing its directory entry."""
-    root = Path(root)
-    if root.is_symlink() or not root.is_dir():
-        raise ValueError("local stage builder did not produce a canonical directory")
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    for directory_name, child_directories, filenames in os.walk(
-        root,
-        topdown=False,
-        followlinks=False,
-    ):
-        directory = Path(directory_name)
-        for name in child_directories:
-            child = directory / name
-            if child.is_symlink():
-                raise ValueError(f"local stage contains a symlink: {child}")
-        for name in filenames:
-            path = directory / name
-            if path.is_symlink() or not path.is_file():
-                raise ValueError(f"local stage contains a non-file: {path}")
-            # Windows' CRT rejects fsync on read-only descriptors.  These are
-            # newly staged files, so open them read/write there while leaving
-            # the historical POSIX read-only + O_NOFOLLOW path unchanged.
-            access_flag = os.O_RDWR if os.name == "nt" else os.O_RDONLY
-            descriptor = os.open(path, access_flag | nofollow)
-            try:
-                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                    raise ValueError(
-                        f"local stage contains a non-regular file: {path}"
-                    )
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-        fileio.fsync_directory(directory)
+    fileio.fsync_tree(root)
 
 
 def _publish_stage_directory(

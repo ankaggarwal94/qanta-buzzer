@@ -29,8 +29,8 @@ Identity-block provenance (constants vs. input-derived):
     ``main.pdf`` hashes and the COMPLETE FINAL_CHECKSUMS closure are source
     constants, not caller-selected authority.
   * qa012  -> exact raw-byte identity of the tracked rev3 scope authority.
-    Separate caller-root scans are available through ``build_qa012_block`` as
-    non-authorizing diagnostics; they are not a publication input.
+    The publication CLI accepts only ``--qa012-authority``; caller-selected
+    scan roots cannot authorize publication.
 
 Exit codes mirror ``verify.py`` / ``phase4_assemble_d7b`` (0 pass, 2 usage,
 3 ingress, 4 internal). Spec rules: R-001..R-011 (profile shape), R-040/R-043

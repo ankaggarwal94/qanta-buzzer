@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Callable
@@ -84,6 +85,56 @@ def fsync_directory(directory: Path) -> None:
     in ``_fsync_directory``; all other open and sync failures still propagate.
     """
     _fsync_directory(Path(directory))
+
+
+def fsync_tree(root: Path) -> None:
+    """Sync every regular file and directory in a closed staged tree.
+
+    The walk is bottom-up so each file's bytes are durable before its parent
+    directory is synced.  Symlinks and non-regular files are rejected rather
+    than followed: a staged evidence envelope is a closed tree of ordinary
+    files and directories, and publication must not depend on external state.
+    """
+    root = Path(root)
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError(f"staged tree is not a canonical directory: {root}")
+
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    for directory_name, child_directories, filenames in os.walk(
+        root,
+        topdown=False,
+        onerror=raise_walk_error,
+        followlinks=False,
+    ):
+        directory = Path(directory_name)
+        for name in child_directories:
+            child = directory / name
+            if child.is_symlink() or not child.is_dir():
+                raise ValueError(
+                    f"staged tree contains a non-directory child: {child}"
+                )
+        for name in filenames:
+            path = directory / name
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(
+                    f"staged tree contains a non-regular file: {path}"
+                )
+            # Windows' CRT requires a writable descriptor for ``os.fsync``.
+            access_flag = os.O_RDWR if _IS_WINDOWS else os.O_RDONLY
+            descriptor = os.open(path, access_flag | nofollow)
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise ValueError(
+                        f"staged tree contains a non-regular file: {path}"
+                    )
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        fsync_directory(directory)
 
 
 def publish_bytes(path: Path, data: bytes) -> None:

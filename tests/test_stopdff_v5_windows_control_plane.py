@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -47,6 +48,39 @@ def test_process_lock_reenters_one_owner_and_rejects_a_second(tmp_path):
     finally:
         _close_all(owner)
         _close_all(contender)
+
+
+def test_process_lock_rejects_another_thread_sharing_owner_map(tmp_path):
+    lock_path = tmp_path / "shared-driver.lock"
+    owner: dict[str, int] = {}
+    failures: list[BaseException] = []
+    try:
+        locking.acquire_process_lock(
+            lock_path,
+            owner,
+            busy_label="thread owner collision",
+        )
+
+        def contend() -> None:
+            try:
+                locking.acquire_process_lock(
+                    lock_path,
+                    owner,
+                    busy_label="thread owner collision",
+                )
+            except BaseException as exc:
+                failures.append(exc)
+
+        contender = threading.Thread(target=contend)
+        contender.start()
+        contender.join()
+
+        assert len(failures) == 1
+        assert isinstance(failures[0], RuntimeError)
+        assert "thread owner collision" in str(failures[0])
+        assert list(owner) == [os.path.realpath(lock_path)]
+    finally:
+        _close_all(owner)
 
 
 @pytest.mark.parametrize(

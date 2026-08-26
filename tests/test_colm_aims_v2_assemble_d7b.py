@@ -484,6 +484,48 @@ def _build(tmp_path, *, run_id="run-0001", reclaim_crashed_relic=False):
 
 
 class TestBuildEvidencePackage:
+    def test_syncs_complete_staged_envelope_before_publication(
+        self, tmp_path, monkeypatch
+    ):
+        synced: list[tuple[str, ...]] = []
+        real_fsync_tree = assembler.fileio.fsync_tree
+
+        def observe_sync(root):
+            root = assembler.Path(root)
+            relative_files = tuple(
+                sorted(
+                    path.relative_to(root).as_posix()
+                    for path in root.rglob("*")
+                    if path.is_file()
+                )
+            )
+            assert "tree/profile.json" in relative_files
+            assert "closure/closure_inventory.json" in relative_files
+            assert all(
+                f"tree/records/{cell_id}.jsonl" in relative_files
+                for cell_id in schema.CELL_IDS
+            )
+            synced.append(relative_files)
+            real_fsync_tree(root)
+
+        monkeypatch.setattr(assembler.fileio, "fsync_tree", observe_sync)
+        _build(tmp_path)
+
+        assert len(synced) == 1
+
+    def test_staged_sync_failure_prevents_immutable_publication(
+        self, tmp_path, monkeypatch
+    ):
+        def fail_sync(_root):
+            raise OSError("synthetic staged fsync failure")
+
+        monkeypatch.setattr(assembler.fileio, "fsync_tree", fail_sync)
+        with pytest.raises(OSError, match="synthetic staged fsync failure"):
+            _build(tmp_path)
+
+        runs_root = tmp_path / "out" / "runs"
+        assert not (runs_root / "run-0001").exists()
+
     def test_caller_snapshot_tampering_is_rejected_before_publish(
         self, tmp_path
     ):
