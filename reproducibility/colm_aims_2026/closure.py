@@ -9,6 +9,8 @@ Spec: .correctless/specs/camera-ready-aims-evidence-2.md
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from .schema import (
@@ -48,11 +50,23 @@ _D6_BASELINE_KEYS = frozenset(
         "main_pdf_sha256",
         "final_checksums_sha256",
         "final_checksums_entries",
+        "final_checksums_entries_sha256",
     }
 )
 _ROW_KEYS = frozenset({"item", "status", "evidence"})
 _HOLM_KEYS = frozenset({"satisfied_by"})
 _QA012_KEYS = frozenset({"status", "inventory_sha256"})
+EXPECTED_CLAIM_ITEMS = frozenset(
+    {"table-1-headline-shifts", "manuscript-identity"}
+)
+
+
+def checksum_entries_sha256(entries: dict[str, str]) -> str:
+    """Canonical digest of the complete FINAL_CHECKSUMS entry map."""
+    payload = json.dumps(
+        entries, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -93,6 +107,7 @@ def validate_closure_inventory(inventory: Any) -> None:
         "main_tex_sha256",
         "main_pdf_sha256",
         "final_checksums_sha256",
+        "final_checksums_entries_sha256",
     ):
         if not is_sha256_hex(baseline[field]):
             raise SchemaValidationError(
@@ -152,6 +167,12 @@ def validate_closure_inventory(inventory: Any) -> None:
                 f"closure rows[{index}] with status {status!r} must bind"
                 " non-empty evidence"
             )
+    if seen_items != EXPECTED_CLAIM_ITEMS:
+        raise SchemaValidationError(
+            "closure expected-claim row set is not frozen;"
+            f" missing={sorted(EXPECTED_CLAIM_ITEMS - seen_items)},"
+            f" unexpected={sorted(seen_items - EXPECTED_CLAIM_ITEMS)}"
+        )
     holm_row = _require_exact_keys(
         inventory["holm_row"], _HOLM_KEYS, "closure holm_row"
     )
@@ -176,7 +197,11 @@ def validate_closure_inventory(inventory: Any) -> None:
         )
 
 
-def evaluate_closure(inventory: dict[str, Any]) -> dict[str, Any]:
+def evaluate_closure(
+    inventory: dict[str, Any],
+    *,
+    expected_final_checksums_entries_sha256: str | None = None,
+) -> dict[str, Any]:
     """Evaluate the frozen CAMERA_READY_CLOSURE inventory, fail-closed.
 
     Returns ``{"gate": CAMERA_READY_CLOSURE, "satisfied": bool,
@@ -203,6 +228,22 @@ def evaluate_closure(inventory: dict[str, Any]) -> dict[str, Any]:
             " closure binds the COMPLETE checksum closure"
         )
     entries = _as_dict(baseline.get("final_checksums_entries"))
+    observed_entries_sha256 = checksum_entries_sha256(entries)
+    if baseline.get("final_checksums_entries_sha256") != observed_entries_sha256:
+        failing.append(
+            "FINAL_CHECKSUMS entry-map digest does not match the complete"
+            " canonical path-to-digest map"
+        )
+    if not is_sha256_hex(expected_final_checksums_entries_sha256):
+        failing.append(
+            "complete FINAL_CHECKSUMS entry-map authority is absent; closure"
+            " requires an independently supplied canonical entry-map digest"
+        )
+    elif observed_entries_sha256 != expected_final_checksums_entries_sha256:
+        failing.append(
+            "FINAL_CHECKSUMS entry set or a figure/bibliography digest differs"
+            " from the independently supplied complete-manifest authority"
+        )
     if entries.get("main.tex") != D6_MAIN_TEX_SHA256:
         failing.append(
             "FINAL_CHECKSUMS entries do not pin main.tex at the designated"

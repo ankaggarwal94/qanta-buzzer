@@ -59,7 +59,6 @@ EXIT_INTERNAL_ERROR = 4
 # QA-012 build result -> closure status (closure.py:35-37; qa012.py:97).
 _QA012_STATUS_BY_RESULT = {
     "zero_hit": "VERIFIED_VACUOUS",
-    "hits": "VERIFIED_WITH_FIXTURES",
 }
 
 
@@ -469,13 +468,21 @@ def qa012_status_block(manifest: dict[str, Any]) -> dict[str, Any]:
     """Map a ``qa012.build_inventory_manifest`` result to the closure
     ``qa012`` block (closure.py:35-37/110-120)."""
     result = manifest["result"]
-    if result not in _QA012_STATUS_BY_RESULT:
+    if result == "hits":
+        status = (
+            "VERIFIED_WITH_FIXTURES"
+            if qa012.hit_fixtures_verified(manifest)
+            else "HITS_PRESENT"
+        )
+    elif result in _QA012_STATUS_BY_RESULT:
+        status = _QA012_STATUS_BY_RESULT[result]
+    else:
         raise schema.ColmAimsError(
             f"unrecognised QA-012 inventory result {result!r};"
             " expected 'zero_hit' or 'hits' (R-072)"
         )
     return {
-        "status": _QA012_STATUS_BY_RESULT[result],
+        "status": status,
         "inventory_sha256": manifest["inventory_sha256"],
     }
 
@@ -493,9 +500,16 @@ def assemble_closure_inventory(
     final manuscript hashes; the Holm/inference row is satisfiable only by the
     D7(b) regenerated outputs (closure.py:100-108).
     """
+    bound_d6_baseline = dict(d6_baseline)
+    entries = bound_d6_baseline.get("final_checksums_entries")
+    if isinstance(entries, dict) and entries:
+        bound_d6_baseline.setdefault(
+            "final_checksums_entries_sha256",
+            closure.checksum_entries_sha256(entries),
+        )
     return {
         "schema_version": schema.SCHEMA_VERSION,
-        "d6_baseline": dict(d6_baseline),
+        "d6_baseline": bound_d6_baseline,
         "rows": [
             {
                 "item": "table-1-headline-shifts",

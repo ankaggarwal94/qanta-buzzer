@@ -260,7 +260,13 @@ class TestD6Baseline:
         inv = assembler.assemble_closure_inventory(
             d6_baseline=baseline, qa012=qa
         )
-        assert closure.evaluate_closure(inv)["satisfied"] is True
+        assert closure.evaluate_closure(inv)["satisfied"] is False
+        assert closure.evaluate_closure(
+            inv,
+            expected_final_checksums_entries_sha256=baseline[
+                "final_checksums_entries_sha256"
+            ],
+        )["satisfied"] is True
 
     def test_default_without_checksums_is_unsatisfied(self):
         # The FINAL D6 checksums are post-de-anonymization and unknown now:
@@ -308,12 +314,21 @@ class TestQa012Block:
 
     def test_explicit_status_and_hash(self):
         block = driver.build_qa012_block(
-            status="VERIFIED_VACUOUS", inventory_sha256="b" * 64
+            status="HITS_PRESENT", inventory_sha256="b" * 64
         )
         assert block == {
-            "status": "VERIFIED_VACUOUS",
+            "status": "HITS_PRESENT",
             "inventory_sha256": "b" * 64,
         }
+
+    @pytest.mark.parametrize(
+        "status", ["VERIFIED_VACUOUS", "VERIFIED_WITH_FIXTURES"]
+    )
+    def test_explicit_satisfied_status_cannot_bypass_scan(self, status):
+        with pytest.raises(schema.ConfigSurfaceError, match="locally validated"):
+            driver.build_qa012_block(
+                status=status, inventory_sha256="b" * 64
+            )
 
     def test_requires_some_input(self):
         with pytest.raises(schema.ConfigSurfaceError):
@@ -404,6 +419,13 @@ class TestRunDriver:
     def test_closure_inventory_satisfied(self, tmp_path):
         built = _run_driver(tmp_path)
         result = closure.evaluate_closure(built.closure_inventory)
+        assert result["satisfied"] is False
+        result = closure.evaluate_closure(
+            built.closure_inventory,
+            expected_final_checksums_entries_sha256=built.closure_inventory[
+                "d6_baseline"
+            ]["final_checksums_entries_sha256"],
+        )
         assert result["satisfied"] is True, result["failing_rows"]
 
     def test_source_verify_passes(self, tmp_path):

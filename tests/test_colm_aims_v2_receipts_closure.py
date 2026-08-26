@@ -164,7 +164,12 @@ class TestClosureGate:
         inventory = make_closure_inventory()
         # The Holm row is satisfiable ONLY by the D7(b) discriminator token.
         assert inventory["holm_row"]["satisfied_by"] == ANALYSIS_PROVENANCE_D7B
-        out = closure.evaluate_closure(inventory)
+        out = closure.evaluate_closure(
+            inventory,
+            expected_final_checksums_entries_sha256=inventory["d6_baseline"][
+                "final_checksums_entries_sha256"
+            ],
+        )
         assert out["gate"] == CLOSURE_GATE_TOKEN
         assert out["satisfied"] is True
 
@@ -192,6 +197,43 @@ class TestClosureGate:
         out = closure.evaluate_closure(inventory)
         assert out["satisfied"] is False
 
+    def test_complete_checksum_map_requires_external_authority(self):
+        inventory = make_closure_inventory()
+        out = closure.evaluate_closure(inventory)
+        assert out["satisfied"] is False
+        assert any("authority" in row for row in out["failing_rows"])
+
+    def test_truncated_checksum_map_cannot_self_authorize(self):
+        inventory = make_closure_inventory()
+        expected = inventory["d6_baseline"][
+            "final_checksums_entries_sha256"
+        ]
+        entries = inventory["d6_baseline"]["final_checksums_entries"]
+        del entries["references.bib"]
+        inventory["d6_baseline"]["final_checksums_entries_sha256"] = (
+            closure.checksum_entries_sha256(entries)
+        )
+        out = closure.evaluate_closure(
+            inventory,
+            expected_final_checksums_entries_sha256=expected,
+        )
+        assert out["satisfied"] is False
+        assert any(
+            "figure/bibliography" in row for row in out["failing_rows"]
+        )
+
+    @pytest.mark.parametrize("mutation", ["missing", "unexpected"])
+    def test_expected_claim_row_set_is_exact(self, mutation):
+        inventory = make_closure_inventory()
+        if mutation == "missing":
+            inventory["rows"] = inventory["rows"][:1]
+        else:
+            inventory["rows"].append(
+                {"item": "arbitrary", "status": "EXTERNAL", "evidence": "x"}
+            )
+        with pytest.raises(schema.SchemaValidationError, match="row set"):
+            closure.evaluate_closure(inventory)
+
     def test_qa012_unverified_blocks_closure(self):
         # R-072 is blocking for closure: the fail-closed default state.
         inventory = make_closure_inventory(
@@ -214,20 +256,25 @@ class TestClosureGate:
         # Handoff L526: every displayed number maps to clean bound evidence
         # or is removed/downgraded — an UNSATISFIED row blocks closure.
         inventory = make_closure_inventory()
-        inventory["rows"].append(
-            {
-                "item": "figure-3-hazard-panel",
-                "status": "UNSATISFIED",
-                "evidence": None,
-            }
+        inventory["rows"][0]["status"] = "UNSATISFIED"
+        inventory["rows"][0]["evidence"] = None
+        out = closure.evaluate_closure(
+            inventory,
+            expected_final_checksums_entries_sha256=inventory["d6_baseline"][
+                "final_checksums_entries_sha256"
+            ],
         )
-        out = closure.evaluate_closure(inventory)
         assert out["satisfied"] is False
 
     def test_external_rows_stay_external_and_do_not_block(self):
         inventory = make_closure_inventory()
         assert any(r["status"] == "EXTERNAL" for r in inventory["rows"])
-        out = closure.evaluate_closure(inventory)
+        out = closure.evaluate_closure(
+            inventory,
+            expected_final_checksums_entries_sha256=inventory["d6_baseline"][
+                "final_checksums_entries_sha256"
+            ],
+        )
         assert out["satisfied"] is True
 
 
@@ -335,6 +382,16 @@ class TestQa012Inventory:
         root = self._write_corpus(tmp_path, with_hit=False)
         (root / "broken.json").write_text("{not json", encoding="utf-8")
         with pytest.raises(schema.TypedIngressError):
+            qa012.build_inventory_manifest([root])
+
+    @pytest.mark.parametrize("shape", ["missing", "empty", "non_json"])
+    def test_vacuous_or_missing_root_is_rejected(self, tmp_path, shape):
+        root = tmp_path / shape
+        if shape != "missing":
+            root.mkdir()
+        if shape == "non_json":
+            (root / "note.txt").write_text("not inventory scope")
+        with pytest.raises(schema.TypedIngressError, match="root|JSON"):
             qa012.build_inventory_manifest([root])
 
     def test_jsonl_lines_are_scanned_too(self, tmp_path):

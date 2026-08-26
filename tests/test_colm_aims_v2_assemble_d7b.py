@@ -37,6 +37,7 @@ from tests._colm_aims_v2_helpers import (
     FAKE_SHA_B,
     FAKE_SHA_C,
     N_ITEMS,
+    REPO_ROOT,
     VERDICT_SOURCE_PASS,
     canonical_data,
     colm_no_network,  # noqa: F401 - autouse fixture
@@ -276,6 +277,13 @@ class TestAssembleClosureInventory:
             d6_baseline=_d6_baseline(), qa012=_qa012()
         )
         result = closure.evaluate_closure(inv)
+        assert result["satisfied"] is False
+        result = closure.evaluate_closure(
+            inv,
+            expected_final_checksums_entries_sha256=inv["d6_baseline"][
+                "final_checksums_entries_sha256"
+            ],
+        )
         assert result["satisfied"] is True, result["failing_rows"]
 
     def test_unsatisfied_when_holm_row_broken(self):
@@ -304,9 +312,32 @@ class TestQa012StatusBlock:
             "inventory_sha256": FAKE_SHA_B,
         }
 
-    def test_hits_maps_to_with_fixtures(self):
+    def test_unbound_hits_remain_blocking(self):
         block = assembler.qa012_status_block(
-            {"result": "hits", "inventory_sha256": FAKE_SHA_A}
+            {"result": "hits", "inventory_sha256": FAKE_SHA_A, "files": []}
+        )
+        assert block["status"] == "HITS_PRESENT"
+
+    def test_only_exact_bound_hits_map_to_verified_fixtures(self):
+        fixture_root = REPO_ROOT / "tests" / "fixtures" / "qa012_item10"
+        bindings = json.loads((fixture_root / "bindings.json").read_text())
+        files = []
+        for basename, binding in bindings["files"].items():
+            files.append(
+                {
+                    "path": f"item10/{basename}",
+                    "size": binding["full_file_size"],
+                    "sha256": binding["full_file_sha256"],
+                    "hits": ["/0/format"],
+                    "first_two_records_sha256": binding["excerpt_sha256"],
+                }
+            )
+        block = assembler.qa012_status_block(
+            {
+                "result": "hits",
+                "inventory_sha256": FAKE_SHA_A,
+                "files": files,
+            }
         )
         assert block["status"] == "VERIFIED_WITH_FIXTURES"
 
@@ -391,7 +422,13 @@ class TestBuildEvidencePackage:
 
     def test_closure_inventory_satisfied(self, tmp_path):
         built = _build(tmp_path)
-        assert closure.evaluate_closure(built.closure_inventory)["satisfied"]
+        assert not closure.evaluate_closure(built.closure_inventory)["satisfied"]
+        assert closure.evaluate_closure(
+            built.closure_inventory,
+            expected_final_checksums_entries_sha256=built.closure_inventory[
+                "d6_baseline"
+            ]["final_checksums_entries_sha256"],
+        )["satisfied"]
 
     def test_publishes_the_same_record_bytes_that_were_validated(
         self, tmp_path, monkeypatch

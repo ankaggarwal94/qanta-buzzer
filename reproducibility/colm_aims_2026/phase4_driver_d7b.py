@@ -487,6 +487,11 @@ def build_d6_baseline(
         baseline["final_checksums_sha256"] = final_checksums_sha256
     if final_checksums_entries is not None:
         baseline["final_checksums_entries"] = dict(final_checksums_entries)
+    entries = baseline.get("final_checksums_entries")
+    if isinstance(entries, dict) and entries:
+        baseline["final_checksums_entries_sha256"] = (
+            closure.checksum_entries_sha256(entries)
+        )
     return baseline
 
 
@@ -510,6 +515,12 @@ def build_qa012_block(
             raise schema.ConfigSurfaceError(
                 "explicit QA-012 requires both a status and a sha256"
                 " inventory hash (R-072)"
+            )
+        if status in {"VERIFIED_VACUOUS", "VERIFIED_WITH_FIXTURES"}:
+            raise schema.ConfigSurfaceError(
+                "a closure-satisfying QA-012 status must be derived from a"
+                " locally validated non-vacuous scan and, for hits, verified"
+                " committed fixtures"
             )
         return {"status": status, "inventory_sha256": inventory_sha256}
     if roots:
