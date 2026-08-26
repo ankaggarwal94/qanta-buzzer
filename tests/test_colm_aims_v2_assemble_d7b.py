@@ -14,12 +14,13 @@ builds.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 
 import numpy as np
 import pytest
 
-from reproducibility.colm_aims_2026 import closure, schema, verifier
+from reproducibility.colm_aims_2026 import closure, qa012, schema, verifier
 
 from reproducibility.colm_aims_2026 import phase4_assemble_d7b as assembler
 
@@ -28,14 +29,11 @@ from tests._colm_aims_v2_helpers import (
     CANONICAL_MATRIX_SHA256,
     CANONICAL_SEED,
     CELL_IDS,
-    D6_MAIN_PDF_SHA256,
-    D6_MAIN_TEX_SHA256,
     EXIT_INGRESS_ERROR,
     EXIT_PASS,
     EXIT_USAGE_ERROR,
     FAKE_SHA_A,
     FAKE_SHA_B,
-    FAKE_SHA_C,
     N_ITEMS,
     REPO_ROOT,
     VERDICT_SOURCE_PASS,
@@ -52,6 +50,8 @@ from tests._colm_aims_v2_helpers import (
     make_llm_involvement,
     make_profile_v2,
     make_provenance,
+    make_closure_profile_bytes,
+    make_qa012_closure_block,
     run_cli,
     sha256_bytes,
 )
@@ -104,26 +104,32 @@ def _signed_shift(record: dict) -> int:
 
 def _d6_baseline() -> dict:
     return {
-        "main_tex_sha256": D6_MAIN_TEX_SHA256,
-        "main_pdf_sha256": D6_MAIN_PDF_SHA256,
-        "final_checksums_sha256": FAKE_SHA_A,
-        "final_checksums_entries": {
-            "main.tex": D6_MAIN_TEX_SHA256,
-            "main.pdf": D6_MAIN_PDF_SHA256,
-            "figures/fig1.pdf": FAKE_SHA_B,
-            "references.bib": FAKE_SHA_C,
-        },
+        "main_tex_sha256": closure.D6_MAIN_TEX_SHA256,
+        "main_pdf_sha256": closure.D6_MAIN_PDF_SHA256,
+        "final_checksums_sha256": closure.D6_FINAL_CHECKSUMS_SHA256,
+        "final_checksums_entries": dict(closure.D6_FINAL_CHECKSUM_ENTRIES),
+        "final_checksums_entries_sha256": (
+            closure.D6_FINAL_CHECKSUMS_ENTRIES_SHA256
+        ),
     }
 
 
-def _d6_expected_entries_sha256() -> str:
-    return closure.checksum_entries_sha256(
-        _d6_baseline()["final_checksums_entries"]
-    )
-
-
 def _qa012() -> dict:
-    return {"status": "VERIFIED_VACUOUS", "inventory_sha256": FAKE_SHA_B}
+    return make_qa012_closure_block()
+
+
+def _qa012_roots(tmp_path) -> dict:
+    roots = {}
+    for prong in qa012.REQUIRED_SCOPE_PRONGS:
+        root = tmp_path / "qa012" / prong
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "clean.json").write_text('{"kind":"clean"}\n', "utf-8")
+        roots[prong] = root
+    return roots
+
+
+def _qa012_manifest(tmp_path) -> dict:
+    return qa012.build_inventory_manifest(_qa012_roots(tmp_path))
 
 
 def _estimands() -> dict[str, dict]:
@@ -311,50 +317,78 @@ class TestAssembleProfile:
 
 
 class TestAssembleClosureInventory:
-    def test_satisfied(self):
-        inv = assembler.assemble_closure_inventory(
-            d6_baseline=_d6_baseline(), qa012=_qa012()
+    def test_satisfied(self, tmp_path):
+        profile_bytes = make_closure_profile_bytes()
+        roots = _qa012_roots(tmp_path)
+        qa_block = assembler.qa012_status_block(
+            qa012.build_inventory_manifest(roots)
         )
-        result = closure.evaluate_closure(inv)
-        assert result["satisfied"] is False
+        inv = assembler.assemble_closure_inventory(
+            d6_baseline=_d6_baseline(),
+            qa012=qa_block,
+            profile_sha256=sha256_bytes(profile_bytes),
+            analysis_provenance=schema.ANALYSIS_PROVENANCE_D7B,
+        )
         result = closure.evaluate_closure(
-            inv,
-            expected_final_checksums_entries_sha256=inv["d6_baseline"][
-                "final_checksums_entries_sha256"
-            ],
+            inv, profile_bytes=profile_bytes, qa012_roots=roots
         )
         assert result["satisfied"] is True, result["failing_rows"]
 
-    def test_unsatisfied_when_holm_row_broken(self):
+    def test_unsatisfied_when_holm_row_broken(self, tmp_path):
+        profile_bytes = make_closure_profile_bytes()
+        roots = _qa012_roots(tmp_path)
         inv = assembler.assemble_closure_inventory(
             d6_baseline=_d6_baseline(),
-            qa012=_qa012(),
-            holm_satisfied_by=None,
+            qa012=assembler.qa012_status_block(
+                qa012.build_inventory_manifest(roots)
+            ),
+            profile_sha256=sha256_bytes(profile_bytes),
+            analysis_provenance=None,
         )
-        assert closure.evaluate_closure(inv)["satisfied"] is False
+        out = closure.evaluate_closure(
+            inv, profile_bytes=profile_bytes, qa012_roots=roots
+        )
+        assert out["satisfied"] is False
+        assert any("holm/inference" in row for row in out["failing_rows"])
 
     def test_unsatisfied_when_qa012_unverified(self):
         inv = assembler.assemble_closure_inventory(
             d6_baseline=_d6_baseline(),
-            qa012={"status": "UNVERIFIED", "inventory_sha256": FAKE_SHA_B},
+            qa012={
+                "status": "UNVERIFIED",
+                "inventory_sha256": FAKE_SHA_B,
+            },
         )
         assert closure.evaluate_closure(inv)["satisfied"] is False
 
 
 class TestQa012StatusBlock:
-    def test_zero_hit_maps_to_vacuous(self):
-        block = assembler.qa012_status_block(
-            {"result": "zero_hit", "inventory_sha256": FAKE_SHA_B}
-        )
+    def test_zero_hit_maps_to_vacuous(self, tmp_path):
+        manifest = _qa012_manifest(tmp_path)
+        block = assembler.qa012_status_block(manifest)
         assert block == {
             "status": "VERIFIED_VACUOUS",
-            "inventory_sha256": FAKE_SHA_B,
+            "inventory_sha256": manifest["inventory_sha256"],
+            "manifest": manifest,
         }
 
-    def test_unbound_hits_remain_blocking(self):
-        block = assembler.qa012_status_block(
-            {"result": "hits", "inventory_sha256": FAKE_SHA_A, "files": []}
-        )
+    def test_unbound_hits_remain_blocking(self, tmp_path):
+        manifest = _qa012_manifest(tmp_path)
+        manifest["result"] = "hits"
+        manifest["files"][0]["hits"] = [
+            {"line": None, "pointer": "/format"}
+        ]
+        manifest["inventory_sha256"] = hashlib.sha256(
+            json.dumps(
+                {
+                    "scope_prongs": manifest["scope_prongs"],
+                    "files": manifest["files"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        block = assembler.qa012_status_block(manifest)
         assert block["status"] == "HITS_PRESENT"
 
     def test_only_exact_bound_hits_map_to_verified_fixtures(self):
@@ -364,18 +398,59 @@ class TestQa012StatusBlock:
         for basename, binding in bindings["files"].items():
             files.append(
                 {
-                    "path": f"item10/{basename}",
+                    "scope_prong": binding["scope_prong"],
+                    "path": binding["relative_path"],
                     "size": binding["full_file_size"],
+                    "content_hash": binding["dropbox_content_hash"],
                     "sha256": binding["full_file_sha256"],
-                    "hits": ["/0/format"],
+                    "hits": [
+                        {"line": 2 * index, "pointer": "/format"}
+                        for index in range(1, binding["hit_count"] + 1)
+                    ],
                     "first_two_records_sha256": binding["excerpt_sha256"],
                 }
             )
+        for prong in qa012.REQUIRED_SCOPE_PRONGS:
+            if prong == "source_export_bundles":
+                continue
+            files.append(
+                {
+                    "scope_prong": prong,
+                    "path": "clean.json",
+                    "size": 2,
+                    "content_hash": FAKE_SHA_A,
+                    "sha256": FAKE_SHA_B,
+                    "hits": [],
+                }
+            )
+        files.sort(key=lambda entry: (entry["scope_prong"], entry["path"]))
+        scope_prongs = [
+            {
+                "name": prong,
+                "status": "LOCATED_SCANNED",
+                "root_basename": prong,
+                "file_count": (
+                    len(bindings["files"])
+                    if prong == "source_export_bundles"
+                    else 1
+                ),
+            }
+            for prong in qa012.REQUIRED_SCOPE_PRONGS
+        ]
+        digest = hashlib.sha256(
+            json.dumps(
+                {"scope_prongs": scope_prongs, "files": files},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         block = assembler.qa012_status_block(
             {
+                "schema_version": 2,
                 "result": "hits",
-                "inventory_sha256": FAKE_SHA_A,
+                "scope_prongs": scope_prongs,
                 "files": files,
+                "inventory_sha256": digest,
             }
         )
         assert block["status"] == "VERIFIED_WITH_FIXTURES"
@@ -406,10 +481,7 @@ def _build(tmp_path, *, run_id="run-0001", reclaim_crashed_relic=False):
         llm_involvement=make_llm_involvement(),
         estimands=_estimands(),
         d6_baseline=_d6_baseline(),
-        expected_final_checksums_entries_sha256=(
-            _d6_expected_entries_sha256()
-        ),
-        qa012=_qa012(),
+        qa012_roots=_qa012_roots(tmp_path),
         run_id=run_id,
         reclaim_crashed_relic=reclaim_crashed_relic,
     )
@@ -441,10 +513,7 @@ class TestBuildEvidencePackage:
                 llm_involvement=make_llm_involvement(),
                 estimands=_estimands(),
                 d6_baseline=_d6_baseline(),
-                expected_final_checksums_entries_sha256=(
-                    _d6_expected_entries_sha256()
-                ),
-                qa012=_qa012(),
+                qa012_roots=_qa012_roots(tmp_path),
                 record_snapshot=snapshot,
             )
 
@@ -467,12 +536,10 @@ class TestBuildEvidencePackage:
 
     def test_closure_inventory_satisfied(self, tmp_path):
         built = _build(tmp_path)
-        assert not closure.evaluate_closure(built.closure_inventory)["satisfied"]
         assert closure.evaluate_closure(
             built.closure_inventory,
-            expected_final_checksums_entries_sha256=built.closure_inventory[
-                "d6_baseline"
-            ]["final_checksums_entries_sha256"],
+            profile_bytes=schema.encode_profile(built.profile),
+            qa012_roots=_qa012_roots(tmp_path),
         )["satisfied"]
 
     def test_publishes_the_same_record_bytes_that_were_validated(
@@ -505,10 +572,7 @@ class TestBuildEvidencePackage:
             llm_involvement=make_llm_involvement(),
             estimands=_estimands(),
             d6_baseline=_d6_baseline(),
-            expected_final_checksums_entries_sha256=(
-                _d6_expected_entries_sha256()
-            ),
-            qa012=_qa012(),
+            qa012_roots=_qa012_roots(tmp_path),
         )
 
         assert mutated
@@ -519,6 +583,8 @@ class TestBuildEvidencePackage:
         records_root = tmp_path / "records"
         _write_records_root(records_root)
         out_dir = tmp_path / "out"
+        d6_baseline = _d6_baseline()
+        d6_baseline["final_checksums_sha256"] = "f" * 64
 
         with pytest.raises(schema.ConfigSurfaceError, match="unsatisfied"):
             assembler.build_evidence_package(
@@ -530,9 +596,8 @@ class TestBuildEvidencePackage:
                 grid=make_grid_block(),
                 llm_involvement=make_llm_involvement(),
                 estimands=_estimands(),
-                d6_baseline=_d6_baseline(),
-                expected_final_checksums_entries_sha256="f" * 64,
-                qa012=_qa012(),
+                d6_baseline=d6_baseline,
+                qa012_roots=_qa012_roots(tmp_path),
             )
 
         assert not (out_dir / "runs" / "run-0001").exists()

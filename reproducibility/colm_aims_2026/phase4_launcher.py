@@ -37,6 +37,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from scripts.stopdff_v5.fileio import (
+    create_once_bytes,
     publish_dir_create_once,
     reclaim_empty_relic,
 )
@@ -70,6 +71,25 @@ LAUNCH_ENV_PINS = {
     "TRANSFORMERS_OFFLINE": "1",
 }
 
+# Closed host-compatibility surface.  The certified interpreter is invoked by
+# absolute path, so PATH and loader-control variables are unnecessary and are
+# deliberately absent.  These keys are the minimum cross-platform process
+# plumbing needed for temporary files, Windows runtime discovery, and stable
+# locale handling.
+RUNTIME_ENV_ALLOWLIST = frozenset(
+    {
+        "COMSPEC",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "WINDIR",
+    }
+)
+
 LAUNCHER_CONFIG_KEYS = (
     "certificate_path",
     "activation_digest",
@@ -82,6 +102,8 @@ LAUNCHER_CONFIG_KEYS = (
 )
 
 STOP_REPORT_NAME = "STOP_REPORT.json"
+LAUNCH_RECEIPT_NAME = "LAUNCH_RECEIPT.json"
+CAPTURED_INPUTS_DIRNAME = ".certified_inputs"
 
 # CLI exit-code contract: a pre-launch refusal never consumes the exception;
 # a run failure occurs after consumption and preserves the quarantine.  Usage
@@ -437,8 +459,7 @@ def _sanitized_runtime_environment() -> dict[str, str]:
     sanitized = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith(AMBIENT_ENV_PREFIX)
-        and not key.upper().startswith("PYTHON")
+        if key.upper() in RUNTIME_ENV_ALLOWLIST
     }
     sanitized.update(LAUNCH_ENV_PINS)
     return sanitized
@@ -1453,18 +1474,311 @@ def _verify_staged_input_hashes(components: dict[str, Any]) -> None:
             )
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    """Write all bytes or fail instead of accepting a short write."""
+    offset = 0
+    while offset < len(data):
+        written = os.write(fd, data[offset:])
+        if type(written) is not int or written <= 0:
+            raise OSError(errno.EIO, "captured-input write made no progress")
+        offset += written
+
+
+def _capture_regular_file(
+    source: Path,
+    destination: Path,
+    *,
+    expected_sha256: str,
+    label: str,
+    expected_size: int | None = None,
+) -> None:
+    """Copy and authenticate one source through the same held read handle.
+
+    The child receives only ``destination``.  A replacement of ``source``
+    after this function returns therefore cannot change the bytes consumed by
+    the producer.  ``O_NOFOLLOW`` is used where available and both the digest
+    and optional declared size are checked from the held descriptor.
+    """
+    source = Path(source)
+    destination = Path(destination)
+    if source.is_symlink():
+        raise LaunchRefusal(f"{label}: source is a symlink (R-075/R-082)")
+    source_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        source_fd = os.open(source, source_flags)
+    except OSError as exc:
+        raise LaunchRefusal(
+            f"{label}: source is missing or unreadable"
+            f" ({exc.__class__.__name__}) (R-075/R-082)"
+        ) from exc
+    destination_fd: int | None = None
+    try:
+        source_stat = os.fstat(source_fd)
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise LaunchRefusal(
+                f"{label}: source is not a regular file (R-075/R-082)"
+            )
+        if expected_size is not None and source_stat.st_size != expected_size:
+            raise LaunchRefusal(
+                f"{label}: source size {source_stat.st_size} != declared"
+                f" size {expected_size} (R-075)"
+            )
+        if hasattr(os, "O_NONBLOCK") and hasattr(os, "get_blocking"):
+            os.set_blocking(source_fd, True)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination_fd = os.open(
+            destination,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0),
+            0o400,
+        )
+        digest = hashlib.sha256()
+        copied = 0
+        while True:
+            chunk = os.read(source_fd, 1 << 20)
+            if not chunk:
+                break
+            digest.update(chunk)
+            copied += len(chunk)
+            _write_all(destination_fd, chunk)
+        if expected_size is not None and copied != expected_size:
+            raise LaunchRefusal(
+                f"{label}: copied size {copied} != declared size"
+                f" {expected_size} (R-075)"
+            )
+        observed_sha256 = digest.hexdigest()
+        if observed_sha256 != expected_sha256:
+            raise LaunchRefusal(
+                f"{label}: copied SHA-256 {observed_sha256} != certified"
+                f" SHA-256 {expected_sha256} (R-075/R-082)"
+            )
+        os.fsync(destination_fd)
+    except OSError as exc:
+        raise LaunchRefusal(
+            f"{label}: could not materialize authenticated private copy"
+            f" ({exc.__class__.__name__}) (R-075/R-082)"
+        ) from exc
+    finally:
+        if destination_fd is not None:
+            os.close(destination_fd)
+        os.close(source_fd)
+    try:
+        destination.chmod(stat.S_IREAD)
+    except OSError as exc:
+        raise LaunchRefusal(
+            f"{label}: authenticated private copy cannot be made read-only"
+            f" ({exc.__class__.__name__}) (R-075/R-082)"
+        ) from exc
+
+
+def _capture_snapshot_role(
+    role_entry: dict[str, Any], source_dir: Path, destination_dir: Path
+) -> None:
+    """Capture every declared model file into one private role directory."""
+    try:
+        destination_dir.mkdir(parents=True, exist_ok=False)
+    except OSError as exc:
+        raise LaunchRefusal(
+            "private model-snapshot directory cannot be created"
+            f" ({exc.__class__.__name__}) (R-075/R-082)"
+        ) from exc
+    files = role_entry["files"]
+    for rel_name in sorted(files):
+        metadata = files[rel_name]
+        _capture_regular_file(
+            Path(source_dir) / PurePosixPath(rel_name),
+            destination_dir / PurePosixPath(rel_name),
+            expected_sha256=metadata["sha256"],
+            expected_size=metadata["size"],
+            label=f"snapshot role {role_entry['model_name']!r} file {rel_name!r}",
+        )
+
+
+def _capture_verified_inputs(
+    quarantine_dir: Path,
+    config: dict[str, Any],
+    components: dict[str, Any],
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Materialize all child-consumed mutable inputs under quarantine."""
+    capture_root = quarantine_dir / CAPTURED_INPUTS_DIRNAME
+    try:
+        capture_root.mkdir(parents=False, exist_ok=False)
+    except OSError as exc:
+        raise LaunchRefusal(
+            "private captured-input directory cannot be created"
+            f" ({exc.__class__.__name__}) (R-075/R-082)"
+        ) from exc
+
+    entries = components["staged_inputs"]
+    by_label = {entry["label"]: entry for entry in entries}
+    captured_staged: dict[str, Path] = {}
+    data_dir = capture_root / "data"
+    for label in phase4.R082_STAGED_INPUT_LABELS:
+        entry = by_label[label]
+        if label == "calibration_train":
+            destination = capture_root / "calibration_train.json"
+        else:
+            destination = data_dir / phase4.R082_DATA_FILENAMES[label]
+        _capture_regular_file(
+            Path(entry["path"]),
+            destination,
+            expected_sha256=entry["expected_sha256"],
+            label=f"staged input {label!r}",
+        )
+        captured_staged[label] = destination
+
+    snapshots = components["snapshots"]
+    captured_manifest = capture_root / "model_snapshot_manifest.json"
+    _capture_regular_file(
+        Path(snapshots["artifact_path"]),
+        captured_manifest,
+        expected_sha256=snapshots["artifact_sha256"],
+        label="model snapshot manifest",
+    )
+    captured_snapshots: dict[str, Path] = {}
+    for role in sorted(phase4.SNAPSHOT_ROLES):
+        destination = capture_root / "models" / role
+        _capture_snapshot_role(
+            manifest["roles"][role],
+            Path(config["snapshot_dirs"][role]),
+            destination,
+        )
+        captured_snapshots[role] = destination
+
+    eligibility = components["eligibility"]
+    captured_eligibility = capture_root / "pairing_eligibility.json"
+    _capture_regular_file(
+        Path(eligibility["artifact_path"]),
+        captured_eligibility,
+        expected_sha256=eligibility["artifact_sha256"],
+        label="pairing eligibility artifact",
+    )
+    return {
+        "data_dir": data_dir,
+        "staged": captured_staged,
+        "manifest": captured_manifest,
+        "snapshots": captured_snapshots,
+        "eligibility": captured_eligibility,
+    }
+
+
+def _rewrite_argv_for_captured_inputs(
+    argv: list[str], captured: dict[str, Any]
+) -> list[str]:
+    """Replace every mutable input binding with its private captured path."""
+    replacements = {
+        "--data-dir": captured["data_dir"],
+        "--calibration": captured["staged"]["calibration_train"],
+        "--eligibility": captured["eligibility"],
+        "--snapshot-manifest": captured["manifest"],
+        "--primary-model-path": captured["snapshots"]["primary_scorer"],
+        "--disjoint-model-path": captured["snapshots"]["disjoint_selector"],
+    }
+    rewritten: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in replacements:
+            rewritten.extend([token, str(replacements[token])])
+            index += 2
+            continue
+        matched = next(
+            (flag for flag in replacements if token.startswith(f"{flag}=")),
+            None,
+        )
+        if matched is not None:
+            rewritten.append(f"{matched}={replacements[matched]}")
+            index += 1
+            continue
+        if token == "--staged-input":
+            spec = argv[index + 1]
+            label, _, remainder = spec.partition("=")
+            _path, separator, digest = remainder.rpartition(":")
+            if not separator or label not in captured["staged"]:
+                raise LaunchRefusal(
+                    f"cannot rewrite malformed staged-input {spec!r}"
+                    " (R-081/R-082)"
+                )
+            rewritten.extend(
+                [token, f"{label}={captured['staged'][label]}:{digest}"]
+            )
+            index += 2
+            continue
+        if token.startswith("--staged-input="):
+            spec = token.partition("=")[2]
+            label, _, remainder = spec.partition("=")
+            _path, separator, digest = remainder.rpartition(":")
+            if not separator or label not in captured["staged"]:
+                raise LaunchRefusal(
+                    f"cannot rewrite malformed staged-input {spec!r}"
+                    " (R-081/R-082)"
+                )
+            rewritten.append(
+                f"--staged-input={label}={captured['staged'][label]}:{digest}"
+            )
+            index += 1
+            continue
+        rewritten.append(token)
+        index += 1
+    return rewritten
+
+
+def _remove_preledger_quarantine(quarantine_dir: Path) -> None:
+    """Remove only this launcher's fresh, not-yet-claimed workspace."""
+    if _path_lexists(quarantine_dir):
+        shutil.rmtree(quarantine_dir)
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def _default_run_git(cmd: list[str]) -> str:
     """Production git runner: subprocess in the repository root."""
+    if not cmd or str(cmd[0]) != "git":
+        raise LaunchRefusal("git probe command must begin with 'git' (R-081)")
+    candidates = (
+        (
+            Path("C:/Program Files/Git/cmd/git.exe"),
+            Path("C:/Program Files/Git/bin/git.exe"),
+            Path("C:/Program Files (x86)/Git/cmd/git.exe"),
+        )
+        if os.name == "nt"
+        else (
+            Path("/usr/bin/git"),
+            Path("/opt/homebrew/bin/git"),
+            Path("/usr/local/bin/git"),
+        )
+    )
+    git_executable = next(
+        (
+            candidate
+            for candidate in candidates
+            if candidate.is_file() and not schema.is_filesystem_link(candidate)
+        ),
+        None,
+    )
+    if git_executable is None:
+        raise LaunchRefusal("git executable cannot be resolved (R-081)")
+    try:
+        git_executable = str(git_executable.resolve(strict=True))
+    except OSError as exc:
+        raise LaunchRefusal("git executable cannot be resolved (R-081)") from exc
     completed = subprocess.run(
-        [str(part) for part in cmd],
+        [git_executable, *(str(part) for part in cmd[1:])],
         cwd=str(_REPO_ROOT),
         capture_output=True,
         text=True,
         check=True,
+        env=_sanitized_runtime_environment(),
     )
     return completed.stdout
 
@@ -1803,11 +2117,59 @@ def _build_default_compare(
 
 def _write_stop_report(quarantine_dir: Path, payload: dict[str, Any]) -> None:
     quarantine_dir = Path(quarantine_dir)
-    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    schema.stable_directory_chain(quarantine_dir, quarantine_dir)
     report_path = quarantine_dir / STOP_REPORT_NAME
-    report_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n",
-        encoding="utf-8",
+    create_once_bytes(
+        report_path,
+        (
+            json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n"
+        ).encode("utf-8"),
+        exists_label="Phase-4 STOP report",
+    )
+
+
+def _write_launch_receipt(
+    quarantine_dir: Path,
+    *,
+    activation_digest: str,
+    ledger_path: Path,
+    out_basename: str,
+    comparator_result: dict[str, Any],
+) -> None:
+    """Bind the accepted export and record bytes before atomic promotion."""
+    records_root = Path(quarantine_dir) / "records"
+    records_sha256 = {
+        cell_id: hashlib.sha256(
+            schema.read_regular_file_bytes(
+                records_root / f"{cell_id}.jsonl", tree_root=quarantine_dir
+            )
+        ).hexdigest()
+        for cell_id in schema.CELL_IDS
+    }
+    export_sha256 = hashlib.sha256(
+        schema.read_regular_file_bytes(
+            Path(quarantine_dir) / out_basename, tree_root=quarantine_dir
+        )
+    ).hexdigest()
+    ledger_sha256 = hashlib.sha256(
+        schema.read_regular_file_bytes(ledger_path)
+    ).hexdigest()
+    payload = {
+        "schema_version": schema.SCHEMA_VERSION,
+        "receipt_type": "phase4_launch",
+        "activation_digest": activation_digest,
+        "ledger_sha256": ledger_sha256,
+        "producer_exit_code": 0,
+        "comparator_verdict": "PASS",
+        "comparator_checked": comparator_result.get("checked"),
+        "export_basename": out_basename,
+        "export_sha256": export_sha256,
+        "records_sha256": records_sha256,
+    }
+    create_once_bytes(
+        Path(quarantine_dir) / LAUNCH_RECEIPT_NAME,
+        schema.encode_json(payload),
+        exists_label="Phase-4 launch receipt",
     )
 
 
@@ -1850,7 +2212,7 @@ def _durably_write_claimed_ledger(
     sync_parent: Any,
 ) -> None:
     """Fully write/fsync an already O_EXCL-claimed ledger descriptor."""
-    failure: Exception | None = None
+    failure: BaseException | None = None
     try:
         view = memoryview(payload)
         offset = 0
@@ -1868,11 +2230,11 @@ def _durably_write_claimed_ledger(
                 )
             offset += written
         fsync(ledger_fd)
-    except Exception as exc:  # noqa: BLE001 - converted to typed RunFailed
+    except BaseException as exc:  # noqa: BLE001 - durability boundary
         failure = exc
     try:
         os.close(ledger_fd)
-    except Exception as exc:  # noqa: BLE001 - durability boundary
+    except BaseException as exc:  # noqa: BLE001 - durability boundary
         if failure is None:
             failure = exc
     if failure is not None:
@@ -2222,6 +2584,20 @@ def validate_and_launch(
             " os.rename cannot promote atomically across devices (R-081)"
         )
 
+    # Capture every path-based child input before claiming the one-use
+    # ledger.  Each private copy is hashed while read through the same held
+    # source descriptor, and argv is then rewritten to address only those
+    # copies.  Mutating or replacing the original staged/model paths after
+    # this point cannot alter the producer's input bytes.
+    try:
+        captured_inputs = _capture_verified_inputs(
+            quarantine_dir, config, components, manifest
+        )
+        argv = _rewrite_argv_for_captured_inputs(argv, captured_inputs)
+    except BaseException:
+        _remove_preledger_quarantine(quarantine_dir)
+        raise
+
     # (8) Single-use consumption: CREATE-ONCE ledger via O_CREAT|O_EXCL,
     # recording the activation digest BEFORE launch.
     ledger_payload = (
@@ -2250,10 +2626,10 @@ def validate_and_launch(
             0o644,
         )
     except FileExistsError as exc:
-        # Ledger refusals stay side-effect-free: remove the quarantine this
-        # call just created (empty by construction at this point).
+        # Ledger refusals stay side-effect-free: remove the private input
+        # envelope this call just created.
         if _created_quarantine:
-            quarantine_dir.rmdir()
+            _remove_preledger_quarantine(quarantine_dir)
         raise LaunchRefusal(
             f"exception ledger {ledger_path} already exists — the"
             " single-use exception was already consumed; no second run"
@@ -2261,7 +2637,7 @@ def validate_and_launch(
         ) from exc
     except OSError as exc:
         if _created_quarantine:
-            quarantine_dir.rmdir()
+            _remove_preledger_quarantine(quarantine_dir)
         raise LaunchRefusal(
             f"exception ledger {ledger_path} is unwritable"
             f" ({exc.__class__.__name__}) (R-081)"
@@ -2275,7 +2651,7 @@ def validate_and_launch(
             fsync=ledger_fsync,
             sync_parent=ledger_parent_sync,
         )
-    except Exception as exc:
+    except BaseException as exc:
         # O_EXCL succeeded, so the exception is consumed even if only a
         # prefix (or zero bytes) reached disk.  Never unlink/retry: preserve
         # the claimed ledger and quarantine as forensic evidence and stop
@@ -2302,7 +2678,7 @@ def validate_and_launch(
     # must exist precisely on the messiest failures.
     try:
         exit_code = launch(list(argv), dict(child_env))
-    except Exception as exc:
+    except BaseException as exc:
         _write_stop_report(
             quarantine_dir,
             {
@@ -2339,7 +2715,7 @@ def validate_and_launch(
     # report too (F-3) — fail-closed with the triage artifact present.
     try:
         result = compare(quarantine_dir)
-    except Exception as exc:
+    except BaseException as exc:
         _write_stop_report(
             quarantine_dir,
             {
@@ -2362,12 +2738,21 @@ def validate_and_launch(
         # claims that slot on POSIX and uses Windows' direct no-replace rename,
         # so every incumbent destination fails closed.
         try:
+            if out_basename is None:
+                raise RunFailed("accepted launch has no bound export basename")
+            _write_launch_receipt(
+                quarantine_dir,
+                activation_digest=activation_digest,
+                ledger_path=ledger_path,
+                out_basename=out_basename,
+                comparator_result=result,
+            )
             publish_dir_create_once(
                 quarantine_dir,
                 promote_to,
                 exists_label="Phase-4 promotion destination",
             )
-        except OSError as exc:
+        except BaseException as exc:
             # The shared primitive's commit point is the directory rename;
             # parent-directory fsync happens afterward.  If that durability
             # barrier fails, the complete output already belongs to the
@@ -2406,7 +2791,9 @@ def validate_and_launch(
             # A ``FileExistsError`` instead means the destination pre-existed (a
             # peer's incumbent claim we do not own): never remove that.
             # ``reclaim_empty_relic`` is itself empty-only and best-effort safe.
-            if not isinstance(exc, FileExistsError):
+            if isinstance(exc, OSError) and not isinstance(
+                exc, FileExistsError
+            ):
                 reclaim_empty_relic(promote_to)
             raise RunFailed(
                 f"atomic promotion failed ({exc.__class__.__name__}) —"

@@ -28,7 +28,10 @@ The verified package is a single tree holding:
 - the in-profile D7(b) inference block — one shared bootstrap resample
   matrix, derived seed, per-cell intervals and p-values, and the m=10 Holm
   family (R-050..R-057);
-- a presentation manifest and rights inventory (R-026, R-035).
+- an in-tree presentation manifest (R-026). The rights inventory is an
+  independently anchored release input outside the verified tree (R-035), as
+  shown in `reproducibility/colm_aims_2026/README.md`; it is never package
+  self-attestation.
 
 The verifier is greenfield v2 code on canonical `main`, written under an
 externally signed contract freeze; it is distinct from

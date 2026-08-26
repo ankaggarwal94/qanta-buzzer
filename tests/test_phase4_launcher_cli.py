@@ -434,6 +434,43 @@ def _runtime_fixture(
         "verify_snapshot_dir",
         lambda _entry, _path: None,
     )
+    real_capture_regular_file = launcher._capture_regular_file
+
+    def capture_fixture_file(
+        source,
+        destination,
+        *,
+        expected_sha256,
+        label,
+        expected_size=None,
+    ):
+        candidate = Path(source).resolve()
+        if any(
+            candidate == staged_path.resolve()
+            for staged_path in staged_paths.values()
+        ):
+            destination = Path(destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(Path(source).read_bytes())
+            return None
+        return real_capture_regular_file(
+            source,
+            destination,
+            expected_sha256=expected_sha256,
+            label=label,
+            expected_size=expected_size,
+        )
+
+    monkeypatch.setattr(
+        launcher, "_capture_regular_file", capture_fixture_file
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_capture_snapshot_role",
+        lambda _entry, _source, destination: Path(destination).mkdir(
+            parents=True, exist_ok=False
+        ),
+    )
 
     def run_git(command_argv):
         if command_argv == ["git", "rev-parse", "HEAD"]:
@@ -464,13 +501,22 @@ def _runtime_fixture(
 
 
 def _call_launcher(config, probes, *, launch=None, compare=None, **kwargs):
+    supplied_launch = launch or (lambda _argv, _env: 0)
+
+    def launch_with_bound_outputs(argv, env):
+        exit_code = supplied_launch(argv, env)
+        records_dir = Path(config["quarantine_dir"]) / "records"
+        if exit_code == 0 and not records_dir.exists():
+            _write_valid_default_outputs(argv, probes["verified_eligibility"])
+        return exit_code
+
     return launcher.validate_and_launch(
         config,
         run_git=probes["run_git"],
         resolve_executable=probes["resolve_executable"],
         host_identity=probes["host_identity"],
         probe_environment_lock=probes["probe_environment_lock"],
-        launch=launch or (lambda _argv, _env: 0),
+        launch=launch_with_bound_outputs,
         compare=compare
         or (lambda _quarantine: {"verdict": "PASS", "checked": 194}),
         **kwargs,
@@ -1352,6 +1398,136 @@ def test_child_environment_includes_cross_platform_thread_pins(
     for name in launcher.AMBIENT_PYTHON_INJECTION_VARS:
         assert name not in observed_envs[0]
     assert "PYTHONUNBUFFERED" not in observed_envs[0]
+
+
+def test_git_probe_ignores_ambient_path(monkeypatch):
+    observed = {}
+
+    def fake_run(argv, **kwargs):
+        observed["argv"] = argv
+        observed["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(argv, 0, stdout="head\n", stderr="")
+
+    monkeypatch.setenv("PATH", str(Path("fake-git-bin")))
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+    assert launcher._default_run_git(["git", "rev-parse", "HEAD"]) == "head\n"
+    assert Path(observed["argv"][0]).is_absolute()
+    assert "fake-git-bin" not in observed["argv"][0]
+    assert "PATH" not in observed["env"]
+
+
+def test_child_argv_uses_private_captured_inputs(
+    tmp_path, monkeypatch
+):
+    config, certificate, staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch, data_dir_equals=True
+    )
+    observed = []
+    original_bytes = staged_path.read_bytes()
+
+    def observe_and_mutate_sources(argv, _env):
+        observed.append(list(argv))
+        staged_path.write_bytes(b"post-capture source mutation\n")
+        for source_dir in config["snapshot_dirs"].values():
+            (Path(source_dir) / "post-capture.bin").write_bytes(b"changed")
+        return 0
+
+    result = _call_launcher(
+        config, probes, launch=observe_and_mutate_sources
+    )
+    assert result["verdict"] == "PASS"
+    assert len(observed) == 1
+    argv = observed[0]
+    capture_root = (
+        Path(config["promote_to"]) / launcher.CAPTURED_INPUTS_DIRNAME
+    )
+    assert argv[argv.index("--calibration") + 1].startswith(
+        str(Path(config["quarantine_dir"]) / launcher.CAPTURED_INPUTS_DIRNAME)
+    )
+    assert next(
+        token for token in argv if token.startswith("--data-dir=")
+    ).split("=", 1)[1].startswith(
+        str(Path(config["quarantine_dir"]) / launcher.CAPTURED_INPUTS_DIRNAME)
+    )
+    for flag in (
+        "--eligibility",
+        "--snapshot-manifest",
+        "--primary-model-path",
+        "--disjoint-model-path",
+    ):
+        assert argv[argv.index(flag) + 1].startswith(
+            str(
+                Path(config["quarantine_dir"])
+                / launcher.CAPTURED_INPUTS_DIRNAME
+            )
+        )
+    for index, token in enumerate(argv):
+        if token != "--staged-input":
+            continue
+        staged_spec = argv[index + 1]
+        assert f"={Path(config['quarantine_dir'])}" in staged_spec
+        assert launcher.CAPTURED_INPUTS_DIRNAME in staged_spec
+    assert (
+        capture_root / "data" / launcher.phase4.R082_DATA_FILENAMES["fit_split"]
+    ).read_bytes() == original_bytes
+    ledger = json.loads(Path(config["ledger_path"]).read_text("utf-8"))
+    assert ledger["argv"] == argv
+    assert certificate["components"]["environment"]["command"] != argv
+
+
+def test_capture_regular_file_authenticates_copied_bytes(tmp_path):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "private" / "copy.bin"
+    content = b"held-descriptor bytes\n"
+    source.write_bytes(content)
+    launcher._capture_regular_file(
+        source,
+        destination,
+        expected_sha256=_sha256(content),
+        expected_size=len(content),
+        label="test input",
+    )
+    source.write_bytes(b"replacement bytes\n")
+    assert destination.read_bytes() == content
+
+    with pytest.raises(launcher.LaunchRefusal, match="copied SHA-256"):
+        launcher._capture_regular_file(
+            source,
+            tmp_path / "private" / "wrong.bin",
+            expected_sha256="0" * 64,
+            label="wrong digest",
+        )
+
+
+@pytest.mark.parametrize("stage", ["launch", "comparator"])
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt(), SystemExit(17)])
+def test_interrupt_after_ledger_claim_writes_stop_report(
+    tmp_path, monkeypatch, stage, interrupt
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+
+    def raise_interrupt(*_args):
+        raise interrupt
+
+    kwargs = (
+        {"launch": raise_interrupt}
+        if stage == "launch"
+        else {"compare": raise_interrupt}
+    )
+    expected_reason = "launch_crash" if stage == "launch" else "comparator_crash"
+    with pytest.raises(launcher.RunFailed) as caught:
+        _call_launcher(config, probes, **kwargs)
+    assert isinstance(caught.value.__cause__, type(interrupt))
+    assert Path(config["ledger_path"]).is_file()
+    quarantine = Path(config["quarantine_dir"])
+    report = json.loads(
+        (quarantine / launcher.STOP_REPORT_NAME).read_text("utf-8")
+    )
+    assert report["reason"] == expected_reason
+    assert report["activation_digest"] == config["activation_digest"]
+    assert not Path(config["promote_to"]).exists()
 
 
 def test_partial_ledger_writes_are_completed_and_fsynced(

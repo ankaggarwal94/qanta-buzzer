@@ -3869,6 +3869,16 @@ def _launcher_fixture(
         "_default_probe_environment_lock",
         lambda _interpreter: fixture_lock,
     )
+    # These legacy launcher lifecycle tests use a marker-only launch double.
+    # Receipt payload semantics are exercised by the focused launcher tests;
+    # keep this fixture scoped to ordering, single-use, and promotion.
+    monkeypatch.setattr(
+        launcher,
+        "_write_launch_receipt",
+        lambda quarantine, **_kwargs: (
+            Path(quarantine) / launcher.LAUNCH_RECEIPT_NAME
+        ).write_text("{}\n", encoding="utf-8"),
+    )
     return launcher, config, digest
 
 
@@ -4202,9 +4212,8 @@ class TestR081LauncherRun:
         for key, value in LAUNCHER_ENV_PINS.items():
             assert env.get(key) == value, key
         assert not any(k.startswith("MODAL_HOST") for k in env)
-        # Argv composed FROM the certificate command: only output paths
-        # remapped into quarantine, digest appended; the (out-of-repo,
-        # R-082) --calibration value passes through VERBATIM.
+        # Argv is composed FROM the certificate command, then every mutable
+        # input path is rebound to its authenticated private quarantine copy.
         quarantine = Path(config["quarantine_dir"])
         staged_dir = _staged_outside_dir(tmp_path)
         expected_argv = _cert_command(
@@ -4220,6 +4229,32 @@ class TestR081LauncherRun:
             quarantine
         )
         expected_argv.extend(["--certificate-digest", digest])
+        capture_root = quarantine / launcher.CAPTURED_INPUTS_DIRNAME
+        expected_argv = launcher._rewrite_argv_for_captured_inputs(
+            expected_argv,
+            {
+                "data_dir": capture_root / "data",
+                "staged": {
+                    "calibration_train": (
+                        capture_root / "calibration_train.json"
+                    ),
+                    **{
+                        label: (
+                            capture_root
+                            / "data"
+                            / launcher.phase4.R082_DATA_FILENAMES[label]
+                        )
+                        for label in launcher.phase4.R082_DATA_FILENAMES
+                    },
+                },
+                "manifest": capture_root / "model_snapshot_manifest.json",
+                "snapshots": {
+                    role: capture_root / "models" / role
+                    for role in launcher.phase4.SNAPSHOT_ROLES
+                },
+                "eligibility": capture_root / "pairing_eligibility.json",
+            },
+        )
         assert argv == expected_argv
         # Ledger consumed (content binds the digest; written pre-launch —
         # asserted inside the recorder).

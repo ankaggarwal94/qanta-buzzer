@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -47,6 +48,7 @@ from reproducibility.colm_aims_2026 import (  # noqa: E402
     pairing,
     qa012,
     schema,
+    verifier,
 )
 
 # Exit-code contract (mirrors ``verify.py``): 0 pass, 2 usage, 3 ingress,
@@ -499,6 +501,7 @@ def assemble_profile(
 def qa012_status_block(manifest: dict[str, Any]) -> dict[str, Any]:
     """Map a ``qa012.build_inventory_manifest`` result to the closure
     ``qa012`` block (closure.py:35-37/110-120)."""
+    qa012.validate_inventory_manifest(manifest)
     result = manifest["result"]
     if result == "hits":
         status = (
@@ -508,22 +511,55 @@ def qa012_status_block(manifest: dict[str, Any]) -> dict[str, Any]:
         )
     elif result in _QA012_STATUS_BY_RESULT:
         status = _QA012_STATUS_BY_RESULT[result]
+    elif result == "incomplete_scope":
+        status = "UNLOCATABLE_ESCALATE"
     else:
         raise schema.ColmAimsError(
             f"unrecognised QA-012 inventory result {result!r};"
-            " expected 'zero_hit' or 'hits' (R-072)"
+            " expected 'zero_hit', 'hits', or 'incomplete_scope' (R-072)"
         )
     return {
         "status": status,
         "inventory_sha256": manifest["inventory_sha256"],
+        "manifest": manifest,
     }
+
+
+def _qa012_closure_block(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Derive a closure block; satisfying states require a full inventory."""
+    if isinstance(evidence, dict) and "result" in evidence:
+        return qa012_status_block(evidence)
+    if not isinstance(evidence, dict) or set(evidence) != {
+        "status",
+        "inventory_sha256",
+    }:
+        raise schema.ConfigSurfaceError(
+            "QA-012 evidence must be a full inventory manifest or an exact"
+            " unsatisfied status/hash block (R-072)"
+        )
+    if evidence.get("status") in {
+        "VERIFIED_VACUOUS",
+        "VERIFIED_WITH_FIXTURES",
+    }:
+        raise schema.ConfigSurfaceError(
+            "closure-satisfying QA-012 status must be derived from a full"
+            " validated five-prong inventory manifest (R-072)"
+        )
+    if not isinstance(evidence.get("status"), str) or not schema.is_sha256_hex(
+        evidence.get("inventory_sha256")
+    ):
+        raise schema.ConfigSurfaceError(
+            "unsatisfied QA-012 evidence requires a status and SHA-256"
+        )
+    return dict(evidence)
 
 
 def assemble_closure_inventory(
     *,
     d6_baseline: dict[str, Any],
     qa012: dict[str, Any],
-    holm_satisfied_by: str | None = schema.ANALYSIS_PROVENANCE_D7B,
+    profile_sha256: str | None = None,
+    analysis_provenance: str | None = None,
 ) -> dict[str, Any]:
     """The satisfied ``CAMERA_READY_CLOSURE`` inventory (R-071/R-072).
 
@@ -539,22 +575,45 @@ def assemble_closure_inventory(
             "final_checksums_entries_sha256",
             closure.checksum_entries_sha256(entries),
         )
+    profile_verified = schema.is_sha256_hex(profile_sha256) and (
+        analysis_provenance == schema.ANALYSIS_PROVENANCE_D7B
+    )
+    d6_verified = (
+        bound_d6_baseline.get("main_tex_sha256")
+        == closure.D6_MAIN_TEX_SHA256
+        and bound_d6_baseline.get("main_pdf_sha256")
+        == closure.D6_MAIN_PDF_SHA256
+        and bound_d6_baseline.get("final_checksums_sha256")
+        == closure.D6_FINAL_CHECKSUMS_SHA256
+        and bound_d6_baseline.get("final_checksums_entries_sha256")
+        == closure.D6_FINAL_CHECKSUMS_ENTRIES_SHA256
+    )
     return {
         "schema_version": schema.SCHEMA_VERSION,
         "d6_baseline": bound_d6_baseline,
         "rows": [
             {
                 "item": "table-1-headline-shifts",
-                "status": "SATISFIED",
-                "evidence": "profile.json ten-cell package",
+                "status": "SATISFIED" if profile_verified else "UNSATISFIED",
+                "evidence": (
+                    f"profile.json sha256:{profile_sha256}"
+                    if profile_verified
+                    else None
+                ),
             },
             {
                 "item": "manuscript-identity",
-                "status": "EXTERNAL",
-                "evidence": "D6 two-party hash verification",
+                "status": "EXTERNAL" if d6_verified else "UNSATISFIED",
+                "evidence": (
+                    "pinned D6 FINAL_CHECKSUMS raw+entry-map authority"
+                    if d6_verified
+                    else None
+                ),
             },
         ],
-        "holm_row": {"satisfied_by": holm_satisfied_by},
+        "holm_row": {
+            "satisfied_by": analysis_provenance if profile_verified else None
+        },
         "qa012": dict(qa012),
     }
 
@@ -594,8 +653,7 @@ def build_evidence_package(
     llm_involvement: dict[str, Any],
     estimands: dict[str, dict[str, Any]],
     d6_baseline: dict[str, Any],
-    expected_final_checksums_entries_sha256: str | None,
-    qa012: dict[str, Any],
+    qa012_roots: dict[str, Path],
     item_key_derivation: dict[str, Any] | None = None,
     run_id: str = "run-0001",
     reclaim_crashed_relic: bool = False,
@@ -621,37 +679,10 @@ def build_evidence_package(
             record_snapshot, records_root
         )
     result = compute_inference(record_snapshot.complete_by_cell)
-    inventory = assemble_closure_inventory(
-        d6_baseline=d6_baseline, qa012=qa012
-    )
-    # Fail before staging or create-once publication. A structurally valid but
-    # semantically unsatisfied closure must never consume an immutable run ID.
-    closure_result = closure.evaluate_closure(
-        inventory,
-        expected_final_checksums_entries_sha256=(
-            expected_final_checksums_entries_sha256
-        ),
-    )
-    if not closure_result["satisfied"]:
-        failing_rows = ", ".join(closure_result["failing_rows"])
-        raise schema.ConfigSurfaceError(
-            "closure is unsatisfied; refusing immutable publication; failing"
-            f" rows: {failing_rows}"
-        )
-
-    # Build the complete run envelope before its single atomic publication.
-    staged_run = Path(tempfile.mkdtemp(prefix="staged-", dir=out_dir))
-    staged_tree = staged_run / "tree"
-    staged_closure = staged_run / "closure"
-    (staged_tree / "records").mkdir(parents=True)
-    staged_closure.mkdir()
-    input_sha256: dict[str, str] = {}
-    for cell_id in schema.CELL_IDS:
-        rel = f"records/{cell_id}.jsonl"
-        blob = record_snapshot.bytes_by_rel[rel]
-        (staged_tree / rel).write_bytes(blob)
-        input_sha256[rel] = hashlib.sha256(blob).hexdigest()
-
+    input_sha256 = {
+        rel: hashlib.sha256(blob).hexdigest()
+        for rel, blob in record_snapshot.bytes_by_rel.items()
+    }
     bound_provenance = dict(provenance)
     bound_provenance["input_sha256"] = dict(input_sha256)
     dirty_state = (
@@ -670,21 +701,88 @@ def build_evidence_package(
         estimands=estimands,
         item_key_derivation=item_key_derivation,
     )
-    schema.write_profile(staged_tree / "profile.json", profile)
-    (staged_tree / "presentation_manifest.json").write_bytes(
-        _dump_json_bytes(_presentation_manifest())
+    profile_bytes = schema.encode_profile(profile)
+    qa012_manifest = qa012.build_inventory_manifest(qa012_roots)
+    inventory = assemble_closure_inventory(
+        d6_baseline=d6_baseline,
+        qa012=qa012_status_block(qa012_manifest),
+        profile_sha256=hashlib.sha256(profile_bytes).hexdigest(),
+        analysis_provenance=profile["inference"]["analysis_provenance"],
     )
+    # Fail before staging or create-once publication. A structurally valid but
+    # semantically unsatisfied closure must never consume an immutable run ID.
+    closure_result = closure.evaluate_closure(
+        inventory,
+        profile_bytes=profile_bytes,
+        qa012_roots=qa012_roots,
+    )
+    if not closure_result["satisfied"]:
+        failing_rows = ", ".join(closure_result["failing_rows"])
+        raise schema.ConfigSurfaceError(
+            "closure is unsatisfied; refusing immutable publication; failing"
+            f" rows: {failing_rows}"
+        )
 
-    (staged_closure / "closure_inventory.json").write_bytes(
-        _dump_json_bytes(inventory)
-    )
+    # Build the complete run envelope before its single atomic publication.
+    staged_run = Path(tempfile.mkdtemp(prefix="staged-", dir=out_dir))
+    staged_tree = staged_run / "tree"
+    staged_closure = staged_run / "closure"
+    closure_bytes = _dump_json_bytes(inventory)
 
-    published_run = schema.publish_evidence_package(
-        staged_run,
-        runs_root,
-        run_id,
-        reclaim_crashed_relic=reclaim_crashed_relic,
-    )
+    try:
+        (staged_tree / "records").mkdir(parents=True)
+        staged_closure.mkdir()
+        for cell_id in schema.CELL_IDS:
+            rel = f"records/{cell_id}.jsonl"
+            blob = record_snapshot.bytes_by_rel[rel]
+            (staged_tree / rel).write_bytes(blob)
+        (staged_tree / "profile.json").write_bytes(profile_bytes)
+        (staged_tree / "presentation_manifest.json").write_bytes(
+            _dump_json_bytes(_presentation_manifest())
+        )
+        (staged_closure / "closure_inventory.json").write_bytes(closure_bytes)
+        envelope_snapshot = verifier._read_tree_snapshot(staged_run)
+
+        # Structural assembly alone is not publication authority.  Exercise
+        # the complete source-mode semantic verifier over the exact staged
+        # bytes before the create-once rename.  Its transient receipt is kept
+        # outside the candidate tree so it cannot become self-attesting input.
+        with tempfile.TemporaryDirectory(
+            prefix="prepublish-receipts-", dir=out_dir
+        ) as receipts_dir:
+            prepublish = verifier.run_verifier(
+                staged_tree,
+                mode="source",
+                receipts_dir=Path(receipts_dir),
+            )
+        if prepublish.verdict != verifier.VERDICT_SOURCE_PASS:
+            failing_legs = ", ".join(
+                leg["leg_id"]
+                for leg in prepublish.legs
+                if leg.get("status") != "PASS"
+            )
+            raise schema.ConfigSurfaceError(
+                "staged evidence failed full source semantic verification;"
+                f" refusing immutable publication; failing legs: {failing_legs}"
+            )
+
+        if verifier._read_tree_snapshot(staged_run) != envelope_snapshot:
+            raise schema.ConfigSurfaceError(
+                "staged envelope changed during semantic verification;"
+                " refusing immutable publication"
+            )
+
+        published_run = schema.publish_evidence_package(
+            staged_run,
+            runs_root,
+            run_id,
+            reclaim_crashed_relic=reclaim_crashed_relic,
+        )
+    except BaseException:
+        # ``staged_run`` is private temporary state owned by this invocation.
+        # Never leave a failed candidate that could be mistaken for a run.
+        shutil.rmtree(staged_run, ignore_errors=True)
+        raise
     published_tree = published_run / "tree"
     closure_path = published_run / "closure" / "closure_inventory.json"
 
@@ -716,11 +814,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--records-root", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--frozen-dir", default=None)
-    parser.add_argument("--d6-checksums", default=None)
-    parser.add_argument("--qa012-root", action="append", default=None)
-    parser.add_argument("--runs-root", default=None)
-    parser.add_argument("--run-id", default="run-0001")
     return parser
 
 

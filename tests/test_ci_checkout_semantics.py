@@ -7,6 +7,9 @@ from typing import Any
 import pytest
 import yaml
 
+from reproducibility.colm_aims_2026 import phase4, receipt
+from scripts import run_ci_suite_with_receipt
+
 
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW_CASES = (
@@ -16,7 +19,7 @@ WORKFLOW_CASES = (
         (
             "pip install -e '.[dev]'",
             "flake8 . --count --select=E9,F63,F7,F82",
-            "pytest tests/ -q --tb=short",
+            "--name full -- pytest tests/ -q -p no:cacheprovider",
         ),
     ),
     (
@@ -25,7 +28,7 @@ WORKFLOW_CASES = (
         (
             "pip install -e '.[dev]'",
             "python scripts/verify_audit_release.py",
-            "pytest tests/test_verify_audit_release.py -q",
+            "--name audit -- pytest tests/test_verify_audit_release.py -q",
         ),
     ),
 )
@@ -100,3 +103,54 @@ def test_pr_workflow_checks_merge_ref_and_literal_head(
     for command in required_commands:
         assert command in _run_commands(merge_job)
         assert command in _run_commands(head_job)
+    if workflow_name == "python-app.yml":
+        for job in (merge_job, head_job):
+            focused = _step_named(
+                job, "Focused Phase-4 suite with R-070 receipt"
+            )["run"]
+            for selection in phase4.FOCUSED_SUITE_SELECTION:
+                assert selection in focused
+    for job in (merge_job, head_job):
+        assert any(
+            step.get("uses") == "actions/upload-artifact@v4"
+            and step.get("if") == "always()"
+            for step in job["steps"]
+        )
+
+
+def test_r070_producer_argv_matches_certificate_contract(tmp_path) -> None:
+    assert set(receipt.SUITE_RECEIPT_REQUIRED_FIELDS) == set(
+        phase4.R070_RECEIPT_FIELDS
+    )
+    interpreter = str(
+        Path(run_ci_suite_with_receipt.sys.executable).resolve()
+    )
+    for name, selection in (
+        ("focused", phase4.FOCUSED_SUITE_SELECTION),
+        ("full", phase4.FULL_SUITE_SELECTION),
+    ):
+        command = run_ci_suite_with_receipt._pytest_command(
+            ["pytest", *selection, "-q", "-p", "no:cacheprovider"],
+            tmp_path / f"{name}.xml",
+        )
+        assert command[0] == interpreter
+        assert phase4.suite_command_failures(name, command) == []
+
+
+def test_r070_producer_reuses_canonical_environment_lock(monkeypatch) -> None:
+    expected = b"numpy==2.4.6\n"
+    observed = []
+
+    def canonical_probe(interpreter):
+        observed.append(Path(interpreter))
+        return expected
+
+    monkeypatch.setattr(
+        run_ci_suite_with_receipt.phase4_launcher,
+        "_default_probe_environment_lock",
+        canonical_probe,
+    )
+    assert run_ci_suite_with_receipt._environment_lock_bytes() == expected
+    assert observed == [
+        Path(run_ci_suite_with_receipt.sys.executable).resolve()
+    ]

@@ -48,9 +48,18 @@ jobs:
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.venv,_legacy,artifacts,checkpoints,results,cache,repomix
         # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics --exclude=.venv,_legacy,artifacts,checkpoints,results,cache,repomix
-    - name: Test with pytest
+    - name: Focused Phase-4 suite with R-070 receipt
       run: |
-        pytest tests/ -q --tb=short
+        python scripts/run_ci_suite_with_receipt.py --workflow .github/workflows/python-app.yml --output-dir ci-evidence --name focused -- pytest tests/test_colm_aims_v2_phase4_pre.py tests/test_colm_aims_v2_schema_raw_bytes.py tests/test_phase4_build_metadata_staging.py tests/test_phase4_certificate_external_staging.py tests/test_phase4_launcher_cli.py tests/test_stopdff_v5_fileio_windows.py tests/test_stopdff_v5_windows_control_plane.py -q -p no:cacheprovider
+    - name: Full suite with R-070 receipt
+      run: |
+        python scripts/run_ci_suite_with_receipt.py --workflow .github/workflows/python-app.yml --output-dir ci-evidence --name full -- pytest tests/ -q -p no:cacheprovider
+    - name: Retain suite evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: python-merge-ref-evidence-${{ github.sha }}
+        path: ci-evidence/
 
   literal-head:
     if: github.event_name == 'pull_request'
@@ -83,6 +92,15 @@ jobs:
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.venv,_legacy,artifacts,checkpoints,results,cache,repomix
         # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics --exclude=.venv,_legacy,artifacts,checkpoints,results,cache,repomix
-    - name: Test with pytest
+    - name: Focused Phase-4 suite with R-070 receipt
       run: |
-        pytest tests/ -q --tb=short
+        python scripts/run_ci_suite_with_receipt.py --workflow .github/workflows/python-app.yml --output-dir ci-evidence --name focused -- pytest tests/test_colm_aims_v2_phase4_pre.py tests/test_colm_aims_v2_schema_raw_bytes.py tests/test_phase4_build_metadata_staging.py tests/test_phase4_certificate_external_staging.py tests/test_phase4_launcher_cli.py tests/test_stopdff_v5_fileio_windows.py tests/test_stopdff_v5_windows_control_plane.py -q -p no:cacheprovider
+    - name: Full suite with R-070 receipt
+      run: |
+        python scripts/run_ci_suite_with_receipt.py --workflow .github/workflows/python-app.yml --output-dir ci-evidence --name full -- pytest tests/ -q -p no:cacheprovider
+    - name: Retain suite evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: python-literal-head-evidence-${{ github.event.pull_request.head.sha }}
+        path: ci-evidence/

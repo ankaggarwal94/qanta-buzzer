@@ -48,7 +48,14 @@ jobs:
 
       - name: Test audit release verifier
         run: |
-          pytest tests/test_verify_audit_release.py -q
+          python scripts/run_ci_suite_with_receipt.py --workflow .github/workflows/audit-artifacts.yml --output-dir ci-evidence --name audit -- pytest tests/test_verify_audit_release.py -q
+
+      - name: Retain audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-merge-ref-evidence-${{ github.sha }}
+          path: ci-evidence/
 
   literal-head:
     if: github.event_name == 'pull_request'
@@ -84,4 +91,11 @@ jobs:
 
       - name: Test audit release verifier
         run: |
-          pytest tests/test_verify_audit_release.py -q
+          python scripts/run_ci_suite_with_receipt.py --workflow .github/workflows/audit-artifacts.yml --output-dir ci-evidence --name audit -- pytest tests/test_verify_audit_release.py -q
+
+      - name: Retain audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-literal-head-evidence-${{ github.event.pull_request.head.sha }}
+          path: ci-evidence/

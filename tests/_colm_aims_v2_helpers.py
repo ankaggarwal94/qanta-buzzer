@@ -1154,17 +1154,18 @@ def make_suite_receipt(**overrides: Any) -> dict[str, Any]:
     """R-070 canonical CI suite-evidence receipt (all-hash bindings)."""
     receipt: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
-        "environment_digest": FAKE_SHA_A,
-        "workflow_file_sha256": FAKE_SHA_B,
+        "environment_lock_sha256": FAKE_SHA_A,
+        "workflow_sha256": FAKE_SHA_B,
         "interpreter_realpath": "/opt/python/3.11.15/bin/python3.11",
         "commit": FAKE_COMMIT,
-        "tree": "e" * 40,
+        "tree_sha256": "e" * 40,
         "dirty": False,
         "command": ["python", "-m", "pytest", "tests/", "-q"],
         "exit_code": 0,
-        "junit_report_sha256": FAKE_SHA_C,
+        "junit_sha256": FAKE_SHA_C,
+        "transcript_sha256": FAKE_SHA_B,
+        "counts": {"tests": 10, "failures": 0, "errors": 0, "skipped": 0},
         "skip_identities": [],
-        "artifact_hashes": {"results/suite.xml": FAKE_SHA_C},
     }
     receipt.update(overrides)
     return receipt
@@ -1178,26 +1179,91 @@ def make_closure_inventory(**overrides: Any) -> dict[str, Any]:
     from reproducibility.colm_aims_2026.phase4_assemble_d7b import (
         assemble_closure_inventory,
     )
+    from reproducibility.colm_aims_2026 import closure
 
+    profile_bytes = make_closure_profile_bytes()
     inventory = assemble_closure_inventory(
         d6_baseline={
-            "main_tex_sha256": D6_MAIN_TEX_SHA256,
-            "main_pdf_sha256": D6_MAIN_PDF_SHA256,
-            "final_checksums_sha256": FAKE_SHA_A,
-            "final_checksums_entries": {
-                "main.tex": D6_MAIN_TEX_SHA256,
-                "main.pdf": D6_MAIN_PDF_SHA256,
-                "figures/fig1.pdf": FAKE_SHA_B,
-                "references.bib": FAKE_SHA_C,
-            },
+            "main_tex_sha256": closure.D6_MAIN_TEX_SHA256,
+            "main_pdf_sha256": closure.D6_MAIN_PDF_SHA256,
+            "final_checksums_sha256": closure.D6_FINAL_CHECKSUMS_SHA256,
+            "final_checksums_entries": dict(
+                closure.D6_FINAL_CHECKSUM_ENTRIES
+            ),
+            "final_checksums_entries_sha256": (
+                closure.D6_FINAL_CHECKSUMS_ENTRIES_SHA256
+            ),
         },
-        qa012={
-            "status": "VERIFIED_VACUOUS",
-            "inventory_sha256": FAKE_SHA_B,
-        },
+        qa012=make_qa012_closure_block(),
+        profile_sha256=hashlib.sha256(profile_bytes).hexdigest(),
+        analysis_provenance=ANALYSIS_PROVENANCE_D7B,
     )
     inventory.update(overrides)
     return inventory
+
+
+@functools.lru_cache(maxsize=1)
+def make_closure_profile_bytes() -> bytes:
+    """Canonical strict-profile bytes used by closure binding tests."""
+    from reproducibility.colm_aims_2026 import schema
+
+    return schema.encode_profile(make_profile_v2())
+
+
+def make_qa012_manifest() -> dict[str, Any]:
+    """Tiny, closed five-prong zero-hit manifest for closure unit tests."""
+    from reproducibility.colm_aims_2026 import qa012
+
+    scope_prongs = []
+    files = []
+    for index, prong in enumerate(qa012.REQUIRED_SCOPE_PRONGS):
+        scope_prongs.append(
+            {
+                "name": prong,
+                "status": "LOCATED_SCANNED",
+                "root_basename": prong,
+                "file_count": 1,
+            }
+        )
+        files.append(
+            {
+                "scope_prong": prong,
+                "path": "clean.json",
+                "size": index + 1,
+                "content_hash": hashlib.sha256(
+                    f"content-{index}".encode("ascii")
+                ).hexdigest(),
+                "sha256": hashlib.sha256(
+                    f"sha-{index}".encode("ascii")
+                ).hexdigest(),
+                "hits": [],
+            }
+        )
+    files.sort(key=lambda entry: (entry["scope_prong"], entry["path"]))
+    payload = json.dumps(
+        {"scope_prongs": scope_prongs, "files": files},
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "result": "zero_hit",
+        "scope_prongs": scope_prongs,
+        "files": files,
+        "inventory_sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    qa012.validate_inventory_manifest(manifest)
+    return manifest
+
+
+def make_qa012_closure_block() -> dict[str, Any]:
+    manifest = make_qa012_manifest()
+    return {
+        "status": "VERIFIED_VACUOUS",
+        "inventory_sha256": manifest["inventory_sha256"],
+        "manifest": manifest,
+    }
 
 
 # ---------------------------------------------------------------------------

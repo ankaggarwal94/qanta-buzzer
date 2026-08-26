@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -28,6 +29,11 @@ from .schema import ColmAimsError
 # The object-existence check binds to THIS repository explicitly — never
 # ambient cwd/.git — so no cwd move or GIT_* env var can flip the gate.
 _SOURCE_REPO = Path(__file__).resolve().parents[2]
+MAX_TREE_FILES = 4096
+MAX_TREE_DIRECTORIES = 4096
+MAX_TREE_BYTES = 512 * 1024 * 1024
+MAX_RECORDED_VALIDATION_ERRORS = 100
+MAX_TOTAL_RECORDS = 100_000
 _GIT_ENV_DENYLIST = frozenset(
     {
         "GIT_DIR",
@@ -309,24 +315,97 @@ def _read_tree_snapshot(tree: Path) -> dict[str, bytes]:
     containment error rather than followed.
     """
     tree = Path(tree)
+    root_chain = schema.stable_directory_chain(tree, tree)
     snapshot: dict[str, bytes] = {}
-    for p in sorted(tree.rglob("*")):
-        if p.is_symlink():
-            rel = p.relative_to(tree).as_posix()
-            raise ContainmentError(
-                f"tree member {rel!r} is a symlink — refusing to follow,"
-                " read, or hash bytes outside the verified tree"
-                " (R-036/R-013)"
+    members: list[Path] = []
+    directory_count = 0
+    pending = [tree]
+    while pending:
+        current = pending.pop()
+        directory_count += 1
+        if directory_count > MAX_TREE_DIRECTORIES:
+            raise schema.TypedIngressError(
+                "verified tree exceeds the aggregate directory-count limit"
+                f" {MAX_TREE_DIRECTORIES} (R-020)"
             )
-        if p.is_dir():
-            continue
+        schema.stable_directory_chain(current, tree)
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    child = Path(entry.path)
+                    if entry.is_symlink() or schema.is_filesystem_link(child):
+                        rel = child.relative_to(tree).as_posix()
+                        raise ContainmentError(
+                            f"tree member {rel!r} is a symlink or reparse"
+                            " point — refusing traversal (R-036/R-013)"
+                        )
+                    if entry.is_dir(follow_symlinks=False):
+                        schema.stable_directory_chain(child, tree)
+                        pending.append(child)
+                    elif entry.is_file(follow_symlinks=False):
+                        members.append(child)
+                    else:
+                        raise schema.TypedIngressError(
+                            "verified tree contains a non-regular member"
+                            " (R-020)"
+                        )
+                    if len(members) > MAX_TREE_FILES:
+                        raise schema.TypedIngressError(
+                            "verified tree exceeds the aggregate file-count"
+                            f" limit {MAX_TREE_FILES} (R-020)"
+                        )
+                    if len(pending) + directory_count > MAX_TREE_DIRECTORIES:
+                        raise schema.TypedIngressError(
+                            "verified tree exceeds the aggregate directory-count"
+                            f" limit {MAX_TREE_DIRECTORIES} (R-020)"
+                        )
+        except schema.ColmAimsError:
+            raise
+        except OSError as exc:
+            raise schema.TypedIngressError(
+                "verified tree traversal failed"
+                f" ({exc.__class__.__name__}) (R-020)"
+            ) from exc
+
+    total_bytes = 0
+    seen_casefold: set[str] = set()
+    for p in sorted(members, key=lambda item: item.relative_to(tree).as_posix()):
         rel = p.relative_to(tree).as_posix()
-        if not schema.resolves_inside(p, tree):
+        folded = rel.casefold()
+        if folded in seen_casefold:
             raise ContainmentError(
-                f"tree member {rel!r} resolves outside the verified tree"
-                " (R-036/R-013)"
+                f"tree member {rel!r} collides under case folding (R-013)"
             )
-        snapshot[rel] = schema.read_regular_file_bytes(p, tree_root=tree)
+        seen_casefold.add(folded)
+        try:
+            member_info = os.stat(p, follow_symlinks=False)
+        except OSError as exc:
+            raise schema.TypedIngressError(
+                f"tree member {rel!r} is unreadable"
+                f" ({exc.__class__.__name__}) (R-020)"
+            ) from exc
+        if schema.is_filesystem_link(p):
+            raise ContainmentError(
+                f"tree member {rel!r} is a symlink or reparse point —"
+                " refusing to follow, read, or hash bytes outside the"
+                " verified tree (R-036/R-013)"
+            )
+        if not stat.S_ISREG(member_info.st_mode):
+            raise schema.TypedIngressError(
+                f"tree member {rel!r} is not a regular file (R-020)"
+            )
+        data = schema.read_regular_file_bytes(p, tree_root=tree)
+        total_bytes += len(data)
+        if total_bytes > MAX_TREE_BYTES:
+            raise schema.TypedIngressError(
+                f"verified tree exceeds the aggregate byte limit"
+                f" {MAX_TREE_BYTES} (R-020)"
+            )
+        snapshot[rel] = data
+    if schema.stable_directory_chain(tree, tree) != root_chain:
+        raise ContainmentError(
+            "verified tree root identity changed during traversal (R-013)"
+        )
     return snapshot
 
 
@@ -1778,7 +1857,7 @@ def _inference_legs(
 # ---------------------------------------------------------------------------
 
 
-def run_verifier(
+def _run_verifier_impl(
     tree: Path,
     *,
     mode: str,
@@ -1834,9 +1913,16 @@ def run_verifier(
 
     records_by_rel: dict[str, list[dict[str, Any]]] = {}
     record_lines_by_rel: dict[str, list[int]] = {}
+    total_records = 0
     for rel in sorted(snapshot):
         if rel.startswith("records/") and rel.endswith(".jsonl"):
             loaded = schema.load_records_bytes(snapshot[rel], rel)
+            total_records += len(loaded["records"])
+            if total_records > MAX_TOTAL_RECORDS:
+                raise schema.TypedIngressError(
+                    "verified tree exceeds the aggregate record-row limit"
+                    f" {MAX_TOTAL_RECORDS} (R-020)"
+                )
             records_by_rel[rel] = loaded["records"]
             record_lines_by_rel[rel] = loaded["line_numbers"]
 
@@ -1887,6 +1973,7 @@ def run_verifier(
 
     # Per-record validation (R-031/R-045), file+line named.
     record_errors: list[str] = []
+    omitted_record_errors = 0
     for rel in sorted(records_by_rel):
         lines = record_lines_by_rel[rel]
         for index, record in enumerate(records_by_rel[rel]):
@@ -1894,15 +1981,24 @@ def run_verifier(
                 schema.validate_record(record)
             except schema.RecordValidationError as exc:
                 lineno = lines[index] if index < len(lines) else "?"
-                record_errors.append(f"{rel}: line {lineno}: {exc}")
-    records_valid = not record_errors
+                if len(record_errors) < MAX_RECORDED_VALIDATION_ERRORS:
+                    record_errors.append(f"{rel}: line {lineno}: {exc}")
+                else:
+                    omitted_record_errors += 1
+    records_valid = not record_errors and omitted_record_errors == 0
+    record_error_summary = "; ".join(record_errors[:5])
+    if omitted_record_errors:
+        record_error_summary += (
+            f"; {omitted_record_errors} additional validation error(s) omitted"
+            " after the bounded diagnostic limit (R-020)"
+        )
     _record_leg(
         legs,
         "record_validation",
         records_valid,
         expected="non-reversible canonical-event per-item records"
         " (R-031/R-045)",
-        observed="; ".join(record_errors[:5]),
+        observed=record_error_summary,
     )
 
     grid = _as_dict(profile.get("grid"))
@@ -2082,6 +2178,52 @@ def run_verifier(
         payload, receipts_dir=receipts_dir, verified_tree=tree
     )
     return report
+
+
+def run_verifier(
+    tree: Path,
+    *,
+    mode: str,
+    receipts_dir: Path,
+    expectations: Path | None = None,
+    pre_legs: list[dict[str, Any]] | None = None,
+) -> VerificationReport:
+    """Run the verifier and emit exactly one receipt even on typed refusal."""
+    try:
+        return _run_verifier_impl(
+            tree,
+            mode=mode,
+            receipts_dir=receipts_dir,
+            expectations=expectations,
+            pre_legs=pre_legs,
+        )
+    except ColmAimsError as exc:
+        legs = list(pre_legs or [])
+        legs.append(
+            _fail(
+                LEG_TYPED_INGRESS,
+                expected="typed ingress and containment checks complete",
+                observed=f"{exc.__class__.__name__}: {exc}",
+            )
+        )
+        payload = {
+            "schema_version": schema.SCHEMA_VERSION,
+            "mode": mode,
+            "verdict": VERDICT_FAIL,
+            "legs": legs,
+            "validated_artifacts": [],
+            "classifications": {},
+            "input_tree_sha256": None,
+            "expectations_anchor_sha256": None,
+            "verifier_code_sha256": _code_digest(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        receipt_mod.emit_receipt(
+            payload,
+            receipts_dir=Path(receipts_dir),
+            verified_tree=Path(tree),
+        )
+        raise
 
 
 # ---------------------------------------------------------------------------

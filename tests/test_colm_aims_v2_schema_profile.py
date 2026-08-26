@@ -562,6 +562,54 @@ class TestClosedMaps:
         with pytest.raises(schema.SchemaValidationError):
             schema.validate_profile(profile)
 
+    @pytest.mark.parametrize(
+        "parts",
+        [
+            ("arms", 0),
+            ("arms", 0, "seed_contract"),
+            ("cells", 0),
+            ("cells", 0, "counts"),
+            ("cells", 0, "rates"),
+            ("cells", 0, "headline_summary"),
+            ("cells", 0, "finite_only_summary"),
+            ("cells", 0, "interval"),
+            ("provenance",),
+            ("provenance", "dirty_state"),
+            ("provenance", "splits"),
+            ("provenance", "splits", "eval"),
+            ("provenance", "pre_package_retention"),
+            ("provenance", "mc_build"),
+            ("provenance", "model"),
+            ("provenance", "model", "numerical_settings"),
+        ],
+    )
+    def test_every_nested_trusted_map_rejects_unknown_keys(self, parts):
+        profile = make_profile_v2()
+        target = profile
+        for part in parts:
+            target = target[part]
+        target["misspelled_extra"] = "typo"
+        with pytest.raises(schema.SchemaValidationError):
+            schema.validate_profile(profile)
+
+    def test_provenance_model_must_be_object(self):
+        profile = make_profile_v2()
+        profile["provenance"]["model"] = None
+        with pytest.raises(schema.SchemaValidationError, match="model"):
+            schema.validate_profile(profile)
+
+    def test_null_revision_requires_byte_digest_manifest(self):
+        profile = make_profile_v2()
+        profile["provenance"]["model"]["revision"] = None
+        with pytest.raises(schema.SchemaValidationError, match="byte_digest"):
+            schema.validate_profile(profile)
+
+    def test_source_commit_must_be_native_string(self):
+        profile = make_profile_v2()
+        profile["provenance"]["dirty_state"]["source_commit"] = int("1" * 40)
+        with pytest.raises(schema.SchemaValidationError, match="source_commit"):
+            schema.validate_profile(profile)
+
     def test_no_defaulted_dict_get_on_trusted_keys(self):
         # The v1 R1 lesson: anchor.get("ledger_path", ...) silently
         # defaulted on a typo. No namespace code may call

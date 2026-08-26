@@ -25,6 +25,7 @@ sys.path.insert(0, str(REPO))
 from reproducibility.colm_aims_2026 import (  # noqa: E402
     phase4,
     phase4_launcher,
+    receipt as receipt_module,
     schema,
 )
 
@@ -263,6 +264,7 @@ def build_receipt(
 ) -> dict[str, Any]:
     counts, skips = junit_counts(run_info["junit_path"])
     return {
+        "schema_version": schema.SCHEMA_VERSION,
         "exit_code": run_info["exit_code"],
         "command": run_info["command"],
         "environment_lock_sha256": environment_lock_sha256,
@@ -386,6 +388,8 @@ def main() -> int:
         )
         receipt_path = RECEIPTS_DIR / f"suite_receipt_{name}.json"
         write_json(receipt_path, receipt)
+        if receipt["exit_code"] == 0:
+            receipt_module.validate_suite_receipt(receipt)
         receipt_paths[name] = receipt_path
         receipts[name] = receipt
 

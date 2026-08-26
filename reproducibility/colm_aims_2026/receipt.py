@@ -72,17 +72,18 @@ def emit_receipt(
 # ---------------------------------------------------------------------------
 
 SUITE_RECEIPT_REQUIRED_FIELDS = (
-    "environment_digest",
-    "workflow_file_sha256",
+    "environment_lock_sha256",
+    "workflow_sha256",
     "interpreter_realpath",
     "commit",
-    "tree",
+    "tree_sha256",
     "dirty",
     "command",
     "exit_code",
-    "junit_report_sha256",
+    "junit_sha256",
+    "transcript_sha256",
+    "counts",
     "skip_identities",
-    "artifact_hashes",
 )
 
 
@@ -94,13 +95,16 @@ def validate_suite_receipt(receipt: dict[str, Any]) -> None:
     """Validate one machine-readable suite-evidence receipt (R-070).
 
     Every binding is a HASH or an exact machine-readable value; the A'-F4
-    defect shape — ``environment_digest`` as a metadata object instead of a
+    defect shape — ``environment_lock_sha256`` as a metadata object instead of a
     lockfile/environment-export hash — is rejected by name.
     """
     if not isinstance(receipt, dict):
         raise SuiteReceiptError("suite receipt must be an object (R-070)")
-    if "schema_version" in receipt:
-        check_schema_version(receipt, "suite receipt")
+    if set(receipt) != {"schema_version", *SUITE_RECEIPT_REQUIRED_FIELDS}:
+        raise SuiteReceiptError(
+            "suite receipt must have the exact closed R-070 shape"
+        )
+    check_schema_version(receipt, "suite receipt")
     missing = sorted(
         set(SUITE_RECEIPT_REQUIRED_FIELDS) - set(receipt)
     )
@@ -108,14 +112,19 @@ def validate_suite_receipt(receipt: dict[str, Any]) -> None:
         raise SuiteReceiptError(
             f"suite receipt missing required field(s) {missing} (R-070)"
         )
-    if not is_sha256_hex(receipt["environment_digest"]):
+    if not is_sha256_hex(receipt["environment_lock_sha256"]):
         raise SuiteReceiptError(
-            "suite receipt environment_digest must be a dependency-lockfile"
+            "suite receipt environment_lock_sha256 must be a dependency-lockfile"
             " or environment-export SHA-256 HASH, not a metadata object"
-            f" (A'-F4); got type {type(receipt['environment_digest']).__name__}"
+            " (A'-F4); got type"
+            f" {type(receipt['environment_lock_sha256']).__name__}"
             " (R-070)"
         )
-    for field in ("workflow_file_sha256", "junit_report_sha256"):
+    for field in (
+        "workflow_sha256",
+        "junit_sha256",
+        "transcript_sha256",
+    ):
         if not is_sha256_hex(receipt[field]):
             raise SuiteReceiptError(
                 f"suite receipt {field} must be a SHA-256 hash (R-070)"
@@ -126,15 +135,15 @@ def validate_suite_receipt(receipt: dict[str, Any]) -> None:
             "suite receipt interpreter_realpath must be a non-empty string"
             " (R-070)"
         )
-    for field in ("commit", "tree"):
+    for field in ("commit", "tree_sha256"):
         if not is_git_object_id(receipt[field]):
             raise SuiteReceiptError(
                 f"suite receipt {field} must be a full-length native Git"
                 " object id (40- or 64-hex; R-070)"
             )
-    if not isinstance(receipt["dirty"], bool):
+    if receipt["dirty"] is not False:
         raise SuiteReceiptError(
-            "suite receipt dirty state must be a boolean (R-070)"
+            "suite receipt dirty state must be identically false (R-070/R-082)"
         )
     command = receipt["command"]
     if not isinstance(command, list) or not command or not all(
@@ -148,16 +157,39 @@ def validate_suite_receipt(receipt: dict[str, Any]) -> None:
         raise SuiteReceiptError(
             "suite receipt exit_code must be a real integer (R-070)"
         )
+    counts = receipt["counts"]
+    count_keys = {"tests", "failures", "errors", "skipped"}
+    if (
+        not isinstance(counts, dict)
+        or set(counts) != count_keys
+        or any(
+            not is_real_int(counts[key]) or counts[key] < 0
+            for key in count_keys
+        )
+        or counts["tests"] <= counts["skipped"]
+        or counts["failures"] != 0
+        or counts["errors"] != 0
+        or receipt["exit_code"] != 0
+    ):
+        raise SuiteReceiptError(
+            "suite receipt counts/exit must describe a nonempty green suite"
+            " with exact tests/failures/errors/skipped fields (R-070)"
+        )
     if not isinstance(receipt["skip_identities"], list):
         raise SuiteReceiptError(
             "suite receipt skip_identities must be a list (R-070)"
         )
-    hashes = receipt["artifact_hashes"]
-    if not isinstance(hashes, dict) or not all(
-        isinstance(name, str) and name and is_sha256_hex(value)
-        for name, value in hashes.items()
+    if any(
+        not isinstance(identity, str) or not identity
+        for identity in receipt["skip_identities"]
     ):
         raise SuiteReceiptError(
-            "suite receipt artifact_hashes must map artifact names to"
-            " SHA-256 hashes (R-070)"
+            "suite receipt skip identities must be non-empty strings (R-070)"
+        )
+    if len(receipt["skip_identities"]) != counts["skipped"] or len(
+        set(receipt["skip_identities"])
+    ) != len(receipt["skip_identities"]):
+        raise SuiteReceiptError(
+            "suite receipt skip identities must be duplicate-free and match"
+            " counts.skipped (R-070)"
         )

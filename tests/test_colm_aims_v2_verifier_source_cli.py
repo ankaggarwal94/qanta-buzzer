@@ -252,6 +252,9 @@ class TestFailClosedFlags:
         pkg = build_package_v2(tmp_path)
         proc = run_cli(*cli_args_for(pkg, "source"), "--frobnicate")
         assert proc.returncode == EXIT_USAGE_ERROR
+        receipt = latest_receipt(pkg.receipts_dir)
+        assert receipt["verdict"] == "FAIL"
+        assert receipt["mode"] == "source"
 
     def test_abbreviated_flags_rejected(self, tmp_path):
         # allow_abbrev=False: --mod cannot smuggle past the unknown-flag

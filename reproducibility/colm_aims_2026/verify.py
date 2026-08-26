@@ -26,7 +26,9 @@ if __package__ in (None, ""):  # pragma: no cover - exercised via subprocess
 
 import argparse
 import re
+from datetime import datetime, timezone
 
+from reproducibility.colm_aims_2026 import receipt as receipt_mod
 from reproducibility.colm_aims_2026 import render, schema
 from reproducibility.colm_aims_2026 import verifier as verifier_mod
 
@@ -50,6 +52,53 @@ _PASS_VERDICTS = (
     verifier_mod.VERDICT_SOURCE_PASS,
     verifier_mod.VERDICT_RELEASE_PASS,
 )
+
+
+def _argv_option(argv: list[str], name: str) -> str | None:
+    """Return the last exact option value without accepting abbreviations."""
+    value = None
+    for index, token in enumerate(argv):
+        if token == name and index + 1 < len(argv):
+            value = argv[index + 1]
+        elif token.startswith(f"{name}="):
+            value = token.partition("=")[2]
+    return value
+
+
+def _emit_cli_failure(
+    *, mode: str | None, tree: str | None, receipts_dir: str | None, observed: str
+) -> None:
+    """Best-effort create-once failure evidence when a receipt path is known."""
+    if not receipts_dir:
+        return
+    receipts = Path(receipts_dir)
+    verified_tree = Path(tree) if tree else receipts.parent / ".no-verified-tree"
+    payload = {
+        "schema_version": schema.SCHEMA_VERSION,
+        "mode": mode if mode in {"source", "release"} else "unknown",
+        "verdict": verifier_mod.VERDICT_FAIL,
+        "legs": [
+            verifier_mod._fail(
+                verifier_mod.LEG_TYPED_INGRESS,
+                expected="valid CLI configuration and completed verification",
+                observed=observed,
+            )
+        ],
+        "validated_artifacts": [],
+        "classifications": {},
+        "input_tree_sha256": None,
+        "expectations_anchor_sha256": None,
+        "verifier_code_sha256": verifier_mod._code_digest(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        receipt_mod.emit_receipt(
+            payload, receipts_dir=receipts, verified_tree=verified_tree
+        )
+    except (OSError, schema.ColmAimsError):
+        # An unusable or in-tree receipt destination cannot safely receive
+        # evidence; retain the pinned exit code without masking the cause.
+        return
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -99,19 +148,54 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point; returns the pinned exit code."""
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = _build_parser()
-    args = parser.parse_args(argv)  # usage errors exit EXIT_USAGE_ERROR (2)
+    try:
+        args = parser.parse_args(raw_argv)
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else EXIT_USAGE_ERROR
+        if code != 0:
+            _emit_cli_failure(
+                mode=_argv_option(raw_argv, "--mode"),
+                tree=_argv_option(raw_argv, "--tree"),
+                receipts_dir=_argv_option(raw_argv, "--receipts-dir"),
+                observed="CLI argument parsing failed",
+            )
+        return code
+    receipts_path = Path(args.receipts_dir)
+    receipts_before = (
+        set(receipts_path.glob("receipt-*.json"))
+        if receipts_path.is_dir()
+        else set()
+    )
+
+    def emit_if_needed(observed: str) -> None:
+        current = (
+            set(receipts_path.glob("receipt-*.json"))
+            if receipts_path.is_dir()
+            else set()
+        )
+        if current == receipts_before:
+            _emit_cli_failure(
+                mode=args.mode,
+                tree=args.tree,
+                receipts_dir=args.receipts_dir,
+                observed=observed,
+            )
+
     if args.tree is not None and args.runs_root is not None:
         print(
             "error: --tree and --runs-root are mutually exclusive (R-069)",
             file=sys.stderr,
         )
+        emit_if_needed("--tree and --runs-root are mutually exclusive")
         return EXIT_USAGE_ERROR
     if args.tree is None and args.runs_root is None:
         print(
             "error: one of --tree or --runs-root is required",
             file=sys.stderr,
         )
+        emit_if_needed("one of --tree or --runs-root is required")
         return EXIT_USAGE_ERROR
     if args.mode == "release" and args.expectations is None:
         print(
@@ -119,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
             " --expectations file (R-013)",
             file=sys.stderr,
         )
+        emit_if_needed("release mode requires --expectations")
         return EXIT_USAGE_ERROR
     if args.runs_root is not None and args.mode != "release":
         print(
@@ -126,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
             " (R-069)",
             file=sys.stderr,
         )
+        emit_if_needed("--runs-root requires release mode")
         return EXIT_USAGE_ERROR
     supplied_paths = [
         p
@@ -159,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             f"error: {_scrub_paths(str(exc), supplied_paths)}",
             file=sys.stderr,
         )
+        emit_if_needed(f"{exc.__class__.__name__}: {exc}")
         return EXIT_INGRESS_ERROR
     except (schema.ConfigSurfaceError, schema.ColmAimsError) as exc:
         # Containment/config violations are usage errors (exit 2) — unknown
@@ -167,6 +254,7 @@ def main(argv: list[str] | None = None) -> int:
             f"error: {_scrub_paths(str(exc), supplied_paths)}",
             file=sys.stderr,
         )
+        emit_if_needed(f"{exc.__class__.__name__}: {exc}")
         return EXIT_USAGE_ERROR
     except Exception as exc:  # noqa: BLE001 - pinned internal-error code
         # An internal (non-ingress) defect gets its own pinned exit code, a
@@ -178,6 +266,7 @@ def main(argv: list[str] | None = None) -> int:
             f" {_scrub_paths(str(exc), supplied_paths)}",
             file=sys.stderr,
         )
+        emit_if_needed(f"unexpected {exc.__class__.__name__}: {exc}")
         return EXIT_INTERNAL_ERROR
 
     exit_code = (

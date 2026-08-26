@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from reproducibility.colm_aims_2026 import schema
+from reproducibility.colm_aims_2026 import schema, verifier
 
 from tests._colm_aims_v2_helpers import (
     EXIT_INGRESS_ERROR,
@@ -41,6 +41,49 @@ SURFACE_FILES = {
     "rights": lambda pkg: pkg.rights_path,
 }
 BAD_VERSIONS = [True, 1.0, "2", 3]
+
+
+class TestAggregateIngressBounds:
+    def test_tree_file_count_limit(self, tmp_path, monkeypatch):
+        tree = tmp_path / "tree"
+        tree.mkdir()
+        (tree / "a.json").write_text("{}", "utf-8")
+        (tree / "b.json").write_text("{}", "utf-8")
+        monkeypatch.setattr(verifier, "MAX_TREE_FILES", 1)
+        with pytest.raises(schema.TypedIngressError, match="file-count"):
+            verifier._read_tree_snapshot(tree)
+
+    def test_tree_directory_count_limit(self, tmp_path, monkeypatch):
+        tree = tmp_path / "tree"
+        (tree / "nested").mkdir(parents=True)
+        monkeypatch.setattr(verifier, "MAX_TREE_DIRECTORIES", 1)
+        with pytest.raises(schema.TypedIngressError, match="directory-count"):
+            verifier._read_tree_snapshot(tree)
+
+    def test_tree_actual_byte_limit(self, tmp_path, monkeypatch):
+        tree = tmp_path / "tree"
+        tree.mkdir()
+        (tree / "a.json").write_bytes(b"{}")
+        monkeypatch.setattr(verifier, "MAX_TREE_BYTES", 1)
+        with pytest.raises(schema.TypedIngressError, match="byte limit"):
+            verifier._read_tree_snapshot(tree)
+
+    def test_scandir_error_is_not_silently_ignored(self, tmp_path, monkeypatch):
+        tree = tmp_path / "tree"
+        tree.mkdir()
+
+        def failing_scandir(*_args, **_kwargs):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(verifier.os, "scandir", failing_scandir)
+        with pytest.raises(schema.TypedIngressError, match="traversal failed"):
+            verifier._read_tree_snapshot(tree)
+
+    def test_aggregate_record_row_limit(self, tmp_path, monkeypatch):
+        pkg = build_package_v2(tmp_path)
+        monkeypatch.setattr(verifier, "MAX_TOTAL_RECORDS", 1)
+        with pytest.raises(schema.TypedIngressError, match="record-row"):
+            run_verifier_on(pkg, "source")
 
 
 def _set_version(path, value, *, drop: bool = False) -> None:
