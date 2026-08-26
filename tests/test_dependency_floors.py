@@ -8,6 +8,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 SENTENCE_TRANSFORMERS_FLOOR = "sentence-transformers>=2.3.0"
 TORCH_FLOOR = "torch>=2.6.0"
+NUMPY_D7B_PIN = "numpy==2.4.6"
 
 
 def test_sentence_transformers_floor_supports_trust_remote_code() -> None:
@@ -70,3 +71,32 @@ def test_torch_floor_covers_cve_2025_32434() -> None:
         if requirement.startswith("torch")
     ]
     assert torch_requirements == ["torch>=2.6,<3"]
+
+
+def test_d7b_dev_environment_pins_numpy_exactly() -> None:
+    """Keep CI and the paper-reproduction lock on the D7(b) version."""
+    pyproject = tomllib.loads(
+        (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    dev_numpy_requirements = [
+        requirement
+        for requirement in pyproject["project"]["optional-dependencies"][
+            "dev"
+        ]
+        if requirement.startswith("numpy")
+    ]
+    assert dev_numpy_requirements == [NUMPY_D7B_PIN]
+
+    locked_requirements = [
+        line.strip()
+        for line in (REPO / "requirements.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    locked_numpy_requirements = [
+        requirement
+        for requirement in locked_requirements
+        if requirement.startswith("numpy")
+    ]
+    assert locked_numpy_requirements == [NUMPY_D7B_PIN]

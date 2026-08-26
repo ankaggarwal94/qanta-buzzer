@@ -29,7 +29,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["jsonschema>=4.18,<5", "pytest>=7.0.0"]
+dev = [
+  "jsonschema>=4.18,<5",
+  # D7(b) is byte-exact under this version; CI installs the dev extra.
+  "numpy==2.4.6",
+  "pytest>=7.0.0",
+]
 modal = ["modal>=1.0.0"]
 openai = ["openai>=1.0.0"]
 maskable = ["sb3-contrib>=2.6.0"]

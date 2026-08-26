@@ -16,6 +16,57 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify merge-ref checkout
+        if: github.event_name == 'pull_request'
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$EXPECTED_SHA"
+          case "$GITHUB_REF" in
+            refs/pull/*/merge) ;;
+            *) echo "unexpected pull-request ref: $GITHUB_REF" >&2; exit 1 ;;
+          esac
+          echo "verified_merge_ref_sha=$actual_sha"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install project (required for tests/conftest.py import chain)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Verify committed audit artifacts
+        run: |
+          python scripts/verify_audit_release.py
+
+      - name: Test audit release verifier
+        run: |
+          pytest tests/test_verify_audit_release.py -q
+
+  literal-head:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Verify literal-head checkout
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$EXPECTED_SHA"
+          echo "verified_literal_head_sha=$actual_sha"
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5

@@ -186,10 +186,10 @@ RANDOM_K_BLOCKING_TASK = (
     " first pinned evidence run under the v2 data model"
 )
 
-# R-018: scripts/verify_audit_release.py stays byte-identical (sha256 pinned
-# at the v2 branch head 689aecf3 at RED authoring time).
+# R-018: scripts/verify_audit_release.py stays byte-identical. Pin the
+# canonical LF Git bytes, never a platform-transcoded CRLF worktree view.
 VERIFY_AUDIT_RELEASE_SHA256 = (
-    "8d4e76c5e183e6efb96844ac13b55dd3fbaa1eab64b9da74fe611466f456513a"
+    "8fd410786edb6cc0d6f2e9894fdbbd6e29d208925f819c67af7147ab65d1cd5c"
 )
 
 # R-027 vocabulary core (v1 fixture carried + R-057 inference additions).

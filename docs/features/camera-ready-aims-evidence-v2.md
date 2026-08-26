@@ -143,9 +143,8 @@ failing leg names the leg id, expected vs observed, and a remediation class
   v2 package only; it is flagged RESOLVED-pending-ack for the next reviewer
   shuttle round (spec Open Questions). Nothing blocks on it.
 - **NumPy exactly 2.4.6** is required for the D7(b) bit-exact procedure
-  (D5/R-051); a runtime release leg and a suite test enforce it.
-  `requirements.txt` still pins 2.4.4 (known drift; the canonical `.venv`
-  runs 2.4.6).
+  (D5/R-051); `requirements.txt` and the `.[dev]` CI environment pin it,
+  while a runtime release leg and suite test enforce it.
 - **Legacy ingest is deliberately minimal.** v1/historical documents parse
   only through `legacy.load_legacy_v1_document` and never certify; only the
   three captured `paper_exports` aggregate families may back an aggregate
