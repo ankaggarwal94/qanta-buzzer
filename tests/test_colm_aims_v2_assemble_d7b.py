@@ -628,6 +628,62 @@ class TestBuildEvidencePackage:
         assert (rebuilt.published_tree / "profile.json").is_file()
         assert rebuilt.closure_inventory_path.is_file()
 
+    def test_post_rename_sync_failure_returns_committed_run(
+        self, tmp_path, monkeypatch
+    ):
+        staged = tmp_path / "staged"
+        staged.mkdir()
+        (staged / "artifact").write_bytes(b"committed")
+        runs_root = tmp_path / "out" / "runs"
+
+        def fail_parent_sync(_parent, **_kwargs):
+            raise OSError("synthetic parent fsync failure")
+
+        monkeypatch.setattr(schema.fileio, "_fsync_directory", fail_parent_sync)
+        published = schema.publish_evidence_package(
+            staged, runs_root, "run-sync-failure"
+        )
+
+        assert published == runs_root / "run-sync-failure"
+        assert (published / "artifact").read_bytes() == b"committed"
+        assert not staged.exists()
+
+    def test_recovery_refuses_while_peer_holds_publication_lock(
+        self, tmp_path
+    ):
+        staged = tmp_path / "staged"
+        staged.mkdir()
+        (staged / "artifact").write_bytes(b"candidate")
+        runs_root = tmp_path / "out" / "runs"
+        runs_root.mkdir(parents=True)
+        dest = runs_root / "run-peer-claim"
+        dest.mkdir()
+        lock_path = (
+            runs_root.parent
+            / ".publication-locks"
+            / "run-peer-claim.lock"
+        )
+        peer_fds: dict[str, int] = {}
+        schema.locking.acquire_process_lock(
+            lock_path,
+            peer_fds,
+            busy_label="synthetic peer lock:",
+        )
+        try:
+            with pytest.raises(schema.ColmAimsError, match="lock is busy"):
+                schema.publish_evidence_package(
+                    staged,
+                    runs_root,
+                    "run-peer-claim",
+                    reclaim_crashed_relic=True,
+                )
+            assert dest.is_dir()
+            assert list(dest.iterdir()) == []
+            assert (staged / "artifact").is_file()
+        finally:
+            for fd in peer_fds.values():
+                schema.os.close(fd)
+
 
 # ---------------------------------------------------------------------------
 # CLI contract — exit codes mirror verify.py (0 / 2 / 3 / 4)

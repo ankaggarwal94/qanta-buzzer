@@ -19,7 +19,10 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from scripts.stopdff_v5 import fileio
+from scripts.stopdff_v5 import fileio, locking
+
+
+_PUBLICATION_LOCK_FDS: dict[str, int] = {}
 
 
 class ColmAimsError(Exception):
@@ -2071,12 +2074,32 @@ def publish_evidence_package(
             f"cannot stat staged/runs-root for the same-filesystem check:"
             f" {exc.__class__.__name__} (R-016)"
         ) from exc
+    lock_path = runs_root.parent / ".publication-locks" / f"{run_id}.lock"
+    try:
+        locking.acquire_process_lock(
+            lock_path,
+            _PUBLICATION_LOCK_FDS,
+            busy_label="evidence package run publication is already active:",
+        )
+    except RuntimeError as exc:
+        raise ColmAimsError(
+            f"evidence package run publication lock is busy for run_id"
+            f" {run_id!r}; recovery/publish refused while a peer is active"
+            " (R-016/R-039)"
+        ) from exc
     if reclaim_crashed_relic:
         fileio.reclaim_empty_relic(dest)
     try:
         fileio.publish_dir_create_once(
             staged, dest, exists_label="evidence package run slot"
         )
+    except fileio.DirectoryPublicationCommittedError:
+        # The atomic rename is the create-once commit point. A failed parent
+        # fsync cannot safely roll that visible immutable directory back; report
+        # the truthful committed state rather than consuming the run ID while
+        # returning failure. Callers that require a stronger barrier (the
+        # Phase-4 launcher) handle this typed post-commit outcome separately.
+        return dest
     except FileExistsError as exc:
         raise ColmAimsError(
             f"evidence package run slot already exists: run_id {run_id!r} —"

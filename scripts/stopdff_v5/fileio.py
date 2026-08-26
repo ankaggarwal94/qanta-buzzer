@@ -22,6 +22,18 @@ from typing import Any, Callable
 _IS_WINDOWS = os.name == "nt"
 
 
+class DirectoryPublicationCommittedError(OSError):
+    """Directory rename committed, but its parent durability sync failed."""
+
+    def __init__(self, destination: Path, cause: OSError):
+        self.destination = Path(destination)
+        self.cause = cause
+        super().__init__(
+            f"directory publication committed at {self.destination}, but"
+            f" parent sync failed: {cause}"
+        )
+
+
 def _fsync_directory(
     directory: Path,
     *,
@@ -210,7 +222,10 @@ def publish_dir_create_once(
         if claim_created is not None:
             claim_created()
         os.rename(staged, dest)
-    _fsync_directory(dest.parent)
+    try:
+        _fsync_directory(dest.parent)
+    except OSError as exc:
+        raise DirectoryPublicationCommittedError(dest, exc) from exc
 
 
 def reclaim_empty_relic(dest: Path) -> bool:
