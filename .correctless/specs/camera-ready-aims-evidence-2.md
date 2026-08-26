@@ -1043,8 +1043,10 @@ analysis over retained per-item records — permitted; model execution is not.
   where directory fsync is supported, and no fallible scientific,
   durability, diagnostic, or cleanup operation follows that sync. A crash
   before the sync may resurrect the guard as a safe false negative; a sync
-  failure propagates and publishes a destination STOP rather than returning
-  PASS;
+  failure first re-creates and durably publishes the canonical pending guard,
+  then propagates and attempts a destination STOP rather than returning PASS.
+  The negative guard, not the best-effort STOP report, prevents a failed
+  transition from being consumed;
   if the rename commit point succeeds but the subsequent durability sync
   fails, report STOP at the destination that now owns the outputs and describe
   that committed-but-not-certified state truthfully — never recreate an empty

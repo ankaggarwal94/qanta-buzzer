@@ -2597,8 +2597,9 @@ def test_acceptance_guard_removal_is_synced_before_pass(tmp_path, monkeypatch):
     assert terminal_syncs == [promote_to]
 
 
-def test_acceptance_guard_removal_sync_failure_never_accepts(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("stop_report_fails", [False, True])
+def test_acceptance_guard_removal_sync_failure_restores_negative_guard(
+    tmp_path, monkeypatch, stop_report_fails
 ):
     config, _certificate, _staged_path, probes = _runtime_fixture(
         tmp_path, monkeypatch
@@ -2621,13 +2622,23 @@ def test_acceptance_guard_removal_sync_failure_never_accepts(
     monkeypatch.setattr(
         launcher.fileio, "fsync_directory", fail_terminal_sync
     )
+    if stop_report_fails:
+        monkeypatch.setattr(
+            launcher,
+            "_write_stop_report",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("synthetic STOP publication failure")
+            ),
+        )
 
     with pytest.raises(launcher.RunFailed, match="acceptance-marker"):
         _call_launcher(config, probes)
 
     assert marker_path.is_file()
-    assert not pending_path.exists()
-    assert (promote_to / launcher.STOP_REPORT_NAME).is_file()
+    assert pending_path.is_file()
+    assert (promote_to / launcher.STOP_REPORT_NAME).exists() is (
+        not stop_report_fails
+    )
 
 
 def test_acceptance_marker_is_written_only_after_quarantine_cleanup(

@@ -2535,15 +2535,16 @@ def _write_acceptance_marker(
     )
     pending_path = promote_to / ACCEPTANCE_PENDING_NAME
     marker_path = promote_to / ACCEPTANCE_MARKER_NAME
+    pending_bytes = schema.encode_json(
+        {
+            "schema_version": schema.SCHEMA_VERSION,
+            "marker_type": "phase4_launch_acceptance_pending",
+            "activation_digest": activation_digest,
+        }
+    )
     create_once_bytes(
         pending_path,
-        schema.encode_json(
-            {
-                "schema_version": schema.SCHEMA_VERSION,
-                "marker_type": "phase4_launch_acceptance_pending",
-                "activation_digest": activation_digest,
-            }
-        ),
+        pending_bytes,
         exists_label="Phase-4 acceptance pending guard",
     )
     create_once_bytes(
@@ -2552,7 +2553,19 @@ def _write_acceptance_marker(
         exists_label="Phase-4 acceptance marker",
     )
     os.unlink(pending_path)
-    fileio.fsync_directory(promote_to)
+    try:
+        fileio.fsync_directory(promote_to)
+    except BaseException:
+        # Do not rely on the outer best-effort STOP report: until the guard
+        # deletion is known durable, a visible marker is not an accepted
+        # transaction. Re-establish and durably publish the canonical
+        # negative guard before propagating the sync failure.
+        create_once_bytes(
+            pending_path,
+            pending_bytes,
+            exists_label="Phase-4 acceptance pending guard recovery",
+        )
+        raise
 
 
 def _default_sync_parent_directory(parent: Path) -> None:
