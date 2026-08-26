@@ -1690,6 +1690,7 @@ def test_default_comparator_uses_preledger_cached_anchor(
         ("wrong_policy", "policy"),
         ("wrong_item_key", "ineligible"),
         ("invalid_record_row", "canonical schema"),
+        ("excluded_record", "excluded rather than a complete pair"),
     ],
 )
 def test_zero_exit_malformed_record_export_never_promotes(
@@ -1734,13 +1735,21 @@ def test_zero_exit_malformed_record_export_never_promotes(
             entry["historical_cell"] = "wrong+shared"
         elif defect == "wrong_policy":
             entry["policy"] = "myopic"
-        elif defect in {"wrong_item_key", "invalid_record_row"}:
+        elif defect in {
+            "wrong_item_key",
+            "invalid_record_row",
+            "excluded_record",
+        }:
             lines = record_path.read_text("utf-8").splitlines()
             first = json.loads(lines[0])
             if defect == "wrong_item_key":
                 first["item_key"] = "not-eligible"
             else:
-                first["mc_stop_step"] = True
+                if defect == "invalid_record_row":
+                    first["mc_stop_step"] = True
+                else:
+                    first["excluded"] = True
+                    first["exclusion_reason"] = "UNKNOWN_NOT_INFERRED"
             lines[0] = json.dumps(
                 first, sort_keys=True, separators=(",", ":")
             )
@@ -1843,6 +1852,88 @@ def test_staged_tree_sync_failure_prevents_promotion(tmp_path, monkeypatch):
     assert report["reason"] == "promotion_crash"
     assert report["promotion_committed"] is False
     assert "synthetic staged fsync failure" in report["error"]
+
+
+def test_post_comparator_output_drift_prevents_receipt_and_promotion(
+    tmp_path, monkeypatch
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    quarantine = Path(config["quarantine_dir"])
+    promote_to = Path(config["promote_to"])
+    real_write_receipt = launcher._write_launch_receipt
+
+    monkeypatch.setattr(
+        launcher.phase4,
+        "compare_parity",
+        lambda *_args: {"verdict": "PASS", "checked": 194, "failures": []},
+    )
+
+    def zero_exit(argv, _env):
+        _write_valid_default_outputs(argv, probes["verified_eligibility"])
+        return 0
+
+    def mutate_then_write_receipt(*args, **kwargs):
+        first_cell = launcher.schema.CELL_IDS[0]
+        with (quarantine / "records" / f"{first_cell}.jsonl").open(
+            "ab"
+        ) as handle:
+            handle.write(b"post-comparator-drift\n")
+        return real_write_receipt(*args, **kwargs)
+
+    monkeypatch.setattr(
+        launcher, "_write_launch_receipt", mutate_then_write_receipt
+    )
+
+    with pytest.raises(launcher.RunFailed, match="atomic promotion failed"):
+        _call_default_launcher(config, probes, launch=zero_exit)
+
+    assert quarantine.is_dir()
+    assert not promote_to.exists()
+    assert not (quarantine / launcher.LAUNCH_RECEIPT_NAME).exists()
+    report = json.loads(
+        (quarantine / launcher.STOP_REPORT_NAME).read_text("utf-8")
+    )
+    assert report["reason"] == "promotion_crash"
+    assert "changed after the comparator" in report["error"]
+
+
+def test_post_fsync_output_drift_prevents_promotion(tmp_path, monkeypatch):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    quarantine = Path(config["quarantine_dir"])
+    promote_to = Path(config["promote_to"])
+    real_fsync_tree = launcher.fileio.fsync_tree
+
+    def sync_then_mutate(root):
+        real_fsync_tree(root)
+        first_cell = launcher.schema.CELL_IDS[0]
+        with (quarantine / "records" / f"{first_cell}.jsonl").open(
+            "ab"
+        ) as handle:
+            handle.write(b"post-fsync-drift\n")
+
+    monkeypatch.setattr(launcher.fileio, "fsync_tree", sync_then_mutate)
+    monkeypatch.setattr(
+        launcher,
+        "publish_dir_create_once",
+        lambda *_args, **_kwargs: pytest.fail(
+            "publication must not run after post-fsync output drift"
+        ),
+    )
+
+    with pytest.raises(launcher.RunFailed, match="atomic promotion failed"):
+        _call_launcher(config, probes)
+
+    assert quarantine.is_dir()
+    assert not promote_to.exists()
+    report = json.loads(
+        (quarantine / launcher.STOP_REPORT_NAME).read_text("utf-8")
+    )
+    assert report["reason"] == "promotion_crash"
+    assert "changed after the comparator" in report["error"]
 
 
 def test_promotion_destination_race_never_replaces_empty_incumbent(

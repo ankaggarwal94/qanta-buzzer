@@ -43,7 +43,7 @@ from scripts.stopdff_v5.fileio import (
     reclaim_empty_relic,
 )
 
-from . import phase4, schema
+from . import pairing, phase4, schema
 
 # reproducibility/colm_aims_2026/phase4_launcher.py -> repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -2105,6 +2105,12 @@ def _validate_exported_records(
                     f"record file {cell_id}.jsonl row {row_index + 1}"
                     f" violates the canonical schema: {exc}"
                 ) from exc
+            outcome = pairing.classify_record(record)
+            if outcome["status"] != "complete":
+                raise ComparatorValidationError(
+                    f"record file {cell_id}.jsonl row {row_index + 1}"
+                    " is excluded rather than a complete pair"
+                )
             item_key = record["item_key"]
             if item_key in observed_keys:
                 raise ComparatorValidationError(
@@ -2174,6 +2180,55 @@ def _build_default_compare(
     return compare
 
 
+def _snapshot_comparator_outputs(
+    quarantine_dir: Path, out_basename: str
+) -> dict[str, bytes]:
+    """Retain the exact export/record bytes presented to the comparator."""
+    quarantine_dir = Path(quarantine_dir)
+    records_root = quarantine_dir / "records"
+    expected_names = {f"{cell_id}.jsonl" for cell_id in schema.CELL_IDS}
+    try:
+        observed_names = {child.name for child in records_root.iterdir()}
+    except OSError as exc:
+        raise ComparatorValidationError(
+            "comparator output records cannot be enumerated"
+        ) from exc
+    if observed_names != expected_names:
+        raise ComparatorValidationError(
+            "comparator output record file set or membership changed"
+        )
+    paths = {out_basename: quarantine_dir / out_basename}
+    paths.update(
+        {
+            f"records/{cell_id}.jsonl": records_root / f"{cell_id}.jsonl"
+            for cell_id in schema.CELL_IDS
+        }
+    )
+    try:
+        return {
+            relative: schema.read_regular_file_bytes(
+                path, tree_root=quarantine_dir
+            )
+            for relative, path in sorted(paths.items())
+        }
+    except schema.ColmAimsError as exc:
+        raise ComparatorValidationError(
+            "comparator output snapshot is unreadable"
+        ) from exc
+
+
+def _require_comparator_outputs_unchanged(
+    quarantine_dir: Path,
+    out_basename: str,
+    expected: dict[str, bytes],
+) -> None:
+    """Reject any byte or membership drift from the compared snapshot."""
+    if _snapshot_comparator_outputs(quarantine_dir, out_basename) != expected:
+        raise ComparatorValidationError(
+            "regenerated export or record bytes changed after the comparator"
+        )
+
+
 def _write_stop_report(quarantine_dir: Path, payload: dict[str, Any]) -> None:
     quarantine_dir = Path(quarantine_dir)
     schema.stable_directory_chain(quarantine_dir, quarantine_dir)
@@ -2194,21 +2249,20 @@ def _write_launch_receipt(
     ledger_path: Path,
     out_basename: str,
     comparator_result: dict[str, Any],
+    comparator_output_snapshot: dict[str, bytes],
 ) -> None:
     """Bind the accepted export and record bytes before atomic promotion."""
-    records_root = Path(quarantine_dir) / "records"
+    _require_comparator_outputs_unchanged(
+        quarantine_dir, out_basename, comparator_output_snapshot
+    )
     records_sha256 = {
         cell_id: hashlib.sha256(
-            schema.read_regular_file_bytes(
-                records_root / f"{cell_id}.jsonl", tree_root=quarantine_dir
-            )
+            comparator_output_snapshot[f"records/{cell_id}.jsonl"]
         ).hexdigest()
         for cell_id in schema.CELL_IDS
     }
     export_sha256 = hashlib.sha256(
-        schema.read_regular_file_bytes(
-            Path(quarantine_dir) / out_basename, tree_root=quarantine_dir
-        )
+        comparator_output_snapshot[out_basename]
     ).hexdigest()
     ledger_sha256 = hashlib.sha256(
         schema.read_regular_file_bytes(ledger_path)
@@ -2794,7 +2848,17 @@ def validate_and_launch(
     # Mandatory comparator on a zero exit. A comparator crash gets a STOP
     # report too (F-3) — fail-closed with the triage artifact present.
     try:
+        if out_basename is None:
+            raise ComparatorValidationError(
+                "accepted launch has no bound export basename"
+            )
+        comparator_output_snapshot = _snapshot_comparator_outputs(
+            quarantine_dir, out_basename
+        )
         result = compare(quarantine_dir)
+        _require_comparator_outputs_unchanged(
+            quarantine_dir, out_basename, comparator_output_snapshot
+        )
     except BaseException as exc:
         _write_stop_report(
             quarantine_dir,
@@ -2824,14 +2888,13 @@ def validate_and_launch(
             promotion_claim_owned = True
 
         try:
-            if out_basename is None:
-                raise RunFailed("accepted launch has no bound export basename")
             _write_launch_receipt(
                 quarantine_dir,
                 activation_digest=activation_digest,
                 ledger_path=ledger_path,
                 out_basename=out_basename,
                 comparator_result=result,
+                comparator_output_snapshot=comparator_output_snapshot,
             )
             _release_captured_inputs_for_durable_sync(captured_inputs)
             # Make the complete accepted tree durable before its create-once
@@ -2840,6 +2903,9 @@ def validate_and_launch(
             # destination parent would leave a crash window where the rename
             # survives but the scientific evidence bytes do not.
             fileio.fsync_tree(quarantine_dir)
+            _require_comparator_outputs_unchanged(
+                quarantine_dir, out_basename, comparator_output_snapshot
+            )
             publish_dir_create_once(
                 quarantine_dir,
                 promote_to,

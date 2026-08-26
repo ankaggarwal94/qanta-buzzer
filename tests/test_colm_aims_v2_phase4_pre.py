@@ -3760,6 +3760,66 @@ class _LaunchRecorder:
         quarantine = Path(self.config["quarantine_dir"])
         assert quarantine.is_dir(), "quarantine must exist at launch time"
         (quarantine / "marker.txt").write_text("ran", encoding="utf-8")
+        if self.exit_code == 0:
+            eligibility = json.loads(
+                Path(argv[argv.index("--eligibility") + 1]).read_text("utf-8")
+            )
+            rows = [
+                {
+                    "item_key": item_key,
+                    "trajectory_horizon": eligibility["horizon_map"][item_key],
+                    "mc_event_status": "FINITE_STOP",
+                    "mc_stop_step": 0,
+                    "mc_terminal_imputation": "NONE",
+                    "ref_event_status": "FINITE_STOP",
+                    "ref_stop_step": 0,
+                    "ref_terminal_imputation": "NONE",
+                }
+                for item_key in eligibility["eligible_keys"]
+            ]
+            record_bytes = b"".join(
+                (
+                    json.dumps(row, sort_keys=True, separators=(",", ":"))
+                    + "\n"
+                ).encode("utf-8")
+                for row in rows
+            )
+            record_sha256 = sha256_bytes(record_bytes)
+            records_root = (
+                Path(argv[argv.index("--records-out") + 1]) / "records"
+            )
+            records_root.mkdir()
+            exported_records = {}
+            for cell_id in schema.CELL_IDS:
+                (records_root / f"{cell_id}.jsonl").write_bytes(record_bytes)
+                reference, calibration = cell_id.rsplit("__", 1)
+                historical_calibration = (
+                    "performat"
+                    if calibration == "format_specific"
+                    else calibration
+                )
+                exported_records[cell_id] = {
+                    "path": f"records/{cell_id}.jsonl",
+                    "sha256": record_sha256,
+                    "n_items": schema.EXPECTED_COMPLETE_PAIRS,
+                    "historical_cell": (
+                        f"{reference}+{historical_calibration}"
+                    ),
+                    "policy": "dp",
+                }
+            Path(argv[argv.index("--out") + 1]).write_text(
+                json.dumps(
+                    {
+                        "metadata": {
+                            "phase4": {
+                                "certificate_digest": self.digest,
+                                "exported_records": exported_records,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
         self.calls.append((list(argv), dict(env)))
         return self.exit_code
 
