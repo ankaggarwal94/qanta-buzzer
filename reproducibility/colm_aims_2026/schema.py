@@ -1186,6 +1186,12 @@ def _validate_arm_event(record: dict[str, Any], prefix: str, horizon: Any) -> No
                 f" {IMPUTATION_NONE!r} — an imputation marker on a finite"
                 " stop is rejected (R-045)"
             )
+        if crossing is False:
+            raise RecordValidationError(
+                f"{prefix} arm declares no crossing with FINITE_STOP — an"
+                " explicit false crossing indicator denotes NEVER_STOPPED"
+                " in the imported legacy representation (R-046)"
+            )
     else:  # NEVER_STOPPED
         if stop is not None:
             raise RecordValidationError(

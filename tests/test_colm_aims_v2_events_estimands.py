@@ -140,6 +140,13 @@ class TestFinalPrefixCrossing:
         rec["mc_crossing_indicator"] = True
         schema.validate_record(rec)
 
+    @pytest.mark.parametrize("prefix", ["mc", "ref"])
+    def test_false_crossing_indicator_with_finite_stop_rejected(self, prefix):
+        rec = make_record_v2("itm-0001", TRAJECTORY_HORIZON - 1, 2)
+        rec[f"{prefix}_crossing_indicator"] = False
+        with pytest.raises(schema.RecordValidationError, match="no crossing"):
+            schema.validate_record(rec)
+
     def test_distinct_fields_roundtrip_both_validated(self):
         # The canonical event and any imported original encoding are
         # DISTINCT fields; both survive a roundtrip unchanged.
