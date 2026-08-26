@@ -666,6 +666,20 @@ def bind_release_provenance(
             "record-derived paired population is not contained in the"
             " authenticated evaluation split"
         )
+    retention = provenance.get("pre_package_retention")
+    upstream_unpaired = eval_set - paired_keys
+    if (
+        not isinstance(retention, dict)
+        or retention.get("retained_count") != len(eval_keys)
+        or retention.get("paired_count") != len(paired_keys)
+        or retention.get("upstream_unpaired_count")
+        != len(upstream_unpaired)
+    ):
+        raise schema.TypedIngressError(
+            "frozen pre-package retention does not reconcile with the"
+            " authenticated evaluation split and record-derived paired"
+            " population"
+        )
 
     split_metadata = _strict_json_document(
         captured_staged_bytes["split_metadata"], "split metadata"
@@ -791,6 +805,7 @@ def bind_release_provenance(
         "git_dirty": repo.get("dirty"),
         "source_commit": repo.get("commit"),
     }
+    paired_order = pairing.canonical_item_order(paired_keys)
     bound["splits"] = {
         "fit": {
             "name": fit_name,
@@ -801,10 +816,8 @@ def bind_release_provenance(
         },
         "eval": {
             "name": eval_name,
-            "count": len(eval_keys),
-            "keyset_sha256": pairing.keyset_sha256(
-                pairing.canonical_item_order(eval_keys)
-            ),
+            "count": len(paired_order),
+            "keyset_sha256": pairing.keyset_sha256(paired_order),
         },
         "zero_overlap": True,
     }
@@ -813,9 +826,9 @@ def bind_release_provenance(
     ).hexdigest()
     bound["mc_build"] = {
         "built_after_split": True,
-        "coverage_rate": float(retention_rate),
-        "retention_policy": "retained_mc_after_raw_split",
-        "retained_count": len(eval_keys),
+        "coverage_rate": len(paired_order) / raw_count,
+        "retention_policy": "paired_mc_after_raw_split",
+        "retained_count": len(paired_order),
     }
     return bound
 

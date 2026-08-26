@@ -93,7 +93,12 @@ def _json_bytes(value) -> bytes:
 
 
 def _synthetic_provenance_inputs() -> dict[str, bytes]:
-    eval_keys = canonical_item_keys()
+    paired_keys = canonical_item_keys()
+    upstream_unpaired = [
+        "itm-" + hashlib.sha256(f"unpaired-{index}".encode()).hexdigest()[:16]
+        for index in range(FROZEN_EXCLUDED_COUNT)
+    ]
+    eval_keys = paired_keys + upstream_unpaired
     fit_keys = [
         "itm-" + hashlib.sha256(f"fit-{index}".encode()).hexdigest()[:16]
         for index in range(6)
@@ -252,7 +257,9 @@ def _write_records_root(
                     "fit_split": "val",
                     "eval_split": "test",
                     "n_fit": 6,
-                    "n_eval": len(canonical_item_keys()),
+                    "n_eval": (
+                        len(canonical_item_keys()) + FROZEN_EXCLUDED_COUNT
+                    ),
                     "seed": 1,
                     "phase4": {"seeds": [1]},
                     "generation": {
@@ -1249,6 +1256,23 @@ class TestRunDriver:
             profile.update(json.loads(json.dumps(built.profile)))
 
         provenance = built.profile["provenance"]
+        assert provenance["splits"]["eval"] == {
+            "name": "test",
+            "count": FROZEN_ELIGIBLE_COUNT,
+            "keyset_sha256": CANONICAL_KEYSET_SHA256,
+        }
+        assert provenance["pre_package_retention"] == {
+            "retained_count": FROZEN_ELIGIBLE_COUNT + FROZEN_EXCLUDED_COUNT,
+            "paired_count": FROZEN_ELIGIBLE_COUNT,
+            "upstream_unpaired_count": FROZEN_EXCLUDED_COUNT,
+        }
+        assert provenance["mc_build"] == {
+            "built_after_split": True,
+            "coverage_rate": FROZEN_ELIGIBLE_COUNT
+            / (FROZEN_ELIGIBLE_COUNT + FROZEN_EXCLUDED_COUNT),
+            "retention_policy": "paired_mc_after_raw_split",
+            "retained_count": FROZEN_ELIGIBLE_COUNT,
+        }
 
         def bind_ledger(ledger):
             model = provenance["model"]
