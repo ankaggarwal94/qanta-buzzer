@@ -377,3 +377,225 @@ def test_finalizer_has_no_fallible_postpublish_verification_or_readback(
 
     assert result.published_dir == destination
     assert verify_calls == 1
+
+
+@pytest.mark.parametrize("swap_seam", ("guard", "rename", "marker"))
+def test_publication_transaction_stays_bound_to_validated_parent_identity(
+    tmp_path, monkeypatch, swap_seam
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    staged = output_root / ".staged"
+    staged.mkdir()
+    (staged / "payload.json").write_bytes(b"{}\n")
+    destination = output_root / "bundle"
+    parent_chain = schema.stable_directory_chain(output_root, output_root)
+    displaced = tmp_path / "displaced-output"
+
+    def swap_parent():
+        output_root.rename(displaced)
+        output_root.mkdir()
+        (output_root / "replacement-sentinel.txt").write_text(
+            "preserve", encoding="utf-8"
+        )
+
+    if swap_seam == "guard":
+        original_guard = finalizer._create_pending_guard
+
+        def swap_before_guard(path, **kwargs):
+            swap_parent()
+            return original_guard(path, **kwargs)
+
+        monkeypatch.setattr(
+            finalizer, "_create_pending_guard", swap_before_guard
+        )
+    elif swap_seam == "rename":
+        original_publish = fileio.publish_dir_create_once
+
+        def swap_after_rename(*args, **kwargs):
+            original_publish(*args, **kwargs)
+            swap_parent()
+
+        monkeypatch.setattr(
+            fileio, "publish_dir_create_once", swap_after_rename
+        )
+    else:
+        original_marker = finalizer._create_accepted_marker
+
+        def swap_before_marker(path, tree_sha256, **kwargs):
+            swap_parent()
+            return original_marker(path, tree_sha256, **kwargs)
+
+        monkeypatch.setattr(
+            finalizer, "_create_accepted_marker", swap_before_marker
+        )
+
+    with pytest.raises(schema.TypedIngressError, match="publication parent"):
+        finalizer._publish_verified_directory(
+            staged,
+            destination,
+            exists_label="test bundle",
+            parent_chain=parent_chain,
+        )
+
+    assert (output_root / "replacement-sentinel.txt").read_text("utf-8") == (
+        "preserve"
+    )
+    assert not finalizer._accepted_marker_path(displaced / "bundle").exists()
+
+
+def test_transient_parent_swap_and_restore_cannot_issue_acceptance(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    staged = output_root / ".staged"
+    staged.mkdir()
+    (staged / "payload.json").write_bytes(b"verified\n")
+    destination = output_root / "bundle"
+    chain = schema.stable_directory_chain(output_root, output_root)
+    displaced = tmp_path / "displaced"
+    transient = tmp_path / "transient"
+
+    def swap_restore_and_fake_publish(_staged, dest, **_kwargs):
+        output_root.rename(displaced)
+        output_root.mkdir()
+        wrong = output_root / Path(dest).name
+        wrong.mkdir()
+        (wrong / "payload.json").write_bytes(b"wrong\n")
+        output_root.rename(transient)
+        displaced.rename(output_root)
+
+    monkeypatch.setattr(
+        fileio, "publish_dir_create_once", swap_restore_and_fake_publish
+    )
+
+    with pytest.raises(schema.ColmAimsError):
+        finalizer._publish_verified_directory(
+            staged,
+            destination,
+            exists_label="test bundle",
+            parent_chain=chain,
+        )
+
+    assert finalizer._pending_guard_path(destination).is_file()
+    assert not finalizer._accepted_marker_path(destination).exists()
+    assert not destination.exists()
+    assert (transient / "bundle" / "payload.json").read_bytes() == b"wrong\n"
+
+
+def test_fake_publish_of_wrong_bytes_at_correct_destination_stays_pending(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    staged = output_root / ".staged"
+    staged.mkdir()
+    (staged / "payload.json").write_bytes(b"verified\n")
+    destination = output_root / "bundle"
+    chain = schema.stable_directory_chain(output_root, output_root)
+
+    def publish_wrong_bytes(_staged, dest, **_kwargs):
+        Path(dest).mkdir()
+        (Path(dest) / "payload.json").write_bytes(b"wrong\n")
+
+    monkeypatch.setattr(
+        fileio, "publish_dir_create_once", publish_wrong_bytes
+    )
+
+    with pytest.raises(schema.TypedIngressError, match="verified staged tree"):
+        finalizer._publish_verified_directory(
+            staged,
+            destination,
+            exists_label="test bundle",
+            parent_chain=chain,
+        )
+
+    assert finalizer._pending_guard_path(destination).is_file()
+    assert not finalizer._accepted_marker_path(destination).exists()
+
+
+def test_post_marker_tree_mutation_is_caught_before_guard_retirement(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    staged = output_root / ".staged"
+    staged.mkdir()
+    (staged / "payload.json").write_bytes(b"verified\n")
+    destination = output_root / "bundle"
+    chain = schema.stable_directory_chain(output_root, output_root)
+    original_marker = finalizer._create_accepted_marker
+
+    def mutate_after_marker(path, tree_sha256, **kwargs):
+        original_marker(path, tree_sha256, **kwargs)
+        (Path(path) / "payload.json").write_bytes(b"mutated\n")
+
+    monkeypatch.setattr(
+        finalizer, "_create_accepted_marker", mutate_after_marker
+    )
+
+    with pytest.raises(schema.TypedIngressError, match="verified staged tree"):
+        finalizer._publish_verified_directory(
+            staged,
+            destination,
+            exists_label="test bundle",
+            parent_chain=chain,
+        )
+
+    assert finalizer._pending_guard_path(destination).is_file()
+    assert finalizer._accepted_marker_path(destination).is_file()
+
+
+def test_non_sibling_staging_is_refused_before_protocol_sidecars(tmp_path):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    stage_root = tmp_path / "stage-root"
+    stage_root.mkdir()
+    staged = stage_root / "staged"
+    staged.mkdir()
+    (staged / "payload.json").write_bytes(b"verified\n")
+    destination = output_root / "bundle"
+    chain = schema.stable_directory_chain(output_root, output_root)
+
+    with pytest.raises(schema.ConfigSurfaceError, match="must be siblings"):
+        finalizer._publish_verified_directory(
+            staged,
+            destination,
+            exists_label="test bundle",
+            parent_chain=chain,
+        )
+
+    assert list(output_root.iterdir()) == []
+
+
+def test_alias_publication_parent_and_missing_parent_are_refused(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(target, target_is_directory=True)
+    except OSError as exc:  # pragma: no cover - Windows privilege-dependent
+        pytest.skip(f"directory symlink creation unavailable: {exc}")
+    staged = alias / ".staged"
+    staged.mkdir()
+    (staged / "payload.json").write_bytes(b"verified\n")
+    destination = alias / "bundle"
+    target_chain = schema.stable_directory_chain(target, target)
+
+    with pytest.raises(schema.TypedIngressError, match="publication parent"):
+        finalizer._publish_verified_directory(
+            staged,
+            destination,
+            exists_label="test bundle",
+            parent_chain=target_chain,
+        )
+    assert not destination.exists()
+
+    missing_destination = tmp_path / "missing-parent" / "bundle"
+    with pytest.raises(schema.TypedIngressError, match="publication parent"):
+        finalizer._create_pending_guard(
+            missing_destination,
+            parent_chain=target_chain,
+        )
+    assert not missing_destination.parent.exists()

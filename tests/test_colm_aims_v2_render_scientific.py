@@ -426,9 +426,12 @@ def test_failed_retry_barrier_stays_guarded_and_is_not_success(
     site, output_root, receipts_dir = _roots(tmp_path)
     destination = output_root / "render-0001"
     original_fsync_tree = fileio.fsync_tree
+    committed = False
 
     def commit_then_fail(staged, dest, **_kwargs):
+        nonlocal committed
         os.rename(staged, dest)
+        committed = True
         raise fileio.DirectoryPublicationCommittedError(
             dest, OSError("injected parent sync failure")
         )
@@ -441,7 +444,11 @@ def test_failed_retry_barrier_stays_guarded_and_is_not_success(
     original_fsync_directory = fileio.fsync_directory
 
     def fail_parent_barrier(path):
-        if failure_point == "parent" and Path(path) == output_root:
+        if (
+            failure_point == "parent"
+            and committed
+            and Path(path) == output_root
+        ):
             raise OSError("injected second durability failure")
         return original_fsync_directory(path)
 
@@ -485,7 +492,7 @@ def test_guard_retirement_failure_leaves_complete_directory_pending(
     site, output_root, receipts_dir = _roots(tmp_path)
     destination = output_root / "render-0001"
 
-    def refuse_retirement(_guard, _encoded):
+    def refuse_retirement(_guard, _encoded, **_kwargs):
         raise OSError("injected guard retirement failure")
 
     monkeypatch.setattr(
@@ -506,7 +513,7 @@ def test_acceptance_marker_failure_leaves_final_directory_guarded(
     site, output_root, receipts_dir = _roots(tmp_path)
     destination = output_root / "render-0001"
 
-    def refuse_marker(_destination, _tree_sha256):
+    def refuse_marker(_destination, _tree_sha256, **_kwargs):
         raise OSError("injected acceptance marker failure")
 
     monkeypatch.setattr(
@@ -529,10 +536,16 @@ def test_guard_unlink_sync_exhaustion_is_safe_live_acceptance(
     destination = output_root / "render-0001"
     original = fileio.fsync_directory
     retirement_sync_calls = 0
+    marker = finalizer._accepted_marker_path(destination)
+    guard = finalizer._pending_guard_path(destination)
 
     def fail_guard_retirement_sync(path):
         nonlocal retirement_sync_calls
-        if Path(path) == output_root:
+        if (
+            Path(path) == output_root
+            and marker.exists()
+            and not guard.exists()
+        ):
             retirement_sync_calls += 1
             raise OSError("injected guard retirement sync failure")
         return original(path)
@@ -557,6 +570,33 @@ def test_positive_marker_binds_exact_detached_output_tree(tmp_path):
 
     with pytest.raises(schema.TypedIngressError, match="exact tree"):
         renderer._read_outputs(result.published_dir)
+
+
+def test_detached_reader_rejects_mutation_after_marker_bound_snapshot(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    result = _render(site, output_root, receipts_dir)
+    marker = finalizer._accepted_marker_path(result.published_dir)
+    original_read = schema.read_regular_file_bytes
+    mutated = False
+
+    def mutate_after_marker_read(path, *args, **kwargs):
+        nonlocal mutated
+        data = original_read(path, *args, **kwargs)
+        if Path(path) == marker and not mutated:
+            mutated = True
+            result.csv_path.write_bytes(result.csv_path.read_bytes() + b"\n")
+        return data
+
+    monkeypatch.setattr(
+        schema, "read_regular_file_bytes", mutate_after_marker_read
+    )
+
+    with pytest.raises(schema.TypedIngressError, match="changed during"):
+        renderer._read_outputs(result.published_dir)
+
+    assert mutated is True
 
 
 def test_guarded_release_authority_is_rejected_by_renderer(tmp_path):

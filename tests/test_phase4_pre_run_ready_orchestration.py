@@ -24,6 +24,30 @@ def _prepared_roots(tmp_path: Path) -> tuple[Path, Path]:
     return asset_root.resolve(), run_root.resolve()
 
 
+class _GuardedScandir:
+    """Iterator that records reads and explodes past its supplied sentinel."""
+
+    def __init__(self, names: list[str]) -> None:
+        self._names = names
+        self.next_calls = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.next_calls += 1
+        index = self.next_calls - 1
+        if index >= len(self._names):
+            raise AssertionError("directory iterator resumed past overflow sentinel")
+        return SimpleNamespace(name=self._names[index])
+
+
 def test_cli_derives_closed_paths_independently_of_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -170,6 +194,51 @@ def test_freshness_accepts_only_exact_empty_operational_shape(
     (run_root / "unexpected.txt").write_text("stale", encoding="utf-8")
     with pytest.raises(RuntimeError, match="membership must be exactly"):
         orchestration.require_fresh_operational_paths(paths)
+
+
+def test_freshness_stops_run_root_scan_at_expected_plus_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset_root, run_root = _prepared_roots(tmp_path)
+    paths = orchestration.derive_paths(
+        asset_root=asset_root, run_root=run_root, run_id="run-1"
+    )
+    guarded = _GuardedScandir(
+        ["certificate", "launch", "output", "receipts", "overflow", "forbidden"]
+    )
+    original_scandir = os.scandir
+
+    def bounded_root(path):
+        return guarded if Path(path) == run_root else original_scandir(path)
+
+    monkeypatch.setattr(orchestration.os, "scandir", bounded_root)
+
+    with pytest.raises(RuntimeError, match="more than 4 entries"):
+        orchestration.require_fresh_operational_paths(paths)
+
+    assert guarded.next_calls == 5
+
+
+def test_freshness_stops_empty_directory_scan_at_first_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset_root, run_root = _prepared_roots(tmp_path)
+    paths = orchestration.derive_paths(
+        asset_root=asset_root, run_root=run_root, run_id="run-1"
+    )
+    receipts = run_root / "receipts"
+    guarded = _GuardedScandir(["unexpected", "forbidden"])
+    original_scandir = os.scandir
+
+    def bounded_receipts(path):
+        return guarded if Path(path) == receipts else original_scandir(path)
+
+    monkeypatch.setattr(orchestration.os, "scandir", bounded_receipts)
+
+    with pytest.raises(RuntimeError, match="operational directory is not fresh"):
+        orchestration.require_fresh_operational_paths(paths)
+
+    assert guarded.next_calls == 1
 
 
 def test_suite_environment_adds_only_trusted_git_path(

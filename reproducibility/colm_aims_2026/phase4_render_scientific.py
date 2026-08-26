@@ -27,6 +27,7 @@ from .phase4_finalize_release import (
     _canonical_existing_directory,
     _parse_object,
     _publish_verified_directory,
+    _read_accepted_directory_snapshot,
     _require_accepted_directory,
     _require_disjoint,
     _require_mutually_disjoint,
@@ -89,7 +90,7 @@ def _capture_release_inputs(
 ) -> tuple[Path, dict[str, bytes]]:
     """Capture the three release sidecars and canonical tree without aliases."""
     expectations_path = Path(os.path.abspath(expectations_path))
-    base = _require_accepted_directory(
+    base, accepted_snapshot = _read_accepted_directory_snapshot(
         expectations_path.parent, "expectations parent"
     )
     _require_disjoint(
@@ -97,9 +98,13 @@ def _capture_release_inputs(
         runs_root,
         "expectations must remain outside the runs root",
     )
-    expectations_bytes = schema.read_regular_file_bytes(
-        expectations_path, tree_root=base
-    )
+    try:
+        expectations_rel = expectations_path.relative_to(base).as_posix()
+        expectations_bytes = accepted_snapshot[expectations_rel]
+    except (KeyError, ValueError) as exc:
+        raise schema.TypedIngressError(
+            "expectations are absent from the accepted authority snapshot"
+        ) from exc
     expectations = _parse_object(expectations_bytes, expectations_path.name)
     anchor = expectations.get("anchor")
     rights_decl = expectations.get("rights_inventory")
@@ -111,8 +116,14 @@ def _capture_release_inputs(
     rights_path = _external_reference(
         base, rights_decl.get("path"), "rights inventory path"
     )
-    ledger_bytes = schema.read_regular_file_bytes(ledger_path, tree_root=base)
-    rights_bytes = schema.read_regular_file_bytes(rights_path, tree_root=base)
+    try:
+        ledger_bytes = accepted_snapshot[ledger_path.relative_to(base).as_posix()]
+        rights_bytes = accepted_snapshot[rights_path.relative_to(base).as_posix()]
+    except (KeyError, ValueError) as exc:
+        raise schema.TypedIngressError(
+            "ledger or rights bytes are absent from the accepted authority"
+            " snapshot"
+        ) from exc
     ledger_doc = _parse_object(ledger_bytes, ledger_path.name)
     run_dir = verifier.resolve_canonical_package(runs_root, ledger_doc)
     return run_dir / "tree", {
@@ -368,21 +379,22 @@ def _tex_bytes(
 def _read_outputs(
     directory: Path, *, require_acceptance: bool = True
 ) -> dict[str, bytes]:
-    directory = (
-        _require_accepted_directory(directory, "scientific output")
-        if require_acceptance
-        else _canonical_existing_directory(directory, "staged scientific output")
-    )
-    observed = {entry.name for entry in directory.iterdir()}
+    if require_acceptance:
+        directory, snapshot = _read_accepted_directory_snapshot(
+            directory, "scientific output"
+        )
+    else:
+        directory = _canonical_existing_directory(
+            directory, "staged scientific output"
+        )
+        snapshot = verifier._read_tree_snapshot(directory)
+    observed = set(snapshot)
     if observed != set(OUTPUT_NAMES):
         raise schema.TypedIngressError(
             "scientific output must contain exactly the JSON, CSV, and TeX"
             f" products; observed {sorted(observed)}"
         )
-    return {
-        name: schema.read_regular_file_bytes(directory / name, tree_root=directory)
-        for name in OUTPUT_NAMES
-    }
+    return {name: snapshot[name] for name in OUTPUT_NAMES}
 
 
 def _require_render_boundaries(
@@ -541,6 +553,7 @@ def render_scientific_release(
             staged,
             destination,
             exists_label="scientific output bundle",
+            parent_chain=output_root_chain,
         )
         # The final name is the terminal operation; avoid fallible I/O after
         # the complete-looking public directory exists.

@@ -210,6 +210,35 @@ def _lexists(path: Path) -> bool:
     return os.path.lexists(path)
 
 
+def _bounded_child_names(
+    directory: Path,
+    *,
+    maximum: int,
+    failure_message: str,
+) -> list[str]:
+    """Read at most ``maximum + 1`` directory entries, never an unbounded list."""
+
+    if maximum < 0:
+        raise ValueError("bounded directory maximum must be nonnegative")
+    names: list[str] = []
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if len(names) == maximum:
+                    raise RuntimeError(
+                        f"{failure_message}; more than {maximum} entries observed"
+                    )
+                names.append(entry.name)
+    except RuntimeError:
+        raise
+    except OSError as exc:
+        raise RuntimeError(
+            f"{failure_message}; directory enumeration failed"
+            f" ({exc.__class__.__name__})"
+        ) from exc
+    return names
+
+
 def _identity(info: os.stat_result) -> tuple[int, int, int]:
     return int(info.st_dev), int(info.st_ino), int(info.st_mode)
 
@@ -512,7 +541,16 @@ def require_fresh_operational_paths(paths: OrchestrationPaths) -> None:
             )
 
     expected_run_children = {"certificate", "launch", "output", "receipts"}
-    observed_run_children = {child.name for child in paths.run_root.iterdir()}
+    observed_run_children = set(
+        _bounded_child_names(
+            paths.run_root,
+            maximum=len(expected_run_children),
+            failure_message=(
+                "fresh run root membership must be exactly"
+                f" {sorted(expected_run_children)}"
+            ),
+        )
+    )
     if observed_run_children != expected_run_children:
         raise RuntimeError(
             "fresh run root membership must be exactly"
@@ -544,11 +582,11 @@ def require_fresh_operational_paths(paths: OrchestrationPaths) -> None:
         paths.run_root / "output",
         paths.run_root / "launch",
     ):
-        stale = list(directory.iterdir())
-        if stale:
-            raise RuntimeError(
-                f"operational directory is not fresh: {directory}: {stale[:10]}"
-            )
+        _bounded_child_names(
+            directory,
+            maximum=0,
+            failure_message=f"operational directory is not fresh: {directory}",
+        )
 
 
 def verify_prepared_inputs(paths: OrchestrationPaths) -> list[dict[str, str]]:

@@ -100,6 +100,19 @@ def _require_unchanged_directory(
         )
 
 
+def _require_publication_parent(
+    destination: Path,
+    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    stage: str,
+) -> None:
+    """Bind every publication syscall to the originally validated parent."""
+    _require_unchanged_directory(
+        Path(destination).parent,
+        parent_chain,
+        f"publication parent during {stage}",
+    )
+
+
 def _require_disjoint(path: Path, root: Path, message: str) -> None:
     if schema.resolves_inside(path, root):
         raise schema.ConfigSurfaceError(message)
@@ -192,8 +205,70 @@ def _accepted_marker_bytes(destination: Path, tree_sha256: str) -> bytes:
     )
 
 
-def _require_accepted_directory(path: Path, label: str) -> Path:
-    """Require exact positive acceptance and no sibling pending-state guard."""
+def _create_once_in_bound_parent(
+    path: Path,
+    data: bytes,
+    *,
+    destination: Path,
+    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    exists_label: str,
+) -> None:
+    """Durably create one sibling without ever creating its parent."""
+    _require_publication_parent(destination, parent_chain, f"{exists_label} open")
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError as exc:
+        raise FileExistsError(f"{exists_label} already exists: {path}") from exc
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _require_publication_parent(
+            destination, parent_chain, f"{exists_label} file sync"
+        )
+        fileio.fsync_directory(path.parent)
+        _require_publication_parent(
+            destination, parent_chain, f"{exists_label} parent sync"
+        )
+    except BaseException:
+        # A partial sibling remains fail-closed: pending is rejection, while a
+        # marker cannot be accepted unless its exact bytes validate.
+        raise
+
+
+def _require_published_tree(
+    destination: Path,
+    expected_tree_sha256: str,
+    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    stage: str,
+) -> None:
+    """Rebind the committed directory bytes to the staged precommit digest."""
+    _require_publication_parent(destination, parent_chain, f"{stage} precheck")
+    observed = _directory_tree_sha256(destination)
+    _require_publication_parent(destination, parent_chain, f"{stage} postcheck")
+    if observed != expected_tree_sha256:
+        raise schema.TypedIngressError(
+            "published directory tree differs from the verified staged tree"
+        )
+
+
+def _read_accepted_directory_snapshot(
+    path: Path, label: str
+) -> tuple[Path, dict[str, bytes]]:
+    """Return the exact snapshot bound by a stable positive marker.
+
+    The first snapshot is the sole authoritative byte capture returned to the
+    consumer. A second capture is only a concurrency postcheck; its bytes are
+    never substituted into the return value.
+    """
     directory = Path(os.path.abspath(path))
     guard = _pending_guard_path(directory)
     if os.path.lexists(guard):
@@ -201,8 +276,14 @@ def _require_accepted_directory(path: Path, label: str) -> Path:
             f"{label} has an unresolved pending publication guard"
         )
     directory = _canonical_existing_directory(directory, label)
+    snapshot = verifier._read_tree_snapshot(directory)
     marker = _accepted_marker_path(directory)
-    tree_sha256 = _directory_tree_sha256(directory)
+    tree_sha256 = verifier._tree_digest_from_shas(
+        {
+            rel: hashlib.sha256(data).hexdigest()
+            for rel, data in snapshot.items()
+        }
+    )
     expected = _accepted_marker_bytes(directory, tree_sha256)
     try:
         observed = schema.read_regular_file_bytes(
@@ -218,21 +299,44 @@ def _require_accepted_directory(path: Path, label: str) -> Path:
         raise schema.TypedIngressError(
             f"{label} positive acceptance marker does not bind its exact tree"
         )
+    if os.path.lexists(guard):
+        raise schema.TypedIngressError(
+            f"{label} became pending during accepted snapshot capture"
+        )
+    if verifier._read_tree_snapshot(directory) != snapshot:
+        raise schema.TypedIngressError(
+            f"{label} tree changed during accepted snapshot capture"
+        )
+    return directory, snapshot
+
+
+def _require_accepted_directory(path: Path, label: str) -> Path:
+    """Require exact positive acceptance and no sibling pending-state guard."""
+    directory, _ = _read_accepted_directory_snapshot(path, label)
     return directory
 
 
-def _create_pending_guard(destination: Path) -> tuple[Path, bytes]:
+def _create_pending_guard(
+    destination: Path,
+    *,
+    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+) -> tuple[Path, bytes]:
+    _require_publication_parent(destination, parent_chain, "guard precheck")
     guard = _pending_guard_path(destination)
     _require_unclaimed(guard, "pending publication guard")
     _require_unclaimed(
         _accepted_marker_path(destination), "positive acceptance marker"
     )
     encoded = _pending_guard_bytes(destination)
-    fileio.create_once_bytes(
+    _require_publication_parent(destination, parent_chain, "guard creation")
+    _create_once_in_bound_parent(
         guard,
         encoded,
+        destination=destination,
+        parent_chain=parent_chain,
         exists_label="pending publication guard",
     )
+    _require_publication_parent(destination, parent_chain, "guard readback")
     observed = schema.read_regular_file_bytes(
         guard,
         tree_root=guard.parent,
@@ -242,17 +346,27 @@ def _create_pending_guard(destination: Path) -> tuple[Path, bytes]:
         raise schema.TypedIngressError(
             "pending publication guard differs from its deterministic bytes"
         )
+    _require_publication_parent(destination, parent_chain, "guard completion")
     return guard, encoded
 
 
-def _create_accepted_marker(destination: Path, tree_sha256: str) -> None:
+def _create_accepted_marker(
+    destination: Path,
+    tree_sha256: str,
+    *,
+    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+) -> None:
+    _require_publication_parent(destination, parent_chain, "marker creation")
     marker = _accepted_marker_path(destination)
     encoded = _accepted_marker_bytes(destination, tree_sha256)
-    fileio.create_once_bytes(
+    _create_once_in_bound_parent(
         marker,
         encoded,
+        destination=destination,
+        parent_chain=parent_chain,
         exists_label="positive acceptance marker",
     )
+    _require_publication_parent(destination, parent_chain, "marker readback")
     observed = schema.read_regular_file_bytes(
         marker,
         tree_root=marker.parent,
@@ -262,10 +376,46 @@ def _create_accepted_marker(destination: Path, tree_sha256: str) -> None:
         raise schema.TypedIngressError(
             "positive acceptance marker differs from its deterministic bytes"
         )
+    _require_publication_parent(destination, parent_chain, "marker completion")
 
 
-def _retire_pending_guard(guard: Path, encoded: bytes) -> None:
+def _require_positive_acceptance_state(
+    destination: Path,
+    tree_sha256: str,
+    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+) -> None:
+    """Validate committed tree and marker while the pending guard is live."""
+    _require_published_tree(
+        destination,
+        tree_sha256,
+        parent_chain,
+        "acceptance tree validation",
+    )
+    marker = _accepted_marker_path(destination)
+    expected = _accepted_marker_bytes(destination, tree_sha256)
+    observed = schema.read_regular_file_bytes(
+        marker,
+        tree_root=marker.parent,
+        max_bytes=len(expected),
+    )
+    _require_publication_parent(
+        destination, parent_chain, "acceptance marker validation"
+    )
+    if observed != expected:
+        raise schema.TypedIngressError(
+            "positive acceptance marker changed before guard retirement"
+        )
+
+
+def _retire_pending_guard(
+    guard: Path,
+    encoded: bytes,
+    *,
+    destination: Path,
+    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+) -> None:
     """Remove the guard only after the final directory is independently durable."""
+    _require_publication_parent(destination, parent_chain, "guard retirement")
     observed = schema.read_regular_file_bytes(
         guard,
         tree_root=guard.parent,
@@ -275,15 +425,26 @@ def _retire_pending_guard(guard: Path, encoded: bytes) -> None:
         raise schema.TypedIngressError(
             "pending publication guard changed before acceptance"
         )
+    _require_publication_parent(destination, parent_chain, "guard unlink")
     os.unlink(guard)
+    _require_publication_parent(destination, parent_chain, "guard unlink commit")
     try:
         fileio.fsync_directory(guard.parent)
+        _require_publication_parent(
+            destination, parent_chain, "guard retirement completion"
+        )
     except OSError:
         # The directory artifact was already made durable before guard
         # retirement. Retry the acceptance-state durability barrier once;
         # exhaustion is classified explicitly by the publishing protocol.
         try:
+            _require_publication_parent(
+                destination, parent_chain, "guard retirement retry"
+            )
             fileio.fsync_directory(guard.parent)
+            _require_publication_parent(
+                destination, parent_chain, "guard retirement retry completion"
+            )
         except OSError as second_exc:
             raise _GuardRetirementCommittedError(
                 "pending guard removal committed after durable positive"
@@ -500,28 +661,56 @@ def _require_report_bindings(
 
 
 def _publish_verified_directory(
-    staged: Path, destination: Path, *, exists_label: str
+    staged: Path,
+    destination: Path,
+    *,
+    exists_label: str,
+    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
 ) -> None:
     """Create-once publish guarded until the final directory is durable."""
+    if Path(os.path.abspath(staged)).parent != Path(
+        os.path.abspath(destination)
+    ).parent:
+        raise schema.ConfigSurfaceError(
+            "staged and destination directories must be siblings under the"
+            " validated publication parent"
+        )
+    _require_publication_parent(destination, parent_chain, "transaction start")
     tree_sha256 = _directory_tree_sha256(staged)
-    guard, guard_bytes = _create_pending_guard(destination)
+    _require_publication_parent(destination, parent_chain, "guard dispatch")
+    guard, guard_bytes = _create_pending_guard(
+        destination, parent_chain=parent_chain
+    )
     published = False
     try:
         try:
+            _require_publication_parent(destination, parent_chain, "directory rename")
             fileio.publish_dir_create_once(
                 staged,
                 destination,
                 exists_label=exists_label,
             )
             published = True
+            _require_publication_parent(
+                destination, parent_chain, "directory rename completion"
+            )
         except fileio.DirectoryPublicationCommittedError as exc:
             if Path(exc.destination).absolute() != Path(destination).absolute():
                 raise
             published = True
+            _require_publication_parent(
+                destination, parent_chain, "committed rename recovery"
+            )
             # The atomic rename committed, but acceptance stays guarded until
             # an independent full-tree + parent durability barrier succeeds.
             fileio.fsync_tree(destination)
+            _require_publication_parent(
+                destination, parent_chain, "committed tree sync"
+            )
             fileio.fsync_directory(destination.parent)
+            _require_publication_parent(
+                destination, parent_chain, "committed parent sync"
+            )
         except FileExistsError as exc:
             raise schema.ConfigSurfaceError(str(exc)) from exc
     except BaseException:
@@ -529,17 +718,42 @@ def _publish_verified_directory(
             # No final directory was committed. Best-effort removal avoids a
             # stale guard; a cleanup failure safely leaves the slot guarded.
             with contextlib.suppress(BaseException):
-                _retire_pending_guard(guard, guard_bytes)
+                _retire_pending_guard(
+                    guard,
+                    guard_bytes,
+                    destination=destination,
+                    parent_chain=parent_chain,
+                )
         raise
+    _require_published_tree(
+        destination,
+        tree_sha256,
+        parent_chain,
+        "postcommit tree validation",
+    )
     try:
-        _create_accepted_marker(destination, tree_sha256)
+        _create_accepted_marker(
+            destination,
+            tree_sha256,
+            parent_chain=parent_chain,
+        )
     except BaseException:
         # The final tree is durable, but without a durable exact marker it is
         # not accepted. Keep the pending guard so every protocol-aware reader
         # mechanically rejects this ambiguous state.
         raise
+    _require_positive_acceptance_state(
+        destination,
+        tree_sha256,
+        parent_chain,
+    )
     try:
-        _retire_pending_guard(guard, guard_bytes)
+        _retire_pending_guard(
+            guard,
+            guard_bytes,
+            destination=destination,
+            parent_chain=parent_chain,
+        )
     except _GuardRetirementCommittedError:
         # Destination and positive marker were each durably published before
         # guard retirement. The live state (exact marker, no guard) is accepted;
@@ -672,6 +886,7 @@ def finalize_release(
             staged,
             destination,
             exists_label="release sidecar bundle",
+            parent_chain=output_root_chain,
         )
         # From this point the complete public name is terminal: no fallible
         # verification, readback, cleanup stat, or other filesystem operation.
