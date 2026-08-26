@@ -37,7 +37,8 @@ Exit codes mirror ``verify.py`` / ``phase4_assemble_d7b`` (0 pass, 2 usage,
 (grid/held-fixed), R-052 (retention), R-071/R-072 (closure), R-074/R-075
 (frozen loaders), R-016/R-039 (create-once publish).
 The launch receipt authenticates the exact ten record hashes and activation
-digest before any evidence is assembled. Spec:
+digest before any evidence is assembled and binds the R-081 process/host
+trust boundary under which those bytes were published. Spec:
 .correctless/specs/camera-ready-aims-evidence-2.md
 """
 from __future__ import annotations
@@ -131,6 +132,7 @@ LAUNCH_RECEIPT_KEYS = frozenset(
     {
         "schema_version",
         "receipt_type",
+        "process_trust_model",
         "activation_digest",
         "ledger_sha256",
         "producer_exit_code",
@@ -665,6 +667,11 @@ def validate_launch_receipt(
     if not isinstance(doc, dict) or set(doc) != LAUNCH_RECEIPT_KEYS:
         raise schema.TypedIngressError("launch receipt has a non-closed shape")
     schema.check_schema_version(doc, "launch receipt")
+    if doc["process_trust_model"] != phase4.PHASE4_PROCESS_TRUST_MODEL_ID:
+        raise schema.TypedIngressError(
+            "launch receipt does not bind the required Phase-4 process trust"
+            " model"
+        )
     if (
         doc["receipt_type"] != "phase4_launch"
         or doc["activation_digest"] != expected_activation_digest

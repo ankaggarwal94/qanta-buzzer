@@ -75,6 +75,43 @@ def test_config_loader_requires_an_exact_closed_json_object(tmp_path):
         launcher._load_launcher_config(_write_config(tmp_path, []))
 
 
+def test_cli_and_contract_disclose_exact_process_trust_boundary():
+    help_text = launcher._build_parser().format_help()
+    assert "not a sandbox" in help_text
+    assert "no surviving producer descendants" in help_text
+
+    repo_root = Path(launcher.__file__).resolve().parents[2]
+    surfaces = {
+        "spec": repo_root
+        / ".correctless/specs/camera-ready-aims-evidence-2.md",
+        "readme": repo_root / "reproducibility/colm_aims_2026/README.md",
+        "feature": repo_root
+        / "docs/features/camera-ready-aims-evidence-v2.md",
+        "decision": repo_root
+        / "decision_record_phase4_process_trust_boundary_2026-08-26.md",
+    }
+    for label, path in surfaces.items():
+        text = path.read_text("utf-8")
+        assert "not a sandbox" in text, label
+        assert "no surviving producer descendants" in text, label
+        assert launcher.phase4.PHASE4_PROCESS_TRUST_MODEL_ID in text, label
+
+    assert "not a sandbox" in (launcher.__doc__ or "")
+    assert "not ACL, principal, or process isolation" in (
+        launcher._materialize_private_promotion_tree.__doc__ or ""
+    )
+    architecture = (repo_root / ".correctless/ARCHITECTURE.md").read_text(
+        "utf-8"
+    )
+    assert "published artifacts are immutable once written" not in architecture
+    assert "not filesystem ACL immutability" in architecture
+    closure_source = (
+        repo_root / "reproducibility/colm_aims_2026/closure.py"
+    ).read_text("utf-8")
+    assert "staged immutable envelope" not in closure_source
+    assert "not an OS-level immutability" in closure_source
+
+
 def test_config_loader_closes_snapshot_roles_and_path_types(tmp_path):
     invalid_roles = _json_config(tmp_path)
     invalid_roles["snapshot_dirs"] = {
@@ -1920,6 +1957,10 @@ def test_publish_uses_private_snapshot_when_original_output_mutates(
     assert promoted_record.read_bytes() == observed["validated"]
     receipt = json.loads(
         (promote_to / launcher.LAUNCH_RECEIPT_NAME).read_text("utf-8")
+    )
+    assert (
+        receipt["process_trust_model"]
+        == launcher.phase4.PHASE4_PROCESS_TRUST_MODEL_ID
     )
     assert receipt["records_sha256"][first_cell] == _sha256(
         observed["validated"]

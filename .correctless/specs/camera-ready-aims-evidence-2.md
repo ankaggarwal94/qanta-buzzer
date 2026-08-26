@@ -1022,6 +1022,34 @@ analysis over retained per-item records — permitted; model execution is not.
   the certificate digest in its output metadata. Enforcement: launcher
   unit tests with injectable runners/launchers for every refusal class and
   the single-use ledger; no test loads a model.
+
+  **Process/host trust boundary — author amendment, 2026-08-26.** The
+  Phase-4 launcher is not a sandbox, privilege boundary, or hostile-process
+  containment mechanism; it is an integrity and reproducibility workflow. It
+  assumes the certified producer and dependency environment, operating
+  system and filesystem, and processes running with the launcher's OS
+  identity are cooperative. In particular, the supported producer workflow
+  has no surviving producer descendants: no independently running descendant
+  retains access to the launch workspace after the direct producer exits. The
+  launcher detects ordinary
+  path and byte drift and reconstructs comparator-approved bytes into a
+  path-detached candidate, but it does not protect that candidate or the
+  promoted directory from a process able to enumerate and mutate files under
+  the same OS identity, or from privileged host compromise. "Private
+  promotion" denotes launcher ownership and byte provenance, not ACL or
+  process isolation. `PASS`, the launch receipt, `PASS_RELEASE`, and
+  `CAMERA_READY_CLOSURE` certify the declared bytes and scientific bindings
+  only under this boundary; they do not establish hostile-process provenance
+  or tamper resistance. This amendment does not weaken any existing
+  untrusted-artifact, symlink/reparse, checksum, TOCTOU, schema, no-replace,
+  durability, or truthful-STOP check within the supported workflow. A
+  conforming launch receipt binds the exact closed token
+  `process_trust_model =
+  "trusted_same_os_identity_no_surviving_descendants_v1"`; a missing or
+  different token is an ingress defect. If this cooperative-host precondition
+  cannot be established, the ceremony must not run; hostile same-principal
+  containment requires a separately approved and tested OS isolation
+  backend.
 - **R-082** [unit] *(operational rejection repair, 2026-08-22)*: Staged
   inputs live OUTSIDE the repository tree — identity is carried by the
   hash gates (R-076), never by location — because the producer's

@@ -280,7 +280,9 @@ def evaluate_closure(
     not itself recompute record semantics. Only
     ``phase4_assemble_d7b.build_evidence_package`` is an authoritative
     publication path: that producer additionally runs the full source
-    verifier over its staged immutable envelope before create-once promotion.
+    verifier over its staged, byte-verified closed envelope before create-once
+    promotion. Create-once is a protocol property under the R-081 process/host
+    trust boundary, not an OS-level immutability or hostile-process claim.
     """
     validate_closure_inventory(inventory)
     failing: list[str] = []

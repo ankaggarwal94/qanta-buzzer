@@ -125,8 +125,11 @@ Three systems share this repo:
   under the runs root — never newest-wins; empty, symlink, or escaping run
   dirs FAIL the release run itself (`resolve_canonical_package`,
   `verifier.py:470`; `run_release_over_runs_root`, `verifier.py:1900`).
-- **Invariant:** published artifacts are immutable once written; canonical
-  selection has exactly one authority (the ledger pointer).
+- **Invariant:** conforming writers publish artifacts with create-once,
+  no-replace semantics; canonical selection has exactly one authority (the
+  ledger pointer). This is a protocol invariant under the Phase-4 R-081
+  cooperative process/host trust boundary, not filesystem ACL immutability or
+  containment against a hostile process sharing the same OS identity.
 - Violated when: a publish site uses bare `os.replace`/`open("w")` on a final
   path, or selection falls back to mtime/newest.
 - Test: `tests/test_colm_aims_v2_receipts_closure.py`,

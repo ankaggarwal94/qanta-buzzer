@@ -9,8 +9,15 @@ activation digest, re-proves the live repository state against the
 certified head, refuses ambient provenance overrides, re-verifies both
 model snapshots, consumes the single-use exception via a CREATE-ONCE
 ledger, launches the producer EXACTLY once into a fresh quarantine
-directory with a pinned environment, and promotes the quarantine to the
-final destination only after a mandatory parity-comparator PASS.
+directory with a pinned environment, and promotes a detached candidate built
+from retained comparator-approved bytes only after a mandatory comparator
+PASS.
+
+This is an integrity and reproducibility workflow, not a sandbox or hostile-
+process containment boundary. R-081 assumes the certified producer,
+dependencies, host, filesystem, and processes sharing the launcher's OS
+identity are cooperative, with no surviving producer descendants. See the
+governing R-081 process/host trust boundary for the exact limitation.
 
 Spec: .correctless/specs/camera-ready-aims-evidence-2.md R-081/R-082
 (operational-rejection repair, 2026-08-22).
@@ -2273,10 +2280,12 @@ def _materialize_private_promotion_tree(
 
     The producer is given only paths in ``quarantine_dir``. A descendant that
     survives the direct child can therefore retain handles to those files.
-    Promotion instead uses a fresh private child whose export and records are
-    created solely from the bytes retained before comparator execution. The
-    authenticated captured inputs are copied through held descriptors and
-    checked against their original size/digest inventory.
+    Promotion instead uses a fresh, path-detached launcher-owned child whose
+    export and records are created solely from the bytes retained before
+    comparator execution. "Private" describes byte provenance and path
+    ownership, not ACL, principal, or process isolation. The authenticated
+    captured inputs are copied through held descriptors and checked against
+    their original size/digest inventory.
     """
     quarantine_dir = Path(quarantine_dir)
     expected_outputs = {out_basename} | {
@@ -2386,6 +2395,7 @@ def _write_launch_receipt(
     payload = {
         "schema_version": schema.SCHEMA_VERSION,
         "receipt_type": "phase4_launch",
+        "process_trust_model": phase4.PHASE4_PROCESS_TRUST_MODEL_ID,
         "activation_digest": activation_digest,
         "ledger_sha256": ledger_sha256,
         "producer_exit_code": 0,
@@ -3121,6 +3131,11 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             "Certificate-bound, single-use Phase-4 launcher. The JSON"
             " config surface is closed and every refusal is fail-closed."
+        ),
+        epilog=(
+            "Threat boundary: this integrity workflow is not a sandbox; it"
+            " requires a cooperative same-identity environment and no"
+            " surviving producer descendants."
         ),
         allow_abbrev=False,
     )

@@ -62,6 +62,9 @@ class ParityAnchorError(schema.TypedIngressError):
 # Pinned constants (R-074/R-075/R-079)
 # ---------------------------------------------------------------------------
 
+PHASE4_PROCESS_TRUST_MODEL_ID = (
+    "trusted_same_os_identity_no_surviving_descendants_v1"
+)
 ELIGIBILITY_ARTIFACT_TYPE = "pairing_eligibility"
 ELIGIBILITY_ARTIFACT_RELPATH = (
     "reproducibility/colm_aims_2026/frozen/pairing_eligibility_v2.json"

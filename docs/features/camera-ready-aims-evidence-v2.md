@@ -125,6 +125,17 @@ failing leg names the leg id, expected vs observed, and a remediation class
 
 ## Known limitations
 
+- **Phase-4 is not a sandbox or process boundary.** R-081 assumes a cooperative
+  certified
+  producer/dependency environment, host OS/filesystem, and same-identity
+  processes, with no surviving producer descendants. "Private promotion"
+  means path-detached, launcher-owned byte provenance; it does not mean ACL,
+  principal, or hostile-process isolation. The launch receipt binds
+  `trusted_same_os_identity_no_surviving_descendants_v1`, and downstream
+  publication rejects another boundary. If the operator cannot establish
+  this precondition, the ceremony must not run without a separately approved
+  OS isolation backend. No PASS or closure verdict proves hostile-process
+  provenance or tamper resistance.
 - **Source ceiling.** `--mode source` tops out at `PASS_SOURCE_ONLY` —
   in-package consistency only. It certifies no release binding, no anchored
   expectation, no rights clearance, no archival identity, and (like every

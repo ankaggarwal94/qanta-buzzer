@@ -74,3 +74,20 @@ Every run emits a schema-versioned JSON receipt (`receipt-<run_id>.json`)
 into `--receipts-dir`, outside the verified tree, create-once: mode,
 verdict, per-leg outcomes, input-tree hash, expectations-anchor hash,
 verifier code hash, timestamp.
+
+## Phase-4 process/host trust boundary
+
+The certificate-bound Phase-4 launcher is an integrity and reproducibility
+workflow, not a sandbox, privilege boundary, or hostile-process containment
+mechanism. The certified producer and dependencies, host OS and filesystem,
+and processes sharing the launcher's OS identity must be cooperative, and the
+supported run leaves no surviving producer descendants. The launcher guards
+ordinary crashes, malformed or drifting bytes, aliases, replacement races,
+and create-once publication, but it cannot protect a path-addressable
+candidate or promoted tree from a deliberately hostile process with the same
+OS access. Its launch receipt binds
+`trusted_same_os_identity_no_surviving_descendants_v1`; the D7(b) driver
+rejects a missing or different process-trust token. If this operator
+precondition is unavailable, do not run the ceremony: provision a separately
+approved OS isolation boundary first. No verifier or closure verdict proves
+hostile-process provenance or tamper resistance.

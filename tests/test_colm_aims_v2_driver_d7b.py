@@ -165,6 +165,7 @@ def _write_records_root(root):
     receipt = {
         "schema_version": schema.SCHEMA_VERSION,
         "receipt_type": "phase4_launch",
+        "process_trust_model": driver.phase4.PHASE4_PROCESS_TRUST_MODEL_ID,
         "activation_digest": activation_digest,
         "ledger_sha256": sha256_bytes(ledger_path.read_bytes()),
         "producer_exit_code": 0,
@@ -552,6 +553,30 @@ def _run_driver(
 
 
 class TestRunDriver:
+    @pytest.mark.parametrize("mutation", ["missing", "different"])
+    def test_launch_receipt_requires_exact_process_trust_model(
+        self, tmp_path, mutation
+    ):
+        records_root = _write_records_root(tmp_path / "records")
+        receipt_path = _launch_receipt(records_root)
+        receipt = json.loads(receipt_path.read_text("utf-8"))
+        if mutation == "missing":
+            receipt.pop("process_trust_model")
+            message = "non-closed shape"
+        else:
+            receipt["process_trust_model"] = "hostile_same_identity_in_scope"
+            message = "process trust model"
+        receipt_path.write_bytes(schema.encode_json(receipt))
+
+        with pytest.raises(schema.TypedIngressError, match=message):
+            driver.validate_launch_receipt(
+                records_root,
+                receipt_path,
+                _launch_ledger(records_root),
+                _activation_digest(records_root),
+                TEST_SOURCE_COMMIT,
+            )
+
     @pytest.mark.parametrize("artifact", ["ledger", "export"])
     def test_launch_receipt_authenticates_transaction_artifacts(
         self, tmp_path, artifact
