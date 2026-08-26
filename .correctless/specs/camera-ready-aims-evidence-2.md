@@ -1030,23 +1030,22 @@ analysis over retained per-item records — permitted; model execution is not.
   never sufficient by itself. Only after promotion durability succeeds, all
   retained handles are released, the producer quarantine is removed, and its
   parent is synced may the launcher durably create the canonical, create-once
-  `LAUNCH_ACCEPTANCE_PENDING.json` negative guard. While that guard exists,
-  the launcher may create and fully publish `LAUNCH_ACCEPTED.json`, including
-  temporary-link cleanup and the host's publication durability barrier. The
-  positive marker binds the exact activation digest and SHA-256 of the raw
-  sibling launch-receipt bytes. The D7(b) driver must reject any surviving
-  pending guard before it requires the marker's exact closed canonical shape;
-  a surviving guard or missing, malformed, aliased, or mismatched marker
-  rejects even when no STOP report exists. Removing the pending guard and
-  then syncing the promotion directory is the terminal acceptance
-  linearization sequence: PASS is returned only after the deletion is durable
-  where directory fsync is supported, and no fallible scientific,
-  durability, diagnostic, or cleanup operation follows that sync. A crash
-  before the sync may resurrect the guard as a safe false negative; a sync
-  failure first re-creates and durably publishes the canonical pending guard,
-  then propagates and attempts a destination STOP rather than returning PASS.
-  The negative guard, not the best-effort STOP report, prevents a failed
-  transition from being consumed;
+  `LAUNCH_ACCEPTANCE_PENDING.json` negative guard. The launcher removes that
+  guard and syncs the promotion directory while no positive marker exists; a
+  deletion or sync failure therefore leaves marker absence as the rejection
+  oracle, independently of best-effort STOP publication. It then writes and
+  fsyncs a temporary marker inode outside the promoted tree and links it
+  no-replace to `LAUNCH_ACCEPTED.json` as the final acceptance linearization
+  point. The positive marker binds the exact activation digest and SHA-256 of
+  the raw sibling launch-receipt bytes. The D7(b) driver must reject any
+  surviving pending guard before it requires the marker's exact closed
+  canonical shape; a surviving guard or missing, malformed, aliased, or
+  mismatched marker rejects even when no STOP report exists. Before the final
+  link, every failure propagates and marker absence prevents consumption.
+  Once the link succeeds, the launcher returns PASS: temporary-inode cleanup
+  and a best-effort directory sync cannot downgrade that committed result.
+  A crash may lose an unsynced marker as a safe false negative, but no
+  launcher-failure path can leave a marker that D7(b) accepts;
   if the rename commit point succeeds but the subsequent durability sync
   fails, report STOP at the destination that now owns the outputs and describe
   that committed-but-not-certified state truthfully — never recreate an empty

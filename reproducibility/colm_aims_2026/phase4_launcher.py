@@ -2513,13 +2513,9 @@ def _write_acceptance_marker(
 
     A durable negative guard precedes marker publication. The driver rejects
     any tree where that guard exists, even if exact marker bytes are visible.
-    Marker temporary-link cleanup and its first durability barrier therefore
-    complete while the tree remains unaccepted. Removing the guard and then
-    syncing the promotion directory is the final linearization sequence; PASS
-    is returned only after the deletion is durable on hosts that support
-    directory fsync. Any exception propagates to the caller, whose STOP report
-    keeps the destination unusable. A pre-existing destination is never
-    adopted.
+    The guard is removed and its parent synced while no positive marker exists.
+    The positive marker is then published by ``_commit_acceptance_marker`` as
+    the final no-replace commit. A pre-existing destination is never adopted.
     """
     promote_to = Path(promote_to)
     receipt_bytes = schema.read_regular_file_bytes(
@@ -2547,25 +2543,60 @@ def _write_acceptance_marker(
         pending_bytes,
         exists_label="Phase-4 acceptance pending guard",
     )
-    create_once_bytes(
-        marker_path,
-        marker_bytes,
-        exists_label="Phase-4 acceptance marker",
-    )
     os.unlink(pending_path)
-    try:
-        fileio.fsync_directory(promote_to)
-    except BaseException:
-        # Do not rely on the outer best-effort STOP report: until the guard
-        # deletion is known durable, a visible marker is not an accepted
-        # transaction. Re-establish and durably publish the canonical
-        # negative guard before propagating the sync failure.
-        create_once_bytes(
-            pending_path,
-            pending_bytes,
-            exists_label="Phase-4 acceptance pending guard recovery",
+    fileio.fsync_directory(promote_to)
+    _commit_acceptance_marker(marker_path, marker_bytes)
+
+
+def _commit_acceptance_marker(marker_path: Path, marker_bytes: bytes) -> None:
+    """Make marker visibility the final, content-durable acceptance commit.
+
+    The temporary inode lives outside the promoted tree and is fully fsynced
+    before the no-replace hard link. Before that link, marker absence is the
+    rejection oracle. After it, the launcher has accepted the transaction;
+    temporary cleanup and a best-effort directory sync cannot reverse that
+    outcome. A crash may lose an unsynced directory entry, which is a safe
+    false negative because the driver then observes no marker.
+    """
+    marker_path = Path(marker_path)
+    if os.path.lexists(marker_path):
+        raise FileExistsError(
+            f"Phase-4 acceptance marker already exists: {marker_path}"
         )
-        raise
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{marker_path.name}.acceptance-",
+        dir=str(marker_path.parent.parent),
+    )
+    temporary = Path(temporary_name)
+    committed = False
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(marker_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, marker_path)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"Phase-4 acceptance marker already exists: {marker_path}"
+            ) from exc
+        committed = True
+    finally:
+        try:
+            os.unlink(temporary)
+        except BaseException:
+            # The temporary lives outside the promoted tree. Once the marker
+            # link commits, cleanup cannot downgrade acceptance; before commit,
+            # marker absence remains fail-closed.
+            pass
+    if committed:
+        try:
+            fileio.fsync_directory(marker_path.parent)
+        except BaseException:
+            # The fully-fsynced inode is already visible at the final path.
+            # Treat the no-replace link as the acceptance commit; a crash may
+            # lose the entry only as a safe false negative.
+            pass
 
 
 def _default_sync_parent_directory(parent: Path) -> None:

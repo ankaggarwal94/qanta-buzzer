@@ -2447,32 +2447,40 @@ def test_acceptance_marker_failure_and_stop_failure_remain_rejected(
     assert not (promote_to / launcher.STOP_REPORT_NAME).exists()
 
 
-def test_exact_marker_visible_after_create_once_exception_still_fails_closed(
+def test_final_marker_link_failure_remains_rejected_when_stop_also_fails(
     tmp_path, monkeypatch
 ):
     config, _certificate, _staged_path, probes = _runtime_fixture(
         tmp_path, monkeypatch
     )
     promote_to = Path(config["promote_to"])
-    real_create_once = launcher.create_once_bytes
+    marker_path = promote_to / launcher.ACCEPTANCE_MARKER_NAME
+    real_link = launcher.os.link
 
-    def publish_marker_then_raise(path, data, **kwargs):
-        real_create_once(path, data, **kwargs)
-        if Path(path).name == launcher.ACCEPTANCE_MARKER_NAME:
-            raise OSError("synthetic post-link directory sync uncertainty")
+    def fail_marker_link(source, destination, *args, **kwargs):
+        if Path(destination) == marker_path:
+            raise OSError("synthetic final marker link failure")
+        return real_link(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(launcher, "create_once_bytes", publish_marker_then_raise)
+    monkeypatch.setattr(launcher.os, "link", fail_marker_link)
+    monkeypatch.setattr(
+        launcher,
+        "_write_stop_report",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("synthetic STOP publication failure")
+        ),
+    )
     with pytest.raises(launcher.RunFailed, match="acceptance-marker"):
         _call_launcher(config, probes)
 
-    assert (promote_to / launcher.ACCEPTANCE_MARKER_NAME).is_file()
-    assert (promote_to / launcher.ACCEPTANCE_PENDING_NAME).is_file()
-    assert (promote_to / launcher.STOP_REPORT_NAME).is_file()
+    assert not marker_path.exists()
+    assert not (promote_to / launcher.ACCEPTANCE_PENDING_NAME).exists()
+    assert not (promote_to / launcher.STOP_REPORT_NAME).exists()
 
 
 @pytest.mark.parametrize("fault", ["temporary_cleanup", "directory_sync"])
 @pytest.mark.parametrize("stop_report_fails", [False, True])
-def test_acceptance_marker_cleanup_and_durability_failures_stop(
+def test_postcommit_marker_cleanup_or_sync_uncertainty_remains_pass(
     tmp_path, monkeypatch, fault, stop_report_fails
 ):
     config, _certificate, _staged_path, probes = _runtime_fixture(
@@ -2482,33 +2490,30 @@ def test_acceptance_marker_cleanup_and_durability_failures_stop(
     marker_path = promote_to / launcher.ACCEPTANCE_MARKER_NAME
 
     if fault == "temporary_cleanup":
-        real_unlink = launcher.fileio.os.unlink
+        real_unlink = launcher.os.unlink
 
         def fail_marker_temporary_cleanup(path, *args, **kwargs):
             candidate = Path(path)
             if (
-                candidate.parent == promote_to
-                and candidate.name.startswith(f".{marker_path.name}.")
+                candidate.parent == promote_to.parent
+                and candidate.name.startswith(
+                    f".{marker_path.name}.acceptance-"
+                )
             ):
                 raise OSError("synthetic marker temporary cleanup failure")
             return real_unlink(path, *args, **kwargs)
 
-        monkeypatch.setattr(
-            launcher.fileio.os, "unlink", fail_marker_temporary_cleanup
-        )
+        monkeypatch.setattr(launcher.os, "unlink", fail_marker_temporary_cleanup)
     else:
-        real_sync = launcher.fileio._fsync_directory
+        real_sync = launcher.fileio.fsync_directory
 
-        def fail_marker_directory_sync(directory, published_file=None):
-            if (
-                published_file is not None
-                and Path(published_file) == marker_path
-            ):
+        def fail_marker_directory_sync(directory):
+            if Path(directory) == promote_to and marker_path.is_file():
                 raise OSError("synthetic marker directory sync failure")
-            return real_sync(directory, published_file=published_file)
+            return real_sync(directory)
 
         monkeypatch.setattr(
-            launcher.fileio, "_fsync_directory", fail_marker_directory_sync
+            launcher.fileio, "fsync_directory", fail_marker_directory_sync
         )
 
     if stop_report_fails:
@@ -2520,18 +2525,17 @@ def test_acceptance_marker_cleanup_and_durability_failures_stop(
             ),
         )
 
-    with pytest.raises(launcher.RunFailed, match="acceptance-marker"):
-        _call_launcher(config, probes)
+    result = _call_launcher(config, probes)
 
+    assert result["verdict"] == "PASS"
     assert marker_path.is_file()
-    assert (promote_to / launcher.ACCEPTANCE_PENDING_NAME).is_file()
-    assert (promote_to / launcher.STOP_REPORT_NAME).exists() is (
-        not stop_report_fails
-    )
+    assert not (promote_to / launcher.ACCEPTANCE_PENDING_NAME).exists()
+    assert not (promote_to / launcher.STOP_REPORT_NAME).exists()
+    assert not list(promote_to.glob(f".{marker_path.name}.*"))
     if fault == "temporary_cleanup":
-        assert list(promote_to.glob(f".{marker_path.name}.*"))
-    else:
-        assert not list(promote_to.glob(f".{marker_path.name}.*"))
+        assert list(
+            promote_to.parent.glob(f".{marker_path.name}.acceptance-*")
+        )
 
 
 @pytest.mark.parametrize("stop_report_fails", [False, True])
@@ -2564,7 +2568,7 @@ def test_acceptance_pending_guard_unlink_failure_never_accepts(
         _call_launcher(config, probes)
 
     assert pending_path.is_file()
-    assert (promote_to / launcher.ACCEPTANCE_MARKER_NAME).is_file()
+    assert not (promote_to / launcher.ACCEPTANCE_MARKER_NAME).exists()
     assert (promote_to / launcher.STOP_REPORT_NAME).exists() is (
         not stop_report_fails
     )
@@ -2582,8 +2586,11 @@ def test_acceptance_guard_removal_is_synced_before_pass(tmp_path, monkeypatch):
 
     def observe_terminal_sync(path):
         path = Path(path)
-        if path == promote_to and marker_path.is_file():
-            assert not pending_path.exists()
+        if (
+            path == promote_to
+            and not pending_path.exists()
+            and not marker_path.exists()
+        ):
             terminal_syncs.append(path)
         return real_sync(path)
 
@@ -2598,7 +2605,7 @@ def test_acceptance_guard_removal_is_synced_before_pass(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("stop_report_fails", [False, True])
-def test_acceptance_guard_removal_sync_failure_restores_negative_guard(
+def test_acceptance_guard_removal_sync_failure_prevents_positive_marker(
     tmp_path, monkeypatch, stop_report_fails
 ):
     config, _certificate, _staged_path, probes = _runtime_fixture(
@@ -2613,8 +2620,8 @@ def test_acceptance_guard_removal_sync_failure_restores_negative_guard(
         path = Path(path)
         if (
             path == promote_to
-            and marker_path.is_file()
             and not pending_path.exists()
+            and not marker_path.exists()
         ):
             raise OSError("synthetic acceptance-guard removal sync failure")
         return real_sync(path)
@@ -2634,8 +2641,8 @@ def test_acceptance_guard_removal_sync_failure_restores_negative_guard(
     with pytest.raises(launcher.RunFailed, match="acceptance-marker"):
         _call_launcher(config, probes)
 
-    assert marker_path.is_file()
-    assert pending_path.is_file()
+    assert not marker_path.exists()
+    assert not pending_path.exists()
     assert (promote_to / launcher.STOP_REPORT_NAME).exists() is (
         not stop_report_fails
     )
