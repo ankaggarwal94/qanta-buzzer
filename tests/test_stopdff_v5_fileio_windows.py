@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import errno
 import os
+import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -13,6 +15,17 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from scripts.stopdff_v5 import fileio  # noqa: E402
+
+
+class _StatWithFileAttributes:
+    """Proxy a real stat result while injecting Windows file attributes."""
+
+    def __init__(self, original, file_attributes):
+        self._original = original
+        self.st_file_attributes = file_attributes
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
 
 
 def _deny_directory_open(monkeypatch, directory: Path, error: OSError):
@@ -95,6 +108,129 @@ def test_create_once_commit_callback_precedes_post_link_sync_failure(
 
     assert committed == [True]
     assert destination.read_bytes() == b"committed"
+
+
+@pytest.mark.parametrize("reparse_at", ["root", "child", "file"])
+def test_fsync_tree_rejects_windows_directory_reparse_points_before_descent(
+    tmp_path, monkeypatch, reparse_at
+):
+    root = tmp_path / "staged"
+    child = root / "junction"
+    child.mkdir(parents=True)
+    file_entry = root / "external-like.bin"
+    file_entry.write_bytes(b"must not be traversed")
+    target = {
+        "root": root,
+        "child": child,
+        "file": file_entry,
+    }[reparse_at]
+    real_stat = os.stat
+    nofollow_targets = []
+
+    def mark_target_as_reparse(path, *args, **kwargs):
+        observed = real_stat(path, *args, **kwargs)
+        if Path(path) == target and kwargs.get("follow_symlinks") is False:
+            nofollow_targets.append(Path(path))
+            attributes = getattr(observed, "st_file_attributes", 0)
+            return _StatWithFileAttributes(
+                observed,
+                attributes | stat.FILE_ATTRIBUTE_REPARSE_POINT,
+            )
+        return observed
+
+    monkeypatch.setattr(fileio.os, "stat", mark_target_as_reparse)
+    real_open = os.open
+
+    def reject_reparse_file_open(path, flags, *args, **kwargs):
+        if Path(path) == file_entry and reparse_at == "file":
+            pytest.fail("reparse-point file was opened before rejection")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(fileio.os, "open", reject_reparse_file_open)
+
+    if reparse_at == "root":
+
+        def reject_walk(*args, **kwargs):
+            pytest.fail("root reparse point was walked before rejection")
+
+        monkeypatch.setattr(fileio.os, "walk", reject_walk)
+    else:
+
+        def guarded_walk(path, *, topdown, onerror, followlinks):
+            assert Path(path) == root
+            assert topdown is True
+            assert followlinks is False
+            yield str(root), [child.name], [file_entry.name]
+            pytest.fail("reparse-point child was descended into")
+
+        monkeypatch.setattr(fileio.os, "walk", guarded_walk)
+
+    with pytest.raises(ValueError, match="reparse|canonical"):
+        fileio.fsync_tree(root)
+    assert target in nofollow_targets
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires a real NTFS junction")
+@pytest.mark.parametrize("junction_at", ["root", "child"])
+def test_fsync_tree_never_descends_into_real_windows_junction(
+    tmp_path, monkeypatch, junction_at
+):
+    external = tmp_path / "external"
+    external.mkdir()
+    external_file = external / "must-not-open.bin"
+    external_file.write_bytes(b"external")
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    junction = (
+        tmp_path / "staged-junction"
+        if junction_at == "root"
+        else staged / "junction"
+    )
+    completed = subprocess.run(
+        [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            str(junction),
+            str(external),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {completed.stderr}")
+
+    real_scandir = os.scandir
+    scanned = []
+
+    def record_scandir(path):
+        scanned.append(Path(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(fileio.os, "scandir", record_scandir)
+    try:
+        with pytest.raises(ValueError, match="reparse|canonical"):
+            fileio.fsync_tree(junction if junction_at == "root" else staged)
+        assert junction not in scanned
+    finally:
+        os.rmdir(junction)
+
+
+def test_fsync_tree_preserves_bottom_up_directory_sync_order(tmp_path, monkeypatch):
+    root = tmp_path / "staged"
+    child = root / "child"
+    child.mkdir(parents=True)
+    (child / "payload.bin").write_bytes(b"payload")
+    synced = []
+
+    monkeypatch.setattr(fileio, "fsync_directory", lambda path: synced.append(path))
+
+    fileio.fsync_tree(root)
+
+    assert synced == [child, root]
 
 
 def test_directory_open_permission_error_remains_fatal_off_windows(

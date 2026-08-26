@@ -87,41 +87,74 @@ def fsync_directory(directory: Path) -> None:
     _fsync_directory(Path(directory))
 
 
+def _nofollow_entry_stat(path: Path) -> os.stat_result:
+    """Return no-follow metadata for one staged-tree entry."""
+    return os.stat(Path(path), follow_symlinks=False)
+
+
+def _is_filesystem_link(info: os.stat_result) -> bool:
+    """Recognize POSIX symlinks and Windows reparse-point aliases."""
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
 def fsync_tree(root: Path) -> None:
     """Sync every regular file and directory in a closed staged tree.
 
-    The walk is bottom-up so each file's bytes are durable before its parent
-    directory is synced.  Symlinks and non-regular files are rejected rather
-    than followed: a staged evidence envelope is a closed tree of ordinary
-    files and directories, and publication must not depend on external state.
+    Traversal validates child directories top-down before ``os.walk`` can
+    descend, then syncs the collected directories bottom-up after every file.
+    POSIX symlinks, Windows reparse points (including junctions), and
+    non-regular files are rejected rather than followed: a staged evidence
+    envelope is a closed tree of ordinary files and directories, and
+    publication must not depend on external state.
     """
     root = Path(root)
-    if root.is_symlink() or not root.is_dir():
+    root_info = _nofollow_entry_stat(root)
+    if _is_filesystem_link(root_info) or not stat.S_ISDIR(root_info.st_mode):
         raise ValueError(f"staged tree is not a canonical directory: {root}")
 
     nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directories_to_sync: list[Path] = []
 
     def raise_walk_error(error: OSError) -> None:
         raise error
 
     for directory_name, child_directories, filenames in os.walk(
         root,
-        topdown=False,
+        topdown=True,
         onerror=raise_walk_error,
         followlinks=False,
     ):
         directory = Path(directory_name)
+        directory_info = _nofollow_entry_stat(directory)
+        if _is_filesystem_link(directory_info) or not stat.S_ISDIR(
+            directory_info.st_mode
+        ):
+            raise ValueError(
+                f"staged tree contains an aliased directory: {directory}"
+            )
+        directories_to_sync.append(directory)
         for name in child_directories:
             child = directory / name
-            if child.is_symlink() or not child.is_dir():
+            child_info = _nofollow_entry_stat(child)
+            if _is_filesystem_link(child_info) or not stat.S_ISDIR(
+                child_info.st_mode
+            ):
                 raise ValueError(
-                    f"staged tree contains a non-directory child: {child}"
+                    "staged tree contains a symlink, junction, reparse point,"
+                    f" or non-directory child: {child}"
                 )
         for name in filenames:
             path = directory / name
-            if path.is_symlink() or not path.is_file():
+            path_info = _nofollow_entry_stat(path)
+            if _is_filesystem_link(path_info) or not stat.S_ISREG(
+                path_info.st_mode
+            ):
                 raise ValueError(
-                    f"staged tree contains a non-regular file: {path}"
+                    "staged tree contains a symlink, reparse point, or"
+                    f" non-regular file: {path}"
                 )
             # Windows' CRT requires a writable descriptor for ``os.fsync``.
             access_flag = os.O_RDWR if _IS_WINDOWS else os.O_RDONLY
@@ -134,6 +167,8 @@ def fsync_tree(root: Path) -> None:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
+
+    for directory in reversed(directories_to_sync):
         fsync_directory(directory)
 
 
