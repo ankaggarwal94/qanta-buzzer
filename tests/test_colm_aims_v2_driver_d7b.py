@@ -147,6 +147,12 @@ PRIMARY_SCORER_WEIGHTS_SHA256 = (
 PRIMARY_SCORER_TOKENIZER_CONFIG_SHA256 = (
     "acb92769e8195aabd29b7b2137a9e6d6e25c476a4f15aa4355c233426c61576b"
 )
+COMPUTATIONAL_HELPER = "scripts/stopdff_dp/dp_solver.py"
+CALIBRATION_HELPER = "scripts/compute_prefix_calibration.py"
+
+
+def _source_sha256(relpath: str) -> str:
+    return sha256_bytes((driver._REPO_ROOT / relpath).read_bytes())
 
 # frozen/pairing_eligibility_v2.json declared counts (2,249 eligible + 9 excluded).
 FROZEN_ELIGIBLE_COUNT = 2249
@@ -249,6 +255,28 @@ def _write_records_root(
                     "n_eval": len(canonical_item_keys()),
                     "seed": 1,
                     "phase4": {"seeds": [1]},
+                    "generation": {
+                        "script_path": driver.PRODUCER_ENTRYPOINT,
+                        "script_sha256": components["content_hashes"][
+                            "producer_sha256"
+                        ]["sha256"],
+                        "commit_script_sha256": components[
+                            "content_hashes"
+                        ]["producer_sha256"]["sha256"],
+                        "commit_contains_exact_script": True,
+                        "git_commit": source_commit,
+                        "git_dirty": False,
+                        "helper_sha256s": {
+                            COMPUTATIONAL_HELPER: _source_sha256(
+                                COMPUTATIONAL_HELPER
+                            )
+                        },
+                        "fair_qa_helper_sha256s": {
+                            CALIBRATION_HELPER: _source_sha256(
+                                CALIBRATION_HELPER
+                            )
+                        },
+                    },
                 },
                 "verdict": "PASS",
             }
@@ -301,6 +329,15 @@ def _rewrite_acceptance_marker(records_root: Path) -> None:
     )["activation_digest"]
     marker["launch_receipt_sha256"] = sha256_bytes(receipt_bytes)
     _acceptance_marker(records_root).write_bytes(schema.encode_json(marker))
+
+
+def _resign_producer_export(records_root: Path) -> None:
+    receipt_path = _launch_receipt(records_root)
+    receipt = json.loads(receipt_path.read_text("utf-8"))
+    export_path = records_root.parent / receipt["export_basename"]
+    receipt["export_sha256"] = sha256_bytes(export_path.read_bytes())
+    receipt_path.write_bytes(schema.encode_json(receipt))
+    _rewrite_acceptance_marker(records_root)
 
 
 def _launch_ledger(records_root: Path) -> Path:
@@ -751,6 +788,42 @@ class TestRunDriver:
             _REAL_READ_CAPTURED_INPUTS(records_root, components)
 
     @pytest.mark.parametrize(
+        "mutation", ["missing_map", "wrong_hash", "unsafe_path"]
+    )
+    def test_computational_helper_closure_fails_closed(
+        self, tmp_path, monkeypatch, mutation
+    ):
+        _bind_synthetic_records_to_frozen(monkeypatch)
+        records_root = _write_records_root(tmp_path / "records")
+        receipt = json.loads(_launch_receipt(records_root).read_text("utf-8"))
+        export_path = records_root.parent / receipt["export_basename"]
+        export = json.loads(export_path.read_text("utf-8"))
+        generation = export["metadata"]["generation"]
+        if mutation == "missing_map":
+            generation.pop("fair_qa_helper_sha256s")
+        elif mutation == "wrong_hash":
+            generation["helper_sha256s"][COMPUTATIONAL_HELPER] = "f" * 64
+        else:
+            generation["helper_sha256s"] = {"../escape.py": "f" * 64}
+        export_path.write_bytes(_json_bytes(export))
+        _resign_producer_export(records_root)
+        checksums = tmp_path / "FINAL_CHECKSUMS.json"
+        _write_final_checksums_json(checksums)
+
+        with pytest.raises(schema.TypedIngressError, match="helper"):
+            driver.run_driver(
+                records_root,
+                tmp_path / "out",
+                FROZEN_DIR,
+                source_commit=TEST_SOURCE_COMMIT,
+                launch_receipt=_launch_receipt(records_root),
+                launch_ledger=_launch_ledger(records_root),
+                activation_digest=_activation_digest(records_root),
+                d6_checksums=checksums,
+                qa012_authority=qa012.CANONICAL_AUTHORITY_PATH,
+            )
+
+    @pytest.mark.parametrize(
         "mutation",
         [
             "wrong_hash",
@@ -1089,6 +1162,13 @@ class TestRunDriver:
         assert (
             built.profile["provenance"]["model"]["repository_namespace"]
             == PRIMARY_SCORER_MODEL
+        )
+        helpers = built.profile["provenance"]["helper_sha256s"]
+        assert helpers[COMPUTATIONAL_HELPER] == _source_sha256(
+            COMPUTATIONAL_HELPER
+        )
+        assert helpers[CALIBRATION_HELPER] == _source_sha256(
+            CALIBRATION_HELPER
         )
 
     def test_non_provenance_profile_matches_canonical_oracle(

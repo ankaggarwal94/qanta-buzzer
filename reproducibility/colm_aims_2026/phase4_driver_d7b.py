@@ -567,6 +567,40 @@ def _metadata_split_count(
     return block
 
 
+def _authenticated_export_helper_map(
+    value: Any, label: str
+) -> dict[str, str]:
+    """Validate and rehash one producer-recorded computational helper map."""
+    if not isinstance(value, dict) or not value:
+        raise schema.TypedIngressError(
+            f"authenticated producer export {label} must be a non-empty map"
+        )
+    result: dict[str, str] = {}
+    for relpath, expected in value.items():
+        if (
+            not isinstance(relpath, str)
+            or not relpath
+            or "\\" in relpath
+            or relpath.startswith("/")
+            or any(part in ("", ".", "..") for part in relpath.split("/"))
+            or not schema.is_sha256_hex(expected)
+        ):
+            raise schema.TypedIngressError(
+                f"authenticated producer export {label} has an unsafe or"
+                " malformed helper binding"
+            )
+        path = _REPO_ROOT.joinpath(*relpath.split("/"))
+        raw = schema.read_regular_file_bytes(path, tree_root=_REPO_ROOT)
+        observed = hashlib.sha256(raw).hexdigest()
+        if observed != expected:
+            raise schema.TypedIngressError(
+                f"authenticated producer export helper {relpath!r} does not"
+                " match the exact source checkout"
+            )
+        result[relpath] = expected
+    return result
+
+
 def bind_release_provenance(
     provenance: dict[str, Any],
     *,
@@ -709,6 +743,21 @@ def bind_release_provenance(
         raise schema.TypedIngressError(
             "authenticated certificate lacks the producer source hash"
         )
+    generation = export_metadata.get("generation")
+    if (
+        not isinstance(generation, dict)
+        or generation.get("script_path") != PRODUCER_ENTRYPOINT
+        or generation.get("script_sha256") != producer_entry["sha256"]
+        or generation.get("commit_script_sha256") != producer_entry["sha256"]
+        or generation.get("commit_contains_exact_script") is not True
+        or generation.get("git_commit") != repo.get("commit")
+        or generation.get("git_dirty") is not False
+    ):
+        raise schema.TypedIngressError(
+            "authenticated producer export generation identity does not"
+            " match the ready certificate"
+        )
+
     helpers: dict[str, str] = {}
     for key, relpath in phase4.CONTENT_HASH_RELPATHS.items():
         if key == "producer_sha256":
@@ -720,6 +769,17 @@ def bind_release_provenance(
                 f"authenticated certificate lacks helper hash {key!r}"
             )
         helpers[relpath] = digest
+    for label in ("helper_sha256s", "fair_qa_helper_sha256s"):
+        computational = _authenticated_export_helper_map(
+            generation.get(label), f"metadata.generation.{label}"
+        )
+        for relpath, digest in computational.items():
+            incumbent = helpers.get(relpath)
+            if incumbent is not None and incumbent != digest:
+                raise schema.TypedIngressError(
+                    f"producer/certificate helper hash conflict for {relpath!r}"
+                )
+            helpers[relpath] = digest
 
     bound = dict(provenance)
     bound["producer_entrypoint"] = PRODUCER_ENTRYPOINT

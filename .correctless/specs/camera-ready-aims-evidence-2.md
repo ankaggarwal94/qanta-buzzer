@@ -548,7 +548,9 @@ analysis over retained per-item records — permitted; model execution is not.
 
 - **R-012** [unit] *(amended)*: Release mode fails closed per leg, one
   fixture per missing or `UNRESOLVED` binding — the v1 leg families carry
-  (schema/profile + producer/helper hashes; semantic command; seeds;
+  (schema/profile + producer/helper hashes, including the authenticated and
+  source-rehashed producer-recorded computational helper closure; semantic
+  command; seeds;
   dirty-state identity; fit/eval split names/counts/key-set hashes/
   zero-overlap; calibration and continuation identities; input and
   `split_metadata.json` hashes; MC-build-after-split freshness, coverage,
