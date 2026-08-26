@@ -21,6 +21,7 @@ pinned to the currently designated ``main.tex``/``main.pdf`` hashes.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -113,6 +114,10 @@ def _complete_by_cell() -> dict[str, dict[str, dict]]:
 
 
 def _write_records_root(root):
+    # Mirror the real launcher topology: the promoted create-once directory
+    # owns records/export/receipt, while certificate and ledger remain siblings.
+    root = Path(root)
+    root = root.parent / "promoted" / root.name
     data = canonical_data()
     root.mkdir(parents=True, exist_ok=True)
     for cell_id in CELL_IDS:
@@ -125,6 +130,15 @@ def _write_records_root(root):
     from tests.test_colm_aims_v2_phase4_pre import _good_components
 
     components = _good_components()
+    transaction_root = root.parent.parent
+    ledger_path = transaction_root / "launch-ledger.json"
+    components["environment"]["quarantine_dir"] = str(
+        (transaction_root / "quarantine").resolve()
+    )
+    components["environment"]["promote_to"] = str(root.parent.resolve())
+    components["environment"]["exception_ledger_path"] = str(
+        ledger_path.resolve()
+    )
     components["repo"]["commit"] = TEST_SOURCE_COMMIT
     components["repo"]["tree_sha256"] = TEST_SOURCE_TREE
     for suite_receipt in components["suite_receipts"].values():
@@ -132,7 +146,7 @@ def _write_records_root(root):
         suite_receipt["tree_sha256"] = TEST_SOURCE_TREE
     certificate = driver.phase4.assemble_certificate(components)
     assert certificate["ready"] is True, certificate["failing_checks"]
-    certificate_path = root.parent / "certificate.json"
+    certificate_path = transaction_root / "certificate.json"
     certificate_bytes = schema.encode_json(certificate)
     certificate_path.write_bytes(certificate_bytes)
     activation_digest = sha256_bytes(certificate_bytes)
@@ -144,7 +158,6 @@ def _write_records_root(root):
         "argv": ["python", "producer.py"],
         "consumed_at": "2026-08-26T00:00:00+00:00",
     }
-    ledger_path = root.parent / "launch-ledger.json"
     ledger_path.write_bytes(schema.encode_json(ledger))
     export_basename = "stopdff_fair_qa_regenerated.json"
     export_path = root.parent / export_basename
@@ -175,11 +188,11 @@ def _launch_receipt(records_root: Path) -> Path:
 
 
 def _launch_ledger(records_root: Path) -> Path:
-    return Path(records_root).parent / "launch-ledger.json"
+    return Path(records_root).parent.parent / "launch-ledger.json"
 
 
 def _launch_certificate(records_root: Path) -> Path:
-    return Path(records_root).parent / "certificate.json"
+    return Path(records_root).parent.parent / "certificate.json"
 
 
 def _activation_digest(records_root: Path) -> str:
@@ -554,6 +567,34 @@ class TestRunDriver:
             driver.validate_launch_receipt(
                 records_root,
                 _launch_receipt(records_root),
+                _launch_ledger(records_root),
+                _activation_digest(records_root),
+                TEST_SOURCE_COMMIT,
+            )
+
+    def test_supplied_ledger_path_must_match_certificate(self, tmp_path):
+        records_root = _write_records_root(tmp_path / "records")
+        substituted_ledger = tmp_path / "substituted-ledger.json"
+        shutil.copyfile(_launch_ledger(records_root), substituted_ledger)
+
+        with pytest.raises(schema.TypedIngressError, match="ledger path"):
+            driver.validate_launch_receipt(
+                records_root,
+                _launch_receipt(records_root),
+                substituted_ledger,
+                _activation_digest(records_root),
+                TEST_SOURCE_COMMIT,
+            )
+
+    def test_records_parent_must_match_certificate_promotion(self, tmp_path):
+        records_root = _write_records_root(tmp_path / "records")
+        substituted_promotion = tmp_path / "substituted-promoted"
+        shutil.copytree(records_root.parent, substituted_promotion)
+
+        with pytest.raises(schema.TypedIngressError, match="promote_to"):
+            driver.validate_launch_receipt(
+                substituted_promotion / "records",
+                substituted_promotion / driver.LAUNCH_RECEIPT_NAME,
                 _launch_ledger(records_root),
                 _activation_digest(records_root),
                 TEST_SOURCE_COMMIT,

@@ -645,6 +645,7 @@ def validate_launch_receipt(
     """Authenticate the certificate-to-ledger-to-record transaction chain."""
     records_root = Path(records_root).absolute()
     receipt_path = Path(receipt_path).absolute()
+    ledger_path = Path(ledger_path).absolute()
     if (
         receipt_path.name != LAUNCH_RECEIPT_NAME
         or receipt_path.parent != records_root.parent
@@ -676,7 +677,7 @@ def validate_launch_receipt(
         raise schema.TypedIngressError(
             "launch receipt does not bind an accepted Phase-4 launch"
         )
-    ledger_bytes = schema.read_regular_file_bytes(Path(ledger_path).absolute())
+    ledger_bytes = schema.read_regular_file_bytes(ledger_path)
     if hashlib.sha256(ledger_bytes).hexdigest() != doc["ledger_sha256"]:
         raise schema.TypedIngressError(
             "launch receipt does not authenticate the supplied exception ledger"
@@ -778,6 +779,33 @@ def validate_launch_receipt(
         raise schema.TypedIngressError(
             "certificate cannot be reproduced by the Phase-4 certificate"
             " validator; fabricated ready state refused"
+        )
+    certificate_environment = certificate["components"].get("environment")
+    if not isinstance(certificate_environment, dict):
+        raise schema.TypedIngressError(
+            "ready certificate does not carry a valid launch environment"
+        )
+    try:
+        certified_ledger = Path(
+            certificate_environment["exception_ledger_path"]
+        ).resolve(strict=True)
+        certified_promotion = Path(
+            certificate_environment["promote_to"]
+        ).resolve(strict=True)
+        supplied_ledger = ledger_path.resolve(strict=True)
+        supplied_promotion = records_root.parent.resolve(strict=True)
+    except (KeyError, OSError, RuntimeError, ValueError) as exc:
+        raise schema.TypedIngressError(
+            "certificate launch paths are missing, unreadable, or noncanonical"
+        ) from exc
+    if supplied_ledger != certified_ledger:
+        raise schema.TypedIngressError(
+            "supplied exception ledger path does not equal the certified"
+            " exception_ledger_path"
+        )
+    if supplied_promotion != certified_promotion:
+        raise schema.TypedIngressError(
+            "records parent does not equal the certified promote_to path"
         )
     export_bytes = schema.read_regular_file_bytes(
         records_root.parent / doc["export_basename"],
