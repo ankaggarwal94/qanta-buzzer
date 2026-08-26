@@ -104,7 +104,9 @@ _D6_BASELINE_KEYS = frozenset(
 )
 _ROW_KEYS = frozenset({"item", "status", "evidence"})
 _HOLM_KEYS = frozenset({"satisfied_by"})
-_QA012_KEYS = frozenset({"status", "inventory_sha256", "manifest"})
+_QA012_KEYS = frozenset(
+    {"status", "inventory_sha256", "authority_sha256", "manifest"}
+)
 EXPECTED_CLAIM_ITEMS = frozenset(
     {"table-1-headline-shifts", "manuscript-identity"}
 )
@@ -240,7 +242,7 @@ def validate_closure_inventory(inventory: Any) -> None:
     ):
         raise SchemaValidationError(
             "closure qa012 must have status/inventory_sha256 and only the"
-            " optional embedded manifest"
+            " optional authority digest or diagnostic manifest"
         )
     if not isinstance(qa012["status"], str) or not qa012["status"]:
         raise SchemaValidationError(
@@ -251,13 +253,21 @@ def validate_closure_inventory(inventory: Any) -> None:
         raise SchemaValidationError(
             "closure qa012.inventory_sha256 must be a SHA-256 value or null"
         )
+    authority_sha256 = qa012.get("authority_sha256")
+    if authority_sha256 is not None and not is_sha256_hex(authority_sha256):
+        raise SchemaValidationError(
+            "closure qa012.authority_sha256 must be a SHA-256 value or null"
+        )
+    if qa012.get("manifest") is not None:
+        from . import qa012 as qa012_module
+
+        qa012_module.validate_inventory_manifest(qa012["manifest"])
 
 
 def evaluate_closure(
     inventory: dict[str, Any],
     *,
     profile_bytes: bytes | None = None,
-    qa012_roots: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate the frozen CAMERA_READY_CLOSURE inventory, fail-closed.
 
@@ -265,8 +275,9 @@ def evaluate_closure(
     "failing_rows": [...]}`` — every unsatisfied duty appears as a failing
     row; the gate is satisfied only when none remain.
 
-    This evidence-level evaluator validates supplied bytes and fresh QA roots;
-    it does not itself recompute record semantics. Only
+    This evidence-level evaluator validates supplied bytes and the pinned
+    QA-012 authority; optional caller-root scans are diagnostic only. It does
+    not itself recompute record semantics. Only
     ``phase4_assemble_d7b.build_evidence_package`` is an authoritative
     publication path: that producer additionally runs the full source
     verifier over its staged immutable envelope before create-once promotion.
@@ -399,37 +410,28 @@ def evaluate_closure(
         try:
             from . import qa012 as qa012_module
 
-            qa012_module.validate_inventory_manifest(qa012_manifest)
-            if qa012_roots is None:
-                raise SchemaValidationError(
-                    "QA-012 satisfying closure requires the actual five"
-                    " corpus roots"
-                )
-            if qa012_module.build_inventory_manifest(qa012_roots) != qa012_manifest:
-                raise SchemaValidationError(
-                    "QA-012 embedded inventory does not match a fresh scan"
-                    " of the supplied roots"
-                )
-            if qa012_manifest["inventory_sha256"] != qa012.get(
-                "inventory_sha256"
+            authority_sha256 = qa012.get("authority_sha256")
+            if (
+                authority_sha256 != qa012_module.CANONICAL_AUTHORITY_SHA256
+                or qa012.get("inventory_sha256") != authority_sha256
+                or qa012_manifest is not None
             ):
                 raise SchemaValidationError(
-                    "QA-012 closure digest does not match its embedded manifest"
+                    "QA-012 satisfying closure must bind only the exact pinned"
+                    " rev3 authority SHA-256"
                 )
+            authority = qa012_module.load_authority_manifest()
             derived_status = (
                 "VERIFIED_WITH_FIXTURES"
-                if qa012_manifest["result"] == "hits"
-                and qa012_module.hit_fixtures_verified(qa012_manifest)
-                else "VERIFIED_VACUOUS"
-                if qa012_manifest["result"] == "zero_hit"
-                else None
+                if qa012_module.authority_hit_fixtures_verified(authority)
+                else "HITS_PRESENT"
             )
             if derived_status != qa012_status:
                 raise SchemaValidationError(
-                    "QA-012 closure status is not derived from its embedded"
-                    " manifest"
+                    "QA-012 closure status is not derived from the pinned rev3"
+                    " authority and committed fixtures"
                 )
-        except (KeyError, TypeError, SchemaValidationError) as exc:
+        except (KeyError, TypeError, OSError, ColmAimsError) as exc:
             failing.append(f"QA-012 embedded inventory invalid: {exc}")
     if qa012_status not in _QA012_SATISFIED_STATUSES or not is_sha256_hex(
         qa012.get("inventory_sha256")

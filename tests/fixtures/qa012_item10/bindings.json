@@ -4,6 +4,7 @@
   "per_prefix_scores_test.jsonl": {
    "scope_prong": "source_export_bundles",
    "relative_path": "item10_reachable_comparator_prototype/modal/outputs/per_prefix_scores_test.jsonl",
+   "full_fixture": "per_prefix_scores_test.jsonl",
    "excerpt_fixture": "per_prefix_scores_test.jsonl.first2.jsonl",
    "excerpt_lines": 2,
    "excerpt_sha256": "08446d6cf330f1cb1cc99ac4450c8fb3f51e5afca311045262a6bf8ea4004374",
@@ -16,6 +17,7 @@
   "per_prefix_scores_test_limit20.jsonl": {
    "scope_prong": "source_export_bundles",
    "relative_path": "item10_reachable_comparator_prototype/modal/outputs/per_prefix_scores_test_limit20.jsonl",
+   "full_fixture": "per_prefix_scores_test_limit20.jsonl",
    "excerpt_fixture": "per_prefix_scores_test_limit20.jsonl.first2.jsonl",
    "excerpt_lines": 2,
    "excerpt_sha256": "08446d6cf330f1cb1cc99ac4450c8fb3f51e5afca311045262a6bf8ea4004374",
@@ -28,6 +30,7 @@
   "per_prefix_scores_test_limit20_sentence-transformers_all-mpnet-base-v2.jsonl": {
    "scope_prong": "source_export_bundles",
    "relative_path": "item10_reachable_comparator_prototype/modal_strong/outputs/per_prefix_scores_test_limit20_sentence-transformers_all-mpnet-base-v2.jsonl",
+   "full_fixture": "per_prefix_scores_test_limit20_sentence-transformers_all-mpnet-base-v2.jsonl",
    "excerpt_fixture": "per_prefix_scores_test_limit20_sentence-transformers_all-mpnet-base-v2.jsonl.first2.jsonl",
    "excerpt_lines": 2,
    "excerpt_sha256": "15a418b7c41b8d31e50b7ace41f14bcc8f8713ed1e4c3ab650bbe76bab878c4d",
@@ -40,6 +43,7 @@
   "per_prefix_scores_test_sentence-transformers_all-mpnet-base-v2.jsonl": {
    "scope_prong": "source_export_bundles",
    "relative_path": "item10_reachable_comparator_prototype/modal_strong/outputs/per_prefix_scores_test_sentence-transformers_all-mpnet-base-v2.jsonl",
+   "full_fixture": "per_prefix_scores_test_sentence-transformers_all-mpnet-base-v2.jsonl",
    "excerpt_fixture": "per_prefix_scores_test_sentence-transformers_all-mpnet-base-v2.jsonl.first2.jsonl",
    "excerpt_lines": 2,
    "excerpt_sha256": "277c502c7e7aeb7c9187536571a9ea0218e93aac2e3fa79954133deda645eaed",

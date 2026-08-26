@@ -1,7 +1,9 @@
 """Regression tests for pull-request checkout identity in CI."""
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -61,6 +63,14 @@ def _run_commands(job: dict[str, Any]) -> str:
     return "\n".join(step.get("run", "") for step in job["steps"])
 
 
+def _receipt_pytest_command(step: dict[str, Any]) -> tuple[str, list[str]]:
+    """Extract the suite name and pytest argv from one workflow producer step."""
+    argv = shlex.split(step["run"])
+    separator = argv.index("--")
+    name = argv[argv.index("--name") + 1]
+    return name, argv[separator + 1 :]
+
+
 @pytest.mark.parametrize(
     ("workflow_name", "merge_job_name", "required_commands"),
     WORKFLOW_CASES,
@@ -105,17 +115,50 @@ def test_pr_workflow_checks_merge_ref_and_literal_head(
         assert command in _run_commands(head_job)
     if workflow_name == "python-app.yml":
         for job in (merge_job, head_job):
-            focused = _step_named(
-                job, "Focused Phase-4 suite with R-070 receipt"
-            )["run"]
-            for selection in phase4.FOCUSED_SUITE_SELECTION:
-                assert selection in focused
-    for job in (merge_job, head_job):
-        assert any(
-            step.get("uses") == "actions/upload-artifact@v4"
-            and step.get("if") == "always()"
-            for step in job["steps"]
-        )
+            for step_name, expected_name in (
+                ("Focused Phase-4 suite with R-070 receipt", "focused"),
+                ("Full suite with R-070 receipt", "full"),
+            ):
+                suite_name, pytest_argv = _receipt_pytest_command(
+                    _step_named(job, step_name)
+                )
+                assert suite_name == expected_name
+                command = run_ci_suite_with_receipt._pytest_command(
+                    pytest_argv, REPO / "ci-evidence" / f"{suite_name}.xml"
+                )
+                assert phase4.suite_command_failures(suite_name, command) == []
+
+    merge_upload = _step_named(
+        merge_job,
+        "Retain suite evidence"
+        if workflow_name == "python-app.yml"
+        else "Retain audit evidence",
+    )
+    direct_upload = _step_named(
+        merge_job,
+        "Retain direct-head suite evidence"
+        if workflow_name == "python-app.yml"
+        else "Retain direct-head audit evidence",
+    )
+    assert merge_upload["uses"] == "actions/upload-artifact@v4"
+    assert merge_upload["if"] == (
+        "always() && github.event_name == 'pull_request'"
+    )
+    assert "merge-ref-evidence" in merge_upload["with"]["name"]
+    assert direct_upload["uses"] == "actions/upload-artifact@v4"
+    assert direct_upload["if"] == (
+        "always() && github.event_name != 'pull_request'"
+    )
+    assert "direct-head-evidence" in direct_upload["with"]["name"]
+
+    head_uploads = [
+        step
+        for step in head_job["steps"]
+        if step.get("uses") == "actions/upload-artifact@v4"
+    ]
+    assert len(head_uploads) == 1
+    assert head_uploads[0]["if"] == "always()"
+    assert "literal-head-evidence" in head_uploads[0]["with"]["name"]
 
 
 def test_r070_producer_argv_matches_certificate_contract(tmp_path) -> None:
@@ -154,3 +197,119 @@ def test_r070_producer_reuses_canonical_environment_lock(monkeypatch) -> None:
     assert observed == [
         Path(run_ci_suite_with_receipt.sys.executable).resolve()
     ]
+
+
+def test_r070_git_identity_is_bound_to_repository_root(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    observed = Path(
+        run_ci_suite_with_receipt._git("rev-parse", "--show-toplevel")
+    ).resolve()
+    assert observed == REPO.resolve()
+
+
+@pytest.mark.parametrize("junit_bytes", [None, b"<not-xml"])
+def test_r070_main_rejects_missing_or_malformed_junit(
+    tmp_path, monkeypatch, junit_bytes
+) -> None:
+    workflow = tmp_path / "workflow.yml"
+    workflow.write_text("name: test\n", encoding="utf-8")
+    output_dir = tmp_path / "evidence"
+
+    def fake_git(*args):
+        if args[:2] == ("rev-parse", "HEAD"):
+            return "a" * 40
+        if args[:2] == ("rev-parse", "HEAD^{tree}"):
+            return "b" * 40
+        if args[:1] == ("status",):
+            return ""
+        raise AssertionError(args)
+
+    def fake_run(command, **_kwargs):
+        junit_arg = next(
+            part for part in command if part.startswith("--junitxml=")
+        )
+        if junit_bytes is not None:
+            Path(junit_arg.partition("=")[2]).write_bytes(junit_bytes)
+        return SimpleNamespace(returncode=0, stdout=b"pytest output\n")
+
+    monkeypatch.setattr(run_ci_suite_with_receipt, "_git", fake_git)
+    monkeypatch.setattr(
+        run_ci_suite_with_receipt, "_environment_lock_bytes", lambda: b"lock\n"
+    )
+    monkeypatch.setattr(run_ci_suite_with_receipt.subprocess, "run", fake_run)
+    rc = run_ci_suite_with_receipt.main(
+        [
+            "--workflow",
+            str(workflow),
+            "--output-dir",
+            str(output_dir),
+            "--name",
+            "focused",
+            "--",
+            "pytest",
+            *phase4.FOCUSED_SUITE_SELECTION,
+            "-q",
+            "-p",
+            "no:cacheprovider",
+        ]
+    )
+    assert rc == 4
+    assert (output_dir / "focused.receipt.json").is_file()
+
+
+@pytest.mark.parametrize("drift", ["dirty", "head"])
+def test_r070_main_rejects_dirty_or_head_drift(
+    tmp_path, monkeypatch, drift
+) -> None:
+    workflow = tmp_path / "workflow.yml"
+    workflow.write_text("name: test\n", encoding="utf-8")
+    calls = {"head": 0, "status": 0}
+
+    def fake_git(*args):
+        if args[:2] == ("rev-parse", "HEAD"):
+            calls["head"] += 1
+            if drift == "head" and calls["head"] == 2:
+                return "c" * 40
+            return "a" * 40
+        if args[:2] == ("rev-parse", "HEAD^{tree}"):
+            return "b" * 40
+        if args[:1] == ("status",):
+            calls["status"] += 1
+            return " M tracked.py" if drift == "dirty" else ""
+        raise AssertionError(args)
+
+    def fake_run(command, **_kwargs):
+        junit_arg = next(
+            part for part in command if part.startswith("--junitxml=")
+        )
+        Path(junit_arg.partition("=")[2]).write_bytes(
+            b'<testsuite tests="1" failures="0" errors="0" skipped="0">'
+            b'<testcase classname="tests.test_x" name="test_ok"/>'
+            b"</testsuite>"
+        )
+        return SimpleNamespace(returncode=0, stdout=b"pytest output\n")
+
+    monkeypatch.setattr(run_ci_suite_with_receipt, "_git", fake_git)
+    monkeypatch.setattr(
+        run_ci_suite_with_receipt, "_environment_lock_bytes", lambda: b"lock\n"
+    )
+    monkeypatch.setattr(run_ci_suite_with_receipt.subprocess, "run", fake_run)
+    with pytest.raises(receipt.SuiteReceiptError, match="dirty"):
+        run_ci_suite_with_receipt.main(
+            [
+                "--workflow",
+                str(workflow),
+                "--output-dir",
+                str(tmp_path / "evidence"),
+                "--name",
+                "focused",
+                "--",
+                "pytest",
+                *phase4.FOCUSED_SUITE_SELECTION,
+                "-q",
+                "-p",
+                "no:cacheprovider",
+            ]
+        )

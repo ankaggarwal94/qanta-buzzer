@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from scripts.stopdff_v5 import fileio
@@ -134,6 +134,14 @@ def validate_suite_receipt(receipt: dict[str, Any]) -> None:
         raise SuiteReceiptError(
             "suite receipt interpreter_realpath must be a non-empty string"
             " (R-070)"
+        )
+    if not (
+        PurePosixPath(interpreter).is_absolute()
+        or PureWindowsPath(interpreter).is_absolute()
+    ):
+        raise SuiteReceiptError(
+            "suite receipt interpreter_realpath must be a syntactically"
+            " absolute POSIX or Windows path (R-070)"
         )
     for field in ("commit", "tree_sha256"):
         if not is_git_object_id(receipt[field]):

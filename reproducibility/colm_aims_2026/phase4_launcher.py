@@ -1661,13 +1661,54 @@ def _capture_verified_inputs(
         expected_sha256=eligibility["artifact_sha256"],
         label="pairing eligibility artifact",
     )
-    return {
+    captured = {
+        "root": capture_root,
         "data_dir": data_dir,
         "staged": captured_staged,
         "manifest": captured_manifest,
         "snapshots": captured_snapshots,
         "eligibility": captured_eligibility,
     }
+    captured["snapshot"] = _captured_input_snapshot(capture_root)
+    return captured
+
+
+def _captured_input_snapshot(root: Path) -> dict[str, dict[str, Any]]:
+    """Hash the complete private input tree without following aliases."""
+    root = Path(root)
+    snapshot: dict[str, dict[str, Any]] = {}
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        if path.is_symlink() or schema.is_filesystem_link(path):
+            raise LaunchRefusal(
+                f"captured input {rel!r} is a symlink or reparse point"
+                " (R-075/R-082)"
+            )
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            raise LaunchRefusal(
+                f"captured input {rel!r} is not a regular file (R-075/R-082)"
+            )
+        snapshot[rel] = {
+            "size": path.stat().st_size,
+            "sha256": _sha256_regular_file(
+                path, label=f"captured input {rel!r}"
+            ),
+        }
+    if not snapshot:
+        raise LaunchRefusal("captured input tree is empty (R-075/R-082)")
+    return snapshot
+
+
+def _verify_captured_inputs(captured: dict[str, Any]) -> None:
+    """Reverify the complete private input tree after producer exit."""
+    observed = _captured_input_snapshot(Path(captured["root"]))
+    if observed != captured["snapshot"]:
+        raise LaunchRefusal(
+            "captured input bytes or membership changed during producer"
+            " execution (R-075/R-082)"
+        )
 
 
 def _rewrite_argv_for_captured_inputs(
@@ -2710,6 +2751,27 @@ def validate_and_launch(
             f" intact at {quarantine_dir}, STOP report written, nothing"
             " promoted (R-081)"
         )
+
+    # The child runs as the same user on supported local platforms, so chmod
+    # is not an immutability boundary. Catch every persistent mutation of the
+    # private captured inputs before comparator execution or promotion.
+    try:
+        _verify_captured_inputs(captured_inputs)
+    except BaseException as exc:
+        _write_stop_report(
+            quarantine_dir,
+            {
+                "reason": "captured_input_drift",
+                "error": f"{exc.__class__.__name__}: {exc}",
+                "activation_digest": activation_digest,
+                "stopped_at": now(),
+            },
+        )
+        raise RunFailed(
+            "captured producer inputs changed during execution — promotion"
+            f" blocked; quarantine left intact at {quarantine_dir} with a"
+            " STOP report (R-075/R-081/R-082)"
+        ) from exc
 
     # Mandatory comparator on a zero exit. A comparator crash gets a STOP
     # report too (F-3) — fail-closed with the triage artifact present.

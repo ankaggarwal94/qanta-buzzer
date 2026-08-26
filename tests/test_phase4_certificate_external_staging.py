@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from reproducibility.colm_aims_2026 import phase4
+from reproducibility.colm_aims_2026 import phase4, schema
 
 
 _SHA = "a" * 64
@@ -87,6 +87,7 @@ def _suite_receipt(
     )
     junit_path = Path(interpreter).parent / f"{suite}-suite.xml"
     return {
+        "schema_version": schema.SCHEMA_VERSION,
         "exit_code": 0,
         "command": [
             interpreter,
@@ -1080,6 +1081,34 @@ def test_suite_receipt_evidence_digest_rejects_malformed_value(
     assert certificate["ready"] is False
     assert any(
         "suite_receipts: full" in failure and field in failure
+        for failure in certificate["failing_checks"]
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing-version", "bool-version", "wrong-version", "extra-field"],
+)
+def test_suite_receipt_requires_canonical_versioned_closed_shape(
+    tmp_path: Path, mutation: str
+) -> None:
+    components = _valid_external_components(tmp_path)
+    receipt = components["suite_receipts"]["focused"]
+    if mutation == "missing-version":
+        del receipt["schema_version"]
+    elif mutation == "bool-version":
+        receipt["schema_version"] = True
+    elif mutation == "wrong-version":
+        receipt["schema_version"] = schema.SCHEMA_VERSION - 1
+    else:
+        receipt["unexpected"] = "must-fail-closed"
+
+    certificate = phase4.assemble_certificate(components)
+
+    assert certificate["ready"] is False
+    assert any(
+        "suite_receipts: focused receipt failed canonical R-070 schema"
+        in failure
         for failure in certificate["failing_checks"]
     )
 

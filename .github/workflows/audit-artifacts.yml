@@ -51,10 +51,17 @@ jobs:
           python scripts/run_ci_suite_with_receipt.py --workflow .github/workflows/audit-artifacts.yml --output-dir ci-evidence --name audit -- pytest tests/test_verify_audit_release.py -q
 
       - name: Retain audit evidence
-        if: always()
+        if: always() && github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: audit-merge-ref-evidence-${{ github.sha }}
+          path: ci-evidence/
+
+      - name: Retain direct-head audit evidence
+        if: always() && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-direct-head-evidence-${{ github.sha }}
           path: ci-evidence/
 
   literal-head:

@@ -22,6 +22,55 @@ from . import schema
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_FIXTURES_ROOT = _REPO_ROOT / "tests" / "fixtures" / "qa012_item10"
 _FIXTURE_BINDINGS_BASENAME = "bindings.json"
+_FIXTURE_BINDINGS_SHA256 = (
+    "c928ff4cbde99e3107c789d0e19cbcf88bdbe86b1dea39ab18b29f3c9d7dd3b0"
+)
+CANONICAL_AUTHORITY_RELPATH = "qa012_inventory_2026-08-22_rev3.json"
+CANONICAL_AUTHORITY_PATH = _REPO_ROOT / CANONICAL_AUTHORITY_RELPATH
+CANONICAL_AUTHORITY_SHA256 = (
+    "bb692446ad07bea63b5fc6799d4c0b6474cc084076c87b2db7c2c2a9b7334303"
+)
+_AUTHORITY_KEYS = frozenset(
+    {
+        "manifest_type",
+        "revision",
+        "supersession_chain",
+        "procedure",
+        "conventions",
+        "generated_at",
+        "files_scanned",
+        "parse_failures",
+        "total_format_qa_hits",
+        "hits_by_file",
+        "verdict",
+        "entries",
+    }
+)
+AUTHORITY_SOURCE_PRONGS = {
+    "d6_bundle": "d6_checksum_closure",
+    "sibling_paper_exports": "historical_paper_exports",
+    "modal_repo_paper_exports": "historical_paper_exports",
+    "modal_staging_paper_exports": "historical_paper_exports",
+    "repo_paper_exports": "historical_paper_exports",
+    "item10_bundle": "source_export_bundles",
+    "data_processed": "source_export_bundles",
+    "git": "external_sidecars",
+    "phase4_successor_artifact": "successor_suite_transcripts",
+}
+_AUTHORITY_SOURCE_COUNTS = {
+    "d6_bundle": 4,
+    "sibling_paper_exports": 12,
+    "modal_repo_paper_exports": 11,
+    "modal_staging_paper_exports": 11,
+    "repo_paper_exports": 7,
+    "item10_bundle": 12,
+    "data_processed": 7,
+    "git": 1,
+    "phase4_successor_artifact": 2,
+}
+_AUTHORITY_SOURCE_RELATIVE_PREFIXES = {
+    "item10_bundle": "CS321M/final_project/",
+}
 DROPBOX_CONTENT_BLOCK_BYTES = 4 * 1024 * 1024
 REQUIRED_SCOPE_PRONGS = (
     "d6_checksum_closure",
@@ -46,6 +95,153 @@ MAX_QA_FILES = 100_000
 MAX_QA_BYTES = 512 * 1024 * 1024
 MAX_QA_JSONL_ROWS = 100_000
 MAX_QA_HITS = 100_000
+
+
+def _fixture_excerpt_is_rejected(excerpt: bytes, excerpt_name: str) -> bool:
+    """Require the exact historical incompatibility represented by a fixture."""
+    try:
+        loaded = schema.load_records_bytes(excerpt, excerpt_name)
+        for record in loaded["records"]:
+            schema.validate_record(record)
+    except schema.RecordValidationError as exc:
+        return "record missing opaque item_key (R-031)" in str(exc)
+    except schema.ColmAimsError:
+        return False
+    return False
+
+
+def _full_fixture_is_incompatible(data: bytes, fixture_name: str) -> bool:
+    """Require every record in an exact hit-file fixture to fail R-031."""
+    try:
+        loaded = schema.load_records_bytes(data, fixture_name)
+    except schema.ColmAimsError:
+        return False
+    records = loaded.get("records")
+    if not isinstance(records, list) or not records:
+        return False
+    for record in records:
+        try:
+            schema.validate_record(record)
+        except schema.RecordValidationError as exc:
+            if "record missing opaque item_key (R-031)" not in str(exc):
+                return False
+        except schema.ColmAimsError:
+            return False
+        else:
+            return False
+    return True
+
+
+def _authority_source(path: Any) -> str:
+    """Return the portable source identifier from a rev3 inventory path."""
+    if not isinstance(path, str) or not path or "\\" in path:
+        raise schema.SchemaValidationError(
+            "QA-012 authority entry path is not a portable source identity"
+        )
+    source, separator, relative = path.partition(":")
+    if (
+        not separator
+        or source not in AUTHORITY_SOURCE_PRONGS
+        or not relative.strip()
+        or relative.lstrip().startswith("/")
+        or bool(re.search(r"[A-Za-z]:[/\\]", path))
+    ):
+        raise schema.SchemaValidationError(
+            "QA-012 authority entry names an unknown or absolute source"
+        )
+    return source
+
+
+def _authority_prong_relative_path(path: str) -> tuple[str, str]:
+    """Map one authority path to its frozen prong and exact portable relative path."""
+    source = _authority_source(path)
+    relative = path.partition(":")[2].strip()
+    prefix = _AUTHORITY_SOURCE_RELATIVE_PREFIXES.get(source, "")
+    if prefix:
+        if not relative.startswith(prefix):
+            raise schema.SchemaValidationError(
+                "QA-012 authority path does not carry its frozen source prefix"
+            )
+        relative = relative[len(prefix) :]
+    return AUTHORITY_SOURCE_PRONGS[source], relative
+
+
+def load_authority_manifest(path: Path | None = None) -> dict[str, Any]:
+    """Load the exact tracked rev3 scope authority, independent of location.
+
+    The runtime path is intentionally not returned or serialized.  Only the
+    raw-byte SHA-256 is durable authority, so a relocated byte-identical copy
+    remains admissible while rev1 or any mutated/self-authored file fails.
+    """
+    authority_path = Path(path or CANONICAL_AUTHORITY_PATH).absolute()
+    raw = schema.read_regular_file_bytes(authority_path)
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != CANONICAL_AUTHORITY_SHA256:
+        raise schema.SchemaValidationError(
+            "QA-012 authority bytes do not match the canonical rev3 SHA-256"
+        )
+    authority = schema.parse_json_bytes_strict(raw)
+    if not isinstance(authority, dict) or set(authority) != _AUTHORITY_KEYS:
+        raise schema.SchemaValidationError(
+            "QA-012 rev3 authority has a non-closed top-level shape"
+        )
+    if (
+        authority.get("manifest_type") != "qa012_format_qa_inventory"
+        or authority.get("revision") != 3
+        or authority.get("files_scanned") != 67
+        or authority.get("parse_failures") != []
+        or authority.get("total_format_qa_hits") != 4556
+        or authority.get("verdict") != "HITS_PRESENT_NOT_VACUOUS"
+        or not isinstance(authority.get("entries"), list)
+        or len(authority["entries"]) != 67
+    ):
+        raise schema.SchemaValidationError(
+            "QA-012 rev3 authority metadata does not encode the adjudicated scope"
+        )
+    source_counts = {source: 0 for source in AUTHORITY_SOURCE_PRONGS}
+    total_hits = 0
+    seen_paths: set[str] = set()
+    for entry in authority["entries"]:
+        if not isinstance(entry, dict) or set(entry) != {
+            "path",
+            "size",
+            "sha256",
+            "dropbox_content_hash",
+            "parse_ok",
+            "format_qa_hits",
+        }:
+            raise schema.SchemaValidationError(
+                "QA-012 rev3 authority entry has a non-closed shape"
+            )
+        source = _authority_source(entry["path"])
+        if entry["path"] in seen_paths:
+            raise schema.SchemaValidationError(
+                "QA-012 rev3 authority contains a duplicate source identity"
+            )
+        seen_paths.add(entry["path"])
+        source_counts[source] += 1
+        if (
+            not schema.is_real_int(entry["size"])
+            or entry["size"] < 0
+            or not schema.is_sha256_hex(entry["sha256"])
+            or not schema.is_sha256_hex(entry["dropbox_content_hash"])
+            or entry["parse_ok"] is not True
+            or not isinstance(entry["format_qa_hits"], list)
+            or not all(isinstance(hit, str) and hit for hit in entry["format_qa_hits"])
+        ):
+            raise schema.SchemaValidationError(
+                "QA-012 rev3 authority entry has invalid hashes or hit evidence"
+            )
+        total_hits += len(entry["format_qa_hits"])
+    if source_counts != _AUTHORITY_SOURCE_COUNTS or total_hits != 4556:
+        raise schema.SchemaValidationError(
+            "QA-012 rev3 authority does not cover every frozen source/prong"
+        )
+    if set(AUTHORITY_SOURCE_PRONGS.values()) != set(REQUIRED_SCOPE_PRONGS):
+        raise schema.SchemaValidationError(
+            "QA-012 authority source map does not cover every required prong"
+        )
+    return authority
 
 
 def dropbox_content_hash(data: bytes) -> str:
@@ -369,6 +565,8 @@ def hit_fixtures_verified(
         bindings_raw = schema.read_regular_file_bytes(
             root / _FIXTURE_BINDINGS_BASENAME, tree_root=root
         )
+        if hashlib.sha256(bindings_raw).hexdigest() != _FIXTURE_BINDINGS_SHA256:
+            return False
         bindings = schema.parse_json_bytes_strict(bindings_raw)
         if not isinstance(bindings, dict):
             return False
@@ -413,9 +611,18 @@ def hit_fixtures_verified(
         for basename, binding_value in bound_files.items():
             if not isinstance(binding_value, dict):
                 return False
+            full_name = binding_value.get("full_fixture")
             excerpt_name = binding_value.get("excerpt_fixture")
-            if not isinstance(excerpt_name, str) or not excerpt_name:
+            if (
+                not isinstance(full_name, str)
+                or not full_name
+                or not isinstance(excerpt_name, str)
+                or not excerpt_name
+            ):
                 return False
+            full_fixture = schema.read_regular_file_bytes(
+                root / full_name, tree_root=root
+            )
             excerpt = schema.read_regular_file_bytes(
                 root / excerpt_name, tree_root=root
             )
@@ -424,13 +631,18 @@ def hit_fixtures_verified(
                 return False
             if len(excerpt.splitlines()) != binding_value.get("excerpt_lines"):
                 return False
-            try:
-                loaded = schema.load_records_bytes(excerpt, excerpt_name)
-                for record in loaded["records"]:
-                    schema.validate_record(record)
-            except schema.ColmAimsError:
-                pass
-            else:
+            if b"\n".join(full_fixture.splitlines()[:2]) + b"\n" != excerpt:
+                return False
+            if (
+                hashlib.sha256(full_fixture).hexdigest()
+                != binding_value.get("full_file_sha256")
+                or len(full_fixture) != binding_value.get("full_file_size")
+                or dropbox_content_hash(full_fixture)
+                != binding_value.get("dropbox_content_hash")
+                or not _full_fixture_is_incompatible(full_fixture, full_name)
+            ):
+                return False
+            if not _fixture_excerpt_is_rejected(excerpt, excerpt_name):
                 # The historical ``format: QA`` rows are compatibility
                 # fixtures only.  If they ever become admissible v2 records,
                 # they could substitute for the required semantic block.
@@ -468,6 +680,104 @@ def hit_fixtures_verified(
     except (OSError, KeyError, TypeError, schema.ColmAimsError):
         return False
     return True
+
+
+def authority_hit_fixtures_verified(
+    authority: dict[str, Any], fixtures_root: Path | None = None
+) -> bool:
+    """Bind every canonical rev3 hit file to the committed compatibility fixtures."""
+    root = Path(fixtures_root or _DEFAULT_FIXTURES_ROOT)
+    try:
+        # The caller may supply a relocated copy, but never a caller-authored
+        # parsed object: reload the tracked authority and require exact equality.
+        if authority != load_authority_manifest():
+            return False
+        bindings_raw = schema.read_regular_file_bytes(
+            root / _FIXTURE_BINDINGS_BASENAME, tree_root=root
+        )
+        if hashlib.sha256(bindings_raw).hexdigest() != _FIXTURE_BINDINGS_SHA256:
+            return False
+        bindings = schema.parse_json_bytes_strict(bindings_raw)
+        if not isinstance(bindings, dict):
+            return False
+        schema.check_schema_version(bindings, "QA-012 fixture bindings")
+        bound_files = bindings.get("files")
+        if not isinstance(bound_files, dict) or not bound_files:
+            return False
+        hit_entries = [entry for entry in authority["entries"] if entry["format_qa_hits"]]
+        if len(hit_entries) != len(bound_files):
+            return False
+        matched_paths: set[str] = set()
+        for binding in bound_files.values():
+            if not isinstance(binding, dict):
+                return False
+            relative_path = binding.get("relative_path")
+            scope_prong = binding.get("scope_prong")
+            matches = [
+                entry
+                for entry in hit_entries
+                if isinstance(relative_path, str)
+                and isinstance(scope_prong, str)
+                and _authority_prong_relative_path(entry["path"])
+                == (scope_prong, relative_path)
+            ]
+            if len(matches) != 1:
+                return False
+            entry = matches[0]
+            matched_paths.add(entry["path"])
+            full_name = binding.get("full_fixture")
+            excerpt_name = binding.get("excerpt_fixture")
+            if (
+                not isinstance(full_name, str)
+                or not full_name
+                or not isinstance(excerpt_name, str)
+                or not excerpt_name
+            ):
+                return False
+            full_fixture = schema.read_regular_file_bytes(
+                root / full_name, tree_root=root
+            )
+            excerpt = schema.read_regular_file_bytes(
+                root / excerpt_name, tree_root=root
+            )
+            if (
+                hashlib.sha256(excerpt).hexdigest() != binding.get("excerpt_sha256")
+                or len(excerpt.splitlines()) != binding.get("excerpt_lines")
+                or b"\n".join(full_fixture.splitlines()[:2]) + b"\n" != excerpt
+                or hashlib.sha256(full_fixture).hexdigest()
+                != binding.get("full_file_sha256")
+                or len(full_fixture) != binding.get("full_file_size")
+                or dropbox_content_hash(full_fixture)
+                != binding.get("dropbox_content_hash")
+                or entry["sha256"] != binding.get("full_file_sha256")
+                or entry["size"] != binding.get("full_file_size")
+                or entry["dropbox_content_hash"]
+                != binding.get("dropbox_content_hash")
+                or len(entry["format_qa_hits"]) != binding.get("hit_count")
+            ):
+                return False
+            normalized_hits: list[dict[str, Any]] = []
+            for hit in entry["format_qa_hits"]:
+                match = re.fullmatch(r"line ([1-9][0-9]*): (/.*/?format|/format)", hit)
+                if match is None:
+                    return False
+                normalized_hits.append(
+                    {"line": int(match.group(1)), "pointer": match.group(2)}
+                )
+            hits_sha256 = hashlib.sha256(
+                json.dumps(
+                    normalized_hits, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+            if hits_sha256 != binding.get("hits_sha256"):
+                return False
+            if not _full_fixture_is_incompatible(full_fixture, full_name):
+                return False
+            if not _fixture_excerpt_is_rejected(excerpt, excerpt_name):
+                return False
+        return matched_paths == {entry["path"] for entry in hit_entries}
+    except (OSError, KeyError, TypeError, schema.ColmAimsError):
+        return False
 
 
 def _candidate_files(root: Path) -> list[Path]:

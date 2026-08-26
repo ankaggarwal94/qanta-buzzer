@@ -55,7 +55,23 @@ from tests._colm_aims_v2_helpers import (
 
 # The REAL in-repo frozen inputs (never regenerated here).
 FROZEN_DIR = NAMESPACE_DIR / "frozen"
-TEST_ACTIVATION_DIGEST = "9" * 64
+TEST_SOURCE_COMMIT = "d" * 40
+TEST_SOURCE_TREE = "e" * 40
+PLACEHOLDER_ACTIVATION_DIGEST = "9" * 64
+
+
+@pytest.fixture(autouse=True)
+def _bind_live_driver_checkout(monkeypatch):
+    """Synthetic transaction fixtures bind a synthetic clean Git identity."""
+    monkeypatch.setattr(
+        driver,
+        "_live_repo_identity",
+        lambda: {
+            "commit": TEST_SOURCE_COMMIT,
+            "tree_sha256": TEST_SOURCE_TREE,
+            "dirty": False,
+        },
+    )
 
 # Frozen model manifest primary-scorer facts (frozen/model_snapshot_manifests.json).
 PRIMARY_SCORER_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -103,11 +119,28 @@ def _write_records_root(root):
         (root / f"{cell_id}.jsonl").write_bytes(
             data["cells"][cell_id].records_bytes
         )
+    # Reuse the independently exercised full certificate-component builder;
+    # this transaction fixture must carry a genuinely reproducible ready
+    # certificate rather than a hand-written ready:true wrapper.
+    from tests.test_colm_aims_v2_phase4_pre import _good_components
+
+    components = _good_components()
+    components["repo"]["commit"] = TEST_SOURCE_COMMIT
+    components["repo"]["tree_sha256"] = TEST_SOURCE_TREE
+    for suite_receipt in components["suite_receipts"].values():
+        suite_receipt["commit"] = TEST_SOURCE_COMMIT
+        suite_receipt["tree_sha256"] = TEST_SOURCE_TREE
+    certificate = driver.phase4.assemble_certificate(components)
+    assert certificate["ready"] is True, certificate["failing_checks"]
+    certificate_path = root.parent / "certificate.json"
+    certificate_bytes = schema.encode_json(certificate)
+    certificate_path.write_bytes(certificate_bytes)
+    activation_digest = sha256_bytes(certificate_bytes)
     ledger = {
-        "activation_digest": TEST_ACTIVATION_DIGEST,
-        "certificate_path": "certificate.json",
-        "certificate_commit": "d" * 40,
-        "certificate_tree": "e" * 40,
+        "activation_digest": activation_digest,
+        "certificate_path": str(certificate_path.absolute()),
+        "certificate_commit": TEST_SOURCE_COMMIT,
+        "certificate_tree": TEST_SOURCE_TREE,
         "argv": ["python", "producer.py"],
         "consumed_at": "2026-08-26T00:00:00+00:00",
     }
@@ -119,7 +152,7 @@ def _write_records_root(root):
     receipt = {
         "schema_version": schema.SCHEMA_VERSION,
         "receipt_type": "phase4_launch",
-        "activation_digest": TEST_ACTIVATION_DIGEST,
+        "activation_digest": activation_digest,
         "ledger_sha256": sha256_bytes(ledger_path.read_bytes()),
         "producer_exit_code": 0,
         "comparator_verdict": "PASS",
@@ -143,6 +176,38 @@ def _launch_receipt(records_root: Path) -> Path:
 
 def _launch_ledger(records_root: Path) -> Path:
     return Path(records_root).parent / "launch-ledger.json"
+
+
+def _launch_certificate(records_root: Path) -> Path:
+    return Path(records_root).parent / "certificate.json"
+
+
+def _activation_digest(records_root: Path) -> str:
+    return sha256_bytes(_launch_certificate(records_root).read_bytes())
+
+
+def _resign_transaction_chain(
+    records_root: Path,
+    certificate: dict,
+    *,
+    mutate_ledger=None,
+) -> str:
+    """Rewrite a synthetic certificate and all enclosing transaction hashes."""
+    certificate_bytes = schema.encode_json(certificate)
+    _launch_certificate(records_root).write_bytes(certificate_bytes)
+    activation_digest = sha256_bytes(certificate_bytes)
+    ledger_path = _launch_ledger(records_root)
+    ledger = json.loads(ledger_path.read_text("utf-8"))
+    ledger["activation_digest"] = activation_digest
+    if mutate_ledger is not None:
+        mutate_ledger(ledger)
+    ledger_path.write_bytes(schema.encode_json(ledger))
+    receipt_path = _launch_receipt(records_root)
+    receipt = json.loads(receipt_path.read_text("utf-8"))
+    receipt["activation_digest"] = activation_digest
+    receipt["ledger_sha256"] = sha256_bytes(ledger_path.read_bytes())
+    receipt_path.write_bytes(schema.encode_json(receipt))
+    return activation_digest
 
 
 def _final_checksums_entries() -> dict[str, str]:
@@ -197,11 +262,8 @@ def _write_qa012_corpus(root):
     return roots
 
 
-def _qa012_cli_args(roots):
-    args = []
-    for prong in qa012.REQUIRED_SCOPE_PRONGS:
-        args.extend(["--qa012-root", f"{prong}={roots[prong]}"])
-    return args
+def _qa012_cli_args():
+    return ["--qa012-authority", str(qa012.CANONICAL_AUTHORITY_PATH)]
 
 
 # ---------------------------------------------------------------------------
@@ -344,8 +406,8 @@ class TestD6Baseline:
         _write_final_checksums_json(path)
         baseline = driver.build_d6_baseline(checksums_path=path)
         qa_roots = _write_qa012_corpus(tmp_path / "qa012")
-        qa = assembler.qa012_status_block(
-            qa012.build_inventory_manifest(qa_roots)
+        qa = assembler.qa012_authority_status_block(
+            qa012.CANONICAL_AUTHORITY_PATH
         )
         profile_bytes = make_closure_profile_bytes()
         inv = assembler.assemble_closure_inventory(
@@ -354,9 +416,9 @@ class TestD6Baseline:
             profile_sha256=sha256_bytes(profile_bytes),
             analysis_provenance=schema.ANALYSIS_PROVENANCE_D7B,
         )
-        assert closure.evaluate_closure(
-            inv, profile_bytes=profile_bytes, qa012_roots=qa_roots
-        )["satisfied"] is True
+        assert closure.evaluate_closure(inv, profile_bytes=profile_bytes)[
+            "satisfied"
+        ] is True
 
     def test_default_without_checksums_is_unsatisfied(self, tmp_path):
         # The FINAL D6 checksums are post-de-anonymization and unknown now:
@@ -388,9 +450,7 @@ class TestD6Baseline:
             profile_sha256=sha256_bytes(profile_bytes),
             analysis_provenance=schema.ANALYSIS_PROVENANCE_D7B,
         )
-        out = closure.evaluate_closure(
-            inv, profile_bytes=profile_bytes, qa012_roots=qa_roots
-        )
+        out = closure.evaluate_closure(inv, profile_bytes=profile_bytes)
         assert out["satisfied"] is False
         assert any("FINAL_CHECKSUMS" in row for row in out["failing_rows"])
 
@@ -428,11 +488,19 @@ class TestQa012Block:
             "inventory_sha256": "b" * 64,
         }
 
+    def test_exact_authority_is_the_only_satisfying_path(self):
+        block = driver.build_qa012_block(
+            authority_path=qa012.CANONICAL_AUTHORITY_PATH
+        )
+        assert block["status"] == "VERIFIED_WITH_FIXTURES"
+        assert block["authority_sha256"] == qa012.CANONICAL_AUTHORITY_SHA256
+        assert all("C:/" not in value for value in block.values())
+
     @pytest.mark.parametrize(
         "status", ["VERIFIED_VACUOUS", "VERIFIED_WITH_FIXTURES"]
     )
     def test_explicit_satisfied_status_cannot_bypass_scan(self, status):
-        with pytest.raises(schema.ConfigSurfaceError, match="locally validated"):
+        with pytest.raises(schema.ConfigSurfaceError, match="pinned rev3"):
             driver.build_qa012_block(
                 status=status, inventory_sha256="b" * 64
             )
@@ -455,17 +523,16 @@ def _run_driver(
     out_dir = tmp_path / "out"
     checksums = tmp_path / "FINAL_CHECKSUMS.json"
     _write_final_checksums_json(checksums)
-    qa_corpus = _write_qa012_corpus(tmp_path / "qa012")
     return driver.run_driver(
         records_root,
         out_dir,
         FROZEN_DIR,
-        source_commit="d" * 40,
+        source_commit=TEST_SOURCE_COMMIT,
         launch_receipt=_launch_receipt(records_root),
         launch_ledger=_launch_ledger(records_root),
-        activation_digest=TEST_ACTIVATION_DIGEST,
+        activation_digest=_activation_digest(records_root),
         d6_checksums=checksums,
-        qa012_roots=qa_corpus,
+        qa012_authority=qa012.CANONICAL_AUTHORITY_PATH,
         run_id=run_id,
         reclaim_crashed_relic=reclaim_crashed_relic,
     )
@@ -488,7 +555,119 @@ class TestRunDriver:
                 records_root,
                 _launch_receipt(records_root),
                 _launch_ledger(records_root),
-                TEST_ACTIVATION_DIGEST,
+                _activation_digest(records_root),
+                TEST_SOURCE_COMMIT,
+            )
+
+    def test_missing_referenced_certificate_refuses(self, tmp_path):
+        records_root = _write_records_root(tmp_path / "records")
+        activation_digest = _activation_digest(records_root)
+        _launch_certificate(records_root).unlink()
+        with pytest.raises(schema.ColmAimsError, match="missing|unreadable"):
+            driver.validate_launch_receipt(
+                records_root,
+                _launch_receipt(records_root),
+                _launch_ledger(records_root),
+                activation_digest,
+                TEST_SOURCE_COMMIT,
+            )
+
+    def test_fabricated_self_consistent_ready_certificate_refuses(
+        self, tmp_path
+    ):
+        records_root = _write_records_root(tmp_path / "records")
+        fabricated_components = {
+            key: {} for key in driver.phase4.CERT_COMPONENT_KEYS
+        }
+        fabricated_components["repo"] = {
+            "commit": TEST_SOURCE_COMMIT,
+            "tree_sha256": TEST_SOURCE_TREE,
+        }
+        fabricated = {
+            "schema_version": driver.phase4.CERT_SCHEMA_VERSION,
+            "ready": True,
+            "failing_checks": [],
+            "components": fabricated_components,
+        }
+        activation_digest = _resign_transaction_chain(
+            records_root, fabricated
+        )
+        with pytest.raises(schema.TypedIngressError, match="fabricated"):
+            driver.validate_launch_receipt(
+                records_root,
+                _launch_receipt(records_root),
+                _launch_ledger(records_root),
+                activation_digest,
+                TEST_SOURCE_COMMIT,
+            )
+
+    @pytest.mark.parametrize(
+        ("identity_field", "message"),
+        [("commit", "commit disagrees"), ("tree_sha256", "tree disagrees")],
+    )
+    def test_certificate_identity_must_match_authenticated_ledger(
+        self, tmp_path, identity_field, message
+    ):
+        records_root = _write_records_root(tmp_path / "records")
+        certificate = json.loads(
+            _launch_certificate(records_root).read_text("utf-8")
+        )
+        certificate["components"]["repo"][identity_field] = "f" * 40
+        activation_digest = _resign_transaction_chain(
+            records_root, certificate
+        )
+        with pytest.raises(schema.TypedIngressError, match=message):
+            driver.validate_launch_receipt(
+                records_root,
+                _launch_receipt(records_root),
+                _launch_ledger(records_root),
+                activation_digest,
+                TEST_SOURCE_COMMIT,
+            )
+
+    def test_ledger_commit_must_match_driver_source_commit(self, tmp_path):
+        records_root = _write_records_root(tmp_path / "records")
+        with pytest.raises(schema.TypedIngressError, match="source_commit"):
+            driver.validate_launch_receipt(
+                records_root,
+                _launch_receipt(records_root),
+                _launch_ledger(records_root),
+                _activation_digest(records_root),
+                "f" * 40,
+            )
+
+    def test_certificate_bytes_must_match_activation_digest(self, tmp_path):
+        records_root = _write_records_root(tmp_path / "records")
+        activation_digest = _activation_digest(records_root)
+        _launch_certificate(records_root).write_bytes(b'{}\n')
+        with pytest.raises(schema.TypedIngressError, match="activation digest"):
+            driver.validate_launch_receipt(
+                records_root,
+                _launch_receipt(records_root),
+                _launch_ledger(records_root),
+                activation_digest,
+                TEST_SOURCE_COMMIT,
+            )
+
+    @pytest.mark.parametrize("drift", ["commit", "tree_sha256", "dirty"])
+    def test_live_checkout_must_match_authenticated_certificate(
+        self, tmp_path, monkeypatch, drift
+    ):
+        records_root = _write_records_root(tmp_path / "records")
+        identity = {
+            "commit": TEST_SOURCE_COMMIT,
+            "tree_sha256": TEST_SOURCE_TREE,
+            "dirty": False,
+        }
+        identity[drift] = True if drift == "dirty" else "f" * 40
+        monkeypatch.setattr(driver, "_live_repo_identity", lambda: identity)
+        with pytest.raises(schema.TypedIngressError, match="live publication"):
+            driver.validate_launch_receipt(
+                records_root,
+                _launch_receipt(records_root),
+                _launch_ledger(records_root),
+                _activation_digest(records_root),
+                TEST_SOURCE_COMMIT,
             )
 
     def test_each_record_file_is_read_once(self, tmp_path, monkeypatch):
@@ -497,7 +676,6 @@ class TestRunDriver:
         out_dir = tmp_path / "out"
         checksums = tmp_path / "FINAL_CHECKSUMS.json"
         _write_final_checksums_json(checksums)
-        qa_corpus = _write_qa012_corpus(tmp_path / "qa012")
 
         original_read = driver.assembler.schema.read_regular_file_bytes
         record_reads: list[str] = []
@@ -516,12 +694,12 @@ class TestRunDriver:
             records_root,
             out_dir,
             FROZEN_DIR,
-            source_commit="d" * 40,
+            source_commit=TEST_SOURCE_COMMIT,
             launch_receipt=_launch_receipt(records_root),
             launch_ledger=_launch_ledger(records_root),
-            activation_digest=TEST_ACTIVATION_DIGEST,
+            activation_digest=_activation_digest(records_root),
             d6_checksums=checksums,
-            qa012_roots=qa_corpus,
+            qa012_authority=qa012.CANONICAL_AUTHORITY_PATH,
         )
 
         assert sorted(record_reads) == sorted(
@@ -546,7 +724,7 @@ class TestRunDriver:
         self, tmp_path, monkeypatch
     ):
         built = _run_driver(tmp_path, monkeypatch)
-        oracle = make_profile_v2(source_commit="d" * 40)
+        oracle = make_profile_v2(source_commit=TEST_SOURCE_COMMIT)
         for key in schema.PROFILE_TOP_LEVEL_KEYS:
             if key == "provenance":
                 continue
@@ -559,10 +737,6 @@ class TestRunDriver:
         result = closure.evaluate_closure(
             built.closure_inventory,
             profile_bytes=schema.encode_profile(built.profile),
-            qa012_roots={
-                prong: tmp_path / "qa012" / prong
-                for prong in qa012.REQUIRED_SCOPE_PRONGS
-            },
         )
         assert result["satisfied"] is True, result["failing_rows"]
 
@@ -592,7 +766,6 @@ class TestRunDriver:
         # Bind only the synthetic record identities so execution reaches closure.
         _bind_synthetic_records_to_frozen(monkeypatch)
         records_root = _write_records_root(tmp_path / "records")
-        qa_corpus = _write_qa012_corpus(tmp_path / "qa012")
         out_dir = tmp_path / "out"
 
         with pytest.raises(schema.SchemaValidationError):
@@ -600,11 +773,11 @@ class TestRunDriver:
                 records_root,
                 out_dir,
                 FROZEN_DIR,
-                source_commit="d" * 40,
+                source_commit=TEST_SOURCE_COMMIT,
                 launch_receipt=_launch_receipt(records_root),
                 launch_ledger=_launch_ledger(records_root),
-                activation_digest=TEST_ACTIVATION_DIGEST,
-                qa012_roots=qa_corpus,
+                activation_digest=_activation_digest(records_root),
+                qa012_authority=qa012.CANONICAL_AUTHORITY_PATH,
             )
 
         assert not (out_dir / "runs" / "run-0001").exists()
@@ -616,7 +789,6 @@ class TestRunDriver:
         records_root = _write_records_root(tmp_path / "records")
         checksums = tmp_path / "FINAL_CHECKSUMS.json"
         _write_final_checksums_json(checksums)
-        qa_corpus = _write_qa012_corpus(tmp_path / "qa012")
         out_dir = tmp_path / "out"
 
         with pytest.raises(schema.SchemaValidationError):
@@ -624,13 +796,13 @@ class TestRunDriver:
                 records_root,
                 out_dir,
                 FROZEN_DIR,
-                source_commit="d" * 40,
+                source_commit=TEST_SOURCE_COMMIT,
                 launch_receipt=_launch_receipt(records_root),
                 launch_ledger=_launch_ledger(records_root),
-                activation_digest=TEST_ACTIVATION_DIGEST,
+                activation_digest=_activation_digest(records_root),
                 d6_checksums=checksums,
                 d6_main_tex_sha256=float("nan"),
-                qa012_roots=qa_corpus,
+                qa012_authority=qa012.CANONICAL_AUTHORITY_PATH,
             )
 
         assert not (out_dir / "runs" / "run-0001").exists()
@@ -654,7 +826,6 @@ class TestCli:
         out_dir = tmp_path / "out"
         checksums = tmp_path / "FINAL_CHECKSUMS.json"
         _write_final_checksums_json(checksums)
-        qa_corpus = _write_qa012_corpus(tmp_path / "qa012")
         rc = driver.main(
             [
                 "--records-root",
@@ -664,16 +835,16 @@ class TestCli:
                 "--frozen-dir",
                 str(FROZEN_DIR),
                 "--source-commit",
-                "d" * 40,
+                TEST_SOURCE_COMMIT,
                 "--launch-receipt",
                 str(_launch_receipt(records_root)),
                 "--launch-ledger",
                 str(_launch_ledger(records_root)),
                 "--activation-digest",
-                TEST_ACTIVATION_DIGEST,
+                _activation_digest(records_root),
                 "--d6-checksums",
                 str(checksums),
-                *_qa012_cli_args(qa_corpus),
+                *_qa012_cli_args(),
             ]
         )
         assert rc == EXIT_PASS
@@ -696,7 +867,6 @@ class TestCli:
     def test_missing_records_is_ingress_error(self, tmp_path):
         checksums = tmp_path / "FINAL_CHECKSUMS.json"
         _write_final_checksums_json(checksums)
-        qa_corpus = _write_qa012_corpus(tmp_path / "qa012")
         rc = driver.main(
             [
                 "--records-root",
@@ -706,16 +876,16 @@ class TestCli:
                 "--frozen-dir",
                 str(FROZEN_DIR),
                 "--source-commit",
-                "d" * 40,
+                TEST_SOURCE_COMMIT,
                 "--launch-receipt",
                 str(tmp_path / driver.LAUNCH_RECEIPT_NAME),
                 "--launch-ledger",
                 str(tmp_path / "missing-ledger.json"),
                 "--activation-digest",
-                TEST_ACTIVATION_DIGEST,
+                PLACEHOLDER_ACTIVATION_DIGEST,
                 "--d6-checksums",
                 str(checksums),
-                *_qa012_cli_args(qa_corpus),
+                *_qa012_cli_args(),
             ]
         )
         assert rc == EXIT_INGRESS_ERROR
@@ -724,7 +894,6 @@ class TestCli:
         records_root = _write_records_root(tmp_path / "records")
         checksums = tmp_path / "FINAL_CHECKSUMS.json"
         _write_final_checksums_json(checksums)
-        qa_corpus = _write_qa012_corpus(tmp_path / "qa012")
         rc = driver.main(
             [
                 "--records-root",
@@ -734,16 +903,16 @@ class TestCli:
                 "--frozen-dir",
                 str(tmp_path / "no-frozen"),
                 "--source-commit",
-                "d" * 40,
+                TEST_SOURCE_COMMIT,
                 "--launch-receipt",
                 str(_launch_receipt(records_root)),
                 "--launch-ledger",
                 str(_launch_ledger(records_root)),
                 "--activation-digest",
-                TEST_ACTIVATION_DIGEST,
+                _activation_digest(records_root),
                 "--d6-checksums",
                 str(checksums),
-                *_qa012_cli_args(qa_corpus),
+                *_qa012_cli_args(),
             ]
         )
         assert rc == EXIT_INGRESS_ERROR
@@ -762,13 +931,13 @@ class TestCli:
                 "--frozen-dir",
                 str(FROZEN_DIR),
                 "--source-commit",
-                "d" * 40,
+                TEST_SOURCE_COMMIT,
                 "--launch-receipt",
                 str(_launch_receipt(records_root)),
                 "--launch-ledger",
                 str(_launch_ledger(records_root)),
                 "--activation-digest",
-                TEST_ACTIVATION_DIGEST,
+                _activation_digest(records_root),
                 "--d6-checksums",
                 str(checksums),
             ]

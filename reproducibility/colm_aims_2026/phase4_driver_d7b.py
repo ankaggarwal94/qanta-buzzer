@@ -3,7 +3,7 @@
 The FIRST production reader that constructs the caller-supplied identity
 blocks the ``phase4_assemble_d7b`` orchestrator needs from the REAL frozen
 inputs + an authenticated launch receipt + a records root + the pinned D6
-baseline + a freshly scanned five-prong QA-012 manifest,
+baseline + the pinned QA-012 rev3 authority,
 then calls ``build_evidence_package`` to emit the real ``profile.json`` +
 evidence package + closure inventory. Before this module the identity blocks
 existed only as ``tests/_colm_aims_v2_helpers.make_*`` synthesizers.
@@ -28,8 +28,9 @@ Identity-block provenance (constants vs. input-derived):
   * d6_baseline  -> PINNED in ``closure``: the two-party ``main.tex``/
     ``main.pdf`` hashes and the COMPLETE FINAL_CHECKSUMS closure are source
     constants, not caller-selected authority.
-  * qa012  -> the executed detector manifest (``qa012.build_inventory_manifest``
-    over exactly five labelled ``--qa012-root PRONG=PATH`` arguments).
+  * qa012  -> exact raw-byte identity of the tracked rev3 scope authority.
+    Separate caller-root scans are available through ``build_qa012_block`` as
+    non-authorizing diagnostics; they are not a publication input.
 
 Exit codes mirror ``verify.py`` / ``phase4_assemble_d7b`` (0 pass, 2 usage,
 3 ingress, 4 internal). Spec rules: R-001..R-011 (profile shape), R-040/R-043
@@ -45,6 +46,7 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -67,6 +69,36 @@ EXIT_PASS = 0
 EXIT_USAGE_ERROR = 2
 EXIT_INGRESS_ERROR = 3
 EXIT_INTERNAL_ERROR = 4
+
+
+def _live_repo_identity() -> dict[str, Any]:
+    """Return runner-sourced tracked Git identity for the publication code."""
+    def run(*args: str) -> str:
+        try:
+            return subprocess.run(
+                ["git", *args],
+                cwd=_REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise schema.TypedIngressError(
+                "cannot authenticate the live publication checkout"
+            ) from exc
+
+    return {
+        "commit": run("rev-parse", "HEAD").strip(),
+        "tree_sha256": run("rev-parse", "HEAD^{tree}").strip(),
+        "dirty": bool(
+            run(
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=no",
+            )
+        ),
+    }
 
 # ---------------------------------------------------------------------------
 # Study-design identity constants (documented; ceremony-overridable).
@@ -553,18 +585,27 @@ def build_d6_baseline(
 def build_qa012_block(
     *,
     roots: dict[str, Path] | None = None,
+    authority_path: Path | None = None,
     status: str | None = None,
     inventory_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Build QA-012 evidence from a scan or explicit blocking status (R-072).
+    """Build QA-012 evidence from authority, diagnostics, or blocking status.
 
-    ``roots`` runs ``qa012.build_inventory_manifest`` over the given corpora and
-    returns the full manifest so the publication boundary can validate and
-    derive any satisfying closure status itself. An explicit unsatisfied
-    ``status``+``inventory_sha256`` may short-circuit the scan. One of the two
-    inputs is required — a satisfying QA-012 block fabricated from nothing is
-    refused.
+    Only ``authority_path`` can derive a satisfying status. ``roots`` produces
+    a diagnostic inventory, while explicit status/hash input must be blocking.
     """
+    modes = sum(
+        (
+            authority_path is not None,
+            bool(roots),
+            status is not None or inventory_sha256 is not None,
+        )
+    )
+    if modes != 1:
+        raise schema.ConfigSurfaceError(
+            "QA-012 requires exactly one of pinned authority, diagnostic roots,"
+            " or explicit blocking status/hash"
+        )
     if status is not None or inventory_sha256 is not None:
         if status is None or not schema.is_sha256_hex(inventory_sha256):
             raise schema.ConfigSurfaceError(
@@ -574,18 +615,18 @@ def build_qa012_block(
         if status in {"VERIFIED_VACUOUS", "VERIFIED_WITH_FIXTURES"}:
             raise schema.ConfigSurfaceError(
                 "a closure-satisfying QA-012 status must be derived from a"
-                " locally validated non-vacuous scan and, for hits, verified"
-                " committed fixtures"
+                " pinned rev3 authority and verified committed fixtures"
             )
         return {"status": status, "inventory_sha256": inventory_sha256}
+    if authority_path is not None:
+        return assembler.qa012_authority_status_block(authority_path)
     if roots:
         manifest = qa012.build_inventory_manifest(
             {name: Path(root) for name, root in roots.items()}
         )
         return manifest
     raise schema.ConfigSurfaceError(
-        "QA-012 block requires either a corpus root to scan or an explicit"
-        " status + inventory sha256 (R-072)"
+        "QA-012 block requires pinned authority, roots, or blocking status/hash"
     )
 
 
@@ -599,18 +640,20 @@ def validate_launch_receipt(
     receipt_path: Path,
     ledger_path: Path,
     expected_activation_digest: str,
+    expected_source_commit: str,
 ) -> dict[str, bytes]:
-    """Authenticate the ledger, promoted export, and record transaction."""
+    """Authenticate the certificate-to-ledger-to-record transaction chain."""
     records_root = Path(records_root).absolute()
     receipt_path = Path(receipt_path).absolute()
     if (
         receipt_path.name != LAUNCH_RECEIPT_NAME
         or receipt_path.parent != records_root.parent
         or not schema.is_sha256_hex(expected_activation_digest)
+        or not schema.is_git_object_id(expected_source_commit)
     ):
         raise schema.ConfigSurfaceError(
             "records require the sibling LAUNCH_RECEIPT.json and an exact"
-            " activation digest"
+            " activation digest/source commit"
         )
     raw = schema.read_regular_file_bytes(
         receipt_path, tree_root=records_root.parent
@@ -664,6 +707,78 @@ def validate_launch_receipt(
         raise schema.TypedIngressError(
             "exception ledger does not bind the accepted launch transaction"
         )
+    certificate_path = Path(ledger["certificate_path"])
+    if not certificate_path.is_absolute():
+        raise schema.TypedIngressError(
+            "exception ledger certificate_path must be absolute so the"
+            " authenticated certificate reference is unambiguous"
+        )
+    certificate_bytes = schema.read_regular_file_bytes(certificate_path)
+    certificate_digest = hashlib.sha256(certificate_bytes).hexdigest()
+    if certificate_digest != expected_activation_digest:
+        raise schema.TypedIngressError(
+            "certificate bytes do not match the launch activation digest"
+        )
+    certificate = schema.parse_json_bytes_strict(certificate_bytes)
+    certificate_keys = {
+        "schema_version",
+        "ready",
+        "failing_checks",
+        "components",
+    }
+    if (
+        not isinstance(certificate, dict)
+        or set(certificate) != certificate_keys
+        or certificate.get("schema_version") != phase4.CERT_SCHEMA_VERSION
+        or certificate.get("ready") is not True
+        or certificate.get("failing_checks") != []
+        or not isinstance(certificate.get("components"), dict)
+        or set(certificate["components"]) != set(phase4.CERT_COMPONENT_KEYS)
+    ):
+        raise schema.TypedIngressError(
+            "activation bytes are not a closed ready Phase-4 certificate"
+        )
+    certificate_repo = certificate["components"].get("repo")
+    if (
+        not isinstance(certificate_repo, dict)
+        or not schema.is_git_object_id(certificate_repo.get("commit"))
+        or not schema.is_git_object_id(certificate_repo.get("tree_sha256"))
+    ):
+        raise schema.TypedIngressError(
+            "ready certificate does not carry a valid repository identity"
+        )
+    if ledger["certificate_commit"] != expected_source_commit:
+        raise schema.TypedIngressError(
+            "exception ledger certificate commit does not equal source_commit"
+        )
+    if ledger["certificate_commit"] != certificate_repo["commit"]:
+        raise schema.TypedIngressError(
+            "exception ledger certificate commit disagrees with certificate"
+        )
+    if ledger["certificate_tree"] != certificate_repo["tree_sha256"]:
+        raise schema.TypedIngressError(
+            "exception ledger certificate tree disagrees with certificate"
+        )
+    live_repo = _live_repo_identity()
+    if (
+        live_repo.get("dirty") is not False
+        or live_repo.get("commit") != expected_source_commit
+        or live_repo.get("tree_sha256") != certificate_repo["tree_sha256"]
+    ):
+        raise schema.TypedIngressError(
+            "live publication checkout must be tracked-clean and exactly"
+            " match the authenticated certificate commit/tree"
+        )
+    # Reject a hand-fabricated ``ready: true`` wrapper even if an attacker
+    # rewrites the certificate, ledger, receipt, and activation argument into
+    # a self-consistent hash chain.  The pure generator must independently
+    # reproduce the exact parsed certificate from its embedded components.
+    regenerated = phase4.assemble_certificate(certificate["components"])
+    if regenerated != certificate:
+        raise schema.TypedIngressError(
+            "certificate cannot be reproduced by the Phase-4 certificate"
+            " validator; fabricated ready state refused"
+        )
     export_bytes = schema.read_regular_file_bytes(
         records_root.parent / doc["export_basename"],
         tree_root=records_root.parent,
@@ -703,7 +818,7 @@ def run_driver(
     d6_checksums: Path | None = None,
     d6_main_tex_sha256: str | None = None,
     d6_main_pdf_sha256: str | None = None,
-    qa012_roots: dict[str, Path] | None = None,
+    qa012_authority: Path | None = None,
     run_id: str = "run-0001",
     reclaim_crashed_relic: bool = False,
 ) -> assembler.BuildResult:
@@ -716,7 +831,11 @@ def run_driver(
     """
     records_root = Path(records_root)
     record_bytes = validate_launch_receipt(
-        records_root, launch_receipt, launch_ledger, activation_digest
+        records_root,
+        launch_receipt,
+        launch_ledger,
+        activation_digest,
+        source_commit,
     )
     record_snapshot = assembler._record_snapshot_from_bytes(
         records_root.absolute(), record_bytes
@@ -742,11 +861,10 @@ def run_driver(
         main_tex_sha256=d6_main_tex_sha256,
         main_pdf_sha256=d6_main_pdf_sha256,
     )
-    if qa012_roots is None:
+    if qa012_authority is None:
         raise schema.ConfigSurfaceError(
-            "publication requires all five QA-012 corpus roots (R-072)"
+            "publication requires the exact pinned QA-012 rev3 authority (R-072)"
         )
-
     return assembler.build_evidence_package(
         records_root,
         out_dir,
@@ -757,7 +875,7 @@ def run_driver(
         llm_involvement=llm_involvement,
         estimands=estimands,
         d6_baseline=d6_baseline,
-        qa012_roots=qa012_roots,
+        qa012_authority=qa012_authority,
         item_key_derivation=schema.PHASE4_ITEM_KEY_DERIVATION,
         run_id=run_id,
         reclaim_crashed_relic=reclaim_crashed_relic,
@@ -790,42 +908,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--d6-checksums", default=None)
     parser.add_argument("--d6-main-tex-sha256", default=None)
     parser.add_argument("--d6-main-pdf-sha256", default=None)
-    parser.add_argument(
-        "--qa012-root",
-        action="append",
-        default=None,
-        dest="qa012_roots",
-        metavar="PRONG=PATH",
-    )
+    parser.add_argument("--qa012-authority", default=None)
     parser.add_argument("--run-id", default="run-0001")
     parser.add_argument(
         "--reclaim-crashed-relic", action="store_true", default=False
     )
     return parser
-
-
-def _parse_qa012_roots(values: list[str] | None) -> dict[str, Path] | None:
-    """Parse the exact repeatable QA-012 ``PRONG=PATH`` CLI surface."""
-    if values is None:
-        return None
-    parsed: dict[str, Path] = {}
-    for raw in values:
-        name, separator, path = str(raw).partition("=")
-        if not separator or not name or not path:
-            raise schema.ConfigSurfaceError(
-                "--qa012-root must be PRONG=PATH (R-072)"
-            )
-        if name in parsed:
-            raise schema.ConfigSurfaceError(
-                f"--qa012-root carries duplicate prong {name!r} (R-072)"
-            )
-        parsed[name] = Path(path)
-    if set(parsed) != set(qa012.REQUIRED_SCOPE_PRONGS):
-        raise schema.ConfigSurfaceError(
-            "--qa012-root must declare exactly the frozen QA-012 prongs"
-            f" {list(qa012.REQUIRED_SCOPE_PRONGS)!r} (R-072)"
-        )
-    return parsed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -838,7 +926,6 @@ def main(argv: list[str] | None = None) -> int:
         return code if isinstance(code, int) else EXIT_USAGE_ERROR
 
     try:
-        qa012_roots = _parse_qa012_roots(args.qa012_roots)
         result = run_driver(
             Path(args.records_root),
             Path(args.out_dir),
@@ -852,7 +939,9 @@ def main(argv: list[str] | None = None) -> int:
             ),
             d6_main_tex_sha256=args.d6_main_tex_sha256,
             d6_main_pdf_sha256=args.d6_main_pdf_sha256,
-            qa012_roots=qa012_roots,
+            qa012_authority=(
+                Path(args.qa012_authority) if args.qa012_authority else None
+            ),
             run_id=args.run_id,
             reclaim_crashed_relic=args.reclaim_crashed_relic,
         )

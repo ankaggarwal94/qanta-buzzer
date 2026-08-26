@@ -320,8 +320,8 @@ class TestAssembleClosureInventory:
     def test_satisfied(self, tmp_path):
         profile_bytes = make_closure_profile_bytes()
         roots = _qa012_roots(tmp_path)
-        qa_block = assembler.qa012_status_block(
-            qa012.build_inventory_manifest(roots)
+        qa_block = assembler.qa012_authority_status_block(
+            qa012.CANONICAL_AUTHORITY_PATH
         )
         inv = assembler.assemble_closure_inventory(
             d6_baseline=_d6_baseline(),
@@ -329,9 +329,7 @@ class TestAssembleClosureInventory:
             profile_sha256=sha256_bytes(profile_bytes),
             analysis_provenance=schema.ANALYSIS_PROVENANCE_D7B,
         )
-        result = closure.evaluate_closure(
-            inv, profile_bytes=profile_bytes, qa012_roots=roots
-        )
+        result = closure.evaluate_closure(inv, profile_bytes=profile_bytes)
         assert result["satisfied"] is True, result["failing_rows"]
 
     def test_unsatisfied_when_holm_row_broken(self, tmp_path):
@@ -345,9 +343,7 @@ class TestAssembleClosureInventory:
             profile_sha256=sha256_bytes(profile_bytes),
             analysis_provenance=None,
         )
-        out = closure.evaluate_closure(
-            inv, profile_bytes=profile_bytes, qa012_roots=roots
-        )
+        out = closure.evaluate_closure(inv, profile_bytes=profile_bytes)
         assert out["satisfied"] is False
         assert any("holm/inference" in row for row in out["failing_rows"])
 
@@ -367,7 +363,7 @@ class TestQa012StatusBlock:
         manifest = _qa012_manifest(tmp_path)
         block = assembler.qa012_status_block(manifest)
         assert block == {
-            "status": "VERIFIED_VACUOUS",
+            "status": "DIAGNOSTIC_ZERO_HIT",
             "inventory_sha256": manifest["inventory_sha256"],
             "manifest": manifest,
         }
@@ -453,7 +449,7 @@ class TestQa012StatusBlock:
                 "inventory_sha256": digest,
             }
         )
-        assert block["status"] == "VERIFIED_WITH_FIXTURES"
+        assert block["status"] == "DIAGNOSTIC_HITS_WITH_FIXTURES"
 
     def test_unknown_result_fails_closed(self):
         with pytest.raises(schema.ColmAimsError):
@@ -481,7 +477,7 @@ def _build(tmp_path, *, run_id="run-0001", reclaim_crashed_relic=False):
         llm_involvement=make_llm_involvement(),
         estimands=_estimands(),
         d6_baseline=_d6_baseline(),
-        qa012_roots=_qa012_roots(tmp_path),
+        qa012_authority=qa012.CANONICAL_AUTHORITY_PATH,
         run_id=run_id,
         reclaim_crashed_relic=reclaim_crashed_relic,
     )
@@ -513,7 +509,7 @@ class TestBuildEvidencePackage:
                 llm_involvement=make_llm_involvement(),
                 estimands=_estimands(),
                 d6_baseline=_d6_baseline(),
-                qa012_roots=_qa012_roots(tmp_path),
+                qa012_authority=qa012.CANONICAL_AUTHORITY_PATH,
                 record_snapshot=snapshot,
             )
 
@@ -539,7 +535,6 @@ class TestBuildEvidencePackage:
         assert closure.evaluate_closure(
             built.closure_inventory,
             profile_bytes=schema.encode_profile(built.profile),
-            qa012_roots=_qa012_roots(tmp_path),
         )["satisfied"]
 
     def test_publishes_the_same_record_bytes_that_were_validated(
@@ -572,7 +567,7 @@ class TestBuildEvidencePackage:
             llm_involvement=make_llm_involvement(),
             estimands=_estimands(),
             d6_baseline=_d6_baseline(),
-            qa012_roots=_qa012_roots(tmp_path),
+            qa012_authority=qa012.CANONICAL_AUTHORITY_PATH,
         )
 
         assert mutated
@@ -597,7 +592,7 @@ class TestBuildEvidencePackage:
                 llm_involvement=make_llm_involvement(),
                 estimands=_estimands(),
                 d6_baseline=d6_baseline,
-                qa012_roots=_qa012_roots(tmp_path),
+                qa012_authority=qa012.CANONICAL_AUTHORITY_PATH,
             )
 
         assert not (out_dir / "runs" / "run-0001").exists()

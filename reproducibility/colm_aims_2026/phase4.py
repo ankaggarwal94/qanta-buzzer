@@ -28,7 +28,7 @@ import subprocess
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from . import pairing, schema
+from . import pairing, receipt as receipt_mod, schema
 
 
 class EligibilityArtifactError(schema.TypedIngressError):
@@ -251,20 +251,7 @@ SUITE_RECEIPT_NAMES = ("focused", "full")
 # R-070/R-082: every suite receipt must carry the full machine-readable
 # binding — including the R-082 head bindings (commit/tree_sha256/dirty) —
 # a receipt missing any of these is a failing suite_receipts component.
-R070_RECEIPT_FIELDS = (
-    "exit_code",
-    "command",
-    "environment_lock_sha256",
-    "workflow_sha256",
-    "interpreter_realpath",
-    "counts",
-    "skip_identities",
-    "junit_sha256",
-    "transcript_sha256",
-    "commit",
-    "tree_sha256",
-    "dirty",
-)
+R070_RECEIPT_FIELDS = receipt_mod.SUITE_RECEIPT_REQUIRED_FIELDS
 FOCUSED_SUITE_SELECTION = (
     "tests/test_colm_aims_v2_phase4_pre.py",
     "tests/test_colm_aims_v2_schema_raw_bytes.py",
@@ -3076,6 +3063,18 @@ def _check_suite_receipts(receipts: Any, fail: Any, repo: Any = None) -> None:
         if not isinstance(receipt, dict):
             fail(f"suite_receipts: {name} receipt missing or malformed")
             continue
+        # Certificate ingestion uses the same canonical, versioned, closed
+        # receipt schema as the receipt producer.  Keep the certificate's
+        # additional command/runtime/head cross-bindings below: schema
+        # validity is necessary, but is not by itself sufficient, for
+        # PRE_RUN_READY.
+        try:
+            receipt_mod.validate_suite_receipt(receipt)
+        except schema.ColmAimsError as exc:
+            fail(
+                f"suite_receipts: {name} receipt failed canonical R-070"
+                f" schema validation: {exc}"
+            )
         # R-070/R-082: the full machine-readable receipt binding is REQUIRED
         # — a receipt missing any field is a failing suite_receipts
         # component.

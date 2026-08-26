@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 
 import pytest
 
@@ -87,6 +88,15 @@ class TestSuiteReceipt:
         with pytest.raises(schema.ColmAimsError):
             receipt_mod.validate_suite_receipt(doc)
 
+    @pytest.mark.parametrize("interpreter", ["python", "bin/python"])
+    def test_interpreter_realpath_must_be_syntactically_absolute(
+        self, interpreter
+    ):
+        with pytest.raises(schema.ColmAimsError, match="syntactically absolute"):
+            receipt_mod.validate_suite_receipt(
+                make_suite_receipt(interpreter_realpath=interpreter)
+            )
+
     def test_commit_and_tree_must_be_full_length(self):
         with pytest.raises(schema.ColmAimsError):
             receipt_mod.validate_suite_receipt(
@@ -149,7 +159,9 @@ class TestClosureGate:
             roots[prong] = root
         manifest = qa012.build_inventory_manifest(roots)
         inventory = make_closure_inventory(
-            qa012=assembler.qa012_status_block(manifest)
+            qa012=assembler.qa012_authority_status_block(
+                qa012.CANONICAL_AUTHORITY_PATH
+            )
         )
         return inventory, roots
 
@@ -200,7 +212,6 @@ class TestClosureGate:
         out = closure.evaluate_closure(
             inventory,
             profile_bytes=make_closure_profile_bytes(),
-            qa012_roots=roots,
         )
         assert out["gate"] == CLOSURE_GATE_TOKEN
         assert out["satisfied"] is True
@@ -213,7 +224,6 @@ class TestClosureGate:
         out = closure.evaluate_closure(
             inventory,
             profile_bytes=make_closure_profile_bytes(),
-            qa012_roots=roots,
         )
         assert out["satisfied"] is False
         assert any("holm" in str(row).lower() for row in out["failing_rows"])
@@ -224,7 +234,6 @@ class TestClosureGate:
         out = closure.evaluate_closure(
             inventory,
             profile_bytes=make_closure_profile_bytes(),
-            qa012_roots=roots,
         )
         assert out["satisfied"] is False
         assert any("holm/inference" in row for row in out["failing_rows"])
@@ -238,7 +247,6 @@ class TestClosureGate:
         out = closure.evaluate_closure(
             inventory,
             profile_bytes=make_closure_profile_bytes(),
-            qa012_roots=roots,
         )
         assert out["satisfied"] is False
         assert any("entry map" in row for row in out["failing_rows"])
@@ -248,7 +256,6 @@ class TestClosureGate:
         out = closure.evaluate_closure(
             inventory,
             profile_bytes=make_closure_profile_bytes(),
-            qa012_roots=roots,
         )
         assert out["satisfied"] is True
         assert out["failing_rows"] == []
@@ -259,7 +266,6 @@ class TestClosureGate:
         out = closure.evaluate_closure(
             inventory,
             profile_bytes=make_closure_profile_bytes(),
-            qa012_roots=roots,
         )
         assert out["satisfied"] is False
         assert any("pinned" in row for row in out["failing_rows"])
@@ -274,7 +280,6 @@ class TestClosureGate:
         out = closure.evaluate_closure(
             inventory,
             profile_bytes=make_closure_profile_bytes(),
-            qa012_roots=roots,
         )
         assert out["satisfied"] is False
         assert any("pinned" in row for row in out["failing_rows"])
@@ -311,7 +316,6 @@ class TestClosureGate:
         out = closure.evaluate_closure(
             inventory,
             profile_bytes=make_closure_profile_bytes(),
-            qa012_roots=roots,
         )
         assert out["satisfied"] is False
         assert any("main.tex hash drifted" in row for row in out["failing_rows"])
@@ -325,7 +329,6 @@ class TestClosureGate:
         out = closure.evaluate_closure(
             inventory,
             profile_bytes=make_closure_profile_bytes(),
-            qa012_roots=roots,
         )
         assert out["satisfied"] is False
         assert any("displayed number" in row for row in out["failing_rows"])
@@ -336,7 +339,6 @@ class TestClosureGate:
         out = closure.evaluate_closure(
             inventory,
             profile_bytes=make_closure_profile_bytes(),
-            qa012_roots=roots,
         )
         assert out["satisfied"] is True
 
@@ -345,26 +347,43 @@ class TestClosureGate:
         assert out["satisfied"] is False
         assert any("actual bound profile" in row for row in out["failing_rows"])
 
-    def test_missing_qa012_roots_blocks_closure(self):
+    def test_authoritative_closure_does_not_serialize_or_require_runtime_roots(
+        self, tmp_path
+    ):
         out = closure.evaluate_closure(
-            make_closure_inventory(),
+            self._inventory_and_roots(tmp_path)[0],
             profile_bytes=make_closure_profile_bytes(),
         )
-        assert out["satisfied"] is False
-        assert any("actual five corpus roots" in row for row in out["failing_rows"])
+        assert out["satisfied"] is True
 
-    def test_qa012_root_manifest_drift_blocks_closure(self, tmp_path):
-        inventory, roots = self._inventory_and_roots(tmp_path)
-        (roots[qa012.REQUIRED_SCOPE_PRONGS[0]] / "added.json").write_text(
-            '{}', "utf-8"
+    def test_arbitrary_clean_roots_cannot_authorize_closure(self, tmp_path):
+        roots = {}
+        for prong in qa012.REQUIRED_SCOPE_PRONGS:
+            root = tmp_path / prong
+            root.mkdir()
+            (root / "clean.json").write_text('{"kind":"clean"}', "utf-8")
+            roots[prong] = root
+        diagnostic = assembler.qa012_status_block(
+            qa012.build_inventory_manifest(roots)
         )
+        inventory = make_closure_inventory(qa012=diagnostic)
         out = closure.evaluate_closure(
             inventory,
             profile_bytes=make_closure_profile_bytes(),
-            qa012_roots=roots,
         )
         assert out["satisfied"] is False
-        assert any("fresh scan" in row for row in out["failing_rows"])
+        assert diagnostic["status"] == "DIAGNOSTIC_ZERO_HIT"
+        assert any("UNVERIFIED" in row for row in out["failing_rows"])
+
+    def test_qa012_authority_digest_drift_blocks_closure(self, tmp_path):
+        inventory, roots = self._inventory_and_roots(tmp_path)
+        inventory["qa012"]["authority_sha256"] = "f" * 64
+        out = closure.evaluate_closure(
+            inventory,
+            profile_bytes=make_closure_profile_bytes(),
+        )
+        assert out["satisfied"] is False
+        assert any("pinned" in row for row in out["failing_rows"])
 
     def test_profile_byte_drift_blocks_closure(self):
         out = closure.evaluate_closure(
@@ -497,6 +516,48 @@ class TestQa012Inventory:
             assert entry["sha256"] == sha256_bytes(
                 (roots[entry["scope_prong"]] / entry["path"]).read_bytes()
             )
+
+    def test_exact_rev3_authority_can_be_relocated(self, tmp_path):
+        relocated = tmp_path / "authority.json"
+        relocated.write_bytes(qa012.CANONICAL_AUTHORITY_PATH.read_bytes())
+        authority = qa012.load_authority_manifest(relocated)
+        block = assembler.qa012_authority_status_block(relocated)
+        assert authority["revision"] == 3
+        assert block == {
+            "status": "VERIFIED_WITH_FIXTURES",
+            "inventory_sha256": qa012.CANONICAL_AUTHORITY_SHA256,
+            "authority_sha256": qa012.CANONICAL_AUTHORITY_SHA256,
+        }
+        assert not any(":" in str(value) for value in block.values())
+
+    @pytest.mark.parametrize("target", ["bindings", "full", "excerpt"])
+    def test_mutated_compatibility_fixture_bytes_are_rejected(
+        self, tmp_path, target
+    ):
+        fixture_root = REPO_ROOT / "tests" / "fixtures" / "qa012_item10"
+        copied = tmp_path / "fixtures"
+        shutil.copytree(fixture_root, copied)
+        paths = {
+            "bindings": copied / "bindings.json",
+            "full": copied / "per_prefix_scores_test.jsonl",
+            "excerpt": copied / "per_prefix_scores_test.jsonl.first2.jsonl",
+        }
+        path = paths[target]
+        path.write_bytes(path.read_bytes() + b" ")
+        authority = qa012.load_authority_manifest()
+        assert not qa012.authority_hit_fixtures_verified(authority, copied)
+
+    @pytest.mark.parametrize("source", ["rev1", "mutated"])
+    def test_rev1_or_mutated_authority_is_rejected(self, tmp_path, source):
+        candidate = tmp_path / "authority.json"
+        if source == "rev1":
+            candidate.write_bytes(b'{"revision":1}\n')
+        else:
+            raw = bytearray(qa012.CANONICAL_AUTHORITY_PATH.read_bytes())
+            raw[-2] = ord(" ") if raw[-2] != ord(" ") else ord("\t")
+            candidate.write_bytes(bytes(raw))
+        with pytest.raises(schema.SchemaValidationError, match="canonical rev3"):
+            qa012.load_authority_manifest(candidate)
 
     def test_hit_manifest_carries_exact_pointers_and_bytes_hash(
         self, tmp_path

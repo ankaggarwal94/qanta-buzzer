@@ -1731,8 +1731,8 @@ class TestR077KnownDivergenceCarveOut:
 
 class TestR078Qa012Fixtures:
     # Source: tests/fixtures/qa012_item10/bindings.json (+ four committed
-    # first-2-line excerpt fixtures beside it), binding the item-10 bundle
-    # per_prefix_scores*.jsonl hit files by SHA-256.
+    # exact full-file fixtures and first-2-line excerpts beside it), binding
+    # the item-10 bundle per_prefix_scores*.jsonl hit files by SHA-256.
 
     @pytest.fixture(scope="class")
     def bindings(self):
@@ -1746,9 +1746,15 @@ class TestR078Qa012Fixtures:
 
     def test_excerpt_fixture_bytes_hash_to_bindings(self, bindings):
         for name, meta in bindings["files"].items():
+            full_blob = (
+                QA012_FIXTURE_DIR / meta["full_fixture"]
+            ).read_bytes()
             fixture = QA012_FIXTURE_DIR / meta["excerpt_fixture"]
             blob = fixture.read_bytes()
+            assert len(full_blob) == meta["full_file_size"], name
+            assert sha256_bytes(full_blob) == meta["full_file_sha256"], name
             assert sha256_bytes(blob) == meta["excerpt_sha256"], name
+            assert b"\n".join(full_blob.splitlines()[:2]) + b"\n" == blob
             lines = [
                 line
                 for line in blob.decode("utf-8").splitlines()
@@ -1775,7 +1781,7 @@ class TestR078Qa012Fixtures:
         # no event statuses, no stop steps, no horizon — the v2 record
         # loader must refuse each one, naming a missing required field.
         for name, meta in bindings["files"].items():
-            fixture = QA012_FIXTURE_DIR / meta["excerpt_fixture"]
+            fixture = QA012_FIXTURE_DIR / meta["full_fixture"]
             loaded = schema.load_records_bytes(
                 fixture.read_bytes(), f"records/{name}"
             )
@@ -1920,6 +1926,7 @@ def _r070_receipt(
             f"--junitxml={Path(tempfile.gettempdir()).resolve() / (suite_name + '_suite.xml')}",
         ]
     return {
+        "schema_version": schema.SCHEMA_VERSION,
         "exit_code": exit_code,
         "command": rendered_command,
         "environment_lock_sha256": environment_lock_sha256,

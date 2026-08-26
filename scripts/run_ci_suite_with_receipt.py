@@ -26,6 +26,7 @@ def _git(*args: str) -> str:
         check=True,
         capture_output=True,
         text=True,
+        cwd=_REPO_ROOT,
     ).stdout.strip()
 
 
@@ -50,7 +51,7 @@ def _pytest_command(command: list[str], junit_path: Path) -> list[str]:
     if command[:1] != ["pytest"]:
         raise ValueError("R-070 suite command must start with pytest")
     return [
-        sys.executable,
+        str(Path(sys.executable).resolve()),
         "-m",
         "pytest",
         *command[1:],

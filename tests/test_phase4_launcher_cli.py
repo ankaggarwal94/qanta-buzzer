@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -1473,6 +1474,29 @@ def test_child_argv_uses_private_captured_inputs(
     ledger = json.loads(Path(config["ledger_path"]).read_text("utf-8"))
     assert ledger["argv"] == argv
     assert certificate["components"]["environment"]["command"] != argv
+
+
+def test_persistent_captured_input_mutation_blocks_promotion(
+    tmp_path, monkeypatch
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+
+    def mutate_captured_input(argv, _env):
+        captured = Path(argv[argv.index("--calibration") + 1])
+        captured.chmod(stat.S_IREAD | stat.S_IWRITE)
+        captured.write_bytes(b"child mutation\n")
+        return 0
+
+    with pytest.raises(launcher.RunFailed, match="changed during execution"):
+        _call_launcher(config, probes, launch=mutate_captured_input)
+    quarantine = Path(config["quarantine_dir"])
+    report = json.loads(
+        (quarantine / launcher.STOP_REPORT_NAME).read_text("utf-8")
+    )
+    assert report["reason"] == "captured_input_drift"
+    assert not Path(config["promote_to"]).exists()
 
 
 def test_capture_regular_file_authenticates_copied_bytes(tmp_path):

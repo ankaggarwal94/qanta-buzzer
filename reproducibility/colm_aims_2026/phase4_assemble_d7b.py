@@ -58,9 +58,9 @@ EXIT_USAGE_ERROR = 2
 EXIT_INGRESS_ERROR = 3
 EXIT_INTERNAL_ERROR = 4
 
-# QA-012 build result -> closure status (closure.py:35-37; qa012.py:97).
+# Caller-selected QA-012 scans are diagnostics, never scope authority.
 _QA012_STATUS_BY_RESULT = {
-    "zero_hit": "VERIFIED_VACUOUS",
+    "zero_hit": "DIAGNOSTIC_ZERO_HIT",
 }
 
 
@@ -499,13 +499,12 @@ def assemble_profile(
 
 
 def qa012_status_block(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Map a ``qa012.build_inventory_manifest`` result to the closure
-    ``qa012`` block (closure.py:35-37/110-120)."""
+    """Map a caller-root scan to a non-authorizing diagnostic block."""
     qa012.validate_inventory_manifest(manifest)
     result = manifest["result"]
     if result == "hits":
         status = (
-            "VERIFIED_WITH_FIXTURES"
+            "DIAGNOSTIC_HITS_WITH_FIXTURES"
             if qa012.hit_fixtures_verified(manifest)
             else "HITS_PRESENT"
         )
@@ -525,10 +524,49 @@ def qa012_status_block(manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def qa012_authority_status_block(authority_path: Path) -> dict[str, Any]:
+    """Derive the only closure-satisfying QA-012 block from pinned rev3 bytes."""
+    authority = qa012.load_authority_manifest(authority_path)
+    status = (
+        "VERIFIED_WITH_FIXTURES"
+        if qa012.authority_hit_fixtures_verified(authority)
+        else "HITS_PRESENT"
+    )
+    return {
+        "status": status,
+        "inventory_sha256": qa012.CANONICAL_AUTHORITY_SHA256,
+        "authority_sha256": qa012.CANONICAL_AUTHORITY_SHA256,
+    }
+
+
 def _qa012_closure_block(evidence: dict[str, Any]) -> dict[str, Any]:
-    """Derive a closure block; satisfying states require a full inventory."""
+    """Normalize QA evidence without allowing a caller-fabricated pass."""
     if isinstance(evidence, dict) and "result" in evidence:
         return qa012_status_block(evidence)
+    if isinstance(evidence, dict) and set(evidence) == {
+        "status",
+        "inventory_sha256",
+        "manifest",
+    }:
+        # Legacy/root-derived blocks are always recomputed as diagnostics,
+        # even if a caller labels the wrapper VERIFIED_*.
+        return qa012_status_block(evidence["manifest"])
+    if isinstance(evidence, dict) and set(evidence) == {
+        "status",
+        "inventory_sha256",
+        "authority_sha256",
+    }:
+        if (
+            evidence["status"] != "VERIFIED_WITH_FIXTURES"
+            or evidence["inventory_sha256"]
+            != qa012.CANONICAL_AUTHORITY_SHA256
+            or evidence["authority_sha256"]
+            != qa012.CANONICAL_AUTHORITY_SHA256
+        ):
+            raise schema.ConfigSurfaceError(
+                "QA-012 authority block does not bind canonical rev3"
+            )
+        return dict(evidence)
     if not isinstance(evidence, dict) or set(evidence) != {
         "status",
         "inventory_sha256",
@@ -542,8 +580,8 @@ def _qa012_closure_block(evidence: dict[str, Any]) -> dict[str, Any]:
         "VERIFIED_WITH_FIXTURES",
     }:
         raise schema.ConfigSurfaceError(
-            "closure-satisfying QA-012 status must be derived from a full"
-            " validated five-prong inventory manifest (R-072)"
+            "closure-satisfying QA-012 status must be derived from pinned rev3"
+            " authority (R-072)"
         )
     if not isinstance(evidence.get("status"), str) or not schema.is_sha256_hex(
         evidence.get("inventory_sha256")
@@ -614,7 +652,7 @@ def assemble_closure_inventory(
         "holm_row": {
             "satisfied_by": analysis_provenance if profile_verified else None
         },
-        "qa012": dict(qa012),
+        "qa012": _qa012_closure_block(qa012),
     }
 
 
@@ -653,7 +691,7 @@ def build_evidence_package(
     llm_involvement: dict[str, Any],
     estimands: dict[str, dict[str, Any]],
     d6_baseline: dict[str, Any],
-    qa012_roots: dict[str, Path],
+    qa012_authority: Path | None = None,
     item_key_derivation: dict[str, Any] | None = None,
     run_id: str = "run-0001",
     reclaim_crashed_relic: bool = False,
@@ -702,10 +740,14 @@ def build_evidence_package(
         item_key_derivation=item_key_derivation,
     )
     profile_bytes = schema.encode_profile(profile)
-    qa012_manifest = qa012.build_inventory_manifest(qa012_roots)
+    if qa012_authority is None:
+        raise schema.ConfigSurfaceError(
+            "publication requires the exact pinned QA-012 rev3 authority"
+        )
+    qa012_block = qa012_authority_status_block(qa012_authority)
     inventory = assemble_closure_inventory(
         d6_baseline=d6_baseline,
-        qa012=qa012_status_block(qa012_manifest),
+        qa012=qa012_block,
         profile_sha256=hashlib.sha256(profile_bytes).hexdigest(),
         analysis_provenance=profile["inference"]["analysis_provenance"],
     )
@@ -714,7 +756,6 @@ def build_evidence_package(
     closure_result = closure.evaluate_closure(
         inventory,
         profile_bytes=profile_bytes,
-        qa012_roots=qa012_roots,
     )
     if not closure_result["satisfied"]:
         failing_rows = ", ".join(closure_result["failing_rows"])
