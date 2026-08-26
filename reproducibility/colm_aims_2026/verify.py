@@ -155,7 +155,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--receipts-dir",
         required=True,
-        help="receipt output directory (outside the verified tree)",
+        help=(
+            "receipt output directory (outside the verified tree and, for"
+            " --runs-root, outside the entire runs site)"
+        ),
     )
     parser.add_argument(
         "--expectations",

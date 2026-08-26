@@ -524,6 +524,42 @@ class TestCanonicalSelection:
             site.run_tree
         )
 
+    @pytest.mark.parametrize(
+        "receipt_location",
+        ["runs_root", "selected_closure", "other_tree", "future_slot"],
+    )
+    def test_success_cannot_write_receipts_anywhere_beneath_runs_root(
+        self, tmp_path, receipt_location
+    ):
+        site = build_runs_site(tmp_path, extra_runs=("run-other",))
+        locations = {
+            "runs_root": site.runs_root,
+            "selected_closure": site.run_tree / "closure",
+            "other_tree": site.runs_root / "run-other" / "tree",
+            "future_slot": site.runs_root / "run-future" / "receipts",
+        }
+        receipts = locations[receipt_location]
+        before = {
+            path.relative_to(site.runs_root).as_posix(): path.read_bytes()
+            for path in site.runs_root.rglob("*")
+            if path.is_file()
+        }
+        args = cli_args_for_runs_site(site)
+        args[-1] = str(receipts)
+
+        proc = run_cli(*args)
+
+        assert proc.returncode == EXIT_USAGE_ERROR
+        assert "outside the entire canonical runs root" in (
+            proc.stdout + proc.stderr
+        )
+        after = {
+            path.relative_to(site.runs_root).as_posix(): path.read_bytes()
+            for path in site.runs_root.rglob("*")
+            if path.is_file()
+        }
+        assert after == before
+
     def test_symlinked_run_dir_refused_even_in_root(self, tmp_path):
         site = build_runs_site(tmp_path, run_id="run-real")
         link = site.runs_root / "run-0001"

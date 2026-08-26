@@ -71,9 +71,11 @@ pointers fail the release run, and newest-wins selection never happens.
 ## Receipts
 
 Every run emits a schema-versioned JSON receipt (`receipt-<run_id>.json`)
-into `--receipts-dir`, outside the verified tree, create-once: mode,
-verdict, per-leg outcomes, input-tree hash, expectations-anchor hash,
-verifier code hash, timestamp.
+into `--receipts-dir`, outside the verified tree, create-once: mode, verdict,
+per-leg outcomes, input-tree hash, expectations-anchor hash, verifier code
+hash, timestamp. For the `--runs-root` release entry, the receipt directory
+must resolve outside the entire runs root so verification cannot mutate a
+published package, another run, or a future create-once run slot.
 
 ## Phase-4 process/host trust boundary
 

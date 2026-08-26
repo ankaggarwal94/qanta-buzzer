@@ -680,12 +680,17 @@ analysis over retained per-item records — permitted; model execution is not.
   explicit per-file allowlist entry); the rights inventory covers every file
   found; and (v2) the `records/` directory reconciles against the grid block
   and expectations per R-041.
-- **R-036** [integration] *(carried)*: Every verifier run emits a
+- **R-036** [integration] *(amended — runs-site containment hardened,
+  2026-08-26)*: Every verifier run emits a
   schema-versioned JSON receipt — mode, verdict, per-leg outcomes,
   input-tree hash, expectations-anchor hash, verifier code hash, timestamp —
   outside the verified tree, create-once under run-scoped unique names
-  (R-016 primitives). If versioned, the receipt uses the R-058/R-059
-  constants and checker.
+  (R-016 primitives). For a `--runs-root` release, the receipt destination
+  must resolve outside the entire runs root, not only outside the selected
+  tree: no successful or failing verifier path may mutate a selected, other,
+  or future create-once run slot. An invalid contained destination emits no
+  receipt there and remains a usage/configuration refusal. If versioned, the
+  receipt uses the R-058/R-059 constants and checker.
 - **R-037** [integration] *(amended)*: CLI contract: documented invocation
   `python -m reproducibility.colm_aims_2026.verify` from the repo root;
   direct-path invocation bootstraps `sys.path` repo-root-first (dedupe then
@@ -1335,7 +1340,7 @@ analysis over retained per-item records — permitted; model execution is not.
 | R-033 | CARRIED | unchanged |
 | R-034 | CARRIED | unchanged (resample matrix regenerated, never deserialized) |
 | R-035 | AMENDED | reconciliation extended with the grid↔records bijection (R-041) |
-| R-036 | CARRIED | unchanged (versioned receipts use the single checker) |
+| R-036 | AMENDED | runs-root releases require receipt output outside the entire runs site; versioned receipts use the single checker |
 | R-037 | AMENDED | exit-code set pinned `0/1/2/3/4` (v1 QA-019 promoted to contract) |
 | R-038 | AMENDED | D4: doc-audit widened to the handoff seven-target set |
 | R-039 | AMENDED | R6 wired into the actual release path with end-to-end coverage (R-069) |

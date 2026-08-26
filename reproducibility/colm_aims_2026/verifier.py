@@ -2241,10 +2241,17 @@ def run_release_over_runs_root(
     exclusively through the ledger pointer, then verify exactly that
     package. Every refusal class FAILS the release run itself (a failing
     ``canonical_selection`` leg + receipt), never falls back, never selects
-    newest-wins (R-069/R-039)."""
+    newest-wins (R-069/R-039). Receipt output must resolve outside the entire
+    runs site, not merely outside the selected package tree (R-036)."""
     runs_root = Path(runs_root)
     receipts_dir = Path(receipts_dir)
     expectations_path = Path(expectations)
+    if schema.resolves_inside(receipts_dir, runs_root):
+        raise ContainmentError(
+            "receipt directory must resolve outside the entire canonical"
+            " runs root; verification never mutates any published or future"
+            " run slot (R-036/R-069)"
+        )
     exp_obj, _ = _load_expectations(expectations_path)
     anchor = exp_obj["anchor"]
     base = expectations_path.parent

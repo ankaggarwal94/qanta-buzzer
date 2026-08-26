@@ -67,7 +67,8 @@ python -m reproducibility.colm_aims_2026.verify \
   usage/config error, `3` typed ingress error, `4` internal error (R-037).
 - Every run — including failing and refusal runs — emits a create-once,
   schema-versioned JSON receipt into `--receipts-dir`, outside the verified
-  tree (R-036).
+  tree. For `--runs-root`, receipts must resolve outside the entire runs root,
+  including every selected, other, and future run slot (R-036/R-069).
 
 ## Configuration surface: the expectations file
 
