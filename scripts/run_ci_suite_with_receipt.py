@@ -8,6 +8,10 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from reproducibility.colm_aims_2026 import phase4_launcher, receipt, schema
 from scripts.stopdff_v5 import fileio
 
