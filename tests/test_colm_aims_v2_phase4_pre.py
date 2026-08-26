@@ -3744,8 +3744,8 @@ def _launcher_snapshots(tmp_path):
 
 class _LaunchRecorder:
     """Injectable launch(argv, env) -> exit_code with full capture; also
-    proves the ledger is written BEFORE launch and drops a marker file into
-    the quarantine so promotion can be content-checked."""
+    proves the ledger is written BEFORE launch and drops an unrelated marker
+    so the private promotion tree can prove producer junk is excluded."""
 
     def __init__(self, config, digest, exit_code=0):
         self.config = config
@@ -4392,10 +4392,21 @@ class TestR081LauncherRun:
         # Ledger consumed (content binds the digest; written pre-launch —
         # asserted inside the recorder).
         assert digest in Path(config["ledger_path"]).read_text("utf-8")
-        # Atomic promote: quarantine gone, contents preserved at promote_to.
+        # Atomic private promote: quarantine is gone, while only the closed
+        # accepted tree (not arbitrary producer files) reaches promote_to.
         promote_to = Path(config["promote_to"])
         assert promote_to.is_dir()
-        assert (promote_to / "marker.txt").read_text("utf-8") == "ran"
+        assert not (promote_to / "marker.txt").exists()
+        assert (
+            promote_to / "stopdff_fair_qa_regenerated.json"
+        ).is_file()
+        assert {
+            path.name for path in (promote_to / "records").iterdir()
+        } == {f"{cell_id}.jsonl" for cell_id in schema.CELL_IDS}
+        assert (
+            promote_to / launcher.CAPTURED_INPUTS_DIRNAME
+        ).is_dir()
+        assert (promote_to / launcher.LAUNCH_RECEIPT_NAME).is_file()
         assert not quarantine.exists()
 
     def test_untracked_only_status_is_not_a_refusal(

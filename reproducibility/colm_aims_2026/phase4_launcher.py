@@ -32,6 +32,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -105,6 +106,7 @@ LAUNCHER_CONFIG_KEYS = (
 STOP_REPORT_NAME = "STOP_REPORT.json"
 LAUNCH_RECEIPT_NAME = "LAUNCH_RECEIPT.json"
 CAPTURED_INPUTS_DIRNAME = ".certified_inputs"
+PRIVATE_PROMOTION_PREFIX = ".phase4-accepted-"
 
 # CLI exit-code contract: a pre-launch refusal never consumes the exception;
 # a run failure occurs after consumption and preserves the quarantine.  Usage
@@ -2229,6 +2231,120 @@ def _require_comparator_outputs_unchanged(
         )
 
 
+def _remove_private_promotion_tree(
+    candidate: Path, quarantine_dir: Path
+) -> None:
+    """Best-effort cleanup of exactly one launcher-created private tree."""
+    candidate = Path(candidate)
+    quarantine_dir = Path(quarantine_dir)
+    if not _path_lexists(candidate):
+        return
+    try:
+        if (
+            candidate.parent.resolve(strict=True)
+            != quarantine_dir.resolve(strict=True)
+            or candidate.is_symlink()
+            or schema.is_filesystem_link(candidate)
+            or not candidate.is_dir()
+        ):
+            return
+        if os.name == "nt":
+            for path in sorted(candidate.rglob("*"), reverse=True):
+                if path.is_file() and not path.is_symlink():
+                    path.chmod(stat.S_IREAD | stat.S_IWRITE)
+        shutil.rmtree(candidate)
+    except OSError:
+        # Never mask the primary post-ledger failure. Any residue remains
+        # inside the already-stale quarantine and is covered by its STOP.
+        return
+
+
+def _materialize_private_promotion_tree(
+    quarantine_dir: Path,
+    *,
+    captured_inputs: dict[str, Any],
+    activation_digest: str,
+    ledger_path: Path,
+    out_basename: str,
+    comparator_result: dict[str, Any],
+    comparator_output_snapshot: dict[str, bytes],
+) -> Path:
+    """Build the promoted tree without reusing producer-owned output paths.
+
+    The producer is given only paths in ``quarantine_dir``. A descendant that
+    survives the direct child can therefore retain handles to those files.
+    Promotion instead uses a fresh private child whose export and records are
+    created solely from the bytes retained before comparator execution. The
+    authenticated captured inputs are copied through held descriptors and
+    checked against their original size/digest inventory.
+    """
+    quarantine_dir = Path(quarantine_dir)
+    expected_outputs = {out_basename} | {
+        f"records/{cell_id}.jsonl" for cell_id in schema.CELL_IDS
+    }
+    if set(comparator_output_snapshot) != expected_outputs:
+        raise ComparatorValidationError(
+            "retained comparator output snapshot has unexpected membership"
+        )
+    candidate = Path(
+        tempfile.mkdtemp(
+            prefix=PRIVATE_PROMOTION_PREFIX,
+            dir=str(quarantine_dir),
+        )
+    )
+    try:
+        source_capture = Path(captured_inputs["root"])
+        captured_snapshot = captured_inputs["snapshot"]
+        candidate_capture = candidate / CAPTURED_INPUTS_DIRNAME
+        for relative, metadata in sorted(captured_snapshot.items()):
+            _capture_regular_file(
+                source_capture / PurePosixPath(relative),
+                candidate_capture / PurePosixPath(relative),
+                expected_sha256=metadata["sha256"],
+                expected_size=metadata["size"],
+                label=f"private promotion input {relative!r}",
+            )
+        for relative, data in sorted(comparator_output_snapshot.items()):
+            create_once_bytes(
+                candidate / PurePosixPath(relative),
+                data,
+                exists_label="private promotion output",
+            )
+        _write_launch_receipt(
+            candidate,
+            activation_digest=activation_digest,
+            ledger_path=ledger_path,
+            out_basename=out_basename,
+            comparator_result=comparator_result,
+            comparator_output_snapshot=comparator_output_snapshot,
+        )
+        _release_captured_inputs_for_durable_sync(
+            {"root": candidate_capture, "snapshot": captured_snapshot}
+        )
+        fileio.fsync_tree(candidate)
+        _require_comparator_outputs_unchanged(
+            candidate, out_basename, comparator_output_snapshot
+        )
+        if _captured_input_snapshot(candidate_capture) != captured_snapshot:
+            raise ComparatorValidationError(
+                "private promotion captured-input bytes or membership drifted"
+            )
+        expected_top_level = {
+            CAPTURED_INPUTS_DIRNAME,
+            LAUNCH_RECEIPT_NAME,
+            "records",
+            out_basename,
+        }
+        if {child.name for child in candidate.iterdir()} != expected_top_level:
+            raise ComparatorValidationError(
+                "private promotion tree has unexpected top-level membership"
+            )
+        return candidate
+    except BaseException:
+        _remove_private_promotion_tree(candidate, quarantine_dir)
+        raise
+
+
 def _write_stop_report(quarantine_dir: Path, payload: dict[str, Any]) -> None:
     quarantine_dir = Path(quarantine_dir)
     schema.stable_directory_chain(quarantine_dir, quarantine_dir)
@@ -2882,54 +2998,61 @@ def validate_and_launch(
         # claims that slot on POSIX and uses Windows' direct no-replace rename,
         # so every incumbent destination fails closed.
         promotion_claim_owned = False
+        promotion_candidate: Path | None = None
+        publication_returned = False
 
         def _mark_promotion_claim_owned() -> None:
             nonlocal promotion_claim_owned
             promotion_claim_owned = True
 
         try:
-            _write_launch_receipt(
+            promotion_candidate = _materialize_private_promotion_tree(
                 quarantine_dir,
+                captured_inputs=captured_inputs,
                 activation_digest=activation_digest,
                 ledger_path=ledger_path,
                 out_basename=out_basename,
                 comparator_result=result,
                 comparator_output_snapshot=comparator_output_snapshot,
             )
-            _release_captured_inputs_for_durable_sync(captured_inputs)
-            # Make the complete accepted tree durable before its create-once
-            # name is published. The producer writes the export and records
-            # with ordinary file operations, so syncing only the receipt and
-            # destination parent would leave a crash window where the rename
-            # survives but the scientific evidence bytes do not.
-            fileio.fsync_tree(quarantine_dir)
-            _require_comparator_outputs_unchanged(
-                quarantine_dir, out_basename, comparator_output_snapshot
-            )
             publish_dir_create_once(
-                quarantine_dir,
+                promotion_candidate,
                 promote_to,
                 exists_label="Phase-4 promotion destination",
                 claim_created=_mark_promotion_claim_owned,
             )
+            publication_returned = True
+            # Only the detached, fully-synced candidate is accepted. Remove
+            # the producer-owned quarantine before reporting PASS; on Windows
+            # an unquiesced descendant handle can make this fail, which is a
+            # truthful post-commit STOP rather than a false acceptance.
+            _release_captured_inputs_for_durable_sync(captured_inputs)
+            shutil.rmtree(quarantine_dir)
+            fileio.fsync_directory(quarantine_dir.parent)
         except BaseException as exc:
             # The shared primitive's commit point is the directory rename;
             # parent-directory fsync happens afterward.  If that durability
             # barrier fails, the complete output already belongs to the
             # destination.  Record that truthful post-commit state *there*;
             # never recreate an empty quarantine or claim nothing promoted.
-            promotion_committed = not _path_lexists(
-                quarantine_dir
-            ) and _path_lexists(promote_to)
+            promotion_committed = (
+                promotion_candidate is not None
+                and not _path_lexists(promotion_candidate)
+                and _path_lexists(promote_to)
+            )
             report_dir = promote_to if promotion_committed else quarantine_dir
             if report_dir.is_dir() and not report_dir.is_symlink():
                 _write_stop_report(
                     report_dir,
                     {
                         "reason": (
-                            "promotion_durability_failure"
-                            if promotion_committed
-                            else "promotion_crash"
+                            "post_promotion_cleanup_failure"
+                            if promotion_committed and publication_returned
+                            else (
+                                "promotion_durability_failure"
+                                if promotion_committed
+                                else "promotion_crash"
+                            )
                         ),
                         "error": f"{exc.__class__.__name__}: {exc}",
                         "activation_digest": activation_digest,
@@ -2939,11 +3062,16 @@ def validate_and_launch(
                 )
             if promotion_committed:
                 raise RunFailed(
-                    "atomic promotion rename committed, but destination"
-                    f" durability sync failed ({exc.__class__.__name__}) —"
+                    "atomic private promotion committed, but destination"
+                    " durability or producer-quarantine cleanup failed"
+                    f" ({exc.__class__.__name__}) —"
                     f" output remains at {promote_to} with a STOP report and"
                     " is not an accepted PASS (R-081)"
                 ) from exc
+            if promotion_candidate is not None:
+                _remove_private_promotion_tree(
+                    promotion_candidate, quarantine_dir
+                )
             # Nothing was promoted and the quarantine is intact. When OUR own
             # create-once claim (POSIX ``os.mkdir``) succeeded but the ensuing
             # rename failed, an EMPTY ``promote_to`` relic is left behind that

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -1822,7 +1823,9 @@ def test_staged_tree_sync_failure_prevents_promotion(tmp_path, monkeypatch):
 
     def fail_sync(root):
         root = Path(root)
-        assert root == quarantine
+        assert root != quarantine
+        assert root.parent == quarantine
+        assert root.name.startswith(launcher.PRIVATE_PROMOTION_PREFIX)
         receipt_path = root / launcher.LAUNCH_RECEIPT_NAME
         receipt = json.loads(receipt_path.read_text("utf-8"))
         assert (root / receipt["export_basename"]).is_file()
@@ -1852,9 +1855,13 @@ def test_staged_tree_sync_failure_prevents_promotion(tmp_path, monkeypatch):
     assert report["reason"] == "promotion_crash"
     assert report["promotion_committed"] is False
     assert "synthetic staged fsync failure" in report["error"]
+    assert not any(
+        child.name.startswith(launcher.PRIVATE_PROMOTION_PREFIX)
+        for child in quarantine.iterdir()
+    )
 
 
-def test_post_comparator_output_drift_prevents_receipt_and_promotion(
+def test_publish_uses_private_snapshot_when_original_output_mutates(
     tmp_path, monkeypatch
 ):
     config, _certificate, _staged_path, probes = _runtime_fixture(
@@ -1862,7 +1869,7 @@ def test_post_comparator_output_drift_prevents_receipt_and_promotion(
     )
     quarantine = Path(config["quarantine_dir"])
     promote_to = Path(config["promote_to"])
-    real_write_receipt = launcher._write_launch_receipt
+    real_publish = launcher.publish_dir_create_once
 
     monkeypatch.setattr(
         launcher.phase4,
@@ -1870,33 +1877,59 @@ def test_post_comparator_output_drift_prevents_receipt_and_promotion(
         lambda *_args: {"verdict": "PASS", "checked": 194, "failures": []},
     )
 
+    held = {}
+
     def zero_exit(argv, _env):
         _write_valid_default_outputs(argv, probes["verified_eligibility"])
+        first_cell = launcher.schema.CELL_IDS[0]
+        held["writer"] = (
+            quarantine / "records" / f"{first_cell}.jsonl"
+        ).open("ab")
         return 0
 
-    def mutate_then_write_receipt(*args, **kwargs):
+    observed = {}
+
+    def mutate_original_then_publish(staged, destination, **kwargs):
+        staged = Path(staged)
+        assert staged != quarantine
+        assert staged.parent == quarantine
         first_cell = launcher.schema.CELL_IDS[0]
-        with (quarantine / "records" / f"{first_cell}.jsonl").open(
-            "ab"
-        ) as handle:
-            handle.write(b"post-comparator-drift\n")
-        return real_write_receipt(*args, **kwargs)
+        candidate_record = staged / "records" / f"{first_cell}.jsonl"
+        original_record = quarantine / "records" / f"{first_cell}.jsonl"
+        observed["validated"] = candidate_record.read_bytes()
+        handle = held.pop("writer")
+        try:
+            handle.write(b"post-validation-open-handle-drift\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        finally:
+            handle.close()
+        assert original_record.read_bytes() != observed["validated"]
+        return real_publish(staged, destination, **kwargs)
 
     monkeypatch.setattr(
-        launcher, "_write_launch_receipt", mutate_then_write_receipt
+        launcher, "publish_dir_create_once", mutate_original_then_publish
     )
 
-    with pytest.raises(launcher.RunFailed, match="atomic promotion failed"):
-        _call_default_launcher(config, probes, launch=zero_exit)
+    result = _call_default_launcher(config, probes, launch=zero_exit)
 
-    assert quarantine.is_dir()
-    assert not promote_to.exists()
-    assert not (quarantine / launcher.LAUNCH_RECEIPT_NAME).exists()
-    report = json.loads(
-        (quarantine / launcher.STOP_REPORT_NAME).read_text("utf-8")
+    assert result["verdict"] == "PASS"
+    assert not quarantine.exists()
+    first_cell = launcher.schema.CELL_IDS[0]
+    promoted_record = promote_to / "records" / f"{first_cell}.jsonl"
+    assert promoted_record.read_bytes() == observed["validated"]
+    receipt = json.loads(
+        (promote_to / launcher.LAUNCH_RECEIPT_NAME).read_text("utf-8")
     )
-    assert report["reason"] == "promotion_crash"
-    assert "changed after the comparator" in report["error"]
+    assert receipt["records_sha256"][first_cell] == _sha256(
+        observed["validated"]
+    )
+    assert {child.name for child in promote_to.iterdir()} == {
+        launcher.CAPTURED_INPUTS_DIRNAME,
+        launcher.LAUNCH_RECEIPT_NAME,
+        "records",
+        receipt["export_basename"],
+    }
 
 
 def test_post_fsync_output_drift_prevents_promotion(tmp_path, monkeypatch):
@@ -1909,8 +1942,11 @@ def test_post_fsync_output_drift_prevents_promotion(tmp_path, monkeypatch):
 
     def sync_then_mutate(root):
         real_fsync_tree(root)
+        root = Path(root)
+        assert root != quarantine
+        assert root.parent == quarantine
         first_cell = launcher.schema.CELL_IDS[0]
-        with (quarantine / "records" / f"{first_cell}.jsonl").open(
+        with (root / "records" / f"{first_cell}.jsonl").open(
             "ab"
         ) as handle:
             handle.write(b"post-fsync-drift\n")
@@ -2012,11 +2048,11 @@ def test_post_rename_sync_failure_records_truthful_committed_state(
         launcher, "publish_dir_create_once", rename_then_fail
     )
     with pytest.raises(
-        launcher.RunFailed, match="rename committed.*durability sync failed"
+        launcher.RunFailed, match="private promotion committed.*cleanup failed"
     ):
         _call_launcher(config, probes)
 
-    assert not quarantine.exists()
+    assert quarantine.exists()
     assert promote_to.is_dir()
     report = json.loads(
         (promote_to / launcher.STOP_REPORT_NAME).read_text("utf-8")
@@ -2024,3 +2060,34 @@ def test_post_rename_sync_failure_records_truthful_committed_state(
     assert report["reason"] == "promotion_durability_failure"
     assert report["promotion_committed"] is True
     assert report["activation_digest"] == config["activation_digest"]
+
+
+def test_postcommit_quarantine_cleanup_failure_never_returns_pass(
+    tmp_path, monkeypatch
+):
+    config, _certificate, _staged_path, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    quarantine = Path(config["quarantine_dir"])
+    promote_to = Path(config["promote_to"])
+    real_rmtree = launcher.shutil.rmtree
+
+    def fail_original_cleanup(path, *args, **kwargs):
+        if Path(path) == quarantine:
+            raise OSError("synthetic original-quarantine cleanup failure")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(launcher.shutil, "rmtree", fail_original_cleanup)
+    with pytest.raises(
+        launcher.RunFailed, match="private promotion committed.*cleanup failed"
+    ):
+        _call_launcher(config, probes)
+
+    assert quarantine.is_dir()
+    assert promote_to.is_dir()
+    report = json.loads(
+        (promote_to / launcher.STOP_REPORT_NAME).read_text("utf-8")
+    )
+    assert report["reason"] == "post_promotion_cleanup_failure"
+    assert report["promotion_committed"] is True
+    assert "original-quarantine cleanup failure" in report["error"]
