@@ -456,7 +456,7 @@ def test_committed_publish_requires_second_durability_barrier(
     result = _render(site, output_root, receipts_dir)
 
     assert result.published_dir == destination
-    assert destination in synced
+    assert any(path.name == destination.name for path in synced)
     assert output_root in synced
     assert not finalizer._pending_guard_path(destination).exists()
 
@@ -482,7 +482,7 @@ def test_failed_retry_barrier_stays_guarded_and_is_not_success(
         )
 
     def fail_destination_barrier(anchor, name, expected_names):
-        if failure_point == "tree" and anchor._path(name) == destination:
+        if failure_point == "tree" and name == destination.name:
             raise OSError("injected second durability failure")
         return original_sync_tree(anchor, name, expected_names)
 

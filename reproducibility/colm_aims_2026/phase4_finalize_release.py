@@ -42,6 +42,11 @@ _PENDING_GUARD_SUFFIX = ".pending"
 _ACCEPTED_MARKER_SUFFIX = ".accepted"
 _PORTABLE_ID_MAX_BYTES = 64
 _PORTABLE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+_WINDOWS_VOLUME_GUID_PATH_RE = re.compile(
+    r"^\\\\\?\\Volume\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-"
+    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}"
+    r"\\.*\Z"
+)
 _WINDOWS_RESERVED_BASENAMES = {
     "CON",
     "PRN",
@@ -80,6 +85,7 @@ class _DirectoryAnchor:
         self.label = label
         self._fd: int | None = None
         self._win_handles: list[int] = []
+        self._operation_path: Path | None = None
 
     def __enter__(self) -> "_DirectoryAnchor":
         _require_unchanged_directory(self.path, self.captured, self.label)
@@ -134,6 +140,7 @@ class _DirectoryAnchor:
             close_handle.restype = wintypes.BOOL
             while self._win_handles:
                 close_handle(wintypes.HANDLE(self._win_handles.pop()))
+        self._operation_path = None
 
     def _verify_posix_handle(self) -> None:
         if self._fd is None:  # pragma: no cover - internal invariant
@@ -153,6 +160,62 @@ class _DirectoryAnchor:
             int(file_id_information.volume_serial_number),
             bytes(file_id_information.file_id.identifier),
         )
+
+    @staticmethod
+    def _windows_final_volume_path(handle: int) -> str:
+        """Resolve one handle to a normalized local Volume-GUID path."""
+        import ctypes
+        from ctypes import wintypes
+
+        get_final_path = ctypes.WinDLL(
+            "kernel32", use_last_error=True
+        ).GetFinalPathNameByHandleW
+        get_final_path.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+        ]
+        get_final_path.restype = wintypes.DWORD
+        capacity = 32768
+        buffer = ctypes.create_unicode_buffer(capacity)
+        length = get_final_path(
+            wintypes.HANDLE(handle),
+            buffer,
+            capacity,
+            0x00000001,  # FILE_NAME_NORMALIZED | VOLUME_NAME_GUID
+        )
+        if length == 0:
+            error = ctypes.get_last_error()
+            raise schema.TypedIngressError(
+                "cannot resolve a local Volume-GUID directory anchor"
+                f" (WindowsError {error})"
+            )
+        if length >= capacity:
+            raise schema.TypedIngressError(
+                "local Volume-GUID directory anchor path is truncated"
+            )
+        return buffer.value
+
+    @staticmethod
+    def _require_local_volume_guid_path(path: str) -> str:
+        """Reject UNC, DOS, device, malformed, or non-normalized final names."""
+        if not isinstance(path, str) or _WINDOWS_VOLUME_GUID_PATH_RE.fullmatch(
+            path
+        ) is None or "/" in path or "\x00" in path:
+            raise schema.TypedIngressError(
+                "Windows publication requires a verified local"
+                " \\\\?\\Volume{GUID}\\... operation path; UNC, mapped-network,"
+                " DOS-device, and unverifiable paths are refused"
+            )
+        suffix = path[path.index("}") + 1 :]
+        if any(part in {".", "..", ""} for part in suffix.split("\\")[1:]):
+            # One terminal empty part is the canonical volume-root slash.
+            if suffix != "\\":
+                raise schema.TypedIngressError(
+                    "Windows Volume-GUID operation path is not normalized"
+                )
+        return path
 
     def _open_windows_handle(self) -> None:
         import ctypes
@@ -211,13 +274,10 @@ class _DirectoryAnchor:
         ]
         create_file.restype = wintypes.HANDLE
         invalid = ctypes.c_void_p(-1).value
-        # The drive root is the immutable namespace anchor. Every descendant
-        # component is mutable and therefore receives its own held handle.
-        components = self.captured[1:]
-        if not components:
-            raise schema.TypedIngressError(
-                f"{self.label} has no verifiable mutable chain component"
-            )
+        # DOS drive mappings (including SUBST) are mutable. The root and every
+        # descendant therefore receive held handles, and all later I/O uses a
+        # Volume-GUID path derived from those handles instead of the DOS name.
+        components = self.captured
 
         def metadata(handle: Any) -> tuple[int, int, tuple[int, bytes]]:
             information = _ByHandleFileInformation()
@@ -249,19 +309,27 @@ class _DirectoryAnchor:
             observed: tuple[int, int, tuple[int, bytes]],
             captured_identity: tuple[int, int, int],
         ) -> None:
-            attributes, legacy_file_index, _native_file_id = observed
+            attributes, _legacy_file_index, native_file_id = observed
+            native_volume, native_file_id_bytes = native_file_id
             if (
                 not attributes
                 & getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
                 or attributes
                 & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-                or legacy_file_index != captured_identity[1]
             ):
                 raise schema.TypedIngressError(
                     f"{self.label} chain handle does not identify its captured"
                     " ordinary directory"
                 )
+            if native_volume != captured_identity[0] or int.from_bytes(
+                native_file_id_bytes, "little"
+            ) != captured_identity[1]:
+                raise schema.TypedIngressError(
+                    f"{self.label} native volume/file identity does not match"
+                    " its captured directory"
+                )
 
+        final_paths: list[str] = []
         for component, captured_identity in components:
             # Capture the complete native identity without blocking a peer's
             # delete request, then immediately reacquire with delete sharing
@@ -283,7 +351,6 @@ class _DirectoryAnchor:
                 )
             try:
                 precaptured = metadata(temporary)
-                validate_metadata(precaptured, captured_identity)
             finally:
                 close_handle(temporary)
             handle = create_file(
@@ -303,12 +370,26 @@ class _DirectoryAnchor:
                 )
             self._win_handles.append(int(handle))
             anchored = metadata(handle)
+            validate_metadata(precaptured, captured_identity)
             validate_metadata(anchored, captured_identity)
             if anchored[2] != precaptured[2]:
                 raise schema.TypedIngressError(
                     f"{self.label} native volume/file identity changed before"
                     " its no-delete-share anchor was acquired"
                 )
+            final_paths.append(
+                self._require_local_volume_guid_path(
+                    self._windows_final_volume_path(int(handle))
+                )
+            )
+        normalized_paths = [path.rstrip("\\").casefold() for path in final_paths]
+        for parent, child in zip(normalized_paths, normalized_paths[1:]):
+            if not child.startswith(parent + "\\"):
+                raise schema.TypedIngressError(
+                    f"{self.label} Volume-GUID chain has mixed or"
+                    " non-descendant components"
+                )
+        self._operation_path = Path(final_paths[-1])
 
     def revalidate(self, stage: str) -> None:
         if os.name == "posix":
@@ -334,7 +415,8 @@ class _DirectoryAnchor:
         return name
 
     def _path(self, name: str) -> Path:
-        return self.path / self._name(name)
+        parent = self._operation_path if self._operation_path is not None else self.path
+        return parent / self._name(name)
 
     def stat(self, name: str) -> os.stat_result:
         name = self._name(name)
@@ -443,7 +525,9 @@ class _DirectoryAnchor:
         if self._fd is not None:
             os.fsync(self._fd)
         else:
-            fileio.fsync_directory(self.path)
+            if self._operation_path is None:  # pragma: no cover - invariant
+                raise RuntimeError("Windows operation path is not pinned")
+            fileio.fsync_directory(self._operation_path)
 
     def sync_directory(self, name: str, expected_names: tuple[str, ...]) -> None:
         """Sync one exact child tree without leaving the anchored generation."""
@@ -1304,7 +1388,12 @@ def _publish_verified_directory(
                     destination, parent_chain, "directory rename completion"
                 )
             except fileio.DirectoryPublicationCommittedError as exc:
-                if Path(exc.destination).absolute() != Path(destination).absolute():
+                committed_destination = Path(exc.destination).absolute()
+                allowed_destinations = {
+                    Path(destination).absolute(),
+                    anchor._path(Path(destination).name).absolute(),
+                }
+                if committed_destination not in allowed_destinations:
                     raise
                 published = True
                 _require_publication_parent(

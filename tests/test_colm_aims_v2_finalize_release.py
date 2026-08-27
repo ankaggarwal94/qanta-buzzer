@@ -364,7 +364,7 @@ def test_finalizer_committed_publish_requires_second_durability_barrier(
     result = _finalize(site, output_root, receipts_dir)
 
     assert result.published_dir == destination
-    assert destination in synced
+    assert any(path.name == destination.name for path in synced)
     assert output_root in synced
     assert not finalizer._pending_guard_path(destination).exists()
     assert finalizer._accepted_marker_path(destination).is_file()
@@ -662,6 +662,185 @@ def test_windows_parent_anchor_denies_rename_or_replacement(tmp_path):
     assert not (tmp_path / "displaced").exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows Volume-GUID contract")
+def test_windows_local_anchor_uses_pinned_volume_guid_path(tmp_path):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    chain = schema.stable_directory_chain(output_root, output_root)
+
+    with finalizer._DirectoryAnchor(
+        output_root, chain, "test publication parent"
+    ) as anchor:
+        operation_path = str(anchor._operation_path)
+        assert operation_path.casefold().startswith(r"\\?\volume{")
+        assert len(anchor._win_handles) == len(chain)
+        assert not operation_path.casefold().startswith(
+            str(output_root.drive).casefold()
+        )
+        anchor.create_once("pinned.txt", b"pinned\n", exists_label="probe")
+
+    assert (output_root / "pinned.txt").read_bytes() == b"pinned\n"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Volume-GUID contract")
+def test_windows_mutations_and_publication_receive_only_pinned_paths(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    staged = output_root / ".staged"
+    staged.mkdir()
+    (staged / "payload.json").write_bytes(b"verified\n")
+    chain = schema.stable_directory_chain(output_root, output_root)
+    original_open = finalizer.os.open
+    original_publish = fileio.publish_dir_create_once
+    original_sync = fileio.fsync_directory
+    opened: list[Path] = []
+    published: list[tuple[Path, Path]] = []
+    synced: list[Path] = []
+
+    with finalizer._DirectoryAnchor(
+        output_root, chain, "test publication parent"
+    ) as anchor:
+        pinned = anchor._operation_path
+        assert pinned is not None
+
+        def track_open(path, flags, mode=0o777, *, dir_fd=None):
+            candidate = Path(path)
+            if candidate.name == "guard.pending":
+                opened.append(candidate)
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        def track_publish(staged_path, destination_path, **kwargs):
+            published.append((Path(staged_path), Path(destination_path)))
+            return original_publish(staged_path, destination_path, **kwargs)
+
+        def track_sync(path):
+            synced.append(Path(path))
+            return original_sync(path)
+
+        monkeypatch.setattr(finalizer.os, "open", track_open)
+        monkeypatch.setattr(fileio, "publish_dir_create_once", track_publish)
+        monkeypatch.setattr(fileio, "fsync_directory", track_sync)
+        anchor.create_once(
+            "guard.pending", b"pending\n", exists_label="test guard"
+        )
+        anchor.publish_directory(
+            staged.name, "bundle", exists_label="test bundle"
+        )
+
+        assert opened == [pinned / "guard.pending"]
+        assert synced == [pinned]
+        assert published == [(pinned / staged.name, pinned / "bundle")]
+        assert all(path.parent == pinned for path in opened)
+        assert all(path.parent == pinned for pair in published for path in pair)
+
+    assert (output_root / "guard.pending").read_bytes() == b"pending\n"
+    assert (output_root / "bundle" / "payload.json").read_bytes() == b"verified\n"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Volume-GUID contract")
+@pytest.mark.parametrize(
+    "untrusted_final_path",
+    (
+        r"\\?\UNC\server\share\output",
+        r"C:\output",
+        r"\Device\HarddiskVolume1\output",
+        r"\\?\Volume{not-a-guid}\output",
+    ),
+)
+def test_windows_anchor_rejects_non_volume_guid_final_paths(
+    tmp_path, monkeypatch, untrusted_final_path
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    chain = schema.stable_directory_chain(output_root, output_root)
+    staged = output_root / ".staged"
+    staged.mkdir()
+    (staged / "payload.json").write_bytes(b"verified\n")
+    destination = output_root / "bundle"
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor,
+        "_windows_final_volume_path",
+        staticmethod(lambda _handle: untrusted_final_path),
+    )
+
+    with pytest.raises(schema.TypedIngressError, match=r"Volume\{GUID\}"):
+        finalizer._publish_verified_directory(
+            staged,
+            destination,
+            exists_label="test bundle",
+            parent_chain=chain,
+            expected_names=("payload.json",),
+        )
+    assert staged.is_dir()
+    assert not destination.exists()
+    assert not finalizer._pending_guard_path(destination).exists()
+    assert not finalizer._accepted_marker_path(destination).exists()
+
+    displaced = tmp_path.with_name(f"{tmp_path.name}-displaced")
+    tmp_path.rename(displaced)
+    displaced.rename(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Volume-GUID contract")
+def test_windows_anchor_rejects_mixed_volume_guid_component_chain(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "nested" / "output"
+    output_root.mkdir(parents=True)
+    chain = schema.stable_directory_chain(output_root, output_root)
+    first_guid = "11111111-1111-1111-1111-111111111111"
+    second_guid = "22222222-2222-2222-2222-222222222222"
+    calls = 0
+
+    def mixed_final_path(_handle):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return rf"\\?\Volume{{{first_guid}}}" + "\\"
+        return rf"\\?\Volume{{{second_guid}}}\part-{calls}"
+
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor,
+        "_windows_final_volume_path",
+        staticmethod(mixed_final_path),
+    )
+    with pytest.raises(schema.TypedIngressError, match="mixed|non-descendant"):
+        with finalizer._DirectoryAnchor(
+            output_root, chain, "test publication parent"
+        ):
+            pass
+    assert calls == len(chain)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Volume-GUID contract")
+def test_windows_anchor_final_path_resolution_failure_closes_handles(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    chain = schema.stable_directory_chain(output_root, output_root)
+
+    def fail_resolution(_handle):
+        raise schema.TypedIngressError("injected Volume-GUID resolution failure")
+
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor,
+        "_windows_final_volume_path",
+        staticmethod(fail_resolution),
+    )
+    with pytest.raises(schema.TypedIngressError, match="injected"):
+        with finalizer._DirectoryAnchor(
+            output_root, chain, "test publication parent"
+        ):
+            pass
+
+    displaced = tmp_path.with_name(f"{tmp_path.name}-displaced")
+    tmp_path.rename(displaced)
+    displaced.rename(tmp_path)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows handle-share contract")
 def test_windows_anchor_denies_ancestor_rename_and_closes_every_handle(tmp_path):
     output_root = tmp_path / "nested" / "output"
@@ -706,6 +885,48 @@ def test_windows_anchor_acquisition_failure_closes_component_handles(
         ):
             pass
 
+    displaced = tmp_path.with_name(f"{tmp_path.name}-displaced")
+    tmp_path.rename(displaced)
+    displaced.rename(tmp_path)
+    assert output_root.is_dir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows FileIdInfo contract")
+@pytest.mark.parametrize("wrong_field", ("volume", "file-id-high-64"))
+def test_windows_anchor_rejects_same_wrong_native_identity_for_both_handles(
+    tmp_path, monkeypatch, wrong_field
+):
+    output_root = tmp_path / "nested" / "output"
+    output_root.mkdir(parents=True)
+    chain = schema.stable_directory_chain(output_root, output_root)
+    original = finalizer._DirectoryAnchor._windows_native_file_id
+    calls = 0
+
+    def same_wrong_identity(information):
+        nonlocal calls
+        calls += 1
+        volume, file_id = original(information)
+        if wrong_field == "volume":
+            volume ^= 1
+        else:
+            file_id = file_id[:8] + bytes([file_id[8] ^ 1]) + file_id[9:]
+        return volume, file_id
+
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor,
+        "_windows_native_file_id",
+        staticmethod(same_wrong_identity),
+    )
+    with pytest.raises(schema.TypedIngressError, match="native volume/file"):
+        with finalizer._DirectoryAnchor(
+            output_root, chain, "test publication parent"
+        ):
+            pass
+
+    # Both the temporary share-delete handle and the locked handle returned
+    # the same forged identity. Direct binding to captured st_dev/st_ino—not
+    # merely temp-vs-anchor equality—must reject it and close the locked handle.
+    assert calls == 2
     displaced = tmp_path.with_name(f"{tmp_path.name}-displaced")
     tmp_path.rename(displaced)
     displaced.rename(tmp_path)
@@ -892,7 +1113,7 @@ def test_exact_membership_scan_stops_at_expected_count_plus_one(
             raise AssertionError("scanner consumed beyond expected_count + 1")
 
     def bounded_scandir(path):
-        if isinstance(path, int) or Path(path) == result.published_dir:
+        if isinstance(path, int) or Path(path).name == result.published_dir.name:
             return OverflowEntries()
         return original_scandir(path)
 
