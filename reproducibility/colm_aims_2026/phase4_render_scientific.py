@@ -91,7 +91,9 @@ def _capture_release_inputs(
     """Capture the three release sidecars and canonical tree without aliases."""
     expectations_path = Path(os.path.abspath(expectations_path))
     base, accepted_snapshot = _read_accepted_directory_snapshot(
-        expectations_path.parent, "expectations parent"
+        expectations_path.parent,
+        "expectations parent",
+        expected_names=("ledger.json", "rights.json", "expectations.json"),
     )
     _require_disjoint(
         expectations_path,
@@ -381,7 +383,9 @@ def _read_outputs(
 ) -> dict[str, bytes]:
     if require_acceptance:
         directory, snapshot = _read_accepted_directory_snapshot(
-            directory, "scientific output"
+            directory,
+            "scientific output",
+            expected_names=OUTPUT_NAMES,
         )
     else:
         directory = _canonical_existing_directory(
@@ -434,7 +438,9 @@ def render_scientific_release(
     receipts_dir = _canonical_existing_directory(receipts_dir, "receipts root")
     expectations_path = Path(os.path.abspath(expectations))
     authority_base = _require_accepted_directory(
-        expectations_path.parent, "expectations authority base"
+        expectations_path.parent,
+        "expectations authority base",
+        expected_names=("ledger.json", "rights.json", "expectations.json"),
     )
     output_root_chain = schema.stable_directory_chain(output_root, output_root)
     receipts_chain = schema.stable_directory_chain(receipts_dir, receipts_dir)
@@ -554,6 +560,7 @@ def render_scientific_release(
             destination,
             exists_label="scientific output bundle",
             parent_chain=output_root_chain,
+            expected_names=OUTPUT_NAMES,
         )
         # The final name is the terminal operation; avoid fallible I/O after
         # the complete-looking public directory exists.

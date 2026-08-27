@@ -41,6 +41,14 @@ from tests._colm_aims_v2_helpers import (
 
 def _roots(tmp_path: Path):
     site = build_runs_site(tmp_path)
+    authority = tmp_path / "accepted-authority"
+    authority.mkdir()
+    for attribute in ("ledger_path", "rights_path", "expectations_path"):
+        source = Path(getattr(site, attribute))
+        copied = authority / source.name
+        copied.write_bytes(source.read_bytes())
+        setattr(site, attribute, copied)
+    site.root = authority
     output_root = tmp_path / "scientific-output"
     receipts_dir = tmp_path / "scientific-receipts"
     output_root.mkdir()
@@ -49,6 +57,19 @@ def _roots(tmp_path: Path):
 
 
 def _render(site, output_root: Path, receipts_dir: Path, **overrides):
+    if {path.name for path in Path(site.root).iterdir()} != {
+        "ledger.json",
+        "rights.json",
+        "expectations.json",
+    }:
+        authority = Path(site.root).parent / "accepted-authority"
+        authority.mkdir()
+        for attribute in ("ledger_path", "rights_path", "expectations_path"):
+            source = Path(getattr(site, attribute))
+            copied = authority / source.name
+            copied.write_bytes(source.read_bytes())
+            setattr(site, attribute, copied)
+        site.root = authority
     marker = finalizer._accepted_marker_path(site.root)
     if not marker.exists():
         marker.write_bytes(
@@ -66,6 +87,21 @@ def _render(site, output_root: Path, receipts_dir: Path, **overrides):
     }
     values.update(overrides)
     return render_scientific_release(**values)
+
+
+def _commit_without_parent_sync(anchor, staged_name: str, destination_name: str):
+    """Commit through the platform's anchored branch, then skip its sync."""
+    if anchor._fd is None:
+        os.rename(anchor._path(staged_name), anchor._path(destination_name))
+    else:
+        os.mkdir(destination_name, dir_fd=anchor._fd)
+        os.rename(
+            staged_name,
+            destination_name,
+            src_dir_fd=anchor._fd,
+            dst_dir_fd=anchor._fd,
+        )
+    return anchor._path(destination_name)
 
 
 def test_release_verified_render_has_exact_grid_and_disclosures(tmp_path):
@@ -315,7 +351,7 @@ def test_renderer_will_not_mutate_expectations_authority_base(tmp_path):
         _render(
             site,
             output_root,
-            site.receipts_dir,
+            site.root,
         )
     with pytest.raises(schema.ConfigSurfaceError, match="authority base"):
         _render(
@@ -389,27 +425,33 @@ def test_committed_publish_requires_second_durability_barrier(
 ):
     site, output_root, receipts_dir = _roots(tmp_path)
     destination = output_root / "render-0001"
-    original_fsync_tree = fileio.fsync_tree
-    original_fsync_directory = fileio.fsync_directory
+    original_sync_tree = finalizer._DirectoryAnchor.sync_directory
+    original_sync_parent = finalizer._DirectoryAnchor.sync
     synced: list[Path] = []
 
-    def commit_then_fail(staged, dest, **_kwargs):
-        os.rename(staged, dest)
+    def commit_then_fail(anchor, staged_name, destination_name, **_kwargs):
+        dest = _commit_without_parent_sync(
+            anchor, staged_name, destination_name
+        )
         raise fileio.DirectoryPublicationCommittedError(
             dest, OSError("injected parent sync failure")
         )
 
-    def record_tree(path):
-        synced.append(Path(path))
-        return original_fsync_tree(path)
+    def record_tree(anchor, name, expected_names):
+        synced.append(anchor._path(name))
+        return original_sync_tree(anchor, name, expected_names)
 
-    def record_directory(path):
-        synced.append(Path(path))
-        return original_fsync_directory(path)
+    def record_directory(anchor):
+        synced.append(anchor.path)
+        return original_sync_parent(anchor)
 
-    monkeypatch.setattr(fileio, "publish_dir_create_once", commit_then_fail)
-    monkeypatch.setattr(fileio, "fsync_tree", record_tree)
-    monkeypatch.setattr(fileio, "fsync_directory", record_directory)
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor, "publish_directory", commit_then_fail
+    )
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor, "sync_directory", record_tree
+    )
+    monkeypatch.setattr(finalizer._DirectoryAnchor, "sync", record_directory)
 
     result = _render(site, output_root, receipts_dir)
 
@@ -425,36 +467,45 @@ def test_failed_retry_barrier_stays_guarded_and_is_not_success(
 ):
     site, output_root, receipts_dir = _roots(tmp_path)
     destination = output_root / "render-0001"
-    original_fsync_tree = fileio.fsync_tree
+    original_sync_tree = finalizer._DirectoryAnchor.sync_directory
+    original_sync_parent = finalizer._DirectoryAnchor.sync
     committed = False
 
-    def commit_then_fail(staged, dest, **_kwargs):
+    def commit_then_fail(anchor, staged_name, destination_name, **_kwargs):
         nonlocal committed
-        os.rename(staged, dest)
+        dest = _commit_without_parent_sync(
+            anchor, staged_name, destination_name
+        )
         committed = True
         raise fileio.DirectoryPublicationCommittedError(
             dest, OSError("injected parent sync failure")
         )
 
-    def fail_destination_barrier(path):
-        if failure_point == "tree" and Path(path) == destination:
+    def fail_destination_barrier(anchor, name, expected_names):
+        if failure_point == "tree" and anchor._path(name) == destination:
             raise OSError("injected second durability failure")
-        return original_fsync_tree(path)
+        return original_sync_tree(anchor, name, expected_names)
 
-    original_fsync_directory = fileio.fsync_directory
-
-    def fail_parent_barrier(path):
+    def fail_parent_barrier(anchor):
         if (
             failure_point == "parent"
             and committed
-            and Path(path) == output_root
+            and anchor.path == output_root
         ):
             raise OSError("injected second durability failure")
-        return original_fsync_directory(path)
+        return original_sync_parent(anchor)
 
-    monkeypatch.setattr(fileio, "publish_dir_create_once", commit_then_fail)
-    monkeypatch.setattr(fileio, "fsync_tree", fail_destination_barrier)
-    monkeypatch.setattr(fileio, "fsync_directory", fail_parent_barrier)
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor, "publish_directory", commit_then_fail
+    )
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor,
+        "sync_directory",
+        fail_destination_barrier,
+    )
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor, "sync", fail_parent_barrier
+    )
 
     with pytest.raises(OSError, match="second durability"):
         _render(site, output_root, receipts_dir)
@@ -534,24 +585,24 @@ def test_guard_unlink_sync_exhaustion_is_safe_live_acceptance(
 ):
     site, output_root, receipts_dir = _roots(tmp_path)
     destination = output_root / "render-0001"
-    original = fileio.fsync_directory
+    original = finalizer._DirectoryAnchor.sync
     retirement_sync_calls = 0
     marker = finalizer._accepted_marker_path(destination)
     guard = finalizer._pending_guard_path(destination)
 
-    def fail_guard_retirement_sync(path):
+    def fail_guard_retirement_sync(anchor):
         nonlocal retirement_sync_calls
         if (
-            Path(path) == output_root
+            anchor.path == output_root
             and marker.exists()
             and not guard.exists()
         ):
             retirement_sync_calls += 1
             raise OSError("injected guard retirement sync failure")
-        return original(path)
+        return original(anchor)
 
     monkeypatch.setattr(
-        fileio, "fsync_directory", fail_guard_retirement_sync
+        finalizer._DirectoryAnchor, "sync", fail_guard_retirement_sync
     )
 
     result = _render(site, output_root, receipts_dir)
@@ -578,25 +629,86 @@ def test_detached_reader_rejects_mutation_after_marker_bound_snapshot(
     site, output_root, receipts_dir = _roots(tmp_path)
     result = _render(site, output_root, receipts_dir)
     marker = finalizer._accepted_marker_path(result.published_dir)
-    original_read = schema.read_regular_file_bytes
+    original_read = finalizer._DirectoryAnchor.read_regular
     mutated = False
 
-    def mutate_after_marker_read(path, *args, **kwargs):
+    def mutate_after_marker_read(anchor, name, *args, **kwargs):
         nonlocal mutated
-        data = original_read(path, *args, **kwargs)
-        if Path(path) == marker and not mutated:
+        data = original_read(anchor, name, *args, **kwargs)
+        if name == marker.name and anchor.path == marker.parent and not mutated:
             mutated = True
             result.csv_path.write_bytes(result.csv_path.read_bytes() + b"\n")
         return data
 
     monkeypatch.setattr(
-        schema, "read_regular_file_bytes", mutate_after_marker_read
+        finalizer._DirectoryAnchor, "read_regular", mutate_after_marker_read
     )
 
     with pytest.raises(schema.TypedIngressError, match="changed during"):
         renderer._read_outputs(result.published_dir)
 
     assert mutated is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-share contract")
+def test_windows_accepted_reader_holds_parent_against_replacement(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    result = _render(site, output_root, receipts_dir)
+    marker = finalizer._accepted_marker_path(result.published_dir)
+    original = finalizer._DirectoryAnchor.read_regular
+    attempted = False
+
+    def attempt_parent_swap(anchor, name, *args, **kwargs):
+        nonlocal attempted
+        if name == marker.name and anchor.path == marker.parent and not attempted:
+            attempted = True
+            anchor.path.rename(tmp_path / "displaced-output")
+        return original(anchor, name, *args, **kwargs)
+
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor, "read_regular", attempt_parent_swap
+    )
+    with pytest.raises(schema.TypedIngressError, match="positive acceptance"):
+        renderer._read_outputs(result.published_dir)
+
+    assert attempted is True
+    assert result.published_dir.is_dir()
+    assert not (tmp_path / "displaced-output").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX dir_fd contract")
+def test_posix_accepted_reader_uses_captured_parent_during_transient_swap(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    result = _render(site, output_root, receipts_dir)
+    expected = {path.name: path.read_bytes() for path in result.published_dir.iterdir()}
+    marker = finalizer._accepted_marker_path(result.published_dir)
+    original_open = finalizer.os.open
+    displaced = tmp_path / "displaced-output"
+    decoy = tmp_path / "decoy-output"
+    swapped = False
+
+    def swap_restore_around_marker(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if path == marker.name and dir_fd is not None and not swapped:
+            swapped = True
+            marker.parent.rename(displaced)
+            marker.parent.mkdir()
+            (marker.parent / "decoy.txt").write_bytes(b"decoy\n")
+            try:
+                return original_open(path, flags, mode, dir_fd=dir_fd)
+            finally:
+                marker.parent.rename(decoy)
+                displaced.rename(marker.parent)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(finalizer.os, "open", swap_restore_around_marker)
+    assert renderer._read_outputs(result.published_dir) == expected
+    assert swapped is True
+    assert (decoy / "decoy.txt").read_bytes() == b"decoy\n"
 
 
 def test_guarded_release_authority_is_rejected_by_renderer(tmp_path):

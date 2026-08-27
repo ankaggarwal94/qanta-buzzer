@@ -15,6 +15,7 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -57,6 +58,563 @@ class ReleaseVerificationFailed(schema.ColmAimsError):
 
 class _GuardRetirementCommittedError(OSError):
     """Guard unlink committed after acceptance, but its sync retries failed."""
+
+
+class _DirectoryAnchor:
+    """Hold one validated publication parent generation for a transaction.
+
+    POSIX child operations are descriptor-relative.  Windows holds a native
+    directory handle without ``FILE_SHARE_DELETE`` across every lexical child
+    operation, which prevents the anchored parent from being renamed or
+    replaced while the transaction is live.  Other hosts fail closed.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        captured: tuple[tuple[str, tuple[int, int, int]], ...],
+        label: str,
+    ) -> None:
+        self.path = Path(os.path.abspath(path))
+        self.captured = captured
+        self.label = label
+        self._fd: int | None = None
+        self._win_handles: list[int] = []
+
+    def __enter__(self) -> "_DirectoryAnchor":
+        _require_unchanged_directory(self.path, self.captured, self.label)
+        try:
+            if os.name == "posix":
+                required = (os.open, os.stat, os.mkdir, os.rename, os.unlink)
+                if any(
+                    function not in os.supports_dir_fd for function in required
+                ):
+                    raise schema.TypedIngressError(
+                        "host does not support the required descriptor-relative"
+                        " publication operations"
+                    )
+                flags = (
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0)
+                )
+                if not getattr(os, "O_DIRECTORY", 0) or not getattr(
+                    os, "O_NOFOLLOW", 0
+                ):
+                    raise schema.TypedIngressError(
+                        "host cannot open a no-follow directory anchor"
+                    )
+                self._fd = os.open(self.path, flags)
+                self._verify_posix_handle()
+            elif os.name == "nt":
+                self._open_windows_handle()
+            else:  # pragma: no cover - closed unsupported-host branch
+                raise schema.TypedIngressError(
+                    "host has no supported directory-anchor implementation"
+                )
+            self.revalidate("anchor acquisition")
+        except BaseException:
+            self.__exit__()
+            raise
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
+        if self._win_handles:
+            import ctypes
+            from ctypes import wintypes
+
+            close_handle = ctypes.WinDLL(
+                "kernel32", use_last_error=True
+            ).CloseHandle
+            close_handle.argtypes = [wintypes.HANDLE]
+            close_handle.restype = wintypes.BOOL
+            while self._win_handles:
+                close_handle(wintypes.HANDLE(self._win_handles.pop()))
+
+    def _verify_posix_handle(self) -> None:
+        if self._fd is None:  # pragma: no cover - internal invariant
+            raise RuntimeError("directory anchor is not open")
+        info = os.fstat(self._fd)
+        if not stat.S_ISDIR(info.st_mode) or schema._identity_tuple(info) != (
+            self.captured[-1][1]
+        ):
+            raise schema.TypedIngressError(
+                f"{self.label} handle does not identify the captured directory"
+            )
+
+    @staticmethod
+    def _windows_native_file_id(file_id_information: Any) -> tuple[int, bytes]:
+        """Return the complete ReFS-safe native volume and 128-bit file ID."""
+        return (
+            int(file_id_information.volume_serial_number),
+            bytes(file_id_information.file_id.identifier),
+        )
+
+    def _open_windows_handle(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        class _ByHandleFileInformation(ctypes.Structure):
+            _fields_ = [
+                ("dwFileAttributes", wintypes.DWORD),
+                ("ftCreationTime", wintypes.FILETIME),
+                ("ftLastAccessTime", wintypes.FILETIME),
+                ("ftLastWriteTime", wintypes.FILETIME),
+                ("dwVolumeSerialNumber", wintypes.DWORD),
+                ("nFileSizeHigh", wintypes.DWORD),
+                ("nFileSizeLow", wintypes.DWORD),
+                ("nNumberOfLinks", wintypes.DWORD),
+                ("nFileIndexHigh", wintypes.DWORD),
+                ("nFileIndexLow", wintypes.DWORD),
+            ]
+
+        class _FileId128(ctypes.Structure):
+            _fields_ = [("identifier", ctypes.c_ubyte * 16)]
+
+        class _FileIdInformation(ctypes.Structure):
+            _fields_ = [
+                ("volume_serial_number", ctypes.c_ulonglong),
+                ("file_id", _FileId128),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        get_information = kernel32.GetFileInformationByHandle
+        get_information.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(_ByHandleFileInformation),
+        ]
+        get_information.restype = wintypes.BOOL
+        get_information_ex = kernel32.GetFileInformationByHandleEx
+        get_information_ex.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        get_information_ex.restype = wintypes.BOOL
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        create_file.restype = wintypes.HANDLE
+        invalid = ctypes.c_void_p(-1).value
+        # The drive root is the immutable namespace anchor. Every descendant
+        # component is mutable and therefore receives its own held handle.
+        components = self.captured[1:]
+        if not components:
+            raise schema.TypedIngressError(
+                f"{self.label} has no verifiable mutable chain component"
+            )
+
+        def metadata(handle: Any) -> tuple[int, int, tuple[int, bytes]]:
+            information = _ByHandleFileInformation()
+            file_id_information = _FileIdInformation()
+            if not get_information(handle, ctypes.byref(information)) or not (
+                get_information_ex(
+                    handle,
+                    18,  # FileIdInfo
+                    ctypes.byref(file_id_information),
+                    ctypes.sizeof(file_id_information),
+                )
+            ):
+                error = ctypes.get_last_error()
+                raise schema.TypedIngressError(
+                    f"cannot verify {self.label} directory-chain anchor"
+                    f" (WindowsError {error})"
+                )
+            attributes = int(information.dwFileAttributes)
+            legacy_file_index = (int(information.nFileIndexHigh) << 32) | int(
+                information.nFileIndexLow
+            )
+            return (
+                attributes,
+                legacy_file_index,
+                self._windows_native_file_id(file_id_information),
+            )
+
+        def validate_metadata(
+            observed: tuple[int, int, tuple[int, bytes]],
+            captured_identity: tuple[int, int, int],
+        ) -> None:
+            attributes, legacy_file_index, _native_file_id = observed
+            if (
+                not attributes
+                & getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
+                or attributes
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+                or legacy_file_index != captured_identity[1]
+            ):
+                raise schema.TypedIngressError(
+                    f"{self.label} chain handle does not identify its captured"
+                    " ordinary directory"
+                )
+
+        for component, captured_identity in components:
+            # Capture the complete native identity without blocking a peer's
+            # delete request, then immediately reacquire with delete sharing
+            # denied and require byte-for-byte identity equality.
+            temporary = create_file(
+                component,
+                0x80000000,
+                0x00000001 | 0x00000002 | 0x00000004,
+                None,
+                3,
+                0x02000000 | 0x00200000,
+                None,
+            )
+            if temporary == invalid:
+                error = ctypes.get_last_error()
+                raise schema.TypedIngressError(
+                    f"cannot pre-capture {self.label} directory-chain identity"
+                    f" (WindowsError {error})"
+                )
+            try:
+                precaptured = metadata(temporary)
+                validate_metadata(precaptured, captured_identity)
+            finally:
+                close_handle(temporary)
+            handle = create_file(
+                component,
+                0x80000000,  # GENERIC_READ activates delete-share exclusion
+                0x00000001 | 0x00000002,  # FILE_SHARE_READ | FILE_SHARE_WRITE
+                None,
+                3,  # OPEN_EXISTING
+                0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+                None,
+            )
+            if handle == invalid:
+                error = ctypes.get_last_error()
+                raise schema.TypedIngressError(
+                    f"cannot acquire {self.label} directory-chain anchor"
+                    f" (WindowsError {error})"
+                )
+            self._win_handles.append(int(handle))
+            anchored = metadata(handle)
+            validate_metadata(anchored, captured_identity)
+            if anchored[2] != precaptured[2]:
+                raise schema.TypedIngressError(
+                    f"{self.label} native volume/file identity changed before"
+                    " its no-delete-share anchor was acquired"
+                )
+
+    def revalidate(self, stage: str) -> None:
+        if os.name == "posix":
+            self._verify_posix_handle()
+        elif not self._win_handles:  # pragma: no cover - internal invariant
+            raise RuntimeError("Windows directory anchor is not open")
+        _require_unchanged_directory(
+            self.path, self.captured, f"{self.label} during {stage}"
+        )
+
+    @staticmethod
+    def _name(name: str) -> str:
+        if (
+            not name
+            or name in {".", ".."}
+            or Path(name).name != name
+            or "/" in name
+            or "\\" in name
+        ):
+            raise schema.ConfigSurfaceError(
+                "anchored child name must be one lexical path component"
+            )
+        return name
+
+    def _path(self, name: str) -> Path:
+        return self.path / self._name(name)
+
+    def stat(self, name: str) -> os.stat_result:
+        name = self._name(name)
+        if self._fd is not None:
+            return os.stat(name, dir_fd=self._fd, follow_symlinks=False)
+        return os.stat(self._path(name), follow_symlinks=False)
+
+    def exists(self, name: str) -> bool:
+        try:
+            self.stat(name)
+        except FileNotFoundError:
+            return False
+        return True
+
+    @staticmethod
+    def _require_regular(info: os.stat_result, label: str) -> None:
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or getattr(info, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            or not stat.S_ISREG(info.st_mode)
+        ):
+            raise schema.TypedIngressError(
+                f"{label} is not an ordinary regular file"
+            )
+
+    def read_regular(self, name: str, *, max_bytes: int) -> bytes:
+        name = self._name(name)
+        self.revalidate(f"read {name} precheck")
+        before = self.stat(name)
+        self._require_regular(before, name)
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        if self._fd is not None:
+            fd = os.open(name, flags, dir_fd=self._fd)
+        else:
+            fd = os.open(self._path(name), flags)
+        try:
+            opened = os.fstat(fd)
+            self._require_regular(opened, name)
+            if schema._identity_tuple(opened) != schema._identity_tuple(before):
+                raise schema.TypedIngressError(
+                    f"{name} changed identity during anchored read"
+                )
+            if opened.st_size > max_bytes:
+                raise schema.TypedIngressError(
+                    f"{name} exceeds the maximum admissible byte count"
+                )
+            if os.name != "nt" and hasattr(os, "set_blocking"):
+                os.set_blocking(fd, True)
+            chunks: list[bytes] = []
+            remaining = max_bytes + 1
+            while remaining:
+                chunk = os.read(fd, min(1 << 20, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            if len(data) > max_bytes:
+                raise schema.TypedIngressError(
+                    f"{name} exceeds the maximum admissible byte count"
+                )
+        finally:
+            os.close(fd)
+        self.revalidate(f"read {name} completion")
+        return data
+
+    def create_once(self, name: str, data: bytes, *, exists_label: str) -> None:
+        name = self._name(name)
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            if self._fd is not None:
+                fd = os.open(name, flags, 0o600, dir_fd=self._fd)
+            else:
+                fd = os.open(self._path(name), flags, 0o600)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"{exists_label} already exists: {self._path(name)}"
+            ) from exc
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        self.sync()
+        self.revalidate(f"create {name} completion")
+
+    def unlink(self, name: str) -> None:
+        name = self._name(name)
+        if self._fd is not None:
+            os.unlink(name, dir_fd=self._fd)
+        else:
+            os.unlink(self._path(name))
+
+    def sync(self) -> None:
+        if self._fd is not None:
+            os.fsync(self._fd)
+        else:
+            fileio.fsync_directory(self.path)
+
+    def sync_directory(self, name: str, expected_names: tuple[str, ...]) -> None:
+        """Sync one exact child tree without leaving the anchored generation."""
+        name = self._name(name)
+        if self._fd is None:
+            fileio.fsync_tree(self._path(name))
+            self.revalidate(f"sync {name} completion")
+            return
+        child_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=self._fd,
+        )
+        try:
+            with os.scandir(child_fd) as entries:
+                names = self._bounded_names(entries, len(expected_names))
+            if set(names) != set(expected_names) or len(names) != len(
+                expected_names
+            ):
+                raise schema.TypedIngressError(
+                    "accepted output must contain exactly three ordinary files"
+                )
+            for child in sorted(expected_names):
+                info = os.stat(child, dir_fd=child_fd, follow_symlinks=False)
+                self._require_regular(info, child)
+                file_fd = os.open(
+                    child,
+                    os.O_RDONLY | os.O_NOFOLLOW,
+                    dir_fd=child_fd,
+                )
+                try:
+                    os.fsync(file_fd)
+                finally:
+                    os.close(file_fd)
+            os.fsync(child_fd)
+        finally:
+            os.close(child_fd)
+        self.revalidate(f"sync {name} completion")
+
+    def snapshot_directory(
+        self, name: str, expected_names: tuple[str, ...]
+    ) -> dict[str, bytes]:
+        """Capture one flat, exact, ordinary-file directory under the anchor."""
+        name = self._name(name)
+        expected = set(expected_names)
+        if not expected or any(self._name(item) != item for item in expected):
+            raise schema.ConfigSurfaceError("expected output membership is invalid")
+        if self._fd is not None:
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(
+                os, "O_CLOEXEC", 0
+            )
+            try:
+                child_fd = os.open(name, flags, dir_fd=self._fd)
+            except OSError as exc:
+                raise schema.TypedIngressError(
+                    "anchored output cannot be opened as an ordinary directory"
+                ) from exc
+            try:
+                info = os.fstat(child_fd)
+                if not stat.S_ISDIR(info.st_mode):
+                    raise schema.TypedIngressError(
+                        "anchored output is not an ordinary directory"
+                    )
+                with os.scandir(child_fd) as entries:
+                    names = self._bounded_names(entries, len(expected))
+                if set(names) != expected or len(names) != len(expected):
+                    raise schema.TypedIngressError(
+                        "accepted output must contain exactly three ordinary files"
+                    )
+                snapshot = {
+                    child: self._read_regular_at(child_fd, child)
+                    for child in sorted(expected)
+                }
+            finally:
+                os.close(child_fd)
+        else:
+            child = self._path(name)
+            chain = schema.stable_directory_chain(child, child)
+            with _DirectoryAnchor(child, chain, "anchored output directory") as anchor:
+                with os.scandir(child) as entries:
+                    names = self._bounded_names(entries, len(expected))
+                if set(names) != expected or len(names) != len(expected):
+                    raise schema.TypedIngressError(
+                        "accepted output must contain exactly three ordinary files"
+                    )
+                snapshot = {
+                    item: anchor.read_regular(
+                        item, max_bytes=schema.MAX_ARTIFACT_BYTES
+                    )
+                    for item in sorted(expected)
+                }
+        self.revalidate(f"snapshot {name} completion")
+        return snapshot
+
+    @staticmethod
+    def _bounded_names(entries: Any, expected_count: int) -> list[str]:
+        """Enumerate at most expected_count+1 entries, rejecting overflow."""
+        names: list[str] = []
+        for entry in entries:
+            names.append(entry.name)
+            if len(names) > expected_count:
+                raise schema.TypedIngressError(
+                    "accepted output must contain exactly three ordinary files"
+                )
+        return names
+
+    @staticmethod
+    def _read_regular_at(directory_fd: int, name: str) -> bytes:
+        info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        _DirectoryAnchor._require_regular(info, name)
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(name, flags, dir_fd=directory_fd)
+        try:
+            opened = os.fstat(fd)
+            _DirectoryAnchor._require_regular(opened, name)
+            if schema._identity_tuple(opened) != schema._identity_tuple(info):
+                raise schema.TypedIngressError(
+                    f"{name} changed identity during anchored read"
+                )
+            if opened.st_size > schema.MAX_ARTIFACT_BYTES:
+                raise schema.TypedIngressError(
+                    f"{name} exceeds the maximum admissible byte count"
+                )
+            chunks: list[bytes] = []
+            remaining = schema.MAX_ARTIFACT_BYTES + 1
+            while remaining:
+                chunk = os.read(fd, min(1 << 20, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            if len(data) > schema.MAX_ARTIFACT_BYTES:
+                raise schema.TypedIngressError(
+                    f"{name} exceeds the maximum admissible byte count"
+                )
+            return data
+        finally:
+            os.close(fd)
+
+    def publish_directory(
+        self, staged_name: str, destination_name: str, *, exists_label: str
+    ) -> None:
+        staged_name = self._name(staged_name)
+        destination_name = self._name(destination_name)
+        if self._fd is None:
+            fileio.publish_dir_create_once(
+                self._path(staged_name),
+                self._path(destination_name),
+                exists_label=exists_label,
+            )
+            self.revalidate("anchored Windows directory publication")
+            return
+        try:
+            os.mkdir(destination_name, dir_fd=self._fd)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"{exists_label} already exists: {self._path(destination_name)}"
+            ) from exc
+        os.rename(
+            staged_name,
+            destination_name,
+            src_dir_fd=self._fd,
+            dst_dir_fd=self._fd,
+        )
+        try:
+            self.sync()
+        except OSError as exc:
+            raise fileio.DirectoryPublicationCommittedError(
+                self._path(destination_name), exc
+            ) from exc
 
 
 @dataclass(frozen=True)
@@ -212,36 +770,27 @@ def _create_once_in_bound_parent(
     destination: Path,
     parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
     exists_label: str,
+    anchor: _DirectoryAnchor | None = None,
 ) -> None:
     """Durably create one sibling without ever creating its parent."""
+    if anchor is None:
+        with _DirectoryAnchor(
+            Path(destination).parent, parent_chain, "publication parent"
+        ) as opened:
+            _create_once_in_bound_parent(
+                path,
+                data,
+                destination=destination,
+                parent_chain=parent_chain,
+                exists_label=exists_label,
+                anchor=opened,
+            )
+        return
     _require_publication_parent(destination, parent_chain, f"{exists_label} open")
-    flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_BINARY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
+    anchor.create_once(Path(path).name, data, exists_label=exists_label)
+    _require_publication_parent(
+        destination, parent_chain, f"{exists_label} parent sync"
     )
-    try:
-        fd = os.open(path, flags, 0o600)
-    except FileExistsError as exc:
-        raise FileExistsError(f"{exists_label} already exists: {path}") from exc
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        _require_publication_parent(
-            destination, parent_chain, f"{exists_label} file sync"
-        )
-        fileio.fsync_directory(path.parent)
-        _require_publication_parent(
-            destination, parent_chain, f"{exists_label} parent sync"
-        )
-    except BaseException:
-        # A partial sibling remains fail-closed: pending is rejection, while a
-        # marker cannot be accepted unless its exact bytes validate.
-        raise
 
 
 def _require_published_tree(
@@ -249,10 +798,19 @@ def _require_published_tree(
     expected_tree_sha256: str,
     parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
     stage: str,
+    expected_names: tuple[str, ...],
+    anchor: _DirectoryAnchor,
 ) -> None:
     """Rebind the committed directory bytes to the staged precommit digest."""
     _require_publication_parent(destination, parent_chain, f"{stage} precheck")
-    observed = _directory_tree_sha256(destination)
+    observed = verifier._tree_digest_from_shas(
+        {
+            rel: hashlib.sha256(data).hexdigest()
+            for rel, data in anchor.snapshot_directory(
+                Path(destination).name, expected_names
+            ).items()
+        }
+    )
     _require_publication_parent(destination, parent_chain, f"{stage} postcheck")
     if observed != expected_tree_sha256:
         raise schema.TypedIngressError(
@@ -261,7 +819,10 @@ def _require_published_tree(
 
 
 def _read_accepted_directory_snapshot(
-    path: Path, label: str
+    path: Path,
+    label: str,
+    *,
+    expected_names: tuple[str, ...] = _SIDECAR_NAMES,
 ) -> tuple[Path, dict[str, bytes]]:
     """Return the exact snapshot bound by a stable positive marker.
 
@@ -270,49 +831,55 @@ def _read_accepted_directory_snapshot(
     never substituted into the return value.
     """
     directory = Path(os.path.abspath(path))
-    guard = _pending_guard_path(directory)
-    if os.path.lexists(guard):
-        raise schema.TypedIngressError(
-            f"{label} has an unresolved pending publication guard"
-        )
     directory = _canonical_existing_directory(directory, label)
-    snapshot = verifier._read_tree_snapshot(directory)
-    marker = _accepted_marker_path(directory)
-    tree_sha256 = verifier._tree_digest_from_shas(
-        {
-            rel: hashlib.sha256(data).hexdigest()
-            for rel, data in snapshot.items()
-        }
-    )
-    expected = _accepted_marker_bytes(directory, tree_sha256)
-    try:
-        observed = schema.read_regular_file_bytes(
-            marker,
-            tree_root=marker.parent,
-            max_bytes=len(expected),
+    parent = directory.parent
+    parent_chain = schema.stable_directory_chain(parent, parent)
+    guard_name = _pending_guard_path(directory).name
+    marker_name = _accepted_marker_path(directory).name
+    with _DirectoryAnchor(parent, parent_chain, f"{label} parent") as anchor:
+        if anchor.exists(guard_name):
+            raise schema.TypedIngressError(
+                f"{label} has an unresolved pending publication guard"
+            )
+        snapshot = anchor.snapshot_directory(directory.name, expected_names)
+        tree_sha256 = verifier._tree_digest_from_shas(
+            {
+                rel: hashlib.sha256(data).hexdigest()
+                for rel, data in snapshot.items()
+            }
         )
-    except (OSError, schema.ColmAimsError) as exc:
-        raise schema.TypedIngressError(
-            f"{label} has no valid positive acceptance marker"
-        ) from exc
-    if observed != expected:
-        raise schema.TypedIngressError(
-            f"{label} positive acceptance marker does not bind its exact tree"
-        )
-    if os.path.lexists(guard):
-        raise schema.TypedIngressError(
-            f"{label} became pending during accepted snapshot capture"
-        )
-    if verifier._read_tree_snapshot(directory) != snapshot:
-        raise schema.TypedIngressError(
-            f"{label} tree changed during accepted snapshot capture"
-        )
+        expected = _accepted_marker_bytes(directory, tree_sha256)
+        try:
+            observed = anchor.read_regular(marker_name, max_bytes=len(expected))
+        except (OSError, schema.ColmAimsError) as exc:
+            raise schema.TypedIngressError(
+                f"{label} has no valid positive acceptance marker"
+            ) from exc
+        if observed != expected:
+            raise schema.TypedIngressError(
+                f"{label} positive acceptance marker does not bind its exact tree"
+            )
+        if anchor.exists(guard_name):
+            raise schema.TypedIngressError(
+                f"{label} became pending during accepted snapshot capture"
+            )
+        if anchor.snapshot_directory(directory.name, expected_names) != snapshot:
+            raise schema.TypedIngressError(
+                f"{label} tree changed during accepted snapshot capture"
+            )
     return directory, snapshot
 
 
-def _require_accepted_directory(path: Path, label: str) -> Path:
+def _require_accepted_directory(
+    path: Path,
+    label: str,
+    *,
+    expected_names: tuple[str, ...] = _SIDECAR_NAMES,
+) -> Path:
     """Require exact positive acceptance and no sibling pending-state guard."""
-    directory, _ = _read_accepted_directory_snapshot(path, label)
+    directory, _ = _read_accepted_directory_snapshot(
+        path, label, expected_names=expected_names
+    )
     return directory
 
 
@@ -320,13 +887,26 @@ def _create_pending_guard(
     destination: Path,
     *,
     parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    anchor: _DirectoryAnchor | None = None,
 ) -> tuple[Path, bytes]:
+    if anchor is None:
+        with _DirectoryAnchor(
+            Path(destination).parent, parent_chain, "publication parent"
+        ) as opened:
+            return _create_pending_guard(
+                destination, parent_chain=parent_chain, anchor=opened
+            )
     _require_publication_parent(destination, parent_chain, "guard precheck")
     guard = _pending_guard_path(destination)
-    _require_unclaimed(guard, "pending publication guard")
-    _require_unclaimed(
-        _accepted_marker_path(destination), "positive acceptance marker"
-    )
+    if anchor.exists(guard.name):
+        raise schema.ConfigSurfaceError(
+            f"pending publication guard already exists: {guard}"
+        )
+    marker = _accepted_marker_path(destination)
+    if anchor.exists(marker.name):
+        raise schema.ConfigSurfaceError(
+            f"positive acceptance marker already exists: {marker}"
+        )
     encoded = _pending_guard_bytes(destination)
     _require_publication_parent(destination, parent_chain, "guard creation")
     _create_once_in_bound_parent(
@@ -335,13 +915,10 @@ def _create_pending_guard(
         destination=destination,
         parent_chain=parent_chain,
         exists_label="pending publication guard",
+        anchor=anchor,
     )
     _require_publication_parent(destination, parent_chain, "guard readback")
-    observed = schema.read_regular_file_bytes(
-        guard,
-        tree_root=guard.parent,
-        max_bytes=len(encoded),
-    )
+    observed = anchor.read_regular(guard.name, max_bytes=len(encoded))
     if observed != encoded:
         raise schema.TypedIngressError(
             "pending publication guard differs from its deterministic bytes"
@@ -355,7 +932,19 @@ def _create_accepted_marker(
     tree_sha256: str,
     *,
     parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    anchor: _DirectoryAnchor | None = None,
 ) -> None:
+    if anchor is None:
+        with _DirectoryAnchor(
+            Path(destination).parent, parent_chain, "publication parent"
+        ) as opened:
+            _create_accepted_marker(
+                destination,
+                tree_sha256,
+                parent_chain=parent_chain,
+                anchor=opened,
+            )
+        return
     _require_publication_parent(destination, parent_chain, "marker creation")
     marker = _accepted_marker_path(destination)
     encoded = _accepted_marker_bytes(destination, tree_sha256)
@@ -365,13 +954,10 @@ def _create_accepted_marker(
         destination=destination,
         parent_chain=parent_chain,
         exists_label="positive acceptance marker",
+        anchor=anchor,
     )
     _require_publication_parent(destination, parent_chain, "marker readback")
-    observed = schema.read_regular_file_bytes(
-        marker,
-        tree_root=marker.parent,
-        max_bytes=len(encoded),
-    )
+    observed = anchor.read_regular(marker.name, max_bytes=len(encoded))
     if observed != encoded:
         raise schema.TypedIngressError(
             "positive acceptance marker differs from its deterministic bytes"
@@ -383,6 +969,8 @@ def _require_positive_acceptance_state(
     destination: Path,
     tree_sha256: str,
     parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    expected_names: tuple[str, ...],
+    anchor: _DirectoryAnchor,
 ) -> None:
     """Validate committed tree and marker while the pending guard is live."""
     _require_published_tree(
@@ -390,14 +978,12 @@ def _require_positive_acceptance_state(
         tree_sha256,
         parent_chain,
         "acceptance tree validation",
+        expected_names,
+        anchor,
     )
     marker = _accepted_marker_path(destination)
     expected = _accepted_marker_bytes(destination, tree_sha256)
-    observed = schema.read_regular_file_bytes(
-        marker,
-        tree_root=marker.parent,
-        max_bytes=len(expected),
-    )
+    observed = anchor.read_regular(marker.name, max_bytes=len(expected))
     _require_publication_parent(
         destination, parent_chain, "acceptance marker validation"
     )
@@ -413,23 +999,32 @@ def _retire_pending_guard(
     *,
     destination: Path,
     parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    anchor: _DirectoryAnchor | None = None,
 ) -> None:
     """Remove the guard only after the final directory is independently durable."""
+    if anchor is None:
+        with _DirectoryAnchor(
+            Path(destination).parent, parent_chain, "publication parent"
+        ) as opened:
+            _retire_pending_guard(
+                guard,
+                encoded,
+                destination=destination,
+                parent_chain=parent_chain,
+                anchor=opened,
+            )
+        return
     _require_publication_parent(destination, parent_chain, "guard retirement")
-    observed = schema.read_regular_file_bytes(
-        guard,
-        tree_root=guard.parent,
-        max_bytes=len(encoded),
-    )
+    observed = anchor.read_regular(guard.name, max_bytes=len(encoded))
     if observed != encoded:
         raise schema.TypedIngressError(
             "pending publication guard changed before acceptance"
         )
     _require_publication_parent(destination, parent_chain, "guard unlink")
-    os.unlink(guard)
+    anchor.unlink(guard.name)
     _require_publication_parent(destination, parent_chain, "guard unlink commit")
     try:
-        fileio.fsync_directory(guard.parent)
+        anchor.sync()
         _require_publication_parent(
             destination, parent_chain, "guard retirement completion"
         )
@@ -441,7 +1036,7 @@ def _retire_pending_guard(
             _require_publication_parent(
                 destination, parent_chain, "guard retirement retry"
             )
-            fileio.fsync_directory(guard.parent)
+            anchor.sync()
             _require_publication_parent(
                 destination, parent_chain, "guard retirement retry completion"
             )
@@ -666,6 +1261,7 @@ def _publish_verified_directory(
     *,
     exists_label: str,
     parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    expected_names: tuple[str, ...] = _SIDECAR_NAMES,
 ) -> None:
     """Create-once publish guarded until the final directory is durable."""
     if Path(os.path.abspath(staged)).parent != Path(
@@ -675,90 +1271,99 @@ def _publish_verified_directory(
             "staged and destination directories must be siblings under the"
             " validated publication parent"
         )
-    _require_publication_parent(destination, parent_chain, "transaction start")
-    tree_sha256 = _directory_tree_sha256(staged)
-    _require_publication_parent(destination, parent_chain, "guard dispatch")
-    guard, guard_bytes = _create_pending_guard(
-        destination, parent_chain=parent_chain
-    )
-    published = False
-    try:
+    with _DirectoryAnchor(
+        Path(destination).parent, parent_chain, "publication parent"
+    ) as anchor:
+        _require_publication_parent(destination, parent_chain, "transaction start")
+        staged_snapshot = anchor.snapshot_directory(
+            Path(staged).name, expected_names
+        )
+        tree_sha256 = verifier._tree_digest_from_shas(
+            {
+                rel: hashlib.sha256(data).hexdigest()
+                for rel, data in staged_snapshot.items()
+            }
+        )
+        _require_publication_parent(destination, parent_chain, "guard dispatch")
+        guard, guard_bytes = _create_pending_guard(
+            destination, parent_chain=parent_chain, anchor=anchor
+        )
+        published = False
         try:
-            _require_publication_parent(destination, parent_chain, "directory rename")
-            fileio.publish_dir_create_once(
-                staged,
-                destination,
-                exists_label=exists_label,
-            )
-            published = True
-            _require_publication_parent(
-                destination, parent_chain, "directory rename completion"
-            )
-        except fileio.DirectoryPublicationCommittedError as exc:
-            if Path(exc.destination).absolute() != Path(destination).absolute():
-                raise
-            published = True
-            _require_publication_parent(
-                destination, parent_chain, "committed rename recovery"
-            )
-            # The atomic rename committed, but acceptance stays guarded until
-            # an independent full-tree + parent durability barrier succeeds.
-            fileio.fsync_tree(destination)
-            _require_publication_parent(
-                destination, parent_chain, "committed tree sync"
-            )
-            fileio.fsync_directory(destination.parent)
-            _require_publication_parent(
-                destination, parent_chain, "committed parent sync"
-            )
-        except FileExistsError as exc:
-            raise schema.ConfigSurfaceError(str(exc)) from exc
-    except BaseException:
-        if not published:
-            # No final directory was committed. Best-effort removal avoids a
-            # stale guard; a cleanup failure safely leaves the slot guarded.
-            with contextlib.suppress(BaseException):
-                _retire_pending_guard(
-                    guard,
-                    guard_bytes,
-                    destination=destination,
-                    parent_chain=parent_chain,
+            try:
+                _require_publication_parent(
+                    destination, parent_chain, "directory rename"
                 )
-        raise
-    _require_published_tree(
-        destination,
-        tree_sha256,
-        parent_chain,
-        "postcommit tree validation",
-    )
-    try:
-        _create_accepted_marker(
+                anchor.publish_directory(
+                    Path(staged).name,
+                    Path(destination).name,
+                    exists_label=exists_label,
+                )
+                published = True
+                _require_publication_parent(
+                    destination, parent_chain, "directory rename completion"
+                )
+            except fileio.DirectoryPublicationCommittedError as exc:
+                if Path(exc.destination).absolute() != Path(destination).absolute():
+                    raise
+                published = True
+                _require_publication_parent(
+                    destination, parent_chain, "committed rename recovery"
+                )
+                # Re-open and sync only through the held parent generation.
+                anchor.snapshot_directory(Path(destination).name, expected_names)
+                anchor.sync_directory(Path(destination).name, expected_names)
+                anchor.sync()
+                _require_publication_parent(
+                    destination, parent_chain, "committed parent sync"
+                )
+            except FileExistsError as exc:
+                raise schema.ConfigSurfaceError(str(exc)) from exc
+        except BaseException:
+            if not published:
+                with contextlib.suppress(BaseException):
+                    _retire_pending_guard(
+                        guard,
+                        guard_bytes,
+                        destination=destination,
+                        parent_chain=parent_chain,
+                        anchor=anchor,
+                    )
+            raise
+        _require_published_tree(
             destination,
             tree_sha256,
-            parent_chain=parent_chain,
+            parent_chain,
+            "postcommit tree validation",
+            expected_names,
+            anchor,
         )
-    except BaseException:
-        # The final tree is durable, but without a durable exact marker it is
-        # not accepted. Keep the pending guard so every protocol-aware reader
-        # mechanically rejects this ambiguous state.
-        raise
-    _require_positive_acceptance_state(
-        destination,
-        tree_sha256,
-        parent_chain,
-    )
-    try:
-        _retire_pending_guard(
-            guard,
-            guard_bytes,
-            destination=destination,
-            parent_chain=parent_chain,
+        try:
+            _create_accepted_marker(
+                destination,
+                tree_sha256,
+                parent_chain=parent_chain,
+                anchor=anchor,
+            )
+        except BaseException:
+            raise
+        _require_positive_acceptance_state(
+            destination,
+            tree_sha256,
+            parent_chain,
+            expected_names,
+            anchor,
         )
-    except _GuardRetirementCommittedError:
-        # Destination and positive marker were each durably published before
-        # guard retirement. The live state (exact marker, no guard) is accepted;
-        # a crash may conservatively restore the guard, yielding safe rejection.
-        return
+        try:
+            _retire_pending_guard(
+                guard,
+                guard_bytes,
+                destination=destination,
+                parent_chain=parent_chain,
+                anchor=anchor,
+            )
+        except _GuardRetirementCommittedError:
+            return
 
 
 def finalize_release(
@@ -887,6 +1492,7 @@ def finalize_release(
             destination,
             exists_label="release sidecar bundle",
             parent_chain=output_root_chain,
+            expected_names=_SIDECAR_NAMES,
         )
         # From this point the complete public name is terminal: no fallible
         # verification, readback, cleanup stat, or other filesystem operation.
