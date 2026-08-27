@@ -57,6 +57,20 @@ SUITE_TIMEOUT_SECONDS = {
     "focused": 2 * 60 * 60,
     "full": 6 * 60 * 60,
 }
+SUITE_READER_JOIN_TIMEOUT_SECONDS = 30.0
+
+_WINDOWS_SUITE_SUPERVISOR = """\
+import json
+import subprocess
+import sys
+
+if sys.stdin.buffer.read(1) != b"R":
+    raise SystemExit(125)
+command = json.loads(sys.argv[1])
+raise SystemExit(
+    subprocess.run(command, stdin=subprocess.DEVNULL, check=False).returncode
+)
+"""
 
 _UNTRACKED_EXECUTABLE_SUFFIXES = frozenset(
     {
@@ -678,44 +692,308 @@ def verify_prepared_snapshots(paths: OrchestrationPaths) -> dict[str, Path]:
     return snapshot_dirs
 
 
-def _taskkill_executable() -> Path:
-    """Return the ordinary System32 process-tree terminator on Windows."""
+class _WindowsJobMemberListTooSmall(RuntimeError):
+    """A bounded Job PID query needs a larger caller-owned buffer."""
 
-    system_root = Path(os.environ.get("SYSTEMROOT", "C:/Windows"))
-    if not system_root.is_absolute():
-        raise RuntimeError("SYSTEMROOT is not absolute")
-    system_root = Path(os.path.abspath(system_root))
-    schema.stable_directory_chain(system_root, system_root)
-    candidate = system_root / "System32" / "taskkill.exe"
-    schema.stable_directory_chain(candidate.parent, system_root)
-    try:
-        info = os.stat(candidate, follow_symlinks=False)
-    except OSError as exc:
-        raise RuntimeError("trusted taskkill.exe is unavailable") from exc
-    if _is_link_info(info) or not stat.S_ISREG(info.st_mode):
-        raise RuntimeError("trusted taskkill.exe is not an ordinary file")
-    return candidate
+    def __init__(self, assigned: int, listed: int) -> None:
+        super().__init__("Windows Job Object member list buffer is too small")
+        self.assigned = assigned
+        self.listed = listed
 
 
-def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+class _WindowsJobObject:
+    """Own a fail-closed Windows process job for one suite invocation."""
+
+    _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
+    _JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
+    _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+
+    def __init__(self) -> None:
+        if os.name != "nt":  # pragma: no cover - construction is Windows-only
+            raise RuntimeError("Windows Job Objects are unavailable on this host")
+
+        import ctypes
+        from ctypes import wintypes
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        class JOBOBJECT_BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("TotalUserTime", ctypes.c_longlong),
+                ("TotalKernelTime", ctypes.c_longlong),
+                ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+                ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                ("TotalPageFaultCount", wintypes.DWORD),
+                ("TotalProcesses", wintypes.DWORD),
+                ("ActiveProcesses", wintypes.DWORD),
+                ("TotalTerminatedProcesses", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+        ]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+        kernel32.OpenProcess.argtypes = [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+        ]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            error = ctypes.get_last_error()
+            raise OSError(error, ctypes.FormatError(error))
+        self._ctypes = ctypes
+        self._kernel32 = kernel32
+        self._wintypes = wintypes
+        self._accounting_type = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+        self._handle: Any | None = handle
+
+        limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        limits.BasicLimitInformation.LimitFlags = (
+            self._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        )
+        if not kernel32.SetInformationJobObject(
+            handle,
+            self._JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(limits),
+            ctypes.sizeof(limits),
+        ):
+            error = ctypes.get_last_error()
+            kernel32.CloseHandle(handle)
+            self._handle = None
+            raise OSError(error, ctypes.FormatError(error))
+
+    def assign(self, process: subprocess.Popen[bytes]) -> None:
+        """Assign the suite root before it can intentionally spawn work."""
+
+        if self._handle is None:
+            raise RuntimeError("Windows Job Object is already closed")
+        process_handle = getattr(process, "_handle", None)
+        if process_handle is None:  # pragma: no cover - CPython contract guard
+            raise RuntimeError("Windows suite process handle is unavailable")
+        if not self._kernel32.AssignProcessToJobObject(
+            self._handle, self._ctypes.c_void_p(int(process_handle))
+        ):
+            error = self._ctypes.get_last_error()
+            raise OSError(error, self._ctypes.FormatError(error))
+
+    def terminate(self) -> None:
+        """Terminate every process still associated with this job."""
+
+        if self._handle is None:
+            return
+        if not self._kernel32.TerminateJobObject(self._handle, 1):
+            error = self._ctypes.get_last_error()
+            raise OSError(error, self._ctypes.FormatError(error))
+        deadline = time.monotonic() + 30
+        member_handles = self._open_member_process_handles(deadline=deadline)
+        try:
+            for member_handle in member_handles:
+                remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                wait_result = self._kernel32.WaitForSingleObject(
+                    member_handle, remaining_ms
+                )
+                if wait_result != 0:
+                    raise RuntimeError(
+                        "Windows Job Object member did not terminate within 30 seconds"
+                    )
+            while self.active_processes() != 0:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "Windows Job Object members did not terminate within 30 seconds"
+                    )
+                time.sleep(0.01)
+        finally:
+            close_error: OSError | None = None
+            for member_handle in member_handles:
+                if not self._kernel32.CloseHandle(member_handle):
+                    error = self._ctypes.get_last_error()
+                    close_error = close_error or OSError(
+                        error, self._ctypes.FormatError(error)
+                    )
+            if close_error is not None:
+                raise close_error
+
+    def _open_member_process_handles(self, *, deadline: float) -> list[Any]:
+        """Hold waitable handles for Job members visible after termination begins."""
+
+        if self._handle is None:
+            raise RuntimeError("Windows Job Object is already closed")
+        maximum_capacity = 4096
+        capacity = max(1, min(self.active_processes(), maximum_capacity))
+        for _attempt in range(8):
+            try:
+                process_ids = self._query_member_process_ids(capacity)
+                break
+            except _WindowsJobMemberListTooSmall as exc:
+                assigned = exc.assigned
+                listed = exc.listed
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    "Windows Job Object member enumeration exceeded its deadline"
+                )
+            requested_capacity = max(
+                capacity * 2,
+                assigned,
+                listed,
+            )
+            if requested_capacity > maximum_capacity:
+                raise RuntimeError(
+                    "Windows Job Object exceeds the 4096-member cleanup bound"
+                )
+            capacity = requested_capacity
+        else:
+            raise RuntimeError(
+                "Windows Job Object member enumeration did not stabilize"
+            )
+
+        handles: list[Any] = []
+        try:
+            for process_id in process_ids:
+                handle = self._kernel32.OpenProcess(0x00100000, False, process_id)
+                if handle:
+                    handles.append(handle)
+                    continue
+                error = self._ctypes.get_last_error()
+                if error != 87:
+                    raise OSError(error, self._ctypes.FormatError(error))
+        except BaseException:
+            for handle in handles:
+                self._kernel32.CloseHandle(handle)
+            raise
+        return handles
+
+    def _query_member_process_ids(self, capacity: int) -> tuple[int, ...]:
+        """Perform one fixed-capacity Job member query."""
+
+        class JOBOBJECT_BASIC_PROCESS_ID_LIST(self._ctypes.Structure):
+            _fields_ = [
+                ("NumberOfAssignedProcesses", self._wintypes.DWORD),
+                ("NumberOfProcessIdsInList", self._wintypes.DWORD),
+                ("ProcessIdList", self._ctypes.c_size_t * capacity),
+            ]
+
+        process_ids = JOBOBJECT_BASIC_PROCESS_ID_LIST()
+        if not self._kernel32.QueryInformationJobObject(
+            self._handle,
+            self._JOB_OBJECT_BASIC_PROCESS_ID_LIST,
+            self._ctypes.byref(process_ids),
+            self._ctypes.sizeof(process_ids),
+            None,
+        ):
+            error = self._ctypes.get_last_error()
+            if error == 234:
+                raise _WindowsJobMemberListTooSmall(
+                    int(process_ids.NumberOfAssignedProcesses),
+                    int(process_ids.NumberOfProcessIdsInList),
+                )
+            raise OSError(error, self._ctypes.FormatError(error))
+        return tuple(
+            int(process_ids.ProcessIdList[index])
+            for index in range(int(process_ids.NumberOfProcessIdsInList))
+        )
+
+    def active_processes(self) -> int:
+        """Return the live member count while the job handle remains owned."""
+
+        if self._handle is None:
+            raise RuntimeError("Windows Job Object is already closed")
+        accounting = self._accounting_type()
+        if not self._kernel32.QueryInformationJobObject(
+            self._handle,
+            self._JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+            self._ctypes.byref(accounting),
+            self._ctypes.sizeof(accounting),
+            None,
+        ):
+            error = self._ctypes.get_last_error()
+            raise OSError(error, self._ctypes.FormatError(error))
+        return int(accounting.ActiveProcesses)
+
+    def close(self) -> None:
+        """Close the job; the configured limit kills any remaining members."""
+
+        handle = self._handle
+        if handle is None:
+            return
+        self._handle = None
+        if not self._kernel32.CloseHandle(handle):
+            error = self._ctypes.get_last_error()
+            raise OSError(error, self._ctypes.FormatError(error))
+
+
+def _terminate_process_tree(
+    process: subprocess.Popen[bytes],
+    windows_job: _WindowsJobObject | None = None,
+) -> None:
     """Terminate the suite process and its descendants, then reap it."""
 
     if os.name == "nt":
-        taskkill = _taskkill_executable()
-        terminated = subprocess.run(
-            [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
-            env=producer_environment(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=30,
-        )
-        if terminated.returncode != 0:
-            if process.poll() is None:
-                process.kill()
-            raise RuntimeError(
-                "Windows process-tree termination could not be confirmed"
-            )
+        if windows_job is None:
+            raise RuntimeError("Windows suite process has no owning Job Object")
+        windows_job.terminate()
     else:
         try:
             os.killpg(process.pid, signal.SIGTERM)
@@ -751,14 +1029,25 @@ def _run_bounded_suite_process(
 ) -> int:
     """Run pytest with bounded streaming capture and process-tree cleanup."""
 
+    windows_job: _WindowsJobObject | None = None
     if os.name == "nt":
-        _taskkill_executable()
+        windows_job = _WindowsJobObject()
+        launch_command = [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            _WINDOWS_SUITE_SUPERVISOR,
+            json.dumps(command, ensure_ascii=True, separators=(",", ":")),
+        ]
+    else:
+        launch_command = command
     popen_kwargs: dict[str, Any] = {
         "cwd": REPO,
         "env": environment,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
-        "stdin": subprocess.DEVNULL,
+        "stdin": subprocess.PIPE if os.name == "nt" else subprocess.DEVNULL,
     }
     if os.name == "nt":
         popen_kwargs["creationflags"] = getattr(
@@ -766,68 +1055,128 @@ def _run_bounded_suite_process(
         )
     else:
         popen_kwargs["start_new_session"] = True
-    process = subprocess.Popen(command, **popen_kwargs)
-    if process.stdout is None:  # pragma: no cover - Popen contract guard
-        _terminate_process_tree(process)
-        raise RuntimeError("suite stdout pipe was not created")
+    process: subprocess.Popen[bytes] | None = None
+    reader: threading.Thread | None = None
+    try:
+        process = subprocess.Popen(launch_command, **popen_kwargs)
+        if windows_job is not None:
+            try:
+                windows_job.assign(process)
+            except BaseException:
+                process.kill()
+                process.wait(timeout=30)
+                raise
+        if process.stdout is None:  # pragma: no cover - Popen contract guard
+            _terminate_process_tree(process, windows_job)
+            raise RuntimeError("suite stdout pipe was not created")
 
-    overflow = threading.Event()
-    reader_error: list[BaseException] = []
+        overflow = threading.Event()
+        reader_error: list[BaseException] = []
 
-    def copy_output() -> None:
-        written = 0
-        try:
-            with transcript_stage.open("xb") as transcript:
-                while True:
-                    chunk = process.stdout.read(1 << 16)
-                    if not chunk:
-                        break
-                    if written + len(chunk) > max_transcript_bytes:
-                        allowed = max(0, max_transcript_bytes - written)
-                        if allowed:
-                            transcript.write(chunk[:allowed])
-                        transcript.flush()
-                        overflow.set()
-                        break
-                    transcript.write(chunk)
-                    written += len(chunk)
-        except BaseException as exc:  # noqa: BLE001 - relayed to owner thread
-            reader_error.append(exc)
-            overflow.set()
+        def copy_output() -> None:
+            written = 0
+            try:
+                with transcript_stage.open("xb") as transcript:
+                    while True:
+                        chunk = process.stdout.read(1 << 16)
+                        if not chunk:
+                            break
+                        if written + len(chunk) > max_transcript_bytes:
+                            allowed = max(0, max_transcript_bytes - written)
+                            if allowed:
+                                transcript.write(chunk[:allowed])
+                            transcript.flush()
+                            overflow.set()
+                            break
+                        transcript.write(chunk)
+                        written += len(chunk)
+            except BaseException as exc:  # noqa: BLE001 - relayed to owner thread
+                reader_error.append(exc)
+                overflow.set()
 
-    reader = threading.Thread(target=copy_output, daemon=True)
-    reader.start()
-    deadline = time.monotonic() + timeout_seconds
-    timed_out = False
-    while process.poll() is None:
+        reader = threading.Thread(target=copy_output, daemon=True)
+        reader.start()
+        if windows_job is not None:
+            if process.stdin is None:  # pragma: no cover - Popen contract guard
+                raise RuntimeError("Windows suite supervisor gate was not created")
+            process.stdin.write(b"R")
+            process.stdin.flush()
+            process.stdin.close()
+        deadline = time.monotonic() + timeout_seconds
+        timed_out = False
+        while process.poll() is None:
+            if overflow.is_set():
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                process.wait(timeout=min(0.25, remaining))
+            except subprocess.TimeoutExpired:
+                continue
+        lingering_windows_descendants = False
+        if windows_job is not None:
+            if not timed_out and not overflow.is_set():
+                process.wait(timeout=30)
+                lingering_windows_descendants = windows_job.active_processes() > 0
+            _terminate_process_tree(process, windows_job)
+        elif timed_out or overflow.is_set():
+            _terminate_process_tree(process, windows_job)
+        reader.join(timeout=SUITE_READER_JOIN_TIMEOUT_SECONDS)
+        if reader.is_alive():
+            _terminate_process_tree(process, windows_job)
+            reader.join(timeout=SUITE_READER_JOIN_TIMEOUT_SECONDS)
+            raise RuntimeError("suite transcript reader did not terminate")
+        if reader_error:
+            raise RuntimeError("suite transcript streaming failed") from reader_error[0]
+        if lingering_windows_descendants:
+            raise RuntimeError("suite left running descendants after its root exited")
+        if timed_out:
+            raise RuntimeError(
+                f"suite exceeded its timeout of {timeout_seconds:g} seconds"
+            )
         if overflow.is_set():
-            break
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            timed_out = True
-            break
-        try:
-            process.wait(timeout=min(0.25, remaining))
-        except subprocess.TimeoutExpired:
-            continue
-    if timed_out or overflow.is_set():
-        _terminate_process_tree(process)
-    reader.join(timeout=30)
-    if reader.is_alive():
-        _terminate_process_tree(process)
-        raise RuntimeError("suite transcript reader did not terminate")
-    if reader_error:
-        raise RuntimeError("suite transcript streaming failed") from reader_error[0]
-    if timed_out:
-        raise RuntimeError(
-            f"suite exceeded its timeout of {timeout_seconds:g} seconds"
-        )
-    if overflow.is_set():
-        raise RuntimeError(
-            "suite transcript exceeded its byte limit"
-            f" {max_transcript_bytes}"
-        )
-    return int(process.returncode)
+            raise RuntimeError(
+                "suite transcript exceeded its byte limit"
+                f" {max_transcript_bytes}"
+            )
+        return int(process.returncode)
+    finally:
+        active_error = sys.exc_info()[1]
+        cleanup_error: BaseException | None = None
+        if process is not None and (
+            process.poll() is None or (reader is not None and reader.is_alive())
+        ):
+            try:
+                _terminate_process_tree(process, windows_job)
+            except BaseException as exc:  # noqa: BLE001 - preserve cleanup failure
+                cleanup_error = exc
+        if windows_job is not None:
+            try:
+                windows_job.close()
+            except BaseException as exc:  # noqa: BLE001 - preserve cleanup failure
+                cleanup_error = cleanup_error or exc
+        if process is not None and process.stdin is not None:
+            try:
+                process.stdin.close()
+            except BaseException as exc:  # noqa: BLE001 - preserve cleanup failure
+                cleanup_error = cleanup_error or exc
+        if process is not None and process.stdout is not None:
+            try:
+                process.stdout.close()
+            except BaseException as exc:  # noqa: BLE001 - preserve cleanup failure
+                cleanup_error = cleanup_error or exc
+        if reader is not None and reader.is_alive():
+            reader.join(timeout=SUITE_READER_JOIN_TIMEOUT_SECONDS)
+            if reader.is_alive() and cleanup_error is None:
+                cleanup_error = RuntimeError(
+                    "suite transcript reader survived final cleanup"
+                )
+        if cleanup_error is not None:
+            if active_error is None:
+                raise cleanup_error
+            active_error.add_note(f"additional cleanup failure: {cleanup_error!r}")
 
 
 def run_suite(

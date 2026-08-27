@@ -6,6 +6,7 @@ import hashlib
 import os
 import stat
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -666,3 +667,204 @@ def test_bounded_suite_process_stops_at_transcript_cap(tmp_path: Path) -> None:
         )
 
     assert transcript.stat().st_size == 127
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object regression")
+def test_bounded_suite_process_reaps_descendant_after_root_exits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dead root PID must not strand a pipe-owning Windows descendant."""
+
+    transcript = tmp_path / "descendant.txt"
+    pid_path = tmp_path / "descendant.pid"
+    child_code = (
+        "import os,time; "
+        f"open({str(pid_path)!r}, 'w').write(str(os.getpid())); "
+        "time.sleep(30)"
+    )
+    root_code = (
+        "import pathlib,subprocess,sys,time; "
+        "time.sleep(0.2); "
+        f"p=subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+        "stdout=sys.stdout, stderr=sys.stderr); "
+        f"target=pathlib.Path({str(pid_path)!r}); "
+        "deadline=time.monotonic()+5; "
+        "exec('while not target.exists() and time.monotonic() < deadline:\\n "
+        "   time.sleep(0.01)')"
+    )
+    monkeypatch.setattr(
+        orchestration, "SUITE_READER_JOIN_TIMEOUT_SECONDS", 0.2
+    )
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="left running descendants"):
+        orchestration._run_bounded_suite_process(
+            [sys.executable, "-c", root_code],
+            environment=os.environ.copy(),
+            transcript_stage=transcript,
+            timeout_seconds=10,
+            max_transcript_bytes=1024,
+        )
+    assert time.monotonic() - started < 5
+
+    _assert_windows_process_exited(int(pid_path.read_text(encoding="utf-8")))
+
+    moved = transcript.with_suffix(".closed")
+    transcript.rename(moved)
+    moved.unlink()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object regression")
+def test_bounded_suite_process_timeout_reaps_all_job_members(
+    tmp_path: Path,
+) -> None:
+    """Timeout cleanup must kill both the gated root and its descendant."""
+
+    transcript = tmp_path / "timeout-descendant.txt"
+    pid_path = tmp_path / "timeout-descendant.pid"
+    child_code = (
+        "import os,time; "
+        f"open({str(pid_path)!r}, 'w').write(str(os.getpid())); "
+        "time.sleep(30)"
+    )
+    root_code = (
+        "import pathlib,subprocess,sys,time; "
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+        "stdout=sys.stdout, stderr=sys.stderr); "
+        f"target=pathlib.Path({str(pid_path)!r}); "
+        "deadline=time.monotonic()+5; "
+        "exec('while not target.exists() and time.monotonic() < deadline:\\n "
+        "   time.sleep(0.01)'); "
+        "time.sleep(30)"
+    )
+
+    with pytest.raises(RuntimeError, match="exceeded its timeout"):
+        orchestration._run_bounded_suite_process(
+            [sys.executable, "-c", root_code],
+            environment=os.environ.copy(),
+            transcript_stage=transcript,
+            timeout_seconds=1,
+            max_transcript_bytes=1024,
+        )
+
+    _assert_windows_process_exited(int(pid_path.read_text(encoding="utf-8")))
+    moved = transcript.with_suffix(".closed")
+    transcript.rename(moved)
+    moved.unlink()
+
+
+def _assert_windows_process_exited(process_id: int) -> None:
+    """Assert that a Windows PID is absent or its retained object is signaled."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(0x00100000, False, process_id)
+    if handle:
+        try:
+            assert kernel32.WaitForSingleObject(handle, 5000) == 0
+        finally:
+            assert kernel32.CloseHandle(handle)
+    else:
+        assert ctypes.get_last_error() == 87
+
+
+def test_windows_job_termination_precedes_member_enumeration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cleanup must stop a growing tree before any bounded PID inventory."""
+
+    events: list[str] = []
+    job = object.__new__(orchestration._WindowsJobObject)
+    job._handle = 1
+    job._ctypes = SimpleNamespace(
+        get_last_error=lambda: 0,
+        FormatError=lambda _error: "",
+    )
+    job._kernel32 = SimpleNamespace(
+        TerminateJobObject=lambda _handle, _code: events.append("terminate") or 1,
+        CloseHandle=lambda _handle: 1,
+    )
+    monkeypatch.setattr(
+        job,
+        "_open_member_process_handles",
+        lambda *, deadline: events.append("enumerate") or [],
+    )
+    monkeypatch.setattr(job, "active_processes", lambda: 0)
+
+    job.terminate()
+
+    assert events == ["terminate", "enumerate"]
+
+
+def test_windows_job_member_enumeration_has_finite_attempt_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Perpetual ERROR_MORE_DATA cannot delay terminal cleanup indefinitely."""
+
+    job = object.__new__(orchestration._WindowsJobObject)
+    job._handle = 1
+    attempts = 0
+    monkeypatch.setattr(job, "active_processes", lambda: 1)
+
+    def always_too_small(_capacity: int) -> tuple[int, ...]:
+        nonlocal attempts
+        attempts += 1
+        raise orchestration._WindowsJobMemberListTooSmall(1, 1)
+
+    monkeypatch.setattr(job, "_query_member_process_ids", always_too_small)
+
+    with pytest.raises(RuntimeError, match="did not stabilize"):
+        job._open_member_process_handles(deadline=time.monotonic() + 30)
+
+    assert attempts == 8
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object regression")
+def test_bounded_suite_process_closes_job_after_termination_fault(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KILL_ON_CLOSE ownership is retained when explicit termination fails."""
+
+    events: list[str] = []
+
+    class FaultedJob:
+        def assign(self, _process) -> None:
+            events.append("assign")
+
+        def active_processes(self) -> int:
+            events.append("active")
+            return 0
+
+        def terminate(self) -> None:
+            events.append("terminate")
+            raise RuntimeError("injected job termination failure")
+
+        def close(self) -> None:
+            events.append("close")
+
+    monkeypatch.setattr(orchestration, "_WindowsJobObject", FaultedJob)
+    transcript = tmp_path / "termination-fault.txt"
+
+    with pytest.raises(RuntimeError, match="injected job termination failure"):
+        orchestration._run_bounded_suite_process(
+            [sys.executable, "-c", "print('finished')"],
+            environment=os.environ.copy(),
+            transcript_stage=transcript,
+            timeout_seconds=10,
+            max_transcript_bytes=1024,
+        )
+
+    assert events == ["assign", "active", "terminate", "close"]
+    moved = transcript.with_suffix(".closed")
+    transcript.rename(moved)
+    moved.unlink()

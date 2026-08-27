@@ -54,6 +54,10 @@ _WINDOWS_RESERVED_BASENAMES = {
     *(f"COM{number}" for number in range(1, 10)),
     *(f"LPT{number}" for number in range(1, 10)),
 }
+_POSIX_DIR_FD_OPERATIONS_SUPPORTED = os.name != "posix" or all(
+    function in os.supports_dir_fd
+    for function in (os.open, os.stat, os.mkdir, os.rename, os.unlink)
+)
 
 
 class ReleaseVerificationFailed(schema.ColmAimsError):
@@ -134,10 +138,7 @@ class _DirectoryAnchor:
         _require_unchanged_directory(self.path, self.captured, self.label)
         try:
             if os.name == "posix":
-                required = (os.open, os.stat, os.mkdir, os.rename, os.unlink)
-                if any(
-                    function not in os.supports_dir_fd for function in required
-                ):
+                if not _POSIX_DIR_FD_OPERATIONS_SUPPORTED:
                     raise schema.TypedIngressError(
                         "host does not support the required descriptor-relative"
                         " publication operations"
@@ -847,7 +848,7 @@ class _DirectoryAnchor:
                     )
                 ):
                     raise schema.TypedIngressError(
-                        "anchored output is not the captured ordinary directory"
+                        "anchored output identity is not the captured ordinary directory"
                     )
                 with os.scandir(child_fd) as entries:
                     names = self._bounded_names(entries, len(expected))
