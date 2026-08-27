@@ -12,7 +12,11 @@ import json
 
 import pytest
 
-from reproducibility.colm_aims_2026 import schema, verifier
+from reproducibility.colm_aims_2026 import (
+    phase4_finalize_release,
+    schema,
+    verifier,
+)
 
 from tests._colm_aims_v2_helpers import (
     EXIT_INGRESS_ERROR,
@@ -78,6 +82,63 @@ class TestAggregateIngressBounds:
         monkeypatch.setattr(verifier.os, "scandir", failing_scandir)
         with pytest.raises(schema.TypedIngressError, match="traversal failed"):
             verifier._read_tree_snapshot(tree)
+
+    def test_tree_depth_limit(self, tmp_path, monkeypatch):
+        tree = tmp_path / "tree"
+        (tree / "nested").mkdir(parents=True)
+        monkeypatch.setattr(verifier, "MAX_TREE_DEPTH", 0)
+        with pytest.raises(schema.TypedIngressError, match="depth limit"):
+            verifier._read_tree_snapshot(tree)
+
+    def test_tree_refuses_transient_child_swap_restore(
+        self, tmp_path, monkeypatch
+    ):
+        tree = tmp_path / "tree"
+        nested = tree / "nested"
+        decoy = tree / "decoy"
+        parked = tree / "parked"
+        nested.mkdir(parents=True)
+        decoy.mkdir()
+        (nested / "original.json").write_bytes(b'{"source":"original"}')
+        (decoy / "decoy.json").write_bytes(b'{"source":"decoy"}')
+        original = (
+            phase4_finalize_release._DirectoryAnchor
+            ._claim_tree_child_directory
+        )
+        seam_fired = False
+
+        def swap_before_claim(anchor, parent_fd, parent_path, name, *args):
+            nonlocal seam_fired
+            if name != "nested":
+                return original(
+                    anchor, parent_fd, parent_path, name, *args
+                )
+            seam_fired = True
+            nested.rename(parked)
+            decoy.rename(nested)
+            try:
+                return original(
+                    anchor, parent_fd, parent_path, name, *args
+                )
+            finally:
+                nested.rename(decoy)
+                parked.rename(nested)
+
+        monkeypatch.setattr(
+            phase4_finalize_release._DirectoryAnchor,
+            "_claim_tree_child_directory",
+            swap_before_claim,
+        )
+
+        with pytest.raises(schema.TypedIngressError, match="changed identity"):
+            verifier._read_tree_snapshot(tree)
+
+        assert seam_fired is True
+        assert (nested / "original.json").read_bytes() == (
+            b'{"source":"original"}'
+        )
+        assert (decoy / "decoy.json").read_bytes() == b'{"source":"decoy"}'
+        assert not parked.exists()
 
     def test_aggregate_record_row_limit(self, tmp_path, monkeypatch):
         pkg = build_package_v2(tmp_path)

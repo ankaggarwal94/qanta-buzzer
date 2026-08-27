@@ -603,6 +603,560 @@ class _DirectoryAnchor:
         self.revalidate(f"read {name} completion")
         return data
 
+    @staticmethod
+    def _tree_member_is_link(info: os.stat_result) -> bool:
+        return stat.S_ISLNK(info.st_mode) or bool(
+            getattr(info, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        )
+
+    def _claim_tree_child_directory(
+        self,
+        parent_fd: int | None,
+        parent_path: Path | None,
+        name: str,
+        expected: os.stat_result,
+        label: str,
+    ) -> int | "_DirectoryAnchor":
+        """Claim one enumerated child generation before traversing it."""
+        name = self._name(name)
+        expected_identity = schema._identity_tuple(expected)
+        if parent_fd is not None:
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            try:
+                child_fd = os.open(name, flags, dir_fd=parent_fd)
+            except OSError as exc:
+                raise schema.TypedIngressError(
+                    f"tree directory {label!r} cannot be claimed"
+                    f" ({exc.__class__.__name__}) (R-020)"
+                ) from exc
+            try:
+                opened = os.fstat(child_fd)
+                if (
+                    not stat.S_ISDIR(opened.st_mode)
+                    or self._tree_member_is_link(opened)
+                    or schema._identity_tuple(opened) != expected_identity
+                ):
+                    raise schema.TypedIngressError(
+                        f"tree directory {label!r} changed identity before"
+                        " its descriptor claim (R-013)"
+                    )
+            except BaseException:
+                os.close(child_fd)
+                raise
+            return child_fd
+
+        if parent_path is None:  # pragma: no cover - internal invariant
+            raise RuntimeError("Windows tree child lacks an anchored parent path")
+        child_path = parent_path / name
+        captured = _capture_directory_chain(child_path)
+        child_anchor = _DirectoryAnchor(
+            child_path, captured, f"tree directory {label!r}"
+        )
+        try:
+            child_anchor.__enter__()
+            if captured.lexical[-1][1] != expected_identity:
+                raise schema.TypedIngressError(
+                    f"tree directory {label!r} changed identity before its"
+                    " native-handle claim (R-013)"
+                )
+        except BaseException:
+            child_anchor.__exit__()
+            raise
+        return child_anchor
+
+    @staticmethod
+    def _read_posix_tree_file(
+        parent_fd: int,
+        name: str,
+        expected: os.stat_result,
+        *,
+        max_bytes: int,
+        label: str,
+    ) -> bytes:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        try:
+            fd = os.open(name, flags, dir_fd=parent_fd)
+        except OSError as exc:
+            raise schema.TypedIngressError(
+                f"tree member {label!r} is unreadable"
+                f" ({exc.__class__.__name__}) (R-020)"
+            ) from exc
+        try:
+            opened = os.fstat(fd)
+            expected_identity = schema._identity_tuple(expected)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or _DirectoryAnchor._tree_member_is_link(opened)
+                or schema._identity_tuple(opened) != expected_identity
+            ):
+                raise schema.TypedIngressError(
+                    f"tree member {label!r} changed identity before its"
+                    " descriptor claim (R-013)"
+                )
+            if opened.st_size > max_bytes:
+                raise schema.TypedIngressError(
+                    "verified tree exceeds the aggregate byte limit"
+                    f" (R-020)"
+                )
+            if hasattr(os, "set_blocking"):
+                os.set_blocking(fd, True)
+            chunks: list[bytes] = []
+            remaining = max_bytes + 1
+            while remaining:
+                chunk = os.read(fd, min(1 << 20, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            if len(data) > max_bytes:
+                raise schema.TypedIngressError(
+                    "verified tree exceeds the aggregate byte limit"
+                    " (R-020)"
+                )
+            after = os.fstat(fd)
+            if (
+                schema._identity_tuple(after) != expected_identity
+                or after.st_size != opened.st_size
+                or getattr(after, "st_mtime_ns", None)
+                != getattr(opened, "st_mtime_ns", None)
+                or getattr(after, "st_ctime_ns", None)
+                != getattr(opened, "st_ctime_ns", None)
+            ):
+                raise schema.TypedIngressError(
+                    f"tree member {label!r} changed during its anchored read"
+                    " (R-013)"
+                )
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if schema._identity_tuple(current) != expected_identity:
+                raise schema.TypedIngressError(
+                    f"tree member {label!r} changed identity during its"
+                    " anchored read (R-013)"
+                )
+            return data
+        finally:
+            os.close(fd)
+
+    @staticmethod
+    def _read_windows_tree_file(
+        path: Path,
+        expected: os.stat_result,
+        *,
+        max_bytes: int,
+        label: str,
+    ) -> bytes:
+        """Read one exact Windows file generation without delete/write share."""
+        import ctypes
+        from ctypes import wintypes
+
+        class _ByHandleFileInformation(ctypes.Structure):
+            _fields_ = [
+                ("dwFileAttributes", wintypes.DWORD),
+                ("ftCreationTime", wintypes.FILETIME),
+                ("ftLastAccessTime", wintypes.FILETIME),
+                ("ftLastWriteTime", wintypes.FILETIME),
+                ("dwVolumeSerialNumber", wintypes.DWORD),
+                ("nFileSizeHigh", wintypes.DWORD),
+                ("nFileSizeLow", wintypes.DWORD),
+                ("nNumberOfLinks", wintypes.DWORD),
+                ("nFileIndexHigh", wintypes.DWORD),
+                ("nFileIndexLow", wintypes.DWORD),
+            ]
+
+        class _FileId128(ctypes.Structure):
+            _fields_ = [("identifier", ctypes.c_ubyte * 16)]
+
+        class _FileIdInformation(ctypes.Structure):
+            _fields_ = [
+                ("volume_serial_number", ctypes.c_ulonglong),
+                ("file_id", _FileId128),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        create_file.restype = wintypes.HANDLE
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        get_information = kernel32.GetFileInformationByHandle
+        get_information.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(_ByHandleFileInformation),
+        ]
+        get_information.restype = wintypes.BOOL
+        get_information_ex = kernel32.GetFileInformationByHandleEx
+        get_information_ex.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        get_information_ex.restype = wintypes.BOOL
+        read_file = kernel32.ReadFile
+        read_file.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        ]
+        read_file.restype = wintypes.BOOL
+        invalid = ctypes.c_void_p(-1).value
+        handle = create_file(
+            str(path),
+            0x80000000,  # GENERIC_READ
+            0x00000001,  # FILE_SHARE_READ; deny write and delete
+            None,
+            3,  # OPEN_EXISTING
+            0x00200000 | 0x08000000,  # OPEN_REPARSE_POINT | SEQUENTIAL_SCAN
+            None,
+        )
+        if handle == invalid:
+            error = ctypes.get_last_error()
+            raise schema.TypedIngressError(
+                f"tree member {label!r} is unreadable"
+                f" (WindowsError {error}) (R-020)"
+            )
+
+        def metadata() -> tuple[
+            int, tuple[int, int], tuple[int, bytes], int
+        ]:
+            information = _ByHandleFileInformation()
+            file_id_information = _FileIdInformation()
+            if not get_information(handle, ctypes.byref(information)) or not (
+                get_information_ex(
+                    handle,
+                    18,  # FileIdInfo
+                    ctypes.byref(file_id_information),
+                    ctypes.sizeof(file_id_information),
+                )
+            ):
+                error = ctypes.get_last_error()
+                raise schema.TypedIngressError(
+                    f"cannot verify tree member {label!r} native identity"
+                    f" (WindowsError {error}) (R-020)"
+                )
+            attributes = int(information.dwFileAttributes)
+            legacy = (
+                int(information.dwVolumeSerialNumber),
+                (int(information.nFileIndexHigh) << 32)
+                | int(information.nFileIndexLow),
+            )
+            native = _DirectoryAnchor._windows_native_file_id(
+                file_id_information
+            )
+            size = (int(information.nFileSizeHigh) << 32) | int(
+                information.nFileSizeLow
+            )
+            return attributes, legacy, native, size
+
+        try:
+            before = metadata()
+            attributes, legacy_pair, native, size = before
+            if (
+                attributes & getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
+                or attributes
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            ):
+                raise schema.TypedIngressError(
+                    f"tree member {label!r} is not a regular file (R-020)"
+                )
+            full_native_pair = (native[0], int.from_bytes(native[1], "little"))
+            if not _windows_stat_pair_matches(
+                schema._identity_tuple(expected), full_native_pair, legacy_pair
+            ):
+                raise schema.TypedIngressError(
+                    f"tree member {label!r} changed identity before its"
+                    " native-handle claim (R-013)"
+                )
+            if size > max_bytes:
+                raise schema.TypedIngressError(
+                    "verified tree exceeds the aggregate byte limit"
+                    " (R-020)"
+                )
+            chunks: list[bytes] = []
+            remaining = max_bytes + 1
+            while remaining:
+                request = min(1 << 20, remaining)
+                buffer = ctypes.create_string_buffer(request)
+                read = wintypes.DWORD()
+                if not read_file(
+                    handle,
+                    buffer,
+                    request,
+                    ctypes.byref(read),
+                    None,
+                ):
+                    error = ctypes.get_last_error()
+                    raise schema.TypedIngressError(
+                        f"tree member {label!r} read failed"
+                        f" (WindowsError {error}) (R-020)"
+                    )
+                count = int(read.value)
+                if count == 0:
+                    break
+                chunks.append(buffer.raw[:count])
+                remaining -= count
+            data = b"".join(chunks)
+            if len(data) > max_bytes:
+                raise schema.TypedIngressError(
+                    "verified tree exceeds the aggregate byte limit"
+                    " (R-020)"
+                )
+            if metadata() != before:
+                raise schema.TypedIngressError(
+                    f"tree member {label!r} changed during its native-handle"
+                    " read (R-013)"
+                )
+            current = os.stat(path, follow_symlinks=False)
+            if not _windows_stat_pair_matches(
+                schema._identity_tuple(current), full_native_pair, legacy_pair
+            ):
+                raise schema.TypedIngressError(
+                    f"tree member {label!r} changed identity during its"
+                    " anchored read (R-013)"
+                )
+            return data
+        finally:
+            close_handle(handle)
+
+    def snapshot_tree_bounded(
+        self,
+        *,
+        max_files: int,
+        max_directories: int,
+        max_total_bytes: int,
+        max_depth: int,
+        containment_error: type[schema.ColmAimsError],
+    ) -> dict[str, bytes]:
+        """Snapshot a recursive tree through held generations only."""
+        if (
+            isinstance(max_files, bool)
+            or not isinstance(max_files, int)
+            or max_files < 0
+            or isinstance(max_directories, bool)
+            or not isinstance(max_directories, int)
+            or max_directories < 1
+            or isinstance(max_total_bytes, bool)
+            or not isinstance(max_total_bytes, int)
+            or max_total_bytes < 0
+            or isinstance(max_depth, bool)
+            or not isinstance(max_depth, int)
+            or max_depth < 0
+        ):
+            raise schema.ConfigSurfaceError(
+                "tree snapshot bounds must be finite non-negative integers"
+                " with at least one directory"
+            )
+        self.revalidate("tree snapshot precheck")
+        snapshot: dict[str, bytes] = {}
+        seen_casefold: set[str] = set()
+        file_count = 0
+        directory_count = 1
+        total_bytes = 0
+
+        def relative(prefix: str, name: str) -> str:
+            return f"{prefix}/{name}" if prefix else name
+
+        def require_member(info: os.stat_result, rel: str) -> str:
+            if self._tree_member_is_link(info):
+                raise containment_error(
+                    f"tree member {rel!r} is a symlink or reparse point —"
+                    " refusing traversal (R-036/R-013)"
+                )
+            if stat.S_ISDIR(info.st_mode):
+                return "directory"
+            if stat.S_ISREG(info.st_mode):
+                return "file"
+            raise schema.TypedIngressError(
+                "verified tree contains a non-regular member (R-020)"
+            )
+
+        def admit_directory(rel: str, depth: int) -> None:
+            nonlocal directory_count
+            if depth > max_depth:
+                raise schema.TypedIngressError(
+                    "verified tree exceeds the aggregate depth limit"
+                    f" {max_depth} (R-020)"
+                )
+            directory_count += 1
+            if directory_count > max_directories:
+                raise schema.TypedIngressError(
+                    "verified tree exceeds the aggregate directory-count limit"
+                    f" {max_directories} (R-020)"
+                )
+
+        def admit_file(rel: str) -> None:
+            nonlocal file_count
+            file_count += 1
+            if file_count > max_files:
+                raise schema.TypedIngressError(
+                    "verified tree exceeds the aggregate file-count limit"
+                    f" {max_files} (R-020)"
+                )
+            folded = rel.casefold()
+            if folded in seen_casefold:
+                raise containment_error(
+                    f"tree member {rel!r} collides under case folding (R-013)"
+                )
+            seen_casefold.add(folded)
+
+        def retain(rel: str, data: bytes) -> None:
+            nonlocal total_bytes
+            total_bytes += len(data)
+            if total_bytes > max_total_bytes:
+                raise schema.TypedIngressError(
+                    "verified tree exceeds the aggregate byte limit"
+                    f" {max_total_bytes} (R-020)"
+                )
+            snapshot[rel] = data
+
+        def visit_posix(fd: int, prefix: str, depth: int) -> None:
+            try:
+                with os.scandir(fd) as entries:
+                    for entry in entries:
+                        name = self._name(entry.name)
+                        rel = relative(prefix, name)
+                        try:
+                            info = os.stat(
+                                name, dir_fd=fd, follow_symlinks=False
+                            )
+                        except OSError as exc:
+                            raise schema.TypedIngressError(
+                                f"tree member {rel!r} is unreadable"
+                                f" ({exc.__class__.__name__}) (R-020)"
+                            ) from exc
+                        kind = require_member(info, rel)
+                        if kind == "directory":
+                            admit_directory(rel, depth + 1)
+                            child = self._claim_tree_child_directory(
+                                fd, None, name, info, rel
+                            )
+                            if not isinstance(child, int):
+                                raise RuntimeError(
+                                    "POSIX tree child did not return a descriptor"
+                                )
+                            try:
+                                visit_posix(child, rel, depth + 1)
+                                current = os.stat(
+                                    name, dir_fd=fd, follow_symlinks=False
+                                )
+                                if schema._identity_tuple(current) != (
+                                    schema._identity_tuple(info)
+                                ):
+                                    raise containment_error(
+                                        f"tree directory {rel!r} changed"
+                                        " identity during traversal (R-013)"
+                                    )
+                            finally:
+                                os.close(child)
+                        else:
+                            admit_file(rel)
+                            data = self._read_posix_tree_file(
+                                fd,
+                                name,
+                                info,
+                                max_bytes=max_total_bytes - total_bytes,
+                                label=rel,
+                            )
+                            retain(rel, data)
+            except schema.ColmAimsError:
+                raise
+            except OSError as exc:
+                raise schema.TypedIngressError(
+                    "verified tree traversal failed"
+                    f" ({exc.__class__.__name__}) (R-020)"
+                ) from exc
+
+        def visit_windows(
+            anchor: "_DirectoryAnchor", prefix: str, depth: int
+        ) -> None:
+            if anchor._operation_path is None:  # pragma: no cover - invariant
+                raise RuntimeError("Windows tree anchor lacks an operation path")
+            anchor.revalidate(f"tree directory {prefix or '.'} precheck")
+            try:
+                with os.scandir(anchor._operation_path) as entries:
+                    for entry in entries:
+                        name = self._name(entry.name)
+                        rel = relative(prefix, name)
+                        try:
+                            info = anchor.stat(name)
+                        except OSError as exc:
+                            raise schema.TypedIngressError(
+                                f"tree member {rel!r} is unreadable"
+                                f" ({exc.__class__.__name__}) (R-020)"
+                            ) from exc
+                        kind = require_member(info, rel)
+                        if kind == "directory":
+                            admit_directory(rel, depth + 1)
+                            child = self._claim_tree_child_directory(
+                                None,
+                                anchor._operation_path,
+                                name,
+                                info,
+                                rel,
+                            )
+                            if not isinstance(child, _DirectoryAnchor):
+                                raise RuntimeError(
+                                    "Windows tree child did not return an anchor"
+                                )
+                            try:
+                                visit_windows(child, rel, depth + 1)
+                                current = anchor.stat(name)
+                                if schema._identity_tuple(current) != (
+                                    schema._identity_tuple(info)
+                                ):
+                                    raise containment_error(
+                                        f"tree directory {rel!r} changed"
+                                        " identity during traversal (R-013)"
+                                    )
+                            finally:
+                                child.__exit__()
+                        else:
+                            admit_file(rel)
+                            data = self._read_windows_tree_file(
+                                anchor._path(name),
+                                info,
+                                max_bytes=max_total_bytes - total_bytes,
+                                label=rel,
+                            )
+                            retain(rel, data)
+            except schema.ColmAimsError:
+                raise
+            except OSError as exc:
+                raise schema.TypedIngressError(
+                    "verified tree traversal failed"
+                    f" ({exc.__class__.__name__}) (R-020)"
+                ) from exc
+            anchor.revalidate(f"tree directory {prefix or '.'} completion")
+
+        if self._fd is not None:
+            visit_posix(self._fd, "", 0)
+        else:
+            visit_windows(self, "", 0)
+        self.revalidate("tree snapshot completion")
+        return {rel: snapshot[rel] for rel in sorted(snapshot)}
+
     def create_once(
         self,
         name: str,
