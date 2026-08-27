@@ -19,6 +19,9 @@ from reproducibility.colm_aims_2026 import phase4_assemble_d7b as assembler
 
 from tests._colm_aims_v2_helpers import (
     ANALYSIS_PROVENANCE_D7B,
+    CAMERA_READY_FINAL_CHECKSUMS_BYTES,
+    CAMERA_READY_FINAL_CHECKSUMS_ENTRIES_SHA256,
+    CAMERA_READY_FINAL_CHECKSUMS_SHA256,
     CLOSURE_GATE_TOKEN,
     D6_MAIN_PDF_SHA256,
     D6_MAIN_TEX_SHA256,
@@ -173,6 +176,37 @@ class TestClosureGate:
         assert closure.D6_MAIN_TEX_SHA256 == D6_MAIN_TEX_SHA256
         assert closure.D6_MAIN_PDF_SHA256 == D6_MAIN_PDF_SHA256
 
+    def test_final_checksum_authority_matches_independent_bytes(self):
+        expected_entries = {}
+        for line in CAMERA_READY_FINAL_CHECKSUMS_BYTES.decode("utf-8").splitlines():
+            digest, relative = line.split(None, 1)
+            assert relative.startswith("./")
+            expected_entries[relative[2:]] = digest
+        assert len(expected_entries) == 30
+        assert b"\r" not in CAMERA_READY_FINAL_CHECKSUMS_BYTES
+        assert CAMERA_READY_FINAL_CHECKSUMS_BYTES.endswith(b"\n")
+        assert (
+            sha256_bytes(CAMERA_READY_FINAL_CHECKSUMS_BYTES)
+            == CAMERA_READY_FINAL_CHECKSUMS_SHA256
+        )
+        assert (
+            closure.checksum_entries_sha256(expected_entries)
+            == CAMERA_READY_FINAL_CHECKSUMS_ENTRIES_SHA256
+        )
+        assert (
+            closure.CAMERA_READY_FINAL_CHECKSUMS_BYTES
+            == CAMERA_READY_FINAL_CHECKSUMS_BYTES
+        )
+        assert closure.CAMERA_READY_FINAL_CHECKSUM_ENTRIES == expected_entries
+        assert closure.CAMERA_READY_FINAL_CHECKSUMS_SHA256 == (
+            CAMERA_READY_FINAL_CHECKSUMS_SHA256
+        )
+        assert closure.CAMERA_READY_FINAL_CHECKSUMS_ENTRIES_SHA256 == (
+            CAMERA_READY_FINAL_CHECKSUMS_ENTRIES_SHA256
+        )
+        assert expected_entries["main.tex"] == D6_MAIN_TEX_SHA256
+        assert expected_entries["main.pdf"] == D6_MAIN_PDF_SHA256
+
     @pytest.mark.parametrize("version", [None, True, 1, 3, "2"])
     def test_closure_schema_version_is_required_and_exact(self, version):
         inventory = make_closure_inventory()
@@ -268,7 +302,7 @@ class TestClosureGate:
             profile_bytes=make_closure_profile_bytes(),
         )
         assert out["satisfied"] is False
-        assert any("pinned" in row for row in out["failing_rows"])
+        assert any("authority" in row for row in out["failing_rows"])
 
     def test_truncated_checksum_map_cannot_self_authorize(self, tmp_path):
         inventory, roots = self._inventory_and_roots(tmp_path)
@@ -282,7 +316,7 @@ class TestClosureGate:
             profile_bytes=make_closure_profile_bytes(),
         )
         assert out["satisfied"] is False
-        assert any("pinned" in row for row in out["failing_rows"])
+        assert any("authority" in row for row in out["failing_rows"])
 
     @pytest.mark.parametrize("mutation", ["missing", "unexpected"])
     def test_expected_claim_row_set_is_exact(self, mutation):
@@ -517,12 +551,12 @@ class TestQa012Inventory:
                 (roots[entry["scope_prong"]] / entry["path"]).read_bytes()
             )
 
-    def test_exact_rev3_authority_can_be_relocated(self, tmp_path):
+    def test_exact_rev4_authority_can_be_relocated(self, tmp_path):
         relocated = tmp_path / "authority.json"
         relocated.write_bytes(qa012.CANONICAL_AUTHORITY_PATH.read_bytes())
         authority = qa012.load_authority_manifest(relocated)
         block = assembler.qa012_authority_status_block(relocated)
-        assert authority["revision"] == 3
+        assert authority["revision"] == 4
         assert block == {
             "status": "VERIFIED_WITH_FIXTURES",
             "inventory_sha256": qa012.CANONICAL_AUTHORITY_SHA256,
@@ -547,16 +581,22 @@ class TestQa012Inventory:
         authority = qa012.load_authority_manifest()
         assert not qa012.authority_hit_fixtures_verified(authority, copied)
 
-    @pytest.mark.parametrize("source", ["rev1", "mutated"])
-    def test_rev1_or_mutated_authority_is_rejected(self, tmp_path, source):
+    @pytest.mark.parametrize("source", ["rev1", "rev3", "mutated"])
+    def test_predecessor_or_mutated_authority_is_rejected(
+        self, tmp_path, source
+    ):
         candidate = tmp_path / "authority.json"
         if source == "rev1":
             candidate.write_bytes(b'{"revision":1}\n')
+        elif source == "rev3":
+            candidate.write_bytes(
+                (REPO_ROOT / qa012.PREVIOUS_AUTHORITY_RELPATH).read_bytes()
+            )
         else:
             raw = bytearray(qa012.CANONICAL_AUTHORITY_PATH.read_bytes())
             raw[-2] = ord(" ") if raw[-2] != ord(" ") else ord("\t")
             candidate.write_bytes(bytes(raw))
-        with pytest.raises(schema.SchemaValidationError, match="canonical rev3"):
+        with pytest.raises(schema.SchemaValidationError, match="canonical rev4"):
             qa012.load_authority_manifest(candidate)
 
     def test_hit_manifest_carries_exact_pointers_and_bytes_hash(

@@ -172,12 +172,50 @@ FAMILY_STOP_VOCAB: dict[str, str] = {
     "learned_continuation": "learned_value_stop",
 }
 
-# R-071: D6 designated manuscript baseline (two-party hash-verified).
+# R-071: final camera-ready manuscript baseline (legacy D6 schema name).
 D6_MAIN_TEX_SHA256 = (
-    "79dccfb3fbdfafbd566a3fb239755ab35142bac510d629d513ed8b3c2c4cdd2f"
+    "8d53f1d3fa65e092ad0f8590e6ed3827da131b810f0b0cc819087832ce31f8d4"
 )
 D6_MAIN_PDF_SHA256 = (
-    "6de23119df59679befc356e3c916bc5a498b2cc2015b6cd8a516a5181dabf10a"
+    "273997e4c06195b295e89e89d70dee96df129290d59d62f200e8d622f9a552b5"
+)
+CAMERA_READY_FINAL_CHECKSUMS_SHA256 = (
+    "2cd3055ed58728c1a1d1967c895a0e4dd268bd5da2a1531992e5025513583173"
+)
+CAMERA_READY_FINAL_CHECKSUMS_ENTRIES_SHA256 = (
+    "ec38232e9c4b779b783844d647a8e867716a7f7efa4135f29924efcacd2e4a83"
+)
+CAMERA_READY_FINAL_CHECKSUMS_BYTES = (
+    b"2b5d808bc73842876c44b0edb248027679c2db613916c6584b8e46c1dc3e1863  ./ABSTRACT_AND_TLDR.txt\n"
+    b"fb4c9e39bbea673f86b317abfb98ee4a6c25d475f64559bbf765da0f40865d0e  ./CHANGES_VS_ORIGINAL.md\n"
+    b"deade0428355a2b13f9622c57588fdda2e9bb12d6009dfc804250724eb2190c9  ./MAINTAINER_NOTES.md\n"
+    b"9f16f46be2c23d5d9644a4cd9de1a41c96a10b1f20f66be2473c995983d6d305  ./OPENREVIEW_FORM_FIELDS.md\n"
+    b"2205417f48cf3a677201c82705af723db904ff94f0daa5d80693b8c1482fad5c  ./OPENREVIEW_FORM_FIELDS.txt\n"
+    b"dd74eea4818edd52088804c078a3382ead66db37fe627a2cab6bd41daca084b6  ./PDF_PREFLIGHT.json\n"
+    b"740148617949f0c96efec55eacfc41c8843ca86e3f12ef890692e00c2d36bd56  ./PROVENANCE_README.md\n"
+    b"7893494fa365814cbc1303d4509df44da0b6ac871f9da0f8113534d404ca397b  ./README.md\n"
+    b"f86eff9825224d0770a6410b93ac2558a5345fcc75692c292ffd835cc4b22245  ./REVISION_NOTES.md\n"
+    b"7c4f43e935e46fb0d378f642ee5eedfbe524bb66aded6610dcbb7554c14fbb0f  ./SUBMISSION_NOTES.md\n"
+    b"2d67552db7ed38ccfccb5957b52f95656e25c249724761d3cf5f7922ad1844c5  ./colm2026_conference.bst\n"
+    b"55962ae80c25a50335825c85d23eb5f1cd9015aa8e77f7af32b483b646c7483e  ./colm2026_conference.sty\n"
+    b"755c995cca1796b73c243fa1e676fc9ffab082a476023e0b240173a62483da06  ./compile_audit.json\n"
+    b"9c7fd92ca0fbf045d4faee241197bde8f1e7a81de1afb9463745ac81e4178eca  ./figures/calibration_ece.pdf\n"
+    b"497f9ab01b9802ff69e3279c429b74406d6ce26e2c7e3108961a594b6ac51e0e  ./figures/calibration_ece.png\n"
+    b"d91e132ddeeb018b540cac2f1ecc41c3ea7f04cee49563104fb1f55512769443  ./figures/learned_direction.pdf\n"
+    b"0e2fa1e6631d2328197e4d46358eaeb0b5b1659c1915ea79586d65a7d401f5c4  ./figures/learned_direction.png\n"
+    b"a36a122f242f315404c0412d848425ccaa315ae96048803eeff6cbb0205c995d  ./figures/reachable_comparator.tex\n"
+    b"192435a360630ee8ef72713b7fdecbb3a3658ada0cd59ec21c656fbe1b5a42fd  ./figures/reference_sensitivity.pdf\n"
+    b"acb7abc34e9b94bcbfe2bc1dfc40f40374d5b7b31086643a2d7b81c3783e26cc  ./figures/reference_sensitivity.png\n"
+    b"115c420ad9e64c4bdd2383789a164b5bb422f0e3fe86d988b15c80fb6727b910  ./main.bbl\n"
+    b"273997e4c06195b295e89e89d70dee96df129290d59d62f200e8d622f9a552b5  ./main.pdf\n"
+    b"8d53f1d3fa65e092ad0f8590e6ed3827da131b810f0b0cc819087832ce31f8d4  ./main.tex\n"
+    b"dfc2e0d02b25eea1cd815f4735d7c0feb362f975e25aa796aa44ce3fc0bd8ff0  ./main_linenumbered.txt\n"
+    b"4579890c296d6c5eed8408494b73df70ed652a67a137f6fbd0f0b01bade42f7b  ./make_figures.py\n"
+    b"2205417f48cf3a677201c82705af723db904ff94f0daa5d80693b8c1482fad5c  ./openreview_metadata.txt\n"
+    b"49341bfa1ad9be3ccb8ec1f8646fc721ada3e64b11c207f5c15a07276673750f  ./references.bib\n"
+    b"d9eb39de1f3239aca8c4e16f1e1de0a3db3f07b4ef1963cb01b618f95136a333  ./reported_results.json\n"
+    b"29b414f0b6831d1f4044bc1f1f5b5f5d7bac59845a9f11d5bb7ca28855107390  ./reported_results_provenance.json\n"
+    b"ec3e3228507c8e0554a0b53c163e890927fc374b96cc9fa7186bcf93ad747d97  ./verify_provenance.py\n"
 )
 
 # R-023/D3: golden Random-K blocking task (exact spec text).

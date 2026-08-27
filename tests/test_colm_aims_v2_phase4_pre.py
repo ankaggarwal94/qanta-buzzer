@@ -186,6 +186,11 @@ top-level (no ``line 0:`` pointer anywhere); ``revision == 3``; the
 in-manifest ``supersession_chain`` names BOTH rev1's and rev2's SHA-256
 with defect notes; totals unchanged (67 scanned / 4,556 hits).
 
+R-072 rev4 (final-authority amendment, 2026-08-27): replaces only the four
+historical-D6 JSON identities with the final camera-ready bundle identities;
+the other 63 entries remain byte-identical to rev3. Rev4 is the sole current
+authority; rev3 remains historical predecessor evidence.
+
 ``reproducibility.colm_aims_2026.phase4_launcher`` (new module, R-081):
   - ``LaunchRefusal`` / ``RunFailed``: ``schema.ColmAimsError`` subclasses
     (pre-launch refusals vs post-launch failures).
@@ -332,6 +337,9 @@ QA012_FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "qa012_item10"
 QA012_BINDINGS_PATH = QA012_FIXTURE_DIR / "bindings.json"
 QA012_REV2_MANIFEST_PATH = REPO_ROOT / "qa012_inventory_2026-08-22_rev2.json"
 QA012_REV3_MANIFEST_PATH = REPO_ROOT / "qa012_inventory_2026-08-22_rev3.json"
+QA012_AUTHORITY_MANIFEST_PATH = (
+    REPO_ROOT / "qa012_inventory_2026-08-27_rev4.json"
+)
 
 # R-074 (PRE-1): two-party pinned test-dataset digest.
 TEST_DATASET_SHA = (
@@ -354,6 +362,9 @@ QA012_REV2_SHA = (
 )
 QA012_REV1_SHA = (
     "149fe39cfe99a0ee69ea844ca2712bb79069bb65215ec7faca240fff41240187"
+)
+QA012_REV3_SHA = (
+    "bb692446ad07bea63b5fc6799d4c0b6474cc084076c87b2db7c2c2a9b7334303"
 )
 # R-078 (PRE-7): the four full hit files, bound by SHA-256.
 QA012_FULL_FILE_SHAS = frozenset(
@@ -2140,10 +2151,10 @@ def _good_components():
             "source_export_a_sha256": phase4.PARITY_SOURCE_EXPORT_A_SHA256,
         },
         "qa012": {
-            "artifact_path": str(QA012_REV3_MANIFEST_PATH.resolve()),
+            "artifact_path": str(QA012_AUTHORITY_MANIFEST_PATH.resolve()),
             "manifest_sha256": phase4.QA012_MANIFEST_SHA256,
             "manifest_type": "qa012_format_qa_inventory",
-            "revision": 3,
+            "revision": phase4.QA012_MANIFEST_REVISION,
             "conventions": {
                 "content_hash": (
                     "Dropbox content hash: sha256 over concatenated"
@@ -3404,7 +3415,7 @@ class TestF4GatherCertificateComponents:
             "snapshot_manifest_path": manifest_path,
             "snapshot_dirs": snapshot_dirs,
             "parity_anchor_path": PARITY_ANCHOR_PATH,
-            "qa012_manifest_path": QA012_REV3_MANIFEST_PATH,
+            "qa012_manifest_path": QA012_AUTHORITY_MANIFEST_PATH,
             "staged_plan": staged_plan,
             "suite_receipt_paths": receipt_paths,
             "content_hash_paths": content_paths,
@@ -3774,6 +3785,51 @@ class TestR072Rev3Manifest:
         assert QA012_REV1_SHA in shas
         assert QA012_REV2_SHA in shas
         assert all(link.get("defect") for link in chain)
+
+
+class TestR072Rev4Authority:
+    def test_rev4_rebinds_only_the_final_manuscript_scope(self):
+        phase4 = _phase4()
+        rev3 = _load_json(QA012_REV3_MANIFEST_PATH)
+        rev4 = _load_json(QA012_AUTHORITY_MANIFEST_PATH)
+        assert sha256_file(QA012_AUTHORITY_MANIFEST_PATH) == (
+            phase4.QA012_MANIFEST_SHA256
+        )
+        assert rev4["revision"] == phase4.QA012_MANIFEST_REVISION == 4
+        assert rev4["files_scanned"] == 67
+        assert rev4["total_format_qa_hits"] == 4556
+        assert rev4["parse_failures"] == []
+
+        old_d6 = [e for e in rev3["entries"] if e["path"].startswith("d6_bundle:")]
+        new_d6 = [e for e in rev4["entries"] if e["path"].startswith("d6_bundle:")]
+        assert len(old_d6) == len(new_d6) == 4
+        assert all("camera_ready_bundle/" in e["path"] for e in new_d6)
+        assert all(e["parse_ok"] is True for e in new_d6)
+        assert all(e["format_qa_hits"] == [] for e in new_d6)
+        assert {e["sha256"] for e in new_d6} == {
+            "dd74eea4818edd52088804c078a3382ead66db37fe627a2cab6bd41daca084b6",
+            "755c995cca1796b73c243fa1e676fc9ffab082a476023e0b240173a62483da06",
+            "d9eb39de1f3239aca8c4e16f1e1de0a3db3f07b4ef1963cb01b618f95136a333",
+            "29b414f0b6831d1f4044bc1f1f5b5f5d7bac59845a9f11d5bb7ca28855107390",
+        }
+
+        unchanged3 = [
+            e for e in rev3["entries"] if not e["path"].startswith("d6_bundle:")
+        ]
+        unchanged4 = [
+            e for e in rev4["entries"] if not e["path"].startswith("d6_bundle:")
+        ]
+        assert len(unchanged3) == len(unchanged4) == 63
+        assert unchanged4 == unchanged3
+
+    def test_rev4_supersession_chain_binds_rev3(self):
+        rev4 = _load_json(QA012_AUTHORITY_MANIFEST_PATH)
+        assert any(
+            link.get("file") == QA012_REV3_MANIFEST_PATH.name
+            and link.get("sha256") == QA012_REV3_SHA
+            and link.get("defect")
+            for link in rev4["supersession_chain"]
+        )
 
 
 # ---------------------------------------------------------------------------

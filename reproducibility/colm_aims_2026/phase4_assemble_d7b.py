@@ -526,7 +526,7 @@ def qa012_status_block(manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def qa012_authority_status_block(authority_path: Path) -> dict[str, Any]:
-    """Derive the only closure-satisfying QA-012 block from pinned rev3 bytes."""
+    """Derive the only closure-satisfying QA-012 block from pinned bytes."""
     authority = qa012.load_authority_manifest(authority_path)
     status = (
         "VERIFIED_WITH_FIXTURES"
@@ -565,7 +565,7 @@ def _qa012_closure_block(evidence: dict[str, Any]) -> dict[str, Any]:
             != qa012.CANONICAL_AUTHORITY_SHA256
         ):
             raise schema.ConfigSurfaceError(
-                "QA-012 authority block does not bind canonical rev3"
+                "QA-012 authority block does not bind the canonical authority"
             )
         return dict(evidence)
     if not isinstance(evidence, dict) or set(evidence) != {
@@ -581,7 +581,7 @@ def _qa012_closure_block(evidence: dict[str, Any]) -> dict[str, Any]:
         "VERIFIED_WITH_FIXTURES",
     }:
         raise schema.ConfigSurfaceError(
-            "closure-satisfying QA-012 status must be derived from pinned rev3"
+            "closure-satisfying QA-012 status must be derived from the pinned"
             " authority (R-072)"
         )
     if not isinstance(evidence.get("status"), str) or not schema.is_sha256_hex(
@@ -602,10 +602,10 @@ def assemble_closure_inventory(
 ) -> dict[str, Any]:
     """The satisfied ``CAMERA_READY_CLOSURE`` inventory (R-071/R-072).
 
-    ``d6_baseline`` (the two-party-verified manuscript baseline + complete
-    FINAL_CHECKSUMS closure) stays PARAMETERIZED so the real run binds the
-    final manuscript hashes; the Holm/inference row is satisfiable only by the
-    D7(b) regenerated outputs (closure.py:100-108).
+    ``d6_baseline`` is the legacy serialized name for the human-designated
+    final camera-ready manuscript + complete FINAL_CHECKSUMS authority. It
+    stays parameterized so the real run binds the final manuscript hashes;
+    the Holm/inference row is satisfiable only by D7(b) regenerated outputs.
     """
     bound_d6_baseline = dict(d6_baseline)
     entries = bound_d6_baseline.get("final_checksums_entries")
@@ -619,13 +619,13 @@ def assemble_closure_inventory(
     )
     d6_verified = (
         bound_d6_baseline.get("main_tex_sha256")
-        == closure.D6_MAIN_TEX_SHA256
+        == closure.CAMERA_READY_MAIN_TEX_SHA256
         and bound_d6_baseline.get("main_pdf_sha256")
-        == closure.D6_MAIN_PDF_SHA256
+        == closure.CAMERA_READY_MAIN_PDF_SHA256
         and bound_d6_baseline.get("final_checksums_sha256")
-        == closure.D6_FINAL_CHECKSUMS_SHA256
+        == closure.CAMERA_READY_FINAL_CHECKSUMS_SHA256
         and bound_d6_baseline.get("final_checksums_entries_sha256")
-        == closure.D6_FINAL_CHECKSUMS_ENTRIES_SHA256
+        == closure.CAMERA_READY_FINAL_CHECKSUMS_ENTRIES_SHA256
     )
     return {
         "schema_version": schema.SCHEMA_VERSION,
@@ -644,7 +644,8 @@ def assemble_closure_inventory(
                 "item": "manuscript-identity",
                 "status": "EXTERNAL" if d6_verified else "UNSATISFIED",
                 "evidence": (
-                    "pinned D6 FINAL_CHECKSUMS raw+entry-map authority"
+                    "human-designated final camera-ready FINAL_CHECKSUMS"
+                    " raw+entry-map authority"
                     if d6_verified
                     else None
                 ),
@@ -743,7 +744,7 @@ def build_evidence_package(
     profile_bytes = schema.encode_profile(profile)
     if qa012_authority is None:
         raise schema.ConfigSurfaceError(
-            "publication requires the exact pinned QA-012 rev3 authority"
+            "publication requires the exact pinned QA-012 rev4 authority"
         )
     qa012_block = qa012_authority_status_block(qa012_authority)
     inventory = assemble_closure_inventory(

@@ -26,9 +26,13 @@ _FIXTURE_BINDINGS_BASENAME = "bindings.json"
 _FIXTURE_BINDINGS_SHA256 = (
     "c928ff4cbde99e3107c789d0e19cbcf88bdbe86b1dea39ab18b29f3c9d7dd3b0"
 )
-CANONICAL_AUTHORITY_RELPATH = "qa012_inventory_2026-08-22_rev3.json"
+CANONICAL_AUTHORITY_RELPATH = "qa012_inventory_2026-08-27_rev4.json"
 CANONICAL_AUTHORITY_PATH = _REPO_ROOT / CANONICAL_AUTHORITY_RELPATH
 CANONICAL_AUTHORITY_SHA256 = (
+    "6b2b194201503f108a430fb85f3ec40dc05de02d5c75c19aaea0af1c68229e4f"
+)
+PREVIOUS_AUTHORITY_RELPATH = "qa012_inventory_2026-08-22_rev3.json"
+PREVIOUS_AUTHORITY_SHA256 = (
     "bb692446ad07bea63b5fc6799d4c0b6474cc084076c87b2db7c2c2a9b7334303"
 )
 _AUTHORITY_KEYS = frozenset(
@@ -146,7 +150,7 @@ def _full_fixture_is_incompatible(data: bytes, fixture_name: str) -> bool:
 
 
 def _authority_source(path: Any) -> str:
-    """Return the portable source identifier from a rev3 inventory path."""
+    """Return the portable source identifier from an authority path."""
     if not isinstance(path, str) or not path or "\\" in path:
         raise schema.SchemaValidationError(
             "QA-012 authority entry path is not a portable source identity"
@@ -180,27 +184,27 @@ def _authority_prong_relative_path(path: str) -> tuple[str, str]:
 
 
 def load_authority_manifest(path: Path | None = None) -> dict[str, Any]:
-    """Load the exact tracked rev3 scope authority, independent of location.
+    """Load the exact tracked rev4 scope authority, independent of location.
 
     The runtime path is intentionally not returned or serialized.  Only the
     raw-byte SHA-256 is durable authority, so a relocated byte-identical copy
-    remains admissible while rev1 or any mutated/self-authored file fails.
+    remains admissible while any predecessor or mutated/self-authored file fails.
     """
     authority_path = Path(path or CANONICAL_AUTHORITY_PATH).absolute()
     raw = schema.read_regular_file_bytes(authority_path)
     digest = hashlib.sha256(raw).hexdigest()
     if digest != CANONICAL_AUTHORITY_SHA256:
         raise schema.SchemaValidationError(
-            "QA-012 authority bytes do not match the canonical rev3 SHA-256"
+            "QA-012 authority bytes do not match the canonical rev4 SHA-256"
         )
     authority = schema.parse_json_bytes_strict(raw)
     if not isinstance(authority, dict) or set(authority) != _AUTHORITY_KEYS:
         raise schema.SchemaValidationError(
-            "QA-012 rev3 authority has a non-closed top-level shape"
+            "QA-012 rev4 authority has a non-closed top-level shape"
         )
     if (
         authority.get("manifest_type") != "qa012_format_qa_inventory"
-        or authority.get("revision") != 3
+        or authority.get("revision") != 4
         or authority.get("files_scanned") != 67
         or authority.get("parse_failures") != []
         or authority.get("total_format_qa_hits") != 4556
@@ -209,7 +213,19 @@ def load_authority_manifest(path: Path | None = None) -> dict[str, Any]:
         or len(authority["entries"]) != 67
     ):
         raise schema.SchemaValidationError(
-            "QA-012 rev3 authority metadata does not encode the adjudicated scope"
+            "QA-012 rev4 authority metadata does not encode the adjudicated scope"
+        )
+    chain = authority.get("supersession_chain")
+    if not isinstance(chain, list) or not any(
+        isinstance(link, dict)
+        and link.get("file") == PREVIOUS_AUTHORITY_RELPATH
+        and link.get("sha256") == PREVIOUS_AUTHORITY_SHA256
+        and isinstance(link.get("defect"), str)
+        and bool(link["defect"])
+        for link in chain
+    ):
+        raise schema.SchemaValidationError(
+            "QA-012 rev4 authority does not bind the exact rev3 predecessor"
         )
     source_counts = {source: 0 for source in AUTHORITY_SOURCE_PRONGS}
     total_hits = 0
@@ -225,12 +241,12 @@ def load_authority_manifest(path: Path | None = None) -> dict[str, Any]:
             "format_qa_hits",
         }:
             raise schema.SchemaValidationError(
-                "QA-012 rev3 authority entry has a non-closed shape"
+                "QA-012 rev4 authority entry has a non-closed shape"
             )
         source = _authority_source(entry["path"])
         if entry["path"] in seen_paths:
             raise schema.SchemaValidationError(
-                "QA-012 rev3 authority contains a duplicate source identity"
+                "QA-012 rev4 authority contains a duplicate source identity"
             )
         seen_paths.add(entry["path"])
         source_counts[source] += 1
@@ -245,17 +261,17 @@ def load_authority_manifest(path: Path | None = None) -> dict[str, Any]:
             or not all(isinstance(hit, str) and hit for hit in entry["format_qa_hits"])
         ):
             raise schema.SchemaValidationError(
-                "QA-012 rev3 authority entry has invalid hashes or hit evidence"
+                "QA-012 rev4 authority entry has invalid hashes or hit evidence"
             )
         total_bytes += entry["size"]
         if total_bytes > MAX_QA_TOTAL_BYTES:
             raise schema.SchemaValidationError(
-                "QA-012 rev3 authority exceeds the aggregate byte limit"
+                "QA-012 rev4 authority exceeds the aggregate byte limit"
             )
         total_hits += len(entry["format_qa_hits"])
     if source_counts != _AUTHORITY_SOURCE_COUNTS or total_hits != 4556:
         raise schema.SchemaValidationError(
-            "QA-012 rev3 authority does not cover every frozen source/prong"
+            "QA-012 rev4 authority does not cover every frozen source/prong"
         )
     if set(AUTHORITY_SOURCE_PRONGS.values()) != set(REQUIRED_SCOPE_PRONGS):
         raise schema.SchemaValidationError(
@@ -829,7 +845,7 @@ def hit_fixtures_verified(
 def authority_hit_fixtures_verified(
     authority: dict[str, Any], fixtures_root: Path | None = None
 ) -> bool:
-    """Bind every canonical rev3 hit file to the committed compatibility fixtures."""
+    """Bind every canonical authority hit file to compatibility fixtures."""
     root = Path(fixtures_root or _DEFAULT_FIXTURES_ROOT)
     try:
         # The caller may supply a relocated copy, but never a caller-authored

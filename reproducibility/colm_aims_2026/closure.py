@@ -2,7 +2,8 @@
 
 A DISTINCT gate token from ``PASS_RELEASE`` — neither implies the other, and
 source mode can emit neither. The expected-claim inventory is FROZEN from
-the D6 baseline's COMPLETE checksum closure (never ``main.tex`` alone); the
+the final manuscript baseline's COMPLETE checksum closure (never ``main.tex``
+alone; legacy schema fields retain the ``d6_baseline`` name); the
 Holm/inference row is satisfiable ONLY by the D7(b) regenerated outputs;
 QA-012 (R-072) is blocking for closure.
 Spec: .correctless/specs/camera-ready-aims-evidence-2.md
@@ -24,38 +25,40 @@ from .schema import (
 
 CAMERA_READY_CLOSURE = "CAMERA_READY_CLOSURE"
 
-# D6 designated manuscript baseline (two-party hash-verified).
-D6_MAIN_TEX_SHA256 = (
-    "79dccfb3fbdfafbd566a3fb239755ab35142bac510d629d513ed8b3c2c4cdd2f"
+# Human-designated final camera-ready manuscript authority. ``D6_*`` aliases
+# remain below for evidence-schema/API compatibility only; they do not confer
+# the historical D6 baseline's former two-party-verification status.
+CAMERA_READY_MAIN_TEX_SHA256 = (
+    "8d53f1d3fa65e092ad0f8590e6ed3827da131b810f0b0cc819087832ce31f8d4"
 )
-D6_MAIN_PDF_SHA256 = (
-    "6de23119df59679befc356e3c916bc5a498b2cc2015b6cd8a516a5181dabf10a"
+CAMERA_READY_MAIN_PDF_SHA256 = (
+    "273997e4c06195b295e89e89d70dee96df129290d59d62f200e8d622f9a552b5"
 )
-D6_FINAL_CHECKSUMS_SHA256 = (
-    "7d1ee36df4dc884a0cb1dad8ee638d1150c2f2a9f46416adb8b7f81c7b6b7e6d"
+CAMERA_READY_FINAL_CHECKSUMS_SHA256 = (
+    "2cd3055ed58728c1a1d1967c895a0e4dd268bd5da2a1531992e5025513583173"
 )
-D6_FINAL_CHECKSUMS_ENTRIES_SHA256 = (
-    "a1bfeb89796b933d38c91d12eed3b652397ecd7fd3a7c55ae73a141fb776b455"
+CAMERA_READY_FINAL_CHECKSUMS_ENTRIES_SHA256 = (
+    "ec38232e9c4b779b783844d647a8e867716a7f7efa4135f29924efcacd2e4a83"
 )
 
-# Human-designated D6 complete checksum entry map. The map was independently
-# read from the designated manuscript bundle on 2026-08-26; external bundle
+# Human-designated final complete checksum entry map, regenerated after the
+# camera-ready authorship and D7(b) wording pass on 2026-08-27. External bundle
 # bytes remain outside the repository. Keeping the full allowlist here makes
 # the closure authority reviewable and clean-checkout reproducible.
-D6_FINAL_CHECKSUM_ENTRIES = {
+CAMERA_READY_FINAL_CHECKSUM_ENTRIES = {
     "ABSTRACT_AND_TLDR.txt": "2b5d808bc73842876c44b0edb248027679c2db613916c6584b8e46c1dc3e1863",
-    "CHANGES_VS_ORIGINAL.md": "0d3b5e93865644ee944e1ec23cfc3be14bcf3ef95bd6f42be336d81faf5fb457",
-    "MAINTAINER_NOTES.md": "7d892974f8d55771f7aba24f1c5318111fce3d55b670344567df1709d5e733b0",
-    "OPENREVIEW_FORM_FIELDS.md": "c7a0eb7096427f122cf36d29e7bd135e8f924f3c888d3ceadc6bdc5495f2dff5",
-    "OPENREVIEW_FORM_FIELDS.txt": "6e5296e1f258b0feb1e970ff8bab9dc95fd8239e36ba17300dbf2fd243b8459c",
-    "PDF_PREFLIGHT.json": "30be113ce2b1f991294b745d9cb542865edd275c28850c46749fb62738addc83",
+    "CHANGES_VS_ORIGINAL.md": "fb4c9e39bbea673f86b317abfb98ee4a6c25d475f64559bbf765da0f40865d0e",
+    "MAINTAINER_NOTES.md": "deade0428355a2b13f9622c57588fdda2e9bb12d6009dfc804250724eb2190c9",
+    "OPENREVIEW_FORM_FIELDS.md": "9f16f46be2c23d5d9644a4cd9de1a41c96a10b1f20f66be2473c995983d6d305",
+    "OPENREVIEW_FORM_FIELDS.txt": "2205417f48cf3a677201c82705af723db904ff94f0daa5d80693b8c1482fad5c",
+    "PDF_PREFLIGHT.json": "dd74eea4818edd52088804c078a3382ead66db37fe627a2cab6bd41daca084b6",
     "PROVENANCE_README.md": "740148617949f0c96efec55eacfc41c8843ca86e3f12ef890692e00c2d36bd56",
-    "README.md": "435ce0cb06d311e17fec61e79eb81dcfd9da5ac2bba62ef3a3ee7fd25fea5f83",
-    "REVISION_NOTES.md": "a745bd863052a93302f557636128bf307a740a575cb74033ceecb830a20dc8d6",
-    "SUBMISSION_NOTES.md": "5ae6d7baca5dcb70c4c36748366ae0ec6a051319e29aae13ee0c86433b3e49ec",
+    "README.md": "7893494fa365814cbc1303d4509df44da0b6ac871f9da0f8113534d404ca397b",
+    "REVISION_NOTES.md": "f86eff9825224d0770a6410b93ac2558a5345fcc75692c292ffd835cc4b22245",
+    "SUBMISSION_NOTES.md": "7c4f43e935e46fb0d378f642ee5eedfbe524bb66aded6610dcbb7554c14fbb0f",
     "colm2026_conference.bst": "2d67552db7ed38ccfccb5957b52f95656e25c249724761d3cf5f7922ad1844c5",
     "colm2026_conference.sty": "55962ae80c25a50335825c85d23eb5f1cd9015aa8e77f7af32b483b646c7483e",
-    "compile_audit.json": "fcf90487d55ca663cd924f18e14d230ddcd6c058d22dc28219a84dff4dff4820",
+    "compile_audit.json": "755c995cca1796b73c243fa1e676fc9ffab082a476023e0b240173a62483da06",
     "figures/calibration_ece.pdf": "9c7fd92ca0fbf045d4faee241197bde8f1e7a81de1afb9463745ac81e4178eca",
     "figures/calibration_ece.png": "497f9ab01b9802ff69e3279c429b74406d6ce26e2c7e3108961a594b6ac51e0e",
     "figures/learned_direction.pdf": "d91e132ddeeb018b540cac2f1ecc41c3ea7f04cee49563104fb1f55512769443",
@@ -64,20 +67,30 @@ D6_FINAL_CHECKSUM_ENTRIES = {
     "figures/reference_sensitivity.pdf": "192435a360630ee8ef72713b7fdecbb3a3658ada0cd59ec21c656fbe1b5a42fd",
     "figures/reference_sensitivity.png": "acb7abc34e9b94bcbfe2bc1dfc40f40374d5b7b31086643a2d7b81c3783e26cc",
     "main.bbl": "115c420ad9e64c4bdd2383789a164b5bb422f0e3fe86d988b15c80fb6727b910",
-    "main.pdf": "6de23119df59679befc356e3c916bc5a498b2cc2015b6cd8a516a5181dabf10a",
-    "main.tex": "79dccfb3fbdfafbd566a3fb239755ab35142bac510d629d513ed8b3c2c4cdd2f",
-    "main_linenumbered.txt": "7f1f24f53c3ea6876ac805d86a8d4d6b993b41e492d3d3d2d9b8aa94aafd8a7c",
+    "main.pdf": "273997e4c06195b295e89e89d70dee96df129290d59d62f200e8d622f9a552b5",
+    "main.tex": "8d53f1d3fa65e092ad0f8590e6ed3827da131b810f0b0cc819087832ce31f8d4",
+    "main_linenumbered.txt": "dfc2e0d02b25eea1cd815f4735d7c0feb362f975e25aa796aa44ce3fc0bd8ff0",
     "make_figures.py": "4579890c296d6c5eed8408494b73df70ed652a67a137f6fbd0f0b01bade42f7b",
-    "openreview_metadata.txt": "6e5296e1f258b0feb1e970ff8bab9dc95fd8239e36ba17300dbf2fd243b8459c",
+    "openreview_metadata.txt": "2205417f48cf3a677201c82705af723db904ff94f0daa5d80693b8c1482fad5c",
     "references.bib": "49341bfa1ad9be3ccb8ec1f8646fc721ada3e64b11c207f5c15a07276673750f",
     "reported_results.json": "d9eb39de1f3239aca8c4e16f1e1de0a3db3f07b4ef1963cb01b618f95136a333",
     "reported_results_provenance.json": "29b414f0b6831d1f4044bc1f1f5b5f5d7bac59845a9f11d5bb7ca28855107390",
     "verify_provenance.py": "ec3e3228507c8e0554a0b53c163e890927fc374b96cc9fa7186bcf93ad747d97",
 }
-D6_FINAL_CHECKSUMS_BYTES = "".join(
+CAMERA_READY_FINAL_CHECKSUMS_BYTES = "".join(
     f"{digest}  ./{path}\n"
-    for path, digest in D6_FINAL_CHECKSUM_ENTRIES.items()
+    for path, digest in CAMERA_READY_FINAL_CHECKSUM_ENTRIES.items()
 ).encode("utf-8")
+
+# Legacy exported names and serialized ``d6_baseline`` fields remain stable so
+# existing evidence readers do not need a schema migration during the final
+# ceremony. New implementation code uses the truthful CAMERA_READY_* names.
+D6_MAIN_TEX_SHA256 = CAMERA_READY_MAIN_TEX_SHA256
+D6_MAIN_PDF_SHA256 = CAMERA_READY_MAIN_PDF_SHA256
+D6_FINAL_CHECKSUMS_SHA256 = CAMERA_READY_FINAL_CHECKSUMS_SHA256
+D6_FINAL_CHECKSUMS_ENTRIES_SHA256 = CAMERA_READY_FINAL_CHECKSUMS_ENTRIES_SHA256
+D6_FINAL_CHECKSUM_ENTRIES = CAMERA_READY_FINAL_CHECKSUM_ENTRIES
+D6_FINAL_CHECKSUMS_BYTES = CAMERA_READY_FINAL_CHECKSUMS_BYTES
 
 
 # Row statuses that do not block closure: SATISFIED rows map to clean bound
@@ -326,25 +339,29 @@ def evaluate_closure(
             )
 
     baseline = _as_dict(inventory.get("d6_baseline"))
-    if baseline.get("main_tex_sha256") != D6_MAIN_TEX_SHA256:
+    if baseline.get("main_tex_sha256") != CAMERA_READY_MAIN_TEX_SHA256:
         failing.append(
-            "d6 baseline main.tex hash drifted from the two-party-verified"
-            f" designated baseline {D6_MAIN_TEX_SHA256}"
+            "final camera-ready manuscript main.tex hash drifted from the"
+            f" human-designated authority {CAMERA_READY_MAIN_TEX_SHA256}"
         )
-    if baseline.get("main_pdf_sha256") != D6_MAIN_PDF_SHA256:
+    if baseline.get("main_pdf_sha256") != CAMERA_READY_MAIN_PDF_SHA256:
         failing.append(
-            "d6 baseline main.pdf hash drifted from the two-party-verified"
-            f" designated baseline {D6_MAIN_PDF_SHA256}"
+            "final camera-ready manuscript main.pdf hash drifted from the"
+            f" human-designated authority {CAMERA_READY_MAIN_PDF_SHA256}"
         )
     if not is_sha256_hex(baseline.get("final_checksums_sha256")):
         failing.append(
-            "d6 baseline missing the FINAL_CHECKSUMS.sha256 manifest hash —"
+            "final camera-ready authority missing the FINAL_CHECKSUMS.sha256"
+            " manifest hash —"
             " closure binds the COMPLETE checksum closure"
         )
-    elif baseline.get("final_checksums_sha256") != D6_FINAL_CHECKSUMS_SHA256:
+    elif (
+        baseline.get("final_checksums_sha256")
+        != CAMERA_READY_FINAL_CHECKSUMS_SHA256
+    ):
         failing.append(
-            "D6 FINAL_CHECKSUMS raw bytes differ from the independently"
-            " pinned designated-manuscript authority"
+            "final camera-ready FINAL_CHECKSUMS raw bytes differ from the"
+            " human-designated complete-manifest authority"
         )
     entries = _as_dict(baseline.get("final_checksums_entries"))
     observed_entries_sha256 = checksum_entries_sha256(entries)
@@ -354,19 +371,20 @@ def evaluate_closure(
             " canonical path-to-digest map"
         )
     if (
-        entries != D6_FINAL_CHECKSUM_ENTRIES
-        or observed_entries_sha256 != D6_FINAL_CHECKSUMS_ENTRIES_SHA256
+        entries != CAMERA_READY_FINAL_CHECKSUM_ENTRIES
+        or observed_entries_sha256
+        != CAMERA_READY_FINAL_CHECKSUMS_ENTRIES_SHA256
     ):
         failing.append(
-            "FINAL_CHECKSUMS entry map differs from the independently pinned"
-            " designated-manuscript authority"
+            "FINAL_CHECKSUMS entry map differs from the human-designated final"
+            " camera-ready manuscript authority"
         )
-    if entries.get("main.tex") != D6_MAIN_TEX_SHA256:
+    if entries.get("main.tex") != CAMERA_READY_MAIN_TEX_SHA256:
         failing.append(
             "FINAL_CHECKSUMS entries do not pin main.tex at the designated"
             " baseline hash"
         )
-    if entries.get("main.pdf") != D6_MAIN_PDF_SHA256:
+    if entries.get("main.pdf") != CAMERA_READY_MAIN_PDF_SHA256:
         failing.append(
             "FINAL_CHECKSUMS entries do not pin main.pdf — closure duties"
             " bind the COMPLETE manifest (figures, bibliography), never"
@@ -420,7 +438,7 @@ def evaluate_closure(
             ):
                 raise SchemaValidationError(
                     "QA-012 satisfying closure must bind only the exact pinned"
-                    " rev3 authority SHA-256"
+                    " authority SHA-256"
                 )
             authority = qa012_module.load_authority_manifest()
             derived_status = (
@@ -430,7 +448,7 @@ def evaluate_closure(
             )
             if derived_status != qa012_status:
                 raise SchemaValidationError(
-                    "QA-012 closure status is not derived from the pinned rev3"
+                    "QA-012 closure status is not derived from the pinned"
                     " authority and committed fixtures"
                 )
         except (KeyError, TypeError, OSError, ColmAimsError) as exc:

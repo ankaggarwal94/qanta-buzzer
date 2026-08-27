@@ -690,7 +690,7 @@ class TestQa012Block:
         "status", ["VERIFIED_VACUOUS", "VERIFIED_WITH_FIXTURES"]
     )
     def test_explicit_satisfied_status_cannot_bypass_scan(self, status):
-        with pytest.raises(schema.ConfigSurfaceError, match="pinned rev3"):
+        with pytest.raises(schema.ConfigSurfaceError, match="pinned rev4"):
             driver.build_qa012_block(
                 status=status, inventory_sha256="b" * 64
             )

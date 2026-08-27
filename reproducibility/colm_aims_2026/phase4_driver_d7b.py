@@ -2,8 +2,8 @@
 
 The FIRST production reader that constructs the caller-supplied identity
 blocks the ``phase4_assemble_d7b`` orchestrator needs from the REAL frozen
-inputs + an authenticated launch receipt + a records root + the pinned D6
-baseline + the pinned QA-012 rev3 authority,
+inputs + an authenticated launch receipt + a records root + the final
+camera-ready manuscript authority + the pinned QA-012 rev4 authority,
 then calls ``build_evidence_package`` to emit the real ``profile.json`` +
 evidence package + closure inventory. Before this module the identity blocks
 existed only as ``tests/_colm_aims_v2_helpers.make_*`` synthesizers.
@@ -25,10 +25,10 @@ Identity-block provenance (constants vs. input-derived):
     splits.eval  -> derived from ``frozen/pairing_eligibility_v2.json`` + the
     record keyset. provenance.input_sha256 + dirty_state.source_commit are
     bound by ``build_evidence_package`` from the staged record bytes.
-  * d6_baseline  -> PINNED in ``closure``: the two-party ``main.tex``/
-    ``main.pdf`` hashes and the COMPLETE FINAL_CHECKSUMS closure are source
-    constants, not caller-selected authority.
-  * qa012  -> exact raw-byte identity of the tracked rev3 scope authority.
+  * d6_baseline  -> legacy serialized name for the human-designated final
+    camera-ready ``main.tex``/``main.pdf`` hashes and COMPLETE
+    FINAL_CHECKSUMS closure pinned in source, never caller-selected authority.
+  * qa012  -> exact raw-byte identity of the tracked rev4 scope authority.
     The publication CLI accepts only ``--qa012-authority``; caller-selected
     scan roots cannot authorize publication.
 
@@ -834,7 +834,7 @@ def bind_release_provenance(
 
 
 # ---------------------------------------------------------------------------
-# D6 baseline (parameterized FINAL_CHECKSUMS closure) + QA-012 block
+# Final manuscript authority (legacy d6_baseline field) + QA-012 block
 # ---------------------------------------------------------------------------
 
 
@@ -920,7 +920,7 @@ def build_d6_baseline(
     final_checksums_sha256: str | None = None,
     final_checksums_entries: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Build a candidate D6 manuscript baseline block.
+    """Build a candidate final manuscript authority block.
 
     The COMPLETE FINAL_CHECKSUMS closure may be loaded from ``checksums_path``
     for comparison. No caller value is authority: ``evaluate_closure`` later
@@ -928,8 +928,12 @@ def build_d6_baseline(
     entry map. Missing or different values therefore fail closed.
     """
     baseline: dict[str, Any] = {
-        "main_tex_sha256": main_tex_sha256 or closure.D6_MAIN_TEX_SHA256,
-        "main_pdf_sha256": main_pdf_sha256 or closure.D6_MAIN_PDF_SHA256,
+        "main_tex_sha256": (
+            main_tex_sha256 or closure.CAMERA_READY_MAIN_TEX_SHA256
+        ),
+        "main_pdf_sha256": (
+            main_pdf_sha256 or closure.CAMERA_READY_MAIN_PDF_SHA256
+        ),
     }
     if checksums_path is not None:
         path = Path(checksums_path)
@@ -988,7 +992,7 @@ def build_qa012_block(
         if status in {"VERIFIED_VACUOUS", "VERIFIED_WITH_FIXTURES"}:
             raise schema.ConfigSurfaceError(
                 "a closure-satisfying QA-012 status must be derived from a"
-                " pinned rev3 authority and verified committed fixtures"
+                " pinned rev4 authority and verified committed fixtures"
             )
         return {"status": status, "inventory_sha256": inventory_sha256}
     if authority_path is not None:
@@ -1394,7 +1398,7 @@ def run_driver(
     )
     if qa012_authority is None:
         raise schema.ConfigSurfaceError(
-            "publication requires the exact pinned QA-012 rev3 authority (R-072)"
+            "publication requires the exact pinned QA-012 rev4 authority (R-072)"
         )
     return assembler.build_evidence_package(
         records_root,

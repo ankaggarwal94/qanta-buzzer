@@ -98,7 +98,7 @@ FROZEN = REPO / "reproducibility" / "colm_aims_2026" / "frozen"
 ELIGIBILITY_PATH = FROZEN / "pairing_eligibility_v2.json"
 SNAPSHOT_MANIFEST_PATH = FROZEN / "model_snapshot_manifests.json"
 PARITY_ANCHOR_PATH = FROZEN / "parity_anchor_export_a.json"
-QA012_REV3_PATH = REPO / "qa012_inventory_2026-08-22_rev3.json"
+QA012_AUTHORITY_PATH = REPO / "qa012_inventory_2026-08-27_rev4.json"
 WORKFLOW_PATH = REPO / ".github" / "workflows" / "python-app.yml"
 
 EXPECTED_STAGED = {
@@ -1819,7 +1819,7 @@ def main(argv: list[str] | None = None) -> int:
             role: str(path) for role, path in snapshot_dirs.items()
         },
         "parity_anchor_path": str(PARITY_ANCHOR_PATH),
-        "qa012_manifest_path": str(QA012_REV3_PATH),
+        "qa012_manifest_path": str(QA012_AUTHORITY_PATH),
         "staged_plan": staged_plan,
         "suite_receipt_paths": {
             name: str(path) for name, path in receipt_paths.items()
