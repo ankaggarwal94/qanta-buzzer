@@ -404,54 +404,79 @@ def publish_certificate_bundle(
     certificate_bytes: bytes,
     summary: dict[str, Any],
 ) -> None:
-    """Publish the certificate pair through one claimed directory generation."""
+    """Publish both certificate files as one atomic directory transaction."""
+    expected_names = (
+        paths.certificate_path.name,
+        "certificate_generation_summary.json",
+    )
     publication = {
         paths.certificate_path.name: certificate_bytes,
         "certificate_generation_summary.json": _json_bytes(summary),
     }
-    claims: dict[str, int] = {}
-    with (
-        phase4_finalize_release._DirectoryAnchor(
-            paths.run_root,
-            run_root_snapshot,
-            "frozen operational run root",
-        ) as run_anchor,
-        phase4_finalize_release._DirectoryAnchor(
-            paths.certificate_dir,
-            certificate_snapshot,
-            "frozen certificate directory",
-        ) as certificate_anchor,
-    ):
-        run_anchor.require_child_identity("certificate", certificate_snapshot)
-        try:
-            for name in publication:
-                claims[name] = certificate_anchor.create_open_once(
+    staged, staged_snapshot = phase4_finalize_release._create_staged_directory(
+        paths.run_root,
+        run_root_snapshot,
+        prefix=".certificate-staged-",
+        label="certificate staging directory",
+    )
+    try:
+        with (
+            phase4_finalize_release._DirectoryAnchor(
+                paths.run_root,
+                run_root_snapshot,
+                "certificate staging parent",
+            ) as parent_anchor,
+            phase4_finalize_release._DirectoryAnchor(
+                staged,
+                staged_snapshot,
+                "certificate staging directory",
+            ) as staged_anchor,
+        ):
+            parent_anchor.require_child_identity(staged.name, staged_snapshot)
+            for name in expected_names:
+                staged_anchor.create_once(
                     name,
-                    exists_label=(
-                        "PRE_RUN_READY certificate"
-                        if name == paths.certificate_path.name
-                        else "certificate generation summary"
-                    ),
+                    publication[name],
+                    exists_label="certificate staging member",
+                    mode=0o600,
                 )
-            for name, data in publication.items():
-                with os.fdopen(os.dup(claims[name]), "wb") as output:
-                    output.write(data)
-                    output.flush()
-                    os.fsync(output.fileno())
-            observed = certificate_anchor.snapshot_claimed_files(
-                claims,
-                {name: len(data) for name, data in publication.items()},
+            if staged_anchor.sync_self(expected_names) != publication:
+                raise RuntimeError("certificate staging bytes changed")
+            parent_anchor.require_child_identity(staged.name, staged_snapshot)
+
+        removed_placeholder = (
+            phase4_finalize_release._remove_exact_staged_directory(
+                parent=paths.run_root,
+                parent_snapshot=run_root_snapshot,
+                staged_name=paths.certificate_dir.name,
+                staged_snapshot=certificate_snapshot,
+                expected_names=(),
             )
-            if observed != publication:
-                raise RuntimeError(
-                    "claimed certificate publication bytes changed"
-                )
-            run_anchor.require_child_identity(
-                "certificate", certificate_snapshot
+        )
+        if not removed_placeholder:
+            raise RuntimeError(
+                "empty captured certificate placeholder could not be retired"
             )
-        finally:
-            for descriptor in claims.values():
-                os.close(descriptor)
+        phase4_finalize_release._publish_verified_directory(
+            staged,
+            paths.certificate_dir,
+            exists_label="PRE_RUN_READY certificate bundle",
+            parent_chain=run_root_snapshot,
+            staged_chain=staged_snapshot,
+            expected_snapshot=publication,
+            expected_names=expected_names,
+        )
+        staged = None
+    finally:
+        if staged is not None:
+            phase4_finalize_release._remove_exact_staged_directory(
+                parent=paths.run_root,
+                parent_snapshot=run_root_snapshot,
+                staged_name=staged.name,
+                staged_snapshot=staged_snapshot,
+                expected_names=expected_names,
+                allow_subset=True,
+            )
 
 
 def gather_certificate_from_captured_receipts(

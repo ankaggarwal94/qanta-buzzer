@@ -789,7 +789,7 @@ def test_certificate_publication_rejects_replaced_frozen_parent(
     sentinel = paths.certificate_dir / "sentinel.txt"
     sentinel.write_bytes(b"replacement\n")
 
-    with pytest.raises(orchestration.schema.TypedIngressError):
+    with pytest.raises(RuntimeError, match="placeholder could not be retired"):
         orchestration.publish_certificate_bundle(
             paths,
             run_snapshot,
@@ -802,18 +802,8 @@ def test_certificate_publication_rejects_replaced_frozen_parent(
     assert list(displaced.iterdir()) == []
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX dir-fd regression")
-@pytest.mark.parametrize(
-    "swap_name",
-    (
-        "pre_run_ready_certificate_run-1.json",
-        "certificate_generation_summary.json",
-    ),
-)
-def test_certificate_pair_uses_one_held_generation_during_transient_swap(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    swap_name: str,
+def test_certificate_is_absent_when_terminal_publication_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     asset_root, run_root = _prepared_roots(tmp_path)
     paths = orchestration.derive_paths(
@@ -827,32 +817,71 @@ def test_certificate_pair_uses_one_held_generation_during_transient_swap(
             paths.certificate_dir
         )
     )
-    displaced = run_root / "held-certificate"
-    replacement = run_root / "replacement-certificate"
-    real_open = orchestration.phase4_finalize_release.os.open
-    swapped = False
-
-    def swap_restore_around_claim(path, flags, mode=0o777, *, dir_fd=None):
-        nonlocal swapped
-        if path == swap_name and dir_fd is not None and not swapped:
-            swapped = True
-            paths.certificate_dir.rename(displaced)
-            paths.certificate_dir.mkdir()
-            (paths.certificate_dir / "sentinel.txt").write_bytes(b"decoy\n")
-            try:
-                descriptor = real_open(
-                    path, flags, mode, dir_fd=dir_fd
-                )
-            finally:
-                paths.certificate_dir.rename(replacement)
-                displaced.rename(paths.certificate_dir)
-            return descriptor
-        return real_open(path, flags, mode, dir_fd=dir_fd)
+    def fail_bundle_publication(*args, **kwargs):
+        raise OSError("injected certificate bundle failure")
 
     monkeypatch.setattr(
-        orchestration.phase4_finalize_release.os,
-        "open",
-        swap_restore_around_claim,
+        orchestration.phase4_finalize_release,
+        "_publish_verified_directory",
+        fail_bundle_publication,
+    )
+
+    with pytest.raises(OSError, match="certificate bundle failure"):
+        orchestration.publish_certificate_bundle(
+            paths,
+            run_snapshot,
+            certificate_snapshot,
+            b"certificate\n",
+            {"ready": True},
+        )
+
+    assert not paths.certificate_dir.exists()
+    assert not any(item.name.startswith(".certificate-staged-") for item in run_root.iterdir())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX dir-fd regression")
+def test_certificate_pair_uses_one_held_generation_during_transient_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asset_root, run_root = _prepared_roots(tmp_path)
+    paths = orchestration.derive_paths(
+        asset_root=asset_root, run_root=run_root, run_id="run-1"
+    )
+    run_snapshot = orchestration.phase4_finalize_release._capture_directory_chain(
+        paths.run_root
+    )
+    certificate_snapshot = (
+        orchestration.phase4_finalize_release._capture_directory_chain(
+            paths.certificate_dir
+        )
+    )
+    displaced = tmp_path / "held-run-root"
+    replacement = tmp_path / "replacement-run-root"
+    original = (
+        orchestration.phase4_finalize_release._DirectoryAnchor.publish_directory
+    )
+    swapped = False
+
+    def swap_restore_around_publish(anchor, *args, **kwargs):
+        nonlocal swapped
+        if anchor.label == "publication parent" and not swapped:
+            swapped = True
+            run_root.rename(displaced)
+            run_root.mkdir()
+            (run_root / "sentinel.txt").write_bytes(b"decoy\n")
+            try:
+                original(anchor, *args, **kwargs)
+            finally:
+                run_root.rename(replacement)
+                displaced.rename(run_root)
+            return None
+        return original(anchor, *args, **kwargs)
+
+    monkeypatch.setattr(
+        orchestration.phase4_finalize_release._DirectoryAnchor,
+        "publish_directory",
+        swap_restore_around_publish,
     )
     certificate_bytes = b"certificate\n"
     summary = {"ready": True}
@@ -874,6 +903,56 @@ def test_certificate_pair_uses_one_held_generation_during_transient_swap(
     assert (replacement / "sentinel.txt").read_bytes() == b"decoy\n"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX dir-fd regression")
+def test_certificate_publication_rejects_persistent_run_root_displacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset_root, run_root = _prepared_roots(tmp_path)
+    paths = orchestration.derive_paths(
+        asset_root=asset_root, run_root=run_root, run_id="run-1"
+    )
+    run_snapshot = orchestration.phase4_finalize_release._capture_directory_chain(
+        paths.run_root
+    )
+    certificate_snapshot = (
+        orchestration.phase4_finalize_release._capture_directory_chain(
+            paths.certificate_dir
+        )
+    )
+    displaced = tmp_path / "displaced-run-root"
+    original = (
+        orchestration.phase4_finalize_release._DirectoryAnchor.publish_directory
+    )
+
+    def displace_after_publish(anchor, *args, **kwargs):
+        result = original(anchor, *args, **kwargs)
+        if anchor.label == "publication parent":
+            run_root.rename(displaced)
+            run_root.mkdir()
+            (run_root / "sentinel.txt").write_bytes(b"decoy\n")
+        return result
+
+    monkeypatch.setattr(
+        orchestration.phase4_finalize_release._DirectoryAnchor,
+        "publish_directory",
+        displace_after_publish,
+    )
+    try:
+        with pytest.raises(orchestration.schema.TypedIngressError):
+            orchestration.publish_certificate_bundle(
+                paths,
+                run_snapshot,
+                certificate_snapshot,
+                b"certificate\n",
+                {"ready": True},
+            )
+        assert not paths.certificate_path.exists()
+        assert (run_root / "sentinel.txt").read_bytes() == b"decoy\n"
+    finally:
+        run_root.rename(tmp_path / "replacement-run-root")
+        displaced.rename(run_root)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows locking regression")
 def test_windows_certificate_anchor_blocks_parent_rename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -891,21 +970,21 @@ def test_windows_certificate_anchor_blocks_parent_rename(
         )
     )
     original = (
-        orchestration.phase4_finalize_release._DirectoryAnchor.create_open_once
+        orchestration.phase4_finalize_release._DirectoryAnchor.publish_directory
     )
     attempted = False
 
-    def attempt_rename(anchor, name, **kwargs):
+    def attempt_rename(anchor, *args, **kwargs):
         nonlocal attempted
-        if anchor.label == "frozen certificate directory" and not attempted:
+        if anchor.label == "publication parent" and not attempted:
             attempted = True
             with pytest.raises(OSError):
-                paths.certificate_dir.rename(run_root / "displaced-certificate")
-        return original(anchor, name, **kwargs)
+                run_root.rename(tmp_path / "displaced-run-root")
+        return original(anchor, *args, **kwargs)
 
     monkeypatch.setattr(
         orchestration.phase4_finalize_release._DirectoryAnchor,
-        "create_open_once",
+        "publish_directory",
         attempt_rename,
     )
     orchestration.publish_certificate_bundle(
