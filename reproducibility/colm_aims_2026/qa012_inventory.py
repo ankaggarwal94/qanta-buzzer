@@ -19,9 +19,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from scripts.stopdff_v5 import fileio
-
 from . import qa012, schema
+from .phase4_finalize_release import (
+    _CapturedDirectoryChain,
+    _capture_directory_chain,
+    _DirectoryAnchor,
+)
 
 EXIT_OK = 0
 EXIT_USAGE_ERROR = 2
@@ -37,7 +40,7 @@ class _OutputPlan:
 
     destination: Path
     parent: Path
-    parent_chain: _DirectoryChain
+    parent_chain: _CapturedDirectoryChain
     resolved_parent: Path
     resolved_roots: tuple[tuple[str, Path], ...]
     root_chains: tuple[tuple[str, _DirectoryChain], ...]
@@ -145,7 +148,7 @@ def _validate_output(output: Path, roots: dict[str, Path]) -> _OutputPlan:
         raise schema.TypedIngressError(
             "QA-012 diagnostic output parent is not an ordinary directory"
         )
-    parent_chain = schema.stable_directory_chain(parent, parent)
+    parent_chain = _capture_directory_chain(parent)
     resolved_parent = parent.resolve(strict=True)
     resolved_destination = resolved_parent / destination.name
     resolved_roots: list[tuple[str, Path]] = []
@@ -179,7 +182,7 @@ def _revalidate_output(
     require_unclaimed: bool,
 ) -> None:
     """Recheck output ancestry and root containment around publication."""
-    current_chain = schema.stable_directory_chain(plan.parent, plan.parent)
+    current_chain = _capture_directory_chain(plan.parent)
     try:
         current_parent = plan.parent.resolve(strict=True)
     except OSError as exc:
@@ -235,19 +238,24 @@ def main(argv: list[str] | None = None) -> int:
         manifest = qa012.build_inventory_manifest(roots)
         qa012.validate_inventory_manifest(manifest)
         encoded = schema.encode_json(manifest)
-        _revalidate_output(output_plan, roots, require_unclaimed=True)
-        fileio.create_once_bytes(
-            output_plan.destination,
-            encoded,
-            exists_label="QA-012 diagnostic manifest",
-        )
-        _revalidate_output(output_plan, roots, require_unclaimed=False)
-        observed = schema.read_regular_file_bytes(
-            output_plan.destination,
-            tree_root=output_plan.parent,
-            max_bytes=qa012.MAX_QA_TOTAL_BYTES,
-        )
-        _revalidate_output(output_plan, roots, require_unclaimed=False)
+        with _DirectoryAnchor(
+            output_plan.parent,
+            output_plan.parent_chain,
+            "QA-012 diagnostic output parent",
+        ) as output_anchor:
+            _revalidate_output(output_plan, roots, require_unclaimed=True)
+            output_anchor.create_once(
+                output_plan.destination.name,
+                encoded,
+                exists_label="QA-012 diagnostic manifest",
+                mode=0o666,
+            )
+            _revalidate_output(output_plan, roots, require_unclaimed=False)
+            observed = output_anchor.read_regular(
+                output_plan.destination.name,
+                max_bytes=qa012.MAX_QA_TOTAL_BYTES,
+            )
+            _revalidate_output(output_plan, roots, require_unclaimed=False)
         if observed != encoded:
             raise schema.TypedIngressError(
                 "QA-012 diagnostic output differs from the validated bytes"

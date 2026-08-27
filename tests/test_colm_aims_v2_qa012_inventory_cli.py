@@ -148,25 +148,35 @@ def test_cli_detects_output_parent_swap_during_create_once(tmp_path, monkeypatch
     output_parent.mkdir()
     output = output_parent / "diagnostic.json"
     displaced = tmp_path / "displaced-output"
-    original_create_once = qa012_inventory.fileio.create_once_bytes
+    original_create_once = qa012_inventory._DirectoryAnchor.create_once
+    swap_blocked = False
 
-    def swap_parent_then_publish(path, data, **kwargs):
-        output_parent.rename(displaced)
-        output_parent.mkdir()
-        original_create_once(path, data, **kwargs)
+    def swap_parent_then_publish(anchor, name, data, **kwargs):
+        nonlocal swap_blocked
+        if anchor.label == "QA-012 diagnostic output parent":
+            try:
+                output_parent.rename(displaced)
+            except OSError:
+                swap_blocked = True
+            else:
+                output_parent.mkdir()
+        return original_create_once(anchor, name, data, **kwargs)
 
     monkeypatch.setattr(
-        qa012_inventory.fileio,
-        "create_once_bytes",
+        qa012_inventory._DirectoryAnchor,
+        "create_once",
         swap_parent_then_publish,
     )
 
-    assert (
-        qa012_inventory.main(_argv(roots, output))
-        == qa012_inventory.EXIT_INGRESS_ERROR
-    )
-    assert output.exists()
-    assert not (displaced / output.name).exists()
+    result = qa012_inventory.main(_argv(roots, output))
+    if swap_blocked:
+        assert result == qa012_inventory.EXIT_OK
+        assert output.is_file()
+        assert not displaced.exists()
+    else:
+        assert result == qa012_inventory.EXIT_INGRESS_ERROR
+        assert not output.exists()
+        assert (displaced / output.name).is_file()
 
 
 def test_canonical_rev3_declared_sizes_fit_operational_limits():

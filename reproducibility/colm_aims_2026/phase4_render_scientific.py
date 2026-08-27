@@ -8,7 +8,6 @@ import hashlib
 import io
 import os
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +24,7 @@ from .phase4_finalize_release import (
     ReleaseVerificationFailed,
     _capture_directory_chain,
     _canonical_existing_directory,
+    _create_staged_directory,
     _materialize_staged_directory,
     _parse_object,
     _publish_verified_directory,
@@ -527,8 +527,12 @@ def render_scientific_release(
         TEX_NAME: _tex_bytes(rows, release_identity),
     }
 
-    staged = Path(tempfile.mkdtemp(prefix=".scientific-staged-", dir=output_root))
-    staged_snapshot = _capture_directory_chain(staged)
+    staged, staged_snapshot = _create_staged_directory(
+        output_root,
+        output_root_chain,
+        prefix=".scientific-staged-",
+        label="scientific staging directory",
+    )
     if (
         staged_snapshot.lexical[:-1] != output_root_chain.lexical
         or (

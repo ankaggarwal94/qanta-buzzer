@@ -14,9 +14,9 @@ import contextlib
 import hashlib
 import os
 import re
+import secrets
 import stat
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -588,6 +588,23 @@ class _DirectoryAnchor:
             os.fsync(handle.fileno())
         self.sync()
         self.revalidate(f"create {name} completion")
+
+    def create_directory_once(
+        self, name: str, *, exists_label: str, mode: int = 0o700
+    ) -> None:
+        """Create one directory under this exact held parent generation."""
+        name = self._name(name)
+        try:
+            if self._fd is not None:
+                os.mkdir(name, mode, dir_fd=self._fd)
+            else:
+                os.mkdir(self._path(name), mode)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"{exists_label} already exists: {self._path(name)}"
+            ) from exc
+        self.sync()
+        self.revalidate(f"create directory {name} completion")
 
     def unlink(self, name: str) -> None:
         name = self._name(name)
@@ -1417,6 +1434,30 @@ def _materialize_staged_directory(
             "captured staging bytes differ from the requested bytes"
         )
     return observed
+
+
+def _create_staged_directory(
+    parent: Path,
+    parent_snapshot: _CapturedDirectoryChain,
+    *,
+    prefix: str,
+    label: str,
+) -> tuple[Path, _CapturedDirectoryChain]:
+    """Create and capture one unpredictable child through a held parent."""
+    with _DirectoryAnchor(parent, parent_snapshot, f"{label} parent") as anchor:
+        for _attempt in range(32):
+            name = f"{prefix}{secrets.token_hex(16)}"
+            try:
+                anchor.create_directory_once(name, exists_label=label)
+            except FileExistsError:
+                continue
+            staged = Path(parent) / name
+            staged_snapshot = _capture_directory_chain(staged)
+            anchor.require_child_identity(name, staged_snapshot)
+            return staged, staged_snapshot
+    raise schema.TypedIngressError(
+        f"cannot allocate a fresh {label} after 32 bounded attempts"
+    )
 
 
 def _require_publication_parent(
@@ -2263,8 +2304,12 @@ def finalize_release(
     _require_unchanged_directory(
         output_root, output_root_chain, "release output root"
     )
-    staged = Path(tempfile.mkdtemp(prefix=".release-staged-", dir=output_root))
-    staged_snapshot = _capture_directory_chain(staged)
+    staged, staged_snapshot = _create_staged_directory(
+        output_root,
+        output_root_chain,
+        prefix=".release-staged-",
+        label="release staging directory",
+    )
     if (
         staged_snapshot.lexical[:-1] != output_root_chain.lexical
         or (

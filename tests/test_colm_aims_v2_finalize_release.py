@@ -208,6 +208,111 @@ def test_staging_materialization_never_truncates_late_file_claim(tmp_path):
     assert {item.name for item in staged.iterdir()} == {claimed.name}
 
 
+def test_staging_directory_creation_has_bounded_collision_retries(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    occupied = output_root / ".test-staged-fixed"
+    occupied.mkdir()
+    sentinel = occupied / "sentinel.txt"
+    sentinel.write_bytes(b"keep\n")
+    parent_snapshot = finalizer._capture_directory_chain(output_root)
+    monkeypatch.setattr(finalizer.secrets, "token_hex", lambda _size: "fixed")
+
+    with pytest.raises(schema.TypedIngressError, match="32 bounded attempts"):
+        finalizer._create_staged_directory(
+            output_root,
+            parent_snapshot,
+            prefix=".test-staged-",
+            label="test staging directory",
+        )
+
+    assert sentinel.read_bytes() == b"keep\n"
+    assert list(output_root.iterdir()) == [occupied]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX dir_fd contract")
+def test_posix_staging_directory_creation_uses_held_parent(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    displaced = tmp_path / "displaced-output"
+    decoy = tmp_path / "decoy-output"
+    parent_snapshot = finalizer._capture_directory_chain(output_root)
+    original_mkdir = finalizer.os.mkdir
+    swapped = False
+
+    def swap_restore_around_mkdir(path, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if (
+            dir_fd is not None
+            and str(path).startswith(".test-staged-")
+            and not swapped
+        ):
+            swapped = True
+            output_root.rename(displaced)
+            output_root.mkdir()
+            (output_root / "sentinel.txt").write_bytes(b"decoy\n")
+            try:
+                return original_mkdir(path, mode, dir_fd=dir_fd)
+            finally:
+                output_root.rename(decoy)
+                displaced.rename(output_root)
+        return original_mkdir(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(finalizer.os, "mkdir", swap_restore_around_mkdir)
+
+    staged, _snapshot = finalizer._create_staged_directory(
+        output_root,
+        parent_snapshot,
+        prefix=".test-staged-",
+        label="test staging directory",
+    )
+
+    assert swapped is True
+    assert staged.parent == output_root and staged.is_dir()
+    assert {item.name for item in decoy.iterdir()} == {"sentinel.txt"}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-share contract")
+def test_windows_staging_directory_creation_blocks_parent_replacement(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    displaced = tmp_path / "displaced-output"
+    parent_snapshot = finalizer._capture_directory_chain(output_root)
+    original = finalizer._DirectoryAnchor.create_directory_once
+    blocked = False
+
+    def attempt_parent_swap(anchor, name, **kwargs):
+        nonlocal blocked
+        if anchor.label == "test staging directory parent":
+            with pytest.raises(OSError):
+                output_root.rename(displaced)
+            blocked = True
+        return original(anchor, name, **kwargs)
+
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor,
+        "create_directory_once",
+        attempt_parent_swap,
+    )
+
+    staged, _snapshot = finalizer._create_staged_directory(
+        output_root,
+        parent_snapshot,
+        prefix=".test-staged-",
+        label="test staging directory",
+    )
+
+    assert blocked is True
+    assert staged.parent == output_root and staged.is_dir()
+    assert not displaced.exists()
+
+
 def test_explicit_run_id_mismatch_refuses_before_publication(tmp_path):
     site, output_root, receipts_dir = _roots(tmp_path)
 
