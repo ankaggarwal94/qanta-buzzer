@@ -214,8 +214,8 @@ authority; rev3 remains historical predecessor evidence.
     (4) live ``rev-parse HEAD^{tree}`` != certificate tree; (5) live
     TRACKED-dirty status (untracked-only ``?? ...`` porcelain lines do NOT
     refuse — the tracked-clean + untracked-disclosure convention);
-    (6) ``MODAL_HOST_GIT_STATUS`` or ``MODAL_HOST_GIT_COMMIT`` present in
-    os.environ AT ALL (even empty) — ambient provenance laundering;
+    (6) any ``MODAL_HOST*`` key present in os.environ AT ALL (even empty) —
+    ambient provenance laundering;
     (7) snapshot re-verification failure against the frozen manifest;
     (R-082/F-1, PRE-LEDGER) any staged path — from BOTH the certificate's
     ``staged_inputs`` component AND the composed argv (``--staged-input``
@@ -237,7 +237,9 @@ authority; rev3 remains historical predecessor evidence.
     the launcher cwd and the child cwd). Success path: ``launch`` called
     EXACTLY once; env carries ``PYTHONHASHSEED=0``, ``OMP_NUM_THREADS=1``,
     ``VECLIB_MAXIMUM_THREADS=1``, ``HF_HUB_OFFLINE=1``,
-    ``TRANSFORMERS_OFFLINE=1`` and NO ``MODAL_HOST_*`` key; argv is
+    ``TRANSFORMERS_OFFLINE=1`` plus exactly three launcher-derived provenance
+    bindings: clean status, the certificate commit, and the verified producer
+    SHA-256; no ambient value is inherited. argv is
     composed FROM the certificate's recorded command
     (components.environment.command) with ONLY output paths remapped —
     ``--out`` value to ``quarantine_dir/<basename>``, ``--records-out``
@@ -4019,6 +4021,7 @@ def _launcher_fixture(
     """
     monkeypatch.delenv("MODAL_HOST_GIT_STATUS", raising=False)
     monkeypatch.delenv("MODAL_HOST_GIT_COMMIT", raising=False)
+    monkeypatch.delenv("MODAL_HOST_PRODUCER_SCRIPT_SHA256", raising=False)
     phase4 = _phase4()
     components = _good_components()
     components["repo"] = {
@@ -4353,7 +4356,13 @@ class TestR081LauncherRefusals:
         # The laundering trap: an ambient EMPTY status would fake-clean the
         # committed-writer guard — PRESENCE at all refuses, value ignored.
         launcher, config, _ = _launcher_fixture(tmp_path, monkeypatch)
-        for var in ("MODAL_HOST_GIT_STATUS", "MODAL_HOST_GIT_COMMIT"):
+        for var in (
+            "MODAL_HOST_GIT_STATUS",
+            "MODAL_HOST_GIT_COMMIT",
+            "MODAL_HOST_PRODUCER_SCRIPT_SHA256",
+            "MODAL_HOST_UNRECOGNIZED",
+            "modal_host_case_variant",
+        ):
             monkeypatch.setenv(var, "")
             launch = _LaunchRecorder(config, config["activation_digest"])
             with pytest.raises(launcher.LaunchRefusal) as excinfo:
@@ -4363,7 +4372,7 @@ class TestR081LauncherRefusals:
                     launch=launch,
                     compare=_pass_compare,
                 )
-            assert "MODAL_HOST" in str(excinfo.value)
+            assert "ambient provenance override" in str(excinfo.value)
             assert launch.calls == []
             monkeypatch.delenv(var)
 
@@ -4513,6 +4522,26 @@ class TestR081LauncherRefusals:
 
 
 class TestR081LauncherRun:
+    def test_certified_producer_environment_accepts_native_sha256_commit(self):
+        launcher = _phase4_launcher()
+        commit = "c" * 64
+        producer_sha256 = "d" * 64
+
+        env = launcher._certified_producer_environment(
+            {"commit": commit, "dirty": False},
+            {
+                "content_hashes": {
+                    "producer_sha256": {"sha256": producer_sha256}
+                }
+            },
+        )
+
+        assert env == {
+            "MODAL_HOST_GIT_STATUS": "",
+            "MODAL_HOST_GIT_COMMIT": commit,
+            "MODAL_HOST_PRODUCER_SCRIPT_SHA256": producer_sha256,
+        }
+
     def test_success_path_launch_env_argv_ledger_promote(
         self, tmp_path, monkeypatch
     ):
@@ -4526,10 +4555,23 @@ class TestR081LauncherRun:
         )
         assert len(launch.calls) == 1, "launch fires EXACTLY once"
         argv, env = launch.calls[0]
-        # Env pins + no ambient-override keys survive into the child.
+        # Env pins plus only launcher-derived, certificate-owned provenance
+        # bindings reach the child; no ambient override survives.
         for key, value in LAUNCHER_ENV_PINS.items():
             assert env.get(key) == value, key
-        assert not any(k.startswith("MODAL_HOST") for k in env)
+        certified_provenance = {
+            key: value
+            for key, value in env.items()
+            if key.startswith("MODAL_HOST")
+        }
+        assert certified_provenance == {
+            "MODAL_HOST_GIT_STATUS": "",
+            "MODAL_HOST_GIT_COMMIT": FAKE_COMMIT,
+            "MODAL_HOST_PRODUCER_SCRIPT_SHA256": sha256_file(
+                REPO_ROOT
+                / launcher.phase4.CONTENT_HASH_RELPATHS["producer_sha256"]
+            ),
+        }
         # Argv is composed FROM the certificate command, then every mutable
         # input path is rebound to its authenticated private quarantine copy.
         quarantine = Path(config["quarantine_dir"])

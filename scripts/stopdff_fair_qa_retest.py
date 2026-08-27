@@ -357,8 +357,8 @@ def _require_exact_producer_binding(generation: dict) -> None:
     commit = generation.get("git_commit")
     if (
         not isinstance(commit, str)
-        or len(commit) != 40
-        or any(char not in "0123456789abcdef" for char in commit.lower())
+        or len(commit) not in (40, 64)
+        or any(char not in "0123456789abcdef" for char in commit)
     ):
         raise RuntimeError("missing producer git commit")
     if generation.get("git_dirty"):

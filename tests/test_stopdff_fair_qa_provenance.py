@@ -22,8 +22,10 @@ def _generation(**overrides: object) -> dict[str, object]:
     return generation
 
 
+@pytest.mark.parametrize("commit_length", [40, 64])
 def test_fair_qa_provenance_accepts_exact_committed_producer(
     monkeypatch: pytest.MonkeyPatch,
+    commit_length: int,
 ) -> None:
     from scripts import stopdff_fair_qa_retest as fair_qa
 
@@ -33,10 +35,44 @@ def test_fair_qa_provenance_accepts_exact_committed_producer(
         lambda _commit, _path: "a" * 64,
     )
 
-    generation = _generation()
+    generation = _generation(git_commit="b" * commit_length)
     fair_qa._require_exact_producer_binding(generation)
 
     assert generation["commit_script_sha256"] == "a" * 64
+    assert generation["commit_contains_exact_script"] is True
+
+
+def test_fair_qa_provenance_accepts_launcher_certified_no_git_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The sanitized launcher child has no PATH and therefore no live git."""
+    from scripts import _common
+    from scripts import stopdff_fair_qa_retest as fair_qa
+
+    commit = "b" * 40
+    producer_sha256 = fair_qa.sha256_file(Path(fair_qa.__file__))
+    monkeypatch.setenv("MODAL_HOST_GIT_STATUS", "")
+    monkeypatch.setenv("MODAL_HOST_GIT_COMMIT", commit)
+    monkeypatch.setenv(
+        "MODAL_HOST_PRODUCER_SCRIPT_SHA256", producer_sha256
+    )
+    monkeypatch.setattr(_common, "_git_output", lambda _args: None)
+
+    calibration = tmp_path / "calibration.json"
+    dataset = tmp_path / "dataset.json"
+    calibration.write_text('{"calibration": 1}\n', encoding="utf-8")
+    dataset.write_text('{"dataset": 1}\n', encoding="utf-8")
+    generation = fair_qa._build_output_provenance(
+        out=tmp_path / "output.json",
+        effective_argv=["--out", str(tmp_path / "output.json")],
+        calibration_path=calibration,
+        data_inputs=[dataset],
+    )
+
+    assert generation["git_commit"] == commit
+    assert generation["git_dirty"] is False
+    assert generation["script_sha256"] == producer_sha256
+    assert generation["commit_script_sha256"] == producer_sha256
     assert generation["commit_contains_exact_script"] is True
 
 

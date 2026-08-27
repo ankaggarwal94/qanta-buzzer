@@ -102,6 +102,13 @@ precondition is unavailable, do not run the ceremony: provision a separately
 approved OS isolation boundary first. No verifier or closure verdict proves
 hostile-process provenance or tamper resistance.
 
+The producer child intentionally receives no ambient `PATH` or ambient
+`MODAL_HOST*` values. After re-proving the certificate commit, tracked-clean
+state, and producer source hash, the launcher supplies those three exact
+certificate-owned provenance values to the legacy producer helper internally.
+This lets the output bind its committed writer without executing an unbound
+`git` binary inside the sanitized child.
+
 `LAUNCH_RECEIPT.json` records pre-acceptance comparator and byte bindings; it
 does not accept a launch. After promotion durability and producer-quarantine
 cleanup complete, the launcher durably creates

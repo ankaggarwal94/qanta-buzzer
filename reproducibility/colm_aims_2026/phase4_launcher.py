@@ -58,9 +58,8 @@ from . import pairing, phase4, phase4_finalize_release, schema
 # reproducibility/colm_aims_2026/phase4_launcher.py -> repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# R-081 class (3)/(6): ambient provenance overrides — PRESENCE refuses,
-# value ignored (an ambient EMPTY status would fake-clean the guard).
-AMBIENT_OVERRIDE_VARS = ("MODAL_HOST_GIT_STATUS", "MODAL_HOST_GIT_COMMIT")
+# R-081 class (3)/(6): ambient provenance overrides — any prefixed key's
+# PRESENCE refuses, value ignored (an ambient EMPTY status would fake-clean).
 AMBIENT_ENV_PREFIX = "MODAL_HOST"
 AMBIENT_PYTHON_INJECTION_VARS = (
     "PYTHONPATH",
@@ -480,10 +479,48 @@ def _sanitized_runtime_environment() -> dict[str, str]:
     return sanitized
 
 
+def _certified_producer_environment(
+    repo: dict[str, Any], components: dict[str, Any]
+) -> dict[str, str]:
+    """Return provenance values derived only from verified certificate data.
+
+    The child deliberately has no ``PATH``, so its legacy provenance helper
+    cannot invoke ``git``.  Supply the already re-proved commit, clean status,
+    and producer hash after ambient overrides have been rejected.  These are
+    launcher-owned bindings, never operator-controlled environment input.
+    """
+
+    commit = repo.get("commit")
+    content_hashes = components.get("content_hashes")
+    producer = (
+        content_hashes.get("producer_sha256")
+        if isinstance(content_hashes, dict)
+        else None
+    )
+    producer_sha256 = (
+        producer.get("sha256") if isinstance(producer, dict) else None
+    )
+    if not schema.is_git_object_id(commit) or repo.get("dirty") is not False:
+        raise LaunchRefusal(
+            "certificate repo identity cannot bind producer provenance"
+            " (R-079/R-081)"
+        )
+    if not schema.is_sha256_hex(producer_sha256):
+        raise LaunchRefusal(
+            "certificate producer hash cannot bind producer provenance"
+            " (R-079/R-081)"
+        )
+    return {
+        "MODAL_HOST_GIT_COMMIT": commit,
+        "MODAL_HOST_GIT_STATUS": "",
+        "MODAL_HOST_PRODUCER_SCRIPT_SHA256": producer_sha256,
+    }
+
+
 def _validate_ambient_environment() -> None:
     """Refuse ambient provenance and Python-import control surfaces."""
-    for var in AMBIENT_OVERRIDE_VARS:
-        if var in os.environ:
+    for var in os.environ:
+        if var.upper().startswith(AMBIENT_ENV_PREFIX):
             raise LaunchRefusal(
                 f"ambient provenance override {var} is present in the"
                 " environment (MODAL_HOST overrides are refused even when"
@@ -2989,6 +3026,7 @@ def validate_and_launch(
             verified_eligibility,
         )
     child_env = _sanitized_runtime_environment()
+    child_env.update(_certified_producer_environment(repo, components))
 
     # (9) Workspace — fully materialized BEFORE the ledger (F-2: no
     # workspace defect may consume the single-use exception; the mkdir's
