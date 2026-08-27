@@ -1002,9 +1002,17 @@ analysis over retained per-item records — permitted; model execution is not.
   (bool-safe); neither file is reopened by path after the accepted snapshot;
   (2) require LIVE `git rev-parse HEAD` == certificate commit, LIVE
   `rev-parse HEAD^{tree}` == certificate tree, and a live tracked-clean
-  check; (3) REJECT ambient provenance overrides (`MODAL_HOST_GIT_STATUS`,
-  `MODAL_HOST_GIT_COMMIT` set at all = refusal) and launch the producer as
-  a SUBPROCESS whose environment sets, before interpreter start:
+  check; (3) REJECT every ambient `MODAL_HOST*` provenance override (set at
+  all = refusal), then derive `MODAL_HOST_GIT_STATUS=""`,
+  `MODAL_HOST_GIT_COMMIT=<certificate commit>`, and
+  `MODAL_HOST_PRODUCER_SCRIPT_SHA256=<verified certificate producer hash>`
+  inside the launcher only after the live commit/tree/tracked-clean and
+  content-hash gates pass and after raw-hashing `git show <certificate
+  commit>:scripts/stopdff_fair_qa_retest.py` to require that the committed
+  blob equals the verified live/certificate hash (independent of index
+  `assume-unchanged`/`skip-worktree` bits). Launch the producer as a SUBPROCESS whose
+  environment sets those certificate-owned provenance bindings and, before
+  interpreter start:
   `PYTHONHASHSEED=0`, `OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`,
   `MKL_NUM_THREADS=1`, `NUMEXPR_NUM_THREADS=1`,
   `VECLIB_MAXIMUM_THREADS=1`, and the offline flags; require the live OS,

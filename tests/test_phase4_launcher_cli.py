@@ -604,6 +604,12 @@ def _runtime_fixture(
     )
 
     def run_git(command_argv):
+        if len(command_argv) >= 2 and command_argv[1] == "show":
+            relpath = command_argv[2].partition(":")[2]
+            assert relpath == launcher.phase4.CONTENT_HASH_RELPATHS[
+                "producer_sha256"
+            ]
+            return (launcher._REPO_ROOT / relpath).read_bytes()
         if command_argv == ["git", "rev-parse", "HEAD"]:
             return commit + "\n"
         if command_argv == ["git", "rev-parse", "HEAD^{tree}"]:
