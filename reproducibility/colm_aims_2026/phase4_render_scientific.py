@@ -574,6 +574,8 @@ def render_scientific_release(
             destination,
             exists_label="scientific output bundle",
             parent_chain=output_root_chain,
+            staged_chain=staged_snapshot,
+            expected_snapshot=generated,
             expected_names=OUTPUT_NAMES,
         )
         # The final name is the terminal operation; avoid fallible I/O after

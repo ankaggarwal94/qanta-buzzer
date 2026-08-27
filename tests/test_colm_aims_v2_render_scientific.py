@@ -89,10 +89,13 @@ def _render(site, output_root: Path, receipts_dir: Path, **overrides):
     return render_scientific_release(**values)
 
 
-def _commit_without_parent_sync(anchor, staged_name: str, destination_name: str):
+def _commit_without_parent_sync(
+    anchor, staged_name: str, destination_name: str, **kwargs
+):
     """Commit through the platform's anchored branch, then skip its sync."""
     if anchor._fd is None:
-        os.rename(anchor._path(staged_name), anchor._path(destination_name))
+        source_anchor = kwargs["source_anchor"]
+        anchor._rename_windows_child_handle(source_anchor, destination_name)
     else:
         os.mkdir(destination_name, dir_fd=anchor._fd)
         os.rename(
@@ -474,6 +477,41 @@ def test_renderer_cleanup_never_removes_replacement_staging_generation(
     assert original_stage.is_dir()
 
 
+def test_renderer_publication_rejects_byte_identical_replacement_stage(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    original_publish = renderer._publish_verified_directory
+    verified_stage = output_root / "verified-stage"
+    observed_stage = None
+
+    def replace_before_publish(staged, destination, **kwargs):
+        nonlocal observed_stage
+        staged = Path(staged)
+        observed_stage = staged
+        verified_bytes = {
+            item.name: item.read_bytes() for item in staged.iterdir()
+        }
+        staged.rename(verified_stage)
+        staged.mkdir()
+        for name, data in verified_bytes.items():
+            (staged / name).write_bytes(data)
+        return original_publish(staged, destination, **kwargs)
+
+    monkeypatch.setattr(
+        renderer, "_publish_verified_directory", replace_before_publish
+    )
+    with pytest.raises(schema.TypedIngressError, match="identity|captured"):
+        _render(site, output_root, receipts_dir)
+
+    assert observed_stage is not None and observed_stage.is_dir()
+    assert verified_stage.is_dir()
+    destination = output_root / "render-0001"
+    assert not destination.exists()
+    assert not finalizer._pending_guard_path(destination).exists()
+    assert not finalizer._accepted_marker_path(destination).exists()
+
+
 def test_staged_fsync_failure_precedes_publication(tmp_path, monkeypatch):
     site, output_root, receipts_dir = _roots(tmp_path)
 
@@ -498,15 +536,15 @@ def test_committed_publish_requires_second_durability_barrier(
 
     def commit_then_fail(anchor, staged_name, destination_name, **_kwargs):
         dest = _commit_without_parent_sync(
-            anchor, staged_name, destination_name
+            anchor, staged_name, destination_name, **_kwargs
         )
         raise fileio.DirectoryPublicationCommittedError(
             dest, OSError("injected parent sync failure")
         )
 
-    def record_tree(anchor, name, expected_names):
+    def record_tree(anchor, name, expected_names, **kwargs):
         synced.append(anchor._path(name))
-        return original_sync_tree(anchor, name, expected_names)
+        return original_sync_tree(anchor, name, expected_names, **kwargs)
 
     def record_directory(anchor):
         synced.append(anchor.path)
@@ -541,17 +579,17 @@ def test_failed_retry_barrier_stays_guarded_and_is_not_success(
     def commit_then_fail(anchor, staged_name, destination_name, **_kwargs):
         nonlocal committed
         dest = _commit_without_parent_sync(
-            anchor, staged_name, destination_name
+            anchor, staged_name, destination_name, **_kwargs
         )
         committed = True
         raise fileio.DirectoryPublicationCommittedError(
             dest, OSError("injected parent sync failure")
         )
 
-    def fail_destination_barrier(anchor, name, expected_names):
+    def fail_destination_barrier(anchor, name, expected_names, **kwargs):
         if failure_point == "tree" and name == destination.name:
             raise OSError("injected second durability failure")
-        return original_sync_tree(anchor, name, expected_names)
+        return original_sync_tree(anchor, name, expected_names, **kwargs)
 
     def fail_parent_barrier(anchor):
         if (

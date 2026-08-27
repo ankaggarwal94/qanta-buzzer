@@ -110,6 +110,7 @@ class _DirectoryAnchor:
         label: str,
         *,
         delete_access: bool = False,
+        share_delete: bool = False,
     ) -> None:
         self.path = Path(os.path.abspath(path))
         if isinstance(captured, _CapturedDirectoryChain):
@@ -124,6 +125,7 @@ class _DirectoryAnchor:
         self.captured = self.snapshot.lexical
         self.label = label
         self._delete_access = delete_access
+        self._share_delete = share_delete
         self._fd: int | None = None
         self._win_handles: list[int] = []
         self._operation_path: Path | None = None
@@ -376,8 +378,8 @@ class _DirectoryAnchor:
                     f"{self.label} original native chain component order changed"
                 )
             # Capture the complete native identity without blocking a peer's
-            # delete request, then immediately reacquire with delete sharing
-            # denied and require byte-for-byte identity equality.
+            # delete request, then immediately reacquire with the requested
+            # share policy and require byte-for-byte identity equality.
             temporary = create_file(
                 component,
                 0x80000000,
@@ -405,7 +407,9 @@ class _DirectoryAnchor:
                     if self._delete_access and index == len(components) - 1
                     else 0
                 ),  # GENERIC_READ plus optional DELETE on the final component
-                0x00000001 | 0x00000002,  # FILE_SHARE_READ | FILE_SHARE_WRITE
+                0x00000001
+                | 0x00000002
+                | (0x00000004 if self._share_delete else 0),
                 None,
                 3,  # OPEN_EXISTING
                 0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
@@ -624,11 +628,30 @@ class _DirectoryAnchor:
             error = ctypes.get_last_error()
             raise OSError(error, "cannot delete exact staging directory handle")
 
-    def sync_directory(self, name: str, expected_names: tuple[str, ...]) -> None:
+    def sync_directory(
+        self,
+        name: str,
+        expected_names: tuple[str, ...],
+        *,
+        child_snapshot: _CapturedDirectoryChain | None = None,
+    ) -> None:
         """Sync one exact child tree without leaving the anchored generation."""
         name = self._name(name)
         if self._fd is None:
-            fileio.fsync_tree(self._path(name))
+            child = self.path / name if child_snapshot is not None else self._path(name)
+            if child_snapshot is None:
+                fileio.fsync_tree(child)
+            else:
+                with _DirectoryAnchor(
+                    child,
+                    child_snapshot,
+                    "anchored sync directory",
+                    share_delete=True,
+                ) as child_anchor:
+                    operation_path = child_anchor._operation_path
+                    if operation_path is None:  # pragma: no cover - invariant
+                        raise RuntimeError("Windows sync path is not pinned")
+                    fileio.fsync_tree(operation_path)
             self.revalidate(f"sync {name} completion")
             return
         child_fd = os.open(
@@ -637,6 +660,15 @@ class _DirectoryAnchor:
             dir_fd=self._fd,
         )
         try:
+            opened = os.fstat(child_fd)
+            if (
+                child_snapshot is not None
+                and schema._identity_tuple(opened)
+                != child_snapshot.lexical[-1][1]
+            ):
+                raise schema.TypedIngressError(
+                    "sync directory does not match its captured identity"
+                )
             with os.scandir(child_fd) as entries:
                 names = self._bounded_names(entries, len(expected_names))
             if set(names) != set(expected_names) or len(names) != len(
@@ -783,7 +815,11 @@ class _DirectoryAnchor:
         return True
 
     def snapshot_directory(
-        self, name: str, expected_names: tuple[str, ...]
+        self,
+        name: str,
+        expected_names: tuple[str, ...],
+        *,
+        child_snapshot: _CapturedDirectoryChain | None = None,
     ) -> dict[str, bytes]:
         """Capture one flat, exact, ordinary-file directory under the anchor."""
         name = self._name(name)
@@ -802,9 +838,16 @@ class _DirectoryAnchor:
                 ) from exc
             try:
                 info = os.fstat(child_fd)
-                if not stat.S_ISDIR(info.st_mode):
+                if (
+                    not stat.S_ISDIR(info.st_mode)
+                    or (
+                        child_snapshot is not None
+                        and schema._identity_tuple(info)
+                        != child_snapshot.lexical[-1][1]
+                    )
+                ):
                     raise schema.TypedIngressError(
-                        "anchored output is not an ordinary directory"
+                        "anchored output is not the captured ordinary directory"
                     )
                 with os.scandir(child_fd) as entries:
                     names = self._bounded_names(entries, len(expected))
@@ -819,10 +862,18 @@ class _DirectoryAnchor:
             finally:
                 os.close(child_fd)
         else:
-            child = self._path(name)
-            chain = _capture_directory_chain(child)
-            with _DirectoryAnchor(child, chain, "anchored output directory") as anchor:
-                with os.scandir(child) as entries:
+            child = self.path / name if child_snapshot is not None else self._path(name)
+            chain = child_snapshot or _capture_directory_chain(child)
+            with _DirectoryAnchor(
+                child,
+                chain,
+                "anchored output directory",
+                share_delete=child_snapshot is not None,
+            ) as anchor:
+                operation_path = anchor._operation_path
+                if operation_path is None:  # pragma: no cover - invariant
+                    raise RuntimeError("Windows output path is not pinned")
+                with os.scandir(operation_path) as entries:
                     names = self._bounded_names(entries, len(expected))
                 if set(names) != expected or len(names) != len(expected):
                     raise schema.TypedIngressError(
@@ -836,6 +887,129 @@ class _DirectoryAnchor:
                 }
         self.revalidate(f"snapshot {name} completion")
         return snapshot
+
+    def snapshot_self(
+        self, expected_names: tuple[str, ...]
+    ) -> dict[str, bytes]:
+        """Capture this held exact flat directory generation."""
+        expected = set(expected_names)
+        if (
+            not expected
+            or len(expected) != len(expected_names)
+            or any(self._name(item) != item for item in expected)
+        ):
+            raise schema.ConfigSurfaceError("expected output membership is invalid")
+        if self._fd is not None:
+            with os.scandir(self._fd) as entries:
+                names = self._bounded_names(entries, len(expected))
+            if set(names) != expected or len(names) != len(expected):
+                raise schema.TypedIngressError(
+                    "accepted output must contain exactly three ordinary files"
+                )
+            return {
+                item: self._read_regular_at(self._fd, item)
+                for item in sorted(expected)
+            }
+        operation_path = self._operation_path
+        if operation_path is None:  # pragma: no cover - invariant
+            raise RuntimeError("Windows output path is not pinned")
+        with os.scandir(operation_path) as entries:
+            names = self._bounded_names(entries, len(expected))
+        if set(names) != expected or len(names) != len(expected):
+            raise schema.TypedIngressError(
+                "accepted output must contain exactly three ordinary files"
+            )
+        return {
+            item: self.read_regular(item, max_bytes=schema.MAX_ARTIFACT_BYTES)
+            for item in sorted(expected)
+        }
+
+    def require_child_identity(
+        self, name: str, child_snapshot: _CapturedDirectoryChain
+    ) -> None:
+        """Require a child name to identify one previously captured directory."""
+        name = self._name(name)
+        try:
+            info = self.stat(name)
+        except OSError as exc:
+            raise schema.TypedIngressError(
+                "captured publication directory is missing"
+            ) from exc
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or getattr(info, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            or schema._identity_tuple(info) != child_snapshot.lexical[-1][1]
+        ):
+            raise schema.TypedIngressError(
+                "publication directory does not match its captured identity"
+            )
+        if self._fd is None:
+            child = self.path / name
+            with _DirectoryAnchor(
+                child,
+                child_snapshot,
+                "captured publication directory",
+                share_delete=True,
+            ):
+                pass
+
+    def _rename_windows_child_handle(
+        self,
+        source_anchor: "_DirectoryAnchor",
+        destination_name: str,
+    ) -> None:
+        """Rename the exact held Windows source handle under this parent."""
+        if (
+            os.name != "nt"
+            or self._fd is not None
+            or not self._win_handles
+            or not source_anchor._win_handles
+            or not source_anchor._delete_access
+        ):
+            raise RuntimeError("exact Windows rename anchors are unavailable")
+        import ctypes
+        from ctypes import wintypes
+
+        destination_path = str(self._path(destination_name))
+
+        class _FileRenameInformation(ctypes.Structure):
+            _fields_ = [
+                ("replace_if_exists", wintypes.BOOLEAN),
+                ("root_directory", wintypes.HANDLE),
+                ("file_name_length", wintypes.DWORD),
+                ("file_name", wintypes.WCHAR * len(destination_path)),
+            ]
+
+        encoded = destination_path.encode("utf-16-le")
+        information = _FileRenameInformation()
+        information.replace_if_exists = False
+        information.root_directory = None
+        information.file_name_length = len(encoded)
+        information.file_name = destination_path
+        set_information = ctypes.WinDLL(
+            "kernel32", use_last_error=True
+        ).SetFileInformationByHandle
+        set_information.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        set_information.restype = wintypes.BOOL
+        if not set_information(
+            wintypes.HANDLE(source_anchor._win_handles[-1]),
+            3,  # FileRenameInfo
+            ctypes.byref(information),
+            ctypes.sizeof(information),
+        ):
+            error = ctypes.get_last_error()
+            if error in {80, 183}:
+                raise FileExistsError(
+                    f"publication destination already exists: {destination_name}"
+                )
+            raise OSError(error, "cannot rename exact staging directory handle")
 
     @staticmethod
     def _bounded_names(entries: Any, expected_count: int) -> list[str]:
@@ -884,36 +1058,49 @@ class _DirectoryAnchor:
             os.close(fd)
 
     def publish_directory(
-        self, staged_name: str, destination_name: str, *, exists_label: str
+        self,
+        staged_name: str,
+        destination_name: str,
+        *,
+        exists_label: str,
+        source_anchor: "_DirectoryAnchor",
+        source_snapshot: _CapturedDirectoryChain,
+        destination_snapshot: _CapturedDirectoryChain,
     ) -> None:
         staged_name = self._name(staged_name)
         destination_name = self._name(destination_name)
-        if self._fd is None:
-            fileio.publish_dir_create_once(
-                self._path(staged_name),
-                self._path(destination_name),
-                exists_label=exists_label,
-            )
-            self.revalidate("anchored Windows directory publication")
-            return
+        if self._fd is not None:
+            self.require_child_identity(staged_name, source_snapshot)
+        committed = False
         try:
-            os.mkdir(destination_name, dir_fd=self._fd)
-        except FileExistsError as exc:
-            raise FileExistsError(
-                f"{exists_label} already exists: {self._path(destination_name)}"
-            ) from exc
-        os.rename(
-            staged_name,
-            destination_name,
-            src_dir_fd=self._fd,
-            dst_dir_fd=self._fd,
-        )
-        try:
+            if self._fd is None:
+                self._rename_windows_child_handle(
+                    source_anchor, destination_name
+                )
+            else:
+                try:
+                    os.mkdir(destination_name, dir_fd=self._fd)
+                except FileExistsError as exc:
+                    raise FileExistsError(
+                        f"{exists_label} already exists:"
+                        f" {self._path(destination_name)}"
+                    ) from exc
+                os.rename(
+                    staged_name,
+                    destination_name,
+                    src_dir_fd=self._fd,
+                    dst_dir_fd=self._fd,
+                )
+            committed = True
+            self.require_child_identity(destination_name, destination_snapshot)
             self.sync()
-        except OSError as exc:
-            raise fileio.DirectoryPublicationCommittedError(
-                self._path(destination_name), exc
-            ) from exc
+        except BaseException as exc:
+            if committed:
+                cause = exc if isinstance(exc, OSError) else OSError(str(exc))
+                raise fileio.DirectoryPublicationCommittedError(
+                    self._path(destination_name), cause
+                ) from exc
+            raise
 
 
 def _capture_directory_chain(path: Path) -> _CapturedDirectoryChain:
@@ -1121,6 +1308,47 @@ def _require_unchanged_directory(
         )
 
 
+def _relocated_child_snapshot(
+    parent_snapshot: _CapturedDirectoryChain,
+    child_snapshot: _CapturedDirectoryChain,
+    destination: Path,
+) -> _CapturedDirectoryChain:
+    """Bind a captured child identity to its post-rename sibling spelling."""
+    if child_snapshot.lexical[:-1] != parent_snapshot.lexical:
+        raise schema.TypedIngressError(
+            "staging identity is not a child of the publication parent"
+        )
+    destination = Path(os.path.abspath(destination))
+    component = os.path.normcase(str(destination))
+    lexical = parent_snapshot.lexical + (
+        (component, child_snapshot.lexical[-1][1]),
+    )
+    parent_windows = parent_snapshot.windows
+    child_windows = child_snapshot.windows
+    if parent_windows is None and child_windows is None:
+        return _CapturedDirectoryChain(lexical=lexical)
+    if (
+        parent_windows is None
+        or child_windows is None
+        or child_windows[:-1] != parent_windows
+    ):
+        raise schema.TypedIngressError(
+            "staging native identity is not a child of the publication parent"
+        )
+    leaf = child_windows[-1]
+    parent_volume_path = parent_windows[-1].final_volume_path.rstrip("\\")
+    moved_leaf = _WindowsComponentIdentity(
+        component=component,
+        volume_serial=leaf.volume_serial,
+        file_id=leaf.file_id,
+        final_volume_path=f"{parent_volume_path}\\{destination.name}",
+    )
+    return _CapturedDirectoryChain(
+        lexical=lexical,
+        windows=parent_windows + (moved_leaf,),
+    )
+
+
 def _remove_exact_staged_directory(
     *,
     parent: Path,
@@ -1284,6 +1512,7 @@ def _require_published_tree(
     stage: str,
     expected_names: tuple[str, ...],
     anchor: _DirectoryAnchor,
+    destination_snapshot: _CapturedDirectoryChain,
 ) -> None:
     """Rebind the committed directory bytes to the staged precommit digest."""
     _require_publication_parent(destination, parent_chain, f"{stage} precheck")
@@ -1291,7 +1520,9 @@ def _require_published_tree(
         {
             rel: hashlib.sha256(data).hexdigest()
             for rel, data in anchor.snapshot_directory(
-                Path(destination).name, expected_names
+                Path(destination).name,
+                expected_names,
+                child_snapshot=destination_snapshot,
             ).items()
         }
     )
@@ -1455,6 +1686,7 @@ def _require_positive_acceptance_state(
     parent_chain: _CapturedDirectoryChain,
     expected_names: tuple[str, ...],
     anchor: _DirectoryAnchor,
+    destination_snapshot: _CapturedDirectoryChain,
 ) -> None:
     """Validate committed tree and marker while the pending guard is live."""
     _require_published_tree(
@@ -1464,6 +1696,7 @@ def _require_positive_acceptance_state(
         "acceptance tree validation",
         expected_names,
         anchor,
+        destination_snapshot,
     )
     marker = _accepted_marker_path(destination)
     expected = _accepted_marker_bytes(destination, tree_sha256)
@@ -1484,6 +1717,7 @@ def _retire_pending_guard(
     destination: Path,
     parent_chain: _CapturedDirectoryChain,
     anchor: _DirectoryAnchor | None = None,
+    destination_snapshot: _CapturedDirectoryChain | None = None,
 ) -> None:
     """Remove the guard only after the final directory is independently durable."""
     if anchor is None:
@@ -1496,15 +1730,20 @@ def _retire_pending_guard(
                 destination=destination,
                 parent_chain=parent_chain,
                 anchor=opened,
+                destination_snapshot=destination_snapshot,
             )
         return
     _require_publication_parent(destination, parent_chain, "guard retirement")
+    if destination_snapshot is not None:
+        anchor.require_child_identity(destination.name, destination_snapshot)
     observed = anchor.read_regular(guard.name, max_bytes=len(encoded))
     if observed != encoded:
         raise schema.TypedIngressError(
             "pending publication guard changed before acceptance"
         )
     _require_publication_parent(destination, parent_chain, "guard unlink")
+    if destination_snapshot is not None:
+        anchor.require_child_identity(destination.name, destination_snapshot)
     anchor.unlink(guard.name)
     _require_publication_parent(destination, parent_chain, "guard unlink commit")
     try:
@@ -1745,6 +1984,8 @@ def _publish_verified_directory(
     *,
     exists_label: str,
     parent_chain: _CapturedDirectoryChain,
+    staged_chain: _CapturedDirectoryChain,
+    expected_snapshot: dict[str, bytes],
     expected_names: tuple[str, ...] = _SIDECAR_NAMES,
 ) -> None:
     """Create-once publish guarded until the final directory is durable."""
@@ -1755,17 +1996,30 @@ def _publish_verified_directory(
             "staged and destination directories must be siblings under the"
             " validated publication parent"
         )
-    with _DirectoryAnchor(
-        Path(destination).parent, parent_chain, "publication parent"
-    ) as anchor:
+    destination_chain = _relocated_child_snapshot(
+        parent_chain, staged_chain, destination
+    )
+    with (
+        _DirectoryAnchor(
+            Path(destination).parent, parent_chain, "publication parent"
+        ) as anchor,
+        _DirectoryAnchor(
+            staged,
+            staged_chain,
+            "verified staging source",
+            delete_access=os.name == "nt",
+        ) as source_anchor,
+    ):
         _require_publication_parent(destination, parent_chain, "transaction start")
-        staged_snapshot = anchor.snapshot_directory(
-            Path(staged).name, expected_names
-        )
+        staged_bytes = source_anchor.snapshot_self(expected_names)
+        if staged_bytes != expected_snapshot:
+            raise schema.TypedIngressError(
+                "captured staging bytes differ from the caller-verified bytes"
+            )
         tree_sha256 = verifier._tree_digest_from_shas(
             {
                 rel: hashlib.sha256(data).hexdigest()
-                for rel, data in staged_snapshot.items()
+                for rel, data in staged_bytes.items()
             }
         )
         _require_publication_parent(destination, parent_chain, "guard dispatch")
@@ -1782,6 +2036,9 @@ def _publish_verified_directory(
                     Path(staged).name,
                     Path(destination).name,
                     exists_label=exists_label,
+                    source_anchor=source_anchor,
+                    source_snapshot=staged_chain,
+                    destination_snapshot=destination_chain,
                 )
                 published = True
                 _require_publication_parent(
@@ -1800,8 +2057,16 @@ def _publish_verified_directory(
                     destination, parent_chain, "committed rename recovery"
                 )
                 # Re-open and sync only through the held parent generation.
-                anchor.snapshot_directory(Path(destination).name, expected_names)
-                anchor.sync_directory(Path(destination).name, expected_names)
+                anchor.snapshot_directory(
+                    Path(destination).name,
+                    expected_names,
+                    child_snapshot=destination_chain,
+                )
+                anchor.sync_directory(
+                    Path(destination).name,
+                    expected_names,
+                    child_snapshot=destination_chain,
+                )
                 anchor.sync()
                 _require_publication_parent(
                     destination, parent_chain, "committed parent sync"
@@ -1826,6 +2091,10 @@ def _publish_verified_directory(
             "postcommit tree validation",
             expected_names,
             anchor,
+            destination_chain,
+        )
+        anchor.require_child_identity(
+            Path(destination).name, destination_chain
         )
         try:
             _create_accepted_marker(
@@ -1836,12 +2105,19 @@ def _publish_verified_directory(
             )
         except BaseException:
             raise
+        anchor.require_child_identity(
+            Path(destination).name, destination_chain
+        )
         _require_positive_acceptance_state(
             destination,
             tree_sha256,
             parent_chain,
             expected_names,
             anchor,
+            destination_chain,
+        )
+        anchor.require_child_identity(
+            Path(destination).name, destination_chain
         )
         try:
             _retire_pending_guard(
@@ -1850,6 +2126,7 @@ def _publish_verified_directory(
                 destination=destination,
                 parent_chain=parent_chain,
                 anchor=anchor,
+                destination_snapshot=destination_chain,
             )
         except _GuardRetirementCommittedError:
             return
@@ -1994,6 +2271,8 @@ def finalize_release(
             destination,
             exists_label="release sidecar bundle",
             parent_chain=output_root_chain,
+            staged_chain=staged_snapshot,
+            expected_snapshot=supplied,
             expected_names=_SIDECAR_NAMES,
         )
         # From this point the complete public name is terminal: no fallible

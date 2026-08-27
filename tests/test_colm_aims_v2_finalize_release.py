@@ -46,10 +46,13 @@ def _finalize(site, output_root: Path, receipts_dir: Path, **overrides):
     return finalize_release(**values)
 
 
-def _commit_without_parent_sync(anchor, staged_name: str, destination_name: str):
+def _commit_without_parent_sync(
+    anchor, staged_name: str, destination_name: str, **kwargs
+):
     """Commit through the platform's anchored branch, then skip its sync."""
     if anchor._fd is None:
-        os.rename(anchor._path(staged_name), anchor._path(destination_name))
+        source_anchor = kwargs["source_anchor"]
+        anchor._rename_windows_child_handle(source_anchor, destination_name)
     else:
         os.mkdir(destination_name, dir_fd=anchor._fd)
         os.rename(
@@ -59,6 +62,30 @@ def _commit_without_parent_sync(anchor, staged_name: str, destination_name: str)
             dst_dir_fd=anchor._fd,
         )
     return anchor._path(destination_name)
+
+
+def _publish_test_directory(
+    staged: Path,
+    destination: Path,
+    *,
+    parent_chain,
+    exists_label: str,
+    expected_names: tuple[str, ...] = ("payload.json",),
+):
+    """Publish caller-captured fixture bytes through the production boundary."""
+    staged_chain = finalizer._capture_directory_chain(staged)
+    expected_snapshot = {
+        name: (staged / name).read_bytes() for name in expected_names
+    }
+    return finalizer._publish_verified_directory(
+        staged,
+        destination,
+        exists_label=exists_label,
+        parent_chain=parent_chain,
+        staged_chain=staged_chain,
+        expected_snapshot=expected_snapshot,
+        expected_names=expected_names,
+    )
 
 
 def test_exact_external_bytes_are_published_and_release_passes(tmp_path):
@@ -401,6 +428,41 @@ def test_failed_cleanup_never_removes_replacement_staging_generation(
     assert original_stage.is_dir()
 
 
+def test_finalizer_publication_rejects_byte_identical_replacement_stage(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    original_publish = finalizer._publish_verified_directory
+    verified_stage = output_root / "verified-stage"
+    observed_stage = None
+
+    def replace_before_publish(staged, destination, **kwargs):
+        nonlocal observed_stage
+        staged = Path(staged)
+        observed_stage = staged
+        verified_bytes = {
+            item.name: item.read_bytes() for item in staged.iterdir()
+        }
+        staged.rename(verified_stage)
+        staged.mkdir()
+        for name, data in verified_bytes.items():
+            (staged / name).write_bytes(data)
+        return original_publish(staged, destination, **kwargs)
+
+    monkeypatch.setattr(
+        finalizer, "_publish_verified_directory", replace_before_publish
+    )
+    with pytest.raises(schema.TypedIngressError, match="identity|captured"):
+        _finalize(site, output_root, receipts_dir)
+
+    assert observed_stage is not None and observed_stage.is_dir()
+    assert verified_stage.is_dir()
+    destination = output_root / "release-0001"
+    assert not destination.exists()
+    assert not finalizer._pending_guard_path(destination).exists()
+    assert not finalizer._accepted_marker_path(destination).exists()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows handle deletion contract")
 def test_windows_cleanup_deletes_exact_handle_without_name_rmdir(
     tmp_path, monkeypatch
@@ -426,6 +488,43 @@ def test_windows_cleanup_deletes_exact_handle_without_name_rmdir(
         expected_names=finalizer._SIDECAR_NAMES,
     )
     assert not staged.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-share contract")
+def test_windows_published_generation_is_locked_through_guard_retirement(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    destination = output_root / "release-0001"
+    displaced = output_root / "displaced-release"
+    original_marker = finalizer._create_accepted_marker
+    original_retire = finalizer._retire_pending_guard
+    blocked_at: list[str] = []
+
+    def marker_while_locked(path, tree_sha256, **kwargs):
+        with pytest.raises(OSError):
+            destination.rename(displaced)
+        blocked_at.append("marker")
+        return original_marker(path, tree_sha256, **kwargs)
+
+    def retire_while_locked(guard, encoded, **kwargs):
+        with pytest.raises(OSError):
+            destination.rename(displaced)
+        blocked_at.append("retire")
+        return original_retire(guard, encoded, **kwargs)
+
+    monkeypatch.setattr(
+        finalizer, "_create_accepted_marker", marker_while_locked
+    )
+    monkeypatch.setattr(
+        finalizer, "_retire_pending_guard", retire_while_locked
+    )
+    result = _finalize(site, output_root, receipts_dir)
+
+    assert result.published_dir == destination
+    assert blocked_at == ["marker", "retire"]
+    destination.rename(displaced)
+    displaced.rename(destination)
 
 
 def test_partial_cleanup_syncs_and_leaves_bounded_orphan(
@@ -521,15 +620,15 @@ def test_finalizer_committed_publish_requires_second_durability_barrier(
 
     def commit_then_fail(anchor, staged_name, destination_name, **_kwargs):
         dest = _commit_without_parent_sync(
-            anchor, staged_name, destination_name
+            anchor, staged_name, destination_name, **_kwargs
         )
         raise fileio.DirectoryPublicationCommittedError(
             dest, OSError("injected parent sync failure")
         )
 
-    def record_tree(anchor, name, expected_names):
+    def record_tree(anchor, name, expected_names, **kwargs):
         synced.append(anchor._path(name))
-        return original_sync_tree(anchor, name, expected_names)
+        return original_sync_tree(anchor, name, expected_names, **kwargs)
 
     def record_directory(anchor):
         synced.append(anchor.path)
@@ -637,7 +736,7 @@ def test_publication_transaction_stays_bound_to_validated_parent_identity(
     expected_error = OSError if os.name == "nt" else schema.TypedIngressError
     match = None if os.name == "nt" else "publication parent"
     with pytest.raises(expected_error, match=match):
-        finalizer._publish_verified_directory(
+        _publish_test_directory(
             staged,
             destination,
             exists_label="test bundle",
@@ -687,7 +786,7 @@ def test_transient_parent_swap_and_restore_cannot_issue_acceptance(
 
     expected_error = OSError if os.name == "nt" else schema.ColmAimsError
     with pytest.raises(expected_error):
-        finalizer._publish_verified_directory(
+        _publish_test_directory(
             staged,
             destination,
             exists_label="test bundle",
@@ -727,8 +826,10 @@ def test_fake_publish_of_wrong_bytes_at_correct_destination_stays_pending(
         finalizer._DirectoryAnchor, "publish_directory", publish_wrong_bytes
     )
 
-    with pytest.raises(schema.TypedIngressError, match="verified staged tree"):
-        finalizer._publish_verified_directory(
+    with pytest.raises(
+        schema.TypedIngressError, match="identity|verified staged tree"
+    ):
+        _publish_test_directory(
             staged,
             destination,
             exists_label="test bundle",
@@ -761,7 +862,7 @@ def test_post_marker_tree_mutation_is_caught_before_guard_retirement(
     )
 
     with pytest.raises(schema.TypedIngressError, match="verified staged tree"):
-        finalizer._publish_verified_directory(
+        _publish_test_directory(
             staged,
             destination,
             exists_label="test bundle",
@@ -785,7 +886,7 @@ def test_non_sibling_staging_is_refused_before_protocol_sidecars(tmp_path):
     chain = finalizer._capture_directory_chain(output_root)
 
     with pytest.raises(schema.ConfigSurfaceError, match="must be siblings"):
-        finalizer._publish_verified_directory(
+        _publish_test_directory(
             staged,
             destination,
             exists_label="test bundle",
@@ -810,8 +911,8 @@ def test_alias_publication_parent_and_missing_parent_are_refused(tmp_path):
     destination = alias / "bundle"
     target_chain = finalizer._capture_directory_chain(target)
 
-    with pytest.raises(schema.TypedIngressError, match="publication parent"):
-        finalizer._publish_verified_directory(
+    with pytest.raises(schema.TypedIngressError, match="publication parent|alias"):
+        _publish_test_directory(
             staged,
             destination,
             exists_label="test bundle",
@@ -875,7 +976,7 @@ def test_windows_mutations_and_publication_receive_only_pinned_paths(
     (staged / "payload.json").write_bytes(b"verified\n")
     chain = finalizer._capture_directory_chain(output_root)
     original_open = finalizer.os.open
-    original_publish = fileio.publish_dir_create_once
+    original_publish = finalizer._DirectoryAnchor._rename_windows_child_handle
     original_sync = fileio.fsync_directory
     opened: list[Path] = []
     published: list[tuple[Path, Path]] = []
@@ -893,26 +994,52 @@ def test_windows_mutations_and_publication_receive_only_pinned_paths(
                 opened.append(candidate)
             return original_open(path, flags, mode, dir_fd=dir_fd)
 
-        def track_publish(staged_path, destination_path, **kwargs):
-            published.append((Path(staged_path), Path(destination_path)))
-            return original_publish(staged_path, destination_path, **kwargs)
+        def track_publish(parent_anchor, source_anchor, destination_name):
+            published.append(
+                (
+                    Path(source_anchor._operation_path),
+                    parent_anchor._path(destination_name),
+                )
+            )
+            return original_publish(
+                parent_anchor, source_anchor, destination_name
+            )
 
         def track_sync(path):
             synced.append(Path(path))
             return original_sync(path)
 
         monkeypatch.setattr(finalizer.os, "open", track_open)
-        monkeypatch.setattr(fileio, "publish_dir_create_once", track_publish)
+        monkeypatch.setattr(
+            finalizer._DirectoryAnchor,
+            "_rename_windows_child_handle",
+            track_publish,
+        )
         monkeypatch.setattr(fileio, "fsync_directory", track_sync)
         anchor.create_once(
             "guard.pending", b"pending\n", exists_label="test guard"
         )
-        anchor.publish_directory(
-            staged.name, "bundle", exists_label="test bundle"
+        staged_chain = finalizer._capture_directory_chain(staged)
+        destination_chain = finalizer._relocated_child_snapshot(
+            chain, staged_chain, output_root / "bundle"
         )
+        with finalizer._DirectoryAnchor(
+            staged,
+            staged_chain,
+            "test staging source",
+            delete_access=True,
+        ) as source_anchor:
+            anchor.publish_directory(
+                staged.name,
+                "bundle",
+                exists_label="test bundle",
+                source_anchor=source_anchor,
+                source_snapshot=staged_chain,
+                destination_snapshot=destination_chain,
+            )
 
         assert opened == [pinned / "guard.pending"]
-        assert synced == [pinned]
+        assert synced == [pinned, pinned]
         assert published == [(pinned / staged.name, pinned / "bundle")]
         assert all(path.parent == pinned for path in opened)
         assert all(path.parent == pinned for pair in published for path in pair)
@@ -948,7 +1075,7 @@ def test_windows_anchor_rejects_non_volume_guid_final_paths(
     )
 
     with pytest.raises(schema.TypedIngressError, match=r"Volume\{GUID\}"):
-        finalizer._publish_verified_directory(
+        _publish_test_directory(
             staged,
             destination,
             exists_label="test bundle",
@@ -1279,7 +1406,7 @@ def test_posix_publish_rename_stays_on_captured_parent_during_transient_swap(
         )
 
     monkeypatch.setattr(finalizer.os, "rename", swap_restore_around_anchored_rename)
-    finalizer._publish_verified_directory(
+    _publish_test_directory(
         staged,
         destination,
         exists_label="test bundle",
