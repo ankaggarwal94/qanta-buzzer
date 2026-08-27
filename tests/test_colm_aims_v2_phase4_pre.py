@@ -201,8 +201,10 @@ with defect notes; totals unchanged (67 scanned / 4,556 hits).
     Pre-launch refusal classes (each a ``LaunchRefusal`` whose message
     names the class; ``launch`` is NEVER invoked and the ledger is NEVER
     newly created on any refusal — refusals are side-effect-free):
-    (1) certificate bytes sha256 != activation_digest — checked FIRST,
-    before parsing/ready; (2) ``ready`` not identically True (bool-safe:
+    (1) certificate must come from a non-pending positive publication whose
+    marker binds the exact two-file snapshot, then its accepted bytes sha256
+    must equal activation_digest before parsing/ready; (2) ``ready`` not
+    identically True (bool-safe:
     ``1`` refuses); (3) live ``git rev-parse HEAD`` != certificate commit;
     (4) live ``rev-parse HEAD^{tree}`` != certificate tree; (5) live
     TRACKED-dirty status (untracked-only ``?? ...`` porcelain lines do NOT
@@ -281,6 +283,7 @@ import numpy as np
 import pytest
 
 from reproducibility.colm_aims_2026 import pairing, schema
+from reproducibility.colm_aims_2026 import phase4_finalize_release as finalizer
 
 from tests._colm_aims_v2_helpers import (
     CALIBRATION_IDS,
@@ -3556,6 +3559,19 @@ def _phase4_launcher():
     return phase4_launcher
 
 
+def _write_accepted_launcher_certificate(path: Path, data: bytes) -> None:
+    """Write or refresh a synthetic accepted certificate publication."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    summary = path.parent / "certificate_generation_summary.json"
+    if not summary.exists():
+        summary.write_bytes(b"{}\n")
+    tree_sha256 = finalizer._directory_tree_sha256(path.parent)
+    finalizer._accepted_marker_path(path.parent).write_bytes(
+        finalizer._accepted_marker_bytes(path.parent, tree_sha256)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Amended R-077: Random-K STRUCTURE is required (values stay exempt)
 # ---------------------------------------------------------------------------
@@ -4082,8 +4098,10 @@ def _launcher_fixture(
     cert_bytes = (json.dumps(cert, indent=2, sort_keys=True) + "\n").encode(
         "utf-8"
     )
-    cert_path = tmp_path / "pre_run_ready_certificate.json"
-    cert_path.write_bytes(cert_bytes)
+    cert_path = (
+        tmp_path / "certificate" / "pre_run_ready_certificate.json"
+    )
+    _write_accepted_launcher_certificate(cert_path, cert_bytes)
     digest = sha256_bytes(cert_bytes)
     config = {
         "certificate_path": cert_path,
@@ -4242,7 +4260,9 @@ class TestR081LauncherRefusals:
             blob = (json.dumps(cert, indent=2, sort_keys=True) + "\n").encode(
                 "utf-8"
             )
-            Path(config["certificate_path"]).write_bytes(blob)
+            _write_accepted_launcher_certificate(
+                Path(config["certificate_path"]), blob
+            )
             config["activation_digest"] = sha256_bytes(blob)
 
         self._refusal(tmp_path, monkeypatch, token="ready", pre=tamper)

@@ -977,9 +977,13 @@ analysis over retained per-item records — permitted; model execution is not.
   nonzero on every config, preflight, run, comparison, or promotion defect.
   A successful import/no-op exit is a blocking defect. Before any model
   construction the launcher must:
-  (1) read the certificate bytes in binary mode (including Windows
-  `O_BINARY`) and require sha256 == the activation
-  digest, hardened-parse it, and require `ready is True` (bool-safe);
+  (1) require the certificate to be an exact two-file directory publication
+  (certificate plus `certificate_generation_summary.json`) with no surviving
+  sibling pending guard and a positive acceptance marker binding the exact
+  directory tree; capture the certificate bytes from that bound snapshot in
+  binary mode (including Windows `O_BINARY`), then require sha256 == the
+  activation digest, hardened-parse it, and require `ready is True`
+  (bool-safe); neither file is reopened by path after the accepted snapshot;
   (2) require LIVE `git rev-parse HEAD` == certificate commit, LIVE
   `rev-parse HEAD^{tree}` == certificate tree, and a live tracked-clean
   check; (3) REJECT ambient provenance overrides (`MODAL_HOST_GIT_STATUS`,

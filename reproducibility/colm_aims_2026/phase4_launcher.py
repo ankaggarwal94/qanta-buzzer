@@ -53,7 +53,7 @@ from scripts.stopdff_v5.fileio import (
     reclaim_empty_relic,
 )
 
-from . import pairing, phase4, schema
+from . import pairing, phase4, phase4_finalize_release, schema
 
 # reproducibility/colm_aims_2026/phase4_launcher.py -> repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -118,6 +118,7 @@ ACCEPTANCE_MARKER_NAME = "LAUNCH_ACCEPTED.json"
 ACCEPTANCE_PENDING_NAME = "LAUNCH_ACCEPTANCE_PENDING.json"
 CAPTURED_INPUTS_DIRNAME = ".certified_inputs"
 PRIVATE_PROMOTION_PREFIX = ".phase4-accepted-"
+CERTIFICATE_GENERATION_SUMMARY_NAME = "certificate_generation_summary.json"
 
 # CLI exit-code contract: a pre-launch refusal never consumes the exception;
 # a run failure occurs after consumption and preserves the quarantine.  Usage
@@ -2685,10 +2686,11 @@ def validate_and_launch(
     """Single-use, fail-closed launch of the ONE authorized run (R-081).
 
     Pre-launch refusal classes, in execution order (``launch`` NEVER fires
-    on any refusal): closed config shape; certificate bytes sha256 !=
-    activation digest (bytes FIRST, before parsing); ``ready`` not
-    identically True (bool-safe); command interpreter, host, or dependency
-    lock drift; external config != certificate-command artifact bindings;
+    on any refusal): closed config shape; missing/pending/unbound certificate
+    publication; accepted certificate bytes sha256 != activation digest
+    (bytes before parsing); ``ready`` not identically True (bool-safe);
+    command interpreter, host, or dependency lock drift; external config !=
+    certificate-command artifact bindings;
     ambient provenance overrides; live commit/tree/tracked-clean mismatch;
     snapshot mismatch; comparator-anchor hash/parse failure; staged path
     containment or live-hash mismatch; stale/unusable workspace; and the
@@ -2724,15 +2726,34 @@ def validate_and_launch(
     certificate_path = Path(config["certificate_path"])
     activation_digest = str(config["activation_digest"])
 
-    # (1) Activation digest over the RAW BYTES — before any parse, before
-    # any semantic check (bytes first, semantics second).
+    # (1) Capture the certificate from a positively accepted, non-pending
+    # publication.  The returned bytes are the authoritative snapshot bound
+    # by the marker; never reopen the live certificate path after this gate.
     try:
-        certificate_bytes = schema.read_regular_file_bytes(certificate_path)
-    except schema.ColmAimsError as exc:
+        certificate_name = certificate_path.name
+        if certificate_name == CERTIFICATE_GENERATION_SUMMARY_NAME:
+            raise schema.TypedIngressError(
+                "certificate path collides with the generation summary"
+            )
+        _, certificate_snapshot = (
+            phase4_finalize_release._read_accepted_directory_snapshot(
+                certificate_path.parent,
+                "PRE_RUN_READY certificate publication",
+                expected_names=(
+                    certificate_name,
+                    CERTIFICATE_GENERATION_SUMMARY_NAME,
+                ),
+            )
+        )
+        certificate_bytes = certificate_snapshot[certificate_name]
+    except (OSError, schema.ColmAimsError) as exc:
         raise LaunchRefusal(
-            f"certificate digest check failed — certificate bytes"
-            f" unreadable: {exc} (R-081)"
+            "certificate publication acceptance check failed — exact"
+            f" certificate bytes unavailable: {exc} (R-081)"
         ) from exc
+
+    # Activation digest over the accepted RAW BYTES — before any parse,
+    # before any semantic check (bytes first, semantics second).
     observed_digest = hashlib.sha256(certificate_bytes).hexdigest()
     if observed_digest != activation_digest:
         raise LaunchRefusal(
