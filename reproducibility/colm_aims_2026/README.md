@@ -104,8 +104,10 @@ hostile-process provenance or tamper resistance.
 
 The producer child intentionally receives no ambient `PATH` or ambient
 `MODAL_HOST*` values. After re-proving the certificate commit, tracked-clean
-state, and producer source hash, the launcher supplies those three exact
-certificate-owned provenance values to the legacy producer helper internally.
+state, producer source hash, and exact producer blob read from the certified
+commit, the launcher supplies those three exact certificate-owned provenance
+values to the legacy producer helper internally. The committed-blob equality
+gate remains effective even if Git index flags hide a worktree modification.
 This lets the output bind its committed writer without executing an unbound
 `git` binary inside the sanitized child.
 

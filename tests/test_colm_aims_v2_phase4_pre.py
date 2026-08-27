@@ -3255,6 +3255,7 @@ def _fake_git_runner(
     tree=FAKE_TREE,
     status="",
     untracked_status="",
+    producer_blob=None,
 ):
     """run(cmd) -> stdout. Git identities come from HERE, never from caller
     assertions. The fake tree id is 64-hex (sha256-object-format repos); see
@@ -3266,6 +3267,14 @@ def _fake_git_runner(
         calls.append(cmd_list)
         joined = " ".join(cmd_list)
         assert "git" in joined, f"unexpected non-git command: {cmd_list}"
+        if len(cmd_list) >= 2 and cmd_list[1] == "show":
+            relpath = cmd_list[2].partition(":")[2]
+            assert relpath == _phase4().CONTENT_HASH_RELPATHS[
+                "producer_sha256"
+            ]
+            if producer_blob is not None:
+                return producer_blob
+            return (REPO_ROOT / relpath).read_bytes()
         if "status" in joined and "--untracked-files=all" in cmd_list:
             return untracked_status
         if "status" in joined:
@@ -4350,6 +4359,16 @@ class TestR081LauncherRefusals:
             run_git_kwargs={"status": " M scripts/stopdff_fair_qa_retest.py\n"},
         )
 
+    def test_5b_committed_producer_blob_mismatch_refuses(
+        self, tmp_path, monkeypatch
+    ):
+        self._refusal(
+            tmp_path,
+            monkeypatch,
+            token="committed producer blob",
+            run_git_kwargs={"producer_blob": b"different committed bytes\n"},
+        )
+
     def test_6_ambient_modal_host_overrides_refuse(
         self, tmp_path, monkeypatch
     ):
@@ -4534,6 +4553,7 @@ class TestR081LauncherRun:
                     "producer_sha256": {"sha256": producer_sha256}
                 }
             },
+            committed_producer_sha256=producer_sha256,
         )
 
         assert env == {

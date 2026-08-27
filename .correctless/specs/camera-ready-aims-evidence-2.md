@@ -1007,7 +1007,10 @@ analysis over retained per-item records — permitted; model execution is not.
   `MODAL_HOST_GIT_COMMIT=<certificate commit>`, and
   `MODAL_HOST_PRODUCER_SCRIPT_SHA256=<verified certificate producer hash>`
   inside the launcher only after the live commit/tree/tracked-clean and
-  content-hash gates pass. Launch the producer as a SUBPROCESS whose
+  content-hash gates pass and after raw-hashing `git show <certificate
+  commit>:scripts/stopdff_fair_qa_retest.py` to require that the committed
+  blob equals the verified live/certificate hash (independent of index
+  `assume-unchanged`/`skip-worktree` bits). Launch the producer as a SUBPROCESS whose
   environment sets those certificate-owned provenance bindings and, before
   interpreter start:
   `PYTHONHASHSEED=0`, `OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`,
