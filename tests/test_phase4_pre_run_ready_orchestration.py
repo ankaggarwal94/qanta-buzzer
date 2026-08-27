@@ -317,6 +317,102 @@ def test_run_suite_uses_repo_cwd_and_suite_environment(
     assert result["junit_path"].parent == paths.receipts_dir
     assert result["transcript_path"].read_bytes() == b"one passed\n"
     assert Path.cwd() == outside
+    assert list(run_root.glob(".focused-suite-staged-*")) == []
+
+
+def test_run_suite_cleanup_removes_transcript_only_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset_root, run_root = _prepared_roots(tmp_path)
+    paths = orchestration.derive_paths(
+        asset_root=asset_root, run_root=run_root, run_id="run-1"
+    )
+
+    def write_transcript_then_fail(
+        _command,
+        *,
+        environment,
+        transcript_stage,
+        timeout_seconds,
+        max_transcript_bytes,
+    ):
+        del environment, timeout_seconds, max_transcript_bytes
+        Path(transcript_stage).write_bytes(b"partial\n")
+        raise RuntimeError("injected partial suite failure")
+
+    monkeypatch.setattr(
+        orchestration,
+        "_run_bounded_suite_process",
+        write_transcript_then_fail,
+    )
+    monkeypatch.setattr(orchestration, "suite_environment", lambda: {})
+
+    with pytest.raises(RuntimeError, match="injected partial"):
+        orchestration.run_suite(paths, "focused", ["tests/example.py"])
+
+    assert list(run_root.glob(".focused-suite-staged-*")) == []
+
+
+def test_run_suite_cleanup_removes_zero_output_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset_root, run_root = _prepared_roots(tmp_path)
+    paths = orchestration.derive_paths(
+        asset_root=asset_root, run_root=run_root, run_id="run-1"
+    )
+
+    def fail_before_outputs(*_args, **_kwargs):
+        raise OSError("injected process creation failure")
+
+    monkeypatch.setattr(
+        orchestration, "_run_bounded_suite_process", fail_before_outputs
+    )
+    monkeypatch.setattr(orchestration, "suite_environment", lambda: {})
+
+    with pytest.raises(OSError, match="injected process creation failure"):
+        orchestration.run_suite(paths, "focused", ["tests/example.py"])
+
+    assert list(run_root.glob(".focused-suite-staged-*")) == []
+
+
+def test_run_suite_cleanup_never_follows_replacement_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset_root, run_root = _prepared_roots(tmp_path)
+    paths = orchestration.derive_paths(
+        asset_root=asset_root, run_root=run_root, run_id="run-1"
+    )
+    displaced = run_root / "captured-suite-stage"
+    replacement: Path | None = None
+
+    def replace_stage_then_fail(
+        _command,
+        *,
+        environment,
+        transcript_stage,
+        timeout_seconds,
+        max_transcript_bytes,
+    ):
+        del environment, timeout_seconds, max_transcript_bytes
+        nonlocal replacement
+        stage = Path(transcript_stage).parent
+        stage.rename(displaced)
+        stage.mkdir()
+        replacement = stage
+        (stage / "sentinel.txt").write_bytes(b"replacement\n")
+        raise RuntimeError("injected suite failure")
+
+    monkeypatch.setattr(
+        orchestration, "_run_bounded_suite_process", replace_stage_then_fail
+    )
+    monkeypatch.setattr(orchestration, "suite_environment", lambda: {})
+
+    with pytest.raises(RuntimeError, match="injected suite failure"):
+        orchestration.run_suite(paths, "focused", ["tests/example.py"])
+
+    assert replacement is not None and replacement.is_dir()
+    assert (replacement / "sentinel.txt").read_bytes() == b"replacement\n"
+    assert displaced.is_dir()
 
 
 def test_producer_command_binds_parameterized_asset_root(tmp_path: Path) -> None:

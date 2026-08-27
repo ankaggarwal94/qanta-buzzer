@@ -591,8 +591,17 @@ class _DirectoryAnchor:
 
     def create_directory_once(
         self, name: str, *, exists_label: str, mode: int = 0o700
-    ) -> None:
-        """Create one directory under this exact held parent generation."""
+    ) -> tuple[int, int, int]:
+        """Create and immediately claim one directory generation.
+
+        Portable directory creation APIs do not return a generation handle.
+        The unpredictable 128-bit child name therefore assumes cooperative
+        same-account peers only until the immediately following no-follow
+        claim succeeds.  After that claim, replacement is excluded or
+        detected by exact identity.  If claiming itself fails, this method
+        leaves at most that one unresolved empty child in place: deleting a
+        lexical name whose generation was never claimed would be unsafe.
+        """
         name = self._name(name)
         try:
             if self._fd is not None:
@@ -603,8 +612,144 @@ class _DirectoryAnchor:
             raise FileExistsError(
                 f"{exists_label} already exists: {self._path(name)}"
             ) from exc
-        self.sync()
-        self.revalidate(f"create directory {name} completion")
+        child_fd: int | None = None
+        child_handle: int | None = None
+        try:
+            if self._fd is not None:
+                child_fd = os.open(
+                    name,
+                    os.O_RDONLY
+                    | os.O_DIRECTORY
+                    | os.O_NOFOLLOW
+                    | getattr(os, "O_CLOEXEC", 0),
+                    dir_fd=self._fd,
+                )
+                created = os.fstat(child_fd)
+            else:
+                child_handle = self._open_created_windows_directory(name)
+                # The no-delete-share native handle keeps this exact child
+                # generation stable while its Python identity is captured.
+                created = self.stat(name)
+            if (
+                stat.S_ISLNK(created.st_mode)
+                or getattr(created, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                or not stat.S_ISDIR(created.st_mode)
+            ):
+                raise schema.TypedIngressError(
+                    "created staging child is not an ordinary directory"
+                )
+            return schema._identity_tuple(created)
+        except BaseException:
+            if child_fd is not None:
+                with contextlib.suppress(BaseException):
+                    opened = os.fstat(child_fd)
+                    current = os.stat(
+                        name, dir_fd=self._fd, follow_symlinks=False
+                    )
+                    with os.scandir(child_fd) as entries:
+                        empty = not self._bounded_names(entries, 0)
+                    if (
+                        empty
+                        and stat.S_ISDIR(opened.st_mode)
+                        and schema._identity_tuple(current)
+                        == schema._identity_tuple(opened)
+                    ):
+                        os.rmdir(name, dir_fd=self._fd)
+            elif child_handle is not None:
+                with contextlib.suppress(BaseException):
+                    self._delete_empty_windows_directory_handle(child_handle)
+            raise
+        finally:
+            if child_fd is not None:
+                os.close(child_fd)
+            if child_handle is not None:
+                self._close_windows_handle(child_handle)
+
+    def _open_created_windows_directory(self, name: str) -> int:
+        """Acquire one no-delete-share handle to a newly created child."""
+        if os.name != "nt" or self._operation_path is None:
+            raise RuntimeError("Windows created-directory claim is unavailable")
+        import ctypes
+        from ctypes import wintypes
+
+        create_file = ctypes.WinDLL(
+            "kernel32", use_last_error=True
+        ).CreateFileW
+        create_file.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        create_file.restype = wintypes.HANDLE
+        handle = create_file(
+            str(self._path(name)),
+            0x80000000 | 0x00010000,  # GENERIC_READ | DELETE
+            0x00000001 | 0x00000002,  # share read/write, not delete
+            None,
+            3,  # OPEN_EXISTING
+            0x02000000 | 0x00200000,  # BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+            None,
+        )
+        if handle == ctypes.c_void_p(-1).value:
+            error = ctypes.get_last_error()
+            raise OSError(error, "cannot claim created staging directory")
+        return int(handle)
+
+    @staticmethod
+    def _close_windows_handle(handle: int) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        close_handle = ctypes.WinDLL(
+            "kernel32", use_last_error=True
+        ).CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        close_handle(wintypes.HANDLE(handle))
+
+    def _delete_empty_windows_directory_handle(self, handle: int) -> None:
+        """Mark the exact claimed empty Windows directory for deletion."""
+        import ctypes
+        from ctypes import wintypes
+
+        operation_path = Path(
+            self._require_local_volume_guid_path(
+                self._windows_final_volume_path(handle)
+            )
+        )
+        with os.scandir(operation_path) as entries:
+            if self._bounded_names(entries, 0):  # pragma: no cover - invariant
+                raise schema.TypedIngressError(
+                    "created staging directory is unexpectedly nonempty"
+                )
+
+        class _FileDispositionInformation(ctypes.Structure):
+            _fields_ = [("delete_file", wintypes.BOOLEAN)]
+
+        set_information = ctypes.WinDLL(
+            "kernel32", use_last_error=True
+        ).SetFileInformationByHandle
+        set_information.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        set_information.restype = wintypes.BOOL
+        disposition = _FileDispositionInformation(True)
+        if not set_information(
+            wintypes.HANDLE(handle),
+            4,  # FileDispositionInfo
+            ctypes.byref(disposition),
+            ctypes.sizeof(disposition),
+        ):
+            error = ctypes.get_last_error()
+            raise OSError(error, "cannot delete claimed staging directory")
 
     def unlink(self, name: str) -> None:
         name = self._name(name)
@@ -724,6 +869,8 @@ class _DirectoryAnchor:
         name: str,
         expected_names: tuple[str, ...],
         child_snapshot: _CapturedDirectoryChain,
+        *,
+        allow_subset: bool = False,
     ) -> bool:
         """Remove one known flat child tree without recursive path traversal.
 
@@ -734,8 +881,7 @@ class _DirectoryAnchor:
         name = self._name(name)
         expected = set(expected_names)
         if (
-            not expected
-            or len(expected) != len(expected_names)
+            len(expected) != len(expected_names)
             or any(self._name(item) != item for item in expected)
         ):
             raise schema.ConfigSurfaceError(
@@ -773,16 +919,21 @@ class _DirectoryAnchor:
                     return False
                 with os.scandir(child_fd) as entries:
                     names = self._bounded_names(entries, len(expected))
-                if set(names) != expected or len(names) != len(expected):
+                observed = set(names)
+                if (
+                    len(observed) != len(names)
+                    or (not allow_subset and observed != expected)
+                    or (allow_subset and not observed.issubset(expected))
+                ):
                     return False
-                for child in sorted(expected):
+                for child in sorted(observed):
                     info = os.stat(
                         child, dir_fd=child_fd, follow_symlinks=False
                     )
                     self._require_regular(info, child)
                 removed = False
                 try:
-                    for child in sorted(expected):
+                    for child in sorted(observed):
                         os.unlink(child, dir_fd=child_fd)
                         removed = True
                 finally:
@@ -819,13 +970,18 @@ class _DirectoryAnchor:
                         )
                     with os.scandir(operation_path) as entries:
                         names = self._bounded_names(entries, len(expected))
-                    if set(names) != expected or len(names) != len(expected):
+                    observed = set(names)
+                    if (
+                        len(observed) != len(names)
+                        or (not allow_subset and observed != expected)
+                        or (allow_subset and not observed.issubset(expected))
+                    ):
                         return False
-                    for item in sorted(expected):
+                    for item in sorted(observed):
                         self._require_regular(child_anchor.stat(item), item)
                     removed = False
                     try:
-                        for item in sorted(expected):
+                        for item in sorted(observed):
                             child_anchor.unlink(item)
                             removed = True
                     finally:
@@ -948,6 +1104,67 @@ class _DirectoryAnchor:
             item: self.read_regular(item, max_bytes=schema.MAX_ARTIFACT_BYTES)
             for item in sorted(expected)
         }
+
+    def sync_self(self, expected_names: tuple[str, ...]) -> dict[str, bytes]:
+        """Bound, validate, and durably sync this exact held flat tree."""
+        before = self.snapshot_self(expected_names)
+        access = os.O_RDWR if os.name == "nt" else os.O_RDONLY
+        flags = (
+            access
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        for name in sorted(expected_names):
+            expected = self.stat(name)
+            self._require_regular(expected, name)
+            if expected.st_size > schema.MAX_ARTIFACT_BYTES:
+                raise schema.TypedIngressError(
+                    f"{name} exceeds the maximum admissible byte count"
+                )
+            if self._fd is not None:
+                fd = os.open(name, flags, dir_fd=self._fd)
+            else:
+                fd = os.open(self._path(name), flags)
+            try:
+                opened = os.fstat(fd)
+                self._require_regular(opened, name)
+                if (
+                    schema._identity_tuple(opened)
+                    != schema._identity_tuple(expected)
+                    or opened.st_size > schema.MAX_ARTIFACT_BYTES
+                ):
+                    raise schema.TypedIngressError(
+                        f"{name} changed identity or size before durable sync"
+                    )
+                chunks: list[bytes] = []
+                remaining = schema.MAX_ARTIFACT_BYTES + 1
+                while remaining:
+                    chunk = os.read(fd, min(1 << 20, remaining))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                data = b"".join(chunks)
+                if len(data) > schema.MAX_ARTIFACT_BYTES:
+                    raise schema.TypedIngressError(
+                        f"{name} exceeds the maximum admissible byte count"
+                    )
+                if data != before[name]:
+                    raise schema.TypedIngressError(
+                        f"{name} changed bytes before durable sync"
+                    )
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        self.sync()
+        self.revalidate("staging tree sync completion")
+        after = self.snapshot_self(expected_names)
+        if after != before:
+            raise schema.TypedIngressError(
+                "staged release sidecars changed during durable sync"
+            )
+        return after
 
     def require_child_identity(
         self, name: str, child_snapshot: _CapturedDirectoryChain
@@ -1381,6 +1598,7 @@ def _remove_exact_staged_directory(
     staged_name: str,
     staged_snapshot: _CapturedDirectoryChain,
     expected_names: tuple[str, ...],
+    allow_subset: bool = False,
 ) -> bool:
     """Best-effort cleanup confined to the captured parent generation."""
     try:
@@ -1388,7 +1606,10 @@ def _remove_exact_staged_directory(
             parent, parent_snapshot, "staging cleanup parent"
         ) as anchor:
             return anchor.remove_exact_directory(
-                staged_name, expected_names, staged_snapshot
+                staged_name,
+                expected_names,
+                staged_snapshot,
+                allow_subset=allow_subset,
             )
     except (OSError, schema.ColmAimsError):
         # Safe orphaning is preferable to resolving a mutable lexical path.
@@ -1448,13 +1669,37 @@ def _create_staged_directory(
         for _attempt in range(32):
             name = f"{prefix}{secrets.token_hex(16)}"
             try:
-                anchor.create_directory_once(name, exists_label=label)
+                created_identity = anchor.create_directory_once(
+                    name, exists_label=label
+                )
             except FileExistsError:
                 continue
             staged = Path(parent) / name
-            staged_snapshot = _capture_directory_chain(staged)
-            anchor.require_child_identity(name, staged_snapshot)
-            return staged, staged_snapshot
+            staged_snapshot: _CapturedDirectoryChain | None = None
+            try:
+                candidate = _capture_directory_chain(staged)
+                if candidate.lexical[-1][1] != created_identity:
+                    raise schema.TypedIngressError(
+                        "created staging directory changed identity before capture"
+                    )
+                staged_snapshot = candidate
+                anchor.require_child_identity(name, staged_snapshot)
+                anchor.sync()
+                anchor.revalidate(f"capture {label} completion")
+                return staged, staged_snapshot
+            except BaseException:
+                cleanup_snapshot = staged_snapshot
+                if cleanup_snapshot is None:
+                    with contextlib.suppress(BaseException):
+                        candidate = _capture_directory_chain(staged)
+                        if candidate.lexical[-1][1] == created_identity:
+                            cleanup_snapshot = candidate
+                if cleanup_snapshot is not None:
+                    with contextlib.suppress(BaseException):
+                        anchor.remove_exact_directory(
+                            name, (), cleanup_snapshot
+                        )
+                raise
     raise schema.TypedIngressError(
         f"cannot allocate a fresh {label} after 32 bounded attempts"
     )
@@ -1981,18 +2226,19 @@ def _validate_authority_documents(
 
 def _read_bundle(directory: Path) -> dict[str, bytes]:
     directory = _canonical_existing_directory(directory, "release bundle")
-    observed = {entry.name for entry in directory.iterdir()}
-    if observed != set(_SIDECAR_NAMES):
-        raise schema.TypedIngressError(
-            "release bundle must contain exactly ledger.json, rights.json, and"
-            f" expectations.json; observed {sorted(observed)}"
-        )
-    return {
-        name: schema.read_regular_file_bytes(
-            directory / name, tree_root=directory
-        )
-        for name in _SIDECAR_NAMES
-    }
+    snapshot = _capture_directory_chain(directory)
+    with _DirectoryAnchor(directory, snapshot, "staged release bundle") as anchor:
+        return anchor.snapshot_self(_SIDECAR_NAMES)
+
+
+def _sync_captured_bundle(
+    directory: Path, directory_snapshot: _CapturedDirectoryChain
+) -> dict[str, bytes]:
+    """Durably sync one exact staged release bundle with bounded membership."""
+    with _DirectoryAnchor(
+        directory, directory_snapshot, "staged release bundle sync"
+    ) as anchor:
+        return anchor.sync_self(_SIDECAR_NAMES)
 
 
 def _require_release_pass(
@@ -2355,7 +2601,10 @@ def finalize_release(
             raise schema.TypedIngressError(
                 "staged release sidecars changed during verification"
             )
-        fileio.fsync_tree(staged)
+        if _sync_captured_bundle(staged, staged_snapshot) != supplied:
+            raise schema.TypedIngressError(
+                "staged release sidecars changed before durable sync"
+            )
         if verifier._read_tree_snapshot(selected_tree) != tree_snapshot:
             raise schema.TypedIngressError(
                 "selected release tree changed before publication"

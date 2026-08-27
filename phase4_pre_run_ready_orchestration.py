@@ -16,6 +16,7 @@ used only as a portable filename component; it cannot select a parent path.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -25,7 +26,6 @@ import signal
 import stat
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -38,6 +38,7 @@ sys.path.insert(0, str(REPO))
 
 from reproducibility.colm_aims_2026 import (  # noqa: E402
     phase4,
+    phase4_finalize_release,
     phase4_launcher,
     receipt as receipt_module,
     schema,
@@ -1214,10 +1215,18 @@ def run_suite(
     transcript_path = paths.receipts_dir / f"{name}_suite_transcript.txt"
     if _lexists(junit_path) or _lexists(transcript_path):
         raise RuntimeError(f"suite {name!r} output slot is already claimed")
-    with tempfile.TemporaryDirectory(
-        prefix=f".{name}-suite-staged-", dir=paths.run_root
-    ) as temporary:
-        stage_root = Path(temporary)
+    run_root_snapshot = phase4_finalize_release._capture_directory_chain(
+        paths.run_root
+    )
+    stage_root, stage_snapshot = (
+        phase4_finalize_release._create_staged_directory(
+            paths.run_root,
+            run_root_snapshot,
+            prefix=f".{name}-suite-staged-",
+            label=f"{name} suite staging directory",
+        )
+    )
+    try:
         junit_stage = stage_root / "suite.xml"
         transcript_stage = stage_root / "transcript.txt"
         command = [
@@ -1260,6 +1269,16 @@ def run_suite(
             junit_bytes,
             label=f"{name} suite JUnit XML",
         )
+    finally:
+        with contextlib.suppress(BaseException):
+            phase4_finalize_release._remove_exact_staged_directory(
+                parent=paths.run_root,
+                parent_snapshot=run_root_snapshot,
+                staged_name=stage_root.name,
+                staged_snapshot=stage_snapshot,
+                expected_names=("suite.xml", "transcript.txt"),
+                allow_subset=True,
+            )
     tail = transcript_bytes.decode("utf-8", errors="replace").splitlines()[-3:]
     print(
         f"[suite:{name}] exit={return_code} tail={tail}",

@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -230,6 +231,321 @@ def test_staging_directory_creation_has_bounded_collision_retries(
 
     assert sentinel.read_bytes() == b"keep\n"
     assert list(output_root.iterdir()) == [occupied]
+
+
+@pytest.mark.parametrize("failure_point", ("capture", "sync"))
+def test_staging_allocation_failure_removes_exact_empty_child(
+    tmp_path, monkeypatch, failure_point
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    parent_snapshot = finalizer._capture_directory_chain(output_root)
+
+    if failure_point == "capture":
+        original_capture = finalizer._capture_directory_chain
+        failed = False
+
+        def fail_first_child_capture(path):
+            nonlocal failed
+            if Path(path).name.startswith(".test-staged-") and not failed:
+                failed = True
+                raise OSError("injected child capture failure")
+            return original_capture(path)
+
+        monkeypatch.setattr(
+            finalizer, "_capture_directory_chain", fail_first_child_capture
+        )
+    else:
+        original_sync = finalizer._DirectoryAnchor.sync
+        failed = False
+
+        def fail_first_parent_sync(anchor):
+            nonlocal failed
+            if anchor.label == "test staging directory parent" and not failed:
+                failed = True
+                raise OSError("injected parent sync failure")
+            return original_sync(anchor)
+
+        monkeypatch.setattr(
+            finalizer._DirectoryAnchor, "sync", fail_first_parent_sync
+        )
+
+    with pytest.raises(OSError, match="injected"):
+        finalizer._create_staged_directory(
+            output_root,
+            parent_snapshot,
+            prefix=".test-staged-",
+            label="test staging directory",
+        )
+
+    assert failed is True
+    assert list(output_root.iterdir()) == []
+
+
+def test_staging_allocation_failure_never_removes_replacement_child(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    parent_snapshot = finalizer._capture_directory_chain(output_root)
+    displaced = output_root / "displaced-stage"
+    replacement = None
+    original_sync = finalizer._DirectoryAnchor.sync
+
+    def replace_child_before_sync_failure(anchor):
+        nonlocal replacement
+        if (
+            anchor.label == "test staging directory parent"
+            and replacement is None
+        ):
+            [created] = output_root.glob(".test-staged-*")
+            created.rename(displaced)
+            created.mkdir()
+            replacement = created
+            (created / "sentinel.txt").write_bytes(b"replacement\n")
+            raise OSError("injected parent sync failure")
+        return original_sync(anchor)
+
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor, "sync", replace_child_before_sync_failure
+    )
+
+    with pytest.raises(OSError, match="injected parent sync failure"):
+        finalizer._create_staged_directory(
+            output_root,
+            parent_snapshot,
+            prefix=".test-staged-",
+            label="test staging directory",
+        )
+
+    assert replacement is not None
+    assert (replacement / "sentinel.txt").read_bytes() == b"replacement\n"
+    assert displaced.is_dir()
+
+
+def test_staging_first_capture_never_claims_empty_replacement(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    parent_snapshot = finalizer._capture_directory_chain(output_root)
+    displaced = output_root / "displaced-stage"
+    replacement = None
+    original_capture = finalizer._capture_directory_chain
+
+    def replace_during_first_child_capture(path):
+        nonlocal replacement
+        path = Path(path)
+        if path.name.startswith(".test-staged-") and replacement is None:
+            path.rename(displaced)
+            path.mkdir()
+            replacement = path
+        return original_capture(path)
+
+    monkeypatch.setattr(
+        finalizer, "_capture_directory_chain", replace_during_first_child_capture
+    )
+
+    with pytest.raises(schema.TypedIngressError, match="changed identity"):
+        finalizer._create_staged_directory(
+            output_root,
+            parent_snapshot,
+            prefix=".test-staged-",
+            label="test staging directory",
+        )
+
+    assert replacement is not None and replacement.is_dir()
+    assert list(replacement.iterdir()) == []
+    assert displaced.is_dir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows claimed-handle cleanup")
+def test_created_directory_stat_failure_deletes_claimed_empty_child(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    parent_snapshot = finalizer._capture_directory_chain(output_root)
+    original_stat = finalizer._DirectoryAnchor.stat
+    failed = False
+
+    def fail_first_created_child_stat(anchor, name):
+        nonlocal failed
+        if str(name).startswith(".test-staged-") and not failed:
+            failed = True
+            raise OSError("injected created-child stat failure")
+        return original_stat(anchor, name)
+
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor, "stat", fail_first_created_child_stat
+    )
+
+    with pytest.raises(OSError, match="injected created-child stat failure"):
+        finalizer._create_staged_directory(
+            output_root,
+            parent_snapshot,
+            prefix=".test-staged-",
+            label="test staging directory",
+        )
+
+    assert failed is True
+    assert list(output_root.iterdir()) == []
+
+
+def test_created_directory_claim_failure_leaves_one_safe_empty_orphan(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    parent_snapshot = finalizer._capture_directory_chain(output_root)
+    failed = False
+
+    if os.name == "nt":
+
+        def fail_claim(_anchor, _name):
+            nonlocal failed
+            failed = True
+            raise OSError("injected created-child claim failure")
+
+        monkeypatch.setattr(
+            finalizer._DirectoryAnchor,
+            "_open_created_windows_directory",
+            fail_claim,
+        )
+    else:
+        original_open = finalizer.os.open
+
+        def fail_claim(path, flags, *args, **kwargs):
+            nonlocal failed
+            if (
+                str(path).startswith(".test-staged-")
+                and kwargs.get("dir_fd") is not None
+            ):
+                failed = True
+                raise OSError("injected created-child claim failure")
+            return original_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(finalizer.os, "open", fail_claim)
+
+    with pytest.raises(OSError, match="injected created-child claim failure"):
+        finalizer._create_staged_directory(
+            output_root,
+            parent_snapshot,
+            prefix=".test-staged-",
+            label="test staging directory",
+        )
+
+    [orphan] = list(output_root.iterdir())
+    assert failed is True
+    assert orphan.name.startswith(".test-staged-")
+    assert orphan.is_dir() and list(orphan.iterdir()) == []
+
+
+def test_read_bundle_uses_bounded_anchor_not_path_iterdir(
+    tmp_path, monkeypatch
+):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    expected = {
+        name: f"{name}\n".encode("utf-8")
+        for name in finalizer._SIDECAR_NAMES
+    }
+    for name, data in expected.items():
+        (bundle / name).write_bytes(data)
+
+    def reject_iterdir(_path):
+        raise AssertionError("release bundle readback used unbounded iterdir")
+
+    monkeypatch.setattr(Path, "iterdir", reject_iterdir)
+
+    assert finalizer._read_bundle(bundle) == expected
+
+
+def test_bounded_membership_stops_at_first_overflow_entry():
+    requested = 0
+
+    class Entry:
+        def __init__(self, name):
+            self.name = name
+
+    def guarded_entries():
+        nonlocal requested
+        for name in ("one", "two", "three", "overflow"):
+            requested += 1
+            yield Entry(name)
+        raise AssertionError("bounded enumeration requested a fifth entry")
+
+    with pytest.raises(schema.TypedIngressError, match="exactly three"):
+        finalizer._DirectoryAnchor._bounded_names(guarded_entries(), 3)
+
+    assert requested == 4
+
+
+def test_sync_bundle_rejects_oversize_replacement_before_file_fsync(
+    tmp_path, monkeypatch
+):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    for name in finalizer._SIDECAR_NAMES:
+        (bundle / name).write_bytes(f"{name}\n".encode("utf-8"))
+    snapshot = finalizer._capture_directory_chain(bundle)
+    original_snapshot_self = finalizer._DirectoryAnchor.snapshot_self
+    replaced = False
+    regular_fsyncs = 0
+    original_fsync = finalizer.os.fsync
+
+    def replace_after_initial_snapshot(anchor, expected_names):
+        nonlocal replaced
+        result = original_snapshot_self(anchor, expected_names)
+        if anchor.label == "staged release bundle sync" and not replaced:
+            target = anchor._path(sorted(finalizer._SIDECAR_NAMES)[0])
+            target.unlink()
+            with target.open("wb") as handle:
+                handle.seek(schema.MAX_ARTIFACT_BYTES)
+                handle.write(b"x")
+            replaced = True
+        return result
+
+    def record_fsync(fd):
+        nonlocal regular_fsyncs
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            regular_fsyncs += 1
+        return original_fsync(fd)
+
+    monkeypatch.setattr(
+        finalizer._DirectoryAnchor, "snapshot_self", replace_after_initial_snapshot
+    )
+    monkeypatch.setattr(finalizer.os, "fsync", record_fsync)
+
+    with pytest.raises(schema.TypedIngressError, match="maximum admissible"):
+        finalizer._sync_captured_bundle(bundle, snapshot)
+
+    assert replaced is True
+    assert regular_fsyncs == 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX nonblocking-open seam")
+def test_sync_bundle_uses_nonblocking_no_follow_file_opens(tmp_path, monkeypatch):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    for name in finalizer._SIDECAR_NAMES:
+        (bundle / name).write_bytes(f"{name}\n".encode("utf-8"))
+    snapshot = finalizer._capture_directory_chain(bundle)
+    original_open = finalizer.os.open
+    observed_flags = []
+
+    def record_file_open(path, flags, *args, **kwargs):
+        if str(path) in finalizer._SIDECAR_NAMES:
+            observed_flags.append(flags)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(finalizer.os, "open", record_file_open)
+
+    finalizer._sync_captured_bundle(bundle, snapshot)
+
+    assert observed_flags
+    assert all(flags & os.O_NONBLOCK for flags in observed_flags)
+    assert all(flags & os.O_NOFOLLOW for flags in observed_flags)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX dir_fd contract")
@@ -787,11 +1103,14 @@ def test_staged_sidecar_fsync_failure_precedes_publication(
     tmp_path, monkeypatch
 ):
     site, output_root, receipts_dir = _roots(tmp_path)
+    original_fsync = finalizer.os.fsync
 
-    def refuse_fsync(_directory):
-        raise OSError("injected staged fsync failure")
+    def refuse_file_fsync(fd):
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("injected staged fsync failure")
+        return original_fsync(fd)
 
-    monkeypatch.setattr(fileio, "fsync_tree", refuse_fsync)
+    monkeypatch.setattr(finalizer.os, "fsync", refuse_file_fsync)
     with pytest.raises(OSError, match="injected staged fsync"):
         _finalize(site, output_root, receipts_dir)
 
