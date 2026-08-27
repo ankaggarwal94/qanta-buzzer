@@ -7,7 +7,6 @@ import csv
 import hashlib
 import io
 import os
-import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -29,6 +28,7 @@ from .phase4_finalize_release import (
     _parse_object,
     _publish_verified_directory,
     _read_accepted_directory_snapshot,
+    _remove_exact_staged_directory,
     _require_accepted_directory,
     _require_disjoint,
     _require_mutually_disjoint,
@@ -527,6 +527,19 @@ def render_scientific_release(
     }
 
     staged = Path(tempfile.mkdtemp(prefix=".scientific-staged-", dir=output_root))
+    staged_snapshot = _capture_directory_chain(staged)
+    if (
+        staged_snapshot.lexical[:-1] != output_root_chain.lexical
+        or (
+            output_root_chain.windows is not None
+            and staged_snapshot.windows is not None
+            and staged_snapshot.windows[:-1] != output_root_chain.windows
+        )
+        or (output_root_chain.windows is None) != (staged_snapshot.windows is None)
+    ):
+        raise schema.TypedIngressError(
+            "staging directory is not a child of the captured output root"
+        )
     try:
         for name in OUTPUT_NAMES:
             (staged / name).write_bytes(generated[name])
@@ -574,9 +587,15 @@ def render_scientific_release(
             report=report,
         )
     finally:
-        if staged is not None and staged.exists():
+        if staged is not None:
             with contextlib.suppress(BaseException):
-                shutil.rmtree(staged)
+                _remove_exact_staged_directory(
+                    parent=output_root,
+                    parent_snapshot=output_root_chain,
+                    staged_name=staged.name,
+                    staged_snapshot=staged_snapshot,
+                    expected_names=OUTPUT_NAMES,
+                )
 
 
 def _build_parser() -> argparse.ArgumentParser:

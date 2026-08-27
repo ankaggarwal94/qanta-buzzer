@@ -14,7 +14,6 @@ import contextlib
 import hashlib
 import os
 import re
-import shutil
 import stat
 import sys
 import tempfile
@@ -109,6 +108,8 @@ class _DirectoryAnchor:
         path: Path,
         captured: _CapturedDirectoryChain | _LexicalChain,
         label: str,
+        *,
+        delete_access: bool = False,
     ) -> None:
         self.path = Path(os.path.abspath(path))
         if isinstance(captured, _CapturedDirectoryChain):
@@ -122,6 +123,7 @@ class _DirectoryAnchor:
             self.snapshot = _CapturedDirectoryChain(lexical=captured)
         self.captured = self.snapshot.lexical
         self.label = label
+        self._delete_access = delete_access
         self._fd: int | None = None
         self._win_handles: list[int] = []
         self._operation_path: Path | None = None
@@ -366,8 +368,8 @@ class _DirectoryAnchor:
                 )
 
         final_paths: list[str] = []
-        for (component, _captured_identity), original in zip(
-            components, original_native
+        for index, ((component, _captured_identity), original) in enumerate(
+            zip(components, original_native)
         ):
             if os.path.normcase(component) != original.component:
                 raise schema.TypedIngressError(
@@ -397,7 +399,12 @@ class _DirectoryAnchor:
                 close_handle(temporary)
             handle = create_file(
                 component,
-                0x80000000,  # GENERIC_READ activates delete-share exclusion
+                0x80000000
+                | (
+                    0x00010000
+                    if self._delete_access and index == len(components) - 1
+                    else 0
+                ),  # GENERIC_READ plus optional DELETE on the final component
                 0x00000001 | 0x00000002,  # FILE_SHARE_READ | FILE_SHARE_WRITE
                 None,
                 3,  # OPEN_EXISTING
@@ -585,6 +592,38 @@ class _DirectoryAnchor:
                 raise RuntimeError("Windows operation path is not pinned")
             fileio.fsync_directory(self._operation_path)
 
+    def delete_on_close(self) -> None:
+        """Mark this exact empty Windows directory handle for deletion."""
+        if self._fd is not None or os.name != "nt":
+            raise RuntimeError("handle-bound deletion is Windows-only")
+        if not self._delete_access or not self._win_handles:
+            raise RuntimeError("directory anchor lacks delete access")
+        import ctypes
+        from ctypes import wintypes
+
+        class _FileDispositionInformation(ctypes.Structure):
+            _fields_ = [("delete_file", wintypes.BOOLEAN)]
+
+        set_information = ctypes.WinDLL(
+            "kernel32", use_last_error=True
+        ).SetFileInformationByHandle
+        set_information.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        set_information.restype = wintypes.BOOL
+        disposition = _FileDispositionInformation(True)
+        if not set_information(
+            wintypes.HANDLE(self._win_handles[-1]),
+            4,  # FileDispositionInfo
+            ctypes.byref(disposition),
+            ctypes.sizeof(disposition),
+        ):
+            error = ctypes.get_last_error()
+            raise OSError(error, "cannot delete exact staging directory handle")
+
     def sync_directory(self, name: str, expected_names: tuple[str, ...]) -> None:
         """Sync one exact child tree without leaving the anchored generation."""
         name = self._name(name)
@@ -622,6 +661,126 @@ class _DirectoryAnchor:
         finally:
             os.close(child_fd)
         self.revalidate(f"sync {name} completion")
+
+    def remove_exact_directory(
+        self,
+        name: str,
+        expected_names: tuple[str, ...],
+        child_snapshot: _CapturedDirectoryChain,
+    ) -> bool:
+        """Remove one known flat child tree without recursive path traversal.
+
+        Cleanup is deliberately narrower than publication validation.  A
+        missing, incomplete, contaminated, aliased, or non-ordinary staging
+        tree is left in place for explicit recovery rather than guessed at.
+        """
+        name = self._name(name)
+        expected = set(expected_names)
+        if (
+            not expected
+            or len(expected) != len(expected_names)
+            or any(self._name(item) != item for item in expected)
+        ):
+            raise schema.ConfigSurfaceError(
+                "expected staging membership is invalid"
+            )
+        try:
+            child_info = self.stat(name)
+        except FileNotFoundError:
+            return False
+        if schema._identity_tuple(child_info) != child_snapshot.lexical[-1][1]:
+            return False
+        if (
+            stat.S_ISLNK(child_info.st_mode)
+            or getattr(child_info, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            or not stat.S_ISDIR(child_info.st_mode)
+        ):
+            return False
+
+        if self._fd is not None:
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(
+                os, "O_CLOEXEC", 0
+            )
+            try:
+                child_fd = os.open(name, flags, dir_fd=self._fd)
+            except OSError:
+                return False
+            try:
+                opened = os.fstat(child_fd)
+                if (
+                    not stat.S_ISDIR(opened.st_mode)
+                    or schema._identity_tuple(opened)
+                    != schema._identity_tuple(child_info)
+                ):
+                    return False
+                with os.scandir(child_fd) as entries:
+                    names = self._bounded_names(entries, len(expected))
+                if set(names) != expected or len(names) != len(expected):
+                    return False
+                for child in sorted(expected):
+                    info = os.stat(
+                        child, dir_fd=child_fd, follow_symlinks=False
+                    )
+                    self._require_regular(info, child)
+                removed = False
+                try:
+                    for child in sorted(expected):
+                        os.unlink(child, dir_fd=child_fd)
+                        removed = True
+                finally:
+                    if removed:
+                        with contextlib.suppress(OSError):
+                            os.fsync(child_fd)
+                current = os.stat(
+                    name, dir_fd=self._fd, follow_symlinks=False
+                )
+                if schema._identity_tuple(current) != schema._identity_tuple(
+                    opened
+                ):
+                    raise schema.TypedIngressError(
+                        "staging directory changed identity during cleanup"
+                    )
+                os.rmdir(name, dir_fd=self._fd)
+            finally:
+                os.close(child_fd)
+        else:
+            # Reacquire against the original lexical snapshot; the nested
+            # anchor then moves all operations onto its verified GUID path.
+            child = self.path / name
+            try:
+                with _DirectoryAnchor(
+                    child,
+                    child_snapshot,
+                    "staging cleanup directory",
+                    delete_access=True,
+                ) as child_anchor:
+                    operation_path = child_anchor._operation_path
+                    if operation_path is None:  # pragma: no cover - invariant
+                        raise RuntimeError(
+                            "Windows staging path is not pinned"
+                        )
+                    with os.scandir(operation_path) as entries:
+                        names = self._bounded_names(entries, len(expected))
+                    if set(names) != expected or len(names) != len(expected):
+                        return False
+                    for item in sorted(expected):
+                        self._require_regular(child_anchor.stat(item), item)
+                    removed = False
+                    try:
+                        for item in sorted(expected):
+                            child_anchor.unlink(item)
+                            removed = True
+                    finally:
+                        if removed:
+                            with contextlib.suppress(OSError):
+                                child_anchor.sync()
+                    child_anchor.delete_on_close()
+            except (OSError, schema.ColmAimsError):
+                return False
+        self.sync()
+        self.revalidate(f"remove {name} completion")
+        return True
 
     def snapshot_directory(
         self, name: str, expected_names: tuple[str, ...]
@@ -960,6 +1119,27 @@ def _require_unchanged_directory(
         raise schema.TypedIngressError(
             f"{label} identity changed during the operation"
         )
+
+
+def _remove_exact_staged_directory(
+    *,
+    parent: Path,
+    parent_snapshot: _CapturedDirectoryChain,
+    staged_name: str,
+    staged_snapshot: _CapturedDirectoryChain,
+    expected_names: tuple[str, ...],
+) -> bool:
+    """Best-effort cleanup confined to the captured parent generation."""
+    try:
+        with _DirectoryAnchor(
+            parent, parent_snapshot, "staging cleanup parent"
+        ) as anchor:
+            return anchor.remove_exact_directory(
+                staged_name, expected_names, staged_snapshot
+            )
+    except (OSError, schema.ColmAimsError):
+        # Safe orphaning is preferable to resolving a mutable lexical path.
+        return False
 
 
 def _require_publication_parent(
@@ -1758,6 +1938,19 @@ def finalize_release(
         output_root, output_root_chain, "release output root"
     )
     staged = Path(tempfile.mkdtemp(prefix=".release-staged-", dir=output_root))
+    staged_snapshot = _capture_directory_chain(staged)
+    if (
+        staged_snapshot.lexical[:-1] != output_root_chain.lexical
+        or (
+            output_root_chain.windows is not None
+            and staged_snapshot.windows is not None
+            and staged_snapshot.windows[:-1] != output_root_chain.windows
+        )
+        or (output_root_chain.windows is None) != (staged_snapshot.windows is None)
+    ):
+        raise schema.TypedIngressError(
+            "staging directory is not a child of the captured output root"
+        )
     try:
         for name in _SIDECAR_NAMES:
             (staged / name).write_bytes(supplied[name])
@@ -1814,9 +2007,15 @@ def finalize_release(
             report=report,
         )
     finally:
-        if staged is not None and staged.exists():
+        if staged is not None:
             with contextlib.suppress(BaseException):
-                shutil.rmtree(staged)
+                _remove_exact_staged_directory(
+                    parent=output_root,
+                    parent_snapshot=output_root_chain,
+                    staged_name=staged.name,
+                    staged_snapshot=staged_snapshot,
+                    expected_names=_SIDECAR_NAMES,
+                )
 
 
 def _build_parser() -> argparse.ArgumentParser:

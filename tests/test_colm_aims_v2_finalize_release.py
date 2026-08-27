@@ -311,6 +311,188 @@ def test_staged_sidecar_readback_failure_precedes_publication(
         _finalize(site, output_root, receipts_dir)
 
     assert not (output_root / "release-0001").exists()
+    assert list(output_root.iterdir()) == []
+
+
+def test_failed_cleanup_never_follows_replaced_output_root(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    displaced = tmp_path / "displaced-authority-output"
+    replacement_bytes = {
+        name: f"replacement {name}\n".encode("utf-8")
+        for name in finalizer._SIDECAR_NAMES
+    }
+
+    def replace_parent_then_refuse(directory):
+        stage_name = Path(directory).name
+        output_root.rename(displaced)
+        output_root.mkdir()
+        replacement_stage = output_root / stage_name
+        replacement_stage.mkdir()
+        for name, data in replacement_bytes.items():
+            (replacement_stage / name).write_bytes(data)
+        raise schema.TypedIngressError("injected staged readback failure")
+
+    monkeypatch.setattr(finalizer, "_read_bundle", replace_parent_then_refuse)
+    with pytest.raises(schema.TypedIngressError, match="injected staged"):
+        _finalize(site, output_root, receipts_dir)
+
+    replacement_stage = next(output_root.iterdir())
+    assert {
+        item.name: item.read_bytes() for item in replacement_stage.iterdir()
+    } == replacement_bytes
+    assert (displaced / replacement_stage.name).is_dir()
+
+
+def test_exact_cleanup_refuses_contaminated_staging_tree(tmp_path):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    staged = output_root / ".staged"
+    staged.mkdir()
+    for name in finalizer._SIDECAR_NAMES:
+        (staged / name).write_bytes(b"owned\n")
+    (staged / "unexpected.txt").write_bytes(b"do not remove\n")
+    snapshot = finalizer._capture_directory_chain(output_root)
+
+    removed = finalizer._remove_exact_staged_directory(
+        parent=output_root,
+        parent_snapshot=snapshot,
+        staged_name=staged.name,
+        staged_snapshot=finalizer._capture_directory_chain(staged),
+        expected_names=finalizer._SIDECAR_NAMES,
+    )
+
+    assert removed is False
+    assert {item.name for item in staged.iterdir()} == {
+        *finalizer._SIDECAR_NAMES,
+        "unexpected.txt",
+    }
+
+
+def test_failed_cleanup_never_removes_replacement_staging_generation(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    original_stage = output_root / "original-stage"
+    replacement_bytes = {
+        name: f"replacement {name}\n".encode("utf-8")
+        for name in finalizer._SIDECAR_NAMES
+    }
+
+    def replace_stage_then_refuse(directory):
+        staged = Path(directory)
+        staged.rename(original_stage)
+        staged.mkdir()
+        for name, data in replacement_bytes.items():
+            (staged / name).write_bytes(data)
+        raise schema.TypedIngressError("injected staged readback failure")
+
+    monkeypatch.setattr(finalizer, "_read_bundle", replace_stage_then_refuse)
+    with pytest.raises(schema.TypedIngressError, match="injected staged"):
+        _finalize(site, output_root, receipts_dir)
+
+    replacement_stage = next(
+        path for path in output_root.iterdir() if path != original_stage
+    )
+    assert {
+        item.name: item.read_bytes() for item in replacement_stage.iterdir()
+    } == replacement_bytes
+    assert original_stage.is_dir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle deletion contract")
+def test_windows_cleanup_deletes_exact_handle_without_name_rmdir(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    staged = output_root / ".staged"
+    staged.mkdir()
+    for name in finalizer._SIDECAR_NAMES:
+        (staged / name).write_bytes(b"owned\n")
+    parent_snapshot = finalizer._capture_directory_chain(output_root)
+    staged_snapshot = finalizer._capture_directory_chain(staged)
+
+    def reject_name_rmdir(*_args, **_kwargs):
+        raise AssertionError("cleanup must delete the verified Windows handle")
+
+    monkeypatch.setattr(finalizer.os, "rmdir", reject_name_rmdir)
+    assert finalizer._remove_exact_staged_directory(
+        parent=output_root,
+        parent_snapshot=parent_snapshot,
+        staged_name=staged.name,
+        staged_snapshot=staged_snapshot,
+        expected_names=finalizer._SIDECAR_NAMES,
+    )
+    assert not staged.exists()
+
+
+def test_partial_cleanup_syncs_and_leaves_bounded_orphan(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    staged = output_root / ".staged"
+    staged.mkdir()
+    for name in finalizer._SIDECAR_NAMES:
+        (staged / name).write_bytes(b"owned\n")
+    parent_snapshot = finalizer._capture_directory_chain(output_root)
+    staged_snapshot = finalizer._capture_directory_chain(staged)
+    cleanup_unlinks = 0
+    cleanup_syncs = 0
+
+    if os.name == "posix":
+        original_unlink = finalizer.os.unlink
+        original_sync = finalizer.os.fsync
+
+        def fail_second_unlink(name, *args, **kwargs):
+            nonlocal cleanup_unlinks
+            if kwargs.get("dir_fd") is not None:
+                cleanup_unlinks += 1
+                if cleanup_unlinks == 2:
+                    raise OSError("injected cleanup unlink failure")
+            return original_unlink(name, *args, **kwargs)
+
+        def track_sync(fd):
+            nonlocal cleanup_syncs
+            cleanup_syncs += 1
+            return original_sync(fd)
+
+        monkeypatch.setattr(finalizer.os, "unlink", fail_second_unlink)
+        monkeypatch.setattr(finalizer.os, "fsync", track_sync)
+    else:
+        original_unlink = finalizer._DirectoryAnchor.unlink
+        original_sync = finalizer._DirectoryAnchor.sync
+
+        def fail_second_unlink(anchor, name):
+            nonlocal cleanup_unlinks
+            if anchor.label == "staging cleanup directory":
+                cleanup_unlinks += 1
+                if cleanup_unlinks == 2:
+                    raise OSError("injected cleanup unlink failure")
+            return original_unlink(anchor, name)
+
+        def track_sync(anchor):
+            nonlocal cleanup_syncs
+            if anchor.label == "staging cleanup directory":
+                cleanup_syncs += 1
+            return original_sync(anchor)
+
+        monkeypatch.setattr(
+            finalizer._DirectoryAnchor, "unlink", fail_second_unlink
+        )
+        monkeypatch.setattr(finalizer._DirectoryAnchor, "sync", track_sync)
+    assert not finalizer._remove_exact_staged_directory(
+        parent=output_root,
+        parent_snapshot=parent_snapshot,
+        staged_name=staged.name,
+        staged_snapshot=staged_snapshot,
+        expected_names=finalizer._SIDECAR_NAMES,
+    )
+    assert cleanup_syncs == 1
+    assert staged.is_dir()
+    assert len(list(staged.iterdir())) == 2
 
 
 def test_staged_sidecar_fsync_failure_precedes_publication(

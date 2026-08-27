@@ -405,6 +405,73 @@ def test_staged_readback_failure_precedes_publication(tmp_path, monkeypatch):
         _render(site, output_root, receipts_dir)
 
     assert not (output_root / "render-0001").exists()
+    assert list(output_root.iterdir()) == []
+
+
+def test_renderer_failed_cleanup_never_follows_replaced_output_root(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    displaced = tmp_path / "displaced-scientific-output"
+    replacement_bytes = {
+        name: f"replacement {name}\n".encode("utf-8")
+        for name in renderer.OUTPUT_NAMES
+    }
+
+    def replace_parent_then_refuse(directory, **_kwargs):
+        stage_name = Path(directory).name
+        output_root.rename(displaced)
+        output_root.mkdir()
+        replacement_stage = output_root / stage_name
+        replacement_stage.mkdir()
+        for name, data in replacement_bytes.items():
+            (replacement_stage / name).write_bytes(data)
+        raise schema.TypedIngressError("injected staged readback failure")
+
+    monkeypatch.setattr(
+        renderer, "_read_outputs", replace_parent_then_refuse
+    )
+    with pytest.raises(schema.TypedIngressError, match="injected staged"):
+        _render(site, output_root, receipts_dir)
+
+    replacement_stage = next(output_root.iterdir())
+    assert {
+        item.name: item.read_bytes() for item in replacement_stage.iterdir()
+    } == replacement_bytes
+    assert (displaced / replacement_stage.name).is_dir()
+
+
+def test_renderer_cleanup_never_removes_replacement_staging_generation(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    original_stage = output_root / "original-stage"
+    replacement_bytes = {
+        name: f"replacement {name}\n".encode("utf-8")
+        for name in renderer.OUTPUT_NAMES
+    }
+
+    def replace_stage_then_refuse(directory, **_kwargs):
+        staged = Path(directory)
+        staged.rename(original_stage)
+        staged.mkdir()
+        for name, data in replacement_bytes.items():
+            (staged / name).write_bytes(data)
+        raise schema.TypedIngressError("injected staged readback failure")
+
+    monkeypatch.setattr(
+        renderer, "_read_outputs", replace_stage_then_refuse
+    )
+    with pytest.raises(schema.TypedIngressError, match="injected staged"):
+        _render(site, output_root, receipts_dir)
+
+    replacement_stage = next(
+        path for path in output_root.iterdir() if path != original_stage
+    )
+    assert {
+        item.name: item.read_bytes() for item in replacement_stage.iterdir()
+    } == replacement_bytes
+    assert original_stage.is_dir()
 
 
 def test_staged_fsync_failure_precedes_publication(tmp_path, monkeypatch):
