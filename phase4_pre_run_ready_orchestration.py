@@ -397,6 +397,63 @@ def publish_bytes_to_captured_directory(
         anchor.create_once(path.name, data, exists_label=label)
 
 
+def publish_certificate_bundle(
+    paths: OrchestrationPaths,
+    run_root_snapshot: phase4_finalize_release._CapturedDirectoryChain,
+    certificate_snapshot: phase4_finalize_release._CapturedDirectoryChain,
+    certificate_bytes: bytes,
+    summary: dict[str, Any],
+) -> None:
+    """Publish the certificate pair through one claimed directory generation."""
+    publication = {
+        paths.certificate_path.name: certificate_bytes,
+        "certificate_generation_summary.json": _json_bytes(summary),
+    }
+    claims: dict[str, int] = {}
+    with (
+        phase4_finalize_release._DirectoryAnchor(
+            paths.run_root,
+            run_root_snapshot,
+            "frozen operational run root",
+        ) as run_anchor,
+        phase4_finalize_release._DirectoryAnchor(
+            paths.certificate_dir,
+            certificate_snapshot,
+            "frozen certificate directory",
+        ) as certificate_anchor,
+    ):
+        run_anchor.require_child_identity("certificate", certificate_snapshot)
+        try:
+            for name in publication:
+                claims[name] = certificate_anchor.create_open_once(
+                    name,
+                    exists_label=(
+                        "PRE_RUN_READY certificate"
+                        if name == paths.certificate_path.name
+                        else "certificate generation summary"
+                    ),
+                )
+            for name, data in publication.items():
+                with os.fdopen(os.dup(claims[name]), "wb") as output:
+                    output.write(data)
+                    output.flush()
+                    os.fsync(output.fileno())
+            observed = certificate_anchor.snapshot_claimed_files(
+                claims,
+                {name: len(data) for name, data in publication.items()},
+            )
+            if observed != publication:
+                raise RuntimeError(
+                    "claimed certificate publication bytes changed"
+                )
+            run_anchor.require_child_identity(
+                "certificate", certificate_snapshot
+            )
+        finally:
+            for descriptor in claims.values():
+                os.close(descriptor)
+
+
 def gather_certificate_from_captured_receipts(
     config: dict[str, Any],
     receipts_dir: Path,
@@ -1608,10 +1665,14 @@ def main(argv: list[str] | None = None) -> int:
     receipts_snapshot = phase4_finalize_release._capture_directory_chain(
         paths.receipts_dir
     )
+    certificate_snapshot = phase4_finalize_release._capture_directory_chain(
+        paths.certificate_dir
+    )
     with phase4_finalize_release._DirectoryAnchor(
         paths.run_root, run_root_snapshot, "frozen operational run root"
     ) as run_anchor:
         run_anchor.require_child_identity("receipts", receipts_snapshot)
+        run_anchor.require_child_identity("certificate", certificate_snapshot)
     staged_plan = verify_prepared_inputs(paths)
     snapshot_dirs = verify_prepared_snapshots(paths)
 
@@ -1782,11 +1843,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     certificate = phase4.assemble_certificate(components)
     certificate_bytes = schema.encode_json(certificate)
-    publish_bytes_create_once(
-        paths.certificate_path,
-        certificate_bytes,
-        label="PRE_RUN_READY certificate",
-    )
     result = {
         "certificate": certificate,
         "ready": certificate["ready"],
@@ -1803,10 +1859,12 @@ def main(argv: list[str] | None = None) -> int:
         "full_counts": receipts["full"]["counts"],
         "failing_checks": result["certificate"].get("failing_checks", []),
     }
-    write_json_create_once(
-        paths.certificate_dir / "certificate_generation_summary.json",
+    publish_certificate_bundle(
+        paths,
+        run_root_snapshot,
+        certificate_snapshot,
+        certificate_bytes,
         summary,
-        label="certificate generation summary",
     )
     print("CERTIFICATE_RESULT=" + json.dumps(summary, sort_keys=True))
     return 0 if result["ready"] else 1

@@ -511,6 +511,27 @@ class _DirectoryAnchor:
             "host cannot expose a held directory generation to a child process"
         )
 
+    def stable_access_path(self) -> Path:
+        """Expose this held directory generation without lexical rebinding."""
+        self.revalidate("stable access path")
+        if self._fd is None:
+            if self._operation_path is None:  # pragma: no cover - invariant
+                raise RuntimeError("Windows directory operation path is absent")
+            return self._operation_path
+        held_identity = schema._identity_tuple(os.fstat(self._fd))
+        for namespace in (Path("/proc/self/fd"), Path("/dev/fd")):
+            proxy = namespace / str(self._fd)
+            try:
+                observed = os.stat(proxy)
+            except OSError:
+                continue
+            if schema._identity_tuple(observed) == held_identity:
+                return proxy
+        raise schema.TypedIngressError(
+            "host cannot expose a held directory generation to an in-process"
+            " verifier"
+        )
+
     def stat(self, name: str) -> os.stat_result:
         name = self._name(name)
         if self._fd is not None:
@@ -2436,7 +2457,7 @@ def _require_report_bindings(
     *,
     tree_snapshot: dict[str, bytes],
     expectations_bytes: bytes,
-    receipts_dir: Path,
+    receipts_anchor: _DirectoryAnchor,
 ) -> dict[str, str]:
     """Bind a PASS report receipt to the exact captured inputs and code."""
     if report.receipt_path is None:
@@ -2444,12 +2465,13 @@ def _require_report_bindings(
             "PASS_RELEASE verifier report did not provide a receipt"
         )
     receipt_path = Path(report.receipt_path)
-    if not schema.resolves_inside(receipt_path, receipts_dir):
+    stable_receipts_dir = receipts_anchor.stable_access_path()
+    if receipt_path.parent != stable_receipts_dir:
         raise schema.TypedIngressError(
             "PASS_RELEASE verifier receipt escaped the selected receipt directory"
         )
-    receipt_bytes = schema.read_regular_file_bytes(
-        receipt_path, tree_root=receipts_dir
+    receipt_bytes = receipts_anchor.read_regular(
+        receipt_path.name, max_bytes=schema.MAX_ARTIFACT_BYTES
     )
     receipt = _parse_object(receipt_bytes, receipt_path.name)
     expected_tree = verifier._tree_digest_from_shas(
@@ -2477,6 +2499,9 @@ def _require_report_bindings(
         raise schema.TypedIngressError(
             "PASS_RELEASE verifier receipt does not carry the release verdict"
         )
+    # The verifier must operate through the held generation, but callers
+    # receive the ordinary lexical spelling after the anchor is retired.
+    report.receipt_path = receipts_anchor.path / receipt_path.name
     return {
         **required,
         "verifier_revision": schema.VERIFIER_REVISION,
@@ -2750,22 +2775,27 @@ def finalize_release(
             raise schema.TypedIngressError(
                 "staged release sidecar bytes differ from the external inputs"
             )
-        report = _require_release_pass(
-            runs_root=runs_root,
-            expectations=staged / _EXPECTATIONS_NAME,
-            receipts_dir=receipts_dir,
-            stage="prepublication",
-        )
-        if verifier._read_tree_snapshot(selected_tree) != tree_snapshot:
-            raise schema.TypedIngressError(
-                "selected release tree changed during verification"
+        with _DirectoryAnchor(
+            receipts_dir,
+            receipts_chain,
+            "release verifier receipts",
+        ) as receipts_anchor:
+            report = _require_release_pass(
+                runs_root=runs_root,
+                expectations=staged / _EXPECTATIONS_NAME,
+                receipts_dir=receipts_anchor.stable_access_path(),
+                stage="prepublication",
             )
-        _require_report_bindings(
-            report,
-            tree_snapshot=tree_snapshot,
-            expectations_bytes=supplied[_EXPECTATIONS_NAME],
-            receipts_dir=receipts_dir,
-        )
+            if verifier._read_tree_snapshot(selected_tree) != tree_snapshot:
+                raise schema.TypedIngressError(
+                    "selected release tree changed during verification"
+                )
+            _require_report_bindings(
+                report,
+                tree_snapshot=tree_snapshot,
+                expectations_bytes=supplied[_EXPECTATIONS_NAME],
+                receipts_anchor=receipts_anchor,
+            )
         if _read_bundle(staged) != supplied:
             raise schema.TypedIngressError(
                 "staged release sidecars changed during verification"

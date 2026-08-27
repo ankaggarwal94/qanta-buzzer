@@ -22,6 +22,7 @@ from .phase4_finalize_release import (
     EXIT_USAGE_ERROR,
     EXIT_VERIFY_FAIL,
     ReleaseVerificationFailed,
+    _DirectoryAnchor,
     _capture_directory_chain,
     _canonical_existing_directory,
     _create_staged_directory,
@@ -465,33 +466,38 @@ def render_scientific_release(
         runs_root, expectations_path
     )
     tree_snapshot_before = verifier._read_tree_snapshot(tree)
-    report = verifier.run_release_over_runs_root(
-        runs_root,
-        expectations=expectations_path,
-        receipts_dir=receipts_dir,
-    )
-    if report.verdict != verifier.VERDICT_RELEASE_PASS:
-        raise ReleaseVerificationFailed(
-            "scientific rendering requires canonical PASS_RELEASE"
+    with _DirectoryAnchor(
+        receipts_dir,
+        receipts_chain,
+        "scientific verifier receipts",
+    ) as receipts_anchor:
+        report = verifier.run_release_over_runs_root(
+            runs_root,
+            expectations=expectations_path,
+            receipts_dir=receipts_anchor.stable_access_path(),
         )
-    tree_after, sidecars_after = _capture_release_inputs(
-        runs_root, expectations_path
-    )
-    tree_snapshot_after = verifier._read_tree_snapshot(tree_after)
-    if (
-        tree_after != tree
-        or sidecars_after != sidecars_before
-        or tree_snapshot_after != tree_snapshot_before
-    ):
-        raise schema.TypedIngressError(
-            "release inputs changed during verification; refusing to render"
+        if report.verdict != verifier.VERDICT_RELEASE_PASS:
+            raise ReleaseVerificationFailed(
+                "scientific rendering requires canonical PASS_RELEASE"
+            )
+        tree_after, sidecars_after = _capture_release_inputs(
+            runs_root, expectations_path
         )
-    report_bindings = _require_report_bindings(
-        report,
-        tree_snapshot=tree_snapshot_before,
-        expectations_bytes=sidecars_before["expectations"],
-        receipts_dir=receipts_dir,
-    )
+        tree_snapshot_after = verifier._read_tree_snapshot(tree_after)
+        if (
+            tree_after != tree
+            or sidecars_after != sidecars_before
+            or tree_snapshot_after != tree_snapshot_before
+        ):
+            raise schema.TypedIngressError(
+                "release inputs changed during verification; refusing to render"
+            )
+        report_bindings = _require_report_bindings(
+            report,
+            tree_snapshot=tree_snapshot_before,
+            expectations_bytes=sidecars_before["expectations"],
+            receipts_anchor=receipts_anchor,
+        )
     _require_unchanged_directory(
         output_root, output_root_chain, "scientific output root"
     )

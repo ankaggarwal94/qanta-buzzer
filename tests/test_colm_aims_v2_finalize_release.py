@@ -809,6 +809,64 @@ def test_verifier_receipt_must_bind_exact_finalization_inputs(
     assert not (output_root / "release-0001").exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX dir-fd regression")
+def test_finalizer_verifier_emits_through_frozen_receipts_generation(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    original = verifier.run_release_over_runs_root
+    displaced = tmp_path / "held-release-receipts"
+    replacement = tmp_path / "replacement-release-receipts"
+    swapped = False
+
+    def swap_during_verifier(*args, **kwargs):
+        nonlocal swapped
+        swapped = True
+        receipts_dir.rename(displaced)
+        receipts_dir.mkdir()
+        (receipts_dir / "sentinel.txt").write_bytes(b"decoy\n")
+        try:
+            report = original(*args, **kwargs)
+        finally:
+            receipts_dir.rename(replacement)
+            displaced.rename(receipts_dir)
+        return report
+
+    monkeypatch.setattr(
+        verifier, "run_release_over_runs_root", swap_during_verifier
+    )
+    result = _finalize(site, output_root, receipts_dir)
+
+    assert swapped is True
+    assert result.report.receipt_path.parent == receipts_dir
+    assert result.report.receipt_path.is_file()
+    assert [item.name for item in replacement.iterdir()] == ["sentinel.txt"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows locking regression")
+def test_windows_finalizer_receipts_anchor_blocks_parent_rename(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    original = verifier.run_release_over_runs_root
+    attempted = False
+
+    def attempt_rename(*args, **kwargs):
+        nonlocal attempted
+        attempted = True
+        with pytest.raises(OSError):
+            receipts_dir.rename(tmp_path / "displaced-release-receipts")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        verifier, "run_release_over_runs_root", attempt_rename
+    )
+    result = _finalize(site, output_root, receipts_dir)
+
+    assert attempted is True
+    assert result.report.receipt_path.is_file()
+
+
 def test_selected_tree_mutation_during_verification_refuses_publication(
     tmp_path, monkeypatch
 ):
