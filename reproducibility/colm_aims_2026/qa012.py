@@ -1144,6 +1144,7 @@ def build_inventory_manifest(roots: dict[str, Path]) -> dict[str, Any]:
     total_bytes = 0
     preflight_total_bytes = 0
     total_hits = 0
+    total_pointer_bytes = 0
     candidate_sets: dict[str, list[Path]] = {}
     candidate_identities: dict[tuple[str, str], tuple[int, int, int]] = {}
     entries_by_identity: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1196,6 +1197,19 @@ def build_inventory_manifest(roots: dict[str, Path]) -> dict[str, Any]:
         )
         for path in candidates:
             entry = _scan_file(path, root, scope_prong)
+            entry_pointer_bytes = sum(
+                len(hit["pointer"].encode("utf-8"))
+                for hit in entry["hits"]
+            )
+            if (
+                total_pointer_bytes + entry_pointer_bytes
+                > MAX_QA_TOTAL_POINTER_BYTES
+            ):
+                raise schema.TypedIngressError(
+                    "QA-012 inventory exceeds aggregate pointer byte limit"
+                    f" {MAX_QA_TOTAL_POINTER_BYTES} (R-072/R-020)"
+                )
+            total_pointer_bytes += entry_pointer_bytes
             files.append(entry)
             entries_by_identity[(scope_prong, entry["path"])] = entry
             total_files += 1

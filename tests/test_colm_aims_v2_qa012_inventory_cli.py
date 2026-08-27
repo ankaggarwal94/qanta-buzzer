@@ -283,6 +283,36 @@ def test_build_rejects_just_over_aggregate_cap_before_large_read(
     assert scan_calls == 2
 
 
+def test_build_rejects_manifest_wide_pointer_bytes_during_scan(
+    tmp_path, monkeypatch
+):
+    roots = _scope_roots(tmp_path / "scope")
+    pointer = "/wide"
+    pointer_bytes = len(pointer.encode("utf-8"))
+    monkeypatch.setattr(
+        qa012, "MAX_QA_TOTAL_POINTER_BYTES", pointer_bytes * 2 - 1
+    )
+    scan_calls = 0
+
+    def virtual_scan(path, root, scope_prong):
+        nonlocal scan_calls
+        scan_calls += 1
+        return {
+            "scope_prong": scope_prong,
+            "path": path.relative_to(root).as_posix(),
+            "size": 0,
+            "content_hash": "0" * 64,
+            "sha256": "0" * 64,
+            "hits": [{"line": None, "pointer": pointer}],
+        }
+
+    monkeypatch.setattr(qa012, "_scan_file", virtual_scan)
+
+    with pytest.raises(schema.TypedIngressError, match="aggregate pointer"):
+        qa012.build_inventory_manifest(roots)
+    assert scan_calls == 2
+
+
 def test_detector_bounds_fanout_without_materializing_all_children():
     class GuardedItemsDict(dict):
         def items(self):
