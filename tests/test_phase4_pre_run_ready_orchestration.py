@@ -289,12 +289,16 @@ def test_run_suite_uses_repo_cwd_and_suite_environment(
         *,
         environment,
         transcript_stage,
+        transcript_fd,
+        inherited_fds,
         timeout_seconds,
         max_transcript_bytes,
     ):
         observed.update(
             command=command,
             env=environment,
+            transcript_fd=transcript_fd,
+            inherited_fds=inherited_fds,
             timeout_seconds=timeout_seconds,
             max_transcript_bytes=max_transcript_bytes,
         )
@@ -305,7 +309,7 @@ def test_run_suite_uses_repo_cwd_and_suite_environment(
             '<testsuite tests="1" failures="0" errors="0" skipped="0"/>',
             encoding="utf-8",
         )
-        transcript_stage.write_bytes(b"one passed\n")
+        os.write(transcript_fd, b"one passed\n")
         return 0
 
     monkeypatch.setattr(orchestration, "_run_bounded_suite_process", fake_run)
@@ -317,6 +321,33 @@ def test_run_suite_uses_repo_cwd_and_suite_environment(
     assert result["junit_path"].parent == paths.receipts_dir
     assert result["transcript_path"].read_bytes() == b"one passed\n"
     assert Path.cwd() == outside
+    assert list(run_root.glob(".focused-suite-staged-*")) == []
+
+
+def test_run_suite_real_process_uses_generation_bound_stage_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset_root, run_root = _prepared_roots(tmp_path)
+    paths = orchestration.derive_paths(
+        asset_root=asset_root, run_root=run_root, run_id="run-1"
+    )
+    monkeypatch.setattr(
+        orchestration, "suite_environment", lambda: os.environ.copy()
+    )
+
+    result = orchestration.run_suite(
+        paths,
+        "focused",
+        [
+            "tests/test_phase4_pre_run_ready_orchestration.py::"
+            "test_producer_command_binds_parameterized_asset_root"
+        ],
+        timeout_seconds=60,
+    )
+
+    assert result["exit_code"] == 0
+    assert b"1 passed" in result["transcript_bytes"]
+    assert result["junit_bytes"].startswith(b"<?xml")
     assert list(run_root.glob(".focused-suite-staged-*")) == []
 
 
@@ -333,11 +364,13 @@ def test_run_suite_cleanup_removes_transcript_only_stage(
         *,
         environment,
         transcript_stage,
+        transcript_fd,
+        inherited_fds,
         timeout_seconds,
         max_transcript_bytes,
     ):
-        del environment, timeout_seconds, max_transcript_bytes
-        Path(transcript_stage).write_bytes(b"partial\n")
+        del environment, inherited_fds, timeout_seconds, max_transcript_bytes
+        os.write(transcript_fd, b"partial\n")
         raise RuntimeError("injected partial suite failure")
 
     monkeypatch.setattr(
@@ -384,35 +417,474 @@ def test_run_suite_cleanup_never_follows_replacement_stage(
     )
     displaced = run_root / "captured-suite-stage"
     replacement: Path | None = None
+    rename_blocked = False
 
     def replace_stage_then_fail(
-        _command,
+        command,
         *,
         environment,
         transcript_stage,
+        transcript_fd,
+        inherited_fds,
         timeout_seconds,
         max_transcript_bytes,
     ):
-        del environment, timeout_seconds, max_transcript_bytes
-        nonlocal replacement
-        stage = Path(transcript_stage).parent
-        stage.rename(displaced)
-        stage.mkdir()
-        replacement = stage
-        (stage / "sentinel.txt").write_bytes(b"replacement\n")
-        raise RuntimeError("injected suite failure")
+        del environment, inherited_fds, timeout_seconds, max_transcript_bytes
+        nonlocal replacement, rename_blocked
+        [stage] = run_root.glob(".focused-suite-staged-*")
+        if os.name == "nt":
+            with pytest.raises(OSError):
+                stage.rename(displaced)
+            rename_blocked = True
+        else:
+            stage.rename(displaced)
+            stage.mkdir()
+            replacement = stage
+            (stage / "sentinel.txt").write_bytes(b"replacement\n")
+        junit_arg = next(
+            token for token in command if token.startswith("--junitxml=")
+        )
+        Path(junit_arg.partition("=")[2]).write_text(
+            '<testsuite tests="1" failures="0" errors="0" skipped="0"/>',
+            encoding="utf-8",
+        )
+        os.write(transcript_fd, b"one passed\n")
+        return 0
 
     monkeypatch.setattr(
         orchestration, "_run_bounded_suite_process", replace_stage_then_fail
     )
     monkeypatch.setattr(orchestration, "suite_environment", lambda: {})
 
-    with pytest.raises(RuntimeError, match="injected suite failure"):
+    if os.name == "nt":
+        result = orchestration.run_suite(
+            paths, "focused", ["tests/example.py"]
+        )
+        assert result["exit_code"] == 0
+        assert rename_blocked is True
+        assert not displaced.exists()
+    else:
+        with pytest.raises(
+            orchestration.schema.TypedIngressError, match="identity"
+        ):
+            orchestration.run_suite(paths, "focused", ["tests/example.py"])
+        assert replacement is not None and replacement.is_dir()
+        assert (replacement / "sentinel.txt").read_bytes() == b"replacement\n"
+        assert (displaced / "transcript.txt").read_bytes() == b"one passed\n"
+        assert (displaced / "suite.xml").is_file()
+
+
+def test_run_suite_never_publishes_through_replacement_receipts_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset_root, run_root = _prepared_roots(tmp_path)
+    paths = orchestration.derive_paths(
+        asset_root=asset_root, run_root=run_root, run_id="run-1"
+    )
+    displaced = run_root / "captured-receipts"
+    decoy = run_root / "replacement-receipts"
+    rename_blocked = False
+
+    def replace_receipts_after_claim(
+        command,
+        *,
+        environment,
+        transcript_stage,
+        transcript_fd,
+        inherited_fds,
+        timeout_seconds,
+        max_transcript_bytes,
+    ):
+        del environment, inherited_fds, timeout_seconds, max_transcript_bytes
+        nonlocal rename_blocked
+        if os.name == "nt":
+            with pytest.raises(OSError):
+                paths.receipts_dir.rename(displaced)
+            rename_blocked = True
+        else:
+            paths.receipts_dir.rename(displaced)
+            paths.receipts_dir.mkdir()
+            (paths.receipts_dir / "sentinel.txt").write_bytes(b"decoy\n")
+        junit_arg = next(
+            token for token in command if token.startswith("--junitxml=")
+        )
+        Path(junit_arg.partition("=")[2]).write_text(
+            '<testsuite tests="1" failures="0" errors="0" skipped="0"/>',
+            encoding="utf-8",
+        )
+        os.write(transcript_fd, b"one passed\n")
+        return 0
+
+    monkeypatch.setattr(
+        orchestration,
+        "_run_bounded_suite_process",
+        replace_receipts_after_claim,
+    )
+    monkeypatch.setattr(orchestration, "suite_environment", lambda: {})
+
+    if os.name == "nt":
+        result = orchestration.run_suite(
+            paths, "focused", ["tests/example.py"]
+        )
+        assert result["exit_code"] == 0
+        assert rename_blocked is True
+        assert not displaced.exists()
+    else:
+        with pytest.raises(
+            orchestration.schema.TypedIngressError, match="identity"
+        ):
+            orchestration.run_suite(paths, "focused", ["tests/example.py"])
+        paths.receipts_dir.rename(decoy)
+        displaced.rename(paths.receipts_dir)
+        assert (decoy / "sentinel.txt").read_bytes() == b"decoy\n"
+        assert list(paths.receipts_dir.iterdir()) == []
+
+
+def test_build_receipt_uses_captured_suite_bytes_not_mutable_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset_root, run_root = _prepared_roots(tmp_path)
+    paths = orchestration.derive_paths(
+        asset_root=asset_root, run_root=run_root, run_id="run-1"
+    )
+
+    def fake_run(
+        command,
+        *,
+        environment,
+        transcript_stage,
+        transcript_fd,
+        inherited_fds,
+        timeout_seconds,
+        max_transcript_bytes,
+    ):
+        del environment, inherited_fds, timeout_seconds, max_transcript_bytes
+        junit_arg = next(
+            token for token in command if token.startswith("--junitxml=")
+        )
+        Path(junit_arg.partition("=")[2]).write_text(
+            '<testsuite tests="1" failures="0" errors="0" skipped="0"/>',
+            encoding="utf-8",
+        )
+        os.write(transcript_fd, b"one passed\n")
+        return 0
+
+    monkeypatch.setattr(orchestration, "_run_bounded_suite_process", fake_run)
+    monkeypatch.setattr(orchestration, "suite_environment", lambda: {})
+    run_info = orchestration.run_suite(
+        paths, "focused", ["tests/example.py"]
+    )
+    original_junit = run_info["junit_bytes"]
+    original_transcript = run_info["transcript_bytes"]
+    run_info["junit_path"].write_bytes(b"substituted\n")
+    run_info["transcript_path"].write_bytes(b"substituted\n")
+
+    receipt = orchestration.build_receipt(
+        run_info,
+        "a" * 64,
+        "b" * 64,
+        str(Path(sys.executable).resolve()),
+        {"commit": "c" * 40, "tree": "d" * 40, "dirty": False},
+    )
+
+    assert receipt["counts"]["tests"] == 1
+    assert receipt["junit_sha256"] == hashlib.sha256(original_junit).hexdigest()
+    assert receipt["transcript_sha256"] == hashlib.sha256(
+        original_transcript
+    ).hexdigest()
+
+
+@pytest.mark.parametrize("replaced_name", ("suite.xml", "transcript.txt"))
+def test_run_suite_never_reads_replacement_child_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replaced_name: str,
+) -> None:
+    asset_root, run_root = _prepared_roots(tmp_path)
+    paths = orchestration.derive_paths(
+        asset_root=asset_root, run_root=run_root, run_id="run-1"
+    )
+    replacement_blocked = False
+
+    def replace_claimed_child(
+        command,
+        *,
+        environment,
+        transcript_stage,
+        transcript_fd,
+        inherited_fds,
+        timeout_seconds,
+        max_transcript_bytes,
+    ):
+        del environment, inherited_fds, timeout_seconds, max_transcript_bytes
+        nonlocal replacement_blocked
+        junit_arg = next(
+            token for token in command if token.startswith("--junitxml=")
+        )
+        Path(junit_arg.partition("=")[2]).write_text(
+            '<testsuite tests="1" failures="0" errors="0" skipped="0"/>',
+            encoding="utf-8",
+        )
+        os.write(transcript_fd, b"one passed\n")
+        [stage] = run_root.glob(".focused-suite-staged-*")
+        target = stage / replaced_name
+        try:
+            target.unlink()
+        except OSError:
+            replacement_blocked = True
+        else:
+            target.write_bytes(b"replacement bytes\n")
+        return 0
+
+    monkeypatch.setattr(
+        orchestration, "_run_bounded_suite_process", replace_claimed_child
+    )
+    monkeypatch.setattr(orchestration, "suite_environment", lambda: {})
+
+    if os.name == "nt":
+        result = orchestration.run_suite(
+            paths, "focused", ["tests/example.py"]
+        )
+        assert replacement_blocked is True
+        assert result["exit_code"] == 0
+    else:
+        with pytest.raises(
+            orchestration.schema.TypedIngressError, match="claimed"
+        ):
+            orchestration.run_suite(paths, "focused", ["tests/example.py"])
+        assert not (paths.receipts_dir / "focused_suite.xml").exists()
+        assert not (
+            paths.receipts_dir / "focused_suite_transcript.txt"
+        ).exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink substitution")
+def test_run_suite_junit_symlink_never_redirects_pytest_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset_root, run_root = _prepared_roots(tmp_path)
+    paths = orchestration.derive_paths(
+        asset_root=asset_root, run_root=run_root, run_id="run-1"
+    )
+    outside = tmp_path / "outside.xml"
+    outside.write_bytes(b"outside sentinel\n")
+
+    def insert_symlink_before_write(
+        command,
+        *,
+        environment,
+        transcript_stage,
+        transcript_fd,
+        inherited_fds,
+        timeout_seconds,
+        max_transcript_bytes,
+    ):
+        del environment, inherited_fds, timeout_seconds, max_transcript_bytes
+        [stage] = run_root.glob(".focused-suite-staged-*")
+        (stage / "suite.xml").unlink()
+        (stage / "suite.xml").symlink_to(outside)
+        junit_arg = next(
+            token for token in command if token.startswith("--junitxml=")
+        )
+        Path(junit_arg.partition("=")[2]).write_text(
+            '<testsuite tests="1" failures="0" errors="0" skipped="0"/>',
+            encoding="utf-8",
+        )
+        os.write(transcript_fd, b"one passed\n")
+        return 0
+
+    monkeypatch.setattr(
+        orchestration,
+        "_run_bounded_suite_process",
+        insert_symlink_before_write,
+    )
+    monkeypatch.setattr(orchestration, "suite_environment", lambda: {})
+
+    with pytest.raises(orchestration.schema.TypedIngressError):
         orchestration.run_suite(paths, "focused", ["tests/example.py"])
 
-    assert replacement is not None and replacement.is_dir()
-    assert (replacement / "sentinel.txt").read_bytes() == b"replacement\n"
-    assert displaced.is_dir()
+    assert outside.read_bytes() == b"outside sentinel\n"
+
+
+def test_run_suite_rejects_replaced_frozen_receipts_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset_root, run_root = _prepared_roots(tmp_path)
+    paths = orchestration.derive_paths(
+        asset_root=asset_root, run_root=run_root, run_id="run-1"
+    )
+    run_snapshot = orchestration.phase4_finalize_release._capture_directory_chain(
+        paths.run_root
+    )
+    receipts_snapshot = (
+        orchestration.phase4_finalize_release._capture_directory_chain(
+            paths.receipts_dir
+        )
+    )
+    displaced = run_root / "original-receipts"
+    paths.receipts_dir.rename(displaced)
+    paths.receipts_dir.mkdir()
+    sentinel = paths.receipts_dir / "sentinel.txt"
+    sentinel.write_bytes(b"replacement\n")
+    monkeypatch.setattr(orchestration, "suite_environment", lambda: {})
+
+    with pytest.raises(orchestration.schema.TypedIngressError):
+        orchestration.run_suite(
+            paths,
+            "focused",
+            ["tests/example.py"],
+            run_root_snapshot=run_snapshot,
+            receipts_snapshot=receipts_snapshot,
+        )
+
+    assert sentinel.read_bytes() == b"replacement\n"
+    assert list(displaced.iterdir()) == []
+
+
+def test_captured_receipt_publication_rejects_replacement_parent(
+    tmp_path: Path
+) -> None:
+    parent = tmp_path / "receipts"
+    parent.mkdir()
+    snapshot = orchestration.phase4_finalize_release._capture_directory_chain(
+        parent
+    )
+    displaced = tmp_path / "original-receipts"
+    parent.rename(displaced)
+    parent.mkdir()
+    sentinel = parent / "sentinel.txt"
+    sentinel.write_bytes(b"replacement\n")
+
+    with pytest.raises(orchestration.schema.TypedIngressError):
+        orchestration.publish_bytes_to_captured_directory(
+            parent,
+            snapshot,
+            parent / "suite_receipt_focused.json",
+            b"{}\n",
+            label="focused suite receipt",
+        )
+
+    assert sentinel.read_bytes() == b"replacement\n"
+    assert list(displaced.iterdir()) == []
+
+
+def test_certificate_gather_reads_only_frozen_receipts_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    paths = {
+        name: receipts / f"suite_receipt_{name}.json"
+        for name in ("focused", "full")
+    }
+    expected = {name: {"source": name} for name in paths}
+    for name, path in paths.items():
+        path.write_bytes(orchestration._json_bytes(expected[name]))
+    snapshot = orchestration.phase4_finalize_release._capture_directory_chain(
+        receipts
+    )
+    displaced = tmp_path / "original-receipts"
+    replacement = tmp_path / "replacement-receipts"
+    rename_blocked = False
+
+    def replace_then_gather(config):
+        nonlocal rename_blocked
+        if os.name == "nt":
+            with pytest.raises(OSError):
+                receipts.rename(displaced)
+            rename_blocked = True
+        else:
+            receipts.rename(displaced)
+            receipts.mkdir()
+            for name in paths:
+                (receipts / f"suite_receipt_{name}.json").write_bytes(
+                    orchestration._json_bytes({"source": "substituted"})
+                )
+        return {
+            "suite_receipts": {
+                name: orchestration.schema.parse_json_bytes_strict(
+                    orchestration.schema.read_regular_file_bytes(Path(path))
+                )
+                for name, path in config["suite_receipt_paths"].items()
+            }
+        }
+
+    monkeypatch.setattr(
+        orchestration.phase4,
+        "gather_certificate_components",
+        replace_then_gather,
+    )
+
+    if os.name == "nt":
+        gathered = orchestration.gather_certificate_from_captured_receipts(
+            {"suite_receipt_paths": paths}, receipts, snapshot, expected
+        )
+        assert gathered["suite_receipts"] == {
+            "focused": {"source": "focused"},
+            "full": {"source": "full"},
+        }
+        assert rename_blocked is True
+        assert not displaced.exists()
+    else:
+        with pytest.raises(
+            orchestration.schema.TypedIngressError, match="identity"
+        ):
+            orchestration.gather_certificate_from_captured_receipts(
+                {"suite_receipt_paths": paths}, receipts, snapshot, expected
+            )
+        receipts.rename(replacement)
+        displaced.rename(receipts)
+        assert {
+            orchestration.schema.parse_json_bytes_strict(path.read_bytes())[
+                "source"
+            ]
+            for path in replacement.iterdir()
+        } == {"substituted"}
+
+
+def test_certificate_gather_rejects_replaced_receipt_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    paths = {
+        name: receipts / f"suite_receipt_{name}.json"
+        for name in ("focused", "full")
+    }
+    expected = {name: {"source": name} for name in paths}
+    for name, path in paths.items():
+        path.write_bytes(orchestration._json_bytes(expected[name]))
+    snapshot = orchestration.phase4_finalize_release._capture_directory_chain(
+        receipts
+    )
+
+    def replace_child_then_gather(config):
+        paths["focused"].unlink()
+        paths["focused"].write_bytes(
+            orchestration._json_bytes({"source": "substituted"})
+        )
+        return {
+            "suite_receipts": {
+                name: orchestration.schema.parse_json_bytes_strict(
+                    orchestration.schema.read_regular_file_bytes(Path(path))
+                )
+                for name, path in config["suite_receipt_paths"].items()
+            }
+        }
+
+    monkeypatch.setattr(
+        orchestration.phase4,
+        "gather_certificate_components",
+        replace_child_then_gather,
+    )
+
+    with pytest.raises(RuntimeError, match="substituted|changed"):
+        orchestration.gather_certificate_from_captured_receipts(
+            {"suite_receipt_paths": paths},
+            receipts,
+            snapshot,
+            expected,
+        )
 
 
 def test_producer_command_binds_parameterized_asset_root(tmp_path: Path) -> None:
@@ -673,9 +1145,12 @@ def test_suite_late_collision_preserves_incumbent(
         *,
         environment,
         transcript_stage,
+        transcript_fd,
+        inherited_fds,
         timeout_seconds,
         max_transcript_bytes,
     ):
+        del environment, inherited_fds, timeout_seconds, max_transcript_bytes
         junit_arg = next(
             token for token in command if token.startswith("--junitxml=")
         )
@@ -683,7 +1158,7 @@ def test_suite_late_collision_preserves_incumbent(
             '<testsuite tests="1" failures="0" errors="0" skipped="0"/>',
             encoding="utf-8",
         )
-        transcript_stage.write_bytes(b"one passed\n")
+        os.write(transcript_fd, b"one passed\n")
         collision_path = (
             paths.receipts_dir / "focused_suite_transcript.txt"
             if collision_kind == "transcript"

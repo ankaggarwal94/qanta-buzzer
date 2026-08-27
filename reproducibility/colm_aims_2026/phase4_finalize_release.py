@@ -486,6 +486,31 @@ class _DirectoryAnchor:
         parent = self._operation_path if self._operation_path is not None else self.path
         return parent / self._name(name)
 
+    def stable_child_access_path(self, name: str) -> Path:
+        """Expose one child path bound to this held directory generation.
+
+        Windows operations use the verified Volume-GUID path while the
+        no-delete-share handle remains live.  POSIX child processes receive
+        the held directory descriptor and address it through the host's fd
+        namespace; resolving that magic path back to a lexical pathname would
+        discard the generation binding and is deliberately avoided.
+        """
+        name = self._name(name)
+        if self._fd is None:
+            return self._path(name)
+        held_identity = schema._identity_tuple(os.fstat(self._fd))
+        for namespace in (Path("/proc/self/fd"), Path("/dev/fd")):
+            proxy = namespace / str(self._fd)
+            try:
+                observed = os.stat(proxy)
+            except OSError:
+                continue
+            if schema._identity_tuple(observed) == held_identity:
+                return proxy / name
+        raise schema.TypedIngressError(
+            "host cannot expose a held directory generation to a child process"
+        )
+
     def stat(self, name: str) -> os.stat_result:
         name = self._name(name)
         if self._fd is not None:
@@ -588,6 +613,150 @@ class _DirectoryAnchor:
             os.fsync(handle.fileno())
         self.sync()
         self.revalidate(f"create {name} completion")
+
+    def create_open_once(
+        self,
+        name: str,
+        *,
+        exists_label: str,
+        mode: int = 0o600,
+    ) -> int:
+        """Create one ordinary file and retain its exact open generation."""
+        name = self._name(name)
+        flags = (
+            os.O_RDWR
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        try:
+            if self._fd is not None:
+                fd = os.open(name, flags, mode, dir_fd=self._fd)
+            else:
+                fd = os.open(self._path(name), flags, mode)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"{exists_label} already exists: {self._path(name)}"
+            ) from exc
+        try:
+            opened = os.fstat(fd)
+            self._require_regular(opened, name)
+            current = self.stat(name)
+            if schema._identity_tuple(current) != schema._identity_tuple(
+                opened
+            ):
+                raise schema.TypedIngressError(
+                    f"{name} changed identity during create-once claim"
+                )
+            self.sync()
+            self.revalidate(f"claim {name} completion")
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    @staticmethod
+    def stable_descriptor_access_path(fd: int) -> Path:
+        """Expose one inherited POSIX descriptor without lexical resolution."""
+        opened = os.fstat(fd)
+        for namespace in (Path("/proc/self/fd"), Path("/dev/fd")):
+            proxy = namespace / str(fd)
+            try:
+                observed = os.stat(proxy)
+            except OSError:
+                continue
+            if schema._identity_tuple(observed) == schema._identity_tuple(
+                opened
+            ):
+                return proxy
+        raise schema.TypedIngressError(
+            "host cannot expose a held file generation to a child process"
+        )
+
+    def snapshot_claimed_files(
+        self,
+        claims: dict[str, int],
+        max_bytes: dict[str, int],
+    ) -> dict[str, bytes]:
+        """Bound, sync, and read exact claimed files through their open fds."""
+        expected = set(claims)
+        if (
+            not expected
+            or expected != set(max_bytes)
+            or any(self._name(name) != name for name in expected)
+            or any(limit <= 0 for limit in max_bytes.values())
+        ):
+            raise schema.ConfigSurfaceError("claimed-file surface is invalid")
+
+        def require_membership() -> None:
+            if self._fd is not None:
+                entries = os.scandir(self._fd)
+            else:
+                operation_path = self._operation_path
+                if operation_path is None:  # pragma: no cover - invariant
+                    raise RuntimeError("Windows output path is not pinned")
+                entries = os.scandir(operation_path)
+            with entries:
+                names = self._bounded_names(entries, len(expected))
+            if set(names) != expected or len(names) != len(expected):
+                raise schema.TypedIngressError(
+                    "claimed output membership changed during suite execution"
+                )
+
+        require_membership()
+        result: dict[str, bytes] = {}
+        identities: dict[str, tuple[int, int, int]] = {}
+        for name in sorted(expected):
+            named = self.stat(name)
+            opened = os.fstat(claims[name])
+            self._require_regular(named, name)
+            self._require_regular(opened, name)
+            identity = schema._identity_tuple(opened)
+            if schema._identity_tuple(named) != identity:
+                raise schema.TypedIngressError(
+                    f"{name} no longer identifies its claimed file generation"
+                )
+            limit = max_bytes[name]
+            if opened.st_size > limit:
+                raise schema.TypedIngressError(
+                    f"{name} exceeds the maximum admissible byte count"
+                )
+            os.lseek(claims[name], 0, os.SEEK_SET)
+            chunks: list[bytes] = []
+            remaining = limit + 1
+            while remaining:
+                chunk = os.read(claims[name], min(1 << 20, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            if len(data) > limit:
+                raise schema.TypedIngressError(
+                    f"{name} exceeds the maximum admissible byte count"
+                )
+            after = os.fstat(claims[name])
+            if (
+                schema._identity_tuple(after) != identity
+                or after.st_size != len(data)
+            ):
+                raise schema.TypedIngressError(
+                    f"{name} changed during claimed-handle readback"
+                )
+            os.fsync(claims[name])
+            result[name] = data
+            identities[name] = identity
+        self.sync()
+        require_membership()
+        for name, identity in identities.items():
+            if schema._identity_tuple(self.stat(name)) != identity:
+                raise schema.TypedIngressError(
+                    f"{name} changed identity after claimed-handle sync"
+                )
+        self.revalidate("claimed-file readback completion")
+        return result
 
     def create_directory_once(
         self, name: str, *, exists_label: str, mode: int = 0o700

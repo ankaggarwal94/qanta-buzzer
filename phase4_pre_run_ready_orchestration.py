@@ -54,6 +54,7 @@ MAX_SNAPSHOT_FILE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_SNAPSHOT_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_SUITE_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 MAX_JUNIT_BYTES = 64 * 1024 * 1024
+MAX_SUITE_RECEIPT_BYTES = 1 * 1024 * 1024
 SUITE_TIMEOUT_SECONDS = {
     "focused": 2 * 60 * 60,
     "full": 6 * 60 * 60,
@@ -375,6 +376,71 @@ def write_json_create_once(path: Path, value: Any, *, label: str) -> None:
         _json_bytes(value),
         label=label,
     )
+
+
+def publish_bytes_to_captured_directory(
+    parent: Path,
+    parent_snapshot: phase4_finalize_release._CapturedDirectoryChain,
+    path: Path,
+    data: bytes,
+    *,
+    label: str,
+) -> None:
+    """Publish once through one previously frozen parent generation."""
+    parent = Path(parent)
+    path = Path(path)
+    if path.parent != parent:
+        raise RuntimeError("captured-directory publication must be a direct child")
+    with phase4_finalize_release._DirectoryAnchor(
+        parent, parent_snapshot, f"{label} parent"
+    ) as anchor:
+        anchor.create_once(path.name, data, exists_label=label)
+
+
+def gather_certificate_from_captured_receipts(
+    config: dict[str, Any],
+    receipts_dir: Path,
+    receipts_snapshot: phase4_finalize_release._CapturedDirectoryChain,
+    expected_receipts: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Gather certificate inputs while receipt paths stay generation-bound."""
+    receipt_paths = dict(config["suite_receipt_paths"])
+    expected_bytes = {
+        name: _json_bytes(receipt)
+        for name, receipt in expected_receipts.items()
+    }
+    if set(receipt_paths) != set(expected_bytes):
+        raise RuntimeError("suite receipt identity surface is inconsistent")
+    with phase4_finalize_release._DirectoryAnchor(
+        receipts_dir, receipts_snapshot, "certificate suite receipts"
+    ) as anchor:
+        for name, path in receipt_paths.items():
+            if anchor.read_regular(
+                Path(path).name,
+                max_bytes=MAX_SUITE_RECEIPT_BYTES,
+            ) != expected_bytes[name]:
+                raise RuntimeError(
+                    f"{name} suite receipt bytes changed before certificate gather"
+                )
+        anchored_config = dict(config)
+        anchored_config["suite_receipt_paths"] = {
+            name: anchor.stable_child_access_path(Path(path).name)
+            for name, path in receipt_paths.items()
+        }
+        components = phase4.gather_certificate_components(anchored_config)
+        if components.get("suite_receipts") != expected_receipts:
+            raise RuntimeError(
+                "certificate gather returned substituted suite receipts"
+            )
+        for name, path in receipt_paths.items():
+            if anchor.read_regular(
+                Path(path).name,
+                max_bytes=MAX_SUITE_RECEIPT_BYTES,
+            ) != expected_bytes[name]:
+                raise RuntimeError(
+                    f"{name} suite receipt bytes changed during certificate gather"
+                )
+        return components
 
 
 def _resolve_git_executable() -> Path:
@@ -1042,6 +1108,8 @@ def _run_bounded_suite_process(
     *,
     environment: dict[str, str],
     transcript_stage: Path,
+    transcript_fd: int | None = None,
+    inherited_fds: tuple[int, ...] = (),
     timeout_seconds: float,
     max_transcript_bytes: int,
 ) -> int:
@@ -1068,11 +1136,14 @@ def _run_bounded_suite_process(
         "stdin": subprocess.PIPE if os.name == "nt" else subprocess.DEVNULL,
     }
     if os.name == "nt":
+        if inherited_fds:
+            raise RuntimeError("Windows suite launch cannot inherit POSIX fds")
         popen_kwargs["creationflags"] = getattr(
             subprocess, "CREATE_NEW_PROCESS_GROUP", 0
         )
     else:
         popen_kwargs["start_new_session"] = True
+        popen_kwargs["pass_fds"] = inherited_fds
     process: subprocess.Popen[bytes] | None = None
     reader: threading.Thread | None = None
     try:
@@ -1094,7 +1165,12 @@ def _run_bounded_suite_process(
         def copy_output() -> None:
             written = 0
             try:
-                with transcript_stage.open("xb") as transcript:
+                transcript_context = (
+                    os.fdopen(os.dup(transcript_fd), "wb")
+                    if transcript_fd is not None
+                    else transcript_stage.open("xb")
+                )
+                with transcript_context as transcript:
                     while True:
                         chunk = process.stdout.read(1 << 16)
                         if not chunk:
@@ -1204,6 +1280,12 @@ def run_suite(
     *,
     timeout_seconds: float | None = None,
     max_transcript_bytes: int = MAX_SUITE_TRANSCRIPT_BYTES,
+    run_root_snapshot: (
+        phase4_finalize_release._CapturedDirectoryChain | None
+    ) = None,
+    receipts_snapshot: (
+        phase4_finalize_release._CapturedDirectoryChain | None
+    ) = None,
 ) -> dict[str, Any]:
     if name not in SUITE_TIMEOUT_SECONDS:
         raise RuntimeError(f"unknown suite identity: {name!r}")
@@ -1215,9 +1297,14 @@ def run_suite(
     transcript_path = paths.receipts_dir / f"{name}_suite_transcript.txt"
     if _lexists(junit_path) or _lexists(transcript_path):
         raise RuntimeError(f"suite {name!r} output slot is already claimed")
-    run_root_snapshot = phase4_finalize_release._capture_directory_chain(
-        paths.run_root
-    )
+    if run_root_snapshot is None:
+        run_root_snapshot = phase4_finalize_release._capture_directory_chain(
+            paths.run_root
+        )
+    if receipts_snapshot is None:
+        receipts_snapshot = phase4_finalize_release._capture_directory_chain(
+            paths.receipts_dir
+        )
     stage_root, stage_snapshot = (
         phase4_finalize_release._create_staged_directory(
             paths.run_root,
@@ -1226,50 +1313,99 @@ def run_suite(
             label=f"{name} suite staging directory",
         )
     )
+    junit_fd: int | None = None
+    transcript_fd: int | None = None
     try:
-        junit_stage = stage_root / "suite.xml"
-        transcript_stage = stage_root / "transcript.txt"
-        command = [
-            str(Path(sys.executable).resolve()),
-            "-m",
-            "pytest",
-            *pytest_args,
-            "-q",
-            "-p",
-            "no:cacheprovider",
-            f"--junitxml={junit_stage}",
-        ]
-        print(f"[suite:{name}] starting", flush=True)
-        return_code = _run_bounded_suite_process(
-            command,
-            environment=suite_environment(),
-            transcript_stage=transcript_stage,
-            timeout_seconds=timeout_seconds,
-            max_transcript_bytes=max_transcript_bytes,
-        )
-        if not junit_stage.is_file() or schema.is_filesystem_link(junit_stage):
-            raise RuntimeError(f"suite {name!r} did not produce ordinary JUnit XML")
-        junit_bytes = schema.read_regular_file_bytes(
-            junit_stage,
-            tree_root=stage_root,
-            max_bytes=MAX_JUNIT_BYTES,
-        )
-        transcript_bytes = schema.read_regular_file_bytes(
-            transcript_stage,
-            tree_root=stage_root,
-            max_bytes=max_transcript_bytes,
-        )
-        publish_bytes_create_once(
-            transcript_path,
-            transcript_bytes,
-            label=f"{name} suite transcript",
-        )
-        publish_bytes_create_once(
-            junit_path,
-            junit_bytes,
-            label=f"{name} suite JUnit XML",
-        )
+        with (
+            phase4_finalize_release._DirectoryAnchor(
+                paths.run_root,
+                run_root_snapshot,
+                f"{name} suite run root",
+            ) as run_anchor,
+            phase4_finalize_release._DirectoryAnchor(
+                stage_root,
+                stage_snapshot,
+                f"{name} suite staging directory",
+            ) as stage_anchor,
+            phase4_finalize_release._DirectoryAnchor(
+                paths.receipts_dir,
+                receipts_snapshot,
+                f"{name} suite receipts directory",
+            ) as receipts_anchor,
+        ):
+            run_anchor.require_child_identity(stage_root.name, stage_snapshot)
+            run_anchor.require_child_identity("receipts", receipts_snapshot)
+            junit_fd = stage_anchor.create_open_once(
+                "suite.xml", exists_label=f"{name} suite JUnit XML", mode=0o666
+            )
+            transcript_fd = stage_anchor.create_open_once(
+                "transcript.txt",
+                exists_label=f"{name} suite transcript",
+                mode=0o666,
+            )
+            if os.name == "nt":
+                junit_stage = stage_anchor.stable_child_access_path("suite.xml")
+                transcript_stage = stage_anchor.stable_child_access_path(
+                    "transcript.txt"
+                )
+                inherited_fds: tuple[int, ...] = ()
+            else:
+                junit_stage = (
+                    phase4_finalize_release._DirectoryAnchor
+                    .stable_descriptor_access_path(junit_fd)
+                )
+                transcript_stage = (
+                    phase4_finalize_release._DirectoryAnchor
+                    .stable_descriptor_access_path(transcript_fd)
+                )
+                inherited_fds = (junit_fd,)
+            command = [
+                str(Path(sys.executable).absolute()),
+                "-m",
+                "pytest",
+                *pytest_args,
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                f"--junitxml={junit_stage}",
+            ]
+            print(f"[suite:{name}] starting", flush=True)
+            return_code = _run_bounded_suite_process(
+                command,
+                environment=suite_environment(),
+                transcript_stage=transcript_stage,
+                transcript_fd=transcript_fd,
+                inherited_fds=inherited_fds,
+                timeout_seconds=timeout_seconds,
+                max_transcript_bytes=max_transcript_bytes,
+            )
+            observed = stage_anchor.snapshot_claimed_files(
+                {"suite.xml": junit_fd, "transcript.txt": transcript_fd},
+                {
+                    "suite.xml": MAX_JUNIT_BYTES,
+                    "transcript.txt": max_transcript_bytes,
+                },
+            )
+            junit_bytes = observed["suite.xml"]
+            transcript_bytes = observed["transcript.txt"]
+            run_anchor.require_child_identity(stage_root.name, stage_snapshot)
+            run_anchor.require_child_identity("receipts", receipts_snapshot)
+            receipts_anchor.revalidate("suite publication precheck")
+            receipts_anchor.create_once(
+                transcript_path.name,
+                transcript_bytes,
+                exists_label=f"{name} suite transcript",
+            )
+            receipts_anchor.create_once(
+                junit_path.name,
+                junit_bytes,
+                exists_label=f"{name} suite JUnit XML",
+            )
     finally:
+        if junit_fd is not None:
+            os.close(junit_fd)
+        if transcript_fd is not None:
+            os.close(transcript_fd)
         with contextlib.suppress(BaseException):
             phase4_finalize_release._remove_exact_staged_directory(
                 parent=paths.run_root,
@@ -1289,6 +1425,8 @@ def run_suite(
         "exit_code": return_code,
         "junit_path": junit_path,
         "transcript_path": transcript_path,
+        "junit_bytes": junit_bytes,
+        "transcript_bytes": transcript_bytes,
     }
 
 
@@ -1298,10 +1436,17 @@ def junit_counts(junit_path: Path) -> tuple[dict[str, int], list[str]]:
         tree_root=Path(junit_path).parent,
         max_bytes=MAX_JUNIT_BYTES,
     )
+    return _junit_counts_bytes(data, label=str(junit_path))
+
+
+def _junit_counts_bytes(
+    data: bytes, *, label: str
+) -> tuple[dict[str, int], list[str]]:
+    """Parse counts from the exact JUnit bytes captured during the suite."""
     root = ET.fromstring(data)
     suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
     if not suites:
-        raise RuntimeError(f"no testsuite element in {junit_path}")
+        raise RuntimeError(f"no testsuite element in {label}")
     counts = {
         key: sum(int(suite.get(key, "0")) for suite in suites)
         for key in ("tests", "failures", "errors", "skipped")
@@ -1321,7 +1466,9 @@ def build_receipt(
     interpreter_realpath: str,
     head: dict[str, Any],
 ) -> dict[str, Any]:
-    counts, skips = junit_counts(run_info["junit_path"])
+    junit_bytes = run_info["junit_bytes"]
+    transcript_bytes = run_info["transcript_bytes"]
+    counts, skips = _junit_counts_bytes(junit_bytes, label="captured suite XML")
     return {
         "schema_version": schema.SCHEMA_VERSION,
         "exit_code": run_info["exit_code"],
@@ -1331,8 +1478,8 @@ def build_receipt(
         "interpreter_realpath": interpreter_realpath,
         "counts": counts,
         "skip_identities": skips,
-        "junit_sha256": sha256_file(run_info["junit_path"]),
-        "transcript_sha256": sha256_file(run_info["transcript_path"]),
+        "junit_sha256": hashlib.sha256(junit_bytes).hexdigest(),
+        "transcript_sha256": hashlib.sha256(transcript_bytes).hexdigest(),
         "commit": head["commit"],
         "tree_sha256": head["tree"],
         "dirty": head["dirty"],
@@ -1455,13 +1602,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     phase4_launcher._validate_ambient_environment()
     require_fresh_operational_paths(paths)
+    run_root_snapshot = phase4_finalize_release._capture_directory_chain(
+        paths.run_root
+    )
+    receipts_snapshot = phase4_finalize_release._capture_directory_chain(
+        paths.receipts_dir
+    )
+    with phase4_finalize_release._DirectoryAnchor(
+        paths.run_root, run_root_snapshot, "frozen operational run root"
+    ) as run_anchor:
+        run_anchor.require_child_identity("receipts", receipts_snapshot)
     staged_plan = verify_prepared_inputs(paths)
     snapshot_dirs = verify_prepared_snapshots(paths)
 
     head = clean_head()
     interpreter = Path(sys.executable).resolve()
     lock_bytes = phase4_launcher._default_probe_environment_lock(interpreter)
-    publish_bytes_create_once(
+    publish_bytes_to_captured_directory(
+        paths.receipts_dir,
+        receipts_snapshot,
         paths.receipts_dir / "environment_lock_pip_freeze.txt",
         lock_bytes,
         label="certified environment lock",
@@ -1470,8 +1629,20 @@ def main(argv: list[str] | None = None) -> int:
     workflow_sha256 = sha256_file(WORKFLOW_PATH, tree_root=REPO)
 
     suite_runs = {
-        "focused": run_suite(paths, "focused", FOCUSED_TESTS),
-        "full": run_suite(paths, "full", ["tests/"]),
+        "focused": run_suite(
+            paths,
+            "focused",
+            FOCUSED_TESTS,
+            run_root_snapshot=run_root_snapshot,
+            receipts_snapshot=receipts_snapshot,
+        ),
+        "full": run_suite(
+            paths,
+            "full",
+            ["tests/"],
+            run_root_snapshot=run_root_snapshot,
+            receipts_snapshot=receipts_snapshot,
+        ),
     }
     post_suite_head = clean_head()
     if post_suite_head != head:
@@ -1499,9 +1670,11 @@ def main(argv: list[str] | None = None) -> int:
         receipt_path = paths.receipts_dir / f"suite_receipt_{name}.json"
         if receipt["exit_code"] == 0:
             receipt_module.validate_suite_receipt(receipt)
-        write_json_create_once(
+        publish_bytes_to_captured_directory(
+            paths.receipts_dir,
+            receipts_snapshot,
             receipt_path,
-            receipt,
+            _json_bytes(receipt),
             label=f"{name} suite receipt",
         )
         receipt_paths[name] = receipt_path
@@ -1604,7 +1777,9 @@ def main(argv: list[str] | None = None) -> int:
             "TRANSFORMERS_OFFLINE=1",
         ],
     }
-    components = phase4.gather_certificate_components(config)
+    components = gather_certificate_from_captured_receipts(
+        config, paths.receipts_dir, receipts_snapshot, receipts
+    )
     certificate = phase4.assemble_certificate(components)
     certificate_bytes = schema.encode_json(certificate)
     publish_bytes_create_once(
