@@ -411,7 +411,7 @@ def test_publication_transaction_stays_bound_to_validated_parent_identity(
     staged.mkdir()
     (staged / "payload.json").write_bytes(b"{}\n")
     destination = output_root / "bundle"
-    parent_chain = schema.stable_directory_chain(output_root, output_root)
+    parent_chain = finalizer._capture_directory_chain(output_root)
     displaced = tmp_path / "displaced-output"
 
     def swap_parent():
@@ -482,7 +482,7 @@ def test_transient_parent_swap_and_restore_cannot_issue_acceptance(
     staged.mkdir()
     (staged / "payload.json").write_bytes(b"verified\n")
     destination = output_root / "bundle"
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
     displaced = tmp_path / "displaced"
     transient = tmp_path / "transient"
 
@@ -534,7 +534,7 @@ def test_fake_publish_of_wrong_bytes_at_correct_destination_stays_pending(
     staged.mkdir()
     (staged / "payload.json").write_bytes(b"verified\n")
     destination = output_root / "bundle"
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
 
     def publish_wrong_bytes(anchor, _staged_name, destination_name, **_kwargs):
         dest = anchor._path(destination_name)
@@ -567,7 +567,7 @@ def test_post_marker_tree_mutation_is_caught_before_guard_retirement(
     staged.mkdir()
     (staged / "payload.json").write_bytes(b"verified\n")
     destination = output_root / "bundle"
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
     original_marker = finalizer._create_accepted_marker
 
     def mutate_after_marker(path, tree_sha256, **kwargs):
@@ -600,7 +600,7 @@ def test_non_sibling_staging_is_refused_before_protocol_sidecars(tmp_path):
     staged.mkdir()
     (staged / "payload.json").write_bytes(b"verified\n")
     destination = output_root / "bundle"
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
 
     with pytest.raises(schema.ConfigSurfaceError, match="must be siblings"):
         finalizer._publish_verified_directory(
@@ -626,7 +626,7 @@ def test_alias_publication_parent_and_missing_parent_are_refused(tmp_path):
     staged.mkdir()
     (staged / "payload.json").write_bytes(b"verified\n")
     destination = alias / "bundle"
-    target_chain = schema.stable_directory_chain(target, target)
+    target_chain = finalizer._capture_directory_chain(target)
 
     with pytest.raises(schema.TypedIngressError, match="publication parent"):
         finalizer._publish_verified_directory(
@@ -650,7 +650,7 @@ def test_alias_publication_parent_and_missing_parent_are_refused(tmp_path):
 def test_windows_parent_anchor_denies_rename_or_replacement(tmp_path):
     output_root = tmp_path / "output"
     output_root.mkdir()
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
 
     with finalizer._DirectoryAnchor(
         output_root, chain, "test publication parent"
@@ -666,14 +666,14 @@ def test_windows_parent_anchor_denies_rename_or_replacement(tmp_path):
 def test_windows_local_anchor_uses_pinned_volume_guid_path(tmp_path):
     output_root = tmp_path / "output"
     output_root.mkdir()
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
 
     with finalizer._DirectoryAnchor(
         output_root, chain, "test publication parent"
     ) as anchor:
         operation_path = str(anchor._operation_path)
         assert operation_path.casefold().startswith(r"\\?\volume{")
-        assert len(anchor._win_handles) == len(chain)
+        assert len(anchor._win_handles) == len(chain.lexical)
         assert not operation_path.casefold().startswith(
             str(output_root.drive).casefold()
         )
@@ -691,7 +691,7 @@ def test_windows_mutations_and_publication_receive_only_pinned_paths(
     staged = output_root / ".staged"
     staged.mkdir()
     (staged / "payload.json").write_bytes(b"verified\n")
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
     original_open = finalizer.os.open
     original_publish = fileio.publish_dir_create_once
     original_sync = fileio.fsync_directory
@@ -754,7 +754,7 @@ def test_windows_anchor_rejects_non_volume_guid_final_paths(
 ):
     output_root = tmp_path / "output"
     output_root.mkdir()
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
     staged = output_root / ".staged"
     staged.mkdir()
     (staged / "payload.json").write_bytes(b"verified\n")
@@ -789,7 +789,7 @@ def test_windows_anchor_rejects_mixed_volume_guid_component_chain(
 ):
     output_root = tmp_path / "nested" / "output"
     output_root.mkdir(parents=True)
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
     first_guid = "11111111-1111-1111-1111-111111111111"
     second_guid = "22222222-2222-2222-2222-222222222222"
     calls = 0
@@ -806,12 +806,14 @@ def test_windows_anchor_rejects_mixed_volume_guid_component_chain(
         "_windows_final_volume_path",
         staticmethod(mixed_final_path),
     )
-    with pytest.raises(schema.TypedIngressError, match="mixed|non-descendant"):
+    with pytest.raises(
+        schema.TypedIngressError, match="mixed|non-descendant|path changed"
+    ):
         with finalizer._DirectoryAnchor(
             output_root, chain, "test publication parent"
         ):
             pass
-    assert calls == len(chain)
+    assert calls == 1
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Volume-GUID contract")
@@ -820,7 +822,7 @@ def test_windows_anchor_final_path_resolution_failure_closes_handles(
 ):
     output_root = tmp_path / "output"
     output_root.mkdir()
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
 
     def fail_resolution(_handle):
         raise schema.TypedIngressError("injected Volume-GUID resolution failure")
@@ -841,11 +843,73 @@ def test_windows_anchor_final_path_resolution_failure_closes_handles(
     displaced.rename(tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("profile", "lexical_pair", "expected"),
+    (
+        ("legacy-3.11", (0x12345678, 0x1122334455667788), True),
+        (
+            "full-3.12",
+            (0x1122334455667788, (1 << 96) | 0x8877665544332211),
+            True,
+        ),
+        ("hybrid", (0x1122334455667788, 0x1122334455667788), False),
+        ("neither", (0xCAFEBABE, 0xDEADBEEF), False),
+    ),
+)
+def test_windows_stat_pair_profiles_are_whole_and_filesystem_independent(
+    profile, lexical_pair, expected
+):
+    full_pair = (0x1122334455667788, (1 << 96) | 0x8877665544332211)
+    legacy_pair = (0x12345678, 0x1122334455667788)
+    lexical_identity = (*lexical_pair, 0o040755)
+
+    assert (
+        finalizer._windows_stat_pair_matches(
+            lexical_identity, full_pair, legacy_pair
+        )
+        is expected
+    ), profile
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native snapshot contract")
+def test_windows_original_snapshot_rejects_lexical_recapture_drift_and_cleans_up(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    actual = schema.stable_directory_chain(output_root, output_root)
+    changed = list(actual)
+    component, (device, inode, mode) = changed[-1]
+    changed[-1] = (component, (device, inode + 1, mode))
+    captures = iter((actual, tuple(changed)))
+    monkeypatch.setattr(
+        schema, "stable_directory_chain", lambda _path, _root: next(captures)
+    )
+
+    with pytest.raises(schema.TypedIngressError, match="changed during original"):
+        finalizer._capture_directory_chain(output_root)
+
+    displaced = tmp_path.with_name(f"{tmp_path.name}-displaced")
+    tmp_path.rename(displaced)
+    displaced.rename(tmp_path)
+    assert output_root.is_dir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native snapshot contract")
+def test_windows_directory_anchor_refuses_raw_lexical_chain(tmp_path):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    raw = schema.stable_directory_chain(output_root, output_root)
+
+    with pytest.raises(schema.TypedIngressError, match="full-native"):
+        finalizer._DirectoryAnchor(output_root, raw, "test publication parent")
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows handle-share contract")
 def test_windows_anchor_denies_ancestor_rename_and_closes_every_handle(tmp_path):
     output_root = tmp_path / "nested" / "output"
     output_root.mkdir(parents=True)
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
     displaced = tmp_path.with_name(f"{tmp_path.name}-displaced")
 
     with finalizer._DirectoryAnchor(
@@ -865,7 +929,7 @@ def test_windows_anchor_acquisition_failure_closes_component_handles(
 ):
     output_root = tmp_path / "nested" / "output"
     output_root.mkdir(parents=True)
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
     original = finalizer._require_unchanged_directory
     calls = 0
 
@@ -898,7 +962,7 @@ def test_windows_anchor_rejects_same_wrong_native_identity_for_both_handles(
 ):
     output_root = tmp_path / "nested" / "output"
     output_root.mkdir(parents=True)
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
     original = finalizer._DirectoryAnchor._windows_native_file_id
     calls = 0
 
@@ -939,7 +1003,7 @@ def test_windows_anchor_rejects_full_128_bit_file_id_mismatch(
 ):
     output_root = tmp_path / "nested" / "output"
     output_root.mkdir(parents=True)
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
     original = finalizer._DirectoryAnchor._windows_native_file_id
     calls = 0
 
@@ -972,7 +1036,7 @@ def test_windows_anchor_rejects_full_128_bit_file_id_mismatch(
 def test_posix_anchor_keeps_child_operation_on_captured_parent(tmp_path):
     output_root = tmp_path / "output"
     output_root.mkdir()
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
     displaced = tmp_path / "displaced"
 
     with finalizer._DirectoryAnchor(
@@ -997,7 +1061,7 @@ def test_posix_publish_rename_stays_on_captured_parent_during_transient_swap(
     staged.mkdir()
     (staged / "payload.json").write_bytes(b"verified\n")
     destination = output_root / "bundle"
-    chain = schema.stable_directory_chain(output_root, output_root)
+    chain = finalizer._capture_directory_chain(output_root)
     original_rename = finalizer.os.rename
     displaced = tmp_path / "displaced-output"
     decoy = tmp_path / "decoy-output"

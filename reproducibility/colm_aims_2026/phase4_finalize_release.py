@@ -65,6 +65,36 @@ class _GuardRetirementCommittedError(OSError):
     """Guard unlink committed after acceptance, but its sync retries failed."""
 
 
+_LexicalChain = tuple[tuple[str, tuple[int, int, int]], ...]
+
+
+@dataclass(frozen=True)
+class _WindowsComponentIdentity:
+    """Version-independent native identity captured for one chain component."""
+
+    component: str
+    volume_serial: int
+    file_id: bytes
+    final_volume_path: str
+
+
+@dataclass(frozen=True)
+class _CapturedDirectoryChain:
+    """Lexical chain plus the original full native Windows identity snapshot."""
+
+    lexical: _LexicalChain
+    windows: tuple[_WindowsComponentIdentity, ...] | None = None
+
+
+def _windows_stat_pair_matches(
+    lexical_identity: tuple[int, int, int],
+    full_native_pair: tuple[int, int],
+    legacy_pair: tuple[int, int],
+) -> bool:
+    """Accept one complete supported Windows stat identity profile."""
+    return lexical_identity[:2] in (full_native_pair, legacy_pair)
+
+
 class _DirectoryAnchor:
     """Hold one validated publication parent generation for a transaction.
 
@@ -77,11 +107,20 @@ class _DirectoryAnchor:
     def __init__(
         self,
         path: Path,
-        captured: tuple[tuple[str, tuple[int, int, int]], ...],
+        captured: _CapturedDirectoryChain | _LexicalChain,
         label: str,
     ) -> None:
         self.path = Path(os.path.abspath(path))
-        self.captured = captured
+        if isinstance(captured, _CapturedDirectoryChain):
+            self.snapshot = captured
+        else:
+            if os.name == "nt":
+                raise schema.TypedIngressError(
+                    "Windows directory anchors require an original full-native"
+                    " chain snapshot"
+                )
+            self.snapshot = _CapturedDirectoryChain(lexical=captured)
+        self.captured = self.snapshot.lexical
         self.label = label
         self._fd: int | None = None
         self._win_handles: list[int] = []
@@ -208,7 +247,7 @@ class _DirectoryAnchor:
                 " \\\\?\\Volume{GUID}\\... operation path; UNC, mapped-network,"
                 " DOS-device, and unverifiable paths are refused"
             )
-        suffix = path[path.index("}") + 1 :]
+        suffix = path[path.index("}") + 1:]
         if any(part in {".", "..", ""} for part in suffix.split("\\")[1:]):
             # One terminal empty part is the canonical volume-root slash.
             if suffix != "\\":
@@ -278,6 +317,12 @@ class _DirectoryAnchor:
         # descendant therefore receive held handles, and all later I/O uses a
         # Volume-GUID path derived from those handles instead of the DOS name.
         components = self.captured
+        original_native = self.snapshot.windows
+        if original_native is None or len(original_native) != len(components):
+            raise schema.TypedIngressError(
+                "Windows directory anchor lacks a complete original"
+                " full-native chain snapshot"
+            )
 
         def metadata(handle: Any) -> tuple[int, int, tuple[int, bytes]]:
             information = _ByHandleFileInformation()
@@ -307,10 +352,8 @@ class _DirectoryAnchor:
 
         def validate_metadata(
             observed: tuple[int, int, tuple[int, bytes]],
-            captured_identity: tuple[int, int, int],
         ) -> None:
-            attributes, _legacy_file_index, native_file_id = observed
-            native_volume, native_file_id_bytes = native_file_id
+            attributes, _legacy_file_index, _native_file_id = observed
             if (
                 not attributes
                 & getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
@@ -321,16 +364,15 @@ class _DirectoryAnchor:
                     f"{self.label} chain handle does not identify its captured"
                     " ordinary directory"
                 )
-            if native_volume != captured_identity[0] or int.from_bytes(
-                native_file_id_bytes, "little"
-            ) != captured_identity[1]:
-                raise schema.TypedIngressError(
-                    f"{self.label} native volume/file identity does not match"
-                    " its captured directory"
-                )
 
         final_paths: list[str] = []
-        for component, captured_identity in components:
+        for (component, _captured_identity), original in zip(
+            components, original_native
+        ):
+            if os.path.normcase(component) != original.component:
+                raise schema.TypedIngressError(
+                    f"{self.label} original native chain component order changed"
+                )
             # Capture the complete native identity without blocking a peer's
             # delete request, then immediately reacquire with delete sharing
             # denied and require byte-for-byte identity equality.
@@ -370,18 +412,32 @@ class _DirectoryAnchor:
                 )
             self._win_handles.append(int(handle))
             anchored = metadata(handle)
-            validate_metadata(precaptured, captured_identity)
-            validate_metadata(anchored, captured_identity)
+            validate_metadata(precaptured)
+            validate_metadata(anchored)
+            expected_native = (original.volume_serial, original.file_id)
+            if precaptured[2] != expected_native or anchored[2] != expected_native:
+                raise schema.TypedIngressError(
+                    f"{self.label} native volume/file identity does not match"
+                    " its original full-native chain snapshot"
+                )
             if anchored[2] != precaptured[2]:
                 raise schema.TypedIngressError(
                     f"{self.label} native volume/file identity changed before"
                     " its no-delete-share anchor was acquired"
                 )
-            final_paths.append(
+            final_path = (
                 self._require_local_volume_guid_path(
                     self._windows_final_volume_path(int(handle))
                 )
             )
+            if final_path.rstrip("\\").casefold() != (
+                original.final_volume_path.rstrip("\\").casefold()
+            ):
+                raise schema.TypedIngressError(
+                    f"{self.label} Volume-GUID component path changed from its"
+                    " original native snapshot"
+                )
+            final_paths.append(final_path)
         normalized_paths = [path.rstrip("\\").casefold() for path in final_paths]
         for parent, child in zip(normalized_paths, normalized_paths[1:]):
             if not child.startswith(parent + "\\"):
@@ -605,7 +661,7 @@ class _DirectoryAnchor:
                 os.close(child_fd)
         else:
             child = self._path(name)
-            chain = schema.stable_directory_chain(child, child)
+            chain = _capture_directory_chain(child)
             with _DirectoryAnchor(child, chain, "anchored output directory") as anchor:
                 with os.scandir(child) as entries:
                     names = self._bounded_names(entries, len(expected))
@@ -701,6 +757,169 @@ class _DirectoryAnchor:
             ) from exc
 
 
+def _capture_directory_chain(path: Path) -> _CapturedDirectoryChain:
+    """Capture one coherent lexical and full-native directory generation."""
+    path = Path(os.path.abspath(path))
+    lexical = schema.stable_directory_chain(path, path)
+    if os.name != "nt":
+        return _CapturedDirectoryChain(lexical=lexical)
+
+    import ctypes
+    from ctypes import wintypes
+
+    class _ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        ]
+
+    class _FileId128(ctypes.Structure):
+        _fields_ = [("identifier", ctypes.c_ubyte * 16)]
+
+    class _FileIdInformation(ctypes.Structure):
+        _fields_ = [
+            ("volume_serial_number", ctypes.c_ulonglong),
+            ("file_id", _FileId128),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    get_information = kernel32.GetFileInformationByHandle
+    get_information.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    ]
+    get_information.restype = wintypes.BOOL
+    get_information_ex = kernel32.GetFileInformationByHandleEx
+    get_information_ex.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    get_information_ex.restype = wintypes.BOOL
+    invalid = ctypes.c_void_p(-1).value
+    handles: list[int] = []
+    captured: list[_WindowsComponentIdentity] = []
+    try:
+        for component, lexical_identity in lexical:
+            handle = create_file(
+                component,
+                0x80000000,
+                0x00000001 | 0x00000002,
+                None,
+                3,
+                0x02000000 | 0x00200000,
+                None,
+            )
+            if handle == invalid:
+                error = ctypes.get_last_error()
+                raise schema.TypedIngressError(
+                    "cannot acquire original full-native directory snapshot"
+                    f" (WindowsError {error})"
+                )
+            handles.append(int(handle))
+            information = _ByHandleFileInformation()
+            file_id_information = _FileIdInformation()
+            if not get_information(handle, ctypes.byref(information)) or not (
+                get_information_ex(
+                    handle,
+                    18,
+                    ctypes.byref(file_id_information),
+                    ctypes.sizeof(file_id_information),
+                )
+            ):
+                error = ctypes.get_last_error()
+                raise schema.TypedIngressError(
+                    "cannot read original full-native directory identity"
+                    f" (WindowsError {error})"
+                )
+            attributes = int(information.dwFileAttributes)
+            if (
+                not attributes
+                & getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10)
+                or attributes
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            ):
+                raise schema.TypedIngressError(
+                    "original native chain member is not an ordinary directory"
+                )
+            volume, file_id = _DirectoryAnchor._windows_native_file_id(
+                file_id_information
+            )
+            if len(file_id) != 16:
+                raise schema.TypedIngressError(
+                    "original native chain member lacks a 128-bit file ID"
+                )
+            legacy_pair = (
+                int(information.dwVolumeSerialNumber),
+                (int(information.nFileIndexHigh) << 32)
+                | int(information.nFileIndexLow),
+            )
+            full_native_pair = (volume, int.from_bytes(file_id, "little"))
+            lexical_pair = lexical_identity[:2]
+            if not _windows_stat_pair_matches(
+                lexical_identity, full_native_pair, legacy_pair
+            ):
+                raise schema.TypedIngressError(
+                    "lexical stat and native directory identity do not match"
+                    " an exact supported Windows pair profile"
+                )
+            final_path = _DirectoryAnchor._require_local_volume_guid_path(
+                _DirectoryAnchor._windows_final_volume_path(int(handle))
+            )
+            captured.append(
+                _WindowsComponentIdentity(
+                    component=os.path.normcase(component),
+                    volume_serial=volume,
+                    file_id=file_id,
+                    final_volume_path=final_path,
+                )
+            )
+        if schema.stable_directory_chain(path, path) != lexical:
+            raise schema.TypedIngressError(
+                "directory identity changed during original full-native"
+                " chain snapshot"
+            )
+        normalized = [
+            item.final_volume_path.rstrip("\\").casefold() for item in captured
+        ]
+        for parent, child in zip(normalized, normalized[1:]):
+            if not child.startswith(parent + "\\"):
+                raise schema.TypedIngressError(
+                    "original full-native Volume-GUID chain has mixed or"
+                    " non-descendant components"
+                )
+        return _CapturedDirectoryChain(
+            lexical=lexical,
+            windows=tuple(captured),
+        )
+    finally:
+        while handles:
+            close_handle(wintypes.HANDLE(handles.pop()))
+
+
 @dataclass(frozen=True)
 class ReleaseFinalizationResult:
     """The immutable published bundle and its successful verifier report."""
@@ -726,7 +945,7 @@ def _canonical_existing_directory(path: Path, label: str) -> Path:
 
 def _require_unchanged_directory(
     path: Path,
-    captured: tuple[tuple[str, tuple[int, int, int]], ...],
+    captured: _CapturedDirectoryChain | _LexicalChain,
     label: str,
 ) -> None:
     """Reject an alias or identity swap of a previously trusted directory."""
@@ -736,7 +955,8 @@ def _require_unchanged_directory(
         raise schema.TypedIngressError(
             f"{label} changed or became aliased during the operation"
         ) from exc
-    if observed != captured:
+    lexical = captured.lexical if isinstance(captured, _CapturedDirectoryChain) else captured
+    if observed != lexical:
         raise schema.TypedIngressError(
             f"{label} identity changed during the operation"
         )
@@ -744,7 +964,7 @@ def _require_unchanged_directory(
 
 def _require_publication_parent(
     destination: Path,
-    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    parent_chain: _CapturedDirectoryChain,
     stage: str,
 ) -> None:
     """Bind every publication syscall to the originally validated parent."""
@@ -852,7 +1072,7 @@ def _create_once_in_bound_parent(
     data: bytes,
     *,
     destination: Path,
-    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    parent_chain: _CapturedDirectoryChain,
     exists_label: str,
     anchor: _DirectoryAnchor | None = None,
 ) -> None:
@@ -880,7 +1100,7 @@ def _create_once_in_bound_parent(
 def _require_published_tree(
     destination: Path,
     expected_tree_sha256: str,
-    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    parent_chain: _CapturedDirectoryChain,
     stage: str,
     expected_names: tuple[str, ...],
     anchor: _DirectoryAnchor,
@@ -917,7 +1137,7 @@ def _read_accepted_directory_snapshot(
     directory = Path(os.path.abspath(path))
     directory = _canonical_existing_directory(directory, label)
     parent = directory.parent
-    parent_chain = schema.stable_directory_chain(parent, parent)
+    parent_chain = _capture_directory_chain(parent)
     guard_name = _pending_guard_path(directory).name
     marker_name = _accepted_marker_path(directory).name
     with _DirectoryAnchor(parent, parent_chain, f"{label} parent") as anchor:
@@ -970,7 +1190,7 @@ def _require_accepted_directory(
 def _create_pending_guard(
     destination: Path,
     *,
-    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    parent_chain: _CapturedDirectoryChain,
     anchor: _DirectoryAnchor | None = None,
 ) -> tuple[Path, bytes]:
     if anchor is None:
@@ -1015,7 +1235,7 @@ def _create_accepted_marker(
     destination: Path,
     tree_sha256: str,
     *,
-    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    parent_chain: _CapturedDirectoryChain,
     anchor: _DirectoryAnchor | None = None,
 ) -> None:
     if anchor is None:
@@ -1052,7 +1272,7 @@ def _create_accepted_marker(
 def _require_positive_acceptance_state(
     destination: Path,
     tree_sha256: str,
-    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    parent_chain: _CapturedDirectoryChain,
     expected_names: tuple[str, ...],
     anchor: _DirectoryAnchor,
 ) -> None:
@@ -1082,7 +1302,7 @@ def _retire_pending_guard(
     encoded: bytes,
     *,
     destination: Path,
-    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    parent_chain: _CapturedDirectoryChain,
     anchor: _DirectoryAnchor | None = None,
 ) -> None:
     """Remove the guard only after the final directory is independently durable."""
@@ -1344,7 +1564,7 @@ def _publish_verified_directory(
     destination: Path,
     *,
     exists_label: str,
-    parent_chain: tuple[tuple[str, tuple[int, int, int]], ...],
+    parent_chain: _CapturedDirectoryChain,
     expected_names: tuple[str, ...] = _SIDECAR_NAMES,
 ) -> None:
     """Create-once publish guarded until the final directory is durable."""
@@ -1479,8 +1699,8 @@ def finalize_release(
     runs_root = _canonical_existing_directory(runs_root, "runs root")
     output_root = _canonical_existing_directory(output_root, "output root")
     receipts_dir = _canonical_existing_directory(receipts_dir, "receipts root")
-    output_root_chain = schema.stable_directory_chain(output_root, output_root)
-    receipts_chain = schema.stable_directory_chain(receipts_dir, receipts_dir)
+    output_root_chain = _capture_directory_chain(output_root)
+    receipts_chain = _capture_directory_chain(receipts_dir)
     destination = output_root / release_id
     _require_unclaimed(destination, "release sidecar bundle")
 

@@ -24,6 +24,7 @@ from .phase4_finalize_release import (
     EXIT_USAGE_ERROR,
     EXIT_VERIFY_FAIL,
     ReleaseVerificationFailed,
+    _capture_directory_chain,
     _canonical_existing_directory,
     _parse_object,
     _publish_verified_directory,
@@ -442,9 +443,9 @@ def render_scientific_release(
         "expectations authority base",
         expected_names=("ledger.json", "rights.json", "expectations.json"),
     )
-    output_root_chain = schema.stable_directory_chain(output_root, output_root)
-    receipts_chain = schema.stable_directory_chain(receipts_dir, receipts_dir)
-    authority_chain = schema.stable_directory_chain(authority_base, authority_base)
+    output_root_chain = _capture_directory_chain(output_root)
+    receipts_chain = _capture_directory_chain(receipts_dir)
+    authority_chain = _capture_directory_chain(authority_base)
     destination = output_root / render_id
     _require_unclaimed(destination, "scientific output bundle")
     _require_disjoint(
