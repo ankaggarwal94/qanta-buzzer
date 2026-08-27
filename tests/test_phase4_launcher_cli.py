@@ -13,6 +13,7 @@ import pytest
 
 from reproducibility.colm_aims_2026 import phase4_launcher as launcher
 from reproducibility.colm_aims_2026 import phase4_driver_d7b as driver
+from reproducibility.colm_aims_2026 import phase4_finalize_release as finalizer
 
 
 HOST_IDENTITY = {"os": "SyntheticOS 1.0 ()", "arch": "synthetic64"}
@@ -36,6 +37,28 @@ OPERATOR_STAGED_LABELS = (
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _write_accepted_certificate(path: Path, data: bytes) -> None:
+    """Write a synthetic certificate bundle with an exact acceptance marker."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    (path.parent / launcher.CERTIFICATE_GENERATION_SUMMARY_NAME).write_bytes(
+        b"{}\n"
+    )
+    tree_sha256 = finalizer._directory_tree_sha256(path.parent)
+    finalizer._accepted_marker_path(path.parent).write_bytes(
+        finalizer._accepted_marker_bytes(path.parent, tree_sha256)
+    )
+
+
+def _refresh_accepted_certificate(path: Path, data: bytes) -> None:
+    """Replace a pre-launch test fixture and rebind its synthetic marker."""
+    path.write_bytes(data)
+    tree_sha256 = finalizer._directory_tree_sha256(path.parent)
+    finalizer._accepted_marker_path(path.parent).write_bytes(
+        finalizer._accepted_marker_bytes(path.parent, tree_sha256)
+    )
 
 
 def _json_config(tmp_path: Path) -> dict[str, object]:
@@ -204,6 +227,65 @@ def test_python_m_interface_is_executable_without_loading_a_model(tmp_path):
     assert completed.returncode == launcher.EXIT_LAUNCH_REFUSAL
     assert "LaunchRefusal:" in completed.stderr
     assert completed.stdout == ""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX dir-fd regression")
+def test_stop_report_refuses_transient_parent_displacement(
+    tmp_path, monkeypatch
+):
+    quarantine = tmp_path / "quarantine"
+    quarantine.mkdir()
+    displaced = tmp_path / "displaced"
+    original = launcher.phase4_finalize_release._DirectoryAnchor.create_once
+
+    def displace_during_publication(anchor, *args, **kwargs):
+        quarantine.rename(displaced)
+        quarantine.mkdir()
+        try:
+            return original(anchor, *args, **kwargs)
+        finally:
+            quarantine.rmdir()
+            displaced.rename(quarantine)
+
+    monkeypatch.setattr(
+        launcher.phase4_finalize_release._DirectoryAnchor,
+        "create_once",
+        displace_during_publication,
+    )
+
+    with pytest.raises(
+        launcher.schema.TypedIngressError, match="identity changed"
+    ):
+        launcher._write_stop_report(quarantine, {"reason": "test"})
+
+    assert list(quarantine.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows anchor regression")
+def test_stop_report_anchor_denies_parent_rename(tmp_path, monkeypatch):
+    quarantine = tmp_path / "quarantine"
+    quarantine.mkdir()
+    displaced = tmp_path / "displaced"
+    original = launcher.phase4_finalize_release._DirectoryAnchor.create_once
+    rename_blocked = False
+
+    def attempt_rename(anchor, *args, **kwargs):
+        nonlocal rename_blocked
+        with pytest.raises(OSError):
+            quarantine.rename(displaced)
+        rename_blocked = True
+        return original(anchor, *args, **kwargs)
+
+    monkeypatch.setattr(
+        launcher.phase4_finalize_release._DirectoryAnchor,
+        "create_once",
+        attempt_rename,
+    )
+
+    launcher._write_stop_report(quarantine, {"reason": "test"})
+
+    assert rename_blocked is True
+    assert (quarantine / launcher.STOP_REPORT_NAME).is_file()
 
 
 def _runtime_fixture(
@@ -452,8 +534,8 @@ def _runtime_fixture(
     certificate_bytes = (
         json.dumps(certificate, sort_keys=True) + "\n"
     ).encode("utf-8")
-    certificate_path = tmp_path / "certificate.json"
-    certificate_path.write_bytes(certificate_bytes)
+    certificate_path = tmp_path / "certificate" / "certificate.json"
+    _write_accepted_certificate(certificate_path, certificate_bytes)
 
     config = {
         "certificate_path": certificate_path,
@@ -590,8 +672,79 @@ def _rewrite_ready_certificate(config, certificate) -> None:
     certificate_bytes = (
         json.dumps(certificate, sort_keys=True) + "\n"
     ).encode("utf-8")
-    Path(config["certificate_path"]).write_bytes(certificate_bytes)
+    _refresh_accepted_certificate(
+        Path(config["certificate_path"]), certificate_bytes
+    )
     config["activation_digest"] = _sha256(certificate_bytes)
+
+
+def test_launcher_requires_positive_certificate_acceptance(
+    tmp_path, monkeypatch
+):
+    config, _certificate, _fit_split, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    finalizer._accepted_marker_path(
+        Path(config["certificate_path"]).parent
+    ).unlink()
+    launches = []
+
+    with pytest.raises(launcher.LaunchRefusal, match="positive acceptance"):
+        _call_launcher(
+            config,
+            probes,
+            launch=lambda argv, env: launches.append((argv, env)) or 0,
+        )
+
+    assert launches == []
+    assert not Path(config["ledger_path"]).exists()
+
+
+def test_launcher_rejects_pending_certificate_publication(
+    tmp_path, monkeypatch
+):
+    config, _certificate, _fit_split, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    certificate_dir = Path(config["certificate_path"]).parent
+    finalizer._pending_guard_path(certificate_dir).write_bytes(
+        finalizer._pending_guard_bytes(certificate_dir)
+    )
+    launches = []
+
+    with pytest.raises(launcher.LaunchRefusal, match="pending"):
+        _call_launcher(
+            config,
+            probes,
+            launch=lambda argv, env: launches.append((argv, env)) or 0,
+        )
+
+    assert launches == []
+    assert not Path(config["ledger_path"]).exists()
+
+
+def test_launcher_rejects_certificate_tree_not_bound_by_marker(
+    tmp_path, monkeypatch
+):
+    config, _certificate, _fit_split, probes = _runtime_fixture(
+        tmp_path, monkeypatch
+    )
+    summary_path = (
+        Path(config["certificate_path"]).parent
+        / launcher.CERTIFICATE_GENERATION_SUMMARY_NAME
+    )
+    summary_path.write_bytes(b'{"changed":true}\n')
+    launches = []
+
+    with pytest.raises(launcher.LaunchRefusal, match="exact tree"):
+        _call_launcher(
+            config,
+            probes,
+            launch=lambda argv, env: launches.append((argv, env)) or 0,
+        )
+
+    assert launches == []
+    assert not Path(config["ledger_path"]).exists()
 
 
 def _historical_cell(cell_id: str) -> str:

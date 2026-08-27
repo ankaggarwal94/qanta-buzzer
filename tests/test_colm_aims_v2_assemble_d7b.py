@@ -739,7 +739,8 @@ class TestCli:
         assert assembler.EXIT_INGRESS_ERROR == 3
         assert assembler.EXIT_INTERNAL_ERROR == 4
 
-    def test_main_computes_inference_summary(self, tmp_path):
+    @pytest.mark.parametrize("source_commit", ("d" * 40, "e" * 64))
+    def test_main_computes_inference_summary(self, tmp_path, source_commit):
         records_root = tmp_path / "records"
         _write_records_root(records_root)
         out_dir = tmp_path / "out"
@@ -750,7 +751,7 @@ class TestCli:
                 "--out-dir",
                 str(out_dir),
                 "--source-commit",
-                "d" * 40,
+                source_commit,
             ]
         )
         assert rc == EXIT_PASS
@@ -761,6 +762,38 @@ class TestCli:
         assert summary["pairing_population_keyset_sha256"] == (
             CANONICAL_KEYSET_SHA256
         )
+        assert summary["source_commit"] == source_commit
+
+    @pytest.mark.parametrize(
+        "source_commit",
+        (
+            "main",
+            "v1.0",
+            "d" * 39,
+            "d" * 41,
+            "d" * 63,
+            "d" * 65,
+            "D" * 40,
+            "E" * 64,
+        ),
+    )
+    def test_source_commit_requires_native_git_object_id(
+        self, tmp_path, source_commit
+    ):
+        out_dir = tmp_path / "out"
+        rc = assembler.main(
+            [
+                "--records-root",
+                str(tmp_path / "unread"),
+                "--out-dir",
+                str(out_dir),
+                "--source-commit",
+                source_commit,
+            ]
+        )
+
+        assert rc == EXIT_USAGE_ERROR
+        assert not out_dir.exists()
 
     def test_unknown_flag_is_usage_error(self):
         assert assembler.main(["--frobnicate"]) == EXIT_USAGE_ERROR

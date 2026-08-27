@@ -14,6 +14,7 @@ import io
 import json
 import os
 import re
+import stat
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -92,9 +93,21 @@ _FILE_KEYS = frozenset(
 _HIT_KEYS = frozenset({"line", "pointer"})
 MAX_QA_DIRECTORIES = 10_000
 MAX_QA_FILES = 100_000
-MAX_QA_BYTES = 512 * 1024 * 1024
+# The frozen 67-file authority contains two JSON documents larger than the
+# package-wide 64-MiB artifact default and totals roughly 634 MiB.  QA-012 is a
+# bounded corpus inventory, so it owns explicit per-file and aggregate limits
+# large enough for that designated scope while remaining fail-closed.
+MAX_QA_FILE_BYTES = 512 * 1024 * 1024
+MAX_QA_TOTAL_BYTES = 1024 * 1024 * 1024
 MAX_QA_JSONL_ROWS = 100_000
 MAX_QA_HITS = 100_000
+# Traversal and emitted-identity limits are separate from the input byte cap.
+# In particular, a compact JSON document can fan out into many Python objects,
+# while long object keys can make its RFC-6901 identities much larger than the
+# number of hits alone suggests.
+MAX_QA_TRAVERSAL_NODES = 10_000_000
+MAX_QA_POINTER_BYTES = 64 * 1024
+MAX_QA_TOTAL_POINTER_BYTES = 64 * 1024 * 1024
 
 
 def _fixture_excerpt_is_rejected(excerpt: bytes, excerpt_name: str) -> bool:
@@ -200,6 +213,7 @@ def load_authority_manifest(path: Path | None = None) -> dict[str, Any]:
         )
     source_counts = {source: 0 for source in AUTHORITY_SOURCE_PRONGS}
     total_hits = 0
+    total_bytes = 0
     seen_paths: set[str] = set()
     for entry in authority["entries"]:
         if not isinstance(entry, dict) or set(entry) != {
@@ -223,6 +237,7 @@ def load_authority_manifest(path: Path | None = None) -> dict[str, Any]:
         if (
             not schema.is_real_int(entry["size"])
             or entry["size"] < 0
+            or entry["size"] > MAX_QA_FILE_BYTES
             or not schema.is_sha256_hex(entry["sha256"])
             or not schema.is_sha256_hex(entry["dropbox_content_hash"])
             or entry["parse_ok"] is not True
@@ -231,6 +246,11 @@ def load_authority_manifest(path: Path | None = None) -> dict[str, Any]:
         ):
             raise schema.SchemaValidationError(
                 "QA-012 rev3 authority entry has invalid hashes or hit evidence"
+            )
+        total_bytes += entry["size"]
+        if total_bytes > MAX_QA_TOTAL_BYTES:
+            raise schema.SchemaValidationError(
+                "QA-012 rev3 authority exceeds the aggregate byte limit"
             )
         total_hits += len(entry["format_qa_hits"])
     if source_counts != _AUTHORITY_SOURCE_COUNTS or total_hits != 4556:
@@ -319,6 +339,7 @@ def validate_inventory_manifest(manifest: Any) -> None:
     seen_file_identities: set[tuple[str, str]] = set()
     total_bytes = 0
     total_hits = 0
+    total_pointer_bytes = 0
     for entry in files:
         if not isinstance(entry, dict):
             raise schema.SchemaValidationError(
@@ -361,8 +382,12 @@ def validate_inventory_manifest(manifest: Any) -> None:
             raise schema.SchemaValidationError(
                 "QA-012 file size must be a nonnegative real integer"
             )
+        if entry["size"] > MAX_QA_FILE_BYTES:
+            raise schema.SchemaValidationError(
+                "QA-012 file exceeds the per-file byte limit"
+            )
         total_bytes += entry["size"]
-        if total_bytes > MAX_QA_BYTES:
+        if total_bytes > MAX_QA_TOTAL_BYTES:
             raise schema.SchemaValidationError(
                 "QA-012 manifest exceeds the aggregate byte limit"
             )
@@ -405,6 +430,16 @@ def validate_inventory_manifest(manifest: Any) -> None:
             if not isinstance(pointer, str) or not pointer.endswith("/format"):
                 raise schema.SchemaValidationError(
                     "QA-012 hit pointer must identify a format field"
+                )
+            pointer_bytes = len(pointer.encode("utf-8"))
+            if pointer_bytes > MAX_QA_POINTER_BYTES:
+                raise schema.SchemaValidationError(
+                    "QA-012 hit pointer exceeds the per-pointer byte limit"
+                )
+            total_pointer_bytes += pointer_bytes
+            if total_pointer_bytes > MAX_QA_TOTAL_POINTER_BYTES:
+                raise schema.SchemaValidationError(
+                    "QA-012 manifest exceeds the aggregate pointer byte limit"
                 )
         if hits != sorted(
             hits,
@@ -459,38 +494,138 @@ def _escape_pointer_token(token: str) -> str:
 
 
 def detect_format_qa(
-    document: Any, _prefix: str = "", *, max_hits: int = MAX_QA_HITS
+    document: Any,
+    _prefix: str = "",
+    *,
+    max_hits: int | None = None,
+    max_nodes: int | None = None,
+    max_pointer_bytes: int | None = None,
+    max_total_pointer_bytes: int | None = None,
 ) -> list[str]:
-    """Detect exact ``format: "QA"`` keys with bounded RFC-6901 output."""
-    pointers: list[str] = []
-    stack: list[tuple[Any, str]] = [(document, _prefix)]
-    while stack:
-        value, prefix = stack.pop()
-        if isinstance(value, dict):
-            children = []
-            for key, child in value.items():
-                pointer = f"{prefix}/{_escape_pointer_token(str(key))}"
-                if key == "format" and isinstance(child, str) and child == "QA":
-                    pointers.append(pointer)
-                    if len(pointers) > max_hits:
-                        raise schema.TypedIngressError(
-                            "QA-012 document exceeds the admissible hit limit"
-                            f" {max_hits} (R-072/R-020)"
-                        )
-                children.append((child, pointer))
-            stack.extend(reversed(children))
-        elif isinstance(value, list):
-            stack.extend(
-                (child, f"{prefix}/{index}")
-                for index, child in reversed(list(enumerate(value)))
+    """Detect exact ``format: "QA"`` keys with bounded RFC-6901 output.
+
+    Traversal stores only one iterator and one raw path token per nesting
+    level.  It never materializes a container's complete child list or builds
+    pointer strings for non-hits, so a broad object cannot induce a second
+    fanout-sized allocation merely from walking it.
+    """
+    max_hits = MAX_QA_HITS if max_hits is None else max_hits
+    max_nodes = MAX_QA_TRAVERSAL_NODES if max_nodes is None else max_nodes
+    max_pointer_bytes = (
+        MAX_QA_POINTER_BYTES if max_pointer_bytes is None else max_pointer_bytes
+    )
+    max_total_pointer_bytes = (
+        MAX_QA_TOTAL_POINTER_BYTES
+        if max_total_pointer_bytes is None
+        else max_total_pointer_bytes
+    )
+    limits = {
+        "hit": max_hits,
+        "node": max_nodes,
+        "pointer": max_pointer_bytes,
+        "aggregate pointer": max_total_pointer_bytes,
+    }
+    for label, limit in limits.items():
+        if not schema.is_real_int(limit) or limit < 0:
+            raise schema.ConfigSurfaceError(
+                f"QA-012 {label} limit must be a nonnegative real integer"
             )
+    if not isinstance(_prefix, str):
+        raise schema.ConfigSurfaceError("QA-012 pointer prefix must be a string")
+    if len(_prefix.encode("utf-8")) > max_pointer_bytes:
+        raise schema.TypedIngressError(
+            "QA-012 pointer prefix exceeds the admissible per-pointer byte"
+            f" limit {max_pointer_bytes} (R-072/R-020)"
+        )
+
+    def children(value: Any):
+        if isinstance(value, dict):
+            return iter(value.items())
+        if isinstance(value, list):
+            return enumerate(value)
+        return None
+
+    pointers: list[str] = []
+    emitted_pointer_bytes = 0
+    visited_nodes = 1
+    if visited_nodes > max_nodes:
+        raise schema.TypedIngressError(
+            "QA-012 document exceeds the admissible traversal-node limit"
+            f" {max_nodes} (R-072/R-020)"
+        )
+    root_children = children(document)
+    if root_children is None:
+        return pointers
+
+    # Each frame is (child iterator, owns one token in path_tokens).  Dict keys
+    # remain references to the already-parsed document until a hit requires
+    # escaping; list indexes are small integers.  This keeps traversal memory
+    # proportional to depth, not fanout.
+    stack: list[tuple[Any, bool]] = [(root_children, False)]
+    path_tokens: list[str | int] = []
+    while stack:
+        child_iterator, owns_token = stack[-1]
+        try:
+            raw_token, child = next(child_iterator)
+        except StopIteration:
+            stack.pop()
+            if owns_token:
+                path_tokens.pop()
+            continue
+
+        visited_nodes += 1
+        if visited_nodes > max_nodes:
+            raise schema.TypedIngressError(
+                "QA-012 document exceeds the admissible traversal-node limit"
+                f" {max_nodes} (R-072/R-020)"
+            )
+        path_tokens.append(raw_token)
+        if (
+            isinstance(raw_token, str)
+            and raw_token == "format"
+            and isinstance(child, str)
+            and child == "QA"
+        ):
+            suffix = "".join(
+                f"/{_escape_pointer_token(str(token))}" for token in path_tokens
+            )
+            pointer = _prefix + suffix
+            pointer_bytes = len(pointer.encode("utf-8"))
+            if pointer_bytes > max_pointer_bytes:
+                raise schema.TypedIngressError(
+                    "QA-012 hit pointer exceeds the admissible per-pointer"
+                    f" byte limit {max_pointer_bytes} (R-072/R-020)"
+                )
+            if emitted_pointer_bytes + pointer_bytes > max_total_pointer_bytes:
+                raise schema.TypedIngressError(
+                    "QA-012 document exceeds the admissible aggregate pointer"
+                    f" byte limit {max_total_pointer_bytes} (R-072/R-020)"
+                )
+            pointers.append(pointer)
+            emitted_pointer_bytes += pointer_bytes
+            if len(pointers) > max_hits:
+                raise schema.TypedIngressError(
+                    "QA-012 document exceeds the admissible hit limit"
+                    f" {max_hits} (R-072/R-020)"
+                )
+
+        nested_children = children(child)
+        if nested_children is None:
+            path_tokens.pop()
+        else:
+            stack.append((nested_children, True))
     return pointers
 
 
 def _scan_file(path: Path, root: Path, scope_prong: str) -> dict[str, Any]:
     rel = path.relative_to(root).as_posix()
-    data = schema.read_regular_file_bytes(path, tree_root=root)
+    data = schema.read_regular_file_bytes(
+        path,
+        tree_root=root,
+        max_bytes=MAX_QA_FILE_BYTES,
+    )
     hits: list[dict[str, Any]] = []
+    emitted_pointer_bytes = 0
     if path.suffix == ".jsonl":
         try:
             text = data.decode("utf-8", errors="strict") if data else ""
@@ -508,11 +643,18 @@ def _scan_file(path: Path, root: Path, scope_prong: str) -> dict[str, Any]:
             if not line.strip():
                 continue
             obj = schema.parse_json_text_strict(line, f"{rel}: line {lineno}")
+            pointers = detect_format_qa(
+                obj,
+                max_hits=MAX_QA_HITS - len(hits),
+                max_total_pointer_bytes=(
+                    MAX_QA_TOTAL_POINTER_BYTES - emitted_pointer_bytes
+                ),
+            )
+            emitted_pointer_bytes += sum(
+                len(pointer.encode("utf-8")) for pointer in pointers
+            )
             hits.extend(
-                {"line": lineno, "pointer": pointer}
-                for pointer in detect_format_qa(
-                    obj, max_hits=MAX_QA_HITS - len(hits)
-                )
+                {"line": lineno, "pointer": pointer} for pointer in pointers
             )
             if len(hits) > MAX_QA_HITS:
                 raise schema.TypedIngressError(
@@ -833,6 +975,136 @@ def _candidate_files(root: Path) -> list[Path]:
     return sorted(candidates, key=lambda path: path.relative_to(root).as_posix())
 
 
+def _candidate_file_info(path: Path, root: Path) -> os.stat_result:
+    """Return no-follow metadata for one ordinary bounded candidate."""
+    rel = path.relative_to(root).as_posix()
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise schema.TypedIngressError(
+            f"{rel}: unreadable QA-012 candidate"
+            f" ({exc.__class__.__name__}) (R-072/R-020)"
+        ) from exc
+    if stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    ):
+        raise schema.TypedIngressError(
+            f"{rel}: QA-012 candidate is a symlink or reparse point"
+            " (R-072/R-013)"
+        )
+    if not stat.S_ISREG(info.st_mode):
+        raise schema.TypedIngressError(
+            f"{rel}: QA-012 candidate is not a regular file (R-072/R-020)"
+        )
+    if int(info.st_size) > MAX_QA_FILE_BYTES:
+        raise schema.TypedIngressError(
+            f"{rel}: exceeds QA-012 per-file byte limit"
+            f" {MAX_QA_FILE_BYTES} (R-072/R-020)"
+        )
+    return info
+
+
+def _candidate_identity(info: os.stat_result) -> tuple[int, int, int]:
+    """Return the same stable-enough no-follow identity used at ingress."""
+    return (int(info.st_dev), int(info.st_ino), int(info.st_mode))
+
+
+def _candidate_file_size(path: Path, root: Path) -> int:
+    """Return one candidate size without reading or following an alias."""
+    return int(_candidate_file_info(path, root).st_size)
+
+
+def _verify_candidate_unchanged(
+    path: Path,
+    root: Path,
+    expected_identity: tuple[int, int, int],
+    entry: dict[str, Any],
+) -> None:
+    """Stream one candidate again and reject replacement or content drift."""
+    rel = path.relative_to(root).as_posix()
+    parent_chain = schema.stable_directory_chain(path.parent, root)
+    before = _candidate_file_info(path, root)
+    if _candidate_identity(before) != expected_identity:
+        raise schema.TypedIngressError(
+            f"{rel}: QA-012 candidate identity changed during inventory"
+            " (R-072/R-020)"
+        )
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise schema.TypedIngressError(
+            f"{rel}: unreadable QA-012 candidate"
+            f" ({exc.__class__.__name__}) (R-072/R-020)"
+        ) from exc
+    sha256 = hashlib.sha256()
+    dropbox_outer = hashlib.sha256()
+    dropbox_block = bytearray()
+    observed_size = 0
+    try:
+        try:
+            opened = os.fstat(fd)
+            if _candidate_identity(opened) != expected_identity:
+                raise schema.TypedIngressError(
+                    f"{rel}: QA-012 candidate identity changed during inventory"
+                    " (R-072/R-020)"
+                )
+            if hasattr(os, "O_NONBLOCK") and hasattr(os, "get_blocking"):
+                os.set_blocking(fd, True)
+            while True:
+                chunk = os.read(fd, 1 << 20)
+                if not chunk:
+                    break
+                observed_size += len(chunk)
+                if observed_size > MAX_QA_FILE_BYTES:
+                    raise schema.TypedIngressError(
+                        f"{rel}: exceeds QA-012 per-file byte limit"
+                        f" {MAX_QA_FILE_BYTES} (R-072/R-020)"
+                    )
+                sha256.update(chunk)
+                dropbox_block.extend(chunk)
+                while len(dropbox_block) >= DROPBOX_CONTENT_BLOCK_BYTES:
+                    block = bytes(dropbox_block[:DROPBOX_CONTENT_BLOCK_BYTES])
+                    del dropbox_block[:DROPBOX_CONTENT_BLOCK_BYTES]
+                    dropbox_outer.update(hashlib.sha256(block).digest())
+            if dropbox_block:
+                dropbox_outer.update(hashlib.sha256(dropbox_block).digest())
+        except schema.ColmAimsError:
+            raise
+        except OSError as exc:
+            raise schema.TypedIngressError(
+                f"{rel}: QA-012 candidate read failed"
+                f" ({exc.__class__.__name__}) (R-072/R-020)"
+            ) from exc
+    finally:
+        os.close(fd)
+    after = _candidate_file_info(path, root)
+    after_chain = schema.stable_directory_chain(path.parent, root)
+    if (
+        _candidate_identity(after) != expected_identity
+        or after_chain != parent_chain
+    ):
+        raise schema.TypedIngressError(
+            f"{rel}: QA-012 candidate identity changed during inventory"
+            " (R-072/R-020)"
+        )
+    if (
+        observed_size != entry["size"]
+        or sha256.hexdigest() != entry["sha256"]
+        or dropbox_outer.hexdigest() != entry["content_hash"]
+    ):
+        raise schema.TypedIngressError(
+            f"{rel}: QA-012 candidate content changed during inventory"
+            " (R-072/R-020)"
+        )
+
+
 def build_inventory_manifest(roots: dict[str, Path]) -> dict[str, Any]:
     """Execute the QA-012 inventory over the given corpus roots (R-072).
 
@@ -854,7 +1126,11 @@ def build_inventory_manifest(roots: dict[str, Path]) -> dict[str, Any]:
             schema.stable_directory_chain(lexical_root, lexical_root)
         root = lexical_root.resolve(strict=False)
         for other_prong, other_root in resolved_roots.items():
-            if root == other_root or root in other_root.parents or other_root in root.parents:
+            if (
+                root == other_root
+                or root in other_root.parents
+                or other_root in root.parents
+            ):
                 raise schema.ConfigSurfaceError(
                     "QA-012 scope roots must be distinct and non-overlapping;"
                     f" {scope_prong!r} overlaps {other_prong!r} (R-072)"
@@ -866,7 +1142,12 @@ def build_inventory_manifest(roots: dict[str, Path]) -> dict[str, Any]:
     scope_prongs: list[dict[str, Any]] = []
     total_files = 0
     total_bytes = 0
+    preflight_total_bytes = 0
     total_hits = 0
+    total_pointer_bytes = 0
+    candidate_sets: dict[str, list[Path]] = {}
+    candidate_identities: dict[tuple[str, str], tuple[int, int, int]] = {}
+    entries_by_identity: dict[tuple[str, str], dict[str, Any]] = {}
     for scope_prong in REQUIRED_SCOPE_PRONGS:
         root = lexical_roots[scope_prong]
         if (
@@ -894,6 +1175,18 @@ def build_inventory_manifest(roots: dict[str, Path]) -> dict[str, Any]:
                 }
             )
             continue
+        for path in candidates:
+            preflight_total_bytes += _candidate_file_size(path, root)
+            rel = path.relative_to(root).as_posix()
+            candidate_identities[(scope_prong, rel)] = _candidate_identity(
+                _candidate_file_info(path, root)
+            )
+            if preflight_total_bytes > MAX_QA_TOTAL_BYTES:
+                raise schema.TypedIngressError(
+                    "QA-012 inventory exceeds aggregate byte limit"
+                    f" {MAX_QA_TOTAL_BYTES} (R-072/R-020)"
+                )
+        candidate_sets[scope_prong] = candidates
         scope_prongs.append(
             {
                 "name": scope_prong,
@@ -904,27 +1197,60 @@ def build_inventory_manifest(roots: dict[str, Path]) -> dict[str, Any]:
         )
         for path in candidates:
             entry = _scan_file(path, root, scope_prong)
+            entry_pointer_bytes = sum(
+                len(hit["pointer"].encode("utf-8"))
+                for hit in entry["hits"]
+            )
+            if (
+                total_pointer_bytes + entry_pointer_bytes
+                > MAX_QA_TOTAL_POINTER_BYTES
+            ):
+                raise schema.TypedIngressError(
+                    "QA-012 inventory exceeds aggregate pointer byte limit"
+                    f" {MAX_QA_TOTAL_POINTER_BYTES} (R-072/R-020)"
+                )
+            total_pointer_bytes += entry_pointer_bytes
             files.append(entry)
+            entries_by_identity[(scope_prong, entry["path"])] = entry
             total_files += 1
             total_bytes += entry["size"]
             total_hits += len(entry["hits"])
-            if total_files > MAX_QA_FILES or total_bytes > MAX_QA_BYTES:
+            if total_files > MAX_QA_FILES:
                 raise schema.TypedIngressError(
-                    "QA-012 inventory exceeds aggregate file/byte limits"
-                    f" ({MAX_QA_FILES} files, {MAX_QA_BYTES} bytes; R-072/R-020)"
+                    "QA-012 inventory exceeds aggregate file-count limit"
+                    f" {MAX_QA_FILES} (R-072/R-020)"
+                )
+            if total_bytes > MAX_QA_TOTAL_BYTES:
+                raise schema.TypedIngressError(
+                    "QA-012 inventory exceeds aggregate byte limit"
+                    f" {MAX_QA_TOTAL_BYTES} (R-072/R-020)"
                 )
             if total_hits > MAX_QA_HITS:
                 raise schema.TypedIngressError(
                     "QA-012 inventory exceeds aggregate hit limit"
                     f" {MAX_QA_HITS} (R-072/R-020)"
                 )
+    # Re-enumerate and re-read every scanned prong only after all scans finish.
+    # A same-name replacement or in-place edit is therefore not hidden by the
+    # membership-only comparison, including drift in an earlier prong while a
+    # later prong is being scanned.
+    for scope_prong, candidates in candidate_sets.items():
+        root = lexical_roots[scope_prong]
         after = _candidate_files(root)
-        if [path.relative_to(root) for path in after] != [
-            path.relative_to(root) for path in candidates
-        ]:
+        candidate_rels = [path.relative_to(root).as_posix() for path in candidates]
+        after_rels = [path.relative_to(root).as_posix() for path in after]
+        if after_rels != candidate_rels:
             raise schema.TypedIngressError(
                 "QA-012 corpus membership changed during inventory"
                 " (R-072/R-020)"
+            )
+        for path, rel in zip(after, after_rels):
+            identity = (scope_prong, rel)
+            _verify_candidate_unchanged(
+                path,
+                root,
+                candidate_identities[identity],
+                entries_by_identity[identity],
             )
     files.sort(key=lambda entry: (entry["scope_prong"], entry["path"]))
     any_hits = any(entry["hits"] for entry in files)

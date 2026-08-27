@@ -79,6 +79,13 @@ published package, another run, or a future create-once run slot.
 
 ## Phase-4 process/host trust boundary
 
+The launcher consumes a PRE_RUN_READY certificate only from the exact
+two-file certificate directory publication. It first rejects a surviving
+sibling pending guard, then requires the sibling positive-acceptance marker
+to bind the certificate and generation-summary bytes captured in one stable
+snapshot. The activation digest is checked over those captured certificate
+bytes; the live certificate path is not reopened afterward.
+
 The certificate-bound Phase-4 launcher is an integrity and reproducibility
 workflow, not a sandbox, privilege boundary, or hostile-process containment
 mechanism. The certified producer and dependencies, host OS and filesystem,
