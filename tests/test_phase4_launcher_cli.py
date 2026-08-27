@@ -229,6 +229,65 @@ def test_python_m_interface_is_executable_without_loading_a_model(tmp_path):
     assert completed.stdout == ""
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX dir-fd regression")
+def test_stop_report_refuses_transient_parent_displacement(
+    tmp_path, monkeypatch
+):
+    quarantine = tmp_path / "quarantine"
+    quarantine.mkdir()
+    displaced = tmp_path / "displaced"
+    original = launcher.phase4_finalize_release._DirectoryAnchor.create_once
+
+    def displace_during_publication(anchor, *args, **kwargs):
+        quarantine.rename(displaced)
+        quarantine.mkdir()
+        try:
+            return original(anchor, *args, **kwargs)
+        finally:
+            quarantine.rmdir()
+            displaced.rename(quarantine)
+
+    monkeypatch.setattr(
+        launcher.phase4_finalize_release._DirectoryAnchor,
+        "create_once",
+        displace_during_publication,
+    )
+
+    with pytest.raises(
+        launcher.schema.TypedIngressError, match="identity changed"
+    ):
+        launcher._write_stop_report(quarantine, {"reason": "test"})
+
+    assert list(quarantine.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows anchor regression")
+def test_stop_report_anchor_denies_parent_rename(tmp_path, monkeypatch):
+    quarantine = tmp_path / "quarantine"
+    quarantine.mkdir()
+    displaced = tmp_path / "displaced"
+    original = launcher.phase4_finalize_release._DirectoryAnchor.create_once
+    rename_blocked = False
+
+    def attempt_rename(anchor, *args, **kwargs):
+        nonlocal rename_blocked
+        with pytest.raises(OSError):
+            quarantine.rename(displaced)
+        rename_blocked = True
+        return original(anchor, *args, **kwargs)
+
+    monkeypatch.setattr(
+        launcher.phase4_finalize_release._DirectoryAnchor,
+        "create_once",
+        attempt_rename,
+    )
+
+    launcher._write_stop_report(quarantine, {"reason": "test"})
+
+    assert rename_blocked is True
+    assert (quarantine / launcher.STOP_REPORT_NAME).is_file()
+
+
 def _runtime_fixture(
     tmp_path: Path,
     monkeypatch,

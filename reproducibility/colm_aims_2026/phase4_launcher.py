@@ -2440,15 +2440,20 @@ def _materialize_private_promotion_tree(
 
 def _write_stop_report(quarantine_dir: Path, payload: dict[str, Any]) -> None:
     quarantine_dir = Path(quarantine_dir)
-    schema.stable_directory_chain(quarantine_dir, quarantine_dir)
-    report_path = quarantine_dir / STOP_REPORT_NAME
-    create_once_bytes(
-        report_path,
-        (
-            json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n"
-        ).encode("utf-8"),
-        exists_label="Phase-4 STOP report",
+    snapshot = phase4_finalize_release._capture_directory_chain(
+        quarantine_dir
     )
+    with phase4_finalize_release._DirectoryAnchor(
+        quarantine_dir, snapshot, "Phase-4 STOP report parent"
+    ) as anchor:
+        anchor.create_once(
+            STOP_REPORT_NAME,
+            (
+                json.dumps(payload, indent=2, sort_keys=True, default=str)
+                + "\n"
+            ).encode("utf-8"),
+            exists_label="Phase-4 STOP report",
+        )
 
 
 def _attempt_stop_report(

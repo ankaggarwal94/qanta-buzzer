@@ -1511,6 +1511,168 @@ def test_windows_parent_anchor_denies_rename_or_replacement(tmp_path):
     assert not (tmp_path / "displaced").exists()
 
 
+@pytest.mark.parametrize(
+    "fault", ("partial_write", "file_fsync", "file_fstat")
+)
+def test_anchored_create_once_never_leaves_partial_final_bytes(
+    tmp_path, monkeypatch, fault
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    chain = finalizer._capture_directory_chain(output_root)
+    final_name = "evidence.json"
+    real_write = finalizer.os.write
+    real_fsync = finalizer.os.fsync
+    real_fstat = finalizer.os.fstat
+    write_calls = 0
+    file_fsync_failed = False
+    file_fstat_failed = False
+
+    def fail_after_partial_write(fd, data):
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 1:
+            return real_write(fd, data[:1])
+        raise OSError("injected staging write failure")
+
+    def fail_staged_file_fsync(fd):
+        nonlocal file_fsync_failed
+        if stat.S_ISREG(finalizer.os.fstat(fd).st_mode) and not file_fsync_failed:
+            file_fsync_failed = True
+            raise OSError("injected staging fsync failure")
+        return real_fsync(fd)
+
+    def fail_staged_file_fstat(fd):
+        nonlocal file_fstat_failed
+        info = real_fstat(fd)
+        if stat.S_ISREG(info.st_mode) and not file_fstat_failed:
+            file_fstat_failed = True
+            raise OSError("injected staging fstat failure")
+        return info
+
+    if fault == "partial_write":
+        monkeypatch.setattr(finalizer.os, "write", fail_after_partial_write)
+    elif fault == "file_fsync":
+        monkeypatch.setattr(finalizer.os, "fsync", fail_staged_file_fsync)
+    else:
+        monkeypatch.setattr(finalizer.os, "fstat", fail_staged_file_fstat)
+
+    with finalizer._DirectoryAnchor(
+        output_root, chain, "test evidence parent"
+    ) as anchor:
+        with pytest.raises(OSError, match="injected staging"):
+            anchor.create_once(
+                final_name, b"complete evidence\n", exists_label="evidence"
+            )
+        assert not anchor.exists(final_name)
+        assert list(output_root.iterdir()) == []
+
+        monkeypatch.setattr(finalizer.os, "write", real_write)
+        monkeypatch.setattr(finalizer.os, "fsync", real_fsync)
+        monkeypatch.setattr(finalizer.os, "fstat", real_fstat)
+        anchor.create_once(
+            final_name, b"complete evidence\n", exists_label="evidence"
+        )
+
+    assert (output_root / final_name).read_bytes() == b"complete evidence\n"
+    assert [path.name for path in output_root.iterdir()] == [final_name]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX capability gate")
+def test_posix_anchor_refuses_when_atomic_link_capability_is_absent(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    chain = finalizer._capture_directory_chain(output_root)
+    monkeypatch.setattr(
+        finalizer, "_POSIX_DIR_FD_OPERATIONS_SUPPORTED", False
+    )
+
+    with pytest.raises(schema.TypedIngressError, match="descriptor-relative"):
+        with finalizer._DirectoryAnchor(
+            output_root, chain, "test publication parent"
+        ):
+            pass
+
+
+def test_anchored_create_once_racing_incumbent_is_never_replaced(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    chain = finalizer._capture_directory_chain(output_root)
+    real_link = finalizer.os.link
+    incumbent = b"racing incumbent\n"
+    injected = False
+
+    def claim_before_link(source, destination, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            flags = (
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_BINARY", 0)
+            )
+            destination_fd = kwargs.get("dst_dir_fd")
+            if destination_fd is None:
+                fd = os.open(destination, flags, 0o600)
+            else:
+                fd = os.open(
+                    destination, flags, 0o600, dir_fd=destination_fd
+                )
+            try:
+                assert os.write(fd, incumbent) == len(incumbent)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        return real_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(finalizer.os, "link", claim_before_link)
+    with finalizer._DirectoryAnchor(
+        output_root, chain, "test evidence parent"
+    ) as anchor:
+        with pytest.raises(FileExistsError, match="evidence already exists"):
+            anchor.create_once(
+                "evidence.json",
+                b"candidate evidence\n",
+                exists_label="evidence",
+            )
+
+    assert injected is True
+    assert (output_root / "evidence.json").read_bytes() == incumbent
+    assert [path.name for path in output_root.iterdir()] == ["evidence.json"]
+
+
+def test_anchored_create_once_postcommit_sync_failure_keeps_complete_bytes(
+    tmp_path, monkeypatch
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    chain = finalizer._capture_directory_chain(output_root)
+    expected = b"complete evidence\n"
+
+    with finalizer._DirectoryAnchor(
+        output_root, chain, "test evidence parent"
+    ) as anchor:
+        monkeypatch.setattr(
+            anchor,
+            "sync",
+            lambda: (_ for _ in ()).throw(
+                OSError("injected postcommit parent sync failure")
+            ),
+        )
+        with pytest.raises(OSError, match="postcommit parent sync"):
+            anchor.create_once(
+                "evidence.json", expected, exists_label="evidence"
+            )
+
+    assert (output_root / "evidence.json").read_bytes() == expected
+    assert [path.name for path in output_root.iterdir()] == ["evidence.json"]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows Volume-GUID contract")
 def test_windows_local_anchor_uses_pinned_volume_guid_path(tmp_path):
     output_root = tmp_path / "output"
@@ -1556,7 +1718,7 @@ def test_windows_mutations_and_publication_receive_only_pinned_paths(
 
         def track_open(path, flags, mode=0o777, *, dir_fd=None):
             candidate = Path(path)
-            if candidate.name == "guard.pending":
+            if candidate.name.startswith(".atomic-file-"):
                 opened.append(candidate)
             return original_open(path, flags, mode, dir_fd=dir_fd)
 
@@ -1604,7 +1766,9 @@ def test_windows_mutations_and_publication_receive_only_pinned_paths(
                 destination_snapshot=destination_chain,
             )
 
-        assert opened == [pinned / "guard.pending"]
+        assert len(opened) == 1
+        assert opened[0].parent == pinned
+        assert opened[0].name.startswith(".atomic-file-")
         assert synced == [pinned, pinned]
         assert published == [(pinned / staged.name, pinned / "bundle")]
         assert all(path.parent == pinned for path in opened)
@@ -1922,7 +2086,7 @@ def test_posix_anchor_keeps_child_operation_on_captured_parent(tmp_path):
         with pytest.raises(schema.TypedIngressError, match="identity changed"):
             anchor.create_once("anchored.txt", b"captured\n", exists_label="probe")
 
-    assert (displaced / "anchored.txt").read_bytes() == b"captured\n"
+    assert list(displaced.iterdir()) == []
     assert list(output_root.iterdir()) == []
 
 

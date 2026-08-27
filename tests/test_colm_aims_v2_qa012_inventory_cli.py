@@ -176,7 +176,8 @@ def test_cli_detects_output_parent_swap_during_create_once(tmp_path, monkeypatch
     else:
         assert result == qa012_inventory.EXIT_INGRESS_ERROR
         assert not output.exists()
-        assert (displaced / output.name).is_file()
+        assert not (displaced / output.name).exists()
+        assert list(displaced.iterdir()) == []
 
 
 def test_canonical_rev3_declared_sizes_fit_operational_limits():

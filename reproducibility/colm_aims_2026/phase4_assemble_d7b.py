@@ -898,6 +898,10 @@ def main(argv: list[str] | None = None) -> int:
         return code if isinstance(code, int) else EXIT_USAGE_ERROR
 
     try:
+        if not schema.is_git_object_id(args.source_commit):
+            raise schema.ConfigSurfaceError(
+                "source commit must be a lowercase native Git object ID"
+            )
         records_root = Path(args.records_root)
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)

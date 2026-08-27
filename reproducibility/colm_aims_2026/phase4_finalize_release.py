@@ -56,8 +56,8 @@ _WINDOWS_RESERVED_BASENAMES = {
 }
 _POSIX_DIR_FD_OPERATIONS_SUPPORTED = os.name != "posix" or all(
     function in os.supports_dir_fd
-    for function in (os.open, os.stat, os.mkdir, os.rename, os.unlink)
-)
+    for function in (os.open, os.stat, os.mkdir, os.rename, os.unlink, os.link)
+) and (os.name != "posix" or os.link in os.supports_follow_symlinks)
 
 
 class ReleaseVerificationFailed(schema.ColmAimsError):
@@ -611,7 +611,13 @@ class _DirectoryAnchor:
         exists_label: str,
         mode: int = 0o600,
     ) -> None:
+        """Durably stage bytes before an atomic no-replace final link."""
         name = self._name(name)
+        self.revalidate(f"create {name} precheck")
+        if self.exists(name):
+            raise FileExistsError(
+                f"{exists_label} already exists: {self._path(name)}"
+            )
         flags = (
             os.O_WRONLY
             | os.O_CREAT
@@ -619,21 +625,93 @@ class _DirectoryAnchor:
             | getattr(os, "O_BINARY", 0)
             | getattr(os, "O_NOFOLLOW", 0)
         )
+        temporary: str | None = None
+        fd: int | None = None
+        staged_identity: tuple[int, int, int] | None = None
+        for _attempt in range(32):
+            candidate = f".atomic-file-{secrets.token_hex(16)}"
+            try:
+                if self._fd is not None:
+                    fd = os.open(candidate, flags, mode, dir_fd=self._fd)
+                else:
+                    fd = os.open(self._path(candidate), flags, mode)
+            except FileExistsError:
+                continue
+            temporary = candidate
+            break
+        if temporary is None or fd is None:
+            raise schema.TypedIngressError(
+                "cannot allocate a fresh atomic file stage after 32 bounded"
+                " attempts"
+            )
+
         try:
-            if self._fd is not None:
-                fd = os.open(name, flags, mode, dir_fd=self._fd)
-            else:
-                fd = os.open(self._path(name), flags, mode)
-        except FileExistsError as exc:
-            raise FileExistsError(
-                f"{exists_label} already exists: {self._path(name)}"
-            ) from exc
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        self.sync()
-        self.revalidate(f"create {name} completion")
+            staged_identity = schema._identity_tuple(os.fstat(fd))
+            remaining = memoryview(data)
+            while remaining:
+                written = os.write(fd, remaining)
+                if written <= 0:
+                    raise OSError("atomic file staging made no write progress")
+                remaining = remaining[written:]
+            os.fsync(fd)
+            named_stage = self.stat(temporary)
+            self._require_regular(named_stage, temporary)
+            if schema._identity_tuple(named_stage) != staged_identity:
+                raise schema.TypedIngressError(
+                    "atomic file stage changed identity before publication"
+                )
+            try:
+                if self._fd is not None:
+                    os.link(
+                        temporary,
+                        name,
+                        src_dir_fd=self._fd,
+                        dst_dir_fd=self._fd,
+                        follow_symlinks=False,
+                    )
+                else:
+                    os.link(
+                        self._path(temporary),
+                        self._path(name),
+                        follow_symlinks=False,
+                    )
+            except FileExistsError as exc:
+                raise FileExistsError(
+                    f"{exists_label} already exists: {self._path(name)}"
+                ) from exc
+            published = self.stat(name)
+            self._require_regular(published, name)
+            if schema._identity_tuple(published) != staged_identity:
+                raise schema.TypedIngressError(
+                    "atomic file publication does not identify its staged"
+                    " bytes"
+                )
+            # Windows CRT descriptors do not share delete access.  The hard
+            # link already binds the final name to these fsynced bytes, so
+            # release the staging descriptor before retiring its temporary
+            # name while retaining the canonical link.
+            os.close(fd)
+            fd = None
+            self.unlink(temporary)
+            temporary = None
+            self.sync()
+            self.revalidate(f"create {name} completion")
+        finally:
+            if fd is not None:
+                if staged_identity is None:
+                    try:
+                        staged_identity = schema._identity_tuple(os.fstat(fd))
+                    except OSError:
+                        pass
+                os.close(fd)
+            if temporary is not None:
+                try:
+                    current = self.stat(temporary)
+                    if schema._identity_tuple(current) == staged_identity:
+                        self.unlink(temporary)
+                        self.sync()
+                except (FileNotFoundError, OSError, schema.ColmAimsError):
+                    pass
 
     def create_open_once(
         self,
