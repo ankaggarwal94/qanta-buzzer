@@ -792,6 +792,12 @@ class _WindowsJobObject:
             wintypes.DWORD,
         ]
         kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.IsProcessInJob.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.BOOL),
+        ]
+        kernel32.IsProcessInJob.restype = wintypes.BOOL
         kernel32.WaitForSingleObject.argtypes = [
             wintypes.HANDLE,
             wintypes.DWORD,
@@ -912,9 +918,20 @@ class _WindowsJobObject:
         handles: list[Any] = []
         try:
             for process_id in process_ids:
-                handle = self._kernel32.OpenProcess(0x00100000, False, process_id)
+                handle = self._kernel32.OpenProcess(0x00101000, False, process_id)
                 if handle:
-                    handles.append(handle)
+                    is_member = self._wintypes.BOOL()
+                    if not self._kernel32.IsProcessInJob(
+                        handle, self._handle, self._ctypes.byref(is_member)
+                    ):
+                        error = self._ctypes.get_last_error()
+                        self._kernel32.CloseHandle(handle)
+                        raise OSError(error, self._ctypes.FormatError(error))
+                    if is_member.value:
+                        handles.append(handle)
+                    elif not self._kernel32.CloseHandle(handle):
+                        error = self._ctypes.get_last_error()
+                        raise OSError(error, self._ctypes.FormatError(error))
                     continue
                 error = self._ctypes.get_last_error()
                 if error != 87:

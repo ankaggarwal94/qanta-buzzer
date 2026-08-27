@@ -828,6 +828,48 @@ def test_windows_job_member_enumeration_has_finite_attempt_bound(
     assert attempts == 8
 
 
+def test_windows_job_rejects_reused_pid_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An opened PID is retained only if its process still belongs to the Job."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    events: list[tuple[object, ...]] = []
+
+    class FakeKernel32:
+        def OpenProcess(self, access, inherit, process_id):
+            events.append(("open", access, inherit, process_id))
+            return 99
+
+        def IsProcessInJob(self, handle, job_handle, result):
+            events.append(("member", handle, job_handle))
+            result._obj.value = 0
+            return 1
+
+        def CloseHandle(self, handle):
+            events.append(("close", handle))
+            return 1
+
+    job = object.__new__(orchestration._WindowsJobObject)
+    job._handle = 1
+    job._ctypes = ctypes
+    job._wintypes = wintypes
+    job._kernel32 = FakeKernel32()
+    monkeypatch.setattr(job, "active_processes", lambda: 1)
+    monkeypatch.setattr(job, "_query_member_process_ids", lambda _capacity: (123,))
+
+    handles = job._open_member_process_handles(deadline=time.monotonic() + 30)
+
+    assert handles == []
+    assert events == [
+        ("open", 0x00101000, False, 123),
+        ("member", 99, 1),
+        ("close", 99),
+    ]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job Object regression")
 def test_bounded_suite_process_closes_job_after_termination_fault(
     tmp_path: Path,
