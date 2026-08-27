@@ -115,7 +115,7 @@ flowchart TD
     PSO --> RCPT["create-once receipt, every run (R-036)"]
     PREL --> RCPT
     FAIL --> RCPT
-    RCPT -.-> CLOSURE["CAMERA_READY_CLOSURE (closure.py) is a SEPARATE inventory gate<br/>over the D6 manuscript baseline; neither verdict implies it (R-071)"]
+    RCPT -.-> CLOSURE["CAMERA_READY_CLOSURE (closure.py) is a SEPARATE inventory gate<br/>over the final camera-ready manuscript authority; neither verdict implies it (R-071)"]
 ```
 
 Inside the leg pipeline, every check is a guarded leg builder: an unexpected

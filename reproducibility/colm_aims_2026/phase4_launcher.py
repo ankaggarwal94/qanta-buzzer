@@ -1182,22 +1182,22 @@ def _load_verified_snapshot_manifest(
 
 
 def _verify_canonical_qa012(components: dict[str, Any]) -> None:
-    """Rehash the exact tracked QA-012 rev3 inventory pre-ledger."""
+    """Rehash the exact tracked QA-012 authority pre-ledger."""
     qa012 = components.get("qa012")
     qa012 = qa012 if isinstance(qa012, dict) else {}
     certified_digest = qa012.get("manifest_sha256")
     if certified_digest != _QA012_SHA256:
         raise LaunchRefusal(
             "certificate qa012.manifest_sha256 does not equal the canonical"
-            " rev3 inventory pin (R-079/R-081)"
+            " rev4 authority pin (R-079/R-081)"
         )
     manifest_path = (_REPO_ROOT / _QA012_RELPATH).resolve()
     observed_digest = _sha256_regular_file(
-        manifest_path, label="QA-012 rev3 inventory"
+        manifest_path, label="QA-012 rev4 authority"
     )
     if observed_digest != _QA012_SHA256:
         raise LaunchRefusal(
-            f"canonical QA-012 rev3 inventory live SHA-256 {observed_digest}"
+            f"canonical QA-012 rev4 authority live SHA-256 {observed_digest}"
             f" != frozen pin {_QA012_SHA256} (R-079/R-081)"
         )
 

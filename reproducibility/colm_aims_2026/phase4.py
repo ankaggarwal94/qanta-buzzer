@@ -166,12 +166,12 @@ PARITY_ANCHOR_SHA256 = (
 PARITY_SOURCE_EXPORT_A_SHA256 = (
     "59e1c1a74e5fc0cf4f09f8befca87cfc81516684dca2e88dd275c952b28893ff"
 )
-QA012_MANIFEST_RELPATH = "qa012_inventory_2026-08-22_rev3.json"
+QA012_MANIFEST_RELPATH = "qa012_inventory_2026-08-27_rev4.json"
 QA012_MANIFEST_SHA256 = (
-    "bb692446ad07bea63b5fc6799d4c0b6474cc084076c87b2db7c2c2a9b7334303"
+    "6b2b194201503f108a430fb85f3ec40dc05de02d5c75c19aaea0af1c68229e4f"
 )
 QA012_MANIFEST_TYPE = "qa012_format_qa_inventory"
-QA012_MANIFEST_REVISION = 3
+QA012_MANIFEST_REVISION = 4
 QA012_CONVENTIONS = {
     "content_hash": (
         "Dropbox content hash: sha256 over concatenated per-4MiB-block"
@@ -3329,7 +3329,7 @@ def _check_qa012(qa012: Any, fail: Any) -> None:
         fail("qa012: manifest_sha256 is not a sha256 hex digest")
     elif qa012.get("manifest_sha256") != QA012_MANIFEST_SHA256:
         fail(
-            "qa012: manifest_sha256 does not equal the canonical rev3 raw"
+            "qa012: manifest_sha256 does not equal the canonical rev4 raw"
             f" manifest pin {QA012_MANIFEST_SHA256}"
         )
     artifact_path = qa012.get("artifact_path")
@@ -3353,7 +3353,7 @@ def _check_qa012(qa012: Any, fail: Any) -> None:
             f"qa012: revision must be exactly int {QA012_MANIFEST_REVISION}"
         )
     if qa012.get("conventions") != QA012_CONVENTIONS:
-        fail("qa012: conventions do not equal the canonical rev3 conventions")
+        fail("qa012: conventions do not equal the canonical rev4 conventions")
 
 
 def _check_environment(env: Any, fail: Any) -> None:

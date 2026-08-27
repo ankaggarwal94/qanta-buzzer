@@ -56,8 +56,9 @@ pointers fail the release run, and newest-wins selection never happens.
   pins.
 - Any failed leg yields `FAIL`.
 - The `CAMERA_READY_CLOSURE` gate (`closure.py`) is a separate inventory
-  gate over the D6 manuscript baseline; neither verifier verdict implies
-  it, and it implies neither of them.
+  gate over the human-designated final camera-ready manuscript authority
+  (the serialized field keeps the legacy `d6_baseline` name); neither
+  verifier verdict implies it, and it implies neither of them.
 
 ## Exit codes
 

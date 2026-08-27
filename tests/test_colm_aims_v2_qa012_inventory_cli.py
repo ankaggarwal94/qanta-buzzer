@@ -66,7 +66,7 @@ def test_cli_diagnostic_is_rejected_by_authority_only_ingress(tmp_path):
 
     with pytest.raises(
         schema.SchemaValidationError,
-        match="canonical rev3 SHA-256",
+        match="canonical rev4 SHA-256",
     ):
         phase4_driver_d7b.build_qa012_block(authority_path=output)
 
@@ -180,7 +180,7 @@ def test_cli_detects_output_parent_swap_during_create_once(tmp_path, monkeypatch
         assert list(displaced.iterdir()) == []
 
 
-def test_canonical_rev3_declared_sizes_fit_operational_limits():
+def test_canonical_authority_declared_sizes_fit_operational_limits():
     authority = qa012.load_authority_manifest()
     sizes = [entry["size"] for entry in authority["entries"]]
 

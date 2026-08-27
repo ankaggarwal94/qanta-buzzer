@@ -16,7 +16,7 @@ Generates the committed frozen artifacts required by the PRE-run contract
     the immutable snapshot copies themselves (symlinks resolved) under an
     OUT-OF-REPO directory supplied by ``--snapshots-out``.
   * ``tests/fixtures/qa012_item10/``        — R-078 (exact-byte full-file
-    and excerpt fixtures for the four hit files + rev3-authority bindings).
+    and excerpt fixtures for the four hit files + authority bindings).
 
 Every input is taken from an explicit CLI path (no hard-coded absolute
 paths; committed artifacts record basenames and hashes only) and every
@@ -328,7 +328,7 @@ def generate_qa012_fixtures(item10_dir: Path, fixtures_out: Path) -> None:
         ]
         if len(authority_matches) != 1:
             raise SystemExit(
-                f"freeze: expected exactly one rev3 authority entry for {basename},"
+                f"freeze: expected exactly one authority entry for {basename},"
                 f" found {len(authority_matches)}"
             )
         authority_entry = authority_matches[0]
@@ -340,7 +340,7 @@ def generate_qa012_fixtures(item10_dir: Path, fixtures_out: Path) -> None:
             match = re.fullmatch(r"line ([1-9][0-9]*): (/.*/?format|/format)", hit)
             if match is None:
                 raise SystemExit(
-                    f"freeze: malformed rev3 authority hit for {basename}: {hit}"
+                    f"freeze: malformed authority hit for {basename}: {hit}"
                 )
             normalized_hits.append(
                 {"line": int(match.group(1)), "pointer": match.group(2)}
@@ -356,7 +356,7 @@ def generate_qa012_fixtures(item10_dir: Path, fixtures_out: Path) -> None:
             or authority_entry["dropbox_content_hash"] != content_hash
         ):
             raise SystemExit(
-                f"freeze: rev3 authority size/content hash mismatch for {basename}"
+                f"freeze: authority size/content hash mismatch for {basename}"
             )
         bindings[basename] = {
             "scope_prong": scope_prong,

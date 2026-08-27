@@ -43,7 +43,7 @@
   `render.py`, `verify.py`). The local commits are review inputs, not
   transplantable authority; successor tests are re-derived against this spec;
   the Track A / Track A′ exploit files are not ported wholesale.
-- **D6 designated manuscript baseline** (two-party hash-verified): `main.tex`
+- **Historical D6 designated manuscript baseline** (two-party hash-verified): `main.tex`
   SHA-256 `79dccfb3fbdfafbd566a3fb239755ab35142bac510d629d513ed8b3c2c4cdd2f`;
   rendered `main.pdf` SHA-256
   `6de23119df59679befc356e3c916bc5a498b2cc2015b6cd8a516a5181dabf10a`; complete
@@ -51,6 +51,20 @@
   `Stanford/CS321M/final_project/does_proxy_preserve_decision_aims_colm2026_tier1_revision_bundle/`.
   Closure duties bind the COMPLETE manifest (figures, bibliography), never
   `main.tex` alone (plan v3 §1 qualifications, adopted).
+- **Final camera-ready manuscript authority** *(author-authorized amendment,
+  2026-08-27)*: the historical D6 bundle above remains immutable provenance,
+  but final `CAMERA_READY_CLOSURE` binds the separate camera-ready bundle's
+  `main.tex` SHA-256
+  `8d53f1d3fa65e092ad0f8590e6ed3827da131b810f0b0cc819087832ce31f8d4`,
+  `main.pdf` SHA-256
+  `273997e4c06195b295e89e89d70dee96df129290d59d62f200e8d622f9a552b5`,
+  complete `FINAL_CHECKSUMS.sha256` raw SHA-256
+  `2cd3055ed58728c1a1d1967c895a0e4dd268bd5da2a1531992e5025513583173`,
+  and canonical 30-entry map SHA-256
+  `ec38232e9c4b779b783844d647a8e867716a7f7efa4135f29924efcacd2e4a83`.
+  The serialized `d6_baseline` key and `D6_*` compatibility aliases remain
+  legacy wire/API names only; they do not transfer the historical D6
+  two-party-verification claim to the final bytes.
 - **Numbering**: v1 rule IDs `R-001..R-039` are retained for carried/amended
   rules (Appendix A maps all 39); new v2 rules start at `R-040`. Appendix B
   maps the sign-off Phase-2 RED coverage list to rule IDs.
@@ -73,7 +87,8 @@ pinned R2 legacy-sidecar boundary (§5, ASK-2(a)); the approved Track A and
 Track A′ repairs as v2-native rules (§6); R6 canonical-selection wiring into
 the actual release path (Phase 3); successor CI evidence receipts (A′-F4);
 and the `CAMERA_READY_CLOSURE` gate (D4, distinct from `PASS_RELEASE`) frozen
-against the D6 baseline's complete checksum closure. Everything new lives
+against the final camera-ready authority's complete checksum closure.
+Everything new lives
 under `reproducibility/colm_aims_2026/`; source-contract mode still tops out
 at `PASS_SOURCE_ONLY`; release mode still fails closed without independently
 anchored expectations. `EXECUTION_MODE=SOURCE_CONTRACT_ONLY` stands: the
@@ -923,8 +938,9 @@ analysis over retained per-item records — permitted; model execution is not.
   manifests, and offline flags; every R-076 staged
   input with expected+observed SHA-256; focused and full suite receipts
   (R-070 shape); the R-077 canonical comparator identity + anchor path/raw
-  hash + embedded Export-A source hash; the canonical R-072 rev3 manifest
-  path and raw hash (rev2 is retired); interpreter realpath, OS/arch/CPU, BLAS, thread settings,
+  hash + embedded Export-A source hash; the canonical R-072 rev4 manifest
+  path and raw hash (rev3 is retained only as predecessor evidence and rev2 is retired);
+  interpreter realpath, OS/arch/CPU, BLAS, thread settings,
   environment-lock hash, exact command, seeds, `PYTHONHASHSEED`, and the
   rng-pinned flags. The environment also signs the absolute external
   quarantine, promotion, and create-once exception-ledger paths. Both suite
@@ -1149,12 +1165,13 @@ analysis over retained per-item records — permitted; model execution is not.
 
 - **R-071** [integration]: `CAMERA_READY_CLOSURE` is a distinct gate token
   from `PASS_RELEASE` (neither implies the other; source mode can emit
-  neither). Its expected-claim inventory is FROZEN from the D6 baseline's
-  COMPLETE checksum closure (`main.tex`
-  `79dccfb3fbdfafbd566a3fb239755ab35142bac510d629d513ed8b3c2c4cdd2f`,
-  `main.pdf`
-  `6de23119df59679befc356e3c916bc5a498b2cc2015b6cd8a516a5181dabf10a`, and
-  every entry of `FINAL_CHECKSUMS.sha256` — never `main.tex` alone). It
+  neither). Per the author-authorized 2026-08-27 amendment, its expected-claim
+  inventory is FROZEN from the final camera-ready authority's COMPLETE
+  checksum closure (`main.tex` `8d53f1d3…31f8d4`, `main.pdf`
+  `273997e4…552b5`, raw `FINAL_CHECKSUMS.sha256` `2cd3055e…83173`, canonical
+  30-entry map `ec38232e…e4a83` — never `main.tex` alone). The historical D6
+  hashes remain provenance and are not redefined. The legacy serialized field
+  name remains `d6_baseline` for schema compatibility. It
   absorbs handoff-L526: every displayed number, count, table, and figure
   maps to clean bound evidence or is removed/downgraded (rows for
   manuscript-side items stay `EXTERNAL` per R-024). The Holm/inference row
@@ -1164,7 +1181,8 @@ analysis over retained per-item records — permitted; model execution is not.
   `NOT_YET_SATISFIED`. Enforcement: closed inventory file + per-row gate;
   fixtures for a satisfied-except-Holm inventory (FAIL) and a
   main.tex-only closure binding (FAIL).
-- **R-072** [integration] *(amended by PRE-7, 2026-08-22)*: QA-012 state:
+- **R-072** [integration] *(amended by PRE-7, 2026-08-22; final-authority
+  amendment, 2026-08-27)*: QA-012 state:
   rev1 inventory (46 files, zero hits) was VOID for scope omission; rev2 at
   corrected scope (67 files including the item-10
   `reachable_comparator_prototype` bundle, `data/processed/*.json`, and the
@@ -1177,15 +1195,25 @@ analysis over retained per-item records — permitted; model execution is not.
   Dropbox-resident evidence) AND SHA-256 — and the 4,556 JSONL hit
   pointers were 0-based where 1-based line numbers are required. Rev3
   corrects both over the same 67-file scope (supersession chain recorded
-  in-manifest). QA-012 is `HITS_PRESENT, non-blocking for source
+  in-manifest). Rev4, `qa012_inventory_2026-08-27_rev4.json` (raw SHA-256
+  `6b2b194201503f108a430fb85f3ec40dc05de02d5c75c19aaea0af1c68229e4f`),
+  replaces only the four historical-D6 JSON identities with the four final
+  camera-ready JSON identities and binds rev3 in its supersession chain. The
+  remaining 63 entries are byte-identical to rev3; 55 were revalidated from
+  live/preserved equivalent sources and the pinned git object, while 8 absent
+  historical modal-mirror identities retain exact rev3 raw-byte authority.
+  Totals remain 67 files, 0 parse failures, and 4,556 hits; all four final
+  manuscript JSONs strictly parse with zero hits. QA-012 is
+  `HITS_PRESENT, non-blocking for source
   reconstruction, blocking for final CAMERA_READY_CLOSURE` until the
   R-078 fixtures land. Executing
   this rule's inventory REQUIRES a per-prong disposition: every enumerated
   scope prong is recorded as located/scanned or UNLOCATABLE-escalate — a
   zero-hit verdict over an incompletely-located scope is a false vacuity and
   is itself a defect. Closure requires
-  the inventory procedure of sign-off §8 executed over: the complete D6
-  checksum closure; historical `paper_exports` copies outside the GitHub
+  the inventory procedure of sign-off §8 executed over: the complete final
+  camera-ready checksum closure (the historical D6 closure remains provenance);
+  historical `paper_exports` copies outside the GitHub
   repository; supplied source/export bundles used by the paper; any external
   expectations or ledger sidecars. For every `.json`/`.jsonl` file:
   (1) record path, size, content hash, and SHA-256; (2) strictly parse;
