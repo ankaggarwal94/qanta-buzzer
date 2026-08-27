@@ -124,6 +124,90 @@ def test_exact_external_bytes_are_published_and_release_passes(tmp_path):
     ) == result.published_dir
 
 
+def test_release_staging_never_uses_lexical_path_write(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    original = Path.write_bytes
+
+    def reject_lexical_stage_write(path, data):
+        if (
+            path.parent.parent == output_root
+            and path.parent.name.startswith(".release-staged-")
+        ):
+            raise AssertionError("release staging write escaped its anchor")
+        return original(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", reject_lexical_stage_write)
+
+    assert _finalize(site, output_root, receipts_dir).published_dir.is_dir()
+
+
+def test_staging_materialization_rejects_replaced_generation_before_write(
+    tmp_path,
+):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    staged = output_root / ".staged"
+    staged.mkdir()
+    parent_snapshot = finalizer._capture_directory_chain(output_root)
+    staged_snapshot = finalizer._capture_directory_chain(staged)
+    displaced = output_root / ".captured-staged"
+    staged.rename(displaced)
+    staged.mkdir()
+    replacement = {
+        name: f"replacement {name}\n".encode("utf-8")
+        for name in finalizer._SIDECAR_NAMES
+    }
+    for name, data in replacement.items():
+        (staged / name).write_bytes(data)
+    expected = {
+        name: f"owned {name}\n".encode("utf-8")
+        for name in finalizer._SIDECAR_NAMES
+    }
+
+    with pytest.raises(schema.TypedIngressError):
+        finalizer._materialize_staged_directory(
+            staged,
+            parent_snapshot,
+            staged_snapshot,
+            expected,
+            finalizer._SIDECAR_NAMES,
+            label="test staging directory",
+        )
+
+    assert list(displaced.iterdir()) == []
+    assert {item.name: item.read_bytes() for item in staged.iterdir()} == replacement
+
+
+def test_staging_materialization_never_truncates_late_file_claim(tmp_path):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    staged = output_root / ".staged"
+    staged.mkdir()
+    parent_snapshot = finalizer._capture_directory_chain(output_root)
+    staged_snapshot = finalizer._capture_directory_chain(staged)
+    claimed = staged / finalizer._SIDECAR_NAMES[0]
+    claimed.write_bytes(b"incumbent\n")
+    expected = {
+        name: f"owned {name}\n".encode("utf-8")
+        for name in finalizer._SIDECAR_NAMES
+    }
+
+    with pytest.raises(FileExistsError):
+        finalizer._materialize_staged_directory(
+            staged,
+            parent_snapshot,
+            staged_snapshot,
+            expected,
+            finalizer._SIDECAR_NAMES,
+            label="test staging directory",
+        )
+
+    assert claimed.read_bytes() == b"incumbent\n"
+    assert {item.name for item in staged.iterdir()} == {claimed.name}
+
+
 def test_explicit_run_id_mismatch_refuses_before_publication(tmp_path):
     site, output_root, receipts_dir = _roots(tmp_path)
 

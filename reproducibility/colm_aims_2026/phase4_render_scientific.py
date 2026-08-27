@@ -25,6 +25,7 @@ from .phase4_finalize_release import (
     ReleaseVerificationFailed,
     _capture_directory_chain,
     _canonical_existing_directory,
+    _materialize_staged_directory,
     _parse_object,
     _publish_verified_directory,
     _read_accepted_directory_snapshot,
@@ -541,8 +542,14 @@ def render_scientific_release(
             "staging directory is not a child of the captured output root"
         )
     try:
-        for name in OUTPUT_NAMES:
-            (staged / name).write_bytes(generated[name])
+        _materialize_staged_directory(
+            staged,
+            output_root_chain,
+            staged_snapshot,
+            generated,
+            OUTPUT_NAMES,
+            label="scientific staging directory",
+        )
         if _read_outputs(staged, require_acceptance=False) != generated:
             raise schema.TypedIngressError(
                 "staged scientific outputs differ from the deterministic bytes"

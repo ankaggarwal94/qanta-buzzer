@@ -557,7 +557,14 @@ class _DirectoryAnchor:
         self.revalidate(f"read {name} completion")
         return data
 
-    def create_once(self, name: str, data: bytes, *, exists_label: str) -> None:
+    def create_once(
+        self,
+        name: str,
+        data: bytes,
+        *,
+        exists_label: str,
+        mode: int = 0o600,
+    ) -> None:
         name = self._name(name)
         flags = (
             os.O_WRONLY
@@ -568,9 +575,9 @@ class _DirectoryAnchor:
         )
         try:
             if self._fd is not None:
-                fd = os.open(name, flags, 0o600, dir_fd=self._fd)
+                fd = os.open(name, flags, mode, dir_fd=self._fd)
             else:
-                fd = os.open(self._path(name), flags, 0o600)
+                fd = os.open(self._path(name), flags, mode)
         except FileExistsError as exc:
             raise FileExistsError(
                 f"{exists_label} already exists: {self._path(name)}"
@@ -1369,6 +1376,47 @@ def _remove_exact_staged_directory(
     except (OSError, schema.ColmAimsError):
         # Safe orphaning is preferable to resolving a mutable lexical path.
         return False
+
+
+def _materialize_staged_directory(
+    staged: Path,
+    parent_snapshot: _CapturedDirectoryChain,
+    staged_snapshot: _CapturedDirectoryChain,
+    expected_snapshot: dict[str, bytes],
+    expected_names: tuple[str, ...],
+    *,
+    label: str,
+) -> dict[str, bytes]:
+    """Create a flat staging tree through its captured directory generation."""
+    if (
+        not expected_names
+        or len(set(expected_names)) != len(expected_names)
+        or set(expected_snapshot) != set(expected_names)
+    ):
+        raise schema.ConfigSurfaceError("staging membership is invalid")
+    with (
+        _DirectoryAnchor(
+            Path(staged).parent,
+            parent_snapshot,
+            f"{label} parent",
+        ) as parent_anchor,
+        _DirectoryAnchor(staged, staged_snapshot, label) as staged_anchor,
+    ):
+        parent_anchor.require_child_identity(Path(staged).name, staged_snapshot)
+        for name in expected_names:
+            staged_anchor.create_once(
+                name,
+                expected_snapshot[name],
+                exists_label=f"{label} member",
+                mode=0o666,
+            )
+        observed = staged_anchor.snapshot_self(expected_names)
+        parent_anchor.require_child_identity(Path(staged).name, staged_snapshot)
+    if observed != expected_snapshot:
+        raise schema.TypedIngressError(
+            "captured staging bytes differ from the requested bytes"
+        )
+    return observed
 
 
 def _require_publication_parent(
@@ -2230,8 +2278,14 @@ def finalize_release(
             "staging directory is not a child of the captured output root"
         )
     try:
-        for name in _SIDECAR_NAMES:
-            (staged / name).write_bytes(supplied[name])
+        _materialize_staged_directory(
+            staged,
+            output_root_chain,
+            staged_snapshot,
+            supplied,
+            _SIDECAR_NAMES,
+            label="release staging directory",
+        )
         if _read_bundle(staged) != supplied:
             raise schema.TypedIngressError(
                 "staged release sidecar bytes differ from the external inputs"

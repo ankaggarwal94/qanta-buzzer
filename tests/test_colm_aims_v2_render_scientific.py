@@ -216,6 +216,25 @@ def test_release_verified_render_has_exact_grid_and_disclosures(tmp_path):
             assert not re.search(rf"\b{term}\b", text)
 
 
+def test_scientific_staging_never_uses_lexical_path_write(
+    tmp_path, monkeypatch
+):
+    site, output_root, receipts_dir = _roots(tmp_path)
+    original = Path.write_bytes
+
+    def reject_lexical_stage_write(path, data):
+        if (
+            path.parent.parent == output_root
+            and path.parent.name.startswith(".scientific-staged-")
+        ):
+            raise AssertionError("scientific staging write escaped its anchor")
+        return original(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", reject_lexical_stage_write)
+
+    assert _render(site, output_root, receipts_dir).published_dir.is_dir()
+
+
 def test_two_render_ids_produce_byte_identical_outputs(tmp_path):
     site, output_root, receipts_dir = _roots(tmp_path)
     first = _render(site, output_root, receipts_dir)
