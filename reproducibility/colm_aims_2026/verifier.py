@@ -32,6 +32,7 @@ _SOURCE_REPO = Path(__file__).resolve().parents[2]
 MAX_TREE_FILES = 4096
 MAX_TREE_DIRECTORIES = 4096
 MAX_TREE_BYTES = 512 * 1024 * 1024
+MAX_TREE_DEPTH = 64
 MAX_RECORDED_VALIDATION_ERRORS = 100
 MAX_TOTAL_RECORDS = 100_000
 _GIT_ENV_DENYLIST = frozenset(
@@ -314,99 +315,23 @@ def _read_tree_snapshot(tree: Path) -> dict[str, bytes]:
     member (or a member resolving outside the tree) is refused with a typed
     containment error rather than followed.
     """
-    tree = Path(tree)
-    root_chain = schema.stable_directory_chain(tree, tree)
-    snapshot: dict[str, bytes] = {}
-    members: list[Path] = []
-    directory_count = 0
-    pending = [tree]
-    while pending:
-        current = pending.pop()
-        directory_count += 1
-        if directory_count > MAX_TREE_DIRECTORIES:
-            raise schema.TypedIngressError(
-                "verified tree exceeds the aggregate directory-count limit"
-                f" {MAX_TREE_DIRECTORIES} (R-020)"
-            )
-        schema.stable_directory_chain(current, tree)
-        try:
-            with os.scandir(current) as entries:
-                for entry in entries:
-                    child = Path(entry.path)
-                    if entry.is_symlink() or schema.is_filesystem_link(child):
-                        rel = child.relative_to(tree).as_posix()
-                        raise ContainmentError(
-                            f"tree member {rel!r} is a symlink or reparse"
-                            " point — refusing traversal (R-036/R-013)"
-                        )
-                    if entry.is_dir(follow_symlinks=False):
-                        schema.stable_directory_chain(child, tree)
-                        pending.append(child)
-                    elif entry.is_file(follow_symlinks=False):
-                        members.append(child)
-                    else:
-                        raise schema.TypedIngressError(
-                            "verified tree contains a non-regular member"
-                            " (R-020)"
-                        )
-                    if len(members) > MAX_TREE_FILES:
-                        raise schema.TypedIngressError(
-                            "verified tree exceeds the aggregate file-count"
-                            f" limit {MAX_TREE_FILES} (R-020)"
-                        )
-                    if len(pending) + directory_count > MAX_TREE_DIRECTORIES:
-                        raise schema.TypedIngressError(
-                            "verified tree exceeds the aggregate directory-count"
-                            f" limit {MAX_TREE_DIRECTORIES} (R-020)"
-                        )
-        except schema.ColmAimsError:
-            raise
-        except OSError as exc:
-            raise schema.TypedIngressError(
-                "verified tree traversal failed"
-                f" ({exc.__class__.__name__}) (R-020)"
-            ) from exc
+    # Imported lazily because the finalizer itself imports this verifier.  At
+    # call time both modules are initialized, while the local import avoids a
+    # module-import cycle.
+    from . import phase4_finalize_release
 
-    total_bytes = 0
-    seen_casefold: set[str] = set()
-    for p in sorted(members, key=lambda item: item.relative_to(tree).as_posix()):
-        rel = p.relative_to(tree).as_posix()
-        folded = rel.casefold()
-        if folded in seen_casefold:
-            raise ContainmentError(
-                f"tree member {rel!r} collides under case folding (R-013)"
-            )
-        seen_casefold.add(folded)
-        try:
-            member_info = os.stat(p, follow_symlinks=False)
-        except OSError as exc:
-            raise schema.TypedIngressError(
-                f"tree member {rel!r} is unreadable"
-                f" ({exc.__class__.__name__}) (R-020)"
-            ) from exc
-        if schema.is_filesystem_link(p):
-            raise ContainmentError(
-                f"tree member {rel!r} is a symlink or reparse point —"
-                " refusing to follow, read, or hash bytes outside the"
-                " verified tree (R-036/R-013)"
-            )
-        if not stat.S_ISREG(member_info.st_mode):
-            raise schema.TypedIngressError(
-                f"tree member {rel!r} is not a regular file (R-020)"
-            )
-        data = schema.read_regular_file_bytes(p, tree_root=tree)
-        total_bytes += len(data)
-        if total_bytes > MAX_TREE_BYTES:
-            raise schema.TypedIngressError(
-                f"verified tree exceeds the aggregate byte limit"
-                f" {MAX_TREE_BYTES} (R-020)"
-            )
-        snapshot[rel] = data
-    if schema.stable_directory_chain(tree, tree) != root_chain:
-        raise ContainmentError(
-            "verified tree root identity changed during traversal (R-013)"
+    tree = Path(tree)
+    captured = phase4_finalize_release._capture_directory_chain(tree)
+    with phase4_finalize_release._DirectoryAnchor(
+        tree, captured, "verified tree root"
+    ) as anchor:
+        return anchor.snapshot_tree_bounded(
+            max_files=MAX_TREE_FILES,
+            max_directories=MAX_TREE_DIRECTORIES,
+            max_total_bytes=MAX_TREE_BYTES,
+            max_depth=MAX_TREE_DEPTH,
+            containment_error=ContainmentError,
         )
-    return snapshot
 
 
 def _sha_map(snapshot: dict[str, bytes]) -> dict[str, str]:
