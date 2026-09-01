@@ -1,0 +1,22 @@
+# Best-effort full-pipeline environment assembled from the repository's
+# 2026-05-26 requirements plus the exact package versions recorded by
+# final_modal_5d5328102912. This file is NOT itself an identity-bound record
+# of the historical pre-v5 raw-input build.
+datasets==4.8.5
+gymnasium==1.2.3
+huggingface_hub==1.29.0
+jsonlines==4.0.0
+jsonschema>=4.18,<5
+matplotlib==3.11.1
+numpy==2.4.6
+pandas==3.0.5
+PyYAML==6.0.3
+scikit-learn==1.9.0
+scipy==1.17.1
+seaborn==0.13.2
+sentence-transformers==6.0.0
+sentencepiece==0.2.1
+stable-baselines3==2.8.0
+torch==2.13.0
+tqdm==4.67.3
+transformers==5.16.1
