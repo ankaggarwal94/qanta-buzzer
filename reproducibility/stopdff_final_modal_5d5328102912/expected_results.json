@@ -1,0 +1,106 @@
+{
+  "by_calibrator": {
+    "isotonic": {
+      "average_absolute_index_mean": 0.6220056799,
+      "average_signed_index_mean": -0.2968286961,
+      "cells": 32,
+      "pointwise_interval_counts": {
+        "crosses_zero": 1,
+        "entirely_negative": 31,
+        "entirely_positive": 0
+      },
+      "tolerance": 1e-09
+    },
+    "platt-logistic": {
+      "average_signed_index_mean_approx": -0.0787,
+      "cells": 32,
+      "pointwise_interval_counts": {
+        "crosses_zero": 7,
+        "entirely_negative": 17,
+        "entirely_positive": 8
+      },
+      "tolerance": 0.0001
+    },
+    "similarity-temperature": {
+      "average_signed_index_mean_approx": -0.00533,
+      "cells": 32,
+      "pointwise_interval_counts": {
+        "crosses_zero": 30,
+        "entirely_negative": 2,
+        "entirely_positive": 0
+      },
+      "tolerance": 1e-05
+    }
+  },
+  "primary": {
+    "completed_cells": 96,
+    "failed_cells": 0,
+    "family_M": 0.0,
+    "family_bootstrap_histogram": {
+      "0.0": 984,
+      "1.0": 16
+    },
+    "family_interval": [
+      0.0,
+      0.0
+    ],
+    "family_verdict": "PASS",
+    "n_paired_items_per_cell": 3037,
+    "release_status": "VALID",
+    "requested_cells": 96,
+    "skipped_cells": 0
+  },
+  "representative_cell": {
+    "absolute_index_mean": 0.3131379650971353,
+    "absolute_index_mean_interval": [
+      0.2904181758314126,
+      0.335874218
+    ],
+    "absolute_index_median": 0.0,
+    "absolute_index_median_interval": [
+      0.0,
+      0.0
+    ],
+    "cell_key": "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "n_paired_items": 3037,
+    "never_buzz_mc": 178,
+    "never_buzz_qa_reference": 723,
+    "signed_index_mean": -0.26177148501811,
+    "signed_index_mean_interval": [
+      -0.2831741850510389,
+      -0.2383766875205795
+    ],
+    "signed_index_median": 0.0,
+    "signed_index_median_interval": [
+      0.0,
+      0.0
+    ]
+  },
+  "run_label": "final_modal_5d5328102912",
+  "schema_version": 1,
+  "scope": "finite audited set of 3037 paired items; intervals are bootstrap stability intervals unless otherwise stated",
+  "secondary_distribution": {
+    "absolute_index_mean": {
+      "max": 1.2169904511030623,
+      "min": 0.000329272308199
+    },
+    "exact_zero_fraction": {
+      "max": 0.9996707276918011,
+      "median": 0.7332894303589069,
+      "min": 0.5205795192624301
+    },
+    "moved_item_count": {
+      "max": 1456,
+      "min": 1
+    },
+    "signed_index_mean": {
+      "max": 0.1096476786302272,
+      "min": -0.6766545933486993
+    },
+    "signed_mean_pointwise_interval_counts": {
+      "crosses_zero": 38,
+      "entirely_negative": 50,
+      "entirely_positive": 8
+    }
+  }
+}
