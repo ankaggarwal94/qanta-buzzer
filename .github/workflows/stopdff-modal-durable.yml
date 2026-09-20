@@ -1,5 +1,8 @@
 name: StopDFF durable validation and gated rerun
 on:
+  push:
+    branches: [ops/stopdff-durable-rerun-20260920]
+    paths: [.github/workflows/stopdff-modal-durable.yml]
   workflow_dispatch:
 permissions:
   contents: read
@@ -8,7 +11,11 @@ concurrency:
   cancel-in-progress: false
 jobs:
   prepare-and-submit:
-    if: github.ref == 'refs/heads/ops/stopdff-durable-rerun-20260920'
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/ops/stopdff-durable-rerun-20260920' &&
+      github.run_attempt == '1' &&
+      github.event.head_commit.message == 'Launch approved StopDFF rerun 20260920T202700Z'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
