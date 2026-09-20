@@ -89,13 +89,23 @@ class TransferASGI:
 
     def prepare(self):
         """Create only fixed directories, rejecting symlinks in their ancestry."""
-        for path in (self.root, self.root / "durable-rerun-20260920", self.inputs, self.staging):
+        paths = (("mount", self.root),
+                 ("namespace", self.root / "durable-rerun-20260920"),
+                 ("inputs", self.inputs), ("staging", self.staging))
+        for label, path in paths:
             try:
                 path.mkdir()
             except FileExistsError:
                 pass
-            if not stat.S_ISDIR(path.lstat().st_mode):
-                raise TransferError(409, "storage path conflict")
+            mode = path.lstat().st_mode
+            if not stat.S_ISDIR(mode):
+                # Diagnostic labels are fixed constants. Never follow a
+                # symlink or reveal its target, a full path, or file contents.
+                file_type = {stat.S_IFREG: "regular", stat.S_IFLNK: "symlink",
+                             stat.S_IFIFO: "fifo", stat.S_IFSOCK: "socket",
+                             stat.S_IFBLK: "block_device", stat.S_IFCHR: "character_device"
+                             }.get(stat.S_IFMT(mode), "unknown")
+                raise TransferError(409, f"storage path conflict: {label} ({file_type})")
 
     @staticmethod
     def exists(path):
@@ -178,6 +188,8 @@ class TransferASGI:
                 self.check_time(deadline)
                 publish_no_replace(temp, path)
                 status = "stored"
+            if self.exists(temp):
+                temp.unlink()
             # Also retry commit for idempotent requests after an earlier failure.
             await self.commit()
             return {"status": status, "index": index, "size": expected, "sha256": actual}

@@ -1,3 +1,4 @@
+# Revision 2: bounded fixed-path storage diagnostics and cleanup before commit.
 name: StopDFF authenticated input transfer
 on:
   push:

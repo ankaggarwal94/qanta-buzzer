@@ -1,0 +1,92 @@
+name: StopDFF durable validation and gated rerun
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: stopdff-durable-rerun-20260920
+  cancel-in-progress: false
+jobs:
+  prepare-and-submit:
+    if: github.ref == 'refs/heads/ops/stopdff-durable-rerun-20260920'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CONTROL_DIR: reproducibility/durable_stopdff_20260920
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install pinned Modal client
+        run: python -m pip install --disable-pip-version-check 'modal==1.5.5'
+      - name: Verify provider adapter failure paths
+        run: python -m unittest discover -s "$CONTROL_DIR" -p 'test_*.py' -v
+      - name: Stage frozen controls for exact image build
+        run: |
+          mkdir -p "$RUNNER_TEMP/stopdff-runtime/controls" receipts
+          cp "$CONTROL_DIR/run_durable_rerun.py" "$CONTROL_DIR/run_persistent.sh" "$CONTROL_DIR/requirements.txt" "$CONTROL_DIR/README.md" "$RUNNER_TEMP/stopdff-runtime/controls/"
+          cp "$CONTROL_DIR/supervisor.py" "$CONTROL_DIR/storage_canary.py" "$RUNNER_TEMP/stopdff-runtime/"
+      - name: Build and verify exact scientific image
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python "$CONTROL_DIR/launch_modal.py" build --directory "$RUNNER_TEMP/stopdff-runtime" --receipt receipts/image.json
+      - name: Launch preflight and persistence canary
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python "$CONTROL_DIR/launch_modal.py" launch --run-id "canary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --mode preflight --image-receipt receipts/image.json --receipt receipts/canary-launch.json --timeout 2400
+      - name: Wait for canary and verify committed evidence with fresh reader
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, sys, time
+          command=[sys.executable, os.environ['CONTROL_DIR']+'/launch_modal.py', 'inspect', '--launch-receipt', 'receipts/canary-launch.json']
+          deadline=time.monotonic()+2400
+          while time.monotonic()<deadline:
+              result=subprocess.run(command,capture_output=True,text=True)
+              if result.returncode:
+                  print(result.stdout)
+                  raise SystemExit('Canary failed; no scientific job submitted')
+              status=json.loads(result.stdout)
+              print(json.dumps(status),flush=True)
+              if status['returncode'] is not None:
+                  break
+              time.sleep(15)
+          else:
+              raise SystemExit('Canary wait expired; no scientific job submitted')
+          subprocess.run(command+['--verify-canary','--receipt','receipts/canary-verified.json'],check=True)
+          PY
+      - name: Submit detached repaired-smoke validation and gated final run
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, sys
+          proof=json.load(open('receipts/canary-verified.json'))
+          if proof.get('status') != 'DURABLE_RESULT_VERIFIED':
+              raise SystemExit('Verified canary proof missing')
+          subprocess.run([sys.executable,os.environ['CONTROL_DIR']+'/launch_modal.py','launch',
+              '--run-id',f"full-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}",
+              '--mode','full','--image-receipt','receipts/image.json','--receipt','receipts/full-launch.json',
+              '--canary-receipt',proof['verified_canary_path'],'--timeout','86400'],check=True)
+          PY
+      - name: Record provider state after submission
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python "$CONTROL_DIR/launch_modal.py" inspect --launch-receipt receipts/full-launch.json
+      - name: Retain launch and verification receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stopdff-durable-${{ github.run_id }}-${{ github.run_attempt }}
+          path: receipts/
+          if-no-files-found: warn
+          retention-days: 30

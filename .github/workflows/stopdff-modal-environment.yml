@@ -1,0 +1,76 @@
+name: StopDFF exact environment and synthetic storage check
+on:
+  push:
+    branches: [ops/stopdff-durable-rerun-20260920]
+    paths: [.github/workflows/stopdff-modal-environment.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: stopdff-environment-20260920
+  cancel-in-progress: false
+jobs:
+  environment-storage-check:
+    if: github.ref == 'refs/heads/ops/stopdff-durable-rerun-20260920'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CONTROL_DIR: reproducibility/durable_stopdff_20260920
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install pinned Modal client
+        run: python -m pip install --disable-pip-version-check 'modal==1.5.5'
+      - name: Verify provider adapter failure paths
+        run: python -m unittest discover -s "$CONTROL_DIR" -p 'test_*.py' -v
+      - name: Stage frozen controls and provider scripts
+        run: |
+          mkdir -p "$RUNNER_TEMP/stopdff-runtime/controls" receipts
+          cp "$CONTROL_DIR/run_durable_rerun.py" "$CONTROL_DIR/run_persistent.sh" "$CONTROL_DIR/requirements.txt" "$CONTROL_DIR/README.md" "$RUNNER_TEMP/stopdff-runtime/controls/"
+          cp "$CONTROL_DIR/supervisor.py" "$CONTROL_DIR/storage_canary.py" "$RUNNER_TEMP/stopdff-runtime/"
+      - name: Build and verify exact scientific image
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python "$CONTROL_DIR/launch_modal.py" build --directory "$RUNNER_TEMP/stopdff-runtime" --receipt receipts/image.json
+      - name: Launch synthetic storage check without research data
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python "$CONTROL_DIR/launch_modal.py" storage-canary --run-id "storage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --image-receipt receipts/image.json --receipt receipts/storage-launch.json
+      - name: Verify committed synthetic bytes from a fresh reader
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, sys, time
+          command=[sys.executable,os.environ['CONTROL_DIR']+'/launch_modal.py','inspect-storage-canary',
+              '--launch-receipt','receipts/storage-launch.json','--receipt','receipts/storage-verified.json']
+          deadline=time.monotonic()+660
+          while time.monotonic()<deadline:
+              result=subprocess.run(command,capture_output=True,text=True)
+              print(result.stdout,flush=True)
+              if result.returncode:
+                  raise SystemExit('Synthetic storage check failed; no science submitted')
+              status=json.loads(result.stdout)
+              if status['status']=='STORAGE_CANARY_VERIFIED':
+                  break
+              if status['status']!='RUNNING':
+                  raise SystemExit('Unexpected storage check status')
+              time.sleep(10)
+          else:
+              raise SystemExit('Synthetic storage wait expired; no science submitted')
+          PY
+      - name: Retain environment and storage receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stopdff-environment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: receipts/
+          if-no-files-found: warn
+          retention-days: 30

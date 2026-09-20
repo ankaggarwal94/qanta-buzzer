@@ -88,6 +88,34 @@ class TransferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.reloads, self.commits), (0, 0))
         self.assertEqual(list(self.root.iterdir()), [])
 
+    async def test_path_conflict_diagnostics_reveal_only_fixed_label_and_type(self):
+        original = self.app
+        private_target = self.root / "private-target-must-never-be-disclosed"
+        for label in ("mount", "namespace", "inputs", "staging"):
+            for file_type in ("regular", "symlink"):
+                with self.subTest(label=label, file_type=file_type):
+                    root = self.root / (label + "-" + file_type)
+                    self.app = TransferASGI(root, self.token, original.expires,
+                                            original.reload, original.commit,
+                                            size=len(self.data), sha256=original.sha256,
+                                            chunk_size=8)
+                    conflict = {"mount": root,
+                                "namespace": root / "durable-rerun-20260920",
+                                "inputs": self.app.inputs,
+                                "staging": self.app.staging}[label]
+                    conflict.parent.mkdir(parents=True, exist_ok=True)
+                    if file_type == "symlink":
+                        conflict.symlink_to(private_target)
+                    else:
+                        conflict.write_text("private-contents-must-never-be-disclosed")
+                    code, result = await self.request("GET", "/status")
+                    self.assertEqual(code, 409)
+                    self.assertEqual(result, {"status": "error", "detail":
+                                     f"storage path conflict: {label} ({file_type})"})
+                    self.assertFalse(private_target.exists())
+                    self.assertEqual(self.commits, 0)
+        self.app = original
+
     async def test_lengths_digest_indices_and_body_stream_are_bounded(self):
         for path in ("/chunk/9999", "/chunk/-1", "/chunk/00", "/chunk/0/../1"):
             self.assertIn((await self.request("PUT", path))[0], (400, 404))
