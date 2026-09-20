@@ -1,0 +1,127 @@
+name: StopDFF Modal access preflight
+
+on:
+  push:
+    branches: [ops/stopdff-durable-rerun-20260920]
+    paths: [.github/workflows/stopdff-modal-preflight.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  modal-access:
+    if: github.ref == 'refs/heads/ops/stopdff-durable-rerun-20260920'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+
+      - name: Install pinned Modal client
+        run: python -m pip install --disable-pip-version-check 'modal==1.5.5'
+
+      - name: Authenticate and read the existing archive volume
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          python - <<'PY'
+          import contextlib
+          import itertools
+          import json
+          import logging
+          import os
+          from pathlib import Path
+          import signal
+          import sys
+          import warnings
+
+          receipt = {
+              "configured": bool(os.environ.get("MODAL_TOKEN_ID"))
+              and bool(os.environ.get("MODAL_TOKEN_SECRET")),
+              "authentication_success": False,
+              "volume_reachable": False,
+          }
+          message = "Modal authentication unavailable: required configuration is missing."
+          observed_count = None
+
+          @contextlib.contextmanager
+          def suppress_sdk_output():
+              # Keep SDK diagnostics and server responses out of public CI logs.
+              sys.stdout.flush()
+              sys.stderr.flush()
+              saved = (os.dup(1), os.dup(2))
+              try:
+                  with open(os.devnull, "w") as sink:
+                      os.dup2(sink.fileno(), 1)
+                      os.dup2(sink.fileno(), 2)
+                      yield
+              finally:
+                  sys.stdout.flush()
+                  sys.stderr.flush()
+                  for target, original in zip((1, 2), saved):
+                      os.dup2(original, target)
+                      os.close(original)
+
+          def deadline(_signum, _frame):
+              raise TimeoutError("preflight deadline")
+
+          if receipt["configured"]:
+              message = "Modal authentication unavailable: the read-only check did not succeed."
+              signal.signal(signal.SIGALRM, deadline)
+              signal.alarm(180)
+              try:
+                  with suppress_sdk_output():
+                      logging.disable(logging.CRITICAL)
+                      warnings.simplefilter("ignore")
+                      os.environ["MODAL_LOGLEVEL"] = "CRITICAL"
+                      import modal
+
+                      client = modal.Client.from_credentials(
+                          os.environ["MODAL_TOKEN_ID"],
+                          os.environ["MODAL_TOKEN_SECRET"],
+                      )
+                      client.hello()
+                      receipt["authentication_success"] = True
+                      message = "Modal authenticated; the known archive volume is unavailable."
+                      volume = modal.Volume.from_name(
+                          "cs321m-stopdff-artifacts",
+                          create_if_missing=False,
+                          client=client,
+                      )
+                      # Force a read, without file contents or recursive traversal.
+                      observed_count = sum(
+                          1 for _ in itertools.islice(
+                              volume.iterdir("/", recursive=False), 10
+                          )
+                      )
+                      receipt["volume_reachable"] = True
+                      message = "Modal authenticated; the known archive volume is reachable."
+              except Exception:
+                  # Exception messages can contain private server details.
+                  pass
+              finally:
+                  signal.alarm(0)
+
+          with Path("modal-auth-preflight.json").open("x", encoding="utf-8") as handle:
+              json.dump(receipt, handle, sort_keys=True, indent=2)
+              handle.write("\n")
+          print(json.dumps(receipt, sort_keys=True))
+          print(message)
+          if receipt["volume_reachable"]:
+              print(f"Root entries observed (capped at 10): {observed_count}")
+          sys.exit(0 if receipt["volume_reachable"] else 1)
+          PY
+
+      - name: Retain public access receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stopdff-modal-access-${{ github.run_id }}-${{ github.run_attempt }}
+          path: modal-auth-preflight.json
+          if-no-files-found: error
+          retention-days: 14
