@@ -10,7 +10,9 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import transfer_modal
 from transfer_modal import TransferASGI, publish_no_replace, TransferError
 
 
@@ -115,6 +117,87 @@ class TransferTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(private_target.exists())
                     self.assertEqual(self.commits, 0)
         self.app = original
+
+    def bound_app(self, name):
+        case = self.root / name
+        backing_directory = case / "provider"
+        backing_directory.mkdir(parents=True)
+        backing = backing_directory / "vo-local-test"
+        backing.mkdir()
+        mount = case / "mount"
+        with patch.object(transfer_modal, "VOLUME_BACKING_DIRECTORY", backing_directory):
+            self.app = TransferASGI(mount, self.token, int(time.time()) + 300,
+                                    self.app.reload, self.app.commit, size=len(self.data),
+                                    sha256=hashlib.sha256(self.data).hexdigest(), chunk_size=8,
+                                    volume_id="vo-local-test")
+        return mount, backing
+
+    async def test_provider_mount_accepts_only_exact_bound_backing_and_rechecks(self):
+        mount, backing = self.bound_app("exact-backing")
+        mount.symlink_to(backing)
+        code, result = await self.request("GET", "/status")
+        self.assertEqual((code, result["status"]), (200, "uploading"))
+        self.assertEqual(self.app.root, backing)
+        await self.upload()
+        self.assertEqual((await self.request("POST", "/finalize"))[0], 200)
+        self.assertEqual(self.app.final.read_bytes(), self.data)
+        other = backing.parent / "vo-other-volume"
+        other.mkdir()
+        mount.unlink()
+        mount.symlink_to(other)
+        code, result = await self.request("GET", "/status")
+        self.assertEqual((code, result["detail"]), (409, "storage mount backing mismatch"))
+        self.assertEqual(list(other.iterdir()), [])
+
+    async def test_provider_mount_rejects_wrong_relative_missing_and_linked_backings(self):
+        for case in ("wrong", "relative", "missing", "file", "backing-link", "ancestor-link"):
+            with self.subTest(case=case):
+                mount, backing = self.bound_app(case)
+                if case == "wrong":
+                    other = backing.parent / "vo-other-volume"
+                    other.mkdir()
+                    mount.symlink_to(other)
+                elif case == "relative":
+                    mount.symlink_to(Path("provider") / backing.name)
+                else:
+                    mount.symlink_to(backing)
+                    if case == "missing":
+                        backing.rmdir()
+                    elif case == "file":
+                        backing.rmdir()
+                        backing.write_bytes(b"synthetic sentinel")
+                    elif case == "backing-link":
+                        backing.rmdir()
+                        other = backing.parent / "private-other-target"
+                        other.mkdir()
+                        backing.symlink_to(other)
+                    elif case == "ancestor-link":
+                        original_parent = backing.parent
+                        actual_parent = original_parent.with_name("private-actual-target")
+                        original_parent.rename(actual_parent)
+                        original_parent.symlink_to(actual_parent)
+                code, result = await self.request("GET", "/status")
+                expected = "unavailable" if case == "missing" else "mismatch"
+                self.assertEqual((code, result), (409, {"status": "error", "detail":
+                                 "storage mount backing " + expected}))
+                self.assertEqual(self.commits, 0)
+
+    async def test_bound_mount_still_rejects_all_descendant_symlinks(self):
+        for label in ("namespace", "inputs", "staging"):
+            with self.subTest(label=label):
+                mount, backing = self.bound_app("child-" + label)
+                mount.symlink_to(backing)
+                inputs = backing / "durable-rerun-20260920" / "inputs"
+                conflict = {"namespace": inputs.parent, "inputs": inputs,
+                            "staging": inputs / (".transfer-" + self.app.sha256)}[label]
+                conflict.parent.mkdir(parents=True, exist_ok=True)
+                private = self.root / "private-target-must-never-be-disclosed"
+                conflict.symlink_to(private)
+                code, result = await self.request("GET", "/status")
+                self.assertEqual((code, result), (409, {"status": "error", "detail":
+                                 f"storage path conflict: {label} (symlink)"}))
+                self.assertFalse(private.exists())
+                self.assertEqual(self.commits, 0)
 
     async def test_lengths_digest_indices_and_body_stream_are_bounded(self):
         for path in ("/chunk/9999", "/chunk/-1", "/chunk/00", "/chunk/0/../1"):

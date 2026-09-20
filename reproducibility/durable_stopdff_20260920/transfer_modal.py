@@ -24,6 +24,7 @@ ARCHIVE_SHA256 = "6afc62e1cb91d0d2ac958c251ba68aec1c83f2da2b9d0354dc4635234dbc1c
 CHUNK_SIZE = 32 * 1024 * 1024
 VOLUME_NAME = "cs321m-stopdff-artifacts"
 MOUNT = "/transfer-volume"
+VOLUME_BACKING_DIRECTORY = Path("/__modal/volumes")
 INPUT_DIRECTORY = "durable-rerun-20260920/inputs"
 REQUEST_SECONDS = 130
 MAX_REQUESTS = 512
@@ -60,12 +61,16 @@ class TransferASGI:
 
     def __init__(self, root: Path, token: str, expires: int, reload_volume, commit_volume,
                  *, size: int = ARCHIVE_SIZE, sha256: str = ARCHIVE_SHA256,
-                 chunk_size: int = CHUNK_SIZE, request_seconds: float = REQUEST_SECONDS):
+                 chunk_size: int = CHUNK_SIZE, request_seconds: float = REQUEST_SECONDS,
+                 volume_id: str | None = None):
         if not token or len(token) < 32 or not HEX_SHA.fullmatch(sha256):
             raise ValueError("invalid transfer configuration")
         if size <= 0 or chunk_size <= 0 or expires > time.time() + 3600 + 5:
             raise ValueError("invalid transfer limits")
-        self.root = Path(root)
+        if volume_id is not None and not re.fullmatch(r"vo-[A-Za-z0-9_-]+", volume_id):
+            raise ValueError("invalid bound volume identity")
+        self.public_root = Path(root)
+        self.expected_root = VOLUME_BACKING_DIRECTORY / volume_id if volume_id is not None else None
         self.token = token.encode("utf-8")
         self.expires = expires
         self.reload = reload_volume
@@ -77,9 +82,13 @@ class TransferASGI:
         self.request_seconds = request_seconds
         self.requests = 0
         self.lock = asyncio.Lock()
+        self.set_root(self.public_root)
+
+    def set_root(self, root):
+        self.root = root
         self.inputs = self.root / INPUT_DIRECTORY
-        self.staging = self.inputs / (".transfer-" + sha256)
-        self.final = self.inputs / (sha256 + ".tar.gz")
+        self.staging = self.inputs / (".transfer-" + self.sha256)
+        self.final = self.inputs / (self.sha256 + ".tar.gz")
 
     def check_time(self, deadline):
         if time.time() >= self.expires:
@@ -88,9 +97,28 @@ class TransferASGI:
             raise TransferError(408, "request deadline exceeded")
 
     def prepare(self):
-        """Create only fixed directories, rejecting symlinks in their ancestry."""
-        paths = (("mount", self.root),
-                 ("namespace", self.root / "durable-rerun-20260920"),
+        """Validate the bound mount, then reject every descendant symlink."""
+        root = self.public_root
+        try:
+            root.mkdir()
+        except FileExistsError:
+            pass
+        if stat.S_ISLNK(root.lstat().st_mode) and self.expected_root is not None:
+            # Modal may expose its mounted Volume via a provider-created link.
+            # The only permitted target comes from the hydrated bound Volume,
+            # never a request value or an arbitrary filesystem resolution.
+            try:
+                if Path(os.readlink(root)) != self.expected_root:
+                    raise TransferError(409, "storage mount backing mismatch")
+                if (not stat.S_ISDIR(self.expected_root.lstat().st_mode)
+                        or self.expected_root.resolve(strict=True) != self.expected_root):
+                    raise TransferError(409, "storage mount backing mismatch")
+            except OSError:
+                raise TransferError(409, "storage mount backing unavailable") from None
+            root = self.expected_root
+        self.set_root(root)
+        paths = (("mount", root),
+                 ("namespace", root / "durable-rerun-20260920"),
                  ("inputs", self.inputs), ("staging", self.staging))
         for label, path in paths:
             try:
@@ -327,4 +355,4 @@ if os.environ.get("STOPDFF_TRANSFER_DEPLOY") == "1":
     def transfer_api():
         return TransferASGI(Path(MOUNT), os.environ["STOPDFF_TRANSFER_TOKEN"],
                             int(os.environ["STOPDFF_TRANSFER_EXPIRES"]),
-                            volume.reload.aio, volume.commit.aio)
+                            volume.reload.aio, volume.commit.aio, volume_id=volume.object_id)

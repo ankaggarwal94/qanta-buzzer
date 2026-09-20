@@ -1,4 +1,4 @@
-# Revision 3: authenticated metadata-only readiness diagnostics after deployment.
+# Revision 4: validate provider mount links against the exact bound Volume.
 name: StopDFF authenticated input transfer
 on:
   push:
@@ -84,6 +84,7 @@ jobs:
           detail = payload.get('detail')
           if isinstance(detail, str):
               known = ('unauthorized', 'transfer expired', 'transfer request limit exceeded',
+                       'storage mount backing mismatch', 'storage mount backing unavailable',
                        'request deadline exceeded', 'storage operation failed; retry safely')
               diagnostic = r'storage path conflict: (mount|namespace|inputs|staging) \((regular|symlink|fifo|socket|block_device|character_device|unknown)\)'
               safe['detail'] = detail if detail in known or re.fullmatch(diagnostic, detail) else 'unrecognized server diagnostic'
