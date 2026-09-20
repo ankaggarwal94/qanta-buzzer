@@ -1,0 +1,58 @@
+name: Inspect the existing StopDFF full submission
+on:
+  push:
+    branches: [ops/stopdff-durable-rerun-20260920]
+    paths: [.github/workflows/stopdff-modal-inspect.yml]
+permissions:
+  contents: read
+concurrency:
+  group: stopdff-existing-full-inspection-20260920
+  cancel-in-progress: false
+jobs:
+  inspect-existing:
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/ops/stopdff-durable-rerun-20260920' &&
+      github.event.head_commit.message == 'ops: inspect existing StopDFF full submission 20260920' &&
+      github.run_attempt == '1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RUN_ID: full-35536866002-1
+      SANDBOX_ID: sb-tNlY3NhD7UH0QbiryD3llN
+      IMAGE_ID: im-tQ21QaPPgHkTu2KZXqHEOD
+      SUBMISSION_CODE_COMMIT: ede184cf77369022ca7cd5fe51b9318573d85630
+      VOLUME_ID: vo-kxgd4TezueO4b7TvuwGyaU
+      VOLUME_VERSION: '2'
+      SUPERVISOR_SHA256: a3218776a94a6b897f90179541355e06d9f7a37a911249dd451a3a0c8f255260
+    steps:
+      - name: Checkout the guarded monitor helper
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: monitor-control
+          persist-credentials: false
+      - name: Checkout the exact submission implementation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SUBMISSION_CODE_COMMIT }}
+          path: submission
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install the pinned inspection SDK
+        run: python -m pip install --disable-pip-version-check 'modal==1.5.5'
+      - name: Inspect the existing job once and verify any completed result
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          python "$GITHUB_WORKSPACE/monitor-control/reproducibility/durable_stopdff_20260920/inspect_existing.py" \
+            --submission-root "$GITHUB_WORKSPACE/submission" \
+            --submission-code-commit "$SUBMISSION_CODE_COMMIT" \
+            --run-id "$RUN_ID" --sandbox-id "$SANDBOX_ID" --image-id "$IMAGE_ID" \
+            --volume-id "$VOLUME_ID" --volume-version "$VOLUME_VERSION" \
+            --supervisor-sha256 "$SUPERVISOR_SHA256" \
+            --recovered-receipt "$RUNNER_TEMP/stopdff-inspection-launch.json"
