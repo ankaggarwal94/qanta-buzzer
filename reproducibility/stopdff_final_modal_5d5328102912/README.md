@@ -2,6 +2,12 @@
 
 This directory documents the exact StopDFF result set used by the final workshop manuscript.
 
+**20 September 2026 reproduction repair:** for the archive shared with Jane, use
+[the repair handoff](REPAIR_HANDOFF_2026-09-20.md). It supersedes instructions to
+pre-seed a runner output directory: import the archived model into a fresh output
+with `--model-snapshot-dir` and `--expected-model-snapshot-id` instead. These flags
+exist on the repair source, not historical commit `0017b89`.
+
 ## Claim boundary
 
 This run compares:
@@ -43,7 +49,11 @@ Given the archived `verified_export/` directory from the certified run, verify e
 
 ### 2. Re-execution from the archived raw-input bundle
 
-Given the ten exact raw inputs listed in `run_identity.json`, check out the source commit, install the recorded environment, and run the local or Modal v5 driver. This is the most direct computational reproduction of the 96-cell sweep.
+Given the ten exact raw inputs listed in `run_identity.json`, install the recorded
+environment and follow the dated repair handoff to import the archived model.
+Keep the historical source checkout for historical package validation; execute
+the repaired local runner from its separately recorded repair commit. This is a
+new computational reproduction of the 96-cell sweep with its own source identity.
 
 ### 3. End-to-end regeneration from `questions.csv`
 
@@ -113,6 +123,11 @@ python scripts/compute_stopdff.py \
 Verify all ten generated files against `run_identity.json` before running v5. A mismatch means the build did not recreate the certified input bytes.
 
 ## Re-run StopDFF v5 locally
+
+The commands in this section illustrate a **fresh model freeze**. They do not
+import the certified model snapshot or pin its Hub revision. For reproduction
+from the shared archive, use the explicit snapshot-import commands in
+[the repair handoff](REPAIR_HANDOFF_2026-09-20.md) instead.
 
 Place output outside the Git checkout because the runner requires a clean worktree:
 

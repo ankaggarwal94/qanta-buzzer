@@ -589,4 +589,4 @@ def test_modal_and_local_resume_use_the_same_closed_manifest_validator(
             **kwargs,
         )
     assert str(local_error.value) == str(modal_error.value)
-    assert "file mismatch: model.bin" in str(local_error.value)
+    assert "size mismatch: model.bin" in str(local_error.value)

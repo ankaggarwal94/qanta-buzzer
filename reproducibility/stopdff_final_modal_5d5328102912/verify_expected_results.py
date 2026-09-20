@@ -177,9 +177,11 @@ def main() -> int:
             f"{dict(all_interval_counts)} != {EXPECTED['interval_counts']}"
         )
     for calibrator, target in EXPECTED["calibrator_interval_counts"].items():
-        actual = dict(by_calibrator_counts[calibrator])
-        if actual != target:
-            errors.append(f"{calibrator} interval counts: {actual} != {target}")
+        actual = by_calibrator_counts[calibrator]
+        # Counter equality treats an absent category as zero (Python >= 3.10),
+        # while still rejecting incorrect or unexpected nonzero counts.
+        if actual != Counter(target):
+            errors.append(f"{calibrator} interval counts: {dict(actual)} != {target}")
 
     family_reps: list[float] = []
     if len(replicate_vectors) == EXPECTED["n_cells"]:
