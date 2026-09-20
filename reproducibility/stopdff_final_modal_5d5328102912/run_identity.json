@@ -1,0 +1,150 @@
+{
+  "adapter": {
+    "eval_row_count": 29840,
+    "eval_rows_sha256": "faf058716aa544592da2830a237d8ee0fe350a73da0569e4a72d94ed2e6928c3",
+    "eval_split": "test",
+    "fit_row_count": 30104,
+    "fit_rows_sha256": "209822a5879da3b06e7f077de918c6579080f94afc16ba93cd41220192441cf0",
+    "fit_split": "val",
+    "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+    "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "scoring": {
+      "mc": "maximum cosine similarity over four fixed options; correct iff argmax option is gold",
+      "qa_reference": "cosine similarity between prefix and gold answer string; correctness fixed to 1 by construction",
+      "round_decimals": 6
+    }
+  },
+  "environment": {
+    "packages": {
+      "huggingface_hub": "1.29.0",
+      "matplotlib": "3.11.1",
+      "numpy": "2.4.6",
+      "pandas": "3.0.5",
+      "scikit-learn": "1.9.0",
+      "scipy": "1.17.1",
+      "sentence-transformers": "6.0.0",
+      "torch": "2.13.0",
+      "transformers": "5.16.1"
+    },
+    "python": "3.11.12"
+  },
+  "identities": {
+    "adapter_bundle_id": "25696657e4551673c218ef5d059e9c8d00a765ca0c46854d626f42599e2e8346",
+    "bootstrap_plan_id": "b00c10072456e3d80877d0accbb67f47441e5545e8723a2237cf9650f920d4cb",
+    "environment_contract_id": "551449e48416c6f927e0034b26226da424616c5378b10f1398be310830ba445e",
+    "fvi_study_id": "9e20bf03ec01ac27edc812bf9dda4f2a5f069099287932e7081986bb6173d48d",
+    "model_snapshot_id": "33b48dc6daf60b6e0a2190964bf3faafc249732269fed1f717f197940cd6f893",
+    "raw_input_bundle_id": "18cbc0671b82610e248776b11833dc62901330cdc53f35ea7b95d69e12db221a",
+    "run_manifest_id": "6184dba435ceff79bde7b8b0cc518cd0cf873b93762c711c06a79c277275b552",
+    "run_spec_id": "5d532810291234df3cb1e23cdcb026593204629fccb899fe8e951a0dfbc3b24d"
+  },
+  "protocol": {
+    "backend": "modal",
+    "bootstrap": {
+      "bit_generator": "PCG64",
+      "common_resamples_across_cells": true,
+      "replicates": 1000,
+      "seed": 1,
+      "unit": "item"
+    },
+    "calibrators": [
+      "platt-logistic",
+      "similarity-temperature",
+      "isotonic"
+    ],
+    "category_poolings": [
+      "per_category",
+      "pooled_category"
+    ],
+    "continuations": [
+      "empirical_bucket",
+      "pooled_empirical"
+    ],
+    "expected_cells": 96,
+    "fvi": {
+      "damping": 0.5,
+      "max_iterations": 100,
+      "numeric_dtype": "float64",
+      "required_consecutive_converged_iterations": 2,
+      "tolerance": 1e-06
+    },
+    "name": "stopdff_bucketed_dp_paired_v2",
+    "prefix_bucketings": [
+      "early_mid_late",
+      "exact_prefix"
+    ],
+    "rewards": [
+      "acf_flat",
+      "power_mark",
+      "wait_cost_small",
+      "strict_wrong"
+    ],
+    "schema_version": 2
+  },
+  "raw_inputs": [
+    {
+      "path": "data/processed/build_metadata.json",
+      "sha256": "8491e9905f8b5d54b22841e6adbee95a4de5c9ffb38ac9667213e6398ec00bf7",
+      "size": 2573
+    },
+    {
+      "path": "paper_exports/calibration.json",
+      "sha256": "5d97a84ac3fb54855d5c8e04961faa5be169efcee8813eb8f48162c6427d4725",
+      "size": 4256
+    },
+    {
+      "path": "data/processed/mc_dataset.json",
+      "sha256": "4dd08e96a4b186f66e4192bf4cabe08f9843cf999f7b37c0d2ac98377e5b4be2",
+      "size": 460171353
+    },
+    {
+      "path": "data/processed/split_metadata.json",
+      "sha256": "88ecea37306fc26c569fd63a8a05f034adac7198a0d88ae063f1f6350f4f0933",
+      "size": 4164
+    },
+    {
+      "path": "paper_exports/stopdff.json",
+      "sha256": "34afb2417f601bb1c1565f51f5bef05cdadb2faeac6573ac5b9ce65747ebd6eb",
+      "size": 4436
+    },
+    {
+      "path": "data/processed/test_dataset.json",
+      "sha256": "85569f54bd9467e72be83e7de2751a8801190df1b0cb636a5e47c2af629d7762",
+      "size": 69475636
+    },
+    {
+      "path": "threshold_manifest.json",
+      "sha256": "6f8702acf885eea013645fc3225872a348055d315bdbcd5c481a037eccff3752",
+      "size": 717
+    },
+    {
+      "path": "threshold_manifest.json.sha256",
+      "sha256": "a29403282cd4d99074da68a61c7f7a66eb63d76e8702742234b8d08f160ec4e5",
+      "size": 90
+    },
+    {
+      "path": "data/processed/train_dataset.json",
+      "sha256": "2eea87aca2b900187d903457e3a9cc78d9da04aa1d15ef4584efd403fcaa81d7",
+      "size": 321826747
+    },
+    {
+      "path": "data/processed/val_dataset.json",
+      "sha256": "73df7a39258f955771a72df8236fc4e83ab47bda136c09478d83b3f610454386",
+      "size": 68868974
+    }
+  ],
+  "run_label": "final_modal_5d5328102912",
+  "schema_version": 1,
+  "scope": "constructed QA-reference sensitivity audit; not observed open-ended QA policy equivalence",
+  "source": {
+    "git_commit": "0017b89da921e85a6960cd8a22f1969176aed079",
+    "git_tree": "d51ebfee68741e2e6b476faf4d438146a6d41b07",
+    "questions_csv": {
+      "path": "questions.csv",
+      "sha256": "da24b029f6d5186b8b9328a4ac3704f9581e84972e3f7cd467c895fadb81916a",
+      "size": 14968106
+    },
+    "repository": "ankaggarwal94/qanta-buzzer",
+    "source_manifest_id": "83410b86a734be9fd4c43b7df7b05458d64c80ce898686e960be1860f5348197"
+  }
+}

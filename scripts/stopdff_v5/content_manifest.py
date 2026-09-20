@@ -259,17 +259,28 @@ def validate_bound_content_manifest(
         digest = entry["sha256"]
         seen.add(name)
         target = content_root / name
-        if (
-            target.is_symlink()
-            or not target.is_file()
-            or target.stat().st_size != size
-            or sha256_file(target) != digest
-            or (
-                kind == "source_snapshot"
-                and git_mode_for_path(target) != entry["mode"]
+        if target.is_symlink():
+            raise ValueError(f"{manifest_name} file is a symlink: {name}")
+        if not target.exists():
+            raise ValueError(f"{manifest_name} missing file: {name}")
+        if not target.is_file():
+            raise ValueError(f"{manifest_name} not a regular file: {name}")
+        actual_size = target.stat().st_size
+        if actual_size != size:
+            raise ValueError(
+                f"{manifest_name} size mismatch: {name} "
+                f"(expected {size}, found {actual_size})"
             )
-        ):
-            raise ValueError(f"{manifest_name} file mismatch: {name}")
+        if sha256_file(target) != digest:
+            raise ValueError(f"{manifest_name} sha256 mismatch: {name}")
+        if kind == "source_snapshot":
+            actual_mode = git_mode_for_path(target)
+            if actual_mode != entry["mode"]:
+                raise ValueError(
+                    f"{manifest_name} mode mismatch: {name} "
+                    f"(expected {entry['mode']}, found {actual_mode}; "
+                    "file bytes match)"
+                )
     actual: set[str] = set()
     for path in content_root.rglob("*"):
         if path.is_symlink():

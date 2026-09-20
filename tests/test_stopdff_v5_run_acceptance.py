@@ -735,7 +735,7 @@ def test_raw_input_staging_rejects_local_tampering_before_upload(
 
     role_path.write_bytes(b"tampered\n")
     tampered = _FakeVolume()
-    with pytest.raises(ValueError, match="file mismatch"):
+    with pytest.raises(ValueError, match="size mismatch"):
         runner._stage_one_input_bundle(bundle, "raw", volume=tampered)
     assert tampered.uploads == 0
 
@@ -921,7 +921,7 @@ def test_source_executable_mode_is_bound_and_rechecked_at_runtime(
     entry = manifest["identity"]["files"][0]
     bound_path = bundle / "source" / entry["path"]
     bound_path.chmod(bound_path.stat().st_mode | 0o111)
-    with pytest.raises(ValueError, match="file mismatch"):
+    with pytest.raises(ValueError, match="mode mismatch"):
         runner._validated_local_input_bundle(bundle, "source")
 
     shutil.rmtree(bundle)
