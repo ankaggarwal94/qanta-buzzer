@@ -13,8 +13,7 @@ jobs:
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/ops/stopdff-durable-rerun-20260920' &&
-      github.event.head_commit.message == 'ops: inspect existing StopDFF full submission 20260920' &&
-      github.run_attempt == '1'
+      github.event.head_commit.message == 'ops: inspect existing StopDFF full submission 20260920'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -29,7 +28,7 @@ jobs:
       - name: Checkout the guarded monitor helper
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: dee0ab56a2bfb191269f90f36a0d67022bf6c0df
           path: monitor-control
           persist-credentials: false
       - name: Checkout the exact submission implementation
