@@ -22,7 +22,7 @@ import tempfile
 
 SDK_VERSION = "1.5.5"
 APP_NAME = "stopdff-durable-rerun-20260920"
-VOLUME_NAME = "cs321m-stopdff-artifacts"
+VOLUME_NAME = "cs321m-stopdff-rerun-20260920-v2"
 ROOT_PREFIX = "durable-rerun-20260920"
 FINAL_COMMIT = "2ed304f6598b94c0c5dc15f77fb8b391ae2f03a3"
 INPUT_SHA256 = "6afc62e1cb91d0d2ac958c251ba68aec1c83f2da2b9d0354dc4635234dbc1cf2"

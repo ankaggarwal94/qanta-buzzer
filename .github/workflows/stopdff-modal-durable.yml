@@ -38,7 +38,7 @@ jobs:
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-        run: python "$CONTROL_DIR/launch_modal.py" launch --run-id "canary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --mode preflight --image-receipt receipts/image.json --receipt receipts/canary-launch.json --timeout 2400
+        run: python "$CONTROL_DIR/launch_modal.py" launch --run-id "canary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --mode preflight --image-receipt receipts/image.json --receipt receipts/canary-launch.json --timeout 2400 --commit-mode sync-v2
       - name: Wait for canary and verify committed evidence with fresh reader
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -75,7 +75,7 @@ jobs:
           subprocess.run([sys.executable,os.environ['CONTROL_DIR']+'/launch_modal.py','launch',
               '--run-id',f"full-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}",
               '--mode','full','--image-receipt','receipts/image.json','--receipt','receipts/full-launch.json',
-              '--canary-receipt',proof['verified_canary_path'],'--timeout','86400'],check=True)
+              '--canary-receipt',proof['verified_canary_path'],'--timeout','86400','--commit-mode','sync-v2'],check=True)
           PY
       - name: Record provider state after submission
         env:

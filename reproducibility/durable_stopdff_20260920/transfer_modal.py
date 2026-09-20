@@ -22,7 +22,7 @@ from pathlib import Path
 ARCHIVE_SIZE = 1_234_697_660
 ARCHIVE_SHA256 = "6afc62e1cb91d0d2ac958c251ba68aec1c83f2da2b9d0354dc4635234dbc1cf2"
 CHUNK_SIZE = 32 * 1024 * 1024
-VOLUME_NAME = "cs321m-stopdff-artifacts"
+VOLUME_NAME = "cs321m-stopdff-rerun-20260920-v2"
 MOUNT = "/transfer-volume"
 VOLUME_BACKING_DIRECTORY = Path("/__modal/volumes")
 INPUT_DIRECTORY = "durable-rerun-20260920/inputs"

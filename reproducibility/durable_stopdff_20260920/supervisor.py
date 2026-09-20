@@ -676,7 +676,7 @@ def main(argv=None):
     parser.add_argument("--canary-receipt", type=Path)
     parser.add_argument("--image-id", required=True)
     parser.add_argument("--job-root", type=Path, default=Path("/job"))
-    parser.add_argument("--volume-name", default="cs321m-stopdff-artifacts")
+    parser.add_argument("--volume-name", default="cs321m-stopdff-rerun-20260920-v2")
     parser.add_argument("--volume-id", required=True)
     parser.add_argument("--volume-mount", type=Path, default=Path("/persist"))
     parser.add_argument("--commit-mode", choices=("sdk", "sync-v2"), default="sdk")

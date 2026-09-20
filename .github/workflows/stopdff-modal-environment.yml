@@ -1,4 +1,4 @@
-# Revision 4: inspect Volume version and require supported v2 Sandbox sync.
+# Revision 5: prepare a separate V2 rerun volume without migrating archive data.
 name: StopDFF exact environment and synthetic storage check
 on:
   push:
@@ -28,6 +28,21 @@ jobs:
         run: python -m pip install --disable-pip-version-check 'modal==1.5.5'
       - name: Verify provider adapter failure paths
         run: python -m unittest discover -s "$CONTROL_DIR" -p 'test_*.py' -v
+      - name: Prepare separate V2 rerun volume
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          python - <<'PY'
+          import modal
+          name = 'cs321m-stopdff-rerun-20260920-v2'
+          modal.Volume.objects.create(name, version=2, allow_existing=True)
+          volume = modal.Volume.from_name(name, create_if_missing=False)
+          volume.hydrate()
+          if volume._get_metadata().version != 2:
+              raise SystemExit('Selected rerun volume is not V2; no job submitted')
+          print('Separate V2 rerun volume is available; no archive data transferred')
+          PY
       - name: Inspect selected volume metadata without reading files
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}

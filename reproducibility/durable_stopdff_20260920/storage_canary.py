@@ -85,7 +85,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--image-id", required=True)
-    parser.add_argument("--volume-name", default="cs321m-stopdff-artifacts")
+    parser.add_argument("--volume-name", default="cs321m-stopdff-rerun-20260920-v2")
     parser.add_argument("--volume-id", required=True)
     parser.add_argument("--commit-mode", choices=("sdk", "sync-v2"), default="sdk")
     args = parser.parse_args(argv)
@@ -93,7 +93,7 @@ def main(argv=None):
         parser.error("Invalid synthetic run ID")
     if not re.fullmatch(r"im-[A-Za-z0-9]+", args.image_id):
         parser.error("Invalid image ID")
-    if args.volume_name != "cs321m-stopdff-artifacts":
+    if args.volume_name != "cs321m-stopdff-rerun-20260920-v2":
         parser.error("Unexpected volume")
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(540)
