@@ -21,10 +21,12 @@ def synthetic_fixture():
             {"python": "3.11.12", "packages": storage_canary.PACKAGES}, "sdk",
         )
         volume = MemoryVolume()
+        volume._get_metadata = lambda: SimpleNamespace(version=2)
         for name in ("synthetic.bin", "payload.json"):
             volume.files[f"{prefix}/{name}"] = (root / name).read_bytes()
     launch = {"mode": "storage-canary", "scope": "synthetic-only", "durable_prefix": prefix,
         "run_id": run_id, "image_id": "im-synthetic", "sandbox_id": "sb-synthetic", "volume_id": "vo-synthetic",
+        "volume_version": 2,
         "commit_mode": "sdk", "storage_canary_sha256": record["storage_canary_sha256"],
         "supervisor_sha256": record["supervisor_sha256"]}
     completion = {**record, "status": "STORAGE_CANARY_PASSED", "explicit_payload_commit_succeeded": True,
@@ -34,6 +36,25 @@ def synthetic_fixture():
 
 
 class SyntheticCanaryTests(unittest.TestCase):
+    def test_sync_v2_requires_explicit_provider_v2_metadata(self):
+        for version in (0, 1, 2):
+            volume = SimpleNamespace(_get_metadata=lambda: SimpleNamespace(version=version))
+            self.assertEqual(launcher.volume_version(volume), version)
+            if version == 2:
+                launcher.require_commit_version("sync-v2", version)
+            else:
+                with self.assertRaisesRegex(ValueError, "explicit V2"):
+                    launcher.require_commit_version("sync-v2", version)
+        for metadata in (None, SimpleNamespace(version=3), SimpleNamespace(version=True)):
+            with self.assertRaises(ValueError):
+                launcher.volume_version(SimpleNamespace(_get_metadata=lambda: metadata))
+
+    def test_fresh_reader_rejects_changed_provider_version(self):
+        volume, launch, completion = synthetic_fixture()
+        volume._get_metadata = lambda: SimpleNamespace(version=1)
+        with self.assertRaisesRegex(ValueError, "version differs"):
+            launcher.verify_storage_canary(volume, launch, completion)
+
     def test_provider_identity_is_hydrated_and_pinned_before_use(self):
         class LazyVolume:
             hydrated = False

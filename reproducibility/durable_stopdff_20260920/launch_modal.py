@@ -237,6 +237,40 @@ def bound_volume(modal, expected_id=None):
     return volume
 
 
+def volume_version(volume):
+    """Read only the hydrated SDK 1.5.5 VolumeMetadata version enum.
+
+    The synchronized Volume hides `_metadata` but exposes `_get_metadata()`.
+    Enum 0 means unspecified (handled as legacy V1 by this SDK), never proof
+    of V2. Missing metadata or an unrecognized future version fails closed.
+    """
+    metadata = volume._get_metadata()
+    version = getattr(metadata, "version", None)
+    if type(version) is not int or version not in (0, 1, 2):
+        raise ValueError("Hydrated Volume version metadata is unavailable or unsupported")
+    return version
+
+
+def require_commit_version(commit_mode, version):
+    if commit_mode == "sync-v2" and version != 2:
+        raise ValueError("sync-v2 requires explicit V2 provider metadata")
+
+
+def require_volume_version(volume, launch):
+    version = volume_version(volume)
+    if type(launch.get("volume_version")) is not int or launch["volume_version"] != version:
+        raise ValueError("Selected Volume version differs from the admitted job")
+    require_commit_version(launch["commit_mode"], version)
+    return version
+
+
+def cmd_volume_info(_args):
+    volume = bound_volume(modal_sdk())
+    version = volume_version(volume)
+    print(json.dumps({"volume_id": volume.object_id, "volume_version": version,
+                      "volume_version_name": {0: "UNSPECIFIED", 1: "V1", 2: "V2"}[version]}, sort_keys=True))
+
+
 def supervisor_command(run_id, bindings, volume_id, preflight, canary_path=None, work_seconds=82800):
     prefix = f"/persist/{ROOT_PREFIX}/submissions/{run_id}"
     command = [
@@ -285,6 +319,8 @@ def cmd_storage_canary(args):
     modal = modal_sdk()
     secret = sandbox_secret(modal, args.commit_mode)
     volume = bound_volume(modal)
+    version = volume_version(volume)
+    require_commit_version(args.commit_mode, version)
     prefix = f"{ROOT_PREFIX}/storage-canaries/{run_id}"
     command = ["/usr/local/bin/python", "/opt/storage_canary.py", "--run-id", run_id,
                "--image-id", image_receipt["image_id"], "--volume-name", VOLUME_NAME,
@@ -296,6 +332,7 @@ def cmd_storage_canary(args):
         "supervisor_sha256": image_receipt["supervisor_sha256"],
         "storage_canary_sha256": helper_sha, "commit_mode": args.commit_mode,
         "started_utc": utc_now(), "volume_name": VOLUME_NAME, "volume_id": volume.object_id,
+        "volume_version": version,
         "durable_prefix": prefix,
         "scientific_acceptance": False, "scope": "synthetic-only",
         "command": command, "cpu": 1.0, "memory_mib": 2048, "timeout_seconds": 600,
@@ -332,6 +369,7 @@ def verify_storage_canary(volume, launch, completion):
         raise ValueError("Expected a synthetic-only launch")
     if not re.fullmatch(r"vo-[A-Za-z0-9]+", launch.get("volume_id", "")):
         raise ValueError("Synthetic launch is missing the bound Volume identity")
+    version = require_volume_version(volume, launch)
     for key in ("run_id", "image_id", "volume_id", "supervisor_sha256", "storage_canary_sha256", "commit_mode"):
         if completion.get(key) != launch.get(key):
             raise ValueError("Synthetic canary identity mismatch")
@@ -363,6 +401,7 @@ def verify_storage_canary(volume, launch, completion):
         "schema_version": 1, "status": "STORAGE_CANARY_VERIFIED", "scope": "synthetic-only",
         "run_id": launch["run_id"], "image_id": launch["image_id"], "sandbox_id": launch["sandbox_id"],
         "volume_id": launch["volume_id"],
+        "volume_version": version,
         "fresh_reader_verified": True, "synthetic_payload_bytes": 4096,
         "posix": posix, "environment": completion["environment"],
         "scientific_acceptance": False, "research_data_accessed": False,
@@ -421,12 +460,16 @@ def cmd_launch(args):
     bindings = expected_bindings(image_receipt, args.commit_mode)
     modal = modal_sdk()
     volume = bound_volume(modal)
+    version = volume_version(volume)
+    require_commit_version(args.commit_mode, version)
     proof = None
     if args.mode == "full":
         if not args.canary_receipt:
             raise ValueError("--canary-receipt is required for full mode")
         proof = load_json_bytes(remote_bytes(volume, safe_relative(args.canary_receipt)))
         require_canary(proof, bindings)
+        if proof.get("volume_id") != volume.object_id or proof.get("volume_version") != version:
+            raise ValueError("Preflight canary Volume identity or version differs from the selected Volume")
         if run_id == proof["canary_run_id"]:
             raise ValueError("Full execution must use a new submission namespace")
     secret = sandbox_secret(modal, args.commit_mode)
@@ -437,6 +480,7 @@ def cmd_launch(args):
         "schema_version": 1, "status": "ADMITTING", "started_utc": utc_now(),
         "run_id": run_id, "mode": args.mode, **bindings,
         "volume_name": VOLUME_NAME, "volume_id": volume.object_id, "durable_prefix": prefix, "command": command,
+        "volume_version": version,
         "cpu": args.cpu, "memory_mib": args.memory, "timeout_seconds": args.timeout,
         "modal_sdk_version": SDK_VERSION, "canary_receipt": args.canary_receipt,
         "scientific_acceptance": False,
@@ -445,7 +489,7 @@ def cmd_launch(args):
     sandbox = None
     try:
         admission = {"schema_version": 1, "run_id": run_id, "mode": args.mode,
-                     "volume_id": volume.object_id, **bindings}
+                     "volume_id": volume.object_id, "volume_version": version, **bindings}
         receipt["admission_sha256"] = upload_json_once(volume, f"{prefix}/admission.json", admission)
         receipt["status"] = "ADMITTED"
         update_local(args.receipt, receipt)
@@ -668,6 +712,7 @@ def cmd_inspect(args):
     result = {"sandbox_id": launch["sandbox_id"], "run_id": launch["run_id"], "returncode": returncode,
               "scientific_acceptance": False}
     volume = bound_volume(modal, launch["volume_id"])
+    result["volume_version"] = require_volume_version(volume, launch)
     if returncode is None:
         result["status"] = "RUNNING"
         result["last_durable_snapshot"] = last_durable_status(volume, launch)
@@ -692,6 +737,7 @@ def cmd_inspect(args):
             "schema_version": 1, "status": "CANARY_VERIFIED", "fresh_reader_verified": True,
             **{key: launch[key] for key in BINDING_KEYS}, "canary_run_id": launch["run_id"],
             "canary_sandbox_id": launch["sandbox_id"],
+            "volume_id": launch["volume_id"], "volume_version": launch["volume_version"],
             "canary_receipt_sha256": hashlib.sha256(completion_body).hexdigest(),
             "verified_utc": utc_now(),
         }
@@ -707,6 +753,8 @@ def cmd_inspect(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    volume_info = commands.add_parser("volume-info", help="Read the selected existing Volume ID and exact provider version")
+    volume_info.set_defaults(handler=cmd_volume_info)
     build = commands.add_parser("build", help="Build the exact image; no scientific execution")
     build.add_argument("--directory", type=Path, default=Path(__file__).resolve().parent)
     build.add_argument("--receipt", type=Path, required=True)
