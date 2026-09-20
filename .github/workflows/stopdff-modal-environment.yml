@@ -1,3 +1,4 @@
+# Revision 2: use repository-portable controller test fixtures.
 name: StopDFF exact environment and synthetic storage check
 on:
   push:

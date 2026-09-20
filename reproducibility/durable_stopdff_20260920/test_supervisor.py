@@ -177,7 +177,11 @@ class SupervisorTests(unittest.TestCase):
         canary = {"schema_version": 1, "status": "CANARY_VERIFIED", "fresh_reader_verified": True,
                   "canary_run_id": "canary-test", "canary_sandbox_id": "sb-test",
                   "canary_receipt_sha256": "a" * 64, **supervisor.bindings}
-        controls = Path(s.__file__).parent / "controls/run_durable_rerun.py"
+        base = Path(__file__).resolve().parent
+        candidates = (base / "run_durable_rerun.py", base / "controls/run_durable_rerun.py")
+        controls = next((path for path in candidates if path.is_file()), None)
+        self.assertIsNotNone(controls, "Frozen controller fixture is missing")
+        self.assertEqual(s.digest(controls), s.CONTROLLER_SHA256)
         with patch.object(s, "CONTROLLER", controls):
             s.write_json(args.canary_receipt, canary)
             supervisor.validate_admission()
