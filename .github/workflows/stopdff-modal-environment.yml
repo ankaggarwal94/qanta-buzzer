@@ -1,4 +1,4 @@
-# Revision 2: use repository-portable controller test fixtures.
+# Revision 3: verify persistence with the exact bound Modal volume alias.
 name: StopDFF exact environment and synthetic storage check
 on:
   push:

@@ -166,8 +166,6 @@ def build_image(modal, directory):
     image = image.pip_install(f"modal=={SDK_VERSION}")
     for name in CONTROL_HASHES:
         image = image.add_local_file(directory / "controls" / name, f"/opt/controls/{name}", copy=True)
-    image = image.add_local_file(supervisor, "/opt/supervisor.py", copy=True)
-    image = image.add_local_file(storage_canary, "/opt/storage_canary.py", copy=True)
     image = image.run_commands(
         "python -c \"import platform; assert platform.python_version() == '3.11.12'\"",
         "python -m venv /opt/stopdff-env",
@@ -177,7 +175,10 @@ def build_image(modal, directory):
         "git clone https://github.com/ankaggarwal94/qanta-buzzer.git /opt/stopdff-code",
         f"git -C /opt/stopdff-code checkout --detach {FINAL_COMMIT}",
         "test -z \"$(git -C /opt/stopdff-code status --porcelain --untracked-files=normal)\"",
-    ).env({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1"})
+    )
+    image = image.add_local_file(supervisor, "/opt/supervisor.py", copy=True)
+    image = image.add_local_file(storage_canary, "/opt/storage_canary.py", copy=True)
+    image = image.env({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1"})
     return image, sha256_file(supervisor)
 
 
@@ -225,13 +226,24 @@ def upload_json_once(volume, path, value):
     return hashlib.sha256(body).hexdigest()
 
 
-def supervisor_command(run_id, bindings, preflight, canary_path=None, work_seconds=82800):
+def bound_volume(modal, expected_id=None):
+    """Resolve the existing volume before using its provider identity."""
+    volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=False)
+    volume.hydrate()
+    if not re.fullmatch(r"vo-[A-Za-z0-9]+", volume.object_id):
+        raise ValueError("Invalid provider Volume identity")
+    if expected_id is not None and volume.object_id != expected_id:
+        raise ValueError("Selected Volume identity differs from the admitted job")
+    return volume
+
+
+def supervisor_command(run_id, bindings, volume_id, preflight, canary_path=None, work_seconds=82800):
     prefix = f"/persist/{ROOT_PREFIX}/submissions/{run_id}"
     command = [
         "/usr/local/bin/python", "/opt/supervisor.py", "--run-id", run_id,
         "--input-tar", f"/persist/{INPUT_PATH}", "--durable-dir", prefix,
         "--admission-marker", f"{prefix}/admission.json", "--job-root", "/job",
-        "--volume-name", VOLUME_NAME, "--image-id", bindings["image_id"],
+        "--volume-name", VOLUME_NAME, "--volume-id", volume_id, "--image-id", bindings["image_id"],
         "--commit-mode", bindings["commit_mode"], "--work-seconds", str(work_seconds),
     ]
     if preflight:
@@ -272,17 +284,19 @@ def cmd_storage_canary(args):
         raise ValueError("Image receipt must bind the synthetic storage canary")
     modal = modal_sdk()
     secret = sandbox_secret(modal, args.commit_mode)
-    volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=False)
+    volume = bound_volume(modal)
     prefix = f"{ROOT_PREFIX}/storage-canaries/{run_id}"
     command = ["/usr/local/bin/python", "/opt/storage_canary.py", "--run-id", run_id,
                "--image-id", image_receipt["image_id"], "--volume-name", VOLUME_NAME,
+               "--volume-id", volume.object_id,
                "--commit-mode", args.commit_mode]
     receipt = {
         "schema_version": 1, "status": "ADMITTING", "mode": "storage-canary",
         "run_id": run_id, "image_id": image_receipt["image_id"],
         "supervisor_sha256": image_receipt["supervisor_sha256"],
         "storage_canary_sha256": helper_sha, "commit_mode": args.commit_mode,
-        "started_utc": utc_now(), "volume_name": VOLUME_NAME, "durable_prefix": prefix,
+        "started_utc": utc_now(), "volume_name": VOLUME_NAME, "volume_id": volume.object_id,
+        "durable_prefix": prefix,
         "scientific_acceptance": False, "scope": "synthetic-only",
         "command": command, "cpu": 1.0, "memory_mib": 2048, "timeout_seconds": 600,
     }
@@ -316,7 +330,9 @@ def cmd_storage_canary(args):
 def verify_storage_canary(volume, launch, completion):
     if launch.get("mode") != "storage-canary" or launch.get("scope") != "synthetic-only":
         raise ValueError("Expected a synthetic-only launch")
-    for key in ("run_id", "image_id", "supervisor_sha256", "storage_canary_sha256", "commit_mode"):
+    if not re.fullmatch(r"vo-[A-Za-z0-9]+", launch.get("volume_id", "")):
+        raise ValueError("Synthetic launch is missing the bound Volume identity")
+    for key in ("run_id", "image_id", "volume_id", "supervisor_sha256", "storage_canary_sha256", "commit_mode"):
         if completion.get(key) != launch.get(key):
             raise ValueError("Synthetic canary identity mismatch")
     if (completion.get("schema_version") != 1 or completion.get("status") != "STORAGE_CANARY_PASSED"
@@ -346,6 +362,7 @@ def verify_storage_canary(volume, launch, completion):
     return {
         "schema_version": 1, "status": "STORAGE_CANARY_VERIFIED", "scope": "synthetic-only",
         "run_id": launch["run_id"], "image_id": launch["image_id"], "sandbox_id": launch["sandbox_id"],
+        "volume_id": launch["volume_id"],
         "fresh_reader_verified": True, "synthetic_payload_bytes": 4096,
         "posix": posix, "environment": completion["environment"],
         "scientific_acceptance": False, "research_data_accessed": False,
@@ -389,7 +406,7 @@ def cmd_inspect_storage_canary(args):
             write_local_once(args.receipt, result)
         print(json.dumps(result, sort_keys=True))
         return 1
-    volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=False)
+    volume = bound_volume(modal, launch["volume_id"])
     completion = load_json_bytes(remote_bytes(volume, f"{launch['durable_prefix']}/completion.json"))
     result.update(verify_storage_canary(volume, launch, completion))
     if args.receipt:
@@ -403,7 +420,7 @@ def cmd_launch(args):
     image_receipt = load_json_bytes(Path(args.image_receipt).read_bytes())
     bindings = expected_bindings(image_receipt, args.commit_mode)
     modal = modal_sdk()
-    volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=False)
+    volume = bound_volume(modal)
     proof = None
     if args.mode == "full":
         if not args.canary_receipt:
@@ -413,13 +430,13 @@ def cmd_launch(args):
         if run_id == proof["canary_run_id"]:
             raise ValueError("Full execution must use a new submission namespace")
     secret = sandbox_secret(modal, args.commit_mode)
-    command = supervisor_command(run_id, bindings, args.mode == "preflight", args.canary_receipt,
+    command = supervisor_command(run_id, bindings, volume.object_id, args.mode == "preflight", args.canary_receipt,
                                  min(82800, args.timeout - 600))
     prefix = f"{ROOT_PREFIX}/submissions/{run_id}"
     receipt = {
         "schema_version": 1, "status": "ADMITTING", "started_utc": utc_now(),
         "run_id": run_id, "mode": args.mode, **bindings,
-        "volume_name": VOLUME_NAME, "durable_prefix": prefix, "command": command,
+        "volume_name": VOLUME_NAME, "volume_id": volume.object_id, "durable_prefix": prefix, "command": command,
         "cpu": args.cpu, "memory_mib": args.memory, "timeout_seconds": args.timeout,
         "modal_sdk_version": SDK_VERSION, "canary_receipt": args.canary_receipt,
         "scientific_acceptance": False,
@@ -427,7 +444,8 @@ def cmd_launch(args):
     write_local_once(args.receipt, receipt)
     sandbox = None
     try:
-        admission = {"schema_version": 1, "run_id": run_id, "mode": args.mode, **bindings}
+        admission = {"schema_version": 1, "run_id": run_id, "mode": args.mode,
+                     "volume_id": volume.object_id, **bindings}
         receipt["admission_sha256"] = upload_json_once(volume, f"{prefix}/admission.json", admission)
         receipt["status"] = "ADMITTED"
         update_local(args.receipt, receipt)
@@ -649,7 +667,7 @@ def cmd_inspect(args):
         sandbox.detach()
     result = {"sandbox_id": launch["sandbox_id"], "run_id": launch["run_id"], "returncode": returncode,
               "scientific_acceptance": False}
-    volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=False)
+    volume = bound_volume(modal, launch["volume_id"])
     if returncode is None:
         result["status"] = "RUNNING"
         result["last_durable_snapshot"] = last_durable_status(volume, launch)

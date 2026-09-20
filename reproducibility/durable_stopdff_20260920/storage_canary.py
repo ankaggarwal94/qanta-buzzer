@@ -18,7 +18,10 @@ import subprocess
 import sys
 import tempfile
 
-from supervisor import check_posix, digest, modal_commit, now, scientific_environment, write_json
+from supervisor import (
+    canonical_transport_path, canonical_volume_root, check_posix, digest,
+    modal_commit, now, scientific_environment, write_json,
+)
 
 PAYLOAD_SIZE = 4096
 PACKAGES = {
@@ -49,7 +52,7 @@ def exact_environment(job):
     return record
 
 
-def synthetic_files(durable, run_id, image_id, posix, environment, commit_mode):
+def synthetic_files(durable, run_id, image_id, volume_id, posix, environment, commit_mode):
     """Create the sole data payload and its bounded identity record."""
     payload = os.urandom(PAYLOAD_SIZE)
     target = durable / "synthetic.bin"
@@ -62,7 +65,7 @@ def synthetic_files(durable, run_id, image_id, posix, environment, commit_mode):
         raise ValueError("Synthetic mounted-volume bytes or executable mode mismatch")
     record = {
         "schema_version": 1, "status": "SYNTHETIC_DATA_WRITTEN", "run_id": run_id,
-        "image_id": image_id, "storage_canary_sha256": digest(Path(__file__)),
+        "image_id": image_id, "volume_id": volume_id, "storage_canary_sha256": digest(Path(__file__)),
         "supervisor_sha256": digest(Path(__file__).with_name("supervisor.py")),
         "created_utc": now(), "commit_mode": commit_mode, "posix": posix,
         "environment": environment, "research_data_accessed": False,
@@ -83,6 +86,7 @@ def main(argv=None):
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--image-id", required=True)
     parser.add_argument("--volume-name", default="cs321m-stopdff-artifacts")
+    parser.add_argument("--volume-id", required=True)
     parser.add_argument("--commit-mode", choices=("sdk", "sync-v2"), default="sdk")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,47}", args.run_id):
@@ -95,13 +99,13 @@ def main(argv=None):
     signal.alarm(540)
     stage = "initialize"
     try:
-        durable = PREFIX / args.run_id
-        if durable.resolve() != durable:
-            raise ValueError("Synthetic destination traverses symlinks")
+        mount = Path("/persist")
+        root = canonical_volume_root(mount, args.volume_id)
+        durable = canonical_transport_path(PREFIX / args.run_id, mount, root)
         durable.mkdir(parents=True, exist_ok=True)
         write_json(durable / "started.json", {
             "schema_version": 1, "run_id": args.run_id, "image_id": args.image_id,
-            "scope": "synthetic-only", "started_utc": now(),
+            "volume_id": args.volume_id, "scope": "synthetic-only", "started_utc": now(),
         }, exclusive=True)
         with tempfile.TemporaryDirectory(prefix="stopdff-storage-canary-") as local:
             job = Path(local)
@@ -112,7 +116,8 @@ def main(argv=None):
             stage = "exact_environment"
             environment = exact_environment(job)
             stage = "write_synthetic"
-            record = synthetic_files(durable, args.run_id, args.image_id, posix, environment, args.commit_mode)
+            record = synthetic_files(durable, args.run_id, args.image_id, args.volume_id,
+                                     posix, environment, args.commit_mode)
             stage = "explicit_payload_commit"
             modal_commit(args.commit_mode, args.volume_name, Path("/persist"))
             stage = "completion_receipt"

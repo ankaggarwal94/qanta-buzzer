@@ -37,6 +37,7 @@ CODE = Path("/opt/stopdff-code")
 EXPORT_SECONDS = 60
 MAX_WORK_SECONDS = 23 * 60 * 60
 MAX_TOTAL_SECONDS = 24 * 60 * 60 - 100
+VOLUME_BACKING_ROOT = Path("/__modal/volumes")
 
 
 def now():
@@ -59,6 +60,37 @@ def regular_path(path, directory=False):
     if not (stat.S_ISDIR(mode) if directory else stat.S_ISREG(mode)):
         raise ValueError(f"Expected regular {'directory' if directory else 'file'}: {path}")
     return path
+
+
+def canonical_volume_root(mount, volume_id):
+    """Allow only Modal's exact alias for the launcher-bound Volume ID.
+
+    SDK 1.5.5 uses one VolumeMount construction for Functions and Sandboxes,
+    with backing paths /__modal/volumes/<volume_id>. No other symlink receives
+    an exception: the mount parent and the backing directory remain canonical.
+    """
+    mount = Path(mount)
+    if not re.fullmatch(r"vo-[A-Za-z0-9]+", volume_id):
+        raise ValueError("Invalid bound Volume ID")
+    if not mount.is_absolute() or mount.parent.resolve(strict=True) != mount.parent:
+        raise ValueError("Volume mount parent must be an absolute canonical directory")
+    if mount.is_symlink():
+        expected = VOLUME_BACKING_ROOT / volume_id
+        if os.readlink(mount) != str(expected):
+            raise ValueError("Volume mount alias does not match the bound Volume ID")
+        return regular_path(expected, directory=True)
+    return regular_path(mount, directory=True)
+
+
+def canonical_transport_path(path, mount, root):
+    """Translate the verified mount alias once, rejecting descendant symlinks."""
+    path, mount, root = Path(path), Path(mount), Path(root)
+    if not path.is_absolute() or ".." in path.parts or not path.is_relative_to(mount):
+        raise ValueError("Transport path must be contained beneath the mounted Volume")
+    target = root / path.relative_to(mount)
+    if target.resolve() != target:
+        raise ValueError("Transport path traverses a symlink below the mounted Volume")
+    return target
 
 
 def fsync_dir(path):
@@ -475,6 +507,7 @@ class Supervisor:
             "supervisor_sha256": digest(Path(__file__)), "image_id": args.image_id,
             "commit_mode": args.commit_mode}
         self.state = {"schema_version": 1, "run_id": args.run_id, **self.bindings,
+            "transport_volume_id": args.volume_id,
             "started_utc": now(), "status": "INITIALIZING", "stage": "admission",
             "scientific_acceptance": False, "controller_pid": None,
             "note": "A historical RUNNING receipt never establishes current liveness or success."}
@@ -506,7 +539,8 @@ class Supervisor:
         args = self.args
         admission = read_json(args.admission_marker)
         expected = {"schema_version": 1, "run_id": args.run_id,
-                    "mode": "preflight" if args.preflight_only else "full", **self.bindings}
+                    "mode": "preflight" if args.preflight_only else "full",
+                    "volume_id": args.volume_id, **self.bindings}
         if any(admission.get(k) != v for k, v in expected.items()):
             raise ValueError("Permanent admission marker does not match this invocation")
         if digest(CONTROLLER) != CONTROLLER_SHA256:
@@ -643,6 +677,7 @@ def main(argv=None):
     parser.add_argument("--image-id", required=True)
     parser.add_argument("--job-root", type=Path, default=Path("/job"))
     parser.add_argument("--volume-name", default="cs321m-stopdff-artifacts")
+    parser.add_argument("--volume-id", required=True)
     parser.add_argument("--volume-mount", type=Path, default=Path("/persist"))
     parser.add_argument("--commit-mode", choices=("sdk", "sync-v2"), default="sdk")
     parser.add_argument("--preflight-only", action="store_true")
@@ -652,11 +687,16 @@ def main(argv=None):
         parser.error("Invalid run ID")
     if not 1 <= args.work_seconds <= MAX_WORK_SECONDS:
         parser.error("Work deadline must leave the terminal export reserve")
-    regular_path(args.volume_mount, directory=True)
-    for path in (args.input_tar, args.durable_dir, args.admission_marker, args.canary_receipt):
-        if path is not None and (not path.is_absolute() or path.resolve() != path
-                                 or not path.is_relative_to(args.volume_mount)):
-            parser.error("Transport paths must be absolute regular paths under the mounted Volume")
+    try:
+        mount = args.volume_mount
+        root = canonical_volume_root(mount, args.volume_id)
+        for name in ("input_tar", "durable_dir", "admission_marker", "canary_receipt"):
+            path = getattr(args, name)
+            if path is not None:
+                setattr(args, name, canonical_transport_path(path, mount, root))
+        args.volume_mount = root
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     if (not args.job_root.is_absolute() or args.job_root.resolve() != args.job_root
             or args.job_root.is_relative_to(args.volume_mount) or args.volume_mount.is_relative_to(args.job_root)):
         parser.error("Job root must be a separate regular local filesystem path")

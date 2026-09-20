@@ -2,6 +2,7 @@
 import copy
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 import launch_modal as launcher
@@ -16,14 +17,14 @@ def synthetic_fixture():
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         record = storage_canary.synthetic_files(
-            root, run_id, "im-synthetic", posix,
+            root, run_id, "im-synthetic", "vo-synthetic", posix,
             {"python": "3.11.12", "packages": storage_canary.PACKAGES}, "sdk",
         )
         volume = MemoryVolume()
         for name in ("synthetic.bin", "payload.json"):
             volume.files[f"{prefix}/{name}"] = (root / name).read_bytes()
     launch = {"mode": "storage-canary", "scope": "synthetic-only", "durable_prefix": prefix,
-        "run_id": run_id, "image_id": "im-synthetic", "sandbox_id": "sb-synthetic",
+        "run_id": run_id, "image_id": "im-synthetic", "sandbox_id": "sb-synthetic", "volume_id": "vo-synthetic",
         "commit_mode": "sdk", "storage_canary_sha256": record["storage_canary_sha256"],
         "supervisor_sha256": record["supervisor_sha256"]}
     completion = {**record, "status": "STORAGE_CANARY_PASSED", "explicit_payload_commit_succeeded": True,
@@ -33,6 +34,25 @@ def synthetic_fixture():
 
 
 class SyntheticCanaryTests(unittest.TestCase):
+    def test_provider_identity_is_hydrated_and_pinned_before_use(self):
+        class LazyVolume:
+            hydrated = False
+
+            def hydrate(self):
+                self.hydrated = True
+
+            @property
+            def object_id(self):
+                if not self.hydrated:
+                    raise RuntimeError("Volume identity accessed before hydration")
+                return "vo-selected"
+
+        volume = LazyVolume()
+        provider = SimpleNamespace(Volume=SimpleNamespace(from_name=lambda *args, **kwargs: volume))
+        self.assertIs(launcher.bound_volume(provider, "vo-selected"), volume)
+        with self.assertRaisesRegex(ValueError, "differs from the admitted job"):
+            launcher.bound_volume(provider, "vo-other")
+
     def test_small_synthetic_payload_round_trip_preserves_no_science_scope(self):
         volume, launch, completion = synthetic_fixture()
         result = launcher.verify_storage_canary(volume, launch, completion)
@@ -47,6 +67,12 @@ class SyntheticCanaryTests(unittest.TestCase):
         volume, launch, completion = synthetic_fixture()
         volume.files[f"{launch['durable_prefix']}/synthetic.bin"] = b"x" * 4096
         with self.assertRaisesRegex(ValueError, "payload mismatch"):
+            launcher.verify_storage_canary(volume, launch, completion)
+
+    def test_volume_identity_substitution_is_rejected(self):
+        volume, launch, completion = synthetic_fixture()
+        completion["volume_id"] = "vo-other"
+        with self.assertRaisesRegex(ValueError, "identity mismatch"):
             launcher.verify_storage_canary(volume, launch, completion)
 
     def test_wrong_runtime_missing_commit_or_science_claim_is_rejected(self):
@@ -75,7 +101,7 @@ class SyntheticCanaryTests(unittest.TestCase):
             root = Path(temporary)
             (root / "synthetic.bin").write_bytes(b"preserve")
             with self.assertRaises(FileExistsError):
-                storage_canary.synthetic_files(root, "run", "im-test", {}, {}, "sdk")
+                storage_canary.synthetic_files(root, "run", "im-test", "vo-test", {}, {}, "sdk")
             self.assertEqual((root / "synthetic.bin").read_bytes(), b"preserve")
 
 

@@ -169,11 +169,12 @@ class SupervisorTests(unittest.TestCase):
 
     def test_full_admission_requires_canary_readback_bound_to_current_image(self):
         args = SimpleNamespace(run_id="full-test", image_id="im-test", commit_mode="sdk",
+                               volume_id="vo-test",
                                preflight_only=False, canary_receipt=self.root / "canary.json",
                                admission_marker=self.root / "admission.json")
         supervisor = s.Supervisor(args)
         s.write_json(args.admission_marker, {"schema_version": 1, "run_id": args.run_id,
-                     "mode": "full", **supervisor.bindings})
+                     "mode": "full", "volume_id": args.volume_id, **supervisor.bindings})
         canary = {"schema_version": 1, "status": "CANARY_VERIFIED", "fresh_reader_verified": True,
                   "canary_run_id": "canary-test", "canary_sandbox_id": "sb-test",
                   "canary_receipt_sha256": "a" * 64, **supervisor.bindings}
@@ -191,6 +192,65 @@ class SupervisorTests(unittest.TestCase):
                     s.write_json(args.canary_receipt, {**canary, **change})
                     with self.assertRaises(ValueError):
                         supervisor.validate_admission()
+            s.write_json(args.canary_receipt, canary)
+            admission = s.read_json(args.admission_marker)
+            s.write_json(args.admission_marker, {**admission, "volume_id": "vo-other"})
+            with self.assertRaises(ValueError):
+                supervisor.validate_admission()
+
+    def test_volume_root_accepts_regular_mount_or_exact_bound_alias(self):
+        mount = self.root / "persist"
+        mount.mkdir()
+        self.assertEqual(s.canonical_volume_root(mount, "vo-test"), mount)
+        mount.rmdir()
+        backing = self.root / "volumes"
+        expected = backing / "vo-test"
+        expected.mkdir(parents=True)
+        mount.symlink_to(expected)
+        with patch.object(s, "VOLUME_BACKING_ROOT", backing):
+            self.assertEqual(s.canonical_volume_root(mount, "vo-test"), expected)
+            self.assertEqual(s.canonical_transport_path(mount / "new/receipt.json", mount, expected),
+                             expected / "new/receipt.json")
+            with self.assertRaises(ValueError):
+                s.canonical_volume_root(mount, "vo-other")
+
+    def test_volume_alias_rejects_unbound_targets_and_symlink_chains(self):
+        backing = self.root / "volumes"
+        expected = backing / "vo-test"
+        expected.mkdir(parents=True)
+        mount = self.root / "persist"
+        other = self.root / "other"
+        other.mkdir()
+        with patch.object(s, "VOLUME_BACKING_ROOT", backing):
+            for target in (other, Path("volumes/vo-test"), backing / "vo-other"):
+                with self.subTest(target=target):
+                    mount.symlink_to(target)
+                    with self.assertRaises(ValueError):
+                        s.canonical_volume_root(mount, "vo-test")
+                    mount.unlink()
+            expected.rmdir()
+            expected.symlink_to(other)
+            mount.symlink_to(expected)
+            with self.assertRaises(ValueError):
+                s.canonical_volume_root(mount, "vo-test")
+
+    def test_mount_parent_and_descendant_symlinks_remain_forbidden(self):
+        backing = self.root / "volumes"
+        expected = backing / "vo-test"
+        expected.mkdir(parents=True)
+        mount = self.root / "persist"
+        mount.symlink_to(expected)
+        (expected / "ordinary").mkdir()
+        (expected / "alias").symlink_to(expected / "ordinary")
+        with patch.object(s, "VOLUME_BACKING_ROOT", backing):
+            root = s.canonical_volume_root(mount, "vo-test")
+            for path in (mount / "alias/receipt.json", mount / "../outside", self.root / "outside"):
+                with self.subTest(path=path), self.assertRaises(ValueError):
+                    s.canonical_transport_path(path, mount, root)
+            parent_alias = self.root / "parent-alias"
+            parent_alias.symlink_to(backing)
+            with self.assertRaises(ValueError):
+                s.canonical_volume_root(parent_alias / "vo-test", "vo-test")
 
     def test_local_posix_primitives(self):
         self.assertTrue(all(s.check_posix(self.root).values()))
