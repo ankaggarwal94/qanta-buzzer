@@ -1,12 +1,15 @@
 """Offline REST/ASGI tests using only dummy credentials and a temporary folder."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import errno
 import hashlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -219,12 +222,22 @@ class TransferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.request("POST", "/finalize"))[0], 409)
         self.assertEqual(self.app.final.read_bytes(), b"historical evidence")
 
+    async def test_stale_hardlinked_temp_does_not_mutate_immutable_chunk(self):
+        self.assertEqual((await self.put(0))[0], 200)
+        old_chunk = self.app.chunk_path(0)
+        # Simulate a process dying after link publication but before unlinking
+        # incoming.tmp. The next upload must allocate a fresh inode.
+        os.link(old_chunk, self.app.staging / "incoming.tmp")
+        self.assertEqual((await self.put(1))[0], 200)
+        self.assertEqual(old_chunk.read_bytes(), self.data[:8])
+        self.assertEqual(self.app.chunk_path(1).read_bytes(), self.data[8:16])
+
     async def test_final_hash_failure_never_publishes(self):
         await self.upload()
         self.app.chunk_path(0).write_bytes(b"tampered")
         self.assertEqual((await self.request("POST", "/finalize"))[0], 422)
         self.assertFalse(self.app.final.exists())
-        self.assertFalse((self.app.staging / "assembled.tmp").exists())
+        self.assertFalse((self.app.inputs / "assembled.tmp").exists())
 
     async def test_commit_failure_is_retried_before_success(self):
         self.fail_commit = True
@@ -244,12 +257,95 @@ class TransferTests(unittest.IsolatedAsyncioTestCase):
         self.app.final.symlink_to(self.root / "missing")
         self.assertEqual((await self.request("POST", "/finalize"))[0], 409)
         self.assertTrue(self.app.final.is_symlink())
-        source, destination = self.root / "source", self.root / "destination"
+        source, destination = self.root / "incoming.tmp", self.root / "destination"
         source.write_bytes(b"new")
+        source.chmod(0o600)
         destination.write_bytes(b"old")
         with self.assertRaises(TransferError):
             publish_no_replace(source, destination)
         self.assertEqual(destination.read_bytes(), b"old")
+
+    def test_concurrent_publish_has_exactly_one_winner_without_overwrite(self):
+        sources = [self.root / "incoming.tmp", self.root / "assembled.tmp"]
+        destination = self.root / "destination"
+        for index, source in enumerate(sources):
+            source.write_bytes(f"candidate-{index}".encode())
+            source.chmod(0o600)
+        barrier = threading.Barrier(2)
+
+        def publish(index):
+            barrier.wait(timeout=5)
+            try:
+                publish_no_replace(sources[index], destination)
+                return index, 200
+            except TransferError as error:
+                return index, error.status
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            results = list(workers.map(publish, range(2)))
+        self.assertEqual(sorted(code for _, code in results), [200, 409])
+        winner = next(index for index, code in results if code == 200)
+        loser = 1 - winner
+        self.assertEqual(destination.read_bytes(), f"candidate-{winner}".encode())
+        self.assertFalse(sources[winner].exists())
+        self.assertEqual(sources[loser].read_bytes(), f"candidate-{loser}".encode())
+
+    def test_publication_rejects_source_symlink_and_dangling_destination(self):
+        source = self.root / "incoming.tmp"
+        original = self.root / "original"
+        destination = self.root / "destination"
+        original.write_bytes(b"preserve")
+        original.chmod(0o600)
+        source.symlink_to(original)
+        with self.assertRaises(TransferError) as error:
+            publish_no_replace(source, destination)
+        self.assertEqual(error.exception.status, 409)
+        self.assertFalse(destination.exists())
+        self.assertEqual(original.read_bytes(), b"preserve")
+        source.unlink()
+        source.write_bytes(b"new")
+        source.chmod(0o600)
+        destination.symlink_to(self.root / "missing")
+        with self.assertRaises(TransferError) as error:
+            publish_no_replace(source, destination)
+        self.assertEqual(error.exception.status, 409)
+        self.assertTrue(destination.is_symlink())
+        self.assertEqual(source.read_bytes(), b"new")
+
+    def test_publication_errno_is_safe_and_unsupported_link_fails_closed(self):
+        source, destination = self.root / "incoming.tmp", self.root / "destination"
+        source.write_bytes(b"preserve")
+        source.chmod(0o600)
+        with patch.object(transfer_modal.os, "link", side_effect=OSError(errno.EOPNOTSUPP, "private-path-never-print")):
+            with self.assertRaises(TransferError) as error:
+                publish_no_replace(source, destination)
+        self.assertEqual(error.exception.status, 503)
+        self.assertEqual(error.exception.message, f"atomic no-replace publication failed (errno {errno.EOPNOTSUPP})")
+        self.assertFalse(destination.exists())
+        self.assertEqual(source.read_bytes(), b"preserve")
+
+    def test_failed_source_unlink_keeps_destination_and_temp_reuse_is_safe(self):
+        source, destination = self.root / "incoming.tmp", self.root / "destination"
+        source.write_bytes(b"immutable")
+        source.chmod(0o600)
+        with patch.object(transfer_modal.os, "unlink", side_effect=OSError(errno.EIO, "private-path-never-print")):
+            with self.assertRaises(TransferError) as error:
+                publish_no_replace(source, destination)
+        self.assertEqual(error.exception.status, 503)
+        self.assertEqual(source.stat().st_ino, destination.stat().st_ino)
+        with self.app.open_regular(source, write=True) as handle:
+            handle.write(b"next input")
+        self.assertEqual(destination.read_bytes(), b"immutable")
+        self.assertNotEqual(source.stat().st_ino, destination.stat().st_ino)
+
+    async def test_stale_temp_symlink_is_rejected_without_touching_target(self):
+        self.app.prepare()
+        target = self.root / "preserved-file"
+        target.write_bytes(b"preserve")
+        (self.app.staging / "incoming.tmp").symlink_to(target)
+        self.assertEqual((await self.put(0))[0], 409)
+        self.assertEqual(target.read_bytes(), b"preserve")
+        self.assertFalse(self.app.chunk_path(0).exists())
 
     async def test_deadline_cancels_slow_request_without_publishing(self):
         self.app.request_seconds = 0.01

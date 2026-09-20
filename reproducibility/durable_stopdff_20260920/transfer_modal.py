@@ -8,7 +8,7 @@ the deployer must never inject its Modal credentials. No endpoint reads data.
 from __future__ import annotations
 
 import asyncio
-import ctypes
+import errno
 import hashlib
 import hmac
 import json
@@ -38,22 +38,47 @@ class TransferError(Exception):
 
 
 def publish_no_replace(source: Path, destination: Path) -> None:
-    """Atomically publish on Linux without replacing any existing object.
+    """Publish one private regular temp atomically using V2 hard-link support.
 
-    Unsupported filesystems fail closed; plain rename is deliberately not a
-    fallback, because it would overwrite historical evidence in a race.
+    link(2) creates the destination only if absent, including against a racing
+    writer. A crash before unlink leaves an alias; temp creation must unlink
+    that stale name and exclusively create a fresh inode, never truncate it.
     """
-    libc = ctypes.CDLL(None, use_errno=True)
-    rename = getattr(libc, "renameat2", None)
-    if rename is None:
-        raise TransferError(503, "atomic no-replace publication unavailable")
-    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    rename.restype = ctypes.c_int
-    if rename(-100, os.fsencode(source), -100, os.fsencode(destination), 1):
-        code = ctypes.get_errno()
-        if code == 17:  # EEXIST
-            raise TransferError(409, "destination already exists")
-        raise TransferError(503, "atomic no-replace publication failed")
+    if (source.parent != destination.parent or source == destination
+            or source.name not in ("incoming.tmp", "assembled.tmp")):
+        raise TransferError(409, "publication path conflict")
+    parent_fd = source_fd = None
+    try:
+        parent_fd = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        original = os.stat(source.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (not stat.S_ISREG(original.st_mode) or original.st_mode & 0o077
+                or original.st_nlink != 1):
+            raise TransferError(409, "publication source conflict")
+        source_fd = os.open(source.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+
+        def identity(info):
+            return (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns)
+
+        before = identity(original)
+        if identity(os.fstat(source_fd)) != before:
+            raise TransferError(409, "publication source changed")
+        os.link(source.name, destination.name, src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd, follow_symlinks=False)
+        if (identity(os.fstat(source_fd)) != before
+                or identity(os.stat(source.name, dir_fd=parent_fd, follow_symlinks=False)) != before
+                or identity(os.stat(destination.name, dir_fd=parent_fd, follow_symlinks=False)) != before):
+            raise TransferError(503, "publication source changed")
+        os.unlink(source.name, dir_fd=parent_fd)
+    except OSError as error:
+        if error.errno == errno.EEXIST:
+            raise TransferError(409, "destination already exists") from None
+        code = error.errno if type(error.errno) is int and 0 < error.errno < 4096 else 0
+        raise TransferError(503, f"atomic no-replace publication failed (errno {code})") from None
+    finally:
+        if source_fd is not None:
+            os.close(source_fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
 
 
 class TransferASGI:
@@ -141,7 +166,16 @@ class TransferASGI:
 
     @staticmethod
     def open_regular(path, *, write=False):
-        flags = os.O_NOFOLLOW | (os.O_WRONLY | os.O_CREAT | os.O_TRUNC if write else os.O_RDONLY)
+        # Only owned transient names may be recycled. A stale temp can still
+        # share the immutable destination inode after an interrupted link, so
+        # unlink its name and use O_EXCL instead of truncating that inode.
+        if write and path.name not in ("incoming.tmp", "assembled.tmp"):
+            raise TransferError(409, "temporary file path conflict")
+        if write and os.path.lexists(path):
+            if not stat.S_ISREG(path.lstat().st_mode):
+                raise TransferError(409, "storage file conflict")
+            path.unlink()
+        flags = os.O_NOFOLLOW | (os.O_WRONLY | os.O_CREAT | os.O_EXCL if write else os.O_RDONLY)
         try:
             fd = os.open(path, flags, 0o600)
         except OSError:
@@ -237,7 +271,8 @@ class TransferASGI:
         paths = [self.chunk_path(index) for index in range(self.chunk_count)]
         if any(not self.exists(path) for path in paths):
             raise TransferError(409, "chunks missing")
-        temp = self.staging / "assembled.tmp"
+        # Keep source and final destination in the same verified directory.
+        temp = self.inputs / "assembled.tmp"
         digest = hashlib.sha256()
         total = 0
         try:
