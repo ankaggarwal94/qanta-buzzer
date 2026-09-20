@@ -1,0 +1,44 @@
+name: StopDFF authenticated input transfer
+on:
+  push:
+    branches: [ops/stopdff-durable-rerun-20260920]
+    paths: [.github/workflows/stopdff-modal-transfer.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: stopdff-input-transfer-20260920
+  cancel-in-progress: false
+jobs:
+  transfer-endpoint:
+    if: github.ref == 'refs/heads/ops/stopdff-durable-rerun-20260920'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install pinned Modal client
+        run: python -m pip install --disable-pip-version-check 'modal==1.5.5'
+      - name: Deploy bounded authenticated transfer endpoint
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          python - <<'PY'
+          import hashlib, hmac, os, subprocess, time
+          env = os.environ.copy()
+          if not env.get('MODAL_TOKEN_ID') or not env.get('MODAL_TOKEN_SECRET'):
+              raise SystemExit('Required Modal credentials unavailable')
+          env['STOPDFF_TRANSFER_TOKEN'] = hmac.new(
+              env['MODAL_TOKEN_SECRET'].encode(), b'stopdff-input-transfer-20260920', hashlib.sha256
+          ).hexdigest()
+          env['STOPDFF_TRANSFER_EXPIRES'] = str(int(time.time()) + 3600)
+          env['STOPDFF_TRANSFER_DEPLOY'] = '1'
+          subprocess.run(['modal', 'deploy',
+              'reproducibility/durable_stopdff_20260920/transfer_modal.py'], env=env, check=True)
+          PY
