@@ -1,0 +1,12 @@
+# Python must be exactly 3.11.12. These nine versions define scientific identity.
+huggingface_hub==1.29.0
+matplotlib==3.11.1
+numpy==2.4.6
+pandas==3.0.5
+scikit-learn==1.9.0
+scipy==1.17.1
+sentence-transformers==6.0.0
+torch==2.13.0
+transformers==5.16.1
+# Validator dependency outside the nine-package scientific identity.
+jsonschema==4.26.0
