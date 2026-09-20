@@ -1,4 +1,4 @@
-# Revision 4: validate provider mount links against the exact bound Volume.
+# Revision 5: bind the endpoint to the verified separate V2 rerun volume.
 name: StopDFF authenticated input transfer
 on:
   push:
