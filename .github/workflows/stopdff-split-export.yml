@@ -1,0 +1,178 @@
+name: Split the existing encrypted StopDFF export
+on:
+  push:
+    branches: [ops/stopdff-private-export-20260921]
+    paths: [.github/workflows/stopdff-split-export.yml]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: stopdff-existing-ciphertext-split-20260921
+  cancel-in-progress: false
+jobs:
+  split-existing-ciphertext:
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/ops/stopdff-private-export-20260921' &&
+      github.event.head_commit.message == 'ops: split verified encrypted StopDFF export 20260921' &&
+      github.run_attempt == '1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Download only the exact already encrypted artifact
+        uses: actions/download-artifact@v4
+        with:
+          # stopdff-encrypted-full-35536866002-1; name is not a selector.
+          artifact-ids: '10629203403'
+          repository: ankaggarwal94/qanta-buzzer
+          run-id: '35579263205'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/stopdff-ciphertext-source
+      - name: Verify exact ciphertext and create bounded parts
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          CMS_NAME = "full-35536866002-1.cms"
+          CMS_SIZE = 3232153750
+          CMS_SHA256 = "cebb566d74ebd9bf9cffded8e4fba83e770a17fbf79bcc48e4ca7ac07d5acbb6"
+          PART_BYTES = 400 * 1024**2
+          EXPECTED_PARTS = 8
+
+          def split_ciphertext(source, destination, expected_size, expected_sha, part_bytes, expected_count):
+              if (type(expected_size) is not int or expected_size <= 0
+                      or type(part_bytes) is not int or part_bytes <= 0
+                      or (expected_size + part_bytes - 1) // part_bytes != expected_count):
+                  raise ValueError("Invalid ciphertext split specification")
+              if source.is_symlink() or not source.is_file() or source.stat().st_size != expected_size:
+                  raise ValueError("Original ciphertext size or file type mismatch")
+              with source.open("rb") as incoming:
+                  if hashlib.file_digest(incoming, "sha256").hexdigest() != expected_sha:
+                      raise ValueError("Original ciphertext digest mismatch")
+              destination.mkdir(parents=True, exist_ok=False)
+              copied = 0
+              second_digest = hashlib.sha256()
+              parts = []
+              with source.open("rb") as incoming:
+                  for index in range(expected_count):
+                      name = source.name + f".part{index:02d}"
+                      size = min(part_bytes, expected_size - copied)
+                      remaining = size
+                      part_digest = hashlib.sha256()
+                      with (destination / name).open("xb") as outgoing:
+                          while remaining:
+                              block = incoming.read(min(1024**2, remaining))
+                              if not block:
+                                  raise ValueError("Ciphertext truncated while splitting")
+                              outgoing.write(block)
+                              part_digest.update(block)
+                              second_digest.update(block)
+                              remaining -= len(block)
+                              copied += len(block)
+                      parts.append({"index": index, "name": name, "size": size,
+                                    "sha256": part_digest.hexdigest()})
+                  if incoming.read(1) or copied != expected_size or second_digest.hexdigest() != expected_sha:
+                      raise ValueError("Ciphertext changed during splitting")
+              # Metadata concerns ciphertext only. No plaintext or private key is present.
+              manifest = {"schema_version": 1, "scope": "encrypted ciphertext only",
+                          "source_run_id": 35579263205, "source_artifact_id": 10629203403,
+                          "original": {"name": source.name, "size": expected_size, "sha256": expected_sha},
+                          "part_bytes": part_bytes, "parts": parts}
+              with (destination / "parts.json").open("x", encoding="utf-8") as stream:
+                  json.dump(manifest, stream, indent=2)
+                  stream.write("\n")
+              with (destination / "SHA256SUMS").open("x", encoding="ascii") as stream:
+                  for part in parts:
+                      stream.write(part["sha256"] + "  " + part["name"] + "\n")
+              return manifest
+
+          if __name__ == "__main__":
+              os.umask(0o077)
+              runtime = Path(os.environ["RUNNER_TEMP"])
+              result = split_ciphertext(runtime / "stopdff-ciphertext-source" / CMS_NAME,
+                                        runtime / "stopdff-ciphertext-parts",
+                                        CMS_SIZE, CMS_SHA256, PART_BYTES, EXPECTED_PARTS)
+              print(json.dumps({"status": "CIPHERTEXT_SPLIT_VERIFIED",
+                                "bytes": result["original"]["size"],
+                                "sha256": result["original"]["sha256"],
+                                "parts": len(result["parts"])}))
+          PY
+      - name: Upload ciphertext part 00
+        uses: actions/upload-artifact@v4
+        with:
+          name: stopdff-encrypted-full-35536866002-1-part00
+          path: ${{ runner.temp }}/stopdff-ciphertext-parts/full-35536866002-1.cms.part00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload ciphertext part 01
+        uses: actions/upload-artifact@v4
+        with:
+          name: stopdff-encrypted-full-35536866002-1-part01
+          path: ${{ runner.temp }}/stopdff-ciphertext-parts/full-35536866002-1.cms.part01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload ciphertext part 02
+        uses: actions/upload-artifact@v4
+        with:
+          name: stopdff-encrypted-full-35536866002-1-part02
+          path: ${{ runner.temp }}/stopdff-ciphertext-parts/full-35536866002-1.cms.part02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload ciphertext part 03
+        uses: actions/upload-artifact@v4
+        with:
+          name: stopdff-encrypted-full-35536866002-1-part03
+          path: ${{ runner.temp }}/stopdff-ciphertext-parts/full-35536866002-1.cms.part03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload ciphertext part 04
+        uses: actions/upload-artifact@v4
+        with:
+          name: stopdff-encrypted-full-35536866002-1-part04
+          path: ${{ runner.temp }}/stopdff-ciphertext-parts/full-35536866002-1.cms.part04
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload ciphertext part 05
+        uses: actions/upload-artifact@v4
+        with:
+          name: stopdff-encrypted-full-35536866002-1-part05
+          path: ${{ runner.temp }}/stopdff-ciphertext-parts/full-35536866002-1.cms.part05
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload ciphertext part 06
+        uses: actions/upload-artifact@v4
+        with:
+          name: stopdff-encrypted-full-35536866002-1-part06
+          path: ${{ runner.temp }}/stopdff-ciphertext-parts/full-35536866002-1.cms.part06
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload ciphertext part 07
+        uses: actions/upload-artifact@v4
+        with:
+          name: stopdff-encrypted-full-35536866002-1-part07
+          path: ${{ runner.temp }}/stopdff-ciphertext-parts/full-35536866002-1.cms.part07
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload ciphertext part index
+        uses: actions/upload-artifact@v4
+        with:
+          name: stopdff-encrypted-full-35536866002-1-part-index
+          path: |
+            ${{ runner.temp }}/stopdff-ciphertext-parts/parts.json
+            ${{ runner.temp }}/stopdff-ciphertext-parts/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
