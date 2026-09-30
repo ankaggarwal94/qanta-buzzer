@@ -1,0 +1,322 @@
+{
+  "artifact": "tae_camera_ready_diag_v1",
+  "max_raw_similarity_test": 0.685533,
+  "method": {
+    "calibrator_application": {
+      "isotonic": "isotonic applied via linear interpolation on the stored (x_thresholds, y_thresholds) knots with edge clipping (np.interp + clip to [0,1]); sklearn-equivalent, sklearn not imported",
+      "platt-logistic": "p = sigmoid(a*s + b), z clipped to [-500, 500]",
+      "similarity-temperature": "p = sigmoid(s / T), same clip"
+    },
+    "ece_definition": "the run's own 10-bin ECE (scripts/stopdff_v5/adapter_build.py): np.linspace(0,1,11) edges, last bin right-inclusive, count-weighted |mean(label) - mean(p)|",
+    "fit_application": "one shared per-phase map fit on validation MC rows, applied unchanged to both MC and QA test rows (run_spec: fit_rows=validation_mc_only, application=shared_map_applied_to_mc_and_qa)",
+    "phase_convention": "early/mid/late by CHARACTER fraction of the question (prefix_char_count / full_question_char_count); early < 0.33 <= mid < 0.66 <= late",
+    "split": "all statistics on TEST eval rows"
+  },
+  "per_calibrator": {
+    "isotonic": {
+      "knot_counts": {
+        "early": 18,
+        "late": 40,
+        "mid": 28
+      },
+      "parameters_stored_per_cell": true,
+      "phases": {
+        "early": {
+          "attained_max_p_all_formats": 0.399596,
+          "by_format": {
+            "MC": {
+              "max_p": 0.399596,
+              "mean_p": 0.342822,
+              "median_p": 0.310369,
+              "n": 3386,
+              "p90_p": 0.399596
+            },
+            "QA": {
+              "max_p": 0.399596,
+              "mean_p": 0.299059,
+              "median_p": 0.310369,
+              "n": 3386,
+              "p90_p": 0.399596
+            }
+          },
+          "level_gap_mean_p_mc_minus_qa": 0.043763,
+          "mc_ece": 0.022579,
+          "n_mc": 3386,
+          "qa_gold_idealized_gap": {
+            "definition": "1 - mean(calibrated p) over QA rows in the phase",
+            "value": 0.700941,
+            "warning": "NOT a calibration ECE. QA-arm labels are identically 1 by construction (gold-idealized reference arm: cosine similarity to the constructed gold answer, correctness hard-coded to 1), so any 'QA ECE' degenerates to 1 - mean(calibrated p). This value therefore measures the gap between the calibrated confidence level and the idealized always-correct label, not per-format calibration quality."
+          }
+        },
+        "late": {
+          "attained_max_p_all_formats": 0.654545,
+          "by_format": {
+            "MC": {
+              "max_p": 0.654545,
+              "mean_p": 0.446851,
+              "median_p": 0.403044,
+              "n": 7055,
+              "p90_p": 0.61383
+            },
+            "QA": {
+              "max_p": 0.654545,
+              "mean_p": 0.387679,
+              "median_p": 0.374775,
+              "n": 7055,
+              "p90_p": 0.584071
+            }
+          },
+          "level_gap_mean_p_mc_minus_qa": 0.059172,
+          "mc_ece": 0.017024,
+          "n_mc": 7055,
+          "qa_gold_idealized_gap": {
+            "definition": "1 - mean(calibrated p) over QA rows in the phase",
+            "value": 0.612321,
+            "warning": "NOT a calibration ECE. QA-arm labels are identically 1 by construction (gold-idealized reference arm: cosine similarity to the constructed gold answer, correctness hard-coded to 1), so any 'QA ECE' degenerates to 1 - mean(calibrated p). This value therefore measures the gap between the calibrated confidence level and the idealized always-correct label, not per-format calibration quality."
+          }
+        },
+        "mid": {
+          "attained_max_p_all_formats": 0.416938,
+          "by_format": {
+            "MC": {
+              "max_p": 0.416938,
+              "mean_p": 0.374631,
+              "median_p": 0.368467,
+              "n": 4479,
+              "p90_p": 0.415842
+            },
+            "QA": {
+              "max_p": 0.416938,
+              "mean_p": 0.343163,
+              "median_p": 0.364407,
+              "n": 4479,
+              "p90_p": 0.401515
+            }
+          },
+          "level_gap_mean_p_mc_minus_qa": 0.031468,
+          "mc_ece": 0.014978,
+          "n_mc": 4479,
+          "qa_gold_idealized_gap": {
+            "definition": "1 - mean(calibrated p) over QA rows in the phase",
+            "value": 0.656837,
+            "warning": "NOT a calibration ECE. QA-arm labels are identically 1 by construction (gold-idealized reference arm: cosine similarity to the constructed gold answer, correctness hard-coded to 1), so any 'QA ECE' degenerates to 1 - mean(calibrated p). This value therefore measures the gap between the calibrated confidence level and the idealized always-correct label, not per-format calibration quality."
+          }
+        }
+      },
+      "reconstruction_note": "isotonic applied via linear interpolation on the stored (x_thresholds, y_thresholds) knots with edge clipping (np.interp + clip to [0,1]); sklearn-equivalent, sklearn not imported"
+    },
+    "platt-logistic": {
+      "parameters_stored_per_cell": true,
+      "phases": {
+        "early": {
+          "attained_max_p_all_formats": 0.47517,
+          "by_format": {
+            "MC": {
+              "max_p": 0.47517,
+              "mean_p": 0.343604,
+              "median_p": 0.341798,
+              "n": 3386,
+              "p90_p": 0.378654
+            },
+            "QA": {
+              "max_p": 0.47517,
+              "mean_p": 0.324622,
+              "median_p": 0.321816,
+              "n": 3386,
+              "p90_p": 0.364857
+            }
+          },
+          "level_gap_mean_p_mc_minus_qa": 0.018982,
+          "mc_ece": 0.013747,
+          "n_mc": 3386,
+          "qa_gold_idealized_gap": {
+            "definition": "1 - mean(calibrated p) over QA rows in the phase",
+            "value": 0.675378,
+            "warning": "NOT a calibration ECE. QA-arm labels are identically 1 by construction (gold-idealized reference arm: cosine similarity to the constructed gold answer, correctness hard-coded to 1), so any 'QA ECE' degenerates to 1 - mean(calibrated p). This value therefore measures the gap between the calibrated confidence level and the idealized always-correct label, not per-format calibration quality."
+          }
+        },
+        "late": {
+          "attained_max_p_all_formats": 0.717912,
+          "by_format": {
+            "MC": {
+              "max_p": 0.717912,
+              "mean_p": 0.446516,
+              "median_p": 0.444595,
+              "n": 7055,
+              "p90_p": 0.552807
+            },
+            "QA": {
+              "max_p": 0.717912,
+              "mean_p": 0.398186,
+              "median_p": 0.388598,
+              "n": 7055,
+              "p90_p": 0.532866
+            }
+          },
+          "level_gap_mean_p_mc_minus_qa": 0.04833,
+          "mc_ece": 0.031919,
+          "n_mc": 7055,
+          "qa_gold_idealized_gap": {
+            "definition": "1 - mean(calibrated p) over QA rows in the phase",
+            "value": 0.601814,
+            "warning": "NOT a calibration ECE. QA-arm labels are identically 1 by construction (gold-idealized reference arm: cosine similarity to the constructed gold answer, correctness hard-coded to 1), so any 'QA ECE' degenerates to 1 - mean(calibrated p). This value therefore measures the gap between the calibrated confidence level and the idealized always-correct label, not per-format calibration quality."
+          }
+        },
+        "mid": {
+          "attained_max_p_all_formats": 0.473027,
+          "by_format": {
+            "MC": {
+              "max_p": 0.473027,
+              "mean_p": 0.375304,
+              "median_p": 0.374049,
+              "n": 4479,
+              "p90_p": 0.404096
+            },
+            "QA": {
+              "max_p": 0.473027,
+              "mean_p": 0.359123,
+              "median_p": 0.357805,
+              "n": 4479,
+              "p90_p": 0.394844
+            }
+          },
+          "level_gap_mean_p_mc_minus_qa": 0.016181,
+          "mc_ece": 0.013958,
+          "n_mc": 4479,
+          "qa_gold_idealized_gap": {
+            "definition": "1 - mean(calibrated p) over QA rows in the phase",
+            "value": 0.640877,
+            "warning": "NOT a calibration ECE. QA-arm labels are identically 1 by construction (gold-idealized reference arm: cosine similarity to the constructed gold answer, correctness hard-coded to 1), so any 'QA ECE' degenerates to 1 - mean(calibrated p). This value therefore measures the gap between the calibrated confidence level and the idealized always-correct label, not per-format calibration quality."
+          }
+        }
+      }
+    },
+    "similarity-temperature": {
+      "parameters_stored_per_cell": true,
+      "phases": {
+        "early": {
+          "attained_max_p_all_formats": 0.534223,
+          "by_format": {
+            "MC": {
+              "max_p": 0.534223,
+              "mean_p": 0.512469,
+              "median_p": 0.512234,
+              "n": 3386,
+              "p90_p": 0.518573
+            },
+            "QA": {
+              "max_p": 0.534223,
+              "mean_p": 0.509049,
+              "median_p": 0.508661,
+              "n": 3386,
+              "p90_p": 0.516233
+            }
+          },
+          "level_gap_mean_p_mc_minus_qa": 0.00342,
+          "mc_ece": 0.179037,
+          "n_mc": 3386,
+          "qa_gold_idealized_gap": {
+            "definition": "1 - mean(calibrated p) over QA rows in the phase",
+            "value": 0.490951,
+            "warning": "NOT a calibration ECE. QA-arm labels are identically 1 by construction (gold-idealized reference arm: cosine similarity to the constructed gold answer, correctness hard-coded to 1), so any 'QA ECE' degenerates to 1 - mean(calibrated p). This value therefore measures the gap between the calibrated confidence level and the idealized always-correct label, not per-format calibration quality."
+          }
+        },
+        "late": {
+          "attained_max_p_all_formats": 0.53422,
+          "by_format": {
+            "MC": {
+              "max_p": 0.53422,
+              "mean_p": 0.516858,
+              "median_p": 0.516824,
+              "n": 7055,
+              "p90_p": 0.523367
+            },
+            "QA": {
+              "max_p": 0.53422,
+              "mean_p": 0.513716,
+              "median_p": 0.513349,
+              "n": 7055,
+              "p90_p": 0.522157
+            }
+          },
+          "level_gap_mean_p_mc_minus_qa": 0.003142,
+          "mc_ece": 0.073059,
+          "n_mc": 7055,
+          "qa_gold_idealized_gap": {
+            "definition": "1 - mean(calibrated p) over QA rows in the phase",
+            "value": 0.486284,
+            "warning": "NOT a calibration ECE. QA-arm labels are identically 1 by construction (gold-idealized reference arm: cosine similarity to the constructed gold answer, correctness hard-coded to 1), so any 'QA ECE' degenerates to 1 - mean(calibrated p). This value therefore measures the gap between the calibrated confidence level and the idealized always-correct label, not per-format calibration quality."
+          }
+        },
+        "mid": {
+          "attained_max_p_all_formats": 0.534075,
+          "by_format": {
+            "MC": {
+              "max_p": 0.534075,
+              "mean_p": 0.51482,
+              "median_p": 0.514617,
+              "n": 4479,
+              "p90_p": 0.520672
+            },
+            "QA": {
+              "max_p": 0.534075,
+              "mean_p": 0.51145,
+              "median_p": 0.511262,
+              "n": 4479,
+              "p90_p": 0.518826
+            }
+          },
+          "level_gap_mean_p_mc_minus_qa": 0.00337,
+          "mc_ece": 0.143086,
+          "n_mc": 4479,
+          "qa_gold_idealized_gap": {
+            "definition": "1 - mean(calibrated p) over QA rows in the phase",
+            "value": 0.48855,
+            "warning": "NOT a calibration ECE. QA-arm labels are identically 1 by construction (gold-idealized reference arm: cosine similarity to the constructed gold answer, correctness hard-coded to 1), so any 'QA ECE' degenerates to 1 - mean(calibrated p). This value therefore measures the gap between the calibrated confidence level and the idealized always-correct label, not per-format calibration quality."
+          }
+        }
+      },
+      "temperature_note": {
+        "T_by_phase": {
+          "early": 5.0,
+          "late": 5.0,
+          "mid": 5.0
+        },
+        "fit_grid": [
+          0.25,
+          0.5,
+          0.75,
+          1.0,
+          1.5,
+          2.0,
+          3.0,
+          5.0
+        ],
+        "note": "T equals the fit grid's MAXIMUM (5.0) in every phase: the grid-constrained log-loss optimum is saturated/truncated at the boundary, compressing calibrated probabilities toward 0.5",
+        "saturated_at_grid_max": true
+      }
+    }
+  },
+  "regression_gate": {
+    "name": "platt_ece_triple",
+    "phases": {
+      "early": {
+        "n_samples": 3386,
+        "recomputed_ece": 0.013747,
+        "stored_ece": 0.013747
+      },
+      "late": {
+        "n_samples": 7055,
+        "recomputed_ece": 0.031919,
+        "stored_ece": 0.031919
+      },
+      "mid": {
+        "n_samples": 4479,
+        "recomputed_ece": 0.013958,
+        "stored_ece": 0.013958
+      }
+    },
+    "status": "PASS"
+  },
+  "run_id": "final_modal_5d5328102912"
+}
