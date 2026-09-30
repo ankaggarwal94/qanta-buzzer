@@ -15,6 +15,7 @@ import argparse
 import importlib.metadata as im
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -51,6 +52,7 @@ from scripts.stopdff_v5.content_manifest import git_mode_for_path  # noqa: E402
 from scripts.stopdff_v5.identity import (  # noqa: E402
     build_manifest,
     compute_id,
+    is_sha256_hex,
     loads_no_duplicate_keys,
     sha256_bytes,
     sha256_file,
@@ -286,6 +288,9 @@ def _lifecycle_contract(*, args, run_sha: str) -> dict:
         "fvi_tolerance": args.fvi_tolerance,
         "fvi_max_iterations": args.fvi_max_iterations,
         "allow_low_mc_retention": args.allow_low_mc_retention,
+        # Bind content, not the external archive's location. Missing values in
+        # older checkpoints compare as None and retain legacy resume behavior.
+        "imported_model_snapshot_id": getattr(args, "imported_model_snapshot_id", None),
     }
 
 
@@ -588,6 +593,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument("--repo-root", type=Path, default=_REPO)
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--variant", choices=["smoke", "final"], default="smoke")
+    ap.add_argument(
+        "--model-snapshot-dir", type=Path,
+        help="import an archived model stage containing model_snapshot_manifest.json and snapshot/; repeat on resume",
+    )
+    ap.add_argument(
+        "--expected-model-snapshot-id",
+        help="require this 64-hex model identity when importing an archived snapshot",
+    )
     ap.add_argument("--skip-fvi-study", action="store_true",
                     help="use --fvi-tolerance/--fvi-max-iterations directly (fast; skips the selector)")
     ap.add_argument("--fvi-tolerance", default="1e-6")
@@ -603,6 +616,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="identity-bind and allow a below-threshold MC retention decision",
     )
     args = ap.parse_args(argv)
+    if args.expected_model_snapshot_id is not None:
+        if args.model_snapshot_dir is None:
+            ap.error("--expected-model-snapshot-id requires --model-snapshot-dir")
+        if not is_sha256_hex(args.expected_model_snapshot_id):
+            ap.error("--expected-model-snapshot-id must be a lowercase 64-hex digest")
     return args
 
 
@@ -739,10 +757,54 @@ def _stage_raw_inputs(
     return raw_id, myopic_sha, raw_dir
 
 
-def _stage_model_snapshot(out: Path) -> str:
+def _validate_model_snapshot_stage(base: Path) -> dict:
+    """Verify every archived model byte, without rewriting its identity."""
+    manifest = _load_bound_content_manifest(
+        base,
+        manifest_name="model_snapshot_manifest.json",
+        expected_kind="model_snapshot",
+        file_key="files",
+        name_key="path",
+        content_subdir="snapshot",
+    )
+    if {path.name for path in base.iterdir()} != {
+        "model_snapshot_manifest.json", "snapshot",
+    }:
+        raise ValueError("archived model stage has unexpected root entries")
+    return manifest
+
+
+def _load_imported_model_manifest(
+    source: Path, *, out: Path, expected_model_snapshot_id: str | None,
+) -> dict:
+    """Reject unsafe paths and verify an external, disjoint archived stage."""
+    source = Path(source).absolute()
+    out = Path(out).absolute()
+    if source.resolve(strict=False) != source:
+        raise ValueError("--model-snapshot-dir must not traverse symlinked or noncanonical paths")
+    if source.is_relative_to(out) or out.is_relative_to(source):
+        raise ValueError("--model-snapshot-dir and --out-dir must not overlap")
+    manifest = _validate_model_snapshot_stage(source)
+    if expected_model_snapshot_id is not None and manifest["id"] != expected_model_snapshot_id:
+        raise ValueError("archived model snapshot does not match expected model identity")
+    return manifest
+
+
+def _stage_model_snapshot(
+    out: Path, *, model_snapshot_dir: Path | None = None,
+    expected_model_snapshot_id: str | None = None,
+) -> str:
     """Create or reuse the pinned model snapshot stage."""
     print("== model snapshot (all-MiniLM-L6-v2, pinned revision) ==")
     model_stage = out / "model"
+    imported_manifest = None
+    if model_snapshot_dir is not None:
+        imported_manifest = _load_imported_model_manifest(
+            model_snapshot_dir, out=out,
+            expected_model_snapshot_id=expected_model_snapshot_id,
+        )
+    elif expected_model_snapshot_id is not None:
+        raise ValueError("expected model identity requires an archived model snapshot")
     if model_stage.exists() or model_stage.is_symlink():
         model_man = _load_bound_content_manifest(
             model_stage,
@@ -751,6 +813,24 @@ def _stage_model_snapshot(out: Path) -> str:
             file_key="files",
             name_key="path",
             content_subdir="snapshot",
+        )
+        if imported_manifest is not None:
+            _validate_model_snapshot_stage(model_stage)
+            if model_man["id"] != imported_manifest["id"]:
+                raise ValueError("staged model snapshot does not match expected imported identity")
+    elif imported_manifest is not None:
+        def import_model_snapshot(staged: Path) -> dict:
+            # Preserve cache entries and the original manifest verbatim. Copy
+            # symlinks as links so post-copy validation rejects any introduced
+            # during a race, rather than following them into another tree.
+            shutil.copytree(model_snapshot_dir, staged, symlinks=True)
+            manifest = _validate_model_snapshot_stage(staged)
+            if manifest["id"] != imported_manifest["id"]:
+                raise ValueError("archived model snapshot changed during import")
+            return manifest
+
+        model_man = _publish_stage_directory(
+            out=out, target_name="model", build=import_model_snapshot,
         )
     else:
         def build_model_snapshot(staged: Path) -> dict:
@@ -1378,6 +1458,16 @@ def main(argv: list[str] | None = None) -> int:
     _verify_imported_producer_origins()
     args = _parse_args(argv)
     out, run_sha = _preflight_clean_worktree(args)
+    args.imported_model_snapshot_id = None
+    if args.model_snapshot_dir is not None:
+        # Validate before creating an output or doing source/mutation/adapter
+        # work. Keep the expected ID fixed across the subsequent copy/recheck.
+        args.model_snapshot_dir = args.model_snapshot_dir.absolute()
+        imported_manifest = _load_imported_model_manifest(
+            args.model_snapshot_dir, out=out,
+            expected_model_snapshot_id=args.expected_model_snapshot_id,
+        )
+        args.imported_model_snapshot_id = imported_manifest["id"]
     runs_dir = out / "runs"
     if runs_dir.is_symlink():
         raise ValueError("local runs directory must not be a symlink")
@@ -1405,6 +1495,13 @@ def main(argv: list[str] | None = None) -> int:
         resume=args.resume,
     )
 
+    imported_model_id = None
+    if args.model_snapshot_dir is not None:
+        imported_model_id = _stage_model_snapshot(
+            out, model_snapshot_dir=args.model_snapshot_dir,
+            expected_model_snapshot_id=args.imported_model_snapshot_id,
+        )
+
     source_id, source_execution = _stage_source_snapshot(
         out=out,
         args=args,
@@ -1412,7 +1509,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     mutation_results = _run_mutation_gate(out=out, lifecycle=lifecycle)
     raw_id, myopic_sha, raw_dir = _stage_raw_inputs(out=out, args=args)
-    model_id = _stage_model_snapshot(out)
+    model_id = imported_model_id or _stage_model_snapshot(out)
     adapter_man, adapter_id, first_build_execution_id = _stage_adapter_bundle(
         out=out,
         lifecycle=lifecycle,
@@ -1673,6 +1770,9 @@ def _resume_local_run(*, args, out: Path, run_sha: str) -> int:
         name_key="path",
         content_subdir="snapshot",
     )
+    imported_model_id = getattr(args, "imported_model_snapshot_id", None)
+    if imported_model_id is not None and model_manifest["id"] != imported_model_id:
+        raise ValueError("resume model snapshot does not match expected imported identity")
     semantic_checks = raw_manifest["identity"].get("semantic_checks")
     if (
         not isinstance(semantic_checks, dict)

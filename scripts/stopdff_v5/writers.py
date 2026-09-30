@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import PROFILE_NAME, PROTOCOL_VERSION
-from .fileio import publish_bytes
+from .fileio import create_once_bytes, publish_bytes
 from .identity import build_manifest, compute_id, loads_no_duplicate_keys, sha256_file
 from .profile import CALIBRATION, REWARD_SCHEDULES
 from .receipt_evidence import (
@@ -766,7 +766,11 @@ def package_run(
     external_artifacts: list[dict[str, Any]] | None = None,
     evidence_files: dict[str, bytes] | None = None,
 ) -> None:
-    """Create a package once, or accept only byte-identical cached content."""
+    """Publish package bytes once, preserving source-manifest executable modes.
+
+    Existing managed files must match their bytes and declared source mode;
+    mode repair of an older extraction requires a separate verified copy.
+    """
     if not external_artifacts:
         raise ValueError("package requires a nonempty external-artifact ledger")
     root = Path(output_dir)
@@ -777,6 +781,17 @@ def package_run(
         evidence_files=dict(evidence_files or {}),
         )
     )
+    from .content_manifest import git_mode_for_path
+
+    source_manifest = _manifest_from_bytes(
+        packaged_evidence[MANIFEST_EVIDENCE_PATHS["source_manifest"]],
+        role="source_manifest",
+    )
+    source_modes = {
+        (Path("evidence/source_snapshot/source") / entry["path"]).as_posix():
+        entry["mode"]
+        for entry in source_manifest["identity"]["files"]
+    }
     candidates: dict[str, bytes] = {
         "reports/report.md": render_markdown(
             aggregate,
@@ -831,7 +846,8 @@ def package_run(
         "\n".join(sorted(checksum_lines)) + "\n"
     ).encode("utf-8")
 
-    # Check every existing managed byte before filling any missing path.
+    # Check every existing managed byte and source mode before filling any
+    # missing path. A cache must not silently acquire a repaired identity.
     for rel, data in candidates.items():
         path = root / rel
         if path.exists() and (
@@ -840,7 +856,22 @@ def package_run(
             or path.read_bytes() != data
         ):
             raise ValueError(f"package evidence mismatch at {path}")
+        if path.exists() and rel in source_modes:
+            actual_mode = git_mode_for_path(path)
+            if actual_mode != source_modes[rel]:
+                raise ValueError(
+                    f"package source mode mismatch at {path}: "
+                    f"expected {source_modes[rel]}, found {actual_mode}"
+                )
     for rel, data in candidates.items():
         path = root / rel
         if not path.exists():
-            publish_bytes(path, data)
+            if rel in source_modes:
+                create_once_bytes(
+                    path,
+                    data,
+                    exists_label="packaged source file",
+                    file_mode=0o755 if source_modes[rel] == "100755" else 0o644,
+                )
+            else:
+                publish_bytes(path, data)

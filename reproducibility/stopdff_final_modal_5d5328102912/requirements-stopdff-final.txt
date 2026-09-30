@@ -1,0 +1,15 @@
+# Exact closed scientific environment recorded by final_modal_5d5328102912
+# Python: 3.11.12
+#
+# This is the identity-bound package set used by StopDFF v5. The standalone
+# validator also needs jsonschema; the upstream data-build stage needs the
+# broader best-effort requirements-rebuild-inputs.txt.
+huggingface_hub==1.29.0
+matplotlib==3.11.1
+numpy==2.4.6
+pandas==3.0.5
+scikit-learn==1.9.0
+scipy==1.17.1
+sentence-transformers==6.0.0
+torch==2.13.0
+transformers==5.16.1

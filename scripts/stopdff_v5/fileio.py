@@ -199,6 +199,7 @@ def create_once_bytes(
     *,
     exists_label: str = "create-once artifact",
     commit_created: Callable[[], None] | None = None,
+    file_mode: int | None = None,
 ) -> None:
     """Durably publish a new regular file, failing closed if ``path`` exists.
 
@@ -221,7 +222,18 @@ def create_once_bytes(
         hard link commits and before any fallible temp cleanup or directory
         sync. Callers may use it to distinguish a committed artifact from a
         pre-commit failure; the callback must not raise.
+    file_mode
+        Optional canonical source mode, ``0o644`` or ``0o755``. Apply it to
+        the private temporary file before syncing and publishing, so the
+        destination never exposes bytes with the wrong executable identity.
+        ``None`` preserves the historical temporary-file mode behavior.
     """
+    if file_mode is not None and (
+        isinstance(file_mode, bool)
+        or not isinstance(file_mode, int)
+        or file_mode not in {0o644, 0o755}
+    ):
+        raise ValueError("file_mode must be None, 0o644, or 0o755")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(
@@ -232,6 +244,15 @@ def create_once_bytes(
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
             handle.flush()
+            if file_mode is not None:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(handle.fileno(), file_mode)
+                else:
+                    os.chmod(temporary, file_mode)
+                if bool(os.fstat(handle.fileno()).st_mode & 0o111) != bool(
+                    file_mode & 0o111
+                ):
+                    raise ValueError("filesystem cannot preserve source executable mode")
             os.fsync(handle.fileno())
         try:
             os.link(temporary, path)

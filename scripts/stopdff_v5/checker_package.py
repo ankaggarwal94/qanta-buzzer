@@ -245,7 +245,7 @@ def inspect_packaged_fvi_manifest_kind(
 def _check_source_producer_map(
     errors: list[str],
     *,
-    source_hashes: dict[str, str],
+    source_hashes: dict[str, str] | None,
     claimed: Any,
     expected_basenames: set[str],
     label: str,
@@ -256,9 +256,17 @@ def _check_source_producer_map(
     for basename in sorted(expected_basenames):
         expected_path = f"scripts/stopdff_v5/{basename}"
         digest = claimed.get(basename)
+        if not is_sha256_hex(digest):
+            errors.append(f"{label} {basename!r} is not a canonical SHA256")
+            continue
+        # A failed source-content gate already blocks acceptance.  Its absent
+        # evidence cannot establish that every producer's digest differs.
+        # Validate declarations above even when comparison is unavailable.
+        if source_hashes is None:
+            continue
         _err(
             errors,
-            is_sha256_hex(digest) and source_hashes.get(expected_path) == digest,
+            source_hashes.get(expected_path) == digest,
             f"{label} {basename!r} does not match packaged source",
         )
 
@@ -586,6 +594,9 @@ def check_external_artifacts(
         source_entries_valid,
         "packaged source manifest file inventory is noncanonical",
     )
+    validated_source_hashes = (
+        source_hashes if source_manifest and source_entries_valid else None
+    )
     raw_manifest = _packaged_manifest(
         run_root=run_root,
         errors=errors,
@@ -657,7 +668,7 @@ def check_external_artifacts(
     )
     _check_source_producer_map(
         errors,
-        source_hashes=source_hashes,
+        source_hashes=validated_source_hashes,
         claimed=(
             adapter_identity.get("producer_hashes")
             if isinstance(adapter_identity, dict)
@@ -668,7 +679,7 @@ def check_external_artifacts(
     )
     _check_source_producer_map(
         errors,
-        source_hashes=source_hashes,
+        source_hashes=validated_source_hashes,
         claimed=(
             evidence_roots.get("producer_hashes")
             if isinstance(evidence_roots, dict)
@@ -738,7 +749,7 @@ def check_external_artifacts(
             producer_hashes = fvi_identity.get("producer_hashes")
             _check_source_producer_map(
                 errors,
-                source_hashes=source_hashes,
+                source_hashes=validated_source_hashes,
                 claimed=producer_hashes,
                 expected_basenames=set(FVI_PRODUCER_FILES),
                 label="packaged FVI producer_hashes",
