@@ -1,0 +1,260 @@
+{
+  "artifact": "tae_camera_ready_diag_v1",
+  "cells": {
+    "count": 96,
+    "sha256sums_sha256": "3fbbadc0db533e6ce6065e9a8e5441d8097487cc1d2b8d86a5f1dff309fe224c",
+    "verified_against_sha256sums": true
+  },
+  "cross_checks": [
+    {
+      "computed": 5925,
+      "expected": 5925,
+      "name": "test_mc_n_correct",
+      "status": "PASS"
+    },
+    {
+      "computed": 0.397118,
+      "expected": 0.397118,
+      "name": "test_mc_accuracy",
+      "status": "PASS"
+    },
+    {
+      "computed": 0.403402,
+      "expected": 0.403402,
+      "name": "val_mc_accuracy",
+      "status": "PASS"
+    },
+    {
+      "computed": 3386,
+      "expected": 3386,
+      "name": "test_mc_phase_n_early",
+      "status": "PASS"
+    },
+    {
+      "computed": 0.3334,
+      "expected": 0.3334,
+      "name": "test_mc_phase_acc_early",
+      "status": "PASS"
+    },
+    {
+      "computed": 0.3443,
+      "expected": 0.3443,
+      "name": "val_mc_phase_acc_early",
+      "status": "PASS"
+    },
+    {
+      "computed": 4479,
+      "expected": 4479,
+      "name": "test_mc_phase_n_mid",
+      "status": "PASS"
+    },
+    {
+      "computed": 0.3717,
+      "expected": 0.3717,
+      "name": "test_mc_phase_acc_mid",
+      "status": "PASS"
+    },
+    {
+      "computed": 0.3761,
+      "expected": 0.3761,
+      "name": "val_mc_phase_acc_mid",
+      "status": "PASS"
+    },
+    {
+      "computed": 7055,
+      "expected": 7055,
+      "name": "test_mc_phase_n_late",
+      "status": "PASS"
+    },
+    {
+      "computed": 0.4438,
+      "expected": 0.4438,
+      "name": "test_mc_phase_acc_late",
+      "status": "PASS"
+    },
+    {
+      "computed": 0.4489,
+      "expected": 0.4489,
+      "name": "val_mc_phase_acc_late",
+      "status": "PASS"
+    },
+    {
+      "computed": 0.685533,
+      "expected": 0.685533,
+      "name": "max_raw_similarity_eval",
+      "status": "PASS"
+    },
+    {
+      "computed": true,
+      "expected": true,
+      "name": "attained_ceilings_4dp_all_formats",
+      "status": "PASS"
+    },
+    {
+      "computed": -0.676655,
+      "expected": -0.676655,
+      "name": "signed_mean_min",
+      "status": "PASS"
+    },
+    {
+      "computed": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "expected": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "name": "signed_mean_min_cell",
+      "status": "PASS"
+    },
+    {
+      "computed": 0.109648,
+      "expected": 0.109648,
+      "name": "signed_mean_max",
+      "status": "PASS"
+    },
+    {
+      "computed": 52.058,
+      "expected": 52.058,
+      "name": "zero_fraction_min_pct",
+      "status": "PASS"
+    },
+    {
+      "computed": 99.967,
+      "expected": 99.967,
+      "name": "zero_fraction_max_pct",
+      "status": "PASS"
+    }
+  ],
+  "export_root": "artifacts/stopdff_modal_controller_0017b89d_20260827/modal_export_final_modal_5d5328102912",
+  "generated_utc": "2026-09-30T20:13:22Z",
+  "generator": {
+    "git_branch": "tae/camera-ready-remediation",
+    "git_rev": "5f5ead546b67ecfedd94e20230412de887eea614",
+    "numpy": "2.4.6",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "python": "3.11.15",
+    "script": "scripts/tae_camera_ready_diagnostics.py"
+  },
+  "inputs": [
+    {
+      "bytes": 51773,
+      "name": "aggregate",
+      "path": "artifacts/stopdff_modal_controller_0017b89d_20260827/modal_export_final_modal_5d5328102912/verified_export/aggregate.json",
+      "sha256": "37db976adcae38a8c0de89b264d4241241dff7562f6b70b8003866ee1130cf19",
+      "verified_against": [
+        "local_export_receipt.json",
+        "SHA256SUMS"
+      ]
+    },
+    {
+      "bytes": 41499,
+      "name": "bootstrap_plan",
+      "path": "artifacts/stopdff_modal_controller_0017b89d_20260827/modal_export_final_modal_5d5328102912/verified_export/bootstrap_plan.json",
+      "sha256": "4e6e218cec867b54afcec4898753d7b5b83a561abc92c2bf8dfbcc4c146196f2",
+      "verified_against": [
+        "SHA256SUMS"
+      ]
+    },
+    {
+      "bytes": 1132,
+      "name": "calibration",
+      "path": "artifacts/stopdff_modal_controller_0017b89d_20260827/modal_export_final_modal_5d5328102912/canonical_adapter/calibration.json",
+      "sha256": "ba8dcc66b4ee06afddb85693a1b4e1aaf70c084e956c8fa83733c838ff07d558",
+      "verified_against": []
+    },
+    {
+      "bytes": 1258852,
+      "name": "eval_rows",
+      "path": "artifacts/stopdff_modal_controller_0017b89d_20260827/modal_export_final_modal_5d5328102912/canonical_adapter/eval_rows.jsonl.gz",
+      "sha256": "faf058716aa544592da2830a237d8ee0fe350a73da0569e4a72d94ed2e6928c3",
+      "verified_against": [
+        "local_export_receipt.json"
+      ]
+    },
+    {
+      "bytes": 1268515,
+      "name": "fit_rows",
+      "path": "artifacts/stopdff_modal_controller_0017b89d_20260827/modal_export_final_modal_5d5328102912/canonical_adapter/fit_rows.jsonl.gz",
+      "sha256": "209822a5879da3b06e7f077de918c6579080f94afc16ba93cd41220192441cf0",
+      "verified_against": [
+        "local_export_receipt.json"
+      ]
+    },
+    {
+      "bytes": 3573,
+      "name": "receipt",
+      "path": "artifacts/stopdff_modal_controller_0017b89d_20260827/modal_export_final_modal_5d5328102912/local_export_receipt.json",
+      "sha256": "82c56ff4fa702005cc207374fb2d9d6fc783352e74173830e51f197813d985c2",
+      "verified_against": []
+    },
+    {
+      "bytes": 7435,
+      "name": "run_spec",
+      "path": "artifacts/stopdff_modal_controller_0017b89d_20260827/modal_export_final_modal_5d5328102912/verified_export/run_spec.json",
+      "sha256": "5eb4eb3df7d359af680e38c1421e9789c53233514a2f0afa917172278b682ca9",
+      "verified_against": [
+        "local_export_receipt.json",
+        "SHA256SUMS"
+      ]
+    },
+    {
+      "bytes": 124473,
+      "name": "sha256sums",
+      "path": "artifacts/stopdff_modal_controller_0017b89d_20260827/modal_export_final_modal_5d5328102912/verified_export/SHA256SUMS",
+      "sha256": "3fbbadc0db533e6ce6065e9a8e5441d8097487cc1d2b8d86a5f1dff309fe224c",
+      "verified_against": [
+        "local_export_receipt.json"
+      ]
+    }
+  ],
+  "method_notes": [
+    "deterministic; no sampling, no RNG; numpy-only (no sklearn)",
+    "isotonic applied via linear interpolation on the stored (x_thresholds, y_thresholds) knots with edge clipping (np.interp + clip to [0,1]); sklearn-equivalent, sklearn not imported",
+    "the run's own 10-bin ECE (scripts/stopdff_v5/adapter_build.py): np.linspace(0,1,11) edges, last bin right-inclusive, count-weighted |mean(label) - mean(p)|",
+    "early/mid/late by CHARACTER fraction of the question (prefix_char_count / full_question_char_count); early < 0.33 <= mid < 0.66 <= late",
+    "mutual never-buzz >= max(0, nb_mc + nb_qa - 3037) per cell (inclusion-exclusion). Never-buzz is coded stop_index == item horizon in BOTH arms over the same prefix set (scripts/stopdff_v5/policy.py), so mutual never-buzz implies D = 0 and the D = 0 mass decomposes exactly into {same finite stop} + {mutual never-buzz}; the same-finite-stop (finite agreement) fraction is therefore bounded between (zero - min(nb_mc, nb_qa, zero)) / n and (zero - LB) / n",
+    "Myopic reachability bound, NOT a recomputation of the Bellman policy: p* = c_wrong / (R_t + c_wrong) is the probability at which a single immediate ANSWER action becomes utility-positive against ABSTAIN (value 0) under reward R_t for a correct answer and -c_wrong for a wrong one. WAIT values, continuation estimates, and the DP recursion are deliberately not recomputed; wait_cost does not enter this bound. A calibrator x phase whose attained calibrated-probability ceiling lies below every applicable p* can never make answering myopically utility-positive in that phase for that reward schedule.",
+    "scientific invariants untouched: all values here are post-hoc summaries of the frozen export; no registered result changes"
+  ],
+  "outputs": [
+    {
+      "bytes": 3384,
+      "path": "mc_accuracy.json",
+      "sha256": "f1b70f266336d5719e1d0f29798966848a1bb695b72e05f70b34e301fe2c3297"
+    },
+    {
+      "bytes": 13399,
+      "path": "calibration_diagnostics.json",
+      "sha256": "f7d2d0d1f7c40264be044632644f8a11f13c6c80759d9e72ed23e24e2f93c538"
+    },
+    {
+      "bytes": 102244,
+      "path": "shift_specification_variability.json",
+      "sha256": "c151d215a6f6e7822375eec9a13d38f34bf9efed0b7ee3389b7b38f8d83c3328"
+    },
+    {
+      "bytes": 4103,
+      "path": "tables.tex",
+      "sha256": "2e12e7f969834fc1cb43f2d940ba43a2c93701ddb23152e47ebba285d47c206e"
+    }
+  ],
+  "regression_gate": {
+    "definition": "recompute the stored Platt ECE (early/mid/late) from test MC eval rows + stored 6dp platt coefficients using the run's 10-bin ECE, rounded to 6dp; abort on any mismatch",
+    "name": "platt_ece_triple",
+    "phases": {
+      "early": {
+        "n_samples": 3386,
+        "recomputed_ece": 0.013747,
+        "stored_ece": 0.013747
+      },
+      "late": {
+        "n_samples": 7055,
+        "recomputed_ece": 0.031919,
+        "stored_ece": 0.031919
+      },
+      "mid": {
+        "n_samples": 4479,
+        "recomputed_ece": 0.013958,
+        "stored_ece": 0.013958
+      }
+    },
+    "status": "PASS"
+  },
+  "run_id": "final_modal_5d5328102912"
+}
