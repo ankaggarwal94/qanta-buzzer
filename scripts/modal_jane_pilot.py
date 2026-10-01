@@ -32,16 +32,22 @@ CPU_CORES = 2
 MEMORY_MIB = 32768
 ALLOCATION_RATE = GPU_RATE + CPU_CORE_RATE * CPU_CORES + MEMORY_GIB_RATE * 32
 RESERVE_USD = Decimal("2")
-MAX_BUDGET_USD = Decimal("10")
+INITIAL_CEILING_USD = Decimal("10")
+PRIOR_RESERVED_USD = Decimal("2.26")
+PRIOR_HOST_SECONDS = Decimal("390.718294956")
+PRIOR_RUN_ID = 36918829142
+PRIOR_SOURCE_COMMIT = "d4105ca1f3a705611c1e65076723838ee67cc0df"
+PRIOR_HOST_RECEIPT_SHA256 = "b48aabe8b521ba9f0d8d7fd9ae1e89706146109c1c7be54983bcc8feaa79d423"
+MAX_BUDGET_USD = INITIAL_CEILING_USD - PRIOR_RESERVED_USD
 MAX_SESSION_SECONDS = 12000
 SHUTDOWN_RESERVE_SECONDS = 120
 MODEL_LOAD_RESERVE_SECONDS = 900
 THROUGHPUT_MULTIPLIER = 3
 MODAL_VERSION = "1.6.0"
-VOLUME_NAME = "jane-mcq-pilot-20261001-initial"
-APP_NAME = "jane-mcq-pilot-20261001"
+VOLUME_NAME = "jane-mcq-pilot-20261001-v4"
+APP_NAME = "jane-mcq-pilot-20261001-v4"
 BRANCH = "ops/jane-modal-pilot-20261001"
-LAUNCH_MESSAGE = "ops: launch frozen Jane Modal pilot 20261001"
+LAUNCH_MESSAGE = "ops: launch frozen Jane Modal v4 candidate 20261001"
 MODELS = (
     ("qwen3b", "Qwen/Qwen2.5-3B-Instruct", "aa8e72537993ba99e69dfaafa59ed015b17504d1"),
     ("qwen7b", "Qwen/Qwen2.5-7B-Instruct", "a09a35458c702b33eeacc393d103063234e8bc28"),
@@ -89,14 +95,16 @@ def _write_once(path: Path, value: Any) -> None:
         os.fsync(stream.fileno())
 
 
-def budget_plan(budget_usd: str | Decimal = "10") -> dict[str, Any]:
+def budget_plan(budget_usd: str | Decimal = "7.74") -> dict[str, Any]:
     """Reject unsupported ceilings and reserve costs beyond the GPU function."""
     try:
         budget = Decimal(str(budget_usd))
     except Exception as error:
         raise ValueError("invalid compute ceiling") from error
+    if ALLOCATION_RATE * PRIOR_HOST_SECONDS + RESERVE_USD > PRIOR_RESERVED_USD:
+        raise ValueError("prior reservation does not cover the first host session and reserve")
     if not budget.is_finite() or not RESERVE_USD < budget <= MAX_BUDGET_USD:
-        raise ValueError("compute ceiling must be greater than $2 and at most $10")
+        raise ValueError("candidate ceiling must be greater than $2 and at most the $7.74 remainder")
     seconds = min(MAX_SESSION_SECONDS, int(((budget - RESERVE_USD) / ALLOCATION_RATE)
                                           .to_integral_value(rounding=ROUND_FLOOR)))
     if seconds <= SHUTDOWN_RESERVE_SECONDS + 2 * MODEL_LOAD_RESERVE_SECONDS:
@@ -112,6 +120,12 @@ def budget_plan(budget_usd: str | Decimal = "10") -> dict[str, Any]:
         "memory_request_and_limit_mib": [MEMORY_MIB, MEMORY_MIB],
         "pricing_url": PRICING_URL, "pricing_checked": PRICING_CHECKED,
         "invoice_status": "estimated; not a provider billing receipt",
+        "cumulative_initial_ceiling_usd": str(INITIAL_CEILING_USD),
+        "prior_reserved_usd": str(PRIOR_RESERVED_USD),
+        "prior_host_session_seconds": str(PRIOR_HOST_SECONDS),
+        "prior_host_receipt_sha256": PRIOR_HOST_RECEIPT_SHA256,
+        "prior_run_id": PRIOR_RUN_ID, "prior_source_commit": PRIOR_SOURCE_COMMIT,
+        "cumulative_max_estimate_plus_reserves_usd": str(PRIOR_RESERVED_USD + estimate),
     }
 
 
@@ -573,7 +587,7 @@ def main(argv=None) -> int:
     parser.add_argument("mode", choices=("plan", "launch"))
     parser.add_argument("--public-dir", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--budget-usd", default="10")
+    parser.add_argument("--budget-usd", default="7.74")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
     repo = Path(__file__).resolve().parents[1]

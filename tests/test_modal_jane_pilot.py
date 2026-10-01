@@ -33,16 +33,19 @@ def trace(jobs, answer="France"):
     return {"predictions": rows}
 
 
-@pytest.mark.parametrize("value", ["nan", "NaN", "Infinity", "-1", "0", "2", "10.01", "100"])
+@pytest.mark.parametrize("value", ["nan", "NaN", "Infinity", "-1", "0", "2", "7.75", "10", "10.01", "100"])
 def test_budget_rejects_before_provider_import(value):
     with pytest.raises(ValueError):
         pilot.budget_plan(value)
 
 
-def test_ten_dollar_allocation_includes_non_gpu_resources_and_reserve():
-    plan = pilot.budget_plan("10")
-    assert plan["max_session_seconds"] == 12000
-    assert Decimal(plan["max_allocation_plus_reserve_usd"]) == Decimal("9.67088")
+def test_remaining_allocation_includes_both_attempts_and_reserves():
+    plan = pilot.budget_plan("7.74")
+    assert plan["max_session_seconds"] == 8979
+    assert Decimal(plan["cumulative_max_estimate_plus_reserves_usd"]) <= Decimal("10")
+    assert Decimal(plan["max_allocation_plus_reserve_usd"]) <= Decimal("7.74")
+    assert pilot.ALLOCATION_RATE * pilot.PRIOR_HOST_SECONDS + pilot.RESERVE_USD <= pilot.PRIOR_RESERVED_USD
+    assert plan["prior_run_id"] == 36918829142
     assert Decimal(plan["allocation_rate_usd_per_second"]) > pilot.GPU_RATE
     assert plan["cpu_request_and_limit"] == [2, 2]
     assert plan["memory_request_and_limit_mib"] == [32768, 32768]
@@ -181,7 +184,7 @@ def test_frozen_workflow_limits_trigger_secrets_and_attempts():
     assert "python scripts/modal_jane_pilot.py launch" not in source
     assert source.count("secrets.MODAL_TOKEN_ID") == 1
     assert source.count("secrets.MODAL_TOKEN_SECRET") == 1
-    assert "--budget-usd 10" in source and "--detach" not in source
+    assert "--budget-usd 7.74" in source and "--budget-usd 10" not in source and "--detach" not in source
 
 
 def test_pinned_sdk_remote_import_matches_the_only_image_module():
