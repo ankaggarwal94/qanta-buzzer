@@ -102,7 +102,7 @@ python scripts/compare_policies.py --config configs/t5_policy.yaml
 ```
 
 Notes:
-`scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the future hazard bridge. `--hazard-pretrain` intentionally raises `NotImplementedError` until that loop is implemented.
+`scripts/train_t5_policy.py` parses `--hazard-pretrain`, `--beta-terminal`, and `--freeze-answer-head` for the hazard warm-start bridge (`training/hazard_pretrain.py::run_hazard_pretrain`). When `--hazard-pretrain` is set, the bridge slots between the supervised warm-start and PPO: it minimizes the survival/hazard expected-NLL loss over each question's `cumulative_prefixes` to teach the buzz/stop head *when to buzz*, then hands its checkpoint (`checkpoints/hazard/best_model`) to PPO. `--beta-terminal` weights the never-buzz survival penalty; `--freeze-answer-head` freezes the answer head only (answer-NLL gradient still reaches the shared encoder). The bridge is **smoke-validated (plumbing only)** on CPU; training efficacy needs full-scale CUDA runs.
 
 ## StopDFF v5 Pipeline (CS321M)
 
