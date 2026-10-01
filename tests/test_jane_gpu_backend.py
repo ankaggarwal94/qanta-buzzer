@@ -217,8 +217,9 @@ class Tokenizer:
         return {'input_ids': Tensor(padded), 'attention_mask': Tensor(mask)}
 
     def decode(self, ids, **kwargs):
-        assert ids == [100, 99, 0], 'input-token or padding slicing bug'
-        return '{"answer":"Paris","confidence":0.7,"status":"answer"}'
+        assert ids in ([100, 99, 0], [101, 99, 0]), 'input-token or padding slicing bug'
+        answer = 'Paris' if ids[0] == 100 else 'A'
+        return '{"answer":"' + answer + '","confidence":0.7,"status":"answer"}'
 
 
 class Context:
@@ -242,11 +243,12 @@ def install_fake_stack(monkeypatch, *, cuda=True, count=1, bf16=True, generate_e
         def eval(self):
             return self
 
-        def generate(self, input_ids, attention_mask, generation_config):
+        def generate(self, input_ids, attention_mask, generation_config, prefix_allowed_tokens_fn):
             calls.append((input_ids.rows, attention_mask.rows, generation_config))
             if generate_error:
                 raise RuntimeError('mock CUDA out of memory')
-            return Tensor([row + [100, 99, 0] for row in input_ids.rows])
+            return Tensor([row + [prefix_allowed_tokens_fn(index, row)[0], 99, 0]
+                           for index, row in enumerate(input_ids.rows)])
 
     fake_torch = SimpleNamespace(
         __version__='fake-torch', bfloat16='bf16', version=SimpleNamespace(cuda='fake-cuda'),
@@ -278,6 +280,15 @@ def install_fake_stack(monkeypatch, *, cuda=True, count=1, bf16=True, generate_e
     monkeypatch.setitem(sys.modules, 'huggingface_hub', SimpleNamespace(
         snapshot_download=lambda **kwargs: pytest.fail('test must not download weights')))
     monkeypatch.setattr(gpu, '_driver_info', lambda: {'driver_version': 'fake-driver', 'driver_query_error': None})
+    class FakeConstraints:
+        def __init__(self, tokenizer, eos_ids):
+            assert eos_ids == {99}
+
+        def for_batch(self, formats):
+            return lambda index, row: [100 if formats[index] == 'oe' else 101]
+
+    monkeypatch.setattr(gpu, 'verify_dependencies', lambda: None)
+    monkeypatch.setattr(gpu, 'OutputConstraints', FakeConstraints)
     return calls
 
 
@@ -311,10 +322,15 @@ def test_mocked_gpu_run_retains_tokens_checkpoint_and_complete_metadata(monkeypa
     assert trace['metadata']['gpu_compute_capability'] == [8, 9]
     assert trace['metadata']['driver_version'] == 'fake-driver'
     assert trace['metadata']['backend_sha256'] == gpu._file_hash(Path(gpu.__file__))
+    assert trace['metadata']['output_constraints']['schema_version'] == 'jane-constrained-json-v1'
+    assert trace['metadata']['output_constraints']['posthoc_repair'] is False
+    assert trace['metadata']['output_constraints']['tokenizer_eos_token_id'] == 99
     rows = trace['predictions']
     assert rows[0]['generated_token_ids'] == [100, 99, 0]
     assert rows[0]['effective_output_tokens'] == 2
     assert rows[0]['finish_reason'] == 'eos'
+    assert rows[0]['constraint_format'] == 'oe'
+    assert rows[0]['constraint_grammar_sha256'] == trace['metadata']['output_constraints']['grammars']['oe']['sha256']
     assert rows[0]['input_tokens'] != rows[1]['input_tokens']
     assert rows[0]['batch_padded_input_width'] == max(row['input_tokens'] for row in rows)
     assert [json.loads(line) for line in checkpoint_path.read_text().splitlines()] == rows
@@ -389,3 +405,48 @@ def test_driver_query_failure_is_explicit(monkeypatch):
     result = gpu._driver_info()
     assert result['driver_version'] is None
     assert 'FileNotFoundError' in result['driver_query_error']
+
+
+@pytest.mark.parametrize('raw', [
+    '{"answer":"Z","confidence":0.8,"status":"answer"}',
+    '{"answer":"A","cofidence":0.8,"status":"answer"}',
+    '{"answer":"A","confidence":1.1,"status":"answer"}',
+])
+def test_mask_failure_checkpoints_exact_raw_before_failing(monkeypatch, tmp_path, raw):
+    install_fake_stack(monkeypatch)
+    monkeypatch.setattr(Tokenizer, 'decode', lambda self, ids, **kw: raw)
+    path = tmp_path / 'failed-mask.jsonl'
+    with path.open('x') as checkpoint:
+        with pytest.raises(ValueError, match='grammar'):
+            gpu.run(package([control_job()], schema='jane-choice-controls-v1'),
+                    local_model(tmp_path), checkpoint)
+    recorded = json.loads(path.read_text())
+    assert recorded['raw_response'] == raw
+    assert recorded['generated_token_ids'] == [101, 99, 0]
+    assert all(recorded[field] == gpu.parse_response(raw)[field]
+               for field in ['answer', 'confidence', 'status', 'parse_error'])
+
+
+def test_length_failure_retains_checkpoint_without_completed_trace(monkeypatch, tmp_path):
+    install_fake_stack(monkeypatch)
+    real_slice = gpu.slice_generated_tokens
+    monkeypatch.setattr(gpu, 'slice_generated_tokens',
+                        lambda rows, width: [[row[0], 98, 0] for row in real_slice(rows, width)])
+    raw = '{"answer":"Paris","confidence":0.7,"status":"answer"}'
+    monkeypatch.setattr(Tokenizer, 'decode', lambda self, ids, **kw: raw)
+    path = tmp_path / 'length.jsonl'
+    with path.open('x') as checkpoint:
+        with pytest.raises(ValueError, match='without EOS'):
+            gpu.run(package(), local_model(tmp_path), checkpoint)
+    recorded = json.loads(path.read_text())
+    assert recorded['finish_reason'] == 'length'
+    assert recorded['raw_response'] == raw
+    assert recorded['status'] == 'answer'
+
+
+def test_mixed_batch_selects_mc_and_oe_constraints(monkeypatch, tmp_path):
+    install_fake_stack(monkeypatch)
+    jobs = [main_job(), main_job(job_id='job2', format='mc', condition='pool', menu_id='m1')]
+    trace = gpu.run(package(jobs), replace(local_model(tmp_path), batch_size=2))
+    assert [row['answer'] for row in trace['predictions']] == ['Paris', 'A']
+    assert [row['constraint_format'] for row in trace['predictions']] == ['oe', 'mc']

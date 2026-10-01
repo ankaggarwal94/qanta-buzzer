@@ -25,10 +25,18 @@ try:
     from scripts.jane_qwen_backend import (
         SCOPES, _reject_constant, _unique_object, parse_response, validate_jobs,
     )
+    from scripts.jane_output_constraints import (
+        OutputConstraints, constraint_provenance, validate_constrained_completion,
+        verify_dependencies,
+    )
 except ModuleNotFoundError:
     # Direct execution places scripts/, rather than the repo root, on sys.path.
     from jane_qwen_backend import (
         SCOPES, _reject_constant, _unique_object, parse_response, validate_jobs,
+    )
+    from jane_output_constraints import (
+        OutputConstraints, constraint_provenance, validate_constrained_completion,
+        verify_dependencies,
     )
 
 
@@ -55,7 +63,7 @@ class GPUConfig:
     batch_size: int = 8
     max_jobs: int = 4000
     max_input_tokens: int = 2048
-    max_new_tokens: int = 96
+    max_new_tokens: int = 160
     max_elapsed_seconds: float = 1800.0
     seed: int = 1
     threads: int = 4
@@ -296,6 +304,8 @@ def run(package: dict[str, Any], config: GPUConfig, checkpoint: TextIO | None = 
     """
     validate_config(config)
     jobs = validate_package(package, max_jobs=config.max_jobs)
+    verify_dependencies()
+    constraint_metadata = constraint_provenance()
     started_clock = time.monotonic()
     started_at = datetime.now(timezone.utc).isoformat()
     source_hash = _file_hash(Path(__file__))
@@ -367,6 +377,8 @@ def run(package: dict[str, Any], config: GPUConfig, checkpoint: TextIO | None = 
     )
     eos_ids = generation.eos_token_id
     eos_ids = set(eos_ids if isinstance(eos_ids, list) else [eos_ids])
+    constraints = OutputConstraints(tokenizer, eos_ids)
+    constraint_metadata['tokenizer_eos_token_id'] = tokenizer.eos_token_id
     predictions = []
     for offset in range(0, len(jobs), config.batch_size):
         check_deadline(started_clock, config.max_elapsed_seconds)
@@ -384,13 +396,16 @@ def run(package: dict[str, Any], config: GPUConfig, checkpoint: TextIO | None = 
         encoded = {key: value.to('cuda:0') for key, value in encoded.items()}
         torch.cuda.synchronize()
         batch_start = time.monotonic()
+        prefix_allowed_tokens_fn = constraints.for_batch([job['format'] for job in batch])
         with torch.inference_mode():
-            output = model.generate(**encoded, generation_config=generation)
+            output = model.generate(**encoded, generation_config=generation,
+                                    prefix_allowed_tokens_fn=prefix_allowed_tokens_fn)
         torch.cuda.synchronize()
         batch_seconds = time.monotonic() - batch_start
         generated_rows = slice_generated_tokens(output.tolist(), padded_width)
         if len(generated_rows) != len(batch):
             raise ValueError('model generated the wrong batch cardinality')
+        constraint_errors = []
         for job, text, input_ids, generated in zip(batch, rendered, input_rows, generated_rows):
             # generate pads completed rows to batch width. Preserve raw IDs but
             # mark the first EOS rather than mistaking trailing padding for EOS.
@@ -406,6 +421,9 @@ def run(package: dict[str, Any], config: GPUConfig, checkpoint: TextIO | None = 
                 'input_tokens': len(input_ids), 'output_tokens': len(generated),
                 'effective_output_tokens': first_eos + 1 if first_eos is not None else len(generated),
                 'finish_reason': 'eos' if first_eos is not None else 'length',
+                'constraint_schema_version': constraint_metadata['schema_version'],
+                'constraint_format': job['format'],
+                'constraint_grammar_sha256': constraint_metadata['grammars'][job['format']]['sha256'],
                 'batch_index': offset // config.batch_size,
                 'batch_job_ids': [item['job_id'] for item in batch],
                 'batch_padded_input_width': padded_width, 'batch_generation_seconds': batch_seconds,
@@ -413,9 +431,22 @@ def run(package: dict[str, Any], config: GPUConfig, checkpoint: TextIO | None = 
             predictions.append(prediction)
             if checkpoint is not None:
                 checkpoint.write(json.dumps(prediction, ensure_ascii=False, allow_nan=False) + '\n')
+            try:
+                validate_constrained_completion(
+                    raw, job['format'],
+                    finished_eos=first_eos is not None and generated[first_eos] == tokenizer.eos_token_id,
+                )
+                if prediction['status'] == 'invalid':
+                    raise ValueError('constrained completion rejected by strict response parser')
+            except ValueError as error:
+                constraint_errors.append(f'{job["job_id"]}: {error}')
         if checkpoint is not None:
             checkpoint.flush()
             os.fsync(checkpoint.fileno())
+        if constraint_errors:
+            # Preserve exact failed generations in the checkpoint, then stop.
+            # No resampling, rewriting, permissive parsing, or test-driven repair.
+            raise ValueError('; '.join(constraint_errors))
         update = {'completed_jobs': len(predictions), 'total_jobs': len(jobs),
                   'batch_seconds': batch_seconds, 'elapsed_seconds': time.monotonic() - started_clock}
         if progress is not None:
@@ -426,6 +457,8 @@ def run(package: dict[str, Any], config: GPUConfig, checkpoint: TextIO | None = 
     validate_prediction_coverage(jobs, predictions)
     if _file_hash(Path(__file__)) != source_hash or _file_hash(parser_path) != parser_hash:
         raise ValueError('backend/parser source changed during generation')
+    if constraint_provenance()['source_sha256'] != constraint_metadata['source_sha256']:
+        raise ValueError('output constraint source changed during generation')
     final_input_hash = _sha256(json.dumps(package, sort_keys=True, ensure_ascii=False,
                                           allow_nan=False, separators=(',', ':')).encode())
     if final_input_hash != input_hash:
@@ -455,6 +488,7 @@ def run(package: dict[str, Any], config: GPUConfig, checkpoint: TextIO | None = 
             'model_load_seconds': load_seconds, 'total_seconds': time.monotonic() - started_clock,
             'model_files_sha256': file_hashes, 'chat_template_sha256': _sha256(tokenizer.chat_template.encode()),
             'backend_sha256': source_hash, 'parser_sha256': parser_hash,
+            'output_constraints': constraint_metadata,
             'public_package_canonical_sha256': input_hash,
             'model_receipt_sha256': _file_hash(Path(config.model_receipt)) if config.model_receipt else None,
             'parser_policy': 'exact JSON object; malformed responses invalid; no repair',
@@ -474,7 +508,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--model', choices=sorted(PINNED_MODELS), required=True)
     parser.add_argument('--revision', required=True)
     for name, default in [('batch_size', 8), ('max_jobs', 4000), ('max_input_tokens', 2048),
-                          ('max_new_tokens', 96), ('threads', 4), ('seed', 1)]:
+                          ('max_new_tokens', 160), ('threads', 4), ('seed', 1)]:
         parser.add_argument('--' + name.replace('_', '-'), type=int, default=default)
     parser.add_argument('--max-elapsed-seconds', type=float, default=1800.0)
     parser.add_argument('--cache-dir', type=Path)

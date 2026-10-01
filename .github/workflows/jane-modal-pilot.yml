@@ -1,4 +1,4 @@
-name: Frozen Jane Modal v4 development candidate
+name: Frozen Jane Modal v5 constrained development candidate
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: jane-modal-v4-20261001
+  group: jane-modal-v5-20261001
   cancel-in-progress: false
 
 jobs:
@@ -19,9 +19,9 @@ jobs:
       github.ref == 'refs/heads/ops/jane-modal-pilot-20261001' &&
       github.actor == 'ankaggarwal94' &&
       github.run_attempt == 1 &&
-      github.event.head_commit.message == 'ops: launch frozen Jane Modal v4 candidate 20261001'
+      github.event.head_commit.message == 'ops: launch frozen Jane Modal v5 constrained candidate 20261001'
     runs-on: ubuntu-24.04
-    timeout-minutes: 155
+    timeout-minutes: 105
     steps:
       - name: Checkout the exact reviewed launch commit
         uses: actions/checkout@v4
@@ -36,11 +36,12 @@ jobs:
         with:
           python-version: '3.11.12'
       - name: Install pinned submission client and pure guard test dependency
-        run: python -m pip install --disable-pip-version-check 'modal==1.6.0' 'pytest==8.3.5'
+        run: python -m pip install --disable-pip-version-check 'modal==1.6.0' 'pytest==8.3.5' 'lm-format-enforcer==0.11.3' 'interegular==0.3.3'
       - name: Test budget, public-data, and workflow guards before credentials are exposed
         run: >-
           python -m pytest --noconftest tests/test_modal_jane_pilot.py
-          tests/test_jane_gpu_backend.py tests/test_unpack_jane_public_inputs.py -q
+          tests/test_jane_gpu_backend.py tests/test_jane_output_constraints.py
+          tests/test_unpack_jane_public_inputs.py -q
       - name: Restore only the exact frozen public input bytes
         run: >-
           python scripts/unpack_jane_public_inputs.py
@@ -52,7 +53,7 @@ jobs:
         run: >-
           python -m scripts.modal_jane_pilot plan
           --public-dir modal_pilot_data/public
-          --source-commit "$SOURCE_COMMIT" --budget-usd 7.74
+          --source-commit "$SOURCE_COMMIT" --budget-usd 5.57
       - name: Launch the single attached allocation with existing credentials
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -62,13 +63,13 @@ jobs:
         run: >-
           python -m scripts.modal_jane_pilot launch
           --public-dir modal_pilot_data/public
-          --source-commit "$SOURCE_COMMIT" --budget-usd 7.74
-          --out results/jane_modal_gpu_v4_20261001
+          --source-commit "$SOURCE_COMMIT" --budget-usd 5.57
+          --out results/jane_modal_gpu_v5_20261001
       - name: Retain full and partial execution evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: jane-modal-pilot-v4-${{ github.run_id }}-${{ github.run_attempt }}
-          path: results/jane_modal_gpu_v4_20261001/
+          name: jane-modal-pilot-v5-${{ github.run_id }}-${{ github.run_attempt }}
+          path: results/jane_modal_gpu_v5_20261001/
           if-no-files-found: warn
           retention-days: 30

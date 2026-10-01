@@ -33,28 +33,37 @@ MEMORY_MIB = 32768
 ALLOCATION_RATE = GPU_RATE + CPU_CORE_RATE * CPU_CORES + MEMORY_GIB_RATE * 32
 RESERVE_USD = Decimal("2")
 INITIAL_CEILING_USD = Decimal("10")
-PRIOR_RESERVED_USD = Decimal("2.26")
-PRIOR_HOST_SECONDS = Decimal("390.718294956")
-PRIOR_RUN_ID = 36918829142
-PRIOR_SOURCE_COMMIT = "d4105ca1f3a705611c1e65076723838ee67cc0df"
-PRIOR_HOST_RECEIPT_SHA256 = "b48aabe8b521ba9f0d8d7fd9ae1e89706146109c1c7be54983bcc8feaa79d423"
+# Preserve each earlier attempt's full non-GPU reserve; round the combined
+# measured host allocation plus those reserves upward before spending again.
+PRIOR_RESERVED_USD = Decimal("4.43")
+PRIOR_ATTEMPTS = (
+    {"run_id": 36918829142,
+     "source_commit": "d4105ca1f3a705611c1e65076723838ee67cc0df",
+     "host_receipt_sha256": "b48aabe8b521ba9f0d8d7fd9ae1e89706146109c1c7be54983bcc8feaa79d423",
+     "host_session_seconds": "390.718294956", "reserve_usd": "2"},
+    {"run_id": 36921167573,
+     "source_commit": "a2013af95f7fa49f055423a9b398358aaf252c64",
+     "host_receipt_sha256": "dadd1a2b72e4186fd93ebd398b3504f454bde0d66e5afbdff731d65493904082",
+     "host_session_seconds": "260.846064845", "reserve_usd": "2"},
+)
 MAX_BUDGET_USD = INITIAL_CEILING_USD - PRIOR_RESERVED_USD
 MAX_SESSION_SECONDS = 12000
 SHUTDOWN_RESERVE_SECONDS = 120
 MODEL_LOAD_RESERVE_SECONDS = 900
 THROUGHPUT_MULTIPLIER = 3
 MODAL_VERSION = "1.6.0"
-VOLUME_NAME = "jane-mcq-pilot-20261001-v4"
-APP_NAME = "jane-mcq-pilot-20261001-v4"
+VOLUME_NAME = "jane-mcq-pilot-20261001-v5"
+APP_NAME = "jane-mcq-pilot-20261001-v5"
 BRANCH = "ops/jane-modal-pilot-20261001"
-LAUNCH_MESSAGE = "ops: launch frozen Jane Modal v4 candidate 20261001"
+LAUNCH_MESSAGE = "ops: launch frozen Jane Modal v5 constrained candidate 20261001"
 MODELS = (
     ("qwen3b", "Qwen/Qwen2.5-3B-Instruct", "aa8e72537993ba99e69dfaafa59ed015b17504d1"),
     ("qwen7b", "Qwen/Qwen2.5-7B-Instruct", "a09a35458c702b33eeacc393d103063234e8bc28"),
 )
 INPUT_FILES = ("dev_jobs.json", "main_jobs.json", "dev_choices_only.json", "main_choices_only.json")
 SOURCE_FILES = ("scripts/__init__.py", "scripts/modal_jane_pilot.py",
-                "scripts/jane_gpu_backend.py", "scripts/jane_qwen_backend.py")
+                "scripts/jane_gpu_backend.py", "scripts/jane_qwen_backend.py",
+                "scripts/jane_output_constraints.py")
 PUBLIC_JOB_KEYS = {"job_id", "qid", "group_id", "split", "format", "condition", "menu_id",
                    "prefix_id", "fraction", "prompt", "prompt_sha256"}
 CHOICE_JOB_KEYS = PUBLIC_JOB_KEYS - {"prefix_id", "fraction"} | {"options"}
@@ -95,16 +104,28 @@ def _write_once(path: Path, value: Any) -> None:
         os.fsync(stream.fileno())
 
 
-def budget_plan(budget_usd: str | Decimal = "7.74") -> dict[str, Any]:
+def budget_plan(budget_usd: str | Decimal = "5.57") -> dict[str, Any]:
     """Reject unsupported ceilings and reserve costs beyond the GPU function."""
     try:
         budget = Decimal(str(budget_usd))
     except Exception as error:
         raise ValueError("invalid compute ceiling") from error
-    if ALLOCATION_RATE * PRIOR_HOST_SECONDS + RESERVE_USD > PRIOR_RESERVED_USD:
-        raise ValueError("prior reservation does not cover the first host session and reserve")
+    prior_estimate = Decimal("0")
+    seen_runs = set()
+    for attempt in PRIOR_ATTEMPTS:
+        seconds = Decimal(attempt["host_session_seconds"])
+        reserve = Decimal(attempt["reserve_usd"])
+        if (attempt["run_id"] in seen_runs or not isinstance(attempt["run_id"], int)
+                or not re.fullmatch(r"[0-9a-f]{40}", attempt["source_commit"])
+                or not HEX64.fullmatch(attempt["host_receipt_sha256"])
+                or not seconds.is_finite() or seconds <= 0 or reserve != RESERVE_USD):
+            raise ValueError("invalid prior attempt evidence ledger")
+        seen_runs.add(attempt["run_id"])
+        prior_estimate += ALLOCATION_RATE * seconds + reserve
+    if len(PRIOR_ATTEMPTS) != 2 or prior_estimate > PRIOR_RESERVED_USD:
+        raise ValueError("prior reservation does not cover both host sessions and reserves")
     if not budget.is_finite() or not RESERVE_USD < budget <= MAX_BUDGET_USD:
-        raise ValueError("candidate ceiling must be greater than $2 and at most the $7.74 remainder")
+        raise ValueError("candidate ceiling must be greater than $2 and at most the $5.57 remainder")
     seconds = min(MAX_SESSION_SECONDS, int(((budget - RESERVE_USD) / ALLOCATION_RATE)
                                           .to_integral_value(rounding=ROUND_FLOOR)))
     if seconds <= SHUTDOWN_RESERVE_SECONDS + 2 * MODEL_LOAD_RESERVE_SECONDS:
@@ -113,7 +134,7 @@ def budget_plan(budget_usd: str | Decimal = "7.74") -> dict[str, Any]:
     if estimate > budget:
         raise ValueError("allocation exceeds compute ceiling")
     return {
-        "schema_version": "jane-modal-budget-v1", "ceiling_usd": str(budget),
+        "schema_version": "jane-modal-budget-v2", "ceiling_usd": str(budget),
         "reserve_usd": str(RESERVE_USD), "allocation_rate_usd_per_second": str(ALLOCATION_RATE),
         "max_session_seconds": seconds, "max_allocation_plus_reserve_usd": str(estimate),
         "gpu": "L40S", "cpu_request_and_limit": [CPU_CORES, CPU_CORES],
@@ -122,11 +143,18 @@ def budget_plan(budget_usd: str | Decimal = "7.74") -> dict[str, Any]:
         "invoice_status": "estimated; not a provider billing receipt",
         "cumulative_initial_ceiling_usd": str(INITIAL_CEILING_USD),
         "prior_reserved_usd": str(PRIOR_RESERVED_USD),
-        "prior_host_session_seconds": str(PRIOR_HOST_SECONDS),
-        "prior_host_receipt_sha256": PRIOR_HOST_RECEIPT_SHA256,
-        "prior_run_id": PRIOR_RUN_ID, "prior_source_commit": PRIOR_SOURCE_COMMIT,
+        "prior_attempts": [dict(attempt) for attempt in PRIOR_ATTEMPTS],
+        "prior_attempts_sha256": _sha(_canonical(PRIOR_ATTEMPTS)),
+        "prior_measured_allocation_plus_reserves_usd": str(prior_estimate),
         "cumulative_max_estimate_plus_reserves_usd": str(PRIOR_RESERVED_USD + estimate),
     }
+
+
+def validate_budget_control(control: dict) -> None:
+    """Reject altered runtime caps or prior receipts before provider operations."""
+    budget = control.get("budget")
+    if not isinstance(budget, dict) or budget != budget_plan(budget.get("ceiling_usd")):
+        raise ValueError("budget control differs from the committed cumulative evidence ledger")
 
 
 def validate_public_package(package: Any, *, controls: bool = False) -> list[dict]:
@@ -282,6 +310,16 @@ def throughput_gate(development: dict[str, dict], packages: dict, remaining_seco
             "per_model_load_reserve_seconds": MODEL_LOAD_RESERVE_SECONDS}
 
 
+def progress_summary(tag: str, role: str, update: dict, previous_logged: int) -> dict | None:
+    """Expose only counts and elapsed time at 128-job milestones or completion."""
+    completed, total = update["completed_jobs"], update["total_jobs"]
+    if (completed <= previous_logged
+            or (completed // 128 <= previous_logged // 128 and completed != total)):
+        return None
+    return {"model": tag, "phase": role, "completed_jobs": completed,
+            "total_jobs": total, "elapsed_seconds": update["elapsed_seconds"]}
+
+
 def phase_timing(trace: dict, wall_seconds: float) -> dict:
     metadata = trace.get("metadata", {})
     total, load = metadata.get("total_seconds"), metadata.get("model_load_seconds")
@@ -399,6 +437,7 @@ def deadline(seconds: float):
 
 def remote_pilot(packages: dict, control: dict) -> dict:
     """Single input: both DEV gates first, then sequential frozen MAIN inference."""
+    validate_budget_control(control)
     import modal
     from scripts.jane_gpu_backend import GPUConfig, run
     started = time.perf_counter()
@@ -428,13 +467,19 @@ def remote_pilot(packages: dict, control: dict) -> dict:
                 elapsed_limit = remaining() - SHUTDOWN_RESERVE_SECONDS
                 if elapsed_limit <= 0:
                     raise TimeoutError("remaining allocation reserve exhausted")
-                def commit_progress(_progress):
+                previous_logged = 0
+                def commit_progress(update):
+                    nonlocal previous_logged
                     checkpoint.close_batch()
                     volume.commit()
+                    summary = progress_summary(tag, role, update, previous_logged)
+                    if summary is not None:
+                        print(json.dumps(summary, sort_keys=True, allow_nan=False), flush=True)
+                        previous_logged = summary["completed_jobs"]
                 call_started = time.perf_counter()
                 with BatchCheckpoint(out / "predictions.checkpoint.jsonl") as checkpoint:
                     trace = run(package, GPUConfig(model=model, revision=revision, batch_size=8,
-                        max_jobs=10000, max_input_tokens=2048, max_new_tokens=96,
+                        max_jobs=10000, max_input_tokens=2048, max_new_tokens=160,
                         max_elapsed_seconds=elapsed_limit, seed=1, threads=4,
                         cache_dir=Path("/tmp/jane-models"), allow_download=True),
                         checkpoint=checkpoint, progress=commit_progress)
@@ -451,12 +496,19 @@ def remote_pilot(packages: dict, control: dict) -> dict:
                 outcomes[tag] = {"development": measured, "interface_gate": gate}
                 development[tag] = measured
                 volume.commit()
+                print(json.dumps({"event": "development_gate", "model": tag,
+                    "passed": gate["passed"], "per_format": gate["per_format"]},
+                    sort_keys=True, allow_nan=False), flush=True)
                 if not gate["passed"]:
                     status = "DEVELOPMENT_INTERFACE_GATE_FAILED"
                     return {"status": status, "models": outcomes}
             gate = throughput_gate(development, packages, remaining())
             _write_once(root / "throughput_gate.json", gate)
             volume.commit()
+            print(json.dumps({"event": "throughput_gate", "passed": gate["passed"],
+                "predicted_seconds_with_load_reserve": gate["predicted_seconds_with_load_reserve"],
+                "remaining_seconds": gate["remaining_seconds"]},
+                sort_keys=True, allow_nan=False), flush=True)
             if not gate["passed"]:
                 status = "DEVELOPMENT_THROUGHPUT_GATE_FAILED"
                 return {"status": status, "models": outcomes, "throughput_gate": gate}
@@ -505,6 +557,7 @@ def download_evidence(volume, out: Path) -> dict:
 
 def launch(packages: dict, control: dict, out: Path, repo: Path) -> dict:
     """Explicit paid operation. Existing named allocation claim forbids reruns."""
+    validate_budget_control(control)
     verify_committed_source(repo, control["source_commit"], control["source_files_sha256"])
     # Some submission environments proxy TLS through a system-trusted CA.
     # This changes only the local submission process, never the GPU image.
@@ -536,7 +589,8 @@ def launch(packages: dict, control: dict, out: Path, repo: Path) -> dict:
                 "public_input_id": control["public_input_id"]})
     image = modal.Image.debian_slim(python_version="3.11").pip_install(
         "torch==2.6.0", "transformers==4.51.3", "tokenizers==0.21.1",
-        "safetensors==0.5.3", "huggingface-hub==0.30.2", "accelerate==1.6.0", "modal==1.6.0")
+        "safetensors==0.5.3", "huggingface-hub==0.30.2", "accelerate==1.6.0", "modal==1.6.0",
+        "lm-format-enforcer==0.11.3", "interegular==0.3.3")
     for name in SOURCE_FILES:
         image = image.add_local_file(str(repo / name), remote_path="/opt/jane/" + name, copy=True)
     image = image.env({"PYTHONPATH": "/opt/jane", "PYTHONUNBUFFERED": "1",
@@ -587,7 +641,7 @@ def main(argv=None) -> int:
     parser.add_argument("mode", choices=("plan", "launch"))
     parser.add_argument("--public-dir", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--budget-usd", default="7.74")
+    parser.add_argument("--budget-usd", default="5.57")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
     repo = Path(__file__).resolve().parents[1]

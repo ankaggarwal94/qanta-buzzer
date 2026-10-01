@@ -1,4 +1,5 @@
 """Pure guards: no Modal import, GPU model load, or paid provider calls."""
+from copy import deepcopy
 from decimal import Decimal
 import hashlib
 import json
@@ -33,22 +34,77 @@ def trace(jobs, answer="France"):
     return {"predictions": rows}
 
 
-@pytest.mark.parametrize("value", ["nan", "NaN", "Infinity", "-1", "0", "2", "7.75", "10", "10.01", "100"])
+@pytest.mark.parametrize("value", ["nan", "NaN", "Infinity", "-1", "0", "2", "5.58", "7.74", "7.75", "10", "10.01", "100"])
 def test_budget_rejects_before_provider_import(value):
     with pytest.raises(ValueError):
         pilot.budget_plan(value)
 
 
-def test_remaining_allocation_includes_both_attempts_and_reserves():
-    plan = pilot.budget_plan("7.74")
-    assert plan["max_session_seconds"] == 8979
+def test_remaining_allocation_includes_three_attempts_and_reserves():
+    plan = pilot.budget_plan("5.57")
+    assert plan["max_session_seconds"] == 5584
     assert Decimal(plan["cumulative_max_estimate_plus_reserves_usd"]) <= Decimal("10")
-    assert Decimal(plan["max_allocation_plus_reserve_usd"]) <= Decimal("7.74")
-    assert pilot.ALLOCATION_RATE * pilot.PRIOR_HOST_SECONDS + pilot.RESERVE_USD <= pilot.PRIOR_RESERVED_USD
-    assert plan["prior_run_id"] == 36918829142
+    assert Decimal(plan["max_allocation_plus_reserve_usd"]) <= Decimal("5.57")
+    measured_prior = sum((pilot.ALLOCATION_RATE * Decimal(attempt["host_session_seconds"])
+                          + Decimal(attempt["reserve_usd"]) for attempt in pilot.PRIOR_ATTEMPTS), Decimal(0))
+    assert measured_prior == Decimal("4.41650600135919124")
+    assert Decimal(plan["prior_measured_allocation_plus_reserves_usd"]) == measured_prior
+    assert measured_prior <= Decimal(plan["prior_reserved_usd"])
+    assert {a["run_id"] for a in plan["prior_attempts"]} == {36918829142, 36921167573}
+    assert all(len(a["source_commit"]) == 40 and len(a["host_receipt_sha256"]) == 64
+               for a in plan["prior_attempts"])
+    assert plan["prior_attempts_sha256"] == pilot._sha(pilot._canonical(plan["prior_attempts"]))
     assert Decimal(plan["allocation_rate_usd_per_second"]) > pilot.GPU_RATE
     assert plan["cpu_request_and_limit"] == [2, 2]
     assert plan["memory_request_and_limit_mib"] == [32768, 32768]
+
+
+def test_prior_debit_cannot_underfund_either_completed_attempt(monkeypatch):
+    monkeypatch.setattr(pilot, "PRIOR_RESERVED_USD", Decimal("4.41"))
+    with pytest.raises(ValueError, match="both host sessions"):
+        pilot.budget_plan("5.57")
+
+
+@pytest.mark.parametrize("mutation", ["missing_attempt", "duplicate_attempt", "missing_receipt", "wrong_reserve"])
+def test_prior_ledger_rejects_missing_or_unbound_attempts(monkeypatch, mutation):
+    attempts = deepcopy(list(pilot.PRIOR_ATTEMPTS))
+    if mutation == "missing_attempt":
+        attempts.pop()
+    elif mutation == "duplicate_attempt":
+        attempts[1] = dict(attempts[0])
+    elif mutation == "missing_receipt":
+        attempts[1]["host_receipt_sha256"] = ""
+    else:
+        attempts[1]["reserve_usd"] = "0"
+    monkeypatch.setattr(pilot, "PRIOR_ATTEMPTS", tuple(attempts))
+    with pytest.raises(ValueError, match="prior"):
+        pilot.budget_plan()
+
+
+@pytest.mark.parametrize("mutation", ["ceiling", "session", "source", "receipt", "ledger"])
+def test_runtime_budget_cannot_override_committed_prior_evidence(mutation, tmp_path):
+    control = {"budget": pilot.budget_plan()}
+    budget = control["budget"]
+    if mutation == "ceiling":
+        budget["ceiling_usd"] = "10"
+    elif mutation == "session":
+        budget["max_session_seconds"] += 1
+    elif mutation == "source":
+        budget["prior_attempts"][1]["source_commit"] = "0" * 40
+    elif mutation == "receipt":
+        budget["prior_attempts"][1]["host_receipt_sha256"] = "0" * 64
+    else:
+        budget["prior_attempts_sha256"] = "0" * 64
+    # Rejection happens before git/source lookup, output creation, or Modal import.
+    with pytest.raises(ValueError):
+        pilot.launch({}, control, tmp_path / "must_not_exist", tmp_path)
+    with pytest.raises(ValueError):
+        pilot.remote_pilot({}, control)
+    assert not (tmp_path / "must_not_exist").exists()
+
+
+def test_valid_runtime_budget_retains_exact_ledger():
+    pilot.validate_budget_control({"budget": pilot.budget_plan()})
 
 
 @pytest.mark.parametrize("key", ["answerline", "gold_option_id", "accepted_answers", "future_question", "labels"])
@@ -184,7 +240,7 @@ def test_frozen_workflow_limits_trigger_secrets_and_attempts():
     assert "python scripts/modal_jane_pilot.py launch" not in source
     assert source.count("secrets.MODAL_TOKEN_ID") == 1
     assert source.count("secrets.MODAL_TOKEN_SECRET") == 1
-    assert "--budget-usd 7.74" in source and "--budget-usd 10" not in source and "--detach" not in source
+    assert "--budget-usd 5.57" in source and "--budget-usd 10" not in source and "--detach" not in source
 
 
 def test_pinned_sdk_remote_import_matches_the_only_image_module():
@@ -194,5 +250,94 @@ def test_pinned_sdk_remote_import_matches_the_only_image_module():
 
 def test_image_source_allowlist_excludes_evaluator_and_data():
     assert set(pilot.SOURCE_FILES) == {"scripts/__init__.py", "scripts/modal_jane_pilot.py",
-                                    "scripts/jane_gpu_backend.py", "scripts/jane_qwen_backend.py"}
+                                    "scripts/jane_gpu_backend.py", "scripts/jane_qwen_backend.py",
+                                    "scripts/jane_output_constraints.py"}
     assert all("data" not in path and "evaluation" not in path for path in pilot.SOURCE_FILES)
+
+
+def test_third_attempt_names_never_reuse_prior_allocation_claim():
+    assert pilot.VOLUME_NAME == "jane-mcq-pilot-20261001-v5"
+    assert pilot.APP_NAME == "jane-mcq-pilot-20261001-v5"
+    assert "v5 constrained" in pilot.LAUNCH_MESSAGE
+
+
+def test_small_remaining_budget_fails_before_model_or_provider_loading():
+    with pytest.raises(ValueError, match="safety reserves"):
+        pilot.budget_plan("3.22")
+
+
+@pytest.mark.parametrize("valid_oe", [18, 19])
+def test_interface_threshold_is_per_format_and_preserves_95_percent(valid_oe):
+    jobs = [job("oe", qid=f"oe-{i}") for i in range(20)]
+    jobs += [job("mc", qid=f"mc-{i}") for i in range(100)]
+    result = trace(jobs)
+    for row in result["predictions"][valid_oe:20]:
+        row.update(answer=None, confidence=None, status="invalid", raw_response="not JSON")
+    assert pilot.interface_gate(jobs, result)["passed"] is (valid_oe == 19)
+
+
+@pytest.mark.parametrize("fail_second_model", [False, True])
+def test_no_main_inference_until_both_development_gates_pass(monkeypatch, tmp_path, fail_second_model, capsys):
+    from scripts import jane_gpu_backend as gpu
+    root = tmp_path / "output"
+    volume = SimpleNamespace(reload=lambda: None, commit=lambda: None)
+    monkeypatch.setitem(sys.modules, "modal", SimpleNamespace(
+        Volume=SimpleNamespace(from_name=lambda *_args, **_kwargs: volume)))
+    real_path = Path
+    monkeypatch.setattr(pilot, "Path", lambda value: root if value == "/jane/output" else real_path(value))
+    monkeypatch.setattr(pilot, "source_identity", lambda _repo: {})
+    calls = []
+    def backend_run(public, config, **_kwargs):
+        _kwargs["checkpoint"].write("checkpoint row\n")
+        _kwargs["progress"]({"completed_jobs": len(public["jobs"]), "total_jobs": len(public["jobs"]),
+                             "elapsed_seconds": 0.1, "prompt": "must never log"})
+        assert _kwargs["checkpoint"].stream is None
+        calls.append((config.model, public["jobs"][0]["qid"]))
+        answer = "..." if fail_second_model and config.model == pilot.MODELS[1][1] else "France"
+        result = trace(public["jobs"], answer)
+        result["metadata"] = {"total_seconds": 0.1, "model_load_seconds": 0.05}
+        return result
+    monkeypatch.setattr(gpu, "run", backend_run)
+    dev = [job("oe", qid="dev"), job("mc", qid="dev")]
+    main = [job("oe", qid="main"), job("mc", qid="main")]
+    ctrl = {k: v for k, v in job("mc", qid="control").items() if k not in {"prefix_id", "fraction"}}
+    ctrl["options"] = [{"id": letter, "text": letter} for letter in "ABCD"]
+    packages = {"dev_jobs.json": package(dev), "main_jobs.json": package(main),
+                "main_choices_only.json": {"schema_version": "jane-choice-controls-v1",
+                "evidence_scope": "engineering_smoke", "jobs": [ctrl]}}
+    control = {"budget": pilot.budget_plan(), "source_commit": "a" * 40,
+               "source_files_sha256": {}, "public_input_id": "b" * 64,
+               "absolute_deadline_unix": pilot.time.time() + 5500}
+    result = pilot.remote_pilot(packages, control)
+    assert calls[:2] == [(model, "dev") for _tag, model, _rev in pilot.MODELS]
+    if fail_second_model:
+        assert len(calls) == 2
+        assert result["status"] == "DEVELOPMENT_INTERFACE_GATE_FAILED"
+        assert not (root / "throughput_gate.json").exists()
+    else:
+        assert calls[2:] == [(model, qid) for _tag, model, _rev in pilot.MODELS
+                             for qid in ("main", "control")]
+        assert result["status"] == "COMPLETED"
+    assert (root / "execution_receipt.json").exists()
+    summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [s["passed"] for s in summaries if s.get("event") == "development_gate"] == [True, not fail_second_model]
+    progress = [s for s in summaries if "completed_jobs" in s]
+    assert len(progress) == len(calls)
+    assert all(set(s) == {"model", "phase", "completed_jobs", "total_jobs", "elapsed_seconds"} for s in progress)
+    throughput = [s for s in summaries if s.get("event") == "throughput_gate"]
+    assert len(throughput) == (0 if fail_second_model else 1)
+
+
+@pytest.mark.parametrize("completed,previous,expected", [
+    (8, 0, False), (120, 0, False), (128, 0, True), (136, 128, False),
+    (256, 128, True), (264, 0, True), (280, 256, True), (280, 280, False),
+])
+def test_progress_logs_only_milestones_or_completion_and_drops_extra_fields(completed, previous, expected):
+    update = {"completed_jobs": completed, "total_jobs": 280, "elapsed_seconds": 14.5,
+              "raw_response": "must never log", "prompt": "must never log", "secret": "must never log"}
+    summary = pilot.progress_summary("qwen3b", "main", update, previous)
+    if expected:
+        assert summary == {"model": "qwen3b", "phase": "main", "completed_jobs": completed,
+                           "total_jobs": 280, "elapsed_seconds": 14.5}
+    else:
+        assert summary is None

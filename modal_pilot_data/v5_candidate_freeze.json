@@ -1,0 +1,136 @@
+{
+  "schema_version": "jane-prospective-interface-candidate-v2",
+  "candidate": "v5_constrained_json",
+  "frozen_utc": "2026-10-01T23:48:00.325386+00:00",
+  "base_commit": "93ffffcd1b4d56273ccb88876e7fb0d8b92fd3d0",
+  "public_inputs": {
+    "schema_version": "jane-modal-public-inputs-v1",
+    "files": [
+      {
+        "path": "dev_jobs.json",
+        "sha256": "4e2e4d308f49e4fcdd94ba77f739fd4574b0c264c1894124f4aab454569fd637",
+        "job_count": 177,
+        "bytes": 322400
+      },
+      {
+        "path": "main_jobs.json",
+        "sha256": "33f4cbfa0f805fa3990646ad5a96ceb3a5546ed6f5082d0a47e72d0f8291fe88",
+        "job_count": 2856,
+        "bytes": 5158027
+      },
+      {
+        "path": "dev_choices_only.json",
+        "sha256": "31158db5445eb5441cce8e05cfc0e41e06de96a865449a22c077766d6d062856",
+        "job_count": 24,
+        "bytes": 30679
+      },
+      {
+        "path": "main_choices_only.json",
+        "sha256": "2d1867d1e8b8f9c805c9e0e9b7a366b067760d3a1a94b7fa8b1a1870f9ae29f2",
+        "job_count": 400,
+        "bytes": 506729
+      }
+    ],
+    "public_input_id": "d7d2168092ca6de6f89381f62581426a7405881bae9678a6348cc7334a4171bd"
+  },
+  "public_archive_sha256": "43b5568bdbd927487e6850dcc75676f8d151618f07143aab31cba8195f220490",
+  "source_files_sha256": {
+    "scripts/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scripts/modal_jane_pilot.py": "0a584a8f9bd301e5c9f460315c1c2738ed3b2246875babd70e20dca00bd4afbb",
+    "scripts/jane_gpu_backend.py": "a2d40893c1264faeb138e3a05567872ddd3f33f253feaf81f4ead5b988f0d06f",
+    "scripts/jane_qwen_backend.py": "8d55952259ab76052fb166c14e70de6b6c611c3578473fd849531dc21f6239e7",
+    "scripts/jane_output_constraints.py": "dc0bbc3aa2eed17141b74930b24b7f89f7e7e1f7a372aeb4c4d18c24614086b2"
+  },
+  "output_constraints": {
+    "schema_version": "jane-constrained-json-v1",
+    "method": "prospective_regex_token_masking_transformers_prefix_allowed_tokens_fn",
+    "package": "lm-format-enforcer",
+    "package_version": "0.11.3",
+    "regex_package": "interegular",
+    "regex_package_version": "0.3.3",
+    "character_parser_adapter": "cached_frozenset_alphabet_exact_membership",
+    "field_order": [
+      "answer",
+      "confidence",
+      "status"
+    ],
+    "confidence_decimal_places": 6,
+    "max_oe_characters": null,
+    "oe_character_policy": "nonwhitespace first character; literal Unicode; escaped quote/backslash/slash; no control or Unicode escapes",
+    "whitespace_policy": "compact JSON; no whitespace outside answer strings",
+    "eos_policy": "tokenizer EOS only, permitted after complete grammar; required to complete trace",
+    "posthoc_repair": false,
+    "source_sha256": "dc0bbc3aa2eed17141b74930b24b7f89f7e7e1f7a372aeb4c4d18c24614086b2",
+    "grammars": {
+      "mc": {
+        "regex": "(\\{\"answer\":\"[ABCD]\",\"confidence\":(0(\\.[0-9]{1,6})?|1(\\.0{1,6})?),\"status\":\"answer\"\\}|\\{\"answer\":null,\"confidence\":null,\"status\":\"abstain\"\\})",
+        "sha256": "cccba36cda2628d4058be1b7c76a3627ee9260e00364a33426dca9f3e7946532"
+      },
+      "oe": {
+        "regex": "(\\{\"answer\":\"([^\"\\\\\\x00-\\x20\\x7f-\\x9f                 　]|\\\\[\"\\\\/])([^\"\\\\\\x00-\\x1f]|\\\\[\"\\\\/])*\",\"confidence\":(0(\\.[0-9]{1,6})?|1(\\.0{1,6})?),\"status\":\"answer\"\\}|\\{\"answer\":null,\"confidence\":null,\"status\":\"abstain\"\\})",
+        "sha256": "6a175a0cdcc3008318bdc63e91493fec7ae1d69082a3d45ccc844110673a3703"
+      }
+    }
+  },
+  "max_new_tokens": 160,
+  "budget": {
+    "schema_version": "jane-modal-budget-v2",
+    "ceiling_usd": "5.57",
+    "reserve_usd": "2",
+    "allocation_rate_usd_per_second": "0.00063924",
+    "max_session_seconds": 5584,
+    "max_allocation_plus_reserve_usd": "5.56951616",
+    "gpu": "L40S",
+    "cpu_request_and_limit": [
+      2,
+      2
+    ],
+    "memory_request_and_limit_mib": [
+      32768,
+      32768
+    ],
+    "pricing_url": "https://modal.com/pricing",
+    "pricing_checked": "2026-10-01",
+    "invoice_status": "estimated; not a provider billing receipt",
+    "cumulative_initial_ceiling_usd": "10",
+    "prior_reserved_usd": "4.43",
+    "prior_attempts": [
+      {
+        "run_id": 36918829142,
+        "source_commit": "d4105ca1f3a705611c1e65076723838ee67cc0df",
+        "host_receipt_sha256": "b48aabe8b521ba9f0d8d7fd9ae1e89706146109c1c7be54983bcc8feaa79d423",
+        "host_session_seconds": "390.718294956",
+        "reserve_usd": "2"
+      },
+      {
+        "run_id": 36921167573,
+        "source_commit": "a2013af95f7fa49f055423a9b398358aaf252c64",
+        "host_receipt_sha256": "dadd1a2b72e4186fd93ebd398b3504f454bde0d66e5afbdff731d65493904082",
+        "host_session_seconds": "260.846064845",
+        "reserve_usd": "2"
+      }
+    ],
+    "prior_attempts_sha256": "9949c04ccc091a8e2d780b7d8c61b2aa0a1264220942b01704808a6c90c46273",
+    "prior_measured_allocation_plus_reserves_usd": "4.41650600135919124",
+    "cumulative_max_estimate_plus_reserves_usd": "9.99951616"
+  },
+  "selection_basis": "Development-only output formatting failures; no main labels or responses inspected during interface selection.",
+  "preserved": [
+    "v4 prompts and job IDs",
+    "questions and splits",
+    "prefixes and distractor menus",
+    "choice controls",
+    "model revisions",
+    "strict parser",
+    "original per-format 95% interface gate",
+    "empirical risk budget0.10",
+    "greedy decoding batch8 seed1"
+  ],
+  "changed": [
+    "prospective token masking",
+    "output cap96 to160",
+    "bound cumulative third-attempt budget",
+    "cached character-set adapter preserving grammar semantics"
+  ],
+  "analysis_scope": "exploratory engineering_smoke, no historical reproduction claim"
+}
