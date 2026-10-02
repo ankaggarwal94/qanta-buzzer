@@ -1,0 +1,202 @@
+{
+  "schema_version": "acl-public-transport-v1",
+  "compression": "xz+base64",
+  "compact_sha256": "c9fb3c5ded63f07eec5f07c36714914595b72d2e0addd7926995642b92f1081b",
+  "compact_bytes": 9489618,
+  "compressed_sha256": "fecfe0b7901426ebfa3c38f79be3c591ce550f34c1c974d364734e2f5cac8b7a",
+  "compressed_bytes": 1746600,
+  "chunks": [
+    {
+      "name": "chunk_000.b64",
+      "sha256": "99dadeff4dd9f88957319a676c5ebff606457aaa92736c631df63130ff270337",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_001.b64",
+      "sha256": "307880604f36928d9e2dcf2f47f9d477e3c42128a8761ab690da5f8e2ae0f106",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_002.b64",
+      "sha256": "c601aaf4b96431e967555579df615c948183c3b7476807502a29cf5ab5bcca40",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_003.b64",
+      "sha256": "3a462b8f31718ee8c774e5ac2749aab699e63c153ba63fc5936ec52eaebcdb80",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_004.b64",
+      "sha256": "8567cfec6c2660235f9738e7073b8fbc8a2ebe8d6e9b321629b81770d83b0ff2",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_005.b64",
+      "sha256": "825ce8a45a3938cb9945985c6905fbf202e648187081ec9b57a060a30225e38a",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_006.b64",
+      "sha256": "378f78101cc8405590707c89225417abc04f95400eceeb341130ed4ef083fb59",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_007.b64",
+      "sha256": "b4c31711f93a766a0acaee05916fa981c231436fc1561b3891a10d7fdc6b49f7",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_008.b64",
+      "sha256": "a4c01df0632a09dd1e16e4ba7195e4ec88b47ed3797702f11aaf8304901c4dec",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_009.b64",
+      "sha256": "c4d3a85c98dce2d9f26fb8176834b63d9912dc57ad7caf4f0059dced61f80b13",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_010.b64",
+      "sha256": "47d1f7edfc1755bc8077a6c40f6adb067452fdcddc85e90595b23952c5881daa",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_011.b64",
+      "sha256": "fa1a8d59c1b2a2dadae2cea0ec79d316940bb1b366c037fdb1f8964d1391a9c3",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_012.b64",
+      "sha256": "d0533c21a7fb93b7bd3080a3333f4402335daaede9b49edc3e7b611c689c0b3e",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_013.b64",
+      "sha256": "9e7eeac34f4b51716a418693329d25fa511b7ace8de49fe7a96d5c25b4c624bf",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_014.b64",
+      "sha256": "447d0b4dd097b9b6a819c845701ac6af7f55cd62e7b6cc650e13de2eb028f6fe",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_015.b64",
+      "sha256": "76975464d287bc0443ad6b94cfa6b138d6b8a5ca5f82caed33a721aefdb598f7",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_016.b64",
+      "sha256": "5f5eb98d4d65fe5a43c35d9ea4ee0ab63dae58472622d01946f0444a83ca0321",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_017.b64",
+      "sha256": "c7f2847bf6a38e660aae3399a96afb36c2f2f4621f12bff41333d45bc6351585",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_018.b64",
+      "sha256": "4dadaf433c34ab67bf775b8e2d26a71bc16c218d574defd4aa30f195ac841ab8",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_019.b64",
+      "sha256": "f449f5fedd4ba8d89b0cfb22cc8926be9554bce4c5f06f0190edb9c1dd6d58c9",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_020.b64",
+      "sha256": "c9d26cb6be4d7be98a7bc091f07698b052ff8f9ce30cfd475267606673eaf41d",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_021.b64",
+      "sha256": "5cbb538c1767e5adff9bc03f099b550459c812630d9a3d54b0304749e607aab3",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_022.b64",
+      "sha256": "ab0089510d03a97898a1b3f7f2549fc9498c866311855f01bf4f277fc19f042c",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_023.b64",
+      "sha256": "28da3a05e72d6e5bdb1177a97ecc26f55a15fa2c3906077088261ad6272bcddc",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_024.b64",
+      "sha256": "81ff17c2b06af4cd5772306c549e0b947e3b2c7088b3a433d007c424794f2fb2",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_025.b64",
+      "sha256": "00e7df5925332892393eb1a4a738d6de1862fe8746c2cf59d4c544c784deef29",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_026.b64",
+      "sha256": "8578ec6c945345249bed61a44dd0947e5094f773699bb841333e34bf11bea92b",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_027.b64",
+      "sha256": "15977823d06eded8ccf954a53262a51edc30ef8d8686e256e8c6cfac8817f6f0",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_028.b64",
+      "sha256": "8e942d19016dcf7d7bbffd51267ed3be55a7948f49cf5a9a0689e4a7fa95a6e7",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_029.b64",
+      "sha256": "5815d0813637fc8ae83c5ad86c9e345be3a8dff013a8fb68fa5daa82a6c3c69d",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_030.b64",
+      "sha256": "294d34955a42c821c1b6328df4410ba22cffd3b7359eb0cba917b5953e0162bd",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_031.b64",
+      "sha256": "8f2d951b7842e2d6083f51922e2c733abd2f30720c3254177b99fd1cd57bbfa6",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_032.b64",
+      "sha256": "f5ede5b4a9248b40be17fcce4c123cc613491cdadee6b4fd07cdcd8b7803fcf5",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_033.b64",
+      "sha256": "9dd44af3a70367c6735b4f39f06b8e7c7437e9594acd3e7dae1f73180ec55336",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_034.b64",
+      "sha256": "721036bee43afe415a1c9da17841c88c06c3528cd88b9af7a43b61b3ee3f22c9",
+      "byte_count": 65536
+    },
+    {
+      "name": "chunk_035.b64",
+      "sha256": "b91ed743565fcf97e4c7a72492b11c5dcc7fa301dde5735207ebfaf50c58d616",
+      "byte_count": 35040
+    }
+  ],
+  "files": {
+    "main_jobs.json": {
+      "sha256": "9bfeaf2d86116ced0e8c55c3c390d3be12050ad38820b4e02c6ed684cc8786bf",
+      "byte_count": 271957519,
+      "job_count": 150000
+    },
+    "main_choices_only.json": {
+      "sha256": "9db13301d928cd31dc54c97f0c5cfd88b9bc25774ceb56027c032c52e4afb043",
+      "byte_count": 13175086,
+      "job_count": 10000
+    }
+  }
+}

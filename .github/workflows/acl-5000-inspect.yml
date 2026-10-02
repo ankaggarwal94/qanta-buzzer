@@ -1,0 +1,43 @@
+name: Inspect existing ACL 5000 experiment
+
+on:
+  push:
+    branches: [ops/acl-5000-experiment-20261002]
+    paths: [.github/workflows/acl-5000-inspect.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: inspect ACL 5000 experiment 20261002'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - run: python -m pip install --disable-pip-version-check 'modal==1.6.0'
+      - name: Read durable progress without starting GPU compute
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: >-
+          python -m scripts.modal_acl_expansion status
+          --run-id acl5000-20261002 > inspection.json
+      - run: cat inspection.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acl5000-inspection-${{ github.run_id }}
+          path: inspection.json
+          if-no-files-found: warn
+          retention-days: 90

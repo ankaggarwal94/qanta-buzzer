@@ -1,0 +1,42 @@
+{
+  "schema_version": "acl-expansion-preflight-v1",
+  "purpose": "CPU-only validation of new frozen inputs; this is not a GPU launch configuration",
+  "execution_authorized_by_this_file": false,
+  "prompt_template": "concise_json_v4",
+  "questions": 5000,
+  "split_counts": {"calibration": 1000, "selection": 1000, "test": 3000},
+  "checkpoints_per_question": 10,
+  "checkpoint_word_rule": "floor(N * k / 10), k=1..10; retain full original text at k=10",
+  "arms": ["oe", "independent_pool", "same_category_pool"],
+  "main_jobs_per_model": 150000,
+  "choices_only_jobs_per_model": 10000,
+  "models": {
+    "Qwen/Qwen2.5-3B-Instruct": "aa8e72537993ba99e69dfaafa59ed015b17504d1",
+    "Qwen/Qwen2.5-7B-Instruct": "a09a35458c702b33eeacc393d103063234e8bc28"
+  },
+  "generation": {
+    "max_input_tokens": 2048,
+    "max_new_tokens": 160,
+    "do_sample": false,
+    "num_beams": 1,
+    "batch_size": 8,
+    "seed": 1,
+    "precision": "bfloat16",
+    "truncate_inputs": false,
+    "confidence_method": "self_reported_correctness_probability_uncalibrated",
+    "constraint_failure_policy": "retain_invalid_at_token_cap_v1"
+  },
+  "tokenizer": {
+    "tokenizers_version": "0.21.1",
+    "tokenizer_json_sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+    "tokenizer_config_sha256": "5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583",
+    "tokenizer_git_blob_id": "443909a61d429dff23010e5bddd28ff530edda00"
+  },
+  "historical_runner_compatible": false,
+  "launch_requirements": [
+    "An expansion-specific runner with create-once checkpoints, stable job identity, and resumable bounded shards",
+    "A newly measured throughput estimate and explicit current compute budget",
+    "Public-only inputs; evaluator files excluded from generation containers",
+    "Frozen grading and human-review protocol before reporting confirmatory claims"
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "analysis": {
+    "bootstrap_samples": 500,
+    "risk_budget": 0.1,
+    "seed": 1
+  },
+  "code_inputs_sha256": {
+    "evaluation/jane_paired.py": "653af47fe9126c54aa02a0b7d58ef25e7a96e8d4a5bba8c4bc31268dcc5c817a",
+    "qb_data/jane_paired.py": "878379d123dddca26a93a07d11a7ae7e96bb8038a8c02aedf329285d78ba5d52",
+    "scripts/analyze_acl_expansion.py": "90b2ed6c97ee358885c4d4f9c328c782e398969f7744bf23f5b181056b8c6865",
+    "scripts/jane_gpu_backend.py": "7596bc5a517981e3d4fbb9b4f4643985653d480e9a01f7691afef9d926cd499a",
+    "scripts/run_jane_paired.py": "29fc3c7feff3660b82a16c0b1a724c4c2725c71536bb96ba7c51c2f665453df2"
+  },
+  "frozen_inputs_sha256": {
+    "evaluator/main_choices_only_gold.json": "93a4eec6e9792e432f96b55e88a527765b812635f3c11a70f94e8361095a8162",
+    "evaluator/main_dataset.json": "d16d8e611965fba3829f01cda936145743b7d46187030e2138caf52068aa9b62",
+    "manifest.json": "0f06ab1bbd61d715d59d8a589f90b1bf3bcdae6cab238f7363ef33476fd3998b",
+    "public/main_choices_only.json": "9db13301d928cd31dc54c97f0c5cfd88b9bc25774ceb56027c032c52e4afb043",
+    "public/main_jobs.json": "9bfeaf2d86116ced0e8c55c3c390d3be12050ad38820b4e02c6ed684cc8786bf"
+  },
+  "inference_run_by_this_artifact": false,
+  "interpretation_limits": [
+    "Frozen word endpoints are not reviewed clue boundaries.",
+    "Deterministic string matches and explicit aliases are provisional; unmatched OE outputs stay unresolved in primary analysis.",
+    "No semantic OE recalibration or selected-policy report without complete supplied adjudication; optional exact-match proxy measures a different target.",
+    "Question/group bootstrap is paired and conditional on fixed maps, thresholds, and assigned grades; no multiplicity correction or fitted-policy uncertainty.",
+    "Risk and mean position are undefined at zero commitments. Each policy mean conditions on its own committing population.",
+    "Selection risk budget is an empirical rule, not a population guarantee.",
+    "The 370 held-out-year candidates and optional type-matched menus are excluded from this frozen 5000-question main experiment.",
+    "Trace execution markers are provenance assertions to cross-check with actual host receipts; this script does not independently attest hardware."
+  ],
+  "question_splits": {
+    "calibration": 1000,
+    "selection": 1000,
+    "test": 3000
+  },
+  "schema_version": "acl-expanded-analysis-contract-v1"
+}
