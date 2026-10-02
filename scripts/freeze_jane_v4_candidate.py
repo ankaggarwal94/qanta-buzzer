@@ -1,7 +1,9 @@
-"""Create a prospective interface candidate from the unchanged frozen sample.
+"""Reconstruct the historical v4 candidate from the unchanged v3 sample.
 
 No retrieval, inference, grading, or accuracy-based selection occurs here.
 The original development gate failure and input archive remain immutable.
+The archived budget documents the historical run; it cannot authorize current
+compute. Current paid execution uses its separately validated budget ledger.
 """
 from __future__ import annotations
 
@@ -14,7 +16,36 @@ import shutil
 import zipfile
 
 from qb_data.jane_paired import build_jobs
-from scripts.modal_jane_pilot import INPUT_FILES, PRIOR_HOST_RECEIPT_SHA256, budget_plan, load_public_inputs
+from scripts.modal_jane_pilot import INPUT_FILES, load_public_inputs
+
+
+PRIOR_HOST_RECEIPT_SHA256 = "b48aabe8b521ba9f0d8d7fd9ae1e89706146109c1c7be54983bcc8feaa79d423"
+HISTORICAL_SOURCE_COMMIT = "a2013af95f7fa49f055423a9b398358aaf252c64"
+HISTORICAL_FREEZE_SHA256 = "c84e978e0ba918552414204f8eddc2fada6f54240519e497d4155fad73deb2b0"
+
+
+def historical_v4_budget() -> dict:
+    """Return the exact archived v4 metadata, independent of today's ceiling.
+
+    Transcribed from the hash-verified historical prompt_candidate_freeze.json
+    identified above. This is a fresh dictionary, not an execution budget plan.
+    The current Modal runner rejects this older schema and $7.74 allowance.
+    """
+    return {
+        "schema_version": "jane-modal-budget-v1", "ceiling_usd": "7.74",
+        "reserve_usd": "2", "allocation_rate_usd_per_second": "0.00063924",
+        "max_session_seconds": 8979, "max_allocation_plus_reserve_usd": "7.73973596",
+        "gpu": "L40S", "cpu_request_and_limit": [2, 2],
+        "memory_request_and_limit_mib": [32768, 32768],
+        "pricing_url": "https://modal.com/pricing", "pricing_checked": "2026-10-01",
+        "invoice_status": "estimated; not a provider billing receipt",
+        "cumulative_initial_ceiling_usd": "10", "prior_reserved_usd": "2.26",
+        "prior_host_session_seconds": "390.718294956",
+        "prior_host_receipt_sha256": "b48aabe8b521ba9f0d8d7fd9ae1e89706146109c1c7be54983bcc8feaa79d423",
+        "prior_run_id": 36918829142,
+        "prior_source_commit": "d4105ca1f3a705611c1e65076723838ee67cc0df",
+        "cumulative_max_estimate_plus_reserves_usd": "9.99973596",
+    }
 
 
 def freeze(original: Path, out: Path, prior_host_receipt: Path) -> dict:
@@ -68,7 +99,11 @@ def freeze(original: Path, out: Path, prior_host_receipt: Path) -> dict:
               "correction": "Instructions precede unchanged question JSON; short answer, low confidence allowed, exact null/null abstention object, no explanations.",
               "preserved": ["models", "revisions", "greedy", "seed", "batching", "token caps", "parser", "95% per-format gate"],
               "original_status": prior["status"], "original_all_3b_oe_abstain": True,
-              "coverage_gate_added": False, "automatic_reruns": 0, "budget": budget_plan("7.74")}
+              "coverage_gate_added": False, "automatic_reruns": 0,
+              "historical_reconstruction": True, "current_execution_authorized": False,
+              "historical_source_commit": HISTORICAL_SOURCE_COMMIT,
+              "historical_freeze_sha256": HISTORICAL_FREEZE_SHA256,
+              "budget": historical_v4_budget()}
     (out / "prompt_candidate_freeze.json").write_text(json.dumps(record, indent=2, allow_nan=False) + "\n")
     with zipfile.ZipFile(out / "public_inputs.zip", "x", compression=zipfile.ZIP_DEFLATED) as archive:
         for name in (*INPUT_FILES, "manifest.json"):
@@ -77,7 +112,7 @@ def freeze(original: Path, out: Path, prior_host_receipt: Path) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--original", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--prior-host-receipt", type=Path, required=True)

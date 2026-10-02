@@ -34,23 +34,26 @@ def trace(jobs, answer="France"):
     return {"predictions": rows}
 
 
-@pytest.mark.parametrize("value", ["nan", "NaN", "Infinity", "-1", "0", "2", "5.58", "7.74", "7.75", "10", "10.01", "100"])
+@pytest.mark.parametrize("value", ["nan", "NaN", "Infinity", "-1", "0", "2", "9.35", "10", "10.01", "100"])
 def test_budget_rejects_before_provider_import(value):
     with pytest.raises(ValueError):
         pilot.budget_plan(value)
 
 
-def test_remaining_allocation_includes_three_attempts_and_reserves():
-    plan = pilot.budget_plan("5.57")
-    assert plan["max_session_seconds"] == 5584
+def test_remaining_allocation_includes_three_prior_attempts_and_one_global_reserve():
+    plan = pilot.budget_plan("9.34")
+    assert plan["max_session_seconds"] == 11482
     assert Decimal(plan["cumulative_max_estimate_plus_reserves_usd"]) <= Decimal("10")
-    assert Decimal(plan["max_allocation_plus_reserve_usd"]) <= Decimal("5.57")
+    assert Decimal(plan["max_allocation_plus_reserve_usd"]) <= Decimal("9.34")
     measured_prior = sum((pilot.ALLOCATION_RATE * Decimal(attempt["host_session_seconds"])
-                          + Decimal(attempt["reserve_usd"]) for attempt in pilot.PRIOR_ATTEMPTS), Decimal(0))
-    assert measured_prior == Decimal("4.41650600135919124")
-    assert Decimal(plan["prior_measured_allocation_plus_reserves_usd"]) == measured_prior
-    assert measured_prior <= Decimal(plan["prior_reserved_usd"])
-    assert {a["run_id"] for a in plan["prior_attempts"]} == {36918829142, 36921167573}
+                          for attempt in pilot.PRIOR_ATTEMPTS), Decimal(0))
+    assert measured_prior == Decimal("0.6490735711451468080380")
+    assert Decimal(plan["prior_whole_host_allocation_estimate_usd"]) == measured_prior
+    assert measured_prior <= Decimal(plan["prior_allocation_debit_usd"])
+    assert Decimal(plan["reserve_usd"]) == Decimal("2")
+    assert "single cumulative" in plan["reserve_scope"]
+    assert all("reserve_usd" not in attempt for attempt in plan["prior_attempts"])
+    assert {a["run_id"] for a in plan["prior_attempts"]} == {36918829142, 36921167573, 36942800586}
     assert all(len(a["source_commit"]) == 40 and len(a["host_receipt_sha256"]) == 64
                for a in plan["prior_attempts"])
     assert plan["prior_attempts_sha256"] == pilot._sha(pilot._canonical(plan["prior_attempts"]))
@@ -59,13 +62,13 @@ def test_remaining_allocation_includes_three_attempts_and_reserves():
     assert plan["memory_request_and_limit_mib"] == [32768, 32768]
 
 
-def test_prior_debit_cannot_underfund_either_completed_attempt(monkeypatch):
-    monkeypatch.setattr(pilot, "PRIOR_RESERVED_USD", Decimal("4.41"))
-    with pytest.raises(ValueError, match="both host sessions"):
-        pilot.budget_plan("5.57")
+def test_prior_debit_cannot_underfund_any_completed_attempt(monkeypatch):
+    monkeypatch.setattr(pilot, "PRIOR_DEBIT_USD", Decimal("0.64"))
+    with pytest.raises(ValueError, match="all three completed host sessions"):
+        pilot.budget_plan("9.34")
 
 
-@pytest.mark.parametrize("mutation", ["missing_attempt", "duplicate_attempt", "missing_receipt", "wrong_reserve"])
+@pytest.mark.parametrize("mutation", ["missing_attempt", "duplicate_attempt", "missing_receipt", "missing_stop_proof"])
 def test_prior_ledger_rejects_missing_or_unbound_attempts(monkeypatch, mutation):
     attempts = deepcopy(list(pilot.PRIOR_ATTEMPTS))
     if mutation == "missing_attempt":
@@ -75,7 +78,7 @@ def test_prior_ledger_rejects_missing_or_unbound_attempts(monkeypatch, mutation)
     elif mutation == "missing_receipt":
         attempts[1]["host_receipt_sha256"] = ""
     else:
-        attempts[1]["reserve_usd"] = "0"
+        attempts[1]["stop_log_sha256"] = ""
     monkeypatch.setattr(pilot, "PRIOR_ATTEMPTS", tuple(attempts))
     with pytest.raises(ValueError, match="prior"):
         pilot.budget_plan()
@@ -240,7 +243,7 @@ def test_frozen_workflow_limits_trigger_secrets_and_attempts():
     assert "python scripts/modal_jane_pilot.py launch" not in source
     assert source.count("secrets.MODAL_TOKEN_ID") == 1
     assert source.count("secrets.MODAL_TOKEN_SECRET") == 1
-    assert "--budget-usd 5.57" in source and "--budget-usd 10" not in source and "--detach" not in source
+    assert "--budget-usd 9.34" in source and "--budget-usd 10" not in source and "--detach" not in source
 
 
 def test_pinned_sdk_remote_import_matches_the_only_image_module():
@@ -255,10 +258,10 @@ def test_image_source_allowlist_excludes_evaluator_and_data():
     assert all("data" not in path and "evaluation" not in path for path in pilot.SOURCE_FILES)
 
 
-def test_third_attempt_names_never_reuse_prior_allocation_claim():
-    assert pilot.VOLUME_NAME == "jane-mcq-pilot-20261001-v5"
-    assert pilot.APP_NAME == "jane-mcq-pilot-20261001-v5"
-    assert "v5 constrained" in pilot.LAUNCH_MESSAGE
+def test_fourth_attempt_names_never_reuse_prior_allocation_claim():
+    assert pilot.VOLUME_NAME == "jane-mcq-pilot-20261001-v6"
+    assert pilot.APP_NAME == "jane-mcq-pilot-20261001-v6"
+    assert "v6 global-budget" in pilot.LAUNCH_MESSAGE
 
 
 def test_small_remaining_budget_fails_before_model_or_provider_loading():

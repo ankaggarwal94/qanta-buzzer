@@ -33,29 +33,40 @@ MEMORY_MIB = 32768
 ALLOCATION_RATE = GPU_RATE + CPU_CORE_RATE * CPU_CORES + MEMORY_GIB_RATE * 32
 RESERVE_USD = Decimal("2")
 INITIAL_CEILING_USD = Decimal("10")
-# Preserve each earlier attempt's full non-GPU reserve; round the combined
-# measured host allocation plus those reserves upward before spending again.
-PRIOR_RESERVED_USD = Decimal("4.43")
+# Completed apps have stopped. Debit all three measured whole-host sessions,
+# rounded above their $0.649074 allocation estimate; retain ONE $2 contingency
+# across completed and future attempts. Historical reserves are not charges.
+PRIOR_DEBIT_USD = Decimal("0.66")
 PRIOR_ATTEMPTS = (
     {"run_id": 36918829142,
      "source_commit": "d4105ca1f3a705611c1e65076723838ee67cc0df",
      "host_receipt_sha256": "b48aabe8b521ba9f0d8d7fd9ae1e89706146109c1c7be54983bcc8feaa79d423",
-     "host_session_seconds": "390.718294956", "reserve_usd": "2"},
+     "host_session_seconds": "390.718294956",
+     "app_id": "ap-8x210ddYAeMmVkOEac5jhg", "app_completed_utc": "2026-10-01T20:10:36.8985518Z",
+     "stop_log_sha256": "f2eaf4f32c972d58a33eacd627e516faade462231daa0de5e040a7cbe668e07b"},
     {"run_id": 36921167573,
      "source_commit": "a2013af95f7fa49f055423a9b398358aaf252c64",
      "host_receipt_sha256": "dadd1a2b72e4186fd93ebd398b3504f454bde0d66e5afbdff731d65493904082",
-     "host_session_seconds": "260.846064845", "reserve_usd": "2"},
+     "host_session_seconds": "260.846064845",
+     "app_id": "ap-VPUezGIuuVNifC3cqOezIj", "app_completed_utc": "2026-10-01T20:27:42.8030958Z",
+     "stop_log_sha256": "97ad188010e9bbc2a8e1aa893d3e4920320eddbd9d79ea9fac483e2f2f25e420"},
+    {"run_id": 36942800586,
+     "source_commit": "cadc3643b00040ce3960592cb1f4c0a6ed684de4",
+     "host_receipt_sha256": "33939ac594d7fe3a62c4a78261f1dfe93807ddb8789222c4b73b5a6a146f28b6",
+     "host_session_seconds": "363.81886268999995",
+     "app_id": "ap-qbjwKGOoLrJHQ94yfLnFzf", "app_completed_utc": "2026-10-01T23:55:32.5326757Z",
+     "stop_log_sha256": "58421f6ac54fd12390766a590ecb9c0eadd20ff571e6c22585ccdb37223c09ad"},
 )
-MAX_BUDGET_USD = INITIAL_CEILING_USD - PRIOR_RESERVED_USD
+MAX_BUDGET_USD = INITIAL_CEILING_USD - PRIOR_DEBIT_USD
 MAX_SESSION_SECONDS = 12000
 SHUTDOWN_RESERVE_SECONDS = 120
 MODEL_LOAD_RESERVE_SECONDS = 900
 THROUGHPUT_MULTIPLIER = 3
 MODAL_VERSION = "1.6.0"
-VOLUME_NAME = "jane-mcq-pilot-20261001-v5"
-APP_NAME = "jane-mcq-pilot-20261001-v5"
+VOLUME_NAME = "jane-mcq-pilot-20261001-v6"
+APP_NAME = "jane-mcq-pilot-20261001-v6"
 BRANCH = "ops/jane-modal-pilot-20261001"
-LAUNCH_MESSAGE = "ops: launch frozen Jane Modal v5 constrained candidate 20261001"
+LAUNCH_MESSAGE = "ops: launch frozen Jane Modal v6 global-budget candidate 20261001"
 MODELS = (
     ("qwen3b", "Qwen/Qwen2.5-3B-Instruct", "aa8e72537993ba99e69dfaafa59ed015b17504d1"),
     ("qwen7b", "Qwen/Qwen2.5-7B-Instruct", "a09a35458c702b33eeacc393d103063234e8bc28"),
@@ -104,7 +115,7 @@ def _write_once(path: Path, value: Any) -> None:
         os.fsync(stream.fileno())
 
 
-def budget_plan(budget_usd: str | Decimal = "5.57") -> dict[str, Any]:
+def budget_plan(budget_usd: str | Decimal = "9.34") -> dict[str, Any]:
     """Reject unsupported ceilings and reserve costs beyond the GPU function."""
     try:
         budget = Decimal(str(budget_usd))
@@ -114,18 +125,20 @@ def budget_plan(budget_usd: str | Decimal = "5.57") -> dict[str, Any]:
     seen_runs = set()
     for attempt in PRIOR_ATTEMPTS:
         seconds = Decimal(attempt["host_session_seconds"])
-        reserve = Decimal(attempt["reserve_usd"])
         if (attempt["run_id"] in seen_runs or not isinstance(attempt["run_id"], int)
                 or not re.fullmatch(r"[0-9a-f]{40}", attempt["source_commit"])
                 or not HEX64.fullmatch(attempt["host_receipt_sha256"])
-                or not seconds.is_finite() or seconds <= 0 or reserve != RESERVE_USD):
+                or not HEX64.fullmatch(attempt["stop_log_sha256"])
+                or not attempt["app_id"].startswith("ap-")
+                or not re.fullmatch(r"[0-9T:.\-]+Z", attempt["app_completed_utc"])
+                or not seconds.is_finite() or seconds <= 0):
             raise ValueError("invalid prior attempt evidence ledger")
         seen_runs.add(attempt["run_id"])
-        prior_estimate += ALLOCATION_RATE * seconds + reserve
-    if len(PRIOR_ATTEMPTS) != 2 or prior_estimate > PRIOR_RESERVED_USD:
-        raise ValueError("prior reservation does not cover both host sessions and reserves")
+        prior_estimate += ALLOCATION_RATE * seconds
+    if len(PRIOR_ATTEMPTS) != 3 or prior_estimate > PRIOR_DEBIT_USD:
+        raise ValueError("prior debit does not cover all three completed host sessions")
     if not budget.is_finite() or not RESERVE_USD < budget <= MAX_BUDGET_USD:
-        raise ValueError("candidate ceiling must be greater than $2 and at most the $5.57 remainder")
+        raise ValueError("candidate ceiling must be greater than $2 and at most the $9.34 remainder")
     seconds = min(MAX_SESSION_SECONDS, int(((budget - RESERVE_USD) / ALLOCATION_RATE)
                                           .to_integral_value(rounding=ROUND_FLOOR)))
     if seconds <= SHUTDOWN_RESERVE_SECONDS + 2 * MODEL_LOAD_RESERVE_SECONDS:
@@ -134,19 +147,21 @@ def budget_plan(budget_usd: str | Decimal = "5.57") -> dict[str, Any]:
     if estimate > budget:
         raise ValueError("allocation exceeds compute ceiling")
     return {
-        "schema_version": "jane-modal-budget-v2", "ceiling_usd": str(budget),
-        "reserve_usd": str(RESERVE_USD), "allocation_rate_usd_per_second": str(ALLOCATION_RATE),
+        "schema_version": "jane-modal-budget-v3", "ceiling_usd": str(budget),
+        "reserve_usd": str(RESERVE_USD),
+        "reserve_scope": "single cumulative contingency for all completed and prospective attempts",
+        "allocation_rate_usd_per_second": str(ALLOCATION_RATE),
         "max_session_seconds": seconds, "max_allocation_plus_reserve_usd": str(estimate),
         "gpu": "L40S", "cpu_request_and_limit": [CPU_CORES, CPU_CORES],
         "memory_request_and_limit_mib": [MEMORY_MIB, MEMORY_MIB],
         "pricing_url": PRICING_URL, "pricing_checked": PRICING_CHECKED,
         "invoice_status": "estimated; not a provider billing receipt",
         "cumulative_initial_ceiling_usd": str(INITIAL_CEILING_USD),
-        "prior_reserved_usd": str(PRIOR_RESERVED_USD),
+        "prior_allocation_debit_usd": str(PRIOR_DEBIT_USD),
         "prior_attempts": [dict(attempt) for attempt in PRIOR_ATTEMPTS],
         "prior_attempts_sha256": _sha(_canonical(PRIOR_ATTEMPTS)),
-        "prior_measured_allocation_plus_reserves_usd": str(prior_estimate),
-        "cumulative_max_estimate_plus_reserves_usd": str(PRIOR_RESERVED_USD + estimate),
+        "prior_whole_host_allocation_estimate_usd": str(prior_estimate),
+        "cumulative_max_estimate_plus_reserves_usd": str(PRIOR_DEBIT_USD + estimate),
     }
 
 
@@ -641,7 +656,7 @@ def main(argv=None) -> int:
     parser.add_argument("mode", choices=("plan", "launch"))
     parser.add_argument("--public-dir", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--budget-usd", default="5.57")
+    parser.add_argument("--budget-usd", default="9.34")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
     repo = Path(__file__).resolve().parents[1]
