@@ -77,4 +77,4 @@ jobs:
             inspection.json
             completed_evidence/
           retention-days: 30
-# Read-only checkpoint 3, including hash-verified completed phases
+# Read-only checkpoint 4, including hash-verified completed phases
