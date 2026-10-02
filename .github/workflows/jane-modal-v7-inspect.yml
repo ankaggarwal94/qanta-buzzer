@@ -1,0 +1,80 @@
+name: Inspect existing Jane v7 allocation
+
+on:
+  push:
+    branches: [ops/jane-modal-pilot-20261001]
+    paths: [.github/workflows/jane-modal-v7-inspect.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: inspect existing Jane v7 allocation 20261001'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11.12'
+      - run: python -m pip install --disable-pip-version-check 'modal==1.6.0'
+      - name: Read committed output summaries without starting compute
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          python - <<'PY'
+          import json
+          import hashlib
+          from pathlib import Path
+          import modal
+          volume = modal.Volume.from_name('jane-mcq-pilot-20261001-v7', create_if_missing=False)
+          result = {'volume': 'jane-mcq-pilot-20261001-v7', 'mode': 'read_only', 'receipts': {}, 'progress': {}}
+          def read(path):
+              data = bytearray()
+              for part in volume.read_file('/output/' + path):
+                  data.extend(part)
+                  if len(data) > 64 * 1024 * 1024:
+                      raise ValueError('read size limit')
+              return bytes(data)
+          for name in ['gpu_execution_started.json', 'qwen7b/development_gate.json', 'throughput_gate.json', 'execution_receipt.json', 'failure.json']:
+              try:
+                  result['receipts'][name] = json.loads(read(name))
+              except Exception as error:
+                  result['receipts'][name] = {'unavailable': type(error).__name__}
+          for model in ['qwen7b']:
+              for phase in ['development', 'main', 'choices_only']:
+                  name = model + '/' + phase
+                  try:
+                      lines = read(name + '/predictions.checkpoint.jsonl').splitlines()
+                      result['progress'][name] = {'persisted_responses': len(lines)}
+                  except Exception as error:
+                      result['progress'][name] = {'unavailable': type(error).__name__}
+                  try:
+                      completion_raw = read(name + '/completion.json')
+                  except FileNotFoundError:
+                      continue
+                  completion = json.loads(completion_raw)
+                  trace_raw = read(name + '/trace.json')
+                  if hashlib.sha256(trace_raw).hexdigest() != completion['trace_sha256']:
+                      raise ValueError('completed trace hash mismatch')
+                  dest = Path('completed_evidence') / name
+                  dest.mkdir(parents=True, exist_ok=False)
+                  (dest / 'completion.json').write_bytes(completion_raw)
+                  (dest / 'trace.json').write_bytes(trace_raw)
+          Path('inspection.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jane-v7-read-only-inspection
+          path: |
+            inspection.json
+            completed_evidence/
+          retention-days: 30
+# Read-only checkpoint 1, including hash-verified completed phases
