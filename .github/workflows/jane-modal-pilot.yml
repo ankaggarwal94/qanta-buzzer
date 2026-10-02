@@ -1,4 +1,4 @@
-name: Frozen Jane Modal v6 cumulative-budget constrained candidate
+name: Frozen Jane Modal v7 Qwen7B recovery candidate
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: jane-modal-v6-20261001
+  group: jane-modal-v7-20261001
   cancel-in-progress: false
 
 jobs:
@@ -19,9 +19,9 @@ jobs:
       github.ref == 'refs/heads/ops/jane-modal-pilot-20261001' &&
       github.actor == 'ankaggarwal94' &&
       github.run_attempt == 1 &&
-      github.event.head_commit.message == 'ops: launch frozen Jane Modal v6 global-budget candidate 20261001'
+      github.event.head_commit.message == 'ops: launch frozen Jane Modal v7 qwen7b recovery 20261001'
     runs-on: ubuntu-24.04
-    timeout-minutes: 230
+    timeout-minutes: 190
     steps:
       - name: Checkout the exact reviewed launch commit
         uses: actions/checkout@v4
@@ -53,7 +53,7 @@ jobs:
         run: >-
           python -m scripts.modal_jane_pilot plan
           --public-dir modal_pilot_data/public
-          --source-commit "$SOURCE_COMMIT" --budget-usd 9.34
+          --source-commit "$SOURCE_COMMIT" --budget-usd 8.31
       - name: Launch the single attached allocation with existing credentials
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -63,13 +63,13 @@ jobs:
         run: >-
           python -m scripts.modal_jane_pilot launch
           --public-dir modal_pilot_data/public
-          --source-commit "$SOURCE_COMMIT" --budget-usd 9.34
-          --out results/jane_modal_gpu_v6_20261001
+          --source-commit "$SOURCE_COMMIT" --budget-usd 8.31
+          --out results/jane_modal_gpu_v7_20261001
       - name: Retain full and partial execution evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: jane-modal-pilot-v6-${{ github.run_id }}-${{ github.run_attempt }}
-          path: results/jane_modal_gpu_v6_20261001/
+          name: jane-modal-pilot-v7-${{ github.run_id }}-${{ github.run_attempt }}
+          path: results/jane_modal_gpu_v7_20261001/
           if-no-files-found: warn
           retention-days: 30

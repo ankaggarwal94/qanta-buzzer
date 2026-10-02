@@ -450,3 +450,60 @@ def test_mixed_batch_selects_mc_and_oe_constraints(monkeypatch, tmp_path):
     trace = gpu.run(package(jobs), replace(local_model(tmp_path), batch_size=2))
     assert [row['answer'] for row in trace['predictions']] == ['Paris', 'A']
     assert [row['constraint_format'] for row in trace['predictions']] == ['oe', 'mc']
+
+
+def test_token_capped_incomplete_json_is_retained_and_later_batches_continue(monkeypatch, tmp_path):
+    calls = install_fake_stack(monkeypatch)
+    generated_batches = iter([
+        [[102] * 160, [100, 99] + [0] * 158],
+        [[100, 99, 0]],
+    ])
+    monkeypatch.setattr(gpu, 'slice_generated_tokens', lambda rows, width: next(generated_batches))
+    incomplete = '{"answer":"' + '1234567890' * 45
+    valid = '{"answer":"Paris","confidence":0.7,"status":"answer"}'
+    monkeypatch.setattr(Tokenizer, 'decode',
+                        lambda self, ids, **kw: incomplete if ids[0] == 102 else valid)
+    jobs = [main_job(job_id=f'j{i}') for i in range(3)]
+    updates = []
+    path = tmp_path / 'continued.jsonl'
+    with path.open('x') as checkpoint:
+        trace = gpu.run(package(jobs), replace(local_model(tmp_path), batch_size=2,
+                                               max_new_tokens=160), checkpoint, updates.append)
+    rows = trace['predictions']
+    assert len(calls) == 2
+    assert [update['completed_jobs'] for update in updates] == [2, 3]
+    assert [row['status'] for row in rows] == ['invalid', 'answer', 'answer']
+    assert rows[0]['raw_response'] == incomplete
+    assert rows[0]['generated_token_ids'] == [102] * 160
+    assert rows[0]['answer'] is None and rows[0]['confidence'] is None
+    assert rows[0]['effective_output_tokens'] == 160
+    assert rows[0]['finish_reason'] == 'length'
+    assert rows[0]['constraint_failure_kind'] == 'max_new_tokens_incomplete_json'
+    assert all(row['constraint_failure_kind'] is None for row in rows[1:])
+    assert trace['metadata']['n_length_capped_invalid_predictions'] == 1
+    assert trace['metadata']['constraint_failure_policy']['retry'] is False
+    assert [json.loads(line) for line in path.read_text().splitlines()] == rows
+
+
+@pytest.mark.parametrize('raw,fmt,count', [
+    ('{"answer":"Z', 'mc', 160),
+    ('{"answer":"A","cofidence":', 'mc', 160),
+    ('{"answer":"A","confidence":1.1', 'mc', 160),
+    ('{"answer":"digits', 'oe', 159),
+    ('{"answer":"Paris","confidence":0.7,"status":"answer"}', 'oe', 160),
+    ('', 'oe', 160),
+])
+def test_capped_other_failures_still_checkpoint_and_abort(monkeypatch, tmp_path, raw, fmt, count):
+    calls = install_fake_stack(monkeypatch)
+    monkeypatch.setattr(gpu, 'slice_generated_tokens', lambda rows, width: [[102] * count])
+    monkeypatch.setattr(Tokenizer, 'decode', lambda self, ids, **kw: raw)
+    job = main_job() if fmt == 'oe' else main_job(format='mc', condition='pool', menu_id='m1')
+    path = tmp_path / 'refused.jsonl'
+    with path.open('x') as checkpoint:
+        with pytest.raises(ValueError):
+            gpu.run(package([job]), local_model(tmp_path), checkpoint)
+    recorded = json.loads(path.read_text())
+    assert recorded['raw_response'] == raw
+    assert recorded['generated_token_ids'] == [102] * count
+    assert recorded['constraint_failure_kind'] == 'constraint_validation_error'
+    assert len(calls) == 1

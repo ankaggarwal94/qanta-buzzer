@@ -34,26 +34,26 @@ def trace(jobs, answer="France"):
     return {"predictions": rows}
 
 
-@pytest.mark.parametrize("value", ["nan", "NaN", "Infinity", "-1", "0", "2", "9.35", "10", "10.01", "100"])
+@pytest.mark.parametrize("value", ["nan", "NaN", "Infinity", "-1", "0", "2", "8.32", "9.34", "10", "10.01", "100"])
 def test_budget_rejects_before_provider_import(value):
     with pytest.raises(ValueError):
         pilot.budget_plan(value)
 
 
-def test_remaining_allocation_includes_three_prior_attempts_and_one_global_reserve():
-    plan = pilot.budget_plan("9.34")
-    assert plan["max_session_seconds"] == 11482
+def test_remaining_allocation_includes_four_prior_attempts_and_one_global_reserve():
+    plan = pilot.budget_plan("8.31")
+    assert plan["max_session_seconds"] == 9871
     assert Decimal(plan["cumulative_max_estimate_plus_reserves_usd"]) <= Decimal("10")
-    assert Decimal(plan["max_allocation_plus_reserve_usd"]) <= Decimal("9.34")
+    assert Decimal(plan["max_allocation_plus_reserve_usd"]) <= Decimal("8.31")
     measured_prior = sum((pilot.ALLOCATION_RATE * Decimal(attempt["host_session_seconds"])
                           for attempt in pilot.PRIOR_ATTEMPTS), Decimal(0))
-    assert measured_prior == Decimal("0.6490735711451468080380")
+    assert measured_prior == Decimal("1.6848916923427847680380")
     assert Decimal(plan["prior_whole_host_allocation_estimate_usd"]) == measured_prior
     assert measured_prior <= Decimal(plan["prior_allocation_debit_usd"])
     assert Decimal(plan["reserve_usd"]) == Decimal("2")
     assert "single cumulative" in plan["reserve_scope"]
     assert all("reserve_usd" not in attempt for attempt in plan["prior_attempts"])
-    assert {a["run_id"] for a in plan["prior_attempts"]} == {36918829142, 36921167573, 36942800586}
+    assert {a["run_id"] for a in plan["prior_attempts"]} == {36918829142, 36921167573, 36942800586, 36945283402}
     assert all(len(a["source_commit"]) == 40 and len(a["host_receipt_sha256"]) == 64
                for a in plan["prior_attempts"])
     assert plan["prior_attempts_sha256"] == pilot._sha(pilot._canonical(plan["prior_attempts"]))
@@ -63,9 +63,9 @@ def test_remaining_allocation_includes_three_prior_attempts_and_one_global_reser
 
 
 def test_prior_debit_cannot_underfund_any_completed_attempt(monkeypatch):
-    monkeypatch.setattr(pilot, "PRIOR_DEBIT_USD", Decimal("0.64"))
-    with pytest.raises(ValueError, match="all three completed host sessions"):
-        pilot.budget_plan("9.34")
+    monkeypatch.setattr(pilot, "PRIOR_DEBIT_USD", Decimal("1.68"))
+    with pytest.raises(ValueError, match="all four completed host sessions"):
+        pilot.budget_plan("8.31")
 
 
 @pytest.mark.parametrize("mutation", ["missing_attempt", "duplicate_attempt", "missing_receipt", "missing_stop_proof"])
@@ -176,13 +176,16 @@ def test_raw_and_parsed_mismatch_is_integrity_failure():
         pilot.interface_gate(jobs, t)
 
 
-def test_throughput_reserves_both_models_and_includes_choices_controls():
+@pytest.mark.parametrize("model_count", [1, 2])
+def test_throughput_reserves_selected_models_and_includes_choices_controls(monkeypatch, model_count):
+    if model_count == 2:
+        monkeypatch.setattr(pilot, "MODELS", pilot.MODELS + (("extra", "model-extra", "0" * 40),))
     packages = {"main_jobs.json": {"jobs": [{}] * 100}, "main_choices_only.json": {"jobs": [{}] * 20}}
     measured = {tag: {"inference_seconds": 10.0, "jobs": 10} for tag, _, _ in pilot.MODELS}
     gate = pilot.throughput_gate(measured, packages, 3000)
-    assert gate["predicted_seconds_with_load_reserve"] == 2520
+    assert gate["predicted_seconds_with_load_reserve"] == model_count * 1260
     assert gate["passed"]
-    assert not pilot.throughput_gate(measured, packages, 2500)["passed"]
+    assert not pilot.throughput_gate(measured, packages, model_count * 1260 + 119)["passed"]
 
 
 def test_throughput_does_not_scale_one_time_model_download_with_job_count():
@@ -192,7 +195,7 @@ def test_throughput_does_not_scale_one_time_model_download_with_job_count():
     packages = {"main_jobs.json": {"jobs": [{}] * 2856}, "main_choices_only.json": {"jobs": [{}] * 400}}
     gate = pilot.throughput_gate(measured, packages, 12000)
     assert gate["passed"]
-    assert gate["predicted_seconds_with_load_reserve"] == pytest.approx(5111.186440677966)
+    assert gate["predicted_seconds_with_load_reserve"] == pytest.approx(2555.593220338983)
 
 
 def test_checkpoint_closes_before_commit_and_reopens_append(tmp_path):
@@ -243,7 +246,7 @@ def test_frozen_workflow_limits_trigger_secrets_and_attempts():
     assert "python scripts/modal_jane_pilot.py launch" not in source
     assert source.count("secrets.MODAL_TOKEN_ID") == 1
     assert source.count("secrets.MODAL_TOKEN_SECRET") == 1
-    assert "--budget-usd 9.34" in source and "--budget-usd 10" not in source and "--detach" not in source
+    assert "--budget-usd 8.31" in source and "--budget-usd 10" not in source and "--detach" not in source
 
 
 def test_pinned_sdk_remote_import_matches_the_only_image_module():
@@ -258,15 +261,15 @@ def test_image_source_allowlist_excludes_evaluator_and_data():
     assert all("data" not in path and "evaluation" not in path for path in pilot.SOURCE_FILES)
 
 
-def test_fourth_attempt_names_never_reuse_prior_allocation_claim():
-    assert pilot.VOLUME_NAME == "jane-mcq-pilot-20261001-v6"
-    assert pilot.APP_NAME == "jane-mcq-pilot-20261001-v6"
-    assert "v6 global-budget" in pilot.LAUNCH_MESSAGE
+def test_fifth_attempt_names_never_reuse_prior_allocation_claim():
+    assert pilot.VOLUME_NAME == "jane-mcq-pilot-20261001-v7"
+    assert pilot.APP_NAME == "jane-mcq-pilot-20261001-v7"
+    assert "v7 qwen7b recovery" in pilot.LAUNCH_MESSAGE
 
 
 def test_small_remaining_budget_fails_before_model_or_provider_loading():
     with pytest.raises(ValueError, match="safety reserves"):
-        pilot.budget_plan("3.22")
+        pilot.budget_plan("2.50")
 
 
 @pytest.mark.parametrize("valid_oe", [18, 19])
@@ -279,8 +282,11 @@ def test_interface_threshold_is_per_format_and_preserves_95_percent(valid_oe):
     assert pilot.interface_gate(jobs, result)["passed"] is (valid_oe == 19)
 
 
-@pytest.mark.parametrize("fail_second_model", [False, True])
-def test_no_main_inference_until_both_development_gates_pass(monkeypatch, tmp_path, fail_second_model, capsys):
+@pytest.mark.parametrize("model_count", [1, 2])
+@pytest.mark.parametrize("fail_last_model", [False, True])
+def test_no_main_inference_until_all_selected_development_gates_pass(monkeypatch, tmp_path, fail_last_model, model_count, capsys):
+    if model_count == 2:
+        monkeypatch.setattr(pilot, "MODELS", pilot.MODELS + (("extra", "model-extra", "0" * 40),))
     from scripts import jane_gpu_backend as gpu
     root = tmp_path / "output"
     volume = SimpleNamespace(reload=lambda: None, commit=lambda: None)
@@ -296,7 +302,7 @@ def test_no_main_inference_until_both_development_gates_pass(monkeypatch, tmp_pa
                              "elapsed_seconds": 0.1, "prompt": "must never log"})
         assert _kwargs["checkpoint"].stream is None
         calls.append((config.model, public["jobs"][0]["qid"]))
-        answer = "..." if fail_second_model and config.model == pilot.MODELS[1][1] else "France"
+        answer = "..." if fail_last_model and config.model == pilot.MODELS[-1][1] else "France"
         result = trace(public["jobs"], answer)
         result["metadata"] = {"total_seconds": 0.1, "model_load_seconds": 0.05}
         return result
@@ -312,23 +318,23 @@ def test_no_main_inference_until_both_development_gates_pass(monkeypatch, tmp_pa
                "source_files_sha256": {}, "public_input_id": "b" * 64,
                "absolute_deadline_unix": pilot.time.time() + 5500}
     result = pilot.remote_pilot(packages, control)
-    assert calls[:2] == [(model, "dev") for _tag, model, _rev in pilot.MODELS]
-    if fail_second_model:
-        assert len(calls) == 2
+    assert calls[:model_count] == [(model, "dev") for _tag, model, _rev in pilot.MODELS]
+    if fail_last_model:
+        assert len(calls) == model_count
         assert result["status"] == "DEVELOPMENT_INTERFACE_GATE_FAILED"
         assert not (root / "throughput_gate.json").exists()
     else:
-        assert calls[2:] == [(model, qid) for _tag, model, _rev in pilot.MODELS
+        assert calls[model_count:] == [(model, qid) for _tag, model, _rev in pilot.MODELS
                              for qid in ("main", "control")]
         assert result["status"] == "COMPLETED"
     assert (root / "execution_receipt.json").exists()
     summaries = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert [s["passed"] for s in summaries if s.get("event") == "development_gate"] == [True, not fail_second_model]
+    assert [s["passed"] for s in summaries if s.get("event") == "development_gate"] == [True] * (model_count - 1) + [not fail_last_model]
     progress = [s for s in summaries if "completed_jobs" in s]
     assert len(progress) == len(calls)
     assert all(set(s) == {"model", "phase", "completed_jobs", "total_jobs", "elapsed_seconds"} for s in progress)
     throughput = [s for s in summaries if s.get("event") == "throughput_gate"]
-    assert len(throughput) == (0 if fail_second_model else 1)
+    assert len(throughput) == (0 if fail_last_model else 1)
 
 
 @pytest.mark.parametrize("completed,previous,expected", [
@@ -344,3 +350,30 @@ def test_progress_logs_only_milestones_or_completion_and_drops_extra_fields(comp
                            "total_jobs": 280, "elapsed_seconds": 14.5}
     else:
         assert summary is None
+
+
+def test_recovery_runs_only_qwen7b_without_repeating_completed_qwen3b():
+    assert pilot.MODELS == (("qwen7b", "Qwen/Qwen2.5-7B-Instruct",
+                             "a09a35458c702b33eeacc393d103063234e8bc28"),)
+
+
+@pytest.mark.parametrize("mutation", ["missing_finalization", "finalized_before_stop", "no_cancel_configured"])
+def test_exceptional_prior_stop_needs_host_finalization_and_cancel_configuration(monkeypatch, mutation):
+    attempts = deepcopy(list(pilot.PRIOR_ATTEMPTS))
+    prior = attempts[-1]
+    assert prior["stop_event_kind"] == "remote_exception_stop_then_host_finalization"
+    if mutation == "missing_finalization":
+        prior.pop("host_finalized_utc")
+    elif mutation == "finalized_before_stop":
+        prior["host_finalized_utc"] = "2026-10-02T00:40:00Z"
+    else:
+        prior["terminate_containers_on_error_configured"] = False
+    monkeypatch.setattr(pilot, "PRIOR_ATTEMPTS", tuple(attempts))
+    with pytest.raises(ValueError, match="exceptional stop"):
+        pilot.budget_plan()
+
+
+def test_no_models_cannot_pass_budget_validation(monkeypatch):
+    monkeypatch.setattr(pilot, "MODELS", ())
+    with pytest.raises(ValueError, match="at least one"):
+        pilot.budget_plan()

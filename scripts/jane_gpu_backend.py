@@ -27,7 +27,7 @@ try:
     )
     from scripts.jane_output_constraints import (
         OutputConstraints, constraint_provenance, validate_constrained_completion,
-        verify_dependencies,
+        verify_dependencies, make_parser,
     )
 except ModuleNotFoundError:
     # Direct execution places scripts/, rather than the repo root, on sys.path.
@@ -36,7 +36,7 @@ except ModuleNotFoundError:
     )
     from jane_output_constraints import (
         OutputConstraints, constraint_provenance, validate_constrained_completion,
-        verify_dependencies,
+        verify_dependencies, make_parser,
     )
 
 
@@ -52,6 +52,14 @@ CONTROL_KEYS = {
 }
 CONFIDENCE_METHOD = 'self_reported_correctness_probability_uncalibrated'
 PLACEHOLDERS = {'...', '…', '[answer]', '<answer>', 'your answer', 'answer here'}
+CONSTRAINT_FAILURE_POLICY = {
+    'version': 'retain_invalid_at_token_cap_v1',
+    'continued_failure_kind': 'max_new_tokens_incomplete_json',
+    'eligibility': 'exact max_new_tokens, no EOS, strict-parser invalid, nonempty valid incomplete frozen-grammar prefix',
+    'handling': 'retain exact raw response and tokens with null answer/confidence; continue later jobs',
+    'retry': False, 'repair': False,
+    'other_constraint_failures': 'checkpoint exact evidence then abort',
+}
 
 
 @dataclass(frozen=True)
@@ -282,6 +290,23 @@ def interface_diagnostics(jobs: list[dict[str, Any]], trace: dict[str, Any]) -> 
     return report
 
 
+def _incomplete_grammar_prefix(raw: str, fmt: str) -> bool:
+    """Recognize truncation inside the unchanged grammar, never repair it."""
+    if not raw:
+        return False
+    from lmformatenforcer import CharacterLevelParserConfig
+    parser = make_parser(fmt)
+    # Include actual decoded Unicode without changing the grammar. This parser
+    # only verifies evidence after generation and never supplies model tokens.
+    parser.config = CharacterLevelParserConfig(
+        alphabet=''.join(sorted(set(parser.config.alphabet + raw))))
+    for char in raw:
+        if char not in parser.get_allowed_characters():
+            return False
+        parser = parser.add_character(char)
+    return not parser.can_end()
+
+
 def run(package: dict[str, Any], config: GPUConfig, checkpoint: TextIO | None = None,
         progress: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     """Generate bounded, batched CUDA completions from public prompts only.
@@ -379,6 +404,9 @@ def run(package: dict[str, Any], config: GPUConfig, checkpoint: TextIO | None = 
     eos_ids = set(eos_ids if isinstance(eos_ids, list) else [eos_ids])
     constraints = OutputConstraints(tokenizer, eos_ids)
     constraint_metadata['tokenizer_eos_token_id'] = tokenizer.eos_token_id
+    constraint_metadata['eos_policy'] = (
+        'tokenizer EOS only after complete grammar; exact token-cap incomplete '
+        'grammar prefixes may be retained as invalid without EOS')
     predictions = []
     for offset in range(0, len(jobs), config.batch_size):
         check_deadline(started_clock, config.max_elapsed_seconds)
@@ -424,22 +452,33 @@ def run(package: dict[str, Any], config: GPUConfig, checkpoint: TextIO | None = 
                 'constraint_schema_version': constraint_metadata['schema_version'],
                 'constraint_format': job['format'],
                 'constraint_grammar_sha256': constraint_metadata['grammars'][job['format']]['sha256'],
+                'constraint_failure_kind': None,
                 'batch_index': offset // config.batch_size,
                 'batch_job_ids': [item['job_id'] for item in batch],
                 'batch_padded_input_width': padded_width, 'batch_generation_seconds': batch_seconds,
             }
+            try:
+                capped_invalid = (
+                    first_eos is None and len(generated) == config.max_new_tokens
+                    and prediction['status'] == 'invalid'
+                    and _incomplete_grammar_prefix(raw, job['format']))
+                if capped_invalid:
+                    # Keep the unchanged strict parser's null answer/confidence.
+                    # The invalid output remains an observed failure in analysis.
+                    prediction['constraint_failure_kind'] = 'max_new_tokens_incomplete_json'
+                else:
+                    validate_constrained_completion(
+                        raw, job['format'],
+                        finished_eos=first_eos is not None and generated[first_eos] == tokenizer.eos_token_id,
+                    )
+                    if prediction['status'] == 'invalid':
+                        raise ValueError('constrained completion rejected by strict response parser')
+            except ValueError as error:
+                prediction['constraint_failure_kind'] = 'constraint_validation_error'
+                constraint_errors.append(f'{job["job_id"]}: {error}')
             predictions.append(prediction)
             if checkpoint is not None:
                 checkpoint.write(json.dumps(prediction, ensure_ascii=False, allow_nan=False) + '\n')
-            try:
-                validate_constrained_completion(
-                    raw, job['format'],
-                    finished_eos=first_eos is not None and generated[first_eos] == tokenizer.eos_token_id,
-                )
-                if prediction['status'] == 'invalid':
-                    raise ValueError('constrained completion rejected by strict response parser')
-            except ValueError as error:
-                constraint_errors.append(f'{job["job_id"]}: {error}')
         if checkpoint is not None:
             checkpoint.flush()
             os.fsync(checkpoint.fileno())
@@ -489,10 +528,14 @@ def run(package: dict[str, Any], config: GPUConfig, checkpoint: TextIO | None = 
             'model_files_sha256': file_hashes, 'chat_template_sha256': _sha256(tokenizer.chat_template.encode()),
             'backend_sha256': source_hash, 'parser_sha256': parser_hash,
             'output_constraints': constraint_metadata,
+            'constraint_failure_policy': dict(CONSTRAINT_FAILURE_POLICY),
+            'n_length_capped_invalid_predictions': sum(
+                row['constraint_failure_kind'] == 'max_new_tokens_incomplete_json'
+                for row in predictions),
             'public_package_canonical_sha256': input_hash,
             'model_receipt_sha256': _file_hash(Path(config.model_receipt)) if config.model_receipt else None,
             'parser_policy': 'exact JSON object; malformed responses invalid; no repair',
-            'retry_policy': 'none; failure leaves partial checkpoint only',
+            'retry_policy': 'no regeneration or repair; recognized token-cap failures retained as invalid; other failures leave partial checkpoint only',
         },
         'predictions': predictions,
     }

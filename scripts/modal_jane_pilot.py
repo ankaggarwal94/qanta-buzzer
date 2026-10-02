@@ -33,29 +33,38 @@ MEMORY_MIB = 32768
 ALLOCATION_RATE = GPU_RATE + CPU_CORE_RATE * CPU_CORES + MEMORY_GIB_RATE * 32
 RESERVE_USD = Decimal("2")
 INITIAL_CEILING_USD = Decimal("10")
-# Completed apps have stopped. Debit all three measured whole-host sessions,
-# rounded above their $0.649074 allocation estimate; retain ONE $2 contingency
+# Completed apps have stopped. Debit all four measured whole-host sessions,
+# rounded above their $1.684892 allocation estimate; retain ONE $2 contingency
 # across completed and future attempts. Historical reserves are not charges.
-PRIOR_DEBIT_USD = Decimal("0.66")
+PRIOR_DEBIT_USD = Decimal("1.69")
 PRIOR_ATTEMPTS = (
     {"run_id": 36918829142,
      "source_commit": "d4105ca1f3a705611c1e65076723838ee67cc0df",
      "host_receipt_sha256": "b48aabe8b521ba9f0d8d7fd9ae1e89706146109c1c7be54983bcc8feaa79d423",
      "host_session_seconds": "390.718294956",
-     "app_id": "ap-8x210ddYAeMmVkOEac5jhg", "app_completed_utc": "2026-10-01T20:10:36.8985518Z",
+     "app_id": "ap-8x210ddYAeMmVkOEac5jhg", "stop_event_kind": "app_completed", "stop_event_utc": "2026-10-01T20:10:36.8985518Z",
      "stop_log_sha256": "f2eaf4f32c972d58a33eacd627e516faade462231daa0de5e040a7cbe668e07b"},
     {"run_id": 36921167573,
      "source_commit": "a2013af95f7fa49f055423a9b398358aaf252c64",
      "host_receipt_sha256": "dadd1a2b72e4186fd93ebd398b3504f454bde0d66e5afbdff731d65493904082",
      "host_session_seconds": "260.846064845",
-     "app_id": "ap-VPUezGIuuVNifC3cqOezIj", "app_completed_utc": "2026-10-01T20:27:42.8030958Z",
+     "app_id": "ap-VPUezGIuuVNifC3cqOezIj", "stop_event_kind": "app_completed", "stop_event_utc": "2026-10-01T20:27:42.8030958Z",
      "stop_log_sha256": "97ad188010e9bbc2a8e1aa893d3e4920320eddbd9d79ea9fac483e2f2f25e420"},
     {"run_id": 36942800586,
      "source_commit": "cadc3643b00040ce3960592cb1f4c0a6ed684de4",
      "host_receipt_sha256": "33939ac594d7fe3a62c4a78261f1dfe93807ddb8789222c4b73b5a6a146f28b6",
      "host_session_seconds": "363.81886268999995",
-     "app_id": "ap-qbjwKGOoLrJHQ94yfLnFzf", "app_completed_utc": "2026-10-01T23:55:32.5326757Z",
+     "app_id": "ap-qbjwKGOoLrJHQ94yfLnFzf", "stop_event_kind": "app_completed", "stop_event_utc": "2026-10-01T23:55:32.5326757Z",
      "stop_log_sha256": "58421f6ac54fd12390766a590ecb9c0eadd20ff571e6c22585ccdb37223c09ad"},
+    {"run_id": 36945283402,
+     "source_commit": "6e3bf3d84cb141ede9f386d256bfd36eaff7d961",
+     "host_receipt_sha256": "87051864781ef255376a35ad3fd203a0edde82fc4a9afffffe446361d58d05bb",
+     "host_session_seconds": "1620.390027529", "app_id": "ap-qZRXLNFkJJotPtxDJqkFVi",
+     "stop_event_kind": "remote_exception_stop_then_host_finalization",
+     "stop_event_utc": "2026-10-02T00:45:09.7574381Z",
+     "host_finalized_utc": "2026-10-02T00:45:24.5100592Z",
+     "terminate_containers_on_error_configured": True,
+     "stop_log_sha256": "102eacbb3e774894dcc349b7fda7b4a232e50b4e1b0a29adf74b79e5dd90e6a0"},
 )
 MAX_BUDGET_USD = INITIAL_CEILING_USD - PRIOR_DEBIT_USD
 MAX_SESSION_SECONDS = 12000
@@ -63,12 +72,11 @@ SHUTDOWN_RESERVE_SECONDS = 120
 MODEL_LOAD_RESERVE_SECONDS = 900
 THROUGHPUT_MULTIPLIER = 3
 MODAL_VERSION = "1.6.0"
-VOLUME_NAME = "jane-mcq-pilot-20261001-v6"
-APP_NAME = "jane-mcq-pilot-20261001-v6"
+VOLUME_NAME = "jane-mcq-pilot-20261001-v7"
+APP_NAME = "jane-mcq-pilot-20261001-v7"
 BRANCH = "ops/jane-modal-pilot-20261001"
-LAUNCH_MESSAGE = "ops: launch frozen Jane Modal v6 global-budget candidate 20261001"
+LAUNCH_MESSAGE = "ops: launch frozen Jane Modal v7 qwen7b recovery 20261001"
 MODELS = (
-    ("qwen3b", "Qwen/Qwen2.5-3B-Instruct", "aa8e72537993ba99e69dfaafa59ed015b17504d1"),
     ("qwen7b", "Qwen/Qwen2.5-7B-Instruct", "a09a35458c702b33eeacc393d103063234e8bc28"),
 )
 INPUT_FILES = ("dev_jobs.json", "main_jobs.json", "dev_choices_only.json", "main_choices_only.json")
@@ -115,12 +123,14 @@ def _write_once(path: Path, value: Any) -> None:
         os.fsync(stream.fileno())
 
 
-def budget_plan(budget_usd: str | Decimal = "9.34") -> dict[str, Any]:
+def budget_plan(budget_usd: str | Decimal = "8.31") -> dict[str, Any]:
     """Reject unsupported ceilings and reserve costs beyond the GPU function."""
     try:
         budget = Decimal(str(budget_usd))
     except Exception as error:
         raise ValueError("invalid compute ceiling") from error
+    if not MODELS:
+        raise ValueError("pilot requires at least one explicitly selected model")
     prior_estimate = Decimal("0")
     seen_runs = set()
     for attempt in PRIOR_ATTEMPTS:
@@ -130,24 +140,32 @@ def budget_plan(budget_usd: str | Decimal = "9.34") -> dict[str, Any]:
                 or not HEX64.fullmatch(attempt["host_receipt_sha256"])
                 or not HEX64.fullmatch(attempt["stop_log_sha256"])
                 or not attempt["app_id"].startswith("ap-")
-                or not re.fullmatch(r"[0-9T:.\-]+Z", attempt["app_completed_utc"])
+                or not re.fullmatch(r"[0-9T:.\-]+Z", attempt["stop_event_utc"])
+                or attempt["stop_event_kind"] not in {
+                    "app_completed", "remote_exception_stop_then_host_finalization"}
                 or not seconds.is_finite() or seconds <= 0):
             raise ValueError("invalid prior attempt evidence ledger")
+        if attempt["stop_event_kind"] == "remote_exception_stop_then_host_finalization":
+            finalized = attempt.get("host_finalized_utc", "")
+            if (not re.fullmatch(r"[0-9T:.\-]+Z", finalized)
+                    or finalized <= attempt["stop_event_utc"]
+                    or attempt.get("terminate_containers_on_error_configured") is not True):
+                raise ValueError("prior exceptional stop lacks host finalization and cancellation configuration")
         seen_runs.add(attempt["run_id"])
         prior_estimate += ALLOCATION_RATE * seconds
-    if len(PRIOR_ATTEMPTS) != 3 or prior_estimate > PRIOR_DEBIT_USD:
-        raise ValueError("prior debit does not cover all three completed host sessions")
+    if len(PRIOR_ATTEMPTS) != 4 or prior_estimate > PRIOR_DEBIT_USD:
+        raise ValueError("prior debit does not cover all four completed host sessions")
     if not budget.is_finite() or not RESERVE_USD < budget <= MAX_BUDGET_USD:
-        raise ValueError("candidate ceiling must be greater than $2 and at most the $9.34 remainder")
+        raise ValueError("candidate ceiling must be greater than $2 and at most the $8.31 remainder")
     seconds = min(MAX_SESSION_SECONDS, int(((budget - RESERVE_USD) / ALLOCATION_RATE)
                                           .to_integral_value(rounding=ROUND_FLOOR)))
-    if seconds <= SHUTDOWN_RESERVE_SECONDS + 2 * MODEL_LOAD_RESERVE_SECONDS:
+    if seconds <= SHUTDOWN_RESERVE_SECONDS + len(MODELS) * MODEL_LOAD_RESERVE_SECONDS:
         raise ValueError("ceiling cannot cover the fixed pilot safety reserves")
     estimate = ALLOCATION_RATE * seconds + RESERVE_USD
     if estimate > budget:
         raise ValueError("allocation exceeds compute ceiling")
     return {
-        "schema_version": "jane-modal-budget-v3", "ceiling_usd": str(budget),
+        "schema_version": "jane-modal-budget-v4", "ceiling_usd": str(budget),
         "reserve_usd": str(RESERVE_USD),
         "reserve_scope": "single cumulative contingency for all completed and prospective attempts",
         "allocation_rate_usd_per_second": str(ALLOCATION_RATE),
@@ -306,7 +324,7 @@ def interface_gate(jobs: list[dict], trace: dict) -> dict:
 
 
 def throughput_gate(development: dict[str, dict], packages: dict, remaining_seconds: float) -> dict:
-    predicted = 2 * MODEL_LOAD_RESERVE_SECONDS
+    predicted = len(MODELS) * MODEL_LOAD_RESERVE_SECONDS
     components = []
     for tag, _model, _revision in MODELS:
         seconds, count = development[tag]["inference_seconds"], development[tag]["jobs"]
@@ -451,7 +469,7 @@ def deadline(seconds: float):
 
 
 def remote_pilot(packages: dict, control: dict) -> dict:
-    """Single input: both DEV gates first, then sequential frozen MAIN inference."""
+    """Single input: all selected DEV gates first, then sequential frozen MAIN inference."""
     validate_budget_control(control)
     import modal
     from scripts.jane_gpu_backend import GPUConfig, run
@@ -656,7 +674,7 @@ def main(argv=None) -> int:
     parser.add_argument("mode", choices=("plan", "launch"))
     parser.add_argument("--public-dir", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--budget-usd", default="9.34")
+    parser.add_argument("--budget-usd", default="8.31")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
     repo = Path(__file__).resolve().parents[1]

@@ -1,0 +1,210 @@
+{
+  "schema_version": "jane-prospective-interface-candidate-v3",
+  "candidate": "v7_qwen7b_retain_capped_invalid",
+  "frozen_utc": "2026-10-02T00:59:31.230863+00:00",
+  "base_commit": "ab38862a7e0d310f36d050866128c0da7cdf3248",
+  "public_inputs": {
+    "schema_version": "jane-modal-public-inputs-v1",
+    "files": [
+      {
+        "path": "dev_jobs.json",
+        "sha256": "4e2e4d308f49e4fcdd94ba77f739fd4574b0c264c1894124f4aab454569fd637",
+        "job_count": 177,
+        "bytes": 322400
+      },
+      {
+        "path": "main_jobs.json",
+        "sha256": "33f4cbfa0f805fa3990646ad5a96ceb3a5546ed6f5082d0a47e72d0f8291fe88",
+        "job_count": 2856,
+        "bytes": 5158027
+      },
+      {
+        "path": "dev_choices_only.json",
+        "sha256": "31158db5445eb5441cce8e05cfc0e41e06de96a865449a22c077766d6d062856",
+        "job_count": 24,
+        "bytes": 30679
+      },
+      {
+        "path": "main_choices_only.json",
+        "sha256": "2d1867d1e8b8f9c805c9e0e9b7a366b067760d3a1a94b7fa8b1a1870f9ae29f2",
+        "job_count": 400,
+        "bytes": 506729
+      }
+    ],
+    "public_input_id": "d7d2168092ca6de6f89381f62581426a7405881bae9678a6348cc7334a4171bd"
+  },
+  "public_archive_sha256": "43b5568bdbd927487e6850dcc75676f8d151618f07143aab31cba8195f220490",
+  "source_files_sha256": {
+    "scripts/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scripts/modal_jane_pilot.py": "4dc2fcacc292e23e4d7f0bd2bafd56a57cf93cc6236500128365e1ab8d72a849",
+    "scripts/jane_gpu_backend.py": "7596bc5a517981e3d4fbb9b4f4643985653d480e9a01f7691afef9d926cd499a",
+    "scripts/jane_qwen_backend.py": "8d55952259ab76052fb166c14e70de6b6c611c3578473fd849531dc21f6239e7",
+    "scripts/jane_output_constraints.py": "dc0bbc3aa2eed17141b74930b24b7f89f7e7e1f7a372aeb4c4d18c24614086b2"
+  },
+  "output_constraints": {
+    "schema_version": "jane-constrained-json-v1",
+    "method": "prospective_regex_token_masking_transformers_prefix_allowed_tokens_fn",
+    "package": "lm-format-enforcer",
+    "package_version": "0.11.3",
+    "regex_package": "interegular",
+    "regex_package_version": "0.3.3",
+    "character_parser_adapter": "cached_frozenset_alphabet_exact_membership",
+    "field_order": [
+      "answer",
+      "confidence",
+      "status"
+    ],
+    "confidence_decimal_places": 6,
+    "max_oe_characters": null,
+    "oe_character_policy": "nonwhitespace first character; literal Unicode; escaped quote/backslash/slash; no control or Unicode escapes",
+    "whitespace_policy": "compact JSON; no whitespace outside answer strings",
+    "eos_policy": "tokenizer EOS only, permitted after complete grammar; required to complete trace",
+    "posthoc_repair": false,
+    "source_sha256": "dc0bbc3aa2eed17141b74930b24b7f89f7e7e1f7a372aeb4c4d18c24614086b2",
+    "grammars": {
+      "mc": {
+        "regex": "(\\{\"answer\":\"[ABCD]\",\"confidence\":(0(\\.[0-9]{1,6})?|1(\\.0{1,6})?),\"status\":\"answer\"\\}|\\{\"answer\":null,\"confidence\":null,\"status\":\"abstain\"\\})",
+        "sha256": "cccba36cda2628d4058be1b7c76a3627ee9260e00364a33426dca9f3e7946532"
+      },
+      "oe": {
+        "regex": "(\\{\"answer\":\"([^\"\\\\\\x00-\\x20\\x7f-\\x9f                 　]|\\\\[\"\\\\/])([^\"\\\\\\x00-\\x1f]|\\\\[\"\\\\/])*\",\"confidence\":(0(\\.[0-9]{1,6})?|1(\\.0{1,6})?),\"status\":\"answer\"\\}|\\{\"answer\":null,\"confidence\":null,\"status\":\"abstain\"\\})",
+        "sha256": "6a175a0cdcc3008318bdc63e91493fec7ae1d69082a3d45ccc844110673a3703"
+      }
+    }
+  },
+  "max_new_tokens": 160,
+  "budget": {
+    "allocation_rate_usd_per_second": "0.00063924",
+    "ceiling_usd": "8.31",
+    "cpu_request_and_limit": [
+      2,
+      2
+    ],
+    "cumulative_initial_ceiling_usd": "10",
+    "cumulative_max_estimate_plus_reserves_usd": "9.99993804",
+    "gpu": "L40S",
+    "invoice_status": "estimated; not a provider billing receipt",
+    "max_allocation_plus_reserve_usd": "8.30993804",
+    "max_session_seconds": 9871,
+    "memory_request_and_limit_mib": [
+      32768,
+      32768
+    ],
+    "pricing_checked": "2026-10-01",
+    "pricing_url": "https://modal.com/pricing",
+    "prior_allocation_debit_usd": "1.69",
+    "prior_attempts": [
+      {
+        "app_id": "ap-8x210ddYAeMmVkOEac5jhg",
+        "host_receipt_sha256": "b48aabe8b521ba9f0d8d7fd9ae1e89706146109c1c7be54983bcc8feaa79d423",
+        "host_session_seconds": "390.718294956",
+        "run_id": 36918829142,
+        "source_commit": "d4105ca1f3a705611c1e65076723838ee67cc0df",
+        "stop_event_kind": "app_completed",
+        "stop_event_utc": "2026-10-01T20:10:36.8985518Z",
+        "stop_log_sha256": "f2eaf4f32c972d58a33eacd627e516faade462231daa0de5e040a7cbe668e07b"
+      },
+      {
+        "app_id": "ap-VPUezGIuuVNifC3cqOezIj",
+        "host_receipt_sha256": "dadd1a2b72e4186fd93ebd398b3504f454bde0d66e5afbdff731d65493904082",
+        "host_session_seconds": "260.846064845",
+        "run_id": 36921167573,
+        "source_commit": "a2013af95f7fa49f055423a9b398358aaf252c64",
+        "stop_event_kind": "app_completed",
+        "stop_event_utc": "2026-10-01T20:27:42.8030958Z",
+        "stop_log_sha256": "97ad188010e9bbc2a8e1aa893d3e4920320eddbd9d79ea9fac483e2f2f25e420"
+      },
+      {
+        "app_id": "ap-qbjwKGOoLrJHQ94yfLnFzf",
+        "host_receipt_sha256": "33939ac594d7fe3a62c4a78261f1dfe93807ddb8789222c4b73b5a6a146f28b6",
+        "host_session_seconds": "363.81886268999995",
+        "run_id": 36942800586,
+        "source_commit": "cadc3643b00040ce3960592cb1f4c0a6ed684de4",
+        "stop_event_kind": "app_completed",
+        "stop_event_utc": "2026-10-01T23:55:32.5326757Z",
+        "stop_log_sha256": "58421f6ac54fd12390766a590ecb9c0eadd20ff571e6c22585ccdb37223c09ad"
+      },
+      {
+        "app_id": "ap-qZRXLNFkJJotPtxDJqkFVi",
+        "host_finalized_utc": "2026-10-02T00:45:24.5100592Z",
+        "host_receipt_sha256": "87051864781ef255376a35ad3fd203a0edde82fc4a9afffffe446361d58d05bb",
+        "host_session_seconds": "1620.390027529",
+        "run_id": 36945283402,
+        "source_commit": "6e3bf3d84cb141ede9f386d256bfd36eaff7d961",
+        "stop_event_kind": "remote_exception_stop_then_host_finalization",
+        "stop_event_utc": "2026-10-02T00:45:09.7574381Z",
+        "stop_log_sha256": "102eacbb3e774894dcc349b7fda7b4a232e50b4e1b0a29adf74b79e5dd90e6a0",
+        "terminate_containers_on_error_configured": true
+      }
+    ],
+    "prior_attempts_sha256": "4d8e57a5beaa1cfdcb60e976a9ceadafad3f7ccfe30a758ebb877f2b5210e7b8",
+    "prior_whole_host_allocation_estimate_usd": "1.6848916923427847680380",
+    "reserve_scope": "single cumulative contingency for all completed and prospective attempts",
+    "reserve_usd": "2",
+    "schema_version": "jane-modal-budget-v4"
+  },
+  "selection_basis": "Narrow operational continuation after a 160-token no-EOS incomplete grammar prefix. 3B answerline adjudication had begun and the one 7B failed output was inspected. No correctness, confidence, selected thresholds or test performance used to change generation. All generation settings and original gating remain unchanged.",
+  "preserved": [
+    "v4 prompts and job IDs",
+    "questions and splits",
+    "prefixes and distractor menus",
+    "choice controls",
+    "model revisions",
+    "strict parser",
+    "original per-format 95% interface gate",
+    "empirical risk budget0.10",
+    "greedy decoding batch8 seed1"
+  ],
+  "changed": [
+    "Retain exactly classified max-token incomplete grammar outputs as invalid and continue; other constraint failures abort",
+    "Rerun complete pinned 7B only; preserve completed v6 3B phases",
+    "Four-attempt prior allocation debit1.69 plus single cumulative reserve2; fresh v7 identities"
+  ],
+  "analysis_scope": "exploratory engineering_smoke, no historical reproduction claim",
+  "prior_v5_evidence": {
+    "source_commit": "cadc3643b00040ce3960592cb1f4c0a6ed684de4",
+    "run_id": 36942800586,
+    "status": "DEVELOPMENT_THROUGHPUT_GATE_FAILED",
+    "valid_development_responses": 354,
+    "development_responses": 354,
+    "main_responses": 0,
+    "choice_control_responses": 0,
+    "archive_sha256": "7a0a04444bea97e751adaa94976d1dd812de4eeb712da227a0dd59591141fb22"
+  },
+  "selected_models": [
+    [
+      "qwen7b",
+      "Qwen/Qwen2.5-7B-Instruct",
+      "a09a35458c702b33eeacc393d103063234e8bc28"
+    ]
+  ],
+  "constraint_failure_policy": {
+    "version": "retain_invalid_at_token_cap_v1",
+    "continued_failure_kind": "max_new_tokens_incomplete_json",
+    "eligibility": "exact max_new_tokens, no EOS, strict-parser invalid, nonempty valid incomplete frozen-grammar prefix",
+    "handling": "retain exact raw response and tokens with null answer/confidence; continue later jobs",
+    "retry": false,
+    "repair": false,
+    "other_constraint_failures": "checkpoint exact evidence then abort"
+  },
+  "preserved_v6_qwen3b": {
+    "completed_controls": 400,
+    "completed_main_jobs": 2856,
+    "evidence_dir": "/workspace/scratch/37862bdc9b64/modal_pilot/v6_run/evidence/qwen3b",
+    "github_run_id": 36945283402,
+    "model": "qwen3b",
+    "not_rerun": true,
+    "source_commit": "6e3bf3d84cb141ede9f386d256bfd36eaff7d961",
+    "main_completion_sha256": "f2f05146518f5d0b12c9cb1f4f7613c1c577253c6afe4cd9d7157b54ff6bc8a5",
+    "original_run_status": "FAILED",
+    "host_receipt_sha256": "87051864781ef255376a35ad3fd203a0edde82fc4a9afffffe446361d58d05bb"
+  },
+  "assembly_requirement": "Separate mixed-run certificate binds completed v6 3B and completed v7 7B; preserve original v6 FAILED receipt and all partial 7B rows.",
+  "validation": {
+    "combined_local_tests_passed": 328,
+    "independent_prelaunch_review_sha256": "df22106652f4b65f9f1fb9350452108f09f14d4b18dcf740a5819b2d1a94bb9e",
+    "generation_ast_equal_v6": true,
+    "grammar_source_equal_v6": true,
+    "known_cap_failure_classification_pass": true
+  }
+}
