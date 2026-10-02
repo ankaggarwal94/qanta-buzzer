@@ -62,4 +62,4 @@ jobs:
           name: jane-v6-read-only-inspection
           path: inspection.json
           retention-days: 30
-# Read-only checkpoint 2
+# Read-only checkpoint 3
