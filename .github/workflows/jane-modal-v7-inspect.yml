@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11.12'
       - run: python -m pip install --disable-pip-version-check 'modal==1.6.0'
@@ -77,4 +77,4 @@ jobs:
             inspection.json
             completed_evidence/
           retention-days: 30
-# Read-only checkpoint 1, including hash-verified completed phases
+# Read-only checkpoint 2, including hash-verified completed phases
