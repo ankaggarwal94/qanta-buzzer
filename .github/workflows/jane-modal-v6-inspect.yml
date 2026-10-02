@@ -29,6 +29,7 @@ jobs:
         run: |
           python - <<'PY'
           import json
+          import hashlib
           from pathlib import Path
           import modal
           volume = modal.Volume.from_name('jane-mcq-pilot-20261001-v6', create_if_missing=False)
@@ -53,6 +54,18 @@ jobs:
                       result['progress'][name] = {'persisted_responses': len(lines)}
                   except Exception as error:
                       result['progress'][name] = {'unavailable': type(error).__name__}
+                  try:
+                      completion_raw = read(name + '/completion.json')
+                  except FileNotFoundError:
+                      continue
+                  completion = json.loads(completion_raw)
+                  trace_raw = read(name + '/trace.json')
+                  if hashlib.sha256(trace_raw).hexdigest() != completion['trace_sha256']:
+                      raise ValueError('completed trace hash mismatch')
+                  dest = Path('completed_evidence') / name
+                  dest.mkdir(parents=True, exist_ok=False)
+                  (dest / 'completion.json').write_bytes(completion_raw)
+                  (dest / 'trace.json').write_bytes(trace_raw)
           Path('inspection.json').write_text(json.dumps(result, indent=2) + '\n')
           print(json.dumps(result, sort_keys=True))
           PY
@@ -60,6 +73,8 @@ jobs:
         if: always()
         with:
           name: jane-v6-read-only-inspection
-          path: inspection.json
+          path: |
+            inspection.json
+            completed_evidence/
           retention-days: 30
-# Read-only checkpoint 3
+# Read-only checkpoint 4, including hash-verified completed phases
