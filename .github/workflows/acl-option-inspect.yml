@@ -1,0 +1,54 @@
+name: Inspect ACL option-scoring receipts
+on:
+  push:
+    branches: [ops/acl-option-scoring-20261003]
+    paths: [.github/workflows/acl-option-inspect.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    if: >-
+      github.actor == 'ankaggarwal94' && github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: inspect ACL option scoring receipts'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - run: python -m pip install 'modal==1.6.0'
+      - name: Read existing volume metadata only
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from scripts.modal_acl_expansion import connect
+          modal, workspace = connect()
+          volume = modal.Volume.from_name('acl5000-option-scores-20261003', create_if_missing=False)
+          report = {'workspace': workspace, 'evidence': {}}
+          try:
+              entries = list(volume.iterdir('/output', recursive=True))
+          except FileNotFoundError:
+              entries = []
+          for entry in entries:
+              name = str(entry.path).lstrip('/')
+              if name.endswith('.json'):
+                  raw = b''.join(volume.read_file(name))
+                  if len(raw) > 1024**2:
+                      raise ValueError('metadata exceeds bound')
+                  report['evidence'][name] = json.loads(raw)
+          Path('inspection.json').write_text(json.dumps(report, indent=2) + '\n')
+          print(json.dumps(report))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acl-option-inspection-${{ github.run_id }}
+          path: inspection.json
+          retention-days: 90
