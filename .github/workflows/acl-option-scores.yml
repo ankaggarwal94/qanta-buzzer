@@ -18,7 +18,7 @@ jobs:
       github.event_name == 'push' &&
       github.actor == 'ankaggarwal94' &&
       github.run_attempt == 1 &&
-      github.event.head_commit.message == 'ops: score ACL menu-only options within three dollars'
+      github.event.head_commit.message == 'ops: recover ACL option scoring within original three dollar cap'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -39,14 +39,14 @@ jobs:
           python -m pytest --noconftest
           tests/test_acl_option_scoring.py tests/test_modal_acl_option_scores.py
           tests/test_analyze_acl_option_scores.py -q
-      - name: Stage pinned models and score within the reserved budget
+      - name: Reuse verified cache and score within the cumulative budget
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
           SOURCE_COMMIT: ${{ github.sha }}
         run: >-
           python -m scripts.modal_acl_option_scores
-          --source-commit "$SOURCE_COMMIT" --out results/acl_option_scores
+          --source-commit "$SOURCE_COMMIT" --out results/acl_option_scores --recover-once
       - name: Preserve raw scores, benchmarks, and receipts
         if: always()
         uses: actions/upload-artifact@v4

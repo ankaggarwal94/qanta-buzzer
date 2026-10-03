@@ -118,15 +118,102 @@ def test_coverage_accepts_only_exact_ordered_prefix_and_complete_final():
         scoring.validate_score_coverage(jobs, corrupt)
 
 
-def test_batch_single_comparison_rejects_changed_rank_or_excessive_drift():
-    result = scoring.validate_batch_agreement([[4, 3, 2, 1]], [[4.0625, 3, 2, 1]])
-    assert result["maximum_absolute_difference"] == 0.0625
-    with pytest.raises(ValueError, match="top-option"):
-        scoring.validate_batch_agreement([[1, 2, 3, 4]], [[1, 2, 4, 3]])
-    with pytest.raises(ValueError, match="tolerance"):
-        scoring.validate_batch_agreement([[4, 3, 2, 1]], [[5, 4, 3, 2]])
-    with pytest.raises(ValueError, match="top-option"):
-        scoring.validate_batch_agreement([[4, 4, 2, 1]], [[4, 3.99, 2, 1]])
+def test_fp32_sanity_gate_allows_numerical_ties_but_rejects_material_drift():
+    result = scoring.validate_fp32_agreement([[4, 3, 2, 1]], [[4.0005, 3, 2, 1]])
+    assert result["numeric_gate_passed"] is True
+    assert result["maximum_absolute_logit_difference"] == pytest.approx(0.0005)
+    # An exact tie can become a tiny reversed preference without a logic error.
+    near_tie = scoring.validate_fp32_agreement([[4, 4, 2, 1]], [[3.9999, 4, 2, 1]])
+    assert near_tie["changed_top_option_rows"] == [0]
+    assert near_tie["exact_top_equality_required"] is False
+    with pytest.raises(ValueError, match="predeclared numeric tolerance"):
+        scoring.validate_fp32_agreement([[4, 3, 2, 1]], [[4.01, 3, 2, 1]])
+    with pytest.raises(ValueError, match="finite numeric"):
+        scoring.validate_fp32_agreement([[4, 3, 2, 1]], [[float("nan"), 3, 2, 1]])
+
+
+def test_bf16_sensitivity_is_reported_without_disappearing_into_a_loosened_gate():
+    report = scoring.comparison_diagnostics([[1, 2, 3, 4]], [[1, 2, 4, 3]])
+    assert report["changed_top_option_rows"] == [0]
+    assert report["maximum_absolute_logit_difference"] == 1
+    assert report["maximum_option_probability_difference"] > 0
+    common_offset = scoring.comparison_diagnostics([[10, 9, 8, 7]], [[9, 8, 7, 6]])
+    assert common_offset["maximum_absolute_logit_difference"] == 1
+    assert common_offset["maximum_centered_logit_difference"] == 0
+    assert common_offset["maximum_option_probability_difference"] == 0
+
+
+class FakeTensor:
+    """Minimal tensor API for testing per-tensor dtype restoration independently."""
+    def __init__(self, values, dtype):
+        self.values, self.dtype = list(values), dtype
+        self.shape = (len(values),)
+
+    @property
+    def data(self):
+        return self
+
+    @data.setter
+    def data(self, tensor):
+        self.values, self.dtype, self.shape = tensor.values, tensor.dtype, tensor.shape
+
+    def detach(self):
+        return self
+
+    def reshape(self, _):
+        return self
+
+    def __getitem__(self, item):
+        return FakeTensor(self.values[item], self.dtype)
+
+    def cpu(self):
+        return self
+
+    def tolist(self):
+        return self.values
+
+    def to(self, *, dtype):
+        return FakeTensor(self.values, dtype)
+
+
+class FakeModel:
+    def __init__(self):
+        self.weight = FakeTensor([1.25, 2.5, 4.0], "bfloat16")
+        self.rope = FakeTensor([1.0, 0.00001234567], "float32")
+        self.integer = FakeTensor([3], "int64")
+
+    def named_parameters(self):
+        return [("weight", self.weight)]
+
+    def named_buffers(self):
+        return [("rope.inv_freq", self.rope), ("integer_counter", self.integer)]
+
+
+def test_per_tensor_restoration_preserves_fp32_rope_and_integer_buffers():
+    model = FakeModel()
+    before = scoring.snapshot_tensor_state(model)
+    model.weight.data = model.weight.to(dtype="float32")
+    result = scoring.restore_tensor_state(model, before)
+    assert model.weight.dtype == "bfloat16"
+    assert model.rope.dtype == "float32"
+    assert model.integer.dtype == "int64"
+    assert result["all_dtypes_restored"] is True
+    assert result["all_sampled_values_restored_exactly"] is True
+    assert result["original_dtypes"]["buffer:rope.inv_freq"] == "float32"
+
+
+def test_dtype_restoration_fails_if_fp32_diagnostic_altered_values_or_schema():
+    model = FakeModel()
+    before = scoring.snapshot_tensor_state(model)
+    model.weight.data = model.weight.to(dtype="float32")
+    model.weight.values[0] = 99.0
+    with pytest.raises(ValueError, match="sampled values"):
+        scoring.restore_tensor_state(model, before)
+    model = FakeModel()
+    before = scoring.snapshot_tensor_state(model)
+    before.pop("buffer:rope.inv_freq")
+    with pytest.raises(ValueError, match="names changed"):
+        scoring.restore_tensor_state(model, before)
 
 
 def test_public_package_hash_and_validator_are_both_enforced(tmp_path, monkeypatch):

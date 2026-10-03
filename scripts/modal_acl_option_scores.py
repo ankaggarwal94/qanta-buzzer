@@ -19,6 +19,13 @@ RUN_ID = 'acl5000-option-scores-20261003'
 ORIGINAL_RUN = 'acl5000-20261002'
 INPUT_HASH = '9db13301d928cd31dc54c97f0c5cfd88b9bc25774ceb56027c032c52e4afb043'
 MODELS = {'qwen3b': 'Qwen/Qwen2.5-3B-Instruct', 'qwen7b': 'Qwen/Qwen2.5-7B-Instruct'}
+PRIOR_RECEIPTS = {
+    'prepare_receipt.json': '95cc6dcd2e99e74597c95c1bf4580457dd843a01053267cf3888b21461a7a1e0',
+    'qwen3b_allocation_receipt.json': '6b3d9eaef6537fffd52f5a1b137889ab13bcc7c9ff020ce1a653c32921478486',
+    'qwen7b_allocation_receipt.json': '23f131208a0618ac77ebaf4b7dddb3707b823fc6ac3984ff6cbb2f0eb75986d3',
+    'qwen3b/receipt.json': 'b015e571b3acf57a216a0ddbfb7a4032d6928164a9482f7a99faab90605a7c8e',
+    'qwen7b/receipt.json': 'aa0c82e41e0b4ad03797ed097ee112152be5b5d1a556d7129d2610d5d22736da',
+}
 SOURCES = ('scripts/__init__.py', 'scripts/modal_acl_option_scores.py',
            'scripts/acl_option_scoring.py', 'scripts/modal_acl_expansion.py',
            'scripts/jane_gpu_backend.py', 'scripts/jane_qwen_backend.py',
@@ -57,8 +64,36 @@ def budget_plan() -> dict:
 
 
 def validate_plan(plan: dict) -> None:
-    if plan != budget_plan() or Decimal(plan['reserved_estimate_usd']) > Decimal('3'):
+    if plan not in (budget_plan(), recovery_budget_plan()) or Decimal(plan['reserved_estimate_usd']) > Decimal('3'):
         raise ValueError('plan must match the authorized three-dollar allocation')
+
+
+def recovery_budget_plan() -> dict:
+    """Reserve one reviewed recovery, including the completed failed attempt."""
+    gpu_rate, cpu_rate = Decimal('0.00063924'), Decimal('0.00004396')
+    # These observed times are bound to PRIOR_RECEIPTS before either allocation.
+    prior_gpu = Decimal('20.152170857') + Decimal('36.623968843')
+    prior_cpu = Decimal('166.74789109900001')
+    prior_reserve = gpu_rate * (prior_gpu + 2 * 92) + cpu_rate * (prior_cpu + 92)
+    new_reserve = gpu_rate * 2 * (1500 + 90 + 2)
+    return {'schema': 'acl-option-score-recovery-budget-v1', 'ceiling_usd': '3',
+            'gpu_rate_usd_per_second': str(gpu_rate), 'cpu_rate_usd_per_second': str(cpu_rate),
+            'gpu_function_timeout_seconds': 1500, 'scorer_deadline_seconds': 1300,
+            'startup_timeout_seconds': 90, 'scaledown_seconds': 2,
+            'gpu_calls': 2, 'cpu_calls': 0, 'contingency_usd': '0.40',
+            'prior_gpu_observed_seconds': str(prior_gpu), 'prior_cpu_observed_seconds': str(prior_cpu),
+            'prior_attempt_reserved_estimate_usd': str(prior_reserve),
+            'recovery_reserved_estimate_usd': str(new_reserve),
+            'reserved_estimate_usd': str(prior_reserve + new_reserve + Decimal('0.40')),
+            'automatic_retries': 0, 'benchmark_jobs_per_model': 256, 'invoice_verified': False}
+
+
+def verify_prior_receipts(read_bytes) -> None:
+    """Require the exact completed zero-row failure before a single recovery."""
+    for name, expected in PRIOR_RECEIPTS.items():
+        data = read_bytes('output/' + name)
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise ValueError('prior receipt mismatch: ' + name)
 
 
 def safe_output_path(name: str) -> str:
@@ -141,11 +176,14 @@ def remote_score(tag: str, control: dict) -> dict:
     volume = modal.Volume.from_name(RUN_ID, create_if_missing=False)
     volume.reload()
     root = Path('/scores')
+    output = root / ('output/recovery1' if control.get('recovery') else 'output')
+    if control.get('recovery'):
+        verify_prior_receipts(lambda name: (root / name).read_bytes())
     if time.time() >= control['gpu_absolute_deadline_unix']:
         raise TimeoutError('shared allocation wall-clock deadline expired')
     # Provider infrastructure replay can occur independently of retries=0.
     # Claim durably before importing torch, hashing weights, or loading a GPU.
-    write_json(root / 'output' / f'{tag}_claim.json',
+    write_json(output / f'{tag}_claim.json',
                {'source_commit': control['source_commit'], 'started_unix': time.time()})
     volume.commit()
     from scripts.acl_option_scoring import run_scoring
@@ -157,11 +195,11 @@ def remote_score(tag: str, control: dict) -> dict:
     started = time.monotonic()
     try:
         receipt = run_scoring(tag, root / 'public/main_choices_only.json', root / 'models',
-            root / 'output' / tag, max_seconds=control['budget']['scorer_deadline_seconds'],
+            output / tag, max_seconds=control['budget']['scorer_deadline_seconds'],
             batch_size=32, progress=progress)
         return receipt
     finally:
-        write_json(root / 'output' / f'{tag}_allocation_receipt.json',
+        write_json(output / f'{tag}_allocation_receipt.json',
                    {'model_tag': tag, 'elapsed_seconds': time.monotonic() - started,
                     'allocation_rate_usd_per_second': control['budget']['gpu_rate_usd_per_second'],
                     'invoice_verified': False})
@@ -191,7 +229,7 @@ def collect(volume, out: Path) -> dict:
     return report
 
 
-def launch(repo: Path, out: Path, source_commit: str) -> dict:
+def launch(repo: Path, out: Path, source_commit: str, recovery: bool = False) -> dict:
     from scripts.modal_acl_expansion import connect, verify_source_commit
     modal, workspace = connect()
     if len(source_commit) != 40 or any(c not in '0123456789abcdef' for c in source_commit):
@@ -199,15 +237,23 @@ def launch(repo: Path, out: Path, source_commit: str) -> dict:
     control = {'run_id': RUN_ID, 'original_run_id': ORIGINAL_RUN,
                'source_commit': source_commit, 'input_sha256': INPUT_HASH,
                'source_files_sha256': {name: digest(repo / name) for name in SOURCES},
-               'budget': budget_plan(), 'created_utc': datetime.now(timezone.utc).isoformat(),
+               'budget': recovery_budget_plan() if recovery else budget_plan(),
+               'recovery': recovery, 'created_utc': datetime.now(timezone.utc).isoformat(),
                'estimand': 'A-D token preference conditional on fixed assistant answer prefix'}
     verify_sources(repo, control)
     verify_source_commit(repo, source_commit, control['source_files_sha256'])
-    volume = modal.Volume.from_name(RUN_ID, create_if_missing=True)
-    if list(volume.iterdir('/')):
+    volume = modal.Volume.from_name(RUN_ID, create_if_missing=not recovery)
+    if recovery:
+        verify_prior_receipts(lambda name: b''.join(volume.read_file(name)))
+        existing = {str(entry.path).lstrip('/') for entry in volume.iterdir('/', recursive=True)}
+        if 'recovery1_control.json' in existing or any(name.startswith('output/recovery1') for name in existing):
+            raise ValueError('reviewed recovery already claimed; never repeat an allocation')
+        control['prior_receipts_sha256'] = PRIOR_RECEIPTS
+    elif list(volume.iterdir('/')):
         raise ValueError('scoring volume already initialized; never relaunch automatically')
     with volume.batch_upload(force=False) as upload:
-        upload.put_file(io.BytesIO(json.dumps(control).encode()), '/control.json')
+        upload.put_file(io.BytesIO(json.dumps(control).encode()),
+                        '/recovery1_control.json' if recovery else '/control.json')
     out.mkdir(parents=True, exist_ok=False)
     write_json(out / 'control.json', control)
     write_json(out / 'workspace.json', workspace)
@@ -224,19 +270,24 @@ def launch(repo: Path, out: Path, source_commit: str) -> dict:
     prepare = app.function(cpu=(2, 2), memory=(8192, 8192), timeout=1200, startup_timeout=90,
         max_containers=1, scaledown_window=2, retries=0, include_source=False,
         volumes={'/original': original, '/scores': volume})(remote_prepare)
-    scorer = app.function(gpu='L40S', cpu=(2, 2), memory=(32768, 32768), timeout=1800,
+    scorer = app.function(gpu='L40S', cpu=(2, 2), memory=(32768, 32768),
+        timeout=control['budget']['gpu_function_timeout_seconds'],
         startup_timeout=90, max_containers=2, scaledown_window=2, retries=0,
         include_source=False, volumes={'/scores': volume})(remote_score)
     result = {'run_id': RUN_ID, 'models': {}}
     try:
         with modal.enable_output(), app.run():
-            prepare_call = prepare.spawn(control)
-            try:
-                result['prepare'] = prepare_call.get(timeout=1290)
-            except Exception:
-                prepare_call.cancel(terminate_containers=True)
-                raise
-            worker_control = {**control, 'gpu_absolute_deadline_unix': time.time() + 1890}
+            if not recovery:
+                prepare_call = prepare.spawn(control)
+                try:
+                    result['prepare'] = prepare_call.get(timeout=1290)
+                except Exception:
+                    prepare_call.cancel(terminate_containers=True)
+                    raise
+            else:
+                result['prepare'] = {'status': 'reused_verified_cache'}
+            worker_control = {**control, 'gpu_absolute_deadline_unix': time.time()
+                + control['budget']['gpu_function_timeout_seconds'] + 90}
             write_json(out / 'gpu_allocation_window.json', worker_control)
             calls = {tag: scorer.spawn(tag, worker_control) for tag in MODELS}
             write_json(out / 'calls.json', {tag: call.object_id for tag, call in calls.items()})
@@ -258,8 +309,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--recover-once', action='store_true')
     args = parser.parse_args()
-    result = launch(Path(__file__).resolve().parents[1], args.out, args.source_commit)
+    result = launch(Path(__file__).resolve().parents[1], args.out, args.source_commit, args.recover_once)
     print(json.dumps(result, sort_keys=True))
     if len(result['models']) != 2 or any(row.get('status') != 'complete' for row in result['models'].values()):
         raise SystemExit('scoring incomplete; inspect preserved evidence before any further allocation')

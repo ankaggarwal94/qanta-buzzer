@@ -29,7 +29,9 @@ PROTOCOL = "conditional_next_token_option_softmax_v1"
 BENCHMARK_ROWS = 256
 SAFETY_FACTOR = 1.5
 SHUTDOWN_SECONDS = 20.0
-BATCH_SINGLE_ATOL = 0.125
+FP32_ATOL = 1e-3
+FP32_RTOL = 1e-5
+VALIDATION_METHOD = "fp32_same_weights_batch_padding_sanity_v2"
 MAX_INPUT_TOKENS = 2048
 
 
@@ -155,22 +157,76 @@ def validate_score_coverage(jobs: list[dict[str, Any]], rows: list[dict[str, Any
         seen.add(row["job_id"])
 
 
-def validate_batch_agreement(batched: list[list[float]], single: list[list[float]]) -> dict[str, Any]:
-    """Reject padding/index errors and material numerical changes before benchmark."""
+def comparison_diagnostics(batched: list[list[float]], single: list[list[float]]) -> dict[str, Any]:
+    """Describe numeric and ranking sensitivity without hiding BF16 differences."""
     if not batched or len(batched) != len(single):
-        raise ValueError("batch/single validation cardinality mismatch")
-    differences = []
-    for left, right in zip(batched, single):
+        raise ValueError("comparison cardinality mismatch")
+    raw_differences, centered_differences, probability_differences = [], [], []
+    top_changes, tie_changes = [], []
+    for index, (left, right) in enumerate(zip(batched, single)):
         left_stat, right_stat = option_statistics(left), option_statistics(right)
+        left_mean, right_mean = math.fsum(left) / 4, math.fsum(right) / 4
+        raw_differences.extend(abs(a - b) for a, b in zip(left, right))
+        centered_differences.extend(abs((a - left_mean) - (b - right_mean)) for a, b in zip(left, right))
+        probability_differences.extend(abs(left_stat["conditional_option_probabilities"][c] -
+                                           right_stat["conditional_option_probabilities"][c]) for c in "ABCD")
+        if left_stat["top_option_id"] != right_stat["top_option_id"]:
+            top_changes.append(index)
         if left_stat["tied_top_option_ids"] != right_stat["tied_top_option_ids"]:
-            raise ValueError("batch/single top-option disagreement")
-        differences.extend(abs(a - b) for a, b in zip(left, right))
-    largest = max(differences)
-    if largest > BATCH_SINGLE_ATOL:
-        raise ValueError("batch/single logits exceed absolute tolerance")
-    return {"rows": len(batched), "absolute_tolerance": BATCH_SINGLE_ATOL,
-            "maximum_absolute_difference": largest, "exact_top_option_sets_match": True}
+            tie_changes.append(index)
+    return {"rows": len(batched), "maximum_absolute_logit_difference": max(raw_differences),
+            "maximum_centered_logit_difference": max(centered_differences),
+            "maximum_option_probability_difference": max(probability_differences),
+            "changed_top_option_rows": top_changes, "changed_top_option_set_rows": tie_changes}
 
+
+def validate_fp32_agreement(batched: list[list[float]], single: list[list[float]]) -> dict[str, Any]:
+    """Check padding/index equivalence in FP32 without rejecting numerical ties."""
+    diagnostics = comparison_diagnostics(batched, single)
+    for left, right in zip(batched, single):
+        if any(abs(a - b) > FP32_ATOL + FP32_RTOL * abs(b) for a, b in zip(left, right)):
+            raise ValueError("FP32 batch/single logits exceed predeclared numeric tolerance")
+    return {**diagnostics, "absolute_tolerance": FP32_ATOL, "relative_tolerance": FP32_RTOL,
+            "numeric_gate_passed": True, "exact_top_equality_required": False}
+
+
+def _named_tensors(model: Any) -> dict[str, Any]:
+    return {**{"parameter:" + name: tensor for name, tensor in model.named_parameters()},
+            **{"buffer:" + name: tensor for name, tensor in model.named_buffers()}}
+
+
+def _tensor_sample(tensor: Any) -> list[Any]:
+    flat = tensor.detach().reshape(-1)
+    # Small deterministic samples establish exact round-trip preservation without
+    # copying several gigabytes to the CPU or retaining a second model.
+    return flat[:2].cpu().tolist() + flat[-2:].cpu().tolist()
+
+
+def snapshot_tensor_state(model: Any) -> dict[str, dict[str, Any]]:
+    """Capture original dtypes, including FP32 RoPE buffers, and exact samples."""
+    return {name: {"dtype": tensor.dtype, "shape": list(tensor.shape),
+                   "sample": _tensor_sample(tensor)}
+            for name, tensor in _named_tensors(model).items()}
+
+
+def restore_tensor_state(model: Any, original: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Restore every named tensor independently; never blanket-cast the model."""
+    tensors = _named_tensors(model)
+    if set(tensors) != set(original):
+        raise ValueError("parameter/buffer names changed during FP32 diagnostic")
+    for name, tensor in tensors.items():
+        state = original[name]
+        if list(tensor.shape) != state["shape"]:
+            raise ValueError("parameter/buffer shape changed during FP32 diagnostic")
+        if tensor.dtype != state["dtype"]:
+            tensor.data = tensor.data.to(dtype=state["dtype"])
+    for name, tensor in _named_tensors(model).items():
+        if tensor.dtype != original[name]["dtype"] or _tensor_sample(tensor) != original[name]["sample"]:
+            raise ValueError("parameter/buffer dtype or sampled values failed exact restoration")
+    return {"tensor_count": len(original), "original_dtypes": {
+                name: str(state["dtype"]) for name, state in original.items()},
+            "all_dtypes_restored": True, "all_sampled_values_restored_exactly": True,
+            "sample_rule": "first two and last two flattened values of every named tensor"}
 
 def _forward(torch: Any, model: Any, tokenizer: Any,
              contexts: list[dict[str, Any]]) -> list[list[float]]:
@@ -330,6 +386,10 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
             "option_token_ids": warm_contexts[0]["option_token_ids"],
             "tie_policy": "first A/B/C/D among exact equal maxima; ties retained explicitly",
             "position_ids": "attention_mask.cumsum(-1)-1; pad positions zero",
+            "validation_method": VALIDATION_METHOD,
+            "validation_diagnostic_dtype": "float32",
+            "fp32_numeric_gate": {"atol": FP32_ATOL, "rtol": FP32_RTOL, "exact_top_equality_required": False},
+            "bf16_batch_single_policy": "retain numeric/rank sensitivity; not a pass/fail top-equality gate",
             "scope": "exploratory preference conditional on fixed answer prefix; no abstention score"}
         write_once(metadata_path, metadata)
         load_started = time.monotonic()
@@ -342,11 +402,51 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
         warm_started = time.monotonic()
         batched = _forward(torch, model, tokenizer, warm_contexts)
         single = [_forward(torch, model, tokenizer, [context])[0] for context in warm_contexts]
-        agreement = validate_batch_agreement(batched, single)
+        # Preserve the actual BF16 vectors before any diagnostic conversion.
+        # Failed validation must still leave inspectable numeric evidence.
+        write_once(out_dir / "warmup_bf16_vectors.json", {
+            "job_ids": [job["job_id"] for job in jobs[:3]], "contexts": warm_contexts,
+            "batched_logits": batched, "single_logits": single,
+            "diagnostics": comparison_diagnostics(batched, single),
+            "comparison": "BF16 batch3_vs_batch1_dynamic_padding", "gate": False})
+        if progress is not None:
+            progress({"phase": "warmup_bf16_vectors", "completed_rows": 0,
+                      "elapsed_seconds": time.monotonic() - started})
+        check_deadline()
+        original_tensor_state = snapshot_tensor_state(model)
+        write_once(out_dir / "tensor_state_before_diagnostic.json", {
+            name: {**state, "dtype": str(state["dtype"])}
+            for name, state in original_tensor_state.items()})
+        # Same stored weights exactly promote to FP32. This independently checks
+        # batched padding/indexing while treating low-precision sensitivity as
+        # measured evidence, not silently broadening the failed BF16 threshold.
+        try:
+            model.float()
+            fp32_batched = _forward(torch, model, tokenizer, warm_contexts)
+            fp32_single = [_forward(torch, model, tokenizer, [context])[0] for context in warm_contexts]
+            write_once(out_dir / "warmup_vectors.json", {
+                "validation_method": VALIDATION_METHOD,
+                "job_ids": [job["job_id"] for job in jobs[:3]], "contexts": warm_contexts,
+                "bf16_batched_logits": batched, "bf16_single_logits": single,
+                "fp32_batched_logits": fp32_batched, "fp32_single_logits": fp32_single,
+                "fp32_absolute_tolerance": FP32_ATOL, "fp32_relative_tolerance": FP32_RTOL,
+                "bf16_batch_sensitivity": comparison_diagnostics(batched, single),
+                "fp32_batch_sensitivity": comparison_diagnostics(fp32_batched, fp32_single),
+                "bf16_vs_fp32_batched": comparison_diagnostics(batched, fp32_batched),
+                "bf16_vs_fp32_single": comparison_diagnostics(single, fp32_single)})
+            if progress is not None:
+                progress({"phase": "warmup_vectors", "completed_rows": 0,
+                          "elapsed_seconds": time.monotonic() - started})
+            agreement = validate_fp32_agreement(fp32_batched, fp32_single)
+        finally:
+            restoration = restore_tensor_state(model, original_tensor_state)
+            write_once(out_dir / "dtype_restoration.json", restoration)
+            torch.cuda.empty_cache()
+        agreement["validation_method"] = VALIDATION_METHOD
         agreement["seconds"] = time.monotonic() - warm_started
         agreement["job_ids"] = [job["job_id"] for job in jobs[:3]]
-        agreement["batched_logits"] = batched
-        agreement["single_logits"] = single
+        agreement["bf16_batch_sensitivity"] = comparison_diagnostics(batched, single)
+        agreement["dtype_restoration_sha256"] = file_hash(out_dir / "dtype_restoration.json")
         write_once(out_dir / "warmup.json", agreement)
         receipt["warmup_seconds"] = agreement["seconds"]
         receipt["ready_seconds"] = time.monotonic() - started

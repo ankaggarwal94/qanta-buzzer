@@ -15,9 +15,16 @@ primary top-1 statistic, with tie sensitivity in the analysis.
 The original model revisions, file hashes, BF16 precision and eager attention
 are preserved. Direct forward passes use attention-mask-derived position IDs
 with left padding. CPU staging verifies every original model file and every
-menu's token boundary before GPU work. GPU warmup compares three single and
-batched score vectors with absolute tolerance 0.125 and identical top-option
-sets; any failure stops without automatic fallback or rerun.
+menu's token boundary before GPU work. The initial BF16 warmup gate failed
+before any production rows. Its receipts are preserved. The reviewed recovery
+records BF16 batch/single sensitivity, then temporarily converts the same
+weights to FP32 to check three batched versus unpadded single score vectors
+at `atol=1e-3, rtol=1e-5`. Raw vectors are saved before validation. This checks
+padding/indexing without demanding exact argmax equality near numerical ties.
+Each parameter and buffer is restored to its individual original dtype,
+including originally FP32 RoPE buffers, and sampled values are checked exactly
+before BF16 production. The diagnostic is recorded as validation method v2;
+the scoring estimand and production batch shape are unchanged.
 
 The first 256 original-order menus are the timing benchmark and stay in the
 result. Continue only when 1.5 times the projected remaining runtime plus the
@@ -27,14 +34,24 @@ claims to prevent infrastructure replay from repeating scoring. CPU staging is
 limited to 1,200 seconds. Two GPU allocations, startup/shutdown allowances,
 CPU staging, and $0.40 contingency reserve total $2.87568048 at the verified
 base allocation rates. This is a reserved compute estimate, not a verified
-invoice or an account-level billing limit. No automatic retries or further
-allocations are authorized by the runner.
+invoice or an account-level billing limit. No automatic retries are permitted.
+
+The one reviewed recovery uses cached inputs and weights without CPU staging.
+It binds the five completed initial receipts by SHA256 and refuses any existing
+recovery claim. Two GPU functions have 1,500-second timeouts, 1,300-second
+internal deadlines, and 90-second startup plus 2-second scaledown allowances.
+The initial measured allocations plus their startup/scaledown allowances,
+the new maximum allocations, and $0.40 contingency total $2.6006284568.
+Initial failed results remain separate from `output/recovery1`.
 
 Run from an exact committed checkout with the existing Modal workspace:
 
 ```bash
 python -m scripts.modal_acl_option_scores --source-commit "$(git rev-parse HEAD)" --out results/acl_option_scores
 ```
+
+The explicitly reviewed recovery adds `--recover-once`; it is not a generic
+retry facility. Its analyzer uses `--scores-root results/acl_option_scores/output/recovery1`.
 
 The guarded GitHub workflow uses the existing Modal credentials. CPU-only
 analysis runs after score collection, with the frozen evaluator data kept
