@@ -1,6 +1,7 @@
 """Synthetic unit fixtures; these are not model scores or empirical findings."""
 from __future__ import annotations
 import copy
+import csv
 import math
 import json
 import tempfile
@@ -32,6 +33,40 @@ def fixtures():
                        top_option_id=selected, tied_top_option_ids=[selected])
             rows.append(row)
     return jobs, gold, rows
+
+
+def numeric_evidence_fixture(root, jobs):
+    """Write synthetic, explicitly labeled numeric evidence for unit guards."""
+    job_ids=[j['job_id'] for j in jobs[:3]]
+    fp_left=[[1.,2.,3.,4.]]*3
+    fp_right=[[1.,2.,3.,4.0005]]*3
+    bf_left=[[1.,2.,3.,4.]]*3
+    bf_right=[[1.,2.,4.,3.]]*3
+    fp=a._numeric_diagnostics(fp_left,fp_right)
+    bf=a._numeric_diagnostics(bf_left,bf_right)
+    before={'parameter:fixture_weight':{'dtype':'torch.bfloat16','sample':[1.],'shape':[1]},
+            'buffer:fixture_rope':{'dtype':'torch.float32','sample':[.01],'shape':[1]}}
+    restored={'tensor_count':len(before),'original_dtypes':{k:v['dtype'] for k,v in before.items()},
+              'all_dtypes_restored':True,'all_sampled_values_restored_exactly':True}
+    (root/'dtype_restoration.json').write_text(json.dumps(restored))
+    (root/'tensor_state_before_diagnostic.json').write_text(json.dumps(before))
+    contexts=[{'synthetic_fixture':i} for i in range(3)]
+    vectors={'validation_method':a.VALIDATION_METHOD,'job_ids':job_ids,'contexts':contexts,
+             'bf16_batched_logits':bf_left,'bf16_single_logits':bf_right,
+             'fp32_batched_logits':fp_left,'fp32_single_logits':fp_right,
+             'fp32_absolute_tolerance':1e-3,'fp32_relative_tolerance':1e-5,
+             'bf16_batch_sensitivity':bf,'fp32_batch_sensitivity':fp}
+    (root/'warmup_vectors.json').write_text(json.dumps(vectors))
+    (root/'warmup_bf16_vectors.json').write_text(json.dumps({
+        'job_ids':job_ids,'contexts':contexts,'batched_logits':bf_left,'single_logits':bf_right,
+        'diagnostics':bf}))
+    (root/'warmup.json').write_text(json.dumps({**fp,'numeric_gate_passed':True,
+        'validation_method':a.VALIDATION_METHOD,'job_ids':job_ids,'absolute_tolerance':1e-3,
+        'relative_tolerance':1e-5,'exact_top_equality_required':False,
+        'bf16_batch_sensitivity':bf,'dtype_restoration_sha256':a.sha256(root/'dtype_restoration.json')}))
+    return {'validation_method':a.VALIDATION_METHOD,'dtype':'bfloat16','batch_size':32,
+            'validation_diagnostic_dtype':'float32','model_hashes_bound_to_original_run':True,
+            'fp32_numeric_gate':{'atol':1e-3,'rtol':1e-5,'exact_top_equality_required':False}}
 
 
 class ScoreAnalysisTests(unittest.TestCase):
@@ -116,6 +151,7 @@ class ScoreAnalysisTests(unittest.TestCase):
                             assistant_prefix=a.ASSISTANT_PREFIX,protocol=a.PROTOCOL,
                             model_files_sha256={'weights':'fixture'},chat_template_sha256='fixture',
                             source_sha256='fixture')
+            metadata.update(numeric_evidence_fixture(root,jobs))
             meta_file=root/'metadata.json'
             meta_file.write_text(json.dumps(metadata))
             receipt=dict(status='complete',completed_rows=len(jobs),expected_rows=len(jobs),
@@ -134,6 +170,65 @@ class ScoreAnalysisTests(unittest.TestCase):
             receipt_file.write_text(json.dumps(receipt))
             with self.assertRaisesRegex(ValueError,'metadata revision mismatch'):
                 a.load_model_scores(root,'qwen3b',jobs,gold)
+
+    def test_recovered_protocol_requires_numeric_evidence(self):
+        jobs, _, _ = fixtures()
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaises((ValueError,FileNotFoundError)):
+                a.validate_numeric_evidence(Path(temp), {}, jobs)
+
+    def test_recovered_fp32_gate_checks_raw_vectors_and_retains_bf16_changes(self):
+        jobs,_,_=fixtures()
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);metadata=numeric_evidence_fixture(root,jobs)
+            verified=a.validate_numeric_evidence(root,metadata,jobs)
+            self.assertTrue(verified['independent_fp32_numeric_gate_passed'])
+            self.assertEqual(verified['bf16_batch_sensitivity']['changed_top_option_rows'],[0,1,2])
+            path=root/'warmup_vectors.json';vectors=json.loads(path.read_text())
+            vectors['fp32_single_logits'][0][3]=4.1
+            # Even if all recorded summaries and the pass flag are changed together,
+            # the analyzer independently applies the original numeric tolerance.
+            fp=a._numeric_diagnostics(vectors['fp32_batched_logits'],vectors['fp32_single_logits'])
+            vectors['fp32_batch_sensitivity']=fp;path.write_text(json.dumps(vectors))
+            warm_path=root/'warmup.json';warm=json.loads(warm_path.read_text());warm.update(fp)
+            warm_path.write_text(json.dumps(warm))
+            with self.assertRaisesRegex(ValueError,'independent numeric gate'):
+                a.validate_numeric_evidence(root,metadata,jobs)
+
+    def test_recovered_restoration_requires_success_and_tensor_identity(self):
+        jobs,_,_=fixtures()
+        for mutation in ('failure','identity','hash'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temp:
+                root=Path(temp);metadata=numeric_evidence_fixture(root,jobs)
+                path=root/'dtype_restoration.json';restored=json.loads(path.read_text())
+                if mutation=='failure': restored['all_dtypes_restored']=False
+                else: restored['original_dtypes']['buffer:fixture_rope']='torch.bfloat16'
+                path.write_text(json.dumps(restored))
+                if mutation!='hash':
+                    warm_path=root/'warmup.json';warm=json.loads(warm_path.read_text())
+                    warm['dtype_restoration_sha256']=a.sha256(path);warm_path.write_text(json.dumps(warm))
+                with self.assertRaisesRegex(ValueError,'dtype restoration'):
+                    a.validate_numeric_evidence(root,metadata,jobs)
+
+    def test_per_menu_csv_joins_exact_option_text_and_escapes_punctuation(self):
+        jobs,gold,rows=fixtures()
+        text='Mercury, "the planet"\nsecond line'
+        jobs[0]['options']=[{'id':option,'text':text if option=='A' else option+' text'} for option in a.OPTIONS]
+        row=a.validate_rows(rows,jobs,gold)[0]
+        exported=a.menu_export_row('qwen3b',row,jobs[0])
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'scores.csv';a.write_menu_csv(path,[exported])
+            with path.open(newline='',encoding='utf-8') as stream:
+                parsed=list(csv.DictReader(stream))
+            self.assertEqual(len(parsed),1)
+            self.assertEqual(parsed[0]['top_option_text'],text)
+            self.assertEqual(parsed[0]['option_text_A'],text)
+            self.assertEqual(parsed[0]['gold_option_id'],'A')
+            self.assertEqual(parsed[0]['correct'],'1')
+            self.assertEqual(json.loads(parsed[0]['tied_top_option_ids']),['A'])
+            self.assertAlmostEqual(float(parsed[0]['raw_logit_A']),1.)
+            self.assertAlmostEqual(float(parsed[0]['logit_margin']),1.)
+            self.assertEqual(set(parsed[0]),set(a.MENU_EXPORT_FIELDS))
 
     def test_frozen_inputs_reject_modified_hash_before_analysis(self):
         with tempfile.TemporaryDirectory() as temp:

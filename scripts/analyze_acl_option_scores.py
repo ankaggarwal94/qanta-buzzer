@@ -20,6 +20,9 @@ OPTIONS = ('A', 'B', 'C', 'D')
 CONDITIONS = ('independent_pool', 'same_category_pool')
 NEAR_TIE_LOGIT_ATOL = 1e-6
 PROTOCOL = 'conditional_next_token_option_softmax_v1'
+VALIDATION_METHOD = 'fp32_same_weights_batch_padding_sanity_v2'
+NUMERIC_EVIDENCE_FILES = ('warmup.json', 'warmup_vectors.json', 'warmup_bf16_vectors.json',
+                          'dtype_restoration.json', 'tensor_state_before_diagnostic.json')
 ASSISTANT_PREFIX = '{"answer":"'
 PUBLIC_SHA256 = '9db13301d928cd31dc54c97f0c5cfd88b9bc25774ceb56027c032c52e4afb043'
 GOLD_SHA256 = '93a4eec6e9792e432f96b55e88a527765b812635f3c11a70f94e8361095a8162'
@@ -145,6 +148,7 @@ def summarize_rows(rows):
                               if r['gold_option_id'] in r['tied_top_option_ids'] else 0. for r in rows)
     lower = sum(r['gold_option_id'] in r['tied_top_option_ids'] and len(r['tied_top_option_ids'])==1 for r in rows)
     upper = sum(r['gold_option_id'] in r['tied_top_option_ids'] for r in rows)
+    margins = [max(r['raw_option_logits'].values())-sorted(r['raw_option_logits'].values(),reverse=True)[1] for r in rows]
     return {
         'n': n, 'n_correct': k, 'accuracy': k/n, 'wilson_95_interval': wilson_interval(k,n),
         'uniform_guessing_reference': .25, 'accuracy_minus_uniform_reference': k/n-.25,
@@ -156,6 +160,9 @@ def summarize_rows(rows):
         'n_exact_top_ties': sum(len(r['tied_top_option_ids'])>1 for r in rows),
         'n_near_top_ties': sum(len(r['near_top_option_ids'])>1 for r in rows),
         'near_tie_absolute_logit_tolerance': NEAR_TIE_LOGIT_ATOL,
+        'n_top_logit_margin_le_0_125': sum(m<=.125 for m in margins),
+        'n_top_logit_margin_le_0_25': sum(m<=.25 for m in margins),
+        'low_margin_interpretation': 'Sensitivity flags only; thresholds do not bound actual precision or batch-shape effects.',
         'uniform_exact_tie_expected_accuracy': uniform_tie_sum/n,
         'exact_tie_accuracy_bounds': [lower/n,upper/n],
         'mean_gold_conditional_probability': math.fsum(r['conditional_option_probabilities'][r['gold_option_id']] for r in rows)/n,
@@ -219,6 +226,90 @@ def load_frozen_inputs(public_path, gold_path):
     return jobs,gold
 
 
+def _numeric_diagnostics(batched, single):
+    left, right = np.asarray(batched,dtype=float), np.asarray(single,dtype=float)
+    if left.shape != (3,4) or right.shape != (3,4) or not np.all(np.isfinite(left)) or not np.all(np.isfinite(right)):
+        raise ValueError('warmup requires three finite four-option vectors')
+    def probability(values):
+        weights=np.exp(values-values.max(axis=1,keepdims=True))
+        return weights/weights.sum(axis=1,keepdims=True)
+    centered_left=left-left.mean(axis=1,keepdims=True)
+    centered_right=right-right.mean(axis=1,keepdims=True)
+    ties_left=left==left.max(axis=1,keepdims=True)
+    ties_right=right==right.max(axis=1,keepdims=True)
+    return {'rows':3,
+            'maximum_absolute_logit_difference':float(np.max(np.abs(left-right))),
+            'maximum_centered_logit_difference':float(np.max(np.abs(centered_left-centered_right))),
+            'maximum_option_probability_difference':float(np.max(np.abs(probability(left)-probability(right)))),
+            'changed_top_option_rows':np.flatnonzero(left.argmax(axis=1)!=right.argmax(axis=1)).tolist(),
+            'changed_top_option_set_rows':np.flatnonzero(np.any(ties_left!=ties_right,axis=1)).tolist()}
+
+
+def _verify_diagnostics(recorded, actual):
+    for key,value in actual.items():
+        existing=recorded.get(key)
+        if isinstance(value,float):
+            if type(existing) not in (int,float) or not math.isfinite(existing) or not math.isclose(value,existing,rel_tol=1e-9,abs_tol=1e-10):
+                raise ValueError(f'warmup numeric diagnostics mismatch: {key}')
+        elif existing!=value:
+            raise ValueError(f'warmup numeric diagnostics mismatch: {key}')
+
+
+def validate_numeric_evidence(directory, metadata, jobs):
+    """Independently validate retained FP32 sanity and BF16 restoration evidence."""
+    if metadata.get('validation_method')!=VALIDATION_METHOD:
+        raise ValueError('recovered scoring requires declared FP32 validation method')
+    required={'dtype':'bfloat16','batch_size':32,'validation_diagnostic_dtype':'float32',
+              'model_hashes_bound_to_original_run':True,
+              'fp32_numeric_gate':{'atol':1e-3,'rtol':1e-5,'exact_top_equality_required':False}}
+    for key,value in required.items():
+        if metadata.get(key)!=value:
+            raise ValueError(f'recovered metadata {key} mismatch')
+    evidence={name:load_json(directory/name) for name in NUMERIC_EVIDENCE_FILES}
+    warm=evidence['warmup.json']; vectors=evidence['warmup_vectors.json']
+    bf16=evidence['warmup_bf16_vectors.json']; restored=evidence['dtype_restoration.json']
+    before=evidence['tensor_state_before_diagnostic.json']
+    job_ids=[job['job_id'] for job in jobs[:3]]
+    for item in (warm,vectors,bf16):
+        if item.get('job_ids')!=job_ids:
+            raise ValueError('warmup job identity mismatch')
+    if warm.get('validation_method')!=VALIDATION_METHOD or vectors.get('validation_method')!=VALIDATION_METHOD:
+        raise ValueError('warmup validation method mismatch')
+    if (warm.get('numeric_gate_passed') is not True or warm.get('absolute_tolerance')!=1e-3
+            or warm.get('relative_tolerance')!=1e-5 or warm.get('exact_top_equality_required') is not False
+            or vectors.get('fp32_absolute_tolerance')!=1e-3 or vectors.get('fp32_relative_tolerance')!=1e-5):
+        raise ValueError('FP32 warmup gate/tolerance mismatch')
+    if bf16.get('batched_logits')!=vectors.get('bf16_batched_logits') or bf16.get('single_logits')!=vectors.get('bf16_single_logits'):
+        raise ValueError('retained BF16 warmup vectors disagree')
+    if bf16.get('contexts')!=vectors.get('contexts') or len(vectors.get('contexts',[]))!=3:
+        raise ValueError('warmup scored-context evidence mismatch')
+    bf16_diagnostics=_numeric_diagnostics(vectors['bf16_batched_logits'],vectors['bf16_single_logits'])
+    fp32_diagnostics=_numeric_diagnostics(vectors['fp32_batched_logits'],vectors['fp32_single_logits'])
+    _verify_diagnostics(warm,fp32_diagnostics)
+    _verify_diagnostics(vectors['fp32_batch_sensitivity'],fp32_diagnostics)
+    for declared in (warm['bf16_batch_sensitivity'],vectors['bf16_batch_sensitivity'],bf16['diagnostics']):
+        _verify_diagnostics(declared,bf16_diagnostics)
+    left=np.asarray(vectors['fp32_batched_logits'],dtype=float)
+    right=np.asarray(vectors['fp32_single_logits'],dtype=float)
+    if np.any(np.abs(left-right)>1e-3+1e-5*np.abs(right)):
+        raise ValueError('FP32 warmup vectors fail independent numeric gate')
+    if sha256(directory/'dtype_restoration.json')!=warm.get('dtype_restoration_sha256'):
+        raise ValueError('dtype restoration hash mismatch')
+    expected_dtypes={name:state['dtype'] for name,state in before.items()}
+    if not expected_dtypes or restored.get('tensor_count')!=len(expected_dtypes) or restored.get('original_dtypes')!=expected_dtypes:
+        raise ValueError('dtype restoration tensor identity mismatch')
+    if restored.get('all_dtypes_restored') is not True or restored.get('all_sampled_values_restored_exactly') is not True:
+        raise ValueError('dtype restoration did not pass')
+    if 'torch.bfloat16' not in expected_dtypes.values() or 'torch.float32' not in expected_dtypes.values():
+        raise ValueError('expected mixed BF16 weights and FP32 buffers in original state')
+    return {'validation_method':VALIDATION_METHOD,'independent_fp32_numeric_gate_passed':True,
+            'fp32_batch_sensitivity':fp32_diagnostics,'bf16_batch_sensitivity':bf16_diagnostics,
+            'dtype_restoration':{'tensor_count':len(expected_dtypes),'dtypes':dict(Counter(expected_dtypes.values())),
+                                'all_dtypes_restored':True,'sampled_values_restored':True},
+            'evidence_sha256':{name:sha256(directory/name) for name in NUMERIC_EVIDENCE_FILES},
+            'limitation':'FP32 padding/indexing sanity passed. BF16 production argmax may vary with batch shape or precision; restoration evidence checks every dtype and recorded samples, not every tensor value.'}
+
+
 def load_model_scores(directory, tag, jobs, gold):
     receipt = load_json(directory/'receipt.json')
     metadata = load_json(directory/'metadata.json')
@@ -236,6 +327,7 @@ def load_model_scores(directory, tag, jobs, gold):
     for key in ('model_files_sha256','chat_template_sha256','source_sha256'):
         if not metadata.get(key):
             raise ValueError(f'{tag}: missing provenance {key}')
+    validate_numeric_evidence(directory,metadata,jobs)
     rows=[]
     with scores_path.open() as stream:
         for line in stream:
@@ -249,6 +341,42 @@ def load_model_scores(directory, tag, jobs, gold):
     return validate_rows(rows,jobs,gold), metadata, receipt
 
 
+MENU_EXPORT_FIELDS = ['model_tag','job_id','qid','condition','split','menu_id',
+    'top_option_id','top_option_text','gold_option_id','gold_option_text','correct',
+    'tied_top_option_ids','logit_margin','probability_margin'] + [
+    f'{kind}_{option}' for kind in ('option_text','conditional_probability','raw_logit') for option in OPTIONS]
+
+
+def menu_export_row(tag, row, job):
+    """Join a validated model score to exact option text in its frozen menu."""
+    if row['job_id']!=job['job_id']:
+        raise ValueError('CSV score/menu job identity mismatch')
+    options={option['id']:option['text'] for option in job['options']}
+    if set(options)!=set(OPTIONS) or len(job['options'])!=4:
+        raise ValueError('CSV requires four distinct A--D option texts')
+    values={'model_tag':tag,**{key:row[key] for key in
+            ('job_id','qid','condition','split','menu_id','top_option_id','gold_option_id')},
+            'top_option_text':options[row['top_option_id']],
+            'gold_option_text':options[row['gold_option_id']],
+            'correct':int(row['correct']),
+            'tied_top_option_ids':json.dumps(row['tied_top_option_ids'],separators=(',',':'))}
+    logits=sorted(row['raw_option_logits'].values(),reverse=True)
+    probabilities=sorted(row['conditional_option_probabilities'].values(),reverse=True)
+    values.update(logit_margin=logits[0]-logits[1],probability_margin=probabilities[0]-probabilities[1])
+    for option in OPTIONS:
+        values[f'option_text_{option}']=options[option]
+        values[f'conditional_probability_{option}']=row['conditional_option_probabilities'][option]
+        values[f'raw_logit_{option}']=row['raw_option_logits'][option]
+    return values
+
+
+def write_menu_csv(path, rows):
+    with Path(path).open('x',newline='',encoding='utf-8') as stream:
+        writer=csv.DictWriter(stream,fieldnames=MENU_EXPORT_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def analyze(public_path, gold_path, scores_root, out, samples=5000, seed=1):
     jobs,gold=load_frozen_inputs(public_path,gold_path)
     if out.exists():
@@ -256,10 +384,14 @@ def analyze(public_path, gold_path, scores_root, out, samples=5000, seed=1):
     summaries=[]
     paired=[]
     provenance={}
+    menu_rows=[]
+    job_by_id={job['job_id']:job for job in jobs}
     for tag in MODELS:
         directory=scores_root/tag
         rows,metadata,receipt=load_model_scores(directory,tag,jobs,gold)
+        menu_rows.extend(menu_export_row(tag,row,job_by_id[row['job_id']]) for row in rows)
         provenance[tag]={'metadata':metadata,'receipt':receipt,
+                         'numeric_validation':validate_numeric_evidence(directory,metadata,jobs),
                          'files_sha256':{name:sha256(directory/name) for name in ('scores.jsonl','receipt.json','metadata.json')}}
         for subset in ('all','test'):
             subset_rows=[r for r in rows if subset=='all' or r['split']=='test']
@@ -285,6 +417,7 @@ def analyze(public_path, gold_path, scores_root, out, samples=5000, seed=1):
                 'Diagnostic follow-up defined after observing universal abstention; not a preregistered confirmatory outcome.',
                 'The original prompt still allows abstention; the fixed assistant prefix conditions evaluation on emitting an option.',
                 'A--D softmax scores are conditional relative preferences, not calibrated correctness probabilities.',
+                'FP32 batch/single warmup checks padding/index logic. BF16 production rankings can vary with batch shape or precision; exact ties and small margins are reported, and do not bound all numerical effects.',
                 'Uniform 25% guessing is a reference; gold and selected position frequencies and constant-position baselines are also reported.',
                 'Wilson intervals and exact binomial tests use an independent-question Bernoulli reference; frozen questions are not a random sample of all quiz bowl.',
                 'All-set and held-out summaries overlap. Holm correction covers only the four model-by-condition held-out tests; all-set tests are descriptive.',
@@ -293,6 +426,7 @@ def analyze(public_path, gold_path, scores_root, out, samples=5000, seed=1):
             ]}
     out.mkdir(parents=True)
     write_json(out/'report.json',report)
+    write_menu_csv(out/'per_menu_scores.csv',menu_rows)
     fields=['model_tag','subset','condition','n','n_correct','accuracy','wilson_lower','wilson_upper',
             'accuracy_minus_uniform_reference','evaluated_set_majority_position_baseline_accuracy',
             'calibration_selected_constant_option','calibration_selected_position_baseline_accuracy',
@@ -311,7 +445,7 @@ def analyze(public_path, gold_path, scores_root, out, samples=5000, seed=1):
         stream.write('\nInterpretation limits:\n'+'\n'.join(report['interpretation_limits'])+'\n')
     write_json(out/'analysis_receipt.json',{'status':'complete','inference_run':False,
         'analysis_source_sha256':sha256(Path(__file__)),
-        'outputs_sha256':{name:sha256(out/name) for name in ('report.json','summary.csv','findings.txt')}})
+        'outputs_sha256':{name:sha256(out/name) for name in ('report.json','summary.csv','findings.txt','per_menu_scores.csv')}})
     return report
 
 

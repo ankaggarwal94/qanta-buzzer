@@ -65,6 +65,10 @@ Analysis validates exact coverage and provenance. Report all-question and
 held-out test results separately, including Wilson intervals, four-comparison
 Holm-adjusted binomial references against uniform 25% guessing, answer-position
 frequencies, a majority-position comparator and question-paired bootstrap
-differences. Above-chance conditional choice accuracy motivates investigation
+differences. Recovered results additionally require independent validation of
+retained FP32 and BF16 warmup vectors and the original dtype restoration
+evidence. `per_menu_scores.csv` joins every score to the exact public option
+texts, displaying the preferred answer, gold answer, correctness, ties, all four
+probabilities and logits, and margins. Above-chance conditional choice accuracy motivates investigation
 of menu construction; it does not establish exploitation during clue-bearing
 answering. The selected 174 unresolved open-ended answer cases are untouched.
