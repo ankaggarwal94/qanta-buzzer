@@ -1,0 +1,57 @@
+name: ACL menu-only option scores
+
+on:
+  push:
+    branches: [ops/acl-option-scoring-20261003]
+    paths: [.github/workflows/acl-option-scores.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acl-option-scoring-20261003
+  cancel-in-progress: false
+
+jobs:
+  score:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: score ACL menu-only options within three dollars'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install control-plane dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          'modal==1.6.0' 'pytest==8.3.5' 'numpy==2.2.4'
+          'lm-format-enforcer==0.11.3' 'interegular==0.3.3'
+      - name: Validate scoring and budget before credential use
+        run: >-
+          python -m pytest --noconftest
+          tests/test_acl_option_scoring.py tests/test_modal_acl_option_scores.py
+          tests/test_analyze_acl_option_scores.py -q
+      - name: Stage pinned models and score within the reserved budget
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: >-
+          python -m scripts.modal_acl_option_scores
+          --source-commit "$SOURCE_COMMIT" --out results/acl_option_scores
+      - name: Preserve raw scores, benchmarks, and receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acl-option-scores-${{ github.run_id }}
+          path: results/acl_option_scores/
+          if-no-files-found: warn
+          retention-days: 90
