@@ -8,7 +8,7 @@ permissions:
 jobs:
   inspect:
     if: >-
-      github.actor == 'ankaggarwal94' && github.run_attempt == 1 &&
+      github.actor == 'ankaggarwal94' &&
       github.event.head_commit.message == 'ops: inspect ACL option scoring receipts'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -49,6 +49,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: acl-option-inspection-${{ github.run_id }}
+          name: acl-option-inspection-${{ github.run_id }}-${{ github.run_attempt }}
           path: inspection.json
           retention-days: 90
