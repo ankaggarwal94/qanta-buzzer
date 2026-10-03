@@ -1,0 +1,54 @@
+name: Collect completed ACL 5000 evidence
+on:
+  push:
+    branches: [ops/acl-5000-experiment-20261002]
+    paths: [.github/workflows/acl-5000-collect.yml]
+permissions:
+  contents: read
+jobs:
+  collect:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: collect completed ACL 5000 evidence 20261003'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: abb0976f02d5859bbb39e4ff1f3c6879b100199b
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - run: python -m pip install --disable-pip-version-check 'modal==1.6.0'
+      - name: Read existing evidence only
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          mkdir -p collection
+          python -m scripts.modal_acl_expansion status --run-id acl5000-20261002 > collection/status.json
+          python -c "import json; assert json.load(open('collection/status.json'))['status'] == 'COMPLETED'"
+          python -m scripts.modal_acl_expansion download --run-id acl5000-20261002 --out collection/raw > collection/download_manifest.json
+      - name: Package immutable evidence
+        run: |
+          tar -czf acl5000-raw-evidence.tar.gz collection
+          sha256sum acl5000-raw-evidence.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acl5000-completed-raw-evidence
+          path: acl5000-raw-evidence.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acl5000-collection-receipts
+          path: |
+            collection/status.json
+            collection/download_manifest.json
+          if-no-files-found: warn
+          retention-days: 90
