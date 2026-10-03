@@ -1,0 +1,52 @@
+name: Inspect paired ACL scoring progress
+on:
+  push:
+    branches: [ops/acl-option-scoring-20261003]
+    paths: [.github/workflows/acl-paired-inspect.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    if: >-
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: inspect paired ACL score progress'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - run: python -m pip install 'modal==1.6.0'
+      - name: Read existing receipts without allocating model workers
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from scripts.modal_acl_expansion import connect
+          modal, workspace = connect()
+          volume = modal.Volume.from_name('acl5000-paired-prompts-20261003', create_if_missing=False)
+          report = {'workspace': workspace, 'evidence': {}}
+          names = ('started.json', 'benchmark.json', 'receipt.json', 'diagnostics_validation.json')
+          for entry in volume.iterdir('/output', recursive=True):
+              name = str(entry.path).lstrip('/')
+              if Path(name).name in names or name.endswith('_allocation_receipt.json'):
+                  raw = b''.join(volume.read_file(name))
+                  if len(raw) > 1024**2:
+                      raise ValueError('metadata exceeds bound')
+                  report['evidence'][name] = json.loads(raw)
+          Path('paired_inspection.json').write_text(json.dumps(report, indent=2) + '\n')
+          print(json.dumps(report))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acl-paired-inspection-${{ github.run_id }}
+          path: paired_inspection.json
+          retention-days: 90
