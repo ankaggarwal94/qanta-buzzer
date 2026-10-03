@@ -41,3 +41,5 @@ jobs:
           path: inspection.json
           if-no-files-found: warn
           retention-days: 90
+
+# Read-only collection check requested 2026-10-03.
