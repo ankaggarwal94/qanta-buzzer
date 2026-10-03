@@ -1,0 +1,68 @@
+name: Export existing ACL evidence in transfer-sized parts
+on:
+  push:
+    branches: [ops/acl-5000-experiment-20261002]
+    paths: [.github/workflows/acl-5000-export-parts.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  export:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: export collected ACL evidence parts 20261003'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: acl5000-completed-raw-evidence
+          run-id: 37129984719
+          github-token: ${{ github.token }}
+      - run: |
+          sha256sum acl5000-raw-evidence.tar.gz
+          split -b 24M -d acl5000-raw-evidence.tar.gz evidence.part-
+          sha256sum evidence.part-* > parts.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acl5000-evidence-part-00
+          path: evidence.part-00
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acl5000-evidence-part-01
+          path: evidence.part-01
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acl5000-evidence-part-02
+          path: evidence.part-02
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acl5000-evidence-part-03
+          path: evidence.part-03
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acl5000-evidence-part-04
+          path: evidence.part-04
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acl5000-evidence-parts-hashes
+          path: parts.sha256
+          if-no-files-found: error
+          retention-days: 90
