@@ -1,0 +1,79 @@
+name: Bounded development IMCQA WAIT pilot
+
+on:
+  push:
+    branches: [feat/imcqa-wait-pilot-20261004]
+    paths: [.github/workflows/imcqa-wait-pilot.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: imcqa-wait-dev-20261004
+  cancel-in-progress: false
+
+jobs:
+  pilot:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: run reviewed development WAIT pilot under four dollars'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install pinned control-plane dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          'modal==1.6.0' 'pytest==8.3.5' 'numpy==2.2.4'
+          'lm-format-enforcer==0.11.3' 'interegular==0.3.3'
+      - name: Validate protocol and bounded runtime before credentials
+        run: >-
+          python -m pytest --noconftest
+          tests/test_imcqa_wait_scoring.py
+          tests/test_modal_imcqa_wait_pilot.py
+          tests/test_analyze_imcqa_wait_pilot.py -q
+      - name: Verify frozen public transport and completed retrospective
+        run: |
+          python - <<'PY'
+          import gzip, hashlib, json
+          from pathlib import Path
+          root = Path('imcqa_public')
+          manifest = json.loads((root/'transport_manifest.json').read_text())
+          gate = json.loads((root/'retrospective_gate.json').read_text())
+          assert gate['status'] == 'completed' and gate['verified_mc_rows'] == 200000
+          packed = (root/'pilot.json.gz').read_bytes()
+          assert hashlib.sha256(packed).hexdigest() == manifest['compressed_sha256']
+          raw = gzip.decompress(packed)
+          assert hashlib.sha256(raw).hexdigest() == manifest['public_sha256']
+          assert hashlib.sha256(Path('configs/imcqa_wait_pilot.json').read_bytes()).hexdigest() == manifest['config_sha256']
+          assert manifest['contexts'] == 4800 and manifest['questions'] == 200
+          assert manifest['gold_labels_included'] is False
+          Path('results').mkdir()
+          Path('results/pilot.json').write_bytes(raw)
+          PY
+      - name: Run explicit WAIT pilot on cached pinned models
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: >-
+          python -m scripts.modal_imcqa_wait_pilot
+          --public-package results/pilot.json
+          --source-commit "$SOURCE_COMMIT"
+          --out results/imcqa_wait_pilot
+      - name: Preserve scores and numerical evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-wait-pilot-${{ github.run_id }}
+          path: results/
+          if-no-files-found: warn
+          retention-days: 90

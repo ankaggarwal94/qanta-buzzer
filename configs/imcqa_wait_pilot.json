@@ -1,0 +1,151 @@
+{
+  "schema_version": "imcqa-wait-pilot-config-v1",
+  "protocol": "imcqa_explicit_wait_fp32_v1",
+  "purpose": "Development-only, payoff-aware WAIT/PASS pilot on frozen cumulative question prefixes; not a confirmatory IMCQA benchmark or IRT analysis.",
+  "n_per_split": 100,
+  "n_diagnostic_per_split": 20,
+  "seed": 1,
+  "splits": ["calibration", "selection"],
+  "forbidden_splits": ["test"],
+  "prefix_ids": ["p2", "p4", "p6", "p8", "p10"],
+  "nominal_prefix_fractions": [0.2, 0.4, 0.6, 0.8, 1.0],
+  "menus": ["independent_pool", "same_category_pool"],
+  "rewards": [1.0, 0.8, 0.6, 0.4, 0.2],
+  "wrong_reward": -1.0,
+  "pass_reward": 0.0,
+  "wait_immediate_reward": 0.0,
+  "discount": 1.0,
+  "models": {
+    "qwen3b": {
+      "model": "Qwen/Qwen2.5-3B-Instruct",
+      "revision": "aa8e72537993ba99e69dfaafa59ed015b17504d1"
+    },
+    "qwen7b": {
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "a09a35458c702b33eeacc393d103063234e8bc28"
+    }
+  },
+  "frozen_source_sha256": {
+    "public/main_jobs.json": "9bfeaf2d86116ced0e8c55c3c390d3be12050ad38820b4e02c6ed684cc8786bf",
+    "evaluator/main_dataset.json": "d16d8e611965fba3829f01cda936145743b7d46187030e2138caf52068aa9b62",
+    "qid_category.json": "5e814f8a2f8081566d9980b8de4e7c069dde27748307106efdc6412a0d0d731f"
+  },
+  "selection": {
+    "stratify_by": ["split", "category"],
+    "category_source": "CPU-derived public qid-to-category map from the frozen evaluator dataset; no answers or correctness fields",
+    "quota_rule": "Within each split, proportional category quotas by largest remainder; lexical category tie-break",
+    "within_category_order": "Ascending SHA256 of UTF-8 '1|split|category|qid', then qid",
+    "diagnostic_rule": "Select 20 of the chosen 100 in each split using proportional category quotas and SHA256 of UTF-8 'diagnostic|1|split|category|qid', then qid",
+    "minimum_category_quota": 0,
+    "freeze_before_inference": true,
+    "reuse_qids_across_models_menus_rounds_conditions": true
+  },
+  "conditions": {
+    "wait": {
+      "question_count": 200,
+      "actions": "ABCDE",
+      "question_text": "exact frozen cumulative prefix",
+      "menu_rotation": 0,
+      "role": "primary sequential policy"
+    },
+    "forced": {
+      "question_count": 200,
+      "actions": "ABCD",
+      "question_text": "same frozen cumulative prefix as wait",
+      "menu_rotation": 0,
+      "role": "matched answer-now control retaining the shared game description but replacing the current action rule to require A-D and forbid E now"
+    },
+    "questionless": {
+      "question_count": 40,
+      "actions": "ABCDE",
+      "question_text": "fixed explicit omission marker; retain menu, round, and reward state",
+      "menu_rotation": 0,
+      "role": "paired diagnostic of menu and reward effects without question evidence"
+    },
+    "rotation": {
+      "question_count": 40,
+      "actions": "ABCDE",
+      "question_text": "same frozen cumulative prefix as wait",
+      "menu_rotation": 1,
+      "rotation_rule": "Canonical candidate A is displayed at B, B at C, C at D, and D at A; E is unchanged",
+      "role": "paired position-sensitivity diagnostic on the same subset as questionless"
+    }
+  },
+  "state_and_actions": {
+    "context": "fresh stateless prompt with current round, remaining rounds, complete reward schedule, revealed cumulative question prefix, fixed four-candidate menu, and the statement that earlier rounds were WAIT decisions; later-round scores are conditional on reaching that state",
+    "previous_model_outputs_included": false,
+    "menu_identities_fixed_within_episode": true,
+    "answer_actions": "A-D immediately terminate with correct or wrong reward",
+    "E_rounds_1_to_4": "WAIT: advance exactly one prefix, receive no immediate reward, and keep the same candidates",
+    "E_round_5": "PASS: terminate with reward zero; no sixth round exists",
+    "selection_rule": "argmax of raw logits restricted to legal single-token action labels",
+    "tie_break": "first action in ABCDE order among exactly tied legal maxima",
+    "repeated_sampling": false,
+    "full_response_generation": false,
+    "scored_boundary": "fresh assistant turn plus fixed {\"action\":\" prefix; labels verified as exact next-token extensions independently for each pinned tokenizer",
+    "scores_are_calibrated_correctness_probabilities": false
+  },
+  "execution": {
+    "collection": "score all stateless round contexts; derive early-exit episodes by deterministic replay",
+    "production_contexts_per_model": 4800,
+    "production_contexts_total": 9600,
+    "numerical_contexts_max_per_model": 24,
+    "live_replay_question_count": 8,
+    "live_replay_rule": "Preselect four qids per development split from selected qids by ascending SHA256 of UTF-8 'live|1|split|qid', then qid; run active-only WAIT episodes for both menus and compare with saved all-round scores",
+    "live_replay_contexts_max_per_model": 80,
+    "gold_on_inference_worker": false,
+    "automatic_retries": 0,
+    "allow_prompt_or_sample_change_after_outcomes": false,
+    "overlong_input_policy": "fail closed; never truncate or silently drop a question"
+  },
+  "numerical_checks": {
+    "precision": "FP32 arithmetic on exact promoted pinned BF16 weights",
+    "tf32": false,
+    "attention_implementation": "eager",
+    "raw_logit_atol": 0.001,
+    "raw_logit_rtol": 0.00001,
+    "max_action_probability_absolute_difference": 0.001,
+    "allow_action_argmax_flip": false,
+    "checks": ["unpadded single versus production batch", "exact replay", "batch permutation", "cached versus uncached if cache reuse is enabled"],
+    "diagnostic_selection": "Include every condition and menu, shortest and longest contexts, WAIT and terminal PASS semantics, and all five rounds within a maximum of 24 contexts",
+    "retained_values": ["A-E raw logits", "legal-action softmax", "full-vocabulary logsumexp", "unconstrained argmax token ID and logit", "legal-action full-vocabulary probability mass", "scored token IDs and tokenization hashes"]
+  },
+  "analysis": {
+    "bootstrap_samples": 2000,
+    "bootstrap_seed": 1,
+    "bootstrap_unit": "question, paired across models, menus, rounds, and conditions",
+    "primary_endpoints": ["mean episodic reward", "commitment rate", "wrong-answer rate among commitments", "correct commitments per episode", "terminal PASS rate", "stopping-round distribution"],
+    "secondary_endpoints": ["round-wise E probability", "round-wise conditional forced-answer accuracy", "primary versus rotated candidate identity and reward", "primary versus questionless behavior", "legal-action probability mass"],
+    "reference_policies": ["answer-now control at each fixed round under the same game prompt", "answer-now control at final round under the same game prompt", "always terminal PASS", "hindsight best available forced-control answer round or PASS; not an upper bound on primary A-E predictions"],
+    "primary_policy_uses_fitted_threshold": false,
+    "report_splits_separately": true,
+    "pooled_development_results_allowed_as_descriptive_only": true,
+    "claim_population_risk_control": false,
+    "claim_irt_ability_estimation": false
+  },
+  "budget": {
+    "ceiling_usd": "4.00",
+    "gpu_function_timeout_seconds": {"qwen3b": 2400, "qwen7b": 3000},
+    "scorer_deadline_seconds": {"qwen3b": 2250, "qwen7b": 2850},
+    "startup_timeout_seconds": 90,
+    "scaledown_seconds": 2,
+    "gpu_rate_usd_per_worker_second": "0.00063924",
+    "cpu_staging_allowance_usd": "0.01723232",
+    "contingency_usd": "0.40",
+    "reserved_estimate_usd": "3.98674848",
+    "invoice_verified": false,
+    "current_rate_recheck_required_before_launch": true,
+    "throughput_gate": "Forecast all remaining production and diagnostic work with conservative batch timing; stop before production if it cannot fit the worker deadline and total reservation",
+    "budget_stop": "Preserve partial evidence, never retry or change precision automatically; any smaller sample requires a newly frozen design before pilot outcomes are inspected"
+  },
+  "interpretation_limits": [
+    "This pilot implements cumulative-prefix IMCQA, not the reformulated-question chains in Nishant's illustration.",
+    "Frozen word endpoints are not reviewed clue boundaries or demonstrated monotone difficulty levels.",
+    "A constrained action-token policy is neither free-response behavior nor a sampled response-frequency estimate.",
+    "The normalized reward schedule is declared by the experiment and is not an IRT-derived score.",
+    "Fresh-context all-round scoring equals sequential replay only under the stated stateless deterministic policy.",
+    "Two related pinned models and development-only questions do not establish general model rankings or confirmatory test performance.",
+    "BenchMarker is an audit framework in the proposal, not a generator of question chains.",
+    "Dynamic-menu history leakage and cross-benchmark chain validity remain separate follow-up experiments."
+  ]
+}

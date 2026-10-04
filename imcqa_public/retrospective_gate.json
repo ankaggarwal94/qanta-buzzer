@@ -1,0 +1,8 @@
+{
+  "retrospective_receipt_sha256": "715f8837c92d7c32534ffe4ebfeb38ab1f9c571f4ec1f23a1c85b128351b1efc",
+  "retrospective_script_sha256": "7c6bc3c24f15121639af629a2ec7472991ff6afc4f8167410fa5968c9f9396c8",
+  "review": "independent raw-gold join, historical replay, and original graded-row cross-check passed;12 focused tests passed",
+  "status": "completed",
+  "verified_mc_rows": 200000,
+  "verified_questions": 5000
+}
