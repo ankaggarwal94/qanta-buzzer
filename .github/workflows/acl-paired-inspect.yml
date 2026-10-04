@@ -33,7 +33,7 @@ jobs:
           from scripts.modal_acl_expansion import connect
           modal, workspace = connect()
           volume = modal.Volume.from_name('acl5000-paired-prompts-cache1-20261003', create_if_missing=False)
-          report = {'checkpoint': 'completed 3B read-only integrity check', 'observed_utc': datetime.now(timezone.utc).isoformat(), 'workspace': workspace, 'evidence': {}}
+          report = {'checkpoint': '7B final progress check', 'observed_utc': datetime.now(timezone.utc).isoformat(), 'workspace': workspace, 'evidence': {}}
           names = ('started.json', 'benchmark.json', 'receipt.json', 'diagnostics_validation.json', 'progress.json', 'cache_plan.json')
           for entry in volume.iterdir('/output', recursive=True):
               name = str(entry.path).lstrip('/')
@@ -45,34 +45,6 @@ jobs:
                       report['evidence'][name] = json.loads(raw)
                   except (ValueError, UnicodeError) as error:
                       report['evidence'][name] = {'read_error': type(error).__name__, 'bytes': len(raw), 'prefix_hex': raw[:16].hex()}
-          # Collect only immutable completed-model evidence; no model calls.
-          import hashlib
-          root = Path('paired_3b_precheck')
-          required = ('receipt.json', 'metadata.json', 'scores.jsonl', 'prompts.json',
-                      'diagnostic_selection.json', 'diagnostics_bf16.json', 'diagnostics_fp32.json',
-                      'diagnostics_validation.json', 'dtype_promotion.json', 'diagnostics_cached.json',
-                      'cache_plan.json')
-          receipt = report['evidence']['output/qwen3b/receipt.json']
-          allocation = report['evidence']['output/qwen3b_allocation_receipt.json']
-          assert receipt['status'] == 'complete' and receipt['completed_rows'] == 20000
-          total = 0
-          for name in ('output/cache_prepare_receipt.json', 'output/qwen3b_allocation_receipt.json',
-                       *('output/qwen3b/' + name for name in required)):
-              raw = b''.join(volume.read_file(name))
-              total += len(raw)
-              assert total < 80 * 1024**2
-              target = root / name
-              target.parent.mkdir(parents=True, exist_ok=True)
-              target.write_bytes(raw)
-          expected = {**receipt['numeric_evidence_sha256'], 'scores.jsonl': receipt['scores_sha256'],
-                      'metadata.json': receipt['metadata_sha256']}
-          for name, wanted in expected.items():
-              assert hashlib.sha256((root / 'output/qwen3b' / name).read_bytes()).hexdigest() == wanted, name
-          cache = modal.Volume.from_name('acl5000-option-scores-20261003', create_if_missing=False)
-          public = b''.join(cache.read_file('public/main_choices_only.json'))
-          assert hashlib.sha256(public).hexdigest() == '9db13301d928cd31dc54c97f0c5cfd88b9bc25774ceb56027c032c52e4afb043'
-          (root / 'main_choices_only.json').write_bytes(public)
-          report['completed_3b_collection'] = {'status': 'worker_hashes_passed', 'bytes': total}
           Path('paired_inspection.json').write_text(json.dumps(report, indent=2) + '\n')
           print(json.dumps(report))
           PY
@@ -80,7 +52,5 @@ jobs:
         if: always()
         with:
           name: acl-paired-inspection-${{ github.run_id }}
-          path: |
-            paired_inspection.json
-            paired_3b_precheck/
+          path: paired_inspection.json
           retention-days: 90
