@@ -32,7 +32,7 @@ jobs:
           from scripts.modal_acl_expansion import connect
           modal, workspace = connect()
           volume = modal.Volume.from_name('imcqa-frozen-transfer-20261004', create_if_missing=False)
-          report = {'checkpoint': 'frozen transfer numerical and throughput checkpoint', 'observed_utc': datetime.now(timezone.utc).isoformat(), 'evidence': {}}
+          report = {'checkpoint': 'frozen transfer scoring checkpoint 2', 'observed_utc': datetime.now(timezone.utc).isoformat(), 'evidence': {}}
           for entry in volume.iterdir('/output', recursive=True):
               name = str(entry.path).lstrip('/')
               if name.endswith(('progress.json','receipt.json','_benchmark.json','_allocation_receipt.json','_claim.json')):
