@@ -1,0 +1,50 @@
+name: Inspect existing IMCQA protocol pilot
+on:
+  push:
+    branches: [feat/imcqa-wait-pilot-20261004]
+    paths: [.github/workflows/imcqa-protocol-inspect.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    if: >-
+      github.actor == 'ankaggarwal94' && github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: inspect protocol diagnosis without new inference'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - run: python -m pip install 'modal==1.6.0'
+      - name: Read saved progress without allocating workers
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from datetime import datetime, timezone
+          from scripts.modal_acl_expansion import connect
+          modal, workspace = connect()
+          volume = modal.Volume.from_name('imcqa-protocol-dev-20261004', create_if_missing=False)
+          report = {'checkpoint': 'first protocol progress check', 'observed_utc': datetime.now(timezone.utc).isoformat(), 'evidence': {}}
+          for entry in volume.iterdir('/output', recursive=True):
+              name = str(entry.path).lstrip('/')
+              if name.endswith(('progress.json','receipt.json','_benchmark.json','_allocation_receipt.json','_claim.json')):
+                  raw = b''.join(volume.read_file(name))
+                  if len(raw) > 1024**2: raise ValueError('metadata exceeds bound')
+                  report['evidence'][name] = json.loads(raw)
+          Path('imcqa_protocol_inspection.json').write_text(json.dumps(report, indent=2)+'\n')
+          print(json.dumps(report))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: imcqa-protocol-inspection-${{ github.run_id }}
+          path: imcqa_protocol_inspection.json
+          retention-days: 90
