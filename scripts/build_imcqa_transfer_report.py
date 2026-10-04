@@ -109,6 +109,8 @@ they do not establish semantic independence or rule out training-data contaminat
 This run checks their identity and use; it does not add a manual semantic audit of them.</li>
 <li>No new controller prompt, calibration fit, threshold search, or reward redesign was
 selected using these results. The external threshold policy does not estimate continuation value.</li>
+<li>The fixed-round comparison changes both when the policy answers and whether it
+answers at all. A gain does not isolate the contribution of timing from selective abstention.</li>
 </ul><h2>Execution and evidence</h2><p>Source commit: <code>{source}</code><br>
 Workflow: <a href="{run}">{run}</a>. The companion package contains scores, frozen inputs,
 policy parameters, numerical checks, per-question outcomes, independent audit, and CPU
