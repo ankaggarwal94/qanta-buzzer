@@ -40,7 +40,10 @@ jobs:
                   raw = b''.join(volume.read_file(name))
                   if len(raw) > 1024**2:
                       raise ValueError('metadata exceeds bound')
-                  report['evidence'][name] = json.loads(raw)
+                  try:
+                      report['evidence'][name] = json.loads(raw)
+                  except (ValueError, UnicodeError) as error:
+                      report['evidence'][name] = {'read_error': type(error).__name__, 'bytes': len(raw), 'prefix_hex': raw[:16].hex()}
           Path('paired_inspection.json').write_text(json.dumps(report, indent=2) + '\n')
           print(json.dumps(report))
           PY
