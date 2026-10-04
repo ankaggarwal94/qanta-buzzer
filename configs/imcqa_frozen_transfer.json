@@ -1,0 +1,174 @@
+{
+  "schema_version": "imcqa-frozen-transfer-config-v1",
+  "protocol": "imcqa_frozen_transfer_fp32_v1",
+  "purpose": "Frozen-policy transfer to selection questions unused by prior protocol pilots, with no fitting or prompt tuning.",
+  "seed": 1,
+  "models": {
+    "qwen7b": {
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "a09a35458c702b33eeacc393d103063234e8bc28"
+    }
+  },
+  "contexts_per_model": 8000,
+  "frozen_source_sha256": {
+    "main_jobs": "9bfeaf2d86116ced0e8c55c3c390d3be12050ad38820b4e02c6ed684cc8786bf",
+    "main_dataset": "d16d8e611965fba3829f01cda936145743b7d46187030e2138caf52068aa9b62",
+    "prior_public": "b5f5f6b5437942904a90f8e49d153ead9e70f215ec855e95db3323951a55078e",
+    "fitted_parameters": "32b808b9ea8b39fe7251856234c7dfc044f55bbfd9e52c8626aa3581c11659a8"
+  },
+  "selection": {
+    "n_questions": 100,
+    "split": "selection",
+    "salt": "imcqa-frozen-transfer-20261004",
+    "exclude_all_prior_wait_questions": 200,
+    "exclude_prior_groups": true,
+    "deduplicate_full_question_token_5gram_jaccard_at_least": 0.8,
+    "rank_rule": "SHA256(salt + '|' + qid), qid tie-break; greedy near-duplicate exclusion against prior and accepted questions",
+    "fresh_confirmatory_test": false
+  },
+  "prefix_ids": [
+    "p2",
+    "p4",
+    "p6",
+    "p8",
+    "p10"
+  ],
+  "menus": [
+    "independent_pool",
+    "same_category_pool"
+  ],
+  "arms": [
+    "plain",
+    "wait"
+  ],
+  "rotations": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "wait_label": "E",
+  "rewards": [
+    1.0,
+    0.8,
+    0.6,
+    0.4,
+    0.2
+  ],
+  "wrong_reward": -1.0,
+  "pass_reward": 0.0,
+  "analysis": {
+    "schema_version": "imcqa-transfer-analysis-plan-v1",
+    "protocol": "imcqa_frozen_transfer_fp32_v1",
+    "model": "qwen7b",
+    "n_questions": 100,
+    "evidence_scope": "Frozen-policy protocol-development transfer; original corpus was previously analyzed, so not pristine confirmatory evaluation.",
+    "fitting": "None. Copy the two exact plain calibrators, thresholds, and fixed rounds from frozen fitted_parameters.json.",
+    "primary_endpoint": "Mean episodic reward, equally averaged over four answer rotations within question.",
+    "primary_contrasts": [
+      {
+        "condition": "independent_pool",
+        "left": "frozen_plain_threshold",
+        "right": "native_wait"
+      },
+      {
+        "condition": "same_category_pool",
+        "left": "frozen_plain_threshold",
+        "right": "native_wait"
+      },
+      {
+        "condition": "independent_pool",
+        "left": "frozen_plain_threshold",
+        "right": "frozen_plain_fixed"
+      },
+      {
+        "condition": "same_category_pool",
+        "left": "frozen_plain_threshold",
+        "right": "frozen_plain_fixed"
+      }
+    ],
+    "primary_family_size": 4,
+    "primary_confidence_level": 0.9875,
+    "multiplicity": "Bonferroni: four prespecified two-sided 98.75% percentile intervals. No claim beyond this finite selected-protocol transfer.",
+    "bootstrap_samples": 20000,
+    "bootstrap_seed": 1,
+    "bootstrap_unit": "Question. Retain all menus, rotations, rounds, arms, and policy outcomes under each resampled question.",
+    "fit_uncertainty": "Condition on the previously frozen fitted policies; no refits in the bootstrap.",
+    "descriptive_confidence_level": 0.95,
+    "descriptive_endpoints": [
+      "Reward versus always PASS",
+      "coverage",
+      "correct commitments per episode",
+      "selective error",
+      "mean observed round",
+      "accuracy by round and at full question",
+      "Brier score",
+      "log loss"
+    ],
+    "descriptive_policies": [
+      "always_pass",
+      "plain_final_round"
+    ],
+    "go_no_go": {
+      "transfer_improvement": "Per menu: 98.75% lower bound for plain frozen threshold minus native WAIT is greater than zero; 95% descriptive lower bound on absolute reward is greater than zero.",
+      "added_stopping_value": "Separately require the 98.75% lower bound versus the frozen fixed-round plain baseline to exceed zero before claiming stopping adds value over that simple baseline.",
+      "mixed_or_inconclusive": "Report menu-specific uncertainty; do not refit, tune, replace the policy, or declare the 20-question pilot confirmed.",
+      "failure": "Negative or uncertain transfer returns development to calibration/reward design. Preserve this evaluation; any revised policy requires a separately reserved evaluation set."
+    },
+    "prohibited": [
+      "Test-split inference",
+      "Refitting on the 100 transfer questions",
+      "Outcome-driven exclusions",
+      "Claiming 8000 independent observations",
+      "Changing prompt or threshold after seeing transfer outcomes",
+      "Full-response-frequency or optimal-stopping claims"
+    ]
+  },
+  "execution": {
+    "contexts_per_model": 8000,
+    "new_contexts_per_model": 8000,
+    "reused_contexts_per_model": 0,
+    "model_tags": [
+      "qwen7b"
+    ],
+    "batch_size": 8,
+    "benchmark_rows": 128,
+    "worker_timeout_seconds": 3000,
+    "internal_deadline_seconds": 2880,
+    "startup_timeout_seconds": 90,
+    "scaledown_seconds": 2,
+    "automatic_retries": 0
+  },
+  "numerical": {
+    "raw_logit_atol": 0.001,
+    "raw_logit_rtol": 1e-05,
+    "probability_atol": 0.001,
+    "require_zero_action_and_candidate_argmax_changes": true,
+    "active_only_episodes": 16,
+    "production_offsets": [
+      0,
+      4000,
+      7992
+    ]
+  },
+  "budget": {
+    "schema": "imcqa-transfer-budget-v1",
+    "ceiling_usd": "4.00",
+    "allocation_rate_usd_per_second": "0.00063924",
+    "model_limits": {
+      "qwen7b": {
+        "timeout": 3000,
+        "deadline": 2880
+      }
+    },
+    "startup_timeout_seconds": 90,
+    "scaledown_seconds": 2,
+    "gpu_calls": 1,
+    "cpu_calls": 0,
+    "automatic_retries": 0,
+    "cpu_staging_allowance_usd": "0.01723232",
+    "contingency_usd": "0.10",
+    "reserved_estimate_usd": "2.09376240",
+    "invoice_verified": false
+  }
+}

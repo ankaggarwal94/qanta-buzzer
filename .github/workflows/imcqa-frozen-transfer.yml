@@ -1,0 +1,86 @@
+name: Bounded frozen IMCQA transfer
+
+on:
+  push:
+    branches: [feat/imcqa-frozen-transfer-20261004]
+    paths: [.github/workflows/imcqa-frozen-transfer.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: imcqa-frozen-transfer-20261004
+  cancel-in-progress: false
+
+jobs:
+  transfer:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: run reviewed frozen transfer within four dollars'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install pinned control-plane dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          'modal==1.6.0' 'pytest==8.3.5' 'numpy==2.2.4'
+          'lm-format-enforcer==0.11.3' 'interegular==0.3.3'
+      - name: Validate frozen design and worker before credentials
+        run: >-
+          python -m pytest --noconftest
+          tests/test_imcqa_transfer_design.py
+          tests/test_imcqa_transfer_scoring.py
+          tests/test_modal_imcqa_transfer.py -q
+      - name: Verify frozen transport and no refitting
+        run: |
+          python - <<'PY'
+          import gzip, hashlib, json
+          from pathlib import Path
+          from scripts.imcqa_transfer_design import validate_public_package
+          from scripts.modal_imcqa_transfer import SOURCES, RUN_ID, CACHE_RUN, PREPARE_SHA256, budget_plan, verify_sources
+          root = Path('imcqa_transfer_public')
+          manifest = json.loads((root/'transport_manifest.json').read_text())
+          packed = (root/'public.json.gz').read_bytes()
+          assert hashlib.sha256(packed).hexdigest() == manifest['compressed_sha256']
+          raw = gzip.decompress(packed)
+          assert hashlib.sha256(raw).hexdigest() == manifest['public_sha256']
+          assert hashlib.sha256(Path('configs/imcqa_frozen_transfer.json').read_bytes()).hexdigest() == manifest['config_sha256']
+          for name in ('analysis_plan', 'frozen_policy', 'selection_manifest'):
+              assert hashlib.sha256((root/(name+'.json')).read_bytes()).hexdigest() == manifest[name+'_sha256']
+          assert manifest['contexts_per_model'] == 8000 and manifest['real_questions'] == 100
+          assert manifest['all_contexts_new'] is True and manifest['new_fits'] == 0
+          assert manifest['real_gold_labels_included'] is False
+          assert len(validate_public_package(json.loads(raw))) == 8000
+          verify_sources(Path('.'), {'run_id':RUN_ID, 'cache_run':CACHE_RUN,
+              'prepare_receipt_sha256':PREPARE_SHA256, 'budget':budget_plan(),
+              'source_files_sha256':{p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in SOURCES}})
+          Path('imcqa_transfer_run_artifacts').mkdir(exist_ok=True)
+          Path('imcqa_transfer_run_artifacts/public.json').write_bytes(raw)
+          PY
+      - name: Score the bounded frozen transfer
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: >-
+          python -m scripts.modal_imcqa_transfer
+          --public-package imcqa_transfer_run_artifacts/public.json
+          --source-commit "$SOURCE_COMMIT"
+          --out imcqa_transfer_run_artifacts/imcqa_frozen_transfer
+      - name: Preserve scores and numerical evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-frozen-transfer-${{ github.run_id }}
+          path: imcqa_transfer_run_artifacts/
+          if-no-files-found: warn
+          retention-days: 90
