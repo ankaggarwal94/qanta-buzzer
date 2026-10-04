@@ -179,12 +179,54 @@ def summarize_pairs(pairs,samples=2000,seed=1):
 
 
 VALIDATION_METHOD='fp32_fixed_shape_single_replay_permutation_v1'
+CACHE_VALIDATION_METHOD='fp32_shared_prefix_cache_equivalence_v1'
 NUMERIC_FILES=('diagnostics_bf16.json','diagnostics_fp32.json','diagnostics_validation.json','dtype_promotion.json')
 CACHE_PREPARE_SHA256='95cc6dcd2e99e74597c95c1bf4580457dd843a01053267cf3888b21461a7a1e0'
 SOURCE_FILES=('scripts/acl_paired_prompt_scoring.py','scripts/acl_option_scoring.py',
               'scripts/jane_gpu_backend.py','scripts/jane_qwen_backend.py','scripts/jane_output_constraints.py')
 CONTEXT_FIELDS=('rendered_prompt_sha256','scored_context_sha256','input_token_ids',
                 'scored_input_token_ids','option_token_ids')
+
+
+def execution_settings(metadata):
+    cached=metadata.get('shared_prefix_cache',False)
+    if type(cached) is not bool:raise ValueError('shared-prefix cache mode must be explicit boolean')
+    batch=128 if cached else 32
+    method=CACHE_VALIDATION_METHOD if cached else VALIDATION_METHOD
+    if metadata.get('batch_size')!=batch or metadata.get('validation_method')!=method:
+        raise ValueError('batch size/validation method disagrees with declared cache mode')
+    if cached and (metadata.get('reference_batch_size')!=32 or metadata.get('use_cache') is not True
+                   or metadata.get('cache_mode')!='paired_exact_token_lcp_dynamic_cache'):
+        raise ValueError('cached execution metadata mismatch')
+    return {'cached':cached,'batch_size':batch,'reference_batch_size':32,'validation_method':method,
+            'numeric_files':NUMERIC_FILES+(('diagnostics_cached.json',) if cached else ())}
+
+
+def cache_geometry(rows):
+    prefix_lengths=[];suffix_lengths=[]
+    for i in range(0,len(rows),2):
+        left=rows[i]['scored_input_token_ids'];right=rows[i+1]['scored_input_token_ids']
+        prefix=0
+        while prefix<min(len(left),len(right)) and left[prefix]==right[prefix]:prefix+=1
+        if prefix<=0 or prefix>=min(len(left),len(right)):
+            raise ValueError('cache requires nonempty exact common prefix and two nonempty suffixes')
+        prefix_lengths.append(prefix);suffix_lengths.extend((len(left)-prefix,len(right)-prefix))
+    return {'prefix_width':max(prefix_lengths),'suffix_width':max(suffix_lengths),
+            'prefix_tokens':sum(prefix_lengths),'suffix_tokens':sum(suffix_lengths),
+            'n_pairs':len(prefix_lengths)}
+
+
+def expected_cache_plan(rows):
+    geometry=cache_geometry(rows)
+    p,s=geometry['prefix_width'],geometry['suffix_width']
+    full=max(len(row['scored_input_token_ids']) for row in rows)
+    return {'schema_version':'acl-shared-prefix-cache-plan-v1','n_pairs':geometry['n_pairs'],
+            'prefix_width':p,'suffix_width':s,'full_width':full,
+            'total_full_input_tokens':sum(len(row['scored_input_token_ids']) for row in rows),
+            'total_shared_prefix_tokens':geometry['prefix_tokens'],'total_suffix_tokens':geometry['suffix_tokens'],
+            'padded_cached_token_positions_per_pair':p+2*s,
+            'padded_uncached_token_positions_per_pair':2*full,
+            'padded_token_position_reduction_fraction':1-(p+2*s)/(2*full)}
 
 
 def _matrix(values,n):
@@ -235,6 +277,7 @@ def _score_from_vector(values):
 
 
 def validate_contexts(rows,metadata):
+    execution=execution_settings(metadata)
     option_ids=metadata.get('option_token_ids',{})
     if set(option_ids)!=set(OPTIONS) or len(set(option_ids.values()))!=4 or any(type(v) is not int or v<0 for v in option_ids.values()):
         raise ValueError('invalid metadata option token IDs')
@@ -248,9 +291,13 @@ def validate_contexts(rows,metadata):
             value=row.get(field)
             if not isinstance(value,str) or len(value)!=64 or any(c not in '0123456789abcdef' for c in value):
                 raise ValueError('invalid context hash evidence')
-        if row.get('batch_index')!=row['score_index']//32:raise ValueError('production batch assignment mismatch')
+        if row.get('batch_index')!=row['score_index']//execution['batch_size']:raise ValueError('production batch assignment mismatch')
     width=max(len(row['scored_input_token_ids']) for row in rows)
     if metadata.get('global_padded_width')!=width or width>2048:raise ValueError('global padded width mismatch')
+    if execution['cached']:
+        geometry=cache_geometry(rows)
+        if metadata.get('cache_prefix_width')!=geometry['prefix_width'] or metadata.get('cache_suffix_width')!=geometry['suffix_width']:
+            raise ValueError('cache global prefix/suffix width mismatch')
 
 
 def expected_diagnostic_selection(jobs,rows):
@@ -266,8 +313,9 @@ def expected_diagnostic_selection(jobs,rows):
 
 
 def validate_numeric_evidence(directory,metadata,receipt,jobs,rows):
+    execution=execution_settings(metadata)
     hashes=receipt.get('numeric_evidence_sha256',{})
-    if set(hashes)!=set(NUMERIC_FILES):raise ValueError('complete numeric artifact hash map required')
+    if set(hashes)!=set(execution['numeric_files']):raise ValueError('complete numeric artifact hash map required')
     for name,digest in hashes.items():
         if sha256(directory/name)!=digest:raise ValueError(f'numeric artifact hash mismatch: {name}')
     expected=expected_diagnostic_selection(jobs,rows)
@@ -284,10 +332,10 @@ def validate_numeric_evidence(directory,metadata,receipt,jobs,rows):
     for item in (bf,fp):
         if item.get('score_indices')!=indices or item.get('score_ids')!=expected_ids or item.get('contexts')!=contexts:
             raise ValueError('numeric subset identity/context mismatch')
-        if item.get('batch_size')!=32 or item.get('global_padded_width')!=metadata['global_padded_width']:
+        if item.get('batch_size')!=execution['reference_batch_size'] or item.get('global_padded_width')!=metadata['global_padded_width']:
             raise ValueError('numeric diagnostic shape mismatch')
     if bf.get('gate') is not False:raise ValueError('BF16 sensitivity must not be an FP32 pass/fail gate')
-    for key,wanted in {'validation_method':VALIDATION_METHOD,'all_gates_passed':True,
+    for key,wanted in {'validation_method':execution['validation_method'],'all_gates_passed':True,
                       'exact_replay_passed':True,'fp32_atol':1e-3,'fp32_rtol':1e-5}.items():
         if gates.get(key)!=wanted:raise ValueError(f'numerical gate setting mismatch: {key}')
     for key,name in (('diagnostic_bf16_sha256','diagnostics_bf16.json'),('diagnostic_fp32_sha256','diagnostics_fp32.json'),
@@ -311,7 +359,12 @@ def validate_numeric_evidence(directory,metadata,receipt,jobs,rows):
     verify_diagnostics(fp.get('bf16_vs_fp32_batched',{}),precision_batched)
     verify_diagnostics(fp.get('bf16_vs_fp32_single',{}),precision_single)
     production=np.asarray([[rows[i]['raw_option_logits'][c] for c in OPTIONS] for i in indices])
-    production_agreement=numeric_gate(production,batched)
+    cached_report=None
+    primary_diagnostic=batched
+    if execution['cached']:
+        cached_report=validate_cached_evidence(directory,metadata,gates,hashes,indices,expected_ids,contexts,batched,single,rows)
+        primary_diagnostic=_matrix(load_json(directory/'diagnostics_cached.json')['cached_logits'],n)
+    production_agreement=numeric_gate(production,primary_diagnostic)
     if (promotion.get('schema_version')!='acl-paired-dtype-promotion-v1' or promotion.get('all_checks_passed') is not True
             or promotion.get('sampled_values_preserved_exactly') is not True or promotion.get('all_floating_tensors_fp32') is not True):
         raise ValueError('dtype promotion did not pass')
@@ -337,6 +390,7 @@ def validate_numeric_evidence(directory,metadata,receipt,jobs,rows):
         record={k:jobs[menu_index][k] for k in ('job_id','qid','condition','split')}
         effect_rows.append({**record,'primary_fp32_total_variation':primary['total_variation'],
             'diagnostic_fp32_total_variation':fp_effect['total_variation'],
+            'diagnostic_cached_fp32_total_variation':pair_effect(_score_from_vector(primary_diagnostic[index]),_score_from_vector(primary_diagnostic[index+1]))['total_variation'] if execution['cached'] else None,
             'diagnostic_fp32_single_total_variation':single_effect['total_variation'],
             'bf16_total_variation':bf_effect['total_variation'],
             'abs_bf16_minus_primary_fp32_effect_tv':abs(bf_effect['total_variation']-primary['total_variation']),
@@ -346,13 +400,59 @@ def validate_numeric_evidence(directory,metadata,receipt,jobs,rows):
             'forced_bf16_vs_primary_fp32_tv':pair_effect(p1,b1)['total_variation'],
             'original_bf16_vs_primary_fp32_top_changed':p0['top_option_id']!=b0['top_option_id'],
             'forced_bf16_vs_primary_fp32_top_changed':p1['top_option_id']!=b1['top_option_id']})
-    return {'all_numeric_gates_independently_passed':True,'validation_method':VALIDATION_METHOD,
+    return {'all_numeric_gates_independently_passed':True,'validation_method':execution['validation_method'],
+        'shared_prefix_cache':execution['cached'],'cache_validation':cached_report,
         'fp32_comparisons':comparisons,'production_vs_diagnostic_fp32':production_agreement,
         'bf16_batch_vs_single':bf_comparison,'bf16_vs_fp32_batched':precision_batched,
         'bf16_vs_fp32_single':precision_single,'precision_subset_effects':effect_rows,
         'dtype_promotion':{'n_tensors':len(original),'original_dtypes':dict(original_dtypes),'sampled_values_preserved_assertion':True},
         'numeric_artifact_sha256':hashes,'selection':selection,
         'scope':'Eight menus selected as two shortest and two longest per menu condition; diagnostic effects are descriptive and are not a representative precision study. Tensor preservation is checked through stored dtypes and sampled-value assertions, not a full tensor-value hash.'}
+
+
+def validate_cached_evidence(directory,metadata,gates,hashes,indices,score_ids,contexts,uncached,uncached_single,rows):
+    path=directory/'diagnostics_cached.json'
+    if gates.get('diagnostic_cached_sha256')!=hashes.get(path.name):
+        raise ValueError('cached diagnostic hash binding mismatch')
+    cached=load_json(path);n=len(indices);geometry=cache_geometry(rows)
+    expected={'score_indices':indices,'score_ids':score_ids,'contexts':contexts,'batch_size':128,
+              'prefix_width':geometry['prefix_width'],'suffix_width':geometry['suffix_width']}
+    for key,value in expected.items():
+        if cached.get(key)!=value:raise ValueError(f'cached diagnostic identity/shape mismatch: {key}')
+    reference=_matrix(cached.get('uncached_logits'),n)
+    if not np.array_equal(reference,uncached):raise ValueError('cached gate reference differs from retained uncached FP32 vectors')
+    single_reference=_matrix(cached.get('single_logits'),n)
+    if not np.array_equal(single_reference,uncached_single):
+        raise ValueError('cached single reference differs from retained unpadded FP32 vectors')
+    values=_matrix(cached.get('cached_logits'),n);replay=_matrix(cached.get('cached_replay_logits'),n)
+    if not np.array_equal(values,replay) or gates.get('exact_cached_replay_passed') is not True:
+        raise ValueError('exact cached FP32 diagnostic replay mismatch')
+    expected_permutation=[i for pair in reversed(range(n//2)) for i in (2*pair,2*pair+1)]
+    permutation=cached.get('permutation_indices')
+    if permutation!=expected_permutation:raise ValueError('cached diagnostic pair permutation mismatch')
+    permuted=_matrix(cached.get('permuted_cached_logits'),n)
+    comparisons={'cached_vs_uncached':numeric_gate(values,uncached),
+                 'cached_vs_unpadded_single':numeric_gate(values,uncached_single),
+                 'cached_permutation':numeric_gate(values,permuted[np.argsort(permutation)])}
+    for key,actual in comparisons.items():
+        declared=gates.get(key,{})
+        for field,wanted in {'numeric_gate_passed':True,'absolute_tolerance':1e-3,'relative_tolerance':1e-5,'exact_top_equality_required':False}.items():
+            if declared.get(field)!=wanted:raise ValueError('declared cached FP32 gate report mismatch')
+        verify_diagnostics(declared,actual)
+    plan_path=directory/'cache_plan.json'
+    if sha256(plan_path)!=metadata.get('cache_plan_sha256'):raise ValueError('cache plan hash mismatch')
+    plan=load_json(plan_path)
+    # Recompute shape and token accounting from every actual scored token pair.
+    for key,wanted in expected_cache_plan(rows).items():
+        actual=plan.get(key)
+        if isinstance(wanted,float):
+            if type(actual) not in (float,int) or not math.isfinite(actual) or not math.isclose(actual,wanted,rel_tol=1e-12,abs_tol=1e-12):
+                raise ValueError(f'cache plan mismatch: {key}')
+        elif actual!=wanted:raise ValueError(f'cache plan mismatch: {key}')
+    return {'all_cached_gates_independently_passed':True,'comparisons':comparisons,
+            'cache_geometry_from_all_rows':geometry,'cache_plan':plan,
+            'cache_plan_sha256':sha256(plan_path),
+            'scope':'Exact token common-prefix reuse changes execution only. Cached/uncached numerical equivalence is checked on the retained 16-score subset at the original FP32 tolerances, not proven for every context.'}
 
 
 def validate_source_identity(metadata,source_root):
@@ -400,14 +500,17 @@ def load_model(directory,tag,jobs,source_root):
         raise ValueError('complete paired scoring receipt required')
     for name,key in (('scores.jsonl','scores_sha256'),('metadata.json','metadata_sha256')):
         if sha256(directory/name)!=receipt.get(key):raise ValueError(f'{name} receipt hash mismatch')
+    execution=execution_settings(metadata)
     model,revision=MODELS[tag]
     required={'schema_version':'acl-paired-prompt-scoring-metadata-v1','model_tag':tag,'model':model,'revision':revision,
         'protocol':PROTOCOL,'public_file_sha256':PUBLIC_SHA256,'n_jobs':len(jobs),'n_score_rows':2*len(jobs),
         'prompt_conditions':list(PROMPT_CONDITIONS),'assistant_prefix':ASSISTANT_PREFIX,'dtype':'float32',
-        'weight_load_dtype':'bfloat16','model_hashes_bound_to_original_run':True,'batch_size':32,
-        'padding_side':'left','attention_implementation':'eager','tf32':False,'float32_matmul_precision':'highest',
-        'deterministic_algorithms':True,'logits_to_keep':1,'use_cache':False,'generation':False,'sampling':False,
-        'quantization':False,'validation_method':VALIDATION_METHOD,
+        'weight_load_dtype':'bfloat16','model_hashes_bound_to_original_run':True,'batch_size':execution['batch_size'],
+        'padding_side':'left',
+        'filler_policy':'duplicate final complete original/forced pair; discard filler outputs' if execution['cached'] else 'duplicate final real context to fixed batch size; discard filler outputs',
+        'attention_implementation':'eager','tf32':False,'float32_matmul_precision':'highest',
+        'deterministic_algorithms':True,'logits_to_keep':1,'use_cache':execution['cached'],'generation':False,'sampling':False,
+        'quantization':False,'validation_method':execution['validation_method'],
         'fp32_numeric_gate':{'atol':1e-3,'rtol':1e-5,'exact_top_equality_required':False,'exact_replay_required':True}}
     for key,wanted in required.items():
         if metadata.get(key)!=wanted:raise ValueError(f'metadata {key} mismatch')
@@ -423,7 +526,7 @@ def load_model(directory,tag,jobs,source_root):
             rows.append(json.loads(line,object_pairs_hook=_unique))
     pairs=validate_rows(rows,jobs);validate_contexts(rows,metadata)
     numeric=validate_numeric_evidence(directory,metadata,receipt,jobs,rows)
-    files=('receipt.json','metadata.json','scores.jsonl','prompts.json','diagnostic_selection.json',*NUMERIC_FILES)
+    files=('receipt.json','metadata.json','scores.jsonl','prompts.json','diagnostic_selection.json',*execution['numeric_files'])+(('cache_plan.json',) if execution['cached'] else ())
     return pairs,{'metadata':metadata,'receipt':receipt,'prompt_manifest':manifest,'original_cache_binding':cache_binding,
                   'numeric_validation':numeric,'files_sha256':{name:sha256(directory/name) for name in files}}
 
@@ -475,6 +578,7 @@ def analyze(public_path,scores_root,out,source_root=REPO,samples=2000,seed=1):
         'This intervention changes the prompt text. It is not removal of an abstention option by masking an otherwise fixed probability vector, and does not test classical independence of irrelevant alternatives.',
         'These are forward-pass option scores, not generated full-response frequencies, abstention probabilities, calibrated correctness probabilities, or an estimate of willingness to answer.',
         'Primary scores use FP32 arithmetic on the original stored weights loaded as BF16 and promoted; original model IDs and weight-file hashes are retained.',
+        'When explicitly declared, primary inference reuses the exact token common-prefix KV cache and validates cached logits against the uncached FP32 reference, cached replay, pair permutation, and production outputs at unchanged tolerances.',
         'FP32 numerical gates cover a deliberately selected 16-score diagnostic subset. They do not mathematically bound numerical errors on every scored context.',
         'BF16 comparisons cover eight menus selected by extreme token lengths, and are descriptive rather than representative of all menus.',
         'All/test summaries overlap. Bootstrap intervals resample questions, preserving their menus; intervals are marginal with no multiplicity adjustment and condition on these frozen menus.',

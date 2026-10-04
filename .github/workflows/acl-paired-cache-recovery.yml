@@ -1,0 +1,66 @@
+name: ACL paired prompt prefix-cache recovery
+
+on:
+  push:
+    branches: [ops/acl-option-scoring-20261003]
+    paths: [.github/workflows/acl-paired-cache-recovery.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acl-paired-prompts-cache1-20261003
+  cancel-in-progress: false
+
+jobs:
+  score:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: complete paired ACL scores with reviewed FP32 prefix caching'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install control-plane dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          'modal==1.6.0' 'pytest==8.3.5' 'numpy==2.2.4'
+          'lm-format-enforcer==0.11.3' 'interegular==0.3.3'
+      - name: Validate paired scoring and budget before credential use
+        run: >-
+          python -m pytest --noconftest
+          tests/test_acl_option_scoring.py tests/test_acl_paired_prompt_scoring.py
+          tests/test_modal_acl_paired_prompt_scores.py
+          tests/test_analyze_acl_paired_prompt_scores.py -q
+      - name: Recompute both prompts using cached pinned models
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: >-
+          python -m scripts.modal_acl_paired_prompt_scores
+          --source-commit "$SOURCE_COMMIT" --out results/acl_paired_prompt_recovery --prefix-cache-recovery-once
+      - name: Validate and analyze completed paired scores
+        run: >-
+          python -m scripts.analyze_acl_paired_prompt_scores
+          --public results/acl_paired_prompt_recovery/main_choices_only.json
+          --scores-root results/acl_paired_prompt_recovery/output
+          --out results/acl_paired_prompt_recovery_analysis
+      - name: Preserve raw scores, numerical checks, and receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acl-paired-prefix-cache-recovery-${{ github.run_id }}
+          path: |
+            results/acl_paired_prompt_recovery/
+            results/acl_paired_prompt_recovery_analysis/
+          if-no-files-found: warn
+          retention-days: 90

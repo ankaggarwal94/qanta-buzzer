@@ -3,7 +3,8 @@ from copy import deepcopy
 from decimal import Decimal
 import pytest
 
-from scripts.modal_acl_paired_prompt_scores import budget_plan, validate_plan, verify_prepare
+from scripts.modal_acl_paired_prompt_scores import (budget_plan, validate_plan, verify_prepare,
+    recovery_budget_plan, verify_prior_receipts, PRIOR_RECEIPTS)
 
 
 def test_combined_reservation_covers_both_models_and_stays_under_two_dollars():
@@ -39,3 +40,23 @@ def test_model_limit_is_not_mutable_through_returned_plan():
 def test_cache_receipt_cannot_be_substituted():
     with pytest.raises(ValueError, match="receipt changed"):
         verify_prepare(b'{}')
+
+
+def test_recovery_budget_counts_completed_allocations_and_all_new_timeouts():
+    plan = recovery_budget_plan()
+    rate = Decimal(plan['allocation_rate_usd_per_second'])
+    prior = rate * (Decimal('75.41704748299999') + Decimal('94.419165222') + 184)
+    expected = prior + rate * (650 + 1350 + 184) + Decimal('0.35')
+    assert Decimal(plan['reserved_estimate_usd']) == expected < Decimal('2')
+    assert Decimal(plan['prior_reserved_estimate_usd']) == prior
+    assert plan['automatic_retries'] == 0
+    validate_plan(plan)
+    plan['prior_gpu_observed_seconds'] = '0'
+    with pytest.raises(ValueError):
+        validate_plan(plan)
+
+
+def test_recovery_refuses_unknown_previous_receipts():
+    assert len(PRIOR_RECEIPTS) == 4
+    with pytest.raises(ValueError, match='initial paired-run receipt mismatch'):
+        verify_prior_receipts(lambda name: b'{}')

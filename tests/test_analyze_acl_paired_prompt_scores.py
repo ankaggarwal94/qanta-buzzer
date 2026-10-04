@@ -56,10 +56,11 @@ def numeric_fixture(root):
     option_ids=dict(zip(a.OPTIONS,range(32,36)))
     for i,row in enumerate(rows):
         tokens=[20]*(2+i//2)
-        row.update(input_token_ids=tokens,scored_input_token_ids=tokens+[9,9],
+        row.update(input_token_ids=tokens,scored_input_token_ids=tokens+[9,9 if row['prompt_condition']=='original' else 10],
                    option_token_ids=option_ids,rendered_prompt_sha256='a'*64,
                    scored_context_sha256='b'*64,batch_index=i//32)
-    metadata={'global_padded_width':max(len(r['scored_input_token_ids']) for r in rows),
+    metadata={'batch_size':32,'validation_method':a.VALIDATION_METHOD,'use_cache':False,'shared_prefix_cache':False,
+              'global_padded_width':max(len(r['scored_input_token_ids']) for r in rows),
               'option_token_ids':option_ids}
     selection={**a.expected_diagnostic_selection(jobs,rows),'selection_uses_gold':False}
     (root/'diagnostic_selection.json').write_text(json.dumps(selection))
@@ -102,6 +103,40 @@ def rehash_numeric(root,receipt):
         gates[key]=a.sha256(root/name)
     (root/'diagnostics_validation.json').write_text(json.dumps(gates))
     receipt['numeric_evidence_sha256']={name:a.sha256(root/name) for name in a.NUMERIC_FILES}
+
+
+def cached_numeric_fixture(root):
+    jobs,rows,metadata,receipt=numeric_fixture(root)
+    geometry=a.cache_geometry(rows)
+    (root/'cache_plan.json').write_text(json.dumps(a.expected_cache_plan(rows)))
+    metadata.update(shared_prefix_cache=True,batch_size=128,reference_batch_size=32,use_cache=True,
+                    validation_method=a.CACHE_VALIDATION_METHOD,cache_mode='paired_exact_token_lcp_dynamic_cache',
+                    cache_prefix_width=geometry['prefix_width'],cache_suffix_width=geometry['suffix_width'],
+                    cache_plan_sha256=a.sha256(root/'cache_plan.json'))
+    fp=json.loads((root/'diagnostics_fp32.json').read_text());values=[[v+.0001 for v in row] for row in fp['batched_logits']]
+    n=len(values);permutation=[i for p in reversed(range(n//2)) for i in (2*p,2*p+1)]
+    cached={key:fp[key] for key in ('score_indices','score_ids','contexts')}
+    cached.update(batch_size=128,prefix_width=geometry['prefix_width'],suffix_width=geometry['suffix_width'],
+                  uncached_logits=fp['batched_logits'],single_logits=fp['single_logits'],cached_logits=values,cached_replay_logits=values,
+                  permutation_indices=permutation,permuted_cached_logits=[values[i] for i in permutation])
+    (root/'diagnostics_cached.json').write_text(json.dumps(cached))
+    gates=json.loads((root/'diagnostics_validation.json').read_text())
+    extra={'numeric_gate_passed':True,'absolute_tolerance':1e-3,'relative_tolerance':1e-5,'exact_top_equality_required':False}
+    gates.update(validation_method=a.CACHE_VALIDATION_METHOD,exact_cached_replay_passed=True,
+                 cached_vs_uncached={**a.matrix_diagnostics(values,fp['batched_logits']),**extra},
+                 cached_vs_unpadded_single={**a.matrix_diagnostics(values,fp['single_logits']),**extra},
+                 cached_permutation={**a.matrix_diagnostics(values,values),**extra},
+                 diagnostic_cached_sha256=a.sha256(root/'diagnostics_cached.json'))
+    (root/'diagnostics_validation.json').write_text(json.dumps(gates))
+    receipt['numeric_evidence_sha256']={name:a.sha256(root/name) for name in (*a.NUMERIC_FILES,'diagnostics_cached.json')}
+    return jobs,rows,metadata,receipt
+
+
+def rehash_cached(root,receipt):
+    gates=json.loads((root/'diagnostics_validation.json').read_text())
+    gates['diagnostic_cached_sha256']=a.sha256(root/'diagnostics_cached.json')
+    (root/'diagnostics_validation.json').write_text(json.dumps(gates))
+    receipt['numeric_evidence_sha256']={name:a.sha256(root/name) for name in (*a.NUMERIC_FILES,'diagnostics_cached.json')}
 
 
 class PairedAnalysisTests(unittest.TestCase):
@@ -217,5 +252,64 @@ class PairedAnalysisTests(unittest.TestCase):
             self.assertEqual(read['forced_top_option_text'],read['original_top_option_text'])
             self.assertAlmostEqual(float(read['original_probability_D']),float(read['forced_probability_D']))
             self.assertEqual(set(read),set(a.CSV_FIELDS))
+
+    def test_cache_mode_requires_explicit_declaration_and_unchanged_reference(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);jobs,rows,metadata,receipt=cached_numeric_fixture(root)
+            a.validate_contexts(rows,metadata)
+            verified=a.validate_numeric_evidence(root,metadata,receipt,jobs,rows)
+            self.assertTrue(verified['shared_prefix_cache'])
+            self.assertTrue(verified['cache_validation']['all_cached_gates_independently_passed'])
+            self.assertEqual(verified['cache_validation']['cache_geometry_from_all_rows']['n_pairs'],len(jobs))
+            for changes in ({'shared_prefix_cache':False},{'shared_prefix_cache':'true'},
+                            {'reference_batch_size':128},{'batch_size':32},{'use_cache':False}):
+                bad={**metadata,**changes}
+                with self.subTest(changes=changes),self.assertRaises(ValueError):a.execution_settings(bad)
+
+    def test_cached_raw_replay_permutation_equivalence_and_plan_corruption_rejected(self):
+        for corruption in ('replay','permutation','tolerance','reference','single_reference','plan'):
+            with self.subTest(corruption=corruption),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp);jobs,rows,metadata,receipt=cached_numeric_fixture(root)
+                path=root/'diagnostics_cached.json';cached=json.loads(path.read_text())
+                if corruption=='replay':cached['cached_replay_logits'][0][0]+=.01
+                elif corruption=='permutation':cached['permutation_indices']=list(reversed(cached['permutation_indices']))
+                elif corruption=='tolerance':
+                    cached['cached_logits'][0][0]+=.1
+                    cached['cached_replay_logits'][0][0]+=.1
+                elif corruption=='reference':cached['uncached_logits'][0][0]+=.0001
+                elif corruption=='single_reference':cached['single_logits'][0][0]+=.0001
+                else:
+                    plan_path=root/'cache_plan.json';plan=json.loads(plan_path.read_text());plan['prefix_width']+=1
+                    plan_path.write_text(json.dumps(plan));metadata['cache_plan_sha256']=a.sha256(plan_path)
+                path.write_text(json.dumps(cached));rehash_cached(root,receipt)
+                with self.assertRaises(ValueError):a.validate_numeric_evidence(root,metadata,receipt,jobs,rows)
+
+    def test_direct_cached_single_gate_prevents_transitive_double_tolerance(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);jobs,rows,metadata,receipt=cached_numeric_fixture(root)
+            fp_path=root/'diagnostics_fp32.json';fp=json.loads(fp_path.read_text())
+            cached_path=root/'diagnostics_cached.json';cached=json.loads(cached_path.read_text())
+            native=fp['batched_logits'][0][0]
+            fp['single_logits'][0][0]=native+.0008
+            cached['cached_logits'][0][0]=native-.0008
+            cached['cached_replay_logits'][0][0]=native-.0008
+            cached['permuted_cached_logits'][cached['permutation_indices'].index(0)][0]=native-.0008
+            cached['single_logits']=fp['single_logits']
+            # Each transitive leg passes, but their composed difference must fail.
+            a.numeric_gate(cached['cached_logits'],fp['batched_logits'])
+            a.numeric_gate(fp['batched_logits'],fp['single_logits'])
+            bf=json.loads((root/'diagnostics_bf16.json').read_text())
+            fp['bf16_vs_fp32_single']=a.matrix_diagnostics(bf['single_logits'],fp['single_logits'])
+            fp_path.write_text(json.dumps(fp));cached_path.write_text(json.dumps(cached))
+            gates_path=root/'diagnostics_validation.json';gates=json.loads(gates_path.read_text())
+            for field,left,right in (
+                ('batch_vs_unpadded_single',fp['batched_logits'],fp['single_logits']),
+                ('cached_vs_uncached',cached['cached_logits'],fp['batched_logits']),
+                ('cached_vs_unpadded_single',cached['cached_logits'],fp['single_logits'])):
+                gates[field].update(a.matrix_diagnostics(left,right))
+            gates['diagnostic_fp32_sha256']=a.sha256(fp_path)
+            gates_path.write_text(json.dumps(gates));rehash_cached(root,receipt)
+            with self.assertRaisesRegex(ValueError,'independent FP32 numeric tolerance failed'):
+                a.validate_numeric_evidence(root,metadata,receipt,jobs,rows)
 
 if __name__=='__main__':unittest.main()

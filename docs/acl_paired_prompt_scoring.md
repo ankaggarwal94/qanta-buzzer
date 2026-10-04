@@ -44,3 +44,33 @@ preserved separately. Analysis checks hashes, coverage, pairing and numerical
 evidence, then reports conditional probability changes by model and menu type.
 Question-level resampling keeps both menus and both prompt conditions together.
 Held-out test questions are reported separately from all-question descriptions.
+
+## Reviewed efficiency recovery
+
+The initial FP32 run passed its numerical gates but stopped at the throughput
+gate after 256 rows per model. Measured batch32 throughput was 28.79 rows/s
+(3B) and 12.92 rows/s (7B), with allocation receipts of 75.417 and 94.419
+seconds. These partial results remain intact and are not complete-run findings.
+
+The one reviewed recovery reuses the exact token prefix shared by each prompt
+pair. Prefill the shared prefix once, duplicate its FP32 key/value cache, and
+score the original and forced suffixes together. Use 128 score rows per batch,
+explicit logical position IDs, and full prefix-plus-suffix attention masks.
+No model weights, prompt text, answer prefix, arithmetic precision, or numerical
+tolerance changes. Additional cached-versus-ordinary FP32 checks, cached replay,
+and paired permutation checks must pass before production. Tensor memory peaks
+and the exact prefix/suffix layout are retained.
+
+The initial 128-menu sample shares 113.95 of 150.95/142.95 original/forced
+tokens on average, suggesting approximately 39% less duplicated token work.
+This is a work estimate, not a measured speedup. The new fixed-shape benchmark
+must justify completion. Its forecast uses the larger of a 1.2-times-mean
+projection and a p95 batch-time projection, with shutdown reserve. The reduced
+forecast multiplier does not change hard allocation limits or numerical gates.
+
+Recovery GPU timeouts are 650 seconds for 3B and 1,350 seconds for 7B, with
+internal deadlines 50 seconds earlier. Including the two completed initial
+allocations, 90-second startup and two-second scaledown allowances for all four
+workers, and $0.35 contingency, the cumulative reserved estimate is $1.97228642.
+Recovery requires the exact four initial receipt hashes and uses new atomic
+run/model claims. There is no generic retry facility.

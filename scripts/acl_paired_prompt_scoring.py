@@ -24,6 +24,8 @@ ASSISTANT_PREFIX = base.ASSISTANT_PREFIX
 PROMPT_CONDITIONS = ("original", "forced")
 PROTOCOL = "paired_menu_prompt_fp32_option_softmax_v1"
 VALIDATION_METHOD = "fp32_fixed_shape_single_replay_permutation_v1"
+CACHE_VALIDATION_METHOD = "fp32_shared_prefix_cache_equivalence_v1"
+CACHE_BATCH_SIZE = 128
 BATCH_SIZE = 32
 BENCHMARK_ROWS = 256
 EXPECTED_JOBS = 10000
@@ -162,6 +164,150 @@ def forward(torch: Any, model: Any, tokenizer: Any, contexts: list[dict[str, Any
     return selected[:layout["real_rows"]]
 
 
+
+def split_context_pair(left: dict[str, Any], right: dict[str, Any]) -> tuple[list[int], list[list[int]]]:
+    """Split an original/forced pair at its exact token-level common prefix."""
+    a, b = left["scored_input_token_ids"], right["scored_input_token_ids"]
+    common = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        common += 1
+    if common == 0 or common == min(len(a), len(b)):
+        raise ValueError("paired contexts require a nonempty shared prefix and two nonempty different suffixes")
+    if left["option_token_ids"] != right["option_token_ids"]:
+        raise ValueError("paired option token IDs differ")
+    return a[:common], [a[common:], b[common:]]
+
+
+def cache_plan(contexts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Freeze global prefix/suffix shapes using only exact public token IDs."""
+    if not contexts or len(contexts) % 2:
+        raise ValueError("cache plan requires complete ordered prompt pairs")
+    pairs = [split_context_pair(contexts[i], contexts[i+1]) for i in range(0, len(contexts), 2)]
+    prefix_width = max(len(prefix) for prefix, _ in pairs)
+    suffix_width = max(len(suffix) for _, suffixes in pairs for suffix in suffixes)
+    full_width = max(len(context["scored_input_token_ids"]) for context in contexts)
+    return {"schema_version": "acl-shared-prefix-cache-plan-v1", "n_pairs": len(pairs),
+            "prefix_width": prefix_width, "suffix_width": suffix_width, "full_width": full_width,
+            "total_full_input_tokens": sum(len(c["scored_input_token_ids"]) for c in contexts),
+            "total_shared_prefix_tokens": sum(len(prefix) for prefix, _ in pairs),
+            "total_suffix_tokens": sum(len(tail) for _, tails in pairs for tail in tails),
+            "padded_cached_token_positions_per_pair": prefix_width + 2 * suffix_width,
+            "padded_uncached_token_positions_per_pair": 2 * full_width,
+            "padded_token_position_reduction_fraction": 1 - (prefix_width + 2 * suffix_width) / (2 * full_width)}
+
+
+def cached_batch_layout(contexts: list[dict[str, Any]], *, pad_token_id: int,
+                        prefix_width: int, suffix_width: int, batch_size: int) -> dict[str, Any]:
+    """Construct physical cache positions and logical token positions separately."""
+    if (not contexts or len(contexts) % 2 or type(batch_size) is not int
+            or batch_size % 2 or not len(contexts) <= batch_size
+            or type(prefix_width) is not int or prefix_width < 1
+            or type(suffix_width) is not int or suffix_width < 1):
+        raise ValueError("cache batches require complete pairs and positive fixed dimensions")
+    physical_contexts = contexts + contexts[-2:] * ((batch_size - len(contexts)) // 2)
+    prefixes, prefix_masks, prefix_positions = [], [], []
+    suffixes, full_masks, suffix_positions, option_ids = [], [], [], []
+    for index in range(0, len(physical_contexts), 2):
+        prefix, tails = split_context_pair(physical_contexts[index], physical_contexts[index+1])
+        if len(prefix) > prefix_width or any(len(tail) > suffix_width for tail in tails):
+            raise ValueError("context exceeds frozen prefix/suffix widths")
+        left_padding = prefix_width - len(prefix)
+        mask = [0] * left_padding + [1] * len(prefix)
+        prefixes.append([pad_token_id] * left_padding + prefix)
+        prefix_masks.append(mask)
+        prefix_positions.append([0] * left_padding + list(range(len(prefix))))
+        for offset, tail in enumerate(tails):
+            suffix_padding = suffix_width - len(tail)
+            suffixes.append([pad_token_id] * suffix_padding + tail)
+            full_masks.append(mask + [0] * suffix_padding + [1] * len(tail))
+            suffix_positions.append([0] * suffix_padding + list(range(len(prefix), len(prefix) + len(tail))))
+            option_ids.append([physical_contexts[index + offset]["option_token_ids"][label] for label in "ABCD"])
+    return {"prefix_input_ids": prefixes, "prefix_attention_mask": prefix_masks,
+            "prefix_position_ids": prefix_positions, "prefix_cache_position": list(range(prefix_width)),
+            "suffix_input_ids": suffixes, "full_attention_mask": full_masks,
+            "suffix_position_ids": suffix_positions,
+            "suffix_cache_position": list(range(prefix_width, prefix_width + suffix_width)),
+            "option_token_ids": option_ids, "real_rows": len(contexts), "physical_rows": batch_size}
+
+
+def cached_forward(torch: Any, model: Any, tokenizer: Any, contexts: list[dict[str, Any]],
+                   *, prefix_width: int, suffix_width: int, batch_size: int) -> list[list[float]]:
+    """Prefill each exact shared prefix once, then score its two suffix branches.
+
+    Transformers 4.51.3 DynamicCache.batch_repeat_interleave mutates every KV
+    layer along batch dimension: [p0,p1] becomes [p0,p0,p1,p1]. A fresh cache is
+    created per call; no question or diagnostic can inherit another's state.
+    """
+    layout = cached_batch_layout(contexts, pad_token_id=tokenizer.pad_token_id,
+        prefix_width=prefix_width, suffix_width=suffix_width, batch_size=batch_size)
+    def tensor(key: str):
+        return torch.tensor(layout[key], device="cuda:0", dtype=torch.long)
+    with torch.inference_mode():
+        prefill = model(input_ids=tensor("prefix_input_ids"), attention_mask=tensor("prefix_attention_mask"),
+            position_ids=tensor("prefix_position_ids"), cache_position=tensor("prefix_cache_position"),
+            use_cache=True, logits_to_keep=1, return_dict=True)
+        cache = prefill.past_key_values
+        if cache is None or cache.get_seq_length() != prefix_width:
+            raise ValueError("prefix prefill returned an invalid cache length")
+        # Official pinned API mutates in place and returns None.
+        cache.batch_repeat_interleave(2)
+        del prefill
+        result = model(input_ids=tensor("suffix_input_ids"), attention_mask=tensor("full_attention_mask"),
+            position_ids=tensor("suffix_position_ids"), cache_position=tensor("suffix_cache_position"),
+            past_key_values=cache, use_cache=True, logits_to_keep=1, return_dict=True)
+        if tuple(result.logits.shape[:2]) != (batch_size, 1):
+            raise ValueError("cached output must have exactly one logit position per physical row")
+        if cache.get_seq_length() != prefix_width + suffix_width:
+            raise ValueError("suffix cache length differs from physical positions")
+        selected = result.logits[:, 0, :].gather(1, tensor("option_token_ids")).float().cpu().tolist()
+    del result, cache
+    torch.cuda.synchronize()
+    for values in selected:
+        base.option_statistics(values)
+    return selected[:layout["real_rows"]]
+
+
+def reverse_pair_permutation(count: int) -> list[int]:
+    if type(count) is not int or count < 2 or count % 2:
+        raise ValueError("pair permutation requires a positive even count")
+    return [index + offset for index in reversed(range(0, count, 2)) for offset in (0, 1)]
+
+
+def validate_cached_diagnostics(cached, native, replay, permuted, permutation, single) -> dict[str, Any]:
+    if len(permuted) != len(cached) or permutation != reverse_pair_permutation(len(cached)):
+        raise ValueError("cached permutation must reverse complete original/forced pairs")
+    aligned = [permuted[permutation.index(index)] for index in range(len(permutation))]
+    native_gate = base.validate_fp32_agreement(cached, native)
+    single_gate = base.validate_fp32_agreement(cached, single)
+    permutation_gate = base.validate_fp32_agreement(cached, aligned)
+    if cached != replay:
+        raise ValueError("exact cached FP32 replay failed")
+    return {"cached_vs_uncached": native_gate, "cached_vs_unpadded_single": single_gate,
+            "cached_permutation": permutation_gate,
+            "exact_cached_replay_passed": True}
+
+
+def cached_budget_projection(processed: int, total: int, seconds: float,
+                             remaining_seconds: float, batch_seconds: list[float],
+                             batch_size: int) -> dict[str, Any]:
+    """Use the worse of mean times 1.2 and empirical nearest-rank p95 batches."""
+    initial = base.budget_projection(processed, total, seconds, remaining_seconds)
+    if (not batch_seconds or any(not math.isfinite(value) or value <= 0 for value in batch_seconds)
+            or type(batch_size) is not int or batch_size < 1):
+        raise ValueError("valid measured cached batches required")
+    p95 = sorted(batch_seconds)[math.ceil(.95 * len(batch_seconds)) - 1]
+    mean_projection = initial["projected_remaining_seconds"]
+    p95_projection = p95 * math.ceil((total - processed) / batch_size)
+    conservative = max(mean_projection * 1.2, p95_projection)
+    return {**initial, "safety_factor": 1.2, "forecast_method": "max(mean_times_1_2,nearest_rank_p95_batch_projection)",
+            "mean_projected_remaining_seconds": mean_projection,
+            "p95_batch_seconds": p95, "p95_projected_remaining_seconds": p95_projection,
+            "projected_remaining_seconds": conservative,
+            "benchmark_batch_seconds": list(batch_seconds),
+            "proceed": conservative + base.SHUTDOWN_SECONDS < remaining_seconds}
+
 def validate_diagnostics(batched: list[list[float]], single: list[list[float]],
                          replay: list[list[float]], permuted: list[list[float]],
                          permutation: list[int]) -> dict[str, Any]:
@@ -218,7 +364,8 @@ def validate_promotion(model: Any, original: dict[str, Any]) -> dict[str, Any]:
 
 def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
                 max_seconds: float = MAX_SECONDS, batch_size: int = BATCH_SIZE,
-                progress: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+                progress: Callable[[dict[str, Any]], None] | None = None,
+                shared_prefix_cache: bool = False) -> dict[str, Any]:
     """Execute paired prompt scoring with fixed FP32 production and a deadline.
 
     Parameters
@@ -230,7 +377,9 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
     max_seconds : float
         Full worker deadline, including imports, hashing, preparation and load.
     batch_size : int
-        Exactly 32, or 16 original/forced menu pairs per production batch.
+        Exactly 32 uncached, or 128 with shared_prefix_cache=True.
+    shared_prefix_cache : bool
+        Explicit reviewed recovery mode; cache only exact paired token prefixes.
     progress : callable, optional
         Called with all streams closed so the provider can commit checkpoints.
 
@@ -239,8 +388,10 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
     dict
         Durable receipt, including partial completion and failure evidence.
     """
-    if tag not in MODELS or type(batch_size) is not int or batch_size != BATCH_SIZE:
-        raise ValueError("a pinned model and batch size 32 are required")
+    expected_batch_size = CACHE_BATCH_SIZE if shared_prefix_cache else BATCH_SIZE
+    if (type(shared_prefix_cache) is not bool or tag not in MODELS
+            or type(batch_size) is not int or batch_size != expected_batch_size):
+        raise ValueError("a pinned model and mode-specific batch size (32 or cached 128) are required")
     if (isinstance(max_seconds, bool) or not isinstance(max_seconds, (int, float))
             or not math.isfinite(max_seconds) or not 0 < max_seconds <= MAX_SECONDS):
         raise ValueError("max_seconds must be finite, positive, and at most 1400")
@@ -248,6 +399,7 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
     out_dir.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
     rows = []
+    torch_runtime = None
     model_name, revision = MODELS[tag], PINNED_MODELS[MODELS[tag]]
     receipt = {"schema_version": "acl-paired-prompt-scoring-receipt-v1", "model_tag": tag,
         "model": model_name, "revision": revision, "protocol": PROTOCOL,
@@ -277,6 +429,7 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
         if os.environ["CUBLAS_WORKSPACE_CONFIG"] not in {":4096:8", ":16:8"}:
             raise ValueError("unsupported deterministic CUBLAS workspace")
         import torch
+        torch_runtime = torch
         from huggingface_hub import snapshot_download
         from transformers import AutoModelForCausalLM, AutoTokenizer
         expected_versions = {"torch": "2.6.0", "transformers": "4.51.3", "tokenizers": "0.21.1",
@@ -324,6 +477,9 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
         if any(context["option_token_ids"] != contexts[0]["option_token_ids"] for context in contexts):
             raise ValueError("option token IDs vary across scored contexts")
         padded_width = max(len(context["scored_input_token_ids"]) for context in contexts)
+        shared_plan = cache_plan(contexts) if shared_prefix_cache else None
+        if shared_plan is not None:
+            base.write_once(out_dir / "cache_plan.json", shared_plan)
         selection = select_diagnostic_menus(jobs, contexts)
         base.write_once(out_dir / "diagnostic_selection.json", selection)
         repo = Path(__file__).resolve().parents[1]
@@ -341,11 +497,19 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
             "attention_implementation": "eager", "tf32": False, "float32_matmul_precision": "highest",
             "deterministic_algorithms": True, "seed": 1, "batch_size": batch_size,
             "global_padded_width": padded_width, "padding_side": "left",
-            "filler_policy": "duplicate final real context to fixed batch size; discard filler outputs",
+            "filler_policy": ("duplicate final complete original/forced pair; discard filler outputs" if shared_prefix_cache else
+                              "duplicate final real context to fixed batch size; discard filler outputs"),
             "option_token_ids": contexts[0]["option_token_ids"], "logits_to_keep": 1,
-            "use_cache": False, "generation": False, "sampling": False, "quantization": False,
+            "use_cache": shared_prefix_cache, "shared_prefix_cache": shared_prefix_cache,
+            "reference_batch_size": BATCH_SIZE,
+            "cache_mode": "paired_exact_token_lcp_dynamic_cache" if shared_prefix_cache else "disabled",
+            "cache_prefix_width": shared_plan["prefix_width"] if shared_plan else None,
+            "cache_suffix_width": shared_plan["suffix_width"] if shared_plan else None,
+            "cache_plan_sha256": base.file_hash(out_dir / "cache_plan.json") if shared_plan else None,
+            "cache_position_policy": "physical prefix/suffix offsets; logical position_ids exclude padding",
+            "generation": False, "sampling": False, "quantization": False,
             "gpu": torch.cuda.get_device_name(0), "torch_cuda_version": torch.version.cuda,
-            "validation_method": VALIDATION_METHOD,
+            "validation_method": CACHE_VALIDATION_METHOD if shared_prefix_cache else VALIDATION_METHOD,
             "fp32_numeric_gate": {"atol": base.FP32_ATOL, "rtol": base.FP32_RTOL,
                                   "exact_top_equality_required": False, "exact_replay_required": True},
             "diagnostic_selection_sha256": base.file_hash(out_dir / "diagnostic_selection.json"),
@@ -365,7 +529,7 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
         diag_contexts = [contexts[index] for index in selection["score_indices"]]
         diag_ids = [expected[index]["score_id"] for index in selection["score_indices"]]
         check_deadline()
-        bf16_batched = forward(torch, model, tokenizer, diag_contexts, padded_width=padded_width, batch_size=batch_size)
+        bf16_batched = forward(torch, model, tokenizer, diag_contexts, padded_width=padded_width, batch_size=BATCH_SIZE)
         bf16_single = []
         for context in diag_contexts:
             check_deadline()
@@ -374,7 +538,7 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
             "score_indices": selection["score_indices"], "score_ids": diag_ids, "contexts": diag_contexts,
             "batched_logits": bf16_batched, "single_logits": bf16_single,
             "diagnostics": base.comparison_diagnostics(bf16_batched, bf16_single),
-            "gate": False, "batch_size": batch_size, "global_padded_width": padded_width})
+            "gate": False, "batch_size": BATCH_SIZE, "global_padded_width": padded_width})
         checkpoint("bf16_diagnostics")
         promotion_started = time.monotonic()
         torch.cuda.empty_cache()
@@ -383,25 +547,48 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
         base.write_once(out_dir / "dtype_promotion.json", validate_promotion(model, original_state))
         receipt["promotion_seconds"] = time.monotonic() - promotion_started
         torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
         check_deadline()
-        fp32_batched = forward(torch, model, tokenizer, diag_contexts, padded_width=padded_width, batch_size=batch_size)
+        fp32_batched = forward(torch, model, tokenizer, diag_contexts, padded_width=padded_width, batch_size=BATCH_SIZE)
         fp32_single = []
         for context in diag_contexts:
             check_deadline()
             fp32_single.append(forward(torch, model, tokenizer, [context])[0])
-        replay = forward(torch, model, tokenizer, diag_contexts, padded_width=padded_width, batch_size=batch_size)
+        replay = forward(torch, model, tokenizer, diag_contexts, padded_width=padded_width, batch_size=BATCH_SIZE)
         permutation = list(reversed(range(len(diag_contexts))))
         permuted = forward(torch, model, tokenizer, [diag_contexts[index] for index in permutation],
-                           padded_width=padded_width, batch_size=batch_size)
+                           padded_width=padded_width, batch_size=BATCH_SIZE)
         base.write_once(out_dir / "diagnostics_fp32.json", {
             "score_indices": selection["score_indices"], "score_ids": diag_ids, "contexts": diag_contexts,
             "batched_logits": fp32_batched, "single_logits": fp32_single,
             "replay_logits": replay, "permutation_indices": permutation, "permuted_logits": permuted,
-            "batch_size": batch_size, "global_padded_width": padded_width,
+            "batch_size": BATCH_SIZE, "global_padded_width": padded_width,
             "bf16_vs_fp32_batched": base.comparison_diagnostics(bf16_batched, fp32_batched),
             "bf16_vs_fp32_single": base.comparison_diagnostics(bf16_single, fp32_single)})
         checkpoint("fp32_diagnostic_vectors")
+        cached_evidence = None
+        if shared_plan is not None:
+            kwargs = {"prefix_width": shared_plan["prefix_width"],
+                      "suffix_width": shared_plan["suffix_width"], "batch_size": batch_size}
+            check_deadline()
+            cached = cached_forward(torch, model, tokenizer, diag_contexts, **kwargs)
+            cached_replay = cached_forward(torch, model, tokenizer, diag_contexts, **kwargs)
+            pair_permutation = reverse_pair_permutation(len(diag_contexts))
+            cached_permuted = cached_forward(torch, model, tokenizer,
+                [diag_contexts[index] for index in pair_permutation], **kwargs)
+            cached_evidence = {"score_indices": selection["score_indices"], "score_ids": diag_ids,
+                "contexts": diag_contexts, "cached_logits": cached, "uncached_logits": fp32_batched,
+                "single_logits": fp32_single,
+                "cached_replay_logits": cached_replay, "permutation_indices": pair_permutation,
+                "permuted_cached_logits": cached_permuted, **kwargs}
+            base.write_once(out_dir / "diagnostics_cached.json", cached_evidence)
+            checkpoint("cached_diagnostic_vectors")
         gates = validate_diagnostics(fp32_batched, fp32_single, replay, permuted, permutation)
+        if cached_evidence is not None:
+            gates.update(validate_cached_diagnostics(cached, fp32_batched, cached_replay,
+                                                       cached_permuted, pair_permutation, fp32_single))
+            gates["validation_method"] = CACHE_VALIDATION_METHOD
+            gates["diagnostic_cached_sha256"] = base.file_hash(out_dir / "diagnostics_cached.json")
         gates["diagnostic_bf16_sha256"] = base.file_hash(out_dir / "diagnostics_bf16.json")
         gates["diagnostic_fp32_sha256"] = base.file_hash(out_dir / "diagnostics_fp32.json")
         gates["dtype_promotion_sha256"] = base.file_hash(out_dir / "dtype_promotion.json")
@@ -413,6 +600,7 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
         checkpoint("diagnostics_passed")
         benchmark_started = time.monotonic()
         last_batch_seconds, next_checkpoint = 0.0, 512
+        benchmark_batch_seconds = []
         while len(rows) < len(expected):
             check_deadline()
             if last_batch_seconds * base.SAFETY_FACTOR + base.SHUTDOWN_SECONDS >= remaining():
@@ -421,8 +609,13 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
             offset = len(rows)
             end = min(offset + batch_size, BENCHMARK_ROWS if offset < BENCHMARK_ROWS else len(expected))
             batch_started = time.monotonic()
-            logits = forward(torch, model, tokenizer, contexts[offset:end],
-                             padded_width=padded_width, batch_size=batch_size)
+            if shared_plan is not None:
+                logits = cached_forward(torch, model, tokenizer, contexts[offset:end],
+                    prefix_width=shared_plan["prefix_width"], suffix_width=shared_plan["suffix_width"],
+                    batch_size=batch_size)
+            else:
+                logits = forward(torch, model, tokenizer, contexts[offset:end],
+                                 padded_width=padded_width, batch_size=batch_size)
             batch_rows = []
             for job, context, values in zip(expected[offset:end], contexts[offset:end], logits):
                 row = {"schema_version": "acl-paired-prompt-scores-v1",
@@ -437,6 +630,8 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
                 os.fsync(stream.fileno())
             rows.extend(batch_rows)
             last_batch_seconds = time.monotonic() - batch_started
+            if offset < BENCHMARK_ROWS:
+                benchmark_batch_seconds.append(last_batch_seconds)
             check = {"batch_index": offset // batch_size, "start": offset, "stop": len(rows),
                 "physical_rows": batch_size, "real_rows": len(batch_rows), "padded_width": padded_width,
                 "rows_sha256": base.sha(b"".join(base.canonical(row) for row in batch_rows)),
@@ -446,8 +641,12 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
                 stream.flush()
                 os.fsync(stream.fileno())
             if len(rows) == BENCHMARK_ROWS:
-                benchmark = base.budget_projection(len(rows), len(expected),
-                    time.monotonic() - benchmark_started, remaining())
+                if shared_prefix_cache:
+                    benchmark = cached_budget_projection(len(rows), len(expected),
+                        time.monotonic() - benchmark_started, remaining(), benchmark_batch_seconds, batch_size)
+                else:
+                    benchmark = base.budget_projection(len(rows), len(expected),
+                        time.monotonic() - benchmark_started, remaining())
                 base.write_once(out_dir / "benchmark.json", benchmark)
                 receipt["benchmark"] = benchmark
                 checkpoint("benchmark", **benchmark)
@@ -468,10 +667,16 @@ def run_scoring(tag: str, jobs_path: Path, cache_dir: Path, out_dir: Path,
     except Exception as error:
         receipt["status"] = "failed"
         receipt["error"] = f"{type(error).__name__}: {error}"
+    if torch_runtime is not None:
+        try:
+            receipt["max_cuda_memory_allocated_bytes"] = torch_runtime.cuda.max_memory_allocated()
+        except Exception:
+            receipt["max_cuda_memory_allocated_bytes"] = None
+    numeric_files = NUMERIC_FILES + (("diagnostics_cached.json",) if shared_prefix_cache else ())
     receipt.update({"completed_rows": len(rows), "finished_at": datetime.now(timezone.utc).isoformat(),
         "total_seconds": time.monotonic() - started,
         "scores_sha256": base.file_hash(out_dir / "scores.jsonl") if (out_dir / "scores.jsonl").exists() else None,
         "metadata_sha256": base.file_hash(out_dir / "metadata.json") if (out_dir / "metadata.json").exists() else None,
-        "numeric_evidence_sha256": {name: base.file_hash(out_dir / name) for name in NUMERIC_FILES if (out_dir / name).exists()}})
+        "numeric_evidence_sha256": {name: base.file_hash(out_dir / name) for name in numeric_files if (out_dir / name).exists()}})
     base.write_once(out_dir / "receipt.json", receipt)
     return receipt
