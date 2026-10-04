@@ -31,9 +31,9 @@ jobs:
           from pathlib import Path
           from scripts.modal_acl_expansion import connect
           modal, workspace = connect()
-          volume = modal.Volume.from_name('acl5000-paired-prompts-20261003', create_if_missing=False)
+          volume = modal.Volume.from_name('acl5000-paired-prompts-cache1-20261003', create_if_missing=False)
           report = {'workspace': workspace, 'evidence': {}}
-          names = ('started.json', 'benchmark.json', 'receipt.json', 'diagnostics_validation.json')
+          names = ('started.json', 'benchmark.json', 'receipt.json', 'diagnostics_validation.json', 'progress.json', 'cache_plan.json')
           for entry in volume.iterdir('/output', recursive=True):
               name = str(entry.path).lstrip('/')
               if Path(name).name in names or name.endswith('_allocation_receipt.json'):
