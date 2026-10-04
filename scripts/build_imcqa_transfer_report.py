@@ -19,14 +19,27 @@ def render(summary: dict, provenance: dict) -> str:
     """Render only values supplied by the validated analyzer."""
     policies = summary["policy_summaries"]
     contrasts = summary["primary_contrasts"]
+    screens = summary.get("screening", [])
+    labels = {"independent_pool": "independent distractors", "same_category_pool": "same-category distractors"}
+    passed = [labels[s["condition"]] for s in screens if s["continue_development_screen"]]
+    fixed = [labels[s["condition"]] for s in screens if s["beats_fixed_family_interval"]]
+    if len(passed) == 2:
+        finding = "The frozen policy passed the development screen with both menus: positive reward and improvement over native WAIT."
+    elif passed:
+        finding = "The frozen policy passed the development screen only with " + passed[0] + "."
+    else:
+        finding = "The frozen policy did not pass the prespecified development screen with either menu."
+    finding += (" Its paired reward also exceeded the frozen fixed-round baseline with " + " and ".join(fixed) + "."
+                if fixed else " Added value over the frozen fixed-round baselines remains unestablished.")
     rows = []
     for item in policies:
         reward = item["mean_reward"]
         mean = reward["mean"] if isinstance(reward, dict) else reward
         ci = reward.get("ci95") if isinstance(reward, dict) else None
         rows.append("<tr>" + "".join(f"<td>{esc(v)}</td>" for v in (
-            item["condition"], item["policy"], number(mean),
+            labels[item["condition"]], item["policy"], number(mean),
             "" if ci is None else f"[{number(ci[0])}, {number(ci[1])}]",
+            number(item["coverage"]["mean"]), number(item["risk"]["mean"]),
             item["n_questions"])) + "</tr>")
     pairs = []
     for item in contrasts:
@@ -52,7 +65,7 @@ th{{background:#e9f0f6}} code,pre{{font-size:12px;overflow-wrap:anywhere;white-s
 small{{color:#526575}} a{{color:#145573}}
 @media print{{body{{background:white}}main{{margin:0;padding:10px}}}}
 </style><main><div class="tag">DEVELOPMENT VALIDATION · 2026-10-04 UTC</div>
-<h1>Does the frozen stopping policy transfer?</h1>
+<h1>Frozen-policy transfer test</h1><p><strong>{esc(finding)}</strong></p>
 <p class="note">A paired test of the existing Qwen 7B plain-MCQA answer and external
 stopping pipeline on 100 questions excluded from all previous WAIT and protocol pilots.
 The prompts, fitted coefficients, thresholds, rewards, and comparisons were frozen
@@ -69,7 +82,7 @@ are 0.60 for independent distractors and 0.85 for same-category distractors. The
 fixed-round benchmarks answer at rounds 1 and 2, respectively. The threshold policy
 has no added positive-expected-value gate; its historical behavior is preserved.</p>
 <h2>Reward results</h2><table><thead><tr><th>Menu</th><th>Policy</th><th>Mean reward</th>
-<th>95% interval</th><th>Questions</th></tr></thead><tbody>{''.join(rows)}</tbody></table>
+<th>95% interval</th><th>Coverage</th><th>Error among answers</th><th>Questions</th></tr></thead><tbody>{''.join(rows)}</tbody></table>
 <h2>Prespecified paired comparisons</h2><p>Each contrast subtracts the benchmark
 from the frozen plain threshold policy. The intervals below are 98.75% question-bootstrap
 intervals for a four-comparison Bonferroni family. They condition on the previously fitted
@@ -92,6 +105,8 @@ not free generated responses or repeated-response frequencies.</li>
 do not cover every permutation. Reveals use word fractions, not validated clue boundaries.</li>
 <li>Deterministic identity and text-overlap exclusions reduce obvious duplication;
 they do not establish semantic independence or rule out training-data contamination.</li>
+<li>Answer keys and distractor menus are inherited from the frozen source dataset.
+This run checks their identity and use; it does not add a manual semantic audit of them.</li>
 <li>No new controller prompt, calibration fit, threshold search, or reward redesign was
 selected using these results. The external threshold policy does not estimate continuation value.</li>
 </ul><h2>Execution and evidence</h2><p>Source commit: <code>{source}</code><br>
