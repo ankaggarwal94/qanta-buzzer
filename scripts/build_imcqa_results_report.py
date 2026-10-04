@@ -256,6 +256,25 @@ def pilot_section(report: dict[str, Any] | None) -> str:
                      row["n_terminal_pass"]])
     content = intro + table(["Model", "Split", "Menu", "Mean reward [95% CI]", "Commitments", "Errors / commitments", "PASS"],
                             rows, "Primary explicit-action policy; 100 questions per cell, development data only")
+    policy_lookup = {(row["model"], row["split"], row["condition"], row["variant"], row["policy"]): row
+                     for row in report["policy_summaries"]}
+    baseline_rows = []
+    below_pass = 0
+    for model in MODELS:
+        for menu in MENUS:
+            primary_reward = policy_lookup[model, "selection", menu, "wait", "first_commit"]["mean_reward"]
+            forced_first = policy_lookup[model, "selection", menu, "forced", "fixed_round_1"]["mean_reward"]
+            forced_final = policy_lookup[model, "selection", menu, "forced", "fixed_round_5"]["mean_reward"]
+            pass_reward = policy_lookup[model, "selection", menu, "forced", "always_terminal_pass"]["mean_reward"]
+            below_pass += primary_reward < pass_reward
+            baseline_rows.append([MODELS[model], MENUS[menu], number(primary_reward),
+                                  number(forced_first), number(forced_final), number(pass_reward)])
+    content += table(["Model", "Menu", "Primary WAIT policy", "Answer now: round 1", "Answer now: round 5", "Always PASS"],
+                     baseline_rows, "Selection split: descriptive mean reward, 100 paired questions per cell")
+    content += (f"<p>The primary mean reward is below the always-PASS value in {below_pass} of "
+                "the four selection cells. Beating the final-round answer-now baseline alone therefore "
+                "does not establish a useful stopping policy. The first-round and PASS columns are "
+                "descriptive reference values; no paired first-round uncertainty estimate is claimed.</p>")
     comparisons = []
     for row in report["paired_comparisons"]:
         if row["comparison"] != "primary_minus_forced_final":
@@ -265,6 +284,27 @@ def pilot_section(report: dict[str, Any] | None) -> str:
                             f"{number(estimate['mean'])} {ci(estimate['ci95'])}"])
     content += table(["Model", "Split", "Menu", "Reward difference [95% CI]"], comparisons,
                      "Primary minus answer-now-at-final-round under the same five-round game prompt")
+    diagnostics = {(row["model"], row["condition"], row["diagnostic"]): row
+                   for row in report["diagnostic_summaries"] if row["split"] == "selection"}
+    diagnostic_rows = []
+    for model in MODELS:
+        for menu in MENUS:
+            forced = diagnostics[model, menu, "forced_prompt_effect"]
+            rotation = diagnostics[model, menu, "semantic_rotation_effect"]
+            if (forced["n_questions"], forced["n_paired_states"], rotation["n_questions"], rotation["n_paired_states"]) != (100, 500, 20, 100):
+                raise ValueError("Unexpected selection diagnostic denominators")
+            formatted = []
+            for metric in (forced["conditional_top_changed"], rotation["semantic_action_changed"], rotation["wait_decision_changed"]):
+                formatted.append(f"{percent(metric['mean'], 1)} {ci(metric['ci95'], percentage=True)}")
+            diagnostic_rows.append([MODELS[model], MENUS[menu], *formatted])
+    content += table(["Model", "Menu", "Answer-now prompt: top A-D changes", "Rotation: semantic action changes", "Rotation: E decision changes"],
+                     diagnostic_rows, "Selection diagnostics, rates [95% question-bootstrap CI]: prompt comparison 500 states / 100 questions; rotation 100 states / 20 questions")
+    content += ("<p class='note'>The prompt comparison conditions the primary scores on A-D and "
+                "compares their top candidate with the separately scored answer-now prompt. Rotation "
+                "changes are computed after mapping labels back to candidate identities. E means WAIT "
+                "before the last round and PASS at the last round; its changes include both. These "
+                "rates use all five scored states per question, including states not visited after an "
+                "early commitment. They are not independent-state sample sizes or episode-level flip rates.</p>")
     controls = []
     for row in report["paired_comparisons"]:
         if row["comparison"] not in {"primary_minus_questionless_matched_subset", "primary_minus_rotation_matched_subset"}:
