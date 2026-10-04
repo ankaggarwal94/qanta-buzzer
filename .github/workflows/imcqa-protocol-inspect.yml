@@ -32,10 +32,10 @@ jobs:
           from scripts.modal_acl_expansion import connect
           modal, workspace = connect()
           volume = modal.Volume.from_name('imcqa-protocol-dev-20261004', create_if_missing=False)
-          report = {'checkpoint': 'first protocol progress check', 'observed_utc': datetime.now(timezone.utc).isoformat(), 'evidence': {}}
+          report = {'checkpoint': 'numerical failure evidence check', 'observed_utc': datetime.now(timezone.utc).isoformat(), 'evidence': {}}
           for entry in volume.iterdir('/output', recursive=True):
               name = str(entry.path).lstrip('/')
-              if name.endswith(('progress.json','receipt.json','_benchmark.json','_allocation_receipt.json','_claim.json')):
+              if name.endswith(('progress.json','receipt.json','_benchmark.json','_allocation_receipt.json','_claim.json','_diagnostics_raw.json','_diagnostics.json','metadata.json','plan.json','dtype_promotion.json')):
                   raw = b''.join(volume.read_file(name))
                   if len(raw) > 1024**2: raise ValueError('metadata exceeds bound')
                   report['evidence'][name] = json.loads(raw)
