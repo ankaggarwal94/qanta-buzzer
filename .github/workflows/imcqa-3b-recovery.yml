@@ -1,0 +1,53 @@
+name: Bounded 3B cached-pair protocol recovery
+
+on:
+  push:
+    branches: [feat/imcqa-wait-pilot-20261004]
+    paths: [.github/workflows/imcqa-3b-recovery.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: imcqa-3b-recovery-20261004
+  cancel-in-progress: false
+
+jobs:
+  recovery:
+    if: >-
+      github.actor == 'ankaggarwal94' && github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: run reviewed cached-pair 3B recovery within budget'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install pinned control-plane dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          'modal==1.6.0' 'pytest==8.3.5' 'numpy==2.2.4'
+          'lm-format-enforcer==0.11.3' 'interegular==0.3.3'
+      - name: Validate recovery before credentials
+        run: python -m pytest --noconftest tests/test_imcqa_3b_protocol_recovery.py -q
+      - name: Recover the unchanged 3B protocol contexts
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: >-
+          python -m scripts.modal_imcqa_3b_protocol_recovery
+          --source-commit "$SOURCE_COMMIT"
+          --out imcqa_3b_recovery_run_artifacts/imcqa_3b_recovery
+      - name: Preserve recovery scores and numerical evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-3b-recovery-${{ github.run_id }}
+          path: imcqa_3b_recovery_run_artifacts/
+          if-no-files-found: warn
+          retention-days: 90
