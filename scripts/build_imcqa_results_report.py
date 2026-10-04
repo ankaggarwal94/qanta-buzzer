@@ -285,13 +285,13 @@ def pilot_section(report: dict[str, Any] | None) -> str:
         audit_rows.append([MODELS[model], audit.get("n_rows"), "passed" if audit.get("passed") else "failed",
                            number(audit.get("elapsed_seconds"), 1)])
     content += table(["Model", "Validated rows", "Numerical/provenance/replay audit", "Scorer seconds"], audit_rows,
-                     "Scorer time excludes some provider allocation overhead; actual cost requires allocation receipts")
+                     "Scorer time excludes worker setup and provider startup; it is not complete billed allocation time")
     return content + "</section>"
 
 
 def execution_section(execution: dict[str, Any] | None) -> str:
     if execution is None:
-        return ("<p class='note'>The pilot allocation ceiling is $4.00. No provider allocation-cost "
+        return ("<p class='note'>The pilot allocation ceiling is $4.00. No worker-timing and cost "
                 "summary was supplied to this renderer; the ceiling is not actual spend.</p>")
     rows = []
     for key, label, unit in (("workflow_elapsed_seconds", "Workflow wall time", "seconds"),
@@ -306,16 +306,19 @@ def execution_section(execution: dict[str, Any] | None) -> str:
     for model, value in execution.get("allocation_seconds_by_model", {}).items():
         value = float(value)
         if model not in MODELS or not math.isfinite(value) or value < 0:
-            raise ValueError("Invalid provider allocation seconds")
-        rows.append([f"{MODELS[model]} provider allocation", number(value, 1), "seconds"])
+            raise ValueError("Invalid worker function elapsed seconds")
+        rows.append([f"{MODELS[model]} worker function elapsed", number(value, 1), "seconds"])
     verified = execution.get("invoice_verified") is True
     return ("<section><h2>Runtime and cost</h2>" + table(["Quantity", "Value", "Unit"], rows,
-             "Supplied execution summary; worker allocation seconds are additive, wall time is not")
+             "Supplied execution summary; worker function seconds are additive, parallel workflow wall time is not")
             + f"<p>Invoice verification: {'verified in supplied summary' if verified else 'not verified'}. "
               "Compute estimates are not billing statements. The pilot ceiling is $4.00. "
               "The planning rate for one L40S worker with two physical CPU cores and 32 GiB memory "
               "is $0.00063924 per second; see <a href='https://modal.com/pricing'>Modal pricing</a>. "
-              "Any startup or contingency allowance is separate from observed allocation time.</p>"
+              "Worker function timing covers only part of the allocation: it excludes provider startup, "
+              "pre-timer source and claim checks, initial volume reload, final receipt commit, and idle "
+              "scaledown. Startup or contingency allowances in the estimate are separate from these "
+              "observed function timings.</p>"
             + (f"<p>{esc(execution['notes'])}</p>" if execution.get("notes") else "") + "</section>")
 
 

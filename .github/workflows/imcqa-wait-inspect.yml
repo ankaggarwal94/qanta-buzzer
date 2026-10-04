@@ -32,7 +32,7 @@ jobs:
           from scripts.modal_acl_expansion import connect
           modal, workspace = connect()
           volume = modal.Volume.from_name('imcqa-wait-dev-20261004', create_if_missing=False)
-          report = {'checkpoint': 'third progress check', 'observed_utc': datetime.now(timezone.utc).isoformat(), 'evidence': {}}
+          report = {'checkpoint': 'fourth progress check', 'observed_utc': datetime.now(timezone.utc).isoformat(), 'evidence': {}}
           for entry in volume.iterdir('/output', recursive=True):
               name = str(entry.path).lstrip('/')
               if name.endswith(('progress.json','receipt.json','_benchmark.json','_allocation_receipt.json','_claim.json')):
