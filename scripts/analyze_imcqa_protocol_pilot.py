@@ -437,7 +437,9 @@ def compare_numeric(left, right, jobs, config):
 
 
 def _only_attempt(directory: Path, suffix: str) -> dict[str, Any]:
-    paths = sorted((directory / "attempts").glob("*_" + suffix + ".json"))
+    ending = "_" + suffix + ".json"
+    paths = sorted(path for path in (directory / "attempts").glob("*" + ending)
+                   if path.name[:-len(ending)].isdigit())
     if len(paths) != 1:
         raise ValueError(f"exactly one retained {suffix} attempt required")
     return old.load_json(paths[0])

@@ -36,7 +36,7 @@ def num(value: float | None, digits: int = 3) -> str:
     return "undefined" if value is None else f"{value:.{digits}f}"
 
 
-def pct(value: float | None, digits: int = 1) -> str:
+def pct(value: float | None, digits: int = 2) -> str:
     return "undefined" if value is None else f"{100 * value:.{digits}f}%"
 
 
@@ -45,6 +45,12 @@ def estimate(value: dict[str, Any], percent: bool = False) -> str:
     point = formatter(value["mean"])
     interval = value.get("ci95")
     return point + (f" [{formatter(interval[0])}, {formatter(interval[1])}]" if interval is not None else " [interval undefined]")
+
+
+def percentage_points(value: dict[str, Any]) -> str:
+    point = f"{100 * value['mean']:.2f}"
+    interval = value.get("ci95")
+    return point + (f" [{100 * interval[0]:.2f}, {100 * interval[1]:.2f}]" if interval is not None else " [interval undefined]")
 
 
 def table(headers: list[str], rows: list[list[Any]], caption: str) -> str:
@@ -126,8 +132,8 @@ def terminal_table(report: dict[str, Any], split: str, models: tuple[str, ...] =
             values = [unique(report["round_summaries"], model=model, condition=menu, split=split, arm=arm, round=5) for arm in ARMS]
             contrast = unique(report["round_prompt_contrasts"], model=model, condition=menu, split=split, contrast="plain_minus_forced", round=5)
             rows.append([MODELS[model], MENUS[menu], values[0]["n_questions"], *[estimate(row["candidate_correct"], True) for row in values],
-                         estimate(contrast["candidate_accuracy_difference"], True)])
-    return table(["Model", "Menu", "Questions", "Plain accuracy [95% CI]", "Forced-game accuracy [95% CI]", "WAIT-candidate accuracy [95% CI]", "Plain − forced [95% CI]"], rows,
+                         percentage_points(contrast["candidate_accuracy_difference"])])
+    return table(["Model", "Menu", "Questions", "Plain accuracy [95% CI]", "Forced-game accuracy [95% CI]", "WAIT-candidate accuracy [95% CI]", "Plain − forced, pp [95% CI]"], rows,
                  f"{split.capitalize()} split, full-question round: average over four cyclic candidate rotations within each question")
 
 
@@ -201,6 +207,21 @@ def comprehension_section(report: dict[str, Any], directory: Path, receipt: dict
     if len(cases) != 32 * len(models) or {row["model"] for row in cases} != set(models):
         raise ValueError("expected all 32 synthetic cases from each verified model")
     rows = [[MODELS[row["model"]], row["passed"], row["total"]] for row in report["comprehension_summary"]]
+    label_rows, findings = [], []
+    for model in models:
+        model_cases = [row for row in cases if row["model"] == model]
+        failed = [row for row in model_cases if row["passed"].lower() != "true"]
+        for wait_label in ("E", "A"):
+            selected = [row for row in model_cases if row["wait_label"] == wait_label]
+            label_rows.append([MODELS[model], wait_label, sum(row["passed"].lower() == "true" for row in selected), len(selected)])
+        uniform = [row for row in model_cases if row["expected_semantic_action"] in ("WAIT", "PASS")]
+        if uniform and all(row["passed"].lower() == "true" for row in uniform):
+            findings.append(f"{MODELS[model]} passed all {len(uniform)} uniform-probability WAIT/PASS checks.")
+        if (failed and all(row["expected_semantic_action"] in "ABCD" and row["wait_label"] == "A"
+                           and row["chosen_action"] == "E" and row["native_semantic_action"] == "A" for row in failed)):
+            findings.append(f"All {len(failed)} failures for {MODELS[model]} occurred on known-correct-answer cases under A-WAIT. "
+                            "Each chose displayed E, which represented canonical candidate A after relabeling. "
+                            "This localizes the observed errors to these relabeled cases without establishing a token-bias mechanism.")
     details = [[MODELS[row["model"]], row["synthetic_case"], row["round"], row["wait_label"], row["expected_semantic_action"],
                 row["native_semantic_action"], row["passed"]] for row in cases]
     return ("<section id='comprehension'><h2>Explicit protocol comprehension checks</h2>"
@@ -208,6 +229,9 @@ def comprehension_section(report: dict[str, Any], directory: Path, receipt: dict
             "a uniform choice with a guaranteed answer next round should WAIT; a uniform terminal choice should PASS. "
             "Both continuation labels are tested. These checks diagnose the declared protocol and do not estimate quizbowl ability.</p>"
             + table(["Model", "Correct semantic actions", "Cases"], rows, "All cases are reported, including failures; no failed case was discarded or used to retune the prompt")
+            + table(["Model", "WAIT/PASS label", "Correct semantic actions", "Cases"], label_rows,
+                    "Same synthetic premises, grouped by continuation label")
+            + "<p>" + esc(" ".join(findings)) + "</p>"
             + f"<details><summary>All {32 * len(models)} scored synthetic cases from verified models</summary>"
             + table(["Model", "Case", "Round", "WAIT/PASS label", "Expected semantic action", "Chosen semantic action", "Passed"], details,
                     "A–D in semantic columns refer to canonical candidate identities, after undoing displayed labels")
@@ -256,6 +280,34 @@ def validate_execution_identity(execution: dict[str, Any], launch_commit: str,
     if not isinstance(analysis_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", analysis_commit):
         raise ValueError("execution summary requires a complete analysis source Git SHA")
     return analysis_commit
+
+
+def verified_result_interpretation(report: dict[str, Any]) -> str:
+    """Present the declared selection contrasts without inferring a mechanism."""
+    contrasts, label_changes, native_intervals, accuracy_differences = [], [], [], []
+    for menu in MENUS:
+        common = {"model": "qwen7b", "condition": menu, "split": "selection"}
+        contrast = unique(report["round_prompt_contrasts"], contrast="plain_minus_forced", round=5, **common)
+        effect = unique(report["action_label_contrasts"], **common)
+        native = unique(report["policy_summaries"], arm="wait", policy="native_wait", **common)
+        contrasts.append(f"{MENUS[menu].lower()} menu: {percentage_points(contrast['candidate_accuracy_difference'])} percentage points")
+        accuracy_differences.append(contrast["candidate_accuracy_difference"]["mean"])
+        label_changes.append(f"{MENUS[menu].lower()} menu: WAIT/PASS versus answer changed in {pct(effect['wait_decision_changed']['mean'])} "
+                             f"of states and the semantic action changed in {pct(effect['semantic_action_changed']['mean'])}")
+        native_intervals.append(native["bootstrap"]["mean_reward"]["ci95"])
+    interval_sentence = ("The native WAIT reward interval includes zero with both menus, so this small selection subset does not establish a positive reward advantage over always passing."
+                         if all(interval is not None and interval[0] <= 0 <= interval[1] for interval in native_intervals)
+                         else "Native WAIT reward intervals are reported below; conclusions are limited to this already-inspected development subset.")
+    result_sentence = ("In this matched 7B experiment, plain MCQA had higher full-question accuracy than the forced-answer game prompt with both menus."
+                       if all(value > 0 for value in accuracy_differences)
+                       else "The matched 7B experiment quantifies the full-question accuracy difference between plain MCQA and the forced-answer game prompt.")
+    return ("<section id='findings'><h2>What changes the next decision</h2><p><strong>" + esc(result_sentence)
+            + "</strong> Paired differences and descriptive 95% intervals were "
+            + esc("; ".join(contrasts)) + ". The comparison holds weights, precision, answer content, and output boundary fixed, "
+            "but changes the full instruction block; it does not isolate a particular reward sentence or mechanism.</p>"
+            "<p>The A/E relabeling also changed decisions: " + esc("; ".join(label_changes))
+            + ". These are state-level proportions over five paired rounds within 20 questions per menu. "
+              "They include counterfactual states after an episode would have ended. " + esc(interval_sentence) + "</p></section>")
 
 
 def build_report(decomposition_directory: Path, protocol_directory: Path, execution_path: Path,
@@ -343,13 +395,19 @@ def build_report(decomposition_directory: Path, protocol_directory: Path, execut
               "The decomposition below covers the earlier, larger 100-question selection split. These denominators should not be combined.</p></div>"
             f"<p class='meta'>The CPU decomposition was completed first. The validated model evidence adds {4032 * len(models):,} scored contexts and reuses {1200 * len(models):,} exact prior contexts, "
             "with explicit identity and numerical checks. Both splits remain exploratory.</p>"
+            + verified_result_interpretation(protocol)
             + decomposition_section(decomposition) + protocol_section(protocol, models) + sensitivity_section(protocol, models)
             + comprehension_section(protocol, protocol_directory, receipt, models) + historical_section(decomposition) + execution_section(execution)
             + "<details><summary>Numerical and provenance audit details</summary><pre>" + esc(json.dumps(protocol.get("audits", {}), indent=2, sort_keys=True)) + "</pre></details>"
-            + "<section><h2>Interpretation and next decision</h2><p>Use the matched contrasts to choose a stable answer-elicitation protocol before expanding the benchmark. "
-              "Evaluate any stopping policy against a transparent calibrated baseline and its own prompt’s candidates. "
-              "If label changes alter semantic choices, report order-averaged performance and retain the position controls. "
-              "Protocol comprehension checks distinguish failures on explicit payoff premises from failures to recognize real clues; they do not by themselves localize a mechanism.</p>"
+            + "<section><h2>Recommended next experiment and limits</h2><p><strong>Stabilize answer elicitation and label handling before scaling to fresh questions.</strong> "
+              "Use the plain MCQA condition as the answer-quality reference, preserve rotation-averaged reporting, and keep the A/E intervention as a required diagnostic. "
+              "Then evaluate a separately specified stopping rule against calibrated and fixed-round baselines using its own candidate predictions. "
+              "The current myopic baseline is not an optimal stopping policy and the observed label effects do not identify a unique mechanism.</p>"
+            + ("<p>Repair the 3B numerical execution issue in a separate pre-production diagnostic, using the existing frozen contexts and unchanged tolerances. "
+               "Determine whether the discrepancy comes from cached, batched, or single-context execution before attempting a replacement production run. "
+               "Its missing scientific results cannot be inferred from the completed 7B experiment.</p>" if partial else "")
+            + "<p>Only after these development decisions are frozen should a fresh question set support a confirmatory evaluation. "
+              "The synthetic checks test explicit payoff premises; passing them does not establish clue recognition or an optimal policy.</p>"
             + "<ul>" + "".join(f"<li>{esc(item)}</li>" for item in limitations) + "</ul></section>"
             + "<section class='hashes'><h2>Evidence and reproducibility</h2><p>Launch source: <a href='https://github.com/ankaggarwal94/qanta-buzzer/commit/"
             + launch_commit + "'>" + launch_commit + "</a>. Analysis and report source: <a href='https://github.com/ankaggarwal94/qanta-buzzer/tree/"

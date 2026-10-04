@@ -165,3 +165,14 @@ def test_new_inference_must_have_completed_all_new_rows(tmp_path):
     (directory / "receipt.json").write_text(json.dumps({"status": "complete", "completed_rows": 4031}))
     with pytest.raises(ValueError, match="completion receipt"):
         a.validate_new_model(directory, "qwen3b", {}, [], {}, "hash", tmp_path / "old", [])
+
+
+def test_numeric_attempt_selection_excludes_other_diagnostic_suffixes(tmp_path):
+    attempts = tmp_path / "attempts"
+    attempts.mkdir()
+    for name in ("000_diagnostics.json", "000_reuse_diagnostics.json", "000_production_diagnostics.json"):
+        (attempts / name).write_text(json.dumps({"name": name}))
+    assert a._only_attempt(tmp_path, "diagnostics") == {"name": "000_diagnostics.json"}
+    (attempts / "001_diagnostics.json").write_text("{}")
+    with pytest.raises(ValueError, match="exactly one"):
+        a._only_attempt(tmp_path, "diagnostics")
