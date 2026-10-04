@@ -17,10 +17,27 @@ def main() -> None:
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--launch-commit", required=True)
     parser.add_argument("--workflow-url", required=True)
+    parser.add_argument("--failure-analysis", type=Path)
     args = parser.parse_args()
+    analysis = json.loads((args.analysis / "report.json").read_bytes())
+    receipt = json.loads((args.analysis / "analysis_receipt.json").read_bytes())
+    if receipt.get("output_sha256", {}).get("report.json") != digest(args.analysis / "report.json"):
+        raise ValueError("analysis report is not bound to its receipt")
+    partial = analysis.get("schema_version") == "imcqa-protocol-partial-analysis-v1"
+    if partial:
+        if receipt.get("status") != "partial" or analysis.get("validated_models") != ["qwen7b"] or analysis.get("failed_models") != ["qwen3b"]:
+            raise ValueError("unexpected partial analysis scope")
+    elif analysis.get("schema_version") != "imcqa-protocol-analysis-v1" or receipt.get("status") != "complete":
+        raise ValueError("unrecognized analysis status/schema")
+    expected_counts = (5232, 4032, 1200) if partial else (10464, 8064, 2400)
+    if tuple(analysis.get(key) for key in ("n_score_rows", "n_new_score_rows", "n_reused_score_rows")) != expected_counts:
+        raise ValueError("unexpected analyzed context counts")
     files = []
-    for label, root in (("decomposition", args.decomposition), ("protocol_analysis", args.analysis),
-                        ("protocol_run", args.run), ("prior_wait_run", args.prior_run)):
+    roots = [("decomposition", args.decomposition), ("protocol_analysis", args.analysis),
+             ("protocol_run", args.run), ("prior_wait_run", args.prior_run)]
+    if args.failure_analysis:
+        roots.append(("numerical_failure_analysis", args.failure_analysis))
+    for label, root in roots:
         if not root.is_dir():
             raise ValueError("missing evidence directory")
         for path in sorted(root.rglob("*")):
@@ -34,17 +51,23 @@ def main() -> None:
     if len({name for _, name in files}) != len(files):
         raise ValueError("duplicate archive path")
     manifest = {"schema": "imcqa-protocol-results-package-v1",
+                "analysis_status": "partial" if partial else "complete",
+                "n_analyzed_contexts": analysis["n_score_rows"],
                 "analysis_source_commit": args.source_commit, "launch_commit": args.launch_commit,
                 "workflow_url": args.workflow_url,
                 "files": [{"path": name, "bytes": path.stat().st_size, "sha256": digest(path)}
                           for path, name in files]}
     readme = (
         "IMCQA protocol diagnosis, 2026-10-04 UTC\n\n"
+        + ("PARTIAL NEW PILOT: Qwen 7B is validated. Qwen 3B failed its initial numerical gate\n"
+           "before producing any new production rows. Failed 3B evidence is retained and excluded\n"
+           "from new scientific estimates. The earlier two-model CPU decomposition is complete.\n\n" if partial else "")
+        +
         "Open the HTML report for the CPU decomposition and matched development pilot findings.\n"
         "decomposition/: 800 original-pilot trajectories, own-candidate hindsight, and calibration references.\n"
         "protocol_analysis/: validated merged contexts, paired summaries, and execution evidence.\n"
-        "protocol_run/: 8,064 newly scored contexts, numerical checks, exact inputs, and reuse manifests.\n"
-        "prior_wait_run/: unchanged prior inputs and scores supplying 2,400 reused contexts.\n"
+        f"protocol_run/: {analysis['n_new_score_rows']:,} validated new contexts, numerical checks, exact inputs, and reuse manifests.\n"
+        f"prior_wait_run/: unchanged prior inputs and scores supplying {analysis['n_reused_score_rows']:,} analyzed reused contexts.\n"
         "protocol_inputs/: transport manifest and synthetic evaluator fixture; fixture was not uploaded to inference.\n"
         "artifact_manifest.json hashes every included file. No model weights or credentials are included.\n\n"
         "Code is versioned in the repository and is not duplicated here:\n"
