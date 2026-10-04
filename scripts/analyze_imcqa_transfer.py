@@ -30,6 +30,12 @@ MENUS, REWARDS, OPTIONS = old.MENUS, old.REWARDS, old.OPTIONS
 POLICIES = ("frozen_plain_threshold", "native_wait", "frozen_plain_fixed", "always_pass", "plain_final_round")
 FROZEN_FIELDS = ("answer_source", "condition", "intercept", "slope", "feature_clip", "selected_threshold",
                  "selected_fixed_policy", "fit_qids", "n_fit_questions", "fit_split", "method")
+PUBLIC_KEYS = {"schema_version", "protocol", "source_input_sha256", "main_dataset_sha256", "prior_public_sha256",
+               "selection", "frozen_policy", "rewards", "wrong_reward", "pass_reward", "prefix_ids", "jobs"}
+JOB_KEYS = {"score_id", "score_index", "source_job_id", "source_prompt_sha256", "qid", "group_id", "split",
+            "condition", "menu_id", "prefix_id", "fraction", "round", "reward", "arm", "rotation",
+            "option_source_ids", "allowed_actions", "prompt", "prompt_sha256", "block", "wait_label",
+            "execution", "source_score_id", "synthetic_case"}
 
 
 def digest(value: Any) -> str:
@@ -67,7 +73,8 @@ def frozen_parameters(fitted: dict[str, Any], selected_qids: list[str]) -> dict[
 
 def validate_public(package, dataset, source, previous, fitted, config):
     """Reconstruct exact prompts and join gold only after source validation."""
-    if package.get("schema_version") != "imcqa-transfer-public-v1" or package.get("protocol") != PROTOCOL:
+    if (set(package) != PUBLIC_KEYS or package.get("schema_version") != "imcqa-transfer-public-v1"
+            or package.get("protocol") != PROTOCOL):
         raise ValueError("transfer public schema/protocol differs")
     if (package.get("rewards") != list(REWARDS) or package.get("wrong_reward") != -1
             or package.get("pass_reward") != 0 or package.get("prefix_ids") != list(old.PREFIX_IDS)):
@@ -95,6 +102,10 @@ def validate_public(package, dataset, source, previous, fitted, config):
     # Ranking is outcome-blind. The exact frozen salt and complete manifest are
     # independently checked against the eligible original development corpus.
     salt = package["selection"]["salt"]
+    if salt != config["selection"]["salt"] or salt != "imcqa-frozen-transfer-20261004":
+        raise ValueError("frozen question selection salt differs")
+    if package["selection"]["qid_category"] != {qid: questions[qid]["source"]["category"] for qid in qids}:
+        raise ValueError("public categories differ from original source")
     excluded_groups = {questions[qid]["group_id"] for qid in excluded}
     eligible = [qid for qid, q in questions.items() if q["split"] == "selection" and qid not in excluded
                 and q["group_id"] not in excluded_groups]
@@ -135,6 +146,8 @@ def validate_public(package, dataset, source, previous, fitted, config):
         raise ValueError("missing original source job")
     seen, ids, enriched = set(), set(), []
     for index, job in enumerate(package["jobs"]):
+        if set(job) != JOB_KEYS:
+            raise ValueError("unexpected public job fields")
         key = tuple(job[name] for name in ("qid", "condition", "round", "rotation", "arm"))
         if key not in expected or key in seen or job["score_id"] in ids or job["score_index"] != index:
             raise ValueError("duplicate, unexpected, or unordered public state")
@@ -272,7 +285,7 @@ def evaluate(views, fits, *, samples=20000, seed=1):
                 "n_questions": len(qids), "mean_delta": float(delta.mean()),
                 "ci95": np.quantile(boot, [.025, .975]).tolist(),
                 "ci98_75": np.quantile(boot, [.00625, .99375]).tolist(), "bonferroni_family_size": 4,
-                "interval_method": "question percentile bootstrap; four preregistered reward contrasts"}
+                "interval_method": "question percentile bootstrap; four prespecified reward contrasts"}
             contrast_rows.append(result); current[right] = result
         reward_ci = np.quantile(threshold[indices].mean(axis=1), [.025, .975]).tolist()
         vs_pass = reward_ci[0] > 0
@@ -508,6 +521,11 @@ def main():
     settings = config["analysis"]
     if settings["bootstrap_samples"] != 20000 or settings["bootstrap_seed"] != 1:
         raise ValueError("frozen bootstrap design differs")
+    contrasts = {(row["condition"], row["left"], row["right"]) for row in settings["primary_contrasts"]}
+    if (len(settings["primary_contrasts"]) != 4 or contrasts != {(menu,"frozen_plain_threshold",baseline)
+            for menu in MENUS for baseline in ("native_wait","frozen_plain_fixed")}
+            or settings["primary_family_size"] != 4 or settings["primary_confidence_level"] != .9875):
+        raise ValueError("frozen primary comparison family differs")
     summary, records = evaluate(views,fits,samples=settings["bootstrap_samples"],seed=settings["bootstrap_seed"])
     args.out.mkdir(parents=True,exist_ok=False)
     old.write_json(args.out/"summary.json", summary)
