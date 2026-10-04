@@ -32,6 +32,10 @@ OMISSION_MARKER = "[Question text withheld in this control.]"
 CACHE_PREPARE_SHA256 = "95cc6dcd2e99e74597c95c1bf4580457dd843a01053267cf3888b21461a7a1e0"
 PINNED_VERSIONS = {"torch": "2.6.0", "transformers": "4.51.3", "tokenizers": "0.21.1",
                    "safetensors": "0.5.3", "huggingface-hub": "0.30.2"}
+SOURCE_FILES = ("scripts/imcqa_wait_scoring.py", "scripts/acl_paired_prompt_scoring.py",
+                "scripts/acl_option_scoring.py", "scripts/jane_gpu_backend.py",
+                "scripts/jane_qwen_backend.py", "scripts/jane_output_constraints.py",
+                "configs/imcqa_wait_pilot.json")
 
 
 def normalize_public_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -165,6 +169,10 @@ def join_job_gold(job: dict[str, Any], questions: dict[str, dict[str, Any]]) -> 
         raise ValueError("invalid round")
     if job["prefix_id"] != PREFIX_IDS[round_number - 1]:
         raise ValueError("round/prefix mismatch")
+    if "reward" in job and job["reward"] != REWARDS[round_number - 1]:
+        raise ValueError("job reward differs from declared round reward")
+    if "allowed_actions" in job and job["allowed_actions"] != ("ABCD" if variant == "forced" else "ABCDE"):
+        raise ValueError("job legal action set differs from condition")
     prefix = question["prefix_index"][job["prefix_id"]]
     condition = job["condition"]
     if condition not in MENUS:
@@ -573,7 +581,15 @@ def validate_provenance(metadata: dict[str, Any], promotion: dict[str, Any], cac
     return {"pinned_stack_passed": True, "original_cache_files_match": True,
             "n_tensors": len(original), "original_dtype_counts": dict(dtypes),
             "sample_preservation_assertions_passed": True,
-            "scope": "Checks retained dtype/sample assertions and source hashes; not an independent attestation of every remote tensor value."}
+            "scope": "Checks retained dtype/sample assertions and original model/tokenizer file hashes; not an independent attestation of every remote tensor value."}
+
+
+def validate_source_metadata(metadata: dict[str, Any], source_root: Path) -> dict[str, str]:
+    """Require retained scorer/helper/config source hashes to match this checkout."""
+    expected = {name: sha256(source_root / name) for name in SOURCE_FILES}
+    if metadata.get("source_files_sha256") != expected:
+        raise ValueError("retained scorer/helper/config source hashes differ from analysis checkout")
+    return expected
 
 
 def validate_model_output(directory: Path, tag: str, package: dict[str, Any], jobs: list[dict[str, Any]],
@@ -603,6 +619,7 @@ def validate_model_output(directory: Path, tag: str, package: dict[str, Any], jo
         raise ValueError("original cache preparation receipt hash mismatch")
     cache = load_json(cache_path).get("model_receipts", {}).get(tag, {})
     provenance = validate_provenance(metadata, load_json(directory / "dtype_promotion.json"), cache)
+    source_hashes = validate_source_metadata(metadata, Path(__file__).resolve().parents[1])
     if receipt.get("protocol") != package["protocol"] or metadata.get("protocol") != package["protocol"]:
         raise ValueError("receipt/metadata protocol mismatch")
     if any(row.get("model_tag") != tag or row.get("schema_version") != "imcqa-wait-scores-v1" for row in raw_rows):
@@ -661,6 +678,7 @@ def validate_model_output(directory: Path, tag: str, package: dict[str, Any], jo
              "scores_sha256": sha256(score_path), "metadata_sha256": sha256(directory / "metadata.json"),
              "elapsed_seconds": receipt["elapsed_seconds"], "numerical_checks": checks,
              "provenance": provenance, "cache_prepare_receipt_sha256": CACHE_PREPARE_SHA256,
+             "verified_source_files_sha256": source_hashes,
              "active_only_replay": {"n_questions": len(expected_qids), "n_episodes": len(expected_qids) * 2,
                                     "n_visited_states": len(expected_live), "passed": True,
                                     "max_action_probability_difference": max(check["max_action_probability_difference"] for check in live_checks)},
@@ -793,6 +811,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     config = load_json(args.config)
+    if sha256(args.config) != sha256(Path(__file__).resolve().parents[1] / "configs/imcqa_wait_pilot.json"):
+        raise ValueError("analysis config differs from source-verified pilot config")
     for path, name in ((args.frozen_source, "public/main_jobs.json"), (args.gold, "evaluator/main_dataset.json")):
         if sha256(path) != config["frozen_source_sha256"][name]:
             raise ValueError(f"immutable source hash mismatch: {name}")

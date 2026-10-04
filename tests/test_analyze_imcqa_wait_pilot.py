@@ -238,3 +238,23 @@ def test_provenance_rejects_corrupted_stack_cache_or_dtype_evidence(corruption):
         promotion["sampled_values_preserved_exactly"] = False
     with pytest.raises(ValueError):
         a.validate_provenance(metadata, promotion, cached)
+
+
+def test_source_hash_validation_detects_changed_scorer_or_config(tmp_path):
+    for name in a.SOURCE_FILES:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(name)
+    metadata = {"source_files_sha256": {name: a.sha256(tmp_path / name) for name in a.SOURCE_FILES}}
+    assert a.validate_source_metadata(metadata, tmp_path) == metadata["source_files_sha256"]
+    (tmp_path / "configs/imcqa_wait_pilot.json").write_text("changed")
+    with pytest.raises(ValueError, match="source hashes"):
+        a.validate_source_metadata(metadata, tmp_path)
+
+
+@pytest.mark.parametrize("field,value", (("reward", .7), ("allowed_actions", "ABCD")))
+def test_primary_public_job_must_keep_reward_and_wait_action(field, value):
+    dataset, jobs = fixture()
+    jobs[0][field] = value
+    with pytest.raises(ValueError, match="reward|action set"):
+        a.join_job_gold(jobs[0], a.frozen_index(dataset))
