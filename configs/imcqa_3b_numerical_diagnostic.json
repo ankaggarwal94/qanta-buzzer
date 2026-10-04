@@ -1,0 +1,69 @@
+{
+  "schema_version": "imcqa-3b-numerical-config-v1",
+  "protocol": "imcqa_3b_numerical_shape_diagnostic_v1",
+  "manifest_sha256": "a2cf2745e7291f43eb29ed7f7676e01f8edbf7b45326d59c337b32fa8aebc40a",
+  "purpose": "Bounded numerical-only shape diagnosis of the retained 3B protocol failure; no production inference or gate relaxation.",
+  "model_tag": "qwen3b",
+  "contexts": 20,
+  "original_diagnostic_contexts": 10,
+  "prior_overlap_contexts": 10,
+  "logical_evaluations": 200,
+  "model_forward_calls": 117,
+  "candidate_batch_sizes": [
+    2,
+    4,
+    8
+  ],
+  "candidate_paths": [
+    "uncached",
+    "cached"
+  ],
+  "single_passes": [
+    "reference",
+    "exact_replay",
+    "reversed_order"
+  ],
+  "negative_control": "Reproduce the exact original ten-context cached32 and uncached32 batches.",
+  "numerical_checks": {
+    "raw_logit_atol": 0.001,
+    "raw_logit_rtol": 1e-05,
+    "probability_atol": 0.001,
+    "allow_action_argmax_flip": false,
+    "allow_candidate_argmax_flip": false,
+    "single_replay_exact": true,
+    "single_reverse_order_exact": true
+  },
+  "global_reference_gates": [
+    "single_exact_replay",
+    "single_exact_reverse_order",
+    "prior_overlap",
+    "prior_single_reference"
+  ],
+  "candidate_eligibility": "All global reference gates and candidate-vs-reference raw-logit/probability/action-and-candidate-argmax checks must pass. Candidate failures remain findings.",
+  "path_selection": "Fastest measured compatible candidate by one complete twenty-context pass; lexical name breaks exact timing ties. Exploratory, not production approval.",
+  "candidate_batch_replay_tested": false,
+  "production_approved": false,
+  "automatic_production_launch": false,
+  "sample_selection_uses_gold": false,
+  "limits": [
+    "Twenty contexts were deliberately chosen for numerical diagnosis, not representativeness.",
+    "Candidate batch replay and batch permutation must be reviewed and validated separately before any production recovery.",
+    "No change to original failed status or tolerance.",
+    "Single-reference fallback requires a separately reviewed protocol if no batched candidate is compatible."
+  ],
+  "budget": {
+    "schema": "imcqa-3b-numerics-budget-v1",
+    "ceiling_usd": "0.50",
+    "allocation_rate_usd_per_second": "0.00063924",
+    "worker_timeout_seconds": 360,
+    "internal_deadline_seconds": 300,
+    "startup_timeout_seconds": 90,
+    "scaledown_seconds": 2,
+    "gpu_calls": 1,
+    "automatic_retries": 0,
+    "cpu_staging_allowance_usd": "0.01723232",
+    "contingency_usd": "0.10",
+    "reserved_estimate_usd": "0.40616880",
+    "invoice_verified": false
+  }
+}

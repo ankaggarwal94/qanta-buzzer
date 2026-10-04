@@ -1,0 +1,141 @@
+{
+  "schema_version": "imcqa-binary-pilot-config-v1",
+  "protocol": "imcqa_binary_stopping_fp32_v1",
+  "purpose": "Exploratory separation of a frozen plain-MCQA answer proposal from a binary submit-versus-defer controller, including reversed action encodings.",
+  "model_tag": "qwen7b",
+  "model": "Qwen/Qwen2.5-7B-Instruct",
+  "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+  "selection": {
+    "source": "The exact 40 previously inspected protocol diagnostic questions",
+    "n_questions": 40,
+    "n_per_split": 20,
+    "splits": [
+      "calibration",
+      "selection"
+    ],
+    "test_questions": 0,
+    "already_inspected": true
+  },
+  "input_bindings": {
+    "prior_protocol_run": "imcqa-protocol-dev-20261004",
+    "prior_public_sha256": "3c84125a4891f276565f127436b1e2fa7aa3e30ffbab75c55549e742c145fdbe",
+    "prior_qwen7b_scores_sha256": "56c6bd4ab93064891b34447b6de37e9070de0a8cc42bc64fbbf998cbea4c7540",
+    "original_source_jobs_sha256": "9bfeaf2d86116ced0e8c55c3c390d3be12050ad38820b4e02c6ed684cc8786bf",
+    "original_gold_sha256": "d16d8e611965fba3829f01cda936145743b7d46187030e2138caf52068aa9b62"
+  },
+  "proposal": {
+    "source_arm": "plain",
+    "rotation": 0,
+    "selection": "Argmax A-D logits with canonical A-D order for exact ties",
+    "fixed_for_current_decision": true,
+    "future_proposals_may_change": true,
+    "confidence_supplied_to_controller": false,
+    "real_gold_supplied_to_controller": false
+  },
+  "actions": {
+    "labels": [
+      "X",
+      "Y"
+    ],
+    "encodings": [
+      "submit_x",
+      "submit_y"
+    ],
+    "semantic_actions": [
+      "SUBMIT",
+      "DEFER"
+    ],
+    "defer_nonterminal": "WAIT",
+    "defer_terminal": "PASS",
+    "exact_logit_tie": "DEFER"
+  },
+  "rewards": [
+    1.0,
+    0.8,
+    0.6,
+    0.4,
+    0.2
+  ],
+  "wrong_reward": -1.0,
+  "pass_reward": 0.0,
+  "execution": {
+    "contexts_per_model": 832,
+    "real_contexts_per_model": 800,
+    "synthetic_contexts_per_model": 32,
+    "numerical_contexts_max_per_model": 32,
+    "active_replay_contexts_max_per_model": 80,
+    "precision": "float32",
+    "tf32": false,
+    "attention": "eager",
+    "seed": 1,
+    "sampling": false,
+    "generation": false,
+    "automatic_retries": 0
+  },
+  "synthetic_design": {
+    "known_correct_rounds_1_and_5": 16,
+    "known_incorrect_round_1_future_certain": 4,
+    "known_incorrect_terminal": 4,
+    "uniform_round_1_future_certain": 4,
+    "uniform_terminal": 4,
+    "both_label_encodings": true,
+    "failed_comprehension_decisions": "Retained scientific outcomes; not a gate or a reason to change the prompts"
+  },
+  "numerical_checks": {
+    "raw_logit_atol": 0.001,
+    "raw_logit_rtol": 1e-05,
+    "probability_atol": 0.001,
+    "allow_semantic_argmax_flip": false,
+    "exact_replay": true,
+    "checks": [
+      "cached-versus-uncached",
+      "single-versus-batch",
+      "exact-replay",
+      "pair-permutation",
+      "production-versus-diagnostics",
+      "active-only-replay"
+    ]
+  },
+  "analysis": {
+    "bootstrap_samples": 2000,
+    "bootstrap_seed": 1,
+    "unit": "question; retain both menus, all five rounds and both encodings",
+    "splits_separate": true,
+    "primary_contrasts": [
+      "Semantic stopping decisions and probability total variation between reversed X/Y encodings",
+      "Episodic reward between reversed X/Y encodings",
+      "Binary controller versus original WAIT stopping schedule, both using the identical saved plain rotation-zero answer proposals"
+    ],
+    "references": [
+      "always PASS",
+      "fixed answer rounds 1-5",
+      "same-proposal gold-assisted hindsight"
+    ],
+    "exact_ties": "Report counts; the frozen policy defers on exact ties",
+    "multiplicity": "Exploratory paired intervals; no multiplicity-adjusted confirmatory claim"
+  },
+  "budget": {
+    "ceiling_usd": "0.80",
+    "worker_timeout_seconds": 900,
+    "internal_deadline_seconds": 780,
+    "startup_timeout_seconds": 90,
+    "scaledown_seconds": 2,
+    "worker_rate_usd_per_second": "0.00063924",
+    "cpu_staging_allowance_usd": "0.01723232",
+    "contingency_usd": "0.10",
+    "reserved_estimate_usd": "0.75135840",
+    "invoice_verified": false,
+    "pricing_url": "https://modal.com/pricing/",
+    "followup_combined_ceiling_usd": "4.00",
+    "price_verified_date_utc": "2026-10-04"
+  },
+  "interpretation_limits": [
+    "All 40 real questions have already been inspected; these are exploratory development results.",
+    "Fixed plain answer proposals isolate stopping comparisons from candidate replacement within this run.",
+    "Binary versus five-way control changes the complete decision interface and instructions; it does not isolate a pure token preference.",
+    "Reversed X/Y labels test only these two encodings, not general language or label invariance.",
+    "Conditional next-token scores are not complete generated-response frequencies or calibrated correctness probabilities.",
+    "Gold-assisted hindsight is not a deployable policy or a performance forecast.",
+    "No broad model ranking, IRT estimate, fresh-test result, or optimal-stopping claim."
+  ]
+}
