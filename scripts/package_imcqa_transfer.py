@@ -263,6 +263,60 @@ PYCOMPARE
     return text
 
 
+def supplemental_audits(args, receipt: dict) -> list[Entry]:
+    """Include only two named, source-bound input audits from an optional directory.
+
+    Never recurse through review notes, which may contain unrelated analysis,
+    prior score sets, or working code.
+    """
+    if args.audit_dir is None:
+        return []
+    if not args.audit_dir.is_dir() or args.audit_dir.is_symlink():
+        raise ValueError("supplemental audit directory must be a regular directory")
+    entries = []
+    preflight = args.audit_dir / "transfer_preflight_audit.json"
+    if preflight.is_file():
+        value = load(preflight)
+        bound = value.get("audited_files_sha256", {})
+        if (value.get("schema_version") != "imcqa-frozen-transfer-independent-audit-v1"
+                or value.get("status") != "passed" or value.get("imports_project_analysis_code") is not False
+                or value.get("public_sha256") != receipt["public_sha256"]
+                or value.get("input_audit", {}).get("n_jobs") != 8000
+                or value.get("input_audit", {}).get("n_questions") != 100 or "result_audit" in value
+                or bound.get("public") != receipt["public_sha256"]
+                or bound.get("gold") != receipt["input_sha256"]["main_dataset"]
+                or bound.get("fits") != receipt["input_sha256"]["fitted_parameters"]
+                or bound.get("prior_public") != receipt["input_sha256"]["prior_public"]):
+            raise ValueError("supplemental preflight audit is incomplete or source-mismatched")
+        entries.append(Entry("audit/transfer_preflight_audit.json", path=preflight))
+    covariates = args.audit_dir / "transfer_covariate_audit.json"
+    if covariates.is_file():
+        value = load(covariates)
+        bound = value.get("source_sha256", {})
+        options = value.get("option_audit", {})
+        public = json.loads(gzip.decompress(committed_bytes("imcqa_transfer_public/public.json.gz")))
+        policy_raw = (json.dumps(public["frozen_policy"], sort_keys=True, ensure_ascii=False,
+                                 separators=(",", ":"), allow_nan=False) + "\n").encode()
+        if (value.get("schema_version") != "imcqa-transfer-covariate-audit-v1"
+                or value.get("status") != "complete" or value.get("cohorts_disjoint") is not True
+                or value.get("new_scores_read") is not False or value.get("model_inference_calls") != 0
+                or bound.get("transfer_public") != receipt["public_sha256"]
+                or bound.get("dataset") != receipt["input_sha256"]["main_dataset"]
+                or bound.get("frozen_policy") != hashlib.sha256(policy_raw).hexdigest()
+                or bound.get("old_protocol") != digest(args.prior/"inputs/protocol/public.json")
+                or value.get("cohorts", {}).get("transfer_100", {}).get("n_questions") != 100
+                or options.get("n_score_contexts") != 8000
+                or options.get("empty_or_duplicate_or_mapping_issues") != []
+                or options.get("unbalanced_strata") != []
+                or options.get("displayed_gold_counts") != dict.fromkeys("ABCD", 2000)):
+            raise ValueError("supplemental covariate audit failed or source-mismatched")
+        entries.append(Entry("audit/transfer_covariate_audit.json", path=covariates))
+        entries.append(Entry("inputs/prior_protocol_public.json", path=args.prior/"inputs/protocol/public.json"))
+    if not entries:
+        raise ValueError("supplemental audit directory contains neither recognized input audit")
+    return entries
+
+
 def write_archive(out: Path, entries: list[Entry], metadata: dict) -> dict:
     names = [e.name for e in entries]
     if len(names) != len(set(names)) or "artifact_manifest.json" in names:
@@ -296,6 +350,8 @@ def main():
     for name in ("prior", "run", "analysis", "audit", "report", "provenance", "out"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--independent-audit-script", type=Path)
+    parser.add_argument("--audit-dir", type=Path,
+                        help="Optionally include only transfer_preflight_audit.json and transfer_covariate_audit.json from this directory")
     args = parser.parse_args()
     receipt, summary, provenance, script = validate(args)
     entries = [
@@ -310,6 +366,8 @@ def main():
         Entry("provenance.json", path=args.provenance),
     ]
     entries += collect(args.run, "run") + collect(args.analysis, "analysis")
+    additional_audits = supplemental_audits(args, receipt)
+    entries += additional_audits
     if script:
         entries.append(Entry("audit/independent_transfer_audit.py", path=script))
     entries.append(Entry("reproduce_cpu.sh", data=reproduction_script(receipt["public_sha256"], script is not None).encode()))
@@ -347,6 +405,11 @@ inputs/ retains the four complete original files needed for source hash checks,
 plus only the prior 7B model metadata and cache receipt. These older corpora
 contain 5,000 questions; they do not expand the transfer sample beyond 100.
 run/ contains only the new run evidence. analysis/ contains its completed outputs.
+Optional named preflight and input-covariate audits are retained in audit/ when
+provided; they describe checks made without reading the new outcome scores.
+When the covariate audit is included, inputs/prior_protocol_public.json preserves
+the earlier protocol question identities it references. The CPU script verifies
+these supplemental file hashes but does not recompute their descriptive counts.
 No prior full score sets, model weights, credentials, provider workspace files,
 or git-backed project source code are included. The standalone auditor and
 generated reproduction helper are included for independent verification.
@@ -360,6 +423,7 @@ its own final checksum. Resource cost is an estimate; the invoice is unverified.
         "analysis_commit": ANALYSIS_COMMIT, "repository": REPOSITORY.removesuffix(".git"),
         "n_questions": summary["n_questions"], "n_score_rows": summary["n_score_rows"],
         "public_sha256": receipt["public_sha256"], "independent_audit_passed": True,
+        "additional_input_audits": [entry.name for entry in additional_audits if entry.name.startswith("audit/")],
         "git_backed_source_code_included": False})
     print(json.dumps(result, sort_keys=True))
 
