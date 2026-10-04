@@ -1,0 +1,239 @@
+{
+  "schema_version": "imcqa-protocol-pilot-config-v1",
+  "protocol": "imcqa_protocol_diagnosis_fp32_v1",
+  "purpose": "Exploratory development diagnosis of plain versus game-framed candidate selection, answer order, WAIT labels, and synthetic protocol comprehension.",
+  "seed": 1,
+  "models": {
+    "qwen3b": {
+      "model": "Qwen/Qwen2.5-3B-Instruct",
+      "revision": "aa8e72537993ba99e69dfaafa59ed015b17504d1"
+    },
+    "qwen7b": {
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "a09a35458c702b33eeacc393d103063234e8bc28"
+    }
+  },
+  "frozen_source_sha256": {
+    "public/main_jobs.json": "9bfeaf2d86116ced0e8c55c3c390d3be12050ad38820b4e02c6ed684cc8786bf",
+    "evaluator/main_dataset.json": "d16d8e611965fba3829f01cda936145743b7d46187030e2138caf52068aa9b62",
+    "qid_category.json": "5e814f8a2f8081566d9980b8de4e7c069dde27748307106efdc6412a0d0d731f"
+  },
+  "selection": {
+    "source": "Exact 40 diagnostic question IDs in the completed WAIT pilot",
+    "n_questions": 40,
+    "n_per_split": 20,
+    "splits": [
+      "calibration",
+      "selection"
+    ],
+    "test_questions": 0,
+    "already_inspected": true
+  },
+  "prefix_ids": [
+    "p2",
+    "p4",
+    "p6",
+    "p8",
+    "p10"
+  ],
+  "rewards": [
+    1.0,
+    0.8,
+    0.6,
+    0.4,
+    0.2
+  ],
+  "wrong_reward": -1.0,
+  "pass_reward": 0.0,
+  "main_factorial": {
+    "questions": 40,
+    "menus": [
+      "independent_pool",
+      "same_category_pool"
+    ],
+    "rounds": 5,
+    "rotations": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "arms": [
+      "plain",
+      "forced",
+      "wait"
+    ],
+    "contexts_per_model": 4800,
+    "rotation_rule": "Candidate content rotates cyclically through A-D; map predictions to canonical identities before comparison."
+  },
+  "label_swap": {
+    "questions": 40,
+    "menus": [
+      "independent_pool",
+      "same_category_pool"
+    ],
+    "rounds": 5,
+    "rotation": 0,
+    "wait_label": "A",
+    "candidate_labels": [
+      "E",
+      "B",
+      "C",
+      "D"
+    ],
+    "contexts_per_model": 400,
+    "interpretation": "Targeted A/E action-label relabeling with candidate content order unchanged; not complete action-label permutation invariance."
+  },
+  "comprehension": {
+    "contexts_per_model": 32,
+    "known_answer": {
+      "rounds": [
+        1,
+        5
+      ],
+      "canonical_answers": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "wait_labels": [
+        "E",
+        "A"
+      ],
+      "count": 16
+    },
+    "uniform_future_certain": {
+      "round": 1,
+      "rotations": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "wait_labels": [
+        "E",
+        "A"
+      ],
+      "count": 8
+    },
+    "uniform_terminal": {
+      "round": 5,
+      "rotations": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "wait_labels": [
+        "E",
+        "A"
+      ],
+      "count": 8
+    },
+    "failed_model_decisions": "Scientific findings, not a reason to discard data or change prompts mid-run.",
+    "expected_actions_in_model_prompts": false,
+    "evaluator_fixture_uploaded": false
+  },
+  "execution": {
+    "contexts_per_model": 5232,
+    "new_contexts_per_model": 4032,
+    "reused_contexts_per_model": 1200,
+    "new_contexts_total": 8064,
+    "reused_contexts_total": 2400,
+    "numerical_contexts_max_per_model": 32,
+    "overlap_contexts_max_per_model": 16,
+    "active_replay_contexts_max_per_model": 80,
+    "precision": "float32",
+    "tf32": false,
+    "attention": "eager",
+    "sampling": false,
+    "generation": false,
+    "automatic_retries": 0,
+    "gold_on_inference_worker": false
+  },
+  "reuse": {
+    "prior_run_id": "imcqa-wait-dev-20261004",
+    "prior_launch_commit": "102cdb2a1d71d4d2bd5b1ae66ef8f50e1ea1f1ef",
+    "prior_public_sha256": "b5f5f6b5437942904a90f8e49d153ead9e70f215ec855e95db3323951a55078e",
+    "prior_scores_sha256": {
+      "qwen3b": "ec6a040ee3cc6f33eff6aaf4ba0befd091e3cdad86c2d8f2ff1fb371502a9035",
+      "qwen7b": "3b74f03cfb8694209881021559b898efcb27b0fcdbff0889b96c7d1ad91e9bae"
+    },
+    "strata": [
+      "main/forced/rotation0",
+      "main/wait/rotation0",
+      "main/wait/rotation1"
+    ],
+    "rule": "Require exact prompt, scored tokens, output boundary, model files, precision and runtime identities; preserve original rows and join through an explicit identity map."
+  },
+  "numerical_checks": {
+    "raw_logit_atol": 0.001,
+    "raw_logit_rtol": 1e-05,
+    "probability_atol": 0.001,
+    "allow_action_argmax_flip": false,
+    "allow_candidate_argmax_flip": false,
+    "checks": [
+      "cached-versus-uncached",
+      "single-versus-batch",
+      "exact-replay",
+      "pair-permutation",
+      "prior-run-overlap",
+      "production-versus-diagnostics",
+      "active-only-replay"
+    ]
+  },
+  "analysis": {
+    "bootstrap_samples": 2000,
+    "bootstrap_seed": 1,
+    "unit": "question; retain all menus, rotations, rounds and arms together",
+    "splits_separate": true,
+    "main_comparisons": [
+      "plain minus forced candidate correctness",
+      "forced minus WAIT-conditional candidate correctness",
+      "semantic agreement across four candidate rotations",
+      "primary versus A/E relabeling actions and episodic rewards"
+    ],
+    "references": [
+      "fixed answer round using each prompt own candidates",
+      "always terminal PASS",
+      "hindsight best same-prompt candidate or PASS; unavailable to deployable policies"
+    ],
+    "comprehension": "Exact expected semantic action derived from explicitly supplied certainty and payoff premises; report all cases, not a significance test.",
+    "calibration": "Optional original-pilot calibration-only fit; selection outputs remain descriptive because both sets have already been inspected.",
+    "multiplicity": "Exploratory intervals, not multiplicity-adjusted confirmatory claims."
+  },
+  "budget": {
+    "ceiling_usd": "4.00",
+    "gpu_function_timeout_seconds": {
+      "qwen3b": 2400,
+      "qwen7b": 3000
+    },
+    "scorer_deadline_seconds": {
+      "qwen3b": 2250,
+      "qwen7b": 2850
+    },
+    "startup_timeout_seconds": 90,
+    "scaledown_seconds": 2,
+    "gpu_rate_usd_per_worker_second": "0.00063924",
+    "cpu_staging_allowance_usd": "0.01723232",
+    "contingency_usd": "0.40",
+    "reserved_estimate_usd": "3.98674848",
+    "invoice_verified": false,
+    "current_rate_recheck_required_before_launch": true,
+    "throughput_gate": "Forecast all remaining production and diagnostic work with conservative batch timing; stop before production if it cannot fit the worker deadline and total reservation",
+    "budget_stop": "Preserve partial evidence, never retry or change precision automatically; any smaller sample requires a newly frozen design before pilot outcomes are inspected",
+    "price_verified_utc": "2026-10-04T02:43:38Z",
+    "pricing_url": "https://modal.com/pricing",
+    "scope": "New two-worker run only. Reservation is not an invoice or an account-wide billing limit."
+  },
+  "interpretation_limits": [
+    "40 independent development questions; more contexts do not increase that sample size.",
+    "Single-token deterministic action scoring, not generated response frequencies.",
+    "Plain versus game changes the instruction block; it does not isolate each sentence or reward component.",
+    "Four cyclic rotations balance candidate positions but do not exhaust all 24 candidate orders.",
+    "A/E relabeling is a targeted control; it changes both action and displaced-candidate labels.",
+    "Word-fraction prefixes are retained to isolate prompt effects; clue-boundary evaluation is a subsequent protocol change.",
+    "No confirmatory test questions, broad model ranking, IRT ability, or optimal stopping claim."
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "status": "complete",
+  "verified_trajectories": 800,
+  "inference_calls": 0,
+  "analysis_receipt_sha256": "8e32a749ea2460adb0af4644df94c62084f06c26b79f6edb85d71839a2d82371",
+  "analyzer_sha256": "52bde5e56cf3cb08c9d4ac2b25e71cd9b89c59e0d4b1cd6fa7947f1c02ec60b6",
+  "prior_public_sha256": "b5f5f6b5437942904a90f8e49d153ead9e70f215ec855e95db3323951a55078e"
+}
