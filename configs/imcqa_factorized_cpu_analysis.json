@@ -1,0 +1,90 @@
+{
+  "schema_version": "imcqa-factorized-cpu-plan-v1",
+  "analysis_protocol": "imcqa_factorized_answer_stopping_cpu_v1",
+  "scope": "Post-hoc development analysis; methods fixed before fitting these new policies, after earlier selection-split results were inspected.",
+  "model": "qwen7b",
+  "source_public_sha256": "3c84125a4891f276565f127436b1e2fa7aa3e30ffbab75c55549e742c145fdbe",
+  "prior_public_sha256": "b5f5f6b5437942904a90f8e49d153ead9e70f215ec855e95db3323951a55078e",
+  "inference_launch_commit": "dc02ad3fedee51eee63913a0bd9ddca0b6678348",
+  "input_block": "factorial",
+  "n_states": 4800,
+  "n_questions": 40,
+  "fit_questions": 20,
+  "evaluation_questions": 20,
+  "fit_split": "calibration",
+  "evaluation_split": "selection",
+  "answer_sources": ["plain", "forced", "wait"],
+  "menus": ["independent_pool", "same_category_pool"],
+  "rounds": [1, 2, 3, 4, 5],
+  "rotations": [0, 1, 2, 3],
+  "correct_rewards": [1.0, 0.8, 0.6, 0.4, 0.2],
+  "wrong_reward": -1.0,
+  "pass_reward": 0.0,
+  "calibration": {
+    "separate_fit_by": ["answer_source", "menu"],
+    "feature": "logit of maximum candidate-conditional probability",
+    "feature_clip": [0.000001, 0.999999],
+    "form": "sigmoid(intercept + nonnegative_slope * feature)",
+    "objective": "mean binary log loss plus 0.01*slope^2/2; intercept unpenalized",
+    "l2": 0.01,
+    "weights": "Equal questions; equal rounds and rotations within each question",
+    "optimizer": "L-BFGS-B",
+    "maxiter": 1000,
+    "ftol": 1e-12,
+    "gtol": 1e-08,
+    "initial_intercept": "logit((number_correct+0.5)/(number_states+1))",
+    "initial_slope": 0.0,
+    "degenerate_labels": "Keep smoothed initial intercept and zero slope"
+  },
+  "stop_policies": {
+    "fixed": ["PASS", 1, 2, 3, 4, 5],
+    "calibration_selected_fixed": "Highest mean calibration reward; ties within 1e-12 prefer PASS then earlier round",
+    "myopic": "First round with calibrated correctness probability strictly greater than 1/(1+correct_reward); otherwise PASS",
+    "threshold_grid": [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0],
+    "threshold_rule": "First round with calibrated correctness probability >= threshold; otherwise PASS",
+    "threshold_selection": "Highest mean calibration episodic reward over grid and explicit PASS; ties within 1e-12 prefer PASS then higher threshold"
+  },
+  "factorization": {
+    "crossed_answer_sources": ["plain", "forced", "wait"],
+    "crossed_stop_sources": ["plain", "forced", "wait"],
+    "crossed_stop_policies": ["myopic", "calibration_selected_threshold", "calibration_selected_fixed"],
+    "native_schedule": "First A-D commitment from the validated native WAIT condition; same stopping round is replayed with each answer source",
+    "primary_contrasts": [
+      "Plain minus WAIT answers under the identical native WAIT stopping schedule",
+      "Plain minus WAIT answers under the identical WAIT-derived myopic stopping schedule",
+      "Plain minus WAIT answers under the identical WAIT-derived calibration-selected threshold stopping schedule"
+    ],
+    "secondary_contrasts": [
+      "Own-source plain versus WAIT external pipelines",
+      "Own-source plain and WAIT external pipelines versus native WAIT",
+      "Full crossed answer-source and stop-source policy tables"
+    ]
+  },
+  "plain_cyclic_ensemble": {
+    "rule": "Arithmetic mean of canonical candidate probabilities across all four cyclic rotations at each question/menu/round; choose canonical A-D argmax",
+    "candidate_tie_break": "First canonical label in A-D order",
+    "calibration": "Separate per-menu fit with the same fixed hyperparameters on 20 calibration questions times five rounds",
+    "policies": ["all_fixed_rounds", "PASS", "myopic", "calibration_selected_threshold", "calibration_selected_fixed"],
+    "comparison": "Complete ensemble pipeline versus the corresponding four-order-averaged plain pipeline, paired by question",
+    "invariance_scope": "Invariant by construction to reindexing the closed four-cyclic-rotation group; no claim about all 24 permutations or the underlying model"
+  },
+  "evaluation": {
+    "primary_endpoint": "Mean episodic reward",
+    "secondary_endpoints": ["commitment rate", "wrong answers among commitments", "correct commitments per episode", "mean stopping round", "Brier score", "binary log loss"],
+    "bootstrap_samples": 2000,
+    "bootstrap_seed": 1,
+    "bootstrap_unit": "Question; retain all menu, round, rotation and paired-condition observations",
+    "interval_scope": "Descriptive percentile intervals conditional on fixed fitted calibrators and selected policies; omit fitting/model-selection uncertainty and multiplicity correction",
+    "policy_fitting_order": "Fit and select using only calibration states, save the frozen parameter/selection receipt, then compute selection policy outcomes",
+    "hyperparameter_tuning_after_selection": false
+  },
+  "exclusions": ["Failed new 3B inference", "Action-label control states", "Synthetic comprehension states", "Original 100-question calibration baseline modification", "New model inference", "New questions", "Repeated response sampling"],
+  "limitations": [
+    "The selection questions were already inspected; this is not prospective confirmation or a fresh test.",
+    "A myopic positive-EV comparison with PASS does not estimate continuation value or solve optimal stopping.",
+    "Pooled-round correctness calibration does not guarantee calibration at each round or after policy-induced selection.",
+    "Crossed stopping schedules derived for one answer source are diagnostic interventions, not claims that their calibrated probabilities apply to another answer source.",
+    "Ensembling changes both answer probabilities and fitted calibration; its comparison is a complete-pipeline contrast.",
+    "Forty real questions remain the sample; rotations and counterfactual states do not increase the independent question count."
+  ]
+}
