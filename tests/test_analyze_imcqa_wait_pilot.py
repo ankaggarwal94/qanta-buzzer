@@ -208,3 +208,33 @@ def test_end_to_end_synthetic_report_keeps_splits_policies_and_paired_controls()
     comparisons = [row for row in report["paired_comparisons"] if row["comparison"].startswith("paired_models")]
     assert len(comparisons) == 8
     assert all(row["differences"]["mean_reward"]["mean"] == 0 for row in comparisons)
+
+
+def provenance_fixture():
+    cached = {"model": "fixture", "revision": "pinned", "model_files_sha256": {"model.safetensors": "a" * 64}}
+    metadata = {**cached, "versions": {**a.PINNED_VERSIONS}}
+    promotion = {"schema_version": "acl-paired-dtype-promotion-v1", "all_checks_passed": True,
+                 "sampled_values_preserved_exactly": True, "all_floating_tensors_fp32": True,
+                 "sample_rule": "first two and last two flattened values of every named tensor",
+                 "original": {"parameter:a": {"dtype": "torch.bfloat16", "shape": [3], "sample": [1., 2., 2., 3.]},
+                              "buffer:b": {"dtype": "torch.float32", "shape": [1], "sample": [1., 1.]}},
+                 "promoted_dtypes": {"parameter:a": "torch.float32", "buffer:b": "torch.float32"}}
+    return metadata, promotion, cached
+
+
+@pytest.mark.parametrize("corruption", ("version", "cache", "dtype", "sample", "assertion"))
+def test_provenance_rejects_corrupted_stack_cache_or_dtype_evidence(corruption):
+    metadata, promotion, cached = provenance_fixture()
+    assert a.validate_provenance(metadata, promotion, cached)["pinned_stack_passed"]
+    if corruption == "version":
+        metadata["versions"]["torch"] = "0.0.0"
+    elif corruption == "cache":
+        metadata["model_files_sha256"] = {"model.safetensors": "b" * 64}
+    elif corruption == "dtype":
+        promotion["promoted_dtypes"]["parameter:a"] = "torch.bfloat16"
+    elif corruption == "sample":
+        promotion["original"]["parameter:a"]["sample"] = [float("nan")] * 4
+    else:
+        promotion["sampled_values_preserved_exactly"] = False
+    with pytest.raises(ValueError):
+        a.validate_provenance(metadata, promotion, cached)

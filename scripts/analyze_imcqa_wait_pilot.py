@@ -29,6 +29,9 @@ REWARDS = (1.0, .8, .6, .4, .2)
 WRONG_REWARD = -1.0
 PASS_REWARD = 0.0
 OMISSION_MARKER = "[Question text withheld in this control.]"
+CACHE_PREPARE_SHA256 = "95cc6dcd2e99e74597c95c1bf4580457dd843a01053267cf3888b21461a7a1e0"
+PINNED_VERSIONS = {"torch": "2.6.0", "transformers": "4.51.3", "tokenizers": "0.21.1",
+                   "safetensors": "0.5.3", "huggingface-hub": "0.30.2"}
 
 
 def normalize_public_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -531,6 +534,48 @@ def validate_vocab_row(row: dict[str, Any]) -> None:
             raise ValueError("vocabulary argmax logit differs from selected token logit")
 
 
+def validate_provenance(metadata: dict[str, Any], promotion: dict[str, Any], cached: dict[str, Any]) -> dict[str, Any]:
+    """Verify stack, original file identity, and retained tensor-promotion evidence."""
+    versions = metadata.get("versions", {})
+    if set(versions) != set(PINNED_VERSIONS) or any(str(versions[key]).split("+")[0] != value for key, value in PINNED_VERSIONS.items()):
+        raise ValueError("runtime versions differ from pinned stack")
+    if cached.get("model") != metadata["model"] or cached.get("revision") != metadata["revision"]:
+        raise ValueError("original cache model/revision differs")
+    hashes = cached.get("model_files_sha256", {})
+    if (not hashes or metadata.get("model_files_sha256") != hashes or
+            not any(name.endswith(".safetensors") for name in hashes) or
+            any(not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest) for digest in hashes.values())):
+        raise ValueError("model/tokenizer hashes differ from original cache")
+    if promotion.get("schema_version") != "acl-paired-dtype-promotion-v1" or any(
+            promotion.get(key) is not True for key in ("all_checks_passed", "sampled_values_preserved_exactly", "all_floating_tensors_fp32")):
+        raise ValueError("dtype promotion assertions did not pass")
+    if promotion.get("sample_rule") != "first two and last two flattened values of every named tensor":
+        raise ValueError("dtype promotion sample rule differs")
+    original = promotion.get("original", {})
+    promoted = promotion.get("promoted_dtypes", {})
+    if not original or set(original) != set(promoted):
+        raise ValueError("dtype promotion tensor identity mismatch")
+    floating = {"torch.bfloat16", "torch.float16", "torch.float32", "torch.float64"}
+    dtypes = Counter()
+    for name, state in original.items():
+        dtype = state.get("dtype")
+        dtypes[dtype] += 1
+        shape = state.get("shape")
+        sample = state.get("sample")
+        if not isinstance(shape, list) or any(type(size) is not int or size < 0 for size in shape):
+            raise ValueError("invalid tensor shape evidence")
+        if not isinstance(sample, list) or len(sample) != 2 * min(2, math.prod(shape)) or any(type(value) not in (int, float, bool) or not math.isfinite(value) for value in sample):
+            raise ValueError("invalid tensor sample evidence")
+        if promoted[name] != ("torch.float32" if dtype in floating else dtype):
+            raise ValueError("tensor promotion dtype mismatch")
+    if not dtypes["torch.bfloat16"] or not dtypes["torch.float32"]:
+        raise ValueError("original BF16 weights and FP32 buffers are required")
+    return {"pinned_stack_passed": True, "original_cache_files_match": True,
+            "n_tensors": len(original), "original_dtype_counts": dict(dtypes),
+            "sample_preservation_assertions_passed": True,
+            "scope": "Checks retained dtype/sample assertions and source hashes; not an independent attestation of every remote tensor value."}
+
+
 def validate_model_output(directory: Path, tag: str, package: dict[str, Any], jobs: list[dict[str, Any]],
                           config: dict[str, Any], public_hash: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Validate completed coverage, model identity, numerical gates and live replay."""
@@ -553,6 +598,11 @@ def validate_model_output(directory: Path, tag: str, package: dict[str, Any], jo
     for key, value in expected_metadata.items():
         if metadata.get(key) != value:
             raise ValueError(f"model metadata {key} mismatch")
+    cache_path = directory.parent / "cache_prepare_receipt.json"
+    if sha256(cache_path) != CACHE_PREPARE_SHA256:
+        raise ValueError("original cache preparation receipt hash mismatch")
+    cache = load_json(cache_path).get("model_receipts", {}).get(tag, {})
+    provenance = validate_provenance(metadata, load_json(directory / "dtype_promotion.json"), cache)
     if receipt.get("protocol") != package["protocol"] or metadata.get("protocol") != package["protocol"]:
         raise ValueError("receipt/metadata protocol mismatch")
     if any(row.get("model_tag") != tag or row.get("schema_version") != "imcqa-wait-scores-v1" for row in raw_rows):
@@ -610,6 +660,7 @@ def validate_model_output(directory: Path, tag: str, package: dict[str, Any], jo
     audit = {"passed": True, "n_rows": len(rows), "n_questions": len({row["qid"] for row in rows}),
              "scores_sha256": sha256(score_path), "metadata_sha256": sha256(directory / "metadata.json"),
              "elapsed_seconds": receipt["elapsed_seconds"], "numerical_checks": checks,
+             "provenance": provenance, "cache_prepare_receipt_sha256": CACHE_PREPARE_SHA256,
              "active_only_replay": {"n_questions": len(expected_qids), "n_episodes": len(expected_qids) * 2,
                                     "n_visited_states": len(expected_live), "passed": True,
                                     "max_action_probability_difference": max(check["max_action_probability_difference"] for check in live_checks)},

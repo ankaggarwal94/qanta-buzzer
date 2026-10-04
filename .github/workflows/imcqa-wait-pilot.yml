@@ -56,8 +56,8 @@ jobs:
           assert hashlib.sha256(Path('configs/imcqa_wait_pilot.json').read_bytes()).hexdigest() == manifest['config_sha256']
           assert manifest['contexts'] == 4800 and manifest['questions'] == 200
           assert manifest['gold_labels_included'] is False
-          Path('results').mkdir()
-          Path('results/pilot.json').write_bytes(raw)
+          Path('imcqa_run_artifacts').mkdir(exist_ok=True)
+          Path('imcqa_run_artifacts/pilot.json').write_bytes(raw)
           PY
       - name: Run explicit WAIT pilot on cached pinned models
         env:
@@ -66,14 +66,14 @@ jobs:
           SOURCE_COMMIT: ${{ github.sha }}
         run: >-
           python -m scripts.modal_imcqa_wait_pilot
-          --public-package results/pilot.json
+          --public-package imcqa_run_artifacts/pilot.json
           --source-commit "$SOURCE_COMMIT"
-          --out results/imcqa_wait_pilot
+          --out imcqa_run_artifacts/imcqa_wait_pilot
       - name: Preserve scores and numerical evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: imcqa-wait-pilot-${{ github.run_id }}
-          path: results/
+          path: imcqa_run_artifacts/
           if-no-files-found: warn
           retention-days: 90
