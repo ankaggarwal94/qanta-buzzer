@@ -1,0 +1,54 @@
+{
+  "analysis_id": "imcqa_crossed_settings_20261005_v1",
+  "status": "exploratory_sensitivity_analysis_on_previously_inspected_development_questions",
+  "base_code_commit": "aeb879dd455f53e14b484fcec198b14465886cb1",
+  "input_archive_sha256": "c3b958bc82f68121b8c678fd610c4c62308a67250dec8839651b614ede941243",
+  "conditions": ["independent_pool", "same_category_pool"],
+  "thresholds": [0.60, 0.85],
+  "fixed_rounds": [1, 2],
+  "settings": [
+    {"setting_id": "t060_r1", "threshold": 0.60, "fixed_round": 1, "requested_bundle": true},
+    {"setting_id": "t060_r2", "threshold": 0.60, "fixed_round": 2, "requested_bundle": false},
+    {"setting_id": "t085_r1", "threshold": 0.85, "fixed_round": 1, "requested_bundle": false},
+    {"setting_id": "t085_r2", "threshold": 0.85, "fixed_round": 2, "requested_bundle": true}
+  ],
+  "calibration": "Retain each menu's own original frozen intercept, slope and clipping. Replace only selected_threshold and selected_fixed_policy for each analysis cell. No fitting or selection from these results.",
+  "policies": {
+    "fixed_forced": "Answer at the specified fixed round regardless of confidence.",
+    "fixed_selective": "Answer only at the specified fixed round iff calibrated confidence >= specified threshold, otherwise no later answer and terminal PASS at round 5.",
+    "adaptive_forced": "Answer at first crossing of specified threshold, otherwise force an answer at round 5.",
+    "adaptive_selective": "Answer at first crossing of specified threshold, otherwise terminal PASS at round 5."
+  },
+  "inference": {
+    "unit": "question; average four rotations within question and use shared bootstrap indices across all settings, menus and policies",
+    "bootstrap_samples": 20000,
+    "seed": 1,
+    "descriptive_interval_level": 0.95,
+    "focal_reward_contrasts": "Adaptive selective minus fixed selective for each of the 2 menus times 4 settings",
+    "focal_family_size": 8,
+    "focal_interval_level": 0.99375,
+    "focal_adjustment": "Bonferroni family size 8 for this added analysis only; does not cover earlier adaptive analyses",
+    "menu_difference_in_gains": "For each setting, (AS-FS)_same_category minus (AS-FS)_independent, paired on question; descriptive 95% intervals",
+    "menu_policy_differences": "For each setting and policy, same_category minus independent; descriptive 95% intervals",
+    "metrics": ["mean_reward", "coverage", "conditional_error", "mean_observed_round"],
+    "conditional_error": "wrong answers / committed answers, ratio recomputed within each bootstrap resample",
+    "interval_method": "percentile"
+  },
+  "correct_rewards": [1.0, 0.8, 0.6, 0.4, 0.2],
+  "wrong_reward": -1.0,
+  "terminal_pass_reward": 0.0,
+  "validation": [
+    "Verify original input identity and saved-score validation through the existing fixed-abstention loader.",
+    "Exactly reproduce all 3200 earlier episode outcomes in the two original menu-specific settings.",
+    "Adaptive policy episodes must be identical across fixed rounds at the same threshold.",
+    "Fixed-forced episodes must be identical across thresholds at the same fixed round.",
+    "Do not treat repeated episodes across settings or rotations as independent samples."
+  ],
+  "limitations": [
+    "Crossing numerical thresholds and rounds still retains different per-menu calibrators; it is not a shared end-to-end decision rule or pure causal menu intervention.",
+    "This is a sensitivity analysis of two thresholds and two fixed rounds, not optimization of the fixed-selective policy.",
+    "The 100 questions were previously inspected. No fresh-data, preregistration or confirmation claim.",
+    "Different menus can change answer correctness, confidence and acceptance sets; reward, coverage and error must be reported together.",
+    "Intervals condition on original fitted calibrators and omit calibration-fit uncertainty."
+  ]
+}
