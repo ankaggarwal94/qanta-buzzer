@@ -1,0 +1,39 @@
+{
+  "analysis_id": "imcqa_fixed_abstention_20261005_v1",
+  "status": "exploratory_addition_to_previously_inspected_development_results",
+  "input_archive_sha256": "c3b958bc82f68121b8c678fd610c4c62308a67250dec8839651b614ede941243",
+  "base_code_commit": "62cac95e6952ba6f3ed02d7316cb6fb13b18c477",
+  "parameters": "Reuse original plain-arm logistic calibrators, clipping, thresholds, fixed rounds, and tie handling exactly; do not refit or reselect.",
+  "policies": {
+    "fixed_forced": "Answer at original frozen fixed round regardless of confidence.",
+    "fixed_selective": "Answer at original frozen fixed round iff calibrated confidence >= original frozen threshold; otherwise make no later answer and terminal PASS at round 5.",
+    "adaptive_forced": "Answer at first original frozen threshold crossing; if no crossing answer at round 5.",
+    "adaptive_selective": "Answer at first original frozen threshold crossing; if none terminal PASS at round 5."
+  },
+  "primary_contrasts": [
+    {"condition": "independent_pool", "metric": "mean_reward", "left": "adaptive_selective", "right": "fixed_selective"},
+    {"condition": "same_category_pool", "metric": "mean_reward", "left": "adaptive_selective", "right": "fixed_selective"}
+  ],
+  "inference": {
+    "unit": "question; all rotations, policies and menus remain paired",
+    "rotation_aggregation": "average the four rotations within each question before resampling",
+    "bootstrap_samples": 20000,
+    "seed": 1,
+    "descriptive_interval_level": 0.95,
+    "primary_interval_level": 0.975,
+    "primary_family_size": 2,
+    "interval_method": "percentile",
+    "conditional_error": "sum wrong answers divided by sum committed answers; recompute ratio in each bootstrap sample",
+    "secondary_comparisons": "Other 2x2 simple effects, interaction, coverage and conditional error differences are descriptive with 95% intervals."
+  },
+  "rewards": [1.0, 0.8, 0.6, 0.4, 0.2],
+  "wrong_reward": -1.0,
+  "terminal_pass_reward": 0.0,
+  "limitations": [
+    "These 100 protocol-unexposed development questions have now been inspected; this addition is not a preregistered confirmation.",
+    "The frozen threshold and fixed round were not optimized for the new selective fixed policy.",
+    "Adaptive and fixed policies select different answer sets; the contrasts do not isolate a causal timing effect.",
+    "Forced-answer fallback is a saved-score policy change, not a new prompt or model inference.",
+    "Original game permits terminal PASS only; fixed-selective failures continue without another answer opportunity to round 5."
+  ]
+}
