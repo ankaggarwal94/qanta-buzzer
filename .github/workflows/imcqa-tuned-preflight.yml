@@ -1,0 +1,130 @@
+name: Verify tuned IMCQA access without inference
+
+on:
+  push:
+    branches: [feat/imcqa-tuned-policy-comparison-20261005]
+    paths: [.github/workflows/imcqa-tuned-preflight.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: imcqa-tuned-preflight-20261006
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: verify tuned IMCQA access without inference'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install pinned control-plane dependency
+        run: python -m pip install --disable-pip-version-check 'modal==1.6.0'
+      - name: Verify existing account and cached model without compute
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          from scripts.modal_acl_expansion import connect, remote_read
+          from scripts.modal_acl_paired_prompt_scores import CACHE_RUN, PREPARE_SHA256, verify_prepare
+
+          out = Path('imcqa_tuned_access_preflight.json')
+          report = {'schema_version': 'imcqa-tuned-access-preflight-v1',
+                    'checked_utc': datetime.now(timezone.utc).isoformat(),
+                    'mode': 'read_only', 'gpu_calls': 0, 'cpu_function_calls': 0,
+                    'source_commit': os.environ['SOURCE_COMMIT'], 'status': 'started'}
+          def save():
+              out.write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          save()
+          try:
+              if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != report['source_commit']:
+                  raise ValueError('checked-out source commit differs')
+              report['phase'] = 'authenticate_expected_workspace'
+              save()
+              modal, workspace = connect()
+              report['workspace'] = workspace
+              report['phase'] = 'verify_cached_preparation_and_sidecar'
+              save()
+              cache = modal.Volume.from_name(CACHE_RUN, create_if_missing=False)
+              raw = remote_read(cache, 'output/prepare_receipt.json', maximum=1024**2)
+              preparation = verify_prepare(raw)
+              sidecar_raw = remote_read(cache, 'models/qwen7b_expected_model_hashes.json', maximum=1024**2)
+              sidecar = json.loads(sidecar_raw)
+              expected = preparation['model_receipts']['qwen7b']
+              if any(sidecar.get(k) != expected[k] for k in ('model', 'revision', 'model_files_sha256')):
+                  raise ValueError('cached model sidecar differs from frozen preparation')
+              if (sidecar['model'] != 'Qwen/Qwen2.5-7B-Instruct' or
+                      sidecar['revision'] != 'a09a35458c702b33eeacc393d103063234e8bc28'):
+                  raise ValueError('cached model identity differs from tuned protocol')
+              report['phase'] = 'verify_cached_snapshot_file_existence'
+              save()
+              snapshot = 'models/models--Qwen--Qwen2.5-7B-Instruct/snapshots/' + sidecar['revision']
+              files = []
+              for entry in cache.iterdir('/' + snapshot, recursive=True):
+                  if len(files) >= 128:
+                      raise ValueError('model snapshot metadata exceeds bound')
+                  name = str(entry.path).lstrip('/')
+                  if not name.startswith(snapshot + '/'):
+                      raise ValueError('snapshot listing escaped expected prefix')
+                  files.append(name[len(snapshot)+1:])
+              if not set(sidecar['model_files_sha256']).issubset(files):
+                  raise ValueError('expected cached model files missing')
+              report['cache'] = {'volume': CACHE_RUN, 'prepare_receipt_sha256': hashlib.sha256(raw).hexdigest(),
+                  'expected_prepare_receipt_sha256': PREPARE_SHA256,
+                  'sidecar_sha256': hashlib.sha256(sidecar_raw).hexdigest(),
+                  'model': sidecar['model'], 'revision': sidecar['revision'],
+                  'model_files_sha256': sidecar['model_files_sha256'],
+                  'snapshot_file_names': sorted(files), 'passed': True,
+                  'validation_scope': 'Account, pinned preparation receipt, matching model sidecar and file existence; model bytes are rehashed by the scoring worker.'}
+              report['phase'] = 'inventory_known_public_input_paths'
+              save()
+              report['known_public_inputs'] = []
+              for volume_name in ('acl5000-20261002', CACHE_RUN):
+                  volume = modal.Volume.from_name(volume_name, create_if_missing=False)
+                  names = []
+                  for entry in volume.iterdir('/public', recursive=True):
+                      if len(names) >= 64:
+                          raise ValueError('public-input metadata exceeds bound')
+                      name = str(entry.path).lstrip('/')
+                      if not name.startswith('public/') or '..' in Path(name).parts:
+                          raise ValueError('unexpected public-input path')
+                      names.append(name)
+                  report['known_public_inputs'].append({'volume': volume_name, 'paths': sorted(names),
+                      'contents_read': False})
+              report['status'] = 'passed'
+              report['phase'] = 'complete'
+              save()
+              print(json.dumps({'status': report['status'], 'workspace': workspace['workspace_name'],
+                                'cached_qwen7b_verified': True, 'gpu_calls': 0, 'cpu_function_calls': 0}))
+          except BaseException as error:
+              report['status'] = 'failed'
+              report['error_type'] = type(error).__name__
+              save()
+              print(json.dumps({'status': 'failed', 'error_type': type(error).__name__,
+                                'gpu_calls': 0, 'cpu_function_calls': 0}))
+              raise SystemExit(1)
+          PY
+      - name: Preserve read-only access receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-access-${{ github.run_id }}
+          path: imcqa_tuned_access_preflight.json
+          if-no-files-found: error
+          retention-days: 90
