@@ -122,13 +122,16 @@ def _validate_review(menu: Mapping[str, Any], prefixes: list[Any],
         _fail(f"{label} needs reviewed evidence for every distractor and prefix")
 
 
-def validate_dataset(dataset: Mapping[str, Any]) -> None:
+def validate_dataset(dataset: Mapping[str, Any], *, required_splits: set[str] | None = None) -> None:
     """Validate a complete paired dataset or raise ``ValueError``.
 
     Parameters
     ----------
     dataset : mapping
         A ``jane-paired-v1`` JSON dataset with all three development/test splits.
+    required_splits : set of str, optional
+        Exact split set required. Defaults to all three splits; a separately
+        frozen test cohort can explicitly require only ``{"test"}``.
 
     Returns
     -------
@@ -270,8 +273,11 @@ def validate_dataset(dataset: Mapping[str, Any]) -> None:
             reference_design = design
         elif reference_design != design:
             _fail("all questions must share the same condition/menu_id design")
-    if seen_splits != SPLITS:
-        _fail("dataset must contain calibration, selection, and test splits")
+    expected_splits = SPLITS if required_splits is None else required_splits
+    if not expected_splits or not expected_splits <= SPLITS:
+        _fail("required_splits must be a nonempty subset of known splits")
+    if seen_splits != expected_splits:
+        _fail("dataset must contain exactly the required splits")
 
 
 def _prompt(prefix_text: str, menu: Mapping[str, Any] | None,
@@ -343,13 +349,16 @@ def _prompt(prefix_text: str, menu: Mapping[str, Any] | None,
     return instructions + _canonical(payload)
 
 
-def build_jobs(dataset: Mapping[str, Any]) -> list[dict[str, Any]]:
+def build_jobs(dataset: Mapping[str, Any], *, required_splits: set[str] | None = None) -> list[dict[str, Any]]:
     """Build deterministically hashed public jobs, sharing one OE trajectory.
 
     Parameters
     ----------
     dataset : mapping
         A validated or unvalidated complete dataset; validation always runs.
+    required_splits : set of str, optional
+        Exact split set required. The default retains calibration, selection
+        and test; a separately frozen fresh test can explicitly require test.
 
     Returns
     -------
@@ -358,7 +367,7 @@ def build_jobs(dataset: Mapping[str, Any]) -> list[dict[str, Any]]:
         receive only each job's ``prompt``. No evaluator answer metadata enters
         these dictionaries.
     """
-    validate_dataset(dataset)
+    validate_dataset(dataset, required_splits=required_splits)
     template = dataset.get("prompt_template", "verbose_json_v1")
     jobs = []
     for question in sorted(dataset["questions"], key=lambda q: q["qid"]):

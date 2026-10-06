@@ -1,0 +1,108 @@
+{
+  "schema_version": "imcqa-tuned-fresh-analysis-plan-v1",
+  "frozen_before_fresh_inference": true,
+  "fresh_inference_status_at_freeze": "not_started",
+  "model": "Qwen/Qwen2.5-7B-Instruct",
+  "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+  "answer_protocol": "unchanged plain MCQA action scoring; original per-menu calibrators",
+  "policy_lock_sha256": "68445eb706531bfbf78dd4ff18f88d260c6391de3b38e29dd469ae5d6b3fe58a",
+  "development_questions": 120,
+  "calibration_questions": 20,
+  "fresh_questions": 850,
+  "menus": [
+    "independent_pool",
+    "same_category_pool"
+  ],
+  "rotations": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "rounds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "requested_prefix_fractions": [
+    0.2,
+    0.4,
+    0.6,
+    0.8,
+    1.0
+  ],
+  "prefix_boundary_rule": "floor(N*k/10) whitespace-word endpoints for k=2,4,6,8,10; realized fractions recorded, fulltext at final round",
+  "new_plain_score_contexts": 34000,
+  "new_wait_score_contexts": 0,
+  "correct_rewards": [
+    1.0,
+    0.8,
+    0.6,
+    0.4,
+    0.2
+  ],
+  "wrong_reward": -1.0,
+  "terminal_pass_reward": 0.0,
+  "primary_contrasts": "adaptive-selective minus fixed-selective mean episodic reward, separately per menu",
+  "independent_unit": "one fresh question per unique answer/text component; average four rotations before paired resampling",
+  "bootstrap": {
+    "samples": 20000,
+    "seed": 1,
+    "paired_across_menus_and_policies": true,
+    "percentile_quantiles": [
+      0.0125,
+      0.9875
+    ]
+  },
+  "multiplicity": {
+    "family_size": 2,
+    "familywise_alpha": 0.05,
+    "method": "Bonferroni",
+    "per_contrast_confidence": 0.975
+  },
+  "minimum_worthwhile_gain": 0.05,
+  "interpretation": {
+    "positive_gain": "adjusted interval lower bound greater than zero",
+    "worthwhile_gain": "adjusted interval lower bound greater than 0.05",
+    "inconclusive": "interval includes zero; does not establish equivalence",
+    "power_scope": "N850 approximately targets 90% marginal power per menu to reject zero when true gain is0.05 under development-based variance assumptions; not 90% power to prove gain exceeds0.05 and not joint power"
+  },
+  "secondary_metrics": [
+    "coverage",
+    "conditional_error_among_answered",
+    "mean_observed_round"
+  ],
+  "secondary_interval_scope": "descriptive95% intervals; do not choose thresholds on fresh outcomes",
+  "forced_controls": "fixed-forced uses selectedFS round, orround5 ifFS selectedPASS; adaptive-forced uses selectedAS threshold, falling back to round5",
+  "sample_size_rule": "max acrossmenus of bootstrap95th-percentile selected-pair SD; normal approximation with90%power andtwo-sided2-menu correction; roundup50,min200",
+  "sample_size_values": {
+    "sd": 0.40870261056003904,
+    "unrounded": 830,
+    "rounded": 850
+  },
+  "cohort_rule_source": "scripts/prepare_imcqa_tuned.py::RULE",
+  "population": "previously unused eligible2010-2025 historical components in the original frozen snapshot, targeting original category/difficulty weights",
+  "post_result_changes_allowed": false,
+  "incomplete_run": "do not report a primary conclusion from a partial run; preserve failure evidence",
+  "compute": {
+    "provider": "Modal",
+    "gpu": "L40S",
+    "cpu_cores": 2,
+    "memory_mib": 32768,
+    "fp32_batch_size": 8,
+    "worker_timeout_seconds": 8250,
+    "internal_deadline_seconds": 8130,
+    "automatic_retries": 0,
+    "one_allocation_ceiling_usd": "6.00",
+    "allocation_rate_usd_per_second": "0.00063924",
+    "pricing_source": "https://modal.com/pricing",
+    "pricing_checked_utc_date": "2026-10-06",
+    "reserved_allocation_estimate_usd": "5.53254008",
+    "invoice_verified": false,
+    "launch_requires_current_price_check": true
+  },
+  "limits": "Assumes the inherited experimental setup and gold/menu semantics are valid. Freshness means unused by this study, not guaranteed absent from model pretraining. Supports this policy-family comparison only, not optimal stopping, a pure timing causal effect, or a risk guarantee.",
+  "sample_size_planning_sha256": "1c10e58f97269d1b55e58e165e48c7e7aa0f1716b691fa10e44875a505d30143"
+}

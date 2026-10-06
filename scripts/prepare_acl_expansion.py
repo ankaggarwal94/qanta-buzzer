@@ -505,7 +505,8 @@ def select_records(records: list[dict], config: Config, source_weights: dict | N
              "estimand": "eligible unique-component sample targeted to raw question category/difficulty mix, with capacity-driven deviations; not a random sample of all source questions"}
 
 
-def build_dataset(records: list[dict], reservoir: list[dict], config: Config, provenance: dict) -> dict:
+def build_dataset(records: list[dict], reservoir: list[dict], config: Config, provenance: dict,
+                  *, required_splits: set[str] | None = None) -> dict:
     questions = []
     for index, record in enumerate(records):
         source, answer = record["source"], record["canonical_answer"]
@@ -542,7 +543,7 @@ def build_dataset(records: list[dict], reservoir: list[dict], config: Config, pr
             "full_answerlines_available": True, "human_review": False,
             "scope_note": "Prepared inference inputs, not completed experiments. Scientific schema does not certify answerline or distractor validity."},
         "questions": questions}
-    validate_dataset(dataset)
+    validate_dataset(dataset, required_splits=required_splits)
     return dataset
 
 
