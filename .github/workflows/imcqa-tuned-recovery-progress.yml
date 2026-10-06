@@ -1,0 +1,105 @@
+name: Inspect frozen tuned IMCQA recovery progress
+
+on:
+  push:
+    branches: [feat/imcqa-tuned-policy-comparison-20261005]
+    paths: [.github/workflows/imcqa-tuned-recovery-progress.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: imcqa-tuned-recovery-progress-20261006
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: inspect frozen tuned IMCQA recovery progress'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install pinned control-plane dependency
+        run: python -m pip install --disable-pip-version-check 'modal==1.6.0'
+      - name: Read bounded metadata from the existing allocation
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          import hashlib, json
+          from pathlib import Path
+          from scripts.modal_acl_expansion import connect, remote_read
+          from scripts.modal_imcqa_tuned import verify_sources
+
+          run_id = 'imcqa-tuned-fresh-recovery1-20261006'
+          expected_input = '250d3fd3aff11cd9566e470eb79da057f2444ce2429654e8b27034760dddc430'
+          expected_commit = '8cd0b71150170ec545716b28fa63a07a163bad61'
+          path = Path('imcqa_tuned_recovery_progress.json')
+          report = {'schema_version':'imcqa-tuned-progress-v1', 'mode':'read_only',
+                    'checked_utc':datetime.now(timezone.utc).isoformat(), 'run_id':run_id,
+                    'gpu_calls':0, 'cpu_function_calls':0, 'status':'started', 'files':{}}
+          def save():
+              path.write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          save()
+          try:
+              modal, workspace = connect()
+              report['workspace'] = workspace
+              volume = modal.Volume.from_name(run_id, create_if_missing=False)
+              raw = remote_read(volume, 'control.json', maximum=65536)
+              control = json.loads(raw)
+              if (control['run_id'] != run_id or control['input_sha256'] != expected_input
+                      or control['source_commit'] != expected_commit or control['production_contexts_per_model'] != 34000
+                      or control['budget']['n_questions'] != 850 or control['budget']['ceiling_usd'] != '5.60'):
+                  raise ValueError('existing allocation identity differs')
+              verify_sources(Path('.'), control)
+              report['control'] = {'sha256':hashlib.sha256(raw).hexdigest(), 'input_sha256':expected_input,
+                                   'source_commit':expected_commit, 'identity_verified':True}
+              names = ('output/qwen7b/progress.json', 'output/qwen7b/attempts/000_benchmark.json',
+                       'output/qwen7b/receipt.json')
+              for name in names:
+                  try:
+                      content = remote_read(volume, name, maximum=1024**2)
+                  except FileNotFoundError:
+                      report['files'][name] = {'present':False}
+                      continue
+                  report['files'][name] = {'present':True, 'sha256':hashlib.sha256(content).hexdigest(),
+                                         'data':json.loads(content)}
+              report['status'] = 'passed'
+              save()
+              progress = report['files'][names[0]].get('data', {})
+              benchmark = report['files'][names[1]].get('data', {})
+              receipt = report['files'][names[2]].get('data', {})
+              print(json.dumps({'inspection_status':'passed', 'run_id':run_id,
+                  'phase':progress.get('phase'), 'completed_rows':progress.get('completed_rows'),
+                  'expected_rows':progress.get('expected_rows'), 'elapsed_seconds':progress.get('elapsed_seconds'),
+                  'benchmark_proceed':benchmark.get('proceed'), 'benchmark_rows_per_second':benchmark.get('rows_per_second'),
+                  'projected_remaining_seconds':benchmark.get('projected_remaining_seconds'),
+                  'worker_status':receipt.get('status'), 'gpu_calls':0, 'cpu_function_calls':0}))
+          except BaseException as error:
+              report['status'] = 'failed'
+              report['error_type'] = type(error).__name__
+              save()
+              print(json.dumps({'inspection_status':'failed', 'error_type':type(error).__name__,
+                                'gpu_calls':0, 'cpu_function_calls':0}))
+              raise SystemExit(1)
+          PY
+      - name: Preserve bounded progress receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-progress-${{ github.run_id }}
+          path: imcqa_tuned_recovery_progress.json
+          if-no-files-found: error
+          retention-days: 90
