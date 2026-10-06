@@ -25,13 +25,24 @@ development paired-SD bootstrap, the larger menu variance, and a two-menu
 Bonferroni correction. This is neither guaranteed nor joint power. Establishing
 a gain greater than 0.05 is a stricter claim and is not the sizing target.
 
-Source restoration and cohort creation remain blocked. See
-`docs/imcqa_tuned_preparation.md` for exact preparation inputs and commands.
-The runtime also lacks an authenticated GPU service. No real fresh-cohort
-dry-run, launch, numerical check, or outcome analysis has occurred. Synthetic
-integration tests validate software behavior, not model performance or GPU
-numerics. Restore both the input bytes and the authenticated Modal environment
-before continuing. Do not replace the planned population with the 2026 reserve.
+The original source files were restored on 2026-10-06 UTC and all five input
+hashes matched. The frozen cohort now contains 850 historical questions and
+34,000 plain contexts. Its public input SHA256 is
+`250d3fd3aff11cd9566e470eb79da057f2444ce2429654e8b27034760dddc430`.
+See `docs/imcqa_tuned_preparation.md` for preparation provenance and commands.
+GitHub Actions run `37396365453` authenticated to the existing Modal workspace
+using repository secrets and verified the cache receipt, sidecar and expected
+file existence. Weight bytes are rehashed by the scoring worker. Fresh model
+inference and outcome analysis have not yet occurred at this launch checkpoint.
+Synthetic integration tests validate software behavior, not model performance
+or GPU numerics. The historical population and frozen policies remain unchanged.
+
+The narrow `.github/workflows/imcqa-tuned-fresh.yml` workflow transports only the
+compressed public package, verifies its manifest and the frozen analysis plan,
+and runs the command below using the exact pushed source commit. Real gold
+labels remain in the separate local evaluator. The one-attempt job has a $6
+allocation ceiling and preserves complete or partial evidence as an Actions
+artifact. A failed or interrupted attempt must not be silently rerun.
 
 ## Launch after preparation
 

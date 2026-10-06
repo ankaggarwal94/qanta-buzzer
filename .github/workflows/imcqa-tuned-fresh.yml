@@ -1,0 +1,147 @@
+name: Bounded independently tuned IMCQA comparison
+
+on:
+  push:
+    branches: [feat/imcqa-tuned-policy-comparison-20261005]
+    paths: [.github/workflows/imcqa-tuned-fresh.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: imcqa-tuned-fresh-20261006
+  cancel-in-progress: false
+
+jobs:
+  score:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: run frozen tuned IMCQA comparison within six dollars'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install pinned control-plane dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          'modal==1.6.0' 'pytest==8.3.5' 'numpy==2.2.4' 'PyYAML==6.0.2'
+          'lm-format-enforcer==0.11.3' 'interegular==0.3.3'
+      - name: Validate data boundary and bounded execution before credentials
+        run: >-
+          python -m pytest --noconftest
+          tests/test_imcqa_tuned_design.py tests/test_imcqa_tuned_scoring.py
+          tests/test_modal_imcqa_tuned.py tests/test_imcqa_tuned_fresh_workflow.py -q
+      - name: Restore and verify frozen public-only transport
+        run: |
+          python - <<'PY'
+          import gzip, hashlib, io, json
+          from pathlib import Path
+          from scripts.imcqa_tuned_design import MODEL, PROTOCOL, validate_public_package
+          from scripts.modal_imcqa_tuned import SOURCES, budget_plan
+
+          root = Path('imcqa_tuned_public')
+          manifest = json.loads((root / 'transport_manifest.json').read_text())
+          required = {'schema_version', 'protocol', 'run_id', 'public_file', 'compressed_sha256',
+                      'compressed_bytes', 'public_sha256', 'public_bytes', 'n_questions',
+                      'contexts_per_model', 'model', 'policy_lock_sha256', 'sample_size_planning_sha256',
+                      'selection_id', 'main_dataset_sha256', 'source_input_sha256', 'config_sha256',
+                      'source_files_sha256', 'pricing', 'real_gold_labels_included', 'new_fits'}
+          if set(manifest) != required or manifest['schema_version'] != 'imcqa-tuned-transport-v1':
+              raise ValueError('transport manifest fields differ')
+          if (manifest['protocol'] != PROTOCOL or manifest['run_id'] != 'imcqa-tuned-fresh-20261006'
+                  or manifest['public_file'] != 'public.json.gz' or manifest['n_questions'] != 850
+                  or manifest['contexts_per_model'] != 34000 or manifest['model'] != MODEL
+                  or manifest['real_gold_labels_included'] is not False or manifest['new_fits'] != 0):
+              raise ValueError('frozen experiment identity differs')
+          if (type(manifest['compressed_bytes']) is not int or not 0 < manifest['compressed_bytes'] <= 16*1024**2
+                  or type(manifest['public_bytes']) is not int or not 0 < manifest['public_bytes'] <= 128*1024**2):
+              raise ValueError('transport byte bounds differ')
+          packed = (root / manifest['public_file']).read_bytes()
+          if len(packed) != manifest['compressed_bytes'] or hashlib.sha256(packed).hexdigest() != manifest['compressed_sha256']:
+              raise ValueError('compressed public transport differs')
+          with gzip.GzipFile(fileobj=io.BytesIO(packed), mode='rb') as stream:
+              raw = stream.read(manifest['public_bytes'] + 1)
+          if len(raw) != manifest['public_bytes'] or hashlib.sha256(raw).hexdigest() != manifest['public_sha256']:
+              raise ValueError('expanded public input differs')
+          config_path = Path('configs/imcqa_tuned_fresh.json')
+          if hashlib.sha256(config_path.read_bytes()).hexdigest() != manifest['config_sha256']:
+              raise ValueError('analysis configuration changed after transport freeze')
+          source_hashes = {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in SOURCES}
+          if source_hashes != manifest['source_files_sha256']:
+              raise ValueError('scoring sources changed after transport freeze')
+          package = json.loads(raw)
+          jobs = validate_public_package(package)
+          if len(jobs) != 34000 or package['n_questions'] != 850 or package['model'] != MODEL:
+              raise ValueError('public scoring grid differs')
+          for key in ('policy_lock_sha256', 'sample_size_planning_sha256', 'selection_id',
+                      'main_dataset_sha256', 'source_input_sha256'):
+              if package[key] != manifest[key]:
+                  raise ValueError('public input binding differs: ' + key)
+          config = json.loads(config_path.read_text())
+          if (config['policy_lock_sha256'] != package['policy_lock_sha256']
+                  or config['sample_size_planning_sha256'] != package['sample_size_planning_sha256']
+                  or config['fresh_questions'] != 850 or config['new_plain_score_contexts'] != 34000
+                  or config['new_wait_score_contexts'] != 0 or config['post_result_changes_allowed'] is not False):
+              raise ValueError('locked scientific protocol differs')
+          expected_pricing = {'max_cost_usd': '6.00', 'rate_usd_per_second': '0.00063924',
+              'rate_verified_utc': '2026-10-06T01:41:54Z', 'rate_source_url': 'https://modal.com/pricing'}
+          if manifest['pricing'] != expected_pricing:
+              raise ValueError('reviewed pricing attestation differs')
+          budget = budget_plan(850, **manifest['pricing'])
+          if budget['worker_timeout_seconds'] != 8250 or budget['internal_deadline_seconds'] != 8130:
+              raise ValueError('frozen allocation limits differ')
+          out = Path('imcqa_tuned_run_artifacts')
+          out.mkdir(exist_ok=False)
+          (out / 'public.json').write_bytes(raw)
+          (out / 'transport_manifest.json').write_bytes((root / 'transport_manifest.json').read_bytes())
+          (out / 'budget_preflight.json').write_text(json.dumps(budget, indent=2, sort_keys=True) + '\n')
+          print(json.dumps({'status': 'public_transport_verified', 'questions':850, 'contexts':34000,
+                            'public_sha256': manifest['public_sha256'], 'reserved_estimate_usd':budget['reserved_estimate_usd']}))
+          PY
+      - name: Verify exact committed launcher without provider access
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: >-
+          python -m scripts.modal_imcqa_tuned
+          --public-package imcqa_tuned_run_artifacts/public.json
+          --source-commit "$SOURCE_COMMIT"
+          --out imcqa_tuned_run_artifacts/run
+          --run-id imcqa-tuned-fresh-20261006
+          --max-cost-usd 6.00
+          --allocation-rate-usd-per-second 0.00063924
+          --rate-verified-utc 2026-10-06T01:41:54Z
+          --rate-source-url https://modal.com/pricing
+          --dry-run
+      - name: Score one bounded allocation with frozen plain prompts
+        timeout-minutes: 160
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: >-
+          python -m scripts.modal_imcqa_tuned
+          --public-package imcqa_tuned_run_artifacts/public.json
+          --source-commit "$SOURCE_COMMIT"
+          --out imcqa_tuned_run_artifacts/run
+          --run-id imcqa-tuned-fresh-20261006
+          --max-cost-usd 6.00
+          --allocation-rate-usd-per-second 0.00063924
+          --rate-verified-utc 2026-10-06T01:41:54Z
+          --rate-source-url https://modal.com/pricing
+      - name: Preserve complete or partial scores and numerical evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-fresh-${{ github.run_id }}
+          path: imcqa_tuned_run_artifacts/
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 90

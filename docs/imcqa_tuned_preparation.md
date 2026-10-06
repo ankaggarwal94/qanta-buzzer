@@ -1,23 +1,31 @@
 # Fresh IMCQA input preparation
 
 The independently tuned policy lock in `tuned_policies/selection_v2` plans 850
-fresh questions and 34,000 plain MCQA contexts. No fresh cohort or model scores
-have been produced. The original full source snapshot could not be recovered:
-its final single-file download returned HTTP 502. The locally retained original
-5,000 questions are all excluded, the 1,100 reservoir components remain
-distractors, and the 370 reserved 2026 questions are outside this historical
-test's 2010–2025 frame.
+fresh questions and 34,000 plain MCQA contexts. The cohort was prepared on
+2026-10-06 UTC after the user reattached both original archives. No fresh model
+scores have been produced at this launch checkpoint. The original 5,000
+questions are all excluded, the 1,100 reservoir components remain distractors,
+and the 370 reserved 2026 questions are outside this historical test's
+2010–2025 frame.
 
-`scripts/prepare_imcqa_tuned.py` is ready to run when the original normalized
-source JSONL, original exclusions JSON and curated identity overrides JSON are
-restored. Their SHA256 values are hard-coded in `INPUT_PINS`; a different source
+The source ZIP contains an incomplete temporary normalized member. It was not
+used. Running the bundled `normalize_snapshot.py` on its manifest-verified raw
+tossups, sets and packets regenerated 187,165 rows (403,470,965 bytes) with exact
+SHA256 `29c0add66d5bb837dd374335603fcc37269c604655e93105893f13770df7819c`.
+The regenerated normalization receipt also matches the archived receipt. The
+exclusions and identity overrides from the other ZIP match their original pins.
+Restoration evidence is in `tuned_experiment/source_restore/restored/`.
+
+`scripts/prepare_imcqa_tuned.py` ran against the restored original normalized
+source JSONL, exclusions JSON and curated identity overrides JSON. Their SHA256
+values are hard-coded in `INPUT_PINS`; a different source
 snapshot cannot silently replace them. The original dataset and reservoir are
 also hash-pinned. Reconstructing the old grouping and partition must reproduce
 every original component identity before fresh sampling proceeds.
 
-The source audit reported 15,106 unused historical components before the new
-0.8 text screen. This is an upper bound on current capacity, not a verified
-850-question fresh cohort. The builder excludes all old component source IDs
+The actual preparation retained 15,106 unused historical components before and
+after the new 0.8 text screen, from which the locked 850 were selected.
+The builder excludes all old component source IDs
 and aliases and applies inclusive normalized word-5gram Jaccard >=0.8 against
 original excluded texts, all original 5,000 texts, and reservoir texts. It
 greedily deduplicates the entire fresh candidate pool in frozen hash order,
@@ -26,9 +34,13 @@ weights using bounded proportional allocation. No answer correctness or model
 outcome influences this sampling. Original menu construction and answer
 semantics are retained as the experiment's authorized setup assumption.
 
-The exact local command below expects three environment variables containing
-the actual restored filenames. These filenames are not known until the source
-archive is recovered; the command fails immediately if any is missing.
+The exact local command below expects the three restored filenames in
+environment variables. In this workspace they are
+`tuned_experiment/source_restore/restored/source/tossups.normalized.jsonl`,
+`tuned_experiment/source_restore/restored/exclusions.json`, and
+`tuned_experiment/source_restore/restored/identity_overrides.json`, relative to
+`/workspace/scratch/cb54ff173a76`. The command fails if any variable is missing.
+The successful output is create-once; reproductions must use a new directory.
 
 ```bash
 cd /workspace/scratch/cb54ff173a76/qanta-buzzer

@@ -1,0 +1,49 @@
+{
+  "compressed_bytes": 3894076,
+  "compressed_sha256": "3e30797c3fb76e3941414b50e9cd19205bcf2b14b778d0ca93a17cc86de13531",
+  "config_sha256": "54ffce3a52dc93448536909cd6dbe4758802dba5dcd7810f079a3f258111c931",
+  "contexts_per_model": 34000,
+  "main_dataset_sha256": "bb8aa81b67f41a280df809c10f74f016d998b56debd32f71eb592e22bd2d32e0",
+  "model": {
+    "name": "Qwen/Qwen2.5-7B-Instruct",
+    "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+    "tag": "qwen7b"
+  },
+  "n_questions": 850,
+  "new_fits": 0,
+  "policy_lock_sha256": "68445eb706531bfbf78dd4ff18f88d260c6391de3b38e29dd469ae5d6b3fe58a",
+  "pricing": {
+    "max_cost_usd": "6.00",
+    "rate_source_url": "https://modal.com/pricing",
+    "rate_usd_per_second": "0.00063924",
+    "rate_verified_utc": "2026-10-06T01:41:54Z"
+  },
+  "protocol": "imcqa-tuned-fresh-v1",
+  "public_bytes": 67730498,
+  "public_file": "public.json.gz",
+  "public_sha256": "250d3fd3aff11cd9566e470eb79da057f2444ce2429654e8b27034760dddc430",
+  "real_gold_labels_included": false,
+  "run_id": "imcqa-tuned-fresh-20261006",
+  "sample_size_planning_sha256": "1c10e58f97269d1b55e58e165e48c7e7aa0f1716b691fa10e44875a505d30143",
+  "schema_version": "imcqa-tuned-transport-v1",
+  "selection_id": "290eaed95a1affe562f3289a88806d26fcd86e8dc6264a23cc954b3f585c9a21",
+  "source_files_sha256": {
+    "configs/imcqa_protocol_pilot.json": "cf1fdb61e88a84cf4180d57e4a99cbbf21f5d12b71761e290542b9c80d226d24",
+    "scripts/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "scripts/acl_option_scoring.py": "37df2c45393c39dd5e5a67017568cdde0ae74342ae762b85df37732506a9877f",
+    "scripts/acl_paired_prompt_scoring.py": "c34ada06730dc7651c10882a6983e10e5dd381bf92e9b98a85b717e4172fe91a",
+    "scripts/imcqa_protocol_design.py": "897401415a71e7aab6bd30d63fffa7098e8cde8732d609a58cf7642664596a38",
+    "scripts/imcqa_protocol_scoring.py": "7cb666e56aa0fd6489659d0372bdfa0b1527f3a23160a70f46dbc7afa342732f",
+    "scripts/imcqa_tuned_design.py": "6c3e32fc06826aa6ee43679f2a7bcc07c9cb384dc7336251ac4cdebf51663a9f",
+    "scripts/imcqa_tuned_scoring.py": "8574a6064fd1607b546ed9bafa8a9339a8f089e8ec39828f7ee588f83071e68b",
+    "scripts/imcqa_wait_scoring.py": "302d5380183521feccaf111ab22d7c4f4a325a1ee339e4934ce167be4121e1b8",
+    "scripts/jane_gpu_backend.py": "7596bc5a517981e3d4fbb9b4f4643985653d480e9a01f7691afef9d926cd499a",
+    "scripts/jane_output_constraints.py": "dc0bbc3aa2eed17141b74930b24b7f89f7e7e1f7a372aeb4c4d18c24614086b2",
+    "scripts/jane_qwen_backend.py": "8d55952259ab76052fb166c14e70de6b6c611c3578473fd849531dc21f6239e7",
+    "scripts/modal_acl_expansion.py": "e8f584eba26443888cfa07245b6993afda1c242e8f447c3dce9be1f29c30491c",
+    "scripts/modal_acl_option_scores.py": "276613be9c04859309d7050f09d7ed95e5138411e34b7c4e3b713d79364f47e6",
+    "scripts/modal_acl_paired_prompt_scores.py": "fc54f316e275dd11e609ba6a8613679417fa09a0a5b10158d4c5109bbe66241a",
+    "scripts/modal_imcqa_tuned.py": "f0fe60f15eb683bee0c9339bac24bc30742796efc5cf6dcae42320b1f0dd1fcd"
+  },
+  "source_input_sha256": "88aef294ff53630dc9fc7a8578d0f14b59025ec353534f0c82fc1b1dc9746bc2"
+}
