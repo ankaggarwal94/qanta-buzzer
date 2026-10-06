@@ -1,0 +1,85 @@
+name: One bounded manual recovery of frozen IMCQA comparison
+
+on:
+  push:
+    branches: [feat/imcqa-tuned-policy-comparison-20261005]
+    paths: [.github/workflows/imcqa-tuned-recovery.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: imcqa-tuned-fresh-recovery1-20261006
+  cancel-in-progress: false
+
+jobs:
+  score:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: recover frozen tuned IMCQA comparison within total six dollars'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install pinned control-plane dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          'modal==1.6.0' 'pytest==8.3.5' 'numpy==2.2.4' 'PyYAML==6.0.2'
+          'lm-format-enforcer==0.11.3' 'interegular==0.3.3'
+      - name: Validate data boundary and bounded execution before credentials
+        run: >-
+          python -m pytest --noconftest
+          tests/test_imcqa_tuned_design.py tests/test_imcqa_tuned_scoring.py
+          tests/test_modal_imcqa_tuned.py tests/test_imcqa_tuned_fresh_workflow.py
+          tests/test_imcqa_tuned_recovery.py -q
+      - name: Verify prior stop and cumulative budget before restoring identical public input
+        run: >-
+          python -m scripts.imcqa_tuned_recovery
+          --out imcqa_tuned_run_artifacts
+      - name: Verify exact committed launcher without provider access
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: >-
+          python -m scripts.modal_imcqa_tuned
+          --public-package imcqa_tuned_run_artifacts/public.json
+          --source-commit "$SOURCE_COMMIT"
+          --out imcqa_tuned_run_artifacts/run
+          --run-id imcqa-tuned-fresh-recovery1-20261006
+          --max-cost-usd 5.60
+          --allocation-rate-usd-per-second 0.00063924
+          --rate-verified-utc 2026-10-06T01:41:54Z
+          --rate-source-url https://modal.com/pricing
+          --dry-run
+      - name: Run one manual recovery allocation with unchanged scoring semantics
+        timeout-minutes: 160
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: >-
+          python -m scripts.modal_imcqa_tuned
+          --public-package imcqa_tuned_run_artifacts/public.json
+          --source-commit "$SOURCE_COMMIT"
+          --out imcqa_tuned_run_artifacts/run
+          --run-id imcqa-tuned-fresh-recovery1-20261006
+          --max-cost-usd 5.60
+          --allocation-rate-usd-per-second 0.00063924
+          --rate-verified-utc 2026-10-06T01:41:54Z
+          --rate-source-url https://modal.com/pricing
+      - name: Preserve complete or partial scores and numerical evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery1-${{ github.run_id }}
+          path: imcqa_tuned_run_artifacts/
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 90

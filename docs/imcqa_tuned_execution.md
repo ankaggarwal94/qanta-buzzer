@@ -44,7 +44,34 @@ labels remain in the separate local evaluator. The one-attempt job has a $6
 allocation ceiling and preserves complete or partial evidence as an Actions
 artifact. A failed or interrupted attempt must not be silently rerun.
 
-## Launch after preparation
+## Operational stop and bounded recovery
+
+The original Actions run `37401012406`, at commit
+`7646fe20c668dc0fac979cb577b40887b23416ef`, passed its initial FP32 numerical
+checks and stopped at the throughput gate after 128 of 34,000 contexts. These
+partial scores are not eligible for outcome analysis. Its benchmark timer
+included the first production batch's one-time single/replay validation and
+checkpoint, then extrapolated that overhead across the entire remaining grid.
+
+The timing correction measures that diagnostic block explicitly and removes
+only its elapsed time from recurring throughput. Ordinary scoring, row
+construction, serialization and fsync remain in the measured recurring time.
+Future checkpoints receive an additional reserve based on their count and the
+maximum measured callback latency. The 1.2 mean safety factor, p95 batch guard,
+all numerical checks and the original hard deadlines remain unchanged. The
+newly measured forecast can still reject continuation.
+
+One manual recovery is bound by `.github/workflows/imcqa-tuned-recovery.yml`
+and `scripts/imcqa_tuned_recovery.py`. It restarts all 34,000 contexts on identical
+public input, without reusing partial scores or changing policies, calibration,
+model, precision, batch size, rewards or analysis. The first attempt's entire
+312-second CI interval at the GPU allocation rate, plus $0.20, is rounded up to
+a $0.40 debit. The new allocation ceiling is $5.60; its unchanged reservation is
+$5.53254008, for a combined $5.93254008 estimate under the original $6 ceiling.
+This is conservative operational accounting, not a verified invoice. Both
+attempts and their source identities are retained; automatic retries remain off.
+
+## Original launch command (already executed)
 
 The existing model cache must still be present in Modal workspace
 `ankaggarwal94`; the launcher verifies its original preparation receipt and

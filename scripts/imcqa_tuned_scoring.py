@@ -94,17 +94,49 @@ def record_numeric_gate(path, left, right, jobs, *, extra=None):
     return numeric_agreement(left, right, jobs)
 
 
-def projection_with_validation(processed, total, seconds, remaining, batch_times, single_seconds):
+def projection_with_validation(processed, total, seconds, remaining, batch_times, single_seconds,
+                               *, production_diagnostic_seconds=0., checkpoint_seconds=()):
+    """Project recurring production work and reserve discrete future operations.
+
+    ``seconds`` is the complete benchmark wall time. Only explicitly timed
+    production-diagnostic blocks are removed: scoring, row construction,
+    serialization and fsync remain in the recurring mean. Their elapsed cost
+    has already reduced ``remaining``. Progress commits are discrete operations
+    and receive a separate, count-based reserve from observed callback latency.
+    """
     if not single_seconds or any(not math.isfinite(s) or s <= 0 for s in single_seconds):
         raise ValueError("finite measured single-forward times required")
+    if (not math.isfinite(seconds) or not math.isfinite(production_diagnostic_seconds)
+            or not 0 <= production_diagnostic_seconds < seconds
+            or any(not math.isfinite(s) or s < 0 for s in checkpoint_seconds)):
+        raise ValueError("finite nonnegative diagnostic and checkpoint accounting required")
+    recurring_seconds = seconds - production_diagnostic_seconds
+    if recurring_seconds + 1e-9 < math.fsum(batch_times):
+        raise ValueError("recurring wall time cannot be smaller than its forward calls")
     # Conservatively reserve all production checks even if first batch was checked.
     active_reserve = 80*max(single_seconds)*1.2
     production_reserve = (3*BATCH_SIZE+3*BATCH_SIZE*2)*max(single_seconds)*1.2
     reserve = active_reserve+production_reserve+45
-    result = paired.cached_budget_projection(processed, total, seconds, remaining-reserve, batch_times, BATCH_SIZE)
+    checkpoint_counts = {"periodic_progress": total//256-processed//256,
+        "future_production_diagnostics": sum(offset >= processed for offset in production_offsets(total)),
+        "benchmark": 1, "final_status": 1, "allocation_final_commit": 1}
+    checkpoint_latency = max(checkpoint_seconds, default=0.)
+    checkpoint_reserve = sum(checkpoint_counts.values())*checkpoint_latency*1.2
+    result = paired.cached_budget_projection(processed, total, recurring_seconds,
+        remaining-reserve-checkpoint_reserve, batch_times, BATCH_SIZE)
     return {**result, "live_trajectory_validation_reserve_seconds": active_reserve,
             "production_validation_reserve_seconds": production_reserve,
             "evidence_overhead_reserve_seconds": 45, "total_validation_reserve_seconds": reserve,
+            "benchmark_wall_seconds": seconds,
+            "nonrecurring_production_diagnostic_seconds": production_diagnostic_seconds,
+            "recurring_production_seconds": recurring_seconds,
+            "benchmark_accounting": "wall minus explicitly timed production diagnostics; recurring scoring, serialization and fsync retained",
+            "available_seconds_before_reserves": remaining,
+            "checkpoint_callback_seconds": list(checkpoint_seconds),
+            "maximum_checkpoint_callback_seconds": checkpoint_latency,
+            "remaining_checkpoint_counts": checkpoint_counts,
+            "checkpoint_reserve_seconds": checkpoint_reserve,
+            "checkpoint_reserve_rule": "all remaining periodic, production-diagnostic, benchmark, final-status and allocation-final commits times maximum observed callback latency times 1.2; additional to unchanged validation/evidence reserves",
             "diagnostic_single_seconds": single_seconds,
             "validation_reserve_rule": "80 full-trajectory singles + 24 production singles + replay/permutation allowance of 48 singles, all max measured single seconds times 1.2, plus 45 seconds"}
 
@@ -135,6 +167,7 @@ def run_scoring(tag: str, public_path: Path, expected_input_sha256: str, cache_d
         "automatic_retries": 0, "sampling": False, "generation": False, "reused_rows": 0,
         "source_commit": source_commit, "batch_size": BATCH_SIZE, "cached": True}
     rows, expected, contexts = [], [], []
+    checkpoint_timings = []
     def remaining():
         return max_seconds-(time.monotonic()-started)
     def check_deadline():
@@ -142,8 +175,13 @@ def run_scoring(tag: str, public_path: Path, expected_input_sha256: str, cache_d
             raise TimeoutError("internal worker deadline reached")
     def checkpoint(phase):
         if progress:
-            progress({"phase": phase, "completed_rows": len(rows), "expected_rows": expected_rows,
-                      "elapsed_seconds": time.monotonic()-started})
+            checkpoint_started = time.monotonic()
+            try:
+                progress({"phase": phase, "completed_rows": len(rows), "expected_rows": expected_rows,
+                          "elapsed_seconds": time.monotonic()-started})
+            finally:
+                checkpoint_timings.append({"phase": phase,
+                    "seconds": time.monotonic()-checkpoint_started})
     def evidence(name, value):
         base.write_once(out_dir/name, value)
     try:
@@ -243,6 +281,7 @@ def run_scoring(tag: str, public_path: Path, expected_input_sha256: str, cache_d
         base.write_once(attempts/"000_diagnostics.json", {**diagnostic_raw, "gates": gates})
         checkpoint("diagnostics_passed")
         benchmark_started = time.monotonic()
+        production_diagnostic_seconds = 0.
         batch_times, production_records = [], []
         while len(rows) < len(expected):
             check_deadline()
@@ -260,6 +299,7 @@ def run_scoring(tag: str, public_path: Path, expected_input_sha256: str, cache_d
                 stream.write(b"".join(base.canonical(row) for row in batch)); stream.flush(); os.fsync(stream.fileno())
             rows.extend(batch); batch_times.append(batch_seconds)
             if offset in selected_offsets:
+                production_diagnostic_started = time.monotonic()
                 live_singles = []
                 for context in batch_contexts:
                     check_deadline()
@@ -275,9 +315,13 @@ def run_scoring(tag: str, public_path: Path, expected_input_sha256: str, cache_d
                 if outputs != replay_outputs:
                     raise ValueError("exact production-batch replay failed")
                 production_records.append({**raw, "gate": gate, "single_gate": single_gate})
+                production_diagnostic_seconds += time.monotonic()-production_diagnostic_started
             if len(rows) == BENCHMARK_ROWS:
                 projection = projection_with_validation(len(rows), len(expected), time.monotonic()-benchmark_started,
-                    remaining(), batch_times, single_seconds)
+                    remaining(), batch_times, single_seconds,
+                    production_diagnostic_seconds=production_diagnostic_seconds,
+                    checkpoint_seconds=[r["seconds"] for r in checkpoint_timings])
+                projection["checkpoint_timing_records"] = list(checkpoint_timings)
                 base.write_once(attempts/"000_benchmark.json", projection)
                 receipt["benchmark"] = projection
                 checkpoint("benchmark")

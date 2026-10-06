@@ -109,6 +109,67 @@ def test_projection_reserves_active_and_actual_production_validation():
         scoring.projection_with_validation(128, 8000, 12.8, 2000, [.8]*16, [math.nan])
 
 
+def test_one_off_diagnostics_do_not_distort_recurring_throughput():
+    common = dict(processed=128, total=8000, batch_times=[.8]*16, single_seconds=[.1],
+                  checkpoint_seconds=[.05, .1])
+    ordinary = scoring.projection_with_validation(seconds=14., remaining=2000., **common)
+    expensive = scoring.projection_with_validation(seconds=114., remaining=1900.,
+        production_diagnostic_seconds=100., **common)
+    assert expensive["recurring_production_seconds"] == ordinary["recurring_production_seconds"] == 14.
+    assert expensive["projected_remaining_seconds"] == ordinary["projected_remaining_seconds"]
+    # The elapsed one-off work still consumes the actual remaining deadline.
+    assert ordinary["remaining_seconds"] - expensive["remaining_seconds"] == pytest.approx(100.)
+    assert expensive["benchmark_wall_seconds"] == expensive["recurring_production_seconds"] + expensive["nonrecurring_production_diagnostic_seconds"]
+    assert expensive["proceed"] is True
+
+
+def test_recurring_serialization_cost_and_low_time_still_stop():
+    common = dict(processed=128, total=8000, batch_times=[.8]*16, single_seconds=[.1],
+                  production_diagnostic_seconds=100., checkpoint_seconds=[.1])
+    normal = scoring.projection_with_validation(seconds=114., remaining=2000., **common)
+    slow_io = scoring.projection_with_validation(seconds=140., remaining=2000., **common)
+    low_time = scoring.projection_with_validation(seconds=114., remaining=800., **common)
+    assert normal["proceed"] is True
+    assert slow_io["recurring_production_seconds"] == 40.
+    assert slow_io["proceed"] is False
+    assert low_time["proceed"] is False
+
+
+def test_progress_commits_are_counted_and_expensive_callbacks_stop():
+    common = dict(processed=128, total=34000, seconds=24., remaining=8000.,
+                  batch_times=[1.4]*16, single_seconds=[.2])
+    fast = scoring.projection_with_validation(checkpoint_seconds=[.1, .2], **common)
+    slow = scoring.projection_with_validation(checkpoint_seconds=[.1, 8.], **common)
+    assert fast["remaining_checkpoint_counts"] == {"periodic_progress": 132,
+        "future_production_diagnostics": 2, "benchmark": 1, "final_status": 1,
+        "allocation_final_commit": 1}
+    assert fast["checkpoint_reserve_seconds"] == pytest.approx(137 * .2 * 1.2)
+    assert fast["proceed"] is True
+    assert slow["proceed"] is False
+
+
+def test_p95_batch_guard_still_rejects_a_slow_tail():
+    projected = scoring.projection_with_validation(128, 8000, 13., 2000.,
+        [.4] * 15 + [6.], [.1], checkpoint_seconds=[.1])
+    assert projected["mean_projected_remaining_seconds"] * 1.2 < projected["remaining_seconds"]
+    assert projected["p95_projected_remaining_seconds"] > projected["remaining_seconds"]
+    assert projected["proceed"] is False
+
+
+@pytest.mark.parametrize("diagnostic,callbacks", [(-1., []), (13., []), (math.nan, []),
+                                                   (0., [-.1]), (0., [math.inf])])
+def test_invalid_timing_accounting_fails_closed(diagnostic, callbacks):
+    with pytest.raises(ValueError):
+        scoring.projection_with_validation(128, 8000, 13., 2000., [.8]*16, [.1],
+            production_diagnostic_seconds=diagnostic, checkpoint_seconds=callbacks)
+
+
+def test_diagnostic_subtraction_cannot_remove_measured_production_work():
+    with pytest.raises(ValueError, match="smaller than its forward calls"):
+        scoring.projection_with_validation(128, 8000, 13., 2000., [.8]*16, [.1],
+            production_diagnostic_seconds=1.)
+
+
 def test_only_new_7b_allocation_accepted_before_file_access(tmp_path):
     with pytest.raises(ValueError, match="invalid pinned model"):
         scoring.run_scoring("qwen3b", tmp_path/"missing", "0"*64, tmp_path, tmp_path/"out",
@@ -118,7 +179,8 @@ def test_only_new_7b_allocation_accepted_before_file_access(tmp_path):
                             source_commit="1"*40, max_seconds=float("nan"))
 
 
-def test_mocked_complete_worker_exercises_runtime_and_live_replay(tmp_path, monkeypatch):
+@pytest.mark.parametrize("extra_diagnostic_seconds", [0., 20.])
+def test_mocked_complete_worker_exercises_runtime_and_live_replay(tmp_path, monkeypatch, extra_diagnostic_seconds):
     """Fake GPU orchestration through real public validation, numerical joins and analysis.
 
     Model/tokenizer and trusted cache receipt are synthetic. This tests software
@@ -178,15 +240,39 @@ def test_mocked_complete_worker_exercises_runtime_and_live_replay(tmp_path, monk
         "option_token_ids": dict(zip("ABCDE", range(5))), "scored_context_sha256": "a"*64,
         "scored_input_token_ids": [1, 2, job["score_index"]+3]})
     monkeypatch.setattr(scoring, "paired_order", lambda contexts: list(range(len(contexts))))
+    clock = {"now": 1000., "production": False, "extra_added": False}
+    monkeypatch.setattr(scoring.time, "monotonic", lambda: clock["now"])
+    real_fsync = scoring.os.fsync
+    def timed_fsync(fd):
+        clock["now"] += .003
+        return real_fsync(fd)
+    monkeypatch.setattr(scoring.os, "fsync", timed_fsync)
+    def progress(update):
+        clock["now"] += .05
+        if update["phase"] == "diagnostics_passed":
+            clock["production"] = True
     def fake_forward(torch, model, tokenizer, contexts, **kwargs):
+        clock["now"] += .005 if len(contexts) == 1 else .01
+        if clock["production"] and len(contexts) == 1 and not clock["extra_added"]:
+            clock["now"] += extra_diagnostic_seconds
+            clock["extra_added"] = True
         return [{"logits": [2., 0., 0., 0., -2.], "vocabulary_logsumexp": 3.,
                  "unconstrained_top_token_id": 0, "unconstrained_top_logit": 2.} for _ in contexts]
     monkeypatch.setattr(scoring, "forward", fake_forward)
     public = tmp_path/"public.json"
     public.write_bytes(scoring.base.canonical(package))
     receipt = scoring.run_scoring(tag, public, scoring.base.file_hash(public), tmp_path, tmp_path/"out",
-                                  source_commit="1"*40, max_seconds=scoring.worker_seconds(4)-120)
+                                  source_commit="1"*40, max_seconds=scoring.worker_seconds(4)-120, progress=progress)
     assert receipt["status"] == "complete", receipt
+    benchmark = receipt["benchmark"]
+    assert benchmark["recurring_production_seconds"] == pytest.approx(16 * (.01 + .003))
+    # The four-question mock checks first and middle production batches before
+    # the benchmark. Only their singles/replay/evidence/checkpoint blocks leave
+    # the recurring timer; the ordinary score fsync above remains included.
+    assert benchmark["nonrecurring_production_diagnostic_seconds"] == pytest.approx(extra_diagnostic_seconds + 2 * (.005 * 8 + .01 + .003 + .05))
+    assert benchmark["maximum_checkpoint_callback_seconds"] == pytest.approx(.05)
+    assert benchmark["remaining_checkpoint_counts"]["future_production_diagnostics"] == 1
+    assert benchmark["checkpoint_reserve_seconds"] == pytest.approx(4 * .05 * 1.2)
     assert receipt["completed_rows"] == 160
     assert receipt["production_single_gate"]["rows"] == 24
     live = json.loads((tmp_path/"out/attempts/000_live_trajectories.json").read_text())
