@@ -1,0 +1,300 @@
+name: Watch frozen tuned IMCQA recovery without compute
+
+on:
+  push:
+    branches: [feat/imcqa-tuned-policy-comparison-20261005]
+    paths: [.github/workflows/imcqa-tuned-recovery-watch.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: imcqa-tuned-recovery-watch-20261006
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: watch frozen tuned IMCQA recovery without compute'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 155
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.12'
+      - name: Install pinned observer dependency
+        run: python -m pip install --disable-pip-version-check 'modal==1.6.0'
+      - name: Read existing recovery metadata 00
+        id: snapshot_00
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 0
+      - name: Preserve snapshot 00 immediately
+        if: always() && steps.snapshot_00.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-00
+          path: imcqa_tuned_recovery_watch/snapshot-00.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 01
+        id: snapshot_01
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 1
+      - name: Preserve snapshot 01 immediately
+        if: always() && steps.snapshot_01.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-01
+          path: imcqa_tuned_recovery_watch/snapshot-01.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 02
+        id: snapshot_02
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 2
+      - name: Preserve snapshot 02 immediately
+        if: always() && steps.snapshot_02.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-02
+          path: imcqa_tuned_recovery_watch/snapshot-02.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 03
+        id: snapshot_03
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 3
+      - name: Preserve snapshot 03 immediately
+        if: always() && steps.snapshot_03.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-03
+          path: imcqa_tuned_recovery_watch/snapshot-03.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 04
+        id: snapshot_04
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 4
+      - name: Preserve snapshot 04 immediately
+        if: always() && steps.snapshot_04.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-04
+          path: imcqa_tuned_recovery_watch/snapshot-04.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 05
+        id: snapshot_05
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 5
+      - name: Preserve snapshot 05 immediately
+        if: always() && steps.snapshot_05.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-05
+          path: imcqa_tuned_recovery_watch/snapshot-05.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 06
+        id: snapshot_06
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 6
+      - name: Preserve snapshot 06 immediately
+        if: always() && steps.snapshot_06.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-06
+          path: imcqa_tuned_recovery_watch/snapshot-06.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 07
+        id: snapshot_07
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 7
+      - name: Preserve snapshot 07 immediately
+        if: always() && steps.snapshot_07.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-07
+          path: imcqa_tuned_recovery_watch/snapshot-07.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 08
+        id: snapshot_08
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 8
+      - name: Preserve snapshot 08 immediately
+        if: always() && steps.snapshot_08.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-08
+          path: imcqa_tuned_recovery_watch/snapshot-08.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 09
+        id: snapshot_09
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 9
+      - name: Preserve snapshot 09 immediately
+        if: always() && steps.snapshot_09.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-09
+          path: imcqa_tuned_recovery_watch/snapshot-09.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 10
+        id: snapshot_10
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 10
+      - name: Preserve snapshot 10 immediately
+        if: always() && steps.snapshot_10.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-10
+          path: imcqa_tuned_recovery_watch/snapshot-10.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 11
+        id: snapshot_11
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 11
+      - name: Preserve snapshot 11 immediately
+        if: always() && steps.snapshot_11.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-11
+          path: imcqa_tuned_recovery_watch/snapshot-11.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 12
+        id: snapshot_12
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 12
+      - name: Preserve snapshot 12 immediately
+        if: always() && steps.snapshot_12.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-12
+          path: imcqa_tuned_recovery_watch/snapshot-12.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 13
+        id: snapshot_13
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 13
+      - name: Preserve snapshot 13 immediately
+        if: always() && steps.snapshot_13.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-13
+          path: imcqa_tuned_recovery_watch/snapshot-13.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Wait ten minutes before next bounded snapshot
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        run: sleep 600
+      - name: Read existing recovery metadata 14
+        id: snapshot_14
+        if: success() && env.IMCQA_WATCH_COMPLETE != 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: python -m scripts.imcqa_tuned_watch --index 14
+      - name: Preserve snapshot 14 immediately
+        if: always() && steps.snapshot_14.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: imcqa-tuned-recovery-watch-${{ github.run_id }}-14
+          path: imcqa_tuned_recovery_watch/snapshot-14.json
+          if-no-files-found: error
+          retention-days: 90
