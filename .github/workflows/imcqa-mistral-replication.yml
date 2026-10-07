@@ -1,0 +1,24 @@
+name: Approved bounded Mistral IMCQA replication
+
+# Staged disabled while the dedicated scorer and spending controls are reviewed.
+# No provider credentials or paid calls exist in this preparation revision.
+on:
+  push:
+    branches: [feat/imcqa-mistral-replication-20261007]
+    paths: [.github/workflows/imcqa-mistral-replication.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: imcqa-mistral-replication-20261007
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Await reviewed launch implementation
+        run: python -c 'raise SystemExit("Launch remains disabled pending complete preflight")'
