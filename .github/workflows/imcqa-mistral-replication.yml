@@ -1,4 +1,5 @@
 name: Bounded Mistral IMCQA development
+# Test-fixture import compatibility corrected before any provider allocation.
 
 on:
   push:

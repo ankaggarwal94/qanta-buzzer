@@ -1,6 +1,9 @@
 """CPU-only false-case tests for frozen Mistral evaluation and pairing."""
 from copy import deepcopy
+import importlib.util
 import json
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -208,10 +211,29 @@ def test_episode_invariants_reject_corruption(mutation):
     with pytest.raises(ValueError):analysis.validate_episode_grid(episodes)
 
 
+def load_sibling_design_helpers():
+    """Load the exact sibling fixture in either pytest package/import mode."""
+    path=Path(__file__).with_name("test_imcqa_mistral_design.py")
+    spec=importlib.util.spec_from_file_location("_imcqa_local_design_test_helpers",path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load the local design-test fixture")
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_sibling_fixture_load_is_path_bound(tmp_path,monkeypatch):
+    # A package-style test checkout must not resolve an ambient top-level module.
+    monkeypatch.setitem(sys.modules,"test_imcqa_mistral_design",None)
+    monkeypatch.chdir(tmp_path)
+    helper=load_sibling_design_helpers()
+    assert Path(helper.__file__).resolve()==Path(__file__).with_name("test_imcqa_mistral_design.py").resolve()
+    assert callable(helper.synthetic_package)
+
+
 @pytest.fixture(scope="module")
 def full_synthetic_evaluation():
-    from test_imcqa_mistral_design import synthetic_package
-    package=synthetic_package("evaluation",locked=True)
+    package=load_sibling_design_helpers().synthetic_package("evaluation",locked=True)
     questions={}
     rows=[]
     for job in package["jobs"]:
