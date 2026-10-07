@@ -1,0 +1,162 @@
+name: Bounded frozen Mistral IMCQA evaluation
+
+on:
+  push:
+    branches: [feat/imcqa-mistral-replication-20261007]
+    paths: [.github/workflows/imcqa-mistral-evaluation.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: imcqa-mistral-eight-usd-v1
+  cancel-in-progress: false
+
+env:
+  # Exact development source; the later launch-input commit must not replace it.
+  MISTRAL_SOURCE_COMMIT: 39acd06683ff6d72f1f7e9ee4d19efcffba4657e
+
+jobs:
+  evaluation:
+    if: >-
+      github.event_name == 'push' &&
+      github.actor == 'ankaggarwal94' &&
+      github.run_attempt == 1 &&
+      github.event.head_commit.message == 'ops: run approved eight-dollar frozen Mistral evaluation once'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    defaults:
+      run:
+        working-directory: source
+    steps:
+      - name: Check out frozen launch inputs and workflow tests
+        id: launch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: launch
+          persist-credentials: false
+      - name: Check out exact development source without changing its HEAD
+        id: source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.MISTRAL_SOURCE_COMMIT }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11.12'
+      - name: Install pinned control-plane dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          'modal==1.6.0' 'pytest==8.3.5' 'numpy==2.2.4' 'scipy==1.15.2'
+          'PyYAML==6.0.2' 'lm-format-enforcer==0.11.3' 'interegular==0.3.3'
+      - name: Test frozen source before credentials
+        run: >-
+          python -m pytest --noconftest
+          tests/test_imcqa_mistral_design.py tests/test_imcqa_mistral_scoring.py
+          tests/test_modal_imcqa_mistral.py tests/test_analyze_imcqa_mistral.py
+          tests/test_imcqa_mistral_workflow.py -q
+      - name: Test evaluation workflow in its separate launch checkout
+        working-directory: launch
+        run: >-
+          python -m pytest --noconftest
+          tests/test_imcqa_mistral_evaluation_workflow.py -q
+      - name: Reconstruct the unchanged public evaluation template
+        run: >-
+          python -m scripts.imcqa_mistral_design --transport-root .
+          --public-bindings imcqa_mistral_public/public_bindings.json
+          --out ../imcqa_mistral_eval_artifacts/public
+      - name: Bind validated development receipt and policy lock before evaluation
+        id: bind
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import shutil
+          from scripts import imcqa_mistral_design as design
+          from scripts import modal_imcqa_mistral as runner
+          from scripts.select_imcqa_mistral_policies import validate_policy_lock
+
+          launch = Path('../launch/imcqa_mistral_eval')
+          out = Path('../imcqa_mistral_eval_artifacts')
+          names = ('cache_control.json', 'prepare_receipt.json', 'policy_lock.json',
+                   'development_receipt.json', 'evaluation_stage_manifest.json')
+          values = {name: runner.load((launch / name).read_bytes()) for name in names}
+          cache = values['cache_control.json']
+          if cache['source_commit'] != os.environ['MISTRAL_SOURCE_COMMIT']:
+              raise ValueError('launch cache is not bound to the frozen source checkout')
+          runner.verify_sources(Path.cwd(), cache, committed=True)
+          runner.validate_prepare(values['prepare_receipt.json'], cache)
+          template = runner.load((out / 'public/evaluation_public_unlocked.json').read_bytes())
+          lock = values['policy_lock.json']
+          development = values['development_receipt.json']
+          if design.value_hash(template) != lock['evaluation_template_sha256']:
+              raise ValueError('policy lock refers to a different evaluation template')
+          public = {**template, 'policy_lock_sha256': design.value_hash(lock),
+                    'development_receipt_sha256': design.value_hash(development)}
+          design.validate_public_package(public)
+          validate_policy_lock(lock, evaluation_package=public)
+          manifest = values['evaluation_stage_manifest.json']
+          design.validate_stage_manifest(manifest, public, policy_lock=lock,
+                                         development_receipt=development)
+          path = out / 'public/evaluation_public.json'
+          design.write_new(path, public)
+          if design.file_hash(path) != manifest['public_input_sha256']:
+              raise ValueError('serialized evaluation package differs from supplied manifest')
+          inputs = out / 'launch_inputs'
+          inputs.mkdir(exist_ok=False)
+          for name in names:
+              shutil.copyfile(launch / name, inputs / name)
+          design.write_new(out / 'input_binding_receipt.json', {
+              'status': 'inputs_validated', 'gpu_executed': False,
+              'source_commit': cache['source_commit'],
+              'evaluation_public_sha256': design.file_hash(path),
+              'launch_files_sha256': {name: design.file_hash(inputs / name) for name in names}})
+          PY
+      - name: Validate evaluation allocation without provider access
+        run: >-
+          python -m scripts.modal_imcqa_mistral score-stage --stage evaluation
+          --cache-control ../launch/imcqa_mistral_eval/cache_control.json
+          --prepare-receipt ../launch/imcqa_mistral_eval/prepare_receipt.json
+          --public-package ../imcqa_mistral_eval_artifacts/public/evaluation_public.json
+          --stage-manifest ../launch/imcqa_mistral_eval/evaluation_stage_manifest.json
+          --policy-lock ../launch/imcqa_mistral_eval/policy_lock.json
+          --development-receipt ../launch/imcqa_mistral_eval/development_receipt.json
+          --out ../imcqa_mistral_eval_artifacts/dry-run --dry-run
+          > ../imcqa_mistral_eval_artifacts/preflight.json
+      - name: Score frozen evaluation once with no retry
+        id: score
+        timeout-minutes: 150
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: >-
+          python -m scripts.modal_imcqa_mistral score-stage --stage evaluation
+          --cache-control ../launch/imcqa_mistral_eval/cache_control.json
+          --prepare-receipt ../launch/imcqa_mistral_eval/prepare_receipt.json
+          --public-package ../imcqa_mistral_eval_artifacts/public/evaluation_public.json
+          --stage-manifest ../launch/imcqa_mistral_eval/evaluation_stage_manifest.json
+          --policy-lock ../launch/imcqa_mistral_eval/policy_lock.json
+          --development-receipt ../launch/imcqa_mistral_eval/development_receipt.json
+          --out ../imcqa_mistral_eval_artifacts/evaluation
+      - name: Delete only this run's model cache after evaluation or any failure
+        if: ${{ always() && steps.source.outcome == 'success' && hashFiles('launch/imcqa_mistral_eval/cache_control.json') != '' }}
+        timeout-minutes: 3
+        continue-on-error: true
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: >-
+          python -m scripts.modal_imcqa_mistral cleanup-cache
+          --control ../launch/imcqa_mistral_eval/cache_control.json
+          --out ../imcqa_mistral_eval_artifacts/cache_cleanup.json
+      - name: Preserve complete or partial evaluation and all receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: imcqa-mistral-evaluation-${{ github.run_id }}
+          path: imcqa_mistral_eval_artifacts/
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 90
