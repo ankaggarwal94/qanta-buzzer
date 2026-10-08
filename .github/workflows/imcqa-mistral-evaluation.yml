@@ -14,6 +14,7 @@ concurrency:
 
 env:
   # Exact development source; the later launch-input commit must not replace it.
+  # Approved one-shot evaluation activation: imcqa-mistral-oct7-a1.
   MISTRAL_SOURCE_COMMIT: 39acd06683ff6d72f1f7e9ee4d19efcffba4657e
 
 jobs:
@@ -160,3 +161,4 @@ jobs:
           if-no-files-found: warn
           compression-level: 6
           retention-days: 90
+
