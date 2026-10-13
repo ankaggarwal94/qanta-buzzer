@@ -1,0 +1,50 @@
+name: TAE v3 pinned tokenizer capture
+on:
+  push:
+    branches: [ops/tae-v3-tokenizer-audit-20261013]
+    paths: [.github/workflows/tae-v3-tokenizer-capture.yml]
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch and authenticate public tokenizer assets
+        shell: bash
+        run: |
+          mkdir -p out/wheels
+          python - <<'PY'
+          import hashlib, json, os, pathlib, platform, urllib.request
+          out=pathlib.Path('out')
+          targets=[
+            ('qwen7b.json','Qwen/Qwen2.5-7B-Instruct','a09a35458c702b33eeacc393d103063234e8bc28','c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539'),
+            ('minilm.json','sentence-transformers/all-MiniLM-L6-v2','1110a243fdf4706b3f48f1d95db1a4f5529b4d41','be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037')]
+          manifest={'purpose':'Read-only token decoding and truncation audit; zero model weights or inference','workflow_commit':os.environ['GITHUB_SHA'],'run_id':os.environ['GITHUB_RUN_ID'],'python':platform.python_version(),'files':[]}
+          for name,repo,rev,expected in targets:
+            url=f'https://huggingface.co/{repo}/resolve/{rev}/tokenizer.json'
+            with urllib.request.urlopen(url,timeout=90) as r: raw=r.read()
+            digest=hashlib.sha256(raw).hexdigest()
+            assert digest==expected,(name,digest,expected)
+            (out/name).write_bytes(raw)
+            manifest['files'].append({'name':name,'repo':repo,'revision':rev,'url':url,'bytes':len(raw),'sha256':digest})
+          (out/'capture_manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          print(json.dumps(manifest,indent=2))
+          PY
+      - name: Retrieve offline tokenizer wheel
+        shell: bash
+        run: |
+          python -m pip download --only-binary=:all: --no-deps tokenizers==0.21.4 --dest out/wheels
+          python - <<'PY'
+          import hashlib,json,pathlib
+          out=pathlib.Path('out')
+          rows={str(p.relative_to(out)):hashlib.sha256(p.read_bytes()).hexdigest() for p in out.rglob('*') if p.is_file()}
+          (out/'SHA256.json').write_text(json.dumps(rows,indent=2)+'\n')
+          PY
+      - name: Preserve authenticated assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tae-v3-pinned-tokenizers
+          path: out/
+          retention-days: 30
+          if-no-files-found: error
