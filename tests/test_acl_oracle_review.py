@@ -62,3 +62,57 @@ def test_scoped_review_fails_closed(mutation):
         rec["options"][0]["rationale"] = " "
     with pytest.raises(ValueError):
         verify_review(prepared,dataset,review)
+
+
+def test_contextual_alternate_or_prompt_alias_fails_before_play():
+    prepared, dataset, _ = reviewed_fixture()
+    registry = prepared.registry
+    registry["classes"]["Venus"] = ["Evening Star"]
+    for kind in ("accepted", "prompt"):
+        modified = deepcopy(dataset)
+        modified["questions"][0]["answer"][kind].append("Evening Star")
+        with pytest.raises(ValueError, match="displayed option"):
+            prepare(prepared.spec, modified, registry, contextual_review=True)
+
+
+def test_review_checks_split_and_multiple_group_text():
+    prepared, dataset, review = reviewed_fixture()
+    prepared.questions["val"].append(prepared.questions["train"].pop())
+    with pytest.raises(ValueError, match="split mismatch"):
+        verify_review(prepared, dataset, review)
+    a, b = dataset["questions"][:2]
+    b["question"], b["prefixes"] = a["question"], a["prefixes"]
+    with pytest.raises(ValueError, match="text overlap"):
+        prepare(prepared.spec, dataset, prepared.registry)
+
+
+def test_scientific_review_projects_complete_judgments_and_rejects_new_class():
+    from dataclasses import replace
+    from qb_data.acl_scientific_review import compile_review, extend_template
+    prepared, dataset, _ = reviewed_fixture()
+    reviewed = extend_template(prepared, dataset, prepared.registry)
+    for q in dataset["questions"]:
+        for key, decision in reviewed["questions"][q["qid"]]["classes"].items():
+            decision.update(reviewer="test", rationale="fixture identity",
+                            judgment="accepted" if key == q["source"]["canonical_answer"] else "rejected")
+    sidecar, receipt = compile_review(prepared, dataset, prepared.registry, reviewed)
+    assert receipt["reviewed_questions"] == len(dataset["questions"])
+    assert len(sidecar["questions"]) == len(dataset["questions"])
+    regenerated = prepare(replace(prepared.spec, menu="uniform_global"), dataset, prepared.registry)
+    with pytest.raises(ValueError, match="no reviewed class decision"):
+        compile_review(regenerated, dataset, prepared.registry, reviewed)
+
+def test_direct_review_rejects_displayed_alias_on_legacy_prepared_menu():
+    from qb_data.acl_protocol import digest
+    prepared, dataset, review = reviewed_fixture()
+    prepared.registry["classes"]["Venus"] = ["Evening Star"]
+    prepared = prepare(prepared.spec, dataset, prepared.registry)
+    source = dataset["questions"][0]
+    source["answer"]["prompt"] = ["Evening Star"]
+    # Recreate an older freeze whose menu preparation permitted this prompt class.
+    prepared.identity.update(dataset_sha256=digest(dataset), oracle_sha256=digest(prepared.registry))
+    updated = review_template(prepared, dataset)
+    for qid, record in updated["questions"].items():
+        record.update({field: review["questions"][qid][field] for field in ("status", "reviewer", "options")})
+    with pytest.raises(ValueError, match="source-specific rule"):
+        verify_review(prepared, dataset, updated)

@@ -6,6 +6,7 @@ from pathlib import Path
 from statistics import fmean
 
 from qb_data.acl_protocol import digest, publish_json
+from scripts.acl_checkpoints import verify_completed_lineage
 from scripts.stopdff_v5.identity import load_json_strict, sha256_file
 
 
@@ -44,6 +45,7 @@ def _read_run(folder, split):
     receipt = load_json_strict(folder/"completed.json")
     if digest(manifest) != folder.name or receipt["run_id"] != folder.name:
         raise ValueError("run identity mismatch")
+    verify_completed_lineage(folder, manifest["training"], receipt)
     path = folder/f"{split}_episodes.json"
     if sha256_file(path) != receipt["episodes"][split]:
         raise ValueError("episode identity mismatch")
@@ -51,20 +53,40 @@ def _read_run(folder, split):
 
 
 def compare(reference, other, split):
+    """Compare two completed arms for the same learner and seed on a common held-out split.
+
+    Accuracy, abstention and prefix counts have common units. Discounted returns
+    describe each arm under its own reward schedule.
+    """
     left, lrows = _read_run(reference, split)
     right, rrows = _read_run(other, split)
+    left_menu = left["input"]["spec"]["menu"]
+    right_menu = right["input"]["spec"]["menu"]
+    same_menu = left_menu == right_menu
+
     def conditions(run):
         inputs = run["input"]
         arm = inputs["spec"]
-        review = inputs.get("source_review", {})
-        fixed_spec = {key: value for key, value in arm.items() if key not in {"menu", "reward"}}
-        return (run["runtime"], run["policy"], run["training"], run["device"],
-                run["assets"].get("encoder"), inputs["dataset_sha256"], inputs["oracle_sha256"],
-                inputs["reservoir_sha256"], inputs["split_roles"], inputs["core"],
-                fixed_spec, arm["reward"]["gamma"], review.get("class_review_sha256"),
-                review.get("selection_sha256"))
+        fixed_spec = {k: v for k, v in arm.items() if k not in {"menu", "reward"}}
+        fixed_reward = {k: v for k, v in arm["reward"].items() if k not in {"arm", "potential_scale"}}
+        assets = dict(run["assets"])
+        if not same_menu and ("sbert" in left_menu) != ("sbert" in right_menu):
+            # Only the SBERT menu consumes retrieval weights in this comparison.
+            if "sbert" in arm["menu"]:
+                if not assets.pop("retriever", None):
+                    raise ValueError("missing retriever identity for matched arms")
+        review = inputs.get("source_review")
+        if review is not None and not same_menu and (
+                review.get("class_review_sha256") or review.get("selection_sha256")):
+            # The same question-level decisions can project to distinct ordered menus.
+            review = {k: v for k, v in review.items() if k not in {"review_sha256", "menus_sha256"}}
+        fixed_inputs = {k: v for k, v in inputs.items()
+                        if k not in {"spec", "source_review", "menus_sha256"}}
+        return (run["runtime"], run["policy"], run["training"], run["device"], assets,
+                fixed_inputs, fixed_spec, fixed_reward, review, inputs["menus_sha256"] if same_menu else None)
+
     if conditions(left) != conditions(right):
-        raise ValueError("source review, dataset, training, fixed payoff settings or runtime differ across matched arms")
+        raise ValueError("source review, menus, fixed payoff, model or runtime differ across matched arms")
     return {"reference_run": reference.name, "arm_run": other.name, "split": split,
             **compare_episodes(lrows, rrows, gamma=left["input"]["spec"]["reward"]["gamma"])}
 

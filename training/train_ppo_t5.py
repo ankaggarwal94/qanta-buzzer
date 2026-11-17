@@ -259,12 +259,16 @@ class PPOTrainer:
         config: Dict[str, Any],
         *,
         text_env_factory: Callable | None = None,
+        bootstrap_time_limits: bool = False,
+        disable_update_dropout: bool = False,
     ) -> None:
         self.model = model
         self.train_questions = list(train_questions)
         self.val_questions = list(val_questions)
         self.config = config
         self.text_env_factory = text_env_factory
+        self.bootstrap_time_limits = bootstrap_time_limits
+        self.disable_update_dropout = disable_update_dropout
 
         self.device = model.device
 
@@ -384,7 +388,7 @@ class PPOTrainer:
                     )
                     done = terminated or truncated
                     bootstrap = 0.0
-                    if self.text_env_factory is not None and truncated and not terminated:
+                    if self.bootstrap_time_limits and truncated and not terminated:
                         _, _, terminal_value = self.model([next_obs], return_value=True)
                         bootstrap = terminal_value.item()
 
@@ -492,10 +496,7 @@ class PPOTrainer:
         """
         # Match the behavior-policy likelihood used for ACL rollouts. Gradients
         # still flow in eval mode, including for end-to-end encoder training.
-        if self.text_env_factory is None:
-            self.model.train()
-        else:
-            self.model.eval()
+        self.model.train(not self.disable_update_dropout)
 
         # Compute returns and advantages
         buffer.compute_returns_and_advantages(

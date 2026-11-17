@@ -48,6 +48,10 @@ def test_policy_projection_and_hidden_suffix_invariance():
     assert a.option_profiles == a.options  # same public feature source for every slot
     api = expansion()
     prompt = api.policy_prompt(a.cumulative_prefixes[0], a.options)
+    changed = list(second.public_jobs("test"))
+    assert changed[0]["prompt"] == next(first.public_jobs("test"))["prompt"]
+    assert "PRIVATE_SUFFIX" not in changed[0]["prompt"]
+    assert "PRIVATE_SUFFIX" in changed[-1]["prompt"]
     assert "PRIVATE_SUFFIX" not in prompt
     payload = json.loads(prompt.rsplit("\n\n", 1)[1])
     assert set(payload) == {"question_prefix", "options"}
@@ -138,3 +142,102 @@ def test_train_prompt_export_and_scoring_share_every_actionable_prefix():
         runtime.score_actions("test", {})
     with pytest.raises(ValueError, match="action"):
         runtime.score_actions("test", {k: True for k in choices})
+
+def test_runtime_replay_checks_steps_and_completed_episodes():
+    from scripts.acl_expansion import Runtime
+    runtime = Runtime(prepare())
+    rows=[]
+    env=runtime.environment(runtime.prepared.questions["train"], sink=rows)
+    env.reset(options={"question_idx":0})
+    env.step(0)
+    env.step(1)
+    runtime.replay_training(rows,"ppo",2)
+    runtime.replay_training(rows,"t5",1)
+    for policy,count,trace in [("ppo",2,[]),("ppo",2,rows[:1]),("t5",2,rows),("t5",1,rows[:1])]:
+        with pytest.raises(ValueError,match="trace"):
+            runtime.replay_training(trace,policy,count)
+
+
+def test_partial_model_cache_is_refetched_then_reusable(tmp_path,monkeypatch):
+    import huggingface_hub
+    from scripts import acl_expansion as acl
+    (tmp_path/"config.json").write_text("{}")
+    calls=[]
+    def download(name, *,revision,local_files_only=False,allow_patterns=None):
+        calls.append(local_files_only)
+        if not local_files_only:
+            for name in ("model.safetensors","tokenizer_config.json","spiece.model","tokenizer.json"):
+                (tmp_path/name).write_bytes(b"stub")
+        return str(tmp_path)
+    acl.snapshot.cache_clear()
+    monkeypatch.setattr(huggingface_hub,"snapshot_download",download)
+    try:
+        assert acl.snapshot(acl.T5)==str(tmp_path)
+        assert calls==[True,False]
+        acl.snapshot.cache_clear()
+        assert acl.snapshot(acl.T5)==str(tmp_path)
+        assert calls==[True,False,True]
+    finally:
+        acl.snapshot.cache_clear()
+
+
+def test_cli_accepts_dotted_overrides_and_rejects_ignored_selectors(tmp_path):
+    from scripts.acl_expansion import main
+    config="configs/acl_expansion/smoke.yaml"
+    main(["export","--config",config,"--out",str(tmp_path/"jobs.json"),"arm.seed=3"])
+    assert (tmp_path/"jobs.json").is_file()
+    for flag,value in [("--reward","linear"),("--menu","baseline")]:
+        with pytest.raises(SystemExit):
+            main(["smoke","--config",config,"--out",str(tmp_path),flag,value])
+
+@pytest.mark.parametrize("terminated,truncated,expected", [(False,True,4.),(True,False,0.),(True,True,0.)])
+def test_rollout_collector_bootstraps_only_live_timeouts(tmp_path, terminated, truncated, expected):
+    import torch
+    from training.train_ppo_t5 import PPOTrainer
+    from transformers import BatchEncoding
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight=torch.nn.Parameter(torch.ones(1))
+            self.device=torch.device("cpu")
+            self.seen=[]
+        def tokenizer(self, obs, **options):
+            return BatchEncoding({"input_ids":torch.ones(1,1,dtype=torch.long),
+                                  "attention_mask":torch.ones(1,1,dtype=torch.long)})
+        def select_action(self, ids, mask, deterministic=False):
+            return torch.tensor(0), {"values":torch.tensor(2.),"log_probs":torch.tensor(0.)}
+        def forward(self, obs, return_value):
+            self.seen.extend(obs)
+            return None,None,torch.tensor(4.)
+
+    class Env:
+        def reset(self):
+            return "start",{}
+        def step(self, action):
+            return "successor",1.,terminated,truncated,{}
+
+    model=Model()
+    trainer=PPOTrainer(model,[object()],[],{"checkpoint_dir":str(tmp_path)},
+                       text_env_factory=lambda q: Env(),bootstrap_time_limits=True)
+    steps=trainer.collect_rollouts(1).get_all_steps()
+    assert steps[0].bootstrap_value==expected
+    assert model.seen==(["successor"] if expected else [])
+
+
+def test_export_stream_is_canonical_and_fails_atomically(tmp_path):
+    from scripts.acl_expansion import _export_jobs
+    from qb_data.acl_protocol import encode
+    path=tmp_path/"jobs"
+    items=[{"é":"text"},{"clues":"next"}]
+    _export_jobs(path,iter(items))
+    assert path.read_bytes()==encode(items)+b"\n"
+    _export_jobs(path,iter(items))
+    with pytest.raises(ValueError,match="immutable"):
+        _export_jobs(path,iter([]))
+    def broken():
+        yield items[0]
+        raise RuntimeError("generator failed")
+    with pytest.raises(RuntimeError,match="generator failed"):
+        _export_jobs(tmp_path/"partial",broken())
+    assert list(tmp_path.iterdir()) == [path]

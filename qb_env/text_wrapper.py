@@ -89,7 +89,12 @@ class TextObservationWrapper(gym.ObservationWrapper):
         step_idx: int = self.env.step_idx
         if getattr(self.env, "acl_reward", None) is not None:
             from qb_data.acl_protocol import policy_prompt
-            return policy_prompt(question.cumulative_prefixes[step_idx - 1], question.options, self.acl_spec)
+            from qb_env.acl_prompt import PublicPayoffs
+            payoffs = PublicPayoffs.from_env(self.env)
+            if self.acl_spec is not None and not payoffs.matches(self.acl_spec):
+                raise ValueError("supplied ACL payoff specification differs from the live environment")
+            return policy_prompt(question.cumulative_prefixes[step_idx - 1], question.options,
+                                 payoffs, end_mode=self.env.end_mode)
 
         # Build visible clue text from cumulative prefixes.
         #

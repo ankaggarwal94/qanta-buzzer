@@ -137,7 +137,8 @@ def certify_payout(program, progress: Fraction, validate: TransitionValidator, *
                 if claimed is not None and claimed != value:
                     raise ValueError("claimed schedule value differs from certified payout")
                 validate(lo, 0., 0., 0., value)
-                validate(hi, 0., 0., 0., value)
+                if hi != lo:
+                    validate(hi, 0., 0., 0., value)
                 return value, {
                     "progress": list(progress.as_integer_ratio()),
                     "lower": list(lo.as_integer_ratio()),

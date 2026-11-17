@@ -13,7 +13,7 @@ For each normalized decay on 0 ≤ x ≤ 1, `ValidCurve` asserts a value of 1 at
 | Step | 1 for x < t and 0 otherwise, with 0 < t ≤ 1 |
 | Piecewise linear | An arbitrary finite ordered list with first (0,1), last (1,0), strictly increasing abscissas and weakly decreasing ordinates. The recursive interpolation agrees at every knot. The witness has an interior knot and a changed slope. |
 
-The Python exponential evaluates a factored expression using `expm1` and switches evaluation order near zero. Over the reals, exp(−kx) × (1 − exp(−k(1−x))) equals exp(−kx) − exp(−k). The cosine implementation evaluates sin²(π(1−x)/2) beyond the midpoint. Both identities explain the link between the normalized real definition and the runtime expression. Binary64 operations, libm approximations, endpoint dispatch and the final clamp require separate runtime evidence. The verified per-horizon checker validates the actual realized binary64 schedule of audited episodes. [Runtime implementation](../../qb_env/acl_rewards.py) · [Runtime evidence](proofs.md)
+An implementation may evaluate the exponential through the identity exp(−kx) × (1 − exp(−k(1−x))) = exp(−kx) − exp(−k). Likewise sin²(π(1−x)/2) = cos²(πx/2). Binary64 operations, libm approximations and episode-level consumption require independent evidence from the downstream implementation. The standalone bridge checks supplied binary64 payout schedules. [Bridge evidence](proofs.md)
 
 From `formal/acl_curves`, native Windows and POSIX environments with Lean 4.35.0 on PATH can build the proof with the same commands. The Lake manifest pins all transitive package revisions, including mathlib `56a005855ea17e0b0958f73ec801ae140b0a1679`.
 
