@@ -155,7 +155,7 @@ def _prefixes(question):
 
 
 def prepare(spec: ArmSpec, dataset: dict, aliases: dict, *, reservoir=None,
-            encoder=None, split_roles=None, core=None, contextual_review=False) -> Prepared:
+            encoder=None, split_roles=None, core=None, contextual_review=False, review_draft=False) -> Prepared:
     """Consume a private jane-paired-v1 freeze with its reviewed class registry.
 
     Native ACL calibration/selection roles require an explicit split mapping.
@@ -253,7 +253,7 @@ def prepare(spec: ArmSpec, dataset: dict, aliases: dict, *, reservoir=None,
                                  prefix=prefixes[0], strategy=spec.menu, k=spec.k, seed=spec.seed,
                                  draw_id=qid, explicit=explicit, explicit_source_ids=source_ids_arg)
             distractors = set(menu.class_ids) - {gold_class}
-            if distractors & accepted_classes or set(menu.class_ids) & rule_classes["prompt"]:
+            if not review_draft and (distractors & accepted_classes or set(menu.class_ids) & rule_classes["prompt"]):
                 raise ValueError(f"{qid}: displayed option conflicts with source-specific answer rules")
             options = list(menu.options)
             if gold_slot is not None and gold_slot != menu.gold_index:

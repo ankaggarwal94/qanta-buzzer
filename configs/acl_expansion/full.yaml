@@ -1,0 +1,34 @@
+arm:
+  version: 1
+  menu: baseline
+  baseline_condition: independent_pool
+  k: 4
+  seed: 1
+  wait_cost: -0.01
+  wrong_reward: -0.5
+  abstain_reward: 0.0
+  correct_reward: 1.0
+  reward:
+    arm: baseline
+    start: 1.25
+    end: 0.2
+    gamma: 0.99
+    shape: 2.0
+    threshold: 0.5
+    knots: [[0, 1], [0.4, 0.9], [0.75, 0.3], [1, 0]]
+inputs:
+  dataset: data/acl_expansion/evaluator/main_dataset.json
+  dataset_file_sha256: d16d8e611965fba3829f01cda936145743b7d46187030e2138caf52068aa9b62
+  reservoir: data/acl_expansion/evaluator/reservoir.json
+  oracle: data/acl_expansion/reviewed_classes.json
+  class_review: data/acl_expansion/review/question_class_decisions.json
+  split_roles: {calibration: train, selection: val, test: test}
+training:
+  updates: 20
+  checkpoint_updates: 10
+  rollout_size: 32
+  epochs: 4
+  batch_size: 8
+  freeze_encoder: false
+  max_input_length: 1024
+  threads: 2

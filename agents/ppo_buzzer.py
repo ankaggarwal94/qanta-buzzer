@@ -138,12 +138,14 @@ class PPOBuzzer:
         policy_kwargs: dict[str, Any] | None = None,
         verbose: int = 0,
         use_maskable_ppo: bool = False,
+        device: str = "auto",
     ):
         if policy_kwargs is None:
             policy_kwargs = {"net_arch": [64, 64]}
 
         self.env = env
         self._use_maskable = use_maskable_ppo
+        device_kwargs = {} if device == "auto" else {"device": device}
 
         if use_maskable_ppo:
             try:
@@ -163,6 +165,7 @@ class PPOBuzzer:
                 batch_size=batch_size,
                 n_epochs=n_epochs,
                 gamma=gamma,
+                **device_kwargs,
                 policy_kwargs=policy_kwargs,
             )
         else:
@@ -176,6 +179,7 @@ class PPOBuzzer:
                 batch_size=batch_size,
                 n_epochs=n_epochs,
                 gamma=gamma,
+                **device_kwargs,
                 policy_kwargs=policy_kwargs,
             )
 
@@ -209,6 +213,7 @@ class PPOBuzzer:
         path: str | Path,
         env: TossupMCEnv,
         use_maskable_ppo: bool = False,
+        device: str = "auto",
     ) -> "PPOBuzzer":
         """Load a previously saved PPO model.
 
@@ -230,6 +235,7 @@ class PPOBuzzer:
         agent = cls.__new__(cls)
         agent.env = env
         agent._use_maskable = use_maskable_ppo
+        device_kwargs = {} if device == "auto" else {"device": device}
         if use_maskable_ppo:
             try:
                 from sb3_contrib import MaskablePPO
@@ -238,9 +244,9 @@ class PPOBuzzer:
                     "MaskablePPO requires sb3-contrib. "
                     "Install with: pip install -e '.[maskable]'"
                 ) from exc
-            agent.model = MaskablePPO.load(str(path), env=env)
+            agent.model = MaskablePPO.load(str(path), env=env, **device_kwargs)
         else:
-            agent.model = PPO.load(str(path), env=env)
+            agent.model = PPO.load(str(path), env=env, **device_kwargs)
         return agent
 
     def _current_action_masks(self) -> np.ndarray | None:
