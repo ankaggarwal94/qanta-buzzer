@@ -54,7 +54,8 @@ def checked_review(inputs, scope, menus=None):
         questions[inputs["split_roles"][row["split"]]].append(SimpleNamespace(
             qid=qid, question=row["question"], options=list(menu["options"]), gold_index=menu["gold_index"]))
         groups[qid] = row["group_id"]
-    prepared = SimpleNamespace(identity=inputs, questions=questions, menus=menus, groups=groups)
+    prepared = SimpleNamespace(identity=inputs, questions=questions, menus=menus, groups=groups,
+                               registry=registry)
     _, authentic = compile_review(prepared, dataset, registry, decisions)
     if review != authentic:
         raise ValueError("reviewed menu adjudication digest or fields differ")

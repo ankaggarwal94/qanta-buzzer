@@ -82,6 +82,7 @@ def test_real_review_uses_full_scientific_workflow():
     from pathlib import Path
     from scripts.acl_reviewed_subset import class_review
     from scripts.acl_expansion import load_inputs
+    from scripts.acl_smoke_receipt import checked_review
     from qb_data.acl_protocol import digest
 
     dataset = load_json_strict(OUTPUT / "dataset.json")
@@ -98,6 +99,12 @@ def test_real_review_uses_full_scientific_workflow():
         assert prepared.identity["source_review"]["class_review_sha256"] == digest(reviewed)
         assert prepared.identity["source_review"]["review_sha256"] == bind_review(
             prepared, dataset, selection, registry)["review_sha256"]
+        assert checked_review(prepared.identity, "reviewed ACL subset engineering smoke",
+                              prepared.menus) == {"source_review": prepared.identity["source_review"]}
+        changed = deepcopy(prepared.identity)
+        changed["source_review"]["review_sha256"] = "0" * 64
+        with pytest.raises(ValueError, match="adjudication digest"):
+            checked_review(changed, "reviewed ACL subset engineering smoke", prepared.menus)
 
 
 @pytest.mark.skipif(not (OUTPUT / "receipt.json").exists(),

@@ -1,6 +1,6 @@
 # Opt-in ACL expansion experiments
 
-Start in the active repository at revision `aef3ca43e36c682ff33ed32217ab1bbab4e2408e` plus the files in this change. The manifest records Git HEAD and hashes the implementation on disk, including uncommitted code. The original training scripts keep their historical CLI and horizon behavior. The `acl` subcommand selects the new protocol. [Evidence ledger](ledger.md)
+The bounded learner receipts were regenerated from revision `50283a793cc0193e719f5cfaa952395ebdf01708` on Linux using the package versions in `configs/acl_expansion/runtime-constraints.txt` and a freshly built Lean runtime. Each manifest records Git HEAD and hashes the implementation on disk. The original training scripts keep their historical CLI and horizon behavior. The `acl` subcommand selects the new protocol. [Evidence ledger](ledger.md)
 
 ## Bounded run
 
@@ -16,6 +16,8 @@ python -m scripts.acl_expansion smoke --policy t5 --config configs/acl_expansion
 ```
 
 Each learner runs 18 conditions on the same eight training groups and two held-out groups. Each of the ten menu choices is tested with the baseline reward. Each of the eight reward choices is tested with the frozen fixture menu, plus a separate potential-shaping run. The PPO budget is four environment steps per condition. T5 updates its policy head using four sampled episodes per condition; its encoder is frozen for these smokes. Both learners reload their checkpoints for inference, then replay training traces and held-out predictions. The fixture's baseline and constant payoffs coincide by design. [Smoke inputs](../../scripts/acl_smoke_data.py) · [Realized run IDs and hashes](evidence/learner_smokes.json)
+
+The portable summaries record digests of the runtime, Lean core and training settings, plus each run's completion and held-out episode hashes. Generate them from the two content-addressed smoke receipt files with `python -m scripts.acl_smoke_receipt <ppo-receipt.json> <t5-receipt.json> --out <summary.json>`. For the reviewed subset below, also pass `--scope "reviewed ACL subset engineering smoke"`. The summary command verifies checkpoint payloads, matched comparisons and source-specific review judgments before publishing these digests.
 
 The same 36 conditions also completed on seven reviewed Geography questions from the real ACL freeze. Three questions supplied training episodes, two supplied validation episodes and two supplied test episodes. Each realized menu carried source-specific judgments for all four options. The baseline preserved the original independent-pool options. These runs exercise training, inference and replay on real inputs. Their purposive selection and size preclude performance estimates. To reproduce them with the private archive, run the following from the repository root. [Review and selection](reviewed_geography_subset.md) · [Real learner receipts](evidence/reviewed_geography_smokes.json)
 
