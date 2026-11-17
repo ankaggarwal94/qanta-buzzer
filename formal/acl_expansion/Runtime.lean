@@ -5,6 +5,37 @@ import Core.Wire
 
 open Lean
 
+namespace ACL
+
+def descending : List Rat → Bool
+  | [] | [_] => true
+  | a :: b :: tail => decide (b ≤ a) && descending (b :: tail)
+
+theorem descending_iff (xs : List Rat) : descending xs = true ↔ xs.Pairwise (· ≥ ·) := by
+  induction xs using descending.induct with
+  | case1 => simp [descending]
+  | case2 => simp [descending]
+  | case3 a b tail ih =>
+    simp only [descending, Bool.and_eq_true, decide_eq_true_eq, ih]
+    constructor
+    · rintro ⟨hab, rest⟩
+      exact List.pairwise_cons.mpr ⟨fun c hc => by
+        rcases List.mem_cons.mp hc with rfl | h
+        · exact hab
+        · exact Rat.le_trans ((List.pairwise_cons.mp rest).1 c h) hab, rest⟩
+    · intro h
+      exact ⟨(List.pairwise_cons.mp h).1 b (by simp), (List.pairwise_cons.mp h).2⟩
+
+def approveSchedule (values : List Rat) (first last : Rat) : Bool :=
+  decide (values.head? = some first ∧ values.getLast? = some last) && descending values
+
+theorem approveSchedule_eq (values : List Rat) (first last : Rat) :
+    approveSchedule values first last = approve values first last := by
+  apply Bool.eq_iff_iff.mpr
+  simp [approveSchedule, approve, descending_iff, and_assoc]
+
+end ACL
+
 private def rational (pair : Int × Nat) : Except String Rat := do
   if pair.2 == 0 then throw "zero denominator"
   return (pair.1 : Rat) / (pair.2 : Rat)
@@ -39,7 +70,7 @@ private def dispatch (req : Json) : Except String Json := do
     let values ← req.getObjValAs? (List (Int × Nat)) "values"
     let first ← req.getObjValAs? (Int × Nat) "first"
     let last ← req.getObjValAs? (Int × Nat) "last"
-    if ACL.approve (← values.mapM rational) (← rational first) (← rational last) then
+    if ACL.approveSchedule (← values.mapM rational) (← rational first) (← rational last) then
       return toJson true
     throw "invalid realized schedule"
   | "insert" =>

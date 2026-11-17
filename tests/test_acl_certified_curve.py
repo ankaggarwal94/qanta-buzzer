@@ -64,6 +64,8 @@ def test_native_program_drives_real_environment(arm, sample_mc_question, monkeyp
         assert digest(formula) == second["curve_program_sha256"]
         correct, cert = certify_payout(formula, F(1,5), native.validate_transition)
         assert correct == second["outcome_reward"] and second["curve_certificate"] == cert
+        if arm == "piecewise":
+            assert correct == float(1 - F(2,5) * (1 - F(.2)))
         if arm == "power":
             assert correct == float(F(16,25))
             with pytest.raises(ValueError,match="certified payout"):
@@ -118,3 +120,10 @@ def test_huge_exact_denominator_has_portable_json_certificate():
     assert value == 0.
     assert F(*record["lower"]) <= F(1,3)**30000 <= F(*record["upper"])
     assert json.loads(json.dumps(record)) == record
+
+
+def test_exact_endpoint_is_checked_once():
+    calls = []
+    _, cert = certify_payout(["q", 1, 2], F(0), lambda *args: calls.append(args))
+    assert cert["lower"] == cert["upper"] == [1, 2]
+    assert calls == [(F(1,2), 0., 0., 0., .5)]

@@ -13,7 +13,8 @@ from dataclasses import asdict, dataclass
 from typing import Protocol
 
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
+from scipy.sparse import coo_matrix, vstack
+from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
 
 
 STRATEGIES = frozenset({
@@ -98,13 +99,10 @@ class DrawDecoder(Protocol):
     def insert(self, xs: Sequence[int], gold: int, pos: int) -> Sequence[int]: ...
 
 
-class MenuOracle:
-    """Generate menus from source-attributed training rows and a closed review registry."""
+class AnswerClasses:
+    """Closed registry of reviewed global answer equivalences."""
 
-    def __init__(self, rows: Iterable[ReservoirRow], *, aliases: Mapping,
-                 encoder: ProfileScorer | None = None, decoder: DrawDecoder | None = None):
-        self.encoder = encoder
-        self.decoder = decoder
+    def __init__(self, aliases: Mapping):
         if not isinstance(aliases, Mapping):
             raise ValueError("missing reviewed equivalence registry")
         for key in ("version", "reviewer"):
@@ -123,6 +121,98 @@ class MenuOracle:
                     raise ValueError(f"ambiguous reviewed alias {label!r}")
         self.equivalence_version = aliases["version"]
         self.equivalence_digest = _digest(aliases)
+
+    def class_id(self, label: str) -> str:
+        """Return the reviewed canonical answer for a covered label."""
+        key = _label_key(label)
+        if key not in self._lookup:
+            raise ValueError(f"unreviewed answer {label!r}")
+        return self._lookup[key]
+
+    def rule_classes(self, labels, *, context_only=()) -> set[str]:
+        """Resolve known classes, allowing explicitly local spellings to lack global IDs."""
+        if not isinstance(context_only, (list, tuple)):
+            raise ValueError("source-dependent terms must be listed for this question")
+        local = {_label_key(label) for label in context_only}
+        classes = set()
+        for label in labels:
+            key = _label_key(label)
+            if key in self._lookup:
+                classes.add(self._lookup[key])
+            elif key not in local:
+                raise ValueError(f"unreviewed source rule {label!r}")
+        return classes
+
+
+class _GroupTfidf:
+    """Raw class counts shared by exact leave-group-out TF-IDF indexes."""
+
+    def __init__(self, catalog):
+        self.labels = sorted(catalog)
+        self.positions = {label: i for i, label in enumerate(self.labels)}
+        self.vectorizer = CountVectorizer(token_pattern=r"(?u)\b\w+\b", dtype=np.float64)
+        try:
+            self.counts = self.vectorizer.fit_transform(
+                " ".join(r.profile for _, r in catalog[label]) for label in self.labels)
+        except ValueError as exc:
+            if "empty vocabulary" not in str(exc):
+                raise
+            self.counts = None
+            return
+        self.counts.sort_indices()
+        self.df = np.bincount(self.counts.indices, minlength=self.counts.shape[1])
+        self.full_weights = TfidfTransformer().fit(self.counts)
+        self.full_matrix = self.full_weights.transform(self.counts)
+
+    def score(self, eligible, labels, affected, prefix):
+        if self.counts is None:
+            return np.zeros(len(labels))
+        query = self.vectorizer.transform([prefix])
+        if not affected:
+            return (self.full_matrix @ self.full_weights.transform(query).T).toarray().ravel()
+
+        # Remove excluded classes and replace only the partially excluded profiles.
+        # Their remaining tokens are a subset of the old vocabulary. Terms absent
+        # from the eligible corpus get zero query weight, just as with a fresh fit.
+        df = self.df.copy()
+        replacements, positions = [], []
+        eligible_pos = {label: i for i, label in enumerate(labels)}
+        for label in sorted(affected):
+            original = self.counts[self.positions[label]]
+            df[original.indices] -= 1
+            if label in eligible:
+                remaining = self.vectorizer.transform(
+                    [" ".join(r.profile for _, r in eligible[label])])
+                df[remaining.indices] += 1
+                replacements.append(remaining - original)
+                positions.append(eligible_pos[label])
+
+        weights = TfidfTransformer()
+        weights.idf_ = np.where(df > 0, np.log((1 + len(labels)) / (1 + df)) + 1., 0.)
+        query_weights = weights.transform(query)
+        if query_weights.count_nonzero() == 0:
+            return np.zeros(len(labels))
+        counts = self.counts[[self.positions[label] for label in labels]]
+        if replacements:
+            delta = vstack(replacements).tocoo()
+            counts = counts + coo_matrix((delta.data, (np.asarray(positions)[delta.row], delta.col)),
+                                         shape=counts.shape)
+        # Only documents containing a query term can have nonzero cosine similarity.
+        candidates = np.unique(counts[:, query.indices].nonzero()[0])
+        scores = np.zeros(len(labels))
+        if len(candidates):
+            scores[candidates] = (weights.transform(counts[candidates]) @ query_weights.T).toarray().ravel()
+        return scores
+
+
+class MenuOracle(AnswerClasses):
+    """Generate menus from source-attributed training rows and a closed review registry."""
+
+    def __init__(self, rows: Iterable[ReservoirRow], *, aliases: Mapping,
+                 encoder: ProfileScorer | None = None, decoder: DrawDecoder | None = None):
+        self.encoder = encoder
+        self.decoder = decoder
+        super().__init__(aliases)
         ordered = []
         source_ids = set()
         for row in rows:
@@ -155,57 +245,20 @@ class MenuOracle:
                 del catalog[key]
         return catalog
 
-    def class_id(self, label: str) -> str:
-        """Return the reviewed canonical answer for a covered label."""
-        key = _label_key(label)
-        if key not in self._lookup:
-            raise ValueError(f"unreviewed answer {label!r}")
-        return self._lookup[key]
-
-    def rule_classes(self, labels, *, context_only=()) -> set[str]:
-        """Resolve known classes, allowing explicitly local spellings to lack global IDs."""
-        if not isinstance(context_only, (list, tuple)):
-            raise ValueError("source-dependent terms must be listed for this question")
-        local = {_label_key(label) for label in context_only}
-        classes = set()
-        for label in labels:
-            key = _label_key(label)
-            if key in self._lookup:
-                classes.add(self._lookup[key])
-            elif key not in local:
-                raise ValueError(f"unreviewed source rule {label!r}")
-        return classes
-
-    def _rank(self, catalog, prefix, strategy):
+    def _rank(self, catalog, prefix, strategy, group_id):
         if not isinstance(prefix, str) or not prefix.strip():
             raise ValueError("retrieval requires an observed nonempty prefix")
         ids = sorted(catalog)
-        def profile_texts():
-            return [" ".join(row.profile for _, row in catalog[i]) for i in ids]
 
         if "sbert" in strategy:
             if self.encoder is None:
                 raise ValueError("SBERT menu requires a configured SBERT profile scorer")
-            scores = np.asarray(self.encoder.score(prefix, profile_texts()), dtype=float)
+            profiles = [" ".join(row.profile for _, row in catalog[i]) for i in ids]
+            scores = np.asarray(self.encoder.score(prefix, profiles), dtype=float)
         else:
-            # Fit IDF only on eligible training profiles, never on the query.
-            index = self._full_tfidf if catalog is self._full_catalog else None
-            if index is None:
-                vectorizer = TfidfVectorizer(token_pattern=r"(?u)\b\w+\b")
-                try:
-                    matrix = vectorizer.fit_transform(profile_texts())
-                except ValueError as exc:
-                    if "empty vocabulary" not in str(exc):
-                        raise
-                    matrix = None
-                index = (vectorizer, matrix)
-                if catalog is self._full_catalog:
-                    self._full_tfidf = index
-            vectorizer, matrix = index
-            if matrix is None:
-                scores = np.zeros(len(ids))
-            else:
-                scores = (matrix @ vectorizer.transform([prefix]).T).toarray().ravel()
+            if self._full_tfidf is None:
+                self._full_tfidf = _GroupTfidf(self._full_catalog)
+            scores = self._full_tfidf.score(catalog, ids, self._group_classes.get(group_id), prefix)
         if scores.shape != (len(ids),) or not np.isfinite(scores).all():
             raise ValueError("invalid retrieval scores")
         return [key for _, key in sorted(zip(-scores, ids))]
@@ -262,7 +315,7 @@ class MenuOracle:
             if not strategy.startswith("uniform_"):
                 # Score the eligible corpus before removing gold. The scorer receives
                 # neither a gold label nor gold position, even for unseen gold classes.
-                pool = [key for key in self._rank(catalog, prefix, strategy) if key != gold_id]
+                pool = [key for key in self._rank(catalog, prefix, strategy, group_id) if key != gold_id]
                 width = max(count, (len(pool) + 1) // 2)
                 if strategy == "mixed":
                     pool = self._mixed(pool, catalog, count)
@@ -281,12 +334,12 @@ class MenuOracle:
                 classes.insert(gold_position, gold_id)
             else:
                 indices = tuple(self.decoder.draw(len(pool), digits))
-                if (len(indices) != count or len(set(indices)) != count or
+                if (indices != select_indices(len(pool), count, digits) or
                         any(type(i) is not int or not 0 <= i < len(pool) for i in indices)):
                     raise ValueError("invalid audited draw decoder result")
                 sentinel = len(pool)
                 ordered = tuple(self.decoder.insert(indices, sentinel, gold_position))
-                if (len(ordered) != k or ordered[gold_position] != sentinel or
+                if (any(type(i) is not int for i in ordered) or len(ordered) != k or ordered[gold_position] != sentinel or
                         ordered[:gold_position] + ordered[gold_position+1:] != indices):
                     raise ValueError("invalid audited gold insertion")
                 classes = [gold_id if i == sentinel else pool[i] for i in ordered]

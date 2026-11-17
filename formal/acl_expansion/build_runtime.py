@@ -38,6 +38,13 @@ def sandbox(project, prefix, command, *, build=False, input_text=None):
     return result.stdout
 
 
+def probe_responses_match(observed, expected):
+    """Compare JSON types as well as values, including nested integers and booleans."""
+    return json.dumps(observed, sort_keys=True, allow_nan=False) == json.dumps(
+        expected, sort_keys=True, allow_nan=False
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--freeze-sha256", required=True)
@@ -76,14 +83,14 @@ def main():
              {"value": True}),
             ({"op": "formula", "arm": "baseline", "knots": [], "start": [1, 1], "end": [0, 1],
               "shape": [1, 1], "threshold": [1, 2], "baseline": [-1, 4]}, {"value": ["q", -1, 4]}),
-            ({"op": "transition", "base": [1, 4], "gamma": [1, 2], "current": [1, 4],
-              "successor": [2, 1], "prev": [(2**53)-1, 2**53], "rounded": [1, 1],
-              "next": [(2**52)+1, 2**52], "even": True}, {"value": True}),
+            ({"op": "transition", "base": [1, 4], "gamma": [1, 2], "current": [1, 8],
+              "successor": [2, 1], "prev": [9 * 2**49 - 1, 2**52], "rounded": [9, 8],
+              "next": [9 * 2**49 + 1, 2**52], "even": True}, {"value": True}),
         ]
         payload = "".join(json.dumps(request) + "\n" for request, _ in checks)
         response = sandbox(clean, prefix, [binary], input_text=payload)
         observed = [json.loads(line) for line in response.splitlines()]
-        if observed != [expected_value for _, expected_value in checks]:
+        if not probe_responses_match(observed, [value for _, value in checks]):
             raise SystemExit(f"unexpected production probe responses: {response}")
         binary_hash = sha256(binary)
         if args.install:
