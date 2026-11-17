@@ -1,0 +1,252 @@
+{
+  "scope": "synthetic engineering smoke",
+  "protocol": "one synthetic heldout question, five word-fifth prefixes, four conditions, fresh context per job",
+  "config": "configs/acl_expansion/paired_imcqa_smoke.yaml",
+  "config_sha256": "28c2b2091fc45df08ea0b407df34b3e8acdcdd938f48b87dbe73d6a6103aa9db",
+  "public_artifact_sha256": "ccadc6148298c1dae190803cc4b0051470b2d85471a137b5c4b3e00139566d0d",
+  "trace_artifact_sha256": "5ceb998611999bdd38d9e5f5ec4c903ceed668f1e0d23480c599e7ed156bdf8f",
+  "grades_artifact_sha256": "ce0e262b5340d02948ffb323a61fb0a85b5903629ec91789cc3d9fa69e043a57",
+  "source_files": {
+    "scripts/acl_smoke_data.py": "941592e7b6728c5613e4671157f28c3cddff3c6652113e7f39db872a9ef898db",
+    "qb_data/acl_menus.py": "b4c1a61495a6db545db8dd1fb6c3fab489c1ec4340504c005f08ac0cad861dc1",
+    "qb_data/acl_protocol.py": "4cbef908899bd61127d41ee92fb2cfd903441e36747cd68f08787a8f6df892e2",
+    "scripts/acl_paired_inference.py": "b903cec97f44cb2a8e90b78cd58532cf876203582e1b0b80498fa5065c5038e5",
+    "scripts/acl_paired_cpu_inference.py": "129e5e4fd670a457f5d54961ab41404b0f93074b7f3f16bd8022a9dca9cfba42",
+    "scripts/jane_output_constraints.py": "dc0bbc3aa2eed17141b74930b24b7f89f7e7e1f7a372aeb4c4d18c24614086b2"
+  },
+  "prepared_identity": {
+    "core": "python",
+    "dataset_sha256": "7175869b42923c5452a46bcf72dd4850b9fbe967b6e908c4b08918baafd23651",
+    "menu_timing": "fixed_at_first_visible_prefix",
+    "menus_sha256": "1c5a3ca68317ea7ee86f4556b0c97fe1b93b4ce1994a38fff569d1ea42d136d2",
+    "oracle_sha256": "abe206455d6477e728f0963ae410cfb58366b4d973f91dc3ac13ce07c0b665ee",
+    "reservoir_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "spec": {
+      "abstain_reward": 0.0,
+      "baseline_condition": "independent_pool",
+      "correct_reward": 1.0,
+      "k": 4,
+      "menu": "uniform_global",
+      "reward": {
+        "arm": "linear",
+        "end": 0.2,
+        "gamma": 1.0,
+        "knots": [
+          [
+            0.0,
+            1.0
+          ],
+          [
+            1.0,
+            0.0
+          ]
+        ],
+        "potential_scale": 0.0,
+        "shape": 1.0,
+        "start": 1.0,
+        "threshold": 0.5
+      },
+      "seed": 1,
+      "version": 1,
+      "wait_cost": 0.0,
+      "wrong_reward": -1.0
+    },
+    "split_roles": {
+      "test": "test",
+      "train": "train",
+      "val": "val"
+    }
+  },
+  "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+  "revision": "12fd25f77366fa6b3b4b768ec3050bf629380bac",
+  "license": "Apache-2.0",
+  "hardware": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+  "system": "Windows",
+  "cost": "Local CPU; no provider compute charges. Energy use unmeasured.",
+  "coverage": {
+    "public_jobs": 20,
+    "typed_responses": 20,
+    "graded_rows": 20
+  },
+  "outcomes": {
+    "forced": {
+      "rejected": 5
+    },
+    "mc": {
+      "abstain": 5
+    },
+    "oe": {
+      "abstain": 5
+    },
+    "wait": {
+      "pass": 1,
+      "wait": 4
+    }
+  },
+  "timing_seconds": {
+    "inference": 10.035565899976064,
+    "load_and_constraints": 1.916086500044912
+  },
+  "rows": [
+    {
+      "qid": "fixture-9",
+      "prefix_index": 0,
+      "arm": "oe",
+      "grade": "abstain",
+      "correct": false,
+      "job_id": "3de77bbf25e0cbdde98189d953f83a62f4ce253e20105621258af5a4fcf63091"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 0,
+      "arm": "mc",
+      "grade": "abstain",
+      "correct": false,
+      "job_id": "cd24a0e04d4be7e2af0a01f6220f894a1783585ca33fdec9b10a8c244da4096d"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 0,
+      "arm": "forced",
+      "grade": "rejected",
+      "correct": false,
+      "job_id": "89dac3c53283dee27ba4758e1c7d5d2698ad9cb1b0344a84411a8359bd2c0c9d"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 0,
+      "arm": "wait",
+      "grade": "wait",
+      "correct": null,
+      "job_id": "1e9048c388e6ff7f82007d0de94e6a0d73a29ede248b3245c05ba75a0843b16f"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 1,
+      "arm": "oe",
+      "grade": "abstain",
+      "correct": false,
+      "job_id": "d4a53a0da1ddedd5cd5cd65f4a06e1b9dc48ba5d70e91ab1789992de0105a8c4"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 1,
+      "arm": "mc",
+      "grade": "abstain",
+      "correct": false,
+      "job_id": "057bf2883a034a45d0c8dc8cbdeaa70f79904f0b6791b71997f5d9eb83c95a36"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 1,
+      "arm": "forced",
+      "grade": "rejected",
+      "correct": false,
+      "job_id": "b06f2fd3c2cbcce5ad0d3a0fbeade6e0a37404344a3717db8cfd68323f6319ff"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 1,
+      "arm": "wait",
+      "grade": "wait",
+      "correct": null,
+      "job_id": "a94c03717d55c08dd6b1bdc842feec35a9cde6833d1e394187e16c0f561202f3"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 2,
+      "arm": "oe",
+      "grade": "abstain",
+      "correct": false,
+      "job_id": "a16180607bf02035fc6ea696f37c172685736eab7fa48bedf8c542c5f866437e"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 2,
+      "arm": "mc",
+      "grade": "abstain",
+      "correct": false,
+      "job_id": "b4db6300c5cede6ddc9693155f2546003284412c5287f82035103caf783e5b90"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 2,
+      "arm": "forced",
+      "grade": "rejected",
+      "correct": false,
+      "job_id": "185c9ea18846ad66b206c812d983944151a6108c2b3e4455aa0517d081b9af27"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 2,
+      "arm": "wait",
+      "grade": "wait",
+      "correct": null,
+      "job_id": "15e639674ce65a68bc1ee9df7971ffee1136a00c2584d5465b2dba82d711e8cc"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 3,
+      "arm": "oe",
+      "grade": "abstain",
+      "correct": false,
+      "job_id": "4f684cd7e596d0791d839456c5bfd9feb96d77339ada3596075d4d7d4d8a50ee"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 3,
+      "arm": "mc",
+      "grade": "abstain",
+      "correct": false,
+      "job_id": "3a2905ecc41df692bf3d430841a218798adfd8da99d3ef8b519f75b92a45a310"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 3,
+      "arm": "forced",
+      "grade": "rejected",
+      "correct": false,
+      "job_id": "8991d529b31f666eac3ecff1236e7e6e9eb566a44d496a1663158a69c034d95e"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 3,
+      "arm": "wait",
+      "grade": "wait",
+      "correct": null,
+      "job_id": "e3ccd79b171cce107a18577c2f0abc4a4fa65b6e4e974a2aae4b12c8569ea83a"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 4,
+      "arm": "oe",
+      "grade": "abstain",
+      "correct": false,
+      "job_id": "1ab75f136a9deb91ba640ea49a4c3e84a13c8479fcb27818ea1ed6462ef234c2"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 4,
+      "arm": "mc",
+      "grade": "abstain",
+      "correct": false,
+      "job_id": "6796f99bd8d8ba14adedae7969c660f428bc6c85a1444be0d46e12a8157198be"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 4,
+      "arm": "forced",
+      "grade": "rejected",
+      "correct": false,
+      "job_id": "dd854249c78d09b3691c32f4e7084c14be0457b0fd4d4adc7ae5370b51cee717"
+    },
+    {
+      "qid": "fixture-9",
+      "prefix_index": 4,
+      "arm": "wait",
+      "grade": "pass",
+      "correct": null,
+      "job_id": "ac434885ab30db30986d27b4e2df63a949d980c8fa4269ddd955b5e515250fb0"
+    }
+  ]
+}

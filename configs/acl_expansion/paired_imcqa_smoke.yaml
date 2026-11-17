@@ -1,0 +1,16 @@
+arm:
+  version: 1
+  menu: uniform_global
+  k: 4
+  seed: 1
+  reward:
+    arm: linear
+    start: 1.0
+    end: 0.2
+    gamma: 1.0
+  wait_cost: 0.0
+  wrong_reward: -1.0
+  abstain_reward: 0.0
+inputs:
+  fixture: solar-system-v1
+  oracle: configs/acl_expansion/smoke_oracle.json

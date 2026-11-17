@@ -1,5 +1,7 @@
 # Does the Proxy Preserve the Decision? -- Code Package
 
+For the opt-in ACL distractor and reward experiments, see the [training and inference runbook](docs/acl_expansion/README.md) and [verification ledger](docs/acl_expansion/ledger.md).
+
 > **Scope note (R-038):** stopping-shift evidence in this repository concerns
 > constructed QA reference trajectories — a constructed-reference sensitivity
 > diagnostic. It does not assert observed open-ended decision preservation;
