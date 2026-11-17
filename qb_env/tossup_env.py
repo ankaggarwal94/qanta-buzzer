@@ -16,6 +16,9 @@ for the unified qanta-buzzer codebase.
 from __future__ import annotations
 
 import random
+from collections.abc import Callable, Sequence
+from copy import deepcopy
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -29,6 +32,8 @@ from agents._math import bayesian_update, softmax_belief
 from models.features import extract_belief_features
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
+from qb_env.acl_rewards import RewardSpec
+from qb_env.acl_settlement import TransitionValidator, settle_reward
 
 
 def _softmax(scores: np.ndarray, beta: float) -> np.ndarray:
@@ -192,6 +197,10 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         max_K: int | None = None,
         end_mode: str = "force_commit",
         no_buzz_reward: float = 0.0,
+        acl_reward: RewardSpec | None = None,
+        acl_schedule_validator: Callable[[Sequence[float], float, float], None] | None = None,
+        acl_transition_validator: TransitionValidator | None = None,
+        acl_formula: Callable[..., list] | None = None,
     ) -> None:
         if not questions:
             raise ValueError("questions cannot be empty")
@@ -223,6 +232,33 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
             self._max_K = max_K or max(len(q.options) for q in questions)
         else:
             self._max_K = K
+
+        self.acl_reward = acl_reward
+        self._acl_ready = False
+        self._acl_schedule_validator = acl_schedule_validator
+        self._acl_transition_validator = acl_transition_validator
+        self._acl_formula = acl_formula
+        self._acl_program: list | None = None
+        self._acl_program_sha256: str | None = None
+        self._acl_curve_certificates: dict[int, tuple[dict, ...]] = {}
+        self._acl_schedules: dict[int, tuple[float, ...]] = {}
+        if acl_formula is not None and (acl_schedule_validator is None or acl_transition_validator is None):
+            raise ValueError("certified ACL schedules require schedule and rounding validators")
+        if (acl_schedule_validator or acl_transition_validator) and acl_reward is None:
+            raise ValueError("ACL validation requires an ACL reward configuration")
+        if acl_reward is not None:
+            if end_mode not in ("force_commit", "no_buzz"):
+                raise ValueError(f"Unknown end_mode: {end_mode}")
+            costs = (wait_penalty, buzz_incorrect, no_buzz_reward, buzz_correct)
+            if not all(np.isfinite(value) for value in costs) or wait_penalty < 0:
+                raise ValueError("ACL payoffs must be finite, wait_penalty nonnegative")
+            for q in questions:
+                k = len(q.options)
+                if (not 2 <= k <= self._max_K or (not variable_K and k != K)
+                        or not 0 <= q.gold_index < k or len(q.option_profiles) != k):
+                    raise ValueError(f"Invalid ACL menu on {q.qid}")
+                if not q.run_indices or len(q.cumulative_prefixes) != len(q.run_indices):
+                    raise ValueError(f"Invalid ACL prefix grid on {q.qid}")
 
         # Build qid -> list-index map for precomputed belief lookups
         self._question_index_map: dict[str, int] = {
@@ -386,6 +422,9 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         np.ndarray
             Feature vector of shape (obs_K + 6,), dtype float32.
         """
+        # ACL policy features depend only on the number of currently visible
+        # prefixes. A fixed synthetic denominator avoids disclosing the horizon.
+        feature_horizon = 1 if self.acl_reward is not None else self.total_steps
         if self.variable_K:
             from models.features import extract_padded_belief_features
 
@@ -393,14 +432,14 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
                 belief=self.belief,
                 prev_belief=self.prev_belief,
                 step_idx=self.step_idx,
-                total_steps=self.total_steps,
+                total_steps=feature_horizon,
                 max_K=self._max_K,
             )
         return extract_belief_features(
             belief=self.belief,
             prev_belief=self.prev_belief,
             step_idx=self.step_idx,
-            total_steps=self.total_steps,
+            total_steps=feature_horizon,
         )
 
     def action_masks(self) -> np.ndarray:
@@ -538,6 +577,7 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         info : dict[str, Any]
             Episode metadata. Contains ``"qid"`` (the sampled question ID).
         """
+        self._acl_ready = False
         if seed is not None:
             self.rng.seed(seed)
 
@@ -559,7 +599,118 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         self.terminated = False
         self.truncated = False
         self._sampled_human_buzz_pos = self._sample_human_buzz(self.question)
+        if self.acl_reward is not None:
+            self._compile_acl_schedule()
+            self.belief = self._compute_belief(self.question, 0)
+            self._acl_confidence()
+            self.step_idx = 1
+            self._acl_ready = True
         return self._obs(), {"qid": self.question.qid}
+
+    def _compile_acl_schedule(self) -> None:
+        """Validate and cache the exact finite schedule consumed by this environment."""
+        h = self.total_steps
+        if h in self._acl_schedules:
+            return
+        spec = self.acl_reward
+        if self._acl_formula is None:
+            values = tuple(spec.correct_reward(Fraction(i, h - 1) if h > 1 else Fraction(1), self.buzz_correct)
+                           for i in range(h))
+        else:
+            from qb_env.acl_certified_curve import certify_payout
+
+            if self._acl_program is None:
+                from qb_data.acl_protocol import digest
+
+                self._acl_program = self._acl_formula(spec.arm, spec.start, spec.end, spec.shape,
+                                                      spec.threshold, spec.knots, self.buzz_correct)
+                self._acl_program_sha256 = digest(self._acl_program)
+            checked = [certify_payout(self._acl_program,
+                                      Fraction(i, h - 1) if h > 1 else Fraction(1),
+                                      self._acl_transition_validator) for i in range(h)]
+            values, certificates = zip(*checked)
+        first = self.buzz_correct if spec.arm == "baseline" else spec.start
+        last = first if spec.arm in ("baseline", "constant") else spec.end
+        if h == 1:
+            first = last
+        if (values[0] != first or values[-1] != last
+                or not all(np.isfinite(v) for v in values)
+                or any(a < b for a, b in zip(values, values[1:]))):
+            raise ValueError(f"Invalid ACL reward schedule on horizon {h}")
+        if self._acl_schedule_validator is not None:
+            self._acl_schedule_validator(values, first, last)
+        self._acl_schedules[h] = values
+        if self._acl_formula is not None:
+            self._acl_curve_certificates[h] = certificates
+
+    def _acl_confidence(self) -> float:
+        """Monitor the posterior before using it as a policy input or potential."""
+        k = len(self.question.options)
+        if (self.belief.shape != (k,) or not np.isfinite(self.belief).all()
+                or (self.belief < 0).any() or (self.belief > 1).any()
+                or not np.isclose(self.belief.sum(), 1., rtol=1e-5, atol=1e-7)):
+            raise ValueError(f"Invalid ACL belief: question_idx={self._current_question_idx}, "
+                             f"visible={self.step_idx}, belief={self.belief.tolist()}")
+        return float(self.belief.max())
+
+    def _step_acl(
+        self, action: int
+    ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        """Apply one transition from an actionable prefix, including the last."""
+        spec = self.acl_reward
+        q = self.question
+        visible = self.step_idx
+        horizon = self.total_steps
+        progress = (visible - 1) / (horizon - 1) if horizon > 1 else 1.
+        phi = spec.potential_scale * self._acl_confidence()
+        info = {"qid": q.qid, "step_idx": visible - 1}
+        wait_reward = -self.wait_penalty if action == 0 else 0.
+        outcome_reward = 0.
+        chosen = None
+        if action:
+            chosen = int(action) - 1
+            info.update(chosen_idx=chosen, correct=chosen == q.gold_index)
+        elif visible < horizon:
+            self.prev_belief = self.belief.copy()
+            self.belief = self._compute_belief(q, visible)
+            self.step_idx += 1
+        elif self.end_mode == "force_commit":
+            chosen = int(np.argmax(self.belief))
+            info.update(forced_choice=chosen, forced_correct=chosen == q.gold_index)
+        else:
+            outcome_reward = self.no_buzz_reward
+            info.update(no_buzz=True, forced_choice=-1, forced_correct=False)
+        if chosen is not None:
+            outcome_reward = (self._acl_schedules[horizon][visible-1]
+                              if chosen == q.gold_index else self.buzz_incorrect)
+        self.terminated = bool(action or visible == horizon)
+        next_phi = 0. if self.terminated else spec.potential_scale * self._acl_confidence()
+        trace = dict(question_idx=self._current_question_idx, visible=visible,
+                     next_visible=self.step_idx, action=int(action), progress=progress,
+                     wait_reward=wait_reward, outcome_reward=outcome_reward,
+                     potential=phi, next_potential=next_phi, terminated=self.terminated,
+                     truncated=False)
+        if self._acl_formula is not None:
+            trace["curve_certificate"] = deepcopy(self._acl_curve_certificates[horizon][visible-1])
+            trace["curve_program_sha256"] = self._acl_program_sha256
+            if visible == 1:
+                trace["curve_program"] = deepcopy(self._acl_program)
+        try:
+            trace.update(settle_reward(wait_reward, outcome_reward, spec.gamma, phi,
+                                       next_phi, self._acl_transition_validator))
+        except ValueError as exc:
+            raise RuntimeError(f"ACL transition violation: {trace} ({exc})") from exc
+        reward = trace["reward"]
+        outcome_count = sum(name in info for name in ("chosen_idx", "forced_choice"))
+        next_visible = visible + int(not action and visible < horizon)
+        if (not np.isfinite(reward) or not 1 <= visible <= horizon
+                or self.step_idx != next_visible or outcome_count != int(self.terminated)
+                or self.terminated != (action != 0 or visible == horizon)
+                or (not outcome_count and outcome_reward != 0.)
+                or (self.terminated and next_phi != 0.)):
+            raise RuntimeError(f"ACL transition violation: {trace}")
+        info["acl_transition"] = trace
+        return self._obs(), reward, self.terminated, False, info
 
     def step(
         self, action: int
@@ -621,6 +772,13 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
                     f"{action - 1}, but question only has {actual_k} options"
                 )
 
+        if self.acl_reward is not None:
+            if not self._acl_ready:
+                raise RuntimeError("ACL environment requires a successful reset")
+            self._acl_ready = False
+            result = self._step_acl(action)
+            self._acl_ready = not self.terminated
+            return result
         info: dict[str, Any] = {"qid": self.question.qid}
         reward = 0.0
 

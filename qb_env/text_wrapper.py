@@ -55,8 +55,9 @@ class TextObservationWrapper(gym.ObservationWrapper):
     >>> assert "CLUES:" in obs and "CHOICES:" in obs
     """
 
-    def __init__(self, env: gym.Env) -> None:
+    def __init__(self, env: gym.Env, *, acl_spec=None) -> None:
         super().__init__(env)
+        self.acl_spec = acl_spec
         # Override observation space with a placeholder.
         # Text observations are variable-length strings; Gymnasium requires
         # a Space object, so we use a minimal Box as a sentinel.
@@ -86,6 +87,9 @@ class TextObservationWrapper(gym.ObservationWrapper):
         """
         question: MCQuestion = self.env.question
         step_idx: int = self.env.step_idx
+        if getattr(self.env, "acl_reward", None) is not None:
+            from qb_data.acl_protocol import policy_prompt
+            return policy_prompt(question.cumulative_prefixes[step_idx - 1], question.options, self.acl_spec)
 
         # Build visible clue text from cumulative prefixes.
         #
