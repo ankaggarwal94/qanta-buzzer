@@ -50,3 +50,6 @@ results/phase_8_sweep.txt
 artifacts.pre_v10_freshsplit_*/
 data/processed.pre_v10_freshsplit_*/
 .claude/
+artifacts/acl_expansion/
+artifacts/acl_paired/
+data/acl_expansion/

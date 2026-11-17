@@ -1,0 +1,9 @@
+{
+  "version": "solar-system-fixture-v1",
+  "reviewer": "Codex, GPT-6 Astra, synthetic fixture only",
+  "classes": {
+    "Mercury": [], "Venus": [], "Earth": ["Terra"], "Mars": [],
+    "Jupiter": [], "Saturn": [], "Uranus": [], "Neptune": [],
+    "Ceres": ["1 Ceres"], "Pluto": ["134340 Pluto"]
+  }
+}
