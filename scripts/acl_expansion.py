@@ -245,7 +245,8 @@ def runtime_identity():
              "qb_data/acl_menus.py", "qb_data/acl_protocol.py", "qb_data/mc_builder.py",
              "qb_data/acl_oracle_review.py", "qb_data/data_loader.py", "qb_data/text_utils.py",
              "qb_env/acl_rewards.py", "qb_env/text_wrapper.py", "qb_env/tossup_env.py",
-             "training/train_ppo_t5.py", "scripts/acl_expansion.py", "scripts/acl_checkpoints.py", "scripts/stopdff_v5/identity.py"]
+             "training/train_ppo_t5.py", "training/ppo_math.py",
+             "scripts/acl_expansion.py", "scripts/acl_checkpoints.py", "scripts/stopdff_v5/identity.py"]
     files += [p.relative_to(ROOT).as_posix() for p in (ROOT/"qb_env").glob("acl_*.py")
               if p.relative_to(ROOT).as_posix() not in files]
     return {"revision": os.environ.get("MODAL_HOST_GIT_COMMIT") or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),

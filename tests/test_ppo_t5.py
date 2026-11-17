@@ -540,6 +540,33 @@ def test_singleton_update_retains_actor_signal_without_nan(tmp_path, sample_roll
     assert torch.all(torch.isfinite(model._param))
 
 
+def test_legacy_trainer_updates_actor_on_a_single_terminal_transition(tmp_path):
+    from config import Config
+    from train_ppo import PPOTrainer as LegacyTrainer, RolloutBuffer as LegacyBuffer, RolloutStep as LegacyStep
+
+    class LegacyPolicy(_TinyPolicyModel):
+        def get_action_log_probs(self, input_ids, attention_mask, actions):
+            log_probs, entropy, values = super().get_action_log_probs(input_ids, attention_mask, actions)
+            return log_probs, values, entropy
+
+    config = Config()
+    config.CHECKPOINT_DIR = tmp_path
+    config.DEVICE = "cpu"
+    config.PPO_EPOCHS_PER_ITER = 1
+    config.PPO_VALUE_COEF = config.PPO_ENTROPY_COEF = 0.0
+    model = LegacyPolicy()
+    trainer = LegacyTrainer(model, [], [], config)
+    token = torch.ones((1, 1), dtype=torch.long)
+    buffer = LegacyBuffer()
+    buffer.add_rollout([LegacyStep("clue", 1, 1., True, 0., float(-np.log(2)), token, token)])
+
+    result = trainer.update_policy(buffer)
+
+    assert result["num_updates"] == 1
+    assert result["policy_loss"] == pytest.approx(-1.0)
+    assert torch.isfinite(model._param).all() and model._param.item() > 0
+
+
 def test_padding_preserves_tokens_masks_and_rejects_misalignment(tmp_path, sample_rollout_steps):
     trainer = PPOTrainer(_TinyPolicyModel(), [], [], {"checkpoint_dir": tmp_path})
     short, long = sample_rollout_steps[:2]

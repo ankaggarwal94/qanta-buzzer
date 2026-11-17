@@ -17,6 +17,7 @@ from dataset import QuizBowlDataset
 from environment import QuizBowlEnvironment
 from metrics import MetricsTracker, evaluate_model
 from config import Config
+from training.ppo_math import normalize_advantages
 
 
 @dataclass
@@ -243,7 +244,7 @@ class PPOTrainer:
         
         # Normalize advantages
         advantages = torch.tensor([step.advantage for step in all_steps])
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        advantages = normalize_advantages(advantages)
         
         # Training metrics
         total_policy_loss = 0

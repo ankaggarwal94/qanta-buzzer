@@ -54,6 +54,7 @@ import torch.optim as optim
 
 from models.t5_policy import T5PolicyModel
 from qb_data.mc_builder import MCQuestion
+from training.ppo_math import normalize_advantages
 
 
 @dataclass
@@ -503,10 +504,7 @@ class PPOTrainer:
         advantages = torch.tensor(
             [step.advantage for step in all_steps], dtype=torch.float32
         )
-        # Sample standard deviation is undefined for one transition. Its raw
-        # advantage still supplies a valid policy gradient.
-        if advantages.numel() > 1:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        advantages = normalize_advantages(advantages)
 
         # Training metrics
         total_policy_loss = 0.0
