@@ -42,6 +42,8 @@ def regenerate():
         code = {}
         for name in BLOBS:
             data = subprocess.check_output(["git","show",f"{JANE_REVISION}:{name}"], cwd=ROOT)
+            if name == "scripts/jane_output_constraints.py" and (ROOT/name).read_bytes() != data:
+                raise ValueError("production grammar differs from the pinned upstream blob")
             path = stage / name
             path.parent.mkdir(exist_ok=True)
             path.write_bytes(data)

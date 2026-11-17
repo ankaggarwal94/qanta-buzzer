@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from unicodedata import normalize
 
+from qb_data.acl_menus import AnswerClasses
 from qb_data.acl_protocol import Prepared, digest
 
 
@@ -26,6 +27,8 @@ def review_template(prepared: Prepared, dataset: dict) -> dict:
     for split, rows in prepared.questions.items():
         for q in rows:
             row = source[q.qid]
+            if q.qid in questions or prepared.identity["split_roles"].get(row["split"]) != split:
+                raise ValueError(f"{q.qid}: duplicate prepared question or frozen split mismatch")
             menu = prepared.menus[q.qid]
             if (list(menu["options"]) != q.options or menu["gold_index"] != q.gold_index
                     or row["question"] != q.question):
@@ -56,6 +59,11 @@ def verify_review(prepared: Prepared, dataset: dict, review: dict) -> dict:
     rows = review["questions"]
     if not isinstance(rows, dict) or rows.keys() != template["questions"].keys():
         raise ValueError("review must cover every prepared qid exactly once")
+    registry = prepared.registry
+    if digest(registry) != prepared.identity["oracle_sha256"]:
+        raise ValueError("source review equivalence registry digest mismatch")
+    catalog = AnswerClasses(registry)
+    local_terms = registry.get("source_review", {}).get("context_only_by_qid", {})
     for qid, expected in template["questions"].items():
         record = rows[qid]
         if (not isinstance(record, dict) or record.keys() != expected.keys()
@@ -74,6 +82,8 @@ def verify_review(prepared: Prepared, dataset: dict, review: dict) -> dict:
         )
         if (accepted & rejected) or (accepted & prompt) or (rejected & prompt):
             raise ValueError(f"{qid}: conflicting source answer rules")
+        ac, rc, pc = (catalog.rule_classes(rules[name], context_only=local_terms.get(qid, []))
+                      for name in ("accepted", "rejected", "prompt"))
         gold = prepared.menus[qid]["gold_index"]
         for i, (item, target) in enumerate(zip(options, expected["options"])):
             if (not isinstance(item, dict) or item.keys() != target.keys()
@@ -81,7 +91,9 @@ def verify_review(prepared: Prepared, dataset: dict, review: dict) -> dict:
                     or item["label"] != target["label"]):
                 raise ValueError(f"{qid}: judgment refers to a different slot or label")
             label = _answer_key(item["label"])
-            if label in prompt or (label in accepted and i != gold) or (label in rejected and i == gold):
+            key = catalog.class_id(item["label"])
+            if (label in prompt or key in pc or (i != gold and (label in accepted or key in ac))
+                    or (i == gold and (label in rejected or key in rc))):
                 raise ValueError(f"{qid}: selected option conflicts with source-specific rule")
             if (item["judgment"] != ("accepted" if i == gold else "rejected")
                     or not isinstance(item["rationale"], str) or not item["rationale"].strip()):

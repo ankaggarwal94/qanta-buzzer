@@ -98,8 +98,12 @@ def audit(path):
                                   "baseline_condition":condition,"reward":{"arm":"baseline"}})
         prepared = prepare(spec,dataset,alias_input,reservoir=reservoir,split_roles=CROSSWALK)
         slots, distractors, prefixes = Counter(), 0, 0
+        visited = set()
         for role, pool in prepared.questions.items():
             for question in pool:
+                if question.qid in visited:
+                    raise ValueError("repeated question in structural comparison")
+                visited.add(question.qid)
                 source = questions[question.qid]
                 old = next(m for m in source["menus"] if m["condition"] == condition)
                 gold = question.gold_index
@@ -117,6 +121,8 @@ def audit(path):
                 slots[str(gold)] += 1
                 distractors += len(ids)
                 prefixes += len(question.cumulative_prefixes)
+        if visited != questions.keys():
+            raise ValueError("structural comparison is missing archive questions")
         counts[condition] = {"gold_slots_zero_based":dict(sorted(slots.items())),
                              "distractor_source_bindings":distractors,"prefixes_matched":prefixes}
     return {"classification":"private historical data; aggregate structural compatibility only",

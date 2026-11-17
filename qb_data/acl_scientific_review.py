@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from qb_data.acl_menus import MenuOracle
+from qb_data.acl_menus import AnswerClasses
 from qb_data.acl_oracle_review import review_template, verify_review
 from qb_data.acl_protocol import Prepared, digest
 
@@ -25,7 +25,7 @@ def extend_template(prepared: Prepared, dataset: dict, registry: dict, *, existi
     out = {**header, "questions": {}} if existing is None else deepcopy(existing)
     if {k: v for k, v in out.items() if k != "questions"} != header:
         raise ValueError("class review belongs to different source inputs or splits")
-    catalog = MenuOracle([], aliases=registry)
+    catalog = AnswerClasses(registry)
     for source in dataset["questions"]:
         qid = source["qid"]
         row = out["questions"].setdefault(qid, {"source_sha256": digest(source), "classes": {}})
@@ -47,7 +47,7 @@ def compile_review(prepared: Prepared, dataset: dict, registry: dict, reviewed: 
     records = reviewed.get("questions")
     if not isinstance(records, dict) or set(records) != set(sidecar["questions"]):
         raise ValueError("class review must cover exactly the source questions")
-    catalog = MenuOracle([], aliases=registry)
+    catalog = AnswerClasses(registry)
     for qid, target in sidecar["questions"].items():
         row = records[qid]
         if (not isinstance(row, dict) or set(row) != {"source_sha256", "classes"} or

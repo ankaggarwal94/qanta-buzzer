@@ -23,6 +23,21 @@ def settle_reward(
     Input payoffs, discount and state potentials are the exact real values
     represented by their binary64 encodings. The Gym scalar is rounded once
     from the exact total. PPO's float32 reward buffer can round it again.
+
+    Parameters
+    ----------
+    wait, outcome : float
+        Wait charge and outcome payoff for this transition.
+    gamma, current, successor : float
+        Discount, current potential and successor potential.
+    validator : callable, optional
+        Checks the exact base, discount, potentials and rounded Gym reward.
+        A rejection propagates to the caller.
+
+    Returns
+    -------
+    dict
+        Exact rational components, Gym and learner rewards, and rounding errors.
     """
     base = Fraction(wait) + Fraction(outcome)
     shaping = Fraction(gamma) * Fraction(successor) - Fraction(current)

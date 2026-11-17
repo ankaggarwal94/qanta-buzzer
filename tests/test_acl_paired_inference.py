@@ -77,7 +77,32 @@ def test_imcqa_selects_the_original_five_even_deciles_and_terminal_pass():
 
 def test_noncanonical_five_prefixes_fail_imcqa_comparability():
     with pytest.raises(ValueError, match="word"):
-        paired_jobs(prepared(prefixes=["a", "ab", "abc", "abcd", "abcde"]), "test", imcqa=True)
+        paired_jobs(prepared(prefixes=["a", "a b c", "a b c", "a b c d", "a b c d e"]), "test", imcqa=True)
+
+
+def test_raw_response_types_duplicates_and_contextual_answers():
+    import json
+    from scripts.acl_paired_inference import _grade_v4
+
+    instance = prepared()
+    q = instance.questions["test"][0]
+    q.gold_index = 0
+    rules = {"accepted": ["conditional"], "prompt": [], "rejected": []}
+    data = {"questions": [{"qid": q.qid, "answer": rules}]}
+    instance.identity = {"dataset_sha256": digest(data)}
+    instance.context_only_by_qid = {q.qid: ["conditional"]}
+    answer = {"status": "answer", "answer": "conditional", "confidence": 1}
+    rows = [{**j, "response": answer, "raw_response": json.dumps(answer)}
+            for j in paired_jobs(instance, "test")]
+    scores = score_responses(instance, data, "test", rows)
+    assert all(s["grade"] == "needs_review" for s in scores if s["arm"] == "oe")
+    for malformed in (json.dumps({**answer, "confidence": True}),
+                      '{"status":"answer","answer":"conditional","confidence":0,"confidence":1}'):
+        rows[0]["raw_response"] = malformed
+        with pytest.raises(ValueError, match="raw generation"):
+            score_responses(instance, data, "test", rows)
+    for value in ({**answer, "confidence": 10**400}, {**answer, "answer": "ABSTAIN"}):
+        assert _grade_v4(value, "oe", [], 0, rules) == ("invalid", False)
 
 
 def test_frozen_prompt_cannot_be_used_for_an_unmatched_reward():

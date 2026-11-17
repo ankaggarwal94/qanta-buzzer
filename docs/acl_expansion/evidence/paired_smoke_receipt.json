@@ -4,14 +4,14 @@
   "config": "configs/acl_expansion/paired_imcqa_smoke.yaml",
   "config_sha256": "28c2b2091fc45df08ea0b407df34b3e8acdcdd938f48b87dbe73d6a6103aa9db",
   "public_artifact_sha256": "ccadc6148298c1dae190803cc4b0051470b2d85471a137b5c4b3e00139566d0d",
-  "trace_artifact_sha256": "5ceb998611999bdd38d9e5f5ec4c903ceed668f1e0d23480c599e7ed156bdf8f",
-  "grades_artifact_sha256": "ce0e262b5340d02948ffb323a61fb0a85b5903629ec91789cc3d9fa69e043a57",
+  "trace_artifact_sha256": "2fd9384e929d57fb2e4e0e42dcbc8942c0472565afcad0322dd887b49e42ef8b",
+  "grades_artifact_sha256": "a924e2ad566bc2b6bfb4e13da329867283e3975029805d17907ff28d061c4e5c",
   "source_files": {
     "scripts/acl_smoke_data.py": "941592e7b6728c5613e4671157f28c3cddff3c6652113e7f39db872a9ef898db",
-    "qb_data/acl_menus.py": "b4c1a61495a6db545db8dd1fb6c3fab489c1ec4340504c005f08ac0cad861dc1",
-    "qb_data/acl_protocol.py": "4cbef908899bd61127d41ee92fb2cfd903441e36747cd68f08787a8f6df892e2",
-    "scripts/acl_paired_inference.py": "b903cec97f44cb2a8e90b78cd58532cf876203582e1b0b80498fa5065c5038e5",
-    "scripts/acl_paired_cpu_inference.py": "129e5e4fd670a457f5d54961ab41404b0f93074b7f3f16bd8022a9dca9cfba42",
+    "qb_data/acl_menus.py": "91946e3ec15f576418893567af77cad8f668875b3027098ba6a102da7eef6e10",
+    "qb_data/acl_protocol.py": "87eb3ca27dd70e08f729706a5562ae8f121a0f5c9b6c14d698a1ae5c289ba15d",
+    "scripts/acl_paired_inference.py": "1a39a60c5c3b1c9be67aa52102fdb83e5715a3c8bea26a79da17e13eb741877a",
+    "scripts/acl_paired_cpu_inference.py": "70a45abcf4f174b8a590923aa9b4102ebfc339eba1ecc71c7109fde7179e780a",
     "scripts/jane_output_constraints.py": "dc0bbc3aa2eed17141b74930b24b7f89f7e7e1f7a372aeb4c4d18c24614086b2"
   },
   "prepared_identity": {
@@ -84,8 +84,8 @@
     }
   },
   "timing_seconds": {
-    "inference": 10.035565899976064,
-    "load_and_constraints": 1.916086500044912
+    "inference": 8.60464769997634,
+    "load_and_constraints": 1.9376495000324212
   },
   "rows": [
     {

@@ -168,7 +168,7 @@ def test_failed_schedule_check_blocks_before_first_action(sample_mc_question):
     env._acl_schedule_validator = reject
     with pytest.raises(ValueError, match="rejected schedule"):
         env.reset()
-    assert not env._acl_schedules
+    assert not env._acl_cache.schedules
 
 def test_transition_monitor_stops_corrupted_visible_count(sample_mc_question, monkeypatch):
     env = make_env(sample_mc_question, 3, 2, "no_buzz", RewardSpec())
@@ -299,3 +299,40 @@ def test_python_schedule_uses_exact_step_threshold_at_prefix_boundary():
     spec = RewardSpec(arm="step", threshold=.1)
     assert spec.correct_reward(Fraction(1,10),1.) == 1.
     assert spec.correct_reward(Fraction(.1),1.) == 0.
+
+
+def test_cached_payout_recompiled_after_reward_change(sample_mc_question):
+    env = make_env(sample_mc_question, 3, 2, "no_buzz", RewardSpec(arm="linear"))
+    env.reset()
+    env.acl_reward = RewardSpec(arm="constant", start=2.)
+    with pytest.raises(RuntimeError, match="reset required"):
+        env.step(0)
+    env.reset()
+    env.step(0)
+    assert env.step(2)[1] == 2.
+    env.acl_reward = RewardSpec(arm="baseline")
+    env.buzz_correct = 4.
+    env.reset()
+    assert env.step(2)[1] == 4.
+
+
+def test_certificates_and_program_change_with_schedule(sample_mc_question):
+    pytest.importorskip("flint")
+    from formal.acl_expansion.runtime import LeanRuntime
+    try:
+        core = LeanRuntime()
+    except FileNotFoundError:
+        pytest.skip("build the pinned native verifier")
+    with core:
+        env = make_env(sample_mc_question, 2, 2, "no_buzz", RewardSpec(arm="linear"),
+                       acl_formula=core.formula, acl_schedule_validator=core.validate_schedule,
+                       acl_transition_validator=core.validate_transition)
+        env.reset()
+        before = env.step(2)[4]["acl_transition"]
+        env.acl_reward = RewardSpec(arm="constant", start=3.)
+        env.reset()
+        after = env.step(2)[4]["acl_transition"]
+        assert before["curve_program_sha256"] != after["curve_program_sha256"]
+        assert before["curve_certificate"]["lower"] == [1, 1]
+        assert after["curve_certificate"]["lower"] == [3, 1]
+        assert after["reward"] == 3.

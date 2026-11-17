@@ -6,6 +6,7 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 
 from qb_data.acl_menus import MenuOracle
@@ -205,20 +206,35 @@ def main(argv=None):
     if (digest(dataset) != selection["materialized_dataset_sha256"] or
             digest(donors) != selection["materialized_reservoir_sha256"]):
         raise ValueError("derived data differ from reviewed version")
-    publish_json(OUTPUT / "dataset.json", dataset)
-    publish_json(OUTPUT / "reservoir.json", donors)
-    publish_json(OUTPUT / "class_review.json", class_review(dataset, donors, selection, registry))
-    _publish_review(SELECTION, selection_bytes)
-    _publish_review(REGISTRY, registry_bytes)
-    receipt = {"scope": dataset["evidence_scope"], "archive_sha256": selection["archive_sha256"],
+    decisions = class_review(dataset, donors, selection, registry)
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=OUTPUT.parent, prefix=".review-") as temp:
+        stage = Path(temp)/"complete"
+        publish_json(stage/"dataset.json", dataset)
+        publish_json(stage/"reservoir.json", donors)
+        publish_json(stage/"class_review.json", decisions)
+        _publish_review(stage/SELECTION.name, selection_bytes)
+        _publish_review(stage/REGISTRY.name, registry_bytes)
+        receipt = {"scope": dataset["evidence_scope"], "archive_sha256": selection["archive_sha256"],
                "members": selection["members"], "selection_sha256": digest(selection),
                "oracle_sha256": selection["oracle_sha256"],
-               "dataset_file_sha256": sha256_file(OUTPUT / "dataset.json"),
-               "reservoir_file_sha256": sha256_file(OUTPUT / "reservoir.json"),
+               "dataset_file_sha256": sha256_file(stage/"dataset.json"),
+               "reservoir_file_sha256": sha256_file(stage/"reservoir.json"),
                "splits": dict(Counter(q["split"] for q in dataset["questions"])),
                "donor_classes": len(donors),
                "donor_categories": dict(Counter(r["source"]["category"] for r in donors))}
-    publish_json(OUTPUT / "receipt.json", receipt)
+        publish_json(stage/"receipt.json", receipt)
+        from filelock import FileLock
+        with FileLock(str(OUTPUT.parent/".materialize-review.lock")):
+            if OUTPUT.exists():
+                files = list(stage.iterdir())
+                if any((OUTPUT/f.name).exists() and (OUTPUT/f.name).read_bytes() != f.read_bytes()
+                       for f in files):
+                    raise ValueError("existing private materialization differs from reviewed bytes")
+                for f in sorted(files, key=lambda path: path.name == "receipt.json"):
+                    _publish_review(OUTPUT/f.name, f.read_bytes())
+            else:
+                stage.rename(OUTPUT)
     print(json.dumps(receipt, sort_keys=True))
 
 

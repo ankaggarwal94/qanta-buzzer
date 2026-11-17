@@ -141,3 +141,15 @@ def test_reviewed_local_only_spelling_without_an_eligible_global_class(tmp_path)
     Path(cfg["inputs"]["oracle"]).write_text(json.dumps(registry), encoding="utf-8")
     with pytest.raises(ValueError, match="unreviewed source rule"):
         load_inputs(cfg, None, None, None, None, review_draft=True)
+
+@pytest.mark.parametrize("scope",[None,"scentific"])
+def test_external_unclassified_data_is_rejected(tmp_path, scope):
+    cfg,dataset,_,_=config_for_counterexample(tmp_path)
+    cfg["inputs"].pop("class_review",None)
+    if scope is None:
+        dataset.pop("evidence_scope")
+    else:
+        dataset["evidence_scope"]=scope
+    Path(cfg["inputs"]["dataset"]).write_text(json.dumps(dataset),encoding="utf-8")
+    with pytest.raises(ValueError,match="evidence_scope"):
+        load_inputs(cfg,None,None,None,None)

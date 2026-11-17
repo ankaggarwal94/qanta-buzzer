@@ -8,6 +8,11 @@ import math
 import os
 import struct
 import subprocess
+import shutil
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 from collections.abc import Sequence
 from fractions import Fraction
 from pathlib import Path
@@ -15,36 +20,79 @@ from pathlib import Path
 PROJECT = Path(__file__).resolve().parent
 
 
+class MissingRuntimeError(FileNotFoundError):
+    """The optional native executable has not been built."""
+
+
+def _wire_json(value):
+    """Encode exact integers, independently of CPython's decimal conversion limit."""
+    if isinstance(value, dict):
+        return "{" + ",".join(json.dumps(k) + ":" + _wire_json(v) for k, v in value.items()) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(map(_wire_json, value)) + "]"
+    if type(value) is int and value.bit_length() > 2000:
+        return format(Decimal(value), "f")
+    return json.dumps(value, allow_nan=False)
+
+
 class LeanRuntime:
-    def __init__(self) -> None:
+    def __init__(self, timeout: float = 30.0) -> None:
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be positive and finite")
         binary = PROJECT / ".lake" / "build" / "bin" / (
             "acl_runtime.exe" if os.name == "nt" else "acl_runtime"
         )
         if not binary.is_file():
-            raise FileNotFoundError("Build formal/acl_expansion with 'lake build acl_runtime'")
+            raise MissingRuntimeError("Build formal/acl_expansion with 'lake build acl_runtime'")
+
         def digest(path):
             with path.open("rb") as handle:
                 return hashlib.file_digest(handle, "sha256").hexdigest()
-        self.identity = {
-            "binary_sha256": digest(binary),
-            "sources": {f: digest(PROJECT / f) for f in (
-                "Core.lean", "Core/Expr.lean", "Core/Wire.lean", "TransitionCore.lean", "Runtime.lean",
-                "lean-toolchain", "runtime.py"
-            )},
-        }
-        self.process = subprocess.Popen(
-            [str(binary)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            text=True, encoding="utf-8", cwd=PROJECT,
-        )
 
-    def _request(self, **fields):
-        assert self.process.stdin and self.process.stdout
-        self.process.stdin.write(json.dumps(fields, allow_nan=False) + "\n")
+        self.timeout = timeout
+        self._lock = threading.Lock()
+        self._closed = False
+        self._generation = tempfile.TemporaryDirectory(prefix="acl-runtime-")
+        try:
+            # A private executable snapshot keeps its identity through an atomic install.
+            pinned = Path(self._generation.name) / binary.name
+            shutil.copy2(binary, pinned)
+            self.identity = {
+                "binary_sha256": digest(pinned),
+                "sources": {f: digest(PROJECT / f) for f in (
+                    "Core.lean", "Core/Expr.lean", "Core/Wire.lean", "TransitionCore.lean",
+                    "Runtime.lean", "lean-toolchain", "runtime.py",
+                )},
+            }
+            self.process = subprocess.Popen(
+                [str(pinned)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                text=True, encoding="utf-8", cwd=PROJECT,
+            )
+        except BaseException:
+            self._generation.cleanup()
+            raise
+        self._worker = ThreadPoolExecutor(max_workers=1)
+
+    def _exchange(self, payload):
+        self.process.stdin.write(payload + "\n")
         self.process.stdin.flush()
         line = self.process.stdout.readline()
         if not line:
             raise RuntimeError("Lean runtime stopped before answering")
-        response = json.loads(line)
+        return json.loads(line, parse_int=lambda digits: int(Decimal(digits)))
+
+    def _request(self, **fields):
+        payload = _wire_json(fields)
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Lean runtime is closed")
+            pending = self._worker.submit(self._exchange, payload)
+            try:
+                response = pending.result(timeout=self.timeout)
+            except BaseException:
+                self.process.kill()
+                self._shutdown()
+                raise
         if "error" in response:
             raise ValueError(response["error"])
         return response["value"]
@@ -56,7 +104,22 @@ class LeanRuntime:
         return tuple(self._request(op="insert", xs=list(xs), gold=gold, pos=pos))
 
     def formula(self, arm, start, end, shape, threshold, knots, baseline):
-        """Emit the complete payout expression with its exact configured parameters."""
+        """Emit the complete payout expression for one configured arm.
+
+        Parameters
+        ----------
+        arm : str
+            Reward arm name accepted by the native dispatcher.
+        start, end, shape, threshold, baseline : int, float or Fraction
+            Finite parameters exposing an exact integer ratio.
+        knots : sequence of pairs
+            Progress and payout coordinates exposing exact integer ratios.
+
+        Returns
+        -------
+        list
+            The nested opcode array with signed integer numerator and denominator literals.
+        """
         params = dict(start=start, end=end, shape=shape, threshold=threshold, baseline=baseline)
         return self._request(
             op="formula", arm=arm,
@@ -91,24 +154,29 @@ class LeanRuntime:
                          first=ratio(first), last=ratio(last)) is not True:
             raise ValueError("unexpected schedule verification result")
 
-    def close(self) -> None:
-        if self.process.stdin and not self.process.stdin.closed:
-            self.process.stdin.close()
+    def _shutdown(self):
+        self._closed = True
         try:
-            self.process.wait(timeout=10)
+            self._worker.shutdown(wait=True)
+            try:
+                self.process.stdin.close()
+            except BrokenPipeError:
+                pass  # The child may already have exited or been killed on timeout.
+            self.process.wait(timeout=self.timeout)
         finally:
             if self.process.poll() is None:
                 self.process.kill()
                 self.process.wait()
-            if self.process.stdout:
-                self.process.stdout.close()
+            self.process.stdout.close()
+            self._generation.cleanup()
+
+    def close(self) -> None:
+        with self._lock:
+            if not self._closed:
+                self._shutdown()
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb):
         self.close()
-
-
-def make_decoder() -> LeanRuntime:
-    return LeanRuntime()

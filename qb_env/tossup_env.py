@@ -18,7 +18,6 @@ from __future__ import annotations
 import random
 from collections.abc import Callable, Sequence
 from copy import deepcopy
-from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -33,6 +32,7 @@ from models.features import extract_belief_features
 from models.likelihoods import LikelihoodModel
 from qb_data.mc_builder import MCQuestion
 from qb_env.acl_rewards import RewardSpec
+from qb_env.acl_schedule import ScheduleCache
 from qb_env.acl_settlement import TransitionValidator, settle_reward
 
 
@@ -238,10 +238,7 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         self._acl_schedule_validator = acl_schedule_validator
         self._acl_transition_validator = acl_transition_validator
         self._acl_formula = acl_formula
-        self._acl_program: list | None = None
-        self._acl_program_sha256: str | None = None
-        self._acl_curve_certificates: dict[int, tuple[dict, ...]] = {}
-        self._acl_schedules: dict[int, tuple[float, ...]] = {}
+        self._acl_cache = ScheduleCache()
         if acl_formula is not None and (acl_schedule_validator is None or acl_transition_validator is None):
             raise ValueError("certified ACL schedules require schedule and rounding validators")
         if (acl_schedule_validator or acl_transition_validator) and acl_reward is None:
@@ -600,48 +597,14 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
         self.truncated = False
         self._sampled_human_buzz_pos = self._sample_human_buzz(self.question)
         if self.acl_reward is not None:
-            self._compile_acl_schedule()
+            self._acl_cache.prepare(self.total_steps, self.acl_reward, self.buzz_correct,
+                                    self._acl_formula, self._acl_schedule_validator,
+                                    self._acl_transition_validator)
             self.belief = self._compute_belief(self.question, 0)
             self._acl_confidence()
             self.step_idx = 1
             self._acl_ready = True
         return self._obs(), {"qid": self.question.qid}
-
-    def _compile_acl_schedule(self) -> None:
-        """Validate and cache the exact finite schedule consumed by this environment."""
-        h = self.total_steps
-        if h in self._acl_schedules:
-            return
-        spec = self.acl_reward
-        if self._acl_formula is None:
-            values = tuple(spec.correct_reward(Fraction(i, h - 1) if h > 1 else Fraction(1), self.buzz_correct)
-                           for i in range(h))
-        else:
-            from qb_env.acl_certified_curve import certify_payout
-
-            if self._acl_program is None:
-                from qb_data.acl_protocol import digest
-
-                self._acl_program = self._acl_formula(spec.arm, spec.start, spec.end, spec.shape,
-                                                      spec.threshold, spec.knots, self.buzz_correct)
-                self._acl_program_sha256 = digest(self._acl_program)
-            checked = [certify_payout(self._acl_program,
-                                      Fraction(i, h - 1) if h > 1 else Fraction(1),
-                                      self._acl_transition_validator) for i in range(h)]
-            values, certificates = zip(*checked)
-        first = self.buzz_correct if spec.arm == "baseline" else spec.start
-        last = first if spec.arm in ("baseline", "constant") else spec.end
-        if h == 1:
-            first = last
-        if (values[0] != first or values[-1] != last
-                or not all(np.isfinite(v) for v in values)
-                or any(a < b for a, b in zip(values, values[1:]))):
-            raise ValueError(f"Invalid ACL reward schedule on horizon {h}")
-        if self._acl_schedule_validator is not None:
-            self._acl_schedule_validator(values, first, last)
-        self._acl_schedules[h] = values
-        if self._acl_formula is not None:
-            self._acl_curve_certificates[h] = certificates
 
     def _acl_confidence(self) -> float:
         """Monitor the posterior before using it as a policy input or potential."""
@@ -658,6 +621,9 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         """Apply one transition from an actionable prefix, including the last."""
         spec = self.acl_reward
+        if not self._acl_cache.matches(spec, self.buzz_correct, self._acl_formula,
+                                       self._acl_schedule_validator, self._acl_transition_validator):
+            raise RuntimeError("ACL reward configuration changed during episode; reset required")
         q = self.question
         visible = self.step_idx
         horizon = self.total_steps
@@ -681,7 +647,7 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
             outcome_reward = self.no_buzz_reward
             info.update(no_buzz=True, forced_choice=-1, forced_correct=False)
         if chosen is not None:
-            outcome_reward = (self._acl_schedules[horizon][visible-1]
+            outcome_reward = (self._acl_cache.schedules[horizon].values[visible-1]
                               if chosen == q.gold_index else self.buzz_incorrect)
         self.terminated = bool(action or visible == horizon)
         next_phi = 0. if self.terminated else spec.potential_scale * self._acl_confidence()
@@ -691,10 +657,10 @@ class TossupMCEnv(gym.Env[np.ndarray, int]):
                      potential=phi, next_potential=next_phi, terminated=self.terminated,
                      truncated=False)
         if self._acl_formula is not None:
-            trace["curve_certificate"] = deepcopy(self._acl_curve_certificates[horizon][visible-1])
-            trace["curve_program_sha256"] = self._acl_program_sha256
+            trace["curve_certificate"] = deepcopy(self._acl_cache.schedules[horizon].certificates[visible-1])
+            trace["curve_program_sha256"] = self._acl_cache.program_sha256
             if visible == 1:
-                trace["curve_program"] = deepcopy(self._acl_program)
+                trace["curve_program"] = deepcopy(self._acl_cache.program)
         try:
             trace.update(settle_reward(wait_reward, outcome_reward, spec.gamma, phi,
                                        next_phi, self._acl_transition_validator))

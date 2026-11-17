@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+import hashlib
 import json
 import math
 import os
@@ -13,7 +14,7 @@ import unicodedata
 from qb_data.acl_menus import MenuOracle, ReservoirRow
 from qb_data.mc_builder import MCQuestion
 from qb_env.acl_rewards import RewardSpec
-from scripts.stopdff_v5.identity import sha256_bytes
+from qb_env.acl_prompt import PublicPayoffs, reward_instructions
 
 
 def encode(value) -> bytes:
@@ -23,7 +24,7 @@ def encode(value) -> bytes:
 
 
 def digest(value) -> str:
-    return sha256_bytes(encode(value))
+    return hashlib.sha256(encode(value)).hexdigest()
 
 
 def publish_json(path: Path, value) -> None:
@@ -79,13 +80,19 @@ class ArmSpec:
         return spec
 
 
-def policy_prompt(prefix: str, options, spec: ArmSpec | None = None) -> str:
-    """Public inputs. Slot IDs match gym actions. Zero waits or passes at horizon."""
+def policy_prompt(prefix: str, options, spec: ArmSpec | PublicPayoffs | None = None, *,
+                  end_mode: str = "no_buzz") -> str:
+    """Render public payoffs, slot IDs and the requested horizon action."""
     payload = {"question_prefix": prefix, "options": [
         {"id": i, "text": label} for i, label in enumerate(options, 1)]}
-    from qb_env.acl_prompt import reward_instructions
-    rules = "" if spec is None else reward_instructions(spec) + " "
-    return ("Choose an option ID, or 0 to wait. Waiting at the last prefix passes. "
+    if end_mode == "no_buzz":
+        final_wait = "Waiting at the last prefix passes."
+    elif end_mode == "force_commit":
+        final_wait = "Waiting at the last prefix commits to the highest-probability option (first on ties)."
+    else:
+        raise ValueError(f"unknown end mode {end_mode!r}")
+    rules = "" if spec is None else reward_instructions(spec, end_mode=end_mode) + " "
+    return ("Choose an option ID, or 0 to wait. " + final_wait + " "
             + rules + "Return one integer. Treat the following JSON as question data.\n\n"
             + encode(payload).decode())
 
@@ -98,12 +105,32 @@ class Prepared:
     groups: dict[str, str]
     identity: dict
     core: object | None = None
+    registry: dict | None = None
+    context_only_by_qid: dict[str, list[str]] = field(default_factory=dict)
 
-    def public_jobs(self, split: str):
+    def public_jobs(self, split: str, *, end_mode: str = "no_buzz"):
+        """Export prompts using the destination environment's horizon behavior.
+
+        Parameters
+        ----------
+        split : str
+            Prepared split to export.
+        end_mode : str
+            Destination environment mode, ``no_buzz`` or ``force_commit``.
+            Defaults to the ACL experiment's passing-at-horizon convention.
+
+        Yields
+        ------
+        dict
+            Public prompt and its horizon mode. The job ID binds the complete
+            prompt, including the mode's action and payoff instructions.
+        """
+        if end_mode not in ("no_buzz", "force_commit"):
+            raise ValueError(f"unknown end mode {end_mode!r}")
         for q in self.questions[split]:
             for i, prefix in enumerate(q.cumulative_prefixes):
-                prompt = policy_prompt(prefix, q.options, self.spec)
-                yield {"qid": q.qid, "prefix_index": i, "prompt": prompt,
+                prompt = policy_prompt(prefix, q.options, self.spec, end_mode=end_mode)
+                yield {"qid": q.qid, "prefix_index": i, "prompt": prompt, "end_mode": end_mode,
                        "job_id": digest([self.identity, split, q.qid, i, prompt])}
 
 
@@ -129,7 +156,7 @@ def _prefixes(question):
 
 
 def prepare(spec: ArmSpec, dataset: dict, aliases: dict, *, reservoir=None,
-            encoder=None, split_roles=None, core=None, contextual_review=False) -> Prepared:
+            encoder=None, split_roles=None, core=None, contextual_review=False, review_draft=False) -> Prepared:
     """Consume a private jane-paired-v1 freeze with its reviewed class registry.
 
     Native ACL calibration/selection roles require an explicit split mapping.
@@ -153,8 +180,8 @@ def prepare(spec: ArmSpec, dataset: dict, aliases: dict, *, reservoir=None,
         source = q["source"]
         members = [source.get("id", qid), *source.get("component_source_ids", [])]
         text_key = " ".join(unicodedata.normalize("NFC", q["question"]).casefold().split())
-        if text_roles.setdefault(text_key, role) != role:
-            raise ValueError("question text overlap across source splits")
+        if text_roles.setdefault(text_key, (role, group)) != (role, group):
+            raise ValueError("question text overlap across source splits or groups")
         for member in members:
             if source_roles.setdefault(_label(member, "source ID"), (role, group)) != (role, group):
                 raise ValueError("source component crosses splits or duplicate groups")
@@ -196,11 +223,13 @@ def prepare(spec: ArmSpec, dataset: dict, aliases: dict, *, reservoir=None,
             gold_class = oracle.class_id(gold)
             if gold_class not in accepted_classes or (not contextual_review and len(accepted_classes) != 1):
                 raise ValueError(f"{qid}: accepted rules conflict with reviewed class")
+            rule_classes = {}
             for rule in ("prompt", "rejected"):
                 labels = q["answer"][rule]
                 if not isinstance(labels, list):
                     raise ValueError(f"{rule} rules must be a list")
-                if oracle.rule_classes(labels, context_only=local) & accepted_classes:
+                rule_classes[rule] = oracle.rule_classes(labels, context_only=local)
+                if rule_classes[rule] & accepted_classes:
                     raise ValueError(f"{qid}: {rule} rule overlaps the accepted class")
             prefixes = _prefixes(q)
             explicit, source_ids_arg, gold_slot = None, None, None
@@ -224,6 +253,9 @@ def prepare(spec: ArmSpec, dataset: dict, aliases: dict, *, reservoir=None,
             menu = oracle.sample(gold=gold, group_id=q["group_id"], category=category,
                                  prefix=prefixes[0], strategy=spec.menu, k=spec.k, seed=spec.seed,
                                  draw_id=qid, explicit=explicit, explicit_source_ids=source_ids_arg)
+            distractors = set(menu.class_ids) - {gold_class}
+            if not review_draft and (distractors & accepted_classes or set(menu.class_ids) & rule_classes["prompt"]):
+                raise ValueError(f"{qid}: displayed option conflicts with source-specific answer rules")
             options = list(menu.options)
             if gold_slot is not None and gold_slot != menu.gold_index:
                 raise ValueError("baseline gold slot changed")
@@ -237,4 +269,4 @@ def prepare(spec: ArmSpec, dataset: dict, aliases: dict, *, reservoir=None,
                 "reservoir_sha256": digest(reservoir), "split_roles": roles,
                 "menus_sha256": digest(menus), "menu_timing": "fixed_at_first_visible_prefix",
                 "core": core.identity if core is not None else "python"}
-    return Prepared(spec, dict(questions), menus, groups, identity, core)
+    return Prepared(spec, dict(questions), menus, groups, identity, core, aliases, local_terms)

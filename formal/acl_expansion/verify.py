@@ -19,14 +19,14 @@ def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def comparator(project, config):
+def comparator(lake, project, config):
     return subprocess.run(
-        ["lake", "comparator", "--config", config, "--paranoid"],
+        [lake, "comparator", "--config", config, "--paranoid"],
         cwd=project, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         check=False,
     )
 
-def check_supplement(folder, expected_freeze, label, solutions):
+def check_supplement(lake, folder, expected_freeze, label, solutions):
     freeze = PROJECT / f"{label}-freeze.json"
     if sha256(freeze) != expected_freeze.lower():
         raise SystemExit(f"reviewed {label} freeze digest mismatch")
@@ -39,7 +39,7 @@ def check_supplement(folder, expected_freeze, label, solutions):
             raise SystemExit(f"reviewed {label} input changed: {name}")
     for name in solutions:
         shutil.copyfile(PROJECT / name, folder / name)
-    result = comparator(folder, f"{label}-comparator.json")
+    result = comparator(lake, folder, f"{label}-comparator.json")
     print(result.stdout, flush=True)
     if result.returncode or "Your solution is okay!" not in result.stdout:
         raise SystemExit(f"{label} comparator failed")
@@ -67,19 +67,21 @@ def main():
         for name, digest in expected.items():
             if sha256(clean / name) != digest:
                 raise SystemExit(f"reviewed input changed: {name}")
-        version = subprocess.check_output(["lake", "--version"], text=True)
+        prefix = subprocess.check_output(["lean", "--print-prefix"], cwd=clean, text=True).strip()
+        lake = Path(prefix).resolve() / "bin" / "lake"
+        version = subprocess.check_output([lake, "--version"], cwd=clean, text=True)
         if "(Lean version 4.35.0)" not in version:
             raise SystemExit(f"unexpected toolchain: {version.strip()}")
         for config in CONFIGS:
-            run = comparator(clean, config)
+            run = comparator(lake, clean, config)
             print(run.stdout, flush=True)
             if run.returncode or "Your solution is okay!" not in run.stdout:
                 raise SystemExit(f"comparator failed: {config}")
         if args.law_freeze_sha256:
-            check_supplement(clean / "sampler", args.law_freeze_sha256, "law",
+            check_supplement(lake, clean / "sampler", args.law_freeze_sha256, "law",
                              ("Solution.lean", "LawSolution.lean"))
         if args.wire_freeze_sha256:
-            check_supplement(clean / "wire", args.wire_freeze_sha256, "wire",
+            check_supplement(lake, clean / "wire", args.wire_freeze_sha256, "wire",
                              ("WireSolution.lean",))
         if args.negative_control:
             # Preserve the reviewed challenge. Only the solution uses this definition.
@@ -92,7 +94,7 @@ def main():
             solution.write_text(solution.read_text().replace("import Core", "import AlternateCore"))
             with (clean / "lakefile.toml").open("a") as handle:
                 handle.write('\n[[lean_lib]]\nname = "AlternateCore"\n')
-            run = comparator(clean, CONFIGS[0])
+            run = comparator(lake, clean, CONFIGS[0])
             if run.returncode == 0 or "Const does not match between challenge and target 'ACL.prize'" not in run.stdout:
                 raise SystemExit(f"unexpected negative-control result:\n{run.stdout}")
             print("Rejected altered ACL.prize definition")

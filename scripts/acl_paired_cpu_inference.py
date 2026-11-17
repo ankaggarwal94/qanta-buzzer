@@ -86,7 +86,7 @@ def infer(package, *, local_only=False, max_new_tokens=128, threads=2):
                     if tokenized[:-1] != inputs.input_ids[0].tolist():
                         raise ValueError("candidate label must add exactly one boundary token")
                     token_ids.append(tokenized[-1])
-                logits = model(**inputs).logits[0, -1, token_ids]
+                logits = model(**inputs, logits_to_keep=1).logits[0, -1, token_ids]
                 if not torch.isfinite(logits).all():
                     raise ValueError("nonfinite action logits")
                 response = {"action": actions[int(logits.argmax())]}

@@ -38,3 +38,29 @@ def test_zero_rate_shaping_and_exact_decimal_precision():
     assert "1-p" in text and "exp(" not in text
     assert "0.875*P(next)-P(now)" in text
     assert "-0.3333333333333333" in text and "terminal P=0" in text
+
+
+@pytest.mark.parametrize("mode", ["no_buzz", "force_commit"])
+def test_live_wrapper_uses_actual_rewards_and_final_action(sample_mc_question, mode):
+    from qb_env.text_wrapper import TextObservationWrapper
+    from tests.test_acl_rewards import make_env
+    spec = RewardSpec(arm="constant", start=3.)
+    env = make_env(sample_mc_question, 1, 2, mode, spec)
+    wrapper = TextObservationWrapper(env)
+    prompt = wrapper.reset()[0]
+    assert "Correct 3." in prompt and "Wrong -0.5" in prompt and "every WAIT -0.1" in prompt
+    payment = wrapper.step(0)[1]
+    if mode == "force_commit":
+        assert "highest-probability" in prompt and "passing" not in prompt and "passes" not in prompt
+        assert payment == pytest.approx(-.6)
+    else:
+        assert "last prefix passes" in prompt and "adds -0.2 for passing" in prompt
+        assert payment == pytest.approx(-.3)
+    with pytest.raises(ValueError, match="differs from the live"):
+        TextObservationWrapper(env, acl_spec=arm("constant")).reset()
+
+
+def test_prompt_step_uses_the_exact_binary64_threshold():
+    from decimal import Decimal
+    spec = arm("step", threshold=.1)
+    assert f"p<{Decimal.from_float(.1)}," in reward_instructions(spec)

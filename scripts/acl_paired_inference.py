@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import math
 import unicodedata
 from pathlib import Path
 from string import ascii_uppercase
 
 from qb_data.acl_protocol import Prepared, digest, encode, publish_json
+from scripts.stopdff_v5.identity import loads_strict
 
 
 JANE_REVISION = "c5981d913165f8dc24173c3ec8615b221cfc944d"
@@ -76,7 +76,22 @@ def render_prompt(prefix: str, labels, round_number: int, arm: str) -> str:
 
 
 def paired_jobs(prepared: Prepared, split: str, *, imcqa: bool = False) -> list[dict]:
-    """Produce independent-prefix requests. OE IDs are stable across menu arms."""
+    """Produce independent-prefix requests. OE IDs are stable across menu arms.
+
+    Parameters
+    ----------
+    prepared : Prepared
+        Prepared question splits with their realized menus.
+    split : str
+        Runtime split to export.
+    imcqa : bool
+        Include the frozen five-round WAIT and forced actions.
+
+    Returns
+    -------
+    list of dict
+        Public, hash-bound requests in question and prefix order.
+    """
     if imcqa:
         spec = prepared.spec
         schedule = [spec.reward.correct_reward(i / 4., spec.correct_reward) for i in range(5)]
@@ -115,15 +130,15 @@ def _answer_key(value):
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
-def _grade_v4(response, arm, labels, gold, answer_rules):
+def _grade_v4(response, arm, labels, gold, answer_rules, context_only=()):
     if (not isinstance(response, dict) or set(response) != {"answer", "status", "confidence"}):
         return "invalid", False
     status, answer, confidence = (response[k] for k in ("status", "answer", "confidence"))
     if status == "abstain" and answer is None and confidence is None:
         return "abstain", False
     if (status != "answer" or not isinstance(answer, str) or not answer.strip() or
-            type(confidence) not in (int, float) or not math.isfinite(confidence) or
-            not 0 <= confidence <= 1):
+            type(confidence) not in (int, float) or not 0 <= confidence <= 1 or
+            _answer_key(answer) == "abstain"):
         return "invalid", False
     if arm == "mc":
         if answer not in labels:
@@ -131,6 +146,8 @@ def _grade_v4(response, arm, labels, gold, answer_rules):
         correct = answer == labels[gold]
         return ("accepted" if correct else "rejected"), correct
     key = _answer_key(answer)
+    if key in {_answer_key(value) for value in context_only}:
+        return "needs_review", None
     matched = [rule for rule in ("accepted", "rejected", "prompt")
                if key in {_answer_key(value) for value in answer_rules[rule]}]
     if len(matched) > 1:
@@ -143,9 +160,12 @@ def _grade_v4(response, arm, labels, gold, answer_rules):
 def score_responses(prepared: Prepared, dataset: dict, split: str, responses: list[dict],
                     *, imcqa: bool = False) -> list[dict]:
     """Bind externally generated response objects to exact public prompts, then grade."""
+    return _score_jobs(prepared, dataset, split, responses, paired_jobs(prepared, split, imcqa=imcqa))
+
+
+def _score_jobs(prepared, dataset, split, responses, jobs):
     if digest(dataset) != prepared.identity["dataset_sha256"]:
         raise ValueError("private dataset differs from prepared identity")
-    jobs = paired_jobs(prepared, split, imcqa=imcqa)
     expected = {j["job_id"] for j in jobs}
     by_job = {r["job_id"]: r for r in responses}
     if set(by_job) != expected or len(responses) != len(expected):
@@ -160,16 +180,19 @@ def score_responses(prepared: Prepared, dataset: dict, split: str, responses: li
         response = row["response"]
         if "raw_response" in row:
             try:
-                parsed = json.loads(row["raw_response"])
+                parsed = loads_strict(row["raw_response"])
             except (TypeError, ValueError):
-                parsed = None
-            if parsed != response and not (response is None and row.get("invalid_reason")):
-                raise ValueError("parsed response differs from recorded raw generation")
+                if response is not None or not row.get("invalid_reason"):
+                    raise ValueError("invalid raw generation lacks an invalid response record") from None
+            else:
+                if encode(parsed) != encode(response) and not (response is None and row.get("invalid_reason")):
+                    raise ValueError("parsed response differs from recorded raw generation")
         q = by_question[j["qid"]]
         labels = _labels(len(q.options))
         arm = j["arm"]
         if arm in ("oe", "mc"):
-            grade, correct = _grade_v4(response, arm, labels, q.gold_index, rules[q.qid])
+            local = getattr(prepared, "context_only_by_qid", {}).get(q.qid, ())
+            grade, correct = _grade_v4(response, arm, labels, q.gold_index, rules[q.qid], local)
         else:
             action = response.get("action") if isinstance(response, dict) and set(response) == {"action"} else None
             if arm == "wait" and action == "E":
@@ -187,6 +210,8 @@ def score_responses(prepared: Prepared, dataset: dict, split: str, responses: li
 
 def main(argv=None):
     import yaml
+    from qb_data.config import merge_overrides
+    from scripts._common import parse_overrides
     from scripts.acl_expansion import load_inputs
     from scripts.acl_smoke_data import inputs as smoke_inputs
     from scripts.stopdff_v5.identity import load_json_strict
@@ -198,21 +223,28 @@ def main(argv=None):
     parser.add_argument("--imcqa", action="store_true")
     parser.add_argument("--responses", type=Path)
     parser.add_argument("--out", type=Path, required=True)
-    args = parser.parse_args(argv)
+    parser.add_argument("overrides", nargs="*", metavar="key=value")
+    args = parser.parse_intermixed_args(argv)
+    if any("=" not in arg for arg in args.overrides):
+        parser.error("config overrides must be key=value")
     if (args.command == "score") != bool(args.responses):
         parser.error("--responses applies to score and is required for it")
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    config = merge_overrides(config, parse_overrides(args))
     prepared = load_inputs(config, None, None, None, None)
     jobs = paired_jobs(prepared, args.split, imcqa=args.imcqa)
+    package = {"schema": "acl-paired-public-v1", "jobs": jobs}
     if args.command == "export":
-        result = {"schema": "acl-paired-public-v1", "jobs": jobs}
+        result = package
     else:
         source = config["inputs"]
         data = smoke_inputs() if "fixture" in source else load_json_strict(source["dataset"])
         trace = load_json_strict(args.responses)
         if trace.get("schema") != "acl-paired-responses-v1":
             raise ValueError("expected an acl-paired-responses-v1 trace")
-        rows = score_responses(prepared, data, args.split, trace["responses"], imcqa=args.imcqa)
+        if trace.get("public_sha256") != digest(package):
+            raise ValueError("response trace public package digest mismatch")
+        rows = _score_jobs(prepared, data, args.split, trace["responses"], jobs)
         result = {"schema": "acl-paired-grades-v1", "prepared_identity": prepared.identity,
                   "jobs_sha256": digest(jobs), "trace_sha256": digest(trace), "rows": rows}
     publish_json(args.out, result)

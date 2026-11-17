@@ -2,6 +2,8 @@
 
 `TossupMCEnv(..., acl_reward=RewardSpec(...))` enables this protocol. Legacy callers omit the argument. ACL experiments use `end_mode="no_buzz"`. The opt-in environment also supports forced commitment for compatibility experiments.
 
+For exported inference prompts, call `prepared.public_jobs(split, end_mode=env.end_mode)` to match the destination environment. The export default is `no_buzz`. Each job records its `end_mode`, and its ID binds the complete prompt's action and payoff instructions. Live `TextObservationWrapper` observations obtain the mode directly from their environment.
+
 ## Prefix grid and policy inputs
 
 A question has a fixed ordered menu of K ≥ 2 options and H ≥ 1 prefixes. Reset reveals and scores the first prefix. At every decision the visible count v is in [1,H]. Action 1 through K commits to that option at the visible prefix. Action 0 reveals exactly one more prefix when v < H. At v = H the same action abstains or commits to the current belief argmax according to the configured end mode. Argmax breaks ties at the first slot. Every policy can act on the final prefix, including the only prefix of a singleton. A path takes at most H actions. Padded option actions and actions after termination raise before scoring.

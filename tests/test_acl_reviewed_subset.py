@@ -36,6 +36,8 @@ def test_review_envelope_authenticates_and_uses_private_bytes(tmp_path, monkeypa
     from qb_data.acl_protocol import digest
     from scripts import acl_reviewed_subset as subset
     aead = pytest.importorskip("cryptography.hazmat.primitives.ciphers.aead")
+    if not hasattr(aead, "AESSIV"):
+        pytest.skip("AESSIV requires the acl-private-review extra")
 
     archive = tmp_path / "fixture"
     archive.write_bytes(b"synthetic private fixture")
@@ -54,18 +56,26 @@ def test_review_envelope_authenticates_and_uses_private_bytes(tmp_path, monkeypa
         recover_review(archive, envelope)
 
 
-def test_smoke_evidence_cannot_label_fixture_as_reviewed_real_data():
+def test_smoke_evidence_cannot_label_fixture_as_reviewed_real_data(tmp_path, monkeypatch):
+    import json
+    from scripts import acl_reviewed_subset as subset
     from scripts.acl_smoke_receipt import checked_review
     from scripts.acl_smoke_data import inputs
     from qb_data.acl_protocol import digest
 
     frozen = {"dataset_sha256": digest(inputs()), "menus_sha256": "menu"}
     assert checked_review(frozen, "synthetic held-out engineering smoke") == {}
-    with pytest.raises(ValueError, match="reviewed"):
+    selection = {"materialized_dataset_sha256": "different", "questions": [], "oracle_sha256": "oracle",
+                 "materialized_reservoir_sha256": "reservoir"}
+    path = tmp_path/"selection.json"
+    path.write_text(json.dumps(selection), encoding="utf-8")
+    monkeypatch.setattr(subset, "SELECTION", path)
+    monkeypatch.setattr(subset, "SELECTION_DIGEST", digest(selection))
+    with pytest.raises(ValueError, match="source-bound"):
         checked_review(frozen, "reviewed ACL subset engineering smoke")
 
 
-@pytest.mark.skipif(not (OUTPUT / "dataset.json").exists(),
+@pytest.mark.skipif(not (OUTPUT / "receipt.json").exists(),
                     reason="privately held source freeze has not been materialized")
 def test_real_review_uses_full_scientific_workflow():
     import yaml
@@ -90,7 +100,7 @@ def test_real_review_uses_full_scientific_workflow():
             prepared, dataset, selection, registry)["review_sha256"]
 
 
-@pytest.mark.skipif(not (OUTPUT / "dataset.json").exists(),
+@pytest.mark.skipif(not (OUTPUT / "receipt.json").exists(),
                     reason="privately held source freeze has not been materialized")
 def test_materialized_real_menu_coverage_and_tampering():
     dataset = load_json_strict(OUTPUT / "dataset.json")

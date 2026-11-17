@@ -164,3 +164,40 @@ def test_optional_decoder_reaches_real_generation_and_disjoint_reference_donors(
         expected = MenuOracle(ROWS, aliases=REGISTRY).sample(strategy=mode, **ARGS)
         assert observed == expected
     assert len(decoder.calls) == 4
+
+
+def test_valid_but_incorrect_decoder_is_rejected():
+    class Biased:
+        def draw(self, n, digits):
+            return list(reversed(select_indices(n, len(digits), digits)))
+    with pytest.raises(ValueError, match="draw decoder"):
+        MenuOracle(ROWS, aliases=REGISTRY, decoder=Biased()).sample(**ARGS)
+
+
+def test_leave_group_out_tfidf_equals_clean_refits_without_retokenizing_corpus(monkeypatch):
+    import numpy as np
+    from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+    from qb_data.acl_menus import _GroupTfidf
+
+    rows = [
+        *ROWS,
+        ReservoirRow("Green", "green private token", "fruit", "0", source_id="add-green"),
+        ReservoirRow("Red", "apple apple", "fruit", "2", source_id="add-red"),
+    ]
+    oracle = MenuOracle(rows, aliases=REGISTRY)
+    index = _GroupTfidf(oracle._full_catalog)
+    queries = ["apple red token", "private", "absent term", "green apple teal"]
+    for group in ("outside", "0", "1", "2", "3"):
+        eligible = oracle._catalog(group)
+        labels = sorted(eligible)
+        ref = TfidfVectorizer(token_pattern=r"(?u)\b\w+\b")
+        matrix = ref.fit_transform([" ".join(r.profile for _, r in eligible[k]) for k in labels])
+        for query in queries:
+            got = index.score(eligible, labels, oracle._group_classes.get(group), query)
+            want = (matrix @ ref.transform([query]).T).toarray().ravel()
+            np.testing.assert_allclose(got, want, rtol=1e-14, atol=0.)
+    def no_refit(*args, **kwargs):
+        pytest.fail("leave-group-out query refit the corpus")
+    monkeypatch.setattr(CountVectorizer, "fit_transform", no_refit)
+    eligible = oracle._catalog("2")
+    assert index.score(eligible, sorted(eligible), oracle._group_classes["2"], "apple").max() > 0

@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
 from importlib.metadata import version
 import math
+import os
+import shutil
 from pathlib import Path
 import platform
 import random
@@ -21,10 +23,13 @@ import yaml
 from filelock import FileLock
 
 from models.likelihoods import SBERTLikelihood, TfIdfLikelihood
+from qb_data.config import merge_overrides
+from scripts._common import parse_overrides
 from qb_data.acl_menus import STRATEGIES
-from qb_data.acl_protocol import ArmSpec, Prepared, digest, prepare, publish_json
+from qb_data.acl_protocol import ArmSpec, Prepared, digest, encode, prepare, publish_json
 from qb_env.text_wrapper import TextObservationWrapper
 from qb_env.tossup_env import TossupMCEnv
+from scripts.acl_checkpoints import hash_tree as _hash_tree, verify_block
 from scripts.stopdff_v5.identity import load_json_strict, sha256_file
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,10 +43,26 @@ def snapshot(model):
     from huggingface_hub import snapshot_download
     name, revision = model
     try:
-        return snapshot_download(name, revision=revision, local_files_only=True)
+        cached = Path(snapshot_download(name, revision=revision, local_files_only=True))
+        if _complete_snapshot(cached, model):
+            return str(cached)
     except FileNotFoundError:
-        return snapshot_download(name, revision=revision,
-                                 allow_patterns=["*.json", "*.model", "*.safetensors", "*.txt"])
+        pass
+    fresh = Path(snapshot_download(name, revision=revision,
+                                  allow_patterns=["*.json", "*.model", "*.safetensors", "*.txt"]))
+    if not _complete_snapshot(fresh, model):
+        raise ValueError(f"incomplete pinned model snapshot for {name}")
+    return str(fresh)
+
+
+def _complete_snapshot(path, model):
+    files = ["config.json", "model.safetensors", "tokenizer_config.json"]
+    if model == T5:
+        files.extend(["spiece.model", "tokenizer.json"])
+    elif model == SBERT:
+        files.extend(["tokenizer.json", "modules.json", "1_Pooling/config.json", "sentence_bert_config.json",
+                      "config_sentence_transformers.json", "special_tokens_map.json", "vocab.txt"])
+    return all((path / name).is_file() and (path / name).stat().st_size for name in files)
 
 
 @lru_cache(maxsize=1)
@@ -59,6 +80,11 @@ class Training:
     max_input_length: int = 512
     threads: int = 2
     checkpoint_updates: int = 10
+
+    def manifest(self, policy):
+        if policy not in {"ppo", "t5"}:
+            raise ValueError("unknown learner")
+        return {**asdict(self), "rollout_unit": "transitions" if policy == "ppo" else "complete_episodes"}
 
     def __post_init__(self):
         for name in ("updates", "epochs", "batch_size", "rollout_size", "max_input_length", "threads",
@@ -125,7 +151,13 @@ class Runtime:
             raise ValueError("invalid action in submitted predictions")
         return self.episodes(split, lambda q, i, obs: choices[jobs[q, i]])
 
-    def replay_training(self, recorded, policy):
+    def replay_training(self, recorded, policy, expected_units):
+        """Validate a PPO step budget or a T5 complete-episode budget for one block."""
+        if not isinstance(recorded, list) or not recorded:
+            raise ValueError("empty training trace")
+        if policy == "ppo" and len(recorded) != expected_units:
+            raise ValueError("training trace differs from the PPO step budget")
+        completed = 0
         questions = self.prepared.questions["train"]
         by_id = {q.qid: i for i, q in enumerate(questions)}
         env = None
@@ -136,9 +168,12 @@ class Runtime:
                 env.reset(options={"question_idx": 0 if policy == "t5" else i})
             if row["qid"] != env.question.qid:
                 raise ValueError("unclosed training episode before question changed")
-            _, reward, _, _, info = env.step(row["action"])
+            _, reward, term, trunc, info = env.step(row["action"])
+            completed += int(term or trunc)
             if row["transition"] != info["acl_transition"] or row["reward"] != reward:
                 raise ValueError("training transition replay mismatch")
+        if policy == "t5" and (completed != expected_units or not (env.terminated or env.truncated)):
+            raise ValueError("training trace differs from the T5 complete-episode budget")
 
 
 class _RecordSteps(gym.Wrapper):
@@ -175,6 +210,9 @@ def load_inputs(config, menu, reward, seed, potential, core=None, *, review_draf
         if "dataset_file_sha256" in inputs and sha256_file(Path(inputs["dataset"])) != inputs["dataset_file_sha256"]:
             raise ValueError("source evaluator file differs from the requested ACL freeze")
         dataset = load_json_strict(inputs["dataset"])
+    if "fixture" not in inputs and dataset.get("evidence_scope") not in (
+            "scientific", "synthetic_fixture", "engineering_smoke", "legacy_engineering_control"):
+        raise ValueError("external dataset must declare a recognized evidence_scope")
     review_keys = set(inputs).intersection({"review", "reviewed_subset", "class_review"})
     if len(review_keys) > 1:
         raise ValueError("supply one source review mechanism")
@@ -186,7 +224,7 @@ def load_inputs(config, menu, reward, seed, potential, core=None, *, review_draf
     aliases = load_json_strict(inputs["oracle"])
     reservoir = load_json_strict(inputs["reservoir"]) if inputs.get("reservoir") else None
     result = prepare(spec, dataset, aliases, reservoir=reservoir, split_roles=inputs.get("split_roles"), core=core,
-                     encoder=sbert() if "sbert" in spec.menu else None, contextual_review="class_review" in inputs)
+                     encoder=sbert() if "sbert" in spec.menu else None, contextual_review="class_review" in inputs, review_draft=review_draft)
     if review_draft:
         return result
     if "review" in inputs:
@@ -207,19 +245,15 @@ def runtime_identity():
              "qb_data/acl_menus.py", "qb_data/acl_protocol.py", "qb_data/mc_builder.py",
              "qb_data/acl_oracle_review.py", "qb_data/data_loader.py", "qb_data/text_utils.py",
              "qb_env/acl_rewards.py", "qb_env/text_wrapper.py", "qb_env/tossup_env.py",
-             "training/train_ppo_t5.py", "scripts/acl_expansion.py", "scripts/stopdff_v5/identity.py"]
+             "training/train_ppo_t5.py", "scripts/acl_expansion.py", "scripts/acl_checkpoints.py", "scripts/stopdff_v5/identity.py"]
     files += [p.relative_to(ROOT).as_posix() for p in (ROOT/"qb_env").glob("acl_*.py")
               if p.relative_to(ROOT).as_posix() not in files]
-    return {"revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+    return {"revision": os.environ.get("MODAL_HOST_GIT_COMMIT") or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
             "code": {name: sha256_file(ROOT/name) for name in files},
             "python": platform.python_version(), "system": [platform.system(), platform.machine()],
             "packages": {name: version(name) for name in ("torch", "numpy", "scikit-learn", "gymnasium",
                          "stable-baselines3", "transformers", "sentence-transformers", "tokenizers",
                          "huggingface-hub", "filelock", "scipy", "safetensors")}}
-
-
-def _hash_tree(path):
-    return {p.relative_to(path).as_posix(): sha256_file(p) for p in sorted(path.rglob("*")) if p.is_file()}
 
 
 @lru_cache(maxsize=2)
@@ -259,7 +293,8 @@ def _train(runtime, policy, settings, stage, previous, first_update, updates, fi
         trainer = PPOTrainer(model, train, p.questions["val"], {
             "ppo_gamma": gamma, "ppo_epochs_per_iter": settings.epochs, "ppo_batch_size": settings.batch_size,
             "max_input_length": settings.max_input_length, "checkpoint_dir": str(stage)},
-            text_env_factory=lambda q: runtime.environment([q], text=True, sink=trace))
+            text_env_factory=lambda q: runtime.environment([q], text=True, sink=trace),
+            bootstrap_time_limits=True, disable_update_dropout=True)
         if previous is not None:
             head = previous/"policy_head.pt" if settings.freeze_encoder else previous/"policy"/"policy_head.pt"
             model.policy_head.load_state_dict(torch.load(head, weights_only=True, map_location="cpu"))
@@ -326,7 +361,7 @@ def run(prepared, out, policy, settings, *, replay=False):
     if "class_review_sha256" in source_review:
         assets["class_review_code_sha256"] = sha256_file(ROOT/"qb_data/acl_scientific_review.py")
     identity = {"schema": "acl-run-v1", "input": prepared.identity, "runtime": runtime_identity(),
-                "policy": policy, "training": asdict(settings), "assets": assets, "device": "cpu"}
+                "policy": policy, "training": settings.manifest(policy), "assets": assets, "device": "cpu"}
     run_id = digest(identity)
     folder = out / run_id
     if replay and not (folder/"completed.json").is_file():
@@ -347,19 +382,21 @@ def run(prepared, out, policy, settings, *, replay=False):
                 if replay or (folder/"completed.json").exists():
                     raise ValueError("missing training checkpoint for completed run")
                 stage = Path(tempfile.mkdtemp(dir=folder, prefix=prefix))
-                _train(runtime, policy, settings, stage, checkpoint, start, end-start, end == settings.updates)
-                publish_json(stage/"files.json", {**header, "files": _hash_tree(stage)})
+                try:
+                    _train(runtime, policy, settings, stage, checkpoint, start, end-start, end == settings.updates)
+                    publish_json(stage/"files.json", {**header, "files": _hash_tree(stage)})
+                except BaseException:
+                    if not (stage/"files.json").exists():
+                        shutil.rmtree(stage)
+                    raise
                 checkpoint = stage
             else:
                 checkpoint = generations[0].parent
-            manifest = load_json_strict(checkpoint/"files.json")
-            files = _hash_tree(checkpoint)
-            del files["files.json"]
-            if manifest != {**header, "files": files}:
-                raise ValueError("checkpoint content or parent mismatch")
+            manifest = verify_block(checkpoint, header)
             parent_digest = digest(manifest)
             if replay:
-                runtime.replay_training(load_json_strict(checkpoint/"train_steps.json"), policy)
+                runtime.replay_training(load_json_strict(checkpoint/"train_steps.json"), policy,
+                                        (end - start) * settings.rollout_size)
         if (folder/"completed.json").is_file():
             receipt = load_json_strict(folder/"completed.json")
             expected = {"run_id": run_id, "checkpoint_sha256": digest(manifest),
@@ -378,7 +415,7 @@ def run(prepared, out, policy, settings, *, replay=False):
 
 
 def sweep(config, args, settings, core):
-    """Independent single-factor smokes or a complete crossed ablation."""
+    """Each invocation runs one learner and seed, over one-factor smokes or a crossed ablation."""
     smoke = args.command == "smoke"
     potential = args.potential_scale if args.potential_scale is not None else .5
     receipts = []
@@ -403,8 +440,32 @@ def sweep(config, args, settings, core):
     publish_json(args.out/f"{args.command}-{args.policy}-{digest(receipt)}.json", receipt)
 
 
+def _export_jobs(path, jobs):
+    """Publish the canonical JSON array atomically while holding one prompt at a time."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        stage = Path(stream.name)
+    try:
+        with stage.open("wb") as output:
+            output.write(b"[")
+            for i, job in enumerate(jobs):
+                if i:
+                    output.write(b",")
+                output.write(encode(job))
+            output.write(b"]\n")
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(stage, path)
+        except FileExistsError:
+            if sha256_file(stage) != sha256_file(path):
+                raise ValueError(f"immutable artifact differs: {path.name}") from None
+    finally:
+        stage.unlink(missing_ok=True)
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, epilog="Matrix and smoke run one learner/seed slice per invocation.")
     parser.add_argument("command", choices=("run", "replay", "export", "score", "matrix", "smoke"))
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
@@ -417,8 +478,15 @@ def main(argv=None):
     parser.add_argument("--actions", type=Path)
     parser.add_argument("--lean-core", action="store_true",
                         help="Decode draws and approve realized schedules using the built Lean executable")
-    args = parser.parse_args(argv)
-    config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    parser.add_argument("overrides", nargs="*", metavar="key=value")
+    args = parser.parse_intermixed_args(argv)
+    if args.command in {"matrix", "smoke"} and (args.menu is not None or args.reward is not None):
+        parser.error("matrix and smoke enumerate menus and rewards; use run for a selected arm")
+    if args.actions is not None and args.command != "score":
+        parser.error("--actions applies only to score")
+    if any("=" not in token for token in args.overrides):
+        parser.error("configuration overrides must be key=value")
+    config = merge_overrides(yaml.safe_load(args.config.read_text(encoding="utf-8")), parse_overrides(args))
     settings = Training(**config.get("training", {}))
     torch.set_num_threads(settings.threads)
     context = nullcontext()
@@ -433,7 +501,7 @@ def main(argv=None):
         if args.command in {"run", "replay"}:
             print(run(p, args.out, args.policy, settings, replay=args.command == "replay"))
         elif args.command == "export":
-            publish_json(args.out, list(p.public_jobs(args.split)))
+            _export_jobs(args.out, p.public_jobs(args.split))
         else:
             if args.actions is None:
                 parser.error("score requires --actions (JSON job_id -> integer action)")
