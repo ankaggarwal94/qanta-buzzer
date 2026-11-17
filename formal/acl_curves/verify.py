@@ -19,7 +19,6 @@ MODULES = (
     "Mathlib.Tactic.Linarith", "Mathlib.Tactic.Positivity", "Mathlib.Tactic.Ring",
     "Mathlib.Tactic.FieldSimp",
 )
-ALLOW = {"propext", "Classical.choice", "Quot.sound"}
 
 
 def digest(path):
@@ -70,19 +69,27 @@ def audit(project, lean_prefix, config):
     source = [f"import {mod}", *(f"#print axioms {name}" for name in names)]
     (project / "Audit.lean").write_text("\n".join(source) + "\n")
     # The compiler must only load untrusted solution declarations behind the sandbox.
-    command = [
-        "bwrap", "--die-with-parent", "--unshare-all", "--ro-bind", "/", "/",
-        "--tmpfs", "/tmp", "--tmpfs", "/home", "--tmpfs", "/root", "--tmpfs", "/mnt",
-        "--proc", "/proc", "--dev", "/dev", "--ro-bind", str(lean_prefix), str(lean_prefix),
-        "--ro-bind", str(project), str(project), "--bind", str(project / ".lake"),
-        str(project / ".lake"), "--chdir", str(project),
-        "--setenv", "HOME", "/tmp", "--setenv", "PATH", f"{lean_prefix}/bin:/usr/bin:/bin",
-        str(lean_prefix / "bin" / "lake"), "env", "lean", "Audit.lean",
-    ]
+    lean = lean_prefix / "bin" / "lean"
+    # Inspect the trusted toolchain executable only. Bind its system dependencies
+    # at their loader paths; the remaining libraries live under the frozen prefix.
+    dependencies = subprocess.check_output(["ldd", lean], text=True)
+    command = ["bwrap", "--die-with-parent", "--unshare-all", "--clearenv",
+               "--new-session", "--tmpfs", "/tmp", "--dev", "/dev", "--proc", "/proc",
+               "--ro-bind", str(lean_prefix), str(lean_prefix),
+               "--ro-bind", str(project), str(project)]
+    for name in re.findall(r"(?:=>\s+|^\s*)(/[^\s]+)\s+\(", dependencies, re.MULTILINE):
+        library = Path(name)
+        if not library.resolve().is_relative_to(lean_prefix):
+            command.extend(["--ro-bind", str(library.resolve()), name])
+    search = [project / ".lake/build/lib/lean"]
+    search.extend(sorted((project / ".lake/packages").glob("*/.lake/build/lib/lean")))
+    command.extend(["--chdir", str(project), "--setenv", "HOME", "/tmp",
+                    "--setenv", "LEAN_PATH", os.pathsep.join(map(str, search)),
+                    str(lean), "Audit.lean"])
     output = subprocess.check_output(command, text=True, cwd=project)
     print(output, flush=True)
     rows = dict(re.findall(r"'([^']+)' depends on axioms: \[([^\]]*)\]", output))
-    if set(rows) != set(names) or any(set(text.split(", ")) - ALLOW for text in rows.values()):
+    if set(rows) != set(names) or any(set(text.split(", ")) - set(config["permitted_axioms"]) for text in rows.values()):
         raise SystemExit("missing theorem or unexpected transitive axiom")
 
 
