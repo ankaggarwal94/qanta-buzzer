@@ -18,7 +18,7 @@ import subprocess
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import numpy as np
 
@@ -34,6 +34,28 @@ DATASET_FILENAMES = {
     "test": "test_dataset.json",
 }
 _FILENAME_TO_SPLIT = {v: k for k, v in DATASET_FILENAMES.items()}
+
+
+class BaselineRewardOptions(TypedDict):
+    """Keyword arguments accepted by live and precomputed offline baselines."""
+
+    reward_mode: str
+    wait_penalty: float
+    buzz_correct: float
+    buzz_incorrect: float
+    early_buzz_penalty: float
+
+
+def baseline_reward_options(config: dict[str, Any]) -> BaselineRewardOptions:
+    """Resolve offline reward replay options, giving the qb-rl reward alias precedence."""
+    env = config.get("environment", {})
+    return {
+        "reward_mode": str(env.get("reward", env.get("reward_mode", "time_penalty"))),
+        "wait_penalty": float(env.get("wait_penalty", 0.0)),
+        "buzz_correct": float(env.get("buzz_correct", 1.0)),
+        "buzz_incorrect": float(env.get("buzz_incorrect", -0.5)),
+        "early_buzz_penalty": float(env.get("early_buzz_penalty", 0.0)),
+    }
 
 
 def split_name_from_path(path: str | Path) -> str:

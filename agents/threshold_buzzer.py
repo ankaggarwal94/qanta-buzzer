@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from functools import partial
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import numpy as np
 
@@ -115,7 +117,55 @@ def precompute_beliefs(
     return out
 
 
-class ThresholdBuzzer:
+_Result = TypeVar("_Result", EpisodeResult, "SoftmaxEpisodeResult")
+
+
+def _threshold_episode(
+    result_type: type[_Result],
+    beliefs: Iterable[np.ndarray],
+    *,
+    qid: str,
+    gold_index: int,
+    total_steps: int,
+    reached: Callable[[float], bool],
+    confidence: Callable[[float], float],
+    reward: Callable[..., float],
+) -> _Result:
+    """Replay a threshold policy over live or cached beliefs, stopping lazily."""
+    c_trace: list[float] = []
+    g_trace: list[float] = []
+    top_p_trace: list[float] = []
+    entropy_trace: list[float] = []
+    chosen_step = total_steps - 1
+    chosen_idx = 0
+    for step, belief in enumerate(beliefs):
+        top_idx, top_p, entropy = belief_stats(belief)
+        c_trace.append(confidence(top_p))
+        g_trace.append(float(top_idx == gold_index))
+        top_p_trace.append(top_p)
+        entropy_trace.append(entropy)
+        if reached(top_p) or step == total_steps - 1:
+            chosen_step, chosen_idx = step, top_idx
+            break
+
+    correct = chosen_idx == gold_index
+    return result_type(
+        qid=qid,
+        buzz_step=chosen_step,
+        buzz_index=chosen_idx,
+        gold_index=gold_index,
+        correct=correct,
+        reward_like=reward(correct=correct, buzz_step=chosen_step, total_steps=total_steps),
+        c_trace=c_trace,
+        g_trace=g_trace,
+        top_p_trace=top_p_trace,
+        entropy_trace=entropy_trace,
+    )
+
+
+class _ThresholdPolicy:
+    """Settings and decision logic shared by the live threshold policies."""
+
     def __init__(
         self,
         likelihood_model: LikelihoodModel,
@@ -139,6 +189,30 @@ class ThresholdBuzzer:
         self.early_buzz_penalty = early_buzz_penalty
         self.belief: np.ndarray | None = None
 
+    def _reward_at_buzz(self, *, correct: bool, buzz_step: int, total_steps: int) -> float:
+        return reward_from_buzz_step(
+            correct=correct, buzz_step=buzz_step, total_steps=total_steps,
+            reward_mode=self.reward_mode, wait_penalty=self.wait_penalty,
+            buzz_correct=self.buzz_correct, buzz_incorrect=self.buzz_incorrect,
+            early_buzz_penalty=self.early_buzz_penalty,
+        )
+
+    def _replay(
+        self,
+        result_type: type[_Result],
+        question: MCQuestion,
+        beliefs: Iterable[np.ndarray],
+        confidence: Callable[[float], float],
+    ) -> _Result:
+        return _threshold_episode(
+            result_type, beliefs, qid=question.qid, gold_index=question.gold_index,
+            total_steps=len(question.cumulative_prefixes),
+            reached=lambda p: p >= self.threshold, confidence=confidence,
+            reward=self._reward_at_buzz,
+        )
+
+
+class ThresholdBuzzer(_ThresholdPolicy):
     def _belief_from_prefix(self, prefix: str, option_profiles: list[str]) -> np.ndarray:
         scores = self.likelihood_model.score(prefix, option_profiles)
         return _scores_to_belief(scores, self.beta)
@@ -146,56 +220,13 @@ class ThresholdBuzzer:
     def _confidence_proxy(self, top_p: float) -> float:
         return confidence_proxy(top_p, self.threshold, self.alpha)
 
+    def _beliefs(self, question: MCQuestion) -> Iterator[np.ndarray]:
+        for prefix in question.cumulative_prefixes:
+            self.belief = self._belief_from_prefix(prefix, question.option_profiles)
+            yield self.belief
+
     def run_episode(self, question: MCQuestion) -> EpisodeResult:
-        c_trace: list[float] = []
-        g_trace: list[float] = []
-        top_p_trace: list[float] = []
-        entropy_trace: list[float] = []
-
-        chosen_step = len(question.cumulative_prefixes) - 1
-        chosen_idx = 0
-
-        for step_idx, prefix in enumerate(question.cumulative_prefixes):
-            belief = self._belief_from_prefix(prefix, question.option_profiles)
-            self.belief = belief
-            top_idx, top_p, entropy = _belief_stats(belief)
-            c_t = self._confidence_proxy(top_p)
-            g_t = 1.0 if top_idx == question.gold_index else 0.0
-
-            c_trace.append(c_t)
-            g_trace.append(g_t)
-            top_p_trace.append(top_p)
-            entropy_trace.append(entropy)
-
-            is_last = step_idx == len(question.cumulative_prefixes) - 1
-            if top_p >= self.threshold or is_last:
-                chosen_step = step_idx
-                chosen_idx = top_idx
-                break
-
-        correct = chosen_idx == question.gold_index
-        reward_like = reward_from_buzz_step(
-            correct=correct,
-            buzz_step=chosen_step,
-            total_steps=len(question.cumulative_prefixes),
-            reward_mode=self.reward_mode,
-            wait_penalty=self.wait_penalty,
-            buzz_correct=self.buzz_correct,
-            buzz_incorrect=self.buzz_incorrect,
-            early_buzz_penalty=self.early_buzz_penalty,
-        )
-        return EpisodeResult(
-            qid=question.qid,
-            buzz_step=chosen_step,
-            buzz_index=chosen_idx,
-            gold_index=question.gold_index,
-            correct=correct,
-            reward_like=reward_like,
-            c_trace=c_trace,
-            g_trace=g_trace,
-            top_p_trace=top_p_trace,
-            entropy_trace=entropy_trace,
-        )
+        return self._replay(EpisodeResult, question, self._beliefs(question), self._confidence_proxy)
 
 
 class AlwaysBuzzFinalBuzzer:
@@ -262,6 +293,29 @@ class AlwaysBuzzFinalBuzzer:
         )
 
 
+def _cached_threshold_episode(
+    result_type: type[_Result],
+    pq: _PrecomputedQuestion,
+    threshold: float,
+    alpha: float,
+    reward_mode: str = "time_penalty",
+    wait_penalty: float = 0.0,
+    buzz_correct: float = 1.0,
+    buzz_incorrect: float = -0.5,
+    early_buzz_penalty: float = 0.0,
+) -> _Result:
+    return _threshold_episode(
+        result_type, pq.beliefs,
+        qid=pq.qid, gold_index=pq.gold_index, total_steps=len(pq.beliefs),
+        reached=lambda p: p >= threshold,
+        confidence=partial(confidence_proxy, threshold=threshold, alpha=alpha),
+        reward=partial(
+            reward_from_buzz_step, reward_mode=reward_mode, wait_penalty=wait_penalty,
+            buzz_correct=buzz_correct, buzz_incorrect=buzz_incorrect, early_buzz_penalty=early_buzz_penalty,
+        ),
+    )
+
+
 def _softmax_episode_from_precomputed(
     pq: _PrecomputedQuestion,
     threshold: float,
@@ -280,51 +334,9 @@ def _softmax_episode_from_precomputed(
     """
     from agents.bayesian_buzzer import SoftmaxEpisodeResult
 
-    c_trace: list[float] = []
-    g_trace: list[float] = []
-    top_p_trace: list[float] = []
-    entropy_trace: list[float] = []
-
-    chosen_step = len(pq.beliefs) - 1
-    chosen_idx = 0
-
-    for step_idx, belief in enumerate(pq.beliefs):
-        top_idx, top_p, entropy = _belief_stats(belief)
-        c_t = confidence_proxy(top_p, threshold, alpha)
-        g_t = 1.0 if top_idx == pq.gold_index else 0.0
-
-        c_trace.append(c_t)
-        g_trace.append(g_t)
-        top_p_trace.append(top_p)
-        entropy_trace.append(entropy)
-
-        is_last = step_idx == len(pq.beliefs) - 1
-        if top_p >= threshold or is_last:
-            chosen_step = step_idx
-            chosen_idx = top_idx
-            break
-
-    correct = chosen_idx == pq.gold_index
-    return SoftmaxEpisodeResult(
-        qid=pq.qid,
-        buzz_step=chosen_step,
-        buzz_index=chosen_idx,
-        gold_index=pq.gold_index,
-        correct=correct,
-        reward_like=reward_from_buzz_step(
-            correct=correct,
-            buzz_step=chosen_step,
-            total_steps=len(pq.beliefs),
-            reward_mode=reward_mode,
-            wait_penalty=wait_penalty,
-            buzz_correct=buzz_correct,
-            buzz_incorrect=buzz_incorrect,
-            early_buzz_penalty=early_buzz_penalty,
-        ),
-        c_trace=c_trace,
-        g_trace=g_trace,
-        top_p_trace=top_p_trace,
-        entropy_trace=entropy_trace,
+    return _cached_threshold_episode(
+        SoftmaxEpisodeResult, pq, threshold, alpha, reward_mode, wait_penalty,
+        buzz_correct, buzz_incorrect, early_buzz_penalty,
     )
 
 
@@ -391,51 +403,9 @@ def _episode_from_precomputed(
     early_buzz_penalty: float = 0.0,
 ) -> EpisodeResult:
     """Build an EpisodeResult from pre-computed beliefs (pure numpy)."""
-    c_trace: list[float] = []
-    g_trace: list[float] = []
-    top_p_trace: list[float] = []
-    entropy_trace: list[float] = []
-
-    chosen_step = len(pq.beliefs) - 1
-    chosen_idx = 0
-
-    for step_idx, belief in enumerate(pq.beliefs):
-        top_idx, top_p, entropy = _belief_stats(belief)
-        c_t = confidence_proxy(top_p, threshold, alpha)
-        g_t = 1.0 if top_idx == pq.gold_index else 0.0
-
-        c_trace.append(c_t)
-        g_trace.append(g_t)
-        top_p_trace.append(top_p)
-        entropy_trace.append(entropy)
-
-        is_last = step_idx == len(pq.beliefs) - 1
-        if top_p >= threshold or is_last:
-            chosen_step = step_idx
-            chosen_idx = top_idx
-            break
-
-    correct = chosen_idx == pq.gold_index
-    return EpisodeResult(
-        qid=pq.qid,
-        buzz_step=chosen_step,
-        buzz_index=chosen_idx,
-        gold_index=pq.gold_index,
-        correct=correct,
-        reward_like=reward_from_buzz_step(
-            correct=correct,
-            buzz_step=chosen_step,
-            total_steps=len(pq.beliefs),
-            reward_mode=reward_mode,
-            wait_penalty=wait_penalty,
-            buzz_correct=buzz_correct,
-            buzz_incorrect=buzz_incorrect,
-            early_buzz_penalty=early_buzz_penalty,
-        ),
-        c_trace=c_trace,
-        g_trace=g_trace,
-        top_p_trace=top_p_trace,
-        entropy_trace=entropy_trace,
+    return _cached_threshold_episode(
+        EpisodeResult, pq, threshold, alpha, reward_mode, wait_penalty,
+        buzz_correct, buzz_incorrect, early_buzz_penalty,
     )
 
 
@@ -458,11 +428,14 @@ def sweep_thresholds(
     entirely and the sweep is pure numpy.  Otherwise beliefs are computed
     once internally and reused across thresholds.
     """
+    unique_thresholds = dict.fromkeys(thresholds)
+    if not unique_thresholds:
+        return {}
     if precomputed is None:
         precomputed = precompute_beliefs(questions, likelihood_model, beta)
 
     out: dict[float, list[EpisodeResult]] = {}
-    for threshold in thresholds:
+    for threshold in unique_thresholds:
         out[float(threshold)] = [
             _episode_from_precomputed(
                 pq,

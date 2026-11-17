@@ -10,6 +10,8 @@ Covers:
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
+import random
 from unittest.mock import MagicMock
 
 import gymnasium as gym
@@ -618,6 +620,28 @@ class TestConstructorValidation:
 
 class TestPrecomputedBeliefs:
     """Tests for precomputed belief trajectory bypass."""
+
+    @pytest.mark.parametrize("mode", ["from_scratch", "sequential_bayes"])
+    def test_seeded_reset_reads_sampled_row_with_duplicate_qids(self, sample_mc_question, mode):
+        question = replace(
+            sample_mc_question, run_indices=[0], tokens=["Washington"],
+            cumulative_prefixes=["Washington"],
+        )
+        questions = [question, replace(question, option_profiles=question.option_profiles[::-1])]
+        model = TfIdfLikelihood(corpus_texts=question.option_profiles)
+        cache = precompute_beliefs(questions, model, belief_mode=mode)
+        assert not np.array_equal(cache[0, 0], cache[1, 0])
+        env = TossupMCEnv(questions, model, belief_mode=mode, precomputed_beliefs=cache)
+
+        seeded = random.Random(1)
+        env.reset(seed=1)
+        for episode in range(8):
+            if episode:
+                env.reset()
+            index = seeded.choice(range(len(questions)))
+            assert env.question is questions[index]
+            env.step(0)
+            np.testing.assert_array_equal(env.belief, cache[index, 0])
 
     def test_precomputed_matches_live_from_scratch(
         self, sample_mc_question: MCQuestion

@@ -64,6 +64,14 @@ def _text_key(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _validate_vector_shape(shape: tuple[int, ...], existing: np.ndarray | None, source: str) -> None:
+    """Require one nonempty feature vector of the same width as prior entries."""
+    if len(shape) != 1 or not shape[0]:
+        raise ValueError(f"{source} requires nonempty one-dimensional embeddings, got vector shape {shape}")
+    if existing is not None and shape != existing.shape:
+        raise ValueError(f"{source} has embedding shape {shape}, expected {existing.shape}")
+
+
 def _best_torch_device() -> "torch.device":
     """Select the best available accelerator: CUDA > MPS > CPU."""
     import torch
@@ -141,12 +149,25 @@ class LikelihoodModel(ABC):
         np.ndarray
             Stacked embeddings of shape (len(texts), embed_dim), dtype float32.
         """
-        missing = [text for text in texts if _text_key(text) not in self.embedding_cache]
+        keys, missing = self._embedding_requests(texts)
         if missing:
-            new_embeddings = self._embed_batch(missing)
-            for text, emb in zip(missing, new_embeddings):
-                self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
-        return np.stack([self.embedding_cache[_text_key(text)] for text in texts])
+            self._cache_embedding_batch(missing)
+        return np.stack([self.embedding_cache[keys[text]] for text in texts])
+
+    def _embedding_requests(self, texts: list[str]) -> tuple[dict[str, str], list[tuple[str, str]]]:
+        """Hash each distinct text once and retain first-seen order for cache misses."""
+        keys = {text: _text_key(text) for text in dict.fromkeys(texts)}
+        missing = [(text, key) for text, key in keys.items() if key not in self.embedding_cache]
+        return keys, missing
+
+    def _cache_embedding_batch(self, batch: list[tuple[str, str]]) -> None:
+        """Validate a complete backend response before publishing any of its rows."""
+        vectors = np.asarray(self._embed_batch([text for text, _ in batch]), dtype=np.float32)
+        if vectors.ndim != 2 or vectors.shape[0] != len(batch):
+            raise ValueError(f"Expected an embedding batch with {len(batch)} rows, got shape {vectors.shape}")
+        existing = next(iter(self.embedding_cache.values()), None)
+        _validate_vector_shape(vectors.shape[1:], existing, "New embedding batch")
+        self.embedding_cache.update({key: row.copy() for (_, key), row in zip(batch, vectors, strict=True)})
 
     def precompute_embeddings(
         self,
@@ -171,15 +192,11 @@ class LikelihoodModel(ABC):
         """
         from tqdm import tqdm
 
-        unique = [t for t in dict.fromkeys(texts) if _text_key(t) not in self.embedding_cache]
-        if not unique:
+        _, missing = self._embedding_requests(texts)
+        if not missing:
             return
-        for i in tqdm(range(0, len(unique), batch_size), desc=desc,
-                       total=(len(unique) + batch_size - 1) // batch_size):
-            batch = unique[i : i + batch_size]
-            embeddings = self._embed_batch(batch)
-            for text, emb in zip(batch, embeddings):
-                self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
+        for i in tqdm(range(0, len(missing), batch_size), desc=desc):
+            self._cache_embedding_batch(missing[i : i + batch_size])
 
     def save_cache(self, path: str | Path) -> int:
         """Persist embedding_cache to disk as compressed ``.npz``.
@@ -222,13 +239,19 @@ class LikelihoodModel(ABC):
         p = Path(path)
         if not p.exists():
             return 0
+        pending: dict[str, np.ndarray] = {}
+        existing = next(iter(self.embedding_cache.values()), None)
         with np.load(p) as data:
-            loaded = 0
             for key in data.files:
-                if key not in self.embedding_cache:
-                    self.embedding_cache[key] = data[key].astype(np.float32)
-                    loaded += 1
-            return loaded
+                if key in self.embedding_cache or key in pending:
+                    continue
+                vector = np.asarray(data[key], dtype=np.float32)
+                _validate_vector_shape(vector.shape, existing, f"Cached embedding {key}")
+                pending[key] = vector
+                if existing is None:
+                    existing = vector
+        self.embedding_cache.update(pending)
+        return len(pending)
 
     @abstractmethod
     def _embed_batch(self, texts: list[str]) -> np.ndarray:
@@ -325,7 +348,12 @@ class TfIdfLikelihood(LikelihoodModel):
         TfIdfLikelihood
             Self, for method chaining.
         """
-        self.vectorizer.fit(corpus_texts)
+        from sklearn.base import clone
+
+        # A failed fit can leave a sklearn estimator partially mutated. Publish
+        # its vocabulary and invalidate the old coordinates only on success.
+        self.vectorizer = clone(self.vectorizer).fit(corpus_texts)
+        self.embedding_cache.clear()
         self._is_fit = True
         return self
 

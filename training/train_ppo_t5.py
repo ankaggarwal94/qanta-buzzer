@@ -434,47 +434,33 @@ class PPOTrainer:
         attention_mask : torch.Tensor
             Padded attention mask of shape ``[batch_size, max_len]``, on device.
         """
-        max_len = max(step.input_ids.shape[1] for step in batch_steps)
-        pad_token_id = self.model.tokenizer.pad_token_id
-
-        padded_input_ids = []
-        padded_attention_mask = []
-
+        if not batch_steps:
+            raise ValueError("Cannot pad an empty rollout batch")
+        tokens = []
+        masks = []
         for step in batch_steps:
-            seq_len = step.input_ids.shape[1]
-            if seq_len < max_len:
-                pad_len = max_len - seq_len
-                input_ids_padded = torch.cat(
-                    [
-                        step.input_ids,
-                        torch.full(
-                            (1, pad_len),
-                            pad_token_id,
-                            dtype=step.input_ids.dtype,
-                        ),
-                    ],
-                    dim=1,
-                )
-                attention_mask_padded = torch.cat(
-                    [
-                        step.attention_mask,
-                        torch.zeros(
-                            (1, pad_len), dtype=step.attention_mask.dtype
-                        ),
-                    ],
-                    dim=1,
-                )
-            else:
-                input_ids_padded = step.input_ids
-                attention_mask_padded = step.attention_mask
+            ids, mask = step.input_ids, step.attention_mask
+            if (
+                ids is None or mask is None or ids.ndim != 2
+                or ids.shape[0] != 1 or ids.shape != mask.shape
+            ):
+                raise ValueError("Rollout input_ids and attention_mask must have matching shape (1, length)")
+            tokens.append(ids[0])
+            masks.append(mask[0])
 
-            padded_input_ids.append(input_ids_padded)
-            padded_attention_mask.append(attention_mask_padded)
+        width = max(row.numel() for row in tokens)
 
-        input_ids = torch.cat(padded_input_ids).to(self.device)
-        attention_mask = torch.cat(padded_attention_mask).to(self.device)
+        def pad(rows: list[torch.Tensor], fill: int) -> torch.Tensor:
+            # Cast the fill to each row's dtype before stack promotes mixed dtypes.
+            padded = []
+            for row in rows:
+                if row.numel() < width:
+                    tail = torch.full((width - row.numel(),), fill, dtype=row.dtype, device=row.device)
+                    row = torch.cat((row, tail))
+                padded.append(row)
+            return torch.stack(padded).to(self.device)
 
-        return input_ids, attention_mask
+        return pad(tokens, self.model.tokenizer.pad_token_id), pad(masks, 0)
 
     def update_policy(self, buffer: RolloutBuffer) -> Dict[str, float]:
         """Update the policy using PPO with clipped surrogate loss.
@@ -517,9 +503,10 @@ class PPOTrainer:
         advantages = torch.tensor(
             [step.advantage for step in all_steps], dtype=torch.float32
         )
-        advantages = (advantages - advantages.mean()) / (
-            advantages.std() + 1e-8
-        )
+        # Sample standard deviation is undefined for one transition. Its raw
+        # advantage still supplies a valid policy gradient.
+        if advantages.numel() > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # Training metrics
         total_policy_loss = 0.0

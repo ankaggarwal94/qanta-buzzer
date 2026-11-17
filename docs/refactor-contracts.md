@@ -13,3 +13,17 @@ Baseline commit `a3195eaf3c4d647978c126c9edbeb69c3515527d`. This inventory descr
 | ACL experiments and delivery | Scientific menus require reviewed answer evidence. Policy-facing text uses available prefixes. Checkpoint identity binds configuration, source, inputs and model assets. Existing receipts describe their original revisions. | CLI workflows compose data, environment, learner and grading components. Lean challenges cover specified sampler, transition and reward properties. Python and native numeric libraries remain separate trust boundaries. |
 
 The verification sequence is contract inventory, failing regression or resource test, implementation, cross-domain review, then independent production-path checks. For numerical kernels, compare the Python results against an independently specified recurrence and state the arithmetic model used in proofs. For artifacts, compare complete bytes. For optional dependencies, report which integrations actually ran.
+
+## Internal dependencies
+
+Static imports in the production packages, including deferred and type-only imports, give the following edges. Some edges are bidirectional because the historical compatibility modules re-export implementations and the environment shares Bayesian math with the agents.
+
+| Package | Imports from this repository |
+| --- | --- |
+| `agents` | `models`, `qb_data`, `qb_env` |
+| `evaluation` | `agents`, `qb_data` |
+| `models` | `qb_data` |
+| `qb_data` | `models`, `qb_env` |
+| `qb_env` | `agents`, `models`, `qb_data` |
+| `training` | `models`, `qb_data`, `qb_env` |
+| `scripts` | All six packages above |

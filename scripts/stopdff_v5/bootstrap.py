@@ -15,6 +15,7 @@ from typing import Sequence
 import numpy as np
 
 RESAMPLE_DTYPE = np.int64
+_RESAMPLE_BATCH_BYTES = 1024 * 1024
 
 
 @dataclass
@@ -81,6 +82,21 @@ def _percentile_ci(samples: np.ndarray) -> list[float]:
     return [lo, hi]
 
 
+def _replicate_statistics(values: np.ndarray, indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Compute a mean and median per replicate using one bounded gather at a time."""
+    replicates, draws = indices.shape
+    batch_size = max(1, _RESAMPLE_BATCH_BYTES // (values.itemsize * max(1, draws)))
+    means = np.empty(replicates, dtype=np.float64)
+    medians = np.empty_like(means)
+    for start in range(0, replicates, batch_size):
+        batch = slice(start, start + batch_size)
+        sampled = values[indices[batch]]
+        means[batch] = np.mean(sampled, axis=1)
+        # Advanced indexing returned a private array; partition it after computing the mean.
+        medians[batch] = np.median(sampled, axis=1, overwrite_input=True)
+    return means, medians
+
+
 def cell_bootstrap_stats(index_shift_by_item: dict[str, int], plan: BootstrapPlan) -> dict:
     """Compute point estimates + 95% percentile CIs for one cell.
 
@@ -97,13 +113,13 @@ def cell_bootstrap_stats(index_shift_by_item: dict[str, int], plan: BootstrapPla
         "absolute_index_median": float(np.median(absd)),
     }
 
-    resampled_d = d[plan.resample_indices]  # (R, N)
-    resampled_abs = absd[plan.resample_indices]
+    signed_mean, signed_median = _replicate_statistics(d, plan.resample_indices)
+    absolute_mean, absolute_median = _replicate_statistics(absd, plan.resample_indices)
     per_rep = {
-        "signed_index_mean": np.mean(resampled_d, axis=1),
-        "signed_index_median": np.median(resampled_d, axis=1),
-        "absolute_index_mean": np.mean(resampled_abs, axis=1),
-        "absolute_index_median": np.median(resampled_abs, axis=1),
+        "signed_index_mean": signed_mean,
+        "signed_index_median": signed_median,
+        "absolute_index_mean": absolute_mean,
+        "absolute_index_median": absolute_median,
     }
     ci = {name: _percentile_ci(arr) for name, arr in per_rep.items()}
 

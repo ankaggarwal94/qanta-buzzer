@@ -67,6 +67,7 @@ from qb_env.tossup_env import make_env_from_config
 from qb_env.tossup_env import precompute_beliefs as env_precompute_beliefs
 from scripts._common import (
     ARTIFACT_DIR,
+    baseline_reward_options,
     build_likelihood_model,
     collect_env_texts,
     load_config,
@@ -265,15 +266,7 @@ def main() -> None:
     threshold = pick_best_softmax_threshold(out_dir, default_threshold=default_threshold)
     print(f"Using best softmax threshold: {threshold}")
 
-    # Honor the documented ``environment.reward`` alias for ``reward_mode``.
-    # ``make_env_from_config`` reads both keys; offline reward replay must
-    # match or baselines/eval will diverge from the env on CLI overrides.
-    env_cfg = config.get("environment", {})
-    reward_mode = str(env_cfg.get("reward", env_cfg.get("reward_mode", "time_penalty")))
-    wait_penalty = float(env_cfg.get("wait_penalty", 0.0))
-    buzz_correct = float(env_cfg.get("buzz_correct", 1.0))
-    buzz_incorrect = float(env_cfg.get("buzz_incorrect", -0.5))
-    early_buzz_penalty = float(env_cfg.get("early_buzz_penalty", 0.0))
+    reward_options = baseline_reward_options(config)
 
     # Batch-encode every text the env will ever score before computing
     # beliefs (mirrors run_baselines.py / train_ppo.py). For SBERT / T5
@@ -293,11 +286,7 @@ def main() -> None:
     def evaluate_questions_precomputed(pqs):
         runs = [asdict(_softmax_episode_from_precomputed(
             pq, threshold, alpha,
-            reward_mode=reward_mode,
-            wait_penalty=wait_penalty,
-            buzz_correct=buzz_correct,
-            buzz_incorrect=buzz_incorrect,
-            early_buzz_penalty=early_buzz_penalty,
+            **reward_options,
         )) for pq in pqs]
         summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
         summary["runs"] = runs
@@ -310,11 +299,7 @@ def main() -> None:
             threshold=threshold,
             beta=beta,
             alpha=alpha,
-            reward_mode=reward_mode,
-            wait_penalty=wait_penalty,
-            buzz_correct=buzz_correct,
-            buzz_incorrect=buzz_incorrect,
-            early_buzz_penalty=early_buzz_penalty,
+            **reward_options,
         )
         runs = [asdict(agent.run_episode(q)) for q in qset]
         summary = {**summarize_buzz_metrics(runs), **calibration_at_buzz(runs)}
@@ -344,11 +329,7 @@ def main() -> None:
     print("Running shuffle control...")
     shuffle_eval = run_shuffle_control_precomputed(
         precomputed, threshold, alpha,
-        reward_mode=reward_mode,
-        wait_penalty=wait_penalty,
-        buzz_correct=buzz_correct,
-        buzz_incorrect=buzz_incorrect,
-        early_buzz_penalty=early_buzz_penalty,
+        **reward_options,
     )
 
     if alias_lookup:
@@ -627,7 +608,7 @@ def main() -> None:
     }
 
     # Add Expected Wins summary only when that reward mode is active
-    if reward_mode == "expected_wins":
+    if reward_options["reward_mode"] == "expected_wins":
         from evaluation.metrics import expected_wins_score
         from qb_env.opponent_models import build_opponent_model_from_config
 

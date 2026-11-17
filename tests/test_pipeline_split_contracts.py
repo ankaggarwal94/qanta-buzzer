@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import evaluation.metrics as metrics
 import scripts.evaluate_all as evaluate_all
 import scripts.run_baselines as run_baselines
@@ -63,6 +65,31 @@ def _config() -> dict[str, object]:
         "environment": {"reward_mode": "time_penalty"},
         "ppo": {},
     }
+
+
+def test_offline_reward_options_keep_defaults_and_expected_wins_mode():
+    from scripts._common import baseline_reward_options
+
+    defaults = baseline_reward_options({})
+    assert defaults == {
+        "reward_mode": "time_penalty", "wait_penalty": 0.0, "buzz_correct": 1.0,
+        "buzz_incorrect": -0.5, "early_buzz_penalty": 0.0,
+    }
+    assert baseline_reward_options({"environment": {"reward_mode": "expected_wins"}}) == {
+        **defaults, "reward_mode": "expected_wins",
+    }
+
+
+def test_offline_reward_options_round_trip_to_replay_with_alias_precedence():
+    from agents.threshold_buzzer import reward_from_buzz_step
+    from scripts._common import baseline_reward_options
+
+    options = baseline_reward_options({"environment": {
+        "reward": "time_penalty", "reward_mode": "simple", "wait_penalty": "0.2",
+        "early_buzz_penalty": "0.4", "buzz_correct": "1.5", "buzz_incorrect": "-2",
+    }})
+    assert reward_from_buzz_step(correct=True, buzz_step=0, total_steps=2, **options) == pytest.approx(1.1)
+    assert reward_from_buzz_step(correct=False, buzz_step=1, total_steps=2, **options) == pytest.approx(-2.4)
 
 
 def test_run_baselines_builds_tfidf_from_train_split_when_val_selected(

@@ -42,6 +42,100 @@ class TestLikelihoodModelABC:
         assert isinstance(model.embedding_cache, dict), "embedding_cache should be dict"
 
 
+def test_embedding_misses_are_unique_and_return_in_request_order(monkeypatch):
+    model = TfIdfLikelihood(["apple berry", "cherry date"])
+    original = model._embed_batch
+    calls = []
+
+    def record(texts):
+        calls.append(list(texts))
+        return original(texts)
+
+    monkeypatch.setattr(model, "_embed_batch", record)
+    model.precompute_embeddings(["date", "date"])
+    texts = ["berry", "date", "berry", "apple", "date"]
+    actual = model.embed_and_cache(texts)
+    np.testing.assert_array_equal(actual, original(texts))
+    assert calls == [["date"], ["berry", "apple"]]
+
+
+@pytest.mark.parametrize("method", ["embed_and_cache", "precompute_embeddings"])
+@pytest.mark.parametrize("shape", [(1, 4), (3, 4), (2,), (2, 5)])
+def test_malformed_embedding_batch_is_rejected_before_cache_update(monkeypatch, method, shape):
+    model = TfIdfLikelihood(["apple berry", "cherry date"])
+    old = model.embed_and_cache(["date"])
+    old_keys = set(model.embedding_cache)
+    original = model._embed_batch
+    monkeypatch.setattr(model, "_embed_batch", lambda texts: np.zeros(shape))
+
+    with pytest.raises(ValueError, match="embedding batch"):
+        getattr(model, method)(["berry", "apple"])
+    assert set(model.embedding_cache) == old_keys
+    np.testing.assert_array_equal(model.embed_and_cache(["date"]), old)
+
+    monkeypatch.setattr(model, "_embed_batch", original)
+    np.testing.assert_array_equal(model.embed_and_cache(["berry", "apple"]), original(["berry", "apple"]))
+
+
+def test_tfidf_refit_updates_the_vocabulary_and_cached_coordinates():
+    model = TfIdfLikelihood(["apple banana", "cherry date"])
+    model.embed_and_cache(["banana", "apple"])
+    corpus = ["zebra banana", "cherry", "yarrow", "zebra", "lemon"]
+    model.fit(corpus)
+    reference = TfIdfLikelihood(corpus)
+    texts = ["banana", "apple", "lemon"]
+    np.testing.assert_array_equal(model.embed_and_cache(texts), reference.embed_and_cache(texts))
+    np.testing.assert_array_equal(model.score("zebra", texts), reference.score("zebra", texts))
+
+
+def test_failed_tfidf_refit_retains_last_working_model():
+    corpus = ["apple banana", "cherry date"]
+    model = TfIdfLikelihood(corpus)
+    model.embed_and_cache(["banana"])
+    with pytest.raises(ValueError, match="empty vocabulary"):
+        model.fit(["the"])
+    scores = model.score("apple banana", ["banana", "date"])
+    np.testing.assert_array_equal(scores, TfIdfLikelihood(corpus).score("apple banana", ["banana", "date"]))
+
+
+class _LocalEmbeddings(LikelihoodModel):
+    def _embed_batch(self, texts):
+        return np.array([[len(text), 1] for text in texts], dtype=np.float32)
+
+    def score(self, clue_prefix, option_profiles):
+        return self.embed_and_cache(option_profiles) @ self.embed_and_cache([clue_prefix])[0]
+
+
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize("bad_shape", [(3,), (1, 2), (0,)])
+def test_legacy_npz_load_rejects_late_corruption_atomically(tmp_path, warm, bad_shape):
+    from models.likelihoods import _text_key
+
+    model = _LocalEmbeddings()
+    if warm:
+        model.embed_and_cache(["warm"])
+    old = model.embedding_cache.copy()
+    path = tmp_path / "cache.npz"
+    rows = {_text_key("first"): np.array([7, 2], dtype=np.float64), _text_key("last"): np.zeros(bad_shape)}
+    np.savez(path, **rows)
+    with pytest.raises(ValueError, match="embedding"):
+        model.load_cache(path)
+    assert list(model.embedding_cache) == list(old)
+    for key in old:
+        assert old[key] is model.embedding_cache[key]
+
+    # Valid legacy files merge into a warm cache, converting to float32. A
+    # conflicting duplicate is ignored even when its on-disk shape is invalid.
+    model.embed_and_cache(["warm"])
+    rows.pop(_text_key("last"))
+    rows[_text_key("warm")] = np.zeros((2, 3))
+    np.savez_compressed(path, **rows)
+    assert model.load_cache(path) == 1
+    result = model.embed_and_cache(["warm", "first"])
+    assert result.dtype == np.float32
+    np.testing.assert_array_equal(result, [[4, 1], [7, 2]])
+
+
 # ------------------------------------------------------------------ #
 # Tests for TfIdfLikelihood
 # ------------------------------------------------------------------ #

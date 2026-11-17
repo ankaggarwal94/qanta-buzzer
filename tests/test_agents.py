@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import warnings
+from itertools import product
 
 import numpy as np
 import pytest
@@ -1139,3 +1140,47 @@ class TestBaselineAgentsVariableK:
         result = buzzer.run_episode(q4)
         assert len(result.c_trace) > 0
         assert 0 <= result.buzz_index < 3
+
+
+@pytest.mark.parametrize("sequential", [False, True])
+def test_empty_threshold_sweep_does_no_model_work(sample_mc_question, sequential):
+    from agents.bayesian_buzzer import sweep_sequential_thresholds
+
+    class UnusedScorer:
+        def score(self, *args):
+            pytest.fail("an empty threshold sweep requested a likelihood")
+
+    sweep = sweep_sequential_thresholds if sequential else sweep_thresholds
+    assert sweep([sample_mc_question], UnusedScorer(), []) == {}
+
+
+def test_profile_policy_can_adjust_threshold_and_reward_during_episode(sample_mc_question, sample_corpus):
+    class AdaptivePolicy(SoftmaxProfileBuzzer):
+        def confidence_proxy(self, top_p):
+            self.threshold = 0.0
+            self.reward_mode = "simple"
+            return super().confidence_proxy(top_p)
+
+    agent = AdaptivePolicy(_make_likelihood(sample_corpus), threshold=2, buzz_correct=19, buzz_incorrect=-19)
+    episode = agent.run_episode(sample_mc_question)
+    assert episode.buzz_step == 0
+    assert episode.reward_like == (1.0 if episode.correct else -1.0)
+
+
+def test_threshold_replay_exhaustive_short_traces():
+    """Check the production replay against the earliest qualifying prefix."""
+    from agents.threshold_buzzer import _PrecomputedQuestion, _episode_from_precomputed
+
+    possible = ((0.25, 0.75), (0.5, 0.5), (0.75, 0.25))
+    for length in range(1, 5):
+        for prefix in product(possible, repeat=length):
+            for gold, threshold in product((0, 1), (0.5, 0.75, 1.0)):
+                step = next((i for i, row in enumerate(prefix) if max(row) >= threshold), length - 1)
+                row = prefix[step]
+                winner = row.index(max(row))
+                question = _PrecomputedQuestion("q", gold, 2, [np.asarray(row) for row in prefix])
+                result = _episode_from_precomputed(question, threshold, 3, reward_mode="simple")
+                assert (result.buzz_step, result.buzz_index, result.correct) == (step, winner, winner == gold)
+                assert result.reward_like == (1.0 if winner == gold else -1.0)
+                assert result.top_p_trace == [max(row) for row in prefix[:step + 1]]
+                assert len(result.c_trace) == len(result.entropy_trace) == len(result.g_trace) == step + 1

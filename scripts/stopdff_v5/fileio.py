@@ -16,8 +16,10 @@ import json
 import os
 import stat
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, BinaryIO, Callable
 
 
 _IS_WINDOWS = os.name == "nt"
@@ -172,8 +174,9 @@ def fsync_tree(root: Path) -> None:
         fsync_directory(directory)
 
 
-def publish_bytes(path: Path, data: bytes) -> None:
-    """Atomically replace a file and apply the host's strongest publish sync."""
+@contextmanager
+def atomic_binary_writer(path: Path) -> Iterator[BinaryIO]:
+    """Yield a private stream and durably replace the target on normal exit."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if (path.exists() or path.is_symlink()) and (
@@ -183,7 +186,7 @@ def publish_bytes(path: Path, data: bytes) -> None:
     fd, tmp = tempfile.mkstemp(dir=str(path.parent))
     try:
         with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
+            yield handle
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
@@ -191,6 +194,12 @@ def publish_bytes(path: Path, data: bytes) -> None:
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
+
+
+def publish_bytes(path: Path, data: bytes) -> None:
+    """Atomically replace a file and apply the host's strongest publish sync."""
+    with atomic_binary_writer(path) as handle:
+        handle.write(data)
 
 
 def create_once_bytes(
