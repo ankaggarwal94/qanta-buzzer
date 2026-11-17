@@ -1,0 +1,12 @@
+{
+  "challenge_module": "OrderChallenge",
+  "solution_module": "OrderSolution",
+  "theorem_names": [
+    "ACL.policyOrder"
+  ],
+  "permitted_axioms": [
+    "propext",
+    "Quot.sound",
+    "Classical.choice"
+  ]
+}

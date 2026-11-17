@@ -1,0 +1,23 @@
+name = "acl_curves"
+version = "0.1.0"
+defaultTargets = ["BridgeSolution"]
+
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4"
+rev = "56a005855ea17e0b0958f73ec801ae140b0a1679"
+
+[[lean_lib]]
+name = "Core"
+
+[[lean_lib]]
+name = "Definitions"
+
+[[lean_lib]]
+name = "BridgeDefinitions"
+
+[[lean_lib]]
+name = "BridgeChallenge"
+
+[[lean_lib]]
+name = "BridgeSolution"

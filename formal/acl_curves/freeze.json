@@ -1,0 +1,8 @@
+{
+  "Challenge.lean": "1f7df1a569a7242ee3e9f46821ea02f586f524b3e87eb554974612d818ffe563",
+  "Definitions.lean": "c4d6cc74376b7be1156f796e05eedf08070e4c0be2e54c499fd960167aa3656a",
+  "comparator.json": "8088895f9a42e07d53d37d6fcd3e946b091638b0600e73d6b0f6e56e15c52c53",
+  "lake-manifest.json": "caa64df0e02646dcddcb2e34e046f40dc2890d47fa32cfdfcc935d83c87fd6aa",
+  "lakefile.toml": "571178dadb3c78c9a691d71228acc59af6eb78850054ae5329af8478963d4e42",
+  "lean-toolchain": "ca5f1f601d34c49079e38d7e7041eb0f2a9c227fbc1df0f404820069a052330c"
+}

@@ -1,0 +1,22 @@
+{
+  "challenge_module": "Challenge",
+  "solution_module": "Solution",
+  "theorem_names": [
+    "ACL.approvedSchedule",
+    "ACL.legalSuccess",
+    "ACL.drawSound",
+    "ACL.drawComplete",
+    "ACL.goldInsertion",
+    "ACL.uniformMass",
+    "ACL.prizeBounds",
+    "ACL.prizeEndpoints",
+    "ACL.prizeMonotone",
+    "ACL.telescoping",
+    "ACL.witness"
+  ],
+  "permitted_axioms": [
+    "propext",
+    "Quot.sound",
+    "Classical.choice"
+  ]
+}

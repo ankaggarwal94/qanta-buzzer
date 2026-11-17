@@ -1,0 +1,17 @@
+name = "acl_expansion"
+version = "0.1.0"
+
+[[lean_lib]]
+name = "Core"
+
+[[lean_lib]]
+name = "Solution"
+
+[[lean_lib]]
+name = "LawCore"
+
+[[lean_lib]]
+name = "LawChallenge"
+
+[[lean_lib]]
+name = "LawSolution"

@@ -1,0 +1,46 @@
+{
+  "challenge_author": "independent proofs agent",
+  "proof_author": "menus agent",
+  "verification": "clean Linux WSL2 staging, Lake sandbox with bubblewrap",
+  "toolchain": "leanprover/lean4:v4.35.0",
+  "mathlib_revision": "56a005855ea17e0b0958f73ec801ae140b0a1679",
+  "mathlib_cache_dependencies": 2252,
+  "freeze_sha256": "dc1277deb55950615066a66915fbf4b60a7c826aeea25a28e3ecc9ae2b9bea49",
+  "solution_sha256": "0b2c01b7510ab9c779b5ca74be2dcc9899606adb79ddd0aac51629e2b403754b",
+  "theorem_names": [
+    "ACL.Curves.validLinear",
+    "ACL.Curves.validExponential",
+    "ACL.Curves.exponentialZeroLimit",
+    "ACL.Curves.validPower",
+    "ACL.Curves.validCosine",
+    "ACL.Curves.validStep",
+    "ACL.Curves.validSegment",
+    "ACL.Curves.validPiecewise",
+    "ACL.Curves.validRescale",
+    "ACL.Curves.constantPayout",
+    "ACL.Curves.piecewiseWitness"
+  ],
+  "permitted_axioms": [
+    "propext",
+    "Quot.sound",
+    "Classical.choice"
+  ],
+  "kernels": {
+    "default": "accepted",
+    "lean_paranoid": "accepted",
+    "lean4lean": 18763,
+    "nanoda": "accepted",
+    "con-leche": 18766,
+    "con-ron": 18766
+  },
+  "command": "lake comparator --config comparator.json --paranoid",
+  "result": "accepted",
+  "inputs": {
+    "Definitions.lean": "c4d6cc74376b7be1156f796e05eedf08070e4c0be2e54c499fd960167aa3656a",
+    "Challenge.lean": "1f7df1a569a7242ee3e9f46821ea02f586f524b3e87eb554974612d818ffe563",
+    "lean-toolchain": "ca5f1f601d34c49079e38d7e7041eb0f2a9c227fbc1df0f404820069a052330c",
+    "lake-manifest.json": "caa64df0e02646dcddcb2e34e046f40dc2890d47fa32cfdfcc935d83c87fd6aa",
+    "lakefile.toml": "571178dadb3c78c9a691d71228acc59af6eb78850054ae5329af8478963d4e42",
+    "comparator.json": "8088895f9a42e07d53d37d6fcd3e946b091638b0600e73d6b0f6e56e15c52c53"
+  }
+}
