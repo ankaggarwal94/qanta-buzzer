@@ -68,7 +68,7 @@ def _config() -> dict[str, object]:
 
 
 def test_offline_reward_options_keep_defaults_and_expected_wins_mode():
-    from scripts._common import baseline_reward_options
+    from qb_data.config import baseline_reward_options
 
     defaults = baseline_reward_options({})
     assert defaults == {
@@ -82,7 +82,7 @@ def test_offline_reward_options_keep_defaults_and_expected_wins_mode():
 
 def test_offline_reward_options_round_trip_to_replay_with_alias_precedence():
     from agents.threshold_buzzer import reward_from_buzz_step
-    from scripts._common import baseline_reward_options
+    from qb_data.config import baseline_reward_options
 
     options = baseline_reward_options({"environment": {
         "reward": "time_penalty", "reward_mode": "simple", "wait_penalty": "0.2",

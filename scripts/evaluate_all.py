@@ -61,13 +61,12 @@ from evaluation.plotting import (
     plot_entropy_vs_clue_index,
     save_comparison_table,
 )
-from qb_data.config import merge_overrides
+from qb_data.config import baseline_reward_options, merge_overrides
 from qb_env.stop_only_env import StopOnlyEnv
 from qb_env.tossup_env import make_env_from_config
 from qb_env.tossup_env import precompute_beliefs as env_precompute_beliefs
 from scripts._common import (
     ARTIFACT_DIR,
-    baseline_reward_options,
     build_likelihood_model,
     collect_env_texts,
     load_config,

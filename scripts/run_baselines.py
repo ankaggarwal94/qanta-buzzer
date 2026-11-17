@@ -44,10 +44,9 @@ from agents.threshold_buzzer import (
     sweep_thresholds,
 )
 from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
-from qb_data.config import merge_overrides
+from qb_data.config import baseline_reward_options, merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
-    baseline_reward_options,
     build_likelihood_model,
     collect_env_texts,
     dataset_path_for_split,
