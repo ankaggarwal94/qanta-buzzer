@@ -70,16 +70,35 @@ These are local measurements of individual workloads. Peak allocations use Pytho
 | Take three words from a 250,000-token question | 13.31 MB | Under 4 KB |
 | Expected Wins at 5 / 50 / 4,096 steps | 6.21 / 14.08 / 746.58 μs | 7.68 / 10.38 / 258.60 μs |
 
-The proof in `formal/FirstBuzz.lean` covers exact rational algebra. The numerical tests exercise the NumPy implementation in float64. The existing ACL proofs cover their declared sampler, transition and reward properties. Filesystem crash durability, third-party libraries, model quality and the complete learning system fall outside these proofs.
+### How the Lean evidence applies
+
+Kevin Buzzard proposes four checks for a claim backed by Lean. They apply differently to the existing ACL results and the first-buzz refactor. [Source article](https://xenaproject.wordpress.com/2026/11/12/and-the-proof-is-checked-in-lean/)
+
+| Question | Existing ACL proofs | First-buzz refactor |
+| --- | --- | --- |
+| Do the definitions and hypotheses capture the intended claim? | The 33 statements cover specific sampling, payout, shaping, and numerical-bridge properties. Uniform menu mass assumes conditionally uniform draws and an independent uniform gold position. | The five definitions describe survival, first-buzz masses, and three ways to calculate a score. Three theorems establish mass conservation and agreement between the scoring formulas for finite rational traces. The challenge restates the theorem signatures and copies the five definitions. Separate agents reviewed their interpretation. Human domain signoff remains unestablished for both groups. |
+| Does the proof build? | Seven challenge/solution comparisons have successful Linux build transcripts. | The official Lean 4.35.0 comparator builds the frozen challenge and candidate in a clean Linux project with bubblewrap. |
+| Does it prove those statements with the approved axioms? | Frozen declarations and transitive axiom checks cover all 33 theorems. A compiling change to the payout definition failed comparison. | The freeze binds the challenge, theorem names, axiom policy, Lake configuration, dependency manifest and toolchain selector. Both an unfinished candidate and a compiling change to the backward recurrence failed comparison. The permitted axioms are `propext`, `Classical.choice`, and `Quot.sound`. |
+| Has the proof been checked beyond the default kernel? | All seven paranoid comparisons passed the six bundled checker modes. | The paranoid comparator runs Lean's default and paranoid kernels, lean4lean, nanoda, con-leche and con-ron. |
+
+The score returned by NumPy has a separate contract. Valid probability-valued traces yield `system_score` in [0, 1], including when the forward float64 sum rounds above one. For example, hazards `[0.2, 0.2, 1]` and all-correct predictions previously scored `1.0000000000000002`. The regression requires exactly `1.0`. Existing traces outside the probability domain retain their weighted-sum behavior, including conditional correctness from float32 PPO. Runtime tests compare production arithmetic with a rational backward recurrence. Extending the theorem claims to learned policy quality, scientific labels, or host arithmetic requires separate evidence. [ACL proof scope](acl_expansion/proofs.md) · [First-buzz challenge](../formal/first_buzz/Challenge.lean) · [Numerical tests](../tests/test_metrics.py)
+
+The FirstBuzz workflow reads the proof from the event commit. It checks the synthetic merge commit for a pull request, the merge-group head in a queue, and the landed revision on a push to main. The workflow pins the verifier bytes and the independently reviewed freeze digest. A reviewer assessing a change to these pins or to the workflow itself must compare against a separately retained reference. Making the job a required merge condition also depends on the host repository's branch policy. [Workflow](../.github/workflows/first-buzz.yml)
 
 ## Reproduce the checks
 
-From the repository root, run these commands in the project environment. The Python and Lean invocations use the same syntax in PowerShell and POSIX shells. Install the project dev dependencies for the test suite. The Lean command uses the 4.35.0 toolchain also selected by the opt-in verification workflow.
+From the repository root, run these commands in the project environment with the development dependencies installed. The Python invocations use the same syntax in PowerShell and POSIX shells.
 
 ```sh
 python -m pytest tests -q
 python -m scripts.validate_stopdff_bucketed_sweep self-test
-lean -DwarningAsError=true formal/FirstBuzz.lean
+```
+
+For the proof gate, use Linux with bubblewrap, user namespaces and the official Lean 4.35.0 binaries on PATH. From PowerShell enter WSL with `wsl -d <distribution>`, or use a Linux VM from macOS. In a Git checkout accessible to the Linux Git client, run the following command. Substitute the full target commit for `$(git rev-parse HEAD)` to verify another revision with this reviewed verifier.
+
+```sh
+python3 -I formal/first_buzz/verify.py --repo . --revision "$(git rev-parse HEAD)" \
+  --freeze-sha256 8edf5836f3e40e6e9e38c5516841889a69d1528aa7bd9f1986ead0ba633fdc91
 ```
 
 For the end-to-end smoke, use a disposable checkout with an empty smoke output directory. These stages write generated artifacts there.

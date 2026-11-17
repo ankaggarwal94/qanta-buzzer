@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from itertools import product
 
+import numpy as np
 import pytest
 
 from evaluation.metrics import (
@@ -46,6 +47,25 @@ def test_system_score_all_correct_immediate_buzz():
     g_trace = [1.0, 1.0, 1.0]
     expected = 1.0 * 1.0  # b_0 = c_0 * 1.0 = 1.0, survival after = 0
     assert abs(system_score(c_trace, g_trace) - expected) < 1e-9
+
+
+def test_system_score_certain_correctness_stays_within_probability_range():
+    # The forward float64 masses sum to 1.0000000000000002.
+    assert system_score([0.2, 0.2, 1.0], [1.0, 1.0, 1.0]) == 1.0
+
+
+@pytest.mark.parametrize("hazard,correctness", [(1.25, 1.0), (1.0, 1.25)])
+def test_system_score_preserves_out_of_domain_arithmetic(hazard, correctness):
+    assert system_score([hazard], [correctness]) == 1.25
+
+
+def test_system_score_accepts_conditional_probability_from_float32_ppo():
+    # PPO divides the gold action probability by 1 - P(wait).
+    hazard = 1.0 - float(np.float32(0.999))
+    gold = float(np.float32(0.001))
+    conditional = gold / hazard
+    assert conditional > 1.0
+    assert system_score([hazard], [conditional]) == gold
 
 
 def test_system_score_gradual_confidence():

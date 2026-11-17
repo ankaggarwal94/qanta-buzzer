@@ -1,0 +1,14 @@
+{
+  "challenge_module": "Challenge",
+  "solution_module": "FirstBuzz",
+  "theorem_names": [
+    "FirstBuzz.conservation",
+    "FirstBuzz.mass_payoffs",
+    "FirstBuzz.score_agreement"
+  ],
+  "permitted_axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+  ]
+}

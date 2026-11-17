@@ -71,13 +71,16 @@ def system_score(c_trace: list[float], g_trace: list[float]) -> float:
     c_trace : list[float]
         Buzz probability at each time step (confidence proxy).
     g_trace : list[float]
-        Correctness indicator at each time step (1.0 if top answer is
-        correct, 0.0 otherwise).
+        Conditional probability of a correct answer given a buzz at each
+        step. A deterministic answer uses the indicator 0.0 or 1.0.
 
     Returns
     -------
     float
-        S_q score for the episode, in [0, 1].
+        First-buzz-weighted correctness, or zero for an empty hazard trace.
+        For inputs in [0, 1], the result lies in [0, 1] even when the
+        float64 sum rounds above one. Traces containing values outside that
+        domain retain their raw float64 weighted sum.
     """
     c = np.asarray(c_trace, dtype=np.float64)
     g = np.asarray(g_trace, dtype=np.float64)
@@ -85,7 +88,12 @@ def system_score(c_trace: list[float], g_trace: list[float]) -> float:
         return 0.0
     if c.ndim != 1 or g.ndim != 1 or c.shape != g.shape:
         raise ValueError("system_score requires aligned one-dimensional traces")
-    return float(np.sum(_first_buzz_mass(c) * g))
+    score = float(np.sum(_first_buzz_mass(c) * g))
+    if score > 1.0 and all(
+        np.all((0.0 <= trace) & (trace <= 1.0)) for trace in (c, g)
+    ):
+        return 1.0
+    return score
 
 
 def expected_wins_score(
