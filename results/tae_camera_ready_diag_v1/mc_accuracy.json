@@ -1,0 +1,162 @@
+{
+  "artifact": "tae_camera_ready_diag_v1",
+  "definitions": {
+    "mc_accuracy": "mean of `correct` over MC adapter rows; per adapter_build, MC correct = int(predicted_idx == gold_index)",
+    "phase_convention": "early/mid/late by CHARACTER fraction of the question (prefix_char_count / full_question_char_count); early < 0.33 <= mid < 0.66 <= late",
+    "qa_note": "QA-arm accuracy is NOT reportable: QA rows carry correct == 1 by construction (gold-idealized reference arm)"
+  },
+  "per_prefix_idx": {
+    "note": "INDEX-BASED curve over prefix_idx (0-9, variable horizons per item); this indexing does NOT match the run's character-fraction phase convention above",
+    "test_mc": [
+      {
+        "accuracy": 0.336187,
+        "n": 3037,
+        "prefix_idx": 0
+      },
+      {
+        "accuracy": 0.358839,
+        "n": 3032,
+        "prefix_idx": 1
+      },
+      {
+        "accuracy": 0.393202,
+        "n": 3001,
+        "prefix_idx": 2
+      },
+      {
+        "accuracy": 0.423679,
+        "n": 2745,
+        "prefix_idx": 3
+      },
+      {
+        "accuracy": 0.469551,
+        "n": 1872,
+        "prefix_idx": 4
+      },
+      {
+        "accuracy": 0.491145,
+        "n": 847,
+        "prefix_idx": 5
+      },
+      {
+        "accuracy": 0.468966,
+        "n": 290,
+        "prefix_idx": 6
+      },
+      {
+        "accuracy": 0.441558,
+        "n": 77,
+        "prefix_idx": 7
+      },
+      {
+        "accuracy": 0.411765,
+        "n": 17,
+        "prefix_idx": 8
+      },
+      {
+        "accuracy": 0.5,
+        "n": 2,
+        "prefix_idx": 9
+      }
+    ],
+    "val_mc": [
+      {
+        "accuracy": 0.334098,
+        "n": 3050,
+        "prefix_idx": 0
+      },
+      {
+        "accuracy": 0.375123,
+        "n": 3047,
+        "prefix_idx": 1
+      },
+      {
+        "accuracy": 0.396277,
+        "n": 3008,
+        "prefix_idx": 2
+      },
+      {
+        "accuracy": 0.44123,
+        "n": 2765,
+        "prefix_idx": 3
+      },
+      {
+        "accuracy": 0.471916,
+        "n": 1905,
+        "prefix_idx": 4
+      },
+      {
+        "accuracy": 0.471742,
+        "n": 867,
+        "prefix_idx": 5
+      },
+      {
+        "accuracy": 0.481356,
+        "n": 295,
+        "prefix_idx": 6
+      },
+      {
+        "accuracy": 0.431818,
+        "n": 88,
+        "prefix_idx": 7
+      },
+      {
+        "accuracy": 0.375,
+        "n": 24,
+        "prefix_idx": 8
+      },
+      {
+        "accuracy": 0.333333,
+        "n": 3,
+        "prefix_idx": 9
+      }
+    ]
+  },
+  "run_id": "final_modal_5d5328102912",
+  "test": {
+    "accuracy": 0.397118,
+    "by_phase": {
+      "early": {
+        "accuracy": 0.333432,
+        "n": 3386,
+        "n_correct": 1129
+      },
+      "late": {
+        "accuracy": 0.443799,
+        "n": 7055,
+        "n_correct": 3131
+      },
+      "mid": {
+        "accuracy": 0.371735,
+        "n": 4479,
+        "n_correct": 1665
+      }
+    },
+    "n": 14920,
+    "n_correct": 5925,
+    "n_items": 3037
+  },
+  "val": {
+    "accuracy": 0.403402,
+    "by_phase": {
+      "early": {
+        "accuracy": 0.344305,
+        "n": 3433,
+        "n_correct": 1182
+      },
+      "late": {
+        "accuracy": 0.44886,
+        "n": 7147,
+        "n_correct": 3208
+      },
+      "mid": {
+        "accuracy": 0.376118,
+        "n": 4472,
+        "n_correct": 1682
+      }
+    },
+    "n": 15052,
+    "n_correct": 6072,
+    "n_items": 3050
+  }
+}

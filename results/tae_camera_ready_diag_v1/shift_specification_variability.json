@@ -1,0 +1,3049 @@
+{
+  "artifact": "tae_camera_ready_diag_v1",
+  "n_cells": 96,
+  "n_items": 3037,
+  "never_buzz_bounds": {
+    "max_never_buzz_mc": 2118,
+    "max_never_buzz_qa": 2405,
+    "method": "mutual never-buzz >= max(0, nb_mc + nb_qa - 3037) per cell (inclusion-exclusion). Never-buzz is coded stop_index == item horizon in BOTH arms over the same prefix set (scripts/stopdff_v5/policy.py), so mutual never-buzz implies D = 0 and the D = 0 mass decomposes exactly into {same finite stop} + {mutual never-buzz}; the same-finite-stop (finite agreement) fraction is therefore bounded between (zero - min(nb_mc, nb_qa, zero)) / n and (zero - LB) / n",
+    "n_cells_with_positive_mutual_lb": 16,
+    "top_cells_by_mutual_nb_lb_share_of_zero_mass": [
+      {
+        "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+        "mutual_nb_lb_share_of_zero_mass": 0.546933,
+        "mutual_never_buzz_lower_bound": 1480,
+        "never_buzz_mc": 2114,
+        "never_buzz_qa": 2403,
+        "same_finite_stop_fraction_bounds": [
+          0.194929,
+          0.403688
+        ],
+        "zero_fraction": 0.891011
+      },
+      {
+        "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+        "mutual_nb_lb_share_of_zero_mass": 0.546157,
+        "mutual_never_buzz_lower_bound": 1485,
+        "never_buzz_mc": 2117,
+        "never_buzz_qa": 2405,
+        "same_finite_stop_fraction_bounds": [
+          0.198222,
+          0.406322
+        ],
+        "zero_fraction": 0.895291
+      },
+      {
+        "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+        "mutual_nb_lb_share_of_zero_mass": 0.546094,
+        "mutual_never_buzz_lower_bound": 1475,
+        "never_buzz_mc": 2110,
+        "never_buzz_qa": 2402,
+        "same_finite_stop_fraction_bounds": [
+          0.1946,
+          0.403688
+        ],
+        "zero_fraction": 0.889365
+      },
+      {
+        "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+        "mutual_nb_lb_share_of_zero_mass": 0.545421,
+        "mutual_never_buzz_lower_bound": 1471,
+        "never_buzz_mc": 2111,
+        "never_buzz_qa": 2397,
+        "same_finite_stop_fraction_bounds": [
+          0.192954,
+          0.403688
+        ],
+        "zero_fraction": 0.888047
+      },
+      {
+        "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+        "mutual_nb_lb_share_of_zero_mass": 0.545421,
+        "mutual_never_buzz_lower_bound": 1483,
+        "never_buzz_mc": 2117,
+        "never_buzz_qa": 2403,
+        "same_finite_stop_fraction_bounds": [
+          0.198222,
+          0.406981
+        ],
+        "zero_fraction": 0.895291
+      }
+    ]
+  },
+  "per_axis_attribution": {
+    "axes": {
+      "calibrator": {
+        "level_mean_spread": 0.291499,
+        "levels": {
+          "isotonic": {
+            "max": -0.001976,
+            "mean_of_cell_signed_means": -0.296829,
+            "min": -0.676655,
+            "n_cells": 32
+          },
+          "platt-logistic": {
+            "max": 0.109648,
+            "mean_of_cell_signed_means": -0.078696,
+            "min": -0.290418,
+            "n_cells": 32
+          },
+          "similarity-temperature": {
+            "max": 0.000988,
+            "mean_of_cell_signed_means": -0.00533,
+            "min": -0.026671,
+            "n_cells": 32
+          }
+        }
+      },
+      "category_pooling": {
+        "level_mean_spread": 0.016017,
+        "levels": {
+          "per_category": {
+            "max": 0.109648,
+            "mean_of_cell_signed_means": -0.118943,
+            "min": -0.623971,
+            "n_cells": 48
+          },
+          "pooled_category": {
+            "max": 0.105038,
+            "mean_of_cell_signed_means": -0.13496,
+            "min": -0.676655,
+            "n_cells": 48
+          }
+        }
+      },
+      "continuation": {
+        "level_mean_spread": 0.002943,
+        "levels": {
+          "empirical_bucket": {
+            "max": 0.105038,
+            "mean_of_cell_signed_means": -0.12548,
+            "min": -0.676655,
+            "n_cells": 48
+          },
+          "pooled_empirical": {
+            "max": 0.109648,
+            "mean_of_cell_signed_means": -0.128423,
+            "min": -0.623971,
+            "n_cells": 48
+          }
+        }
+      },
+      "prefix_bucketing": {
+        "level_mean_spread": 0.000363,
+        "levels": {
+          "early_mid_late": {
+            "max": 0.109648,
+            "mean_of_cell_signed_means": -0.127133,
+            "min": -0.676655,
+            "n_cells": 48
+          },
+          "exact_prefix": {
+            "max": 0.107014,
+            "mean_of_cell_signed_means": -0.12677,
+            "min": -0.599934,
+            "n_cells": 48
+          }
+        }
+      },
+      "reward_schedule": {
+        "level_mean_spread": 0.079272,
+        "levels": {
+          "acf_flat": {
+            "max": -0.007903,
+            "mean_of_cell_signed_means": -0.169273,
+            "min": -0.297004,
+            "n_cells": 24
+          },
+          "power_mark": {
+            "max": 0.109648,
+            "mean_of_cell_signed_means": -0.090001,
+            "min": -0.676655,
+            "n_cells": 24
+          },
+          "strict_wrong": {
+            "max": 0.000988,
+            "mean_of_cell_signed_means": -0.109442,
+            "min": -0.18571,
+            "n_cells": 24
+          },
+          "wait_cost_small": {
+            "max": 0.096477,
+            "mean_of_cell_signed_means": -0.13909,
+            "min": -0.623971,
+            "n_cells": 24
+          }
+        }
+      }
+    },
+    "note": "cell signed means (mean of D per cell) grouped by each specification axis level; level_mean_spread = max - min of the level means for that axis"
+  },
+  "per_cell": [
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 178,
+      "never_buzz_mc": 178,
+      "never_buzz_qa": 723,
+      "same_finite_stop_count_bounds": [
+        2095,
+        2273
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.689825,
+        0.748436
+      ],
+      "signed_mean_shift": -0.261771,
+      "zero_count": 2273,
+      "zero_fraction": 0.748436
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 179,
+      "never_buzz_mc": 179,
+      "never_buzz_qa": 724,
+      "same_finite_stop_count_bounds": [
+        2078,
+        2257
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.684228,
+        0.743168
+      ],
+      "signed_mean_shift": -0.297004,
+      "zero_count": 2257,
+      "zero_fraction": 0.743168
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 179,
+      "never_buzz_mc": 179,
+      "never_buzz_qa": 717,
+      "same_finite_stop_count_bounds": [
+        2053,
+        2232
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.675996,
+        0.734936
+      ],
+      "signed_mean_shift": -0.242674,
+      "zero_count": 2232,
+      "zero_fraction": 0.734936
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 179,
+      "never_buzz_mc": 179,
+      "never_buzz_qa": 724,
+      "same_finite_stop_count_bounds": [
+        2160,
+        2339
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.711228,
+        0.770168
+      ],
+      "signed_mean_shift": -0.261113,
+      "zero_count": 2339,
+      "zero_fraction": 0.770168
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 170,
+      "never_buzz_mc": 170,
+      "never_buzz_qa": 707,
+      "same_finite_stop_count_bounds": [
+        1970,
+        2140
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.648666,
+        0.704643
+      ],
+      "signed_mean_shift": -0.249259,
+      "zero_count": 2140,
+      "zero_fraction": 0.704643
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 171,
+      "never_buzz_mc": 171,
+      "never_buzz_qa": 709,
+      "same_finite_stop_count_bounds": [
+        2101,
+        2272
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.691801,
+        0.748107
+      ],
+      "signed_mean_shift": -0.290418,
+      "zero_count": 2272,
+      "zero_fraction": 0.748107
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 171,
+      "never_buzz_mc": 171,
+      "never_buzz_qa": 707,
+      "same_finite_stop_count_bounds": [
+        2016,
+        2187
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.663813,
+        0.720119
+      ],
+      "signed_mean_shift": -0.235759,
+      "zero_count": 2187,
+      "zero_fraction": 0.720119
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 171,
+      "never_buzz_mc": 171,
+      "never_buzz_qa": 709,
+      "same_finite_stop_count_bounds": [
+        2126,
+        2297
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.700033,
+        0.756338
+      ],
+      "signed_mean_shift": -0.274942,
+      "zero_count": 2297,
+      "zero_fraction": 0.756338
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        2057,
+        2057
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.677313,
+        0.677313
+      ],
+      "signed_mean_shift": -0.026671,
+      "zero_count": 2057,
+      "zero_fraction": 0.677313
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        2052,
+        2052
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.675667,
+        0.675667
+      ],
+      "signed_mean_shift": -0.007903,
+      "zero_count": 2052,
+      "zero_fraction": 0.675667
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        2089,
+        2089
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.68785,
+        0.68785
+      ],
+      "signed_mean_shift": -0.026013,
+      "zero_count": 2089,
+      "zero_fraction": 0.68785
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        2111,
+        2111
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.695094,
+        0.695094
+      ],
+      "signed_mean_shift": -0.011195,
+      "zero_count": 2111,
+      "zero_fraction": 0.695094
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 179,
+      "never_buzz_mc": 179,
+      "never_buzz_qa": 723,
+      "same_finite_stop_count_bounds": [
+        1854,
+        2033
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.610471,
+        0.669411
+      ],
+      "signed_mean_shift": -0.199539,
+      "zero_count": 2033,
+      "zero_fraction": 0.669411
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 179,
+      "never_buzz_mc": 179,
+      "never_buzz_qa": 724,
+      "same_finite_stop_count_bounds": [
+        2046,
+        2225
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.673691,
+        0.732631
+      ],
+      "signed_mean_shift": -0.260125,
+      "zero_count": 2225,
+      "zero_fraction": 0.732631
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 179,
+      "never_buzz_mc": 179,
+      "never_buzz_qa": 723,
+      "same_finite_stop_count_bounds": [
+        1937,
+        2116
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.6378,
+        0.69674
+      ],
+      "signed_mean_shift": -0.202502,
+      "zero_count": 2116,
+      "zero_fraction": 0.69674
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 179,
+      "never_buzz_mc": 179,
+      "never_buzz_qa": 724,
+      "same_finite_stop_count_bounds": [
+        2050,
+        2229
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.675008,
+        0.733948
+      ],
+      "signed_mean_shift": -0.254527,
+      "zero_count": 2229,
+      "zero_fraction": 0.733948
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 171,
+      "never_buzz_mc": 171,
+      "never_buzz_qa": 709,
+      "same_finite_stop_count_bounds": [
+        1813,
+        1984
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.596971,
+        0.653276
+      ],
+      "signed_mean_shift": -0.223247,
+      "zero_count": 1984,
+      "zero_fraction": 0.653276
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 171,
+      "never_buzz_mc": 171,
+      "never_buzz_qa": 709,
+      "same_finite_stop_count_bounds": [
+        1809,
+        1980
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.595654,
+        0.651959
+      ],
+      "signed_mean_shift": -0.229832,
+      "zero_count": 1980,
+      "zero_fraction": 0.651959
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 171,
+      "never_buzz_mc": 171,
+      "never_buzz_qa": 709,
+      "same_finite_stop_count_bounds": [
+        1820,
+        1991
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.599276,
+        0.655581
+      ],
+      "signed_mean_shift": -0.217649,
+      "zero_count": 1991,
+      "zero_fraction": 0.655581
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 171,
+      "never_buzz_mc": 171,
+      "never_buzz_qa": 709,
+      "same_finite_stop_count_bounds": [
+        1846,
+        2017
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.607837,
+        0.664142
+      ],
+      "signed_mean_shift": -0.218637,
+      "zero_count": 2017,
+      "zero_fraction": 0.664142
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        2057,
+        2057
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.677313,
+        0.677313
+      ],
+      "signed_mean_shift": -0.026671,
+      "zero_count": 2057,
+      "zero_fraction": 0.677313
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        2052,
+        2052
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.675667,
+        0.675667
+      ],
+      "signed_mean_shift": -0.007903,
+      "zero_count": 2052,
+      "zero_fraction": 0.675667
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        2089,
+        2089
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.68785,
+        0.68785
+      ],
+      "signed_mean_shift": -0.026013,
+      "zero_count": 2089,
+      "zero_fraction": 0.68785
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "acf_flat"
+      },
+      "cell_key": "reward_schedule=acf_flat__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        2111,
+        2111
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.695094,
+        0.695094
+      ],
+      "signed_mean_shift": -0.011195,
+      "zero_count": 2111,
+      "zero_fraction": 0.695094
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 111,
+      "never_buzz_mc": 111,
+      "never_buzz_qa": 421,
+      "same_finite_stop_count_bounds": [
+        1872,
+        1983
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.616398,
+        0.652947
+      ],
+      "signed_mean_shift": -0.183405,
+      "zero_count": 1983,
+      "zero_fraction": 0.652947
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 141,
+      "never_buzz_mc": 141,
+      "never_buzz_qa": 590,
+      "same_finite_stop_count_bounds": [
+        1763,
+        1904
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.580507,
+        0.626934
+      ],
+      "signed_mean_shift": -0.676655,
+      "zero_count": 1904,
+      "zero_fraction": 0.626934
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 137,
+      "never_buzz_mc": 137,
+      "never_buzz_qa": 504,
+      "same_finite_stop_count_bounds": [
+        1692,
+        1829
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.557129,
+        0.602239
+      ],
+      "signed_mean_shift": -0.206124,
+      "zero_count": 1829,
+      "zero_fraction": 0.602239
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 142,
+      "never_buzz_mc": 142,
+      "never_buzz_qa": 580,
+      "same_finite_stop_count_bounds": [
+        1719,
+        1861
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.566019,
+        0.612776
+      ],
+      "signed_mean_shift": -0.595983,
+      "zero_count": 1861,
+      "zero_fraction": 0.612776
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 98,
+      "never_buzz_mc": 98,
+      "never_buzz_qa": 318,
+      "same_finite_stop_count_bounds": [
+        1972,
+        2070
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.649325,
+        0.681594
+      ],
+      "signed_mean_shift": 0.037866,
+      "zero_count": 2070,
+      "zero_fraction": 0.681594
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 143,
+      "never_buzz_mc": 143,
+      "never_buzz_qa": 314,
+      "same_finite_stop_count_bounds": [
+        1980,
+        2123
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.651959,
+        0.699045
+      ],
+      "signed_mean_shift": 0.105038,
+      "zero_count": 2123,
+      "zero_fraction": 0.699045
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 113,
+      "never_buzz_mc": 113,
+      "never_buzz_qa": 357,
+      "same_finite_stop_count_bounds": [
+        1834,
+        1947
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.603885,
+        0.641093
+      ],
+      "signed_mean_shift": 0.062232,
+      "zero_count": 1947,
+      "zero_fraction": 0.641093
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 144,
+      "never_buzz_mc": 144,
+      "never_buzz_qa": 411,
+      "same_finite_stop_count_bounds": [
+        1743,
+        1887
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.573922,
+        0.621337
+      ],
+      "signed_mean_shift": 0.088904,
+      "zero_count": 1887,
+      "zero_fraction": 0.621337
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3012,
+        3012
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.991768,
+        0.991768
+      ],
+      "signed_mean_shift": 0.0,
+      "zero_count": 3012,
+      "zero_fraction": 0.991768
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3030,
+        3030
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.997695,
+        0.997695
+      ],
+      "signed_mean_shift": 0.000988,
+      "zero_count": 3030,
+      "zero_fraction": 0.997695
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3011,
+        3011
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.991439,
+        0.991439
+      ],
+      "signed_mean_shift": -0.003951,
+      "zero_count": 3011,
+      "zero_fraction": 0.991439
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3036,
+        3036
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.999671,
+        0.999671
+      ],
+      "signed_mean_shift": -0.000329,
+      "zero_count": 3036,
+      "zero_fraction": 0.999671
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 149,
+      "never_buzz_mc": 149,
+      "never_buzz_qa": 661,
+      "same_finite_stop_count_bounds": [
+        1584,
+        1733
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.521567,
+        0.570629
+      ],
+      "signed_mean_shift": -0.465262,
+      "zero_count": 1733,
+      "zero_fraction": 0.570629
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 175,
+      "never_buzz_mc": 175,
+      "never_buzz_qa": 669,
+      "same_finite_stop_count_bounds": [
+        1406,
+        1581
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.462957,
+        0.52058
+      ],
+      "signed_mean_shift": -0.001976,
+      "zero_count": 1581,
+      "zero_fraction": 0.52058
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 150,
+      "never_buzz_mc": 150,
+      "never_buzz_qa": 662,
+      "same_finite_stop_count_bounds": [
+        1563,
+        1713
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.514653,
+        0.564043
+      ],
+      "signed_mean_shift": -0.474152,
+      "zero_count": 1713,
+      "zero_fraction": 0.564043
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 172,
+      "never_buzz_mc": 172,
+      "never_buzz_qa": 675,
+      "same_finite_stop_count_bounds": [
+        1435,
+        1607
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.472506,
+        0.529141
+      ],
+      "signed_mean_shift": -0.156734,
+      "zero_count": 1607,
+      "zero_fraction": 0.529141
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 133,
+      "never_buzz_mc": 133,
+      "never_buzz_qa": 416,
+      "same_finite_stop_count_bounds": [
+        1690,
+        1823
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.55647,
+        0.600263
+      ],
+      "signed_mean_shift": 0.109648,
+      "zero_count": 1823,
+      "zero_fraction": 0.600263
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 168,
+      "never_buzz_mc": 168,
+      "never_buzz_qa": 593,
+      "same_finite_stop_count_bounds": [
+        1453,
+        1621
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.478433,
+        0.53375
+      ],
+      "signed_mean_shift": 0.070794,
+      "zero_count": 1621,
+      "zero_fraction": 0.53375
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 135,
+      "never_buzz_mc": 135,
+      "never_buzz_qa": 437,
+      "same_finite_stop_count_bounds": [
+        1604,
+        1739
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.528153,
+        0.572605
+      ],
+      "signed_mean_shift": 0.107014,
+      "zero_count": 1739,
+      "zero_fraction": 0.572605
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 167,
+      "never_buzz_mc": 167,
+      "never_buzz_qa": 598,
+      "same_finite_stop_count_bounds": [
+        1446,
+        1613
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.476128,
+        0.531116
+      ],
+      "signed_mean_shift": 0.025354,
+      "zero_count": 1613,
+      "zero_fraction": 0.531116
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3012,
+        3012
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.991768,
+        0.991768
+      ],
+      "signed_mean_shift": 0.0,
+      "zero_count": 3012,
+      "zero_fraction": 0.991768
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3030,
+        3030
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.997695,
+        0.997695
+      ],
+      "signed_mean_shift": 0.000988,
+      "zero_count": 3030,
+      "zero_fraction": 0.997695
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3011,
+        3011
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.991439,
+        0.991439
+      ],
+      "signed_mean_shift": -0.003951,
+      "zero_count": 3011,
+      "zero_fraction": 0.991439
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "power_mark"
+      },
+      "cell_key": "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3036,
+        3036
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.999671,
+        0.999671
+      ],
+      "signed_mean_shift": -0.000329,
+      "zero_count": 3036,
+      "zero_fraction": 0.999671
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.485677,
+      "mutual_nb_lb_share_of_zero_mass": 0.546094,
+      "mutual_never_buzz_lower_bound": 1475,
+      "mutual_never_buzz_upper_bound": 2110,
+      "never_buzz_mc": 2110,
+      "never_buzz_qa": 2402,
+      "same_finite_stop_count_bounds": [
+        591,
+        1226
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.1946,
+        0.403688
+      ],
+      "signed_mean_shift": -0.156734,
+      "zero_count": 2701,
+      "zero_fraction": 0.889365
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.488969,
+      "mutual_nb_lb_share_of_zero_mass": 0.546157,
+      "mutual_never_buzz_lower_bound": 1485,
+      "mutual_never_buzz_upper_bound": 2117,
+      "never_buzz_mc": 2117,
+      "never_buzz_qa": 2405,
+      "same_finite_stop_count_bounds": [
+        602,
+        1234
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.198222,
+        0.406322
+      ],
+      "signed_mean_shift": -0.151795,
+      "zero_count": 2719,
+      "zero_fraction": 0.895291
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.487323,
+      "mutual_nb_lb_share_of_zero_mass": 0.546933,
+      "mutual_never_buzz_lower_bound": 1480,
+      "mutual_never_buzz_upper_bound": 2114,
+      "never_buzz_mc": 2114,
+      "never_buzz_qa": 2403,
+      "same_finite_stop_count_bounds": [
+        592,
+        1226
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.194929,
+        0.403688
+      ],
+      "signed_mean_shift": -0.154758,
+      "zero_count": 2706,
+      "zero_fraction": 0.891011
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.489299,
+      "mutual_nb_lb_share_of_zero_mass": 0.545121,
+      "mutual_never_buzz_lower_bound": 1486,
+      "mutual_never_buzz_upper_bound": 2118,
+      "never_buzz_mc": 2118,
+      "never_buzz_qa": 2405,
+      "same_finite_stop_count_bounds": [
+        608,
+        1240
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.200198,
+        0.408298
+      ],
+      "signed_mean_shift": -0.14916,
+      "zero_count": 2726,
+      "zero_fraction": 0.897596
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.408298,
+      "mutual_nb_lb_share_of_zero_mass": 0.468455,
+      "mutual_never_buzz_lower_bound": 1240,
+      "mutual_never_buzz_upper_bound": 1973,
+      "never_buzz_mc": 1973,
+      "never_buzz_qa": 2304,
+      "same_finite_stop_count_bounds": [
+        674,
+        1407
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.22193,
+        0.463286
+      ],
+      "signed_mean_shift": -0.169575,
+      "zero_count": 2647,
+      "zero_fraction": 0.871584
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.410603,
+      "mutual_nb_lb_share_of_zero_mass": 0.470034,
+      "mutual_never_buzz_lower_bound": 1247,
+      "mutual_never_buzz_upper_bound": 1977,
+      "never_buzz_mc": 1977,
+      "never_buzz_qa": 2307,
+      "same_finite_stop_count_bounds": [
+        676,
+        1406
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.222588,
+        0.462957
+      ],
+      "signed_mean_shift": -0.175831,
+      "zero_count": 2653,
+      "zero_fraction": 0.873559
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.408956,
+      "mutual_nb_lb_share_of_zero_mass": 0.469921,
+      "mutual_never_buzz_lower_bound": 1242,
+      "mutual_never_buzz_upper_bound": 1974,
+      "never_buzz_mc": 1974,
+      "never_buzz_qa": 2305,
+      "same_finite_stop_count_bounds": [
+        669,
+        1401
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.220283,
+        0.461311
+      ],
+      "signed_mean_shift": -0.180441,
+      "zero_count": 2643,
+      "zero_fraction": 0.870267
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.41192,
+      "mutual_nb_lb_share_of_zero_mass": 0.469595,
+      "mutual_never_buzz_lower_bound": 1251,
+      "mutual_never_buzz_upper_bound": 1981,
+      "never_buzz_mc": 1981,
+      "never_buzz_qa": 2307,
+      "same_finite_stop_count_bounds": [
+        683,
+        1413
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.224893,
+        0.465262
+      ],
+      "signed_mean_shift": -0.17649,
+      "zero_count": 2664,
+      "zero_fraction": 0.877181
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3003,
+        3003
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.988805,
+        0.988805
+      ],
+      "signed_mean_shift": -0.000659,
+      "zero_count": 3003,
+      "zero_fraction": 0.988805
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3028,
+        3028
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.997037,
+        0.997037
+      ],
+      "signed_mean_shift": 0.000988,
+      "zero_count": 3028,
+      "zero_fraction": 0.997037
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3003,
+        3003
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.988805,
+        0.988805
+      ],
+      "signed_mean_shift": -0.003951,
+      "zero_count": 3003,
+      "zero_fraction": 0.988805
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3036,
+        3036
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.999671,
+        0.999671
+      ],
+      "signed_mean_shift": -0.000329,
+      "zero_count": 3036,
+      "zero_fraction": 0.999671
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.483372,
+      "mutual_nb_lb_share_of_zero_mass": 0.543301,
+      "mutual_never_buzz_lower_bound": 1468,
+      "mutual_never_buzz_upper_bound": 2107,
+      "never_buzz_mc": 2107,
+      "never_buzz_qa": 2398,
+      "same_finite_stop_count_bounds": [
+        595,
+        1234
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.195917,
+        0.406322
+      ],
+      "signed_mean_shift": -0.156404,
+      "zero_count": 2702,
+      "zero_fraction": 0.889694
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.487982,
+      "mutual_nb_lb_share_of_zero_mass": 0.544053,
+      "mutual_never_buzz_lower_bound": 1482,
+      "mutual_never_buzz_upper_bound": 2116,
+      "never_buzz_mc": 2116,
+      "never_buzz_qa": 2403,
+      "same_finite_stop_count_bounds": [
+        608,
+        1242
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.200198,
+        0.408956
+      ],
+      "signed_mean_shift": -0.157721,
+      "zero_count": 2724,
+      "zero_fraction": 0.896938
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.48436,
+      "mutual_nb_lb_share_of_zero_mass": 0.545421,
+      "mutual_never_buzz_lower_bound": 1471,
+      "mutual_never_buzz_upper_bound": 2111,
+      "never_buzz_mc": 2111,
+      "never_buzz_qa": 2397,
+      "same_finite_stop_count_bounds": [
+        586,
+        1226
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.192954,
+        0.403688
+      ],
+      "signed_mean_shift": -0.147185,
+      "zero_count": 2697,
+      "zero_fraction": 0.888047
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.488311,
+      "mutual_nb_lb_share_of_zero_mass": 0.545421,
+      "mutual_never_buzz_lower_bound": 1483,
+      "mutual_never_buzz_upper_bound": 2117,
+      "never_buzz_mc": 2117,
+      "never_buzz_qa": 2403,
+      "same_finite_stop_count_bounds": [
+        602,
+        1236
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.198222,
+        0.406981
+      ],
+      "signed_mean_shift": -0.154429,
+      "zero_count": 2719,
+      "zero_fraction": 0.895291
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.404346,
+      "mutual_nb_lb_share_of_zero_mass": 0.47104,
+      "mutual_never_buzz_lower_bound": 1228,
+      "mutual_never_buzz_upper_bound": 1963,
+      "never_buzz_mc": 1963,
+      "never_buzz_qa": 2302,
+      "same_finite_stop_count_bounds": [
+        644,
+        1379
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.212051,
+        0.454067
+      ],
+      "signed_mean_shift": -0.18571,
+      "zero_count": 2607,
+      "zero_fraction": 0.858413
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.406651,
+      "mutual_nb_lb_share_of_zero_mass": 0.471734,
+      "mutual_never_buzz_lower_bound": 1235,
+      "mutual_never_buzz_upper_bound": 1970,
+      "never_buzz_mc": 1970,
+      "never_buzz_qa": 2302,
+      "same_finite_stop_count_bounds": [
+        648,
+        1383
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.213368,
+        0.455384
+      ],
+      "signed_mean_shift": -0.164636,
+      "zero_count": 2618,
+      "zero_fraction": 0.862035
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.405005,
+      "mutual_nb_lb_share_of_zero_mass": 0.471807,
+      "mutual_never_buzz_lower_bound": 1230,
+      "mutual_never_buzz_upper_bound": 1965,
+      "never_buzz_mc": 1965,
+      "never_buzz_qa": 2302,
+      "same_finite_stop_count_bounds": [
+        642,
+        1377
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.211393,
+        0.453408
+      ],
+      "signed_mean_shift": -0.18077,
+      "zero_count": 2607,
+      "zero_fraction": 0.858413
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.407639,
+      "mutual_nb_lb_share_of_zero_mass": 0.473061,
+      "mutual_never_buzz_lower_bound": 1238,
+      "mutual_never_buzz_upper_bound": 1973,
+      "never_buzz_mc": 1973,
+      "never_buzz_qa": 2302,
+      "same_finite_stop_count_bounds": [
+        644,
+        1379
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.212051,
+        0.454067
+      ],
+      "signed_mean_shift": -0.157063,
+      "zero_count": 2617,
+      "zero_fraction": 0.861706
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3003,
+        3003
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.988805,
+        0.988805
+      ],
+      "signed_mean_shift": -0.000659,
+      "zero_count": 3003,
+      "zero_fraction": 0.988805
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3028,
+        3028
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.997037,
+        0.997037
+      ],
+      "signed_mean_shift": 0.000988,
+      "zero_count": 3028,
+      "zero_fraction": 0.997037
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3003,
+        3003
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.988805,
+        0.988805
+      ],
+      "signed_mean_shift": -0.003951,
+      "zero_count": 3003,
+      "zero_fraction": 0.988805
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "strict_wrong"
+      },
+      "cell_key": "reward_schedule=strict_wrong__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3036,
+        3036
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.999671,
+        0.999671
+      ],
+      "signed_mean_shift": -0.000329,
+      "zero_count": 3036,
+      "zero_fraction": 0.999671
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 109,
+      "never_buzz_mc": 109,
+      "never_buzz_qa": 380,
+      "same_finite_stop_count_bounds": [
+        1760,
+        1869
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.579519,
+        0.61541
+      ],
+      "signed_mean_shift": -0.132038,
+      "zero_count": 1869,
+      "zero_fraction": 0.61541
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 108,
+      "never_buzz_mc": 108,
+      "never_buzz_qa": 347,
+      "same_finite_stop_count_bounds": [
+        2093,
+        2201
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.689167,
+        0.724728
+      ],
+      "signed_mean_shift": -0.411261,
+      "zero_count": 2201,
+      "zero_fraction": 0.724728
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 126,
+      "never_buzz_mc": 126,
+      "never_buzz_qa": 468,
+      "same_finite_stop_count_bounds": [
+        1639,
+        1765
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.539677,
+        0.581166
+      ],
+      "signed_mean_shift": -0.188673,
+      "zero_count": 1765,
+      "zero_fraction": 0.581166
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 134,
+      "never_buzz_mc": 134,
+      "never_buzz_qa": 543,
+      "same_finite_stop_count_bounds": [
+        1772,
+        1906
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.583471,
+        0.627593
+      ],
+      "signed_mean_shift": -0.493908,
+      "zero_count": 1906,
+      "zero_fraction": 0.627593
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 89,
+      "never_buzz_mc": 89,
+      "never_buzz_qa": 296,
+      "same_finite_stop_count_bounds": [
+        1995,
+        2084
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.656898,
+        0.686203
+      ],
+      "signed_mean_shift": -0.050049,
+      "zero_count": 2084,
+      "zero_fraction": 0.686203
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 111,
+      "never_buzz_mc": 111,
+      "never_buzz_qa": 254,
+      "same_finite_stop_count_bounds": [
+        2161,
+        2272
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.711557,
+        0.748107
+      ],
+      "signed_mean_shift": -0.010207,
+      "zero_count": 2272,
+      "zero_fraction": 0.748107
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 106,
+      "never_buzz_mc": 106,
+      "never_buzz_qa": 321,
+      "same_finite_stop_count_bounds": [
+        1825,
+        1931
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.600922,
+        0.635825
+      ],
+      "signed_mean_shift": 0.047744,
+      "zero_count": 1931,
+      "zero_fraction": 0.635825
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 129,
+      "never_buzz_mc": 129,
+      "never_buzz_qa": 333,
+      "same_finite_stop_count_bounds": [
+        1778,
+        1907
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.585446,
+        0.627922
+      ],
+      "signed_mean_shift": 0.096477,
+      "zero_count": 1907,
+      "zero_fraction": 0.627922
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3008,
+        3008
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.990451,
+        0.990451
+      ],
+      "signed_mean_shift": -0.000659,
+      "zero_count": 3008,
+      "zero_fraction": 0.990451
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3032,
+        3032
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.998354,
+        0.998354
+      ],
+      "signed_mean_shift": -0.001646,
+      "zero_count": 3032,
+      "zero_fraction": 0.998354
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3011,
+        3011
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.991439,
+        0.991439
+      ],
+      "signed_mean_shift": -0.003293,
+      "zero_count": 3011,
+      "zero_fraction": 0.991439
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "empirical_bucket",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=empirical_bucket__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3035,
+        3035
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.999341,
+        0.999341
+      ],
+      "signed_mean_shift": -0.000659,
+      "zero_count": 3035,
+      "zero_fraction": 0.999341
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 145,
+      "never_buzz_mc": 145,
+      "never_buzz_qa": 660,
+      "same_finite_stop_count_bounds": [
+        1629,
+        1774
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.536385,
+        0.584129
+      ],
+      "signed_mean_shift": -0.623971,
+      "zero_count": 1774,
+      "zero_fraction": 0.584129
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 168,
+      "never_buzz_mc": 168,
+      "never_buzz_qa": 669,
+      "same_finite_stop_count_bounds": [
+        1576,
+        1744
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.518933,
+        0.574251
+      ],
+      "signed_mean_shift": -0.530128,
+      "zero_count": 1744,
+      "zero_fraction": 0.574251
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 146,
+      "never_buzz_mc": 146,
+      "never_buzz_qa": 646,
+      "same_finite_stop_count_bounds": [
+        1587,
+        1733
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.522555,
+        0.570629
+      ],
+      "signed_mean_shift": -0.550873,
+      "zero_count": 1733,
+      "zero_fraction": 0.570629
+    },
+    {
+      "axes": {
+        "calibrator": "isotonic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=isotonic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 166,
+      "never_buzz_mc": 166,
+      "never_buzz_qa": 669,
+      "same_finite_stop_count_bounds": [
+        1572,
+        1738
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.517616,
+        0.572275
+      ],
+      "signed_mean_shift": -0.599934,
+      "zero_count": 1738,
+      "zero_fraction": 0.572275
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 117,
+      "never_buzz_mc": 117,
+      "never_buzz_qa": 380,
+      "same_finite_stop_count_bounds": [
+        1749,
+        1866
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.575897,
+        0.614422
+      ],
+      "signed_mean_shift": 0.035232,
+      "zero_count": 1866,
+      "zero_fraction": 0.614422
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 163,
+      "never_buzz_mc": 163,
+      "never_buzz_qa": 518,
+      "same_finite_stop_count_bounds": [
+        1550,
+        1713
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.510372,
+        0.564043
+      ],
+      "signed_mean_shift": 0.024695,
+      "zero_count": 1713,
+      "zero_fraction": 0.564043
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 124,
+      "never_buzz_mc": 124,
+      "never_buzz_qa": 400,
+      "same_finite_stop_count_bounds": [
+        1671,
+        1795
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.550214,
+        0.591044
+      ],
+      "signed_mean_shift": 0.059928,
+      "zero_count": 1795,
+      "zero_fraction": 0.591044
+    },
+    {
+      "axes": {
+        "calibrator": "platt-logistic",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 163,
+      "never_buzz_mc": 163,
+      "never_buzz_qa": 535,
+      "same_finite_stop_count_bounds": [
+        1514,
+        1677
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.498518,
+        0.55219
+      ],
+      "signed_mean_shift": 0.001317,
+      "zero_count": 1677,
+      "zero_fraction": 0.55219
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3008,
+        3008
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.990451,
+        0.990451
+      ],
+      "signed_mean_shift": -0.000659,
+      "zero_count": 3008,
+      "zero_fraction": 0.990451
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "early_mid_late",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3032,
+        3032
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.998354,
+        0.998354
+      ],
+      "signed_mean_shift": -0.001646,
+      "zero_count": 3032,
+      "zero_fraction": 0.998354
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "per_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=per_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3011,
+        3011
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.991439,
+        0.991439
+      ],
+      "signed_mean_shift": -0.003293,
+      "zero_count": 3011,
+      "zero_fraction": 0.991439
+    },
+    {
+      "axes": {
+        "calibrator": "similarity-temperature",
+        "category_pooling": "pooled_category",
+        "continuation": "pooled_empirical",
+        "prefix_bucketing": "exact_prefix",
+        "reward_schedule": "wait_cost_small"
+      },
+      "cell_key": "reward_schedule=wait_cost_small__continuation=pooled_empirical__calibrator=similarity-temperature__prefix_bucketing=exact_prefix__category_pooling=pooled_category",
+      "mutual_nb_lb_fraction_of_items": 0.0,
+      "mutual_nb_lb_share_of_zero_mass": 0.0,
+      "mutual_never_buzz_lower_bound": 0,
+      "mutual_never_buzz_upper_bound": 0,
+      "never_buzz_mc": 0,
+      "never_buzz_qa": 0,
+      "same_finite_stop_count_bounds": [
+        3035,
+        3035
+      ],
+      "same_finite_stop_fraction_bounds": [
+        0.999341,
+        0.999341
+      ],
+      "signed_mean_shift": -0.000659,
+      "zero_count": 3035,
+      "zero_fraction": 0.999341
+    }
+  ],
+  "per_item_cross_cell_dispersion": {
+    "definitions": {
+      "iqr": "p75 - p25 (numpy linear interpolation) of D across the 96 cells, per item",
+      "range": "max - min of D across the 96 cells, per item",
+      "sd": "population SD (ddof=0) of D across the 96 cells, per item"
+    },
+    "fraction_items_D_constant_across_cells": 0.054988,
+    "fraction_items_D_nonzero_in_at_least_one_cell": 0.945012,
+    "fraction_items_D_zero_in_all_cells": 0.054988,
+    "iqr": {
+      "max": 6.0,
+      "mean": 0.431841,
+      "median": 0.0,
+      "min": 0.0,
+      "p90": 1.0
+    },
+    "range": {
+      "max": 14.0,
+      "mean": 3.602898,
+      "median": 3.0,
+      "min": 0.0,
+      "p90": 6.0
+    },
+    "sd": {
+      "max": 3.220755,
+      "mean": 0.830171,
+      "median": 0.777282,
+      "min": 0.0,
+      "p90": 1.45484
+    }
+  },
+  "reachability_bound": {
+    "attained_max_calibrated_p": {
+      "isotonic": {
+        "early": {
+          "MC": 0.399596,
+          "QA": 0.399596,
+          "all_formats": 0.399596
+        },
+        "late": {
+          "MC": 0.654545,
+          "QA": 0.654545,
+          "all_formats": 0.654545
+        },
+        "mid": {
+          "MC": 0.416938,
+          "QA": 0.416938,
+          "all_formats": 0.416938
+        }
+      },
+      "platt-logistic": {
+        "early": {
+          "MC": 0.47517,
+          "QA": 0.47517,
+          "all_formats": 0.47517
+        },
+        "late": {
+          "MC": 0.717912,
+          "QA": 0.717912,
+          "all_formats": 0.717912
+        },
+        "mid": {
+          "MC": 0.473027,
+          "QA": 0.473027,
+          "all_formats": 0.473027
+        }
+      },
+      "similarity-temperature": {
+        "early": {
+          "MC": 0.534223,
+          "QA": 0.534223,
+          "all_formats": 0.534223
+        },
+        "late": {
+          "MC": 0.53422,
+          "QA": 0.53422,
+          "all_formats": 0.53422
+        },
+        "mid": {
+          "MC": 0.534075,
+          "QA": 0.534075,
+          "all_formats": 0.534075
+        }
+      }
+    },
+    "flags": [
+      {
+        "applicable_p_star": [
+          0.4,
+          0.5
+        ],
+        "below_max_applicable_p_star_only": true,
+        "calibrator": "platt-logistic",
+        "format": "MC",
+        "max_attained_p": 0.473027,
+        "never_myopically_positive": false,
+        "phase": "mid",
+        "reward_schedule": "strict_wrong"
+      },
+      {
+        "applicable_p_star": [
+          0.4,
+          0.5
+        ],
+        "below_max_applicable_p_star_only": true,
+        "calibrator": "platt-logistic",
+        "format": "QA",
+        "max_attained_p": 0.473027,
+        "never_myopically_positive": false,
+        "phase": "mid",
+        "reward_schedule": "strict_wrong"
+      },
+      {
+        "applicable_p_star": [
+          0.4
+        ],
+        "below_max_applicable_p_star_only": false,
+        "calibrator": "isotonic",
+        "format": "MC",
+        "max_attained_p": 0.399596,
+        "never_myopically_positive": true,
+        "phase": "early",
+        "reward_schedule": "strict_wrong"
+      },
+      {
+        "applicable_p_star": [
+          0.4
+        ],
+        "below_max_applicable_p_star_only": false,
+        "calibrator": "isotonic",
+        "format": "QA",
+        "max_attained_p": 0.399596,
+        "never_myopically_positive": true,
+        "phase": "early",
+        "reward_schedule": "strict_wrong"
+      },
+      {
+        "applicable_p_star": [
+          0.4,
+          0.5
+        ],
+        "below_max_applicable_p_star_only": true,
+        "calibrator": "isotonic",
+        "format": "MC",
+        "max_attained_p": 0.416938,
+        "never_myopically_positive": false,
+        "phase": "mid",
+        "reward_schedule": "strict_wrong"
+      },
+      {
+        "applicable_p_star": [
+          0.4,
+          0.5
+        ],
+        "below_max_applicable_p_star_only": true,
+        "calibrator": "isotonic",
+        "format": "QA",
+        "max_attained_p": 0.416938,
+        "never_myopically_positive": false,
+        "phase": "mid",
+        "reward_schedule": "strict_wrong"
+      }
+    ],
+    "framing": "Myopic reachability bound, NOT a recomputation of the Bellman policy: p* = c_wrong / (R_t + c_wrong) is the probability at which a single immediate ANSWER action becomes utility-positive against ABSTAIN (value 0) under reward R_t for a correct answer and -c_wrong for a wrong one. WAIT values, continuation estimates, and the DP recursion are deliberately not recomputed; wait_cost does not enter this bound. A calibrator x phase whose attained calibrated-probability ceiling lies below every applicable p* can never make answering myopically utility-positive in that phase for that reward schedule.",
+    "n_flags_never_myopically_positive": 2,
+    "n_flags_total": 6,
+    "p_star_by_schedule": {
+      "acf_flat": {
+        "R_early": 10.0,
+        "R_late": 10.0,
+        "applicable_p_star_by_phase": {
+          "early": [
+            0.333333
+          ],
+          "late": [
+            0.333333
+          ],
+          "mid": [
+            0.333333
+          ]
+        },
+        "c_wrong": 5.0,
+        "p_star_early_reward": 0.333333,
+        "p_star_late_reward": 0.333333,
+        "split": 1.0,
+        "wait_cost": 0.0
+      },
+      "power_mark": {
+        "R_early": 15.0,
+        "R_late": 10.0,
+        "applicable_p_star_by_phase": {
+          "early": [
+            0.25
+          ],
+          "late": [
+            0.333333
+          ],
+          "mid": [
+            0.25,
+            0.333333
+          ]
+        },
+        "c_wrong": 5.0,
+        "p_star_early_reward": 0.25,
+        "p_star_late_reward": 0.333333,
+        "split": 0.5,
+        "wait_cost": 0.0
+      },
+      "strict_wrong": {
+        "R_early": 15.0,
+        "R_late": 10.0,
+        "applicable_p_star_by_phase": {
+          "early": [
+            0.4
+          ],
+          "late": [
+            0.5
+          ],
+          "mid": [
+            0.4,
+            0.5
+          ]
+        },
+        "c_wrong": 10.0,
+        "p_star_early_reward": 0.4,
+        "p_star_late_reward": 0.5,
+        "split": 0.5,
+        "wait_cost": 0.0
+      },
+      "wait_cost_small": {
+        "R_early": 15.0,
+        "R_late": 10.0,
+        "applicable_p_star_by_phase": {
+          "early": [
+            0.25
+          ],
+          "late": [
+            0.333333
+          ],
+          "mid": [
+            0.25,
+            0.333333
+          ]
+        },
+        "c_wrong": 5.0,
+        "p_star_early_reward": 0.25,
+        "p_star_late_reward": 0.333333,
+        "split": 0.5,
+        "wait_cost": 0.05
+      }
+    }
+  },
+  "rescope_note": "Per-format stopping indices are not recoverable from the frozen artifacts (cells store only the paired shift D = tau_MC - tau_QA per item); this file therefore reports cross-SPECIFICATION variability of D across the 96 registered cells, never-buzz inclusion-exclusion bounds, and a myopic reachability bound",
+  "run_id": "final_modal_5d5328102912",
+  "shift_value_range_observed": [
+    -9,
+    8
+  ],
+  "signed_mean_summary": {
+    "argmax_cell": "reward_schedule=power_mark__continuation=pooled_empirical__calibrator=platt-logistic__prefix_bucketing=early_mid_late__category_pooling=per_category",
+    "argmin_cell": "reward_schedule=power_mark__continuation=empirical_bucket__calibrator=isotonic__prefix_bucketing=early_mid_late__category_pooling=pooled_category",
+    "max": 0.109648,
+    "mean": -0.126952,
+    "median": -0.03836,
+    "min": -0.676655,
+    "p90": 0.036549
+  },
+  "zero_fraction_summary": {
+    "max": 0.999671,
+    "mean": 0.773238,
+    "median": 0.73329,
+    "min": 0.52058,
+    "p90": 0.997366
+  }
+}
