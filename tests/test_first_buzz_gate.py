@@ -8,11 +8,23 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 FORMAL = Path(__file__).resolve().parents[1] / "formal"
 GATE = Path("formal/first_buzz")
 FROZEN = tuple(json.loads((FORMAL / "first_buzz/freeze.json").read_bytes()))
+
+
+def test_workflow_checksums_match_shipped_inputs():
+    workflow = FORMAL.parent / ".github/workflows/first-buzz.yml"
+    steps = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["compare"]["steps"]
+    commands = [line.strip() for step in steps for line in step.get("run", "").splitlines()]
+    verifier = hashlib.sha256((FORMAL / "first_buzz/verify.py").read_bytes()).hexdigest()
+    freeze = hashlib.sha256((FORMAL / "first_buzz/freeze.json").read_bytes()).hexdigest()
+
+    assert f'echo "{verifier}  $RUNNER_TEMP/first-buzz.py" | sha256sum -c -' in commands
+    assert f"--freeze-sha256 {freeze}" in commands
 
 
 def git(repo, *args):

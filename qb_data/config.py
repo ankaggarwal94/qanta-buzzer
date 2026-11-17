@@ -21,7 +21,22 @@ class BaselineRewardOptions(TypedDict):
 
 
 def baseline_reward_options(config: dict[str, Any]) -> BaselineRewardOptions:
-    """Resolve offline reward replay options, giving the qb-rl reward alias precedence."""
+    """Resolve the rewards used to replay offline baseline decisions.
+
+    Parameters
+    ----------
+    config : dict
+        Project configuration. Within its optional ``environment`` mapping,
+        the qb-rl ``reward`` alias takes precedence over ``reward_mode``.
+
+    Returns
+    -------
+    BaselineRewardOptions
+        Replay keyword arguments. The mode defaults to ``"time_penalty"`` and
+        is converted to a string. The float defaults for ``wait_penalty``,
+        ``buzz_correct``, ``buzz_incorrect``, and ``early_buzz_penalty`` are
+        0.0, 1.0, -0.5, and 0.0 respectively.
+    """
     env = config.get("environment", {})
     return {
         "reward_mode": str(env.get("reward", env.get("reward_mode", "time_penalty"))),

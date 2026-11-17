@@ -1167,6 +1167,47 @@ def test_profile_policy_can_adjust_threshold_and_reward_during_episode(sample_mc
     assert episode.reward_like == (1.0 if episode.correct else -1.0)
 
 
+@pytest.mark.parametrize("policy", [ThresholdBuzzer, SoftmaxProfileBuzzer, SequentialBayesBuzzer])
+@pytest.mark.parametrize(
+    ("initial_steps", "updated_steps", "threshold", "expected_index", "expected_reward"),
+    [
+        (2, 1, 2.0, 1, -0.5),  # The first belief becomes the final decision.
+        (1, 2, 2.0, 0, 0.5),   # The original iterator exhausts without a decision.
+        (1, 2, 0.0, 1, -1.0),  # An early decision uses the updated duration for reward.
+    ],
+)
+def test_live_threshold_policies_observe_horizon_changes(
+    sample_mc_question, policy, initial_steps, updated_steps, threshold, expected_index, expected_reward,
+):
+    question = sample_mc_question
+    prefixes = question.cumulative_prefixes
+    question.cumulative_prefixes = prefixes[:initial_steps]
+    question.run_indices = question.run_indices[:initial_steps]
+
+    class HorizonChangingScorer:
+        def score(self, prefix, options):
+            question.cumulative_prefixes = prefixes[:updated_steps]
+            return np.array([0.0, 1.0, 0.0, 0.0])
+
+    agent = policy(HorizonChangingScorer(), threshold=threshold, early_buzz_penalty=1.0)
+    result = agent.run_episode(question)
+
+    assert (result.buzz_step, result.buzz_index) == (0, expected_index)
+    assert result.reward_like == pytest.approx(expected_reward)
+    assert len(result.c_trace) == 1
+
+
+def test_profile_policy_observes_horizon_changed_by_confidence(sample_mc_question, sample_corpus):
+    class ShorteningPolicy(SoftmaxProfileBuzzer):
+        def confidence_proxy(self, top_p):
+            del sample_mc_question.cumulative_prefixes[1:]
+            return super().confidence_proxy(top_p)
+
+    result = ShorteningPolicy(_make_likelihood(sample_corpus), threshold=2.0).run_episode(sample_mc_question)
+    assert result.buzz_step == 0
+    assert len(result.c_trace) == 1
+
+
 def test_threshold_replay_exhaustive_short_traces():
     """Check the production replay against the earliest qualifying prefix."""
     from agents.threshold_buzzer import _PrecomputedQuestion, _episode_from_precomputed

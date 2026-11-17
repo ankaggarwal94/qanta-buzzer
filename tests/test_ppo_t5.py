@@ -526,7 +526,13 @@ class _TinyPolicyModel(torch.nn.Module):
 
 def test_singleton_update_retains_actor_signal_without_nan(tmp_path, sample_rollout_steps):
     model = _TinyPolicyModel()
-    trainer = PPOTrainer(model, [], [], {"ppo_epochs_per_iter": 1, "checkpoint_dir": tmp_path})
+    config = {
+        "ppo_epochs_per_iter": 1,
+        "ppo_value_coef": 0.0,
+        "ppo_entropy_coef": 0.0,
+        "checkpoint_dir": tmp_path,
+    }
+    trainer = PPOTrainer(model, [], [], config)
     buffer = RolloutBuffer()
     step = sample_rollout_steps[-1]
     step.log_prob = -np.log(2)
@@ -538,6 +544,7 @@ def test_singleton_update_retains_actor_signal_without_nan(tmp_path, sample_roll
     assert result["policy_loss"] == pytest.approx(-step.advantage)
     assert all(np.isfinite(metric) for metric in result.values())
     assert torch.all(torch.isfinite(model._param))
+    assert model._param.item() > 0.0  # Positive advantage increases the chosen action's log-probability.
 
 
 def test_legacy_trainer_updates_actor_on_a_single_terminal_transition(tmp_path):

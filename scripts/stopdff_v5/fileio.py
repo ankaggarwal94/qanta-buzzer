@@ -176,7 +176,20 @@ def fsync_tree(root: Path) -> None:
 
 @contextmanager
 def atomic_binary_writer(path: Path) -> Iterator[BinaryIO]:
-    """Yield a private stream and durably replace the target on normal exit."""
+    """Stage binary output and atomically publish it on normal exit.
+
+    Parameters
+    ----------
+    path : Path
+        Destination file. Missing parent directories are created.
+
+    Yields
+    ------
+    BinaryIO
+        Writable temporary stream in the destination directory. On normal
+        exit its contents are flushed and synced before replacing the target.
+        If the producer raises, the temporary file is discarded.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if (path.exists() or path.is_symlink()) and (

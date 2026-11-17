@@ -164,7 +164,7 @@ class TestCacheEfficiency:
 
 
 @pytest.mark.parametrize("limit", [-1, 0, 1, 3, 8, sys.maxsize + 1])
-@pytest.mark.parametrize("minimum", [0, 2, 4, sys.maxsize + 1])
+@pytest.mark.parametrize("minimum", [0, 2, 3, 4, sys.maxsize + 1])
 def test_profiles_match_concatenation_with_whitespace_and_exclusion(limit, minimum):
     rows = [
         _make_question("excluded", "gold", "outside"),

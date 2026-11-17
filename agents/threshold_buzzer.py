@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 import numpy as np
 
@@ -120,23 +120,27 @@ def precompute_beliefs(
 _Result = TypeVar("_Result", EpisodeResult, "SoftmaxEpisodeResult")
 
 
+class _RewardAtBuzz(Protocol):
+    def __call__(self, *, correct: bool, buzz_step: int, total_steps: int) -> float: ...
+
+
 def _threshold_episode(
     result_type: type[_Result],
     beliefs: Iterable[np.ndarray],
     *,
     qid: str,
     gold_index: int,
-    total_steps: int,
+    step_count: Callable[[], int],
     reached: Callable[[float], bool],
     confidence: Callable[[float], float],
-    reward: Callable[..., float],
+    reward: _RewardAtBuzz,
 ) -> _Result:
     """Replay a threshold policy over live or cached beliefs, stopping lazily."""
     c_trace: list[float] = []
     g_trace: list[float] = []
     top_p_trace: list[float] = []
     entropy_trace: list[float] = []
-    chosen_step = total_steps - 1
+    chosen_step = step_count() - 1
     chosen_idx = 0
     for step, belief in enumerate(beliefs):
         top_idx, top_p, entropy = belief_stats(belief)
@@ -144,7 +148,7 @@ def _threshold_episode(
         g_trace.append(float(top_idx == gold_index))
         top_p_trace.append(top_p)
         entropy_trace.append(entropy)
-        if reached(top_p) or step == total_steps - 1:
+        if reached(top_p) or step == step_count() - 1:
             chosen_step, chosen_idx = step, top_idx
             break
 
@@ -155,7 +159,7 @@ def _threshold_episode(
         buzz_index=chosen_idx,
         gold_index=gold_index,
         correct=correct,
-        reward_like=reward(correct=correct, buzz_step=chosen_step, total_steps=total_steps),
+        reward_like=reward(correct=correct, buzz_step=chosen_step, total_steps=step_count()),
         c_trace=c_trace,
         g_trace=g_trace,
         top_p_trace=top_p_trace,
@@ -206,7 +210,7 @@ class _ThresholdPolicy:
     ) -> _Result:
         return _threshold_episode(
             result_type, beliefs, qid=question.qid, gold_index=question.gold_index,
-            total_steps=len(question.cumulative_prefixes),
+            step_count=lambda: len(question.cumulative_prefixes),
             reached=lambda p: p >= self.threshold, confidence=confidence,
             reward=self._reward_at_buzz,
         )
@@ -306,7 +310,7 @@ def _cached_threshold_episode(
 ) -> _Result:
     return _threshold_episode(
         result_type, pq.beliefs,
-        qid=pq.qid, gold_index=pq.gold_index, total_steps=len(pq.beliefs),
+        qid=pq.qid, gold_index=pq.gold_index, step_count=lambda: len(pq.beliefs),
         reached=lambda p: p >= threshold,
         confidence=partial(confidence_proxy, threshold=threshold, alpha=alpha),
         reward=partial(

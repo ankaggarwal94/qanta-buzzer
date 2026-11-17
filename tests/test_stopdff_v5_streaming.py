@@ -8,6 +8,7 @@ import json
 import random
 import statistics
 import tracemalloc
+import weakref
 
 import numpy as np
 import pytest
@@ -101,6 +102,25 @@ def test_bootstrap_workspace_is_bounded_independently_of_resample_matrix():
     finally:
         tracemalloc.stop()
     assert peak < 4 * 1024 * 1024, f"paired cell reductions allocated {peak} bytes"
+
+
+def test_bootstrap_releases_each_gather_before_the_next(monkeypatch):
+    previous = None
+
+    class ObservedValues(np.ndarray):
+        def __getitem__(self, indices):
+            nonlocal previous
+            assert previous is None or previous() is None
+            sampled = super().__getitem__(indices).view(np.ndarray)
+            previous = weakref.ref(sampled)
+            return sampled
+
+    values = np.array([1.0, 3.0]).view(ObservedValues)
+    monkeypatch.setattr(bootstrap, "_RESAMPLE_BATCH_BYTES", values.nbytes)
+    indices = np.array([[0, 1], [1, 0]])
+    means, medians = bootstrap._replicate_statistics(values, indices)
+    np.testing.assert_array_equal(means, [2.0, 2.0])
+    np.testing.assert_array_equal(medians, means)
 
 
 def test_all_small_resamples_match_scalar_statistics(monkeypatch):

@@ -94,6 +94,7 @@ def _replicate_statistics(values: np.ndarray, indices: np.ndarray) -> tuple[np.n
         means[batch] = np.mean(sampled, axis=1)
         # Advanced indexing returned a private array; partition it after computing the mean.
         medians[batch] = np.median(sampled, axis=1, overwrite_input=True)
+        del sampled  # Release this gather before allocating the next batch.
     return means, medians
 
 

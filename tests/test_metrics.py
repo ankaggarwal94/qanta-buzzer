@@ -469,6 +469,21 @@ def test_expected_wins_score_fractional_g_trace():
     assert abs(ew - 3.2) < 1e-9
 
 
+@pytest.mark.parametrize(
+    "hazards,correctness,survival",
+    [
+        ([[0.5]], [1.0], [1.0]),
+        ([0.5], [[1.0]], [1.0]),
+        ([0.5], [1.0], [[1.0]]),
+        ([], [[1.0]], []),
+        ([], [], [[1.0]]),
+    ],
+)
+def test_expected_wins_rejects_non_vector_traces(hazards, correctness, survival):
+    with pytest.raises(ValueError, match="one-dimensional"):
+        expected_wins_score(hazards, correctness, survival)
+
+
 def test_expected_wins_score_empty():
     assert expected_wins_score([], [], []) == 0.0
 

@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -18,6 +19,7 @@ import pytest
 from models.likelihoods import (
     LikelihoodModel,
     SBERTLikelihood,
+    T5Likelihood,
     TfIdfLikelihood,
 )
 
@@ -104,6 +106,67 @@ class _LocalEmbeddings(LikelihoodModel):
 
     def score(self, clue_prefix, option_profiles):
         return self.embed_and_cache(option_profiles) @ self.embed_and_cache([clue_prefix])[0]
+
+
+def test_bulk_precompute_releases_hashes_for_warm_entries():
+    import tracemalloc
+    from models.likelihoods import _text_key
+
+    model = _LocalEmbeddings()
+    texts = [f"warm-{i}" for i in range(8192)]
+    vector = np.ones(2, dtype=np.float32)
+    model.embedding_cache.update({_text_key(text): vector for text in texts})
+    model.precompute_embeddings([])  # Exclude the initial tqdm import.
+    tracemalloc.start()
+    try:
+        model.precompute_embeddings(texts)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # Holding 8,192 new 64-character digests alone would exceed this bound.
+    assert peak < 700 * 1024
+
+
+@pytest.mark.parametrize("backend, encoder", [
+    (SBERTLikelihood, SimpleNamespace(get_embedding_dimension=lambda: 2)),
+    (SBERTLikelihood, SimpleNamespace(get_sentence_embedding_dimension=lambda: 2)),
+    (T5Likelihood, SimpleNamespace(config=SimpleNamespace(d_model=2))),
+])
+def test_known_encoder_width_rejects_stale_archives(tmp_path, monkeypatch, backend, encoder):
+    from models.likelihoods import _text_key
+
+    model = backend.__new__(backend)
+    LikelihoodModel.__init__(model)
+    model.encoder = encoder
+    monkeypatch.setattr(model, "_embed_batch", _LocalEmbeddings()._embed_batch)
+    archive = tmp_path / "embeddings.npz"
+    np.savez(archive, **{_text_key("old"): np.ones(3)})
+    with pytest.warns(RuntimeWarning, match="width"):
+        assert model.load_cache(archive) == 0
+    assert not model.embedding_cache
+    np.testing.assert_array_equal(model.embed_and_cache(["fresh"]), [[5, 1]])
+
+    # An incompatible first row must not conceal a malformed later row.
+    np.savez(archive, **{_text_key("old"): np.ones(3), _text_key("bad"): np.ones((3, 1))})
+    with pytest.raises(ValueError, match="embedding"):
+        model.load_cache(archive)
+    assert list(model.embedding_cache) == [_text_key("fresh")]
+
+    np.savez(archive, **{_text_key("old"): np.array([9, 8]), _text_key("fresh"): np.zeros(2)})
+    assert model.load_cache(archive) == 1
+    np.testing.assert_array_equal(model.embed_and_cache(["fresh", "old"]), [[5, 1], [9, 8]])
+
+
+def test_unknown_width_mismatch_names_cache_recovery(tmp_path):
+    from models.likelihoods import _text_key
+
+    model = _LocalEmbeddings()
+    archive = tmp_path / "legacy.npz"
+    np.savez(archive, **{_text_key("old"): np.ones(3)})
+    assert model.load_cache(archive) == 1
+    with pytest.raises(ValueError, match="rebuild"):
+        model.embed_and_cache(["fresh"])
+    assert list(model.embedding_cache) == [_text_key("old")]
 
 
 @pytest.mark.parametrize("warm", [False, True])
