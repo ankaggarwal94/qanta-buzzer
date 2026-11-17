@@ -1,0 +1,48 @@
+{
+  "base_revision": "aef3ca43e36c682ff33ed32217ab1bbab4e2408e",
+  "date": "2026-11-17",
+  "linux_final": {
+    "filesystem": "ext4, canonical LF checkout",
+    "network": "offline",
+    "cpu_cores": 2,
+    "python": "3.12.16",
+    "numpy": "2.4.6",
+    "torch": "2.12.0+cpu",
+    "pytest": "9.0.3",
+    "exit_code": 0,
+    "passed": 3642,
+    "skipped": 39,
+    "failed": 0,
+    "warnings": 1,
+    "seconds": 324.76,
+    "acl_passed": 177,
+    "acl_skipped": 0,
+    "skip_reasons": {
+      "Windows only": 35,
+      "optional DSPy": 2,
+      "opt-in four-stage pipeline": 1,
+      "missing historical evidence export": 1
+    },
+    "junit_sha256": "cc7efc9570964b92178dc326f45a8690c5238bedf577a974a524fbe234cfe55f",
+    "console_log_sha256": "a99484e3841769c82e2c99e28c5cad4d9a845331f6733da390a064b27b1bd666"
+  },
+  "windows": {
+    "final_acl_passed": 177,
+    "final_acl_skipped": 0,
+    "earlier_canonical_lf_full_suite": {
+      "passed": 3596,
+      "skipped": 67,
+      "failed": 5,
+      "seconds": 480.05,
+      "all_five_reproduced_on_unmodified_base": true,
+      "junit_sha256": "aae7d6b936df704531f7b5ef8b507586bea0a86bd56c83848f2a794bb642359e",
+      "failed_nodes": [
+        "tests/test_stopdff_source_package_repair.py::test_mode_repair_only_changes_copy_and_writes_external_receipt",
+        "tests/test_stopdff_source_package_repair.py::test_non_mode_failures_reject_before_copy[special]",
+        "tests/test_stopdff_source_package_repair.py::test_full_validator_mode_error_remains_fail_closed_without_hash_cascade",
+        "tests/test_stopdff_source_package_repair.py::test_cli_exit_codes_and_json",
+        "tests/test_stopdff_v5_model_import.py::test_invalid_import_rejected_before_output_or_heavy_work[fifo]"
+      ]
+    }
+  }
+}

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import hashlib
 import json
 import math
@@ -106,6 +106,7 @@ class Prepared:
     identity: dict
     core: object | None = None
     registry: dict | None = None
+    context_only_by_qid: dict[str, list[str]] = field(default_factory=dict)
 
     def public_jobs(self, split: str, *, end_mode: str = "no_buzz"):
         """Export prompts using the destination environment's horizon behavior.
@@ -268,4 +269,4 @@ def prepare(spec: ArmSpec, dataset: dict, aliases: dict, *, reservoir=None,
                 "reservoir_sha256": digest(reservoir), "split_roles": roles,
                 "menus_sha256": digest(menus), "menu_timing": "fixed_at_first_visible_prefix",
                 "core": core.identity if core is not None else "python"}
-    return Prepared(spec, dict(questions), menus, groups, identity, core, aliases)
+    return Prepared(spec, dict(questions), menus, groups, identity, core, aliases, local_terms)

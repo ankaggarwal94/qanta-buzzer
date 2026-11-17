@@ -1,0 +1,604 @@
+{
+  "source_revision": "c5981d913165f8dc24173c3ec8615b221cfc944d",
+  "transport_manifest_sha256": "594b961d22cc7db2278315bf8c1d17e0599cdab8f0fe6780a2bee5bc3ba4c6ec",
+  "renderer_sha256": "1a39a60c5c3b1c9be67aa52102fdb83e5715a3c8bea26a79da17e13eb741877a",
+  "verifier_sha256": "97dc08b294451fc702c011243f0595f5b2b5905dbb01aed7e72de1703b3e2a1b",
+  "transport_chunks": 36,
+  "compact_sha256": "c9fb3c5ded63f07eec5f07c36714914595b72d2e0addd7926995642b92f1081b",
+  "compressed_sha256": "fecfe0b7901426ebfa3c38f79be3c591ce550f34c1c974d364734e2f5cac8b7a",
+  "verified_files": {
+    "main_jobs.json": {
+      "sha256": "9bfeaf2d86116ced0e8c55c3c390d3be12050ad38820b4e02c6ed684cc8786bf",
+      "byte_count": 271957519,
+      "job_count": 150000
+    },
+    "main_choices_only.json": {
+      "sha256": "9db13301d928cd31dc54c97f0c5cfd88b9bc25774ceb56027c032c52e4afb043",
+      "byte_count": 13175086,
+      "job_count": 10000
+    }
+  },
+  "scope": "Public prompt bytes, frozen job IDs and original file order. No model or evaluator inputs.",
+  "matched_renderer_jobs": 150000,
+  "shared_oe_cross_menu_checks": 50000,
+  "transport_only_choices_only_controls": 10000,
+  "questions_by_split": {
+    "calibration": 1000,
+    "selection": 1000,
+    "test": 3000
+  },
+  "matched_jobs_by_split_prefix_condition": [
+    {
+      "split": "calibration",
+      "prefix_id": "p1",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p1",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p1",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p2",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p2",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p2",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p3",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p3",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p3",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p4",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p4",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p4",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p5",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p5",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p5",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p6",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p6",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p6",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p7",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p7",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p7",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p8",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p8",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p8",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p9",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p9",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p9",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p10",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p10",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "prefix_id": "p10",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p1",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p1",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p1",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p2",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p2",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p2",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p3",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p3",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p3",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p4",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p4",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p4",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p5",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p5",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p5",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p6",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p6",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p6",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p7",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p7",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p7",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p8",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p8",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p8",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p9",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p9",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p9",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p10",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p10",
+      "condition": "oe",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "prefix_id": "p10",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p1",
+      "condition": "independent_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p1",
+      "condition": "oe",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p1",
+      "condition": "same_category_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p2",
+      "condition": "independent_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p2",
+      "condition": "oe",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p2",
+      "condition": "same_category_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p3",
+      "condition": "independent_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p3",
+      "condition": "oe",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p3",
+      "condition": "same_category_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p4",
+      "condition": "independent_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p4",
+      "condition": "oe",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p4",
+      "condition": "same_category_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p5",
+      "condition": "independent_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p5",
+      "condition": "oe",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p5",
+      "condition": "same_category_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p6",
+      "condition": "independent_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p6",
+      "condition": "oe",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p6",
+      "condition": "same_category_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p7",
+      "condition": "independent_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p7",
+      "condition": "oe",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p7",
+      "condition": "same_category_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p8",
+      "condition": "independent_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p8",
+      "condition": "oe",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p8",
+      "condition": "same_category_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p9",
+      "condition": "independent_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p9",
+      "condition": "oe",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p9",
+      "condition": "same_category_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p10",
+      "condition": "independent_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p10",
+      "condition": "oe",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "prefix_id": "p10",
+      "condition": "same_category_pool",
+      "jobs": 3000
+    }
+  ],
+  "choices_only_by_split_condition": [
+    {
+      "split": "calibration",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "calibration",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "condition": "independent_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "selection",
+      "condition": "same_category_pool",
+      "jobs": 1000
+    },
+    {
+      "split": "test",
+      "condition": "independent_pool",
+      "jobs": 3000
+    },
+    {
+      "split": "test",
+      "condition": "same_category_pool",
+      "jobs": 3000
+    }
+  ]
+}

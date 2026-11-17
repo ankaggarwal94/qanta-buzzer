@@ -30,6 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 acl-verified = ["python-flint==0.8.0", "filelock>=3"]
+acl-private-review = ["cryptography==46.0.7"]
 dev = [
   "jsonschema>=4.18,<5",
   # D7(b) is byte-exact under this version; CI installs the dev extra.

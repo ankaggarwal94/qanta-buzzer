@@ -4,6 +4,7 @@
 # the repo is touched on a different host. Pre-existing narrow LF pins are kept
 # below as defense-in-depth.
 * text=auto eol=lf
+configs/acl_expansion/*.siv binary
 
 # Explicit text declarations (some tools/IDEs still benefit from explicit hints)
 *.py text eol=lf

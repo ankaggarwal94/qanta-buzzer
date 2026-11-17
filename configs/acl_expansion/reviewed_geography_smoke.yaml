@@ -1,0 +1,30 @@
+arm:
+  version: 1
+  menu: uniform_global
+  k: 4
+  seed: 1
+  reward:
+    arm: linear
+    start: 1.0
+    end: 0.25
+    shape: 2.0
+    knots: [[0, 1], [0.5, 0.75], [1, 0]]
+    gamma: 0.99
+inputs:
+  dataset: artifacts/acl_expansion/real_inputs/dataset.json
+  dataset_file_sha256: 5d4bd5362e4c29c252487b6df1e4e1938365e67592719807fd7dec5a675e7905
+  reservoir: artifacts/acl_expansion/real_inputs/reservoir.json
+  oracle: artifacts/acl_expansion/real_inputs/registry.json
+  class_review: artifacts/acl_expansion/real_inputs/class_review.json
+  split_roles:
+    calibration: train
+    selection: val
+    test: test
+training:
+  updates: 1
+  rollout_size: 4
+  epochs: 1
+  batch_size: 4
+  freeze_encoder: true
+  max_input_length: 512
+  threads: 2
