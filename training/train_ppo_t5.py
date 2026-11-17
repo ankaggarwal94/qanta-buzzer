@@ -44,6 +44,7 @@ import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -97,6 +98,7 @@ class RolloutStep:
     attention_mask: Optional[torch.Tensor] = None
     return_: float = 0.0
     advantage: float = 0.0
+    bootstrap_value: float = 0.0
 
 
 class RolloutBuffer:
@@ -175,7 +177,7 @@ class RolloutBuffer:
 
             for t in reversed(range(len(rollout))):
                 if dones[t]:
-                    next_value = 0.0
+                    next_value = rollout[t].bootstrap_value
                     gae = 0.0
 
                 # TD error
@@ -255,11 +257,14 @@ class PPOTrainer:
         train_questions: List[MCQuestion],
         val_questions: List[MCQuestion],
         config: Dict[str, Any],
+        *,
+        text_env_factory: Callable | None = None,
     ) -> None:
         self.model = model
         self.train_questions = list(train_questions)
         self.val_questions = list(val_questions)
         self.config = config
+        self.text_env_factory = text_env_factory
 
         self.device = model.device
 
@@ -308,6 +313,18 @@ class PPOTrainer:
             self._reward_likelihood_model = TfIdfLikelihood(corpus_texts=corpus)
         return self._reward_likelihood_model
 
+    def _text_environment(self, question):
+        """Build the same observation and reward protocol for rollout and validation."""
+        if self.text_env_factory is not None:
+            return self.text_env_factory(question)
+        from qb_env.text_wrapper import TextObservationWrapper
+        from qb_env.tossup_env import TossupMCEnv
+
+        env = TossupMCEnv(questions=[question], likelihood_model=self._build_reward_likelihood(),
+                          K=len(question.options), reward_mode="time_penalty",
+                          wait_penalty=self.reward_time_penalty, belief_mode="from_scratch")
+        return TextObservationWrapper(env)
+
     def collect_rollouts(self, num_episodes: int) -> RolloutBuffer:
         """Collect rollouts by running episodes with the current policy.
 
@@ -326,29 +343,15 @@ class PPOTrainer:
         RolloutBuffer
             Buffer containing all collected episode rollouts.
         """
-        from qb_env.text_wrapper import TextObservationWrapper
-        from qb_env.tossup_env import TossupMCEnv
         self.model.eval()
         buffer = RolloutBuffer()
 
         # Sample questions for this iteration
         questions = random.choices(self.train_questions, k=num_episodes)
 
-        # The T5 policy reads text directly; the TF-IDF helper is only used
-        # for env-side belief updates and reward computation.
-        likelihood_model = self._build_reward_likelihood()
-
         with torch.no_grad():
             for question in questions:
-                env = TossupMCEnv(
-                    questions=[question],
-                    likelihood_model=likelihood_model,
-                    K=len(question.options),
-                    reward_mode="time_penalty",
-                    wait_penalty=self.reward_time_penalty,
-                    belief_mode="from_scratch",
-                )
-                wrapped_env = TextObservationWrapper(env)
+                wrapped_env = self._text_environment(question)
 
                 obs, _ = wrapped_env.reset()
                 done = False
@@ -380,6 +383,10 @@ class PPOTrainer:
                         wrapped_env.step(action)
                     )
                     done = terminated or truncated
+                    bootstrap = 0.0
+                    if self.text_env_factory is not None and truncated and not terminated:
+                        _, _, terminal_value = self.model([next_obs], return_value=True)
+                        bootstrap = terminal_value.item()
 
                     # CRITICAL: Detach and move tensors to CPU immediately
                     # to prevent GPU memory accumulation during rollout collection
@@ -388,6 +395,7 @@ class PPOTrainer:
                         action=action,
                         reward=reward,
                         done=done,
+                        bootstrap_value=bootstrap,
                         value=value,
                         log_prob=log_prob,
                         input_ids=inputs["input_ids"].detach().cpu(),
@@ -482,7 +490,12 @@ class PPOTrainer:
         dict[str, float]
             Training metrics: policy_loss, value_loss, entropy, num_updates.
         """
-        self.model.train()
+        # Match the behavior-policy likelihood used for ACL rollouts. Gradients
+        # still flow in eval mode, including for end-to-end encoder training.
+        if self.text_env_factory is None:
+            self.model.train()
+        else:
+            self.model.eval()
 
         # Compute returns and advantages
         buffer.compute_returns_and_advantages(
@@ -619,11 +632,7 @@ class PPOTrainer:
             overall_outcome_accuracy, average_reward, avg_episode_length,
             n_questions_evaluated, evaluation_split.
         """
-        from qb_env.text_wrapper import TextObservationWrapper
-        from qb_env.tossup_env import TossupMCEnv
-
         self.model.eval()
-        likelihood_model = self._build_reward_likelihood()
 
         correct = 0
         forced_correct = 0
@@ -633,15 +642,7 @@ class PPOTrainer:
 
         with torch.no_grad():
             for question in questions:
-                env = TossupMCEnv(
-                    questions=[question],
-                    likelihood_model=likelihood_model,
-                    K=len(question.options),
-                    reward_mode="time_penalty",
-                    wait_penalty=self.reward_time_penalty,
-                    belief_mode="from_scratch",
-                )
-                wrapped_env = TextObservationWrapper(env)
+                wrapped_env = self._text_environment(question)
 
                 obs, _ = wrapped_env.reset()
                 done = False

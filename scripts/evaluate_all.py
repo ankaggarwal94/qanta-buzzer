@@ -726,4 +726,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:2] == ["acl"]:
+        from scripts.acl_expansion import main as acl_main
+        acl_main(["replay", *sys.argv[2:]])
+    else:
+        main()
