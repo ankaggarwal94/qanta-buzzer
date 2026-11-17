@@ -12,6 +12,8 @@ The full historical public freeze contains 5,000 questions across calibration (1
 
 Run `python -m scripts.verify_acl_public_prompts` from the repository root to replay the check on Windows or POSIX. The recorded revision must be present in the local Git object database. A shallow checkout can retrieve it with `git fetch origin c5981d913165f8dc24173c3ec8615b221cfc944d`. The verifier reads the pinned objects with `git show` and streams the historical file digest without writing the reconstructed public packages. [Verifier](../../scripts/verify_acl_public_prompts.py)
 
+The recorded replay was rerun against renderer revision `00bdb409a61460c0987f2c362e06be7cbc4e13bd`. The receipt binds the renderer and verifier source hashes and confirms all 36 transport chunks, 150,000 main jobs and 10,000 choices-only controls. [Current replay receipt](evidence/frozen_public_prompt_receipt.json)
+
 ## Run the three stages
 
 In the Python environment for the optional CPU model backend, install `transformers==4.51.3`, `tokenizers==0.21.1`, `huggingface-hub==0.30.2`, `lm-format-enforcer==0.11.3` and `interegular==0.3.3`. The core menu, proof and generic paired-export paths do not load the grammar dependencies. The following commands work from the repository root on Windows and POSIX.

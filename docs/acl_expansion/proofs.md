@@ -2,6 +2,8 @@
 
 The five frozen challenges cover 20 theorems about the menu decoder, realized payout schedules and potential shaping. On 2026-11-16 (Pacific), all five passed Lean 4.35.0's sandboxed comparator with every bundled checker. The proof author drafted the specifications. A separate coordinating agent inspected the definitions and approved each challenge before its solution was written. This was agent review. A human reviewer can inspect the five challenge modules without reading the tactics. [Frozen inputs](../../formal/acl_expansion/freeze.json) · [Verification receipt](proof_receipt.json)
 
+The core receipt's hashes for `Runtime.lean`, `runtime.py` and `verify.py` identify the versions used for that original verification. The current theorem challenges, solutions, comparator configurations and freeze match their recorded hashes. [Original verification receipt](proof_receipt.json)
+
 The review procedure follows Robert Joseph George's distinction between the validity of a proof term and the meaning of its statement. Challenge files use placeholder proof bodies as permitted by Comparator. The definitions and solutions have no placeholders, declared axioms, native decision procedures or unsafe overrides. Lean's release supplies all dependencies of these five challenges. [Getting the (In)formal Statement Right](https://www.robertj1.com/ai4science/getting-the-statement-right/) · [Validating a Lean Proof](https://lean-lang.org/doc/reference/latest/ValidatingProofs/) · [Lake comparator](https://lean-lang.org/doc/reference/latest/Build-Tools-and-Distribution/Lake/)
 
 ## Statements and scientific interpretation
@@ -54,7 +56,7 @@ The verifier copies explicit files to a fresh staging directory, verifies the tr
 
 The historical production receipt identifies its original source and binary hashes. The build command below uses the current runtime freeze.
 
-For the audited Linux production executable, run this command from the repository root. It checks the frozen production sources, builds with the checkout read-only and networking disabled, runs six requests in a second read-only sandbox and installs the probed ELF at the standard Lake target. Two independent staging builds produced the same SHA-256, and the Python production client successfully decoded a draw with the installed executable. [Production build receipt](evidence/production_runtime_receipt.json) · [Source manifest](../../formal/acl_expansion/runtime-freeze.json)
+For the audited Linux production executable, run this command from the repository root. It checks the frozen production sources, builds with the checkout read-only and networking disabled, runs six requests in a second read-only sandbox and installs the probed ELF at the standard Lake target. The historical receipt records two independent staging builds with the same SHA-256 and a successful Python-client draw using that executable. [Historical production build receipt](evidence/production_runtime_receipt.json) · [Source manifest](../../formal/acl_expansion/runtime-freeze.json)
 
 ```sh
 python3 formal/acl_expansion/build_runtime.py --freeze-sha256 b15dec870259717ec14b84112935fc2918f05b6173d8d5f84025e7827f2acd24 --install

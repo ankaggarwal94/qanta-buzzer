@@ -1,7 +1,7 @@
 {
   "source_revision": "c5981d913165f8dc24173c3ec8615b221cfc944d",
   "transport_manifest_sha256": "594b961d22cc7db2278315bf8c1d17e0599cdab8f0fe6780a2bee5bc3ba4c6ec",
-  "renderer_sha256": "b903cec97f44cb2a8e90b78cd58532cf876203582e1b0b80498fa5065c5038e5",
+  "renderer_sha256": "1a39a60c5c3b1c9be67aa52102fdb83e5715a3c8bea26a79da17e13eb741877a",
   "verifier_sha256": "97dc08b294451fc702c011243f0595f5b2b5905dbb01aed7e72de1703b3e2a1b",
   "transport_chunks": 36,
   "compact_sha256": "c9fb3c5ded63f07eec5f07c36714914595b72d2e0addd7926995642b92f1081b",
