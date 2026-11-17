@@ -1,0 +1,9 @@
+{
+  "Core/Expr.lean": "3cf70bd602f81ca771823b7fbfca1d642aa95f80ec768e45809a39bc2e44c021",
+  "Core/Wire.lean": "74c93403a510a7983268529949bca0ebb89570aa25308da907b4bbf09ccfff21",
+  "WireChallenge.lean": "bb4c43653456588cb3923233223175c28c28cfb7633759e4c2beeb9d726915dc",
+  "lake-manifest.json": "7565e6f7dbc4e1b5a09019a877cea9f873f0d17cc36c5cb128a16de7e7e4722a",
+  "lean-toolchain": "ca5f1f601d34c49079e38d7e7041eb0f2a9c227fbc1df0f404820069a052330c",
+  "wire-comparator.json": "ea09fc18b24b9e933c88112776d01c06f74dff1dd535985b6f115d121e4cefce",
+  "wire-lakefile.toml": "73de396483de7ef2a9ee72f7f216adbd3984f9765bae08a8fd87a37298b9dc33"
+}

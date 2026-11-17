@@ -1,0 +1,17 @@
+{
+  "challenge_module": "LawChallenge",
+  "solution_module": "LawSolution",
+  "theorem_names": [
+    "ACL.traceCard",
+    "ACL.traceLegal",
+    "ACL.traceDistinct",
+    "ACL.supportedPreimage",
+    "ACL.unsupportedPreimage",
+    "ACL.goldUnique"
+  ],
+  "permitted_axioms": [
+    "propext",
+    "Quot.sound",
+    "Classical.choice"
+  ]
+}

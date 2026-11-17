@@ -1,0 +1,22 @@
+{
+  "challenge_module": "Challenge",
+  "solution_module": "Solution",
+  "theorem_names": [
+    "ACL.Curves.validLinear",
+    "ACL.Curves.validExponential",
+    "ACL.Curves.exponentialZeroLimit",
+    "ACL.Curves.validPower",
+    "ACL.Curves.validCosine",
+    "ACL.Curves.validStep",
+    "ACL.Curves.validSegment",
+    "ACL.Curves.validPiecewise",
+    "ACL.Curves.validRescale",
+    "ACL.Curves.constantPayout",
+    "ACL.Curves.piecewiseWitness"
+  ],
+  "permitted_axioms": [
+    "propext",
+    "Quot.sound",
+    "Classical.choice"
+  ]
+}

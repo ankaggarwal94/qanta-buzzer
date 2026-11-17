@@ -1,0 +1,10 @@
+{
+  "../acl_expansion/Core/Expr.lean": "3cf70bd602f81ca771823b7fbfca1d642aa95f80ec768e45809a39bc2e44c021",
+  "BridgeChallenge.lean": "6c12685fc2436f901cc3a3ef810155a2ecc08211203b85639219e65f977f1693",
+  "BridgeDefinitions.lean": "ddf279469b47b3fed27fcbd74cc35b10dd9e186e2b8da647aa67a733cffa6b7e",
+  "Definitions.lean": "c4d6cc74376b7be1156f796e05eedf08070e4c0be2e54c499fd960167aa3656a",
+  "bridge-comparator.json": "329b1530f093e164e0c0bdcdfa8e71ec7f66a526bec5a6107d28733f4c0f0d32",
+  "bridge-lakefile.toml": "d6d2189689269cb8269ee0d4ae74c212c6aa0271a161793f39a2bb2e3ec3f0ee",
+  "lake-manifest.json": "caa64df0e02646dcddcb2e34e046f40dc2890d47fa32cfdfcc935d83c87fd6aa",
+  "lean-toolchain": "ca5f1f601d34c49079e38d7e7041eb0f2a9c227fbc1df0f404820069a052330c"
+}

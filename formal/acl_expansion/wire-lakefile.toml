@@ -1,0 +1,11 @@
+name = "acl_expansion"
+version = "0.1.0"
+
+[[lean_lib]]
+name = "Core"
+
+[[lean_lib]]
+name = "WireChallenge"
+
+[[lean_lib]]
+name = "WireSolution"

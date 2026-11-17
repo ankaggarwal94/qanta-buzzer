@@ -1,0 +1,108 @@
+{
+  "toolchain": "leanprover/lean4:v4.35.0",
+  "mathlib_revision": "56a005855ea17e0b0958f73ec801ae140b0a1679",
+  "platform": "Debian bookworm x86_64, Linux WSL2, bubblewrap",
+  "curve_freeze_sha256": "dc1277deb55950615066a66915fbf4b60a7c826aeea25a28e3ecc9ae2b9bea49",
+  "bridge_freeze_sha256": "d11a8e03ca4a7ee843d25761759ac90339a60f831f6c0649d9cc026d8fb3a560",
+  "inputs": {
+    "BridgeSolution.lean": "592a104e2bc6fa15f3a9a308dc095035029af8d447177964ba38419729742577",
+    "Solution.lean": "0b2c01b7510ab9c779b5ca74be2dcc9899606adb79ddd0aac51629e2b403754b",
+    "BridgeChallenge.lean": "6c12685fc2436f901cc3a3ef810155a2ecc08211203b85639219e65f977f1693",
+    "BridgeDefinitions.lean": "ddf279469b47b3fed27fcbd74cc35b10dd9e186e2b8da647aa67a733cffa6b7e",
+    "../acl_expansion/Core/Expr.lean": "3cf70bd602f81ca771823b7fbfca1d642aa95f80ec768e45809a39bc2e44c021",
+    "lake-manifest.json": "caa64df0e02646dcddcb2e34e046f40dc2890d47fa32cfdfcc935d83c87fd6aa",
+    "bridge-comparator.json": "329b1530f093e164e0c0bdcdfa8e71ec7f66a526bec5a6107d28733f4c0f0d32",
+    "bridge-lakefile.toml": "d6d2189689269cb8269ee0d4ae74c212c6aa0271a161793f39a2bb2e3ec3f0ee"
+  },
+  "kernel_runs": {
+    "comparator.json": [
+      "Lean paranoid kernel accepts the solution",
+      "checked 18763 declarations",
+      "lean4lean kernel accepts the solution",
+      "nanoda kernel accepts the solution",
+      "con-leche: accepted 18766 declarations (--verified)",
+      "con-leche kernel accepts the solution",
+      "con-ron: accepted 18766 declarations (--verified)",
+      "con-ron kernel accepts the solution",
+      "Lean default kernel accepts the solution"
+    ],
+    "bridge-comparator.json": [
+      "Lean paranoid kernel accepts the solution",
+      "checked 15942 declarations",
+      "lean4lean kernel accepts the solution",
+      "nanoda kernel accepts the solution",
+      "con-leche: accepted 15945 declarations (--verified)",
+      "con-leche kernel accepts the solution",
+      "con-ron: accepted 15945 declarations (--verified)",
+      "con-ron kernel accepts the solution",
+      "Lean default kernel accepts the solution"
+    ]
+  },
+  "actual_transitive_axioms": {
+    "ACL.Curves.validLinear": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.Curves.validExponential": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.Curves.exponentialZeroLimit": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.Curves.validPower": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.Curves.validCosine": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.Curves.validStep": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.Curves.validSegment": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.Curves.validPiecewise": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.Curves.validRescale": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.Curves.constantPayout": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.Curves.piecewiseWitness": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.Curves.piecewiseExprRefines": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.Curves.payoutExprRefines": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ]
+  }
+}

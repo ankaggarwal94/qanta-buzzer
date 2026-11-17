@@ -1,0 +1,206 @@
+{
+  "toolchain": "leanprover/lean4:v4.35.0",
+  "linux_release_sha256": "7289597a44543246c9227b8cae501767e095ce17f6d448b95fc4a8dc97268f6d",
+  "platform": "Debian bookworm x86_64, Linux WSL2, bubblewrap",
+  "freeze_sha256": "873dc65663c7bc59359bb77ea7b111e6b385a92cf3053a0795d46915c6022f5c",
+  "kernel_runs": {
+    "comparator.json": [
+      "Lean paranoid kernel accepts the solution",
+      "checked 3606 declarations",
+      "lean4lean kernel accepts the solution",
+      "nanoda kernel accepts the solution",
+      "con-leche: accepted 3609 declarations (--verified)",
+      "con-leche kernel accepts the solution",
+      "con-ron: accepted 3609 declarations (--verified)",
+      "con-ron kernel accepts the solution",
+      "Lean default kernel accepts the solution"
+    ],
+    "order-comparator.json": [
+      "Lean paranoid kernel accepts the solution",
+      "checked 2912 declarations",
+      "lean4lean kernel accepts the solution",
+      "nanoda kernel accepts the solution",
+      "con-leche: accepted 2915 declarations (--verified)",
+      "con-leche kernel accepts the solution",
+      "con-ron: accepted 2915 declarations (--verified)",
+      "con-ron kernel accepts the solution",
+      "Lean default kernel accepts the solution"
+    ],
+    "transition-comparator.json": [
+      "Lean paranoid kernel accepts the solution",
+      "checked 3231 declarations",
+      "lean4lean kernel accepts the solution",
+      "nanoda kernel accepts the solution",
+      "con-leche: accepted 3234 declarations (--verified)",
+      "con-leche kernel accepts the solution",
+      "con-ron: accepted 3234 declarations (--verified)",
+      "con-ron kernel accepts the solution",
+      "Lean default kernel accepts the solution"
+    ],
+    "law-comparator.json": [
+      "Lean paranoid kernel accepts the solution",
+      "checked 3214 declarations",
+      "lean4lean kernel accepts the solution",
+      "nanoda kernel accepts the solution",
+      "con-leche: accepted 3217 declarations (--verified)",
+      "con-leche kernel accepts the solution",
+      "con-ron: accepted 3217 declarations (--verified)",
+      "con-ron kernel accepts the solution",
+      "Lean default kernel accepts the solution"
+    ],
+    "wire-comparator.json": [
+      "Lean paranoid kernel accepts the solution",
+      "checked 3339 declarations",
+      "lean4lean kernel accepts the solution",
+      "nanoda kernel accepts the solution",
+      "con-leche: accepted 3342 declarations (--verified)",
+      "con-leche kernel accepts the solution",
+      "con-ron: accepted 3342 declarations (--verified)",
+      "con-ron kernel accepts the solution",
+      "Lean default kernel accepts the solution"
+    ]
+  },
+  "actual_transitive_axioms": {
+    "ACL.approvedSchedule": [
+      "propext",
+      "Quot.sound"
+    ],
+    "ACL.legalSuccess": [
+      "propext",
+      "Quot.sound"
+    ],
+    "ACL.drawSound": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.drawComplete": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.goldInsertion": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.uniformMass": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.prizeBounds": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.prizeEndpoints": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.prizeMonotone": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.telescoping": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.witness": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.policyOrder": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.checkedTransition": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.traceCard": [
+      "propext",
+      "Quot.sound"
+    ],
+    "ACL.traceLegal": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.traceDistinct": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.supportedPreimage": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.unsupportedPreimage": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.goldUnique": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "ACL.expressionWire": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ]
+  },
+  "negative_control": "Rejected altered ACL.prize definition",
+  "files": {
+    "Audit.lean": "3da84b7330175c2fbfeb3b1189b0716acc6889ccb890612dad9f2e62e33a38c9",
+    "Challenge.lean": "cf3d09de40c7e3a52974a202fce685f751327c60df5fee39c5962bcf423e6dce",
+    "comparator.json": "d143c813c188461a3c37a3fc4bd6b8f1f21dd51f27e3487365347a607831dff5",
+    "Core/Expr.lean": "3cf70bd602f81ca771823b7fbfca1d642aa95f80ec768e45809a39bc2e44c021",
+    "Core/Wire.lean": "74c93403a510a7983268529949bca0ebb89570aa25308da907b4bbf09ccfff21",
+    "Core.lean": "f84671cd2f980e2b7e7ce36196ec9e5062a9be010568a07a90e82ceefd21c9e0",
+    "freeze.json": "873dc65663c7bc59359bb77ea7b111e6b385a92cf3053a0795d46915c6022f5c",
+    "lake-manifest.json": "7565e6f7dbc4e1b5a09019a877cea9f873f0d17cc36c5cb128a16de7e7e4722a",
+    "lakefile.toml": "1475ce5e9069db42b53be15cd70cb1b003b4d8a484187afabbdc60439eafcee8",
+    "law-comparator.json": "fa6709b70590c3717019421ba91151179a89a5d74c364e65546b98ac698afdee",
+    "law-freeze.json": "9d7a420ee917caf13a314fcc625930365a2c76904b93ffdaecf4eeb59523d75c",
+    "law-lakefile.toml": "76b98f0ef35d5e6dfe73f46e68d1a546431acd6d78c3c019d87cf8e0877cace8",
+    "LawAudit.lean": "e923d5ddf7d213b138fecccd1b7e60ccb4937c88ccb30bbe0e9a69b87def52b3",
+    "LawChallenge.lean": "b5f423ca6649f831254603100e70a84e0ffd2317703436f401469244593fd413",
+    "LawCore.lean": "a9642da01446db58585e461bfb897aa171ae53e8f698df46b714e076fd4e0d7d",
+    "LawSolution.lean": "f759c33c8bc820c86a4068c5f6772fb925f8b856c1d2e481e01495b8878ca579",
+    "order-comparator.json": "de6c9b56d84b1fadd52e7766aa6a3601b0a6536bb44f65759c1d956fa78a3b56",
+    "OrderChallenge.lean": "84e7e284f06f30d5bd5939fcebc6a6457c0f8b3f91213bb30c5a82b96324da22",
+    "OrderSolution.lean": "e0a4f6a1ec2aa9532de4e5434632b495e15f862e3ae89c65c0b4fd6ac1d979e3",
+    "Runtime.lean": "75bed9849d4f963fc2b978cc75d44ee1c8d74f8c0c4d19edf015bfc04caa16d7",
+    "runtime.py": "c2a48c53fdfb36895c8c23d02d4000aab27ac467a1c0075a67bdf2d49a972b3e",
+    "Solution.lean": "22947eac9621a871491123cc032ed0773f7f46601bac684038e47dba85079389",
+    "transition-comparator.json": "bdd1a63e0e957700d3c3c36efdef54d6b3dfc485cbad4fcd0f2834da501db508",
+    "TransitionChallenge.lean": "163c8c0ec0e74eb2d15f4c588cad30b33c1703f2d11e4b7759968ad9ebe56857",
+    "TransitionCore.lean": "c064828e4823dba9364ee95f7aaa21766963bb79d2d51cd60ef1c078daf36268",
+    "TransitionSolution.lean": "b84f0cb2d62a10156491339f2bfa62239daeac9f6f454d8b1347910847c85182",
+    "verify.py": "29f5244b2e8de75abeb7c3a9ae1b6add42430c9a687db9e0fb2cd293a3a9b88d",
+    "wire-comparator.json": "ea09fc18b24b9e933c88112776d01c06f74dff1dd535985b6f115d121e4cefce",
+    "wire-freeze.json": "352464ab213fc34363d04122ae37071fb7d45c704d6ee3abd7c058b3f184ff9a",
+    "wire-lakefile.toml": "73de396483de7ef2a9ee72f7f216adbd3984f9765bae08a8fd87a37298b9dc33",
+    "WireAudit.lean": "f68321fb44fe72faa8a23798822aa9a321dd726e2fb9196bf02ffb143ce83822",
+    "WireChallenge.lean": "bb4c43653456588cb3923233223175c28c28cfb7633759e4c2beeb9d726915dc",
+    "WireSolution.lean": "62203655d5645d09601854a0d30f054117ced6da1e9b8a0b2fed97bb7dfef55a"
+  },
+  "law_freeze_sha256": "9d7a420ee917caf13a314fcc625930365a2c76904b93ffdaecf4eeb59523d75c",
+  "wire_freeze_sha256": "352464ab213fc34363d04122ae37071fb7d45c704d6ee3abd7c058b3f184ff9a",
+  "negative_control_detail": {
+    "stage": "sandboxed comparator after successful challenge and alternate solution builds",
+    "statement": "same theorem names and type text",
+    "mutation": "solution-side ACL.prize changed lo + (hi-lo)*weight to lo + weight*(hi-lo)",
+    "observed_error": "Const does not match between challenge and target 'ACL.prize'"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "challenge_module": "WireChallenge",
+  "solution_module": "WireSolution",
+  "theorem_names": [
+    "ACL.expressionWire"
+  ],
+  "permitted_axioms": [
+    "propext",
+    "Quot.sound",
+    "Classical.choice"
+  ]
+}

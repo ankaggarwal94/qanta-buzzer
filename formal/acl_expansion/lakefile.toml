@@ -1,0 +1,30 @@
+name = "acl_expansion"
+version = "0.1.0"
+
+[[lean_lib]]
+name = "Core"
+
+[[lean_lib]]
+name = "Challenge"
+
+[[lean_lib]]
+name = "Solution"
+
+[[lean_exe]]
+name = "acl_runtime"
+root = "Runtime"
+
+[[lean_lib]]
+name = "OrderChallenge"
+
+[[lean_lib]]
+name = "OrderSolution"
+
+[[lean_lib]]
+name = "TransitionCore"
+
+[[lean_lib]]
+name = "TransitionChallenge"
+
+[[lean_lib]]
+name = "TransitionSolution"

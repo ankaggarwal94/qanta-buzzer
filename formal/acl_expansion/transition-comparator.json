@@ -1,0 +1,12 @@
+{
+  "challenge_module": "TransitionChallenge",
+  "solution_module": "TransitionSolution",
+  "theorem_names": [
+    "ACL.checkedTransition"
+  ],
+  "permitted_axioms": [
+    "propext",
+    "Quot.sound",
+    "Classical.choice"
+  ]
+}
