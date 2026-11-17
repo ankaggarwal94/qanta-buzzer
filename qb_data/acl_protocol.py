@@ -107,11 +107,29 @@ class Prepared:
     core: object | None = None
     registry: dict | None = None
 
-    def public_jobs(self, split: str):
+    def public_jobs(self, split: str, *, end_mode: str = "no_buzz"):
+        """Export prompts using the destination environment's horizon behavior.
+
+        Parameters
+        ----------
+        split : str
+            Prepared split to export.
+        end_mode : str
+            Destination environment mode, ``no_buzz`` or ``force_commit``.
+            Defaults to the ACL experiment's passing-at-horizon convention.
+
+        Yields
+        ------
+        dict
+            Public prompt and its horizon mode. The job ID binds the complete
+            prompt, including the mode's action and payoff instructions.
+        """
+        if end_mode not in ("no_buzz", "force_commit"):
+            raise ValueError(f"unknown end mode {end_mode!r}")
         for q in self.questions[split]:
             for i, prefix in enumerate(q.cumulative_prefixes):
-                prompt = policy_prompt(prefix, q.options, self.spec)
-                yield {"qid": q.qid, "prefix_index": i, "prompt": prompt,
+                prompt = policy_prompt(prefix, q.options, self.spec, end_mode=end_mode)
+                yield {"qid": q.qid, "prefix_index": i, "prompt": prompt, "end_mode": end_mode,
                        "job_id": digest([self.identity, split, q.qid, i, prompt])}
 
 
