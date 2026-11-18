@@ -105,6 +105,33 @@ def test_mutable_revision_is_rejected(reviewed, reject_at_cli):
     reject_at_cli(repo, "HEAD", digest, "commit")
 
 
+def test_comparator_failure_reaches_cli(reviewed, monkeypatch, capsys):
+    from formal.first_buzz import verify
+
+    repo, revision, digest = reviewed
+    run = subprocess.run
+
+    def run_with_failing_lake(args, **kwargs):
+        if args[0] == "lake":
+            if args[1:] == ["--version"]:
+                script = "print('Lake (Lean version 4.35.0)')"
+            else:
+                assert args[1:] == ["comparator", "--config", "comparator.json", "--paranoid"]
+                script = "raise SystemExit(7)"
+            args = [sys.executable, "-c", script]
+        return run(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_with_failing_lake)
+    monkeypatch.delenv("COMPARATOR_BWRAP", raising=False)
+    monkeypatch.setattr(sys, "argv", [
+        "verify.py", "--repo", str(repo), "--revision", revision, "--freeze-sha256", digest,
+    ])
+    with pytest.raises(SystemExit) as raised:
+        verify.main()
+    assert raised.value.code == 1
+    assert "exit status 7" in capsys.readouterr().err
+
+
 def test_stage_uses_commit_despite_dirty_worktree(reviewed, tmp_path):
     from formal.first_buzz.verify import stage_project
 

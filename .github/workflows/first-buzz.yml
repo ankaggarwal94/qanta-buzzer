@@ -33,7 +33,7 @@ jobs:
             merge_group) test "$QUEUE_SHA" = "$GITHUB_SHA" ;;
           esac
           git --no-replace-objects cat-file blob "$GITHUB_SHA:formal/first_buzz/verify.py" > "$RUNNER_TEMP/first-buzz.py"
-          echo "d57e91abe3f09e6e1051495d7adca4be6bb8d06413bb1ad24236fb0540018155  $RUNNER_TEMP/first-buzz.py" | sha256sum -c -
+          echo "12a96321104c28a1ab58b9c5d50b4662d8420eab2729d807ec72a3fa8a9d42b8  $RUNNER_TEMP/first-buzz.py" | sha256sum -c -
       - name: Install the pinned Lean toolchain and bubblewrap
         run: |
           sudo apt-get update -qq

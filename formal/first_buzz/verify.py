@@ -11,6 +11,20 @@ import tempfile
 
 
 def git(repo: Path, *args: str) -> bytes:
+    """Run Git with replacement objects disabled.
+
+    Parameters
+    ----------
+    repo : Path
+        Repository in which to run Git.
+    *args : str
+        Git subcommand and its arguments.
+
+    Returns
+    -------
+    bytes
+        Standard output from the completed command, including any trailing newline.
+    """
     return subprocess.check_output(["git", "--no-replace-objects", "-C", str(repo), *args])
 
 
@@ -32,6 +46,10 @@ def stage_project(repo: Path, revision: str, freeze_sha256: str, project: Path) 
     ------
     ValueError
         If the commit, manifest, frozen files, or destination fail validation.
+    subprocess.CalledProcessError
+        If Git cannot read the requested commit or one of its blobs.
+    OSError
+        If Git cannot start or the project directory cannot be prepared or written.
     """
     if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision):
         raise ValueError("supply a full commit object ID")
