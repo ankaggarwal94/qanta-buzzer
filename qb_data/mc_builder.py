@@ -77,6 +77,40 @@ class MCQuestion(TossupQuestion):
         self.human_buzz_positions = restored
 
 
+def validate_gold_option(question: MCQuestion) -> None:
+    """Bind the label to its source answer after the producer has shuffled the menu."""
+    i = question.gold_index
+    count = len(question.options)
+    if (isinstance(i, bool) or not isinstance(i, (int, np.integer)) or not 0 <= i < count
+            or len(question.option_answer_primary) != count
+            or question.option_answer_primary[i] != question.answer_primary):
+        raise ValueError(f"{question.qid}: gold_index does not identify the source answer")
+    displayed = question.options[i]
+    if displayed != question.answer_primary:
+        aliases = {normalize_answer(s) for s in [question.answer_primary, *question.clean_answers]}
+        if not isinstance(displayed, str) or not displayed.strip() or normalize_answer(displayed) not in aliases:
+            raise ValueError(f"{question.qid}: displayed gold option differs from the source answer")
+
+
+def validate_reveal_grid(question: MCQuestion) -> None:
+    """Check stored prefix text against the inclusive token boundaries used by the loader."""
+    indices = question.run_indices
+    prefixes = question.cumulative_prefixes
+    if list(question.tokens) != question.question.split():
+        raise ValueError(f"{question.qid}: reveal tokens differ from the source question")
+    if not indices or len(indices) != len(prefixes):
+        raise ValueError(f"{question.qid}: empty or misaligned reveal grid")
+    previous = -1
+    for index, text in zip(indices, prefixes, strict=True):
+        if (isinstance(index, bool) or not isinstance(index, (int, np.integer))
+                or not 0 <= index < len(question.tokens) or index < previous):
+            raise ValueError(f"{question.qid}: invalid reveal boundary {index!r}")
+        expected = " ".join(question.tokens[:index + 1]).split()
+        if not expected or not isinstance(text, str) or text.split() != expected:
+            raise ValueError(f"{question.qid}: saved prefix differs from reveal at token {index}")
+        previous = index
+
+
 @dataclass
 class _RepairSearchBudget:
     """Independent scan- and transition-count ceilings for one repair."""

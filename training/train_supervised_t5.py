@@ -1,9 +1,11 @@
 """
 Supervised warm-start training for T5PolicyModel.
 
-Trains answer selection on complete questions using cross-entropy loss. All
-clues are shown at once (not incremental), providing a strong initialization
-before PPO fine-tuning on partial observations.
+Trains answer selection using cross-entropy loss. The default shows complete
+questions. Prefix mode trains and validates once per scheduled cumulative
+reveal. Overlength rows retain the complete menu and the newest visible clue
+tokens. These are answer-supervision examples even when the buzzer cannot act
+at a scheduled reveal.
 
 The training loop uses gradient accumulation (default 4 steps, effective
 batch = 32) for stable training without exceeding GPU memory. Best model
@@ -30,7 +32,7 @@ From Python::
 
 From command line::
 
-    python -m training.train_supervised_t5 --config configs/t5_policy.yaml
+    python scripts/train_t5_policy.py --supervised-only supervised.input_mode=prefixes
 """
 
 from __future__ import annotations
@@ -47,38 +49,43 @@ import torch.nn as nn
 import torch.optim as optim
 
 from models.t5_policy import T5PolicyModel
+from qb_data.data_audit import validate_question_splits
+from qb_data.mc_builder import MCQuestion, validate_gold_option, validate_reveal_grid
 from training.checkpoints import exclusive_training_run, save_training_checkpoint, training_lock
-from qb_data.mc_builder import MCQuestion
 
 
-def format_question_text(question: MCQuestion) -> str:
-    """Format a complete question as text for supervised training.
+AnswerExample = tuple[MCQuestion, str | None]
 
-    Shows ALL clues (complete question) since supervised training is the
-    easier task of answer selection on full information. PPO later trains
-    on incremental clues.
+
+def _menu_text(question: MCQuestion) -> str:
+    choices = " ".join(f"({i}) {option}" for i, option in enumerate(question.options, 1))
+    return f"| CHOICES: {choices}"
+
+
+def format_question_text(question: MCQuestion, clues: str | None = None) -> str:
+    """Format visible clues and the original ordered menu for answer selection.
 
     Parameters
     ----------
     question : MCQuestion
         Question with tokens, options, and gold_index.
+    clues : str, optional
+        A scheduled clue prefix. Defaults to the complete token sequence.
 
     Returns
     -------
     str
-        Formatted text: ``"CLUES: <all tokens> | CHOICES: (1) opt1 (2) opt2 ..."``
+        Formatted text: ``"CLUES: <visible tokens> | CHOICES: (1) opt1 (2) opt2 ..."``
     """
-    clues_text = " ".join(question.tokens)
-    choices_parts = [f"({i + 1}) {opt}" for i, opt in enumerate(question.options)]
-    choices_text = " ".join(choices_parts)
-    return f"CLUES: {clues_text} | CHOICES: {choices_text}"
+    if clues is None:
+        clues = " ".join(question.tokens)
+    return f"CLUES: {clues} {_menu_text(question)}"
 
 
 class SupervisedTrainer:
     """Trainer for supervised warm-start of T5PolicyModel.
 
-    Trains the answer head using cross-entropy loss on complete questions
-    (all clues shown at once). Uses gradient accumulation for stable training
+    Trains the answer head using cross-entropy loss. Uses gradient accumulation for stable training
     with large effective batch sizes without exceeding GPU memory.
 
     The training loop:
@@ -102,6 +109,7 @@ class SupervisedTrainer:
         Configuration dictionary with keys:
 
         - ``supervised_lr`` (float): Learning rate. Default 3e-4.
+        - ``supervised_input_mode`` (str): "full_question" or "prefixes".
         - ``supervised_epochs`` (int): Number of epochs. Default 10.
         - ``supervised_batch_size`` (int): Batch size. Default 8.
         - ``supervised_grad_accum_steps`` (int): Gradient accumulation. Default 4.
@@ -142,6 +150,15 @@ class SupervisedTrainer:
         self.write_checkpoint_sidecars: Callable[[Path], None] | None = None
 
         self.device = model.device
+        self.input_mode = config.get("supervised_input_mode", "full_question")
+        if self.input_mode not in ("full_question", "prefixes"):
+            raise ValueError("supervised.input_mode must be 'full_question' or 'prefixes'")
+        self.shuffle = random.shuffle
+        if self.input_mode == "prefixes":
+            validate_question_splits(train=self.train_questions, val=self.val_questions)
+            self.shuffle = random.Random(config.get("supervised_seed", 42)).shuffle
+        self.train_examples = self._examples(self.train_questions)
+        self.val_examples = self._examples(self.val_questions)
 
         # Hyperparameters with defaults
         self.lr = float(config.get("supervised_lr", 3e-4))
@@ -171,19 +188,37 @@ class SupervisedTrainer:
         self.checkpoint_dir = Path(config.get("checkpoint_dir", "checkpoints")) / "supervised"
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    def prepare_batch(
-        self, questions: List[MCQuestion]
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Format a batch of complete questions as tokenized tensors.
+    def _examples(self, questions: List[MCQuestion]) -> list[AnswerExample]:
+        """Keep references to each unique reveal within its already-assigned source split."""
+        if self.input_mode == "full_question":
+            return [(question, None) for question in questions]
+        examples = []
+        head = getattr(self.model, "policy_head", None)
+        width = getattr(head, "num_choices", self.config.get("num_choices", 4))
+        for question in questions:
+            count = len(question.options)
+            if not 1 <= count <= width:
+                raise ValueError(f"{question.qid}: menu size {count} exceeds the answer head or is empty")
+            validate_gold_option(question)
+            validate_reveal_grid(question)
+            # Repeated boundaries can differ in whitespace while exposing identical tokens.
+            by_end = dict(zip(question.run_indices, question.cumulative_prefixes, strict=True))
+            examples.extend((question, prefix) for prefix in by_end.values())
+        return examples
 
-        Each question is formatted with ALL clues visible (supervised training
-        shows complete information). Text is tokenized using the model's
-        T5TokenizerFast.
+    def prepare_batch(
+        self, questions: List[MCQuestion], clues: list[str | None] | None = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Format a batch of answer examples as tokenized tensors.
+
+        Tokenize either complete questions or the supplied scheduled reveals.
 
         Parameters
         ----------
         questions : list[MCQuestion]
             Batch of questions to format.
+        clues : list[str or None], optional
+            Visible clue text for each row. None selects the full question.
 
         Returns
         -------
@@ -194,23 +229,47 @@ class SupervisedTrainer:
         labels : torch.Tensor
             Gold answer indices of shape ``[batch_size]``, on device.
         """
-        texts = [format_question_text(q) for q in questions]
+        if clues is None:
+            clues = [None] * len(questions)
+        texts = [format_question_text(q, p) for q, p in zip(questions, clues, strict=True)]
         labels = [q.gold_index for q in questions]
 
-        # Tokenize
-        inputs = self.model.tokenizer(
-            texts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=self.max_input_length,
-        )
+        tokenizer = self.model.tokenizer
+        if self.input_mode == "prefixes":
+            rows = tokenizer(texts, truncation=False, return_attention_mask=False, verbose=False)["input_ids"]
+            for i, row in enumerate(rows):
+                if len(row) > self.max_input_length:
+                    # Preserve the new reveal and every displayed answer in a long prompt.
+                    header = tokenizer("CLUES:", add_special_tokens=False)["input_ids"]
+                    menu = tokenizer(_menu_text(questions[i]))["input_ids"]
+                    available = self.max_input_length - len(header) - len(menu)
+                    if available < 1:
+                        raise ValueError(f"{questions[i].qid}: menu leaves no context for clues")
+                    visible = clues[i] if clues[i] is not None else " ".join(questions[i].tokens)
+                    clue_ids = tokenizer(visible, add_special_tokens=False)["input_ids"]
+                    rows[i] = header + clue_ids[-available:] + menu
+            inputs = tokenizer.pad({"input_ids": rows}, padding=True, return_tensors="pt")
+        else:
+            inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True,
+                               max_length=self.max_input_length)
 
         input_ids = inputs["input_ids"].to(self.device)
         attention_mask = inputs["attention_mask"].to(self.device)
         labels_tensor = torch.tensor(labels, dtype=torch.long).to(self.device)
 
         return input_ids, attention_mask, labels_tensor
+
+    def _predict_batch(self, examples: list[AnswerExample]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Predict active menu slots for both optimization and validation."""
+        questions = [q for q, _ in examples]
+        ids, attention, labels = self.prepare_batch(questions, [p for _, p in examples])
+        logits, predictions = self.model.predict_answer(ids, attention)
+        if self.input_mode == "prefixes":
+            counts = torch.tensor([len(q.options) for q in questions], device=logits.device)
+            slots = torch.arange(logits.shape[-1], device=logits.device)
+            logits = logits.masked_fill(slots >= counts[:, None], -torch.inf)
+            predictions = logits.argmax(dim=-1)
+        return logits, predictions, labels
 
     def train_epoch(self) -> Tuple[float, float]:
         """Train for one epoch with gradient accumulation.
@@ -229,8 +288,8 @@ class SupervisedTrainer:
         self.model.train()
 
         # Shuffle training data
-        shuffled = self.train_questions[:]
-        random.shuffle(shuffled)
+        shuffled = self.train_examples[:]
+        self.shuffle(shuffled)
 
         total_loss = 0.0
         total_correct = 0
@@ -248,13 +307,7 @@ class SupervisedTrainer:
             if not batch_questions:
                 continue
 
-            # Prepare batch
-            input_ids, attention_mask, labels = self.prepare_batch(batch_questions)
-
-            # Forward pass
-            answer_logits, predictions = self.model.predict_answer(
-                input_ids, attention_mask
-            )
+            answer_logits, predictions, labels = self._predict_batch(batch_questions)
 
             # Compute loss (scaled by accumulation steps for correct gradient magnitude)
             loss = self.criterion(answer_logits, labels)
@@ -289,38 +342,28 @@ class SupervisedTrainer:
         return epoch_loss, epoch_acc
 
     def validate(self) -> Tuple[float, float]:
-        """Validate on the validation set.
+        """Compute loss and answer accuracy over the configured validation examples."""
+        return self._evaluate(self.val_examples)
 
-        Runs the model in eval mode on all validation questions, computing
-        accuracy and loss without gradient computation.
-
-        Returns
-        -------
-        val_loss : float
-            Average cross-entropy loss on validation set.
-        val_acc : float
-            Accuracy on validation set (fraction correct).
-        """
+    def _evaluate(self, examples: list[AnswerExample]) -> Tuple[float, float]:
+        """Compute mean batch loss and sample accuracy for the requested reveals."""
         self.model.eval()
 
         total_loss = 0.0
         total_correct = 0
         total_samples = 0
-        num_batches = max(1, (len(self.val_questions) + self.batch_size - 1) // self.batch_size)
+        num_batches = max(1, (len(examples) + self.batch_size - 1) // self.batch_size)
 
         with torch.no_grad():
             for batch_idx in range(num_batches):
                 start = batch_idx * self.batch_size
-                end = min(start + self.batch_size, len(self.val_questions))
-                batch_questions = self.val_questions[start:end]
+                end = min(start + self.batch_size, len(examples))
+                batch_questions = examples[start:end]
 
                 if not batch_questions:
                     continue
 
-                input_ids, attention_mask, labels = self.prepare_batch(batch_questions)
-                answer_logits, predictions = self.model.predict_answer(
-                    input_ids, attention_mask
-                )
+                answer_logits, predictions, labels = self._predict_batch(batch_questions)
 
                 loss = self.criterion(answer_logits, labels)
                 total_loss += loss.item()
@@ -359,8 +402,8 @@ class SupervisedTrainer:
         if not self.val_questions:
             raise ValueError("T5 checkpoint selection requires validation questions")
         print(f"Starting supervised training for {self.epochs} epochs")
-        print(f"  Training samples: {len(self.train_questions)}")
-        print(f"  Validation samples: {len(self.val_questions)}")
+        print(f"  Training samples: {len(self.train_examples)} from {len(self.train_questions)} questions")
+        print(f"  Validation samples: {len(self.val_examples)} from {len(self.val_questions)} questions")
         print(f"  Batch size: {self.batch_size}")
         print(f"  Gradient accumulation: {self.grad_accum_steps} (effective batch = {self.batch_size * self.grad_accum_steps})")
         print(f"  Learning rate: {self.lr}")
@@ -468,6 +511,10 @@ class SupervisedTrainer:
             "train": _convert_to_native(self.train_history),
             "val": _convert_to_native(self.val_history),
             "config": {
+                "input_mode": self.input_mode,
+                "seed": self.config.get("supervised_seed", 42) if self.input_mode == "prefixes" else None,
+                "train_examples": len(self.train_examples),
+                "val_examples": len(self.val_examples),
                 "lr": self.lr,
                 "epochs": self.epochs,
                 "batch_size": self.batch_size,
@@ -527,8 +574,12 @@ def run_supervised_training(
 
     if int(config.get("supervised_epochs", 10)) <= 0:
         raise ValueError("supervised_epochs must be positive to produce a fresh checkpoint")
+    if config.get("supervised_input_mode") == "prefixes" and test_questions is not None:
+        validate_question_splits(train=train_questions, val=val_questions, test=test_questions)
 
     # Initialize model
+    if config.get("supervised_input_mode") == "prefixes":
+        torch.manual_seed(config.get("supervised_seed", 42))
     model_config = {
         "model_name": config.get("model_name", "t5-large"),
         "device": config.get("device", "cpu"),
@@ -562,7 +613,7 @@ def run_supervised_training(
         model.eval()
 
         # Evaluate
-        test_loss, test_acc = _evaluate_on_questions(model, test_questions, trainer)
+        test_loss, test_acc = trainer._evaluate(trainer._examples(test_questions))
         print(f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}")
 
         # Save test results
@@ -577,57 +628,6 @@ def run_supervised_training(
         print(f"Test results saved to {results_path}")
 
     return model, trainer
-
-
-def _evaluate_on_questions(
-    model: T5PolicyModel,
-    questions: List[MCQuestion],
-    trainer: SupervisedTrainer,
-) -> Tuple[float, float]:
-    """Evaluate model on a set of questions.
-
-    Parameters
-    ----------
-    model : T5PolicyModel
-        Model to evaluate.
-    questions : list[MCQuestion]
-        Questions to evaluate on.
-    trainer : SupervisedTrainer
-        Trainer instance (for batch preparation).
-
-    Returns
-    -------
-    avg_loss : float
-        Average cross-entropy loss.
-    accuracy : float
-        Fraction of correctly predicted answers.
-    """
-    model.eval()
-    total_loss = 0.0
-    total_correct = 0
-    total_samples = 0
-    batch_size = trainer.batch_size
-    num_batches = max(1, (len(questions) + batch_size - 1) // batch_size)
-    criterion = nn.CrossEntropyLoss()
-
-    with torch.no_grad():
-        for batch_idx in range(num_batches):
-            start = batch_idx * batch_size
-            end = min(start + batch_size, len(questions))
-            batch_questions = questions[start:end]
-
-            if not batch_questions:
-                continue
-
-            input_ids, attention_mask, labels = trainer.prepare_batch(batch_questions)
-            answer_logits, predictions = model.predict_answer(input_ids, attention_mask)
-
-            loss = criterion(answer_logits, labels)
-            total_loss += loss.item()
-            total_correct += (predictions == labels).sum().item()
-            total_samples += len(labels)
-
-    return total_loss / max(1, num_batches), total_correct / max(1, total_samples)
 
 
 def _convert_to_native(obj: Any) -> Any:

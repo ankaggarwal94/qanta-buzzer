@@ -3,7 +3,7 @@
 Train T5 policy with supervised warm-start then PPO fine-tuning.
 
 End-to-end pipeline for training a T5PolicyModel on quiz bowl questions:
-1. Supervised warm-start: Train answer selection on complete questions
+1. Supervised warm-start: Train answer selection on complete questions or scheduled prefixes
 2. PPO fine-tuning: Optimize wait/answer policy on incremental episodes
 
 Usage:
@@ -72,10 +72,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Quick test run: uses t5-small, 2 epochs, 4 batch size.",
     )
-    parser.add_argument(
+    phases = parser.add_mutually_exclusive_group()
+    phases.add_argument(
         "--skip-supervised",
         action="store_true",
         help="Skip supervised training phase.",
+    )
+    phases.add_argument(
+        "--supervised-only", action="store_true",
+        help="Save the supervised answer checkpoint and finish before PPO.",
     )
     parser.add_argument(
         "--model-path",
@@ -193,6 +198,8 @@ def flatten_config(config: dict) -> dict:
 
     # Supervised section
     sup = config.get("supervised", {})
+    flat["supervised_input_mode"] = sup.get("input_mode", "full_question")
+    flat["supervised_seed"] = sup.get("seed", config.get("data", {}).get("seed", 42))
     flat["supervised_lr"] = sup.get("lr", 3e-4)
     flat["supervised_epochs"] = sup.get("epochs", 10)
     flat["supervised_batch_size"] = sup.get("batch_size", 8)
@@ -218,6 +225,13 @@ def flatten_config(config: dict) -> dict:
     flat["save_interval"] = ppo.get("save_interval", 20)
 
     return flat
+
+
+def _read_questions(path: Path, config: dict) -> list:
+    if config.get("supervised", {}).get("input_mode") == "prefixes":
+        from scripts._stopping_inputs import parse_stopping_questions
+        return parse_stopping_questions(path.read_bytes(), path)
+    return load_mc_questions(path)
 
 
 def load_questions(
@@ -258,7 +272,7 @@ def load_questions(
 
     data_audit.require_clean_split_directory(mc_path.parent)
     print(f"Loading MC questions from: {mc_path}")
-    questions = load_mc_questions(mc_path)
+    questions = _read_questions(mc_path, config)
     print(f"Loaded {len(questions)} questions")
 
     # Apply max_questions limit when falling back to a combined dataset.
@@ -422,15 +436,15 @@ def load_question_splits_with_metadata(
         if split_paths is None:
             continue
         data_audit.require_clean_split_directory(base_dir)
-        train_questions = load_mc_questions(split_paths["train"])
+        train_questions = _read_questions(split_paths["train"], config)
         if not train_questions:
             print(
                 f"Warning: persisted train split at {split_paths['train']} "
                 "is empty; skipping this candidate and trying next."
             )
             continue
-        val_questions = load_mc_questions(split_paths["val"])
-        test_questions = load_mc_questions(split_paths["test"])
+        val_questions = _read_questions(split_paths["val"], config)
+        test_questions = _read_questions(split_paths["test"], config)
         cap_was_applied = bool(max_questions)
         if cap_was_applied:
             train_questions, val_questions, test_questions = _apply_max_questions(
@@ -612,6 +626,8 @@ def _train_policy(args: argparse.Namespace, config: dict, flat_config: dict) -> 
         supervised_checkpoint = _current_best_checkpoint(trainer)
         supervised_model_path = str(supervised_checkpoint)
         print(f"Supervised model saved to: {supervised_model_path}")
+        if getattr(args, "supervised_only", False):
+            return
     else:
         supervised_model_path = args.model_path
         print(f"\nSkipping supervised training, using model: {supervised_model_path}")

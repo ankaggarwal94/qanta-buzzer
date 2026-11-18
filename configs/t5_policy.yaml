@@ -1,6 +1,6 @@
 # T5 Policy Configuration
 # Hyperparameters for T5PolicyModel with supervised warm-start and PPO fine-tuning.
-# Use with: python -m training.train_supervised_t5 --config configs/t5_policy.yaml
+# Use with: python scripts/train_t5_policy.py --config configs/t5_policy.yaml
 
 model:
   model_name: t5-large  # Use t5-base or t5-small if memory constrained
@@ -9,6 +9,7 @@ model:
   num_choices: 4
 
 supervised:
+  input_mode: full_question  # "prefixes" uses each distinct scheduled cumulative reveal.
   lr: 3.0e-4
   epochs: 10
   batch_size: 8
