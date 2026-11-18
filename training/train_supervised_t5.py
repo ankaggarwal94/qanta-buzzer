@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -46,6 +47,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from models.t5_policy import T5PolicyModel
+from training.checkpoints import exclusive_training_run, save_training_checkpoint, training_lock
 from qb_data.mc_builder import MCQuestion
 
 
@@ -137,6 +139,7 @@ class SupervisedTrainer:
         self.train_questions = list(train_questions)
         self.val_questions = list(val_questions)
         self.config = config
+        self.write_checkpoint_sidecars: Callable[[Path], None] | None = None
 
         self.device = model.device
 
@@ -159,7 +162,8 @@ class SupervisedTrainer:
 
         # Training state
         self.current_epoch = 0
-        self.best_val_acc = 0.0
+        self.best_val_acc = -float("inf")
+        self.best_checkpoint_path: Path | None = None
         self.train_history: List[Dict[str, Any]] = []
         self.val_history: List[Dict[str, Any]] = []
 
@@ -341,6 +345,19 @@ class SupervisedTrainer:
             Training summary with keys: ``best_val_acc``, ``final_train_acc``,
             ``final_train_loss``, ``total_epochs``.
         """
+        # Existing files are never evidence that this invocation saved a model.
+        with training_lock(self.checkpoint_dir.parent):
+            return self._train()
+
+    def _train(self) -> Dict[str, Any]:
+        self.best_checkpoint_path = None
+        self.train_history.clear()
+        self.val_history.clear()
+        self.best_val_acc = -float("inf")
+        if self.epochs <= 0:
+            raise ValueError("supervised_epochs must be positive to produce a fresh checkpoint")
+        if not self.val_questions:
+            raise ValueError("T5 checkpoint selection requires validation questions")
         print(f"Starting supervised training for {self.epochs} epochs")
         print(f"  Training samples: {len(self.train_questions)}")
         print(f"  Validation samples: {len(self.val_questions)}")
@@ -363,6 +380,8 @@ class SupervisedTrainer:
 
             # Validate
             val_loss, val_acc = self.validate()
+            if not np.isfinite(val_loss) or not np.isfinite(val_acc):
+                raise ValueError("Supervised validation loss and accuracy must be finite")
 
             # Log results
             print(
@@ -381,11 +400,10 @@ class SupervisedTrainer:
 
             # Save best model
             if val_acc > self.best_val_acc:
-                self.best_val_acc = val_acc
-                self.save_checkpoint(is_best=True)
+                self.save_checkpoint(is_best=True, validation_score=val_acc)
                 print(f"  -> New best validation accuracy: {val_acc:.4f}")
 
-        print(f"\nSupervised training completed!")
+        print("\nSupervised training completed!")
         print(f"  Best validation accuracy: {self.best_val_acc:.4f}")
 
         # Save training history
@@ -398,7 +416,7 @@ class SupervisedTrainer:
             "total_epochs": self.epochs,
         }
 
-    def save_checkpoint(self, is_best: bool = False) -> Path:
+    def save_checkpoint(self, is_best: bool = False, *, validation_score: float | None = None) -> Path:
         """Save model checkpoint to disk.
 
         Saves the model (T5 encoder + policy head) and optimizer state.
@@ -409,6 +427,8 @@ class SupervisedTrainer:
         ----------
         is_best : bool
             If True, save to ``best_model/`` directory.
+        validation_score : float, optional
+            Updated best score, committed with the model after a successful save.
 
         Returns
         -------
@@ -420,16 +440,17 @@ class SupervisedTrainer:
         else:
             save_path = self.checkpoint_dir / f"epoch_{self.current_epoch + 1}"
 
-        # Use T5PolicyModel's save() method
-        self.model.save(str(save_path))
-
-        # Save training state
+        score = self.best_val_acc if validation_score is None else validation_score
         state = {
             "epoch": self.current_epoch + 1,
-            "best_val_acc": self.best_val_acc,
+            "best_val_acc": score,
             "optimizer_state_dict": self.optimizer.state_dict(),
         }
-        torch.save(state, save_path / "training_state.pt")
+        with training_lock(self.checkpoint_dir.parent):
+            save_training_checkpoint(self.model, save_path, state, self.write_checkpoint_sidecars)
+            if is_best:
+                self.best_checkpoint_path = save_path
+                self.best_val_acc = score
 
         return save_path
 
@@ -462,11 +483,14 @@ class SupervisedTrainer:
         return history_path
 
 
+@exclusive_training_run
 def run_supervised_training(
     config: Dict[str, Any],
     train_questions: List[MCQuestion],
     val_questions: List[MCQuestion],
     test_questions: Optional[List[MCQuestion]] = None,
+    *,
+    write_checkpoint_sidecars: Callable[[Path], None] | None = None,
 ) -> Tuple[T5PolicyModel, SupervisedTrainer]:
     """Run the complete supervised training pipeline.
 
@@ -487,6 +511,9 @@ def run_supervised_training(
     test_questions : list[MCQuestion] or None
         Optional test set for final evaluation.
 
+    write_checkpoint_sidecars : callable, optional
+        Write run metadata into each staged checkpoint before publication.
+
     Returns
     -------
     model : T5PolicyModel
@@ -497,6 +524,9 @@ def run_supervised_training(
     print("=" * 60)
     print("SUPERVISED TRAINING PHASE")
     print("=" * 60)
+
+    if int(config.get("supervised_epochs", 10)) <= 0:
+        raise ValueError("supervised_epochs must be positive to produce a fresh checkpoint")
 
     # Initialize model
     model_config = {
@@ -515,8 +545,12 @@ def run_supervised_training(
         config=config,
     )
 
+    trainer.write_checkpoint_sidecars = write_checkpoint_sidecars
+
     # Train
     summary = trainer.train()
+    if trainer.best_checkpoint_path is None:
+        raise RuntimeError("Supervised training did not save a best checkpoint in this run")
 
     # Evaluate on test set if provided
     if test_questions is not None:
@@ -524,9 +558,7 @@ def run_supervised_training(
         print("FINAL EVALUATION ON TEST SET")
         print("=" * 60)
 
-        # Load best model
-        best_model_path = trainer.checkpoint_dir / "best_model"
-        model.load(str(best_model_path))
+        model.load(str(trainer.best_checkpoint_path))
         model.eval()
 
         # Evaluate

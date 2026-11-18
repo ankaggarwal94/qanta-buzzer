@@ -53,6 +53,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from models.t5_policy import T5PolicyModel
+from training.checkpoints import exclusive_training_run, save_training_checkpoint, training_lock
 from qb_data.mc_builder import MCQuestion
 from training.ppo_math import normalize_advantages
 
@@ -267,6 +268,7 @@ class PPOTrainer:
         self.train_questions = list(train_questions)
         self.val_questions = list(val_questions)
         self.config = config
+        self.write_checkpoint_sidecars: Callable[[Path], None] | None = None
         self.text_env_factory = text_env_factory
         self.bootstrap_time_limits = bootstrap_time_limits
         self.disable_update_dropout = disable_update_dropout
@@ -298,6 +300,7 @@ class PPOTrainer:
         # Training state
         self.current_iteration = 0
         self.best_val_reward = -float("inf")
+        self.best_checkpoint_path: Path | None = None
         self.history: List[Dict[str, Any]] = []
 
         # Checkpoint directory
@@ -693,6 +696,20 @@ class PPOTrainer:
         dict[str, Any]
             Training summary: best_val_reward, total_iterations.
         """
+        # A pre-existing best_model belongs to an earlier invocation.
+        with training_lock(self.checkpoint_dir.parent):
+            return self._train()
+
+    def _train(self) -> Dict[str, Any]:
+        self.best_checkpoint_path = None
+        self.history.clear()
+        self.best_val_reward = -float("inf")
+        if self.iterations <= 0:
+            raise ValueError("ppo_iterations must be positive to produce a fresh checkpoint")
+        if self.eval_interval <= 0 or self.save_interval <= 0:
+            raise ValueError("eval_interval and save_interval must be positive")
+        if not self.val_questions:
+            raise ValueError("T5 checkpoint selection requires validation questions")
         print(f"Starting PPO training for {self.iterations} iterations")
         print(f"  Training questions: {len(self.train_questions)}")
         print(f"  Validation questions: {len(self.val_questions)}")
@@ -731,11 +748,13 @@ class PPOTrainer:
             print(f"  Value loss: {update_metrics['value_loss']:.4f}")
             print(f"  Entropy: {update_metrics['entropy']:.4f}")
 
-            # Validate periodically
-            if (iteration + 1) % self.eval_interval == 0:
+            # Always validate the final policy, including short smoke runs.
+            if (iteration + 1) % self.eval_interval == 0 or iteration + 1 == self.iterations:
                 print("\n  Validating...")
                 val_summary = self.validate()
-                val_reward = val_summary.get("average_reward", 0.0)
+                val_reward = val_summary["average_reward"]
+                if not np.isfinite(val_reward):
+                    raise ValueError("PPO validation reward must be finite")
 
                 print(f"  Val Accuracy: {val_summary['accuracy']:.4f}")
                 print(f"  Val Reward: {val_reward:.4f}")
@@ -756,8 +775,7 @@ class PPOTrainer:
 
                 # Save best model
                 if val_reward > self.best_val_reward:
-                    self.best_val_reward = val_reward
-                    self.save_checkpoint(is_best=True)
+                    self.save_checkpoint(is_best=True, validation_score=val_reward)
                     print(
                         f"  -> New best validation reward: {val_reward:.4f}"
                     )
@@ -780,13 +798,15 @@ class PPOTrainer:
             "total_iterations": self.iterations,
         }
 
-    def save_checkpoint(self, is_best: bool = False) -> Path:
+    def save_checkpoint(self, is_best: bool = False, *, validation_score: float | None = None) -> Path:
         """Save model checkpoint to disk.
 
         Parameters
         ----------
         is_best : bool
             If True, save to ``best_model/`` directory.
+        validation_score : float, optional
+            Updated best score, committed with the model after a successful save.
 
         Returns
         -------
@@ -801,16 +821,17 @@ class PPOTrainer:
                 / f"iter_{self.current_iteration + 1}"
             )
 
-        # Use T5PolicyModel's save() method
-        self.model.save(str(save_path))
-
-        # Save training state
+        score = self.best_val_reward if validation_score is None else validation_score
         state = {
             "iteration": self.current_iteration + 1,
-            "best_val_reward": self.best_val_reward,
+            "best_val_reward": score,
             "optimizer_state_dict": self.optimizer.state_dict(),
         }
-        torch.save(state, save_path / "training_state.pt")
+        with training_lock(self.checkpoint_dir.parent):
+            save_training_checkpoint(self.model, save_path, state, self.write_checkpoint_sidecars)
+            if is_best:
+                self.best_checkpoint_path = save_path
+                self.best_val_reward = score
 
         print(f"  Checkpoint saved to {save_path}")
         return save_path
@@ -829,12 +850,15 @@ class PPOTrainer:
         return history_path
 
 
+@exclusive_training_run
 def run_ppo_training(
     config: Dict[str, Any],
     train_questions: List[MCQuestion],
     val_questions: List[MCQuestion],
     test_questions: Optional[List[MCQuestion]] = None,
     pretrained_model_path: Optional[str] = None,
+    *,
+    write_checkpoint_sidecars: Callable[[Path], None] | None = None,
 ) -> Tuple[T5PolicyModel, PPOTrainer]:
     """Run the PPO training pipeline with optional pretrained model.
 
@@ -855,6 +879,9 @@ def run_ppo_training(
         Path to a supervised pretrained checkpoint. If provided, loads the
         model from this path. Otherwise creates a new model.
 
+    write_checkpoint_sidecars : callable, optional
+        Write run metadata into each staged checkpoint before publication.
+
     Returns
     -------
     model : T5PolicyModel
@@ -865,6 +892,9 @@ def run_ppo_training(
     print("=" * 60)
     print("PPO TRAINING PHASE (T5 Policy)")
     print("=" * 60)
+
+    if int(config.get("ppo_iterations", 100)) <= 0:
+        raise ValueError("ppo_iterations must be positive to produce a fresh checkpoint")
 
     # Load or create model
     if pretrained_model_path:
@@ -898,8 +928,12 @@ def run_ppo_training(
         config=config,
     )
 
+    trainer.write_checkpoint_sidecars = write_checkpoint_sidecars
+
     # Train
     summary = trainer.train()
+    if trainer.best_checkpoint_path is None:
+        raise RuntimeError("PPO training did not save a best checkpoint in this run")
 
     # Evaluate on test set if provided
     if test_questions is not None:
@@ -907,12 +941,8 @@ def run_ppo_training(
         print("FINAL EVALUATION ON TEST SET")
         print("=" * 60)
 
-        # Load best model if it exists
-        best_model_path = trainer.checkpoint_dir / "best_model"
-        if best_model_path.exists():
-            print(f"Loading best model from {best_model_path}")
-            model.load(str(best_model_path))
-
+        print(f"Loading best model from {trainer.best_checkpoint_path}")
+        model.load(str(trainer.best_checkpoint_path))
         # Run full test evaluation directly on the held-out split.
         test_metrics = trainer.evaluate_questions(list(test_questions), "test")
 

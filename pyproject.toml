@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "datasets>=2.14.0",
+  "filelock>=3.13",
   "gymnasium>=1.1.0",
   "jsonlines>=3.1.0",
   "matplotlib>=3.7.0",
@@ -29,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-acl-verified = ["python-flint==0.8.0", "filelock>=3"]
+acl-verified = ["python-flint==0.8.0"]
 acl-private-review = ["cryptography==46.0.7"]
 dev = [
   "jsonschema>=4.18,<5",

@@ -140,17 +140,21 @@ def test_main_writes_t5_config_and_split_manifest(
     class FakeTrainer:
         def __init__(self, checkpoint_dir):
             self.checkpoint_dir = checkpoint_dir
+            self.best_checkpoint_path = checkpoint_dir / "best_model"
+            self.best_checkpoint_path.mkdir()
 
     monkeypatch.setattr(
         train_t5_policy,
         "load_question_splits_with_metadata",
         lambda _args, _config: ([fake_question], [fake_question], [fake_question], fake_manifest),
     )
-    monkeypatch.setattr(
-        ppo_t5_mod,
-        "run_ppo_training",
-        lambda **_kwargs: (object(), FakeTrainer(checkpoint_dir)),
-    )
+    def train(**kwargs):
+        trainer = FakeTrainer(checkpoint_dir)
+        kwargs["write_checkpoint_sidecars"](trainer.best_checkpoint_path)
+        return object(), trainer
+
+    monkeypatch.setattr(ppo_t5_mod, "run_ppo_training", train)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -166,8 +170,8 @@ def test_main_writes_t5_config_and_split_manifest(
 
     train_t5_policy.main()
 
-    assert (checkpoint_dir / "config_used.json").exists()
-    assert (checkpoint_dir / "split_manifest.json").exists()
+    assert (checkpoint_dir / "best_model" / "config_used.json").exists()
+    assert (checkpoint_dir / "best_model" / "split_manifest.json").exists()
 
 
 def test_apply_max_questions_global_raises_when_max_q_below_num_splits():
