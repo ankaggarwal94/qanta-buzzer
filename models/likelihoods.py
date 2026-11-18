@@ -262,6 +262,8 @@ class LikelihoodModel(ABC):
         pending: dict[str, np.ndarray] = {}
         archive_shape = None
         width = None
+        existing = next(iter(self.embedding_cache.values()), None)
+        existing_shape = None if existing is None else existing.shape
         with np.load(p) as data:
             for key in data.files:
                 if key in self.embedding_cache or key in pending:
@@ -271,7 +273,9 @@ class LikelihoodModel(ABC):
                 if archive_shape is None:
                     archive_shape = vector.shape
                     width = self._embedding_width()
-                if width is None or vector.size == width:
+                if (width is None or vector.size == width) and (
+                    existing_shape is None or vector.shape == existing_shape
+                ):
                     pending[key] = vector
         if archive_shape is None:
             return 0
@@ -283,8 +287,7 @@ class LikelihoodModel(ABC):
                 stacklevel=2,
             )
             return 0
-        existing = next(iter(self.embedding_cache.values()), None)
-        _validate_vector_shape(archive_shape, None if existing is None else existing.shape, f"Embedding cache {p}")
+        _validate_vector_shape(archive_shape, existing_shape, f"Embedding cache {p}")
         self.embedding_cache.update(pending)
         return len(pending)
 

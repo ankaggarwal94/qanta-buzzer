@@ -211,11 +211,16 @@ def test_first_batch_must_match_encoder_width_before_publishing(monkeypatch):
     np.testing.assert_array_equal(model.embed_and_cache(["fresh", "other"]), [[5, 1], [5, 1]])
 
 
-def test_incompatible_archive_releases_decoded_rows_as_it_validates(tmp_path, monkeypatch):
+@pytest.mark.parametrize("warm", [False, True], ids=["encoder-width", "warm-cache-width"])
+def test_incompatible_archive_releases_decoded_rows_as_it_validates(tmp_path, monkeypatch, warm):
     from weakref import WeakValueDictionary
 
     model = _LocalEmbeddings()
-    monkeypatch.setattr(model, "_embedding_width", lambda: 2)
+    if warm:
+        model.embed_and_cache(["warm"])
+    else:
+        monkeypatch.setattr(model, "_embedding_width", lambda: 2)
+    old = model.embedding_cache.copy()
     path = tmp_path / "stale.npz"
     rows = {str(i): np.ones(3, dtype=np.float32) for i in range(32)}
     np.savez_compressed(path, **rows)
@@ -232,11 +237,16 @@ def test_incompatible_archive_releases_decoded_rows_as_it_validates(tmp_path, mo
         return row
 
     monkeypatch.setattr(archive_class, "__getitem__", read)
-    with pytest.warns(RuntimeWarning, match="width"):
-        assert model.load_cache(path) == 0
+    if warm:
+        with pytest.raises(ValueError, match="rebuild"):
+            model.load_cache(path)
+    else:
+        with pytest.warns(RuntimeWarning, match="width"):
+            assert model.load_cache(path) == 0
     assert len(counts) == len(rows)
     assert max(counts) <= 2  # Current row and the preceding loop iteration.
-    assert not model.embedding_cache
+    assert model.embedding_cache.keys() == old.keys()
+    assert all(model.embedding_cache[k] is v for k, v in old.items())
 
 
 @pytest.mark.parametrize("warm", [False, True])
