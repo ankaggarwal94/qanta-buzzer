@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -18,6 +19,7 @@ import pytest
 from models.likelihoods import (
     LikelihoodModel,
     SBERTLikelihood,
+    T5Likelihood,
     TfIdfLikelihood,
 )
 
@@ -40,6 +42,241 @@ class TestLikelihoodModelABC:
         model = TfIdfLikelihood(corpus_texts=sample_corpus)
         assert hasattr(model, "embedding_cache"), "Missing embedding_cache attribute"
         assert isinstance(model.embedding_cache, dict), "embedding_cache should be dict"
+
+
+def test_embedding_misses_are_unique_and_return_in_request_order(monkeypatch):
+    model = TfIdfLikelihood(["apple berry", "cherry date"])
+    original = model._embed_batch
+    calls = []
+
+    def record(texts):
+        calls.append(list(texts))
+        return original(texts)
+
+    monkeypatch.setattr(model, "_embed_batch", record)
+    model.precompute_embeddings(["date", "date"])
+    texts = ["berry", "date", "berry", "apple", "date"]
+    actual = model.embed_and_cache(texts)
+    np.testing.assert_array_equal(actual, original(texts))
+    assert calls == [["date"], ["berry", "apple"]]
+
+
+@pytest.mark.parametrize("method", ["embed_and_cache", "precompute_embeddings"])
+@pytest.mark.parametrize("shape", [(1, 4), (3, 4), (2,), (2, 5)])
+def test_malformed_embedding_batch_is_rejected_before_cache_update(monkeypatch, method, shape):
+    model = TfIdfLikelihood(["apple berry", "cherry date"])
+    old = model.embed_and_cache(["date"])
+    old_keys = set(model.embedding_cache)
+    original = model._embed_batch
+    monkeypatch.setattr(model, "_embed_batch", lambda texts: np.zeros(shape))
+
+    with pytest.raises(ValueError, match="embedding batch"):
+        getattr(model, method)(["berry", "apple"])
+    assert set(model.embedding_cache) == old_keys
+    np.testing.assert_array_equal(model.embed_and_cache(["date"]), old)
+
+    monkeypatch.setattr(model, "_embed_batch", original)
+    np.testing.assert_array_equal(model.embed_and_cache(["berry", "apple"]), original(["berry", "apple"]))
+
+
+def test_tfidf_refit_updates_the_vocabulary_and_cached_coordinates():
+    model = TfIdfLikelihood(["apple banana", "cherry date"])
+    previous = model.vectorizer
+    model.embed_and_cache(["banana", "apple"])
+    corpus = ["zebra banana", "cherry", "yarrow", "zebra", "lemon"]
+    model.fit(corpus)
+    assert "lemon" in model.vectorizer.vocabulary_
+    assert "lemon" not in previous.vocabulary_
+    reference = TfIdfLikelihood(corpus)
+    texts = ["banana", "apple", "lemon"]
+    np.testing.assert_array_equal(model.embed_and_cache(texts), reference.embed_and_cache(texts))
+    np.testing.assert_array_equal(model.score("zebra", texts), reference.score("zebra", texts))
+
+
+def test_failed_tfidf_refit_retains_last_working_model():
+    corpus = ["apple banana", "cherry date"]
+    model = TfIdfLikelihood(corpus)
+    model.embed_and_cache(["banana"])
+    key, warm_row = next(iter(model.embedding_cache.items()))
+    with pytest.raises(ValueError, match="empty vocabulary"):
+        model.fit(["the"])
+    assert model.embedding_cache[key] is warm_row
+    scores = model.score("apple banana", ["banana", "date"])
+    np.testing.assert_array_equal(scores, TfIdfLikelihood(corpus).score("apple banana", ["banana", "date"]))
+
+
+class _LocalEmbeddings(LikelihoodModel):
+    def _embed_batch(self, texts):
+        return np.array([[len(text), 1] for text in texts], dtype=np.float32)
+
+    def score(self, clue_prefix, option_profiles):
+        return self.embed_and_cache(option_profiles) @ self.embed_and_cache([clue_prefix])[0]
+
+
+def test_bulk_precompute_encodes_each_batch_before_scanning_further(monkeypatch):
+    from models import likelihoods
+
+    model = _LocalEmbeddings()
+    model.embed_and_cache(["warm"])
+    original_key = likelihoods._text_key
+    original_embed = model._embed_batch
+    batches = []
+
+    def key(text):
+        if text == "third":
+            assert batches == [["first", "second"]]
+        return original_key(text)
+
+    def embed(texts):
+        batches.append(texts)
+        return original_embed(texts)
+
+    monkeypatch.setattr(likelihoods, "_text_key", key)
+    monkeypatch.setattr(model, "_embed_batch", embed)
+    model.precompute_embeddings(["warm", "first", "first", "second", "first", "third"], batch_size=2)
+    assert batches == [["first", "second"], ["third"]]
+
+
+def test_bulk_precompute_releases_hashes_for_warm_entries():
+    import tracemalloc
+    from models.likelihoods import _text_key
+
+    model = _LocalEmbeddings()
+    texts = [f"warm-{i}" for i in range(8192)]
+    vector = np.ones(2, dtype=np.float32)
+    model.embedding_cache.update({_text_key(text): vector for text in texts})
+    model.precompute_embeddings([])  # Exclude the initial tqdm import.
+    tracemalloc.start()
+    try:
+        model.precompute_embeddings(texts)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # Holding 8,192 new 64-character digests alone would exceed this bound.
+    assert peak < 700 * 1024
+
+
+@pytest.mark.parametrize("backend, encoder", [
+    (SBERTLikelihood, SimpleNamespace(get_embedding_dimension=lambda: 2)),
+    (SBERTLikelihood, SimpleNamespace(get_sentence_embedding_dimension=lambda: 2)),
+    (T5Likelihood, SimpleNamespace(config=SimpleNamespace(d_model=2))),
+])
+def test_known_encoder_width_rejects_stale_archives(tmp_path, monkeypatch, backend, encoder):
+    from models.likelihoods import _text_key
+
+    model = backend.__new__(backend)
+    LikelihoodModel.__init__(model)
+    model.encoder = encoder
+    monkeypatch.setattr(model, "_embed_batch", _LocalEmbeddings()._embed_batch)
+    archive = tmp_path / "embeddings.npz"
+    np.savez(archive, **{_text_key("old"): np.ones(3)})
+    with pytest.warns(RuntimeWarning, match="width"):
+        assert model.load_cache(archive) == 0
+    assert not model.embedding_cache
+    np.testing.assert_array_equal(model.embed_and_cache(["fresh"]), [[5, 1]])
+
+    # An incompatible first row must not conceal a malformed later row.
+    np.savez(archive, **{_text_key("old"): np.ones(3), _text_key("bad"): np.ones((3, 1))})
+    with pytest.raises(ValueError, match="embedding"):
+        model.load_cache(archive)
+    assert list(model.embedding_cache) == [_text_key("fresh")]
+
+    np.savez(archive, **{_text_key("old"): np.array([9, 8]), _text_key("fresh"): np.zeros(2)})
+    assert model.load_cache(archive) == 1
+    np.testing.assert_array_equal(model.embed_and_cache(["fresh", "old"]), [[5, 1], [9, 8]])
+
+
+def test_unknown_width_mismatch_names_cache_recovery(tmp_path):
+    from models.likelihoods import _text_key
+
+    model = _LocalEmbeddings()
+    archive = tmp_path / "legacy.npz"
+    np.savez(archive, **{_text_key("old"): np.ones(3)})
+    assert model.load_cache(archive) == 1
+    with pytest.raises(ValueError, match="rebuild"):
+        model.embed_and_cache(["fresh"])
+    assert list(model.embedding_cache) == [_text_key("old")]
+
+
+def test_first_batch_must_match_encoder_width_before_publishing(monkeypatch):
+    model = T5Likelihood.__new__(T5Likelihood)
+    LikelihoodModel.__init__(model)
+    model.encoder = SimpleNamespace(config=SimpleNamespace(d_model=2))
+    monkeypatch.setattr(model, "_embed_batch", lambda texts: np.ones((len(texts), 3)))
+    with pytest.raises(ValueError, match="width"):
+        model.precompute_embeddings(["fresh", "other"])
+    assert not model.embedding_cache
+
+    monkeypatch.setattr(model, "_embed_batch", _LocalEmbeddings()._embed_batch)
+    np.testing.assert_array_equal(model.embed_and_cache(["fresh", "other"]), [[5, 1], [5, 1]])
+
+
+@pytest.mark.parametrize("warm", [False, True], ids=["encoder-width", "warm-cache-width"])
+def test_incompatible_archive_releases_decoded_rows_as_it_validates(tmp_path, monkeypatch, warm):
+    from weakref import WeakValueDictionary
+
+    model = _LocalEmbeddings()
+    if warm:
+        model.embed_and_cache(["warm"])
+    else:
+        monkeypatch.setattr(model, "_embedding_width", lambda: 2)
+    old = model.embedding_cache.copy()
+    path = tmp_path / "stale.npz"
+    rows = {str(i): np.ones(3, dtype=np.float32) for i in range(32)}
+    np.savez_compressed(path, **rows)
+    with np.load(path) as archive:
+        archive_class = type(archive)
+    read_row = archive_class.__getitem__
+    live_rows = WeakValueDictionary()
+    counts = []
+
+    def read(archive, key):
+        row = read_row(archive, key)
+        live_rows[key] = row
+        counts.append(len(live_rows))
+        return row
+
+    monkeypatch.setattr(archive_class, "__getitem__", read)
+    if warm:
+        with pytest.raises(ValueError, match="rebuild"):
+            model.load_cache(path)
+    else:
+        with pytest.warns(RuntimeWarning, match="width"):
+            assert model.load_cache(path) == 0
+    assert len(counts) == len(rows)
+    assert max(counts) <= 2  # Current row and the preceding loop iteration.
+    assert model.embedding_cache.keys() == old.keys()
+    assert all(model.embedding_cache[k] is v for k, v in old.items())
+
+
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize("bad_shape", [(3,), (1, 2), (0,)])
+def test_legacy_npz_load_rejects_late_corruption_atomically(tmp_path, warm, bad_shape):
+    from models.likelihoods import _text_key
+
+    model = _LocalEmbeddings()
+    if warm:
+        model.embed_and_cache(["warm"])
+    old = model.embedding_cache.copy()
+    path = tmp_path / "cache.npz"
+    rows = {_text_key("first"): np.array([7, 2], dtype=np.float64), _text_key("last"): np.zeros(bad_shape)}
+    np.savez(path, **rows)
+    with pytest.raises(ValueError, match="embedding"):
+        model.load_cache(path)
+    assert list(model.embedding_cache) == list(old)
+    for key in old:
+        assert old[key] is model.embedding_cache[key]
+
+    # Valid legacy files merge into a warm cache, converting to float32. A
+    # conflicting duplicate is ignored even when its on-disk shape is invalid.
+    model.embed_and_cache(["warm"])
+    rows.pop(_text_key("last"))
+    rows[_text_key("warm")] = np.zeros((2, 3))
+    np.savez_compressed(path, **rows)
+    assert model.load_cache(path) == 1
+    result = model.embed_and_cache(["warm", "first"])
+    assert result.dtype == np.float32
+    np.testing.assert_array_equal(result, [[4, 1], [7, 2]])
 
 
 # ------------------------------------------------------------------ #

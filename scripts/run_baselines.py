@@ -44,7 +44,7 @@ from agents.threshold_buzzer import (
     sweep_thresholds,
 )
 from evaluation.metrics import calibration_at_buzz, summarize_buzz_metrics
-from qb_data.config import merge_overrides
+from qb_data.config import baseline_reward_options, merge_overrides
 from scripts._common import (
     ARTIFACT_DIR,
     build_likelihood_model,
@@ -219,13 +219,8 @@ def main() -> None:
     beta = float(config["likelihood"].get("beta", 5.0))
     alpha = float(config["bayesian"].get("alpha", 10.0))
     thresholds = [float(x) for x in config["bayesian"]["threshold_sweep"]]
-    # Honor the documented ``environment.reward`` alias for ``reward_mode``.
-    env_cfg = config.get("environment", {})
-    reward_mode = str(env_cfg.get("reward", env_cfg.get("reward_mode", "time_penalty")))
-    wait_penalty = float(env_cfg.get("wait_penalty", 0.0))
-    buzz_correct = float(env_cfg.get("buzz_correct", 1.0))
-    buzz_incorrect = float(env_cfg.get("buzz_incorrect", -0.5))
-    early_buzz_penalty = float(env_cfg.get("early_buzz_penalty", 0.0))
+    reward_options = baseline_reward_options(config)
+    reward_mode = reward_options["reward_mode"]
 
     if reward_mode not in {"time_penalty", "simple"}:
         print(
@@ -254,11 +249,7 @@ def main() -> None:
         thresholds=thresholds,
         beta=beta,
         alpha=alpha,
-        reward_mode=reward_mode,
-        wait_penalty=wait_penalty,
-        buzz_correct=buzz_correct,
-        buzz_incorrect=buzz_incorrect,
-        early_buzz_penalty=early_buzz_penalty,
+        **reward_options,
         precomputed=precomputed,
     )
 
@@ -280,11 +271,7 @@ def main() -> None:
                     pq,
                     threshold,
                     alpha,
-                    reward_mode=reward_mode,
-                    wait_penalty=wait_penalty,
-                    buzz_correct=buzz_correct,
-                    buzz_incorrect=buzz_incorrect,
-                    early_buzz_penalty=early_buzz_penalty,
+                    **reward_options,
                 )
             )
             for pq in precomputed
@@ -302,11 +289,7 @@ def main() -> None:
         thresholds=thresholds,
         beta=beta,
         alpha=alpha,
-        reward_mode=reward_mode,
-        wait_penalty=wait_penalty,
-        buzz_correct=buzz_correct,
-        buzz_incorrect=buzz_incorrect,
-        early_buzz_penalty=early_buzz_penalty,
+        **reward_options,
         precomputed=seq_precomputed,
     )
     sequential_payload: dict[str, list[dict]] = {}
@@ -322,11 +305,7 @@ def main() -> None:
         asdict(
             _always_final_from_precomputed(
                 pq,
-                reward_mode=reward_mode,
-                wait_penalty=wait_penalty,
-                buzz_correct=buzz_correct,
-                buzz_incorrect=buzz_incorrect,
-                early_buzz_penalty=early_buzz_penalty,
+                **reward_options,
             )
         )
         for pq in precomputed

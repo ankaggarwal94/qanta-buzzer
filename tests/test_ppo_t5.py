@@ -499,6 +499,8 @@ class _TinyPolicyModel(torch.nn.Module):
         self._param = torch.nn.Parameter(torch.zeros(1))
 
         class _Tokenizer:
+            pad_token_id = 7
+
             class _Batch(dict):
                 def to(self, _device):
                     return self
@@ -516,6 +518,101 @@ class _TinyPolicyModel(torch.nn.Module):
 
     def select_action(self, input_ids, attention_mask, deterministic=True):
         return torch.tensor([1]), {"values": torch.tensor([[0.0]]), "log_probs": torch.tensor([0.0])}
+
+    def get_action_log_probs(self, input_ids, attention_mask, actions):
+        values = self._param.expand(len(actions))
+        return torch.nn.functional.logsigmoid(values), torch.zeros_like(values), values
+
+
+def test_singleton_update_retains_actor_signal_without_nan(tmp_path, sample_rollout_steps):
+    model = _TinyPolicyModel()
+    config = {
+        "ppo_epochs_per_iter": 1,
+        "ppo_value_coef": 0.0,
+        "ppo_entropy_coef": 0.0,
+        "checkpoint_dir": tmp_path,
+    }
+    trainer = PPOTrainer(model, [], [], config)
+    buffer = RolloutBuffer()
+    step = sample_rollout_steps[-1]
+    step.log_prob = -np.log(2)
+    buffer.add_rollout([step])
+
+    result = trainer.update_policy(buffer)
+
+    assert result["num_updates"] == 1
+    assert result["policy_loss"] == pytest.approx(-step.advantage)
+    assert all(np.isfinite(metric) for metric in result.values())
+    assert torch.all(torch.isfinite(model._param))
+    assert model._param.item() > 0.0  # Positive advantage increases the chosen action's log-probability.
+
+
+def test_legacy_trainer_updates_actor_on_a_single_terminal_transition(tmp_path):
+    from config import Config
+    from train_ppo import PPOTrainer as LegacyTrainer, RolloutBuffer as LegacyBuffer, RolloutStep as LegacyStep
+
+    class LegacyPolicy(_TinyPolicyModel):
+        def get_action_log_probs(self, input_ids, attention_mask, actions):
+            log_probs, entropy, values = super().get_action_log_probs(input_ids, attention_mask, actions)
+            return log_probs, values, entropy
+
+    config = Config()
+    config.CHECKPOINT_DIR = tmp_path
+    config.DEVICE = "cpu"
+    config.PPO_EPOCHS_PER_ITER = 1
+    config.PPO_VALUE_COEF = config.PPO_ENTROPY_COEF = 0.0
+    model = LegacyPolicy()
+    trainer = LegacyTrainer(model, [], [], config)
+    token = torch.ones((1, 1), dtype=torch.long)
+    buffer = LegacyBuffer()
+    buffer.add_rollout([LegacyStep("clue", 1, 1., True, 0., float(-np.log(2)), token, token)])
+
+    result = trainer.update_policy(buffer)
+
+    assert result["num_updates"] == 1
+    assert result["policy_loss"] == pytest.approx(-1.0)
+    assert torch.isfinite(model._param).all() and model._param.item() > 0
+
+
+def test_padding_preserves_tokens_masks_and_rejects_misalignment(tmp_path, sample_rollout_steps):
+    trainer = PPOTrainer(_TinyPolicyModel(), [], [], {"checkpoint_dir": tmp_path})
+    short, long = sample_rollout_steps[:2]
+    short.input_ids = torch.tensor([[0, 3]], dtype=torch.int32)
+    short.attention_mask = torch.tensor([[0, 1]], dtype=torch.bool)
+    long.input_ids = torch.tensor([[5, 4, 1]], dtype=torch.int32)
+    long.attention_mask = torch.tensor([[1, 1, 1]], dtype=torch.bool)
+    ids, mask = trainer._pad_batch([short, long])
+    torch.testing.assert_close(ids, torch.tensor([[0, 3, 7], [5, 4, 1]], dtype=torch.int32))
+    torch.testing.assert_close(mask, torch.tensor([[0, 1, 0], [1, 1, 1]], dtype=torch.bool))
+    short.attention_mask = short.attention_mask[:, :1]
+    with pytest.raises(ValueError, match="mask"):
+        trainer._pad_batch([short, long])
+
+
+def test_mixed_rollout_types_pad_before_dtype_promotion(tmp_path, sample_rollout_steps):
+    trainer = PPOTrainer(_TinyPolicyModel(), [], [], {"checkpoint_dir": tmp_path})
+    short, long = sample_rollout_steps[:2]
+    short.input_ids = torch.tensor([[False, True]])
+    short.attention_mask = torch.tensor([[True, True]])
+    long.input_ids = torch.tensor([[5, 4, 1]], dtype=torch.int32)
+    long.attention_mask = torch.tensor([[1, 1, 1]], dtype=torch.int16)
+
+    ids, masks = trainer._pad_batch([short, long])
+
+    # The tokenizer's pad ID (7) casts to True in the bool row before stacking.
+    torch.testing.assert_close(ids, torch.tensor([[0, 1, 1], [5, 4, 1]], dtype=torch.int32))
+    torch.testing.assert_close(masks, torch.tensor([[1, 1, 0], [1, 1, 1]], dtype=torch.int16))
+
+
+@pytest.mark.parametrize("dtype,fill", [(torch.int64, 2**53 + 1), (torch.uint8, -1)])
+def test_integer_padding_preserves_source_tensor_fill_semantics(dtype, fill, tmp_path, sample_rollout_steps):
+    trainer = PPOTrainer(_TinyPolicyModel(), [], [], {"checkpoint_dir": tmp_path})
+    trainer.model.tokenizer.pad_token_id = fill
+    short, long = sample_rollout_steps[:2]
+    short.input_ids = torch.ones((1, 1), dtype=dtype)
+    short.attention_mask = torch.ones_like(short.input_ids)
+    ids, _ = trainer._pad_batch([short, long])
+    assert ids[0, -1].item() == torch.full((1,), fill, dtype=dtype).item()
 
 
 class TestEvaluationSemantics:

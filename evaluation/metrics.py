@@ -26,7 +26,7 @@ expected_wins_score(c_trace, g_trace, opponent_survival_trace, ...)
 
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
+from dataclasses import fields, is_dataclass
 from typing import Any
 
 import numpy as np
@@ -48,8 +48,15 @@ def _to_dict(item: Any) -> dict[str, Any]:
     if isinstance(item, dict):
         return item
     if is_dataclass(item):
-        return asdict(item)
+        return {field.name: getattr(item, field.name) for field in fields(item)}
     return item.__dict__
+
+
+def _first_buzz_mass(hazards: np.ndarray) -> np.ndarray:
+    """Weight each conditional buzz by the probability of reaching its step."""
+    survival = np.ones_like(hazards)
+    np.cumprod(1.0 - hazards[:-1], out=survival[1:])
+    return hazards * survival
 
 
 def system_score(c_trace: list[float], g_trace: list[float]) -> float:
@@ -64,24 +71,29 @@ def system_score(c_trace: list[float], g_trace: list[float]) -> float:
     c_trace : list[float]
         Buzz probability at each time step (confidence proxy).
     g_trace : list[float]
-        Correctness indicator at each time step (1.0 if top answer is
-        correct, 0.0 otherwise).
+        Conditional probability of a correct answer given a buzz at each
+        step. A deterministic answer uses the indicator 0.0 or 1.0.
 
     Returns
     -------
     float
-        S_q score for the episode, in [0, 1].
+        First-buzz-weighted correctness, or zero for an empty hazard trace.
+        For inputs in [0, 1], the result lies in [0, 1] even when the
+        float64 sum rounds above one. Traces containing values outside that
+        domain retain their raw float64 weighted sum.
     """
-    c = np.array(c_trace, dtype=np.float64)
-    g = np.array(g_trace, dtype=np.float64)
-    if len(c) == 0:
+    c = np.asarray(c_trace, dtype=np.float64)
+    g = np.asarray(g_trace, dtype=np.float64)
+    if c.ndim == 1 and c.size == 0:
         return 0.0
-    stay = 1.0 - c
-    survival = np.ones(len(c), dtype=np.float64)
-    if len(c) > 1:
-        survival[1:] = np.cumprod(stay[:-1])
-    b = c * survival
-    return float(np.sum(b * g))
+    if c.ndim != 1 or g.ndim != 1 or c.shape != g.shape:
+        raise ValueError("system_score requires aligned one-dimensional traces")
+    score = float(np.sum(_first_buzz_mass(c) * g))
+    if score > 1.0 and all(
+        np.all((0.0 <= trace) & (trace <= 1.0)) for trace in (c, g)
+    ):
+        return 1.0
+    return score
 
 
 def expected_wins_score(
@@ -128,19 +140,14 @@ def expected_wins_score(
     float
         Expected Wins score for the episode.
     """
-    c = np.array(c_trace, dtype=np.float64)
-    g = np.array(g_trace, dtype=np.float64)
-    s = np.array(opponent_survival_trace, dtype=np.float64)
-    if len(c) == 0:
-        return 0.0
+    c = np.asarray(c_trace, dtype=np.float64)
+    g = np.asarray(g_trace, dtype=np.float64)
+    s = np.asarray(opponent_survival_trace, dtype=np.float64)
+    if any(trace.ndim != 1 for trace in (c, g, s)):
+        raise ValueError("expected_wins_score requires one-dimensional traces")
     n = min(len(c), len(g), len(s))
-    c, g, s = c[:n], g[:n], s[:n]
-
-    b = np.zeros(n, dtype=np.float64)
-    survival = 1.0
-    for t in range(n):
-        b[t] = c[t] * survival
-        survival *= 1.0 - c[t]
+    b = _first_buzz_mass(c[:n])
+    g, s = g[:n], s[:n]
 
     v_self = g * reward_correct + (1.0 - g) * reward_incorrect
     v = s * v_self + (1.0 - s) * opponent_expected_value

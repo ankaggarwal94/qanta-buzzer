@@ -2,10 +2,30 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from collections.abc import Iterable
+from itertools import chain, islice
 
 from qb_data.data_loader import TossupQuestion
+
+
+_WORD = re.compile(r"\S+")
+
+
+def _profile_tokens(texts: Iterable[str], limit: int) -> list[str]:
+    """Split complete short documents natively and stream only a potentially oversized one."""
+    words: list[str] = []
+    for text in texts:
+        remaining = limit - len(words)
+        # N whitespace-delimited words need at least 2*N - 1 characters.
+        if limit <= 0 or len(text) <= 2 * remaining:
+            words.extend(text.split())
+        else:
+            words.extend(match[0] for match in islice(_WORD.finditer(text), remaining))
+        if limit > 0 and len(words) == limit:
+            break
+    return words
 
 
 class AnswerProfileBuilder:
@@ -25,8 +45,8 @@ class AnswerProfileBuilder:
     def __init__(
         self,
         max_tokens_per_profile: int = 2000,
-        min_questions_per_answer: int = 1
-    ):
+        min_questions_per_answer: int = 1,
+    ) -> None:
         """Initialize the answer profile builder.
 
         Args:
@@ -35,13 +55,11 @@ class AnswerProfileBuilder:
         """
         self.max_tokens_per_profile = max_tokens_per_profile
         self.min_questions_per_answer = min_questions_per_answer
-        self._grouped: Dict[str, List[Tuple[str, str]]] = {}
-        self._cache: Dict[Tuple[str, Optional[str]], str] = {}
-        self._fit_signature: Optional[
-            Tuple[Tuple[str, str, str], ...]
-        ] = None
+        self._grouped: dict[str, list[tuple[str, str]]] = {}
+        self._cache: dict[tuple[str, str | None], str] = {}
+        self._fit_signature: tuple[tuple[str, str, str], ...] | None = None
 
-    def fit(self, questions: List[TossupQuestion]) -> "AnswerProfileBuilder":
+    def fit(self, questions: list[TossupQuestion]) -> AnswerProfileBuilder:
         """Fit the builder on a set of questions.
 
         Groups questions by their primary answer for efficient profile building.
@@ -62,7 +80,7 @@ class AnswerProfileBuilder:
         )
         if fit_signature == self._fit_signature:
             return self
-        grouped: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+        grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
         for q in questions:
             grouped[q.answer_primary].append((q.qid, q.question))
         self._grouped = dict(grouped)
@@ -73,7 +91,7 @@ class AnswerProfileBuilder:
     def _profile_text(
         self,
         answer_primary: str,
-        exclude_qid: Optional[str] = None
+        exclude_qid: str | None = None,
     ) -> str:
         """Build profile text for an answer with optional exclusion.
 
@@ -88,35 +106,25 @@ class AnswerProfileBuilder:
         if key in self._cache:
             return self._cache[key]
 
-        items = self._grouped.get(answer_primary, [])
-        texts: List[str] = []
-
-        # Collect all question texts except the excluded one
-        for qid, qtext in items:
-            if exclude_qid is not None and qid == exclude_qid:
-                continue
-            texts.append(qtext)
-
-        # If not enough questions after exclusion, fall back to answer text
-        if len(texts) < self.min_questions_per_answer:
-            self._cache[key] = answer_primary
-            return answer_primary
-
-        # Merge all texts and split into tokens
-        merged = " ".join(texts).split()
-
-        # Truncate to max tokens if specified
-        if self.max_tokens_per_profile > 0:
-            merged = merged[:self.max_tokens_per_profile]
-
-        result = " ".join(merged) if merged else answer_primary
+        items = self._grouped.get(answer_primary, ())
+        texts = (
+            text for qid, text in items
+            if exclude_qid is None or qid != exclude_qid
+        )
+        # Count the minimum number of eligible questions, including blank ones,
+        # before stopping tokenization at the requested prefix.
+        first = list(islice(texts, min(len(items), max(0, self.min_questions_per_answer))))
+        result = answer_primary
+        if len(first) >= self.min_questions_per_answer:
+            words = _profile_tokens(chain(first, texts), self.max_tokens_per_profile)
+            result = " ".join(words) or answer_primary
         self._cache[key] = result
         return result
 
     def profile_for_answer(
         self,
         answer_primary: str,
-        exclude_qid: Optional[str] = None
+        exclude_qid: str | None = None,
     ) -> str:
         """Get the profile for a specific answer.
 
@@ -134,9 +142,9 @@ class AnswerProfileBuilder:
 
     def build_profiles(
         self,
-        questions: List[TossupQuestion],
-        exclude_qid: Optional[str] = None,
-    ) -> Dict[str, str]:
+        questions: list[TossupQuestion],
+        exclude_qid: str | None = None,
+    ) -> dict[str, str]:
         """Build profiles for all answers in the dataset.
 
         Args:

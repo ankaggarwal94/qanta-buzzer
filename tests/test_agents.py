@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import warnings
+from itertools import product
 
 import numpy as np
 import pytest
@@ -1139,3 +1140,137 @@ class TestBaselineAgentsVariableK:
         result = buzzer.run_episode(q4)
         assert len(result.c_trace) > 0
         assert 0 <= result.buzz_index < 3
+
+
+@pytest.mark.parametrize("sequential", [False, True])
+def test_empty_threshold_sweep_does_no_model_work(sample_mc_question, sequential):
+    from agents.bayesian_buzzer import sweep_sequential_thresholds
+
+    class UnusedScorer:
+        def score(self, *args):
+            pytest.fail("an empty threshold sweep requested a likelihood")
+
+    sweep = sweep_sequential_thresholds if sequential else sweep_thresholds
+    assert sweep([sample_mc_question], UnusedScorer(), []) == {}
+
+
+def test_profile_policy_can_adjust_threshold_and_reward_during_episode(sample_mc_question, sample_corpus):
+    class AdaptivePolicy(SoftmaxProfileBuzzer):
+        def confidence_proxy(self, top_p):
+            self.threshold = 0.0
+            self.reward_mode = "simple"
+            return super().confidence_proxy(top_p)
+
+    agent = AdaptivePolicy(_make_likelihood(sample_corpus), threshold=2, buzz_correct=19, buzz_incorrect=-19)
+    episode = agent.run_episode(sample_mc_question)
+    assert episode.buzz_step == 0
+    assert episode.reward_like == (1.0 if episode.correct else -1.0)
+
+
+@pytest.mark.parametrize("policy", [ThresholdBuzzer, SoftmaxProfileBuzzer, SequentialBayesBuzzer])
+@pytest.mark.parametrize(
+    ("initial_steps", "updated_steps", "threshold", "expected_index", "expected_reward"),
+    [
+        (2, 1, 2.0, 1, -0.5),  # The first belief becomes the final decision.
+        (1, 2, 2.0, 0, 0.5),   # The original iterator exhausts without a decision.
+        (1, 2, 0.0, 1, -1.0),  # An early decision uses the updated duration for reward.
+    ],
+)
+def test_live_threshold_policies_observe_horizon_changes(
+    sample_mc_question, policy, initial_steps, updated_steps, threshold, expected_index, expected_reward,
+):
+    question = sample_mc_question
+    prefixes = question.cumulative_prefixes
+    question.cumulative_prefixes = prefixes[:initial_steps]
+    question.run_indices = question.run_indices[:initial_steps]
+
+    class HorizonChangingScorer:
+        def score(self, prefix, options):
+            question.cumulative_prefixes = prefixes[:updated_steps]
+            return np.array([0.0, 1.0, 0.0, 0.0])
+
+    agent = policy(HorizonChangingScorer(), threshold=threshold, early_buzz_penalty=1.0)
+    result = agent.run_episode(question)
+
+    assert (result.buzz_step, result.buzz_index) == (0, expected_index)
+    assert result.reward_like == pytest.approx(expected_reward)
+    assert len(result.c_trace) == 1
+
+
+@pytest.mark.parametrize("policy", [ThresholdBuzzer, SoftmaxProfileBuzzer, SequentialBayesBuzzer])
+def test_live_episode_uses_question_metadata_updated_by_scorer(sample_mc_question, policy):
+    question = sample_mc_question
+    question.cumulative_prefixes = question.cumulative_prefixes[:2]
+    question.run_indices = question.run_indices[:2]
+
+    class RelabelingScorer:
+        def score(self, clue, profiles):
+            if clue != "Who":
+                question.qid = "corrected"
+                question.gold_index = 1
+            return np.array([0.0, 1.0, 0.0, 0.0])
+
+    result = policy(RelabelingScorer(), threshold=2.0, reward_mode="simple").run_episode(question)
+    assert result.qid == "corrected"
+    assert result.g_trace == [0.0, 1.0]
+    assert result.gold_index == result.buzz_index == 1
+    assert result.correct and result.reward_like == 1.0
+
+
+@pytest.mark.parametrize("cached", [False, True], ids=["live", "sweep"])
+def test_sequential_episode_uses_revised_clue_boundary(sample_mc_question, cached):
+    from agents import sweep_sequential_thresholds
+
+    question = sample_mc_question
+    question.run_indices = [1, 3]
+    question.cumulative_prefixes = ["Who was", "Who was the first"]
+    fragments = []
+
+    class RevisingScorer:
+        def score(self, clue, profiles):
+            fragments.append(clue)
+            if len(fragments) == 1:
+                question.run_indices[0] = 0
+                return np.zeros(4)
+            if clue.startswith("was "):
+                return np.array([1.0, 0.0, 0.0, 0.0])
+            return np.array([0.0, 1.0, 0.0, 0.0])
+
+    if cached:
+        sweep = sweep_sequential_thresholds([question], RevisingScorer(), [2.0], reward_mode="simple")
+        result = sweep[2.0][0]
+    else:
+        policy = SequentialBayesBuzzer(RevisingScorer(), threshold=2.0, reward_mode="simple")
+        result = policy.run_episode(question)
+    assert fragments == ["Who was", "was the first"]
+    assert result.buzz_index == 0 and result.correct and result.reward_like == 1.0
+
+
+def test_profile_policy_observes_horizon_changed_by_confidence(sample_mc_question, sample_corpus):
+    class ShorteningPolicy(SoftmaxProfileBuzzer):
+        def confidence_proxy(self, top_p):
+            del sample_mc_question.cumulative_prefixes[1:]
+            return super().confidence_proxy(top_p)
+
+    result = ShorteningPolicy(_make_likelihood(sample_corpus), threshold=2.0).run_episode(sample_mc_question)
+    assert result.buzz_step == 0
+    assert len(result.c_trace) == 1
+
+
+def test_threshold_replay_exhaustive_short_traces():
+    """Check the production replay against the earliest qualifying prefix."""
+    from agents.threshold_buzzer import _PrecomputedQuestion, _episode_from_precomputed
+
+    possible = ((0.25, 0.75), (0.5, 0.5), (0.75, 0.25))
+    for length in range(1, 5):
+        for prefix in product(possible, repeat=length):
+            for gold, threshold in product((0, 1), (0.5, 0.75, 1.0)):
+                step = next((i for i, row in enumerate(prefix) if max(row) >= threshold), length - 1)
+                row = prefix[step]
+                winner = row.index(max(row))
+                question = _PrecomputedQuestion("q", gold, 2, [np.asarray(row) for row in prefix])
+                result = _episode_from_precomputed(question, threshold, 3, reward_mode="simple")
+                assert (result.buzz_step, result.buzz_index, result.correct) == (step, winner, winner == gold)
+                assert result.reward_like == (1.0 if winner == gold else -1.0)
+                assert result.top_p_trace == [max(row) for row in prefix[:step + 1]]
+                assert len(result.c_trace) == len(result.entropy_trace) == len(result.g_trace) == step + 1

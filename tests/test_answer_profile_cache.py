@@ -11,6 +11,9 @@ Verifies that:
 
 from __future__ import annotations
 
+import sys
+import tracemalloc
+
 import pytest
 
 from qb_data.answer_profiles import AnswerProfileBuilder
@@ -158,3 +161,40 @@ class TestCacheEfficiency:
         # Only one cache entry for (Lincoln, None)
         assert ("Lincoln", None) in builder._cache
         assert len([k for k in builder._cache if k[0] == "Lincoln"]) == 1
+
+
+@pytest.mark.parametrize("limit", [-1, 0, 1, 3, 8, sys.maxsize + 1])
+@pytest.mark.parametrize("minimum", [0, 2, 3, 4, sys.maxsize + 1])
+def test_profiles_match_concatenation_with_whitespace_and_exclusion(limit, minimum):
+    rows = [
+        _make_question("excluded", "gold", "outside"),
+        _make_question("one", "gold", "  alpha\tbravo\u00a0"),
+        _make_question("empty", "gold", "\n"),
+        _make_question("three", "gold", "charlie\x1cdelta"),
+    ]
+    builder = AnswerProfileBuilder(limit, minimum).fit(rows)
+    texts = [row.question for row in rows if row.qid != "excluded"]
+    words = " ".join(texts).split()
+    if limit > 0:
+        words = words[:limit]
+    expected = " ".join(words) if len(texts) >= minimum else "gold"
+    assert builder.profile_for_answer("gold", "excluded") == expected
+
+
+def test_short_profile_does_not_materialize_tokens_beyond_limit():
+    row = _make_question("q", "gold", "word")
+    row.question = "word " * 250_000
+    builder = AnswerProfileBuilder(max_tokens_per_profile=3).fit([row])
+    # Exclude fixture allocation and compare against the size of the source.
+    tracing = tracemalloc.is_tracing()
+    if not tracing:
+        tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        initial = tracemalloc.get_traced_memory()[0]
+        assert builder.profile_for_answer("gold") == "word word word"
+        peak = tracemalloc.get_traced_memory()[1] - initial
+    finally:
+        if not tracing:
+            tracemalloc.stop()
+    assert peak < len(row.question)

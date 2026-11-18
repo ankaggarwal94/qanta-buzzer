@@ -64,6 +64,17 @@ def _text_key(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _validate_vector_shape(shape: tuple[int, ...], expected: tuple[int, ...] | None, source: str) -> None:
+    """Require one nonempty feature vector of the same width as prior entries."""
+    if len(shape) != 1 or not shape[0]:
+        raise ValueError(f"{source} requires nonempty one-dimensional embeddings, got vector shape {shape}")
+    if expected is not None and shape != expected:
+        raise ValueError(
+            f"{source} has embedding shape {shape}, expected {expected}. "
+            "If using a saved embedding cache, rebuild it with the active encoder."
+        )
+
+
 def _best_torch_device() -> "torch.device":
     """Select the best available accelerator: CUDA > MPS > CPU."""
     import torch
@@ -141,12 +152,24 @@ class LikelihoodModel(ABC):
         np.ndarray
             Stacked embeddings of shape (len(texts), embed_dim), dtype float32.
         """
-        missing = [text for text in texts if _text_key(text) not in self.embedding_cache]
+        keys = {text: _text_key(text) for text in dict.fromkeys(texts)}
+        missing = {text: key for text, key in keys.items() if key not in self.embedding_cache}
         if missing:
-            new_embeddings = self._embed_batch(missing)
-            for text, emb in zip(missing, new_embeddings):
-                self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
-        return np.stack([self.embedding_cache[_text_key(text)] for text in texts])
+            self._cache_embedding_batch(missing)
+        return np.stack([self.embedding_cache[keys[text]] for text in texts])
+
+    def _cache_embedding_batch(self, batch: dict[str, str]) -> None:
+        """Validate a complete backend response before publishing any of its rows."""
+        vectors = np.asarray(self._embed_batch(list(batch)), dtype=np.float32)
+        if vectors.ndim != 2 or vectors.shape[0] != len(batch):
+            raise ValueError(f"Expected an embedding batch with {len(batch)} rows, got shape {vectors.shape}")
+        existing = next(iter(self.embedding_cache.values()), None)
+        _validate_vector_shape(vectors.shape[1:], None if existing is None else existing.shape, "New embedding batch")
+        if existing is None:
+            width = self._embedding_width()
+            if width is not None and vectors.shape[1] != width:
+                raise ValueError(f"New embedding batch has width {vectors.shape[1]}, encoder width {width}")
+        self.embedding_cache.update({key: row.copy() for key, row in zip(batch.values(), vectors, strict=True)})
 
     def precompute_embeddings(
         self,
@@ -165,21 +188,30 @@ class LikelihoodModel(ABC):
         texts : list[str]
             All texts to embed (clue prefixes, option profiles, fragments).
         batch_size : int
-            Number of texts per ``_embed_batch`` call.
+            Maximum number of texts per ``_embed_batch`` call. Must be positive.
         desc : str
             tqdm progress-bar description.
         """
         from tqdm import tqdm
 
-        unique = [t for t in dict.fromkeys(texts) if _text_key(t) not in self.embedding_cache]
-        if not unique:
-            return
-        for i in tqdm(range(0, len(unique), batch_size), desc=desc,
-                       total=(len(unique) + batch_size - 1) // batch_size):
-            batch = unique[i : i + batch_size]
-            embeddings = self._embed_batch(batch)
-            for text, emb in zip(batch, embeddings):
-                self.embedding_cache[_text_key(text)] = emb.astype(np.float32)
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        batch: dict[str, str] = {}
+        for start in tqdm(range(0, len(texts), batch_size), desc=desc, delay=0.5):
+            for text in dict.fromkeys(texts[start : start + batch_size]):
+                key = _text_key(text)
+                if key in self.embedding_cache:
+                    continue
+                batch[text] = key
+                if len(batch) == batch_size:
+                    self._cache_embedding_batch(batch)
+                    batch.clear()
+        if batch:
+            self._cache_embedding_batch(batch)
+
+    def _embedding_width(self) -> int | None:
+        """Return the output width when available from local encoder metadata."""
+        return None
 
     def save_cache(self, path: str | Path) -> int:
         """Persist embedding_cache to disk as compressed ``.npz``.
@@ -207,7 +239,12 @@ class LikelihoodModel(ABC):
 
         Merges loaded entries into the existing cache **without**
         overwriting keys that are already present (existing keys win).
-        If the file does not exist, silently returns 0 (cold-start).
+        A missing file or a uniform archive with a different width from the
+        active encoder contributes zero entries. Malformed archives raise before
+        any new row is published. For encoders without local width metadata
+        (including OpenAI), the first stored row sets the expected width.
+        A conflicting response raises and preserves the cache so the caller
+        can rebuild it with the intended encoder.
 
         Parameters
         ----------
@@ -222,13 +259,37 @@ class LikelihoodModel(ABC):
         p = Path(path)
         if not p.exists():
             return 0
+        pending: dict[str, np.ndarray] = {}
+        archive_shape = None
+        width = None
+        existing = next(iter(self.embedding_cache.values()), None)
+        existing_shape = None if existing is None else existing.shape
         with np.load(p) as data:
-            loaded = 0
             for key in data.files:
-                if key not in self.embedding_cache:
-                    self.embedding_cache[key] = data[key].astype(np.float32)
-                    loaded += 1
-            return loaded
+                if key in self.embedding_cache or key in pending:
+                    continue
+                vector = np.asarray(data[key], dtype=np.float32)
+                _validate_vector_shape(vector.shape, archive_shape, f"Cached embedding {key}")
+                if archive_shape is None:
+                    archive_shape = vector.shape
+                    width = self._embedding_width()
+                if (width is None or vector.size == width) and (
+                    existing_shape is None or vector.shape == existing_shape
+                ):
+                    pending[key] = vector
+        if archive_shape is None:
+            return 0
+        if width is not None and archive_shape[0] != width:
+            warnings.warn(
+                f"Skipping embedding cache {p}: archive width {archive_shape[0]}, encoder width {width}. "
+                "Rebuild the cache with the active encoder.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return 0
+        _validate_vector_shape(archive_shape, existing_shape, f"Embedding cache {p}")
+        self.embedding_cache.update(pending)
+        return len(pending)
 
     @abstractmethod
     def _embed_batch(self, texts: list[str]) -> np.ndarray:
@@ -314,6 +375,10 @@ class TfIdfLikelihood(LikelihoodModel):
     def fit(self, corpus_texts: list[str]) -> "TfIdfLikelihood":
         """Learn vocabulary and IDF weights from a text corpus.
 
+        Each successful fit publishes a new fitted ``vectorizer``. Callers
+        holding a reference to the previous estimator can obtain the new one
+        from this attribute. A failed fit preserves the estimator and its cache.
+
         Parameters
         ----------
         corpus_texts : list[str]
@@ -325,7 +390,12 @@ class TfIdfLikelihood(LikelihoodModel):
         TfIdfLikelihood
             Self, for method chaining.
         """
-        self.vectorizer.fit(corpus_texts)
+        from sklearn.base import clone
+
+        # A failed fit can leave a sklearn estimator partially mutated. Publish
+        # its vocabulary and invalidate the old coordinates only on success.
+        self.vectorizer = clone(self.vectorizer).fit(corpus_texts)
+        self.embedding_cache.clear()
         self._is_fit = True
         return self
 
@@ -437,6 +507,12 @@ class SBERTLikelihood(LikelihoodModel):
 
         self.model_name = model_name
         self.encoder = SentenceTransformer(model_name)
+
+    def _embedding_width(self) -> int | None:
+        get_width = getattr(self.encoder, "get_embedding_dimension", None)
+        if get_width is None:
+            get_width = self.encoder.get_sentence_embedding_dimension
+        return get_width()
 
     def _embed_batch(self, texts: list[str]) -> np.ndarray:
         """Embed texts using the SentenceTransformer encoder.
@@ -592,6 +668,9 @@ class T5Likelihood(LikelihoodModel):
         self.device = _best_torch_device()
         self.encoder.to(self.device)
         self.encoder.eval()
+
+    def _embedding_width(self) -> int:
+        return self.encoder.config.d_model
 
     def _embed_batch(self, texts: list[str]) -> np.ndarray:
         """Embed texts using T5 encoder with attention-masked mean pooling.

@@ -9,10 +9,11 @@ from __future__ import annotations
 import gzip
 import io
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
+from typing import BinaryIO
 
-from .fileio import publish_bytes
+from .fileio import atomic_binary_writer
 from .identity import loads_strict
 
 _COMPRESSLEVEL = 6
@@ -30,22 +31,46 @@ def _canonical_row(row: dict) -> str:
     )
 
 
+def _write_rows(handle: BinaryIO, rows: Iterable[dict]) -> None:
+    # The private staging filename must never enter the hash-attested gzip header.
+    with gzip.GzipFile(
+        filename="", fileobj=handle, mode="wb", mtime=0, compresslevel=_COMPRESSLEVEL
+    ) as archive:
+        for row in rows:
+            archive.write((_canonical_row(row) + "\n").encode("utf-8"))
+
+
 def dumps_rows(rows: Iterable[dict]) -> bytes:
-    payload = "".join(_canonical_row(r) + "\n" for r in rows).encode("utf-8")
-    buf = io.BytesIO()
-    with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0, compresslevel=_COMPRESSLEVEL) as gz:
-        gz.write(payload)
-    return buf.getvalue()
+    """Encode adapter rows as deterministic gzipped JSON Lines.
+
+    Parameters
+    ----------
+    rows : Iterable[dict]
+        Row objects in output order, consumed once.
+
+    Returns
+    -------
+    bytes
+        Compressed UTF-8 JSON Lines with sorted keys and a fixed gzip timestamp.
+    """
+    with io.BytesIO() as buf:
+        _write_rows(buf, rows)
+        return buf.getvalue()
 
 
 def write_jsonl_gz(path: str | Path, rows: Iterable[dict]) -> None:
-    """Atomically and durably publish one adapter row file.
+    """Stream deterministic gzipped JSON Lines to an atomically replaced file.
 
-    Row serialization stays canonical (``dumps_rows``); the crash-durable
-    publish mechanics (flush + file fsync before the rename, directory fsync
-    after) are the package-wide primitive ``fileio.publish_bytes``.
+    Parameters
+    ----------
+    path : str or Path
+        Destination published after all rows serialize successfully. A row
+        serialization failure preserves any existing destination.
+    rows : Iterable[dict]
+        Row objects in output order, consumed once.
     """
-    publish_bytes(Path(path), dumps_rows(rows))
+    with atomic_binary_writer(Path(path)) as handle:
+        _write_rows(handle, rows)
 
 
 def read_jsonl_gz(path: str | Path) -> list[dict]:

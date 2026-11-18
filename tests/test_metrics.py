@@ -4,6 +4,11 @@ Tests edge cases for system_score (S_q), calibration metrics (ECE, Brier),
 and per-category accuracy grouping.
 """
 
+from dataclasses import dataclass
+from fractions import Fraction
+from itertools import product
+
+import numpy as np
 import pytest
 
 from evaluation.metrics import (
@@ -26,6 +31,7 @@ from evaluation.metrics import (
 def test_system_score_empty_trace():
     """S_q should return 0.0 for empty traces."""
     assert system_score([], []) == 0.0
+    assert system_score([], [1.0]) == 0.0
 
 
 def test_system_score_all_zero_confidence():
@@ -41,6 +47,25 @@ def test_system_score_all_correct_immediate_buzz():
     g_trace = [1.0, 1.0, 1.0]
     expected = 1.0 * 1.0  # b_0 = c_0 * 1.0 = 1.0, survival after = 0
     assert abs(system_score(c_trace, g_trace) - expected) < 1e-9
+
+
+def test_system_score_certain_correctness_stays_within_probability_range():
+    # The forward float64 masses sum to 1.0000000000000002.
+    assert system_score([0.2, 0.2, 1.0], [1.0, 1.0, 1.0]) == 1.0
+
+
+@pytest.mark.parametrize("hazard,correctness", [(1.25, 1.0), (1.0, 1.25)])
+def test_system_score_preserves_out_of_domain_arithmetic(hazard, correctness):
+    assert system_score([hazard], [correctness]) == 1.25
+
+
+def test_system_score_accepts_conditional_probability_from_float32_ppo():
+    # PPO divides the gold action probability by 1 - P(wait).
+    hazard = 1.0 - float(np.float32(0.999))
+    gold = float(np.float32(0.001))
+    conditional = gold / hazard
+    assert conditional > 1.0
+    assert system_score([hazard], [conditional]) == gold
 
 
 def test_system_score_gradual_confidence():
@@ -444,6 +469,21 @@ def test_expected_wins_score_fractional_g_trace():
     assert abs(ew - 3.2) < 1e-9
 
 
+@pytest.mark.parametrize(
+    "hazards,correctness,survival",
+    [
+        ([[0.5]], [1.0], [1.0]),
+        ([0.5], [[1.0]], [1.0]),
+        ([0.5], [1.0], [[1.0]]),
+        ([], [[1.0]], []),
+        ([], [], [[1.0]]),
+    ],
+)
+def test_expected_wins_rejects_non_vector_traces(hazards, correctness, survival):
+    with pytest.raises(ValueError, match="one-dimensional"):
+        expected_wins_score(hazards, correctness, survival)
+
+
 def test_expected_wins_score_empty():
     assert expected_wins_score([], [], []) == 0.0
 
@@ -503,3 +543,44 @@ def test_calibration_at_buzz_consistent_with_pairs():
     cal = calibration_at_buzz(results)
     confs, outs = calibration_pairs_at_buzz(results)
     assert cal["n_calibration"] == len(confs)
+
+
+def test_summary_reads_slotted_trace_without_copying_opaque_metadata():
+    class Opaque:
+        def __deepcopy__(self, memo):
+            raise AssertionError("read-only evaluation copied unused metadata")
+
+    @dataclass(slots=True)
+    class Trace:
+        c_trace: tuple
+        g_trace: tuple
+        metadata: Opaque
+
+    trace = Trace((1.0,), (0.75,), Opaque())
+    assert summarize_buzz_metrics([trace])["mean_sq"] == 0.75
+
+
+@pytest.mark.parametrize(("hazards", "gains"), [
+    ([0.25, 0.5], [1.0]),
+    ([[0.25], [0.5]], [[1.0], [0.0]]),
+    ([[0.25], [0.5]], [1.0, 0.0]),
+    ([0.25, 0.5], [[1.0], [0.0]]),
+])
+def test_system_score_requires_aligned_vectors(hazards, gains):
+    with pytest.raises(ValueError, match="aligned one-dimensional"):
+        system_score(hazards, gains)
+
+
+def test_stopping_scores_match_exact_backward_expectation():
+    # Independent backward conditioning; production accumulates forward mass.
+    for hazards in product((0, Fraction(1, 4), 1), repeat=4):
+        gains = (0, Fraction(1, 2), 1, Fraction(1, 4))
+        opponent = (1, Fraction(3, 4), Fraction(1, 2), 0)
+        sq = ew = Fraction(0)
+        for h, g, s in reversed(list(zip(hazards, gains, opponent))):
+            sq = h * g + (1 - h) * sq
+            value = s * (10 * g - 5 * (1 - g)) + (1 - s) * 2
+            ew = h * value + (1 - h) * ew
+        assert system_score(hazards, gains) == float(sq)
+        # EW scores the common prefix and accepts unused trailing entries.
+        assert expected_wins_score(hazards + (1,), gains, opponent, 10, -5, 2) == float(ew)

@@ -7,7 +7,44 @@ using dot notation (e.g., ``data.K=5`` updates ``config["data"]["K"]``).
 
 import argparse
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, TypedDict, Union
+
+
+class BaselineRewardOptions(TypedDict):
+    """Keyword arguments accepted by live and precomputed offline baselines."""
+
+    reward_mode: str
+    wait_penalty: float
+    buzz_correct: float
+    buzz_incorrect: float
+    early_buzz_penalty: float
+
+
+def baseline_reward_options(config: dict[str, Any]) -> BaselineRewardOptions:
+    """Resolve the rewards used to replay offline baseline decisions.
+
+    Parameters
+    ----------
+    config : dict
+        Project configuration. Within its optional ``environment`` mapping,
+        the qb-rl ``reward`` alias takes precedence over ``reward_mode``.
+
+    Returns
+    -------
+    BaselineRewardOptions
+        Replay keyword arguments. The mode defaults to ``"time_penalty"`` and
+        is converted to a string. The float defaults for ``wait_penalty``,
+        ``buzz_correct``, ``buzz_incorrect``, and ``early_buzz_penalty`` are
+        0.0, 1.0, -0.5, and 0.0 respectively.
+    """
+    env = config.get("environment", {})
+    return {
+        "reward_mode": str(env.get("reward", env.get("reward_mode", "time_penalty"))),
+        "wait_penalty": float(env.get("wait_penalty", 0.0)),
+        "buzz_correct": float(env.get("buzz_correct", 1.0)),
+        "buzz_incorrect": float(env.get("buzz_incorrect", -0.5)),
+        "early_buzz_penalty": float(env.get("early_buzz_penalty", 0.0)),
+    }
 
 
 def normalize_config(
