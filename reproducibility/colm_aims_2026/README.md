@@ -120,3 +120,42 @@ rejects any surviving pending guard before requiring the acceptance marker to
 bind the exact receipt bytes and activation digest. A missing marker or a
 surviving guard fails closed regardless of whether a diagnostic
 `STOP_REPORT.json` could be written.
+
+## Transfer a settled Phase 4 run between devices
+
+The optional exchange tool copies regular files and records their sizes and
+SHA-256 digests in a version 2 `RETURN_MANIFEST.json`. On the publishing
+device, finish the run first and choose a fresh name in a synced directory
+outside the repository. These commands work in both PowerShell and POSIX shells.
+
+```console
+python -m reproducibility.colm_aims_2026.phase4_exchange publish ../local-run ../exchange --name retry1 --provenance ../provenance.json
+```
+
+The optional provenance file contains a JSON object. Include an activation
+digest when the receiving workflow needs to compare the transfer with an
+existing run certificate. The manifest also records the publishing hostname,
+platform, and time. For distributing inputs, use
+`--manifest-type phase4_exchange_staging`.
+
+On the receiving device, let the exchange directory sync and select a fresh
+local destination outside the repository.
+
+```console
+python -m reproducibility.colm_aims_2026.phase4_exchange pull ../exchange/retry1 ../intake/retry1
+```
+
+Pull verifies each copied file against the manifest. Immediately before publishing
+the intake directory, it checks the file list and manifest bytes again. A changed
+manifest, missing member, extra file, or digest mismatch causes a nonzero exit.
+Retry after sync finishes. The payload consists of files and
+their relative paths. Empty directories, filesystem metadata, and the transport
+manifest are omitted from the intake. A successful pull establishes agreement
+with the supplied manifest. Use the run's certificate or evidence verifier for
+provenance and scientific acceptance.
+
+Both operations use a staging directory and a create-once destination. After a
+process interruption, inspect any residual staging directory or empty destination
+before retrying with a fresh name. The historical two-device reconciliation
+records a transfer of 52 files using this manifest format.
+[Transfer record](../../handoff_phase4_reconciliation_2026-08-24.md)
